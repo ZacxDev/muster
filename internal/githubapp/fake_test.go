@@ -60,10 +60,17 @@ type fakeGitHub struct {
 	mintStatus    int // non-zero: answer every mint with this status
 	listCalls     int
 	tokenTTL      time.Duration
+	// pulls is GET /repos/<owner>/<name>/pulls/<n>'s answer per
+	// "<owner>/<name>#<n>" (pull).
+	pulls map[string]pull
+	// pullReads counts GET .../pulls/<n> requests.
+	pullReads int
 	// rawInstallations, when set, is GET /app/installations' body VERBATIM —
 	// GitHub's own JSON, not the production struct re-encoded, so a wrong json
 	// tag on that struct cannot agree with itself and pass.
 	rawInstallations string
+	// rawApp, when set, is GET /app's body VERBATIM (GitHub's own JSON).
+	rawApp string
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
@@ -121,7 +128,83 @@ func (f *fakeGitHub) verifyJWT(auth string) error {
 	return nil
 }
 
+// pull is a scripted GET .../pulls/<n> answer: status (0 = 200) and body,
+// after delay. Every repository here is PRIVATE, as GitHub treats one: a
+// token not minted with pull_requests read for that repository gets a 404,
+// whatever is scripted.
+type pull struct {
+	status int
+	body   string
+	delay  time.Duration
+}
+
+func (f *fakeGitHub) setPull(fullName string, n int, p pull) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pulls == nil {
+		f.pulls = map[string]pull{}
+	}
+	f.pulls[fullName+"#"+strconv.Itoa(n)] = p
+}
+
+func (f *fakeGitHub) pullReadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pullReads
+}
+
+// servePull answers GET /repos/<owner>/<name>/pulls/<n>: 404 unless the token
+// was minted with pull_requests read (or write) for that repository, then the
+// scripted answer after its delay (unlocked, and cut short by the request's
+// context, as a client's deadline cuts a real one).
+func (f *fakeGitHub) servePull(w http.ResponseWriter, r *http.Request, rest string) {
+	full, num, _ := strings.Cut(rest, "/pulls/")
+	f.mu.Lock()
+	f.pullReads++
+	var granted bool
+	for _, m := range f.mints {
+		if "token "+m.token != r.Header.Get("Authorization") {
+			continue
+		}
+		var body struct {
+			Repositories []string          `json:"repositories"`
+			Permissions  map[string]string `json:"permissions"`
+		}
+		_ = json.Unmarshal([]byte(m.body), &body)
+		_, name, _ := strings.Cut(full, "/")
+		inScope := len(body.Repositories) == 0
+		for _, rn := range body.Repositories {
+			inScope = inScope || rn == name
+		}
+		pr := body.Permissions["pull_requests"]
+		granted = inScope && (pr == "read" || pr == "write")
+	}
+	p, scripted := f.pulls[full+"#"+num]
+	f.mu.Unlock()
+	if !granted || !scripted {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+		return
+	}
+	if p.delay > 0 {
+		select {
+		case <-time.After(p.delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if p.status != 0 {
+		w.WriteHeader(p.status)
+	}
+	_, _ = io.WriteString(w, p.body)
+}
+
 func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/repos/"); ok && r.Method == http.MethodGet && strings.Contains(rest, "/pulls/") {
+		w.Header().Set("Content-Type", "application/json")
+		f.servePull(w, r, rest)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p := r.URL.Path
@@ -134,6 +217,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case r.Method == http.MethodGet && p == "/app":
+		if err := f.verifyJWT(r.Header.Get("Authorization")); err != nil || f.rawApp == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"message":"A JSON web token could not be decoded"}`)
+			return
+		}
+		_, _ = io.WriteString(w, f.rawApp)
 	case r.Method == http.MethodGet && p == "/app/installations":
 		if f.rawInstallations != "" {
 			_, _ = io.WriteString(w, f.rawInstallations)
@@ -217,11 +307,17 @@ func (c *clock) set(t time.Time) {
 // example-org holding example-org/widget and example-org/gadget.
 func newTestApp(t *testing.T) (*App, *fakeGitHub, *clock) {
 	t.Helper()
+	return newTestAppAccess(t, "")
+}
+
+// newTestAppAccess is newTestApp with Config.Access = access ("" = unset).
+func newTestAppAccess(t *testing.T, access Access) (*App, *fakeGitHub, *clock) {
+	t.Helper()
 	c := &clock{t: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
 	k := key(t)
 	f := newFakeGitHub(t, &k.PublicKey, c.now)
 	f.install(42, "example-org", "example-org/widget", "example-org/gadget")
-	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []Account{{Login: "Example-Org", ID: 4200}}})
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Access: access, Accounts: []Account{{Login: "Example-Org", ID: 4200}}})
 	if err != nil {
 		t.Fatal(err)
 	}

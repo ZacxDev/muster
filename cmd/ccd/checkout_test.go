@@ -160,6 +160,26 @@ func newTestCheckout(t *testing.T, repo, branch, dir, base string) *checkout {
 	return c
 }
 
+// runCheckout runs c.Run in the background for the rest of the test, and at
+// the test's cleanup cancels it AND WAITS FOR IT TO RETURN: a cancel only asks
+// the in-flight `git clone` to die, and until Run is back that clone can still
+// be writing its scratch directory under the test's TempDir, racing the
+// TempDir cleanup ("directory not empty"). Same join as podagent's runCheckout,
+// whose comment has the incident.
+func runCheckout(t *testing.T, c *checkout) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		c.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-stopped
+	})
+}
+
 // waitState polls c until ok, or fails with the last state.
 func waitState(t *testing.T, c *checkout, ok func(checkoutState) bool) checkoutState {
 	t.Helper()
@@ -292,9 +312,7 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	srv := fc.server(t)
 	dir := filepath.Join(root, "ws", "private-app")
 	c := newTestCheckout(t, "example-org/private-app", "", dir, srv.URL)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	runCheckout(t, c)
 
 	// 🔴 awaiting_grant, NOT failed: muster's kickoff deliverer holds the first
 	// turn on exactly this state (agents.CheckoutAwaitingGrant), so a request ccd
@@ -333,7 +351,7 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	// Approved, and git can now read it.
 	gh.publish(t, "example-org/private-app", map[string]string{"README.md": "r\n"})
 	fc.set(true, "approved")
-	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)
+	wctx, wcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer wcancel()
 	if !c.Wait(wctx) {
 		t.Fatalf("never cloned after the approval: %+v", c.State())
@@ -413,6 +431,27 @@ func TestTheCheckoutComesOnlyFromCCDRepo(t *testing.T) {
 	}
 }
 
+// TestCcdReadsTheMirrorPath: ccd hands CCD_REPO_MIRROR to the checkout — a
+// relative or unclean path stops ccd naming the variable (it would otherwise
+// fail every clone, silently), and an absolute one (or none) is a checkout
+// that clones from it (or anonymously).
+func TestCcdReadsTheMirrorPath(t *testing.T) {
+	t.Setenv(envRepo, "example-org/tide-charts")
+	for _, m := range []string{"var/lib/muster-mirror/repo.git", "/var/lib/../lib/muster-mirror/repo.git"} {
+		t.Setenv(envRepoMirror, m)
+		_, err := checkoutFromEnv("/data/workspace/tide-charts")
+		if err == nil || !strings.Contains(err.Error(), "CCD_REPO_MIRROR") {
+			t.Errorf("mirror %q: err = %v", m, err)
+		}
+	}
+	for _, m := range []string{"/var/lib/muster-mirror/repo.git", ""} {
+		t.Setenv(envRepoMirror, m)
+		if co, err := checkoutFromEnv("/data/workspace/tide-charts"); err != nil || co == nil {
+			t.Errorf("control: mirror %q: %v %v", m, co, err)
+		}
+	}
+}
+
 // TestARequestIsFiledOnceEvenIfTheGrantStaysNone: when muster still answers
 // `none` after ccd filed the request, ccd does not file it again on every
 // retry — it says the request is no longer pending instead.
@@ -426,9 +465,7 @@ func TestARequestIsFiledOnceEvenIfTheGrantStaysNone(t *testing.T) {
 	fc := &fakeConnectors{grant: "none", stayNone: true}
 	srv := fc.server(t)
 	c := newTestCheckout(t, "example-org/private-app", "", filepath.Join(root, "ws", "private-app"), srv.URL)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	runCheckout(t, c)
 	st := waitState(t, c, func(s checkoutState) bool { return strings.Contains(s.Detail, "no longer pending") })
 	time.Sleep(200 * time.Millisecond)
 	if n := len(fc.filed()); n != 1 {

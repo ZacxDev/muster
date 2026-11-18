@@ -45,30 +45,57 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // commit or roll back together. The caller owns tx (Commit / Rollback).
 func NewPGTx(tx pgx.Tx) *PGStore { return &PGStore{pool: tx} }
 
+// agentCols is what every ordinary read of an agents row selects.
+//
+// 🔴 IT NAMES NEITHER hooks_token NOR gateway_secret, AND THAT IS THE POINT
+// (team sharing phase 4, slice 4.2). Those are the agent's credentials; they
+// are read only through [PGStore.Secrets] (agent_secrets), so a read of the
+// row — the one a later slice shares with a team's members — never loads
+// them. secrets_ledger_test.go pins it.
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
-	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
-	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret`
+	pending_note, model, status, kicked_off, last_output, error_message, created_at, updated_at,
+	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool,
+	cc_account_pinned, cc_failover,
+	outcome, outcome_reason, outcome_at, activity_at, first_reply_at, dispatched_by, outcome_told_at, display_name_source,
+	display_name_at, runs_on_host`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
 }) (Agent, error) {
 	var a Agent
 	err := row.Scan(&a.ID, &a.Name, &a.Namespace, &a.DisplayName, &a.Repo, &a.RepoBranch,
-		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.HooksToken, &a.KickedOff,
+		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.KickedOff,
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
 		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool,
-		&a.GatewaySecret)
+		&a.CCAccountPinned, &a.CCFailover,
+		&a.Outcome, &a.OutcomeReason, &a.OutcomeAt, &a.ActivityAt, &a.FirstReplyAt, &a.DispatchedBy, &a.OutcomeToldAt,
+		&a.DisplayNameSource, &a.DisplayNameAt, &a.RunsOnHost)
 	return a, err
 }
 
-// Create inserts an agent and returns it with generated id/timestamps.
+// Create inserts an agent and returns it with generated id/timestamps. A
+// HooksToken on a is stored as SetHooksToken stores one, in the same
+// statement; like every read, the returned row does not carry it.
+//
+// 🔴 FOR A TEAM OWNER THE OLD COLUMN STAYS '' (migration 0131's
+// agents_team_no_secret trigger forces it, whatever this statement writes):
+// agents is shared with the team's members since 0131, so only a person's
+// agent is dual-written. pgstore_team_secrets_test.go pins it.
 func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		RETURNING `+agentCols,
+		WITH a AS (
+			INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool,
+				cc_account_pinned, cc_failover, display_name_source, runs_on_host)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			RETURNING `+agentCols+`
+		), s AS (
+			INSERT INTO agent_secrets (agent_id, owner_id, hooks_token)
+			SELECT id, owner_id, $11 FROM a WHERE $11 <> ''
+		)
+		SELECT `+agentCols+` FROM a`,
 		a.Name, a.Namespace, a.DisplayName, a.Repo, a.RepoBranch, a.NoteID, a.NoteText,
-		a.PendingNote, a.Model, nonEmptyStatus(a.Status), a.HooksToken, ResolveKind(a.Kind), a.CCAccount, a.WorkerPool)
+		a.PendingNote, a.Model, nonEmptyStatus(a.Status), a.HooksToken, ResolveKind(a.Kind), a.CCAccount, a.WorkerPool,
+		a.CCAccountPinned, a.CCFailover, ResolveDisplayNameSource(a.DisplayNameSource), a.RunsOnHost)
 	return scanAgent(row)
 }
 
@@ -83,8 +110,46 @@ func (s *PGStore) GetByName(ctx context.Context, name string) (Agent, error) {
 // GetByHooksToken looks an agent up by its per-agent hooks token. This is the
 // agent self-service auth path: the token is unique per agent and injected into
 // the pod, so a valid bearer both authenticates and identifies the caller.
+//
+// agent_secrets answers first; the old agents.hooks_token column answers only
+// when it has no row (an agent minted by an older image after 0128 ran — see
+// [PGStore.Secrets]). An empty token matches nothing. The row returned carries
+// no credentials, as every read's does.
 func (s *PGStore) GetByHooksToken(ctx context.Context, token string) (Agent, error) {
-	return scanAgent(s.pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents WHERE hooks_token=$1`, token))
+	return scanAgent(s.pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents
+		WHERE $1 <> '' AND id = COALESCE(
+			(SELECT agent_id FROM agent_secrets WHERE hooks_token = $1),
+			(SELECT id FROM agents WHERE hooks_token = $1))`, token))
+}
+
+// Secrets is [SecretReader]: agent id's credentials, from agent_secrets.
+//
+// ⚠ EACH FALLS BACK TO THE OLD agents COLUMN WHEN agent_secrets HAS NONE, FOR
+// ROLLBACK. Until those columns are dropped (a later migration, one release
+// after 0128), every write lands in both; an older image rolled back to writes
+// only the old column, so a token it minted would otherwise be invisible here
+// when this image comes back, and the agent would be re-minted a credential its
+// running pod does not hold. When the columns are dropped, this reads
+// agent_secrets alone.
+//
+// 🔴 ONLY THE AGENT'S OWNER (OR THE SYSTEM SCOPE) READS THEM, AND ANYONE ELSE
+// IS pgx.ErrNoRows — NOT EMPTY CREDENTIALS. Since 0131 a team's agents row is
+// readable by the team's members (agents is shared), while agent_secrets stays
+// owner-isolated; without the owner arm below, a member's read would join no
+// secrets row, fall back to the (blank, 0131) old columns and answer two empty
+// strings with no error — a turn would then go out with a derived bearer the
+// runtime rejects, read as "a rotated secret". A turn a member triggers on a
+// team agent reads this as the TEAM ACTING PRINCIPAL (internal/api
+// turnActingContext); a member's own principal fails closed here.
+func (s *PGStore) Secrets(ctx context.Context, id int64) (Secrets, error) {
+	var out Secrets
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(NULLIF(s.hooks_token, ''), a.hooks_token),
+			COALESCE(NULLIF(s.gateway_secret, ''), a.gateway_secret)
+		FROM agents a LEFT JOIN agent_secrets s ON s.agent_id = a.id
+		WHERE a.id = $1
+		  AND (a.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		       OR current_setting('muster.scope', true) = 'all')`, id).Scan(&out.HooksToken, &out.GatewaySecret)
+	return out, err
 }
 
 func (s *PGStore) List(ctx context.Context) ([]Agent, error) {
@@ -213,16 +278,33 @@ func (s *PGStore) SetModel(ctx context.Context, id int64, model string) (Agent, 
 		`UPDATE agents SET model=$2, updated_at=now() WHERE id=$1 RETURNING `+agentCols, id, model))
 }
 
-// SetDisplayName updates an agent's display name. A blank name falls back to the
-// agent's immutable slug (the `name` column) so the card is never label-less.
+// SetDisplayName updates an agent's display name — the person's own name for it,
+// so its source becomes NameManual (migration 0090), which nothing automatic
+// overwrites. A blank name falls back to the agent's immutable slug (the `name`
+// column), source NameDefault, so the card is never label-less and the auto name
+// may head it again.
 func (s *PGStore) SetDisplayName(ctx context.Context, id int64, name string) (Agent, error) {
 	return scanAgent(s.pool.QueryRow(ctx,
-		`UPDATE agents SET display_name=COALESCE(NULLIF($2,''), name), updated_at=now()
+		`UPDATE agents SET display_name=COALESCE(NULLIF($2,''), name),
+			display_name_source=CASE WHEN $2 = '' THEN 'default' ELSE 'manual' END, display_name_at=now(), updated_at=now()
 		 WHERE id=$1 RETURNING `+agentCols, id, name))
 }
 
+// SetHooksToken stores agent id's muster identity in agent_secrets, and —
+// DUAL-WRITTEN for rollback, until a later migration drops the column one
+// release after 0128 — in agents.hooks_token, which an older image still reads.
+// One statement, so the two cannot disagree.
+//
+// 🔴 FOR A TEAM OWNER THE OLD COLUMN STAYS '' (migration 0131's
+// agents_team_no_secret trigger forces it, whatever this statement writes):
+// agents is shared with the team's members since 0131, so only a person's
+// agent is dual-written. pgstore_team_secrets_test.go pins it.
 func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE agents SET hooks_token=$2, updated_at=now() WHERE id=$1`, id, token)
+	_, err := s.pool.Exec(ctx, `WITH a AS (
+			UPDATE agents SET hooks_token=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
+		)
+		INSERT INTO agent_secrets (agent_id, owner_id, hooks_token) SELECT id, owner_id, $2 FROM a
+		ON CONFLICT (agent_id) DO UPDATE SET hooks_token = EXCLUDED.hooks_token`, id, token)
 	return err
 }
 
@@ -290,9 +372,89 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 	return res, tx.Commit(ctx)
 }
 
+// SetGatewaySecret stores agent id's turn credential, dual-written as
+// SetHooksToken's is.
+//
+// 🔴 FOR A TEAM OWNER THE OLD COLUMN STAYS '' (migration 0131's
+// agents_team_no_secret trigger forces it, whatever this statement writes):
+// agents is shared with the team's members since 0131, so only a person's
+// agent is dual-written. pgstore_team_secrets_test.go pins it.
 func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1`, id, secret)
+	_, err := s.pool.Exec(ctx, `WITH a AS (
+			UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
+		)
+		INSERT INTO agent_secrets (agent_id, owner_id, gateway_secret) SELECT id, owner_id, $2 FROM a
+		ON CONFLICT (agent_id) DO UPDATE SET gateway_secret = EXCLUDED.gateway_secret`, id, secret)
 	return err
+}
+
+// CredentialsWriter is the store write a credential ROTATION takes
+// (agentprovision.Adapter.RotateCredentials): agent id's hooks token and turn
+// credential together, in ONE transaction. Asserted, not on Store, for
+// RebindCCAccount's reason: one caller, and every fake of Store would need it.
+type CredentialsWriter interface {
+	// SetCredentials stores hooksToken and — when gatewaySecret is not "" —
+	// gatewaySecret, each as SetHooksToken / SetGatewaySecret stores it.
+	// Neither changes unless both do.
+	SetCredentials(ctx context.Context, id int64, hooksToken, gatewaySecret string) error
+}
+
+// SetCredentials is CredentialsWriter's write: SetHooksToken's statement and
+// SetGatewaySecret's, in ONE transaction, so a failure of either leaves the
+// agent on its old credentials — never on a new token and an old turn
+// credential. A gatewaySecret of "" leaves the turn credential as it is (a
+// gateway agent has none to rotate). 0131's trigger blanks a team agent's
+// legacy columns on both statements, as on the single writes.
+func (s *PGStore) SetCredentials(ctx context.Context, id int64, hooksToken, gatewaySecret string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	in := &PGStore{pool: tx}
+	if err := in.SetHooksToken(ctx, id, hooksToken); err != nil {
+		return err
+	}
+	if gatewaySecret != "" {
+		if err := in.SetGatewaySecret(ctx, id, gatewaySecret); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// RebindCCAccount moves claude-code agent id from Claude account from to
+// account to, and reports whether it did. It is the ACCOUNT FAILOVER's one
+// write (internal/ccfailover, through agentprovision.Adapter.Rebind), and not
+// on the Store interface for RearmKickoff's reason.
+//
+// 🔴 CONDITIONAL ON from, SO A REBIND IS IDEMPOTENT ON (agent, from). Two turns
+// on one agent hitting the limit at once — in this process or another — both
+// ask to move it off from; the first moves it, and the second matches no row
+// (false) instead of moving it again. Migration 0066's trigger refuses this
+// UPDATE unless the transaction set muster.cc_account_rebind, which only this
+// statement does.
+func (s *PGStore) RebindCCAccount(ctx context.Context, id int64, from, to string) (bool, error) {
+	if from == "" || to == "" || from == to {
+		return false, fmt.Errorf("agents: rebind agent %d: from %q to %q is not a move between two accounts", id, from, to)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('muster.cc_account_rebind', 'on', true)`); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agents SET cc_account=$3, updated_at=now()
+		WHERE id=$1 AND cc_account=$2 AND kind='claude-code'`, id, from, to)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // AppendPendingNote appends text to agent id's first message while that
@@ -309,6 +471,25 @@ func (s *PGStore) AppendPendingNote(ctx context.Context, id int64, text string) 
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// RearmKickoff makes agent id owe a NEW first turn: note becomes its pending
+// note and every kickoff marker is reset, so the kickoff deliverer
+// (internal/agentkickoff) hands note to the agent once its instance is ready —
+// the same path, claim and bookkeeping as a dispatch's first turn.
+//
+// 🔴 ITS ONE CALLER IS THE OFFICER RUNTIME waking a stopped instance
+// (internal/api's officer fleet). agentkickoff deliberately never re-sends a
+// delivered note by itself ("deciding to re-send a task is a different,
+// costlier decision … not taken here by omission"); this method is that
+// decision, taken explicitly, for an agent whose every wake IS a new session
+// of work. It is not on the Store interface for that reason: a caller has to
+// name *PGStore (or a test fake) to reach it.
+func (s *PGStore) RearmKickoff(ctx context.Context, id int64, note string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET pending_note=$2, kicked_off=false,
+		kickoff_pod='', kickoff_restarts=0, kickoff_attempts=0, kickoff_error='', updated_at=now()
+		WHERE id=$1`, id, note)
+	return err
 }
 
 func (s *PGStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
@@ -349,6 +530,42 @@ func (s *PGStore) SetKickoffError(ctx context.Context, id int64, msg string) err
 	return err
 }
 
+// ClearKickoffFailure erases a stale first-turn failure once a later turn on the
+// agent completed (see the Store contract). At-most-once kickoff is untouched:
+// kicked_off and kickoff_attempts are not written, so nothing is re-sent.
+//
+// 🔴 updated_at IS DELIBERATELY NOT BUMPED, for the same reason SetKickoffError
+// does not bump it. The dwell clock (agents.DecideReconcile's ActionRetryKickoff
+// bound, MarkKickoffStuck's equality) is read only for OWED rows, which the
+// `kicked_off` conjunct already excludes — so bumping could not help there and
+// could only disturb a row it was never meant to touch. Erasing stale evidence is
+// not a transition; the turn that justified it already moved the agent's order
+// through its transcript message.
+//
+// ⚠ THE `kicked_off` CONJUNCT IS LOAD-BEARING: on a row that is NOT kicked off,
+// kickoff_error is the checkout-wait marker (WaitedForCheckout) or a
+// not-delivered record, and an operator chat turn to such an agent must not erase
+// either. Pinned by TestClearKickoffFailureLeavesAnOwedRowAlone.
+//
+// 🔴 A RESEND-SAFE CAUSE IS KEPT (operator decision). A first turn whose recorded
+// cause PROVES the task was never delivered — [KickoffResendSafe]: the
+// never-connected, not-accepted and busy prefixes — keeps its badge and its
+// "safe to re-send" remedy after a later turn completes, because that later turn
+// did not carry the task and the operator still owes the re-send. Only causes
+// under which the task may have arrived (timeout, shutdown, transport error,
+// empty reply, unrecognised text) are cleared. The three prefixes are the SAME
+// constants KickoffResendSafe reads, passed as parameters, so the SQL cannot drift
+// from it. Pinned by TestClearKickoffFailureKeepsAResendSafeCause.
+func (s *PGStore) ClearKickoffFailure(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET kickoff_error=''
+		WHERE id=$1 AND kicked_off AND kickoff_error<>''
+		  AND NOT starts_with(kickoff_error, $2)
+		  AND NOT starts_with(kickoff_error, $3)
+		  AND NOT starts_with(kickoff_error, $4)`,
+		id, KickoffNeverConnectedReason, KickoffNotAcceptedReason, KickoffBusyReason)
+	return err
+}
+
 // MarkKickoffStuck is the conditional `error` write for an owed row the deliverer
 // judged stuck (see the Store contract). updated_at is compared for EQUALITY with
 // the value the caller read: every writer that moves the row on (UpdateStatus,
@@ -377,7 +594,7 @@ func (s *PGStore) MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt 
 
 // MarkRunning promotes a provisioning row the caller saw at seenUpdatedAt to
 // running (see the Store contract). updated_at is bumped: this IS a status
-// transition, and it is what moves agents.LastActivity for the Agents list.
+// transition, and it is what moves agents.LastActivity for the sidebar's order.
 func (s *PGStore) MarkRunning(ctx context.Context, id int64, seenUpdatedAt time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE agents
@@ -426,6 +643,24 @@ func (s *PGStore) ClaimKickoff(ctx context.Context, id int64, owner string, ttl 
 	return tag.RowsAffected() > 0, nil
 }
 
+// ClaimKickoffForDelivery is ClaimKickoff that also loses while an owner turn
+// is in flight (see the Store contract): one atomic UPDATE, the owner-turn
+// conjunct being ownerTurnLive — the predicate OwnerTurnInFlight reads — so
+// the claim and the marker are judged on one row, at one instant, by one clock.
+func (s *PGStore) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agents
+		   SET kickoff_claim_owner=$2, kickoff_claim_expires_at=now()+make_interval(secs => $3)
+		 WHERE id=$1
+		   AND (kickoff_claim_expires_at IS NULL OR kickoff_claim_expires_at <= now())
+		   AND NOT (`+ownerTurnLive+`)`,
+		id, owner, ttl.Seconds())
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // RenewKickoffClaim extends this owner's claim (see the Store contract). The
 // owner predicate is load-bearing: without it a process whose TTL lapsed would
 // stamp over the claim another pod legitimately took, and two kickoffs would run.
@@ -450,6 +685,20 @@ func (s *PGStore) ReleaseKickoffClaim(ctx context.Context, id int64, owner strin
 		   SET kickoff_claim_owner='', kickoff_claim_expires_at=NULL
 		 WHERE id=$1 AND kickoff_claim_owner=$2`, id, owner)
 	return err
+}
+
+// KickoffClaimHolder reads who holds the agent's claim (see the Store
+// contract): "" when unheld or expired — by Postgres's clock, as ClaimKickoff
+// judges it — and for a row that does not exist.
+func (s *PGStore) KickoffClaimHolder(ctx context.Context, id int64) (string, error) {
+	var owner string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(kickoff_claim_owner, '') FROM agents
+		 WHERE id=$1 AND kickoff_claim_expires_at > now()`, id).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return owner, err
 }
 
 // ClearKickoffClaimsByOwnerPrefix clears claims whose owner begins with prefix
@@ -478,13 +727,13 @@ func (s *PGStore) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
-const sessionCols = `id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default`
+const sessionCols = `id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default, archived_at`
 
 func scanSession(row interface {
 	Scan(dest ...any) error
 }) (ChatSession, error) {
 	var c ChatSession
-	err := row.Scan(&c.ID, &c.AgentID, &c.SessionKey, &c.Title, &c.CreatedAt, &c.UpdatedAt, &c.ReadAt, &c.Runtime, &c.Model, &c.IsDefault)
+	err := row.Scan(&c.ID, &c.AgentID, &c.SessionKey, &c.Title, &c.CreatedAt, &c.UpdatedAt, &c.ReadAt, &c.Runtime, &c.Model, &c.IsDefault, &c.ArchivedAt)
 	return c, err
 }
 
@@ -557,7 +806,7 @@ const searchSnippetLateral = `
 const searchRankedTitlesSQL = `
 		WITH cand AS (
 			SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       s.runtime, s.model, s.is_default,
+		       s.runtime, s.model, s.is_default, s.archived_at,
 			       CASE WHEN s.title ILIKE $7 ESCAPE '\' THEN 0 ELSE 1 END AS rank
 			FROM chat_sessions s
 			WHERE s.agent_id = $1
@@ -567,7 +816,7 @@ const searchRankedTitlesSQL = `
 			LIMIT $6
 		)
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       s.runtime, s.model, s.is_default,
+		       s.runtime, s.model, s.is_default, s.archived_at,
 		       COALESCE(m.snippet, '') AS snippet
 		FROM cand s` + searchSnippetLateral + `
 		ORDER BY s.rank, s.updated_at DESC, s.id DESC`
@@ -591,11 +840,11 @@ const searchRankedTitlesSQL = `
 // pins only that these are the statements SearchSessions sends.
 const searchRecentSQL = `
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       s.runtime, s.model, s.is_default,
+		       s.runtime, s.model, s.is_default, s.archived_at,
 		       COALESCE(m.snippet, '') AS snippet,
 		       (s.title ILIKE $3 ESCAPE '\' OR m.snippet IS NOT NULL) AS matched
 		FROM (
-			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default
+			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default, archived_at
 			FROM chat_sessions
 			WHERE agent_id = $1
 			  AND ($6::timestamptz IS NULL OR (updated_at, id) < ($6::timestamptz, $7::bigint))
@@ -682,7 +931,7 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 				var m SessionMatch
 				var matched bool
 				if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
-					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.Snippet, &matched); err != nil {
+					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.ArchivedAt, &m.Snippet, &matched); err != nil {
 					rows.Close()
 					return nil, err
 				}
@@ -719,7 +968,7 @@ func (s *PGStore) searchRows(ctx context.Context, query string, args ...any) ([]
 	for rows.Next() {
 		var m SessionMatch
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
-			&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.Snippet); err != nil {
+			&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.ArchivedAt, &m.Snippet); err != nil {
 			return nil, err
 		}
 		m.Snippet = strings.Join(strings.Fields(m.Snippet), " ")
@@ -745,8 +994,56 @@ func regexpLiteral(q string) string {
 	return b.String()
 }
 
+// SetSessionTitle names chat session sessionID title (cut to the title
+// column's bound), as the caller's principal: a session that is not theirs is
+// pgx.ErrNoRows. The chief's Fleet side chat is named so (internal/api
+// fleet_digest.go); a session's title is otherwise its first message's.
+func (s *PGStore) SetSessionTitle(ctx context.Context, sessionID int64, title string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE chat_sessions SET title = left($2, 200) WHERE id = $1`, sessionID, title)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (s *PGStore) GetSession(ctx context.Context, sessionID int64) (ChatSession, error) {
 	return scanSession(s.pool.QueryRow(ctx, `SELECT `+sessionCols+` FROM chat_sessions WHERE id=$1`, sessionID))
+}
+
+// latestSessionOrder is what "an agent's latest session" means: the order
+// LatestOrCreateSession takes its first row in (the session a bare
+// GET /agents/{name} redirects to) and LatestSessionIDs takes each agent's first
+// row in (the session an in-app link names, ui.AgentSessionHref). ONE spelling,
+// so a link can never name a different session than the redirect would pick.
+const latestSessionOrder = `updated_at DESC, id DESC`
+
+// LatestSessionIDs returns, per requested agent id, the id of the session
+// LatestOrCreateSession would return for it, in ONE query, WITHOUT creating
+// anything: an agent with no session is absent from the map (its link stays the
+// bare page, whose handler creates one). It exists so a list of agent links can
+// name each agent's canonical ?session= URL instead of paying the bare URL's 303.
+func (s *PGStore) LatestSessionIDs(ctx context.Context, ids []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT ON (agent_id) agent_id, id FROM chat_sessions WHERE agent_id = ANY($1) ORDER BY agent_id, `+latestSessionOrder, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var agentID, id int64
+		if err := rows.Scan(&agentID, &id); err != nil {
+			return nil, err
+		}
+		out[agentID] = id
+	}
+	return out, rows.Err()
 }
 
 // LatestOrCreateSession returns the agent's most-recently-updated session, or
@@ -755,7 +1052,7 @@ func (s *PGStore) GetSession(ctx context.Context, sessionID int64) (ChatSession,
 // one exists takes the latest branch and never collides.
 func (s *PGStore) LatestOrCreateSession(ctx context.Context, agentID int64, agentName string) (ChatSession, error) {
 	c, err := scanSession(s.pool.QueryRow(ctx,
-		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id=$1 ORDER BY updated_at DESC, id DESC LIMIT 1`, agentID))
+		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id=$1 ORDER BY `+latestSessionOrder+` LIMIT 1`, agentID))
 	if err == nil {
 		return c, nil
 	}
@@ -803,16 +1100,37 @@ func (s *PGStore) DefaultSession(ctx context.Context, agentID int64, agentName s
 	if _, err := s.LatestOrCreateSession(ctx, agentID, agentName); err != nil {
 		return ChatSession{}, err
 	}
-	_, err = s.pool.Exec(ctx, `
+	// 🔴 NEVER AN ARCHIVED SESSION (0115): the primary is never archived
+	// (chat_sessions_primary_not_archived), so electing one failed the CHECK —
+	// and every delivery to the agent with it, for as long as the agent had no
+	// default (PR #609 round 1 F4).
+	elect := func() error {
+		_, err := s.pool.Exec(ctx, `
 		UPDATE chat_sessions SET is_default = true
 		WHERE id = (
 			SELECT id FROM chat_sessions
-			WHERE agent_id = $1
+			WHERE agent_id = $1 AND archived_at IS NULL
 			ORDER BY (session_key = $2) DESC, created_at, id
 			LIMIT 1)
 		  AND NOT EXISTS (SELECT 1 FROM chat_sessions WHERE agent_id = $1 AND is_default)`,
-		agentID, legacySessionKey(agentName))
-	if err != nil && !isUniqueViolation(err) {
+			agentID, legacySessionKey(agentName))
+		if err != nil && !isUniqueViolation(err) {
+			return err
+		}
+		return nil
+	}
+	if err := elect(); err != nil {
+		return ChatSession{}, err
+	}
+	c, err = read()
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return c, err
+	}
+	// Every session is archived: a new one is the primary.
+	if _, err := s.CreateSession(ctx, agentID, agentName); err != nil {
+		return ChatSession{}, err
+	}
+	if err := elect(); err != nil {
 		return ChatSession{}, err
 	}
 	return read()
@@ -842,7 +1160,9 @@ func (s *PGStore) SetDefaultSession(ctx context.Context, agentID, sessionID int6
 	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = false WHERE agent_id = $1 AND is_default AND id <> $2`, agentID, sessionID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true WHERE id = $1`, sessionID); err != nil {
+	// An archived session made primary is unarchived with it: the primary is never
+	// archived (0115's chat_sessions_primary_not_archived).
+	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true, archived_at = NULL WHERE id = $1`, sessionID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -861,16 +1181,17 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 	if m.Kind == "" {
 		m.Kind = "text"
 	}
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok)
-		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at`,
-		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK).
-		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
+	stored, err := scanChatMessage(s.pool.QueryRow(ctx, `
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by, plugin_message_id, about)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING `+chatMessageCols,
+		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, typedByArg(m), pluginMessageArg(m), aboutArg(m)))
 	if err != nil {
 		return m, err
 	}
-	if m.SessionID != 0 {
+	touch := !m.NoSessionTouch
+	m = stored
+	if m.SessionID != 0 && touch {
 		// Bump updated_at so the session sorts most-recent-first; set the title from
 		// the first user message when it's still blank (COALESCE keeps any existing
 		// title, the NULLIF/'' guard only names an as-yet-untitled session).
@@ -887,9 +1208,101 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 	return m, nil
 }
 
+// chatMessageCols is the column list every chat_messages read (and the insert's
+// RETURNING) scans with scanChatMessage — ONE list, so a column added to the row
+// (typed_by 0081, plugin_message_id 0096) cannot be read by one path and
+// silently zero on another.
+//
+// Its last column is WrittenBeforeRelayLink: the row's created_at against 0096's
+// own applied_at in schema_migrations — the moment from which every relay row
+// carries plugin_message_id. 🔴 CHOSEN OVER AN ID CUTOVER the migration would
+// record, because that needs a table of its own (a one-row global table beside
+// the owned ones, under 0007's grants and RLSOn's ledger) to hold one number,
+// while applied_at is already written, by the migrator, at exactly that
+// moment, and nothing ever changes it. The read is an uncorrelated subquery
+// on schema_migrations' primary key, which Postgres evaluates ONCE per
+// statement (an InitPlan), so a page of messages pays one key lookup. With no
+// 0096 row (never, after migrating) it is false: the text fallback is off.
+const chatMessageCols = `id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0), coalesce(plugin_message_id, 0), ` +
+	`coalesce(created_at < (SELECT applied_at FROM schema_migrations WHERE version = ` + relayLinkMigrationVersion + `), false), coalesce(about, '')`
+
+// relayLinkMigrationVersion is the migration that added
+// chat_messages.plugin_message_id (0096_chat_plugin_message.sql). 🔴 RENUMBER IT
+// WITH THE FILE if the migration is renumbered at merge
+// (TestTheRelayCutoverNamesTheLinkMigration checks the two agree).
+const relayLinkMigrationVersion = "96"
+
+// scanChatMessage scans one row of chatMessageCols.
+func scanChatMessage(row pgx.Row) (ChatMessage, error) {
+	var m ChatMessage
+	err := row.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy, &m.PluginMessageID, &m.WrittenBeforeRelayLink, &m.AboutKey)
+	return m, err
+}
+
+// aboutArg is m's about (migration 0098): NULL unless m is a USER row with a
+// subject's key (only runEnteredTurn sets one, from the view's chief door).
+// 🔴 An assistant row is never about anything the owner was viewing.
+func aboutArg(m ChatMessage) any {
+	if m.AboutKey == "" || m.Role != "user" {
+		return nil
+	}
+	return m.AboutKey
+}
+
+// pluginMessageArg is m's plugin_message_id: NULL unless m is a USER row
+// relaying a plugin message (only internal/plugins' Deliverer sets it).
+func pluginMessageArg(m ChatMessage) any {
+	if m.PluginMessageID <= 0 || m.Role != "user" {
+		return nil
+	}
+	return m.PluginMessageID
+}
+
+// typedByArg is m's typed_by: NULL unless m is a USER row with a typer. 🔴 An
+// assistant row is never anyone's typing, whatever its caller set.
+func typedByArg(m ChatMessage) any {
+	if m.TypedBy <= 0 || m.Role != "user" {
+		return nil
+	}
+	return m.TypedBy
+}
+
+// OwnerTypedChatMessages is up to limit of agentID's text USER rows that user
+// by TYPED (typed_by, migration 0081), written at or after since, in every
+// chat session of the agent, oldest first: the newest limit of them. The stall
+// sweep reads it for the owner's Chief chat (docs/design/session-state.md,
+// step 3b-1); a caller that must vouch for the whole window asks for one more
+// than it shows and treats a full page as a partial read.
+func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64, since time.Time, limit int) ([]ChatMessage, error) {
+	if limit <= 0 || by <= 0 {
+		return []ChatMessage{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+chatMessageCols+` FROM chat_messages
+		WHERE agent_id = $1 AND typed_by = $2 AND role = 'user' AND kind = 'text' AND created_at >= $3
+		ORDER BY id DESC LIMIT $4`, agentID, by, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChatMessage, 0, limit)
+	for rows.Next() {
+		m, err := scanChatMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	reverseChatChronological(out)
+	return out, nil
+}
+
 func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
+		SELECT `+chatMessageCols+` FROM chat_messages
 		WHERE session_id=$1 ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, err
@@ -897,8 +1310,8 @@ func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]Chat
 	defer rows.Close()
 	out := make([]ChatMessage, 0)
 	for rows.Next() {
-		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt); err != nil {
+		m, err := scanChatMessage(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -938,7 +1351,7 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	// drift, and the drift would present as the first page of a paged read
 	// disagreeing with an unpaged one about what the conversation says.
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
+		SELECT `+chatMessageCols+` FROM chat_messages
 		WHERE session_id=$1 AND ($2 <= 0 OR id < $2) ORDER BY id DESC LIMIT $3`, sessionID, beforeID, limit)
 	if err != nil {
 		return nil, err
@@ -946,8 +1359,8 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	defer rows.Close()
 	out := make([]ChatMessage, 0, limit)
 	for rows.Next() {
-		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt); err != nil {
+		m, err := scanChatMessage(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -957,6 +1370,68 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	}
 	reverseChatChronological(out)
 	return out, nil
+}
+
+// OwnerTurn is the marker of an owner-typed turn in flight on an agent
+// (migration 0069): the user who typed it, the chat row it stored, and when the
+// marker lapses. The zero value is "no owner turn in flight".
+type OwnerTurn struct {
+	By        int64
+	MessageID int64
+	// Lane is the ccd lane (chat session key) the turn runs in; "" = ccd's
+	// primary CLI.
+	Lane      string
+	ExpiresAt time.Time
+}
+
+// SetOwnerTurn marks agentID as running, in ccd lane lane, a turn user by
+// typed (chat row messageID), until ttl from now by Postgres's clock. It
+// overwrites any earlier marker: one owner turn in flight per agent.
+func (s *PGStore) SetOwnerTurn(ctx context.Context, agentID, by, messageID int64, lane string, ttl time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agents SET owner_turn_message_id = $2, owner_turn_by = $3, owner_turn_lane = $5,
+		       owner_turn_expires_at = now() + make_interval(secs => $4)
+		 WHERE id = $1`, agentID, messageID, by, ttl.Seconds(), lane)
+	return err
+}
+
+// ClearOwnerTurn removes agentID's marker IF it is still the one for
+// messageID: a turn ending never clears a later turn's marker.
+func (s *PGStore) ClearOwnerTurn(ctx context.Context, agentID, messageID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agents SET owner_turn_message_id = NULL, owner_turn_by = NULL, owner_turn_expires_at = NULL, owner_turn_lane = NULL
+		 WHERE id = $1 AND owner_turn_message_id = $2`, agentID, messageID)
+	return err
+}
+
+// ownerTurnLive is THE "an owner-typed turn is in flight" predicate on an
+// agents row: what OwnerTurnInFlight reads and what ClaimKickoffForDelivery
+// refuses on. One string, so the two can never disagree about a marker.
+const ownerTurnLive = `(owner_turn_message_id IS NOT NULL AND owner_turn_by IS NOT NULL AND owner_turn_expires_at > now())`
+
+// OwnerTurnInFlight reads agentID's marker; the zero OwnerTurn when there is
+// none, it has lapsed (by Postgres's clock), or the agent does not exist.
+func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTurn, error) {
+	var t OwnerTurn
+	err := s.pool.QueryRow(ctx, `
+		SELECT owner_turn_by, owner_turn_message_id, COALESCE(owner_turn_lane, ''), owner_turn_expires_at FROM agents
+		 WHERE id = $1 AND `+ownerTurnLive, agentID).Scan(&t.By, &t.MessageID, &t.Lane, &t.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OwnerTurn{}, nil
+	}
+	return t, err
+}
+
+// ChatMessage reads one chat row by id (pgx.ErrNoRows when there is none
+// visible to ctx's principal).
+func (s *PGStore) ChatMessage(ctx context.Context, id int64) (ChatMessage, error) {
+	return scanChatMessage(s.pool.QueryRow(ctx, `SELECT `+chatMessageCols+` FROM chat_messages WHERE id = $1`, id))
+}
+
+// DeleteChatMessage removes agentID's user row id (see the Store contract).
+func (s *PGStore) DeleteChatMessage(ctx context.Context, agentID, id int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM chat_messages WHERE id = $1 AND agent_id = $2 AND role = 'user'`, id, agentID)
+	return err
 }
 
 // DeleteChatMessagesOlderThan removes chat messages created before cutoff.
@@ -999,7 +1474,7 @@ func (s *PGStore) UnreadByAgent(ctx context.Context) ([]AgentUnread, error) {
 			FROM chat_sessions
 			ORDER BY agent_id, updated_at DESC, id DESC
 		)
-		SELECT u.agent_id, a.name, a.display_name, t.session_id, u.cnt
+		SELECT u.agent_id, a.name, a.display_name, a.display_name_source, t.session_id, u.cnt
 		FROM unread u
 		JOIN agents a ON a.id = u.agent_id
 		JOIN target t ON t.agent_id = u.agent_id
@@ -1011,7 +1486,7 @@ func (s *PGStore) UnreadByAgent(ctx context.Context) ([]AgentUnread, error) {
 	out := make([]AgentUnread, 0)
 	for rows.Next() {
 		var u AgentUnread
-		if err := rows.Scan(&u.AgentID, &u.AgentName, &u.DisplayName, &u.SessionID, &u.Count); err != nil {
+		if err := rows.Scan(&u.AgentID, &u.AgentName, &u.DisplayName, &u.DisplayNameSource, &u.SessionID, &u.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

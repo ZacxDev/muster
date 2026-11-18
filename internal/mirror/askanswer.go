@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
 
@@ -52,6 +55,61 @@ var (
 	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
 )
 
+// MaxAskScreen bounds the pane a host sends with a refusal (Msg.Screen), in
+// bytes: the bottom of the pane, where the picker is, is kept.
+const MaxAskScreen = 16 << 10
+
+// AskScreenCutMark begins a screen CapAskScreen cut.
+const AskScreenCutMark = "[… the top of the pane was cut]\n"
+
+// CapAskScreen is s as a host sends it: REDACTED FIRST (redact.Secrets, over
+// the whole pane), then, when it is over MaxAskScreen bytes, its tail from a
+// line start, under AskScreenCutMark, MaxAskScreen bytes in all.
+//
+// 🔴 REDACTION BEFORE THE CUT: a cut first could split a secret — a key
+// block's BEGIN line above the cut, its body below — into a fragment the
+// redactor no longer recognises (internal/askattempt's store redacts again,
+// and cuts again, for the same reason).
+func CapAskScreen(s string) string {
+	s = redact.Secrets(s)
+	if len(s) <= MaxAskScreen {
+		return s
+	}
+	s = s[len(s)-(MaxAskScreen-len(AskScreenCutMark)):]
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	return AskScreenCutMark + s
+}
+
+// askScreenError is a host's refusal with the pane it read then (Msg.Screen).
+type askScreenError struct {
+	screen string
+	err    error
+}
+
+func (e askScreenError) Error() string { return e.err.Error() }
+func (e askScreenError) Unwrap() error { return e.err }
+
+// WithAskScreen is err carrying the pane screen a host read when it refused
+// (AskScreen). nil stays nil, and an empty screen adds nothing.
+func WithAskScreen(err error, screen string) error {
+	if err == nil || screen == "" {
+		return err
+	}
+	return askScreenError{screen: screen, err: err}
+}
+
+// AskScreen is the pane the host sent with AnswerWindow's refusal err: ""
+// when it sent none (an older host, a refusal before it read the pane).
+func AskScreen(err error) string {
+	var s askScreenError
+	if errors.As(err, &s) {
+		return s.screen
+	}
+	return ""
+}
+
 // askKeysError is a host's refusal with how many keys of the answer's plan
 // the picker had received (Msg.Keys).
 type askKeysError struct {
@@ -91,8 +149,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskCancelUnsupported, ErrAskRefused,
-		ErrHermesApprovalGone, ErrHermesUnreachable} {
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskCancelUnsupported, ErrAskRefused} {
 		if errors.Is(err, e) {
 			return true
 		}
@@ -109,7 +166,9 @@ const askAnswerTimeout = 60 * time.Second
 // = the session's active window), and waits for the host's outcome. prior is
 // what an earlier answer is known to have left in that picker (nil: nothing);
 // a refusal carries how many keys the picker has received (AskKeys).
-func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error {
+func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) (err error) {
+	ctx, done := hubOp(ctx, "answer")
+	defer func() { done(err) }()
 	ch, id, hc, m, err := h.prepareAnswer(ctx, owner, host, session, window, qs, choices)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrAskNotSent, err)
@@ -166,8 +225,9 @@ func (h *Hub) prepareAnswer(ctx context.Context, owner int64, host, session, win
 }
 
 // answered hands the host's outcome to the answer waiting on id: keys is how
-// many keys of its plan the picker had received (Msg.Keys).
-func (hc *hostConn) answered(id uint32, why, refusal string, keys int) {
+// many keys of its plan the picker had received (Msg.Keys), screen the pane
+// the host read when it stopped (Msg.Screen).
+func (hc *hostConn) answered(id uint32, why, refusal string, keys int, screen string) {
 	hc.mu.Lock()
 	ch := hc.answers[id]
 	delete(hc.answers, id)
@@ -175,7 +235,7 @@ func (hc *hostConn) answered(id uint32, why, refusal string, keys int) {
 	if ch == nil {
 		return
 	}
-	ch <- WithAskKeys(askAnswerError(why, refusal), keys)
+	ch <- WithAskScreen(WithAskKeys(askAnswerError(why, refusal), keys), CapAskScreen(screen))
 }
 
 // askAnswerError is the error a host's answered means; the host's prose (why)
@@ -201,19 +261,21 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskUnreadable, why)
 	case AskRefusalUnreadableTyped:
 		return fmt.Errorf("%w: %w: %s", ErrAskUnreadable, ErrAskLost, why)
-	case AskRefusalHermesGone:
-		return fmt.Errorf("%w: %s", ErrHermesApprovalGone, why)
-	case AskRefusalHermesUnreachable:
-		return fmt.Errorf("%w: %s", ErrHermesUnreachable, why)
-	case AskRefusalHermesUnknown:
-		return fmt.Errorf("%w: %s", ErrHermesAnswerUnknown, why)
+	case AskRefusalOpenCodeGone:
+		return fmt.Errorf("%w: %s", ErrOpenCodeAskGone, why)
+	case AskRefusalOpenCodeUnreachable:
+		return fmt.Errorf("%w: %s", ErrOpenCodeUnreachable, why)
+	case AskRefusalOpenCodeUnknown:
+		return fmt.Errorf("%w: %s", ErrOpenCodeAnswerUnknown, why)
+	case AskRefusalOpenCodeRefused:
+		return fmt.Errorf("%w: %s", ErrOpenCodeAnswerRefused, why)
 	}
 	return fmt.Errorf("%w: %s", ErrAskRefused, why)
 }
 
 // AnswerWindow is Hub.AnswerWindow for the viewing principal's host.
 func (s *Service) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return err
 	}

@@ -185,6 +185,25 @@ func (f *fakeStore) ClaimKickoff(_ context.Context, id int64, owner string, ttl 
 	return true, nil
 }
 
+// DeleteChatMessage is a no-op: chatMsgs is a call log here, and no test in
+// this package removes a row.
+func (f *fakeStore) DeleteChatMessage(context.Context, int64, int64) error { return nil }
+
+// ClaimKickoffForDelivery is ClaimKickoff: this fake keeps no owner-turn
+// marker (the PG store's conjunct is pinned by pgstore_test.go).
+func (f *fakeStore) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return f.ClaimKickoff(ctx, id, owner, ttl)
+}
+
+func (f *fakeStore) KickoffClaimHolder(_ context.Context, id int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c, ok := f.claims[id]; ok && c.expires.After(time.Now()) {
+		return c.owner, nil
+	}
+	return "", nil
+}
+
 func (f *fakeStore) RenewKickoffClaim(_ context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -267,6 +286,16 @@ func (f *fakeStore) SetKickoffError(ctx context.Context, id int64, msg string) e
 	return nil
 }
 
+func (f *fakeStore) ClearKickoffFailure(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.agents[id]; ok && a.KickedOff && a.KickoffError != "" && !KickoffResendSafe(a) {
+		a.KickoffError = ""
+		f.agents[id] = a
+	}
+	return nil
+}
+
 func (f *fakeStore) kickedOff(id int64) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -322,12 +351,19 @@ func (f *fakeStore) SetDisplayName(ctx context.Context, id int64, name string) (
 	if !ok {
 		return Agent{}, context.Canceled
 	}
+	a.DisplayNameSource = NameManual
 	if name == "" {
-		name = a.Name
+		name, a.DisplayNameSource = a.Name, NameDefault
 	}
 	a.DisplayName = name
 	f.agents[id] = a
 	return a, nil
+}
+func (f *fakeStore) Secrets(ctx context.Context, id int64) (Secrets, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.agents[id]
+	return Secrets{HooksToken: a.HooksToken, GatewaySecret: a.GatewaySecret}, nil
 }
 func (f *fakeStore) SetHooksToken(ctx context.Context, id int64, token string) error { return nil }
 func (f *fakeStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
@@ -403,6 +439,16 @@ func (f *fakeStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map
 		if want[m.AgentID] && m.CreatedAt.After(out[m.AgentID]) {
 			out[m.AgentID] = m.CreatedAt
 		}
+	}
+	return out, nil
+}
+
+// LatestSessionIDs: the fake keeps no sessions table (LatestOrCreateSession
+// answers with the agent's id), so it answers the same way for every id.
+func (f *fakeStore) LatestSessionIDs(ctx context.Context, ids []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(ids))
+	for _, id := range ids {
+		out[id] = id
 	}
 	return out, nil
 }

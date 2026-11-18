@@ -74,17 +74,25 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 	if merr != nil {
 		m = plugins.Message{}
 	}
-	s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
-	// It is also an item of the owner's attention queue; it supersedes the
-	// message's earlier pending draft, whose notification is withdrawn.
+	next := "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again."
+	if d.AwaitingCheck() {
+		// Its plugin checks it first (plugins.CapDraftChecks): the owner is asked
+		// once it says it can send it (handlePluginDraftCheck).
+		next = "Its plugin checks this draft first; your owner is asked to approve it only once the plugin says it can send it. " +
+			"If the plugin refuses it, you are told why. Nothing is sent until your owner approves it. Do not file it again."
+	} else {
+		s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
+	}
+	// It is also an item of the owner's attention queue (once it is
+	// approvable: pendingDraftItems); it supersedes the message's earlier
+	// pending draft, whose notification is withdrawn.
 	s.draftFiled(agentOwnerID(a), d)
 	return toolJSON(map[string]any{
-		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded,
-		"next": "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again.",
+		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded, "next": next,
 	})
 }
 
-// draftCardAnchor is a draft card's fragment on /plugins: the push deep link.
+// draftCardAnchor is a draft card's fragment on the Asks page (draftLink).
 func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 10) }
 
 // notifyDraftAwaiting pushes the `plugin` event to the draft's owner.
@@ -96,6 +104,20 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 // queue page and /plugins show them, behind the sign-in. Without the message
 // (m.ID 0) it is muster's fixed sentence.
 func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message) {
+	s.notifyDraftAwaitingNoting(ctx, owner, d, m, "")
+}
+
+// notifyDraftAwaitingNoting is notifyDraftAwaiting with muster's own note
+// after the body: a lapsed check's (lapseDraftChecks, DraftCheckLapsedNote).
+func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message, note string) {
+	if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) {
+		// A follow or a like: ONE notification per outreach batch (its tag
+		// replaces the last), never one each (outreach_batch.go).
+		// A team's batch reaches its operators and managers through
+		// goNotify's one fan-out (team_notify.go).
+		s.notifyBatchAwaiting(owner, d)
+		return
+	}
 	id := strconv.FormatInt(d.ID, 10)
 	label := ""
 	if m.ID != 0 {
@@ -103,14 +125,17 @@ func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins
 			label = p.Label
 		}
 	}
-	s.goNotify(owner, push.EventPlugin, RouterNotification{
+	n := RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
-		Body:  draftPushBody(m, label),
+		Body:  draftPushBody(m, label) + note,
 		Tag:   "plugin-draft-" + id,
-		Data:  map[string]string{"url": pluginsPath + "#" + draftCardAnchor(d.ID)},
-	}, nil)
+		Data:  map[string]string{"url": draftLink(d.ID)},
+	}
+	// A team's draft — an officer's or a reply — reaches its operators and
+	// managers through goNotify's one fan-out (team_notify.go).
+	s.goNotify(owner, push.EventPlugin, n, nil)
 }
 
 // draftPushBody is a draft notification's body: "Reply draft: <sender's
@@ -132,7 +157,7 @@ func draftPushBody(m plugins.Message, pluginLabel string) string {
 	if l := mirror.OneLine(pluginLabel, plugins.MaxLabelRunes); l != "" {
 		body += " (" + l + ")"
 	}
-	return truncate(body, attentionPushBodyMax)
+	return truncate(body, draftPushBodyMax)
 }
 
 // senderDisplayName is a sender as a name: "Ada" of "Ada <ada@example.test>",
@@ -156,8 +181,13 @@ const unverifiedSender = "unverified sender"
 // surface.
 const unverifiedSenderNote = "(" + unverifiedSender + ")"
 
-// draftPushNameMax bounds the sender's name in a draft notification.
-const draftPushNameMax = 60
+// draftPushNameMax bounds the sender's name in a draft notification;
+// draftPushBodyMax the whole body (who and where only — unlike an ask's, whose
+// body is its question: attentionPushBody).
+const (
+	draftPushNameMax = 60
+	draftPushBodyMax = 120
+)
 
 // The `plugin` push's title (muster's), and its body when the message cannot
 // be read.

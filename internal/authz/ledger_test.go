@@ -58,11 +58,9 @@ const (
 var (
 	// systemLedger: the background loops, which act for every user.
 	//
-	// ⚠ NOT LISTED, BECAUSE THERE IS NO LOOP TO LIST: ccpool (selection runs
-	// inside a dispatch request), a GitHub mirror (none exists;
-	// cmd/muster-server's connectStaticGitHub is a one-shot boot write of the
-	// OPERATOR'S connection, which runs under authz.Operator (operatorLedger), not
-	// System), and a reconciler (agents/reconcile.go is a pure decision table
+	// ⚠ NOT LISTED, BECAUSE THERE IS NO LOOP TO LIST: ccpool's selection (it
+	// runs inside a dispatch request; its one System site, markScope, is the
+	// shared pool's marks, listed below), a GitHub mirror (none exists), and a reconciler (agents/reconcile.go is a pure decision table
 	// that agentstatus drives).
 	//
 	// Accounts PR 3a added the two non-loop sites, each reading ONE row with
@@ -80,9 +78,18 @@ var (
 	//   - agentOwner: the agent-named SSE nudge (BroadcastAgentChanged) is
 	//     handed only a NAME, by loops with no principal; the owner the event
 	//     reaches is read here.
-	//   - roleOfChecked (and roleOf through it): the request principal's ROLE, read inside the wrappers before
+	//   - accountOfChecked (and roleOf through principalFor): the request principal's ROLE, kind and team memberships, read inside the wrappers before
 	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{
+		// `muster-server mirror token create <host> --team <id>` (team sharing
+		// 2b.2): a TEAM host token, minted from the server's shell — which can
+		// already do anything — with the team's audit row in the same
+		// transaction; it mints only for an id that names a team.
+		"cmd/muster-server.mirrorCreateTeamToken",
+		// The feature registry's one boolean, at boot (officers O-B round 0):
+		// is any live plugin bound to an officer, deployment-wide. It reads
+		// EXISTS and hands on nothing else.
+		"cmd/muster-server.pluginsBoundAtBoot",
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",
@@ -90,13 +97,43 @@ var (
 		"internal/api.(*Server).agentByToken",
 		"internal/api.(*Server).agentOwner",
 		"internal/api.(*Server).notifyAgentRunning",
-		"internal/api.(*Server).roleOfChecked", // roleOf delegates to it; the connector door calls it directly
+		// The outcome tracker (agent_outcome.go): a turn's end, a work report or a
+		// task's status records the agent's OWN row's outcome — from a request or
+		// from the kickoff deliverer alike — and its sweep (agent_watchdog.go) acts
+		// for every owner. Nothing read under System is returned to a caller.
+		"internal/api.(*Server).AgentWatchdogPass",
+		"internal/api.outcomeCtx",
+		"internal/api.(*Server).accountOfChecked", // principalFor (and roleOf through it): role, kind and team memberships
+		// Team sharing phase 4 (slice 4.3): moving one of a person's tasks into
+		// a team rewrites owner_id on the task and its children, which only the
+		// system scope may (0127's owner_fixed). handleTaskMove checks the caller
+		// owns the task and operates in the team, then hands notes.MoveToTeam
+		// the system scope; the store re-checks the owner under the row lock and
+		// hands nothing read back.
+		"internal/api.(*Server).handleTaskMove",
 		// Bring-your-own credentials: whose model-provider credentials an
 		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec
 		// path asks it from loops with no principal (and a member's principal
 		// cannot read another user's row). It reads one role and returns one
 		// boolean; every failure answers "the owner's own credentials".
 		"internal/credentials.(*Plane).usesEnvironment",
+		// Team sharing phase 4 acceptance fix: a rate limit is a property of
+		// the ACCOUNT. The admin and every team on the server pool run on the
+		// same environment accounts, so the pool's marks are kept once, under
+		// the operator, and a team acting as itself reads and writes them
+		// there (row-level security would otherwise hide the admin's marks,
+		// and a team's first agent was placed on an exhausted account). Every
+		// marks query names the owner, so this reaches only the pool's marks
+		// rows (account health: timestamp, limit message, token fingerprint),
+		// and only for an owner the Source puts on the shared pool.
+		"internal/ccpool.(*Pool).markScope",
+		// The Claude account usage poller (team sharing phase 4, round 0): it
+		// reads the server pool's accounts as the pool's OWNER, which is
+		// derived (credentials.Plane.EnvPoolOwner: the lowest-id enabled
+		// admin) rather than fixed at user 1, so no fixed principal is its own.
+		// Every usage-store and marks query names that owner, so the system
+		// scope reaches the pool owner's readings and marks and nobody else's.
+		"internal/ccusage.(*Poller).Run",
 		// The mirror plugin's token lookup and its 30 s recheck: a host's token
 		// must be found by its hash before anyone is known (mirror_tokens is
 		// under RLS). What it yields — the token's owner — scopes everything after.
@@ -104,6 +141,11 @@ var (
 		// and the AskUserQuestion hook's door (AuthenticateHost).
 		"internal/mirror.(*Service).authenticate",
 		"internal/mirror.(*Service).watchToken",
+		// The spawning-host mark (mirror_tokens.spawned_at): written, before
+		// the welcome, on the token THIS connection authenticated with (its
+		// id, from authenticate above), one column, by id. Like the lookup it
+		// follows, it runs before any principal is known.
+		"internal/mirror.(*Service).markSpawned",
 		// Accounts PR 4: the account store (users, invites). Both tables are
 		// under FORCE row-level security (0009), and every query there (except
 		// Role, which roleOf above calls under System) is how a request LEARNS
@@ -111,6 +153,14 @@ var (
 		// claim-link visitor — there is no principal to run as yet. One helper,
 		// so the whole package is this one site.
 		"internal/users.sys",
+		// Instance branding (migration 0105): the server's ONE row, which no user
+		// owns. instance_branding is under FORCE row-level security with a
+		// scope_all policy only, so it is read as the system (Load: the sign-in
+		// page and the public /brand/ images have no user at all) and written as
+		// the system (Apply) only after Apply has checked the caller is an admin.
+		// Nothing per-user is read or handed on.
+		"internal/branding.(*PG).Load",
+		"internal/branding.(*PG).Apply",
 		// Accounts PR 6: a personal API token's lookup by hash. Like
 		// agentByToken, it is how the request's user is LEARNED (api_tokens is
 		// under FORCE RLS); only the row's user_id is handed on.
@@ -133,6 +183,11 @@ var (
 		// message is then probed and delivered as its own owner
 		// (withPrincipalLedger's queuedPrincipal), never under System.
 		"internal/sendqueue.sys",
+		// The chief's stall nudges (migration 0064): the store's one helper. It
+		// lists the owners the sweep visits, counts every owner's nudges for the
+		// global hourly cap and reads the live decisions still in flight; each
+		// decision is then acted on as its own owner (attentionPrincipal).
+		"internal/chiefnudge.sys",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already
@@ -156,12 +211,32 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// A chief's approved plugin instruction sections (migration 0141),
+		// read while the provisioner builds the chief's spec — from loops and
+		// requests alike, with no principal that is the chief's owner (the
+		// shape of credentials.Plane.usesEnvironment). Every query names the
+		// owner on both tables; only the rendered name, date and text are
+		// handed on.
+		"internal/plugins.(*PGStore).ApprovedChiefSections",
+		// The host-dispatch sweep's owners: every owner with an open host
+		// dispatch, then each is acted on as that owner (ViaHostDispatch).
+		"internal/plugins.(*PGStore).HostDispatchOwners",
+		// …and its read of every route still routed with a paste row (ids,
+		// owners, targets, row ids), so a cancelled row or a vanished window
+		// ends the route early; each is read and failed as its owner.
+		"internal/plugins.(*PGStore).RoutedPastes",
 		// File attachments (migration 0024): a signed link's read of ONE row by
 		// its public id (uploads.PGStore.LinkTarget), made only after the link's
 		// HMAC and expiry have been verified — the link is the credential, and
 		// there is no principal to run as. Only what serving the file needs is
 		// handed on (its key, type, name, and whether it was revoked).
 		"internal/uploads.sys",
+		// Shareable pages (migration 0116): a share link's read of ONE live
+		// link by the sha256 of the presented token (pages.PGStore.LinkByToken)
+		// — the link is the credential, and its row names the owner the
+		// request then acts as (authz.ViaPageLink). Only the link row is
+		// handed on.
+		"internal/pages.sys",
 		// The attention queue (migration 0023): the expiry sweep moves every
 		// owner's lapsed asks and hands each back with its owner, whose devices
 		// alone are then told (attention.PGStore.ExpireDue's one helper) — and,
@@ -173,10 +248,81 @@ var (
 		// deadlines; no body), read once per process so a notification shown
 		// before a restart is still withdrawn when its draft expires.
 		"internal/plugins.(*PGStore).PendingDrafts",
+		// …and every owner's drafts whose plugin check is past its deadline
+		// (ids and owners only), each then lapsed as THAT owner (ViaAttention).
+		"internal/plugins.(*PGStore).DraftChecksDue",
+		// …and its unrouted-message half (migration 0051): every owner's
+		// delivered messages the chief has not dispositioned past the delay, and
+		// every owner's open ask raised for a message dispositioned since — each
+		// row handed back with its owner, then raised or cancelled as THAT owner.
+		"internal/plugins.(*PGStore).UnroutedDue",
+		"internal/plugins.(*PGStore).UnroutedAsksToClose",
+		// …and its held-dispatch half: every owner's CARD hold that lapsed unused
+		// while its card is still open (owners, hold and ask ids, request keys;
+		// no detail), each card then withdrawn — and its chief told — as THAT
+		// owner (internal/api withdrawLapsedHoldCards).
+		"internal/plugins.(*PGStore).LapsedCardHolds",
+		// Task claims (migration 0111): the claim sweep's read of every owner's
+		// live session claims (owner, task, session, host — no text); each is
+		// then judged against THAT owner's hosts and released as that owner
+		// (internal/api ReleaseEndedClaims).
+		"internal/api.(*Server).ReleaseEndedClaims",
+		// The built-in officer store (#503 slices 6-7): the Attention sweep
+		// reads every owner's waiting asks and due escalations (ids, the
+		// officer, the item's kind/subject/summary for an escalation's text):
+		// an ask is settled as its owner, an escalation is raised in Attention
+		// as its recipient, and the item's own escalation bookkeeping
+		// (NoticeRaised/NoticeAbandoned/SettleEscalation, one row each) is
+		// written in the system scope, since the recipient need not own it.
+		// (An officer's escalate_to is no longer checked here: escalationRefusal
+		// reads the reach through the users store's MyTeams/TeamMembers, whose
+		// own System is users.sys below — round 1 of O-C, Q1.)
+		"internal/api.(*Server).SweepOfficerAttention",
+		// …the declared-officer roster loader, which reads every owner's
+		// DB-declared officer rows (the runtime fields, no charter) to run each
+		// as its owner — as the scheduler below reads every owner's due
+		// schedules.
+		"internal/api.(*Server).loadDeclaredRoster",
+		// …and its slug allocator, which asks whether an instance agent of a
+		// candidate slug exists for ANY owner (an agent name is global), so
+		// an orphan is never adopted by a new officer (round 0's F2): it
+		// answers only taken or not.
+		"internal/api.(*Server).slugHasAgents",
+		// …and its scheduler (#503 slice 8): FireDue reads every owner's due
+		// schedules and fires each with a compare-and-set, inserting the item
+		// with that schedule's own owner_id.
+		"internal/api.(*Server).RunOfficerScheduler",
+		// Plugin pairing (plugin_pairing.go, migration 0122): the
+		// unauthenticated request has nobody signed in, so the owner it names
+		// is LEARNED under System (as pluginFor learns a token's owner), and the
+		// request — or a decoy — is written naming that owner; the poll finds
+		// the request by its public id under System to learn whose it is, then
+		// mints acting AS that owner (the WithPrincipal ledger below).
+		"internal/api.(*Server).handlePairRequest",
+		"internal/plugins.(*PGStore).RedeemPair",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
 		"internal/jobs.sys",
+		// A pool submission's account failover asks whether a worker is idle
+		// before restarting its pod: queued and running counts per agent,
+		// whoever submitted the jobs (under the caller's RLS another user's
+		// job would read as absent, and the worker as idle). Counts only, no row.
+		"internal/jobs.(*PGStore).ActiveCounts",
+		// The job queue's dispatch read: each free agent's oldest queued job
+		// (ids, agents and owners only), across every owner, since another
+		// owner's running job holds the agent too; each job is then read and run
+		// as its owner (withPrincipalLedger's jobPrincipal).
+		"internal/jobs.(*PGStore).Heads",
+		// The ask log (migration 0089): the retention sweep's one helper. It
+		// clears question and answer text past the TTL and deletes rows past
+		// 180 days, by age only, across every owner (asklog.PG.Purge), and
+		// returns only counts.
+		"internal/asklog.sys",
+		// The answer-attempt log (migration 0116): the retention sweep's one
+		// helper. It deletes rows past 30 days, by age only, across every
+		// owner (askattempt.PG.Prune), and returns only a count.
+		"internal/askattempt.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -187,7 +333,6 @@ var (
 	// it is safe only because no non-test file imports dbtest
 	// (TestOnlyTestFilesImportDBTest).
 	operatorLedger = []string{
-		"cmd/muster-server.connectStaticGitHub",
 		// `muster-server mirror token create|ls|revoke`: the operator's tokens.
 		"cmd/muster-server.runMirrorCLI",
 		"e2e/seed.run",
@@ -195,10 +340,18 @@ var (
 		// rows filed under the operator, as the seed's are.
 		"e2e/mkchat.run",
 		"internal/dbtest.AsOperator",
+		// The Compose chief's boot re-apply: the admin's (user 1's) chief, the
+		// one the compose driver runs, re-applied on the current credential.
+		"internal/api.(*Server).reapplyComposeChief",
 		// The cairn memo relay: it presents the OPERATOR's cairn credential, so it
 		// serves the operator's agents and must be handed nobody else's. Running as
 		// the operator (not the system) is what makes row-level security say so.
 		"internal/memorelay.(*Relay).Run",
+		// The consumer usage collector (MUSTER_CC_CONSUMER_USAGE): it reads the
+		// instances on the OPERATOR's pool accounts and their failover history,
+		// so it acts as the operator and row-level security keeps every other
+		// user's agents out of it.
+		"internal/api.(*Server).consumerUsagePrincipal",
 	}
 	// withPrincipalLedger: admit, and the send queue's delivery.
 	//
@@ -208,6 +361,21 @@ var (
 	// send queue's dispatcher (its AsOwner), handed each row's owner after it
 	// read the row under System; the request path never calls it.
 	withPrincipalLedger = []string{
+		// The browser suite's agent-create token minter (e2e/mktoken): it mints
+		// through the real token store AS the named fixture user, so row-level
+		// security files the token under that user, as /account/tokens would.
+		// A fixture command, never linked into a binary (modulegate's linkage
+		// ledger), and it refuses any database not ending in _e2e.
+		"e2e/mktoken.run",
+		// The ask-log browser spec's fixture (e2e/askfix): it writes and clears
+		// asks through the real store AS the named fixture user, so row-level
+		// security confines it to that user's rows. A fixture command, never
+		// linked into a binary, and it refuses any database not ending in _e2e.
+		"e2e/askfix.run",
+		// The Asks card feed's browser fixture (e2e/asksfeedfix): the same, for
+		// one owner's queue of every kind. A fixture command, never linked into
+		// a binary, and it refuses any database not ending in _e2e.
+		"e2e/asksfeedfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions
@@ -222,17 +390,74 @@ var (
 		// person, read as that owner after the hub's nudge named them, through
 		// authz.ViaAttention.
 		"internal/api.(*Server).attentionPrincipal",
-		// The AskUserQuestion watcher: the transcript of the window showing a
-		// question, read as the question's owner (its host's token's), through
+		// A member's preview of a TEAM session (team sharing 2b.3b): the team's
+		// viewer plugins read, and the hand-off written, as the team, through
+		// the team plugin door authz.ViaPlugin, after a fresh viewer read.
+		"internal/api.(*Server).teamPreviewPrincipal",
+		// The AskUserQuestion watcher and open-question scan: the transcript of
+		// the window showing a question, or of a waiting window, read as the
+		// question's or the window's owner (its host's token's), through
 		// authz.ViaAsk.
 		"internal/api.(*Server).askPrincipal",
+		// The stopped-agent reaper: each due agent is claimed and destroyed as
+		// its owner, through authz.ViaReap, after
+		// agents.PGStore.ListReapableStopped read the due rows under System.
+		"internal/api.(*Server).reapPrincipal",
+		// The officer wake loop: one officer's instance agents read, created,
+		// started and stopped as the officer's configured owner, through
+		// authz.ViaOfficer.
+		"internal/api.(*Server).officerPrincipal",
+		// A gateway agent's tool-enabled turn started outside an owner's
+		// session — the kickoff deliverer's first turn (authz.ViaKickoff, after
+		// the deliverer read the agent's row under System) and the machine
+		// message door's turn (authz.ViaAgentMessage): its tool calls run as the
+		// agent's owner. One site for both doors (gatewayTurnTools).
+		"internal/api.(*Server).turnPrincipal",
+		// The host-dispatch reconciler: one owner's host_dispatches rows moved on
+		// a spawn reply, a listing or the not-seen sweep, through
+		// authz.ViaHostDispatch.
+		"internal/api.(*Server).hostDispatchPrincipal",
+		// The job queue's runner: a job no request of this process holds (one a
+		// restart left queued) is read and run as its owner, through
+		// authz.ViaJobQueue, after jobs.PGStore.Heads read the head under System.
+		"internal/api.(*Server).jobPrincipal",
+		// The chief's routing-rule proposal (routing_rules.go): the SAME owner,
+		// its door narrowed from a plugin delivery turn's authz.ViaPlugin to
+		// authz.ViaAgent, so the rule store (which refuses every plugin
+		// principal) records the chief's own write. Never a new user id.
+		"internal/api.chiefWriteContext",
+		// A turn a PERSON starts on an agent their TEAM owns (team sharing
+		// slice 4.4, team_agents.go): after a fresh read of the person's role
+		// in the team (operator or above), it runs as the agent's owner — the
+		// team acting principal through authz.ViaAgent — so its credentials,
+		// usage and reply are the team's. Never a new user id: the agent's
+		// own owner, read by agentPrincipal.
+		"internal/api.(*Server).turnActingContext",
+		// A TEAM MANAGER's lifecycle door (team sharing slice 4.5,
+		// team_admin.go): after a FRESH read of the person's role says manager
+		// of the team, the manager's start, stop, delete, credential rotation
+		// or chief provisioning runs as the team — the team acting principal
+		// through authz.ViaTeamAdmin. Never a new user id: the team the
+		// person's own memberships name.
+		"internal/api.(*Server).teamAdminContext",
+		// A host officer machine's confirmed step-up (host_stepup.go): the
+		// owner-authority call the owner's PHONE just confirmed (a signed
+		// device action, single use, bound to the card) runs as that SAME
+		// owner — the hook checked the device principal's user is the card's
+		// — at the door it was asked through, authz.ViaMirrorHost. Never a
+		// new user id.
+		"internal/api.(*Server).stepUpPrincipal",
+		// A pairing's hand-out (internal/plugins pairing.go): the token is
+		// minted acting AS the request's owner, whose id the request row
+		// names (read under System above) — the owner who approved it. Never
+		// an id the caller chose.
+		"internal/plugins.(*PGStore).RedeemPair",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
 		"internal/api.(*Server).admitAttributedService", // requireServiceToken + the service branch of requireHookOrServiceToken
 		"internal/api.(*Server).admitAPIToken",          // personal tokens: the hook-tier wrappers + requireAPIToken (accounts PR 6)
 		"internal/api.(*Server).requireAgentToken",
-		"internal/api.(*Server).requireArmedHookToken",
 		"internal/api.(*Server).requireConnectorAgent",
 		"internal/api.(*Server).requireGoTrueSession", // requireSession's gotrue-mode half (accounts PR 4)
 		"internal/api.(*Server).requireHookOrServiceToken",
@@ -242,15 +467,16 @@ var (
 		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
 		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0039): /api/device/*
 		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
+		"internal/api.(*Server).requirePageLink",        // a page's share link (0116): /s/{token}/*
 		"internal/api.(*Server).requireSession",
 	}
 	// authzExports is authz's whole exported package scope. A new exported
 	// name — `var Everyone = System`, a helper wrapping WithPrincipal — is a
 	// new door until someone has decided it is not.
 	authzExports = []string{
-		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
-		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
+		"From", "IsAdmin", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
+		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"ViaSession", "ViaSystem", "ViaTeamAdmin", "ViaToken", "WithPrincipal",
 	}
 )
 
@@ -485,6 +711,12 @@ func loadPass(root, tags string) (pass, error) {
 		args = append(args, "-tags", tags)
 	}
 	args = append(args, "./...")
+	// 🔴 NEVER REPLAYED FROM GO'S TEST CACHE: what the `go` subprocess below reads
+	// (every package of the module) is invisible to the cache, which keys a result
+	// only on the test binary and the files and variables the test process itself
+	// touched. ci.yml gives MUSTER_TEST_NOCACHE a per-run value, and reading it
+	// puts that value in the key (cmd/go: "env" lines of the test log).
+	_ = os.Getenv("MUSTER_TEST_NOCACHE")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	var stderr bytes.Buffer

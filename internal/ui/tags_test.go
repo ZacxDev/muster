@@ -98,7 +98,7 @@ func TestRoutingChipsVisuallyDistinct(t *testing.T) {
 		t.Fatal("routing and descriptive chips must have different styling")
 	}
 	// Each reserved namespace gets its own treatment + an explanatory title.
-	for _, tag := range []string{"initiative:launch", "initiative:remix", "gate:blocked", "auto:dispatch"} {
+	for _, tag := range []string{"initiative:launch", "initiative:zephyr", "gate:blocked", "auto:dispatch"} {
 		cls, title := tagChipClass(tag)
 		if cls == descClass {
 			t.Errorf("%s must not be styled as a descriptive chip", tag)
@@ -177,8 +177,8 @@ func TestBoardURLCarriesEveryDimension(t *testing.T) {
 		{"status only", nil, "in_progress", 0, "/ui/tasks?status=in_progress"},
 		{"limit only", nil, "", 137, "/ui/tasks?limit=137"},
 		{"status+limit", nil, "done", 71, "/ui/tasks?limit=71&status=done"},
-		{"all three", []string{"project:civitai"}, "open", 23,
-			"/ui/tasks?limit=23&status=open&tag=project%3Acivitai"},
+		{"all three", []string{"project:acme"}, "open", 23,
+			"/ui/tasks?limit=23&status=open&tag=project%3Aacme"},
 		// 0 means "no cap", and it must not appear as limit=0 — the server reads
 		// that back as the default page, so emitting it would be a silent lie about
 		// what was asked for.
@@ -305,32 +305,6 @@ func TestEditorRoutingTagsLockedInProgress(t *testing.T) {
 	}
 	if !strings.Contains(out, "routing tags are locked") {
 		t.Fatalf("the editor must explain WHY routing tags are locked; body=%s", out)
-	}
-}
-
-// TestGateTagDisablesDispatch asserts a `gate:` tag disables the card's Dispatch
-// button and surfaces the reason (the server 409s independently).
-func TestGateTagDisablesDispatch(t *testing.T) {
-	out := renderTagCard(t, notes.Note{ID: 5, Body: "x", Tags: []string{"gate:needs-decision"}})
-
-	if !strings.Contains(out, `data-dispatch-gated="needs-decision"`) {
-		t.Fatalf("a gate: tag must mark the Dispatch button gated; body=%s", out)
-	}
-	if !strings.Contains(out, "disabled") {
-		t.Fatalf("the gated Dispatch button must be disabled; body=%s", out)
-	}
-	if !strings.Contains(out, "Gated: needs-decision") {
-		t.Fatalf("the gated button must surface the REASON; body=%s", out)
-	}
-	// It must NOT still open the dispatch modal.
-	if strings.Contains(out, "/ui/agents/new?") {
-		t.Fatalf("a gated card must not wire the dispatch modal; body=%s", out)
-	}
-
-	// An ungated card keeps the working Dispatch button.
-	ok := renderTagCard(t, notes.Note{ID: 6, Body: "x", Tags: []string{"bug"}})
-	if !strings.Contains(ok, "/ui/agents/new?") {
-		t.Fatalf("an ungated card must keep its Dispatch button; body=%s", ok)
 	}
 }
 

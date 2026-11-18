@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -155,6 +156,18 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Team tasks (team sharing phase 4): a merge writes both tasks, so the
+	// caller is at least an operator on each; and it folds the loser's tags
+	// and a pointer into the winner, so the two have ONE owner — a person's
+	// task never merges into a team's, or a team's into another's.
+	if winner.OwnerID != loser.OwnerID {
+		http.Error(w, "these tasks belong to different owners and cannot be merged", http.StatusConflict)
+		return
+	}
+	if p, ok := authz.From(r.Context()); ok && !taskRoleAllows(p, winner.OwnerID, authz.TeamOperator) {
+		http.Error(w, "this is a team task: it needs a team operator or above", http.StatusForbidden)
+		return
+	}
 
 	// Refuse in_progress on EITHER side. A merge rewrites the winner's routing tags
 	// and retires the loser — both are spec changes, and an agent is mid-flight
@@ -196,6 +209,14 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the task you chose to keep is already complete — keep the open one instead", http.StatusConflict)
 		return
 	}
+	// 🔴 A PLUGIN TASK REFERENCE IS NEVER THE LOSER. Retiring the loser is a
+	// status write, and on a reference that is queued for its upstream
+	// (task_ref_queue.go): a merge would close the UPSTREAM task as a side
+	// effect of tidying this board. Keep the reference; merge the other in.
+	if loser.IsReference() {
+		http.Error(w, "that task follows its upstream and cannot be merged away — keep it and merge the other into it", http.StatusConflict)
+		return
+	}
 
 	// Validate the UNION before touching anything: MergeTags does not validate, so
 	// two legal tag sets can union into an illegal one (different projects, or past
@@ -233,7 +254,7 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 		observeRoutingTags(merged)
 	}
 	// (2) Winner records what it absorbed.
-	if _, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
+	if _, _, err := s.addTaskComment(r.Context(), commentByMuster, notes.Comment{
 		NoteID: winnerID, Author: mergeCommentAuthor,
 		Body: "Merged in task #" + strconv.FormatInt(loserID, 10) + mergeLabelSuffix(loser) + ".",
 	}); err != nil {
@@ -299,7 +320,7 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	// to cover a case only reachable by reopening an already-superseded task would
 	// cost every reader clarity to serve almost none, and this comment is the record
 	// that the imprecision is known rather than overlooked.
-	if _, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
+	if _, _, err := s.addTaskComment(r.Context(), commentByMuster, notes.Comment{
 		NoteID: loserID, Author: mergeCommentAuthor,
 		Body: "Superseded by task #" + strconv.FormatInt(winnerID, 10) + mergeLabelSuffix(winner) + ". Its tags were merged there; nothing was deleted.",
 	}); err != nil {

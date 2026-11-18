@@ -41,7 +41,12 @@ func placedEvents(b []byte) []Event {
 	for _, line := range bytes.Split(b, []byte{'\n'}) {
 		pos += int64(len(line)) + 1
 		if r, ok := DecodeLine(line); ok {
-			for _, ev := range Events(r) {
+			evs := Events(r)
+			if r.Type == "attachment" && !r.IsSidechain {
+				// The mirrored view's readers mark context the CLI injected.
+				evs = []Event{{Kind: KindInjected, Text: r.Attachment.Type}}
+			}
+			for _, ev := range evs {
 				if ev.Kind == KindPrompt {
 					ev.Line = pos
 				}
@@ -83,13 +88,13 @@ func TestAReaderPlacesEachPromptAtItsLineEnd(t *testing.T) {
 func TestEventsFromARealToolTurn(t *testing.T) {
 	got := allEvents(readFixture(t))
 	want := []Event{
-		{Kind: KindPrompt, Text: "an earlier prompt"},
-		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Tokens: 248773}},
-		{Kind: KindPrompt, Text: "list the workspace"},
-		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773}},
-		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Usage: &Usage{Tokens: 248773}},
-		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", At: 946684811000},
-		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Tokens: 249972}},
+		{Kind: KindPrompt, Text: "an earlier prompt", Cwd: "/data/workspace", PromptAt: 946684806000},
+		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Tokens: 248773, Output: 829}},
+		{Kind: KindPrompt, Text: "list the workspace", Cwd: "/data/workspace", PromptAt: 946684806000},
+		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773, Output: 829}},
+		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Bytes: 43, Usage: &Usage{Tokens: 248773, Output: 829}},
+		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", Bytes: 13, At: 946684811000},
+		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Tokens: 249972, Output: 117}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events:\n got %+v\nwant %+v", got, want)
@@ -125,12 +130,22 @@ func TestEventsRecordShapes(t *testing.T) {
 	}{
 		{"errored tool result is not ok",
 			`{"type":"user","promptId":"p","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}`,
-			[]Event{{Kind: KindToolResult, ToolID: "t1", OK: false, Output: "boom"}}},
+			[]Event{{Kind: KindToolResult, ToolID: "t1", OK: false, Output: "boom", Bytes: 4}}},
 		{"block-array result content",
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]}]}}`,
-			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb"}}},
+			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb", Bytes: 1 + 1 + 3520}}},
 		{"injected context is dropped",
 			`{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill"}]}}`, nil},
+		// A Stop hook that BLOCKS: Claude Code records its reason as a user
+		// record with "isMeta":true and content "Stop hook feedback:\n<reason>"
+		// (the shape read off a real transcript). It must never be a prompt —
+		// the chief nudge sweep reads prompts as the owner's own words.
+		// ⚠ AN INVARIANT GUARD, NOT REGRESSION COVERAGE: the reader already
+		// dropped every isMeta record before this case existed, so it never
+		// failed on old code; it pins that behaviour (dropping the IsMeta check
+		// in PromptText reddens it).
+		{"a Stop hook's block reason is dropped",
+			`{"type":"user","isMeta":true,"userType":"external","message":{"role":"user","content":"Stop hook feedback:\nCall attention_ask with your question before you stop."}}`, nil},
 		{"a subagent's records are dropped",
 			`{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"sub"}]}}`, nil},
 		{"a prompt written as text blocks",
@@ -333,5 +348,32 @@ func TestBackfillCapSplitsTheOldestLine(t *testing.T) {
 	got := Flatten(lines)
 	if len(got) != 2 || got[0].ToolID != "b" || got[1].Text != "newest" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// A prompt carries its record's working directory, and only a prompt: the
+// real fixture's records all name one (the positive control), and no other
+// event does. One past MaxCwd is dropped, never cut.
+func TestOnlyAPromptCarriesItsWorkingDirectory(t *testing.T) {
+	prompts := 0
+	for _, ev := range allEvents(readFixture(t)) {
+		switch {
+		case ev.Kind == KindPrompt && ev.Cwd == "/data/workspace":
+			prompts++
+		case ev.Cwd != "":
+			t.Errorf("a %s carries cwd %q", ev.Kind, ev.Cwd)
+		}
+	}
+	if prompts != 2 {
+		t.Fatalf("%d prompts carry the fixture's cwd; want 2", prompts)
+	}
+	long := "/" + strings.Repeat("d", MaxCwd)
+	r, ok := DecodeLine([]byte(`{"type":"user","cwd":"` + long + `","message":{"content":"hello"}}`))
+	if evs := Events(r); !ok || len(evs) != 1 || evs[0].Cwd != "" || evs[0].Text != "hello" {
+		t.Fatalf("an over-long cwd: %+v", evs)
+	}
+	r, _ = DecodeLine([]byte(`{"type":"user","cwd":"` + long[:MaxCwd] + `","message":{"content":"hello"}}`))
+	if evs := Events(r); len(evs) != 1 || evs[0].Cwd != long[:MaxCwd] {
+		t.Fatalf("control: a cwd of exactly MaxCwd was dropped: %+v", evs)
 	}
 }

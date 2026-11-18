@@ -108,11 +108,20 @@ func TestTheMCPEndpointListensOnLoopbackOnly(t *testing.T) {
 			t.Errorf("%s: %v", addr, err)
 		}
 	}
-	l, err := ListenMCP("127.0.0.1:0")
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := free.Addr().String()
+	free.Close()
+	l, err := ListenMCP(addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	if l.Addr().String() != addr {
+		t.Fatalf("bound %v, asked for %s", l.Addr(), addr)
+	}
 	if ip := l.Addr().(*net.TCPAddr).IP; !ip.IsLoopback() {
 		t.Fatalf("listening on %v", ip)
 	}
@@ -209,16 +218,17 @@ func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 			t.Errorf("%s: %s", name, text)
 		}
 	}
-	// Another tmux server's pane, and no tmux at all, are refused for ANY
-	// request: no pane there is this host's.
+	// Another tmux server's pane, and no tmux at all, are NEVER forwarded, for
+	// any request: no pane there is this host's. They are answered here as a
+	// server with no tools (mcpproxy_outsider_test.go pins each answer).
 	for name, hdr := range map[string]map[string]string{
 		"another tmux server": {MCPPaneHeader: "%7", MCPTmuxHeader: "/tmp/tmux-1000/other,99,0"},
 		"no tmux":             {MCPPaneHeader: "%7"},
 		"no name":             {},
 	} {
 		for _, body := range []string{proxyCall, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`} {
-			if w := postBody(t, p, auth(hdr), body); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "tmux server") {
-				t.Errorf("%s: %d %s", name, w.Code, w.Body)
+			if w := postBody(t, p, auth(hdr), body); w.Code == http.StatusTeapot {
+				t.Errorf("%s: forwarded upstream: %d %s", name, w.Code, w.Body)
 			}
 		}
 	}

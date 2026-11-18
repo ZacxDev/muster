@@ -20,6 +20,9 @@
 package sse
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,12 +91,30 @@ type Broadcaster struct {
 	subs   map[uint64]subscriber
 	nextID uint64
 	buffer int
+
+	// epoch names this Broadcaster (one per process); seq counts the events
+	// Broadcast has accepted, per owner. Together they are Mark.
+	epoch string
+	seqMu sync.Mutex
+	seq   map[int64]uint64
 }
 
-// subscriber is one registered stream and the user it streams for.
+// subscriber is one registered stream and the owners it streams for: its
+// user, and — since team sharing 2b.3 — the teams that user was a member of
+// when it subscribed (internal/api's handleEvents; a removal ends the stream,
+// so a reconnect subscribes to the teams as they are then).
 type subscriber struct {
-	owner int64
-	ch    chan Event
+	owners []int64
+	ch     chan Event
+}
+
+func (s subscriber) streams(owner int64) bool {
+	for _, o := range s.owners {
+		if o == owner {
+			return true
+		}
+	}
+	return false
 }
 
 // New returns a Broadcaster. buffer is the per-subscriber channel buffer
@@ -103,20 +124,62 @@ func New(buffer int) *Broadcaster {
 	if buffer < 1 {
 		buffer = 1
 	}
+	var e [8]byte
+	_, _ = rand.Read(e[:])
 	return &Broadcaster{
 		subs:   make(map[uint64]subscriber),
 		buffer: buffer,
+		epoch:  hex.EncodeToString(e[:]),
+		seq:    make(map[int64]uint64),
 	}
 }
 
-// Subscribe registers a new subscriber streaming for user owner and returns
-// its receive channel plus an id used to Unsubscribe. The channel is buffered.
-// A subscriber whose owner is not positive receives nothing.
-func (b *Broadcaster) Subscribe(owner int64) (uint64, <-chan Event) {
+// Mark names how far owner's events have got: <epoch>-<owner>-<count>, this
+// Broadcaster's epoch, the owner, and the number of events Broadcast has
+// accepted for owner. Two equal marks mean NO event for owner was broadcast
+// between the two reads, on this process; a mark read from another process (or
+// a restarted one), or for another owner, never equals — so another user's
+// stream (one browser, a sign-in in between) can never vouch for this user's
+// board, even at an equal count.
+//
+// 🔴 WHAT IT IS FOR: a document that drew a list at mark M, whose event stream
+// then opened at mark M too, has missed nothing — so its first connect need not
+// fetch the list again (internal/api's handleEvents sends the stream's mark as
+// muster.hello; the shell's resyncScript compares). The ORDER of the two reads
+// is what makes that true, and both are the caller's: the document reads its
+// mark BEFORE it reads the list, the stream reads its mark AFTER Subscribe
+// returns. An event accepted between the two makes the marks differ; one
+// accepted after Subscribe is delivered on the stream, because Broadcast counts
+// it inside the same critical section it delivers in.
+//
+// ⚠ An event dropped for a full buffer is still counted: the mark is about what
+// was published, not about what one subscriber received.
+//
+// A mark of SEVERAL owners (a stream subscribed to its user's teams too) is
+// each owner and each count, in the order given, joined by ".": it equals
+// another only for the same owners, in the same order, at the same counts.
+// For one owner it is exactly the one-owner form.
+func (b *Broadcaster) Mark(owners ...int64) string {
+	ids := make([]string, len(owners))
+	ns := make([]string, len(owners))
+	b.seqMu.Lock()
+	for i, o := range owners {
+		ids[i] = strconv.FormatInt(o, 10)
+		ns[i] = strconv.FormatUint(b.seq[o], 10)
+	}
+	b.seqMu.Unlock()
+	return b.epoch + "-" + strings.Join(ids, ".") + "-" + strings.Join(ns, ".")
+}
+
+// Subscribe registers a new subscriber streaming for owners — a user, and any
+// teams of theirs (see subscriber) — and returns its receive channel plus an
+// id used to Unsubscribe. The channel is buffered. An owner that is not
+// positive receives nothing.
+func (b *Broadcaster) Subscribe(owners ...int64) (uint64, <-chan Event) {
 	ch := make(chan Event, b.buffer)
 	id := atomic.AddUint64(&b.nextID, 1)
 	b.mu.Lock()
-	b.subs[id] = subscriber{owner: owner, ch: ch}
+	b.subs[id] = subscriber{owners: append([]int64(nil), owners...), ch: ch}
 	b.mu.Unlock()
 	return id, ch
 }
@@ -132,7 +195,8 @@ func (b *Broadcaster) Unsubscribe(id uint64) {
 	b.mu.Unlock()
 }
 
-// Broadcast delivers ev to every current subscriber of ev.OwnerID. Delivery
+// Broadcast delivers ev to every current subscriber of ev.OwnerID (each
+// stream that names it among its owners). Delivery
 // is non-blocking: if a subscriber's buffer is full the event is dropped for
 // that subscriber so one slow consumer cannot stall the rest.
 //
@@ -143,8 +207,14 @@ func (b *Broadcaster) Broadcast(ev Event) bool {
 		return false
 	}
 	b.mu.RLock()
+	// Counted under the read lock that Subscribe's write lock excludes: an event
+	// is either counted before a subscriber exists (so that subscriber's Mark,
+	// read after Subscribe, includes it) or delivered to it. See Mark.
+	b.seqMu.Lock()
+	b.seq[ev.OwnerID]++
+	b.seqMu.Unlock()
 	for _, sub := range b.subs {
-		if sub.owner != ev.OwnerID {
+		if !sub.streams(ev.OwnerID) {
 			continue
 		}
 		select {

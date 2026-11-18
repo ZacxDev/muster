@@ -22,7 +22,10 @@
 // "which accounts may this OWNER use", and every selection, mark and live count
 // is per (owner, account): there is no path from a member's dispatch to an
 // environment-pool account (TestAMemberDispatchNeverSelectsAnAdminPoolAccount
-// in internal/credentials).
+// in internal/credentials). The one exception is the marks of a SHARED pool's
+// accounts ([SharedAccounts]): the admin and the teams listed on the server
+// pool run on the same accounts, so their marks are kept once, under the
+// pool's marks owner, and every owner on the pool sees them.
 //
 // # Selection
 //
@@ -50,14 +53,30 @@
 // reset time the CLI's message states ("resets 9:45pm (UTC)", "resets Oct 9,
 // 9am (UTC)") when one can be read, else the mark's time plus
 // [Limits.Cooldown] (default [DefaultCooldown]). It is over at exactly that
-// instant.
+// instant — or sooner, when THE LIVE READING SAYS THE ACCOUNT IS USABLE: the
+// usage poller (internal/ccusage) keeps reading a cooling account, and when
+// what the account reports right now shows it usable it clears the mark
+// ([Pool.ClearRateLimit]), guarded so a NEWER mark written while it was
+// reading is never cleared. A stated reset is the CLI's estimate; the live
+// reading is the account's own word. With the poller off nothing ends a
+// cooldown early.
 //
-// 🔴 ONLY THE JOB API REFUSES FOR IT. Its worker-pool choice (internal/api
-// chooseWorker, reading [AccountState.CoolingUntil]) skips a worker on a
-// cooling account and answers 429 when every worker is skipped. Agent dispatch
-// ([Choose]) only ranks a cooling account last and still picks it when it is
-// all there is: an agent keeps its account for life, so refusing to create it
-// for a window of hours would buy nothing.
+// A rate_limited mark is about the SUBSCRIPTION, not the token: limits are
+// counted per subscription, so a re-issued token on the same one is still
+// limited, and replacing the token does NOT end the cooldown. A changed token
+// on a cooling account is read by the live probe on the poller's next pass,
+// and that reading decides.
+//
+// 🔴 ONLY THE JOB API AND THE FAILOVER REFUSE FOR IT. The job API's
+// worker-pool choice (internal/api chooseWorker, reading
+// [AccountState.CoolingUntil]) skips a worker on a cooling account — and when
+// that leaves no worker it fails one such worker over to a usable account
+// (internal/ccfailover) and places the job there, answering 429 only when no
+// account is usable — and [ChooseFailover] never moves an agent onto a
+// cooling account. Agent dispatch ([Choose]) only ranks a cooling
+// account last and still picks it when it is all there is: an agent outlives a
+// rate-limit window, so refusing to create it for a window of hours would buy
+// nothing.
 //
 // [Limits.MaxConcurrentJobs] caps how many JOBS one account runs at once, and
 // is OPT-IN: zero (the default) is no cap, because an account's real capacity
@@ -69,9 +88,12 @@
 // including for an account the pool would skip — but must name a configured
 // account.
 //
-// 🔴 AN AGENT KEEPS ITS ACCOUNT FOR LIFE. Select runs once, before the agent's
-// row exists; the row stores the NAME (agents.cc_account) and migration 0003
-// refuses any later change. A restart, a re-provision, a model of the pool
+// 🔴 AN AGENT KEEPS ITS ACCOUNT UNTIL AN ACCOUNT FAILOVER MOVES IT. Select runs
+// once, before the agent's row exists; the row stores the NAME
+// (agents.cc_account) and migration 0003's trigger refuses any later change
+// except the failover's (internal/ccfailover, migration 0066), which moves an
+// agent off an account that answered rate_limited or auth_failed onto one
+// [ChooseFailover] picks. A restart, a re-provision, a model of the pool
 // changing under it — none of them re-select.
 //
 // 🔴 [Pool.Token] IS THE ONE PLACE A TOKEN LEAVES THIS PACKAGE: the pod-spec
@@ -100,6 +122,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // The failure types ccd reports that mark an account. They are ccd's own
@@ -182,6 +206,10 @@ type Store interface {
 	LiveCounts(ctx context.Context, owner int64) (map[string]int, error)
 	MarkRateLimited(ctx context.Context, owner int64, account, detail string, at time.Time) error
 	MarkAuthFailed(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error
+	// ClearRateLimited clears owner's account's rate_limited mark ONLY while
+	// its timestamp is still markedAt (a compare-and-clear), and reports
+	// whether it did. A newer mark, written after markedAt was read, stands.
+	ClearRateLimited(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error)
 }
 
 // Source answers which Claude accounts an OWNER's agents may run on: name →
@@ -191,6 +219,52 @@ type Store interface {
 // member); [Static] is a fixed map.
 type Source interface {
 	Accounts(ctx context.Context, owner int64) (map[string]string, error)
+}
+
+// SharedAccounts is implemented by a [Source] under which several owners run on
+// ONE set of accounts (internal/credentials.Plane: the admin and every team in
+// MUSTER_TEAMS_ON_SERVER_POOL share the environment pool).
+//
+// A rate limit or an auth failure is a property of the ACCOUNT, not of whoever
+// hit it: a team's first agent on the server pool must not be placed on an
+// account the admin's agents already found exhausted. So the marks of a shared
+// pool's accounts are kept under ONE owner, the one MarksOwner names, and every
+// owner on that pool reads and writes them there. Live counts stay per owner.
+type SharedAccounts interface {
+	// MarksOwner reports the owner whose marks stand for owner's accounts, and
+	// true, when owner's accounts are a shared pool's. false: owner's accounts
+	// are its own, and so are its marks.
+	MarksOwner(ctx context.Context, owner int64) (int64, bool)
+}
+
+// markScope is the context and owner the marks of owner's accounts are read
+// and written under: owner itself under ctx, or — for an owner on a shared
+// pool ([SharedAccounts]) — the pool's marks owner under authz.System.
+//
+// 🔴 A SYSTEM-LEDGER SITE, AND IT READS ACCOUNT HEALTH ONLY. cc_account_marks
+// is under row-level security, so a team acting as itself cannot read the
+// marks the admin's agents recorded on the same pool account. Every Store
+// query names the owner (PGStore), so System here reaches exactly the pool's
+// marks rows: per account a timestamp, the CLI's limit message and a token
+// fingerprint — nothing of any owner's muster data. It is taken only when the
+// Source says owner runs on the shared pool; an owner with accounts of its own
+// (a member's bring-your-own) keeps its own principal and its own marks.
+func (p *Pool) markScope(ctx context.Context, owner int64) (context.Context, int64) {
+	sh, ok := p.src.(SharedAccounts)
+	if !ok {
+		return ctx, owner
+	}
+	to, shared := sh.MarksOwner(ctx, owner)
+	if !shared || to <= 0 {
+		return ctx, owner
+	}
+	return authz.System(ctx), to
+}
+
+// marks is the marks of owner's accounts, read where [Pool.markScope] says.
+func (p *Pool) marks(ctx context.Context, owner int64) (map[string]Mark, error) {
+	mctx, mowner := p.markScope(ctx, owner)
+	return p.store.Marks(mctx, mowner)
 }
 
 // Static is a fixed account map, the same for every owner: the environment
@@ -333,7 +407,7 @@ func (p *Pool) Select(ctx context.Context, owner int64, pin string) (string, err
 		}
 		return pin, nil
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return "", fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -362,7 +436,7 @@ func (p *Pool) AuthFailure(ctx context.Context, owner int64, account string) (st
 	if !ok || tok == "" {
 		return "", fmt.Errorf("%w %q for user %d", ErrUnknownAccount, account, owner)
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return "", fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -400,7 +474,7 @@ func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState
 	if err != nil {
 		return nil, err
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -590,6 +664,121 @@ func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[st
 	return cands[0].name, nil
 }
 
+// ChooseFailover is the account a claude-code agent on account from is REBOUND
+// to after from hit its limit or failed authentication (internal/ccfailover):
+// pure, like [Choose], over the same marks, the same "current token" rule and
+// the same cooldown.
+//
+// 🔴 UNLIKE [Choose] IT REFUSES RATHER THAN RANKING LAST. Choose still picks a
+// cooling account when it is all there is, because a new agent outlives a
+// rate-limit window; a failover exists only to move OFF a limited account, so
+// moving onto another one that is still cooling (or whose token failed) would
+// restart the agent's pod to buy nothing. ok is false then, and the agent stays
+// where it is.
+//
+// Of the usable accounts other than from — not auth_failed for its current
+// token, not cooling down at now — it prefers the order the pool and the job
+// API use: never rate-limited first, then the one rate-limited longest ago,
+// then the name (deterministic).
+func ChooseFailover(now time.Time, cooldown time.Duration, names []string, tokens map[string]string, marks map[string]Mark, from string) (string, bool) {
+	best, found := "", false
+	var bestRL time.Time
+	for _, n := range names {
+		if n == from {
+			continue
+		}
+		m := marks[n]
+		if authFailedNow(m, tokens[n]) || !coolingUntil(m, cooldown, now).IsZero() {
+			continue
+		}
+		rl := m.RateLimitedAt
+		better := !found
+		if found {
+			switch {
+			case rl.Equal(bestRL):
+				better = n < best
+			case rl.IsZero() || bestRL.IsZero():
+				better = rl.IsZero()
+			default:
+				better = rl.Before(bestRL)
+			}
+		}
+		if better {
+			best, bestRL, found = n, rl, true
+		}
+	}
+	return best, found
+}
+
+// FailoverTarget is [ChooseFailover] over owner's accounts and marks, read now.
+// ok is false when no other account of owner's is usable.
+func (p *Pool) FailoverTarget(ctx context.Context, owner int64, from string) (string, bool, error) {
+	tokens, names, err := p.accounts(ctx, owner)
+	if err != nil {
+		return "", false, err
+	}
+	marks, err := p.marks(ctx, owner)
+	if err != nil {
+		return "", false, fmt.Errorf("ccpool: read account marks: %w", err)
+	}
+	to, ok := ChooseFailover(p.now(), p.limits.Cooldown, names, tokens, marks, from)
+	return to, ok, nil
+}
+
+// Cooldown is one account's rate-limit cooldown as [Pool.Cooldown] read it.
+type Cooldown struct {
+	// Until is when the cooldown ends ([CooldownUntil]); zero when the account
+	// is not cooling now.
+	Until time.Time
+	// MarkedAt is the timestamp of the rate_limited mark Until was computed
+	// from (zero with Until). It is what [Pool.ClearRateLimit] compares
+	// against, so a clear decided on this reading can never erase a newer mark.
+	MarkedAt time.Time
+	// Detail is that mark's stored detail (the CLI's limit message; "" with
+	// Until). It names WHICH limit was hit, which the live reading must answer
+	// for before the mark is cleared (internal/ccusage LiveUsable).
+	Detail string
+}
+
+// Cooldown is owner's account's rate-limit cooldown.
+func (p *Pool) Cooldown(ctx context.Context, owner int64, account string) (Cooldown, error) {
+	marks, err := p.marks(ctx, owner)
+	if err != nil {
+		return Cooldown{}, fmt.Errorf("ccpool: read account marks: %w", err)
+	}
+	m := marks[account]
+	until := coolingUntil(m, p.limits.Cooldown, p.now())
+	if until.IsZero() {
+		return Cooldown{}, nil
+	}
+	return Cooldown{Until: until, MarkedAt: m.RateLimitedAt, Detail: m.RateLimitedDetail}, nil
+}
+
+// CoolingUntil is [Pool.Cooldown]'s Until: when owner's account stops cooling
+// down, or zero when it is not cooling now.
+func (p *Pool) CoolingUntil(ctx context.Context, owner int64, account string) (time.Time, error) {
+	c, err := p.Cooldown(ctx, owner, account)
+	return c.Until, err
+}
+
+// ClearRateLimit clears owner's account's rate_limited mark because a LIVE
+// reading of the account shows it usable (internal/ccusage), and reports
+// whether it did. markedAt is [Cooldown.MarkedAt] as read BEFORE that reading
+// was taken: the mark is cleared only while it is still that one, so a turn
+// that hits the limit again while the reading is in flight keeps its mark.
+// A zero markedAt clears nothing.
+func (p *Pool) ClearRateLimit(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error) {
+	if markedAt.IsZero() {
+		return false, nil
+	}
+	mctx, mowner := p.markScope(ctx, owner)
+	ok, err := p.store.ClearRateLimited(mctx, mowner, account, markedAt)
+	if err != nil {
+		return false, fmt.Errorf("ccpool: clear the rate-limit mark of account %q: %w", account, err)
+	}
+	return ok, nil
+}
+
 // maxDetail bounds the stored detail. ccd's message carries the CLI's "resets …"
 // text, which is what is worth keeping; a runtime body is not.
 const maxDetail = 300
@@ -614,8 +803,9 @@ func (p *Pool) MarkFailure(ctx context.Context, owner int64, account, failure, d
 		}
 		detail = detail[:cut] + "…"
 	}
+	mctx, mowner := p.markScope(ctx, owner)
 	if failure == FailureRateLimited {
-		return p.store.MarkRateLimited(ctx, owner, account, detail, p.now())
+		return p.store.MarkRateLimited(mctx, mowner, account, detail, p.now())
 	}
-	return p.store.MarkAuthFailed(ctx, owner, account, Fingerprint(tok), detail, p.now())
+	return p.store.MarkAuthFailed(mctx, mowner, account, Fingerprint(tok), detail, p.now())
 }

@@ -1,20 +1,24 @@
 package ui
 
 import (
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
-	g "maragu.dev/gomponents"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// THE AGENTS LIST IS ONE FLAT LIST, MOST RECENTLY ACTIVE FIRST (operator ask:
+// THE ENTRIES ARE ONE FLAT LIST, MOST RECENTLY ACTIVE FIRST (operator ask:
 // "sort agents by most recently active, flat, not separated by host"). Before
-// it the list drew every dispatched agent ahead of every mirrored window, so an
-// agent idle for a week sat above a Claude Code window that answered a minute
-// ago. The host stays visible on each card through its host icon (hostMark /
-// clusterMark); it no longer decides the order.
+// it the retired Agents list drew every dispatched agent ahead of every
+// mirrored window, so an agent idle for a week sat above a Claude Code window
+// that answered a minute ago. The host stays visible on each sidebar row and
+// switcher pill through its host icon (hostMark); it no longer decides the
+// order.
 //
-// listEntry is one card of that list: exactly one of agent and mirror is set.
+// listEntry is one entry of that list — a sidebar row, a switcher pill:
+// exactly one of agent and mirror is set.
 type listEntry struct {
 	agent  *AgentCardView
 	mirror *MirrorCardView
@@ -28,7 +32,20 @@ func (e listEntry) pinned() bool {
 	return e.mirror.Pinned
 }
 
+// work is what the entry has running (its sidebar row's count, navWork): a dispatched
+// agent's pod report, a mirrored window's host report.
+func (e listEntry) work() mirror.WindowWork {
+	if e.agent != nil {
+		return e.agent.Work
+	}
+	return e.mirror.Work
+}
+
 // idle reports whether the entry is drawn in the Idle section (MarkIdle).
+// superseded reports whether a running successor replaced the entry's
+// session (a mirrored window only).
+func (e listEntry) superseded() bool { return e.mirror != nil && e.mirror.Superseded }
+
 func (e listEntry) idle() bool {
 	if e.agent != nil {
 		return e.agent.Idle
@@ -36,8 +53,8 @@ func (e listEntry) idle() bool {
 	return e.mirror.Idle
 }
 
-// activeAt is the entry's LAST ACTIVITY — the time its card prints as "active
-// … ago" (cardActivity), so the order and the label are one number:
+// activeAt is the entry's LAST ACTIVITY — the time its sidebar row's recency
+// dot reads (recencyDot), so the order and the dot are one number:
 //
 //   - a dispatched agent: agents.LastActivity (the newer of its row's
 //     updated_at and its newest persisted transcript message: a turn, a status
@@ -52,7 +69,7 @@ func (e listEntry) activeAt() time.Time {
 	return e.mirror.ActiveAt
 }
 
-// orderList is the Agents list's order — 🔴 ONE RULE, ONE PLACE:
+// orderList is the switcher's order, which navOrder re-sorts — 🔴 ONE RULE, ONE PLACE:
 //
 //  1. the viewer's PINNED entries first, then the rest (pins are per viewer,
 //     which is why this happens here and not in agents.SortByLastActivity or
@@ -63,7 +80,7 @@ func (e listEntry) activeAt() time.Time {
 //     after every entry that has one;
 //  4. ties keep the order the entries arrive in — agents first, each kind in
 //     its own already-decided order (agents.SortByLastActivity breaks its own
-//     ties by id; mirror.Ordered by host, then the host's order) — so two cards
+//     ties by id; mirror.Ordered by host, then the host's order) — so two entries
 //     active in the same instant never swap places between two renders.
 func orderList(agents []AgentCardView, mirrors []MirrorCardView) []listEntry {
 	out := make([]listEntry, 0, len(agents)+len(mirrors))
@@ -87,10 +104,133 @@ func listBefore(a, b listEntry) bool {
 	return a.activeAt().After(b.activeAt())
 }
 
-// listCard renders one entry as its card.
-func listCard(e listEntry) g.Node {
+// waiting reports whether the entry waits on the viewer: waitingToken among
+// its wait words (waitTokens) — an attention item that files under "you", or a
+// dispatched agent blocked at a permission prompt. 🔴 THE ONE PREDICATE the
+// session switcher's Waiting view and waiting dot (NewSwitcher,
+// switcherItems), the sidebar's order (navBefore) and its rows' waiting mark
+// (navAgentRow) all read, so none of them can disagree about who is waiting.
+func (e listEntry) waiting() bool {
+	var words string
 	if e.agent != nil {
-		return agentCard(*e.agent)
+		words = waitTokens(e.agent.Attention, e.agent.AwaitingApproval)
+	} else {
+		words = waitTokens(e.mirror.Attention, false)
 	}
-	return mirrorCard(*e.mirror)
+	return slices.Contains(strings.Fields(words), waitingToken)
+}
+
+// chief reports whether the entry is the viewer's chief agent
+// (AgentCardView.IsChief, internal/api's one chief predicate). A mirrored
+// window is never the chief.
+func (e listEntry) chief() bool { return e.agent != nil && e.agent.IsChief }
+
+// team is the TEAM the entry is its, and that team's name: a team agent's
+// (AgentCardView.TeamOwner) or a team host's session's (MirrorCardView.Owner);
+// 0 for the viewer's own. 🔴 ONE KEY FOR BOTH KINDS: the sidebar draws a
+// team's agents and its hosts' sessions in ONE group (NavAgentsList), and the
+// switcher labels both with their team (sessionSwitcherLabels).
+func (e listEntry) team() (int64, string) {
+	if e.agent != nil {
+		return e.agent.TeamOwner, e.agent.Team
+	}
+	return e.mirror.Owner, e.mirror.Team
+}
+
+// teamChief reports whether the entry is a team's chief: the chief (chief)
+// of a team, not the viewer's own. Its sidebar row is drawn in its team's
+// group and never carries data-nav-chief, which marks only the viewer's.
+func (e listEntry) teamChief() bool {
+	owner, _ := e.team()
+	return e.chief() && owner != 0
+}
+
+// officer is the declared officer the entry is an instance of
+// (AgentCardView.Officer, internal/api's binding rule), "" for none. A
+// mirrored window is never one here: a host officer's instance is its window,
+// and the server does not bind windows to officers for the sidebar.
+func (e listEntry) officer() string {
+	if e.agent != nil {
+		return e.agent.Officer
+	}
+	return ""
+}
+
+// primaryChief reports whether the entry is THE chief — where `/` opens
+// (AgentCardView.PrimaryChief, internal/api's primaryChief).
+func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }
+
+// navOrder is the SIDEBAR's order of the entries (nav_agents.go)
+// — 🔴 ONE RULE, ONE PLACE, beside orderList, whose output it re-sorts:
+//
+//  1. the chief agent first (the operator's main conversation, pinned) —
+//     THE chief, where `/` opens (primaryChief), above any other agent that
+//     is also a chief (a relabelled reserved slug beside a labelled chief);
+//  2. then every entry waiting on the operator (listEntry.waiting);
+//  3. then the rest, most recently active first (activeAt), an entry with no
+//     known activity last;
+//  4. ties keep orderList's order (a stable sort over its output), so two
+//     entries active in the same instant never swap places between renders.
+//
+// Unlike orderList it does not lift the viewer's pins: the sidebar is a list
+// of conversations ordered by who needs the operator, and the switcher (its
+// Pins view, and the pins first in its Waiting and All views) keeps the pins.
+func navOrder(agents []AgentCardView, mirrors []MirrorCardView) []listEntry {
+	out := orderList(agents, mirrors)
+	sort.SliceStable(out, func(i, j int) bool { return navBefore(out[i], out[j]) })
+	return out
+}
+
+// navBefore is navOrder's comparison: whether a is drawn above b.
+func navBefore(a, b listEntry) bool {
+	if pa, pb := a.primaryChief(), b.primaryChief(); pa != pb {
+		return pa
+	}
+	if ca, cb := a.chief(), b.chief(); ca != cb {
+		return ca
+	}
+	if wa, wb := a.waiting(), b.waiting(); wa != wb {
+		return wa
+	}
+	return a.activeAt().After(b.activeAt())
+}
+
+// HomeHref is where home (`/`, and the retired /agents) opens for a viewer
+// with no chief to open (internal/api homeTarget): the session the viewer
+// opened LAST that is still listed (refs, newest first — the switcher's Recent
+// order), else the sidebar's first session row (navOrder: whoever waits on the
+// operator, then the most recently active; an officer instance its officer's
+// row stands in for is not a session row, navOfficerRowStandsIn), else "" —
+// nothing to open, and home draws the onboarding page. The caller blanks
+// AgentCardView.Officer when the server draws no Officers group.
+//
+// 🔴 A CONVERSATION, NOT A PAGE OF CONVERSATIONS (operator decision: "make the
+// default view open to the chief"). Without a chief, an empty page whose only
+// way on is a drawer that starts shut on a phone would be a dead end; the last
+// conversation is what a chat app opens.
+func HomeHref(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) string {
+	es := navOrder(list, mirrors)
+	for _, r := range refs {
+		for _, e := range es {
+			if r.AgentID != 0 && e.agent != nil && e.agent.ID == r.AgentID {
+				return e.agent.PageHref()
+			}
+			if r.AgentID == 0 && e.mirror != nil && e.mirror.Ref() == r.Mirror {
+				return MirrorCardHref(*e.mirror)
+			}
+		}
+	}
+	// The sidebar's first SESSION row: an officer's instance whose officer's
+	// row stands in for it (navOfficerRowStandsIn) is not one. (A recent ref
+	// above may still name one: that is a conversation the viewer opened.)
+	for _, e := range es {
+		if navOfficerRowStandsIn(e) {
+			continue
+		}
+		if e.agent != nil {
+			return e.agent.PageHref()
+		}
+		return MirrorCardHref(*e.mirror)
+	}
+	return ""
 }

@@ -1,9 +1,17 @@
 # Plugins
 
+**New here? Start with the [quickstart](plugins-quickstart.md)**: a working
+plugin in about 15 minutes. For a plugin that works for an officer, the
+[recipe](officer-plugin-recipe.md); for what others have built,
+[ecosystem.md](ecosystem.md). This page is the reference.
+
 A **plugin** is a separate process that connects muster to another system, such
 as an inbox. It brings that system's messages to your **chief** agent, and it
 sends the replies you approve back. muster never calls a plugin. The plugin
 calls muster, for everything (see [decisions](decisions.md#plugins-pull-muster-never-calls-out)).
+
+To pair your chief with another operator's over ClankMail (signed agent-to-agent
+messages), follow [clankmail.md](clankmail.md).
 
 Plugins are **off** unless the server runs with `MUSTER_PLUGINS=1` and a
 database. While they are off, every `/plugin/*` route and the `/plugins` page
@@ -15,17 +23,26 @@ The whole loop:
 2. muster hands it to your chief as a fenced turn.
 3. The chief may file a gated task (`task_create_gated`), draft a reply
    (`reply_draft`), [route it to a session](#routing-a-message-to-a-session)
-   (`route_to_session`, when routing is on), or do nothing.
-4. You approve or reject each draft on `/plugins`.
+   (`route_to_session`, when routing is on), or do nothing. That is the
+   **Kubernetes** chief. The **Docker Compose** chief is offered neither
+   `task_create_gated` nor `reply_draft`: it can only route the message to a
+   session, which writes the reply, and only with routing on
+   ([chief.md](chief.md#on-the-docker-compose-install)).
+4. You approve or reject each draft on the **Asks** page's **Drafts** tab
+   (`/attention?tab=drafts`; see [attention.md](attention.md#the-reply-drafts-tab)).
 5. The plugin claims an approved draft (`POST /plugin/v1/drafts/claim`), sends
-   it, and reports the result (`POST /plugin/v1/drafts/{id}/result`).
+   it, and reports the result (`POST /plugin/v1/drafts/{id}/result`). A plugin
+   minted with [`draft_checks`](#check-a-reply-before-it-can-be-approved) also
+   checks each pending draft before you can approve it. A reply the plugin
+   refuses [comes back](#when-the-plugin-refuses-a-reply).
 
 ## Two ways in
 
 | door | who | routes |
 |---|---|---|
-| The **page** | you, signed in | `/plugins`: create and revoke plugin tokens; approve or reject reply drafts |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/tasks` |
+| The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Drafts tab): approve or reject reply drafts, and see what became of each under Archived |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/drafts/{id}/renew`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
+| A plugin **pairing** | none (then a poll secret) | `POST /plugin/v1/pair`, `GET /plugin/v1/pair/{request_id}`: [pairing a plugin](#pairing-a-plugin-without-handling-its-token) |
 
 A plugin token is shown once, when you create it. muster stores only its
 sha256. The token acts as you, and only on `/plugin/v1/*`:
@@ -36,9 +53,244 @@ sha256. The token acts as you, and only on `/plugin/v1/*`:
   sessions.
 
 Each plugin has a **name** (a slug), a **label** (what your chief's conversation
-for it is called) and a **data scope**. The page lists each plugin with when it
+for it is called), a **data scope** and a set of **capabilities**. The page lists each plugin with when it
 was last seen (its last authenticated call) and how many of its messages are
 still waiting to reach your chief.
+
+### Capabilities
+
+A plugin token opens only the routes its **capabilities** allow:
+
+| capability | opens |
+|---|---|
+| `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
+| `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
+| `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
+| `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
+
+Every token minted before capabilities existed has `messages` (migration
+`0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
+token is minted, with two exceptions: `draft_checks` and `chief_extension`,
+which you can turn on or off for an existing plugin (below).
+
+On `/plugins`, the `messages`/`viewer` choice is drawn only while
+`MUSTER_PLUGIN_ORIGINS` is set
+([configuration.md](configuration.md#muster-server-optional-features)); without
+it every new token gets `messages`. The **Checks replies** box adds
+`draft_checks`, and the **Chief instructions** box adds `chief_extension`,
+whatever that variable says.
+
+An existing plugin can gain or lose `draft_checks` with no new token. Each live
+plugin with `messages` has a **Turn on Checks replies** (or **Turn off**) button
+on its `/plugins` card (`POST /plugins/{id}/draft-checks`, `on=1` or `0`). The
+plugin keeps its row and its token, so its routing rules, chief session, queued
+messages and drafts all stay. The button is gated like **Revoke**: a signed-in
+session and a same-origin form, with no fresh sign-in, because it changes
+nothing an outside party is sent and you still approve every reply. Only the
+plugin's owner can use it (another owner's plugin answers 404). It needs
+`messages`, as at mint. Each change writes a `plugin.capability.changed` audit
+row with the old and new sets. Turning it **off** lapses every draft of the
+plugin still awaiting a check, as its deadline would. Each becomes an ordinary
+pending draft, and you get the usual push, noting that the plugin no longer
+checks replies.
+
+A `viewer` token also carries:
+
+- an **origin**, one of the server's `MUSTER_PLUGIN_ORIGINS` patterns, chosen
+  from a list;
+- an **entry URL** under that origin: `https://<host>/<path>` with no user,
+  port (not even an empty one), query or fragment, whose host is lower-case
+  DNS labels (none empty) under the origin. So
+  `https://evil.example.net/x?.<zone>` and `https://w.<zone>@evil.example.net/`
+  are refused.
+
+A token with `viewer` and no `messages` brings no messages, so its data scope
+is stored as `none` whatever the form says.
+
+### Viewer hand-off
+
+How a viewer plugin learns, without a sign-in of its own, that a browser
+belongs to a signed-in owner, and which session view they came from. Off
+(the typed `feature_disabled` 404, feature `plugin-viewers`) until plugins are
+on and `MUSTER_PLUGIN_ORIGINS` is set.
+
+1. muster's page, signed in on muster's own origin, posts
+   `POST /plugin-handoffs` with the plugin and the mirrored window being
+   viewed:
+
+   ```json
+   {"plugin": 3, "target": {"mirror": {"host": "ws", "window": "@3"}}}
+   ```
+
+   The plugin must be one of the owner's own live `viewer` plugins, and the
+   window one the owner's host lists now (by its tmux window id); either
+   refused is a `404`. The plugin's origin and entry URL are checked again
+   against the server's **current** `MUSTER_PLUGIN_ORIGINS`: once the admin
+   removes its pattern, the mint is refused `403` (revoke the plugin and mint
+   another). muster mints a **code**: 32 random bytes, stored only as
+   its sha256, valid **60 s**, single use. It records the owner, the plugin,
+   the window (with its session as the host lists it), the purpose `view`, and
+   whether the browser session's [step-up](sending-and-step-up.md#step-up-confirm-its-you)
+   was fresh at that moment, read from the session, never from the request.
+   It answers `200 {"url": "<entry URL>?muster_code=<code>&muster_plugin=<id>"}`.
+   An owner may mint 60 codes a minute; past that, `429` with `Retry-After`.
+2. The page opens that URL. `muster_plugin` lets a plugin holding several
+   owners' tokens pick the one to redeem with; it is not a credential.
+3. The plugin's entry route redeems the code with its own token:
+
+   ```
+   POST /plugin/v1/handoffs/redeem   {"code": "<muster_code>"}
+   ```
+
+   ```json
+   {"owner_id": 1, "target": {"mirror": {"host": "ws", "session": "main", "window": "@3"}},
+    "purpose": "view", "stepped_up": true, "minted_at": "2000-01-02T03:04:05Z"}
+   ```
+
+   A code that is unknown, already redeemed, expired, or minted for another
+   plugin (the owner's own or anyone's) is one `404`. A token without `viewer`
+   gets the `403` above. The plugin should then remove the code from the
+   address bar (a redirect, or `history.replaceState`) and answer with
+   `Referrer-Policy: no-referrer`.
+
+Counted in `muster_plugin_handoffs_total{purpose,outcome}`: `minted`,
+`rate_limited` and `refused` on the mint, `redeemed` and `not_found` (purpose
+`unknown`) on the redeem.
+
+### The session-view chip
+
+Where a [hand-off](#viewer-hand-off) starts. (The heading keeps its old name
+so links to it hold; the chip row it named is gone.) On a mirrored window's
+two session views, `/mirror/view` and `/mirror/terminal`, the header carries a
+**Preview** button beside the Rendered | Terminal switch, and it opens the
+owner's live `viewer` plugin in a panel. A window with no rendered view opens
+on `/mirror/terminal`, so the button is on both. An agent's pages
+(`/agents/{name}`) draw none.
+
+- **Where it sits.** From `sm` (640 px) up, in the header row beside the
+  switch: an icon, "Preview" and the count. Below `sm`, in the header's
+  **second row** (the status line under the title), as a small pill with the
+  count and a 44 px tap target, so the title keeps its whole width; it lays
+  out at that row's own height, so neither the title nor the header moves
+  when it appears. Each place has its own slot, polled only at its width.
+
+- **Only while the window has something to preview.** The window's host
+  reports, per tmux window, how many of its web servers it offers and how many
+  previews of it are open ([previews.md](previews.md#what-you-do)); the button
+  is drawn only while that sum is above zero, and shows it as a count. A window
+  with nothing, and every window of a host that does not report (an older
+  `muster-mirror`, or one without `-preview`), draws no button.
+- **And only while a plugin would mint.** A plugin counts while its token is
+  live, has `viewer`, and its origin and entry URL still pass the server's
+  current `MUSTER_PLUGIN_ORIGINS` (the mint's own check). With none, nothing
+  is drawn at all, whatever the host reports. Drawing the button mints
+  nothing.
+- **It follows the host live.** The button's slot re-reads
+  `GET /ui/mirror/preview-button` every 10 s while the tab is shown, so it
+  appears and goes on an open page as the host's counts move (the host reports
+  them on its 5 s refresh, after its own 5 s listener scan). That route answers
+  nothing for a window with nothing to preview (without reading the plugin
+  store), and nothing once the plugin's token is revoked.
+- **The panel.** The button opens the plugin's page in a sandboxed frame: a
+  full-height side panel at the right from `sm` (640 px) up, the screen above
+  the message bar below it. **Close** or Escape closes it and unloads the page.
+  Its header has **New tab**, the same hand-off in a new tab. With more than
+  one live viewer plugin the header also has a picker (newest first).
+- **The message bar stays usable while the panel is open.** The page's one
+  message bar is kept, never a second one:
+  - Below `sm` the panel ends at the bar's top and the bar stays live: typing,
+    Send, the mic, the paperclip, the `/` menu and the suggested replies,
+    whose popups open over the panel. The panel's bottom is measured from the
+    bar, so when the keyboard raises the bar the panel shrinks above it.
+  - From `sm` up the conversation and the bar end at the panel's left edge,
+    so Send and the replies stay in view beside it.
+  - In full screen (the Android app, below) the bar is hidden. A
+    semi-transparent round button at the bottom right, **Show message bar**,
+    shows it with the preview above it, and the same button (**Hide message
+    bar**) hides it again. Full screen always opens with the bar hidden.
+  - While the panel covers the conversation (below `sm`, and in full screen),
+    a reply from the agent puts a dot on the panel's title, or on the bar
+    button in full screen, where the header is hidden. The dot clears when the
+    conversation is in view again: the panel closes, or becomes a side panel.
+    A reconnect that redraws the conversation, however many batches it takes,
+    does not set it. Beside the page the replies stay in view, so there is no dot. A Terminal
+    view has no transcript to watch, so it has no dot.
+- **Both mint at click time.** The page posts `POST /plugin-handoffs` for that
+  plugin and the window on screen, then goes to the URL it answers. A refused
+  mint (the token revoked since the page loaded, the window gone, the rate
+  cap) says why in the panel and goes nowhere. One mint at a time: a tap while
+  one is in flight is ignored.
+- **New tab** opens a blank tab within the tap itself, before minting. The
+  tab's `opener` is cleared while it is still blank, and only then is it sent
+  to the minted URL. So the plugin's page gets no `window.opener` handle on
+  muster's tab and no `Referer`, just as `rel="noopener noreferrer"` would
+  give, and the link carries those attributes too. Because the tab opens
+  before the mint, a popup blocker refuses at the tap: the panel says the tab
+  was blocked and no code is minted. If the mint is refused, the blank tab is
+  closed and the panel says why. An expired sign-in says to sign in again.
+- **In the Android app, New tab is Full screen.** The app sends every
+  origin but muster's to the system browser, so a new tab would leave the
+  app. Where the app's bridge object (`window.musterApp`, read in the main
+  frame) exists, the same header control reads **Full screen**: the same frame,
+  not reloaded and with no new mint, fills the screen at every width, the
+  header hidden, with an **Exit** button over its top right corner. Exit,
+  Escape and the app's Back leave full screen; Close or a second Escape
+  closes the panel. In a browser New tab is unchanged.
+- **In the Android app, Back belongs to the panel while it is open.** The
+  panel posts a `back-claim` bridge message from open to close, full screen
+  or not, and the main frame's `window.musterBack` answers the app's press:
+  full screen, it leaves full screen; otherwise it closes the panel (the
+  switcher dock, if open over the side panel, closes first). Without the
+  claim the app's Back is the WebView's own, which walks the tab's joint
+  session history, subframe navigations included. So, as a second layer, the
+  panel's OWN loads add no entry to that history: each hand-off (and the
+  close) loads in a NEW frame element (src set before it is inserted) put in
+  the old one's place, and the gateway's session page opens a preview with
+  `location.replace`. ⚠ What the previewed page does inside the frame is
+  not muster's: an app's own `pushState` or a link it follows still adds
+  entries. While the panel is open Back is claimed, so they do not matter;
+  after it closes they belong to a frame that is gone, and each one takes a
+  Back press that does nothing.
+- **The panel's frame:**
+
+  ```html
+  <iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
+          allow="" referrerpolicy="no-referrer">
+  ```
+
+  There is no `allow-top-navigation`, so the plugin's content cannot navigate
+  muster's tab, and `allow=""` grants no camera, microphone or location.
+  `allow-same-origin` lets the plugin use its own origin's storage; it is not
+  muster's origin (a `Host` under `MUSTER_PLUGIN_ORIGINS` is refused `421`).
+  A plugin that depends on a cookie in the frame needs it to work as a
+  third-party cookie (`SameSite=None; Partitioned`); **New tab** never does.
+- **The page's CSP** gains `frame-src 'self' <origin> …`, with each live viewer
+  plugin's origin once, on those two views only — whenever the owner has one,
+  **not only while the button shows**: the button can appear after the page
+  loaded, and its panel must then be allowed to frame the plugin. `'self'`
+  stays: the Rendered | Terminal switch frames the other view of muster's own
+  origin. Every other page's CSP is unchanged, and so are the two views' when
+  there is no live viewer plugin.
+- **Nothing moves on load.** The button's first state is drawn with the page,
+  and the panel is `position: fixed`, so neither shifts the conversation. The
+  layout around the open panel is keyed on attributes set on `<html>` only
+  while it is open, so a page loads exactly as it did without them.
+- **Nothing is drawn**, nothing polls, and no `frame-src` is added, while
+  `MUSTER_PLUGIN_ORIGINS` is unset, plugins are off, the owner has no live
+  `viewer` plugin, or the window has no tmux window id (an older per-session
+  muster-mirror) for a hand-off to name.
+- **The sidebar** marks a window that has something to preview with a small
+  browser-window glyph on its row, the counts in words its name and tooltip,
+  under the button's own gate: only while the owner has a live viewer plugin
+  (read once per list, and not at all with plugins or
+  `MUSTER_PLUGIN_ORIGINS` off).
+- **Escape** closes the panel only when no other dialog or popover is open.
+  While the panel covers the page (below `sm`, and in full screen) everything
+  it covers is made inert, so Tab reaches only the panel and the message bar
+  (while the bar is shown). Dialogs, popovers and the toasts are never made
+  inert, wherever they sit, so the command palette opened from the bar and a
+  step-up confirm opened by a Send still answer. Beside the page nothing is
+  inert. All of it is undone on close.
 
 ## The plugin author's contract
 
@@ -48,7 +300,29 @@ JSON. On every route:
 | answer | meaning |
 |---|---|
 | `401` | not a live plugin token (unknown, revoked, malformed, another kind of credential, or the owner's account is disabled) |
-| `404` | plugins are off on this server |
+| `403` | a live token without the [capability](#capabilities) the route needs; the body names it |
+| `404` | plugins are off on this server (the hand-off redeem also while `MUSTER_PLUGIN_ORIGINS` is unset) |
+
+### `GET /plugin/v1/self`: who the token is
+
+Any live plugin token may ask. The answer names the token's plugin, its owner
+and its capabilities:
+
+```json
+{"plugin_id": 3, "plugin_name": "example-inbox", "owner_id": 1,
+ "owner_login": "owner@example.invalid", "owner_kind": "person",
+ "capabilities": ["messages"], "deliver_to": null}
+```
+
+`deliver_to` is `"officer:<id>"` for a plugin [bound to an officer](#a-plugin-bound-to-an-officer).
+
+`owner_login` is the owner's email, or the account's display name when it has
+no email. `owner_kind` is `person`, or `team` for a **team viewer plugin**
+(minted by a team's manager on `/teams/<id>/plugins`), whose `owner_login`
+is the team's name. A team's token is served this route and the hand-off
+redeem only, and refused `403` at every other plugin route whatever its
+capabilities ([previews.md](previews.md#team-previews-manual-step-for-the-gateways-admin)). A revoked token or a disabled owner gets the `401` above, so calling
+this route is how a plugin learns of either.
 
 ### `POST /plugin/v1/messages`: an inbound message
 
@@ -66,6 +340,8 @@ JSON. On every route:
 | `received_at` | no | RFC 3339 |
 | `no_reply` | no | `true` marks a message nobody may answer (see below). Default `false`. |
 | `sender_verified` | no | `true` asserts that YOU authenticated `sender` (see below). Default `false`. |
+| `thread` | no | The upstream's thread id: 1 to 200 bytes, no spaces or control characters, matched exactly. A reply on a thread one of your mirrored sessions started goes to that session ([below](#a-reply-on-a-thread-a-session-started)). |
+| `human_conversation` | no | `true` marks the sender as a person writing in a direct conversation (a chat DM): a route of the message waits 4 hours instead of 30 minutes ([below](#routing-a-message-to-a-session)). Default `false`. |
 
 | answer | meaning |
 |---|---|
@@ -87,6 +363,9 @@ from an address that does not take replies. Then:
 
 - the chief's turn says that no reply is possible;
 - `reply_draft` refuses that message;
+- your chief can still hand it to the session already on what it is about, as
+  a [one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered):
+  the session's answer goes to the chief, never to the sender;
 - the database refuses any reply draft for it, whatever writes it;
 - the mark cannot be changed once the message is stored.
 
@@ -176,12 +455,133 @@ waiting for it, and a message already being delivered is not handed over twice.
 | `404 {"error"}` | no such reply claimed by this plugin (another plugin's, another owner's, or none) |
 | `409 {"error", "draft_id", "status"}` | the reply already has the **other** result, or it was never claimed |
 
+### `POST /plugin/v1/drafts/{id}/renew`: keep a long send's claim
+
+A send that takes longer than the 2-minute lease (a post made through a
+browser, say) renews the lease before it lapses, so a slow success is not
+swept **unconfirmed** under it. No body. Each renewal extends the lease to 2
+minutes from now (`plugins.LeaseDuration`), and never past **10 minutes after
+the claim** (`plugins.MaxLeaseTotal`): a plugin cannot hold a draft for ever.
+Renew about once a minute while the send runs. Reply drafts and outbound
+drafts renew the same way, and renewing is optional.
+
+| answer | meaning |
+|---|---|
+| `200 {"draft_id", "lease_until", "lease_max"}` | renewed: report the result before `lease_until`, or renew again; `lease_max` is the bound |
+| `404 {"error"}` | no such draft claimed by this plugin (another plugin's, another owner's, or none) |
+| `409 {"error", "draft_id", "code": "lease_lapsed"}` | the lease already lapsed (whether or not muster has marked the draft unconfirmed yet): it is unconfirmed and stays so. Report its result anyway: a late result is still recorded |
+| `409 {"error", "draft_id", "code": "lease_at_max"}` | the lease already runs to `lease_max`: report the result before then |
+| `409 {"error", "draft_id", "status", "code": "not_claimed"}` | the draft is not claimed, or already has its result |
+
+Only a live lease is renewed. A lapsed one means muster has given the claim up
+(at most once, below), so renewing it would revive nothing.
+
+### Check a reply before it can be approved
+
+A plugin minted with `draft_checks` checks each **pending** reply draft before
+your owner can approve it. This keeps the sending rule in the plugin, the one
+place that knows what its upstream can carry. muster does not copy it.
+
+While a draft awaits the check:
+
+- your owner gets no push and no attention item for it;
+- the Asks card says the plugin is checking it, and offers only **Reject**;
+- `plugin_drafts_list` marks it `awaiting_plugin_check`;
+- an approval is refused, on the card and over `plugin_draft_decide`.
+
+The wait is bounded. A draft with no verdict **1 hour** after it was filed
+(`plugins.DraftCheckWait`) **lapses**: it becomes an ordinary pending draft that
+your owner may approve. Your owner then gets the usual push, saying the plugin
+did not check it, and the attention item. `plugin_drafts_list` marks it
+`plugin_check_lapsed`. A plugin that stops checking therefore never leaves a
+reply to expire unseen.
+
+An auto-approved draft (an [allowlisted, verified sender](#routing-a-message-to-a-session))
+is not checked first. If your send-time check refuses it, report the result
+`ok: false`, and it [comes back](#when-the-plugin-refuses-a-reply) the same way.
+
+#### `GET /plugin/v1/drafts/checks`
+
+Your plugin's pending drafts awaiting a verdict, oldest first, at most 20:
+
+```json
+{"drafts": [{"draft_id": 17, "message_external_id": "msg-0001",
+  "body": "Thanks, noon works.", "created_at": "2000-01-02T03:04:05Z"}]}
+```
+
+Nothing is leased. Checking a draft twice is harmless: the first verdict
+recorded is kept. Call this beside your claim loop, for example after each claim
+that answered `204`.
+
+#### `POST /plugin/v1/drafts/{id}/check`
+
+```json
+{"sendable": false, "detail": "rule list-bullet: line 6 starts with '- '"}
+```
+
+| field | required | rule |
+|---|---|---|
+| `sendable` | yes | `true`: you can send it. `false`: you cannot. |
+| `detail` | with `false` | up to 4 KiB: why not. It is what the reply's writer is told to fix. |
+
+| answer | meaning |
+|---|---|
+| `200 {"draft_id", "status", "check"}` | recorded. `sendable`: the draft stays `pending`, and your owner is now pushed to decide it. `refused`: the draft is `rejected`, can never be approved, and [goes back](#when-the-plugin-refuses-a-reply) to whoever wrote it. The same verdict again is also `200` and changes nothing. |
+| `400 {"error"}` | `sendable` is missing, a refusal has no `detail`, or a field breaks a rule |
+| `403 {"error"}` | the token does not have `draft_checks` |
+| `404 {"error"}` | no such draft of this plugin's messages (another plugin's, another owner's, or none) |
+| `409 {"error", "draft_id", "status", "check"}` | the draft already has the **other** verdict, or it is not awaiting a check: none was asked for, it was superseded, rejected or expired first, or its check **lapsed** (`"check": "lapsed"`). After a lapse your owner decides it, and a late verdict changes nothing. |
+
+A plugin that never calls these routes, and was not minted with
+`draft_checks`, behaves as before: its drafts are approvable at once.
+
+### When the plugin refuses a reply
+
+A reply is refused when the plugin reports its result `"ok": false`, or when
+its [check](#check-a-reply-before-it-can-be-approved) says `"sendable": false`.
+muster then, once, on the call that recorded it:
+
+- **does nothing more when another reply already went.** If another reply to
+  the same message was reported sent, or is approved and on its way, the
+  sender has an answer. The refusal is recorded on the draft only. Its route
+  is left as it was, nothing goes back to the session or the chief, and your
+  owner's push says another reply was already sent. This is the case where a
+  draft's lease lapsed, another reply was sent, and the first one's failure
+  arrived late.
+
+- **pushes your owner** on the draft's own notification tag, with the plugin's
+  `detail` on one line (cut to 300 characters), after where the reply goes:
+  back to the session that wrote it (or to your chief if that session is gone),
+  or straight to your chief. It does this for every failed
+  send. For a check refusal it does this only when the reply is not going back
+  to its session, because there is nothing for your owner to do while the
+  session rewrites it.
+- **hands a routed reply back to the session that wrote it.** The route ends
+  `send_failed`, not `relayed`, so `plugin_messages_list` says `send_failed`.
+  The route sweep makes a **new route** of the same message to the same
+  session. Its paste says the earlier reply was not sent, and quotes, as data,
+  the plugin's `detail` and the refused text. The session answers the new
+  `route_id`. The chief gets a note naming the new route.
+- **bounds it.** A message's reply goes back to its session at most **2**
+  times (`plugins.MaxRouteRedrafts`). The refusal after that goes to the
+  chief as a hand-back, as a timed-out route's does: a turn, or a note when it
+  is not running. The same happens when the session's window is gone, or the
+  new route cannot be made.
+- **notes the chief** about a draft it filed itself (`reply_draft`, no route),
+  in the plugin's chief session, with the `detail`, so it can draft again.
+
+Each step writes an audit row: `plugin.draft.failed` or
+`plugin.draft.check_refused`, then `session_route.send_failed` (with
+`redraft` and the message's refusal count), then the new route's
+`session_route.routed` (`routed_via` `redraft of <route> to <session>`).
+
 ### At most once
 
 muster hands an approved reply to a claim **once**. Two concurrent claims never
 receive the same reply.
 
-If no result arrives within the 2-minute lease, the reply becomes
+If no result arrives within the 2-minute lease (renewed or not: see
+[renew](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)), the reply becomes
 **unconfirmed**. muster does not know whether you sent it, so it **never offers
 it again**, and your owner cannot approve it again either. If the sender still
 needs an answer, the chief can draft a new reply to the message; its card warns
@@ -208,6 +608,628 @@ So a plugin should:
    offers one twice either; a new reply always has a new `draft_id`);
 3. post the result as soon as it knows, and post it again if it did not see an
    answer (a repeat is safe).
+
+### A plugin bound to an officer
+
+A plugin can work for one [builtin officer](officers-builtin.md) instead of
+your chief. Its messages become **items** in that officer's queue, and the
+officer files **outbound drafts** — new posts, or replies on an upstream
+thread — that the plugin sends once you approve the exact text and media. The
+plugin does every outward thing itself; the officer has no other way out.
+
+The binding is the plugin's **`deliver_to`**: `officer:<officer id>`, for
+example `officer:example:main` (an officer id is `<type>:<area>`). Set it:
+
+- when minting, in the **Deliver to** field on `/plugins`, or in a
+  [pairing request](#pairing-a-plugin-without-handling-its-token);
+- later, on the plugin's `/plugins` card (**Deliver to** form; empty clears it);
+- over the admin REST door: `PUT /api/plugins/{id}/deliver-to
+  {"deliver_to": "officer:example:main"}` (`""` clears it), behind the hook
+  tier, acting as the caller; or the CLI:
+  `muster plugins deliver-to <plugin id> officer:example:main` (`--clear`).
+
+Every door refuses a binding unless the officer is **defined in the built-in
+store for the plugin's owner** (`muster officer create`, or **New officer**
+on the Officers page), and the built-in
+store is on (whenever muster has a database). One owner's plugin can never name another
+owner's officer: the officer is read under the owner's row-level security, so
+another owner's officer reads as missing. Each change writes a
+`plugin.deliver_to.changed` audit row. `GET /plugin/v1/self` answers
+`deliver_to` (`null` when unbound).
+
+#### Inbound: `POST /plugin/v1/messages` from a bound plugin
+
+The same route and body, with four more fields:
+
+| field | required | rule |
+|---|---|---|
+| `kind` | no | `plan`, `reply`, `snapshot`, `note` (the default) or `engagement` ([below](#engagement-kind-engagement)). |
+| `venue` | with `kind: "reply"` | Where it happened: 1 to 64 lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit (`reddit`, `x`, `example.forum`). |
+| `thread` | with `kind: "reply"` | The upstream reference of the human reply to answer (the field every message already has). |
+| `url` | no | Where the message can be read upstream (a post's permalink): an absolute `http` or `https` URL with a host and no userinfo, at most 2048 bytes, with no spaces, control or invisible characters. It rides in the item's `payload.url` (not on the message row) and is shown to the owner **as text, never as a link** on an ask about the item. |
+
+`kind`, `venue` and `url` are refused (400) on a plugin with no `deliver_to`.
+
+Instead of a chief turn, muster creates one **item** in the officer's queue,
+in the same transaction that stores the message:
+
+| item field | value |
+|---|---|
+| `kind` | `plugin.<kind>`, e.g. `plugin.reply` |
+| `subject_key` | `plugin:<plugin id>:<external_id>`, so a repeat is the same item and two plugins never share one |
+| `payload` | `{"plugin": "<name>", "plugin_id", "message_id", "external_id", "kind", "venue", "thread", "received_at", "message": "<fenced block>"}`, plus `"url"` when the message carried one |
+| tier, priority | judgement, normal |
+
+`payload.message` is the sender, subject and body as a fenced **untrusted**
+block, exactly as a chief turn shows a message: the officer reads it as data,
+never as instructions.
+
+When the officer asks its owner about such an item or escalates it, the owner's
+Attention ask carries the message itself — venue, thread, sender (UNVERIFIED
+unless the plugin verified it), body and url — built by muster from the item,
+apart from the officer's note ([officers-builtin.md](officers-builtin.md#what-the-owner-is-shown)).
+
+| answer | meaning |
+|---|---|
+| `202 {"id", "status": "delivered", "item_id"}` | stored, and the item created |
+| `200 {"id", "status", "item_id"}` | a repeat of this `external_id`: the stored message and its item, nothing new |
+| `409 {"error"}` | the officer the plugin is bound to is no longer defined for its owner (or the built-in store is off): **nothing was stored**. Send it again once the officer is back |
+| `400`, `429` | as for every message. The hourly allowance (60) is the same one; a bound plugin's messages never wait in the chief's queue |
+
+The wake loop starts an instance for the new item within the officer's poll
+interval.
+
+#### Engagement: `kind: "engagement"`
+
+A bound plugin reports **one event of a person's engagement** with its
+owner's posts as a message of kind `engagement`, with the person and the event
+in place of a subject and body:
+
+```json
+{"kind": "engagement", "venue": "example.social",
+ "person": {"handle": "someone", "display": "Some One", "profile_url": "https://example.social/someone", "bio": "builds things"},
+ "event": {"kind": "reply", "ref": "c_123", "parent_ref": "c_100", "our_post_ref": "p_42",
+           "at": "2000-01-02T03:04:05Z", "text": "Does it handle retries?"}}
+```
+
+| field | required | rule |
+|---|---|---|
+| `venue` | yes | as for a reply |
+| `person.handle` | yes | the person's stable id on the venue (a username, a profile slug): a leading `@` is dropped and it is compared without case; 1–100 bytes, no spaces |
+| `person.display`, `person.profile_url`, `person.bio` | no | at most 100, 300 and 300 characters; a value sent replaces the stored one, an absent one leaves it |
+| `event.kind` | yes | `reply`, `quote`, `mention`, `like`, `repost`, `follow`, `nested_reply`, `dm_in` or `block` |
+| `event.ref` | yes | the upstream reference of the event (1–200 bytes, no spaces): recorded once per person, kind and ref |
+| `event.parent_ref` | no | what a nested reply answers |
+| `event.our_post_ref` | for `reply`, `quote`, `like`, `repost`, `nested_reply` | the owner's post it is on |
+| `event.at` | no | when it happened; muster's own time when absent or later than now |
+| `event.text` | no | what they said (kept as a 500-character excerpt; the whole is the message body) |
+| `external_id` | no | default: a hash of venue, event kind, handle and ref, so a repeat of one event is one message |
+
+muster stores the message (the same hourly allowance; `body` defaults to the
+text, `sender` to the handle, `thread` to the event's ref) and, in the same
+transaction, records the person and the event and puts them on the officer's
+**one open item of the day for that person**
+([officers-builtin.md](officers-builtin.md#people-and-outreach)). A
+`block`, or their words asking to stop, sets the person **do-not-contact**.
+
+| answer | meaning |
+|---|---|
+| `202 {"id", "status": "delivered", "item_id"}` | stored and recorded; `item_id` is the person's item of the day, or `null` when none is due (a like that finds no open item of theirs that day, or a do-not-contact, bot or hostile person) |
+| `200 {"id", "status", "item_id"}` | a repeat of this `external_id`: nothing new |
+| `400`, `409`, `429` | as above |
+
+`person` and `event` are refused (400) on any other kind.
+
+#### Outbound drafts: `officer_post_draft`
+
+A builtin officer whose **type** grants the `outbound_drafts` capability
+(`"capabilities": ["outbound_drafts"]` in the type's policy:
+`muster officer type put <key> --policy '{"capabilities":["outbound_drafts"]}'`)
+is offered one more tool, `officer_post_draft`; see
+[officers.md](officers.md#outbound-drafts-officer_post_draft). An HQ officer is
+never offered it, and neither is a builtin officer whose type does not grant
+it. The draft it files belongs to the plugin bound to that officer, carries no
+message, and is checked, approved, claimed and settled through the routes
+below.
+
+🔴 **A plugin that takes outbound drafts must have `draft_checks`.** The media
+reach muster only through the check, so `officer_post_draft` refuses a plugin
+without it. An outbound draft's check **never lapses**: it awaits the plugin's
+verdict until the draft expires (7 days). Turning **Checks replies** off for
+the plugin REFUSES its outbound drafts still awaiting the check (`rejected`,
+detail "the plugin's Checks replies was turned off…"), since none could be
+approved without it.
+
+An outbound draft's body may contain **public host names and URLs**, such as
+`github.com/example/project`, so a post can link to the project. Everything
+else in the [screen](#replying-drafts-you-approve) still applies: no IP
+address, no internal host name (`.lan`, `.local`, `.internal`, `.svc`,
+`.cluster`), no credential- or token-shaped string, no infrastructure word, no
+one of the deployment's own names, no hidden character. A reply your chief
+drafts is screened as before, host names refused.
+
+##### Venue rules
+
+For the venues below, `officer_post_draft` also refuses, **when the draft is
+filed**, a body or media list the venue cannot take, so the officer can fix
+and re-file it in the same turn instead of learning it from a refused check
+later. The refusal names the part, its length and the limit (`x part 2 of 3
+is 281 characters as X counts them; the limit is 280 …`). Nothing is filed.
+The rules live in one place, `internal/plugins/venue_rules.go`.
+
+| venue | target | rule |
+|---|---|---|
+| `x` | `post` | A post becomes a **thread** at each line that is exactly `---8<---` (trailing whitespace ignored); without one it is a single post. Each part is at most **280** characters as X counts them (below), none is empty, at most **25** parts. In a thread `media[i]` goes on part i+1, so there are never more media than parts; a single post carries all its media (at most 4). |
+| `x` | `reply` | **One part**: `---8<---` in a reply is not a split, it is posted as text. At most 280 characters as X counts them; up to 4 media. |
+| `reddit` | `reply` | No media. |
+
+**How X counts.** twitter-text v3's weighting: every link counts **23** (X
+wraps it in a `t.co` link), whatever its length; a code point in U+0000-U+10FF,
+U+2000-U+200D, U+2010-U+201F or U+2032-U+2037 counts 1; every other code point
+(CJK, emoji) counts 2. A link is a word of dot-separated labels ending in a
+letters-only label of two or more, with an optional `http(s)://` and path. A
+part is counted as posted: trailing whitespace off every line, leading and
+trailing blank lines dropped. The count errs **long**, never short: X counts a
+whole emoji sequence (a flag, a ZWJ family) as 2 where muster counts each code
+point, and muster takes a word like `file.go` for a link. So a part muster
+passes, X takes; the plugin's check is still the final word.
+
+Any other venue, or another target kind, has no rule here: muster does not
+guess limits for a venue it does not know.
+
+##### Public links in an outbound draft
+
+A project's own repository link usually spells one of the deployment's own
+names (`MUSTER_FLOW_AGENT_DENY_WORDS`): `github.com/<owner>/muster` contains
+`muster`. So the outbound screen first takes the links on an **allowlist**
+out of the text, then screens what is left:
+
+- **The allowlist** is built for each draft: `github.com/<owner>/<repo>` for
+  each of the filing officer's **standing-read repositories** (`read_repos`
+  with `read_grant: "standing"`, [officers.md](officers.md#a-standing-public-read-read_grant-standing)
+  — the repositories the deployment itself declares public). To let an
+  officer link to another public repository, add it to that officer's
+  standing `read_repos`. `read_repos` under the ordinary per-instance
+  approval are not on it: they may be private. The allowlist trusts the
+  declaration; it does not ask GitHub whether the repository is still public.
+- **A link on it** is `[http[s]://][www.]host[/path…]` whose host is an entry's
+  host and whose first path segments are the entry's segments, compared
+  without case. A segment may end in `.git` or a sentence's `.`. The character
+  before the link may not continue a URL (a letter, digit, non-ASCII character,
+  `.`, `@`, `/`, `:` and the like), so `user@github.com/…`,
+  `x.github.com/…` and `…/https://github.com/…` are not on it.
+- **Only the allowlisted prefix is exempt.** A deeper path
+  (`github.com/<owner>/<repo>/tree/<name>`) is screened like every other word.
+  A link the allowlist does not name is not exempt at all, including another
+  repository of the same owner (`github.com/<owner>/muster-private`): it is
+  refused if it spells a deployment name.
+- **Everything else is unchanged.** A deployment name in the prose around the
+  link ("muster is out: …"), an internal host name, an IP address, a
+  credential- or token-shaped string or an infrastructure word is refused as
+  before.
+
+The allowlist only widens the outbound screen. A reply your chief drafts,
+and a browser flow's text, have none.
+
+#### `GET /plugin/v1/drafts/checks` for an outbound draft
+
+Every entry now says its `kind`. An outbound one carries its target and media
+instead of a message:
+
+```json
+{"drafts": [
+  {"draft_id": 17, "kind": "reply", "message_external_id": "msg-0001",
+   "body": "Thanks, noon works.", "created_at": "2000-01-02T03:04:05Z"},
+  {"draft_id": 18, "kind": "outbound", "message_external_id": "",
+   "body": "…", "created_at": "2000-01-02T03:04:05Z",
+   "venue": "example.forum", "target": {"kind": "reply", "ref": "t1_abc"},
+   "media": [{"ref": "launch/hero-1", "uploaded": false},
+             {"ref": "launch/demo-2", "uploaded": true, "sha256": "…",
+              "content_type": "video/mp4", "size": 1048576}]}
+]}
+```
+
+`target.kind` is `post` (a new post; `ref` is `""`), `reply` (`ref` is the
+upstream reference to answer), or one of the [outreach](#outreach-drafts-dm-follow-like)
+kinds: `dm` and `follow` (`handle` is the person, `ref` is `""`) and `like`
+(`ref` is what to like). An outreach entry also carries its `because_ref` (the
+engagement that motivates it), exactly as [its claim](#outreach-drafts-dm-follow-like)
+will; an entry that cites none has no `because_ref` key. The venue, target and
+`because_ref` of an outbound entry are always the ones its claim hands out, so
+check the draft on the fields you will act on:
+
+```json
+{"draft_id": 19, "kind": "outbound", "message_external_id": "", "body": "",
+ "created_at": "2000-01-02T03:04:05Z", "venue": "example.social",
+ "target": {"kind": "follow", "ref": "", "handle": "someone"},
+ "because_ref": "c_123", "media": []}
+```
+
+`media` is in the order the officer gave, at most 4
+(a post or a reply only); each `ref` is `<angle>/<id>`, which the plugin
+resolves on its own machine.
+
+#### `POST /plugin/v1/drafts/{id}/media`: upload one ref's bytes
+
+One call per ref, before the check. The body is the file's raw bytes:
+
+```
+POST /plugin/v1/drafts/18/media?ref=launch%2Fhero-1
+Authorization: Bearer mpl_…
+Content-Type: image/webp
+X-Content-SHA256: <64 lower-case hex digits: the SHA-256 of the body>
+```
+
+| rule | |
+|---|---|
+| types | `image/png`, `image/jpeg`, `image/webp` up to 5 MiB; `video/mp4` up to 16 MiB |
+| type check | muster sniffs the bytes and refuses a body whose type is not the `Content-Type` sent |
+| hash | muster hashes the body and refuses it unless it equals `X-Content-SHA256` |
+| when | only while the draft awaits its check |
+| once | a ref's bytes are fixed once uploaded. The same bytes again answer `200`; different bytes are `409` |
+
+| answer | meaning |
+|---|---|
+| `201 {"draft_id", "ref", "sha256", "content_type", "size"}` | stored in muster's object store |
+| `200 {…}` | these exact bytes were already stored for this ref |
+| `400 {"error"}` | `ref` is not one of the draft's, a type or hash rule is broken |
+| `403` | the token does not have `draft_checks` |
+| `404 {"error"}` | no such outbound draft of this plugin's |
+| `409 {"error"}` | the draft is not awaiting its check, or other bytes are already stored for this ref |
+| `413 {"error"}` | over the type's cap |
+| `503 {"error"}` | this server has no object store ([file attachments](uploads.md) off) |
+
+The bytes go to the [file attachments](uploads.md) bucket under
+`uploads/plugin-drafts/<draft id>/<random id>`, so the access key and the
+`uploads/` lifecycle rule that page asks for already cover them. A rule that
+expires objects sooner than 7 days can remove a draft's media before you
+decide it.
+
+Then `POST /plugin/v1/drafts/{id}/check` as for any draft. 🔴 **A
+`sendable: true` verdict on an outbound draft is refused (409, `"missing":
+[refs]`) until every ref has its bytes**, so you are never asked to approve a
+post whose media you cannot see. A `sendable: false` verdict needs no media.
+
+#### What you approve
+
+The outbound draft's card on the Drafts tab shows the venue and target
+(for a reply target, the human reply muster received with that `thread`,
+escaped and labelled untrusted; or a line saying none arrived), the exact body
+spelled out as for every draft, and every uploaded image rendered and every
+video playable, each with its ref and SHA-256.
+
+🔴 **Approval binds the body and every medium.** The card's **Approve and
+send** posts the body's SHA-256 and the ordered list of the media's SHA-256
+values it showed you; `plugin_draft_decide` must pass them too
+(`body_sha256`, `media_sha256`). muster refuses the approval unless both match
+what is stored, records them on the draft, and refuses it outright while any
+ref has no bytes. The 12-hour sign-in rule and the push are as for every draft.
+
+#### `POST /plugin/v1/drafts/claim` for an outbound draft
+
+```json
+{"draft_id": 18, "kind": "outbound", "message_external_id": "",
+ "body": "…", "body_sha256": "…", "approved_at": "2000-01-02T03:04:05Z",
+ "venue": "example.forum", "target": {"kind": "reply", "ref": "t1_abc"},
+ "media": [{"ref": "launch/hero-1", "sha256": "…", "content_type": "image/webp", "size": 81234}]}
+```
+
+A reply draft's claim is unchanged, plus `"kind": "reply"`. Before handing an
+outbound draft out, muster re-checks that its body and media still hash to
+what you approved — the body's own hash, and the media hashes recorded at
+upload (the bytes in the object store are not re-read: the plugin's own
+re-hash below is the check on them); one that does not is **withdrawn**
+(rejected, with the detail "the body or media changed after approval") and
+never handed out. muster's database already refuses any change to the body
+or media after approval, so this is a second check, not the first.
+
+🔴 **The plugin re-hashes its own files before it posts.** Any file whose
+SHA-256 is not the claim's: post nothing and report
+`{"ok": false, "detail": "media changed since approval"}`.
+
+#### The result
+
+`POST /plugin/v1/drafts/{id}/result` as for any draft, at most once. Report
+`external_ref` as the post's id or URL. Read the post back before you report
+`ok: true`, and never retry a post without first confirming it is absent.
+
+After the result, for an outbound draft filed with an `item_id`:
+
+- From the moment the draft is filed, that item is **waiting** with no holder:
+  it waits on the draft. The instance can neither complete nor release it
+  (the refusal says why), and no instance can claim it again, so it is never
+  finished before the post exists nor drafted twice.
+- `ok: true`: muster completes that item (`done`, summary `posted <external_ref>
+  (draft <id>)`).
+- `ok: false`, a `sendable: false` check, or **your rejection** (Reject or
+  Withdraw on the card, or `plugin_draft_decide` with `decision: "reject"`):
+  muster queues a new item for the officer, kind `draft.refused`, subject
+  `draft:<id>`, payload `{draft_id, item_id, venue, target, media, status,
+  by, detail}` — `by` is `plugin` or `owner`; `detail` is the plugin's detail,
+  or your reason (`"rejected by the owner, no reason given"` when you gave
+  none) — so it can write a better one. In the same transaction the item the
+  draft was for is finished `no_action`, its summary naming the new item: the
+  work continues there.
+- **Ended by muster itself**, in the same transaction that ends the draft
+  (the draft sweep that runs before any draft is read, filed, checked or
+  claimed, and the claim):
+  - the draft **expires** (not sent within 7 days of being written): a
+    `draft.refused` item, `status: "expired"`, `by: "muster"`, and the item
+    the draft was for is finished `no_action` naming it;
+  - the claim finds its **binding broken** (the body or media no longer what
+    you approved) and withdraws it: the same, `status: "rejected"`,
+    `by: "muster"`, `detail: "the body or media changed after approval"`;
+  - you turn the plugin's **Checks replies off** while the draft awaits its
+    check, which refuses it: the same, `status: "rejected"`, `by: "muster"`,
+    `detail` saying Checks replies was turned off;
+  - 🔴 the draft becomes **unconfirmed** (the plugin collected it and its
+    lease lapsed with no result): it **may have been posted**, so muster
+    never hands it back to be redrafted, which could post it twice. No
+    `draft.refused` item is queued; the item the draft was for is
+    **escalated** to you instead, and the escalation's Attention ask says the
+    draft may be live and to check the venue. Answering sends the item back
+    to the officer with your answer; dismissing leaves it escalated. A
+    **late `ok: true`** for that draft (a slow post that did go out) completes
+    the item `done` with the post's reference after all, and withdraws the
+    escalation's open asks, so you are not left with a stale "may have been
+    posted" question. A **late `ok: false`** (it was NOT posted after all)
+    settles it like any refusal: a `draft.refused` item with the plugin's
+    detail, the item finished `no_action` naming it, and the escalation's
+    open asks withdrawn. Neither happens to an escalation that is not that
+    draft's own: one you made by hand, one after you sent the item back, or
+    one on an item a newer draft was filed for. A
+    plugin whose sends run long should [renew its lease](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)
+    so the draft never goes unconfirmed in the first place.
+- 🔴 **Bounded, never dropped:** at most 3 `draft.refused` items are
+  claimable at once per officer, counted and filed in one transaction under
+  one lock, so neither a plugin that refuses every draft nor two refusals at
+  the same instant can loop the officer past it. Past the bound the
+  `draft.refused` item is **still filed, but held**: `blocked: true`, so
+  claiming it is refused (`held: true`, saying why) and claim-next skips it.
+  The item the draft was for is finished `no_action`, its summary naming the
+  held item and saying it is delivered when one of the open ones is finished.
+  The officer sweep (every 15 seconds) delivers held items, oldest first, as
+  the officer's claimable ones are finished — a hold is a row, so it is
+  delivered exactly once, and a restart in between loses nothing. A plugin's
+  refusal push says it goes back to the officer once it is under the bound.
+- No terminal state of a draft leaves its item waiting. An item is settled
+  only while it waits on that draft: one you already finished by hand, one an
+  instance holds under a live lease, or one that waits on a newer draft of its
+  own (still pending or approved) is left as it is. An item left **claimed**
+  by a draft filed before items waited on their drafts (muster 0.218.0) is
+  settled the same way once its lease has lapsed.
+
+#### Outreach drafts: dm, follow, like
+
+An outbound draft that reaches a **person** — a DM, a follow, a like, or a
+reply to one of their recorded [engagements](#engagement-kind-engagement) — is
+**outreach**. `officer_post_draft` takes three more arguments for it:
+
+| argument | for | rule |
+|---|---|---|
+| `target` | | `{"kind": "dm", "handle"}`, `{"kind": "follow", "handle"}` or `{"kind": "like", "ref"}` |
+| `body` | post, reply, dm (required); follow, like (refused) | a follow or a like is no text |
+| `because_ref` | dm, follow, like (required); reply (optional) | the ref of the person's recorded engagement that motivates it. **Send an X id as a JSON string** (`"because_ref": "2122495152350453825"`; so is `target.ref`). A JSON number is taken as its digits only when it is whole, non-negative and at most 2^53-1 (9007199254740991): a larger one is refused, because a client that parses JSON numbers as doubles (JavaScript does) has already rounded it (`2122495152350453825` arrives as `2122495152350453800`, which is someone else's id); a fraction, a sign or an exponent is refused too |
+| `contact` | like, reply (optional) | the person's handle, when the target is not one of their recorded engagements |
+| `reason` | follow, like (required); others (optional) | the officer's one line (at most 200 characters), shown on the outreach batch |
+
+The person is a dm's or a follow's `handle`; a like's or a reply's target when
+it is one of a person's own recorded words (a reply, quote, mention, nested
+reply or DM — never the owner's post a like or a repost names); else
+`contact`. A reply that reaches no recorded person is an ordinary reply.
+
+🔴 **Refused at the filing, in its transaction, under the person's row lock**
+— nothing is filed, and the answer is `{"error", "refused": <code>}`:
+
+| code | refused when |
+|---|---|
+| `do_not_contact`, `bot`, `hostile` | the person is on the do-not-contact list, or marked a bot or hostile |
+| `because_ref_required` / an invalid filing | a dm, a follow or a like names no `because_ref` |
+| `no_qualifying_engagement` | `because_ref` is not a recorded engagement **of that person**, or one that cannot motivate it: never a like (a person whose only engagement is a like is never contacted), and a DM answers something they said (a reply, quote, mention, nested reply or DM); a follow may answer their follow (a follow-back) |
+| `unknown_person` | muster has recorded no engagement from that handle |
+| `person_unresolved`, `person_mismatch` | a like names nobody, or its target is another person's (or two people's) engagement |
+| `outreach_outstanding` | another outreach to them is still pending, approved or in flight |
+| `twice_without_engagement` | they were reached before (a sent outreach, or an unconfirmed one: it may have been sent) and have not engaged since in a way that qualifies for this kind |
+| `cooldown` | inside the per-person cooldown since that last outreach (the type's policy `{"outreach": {"cooldown_days": n}}`, a whole number 0–365, default 7), and the outreach does not answer an engagement **newer** than it — so a conversation they continue can be answered, and nothing else is sent |
+
+**Approved on its exact text**, as a post is: a DM through its card or
+`plugin_draft_decide` with its `body_sha256`. **A follow or a like has no
+text** and is approved only in its day's [outreach batch](#the-outreach-batch);
+an individual approval of one is refused (409); rejecting it alone is
+allowed, and finishes its item quietly, as an unticked batch entry. Its plugin's [check](#check-a-reply-before-it-can-be-approved) is
+where per-venue daily caps are refused.
+
+🔴 **The person is re-checked at the approval and at the claim.** A pending
+outreach to a person who has since said stop, blocked the owner, been marked,
+or been erased cannot be approved; an approved one is **withdrawn at the
+claim** (rejected, `detail` naming why; the item it was filed for is finished
+without a `draft.refused` item: there is nothing to redraft) and never handed
+out.
+
+The claim names the person and the engagement:
+
+```json
+{"draft_id": 19, "kind": "outbound", "body": "", "body_sha256": "<the SHA-256 of the empty string>",
+ "venue": "example.social", "target": {"kind": "follow", "ref": "", "handle": "someone"},
+ "because_ref": "c_123", "media": []}
+```
+
+Verify the target on the page (the handle) before acting, act once, read the
+state back (following, liked, the DM in the conversation) and report
+`{"ok": true, "external_ref"}`: muster records the outreach on the person
+(`follow_out`, `like_out`, `dm_out`, `reply_out`) in the result's
+transaction, so the guards see it at once.
+
+#### The outreach batch
+
+An officer's follows and likes of one UTC day are **one batch**, id
+`<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Drafts tab, one Attention item
+and one notification (each new entry replaces the batch's last notification),
+never one each. Each entry shows the person, the venue, the action, the
+engagement of theirs that motivated it (untrusted, escaped) and the officer's
+reason, with a checkbox; entries still awaiting their plugin's check are
+counted, not listed, and are not part of the decision.
+
+🔴 **The decision binds the exact set.** **Approve ticked, reject the rest**
+posts the ticked draft ids and the batch's `batch_sha256` (the SHA-256 of every
+listed entry's id); muster, in one transaction under every entry's row lock,
+refuses it unless the batch's decidable entries are exactly that set (an entry
+that joined, expired or was decided since: 409, look again), refuses a ticked
+id that is not one of them (400) and a ticked person who may no longer be
+contacted (409, nothing decided). A team officer's batch is decided by the
+team's managers only, never by the team itself, and nobody approves an entry
+they caused (403), as for every team draft. Then exactly the ticked entries are approved
+and **every other entry is rejected, reason `not selected`**: its item is
+finished `no_action` saying so, with no `draft.refused` item. The 12-hour
+sign-in rule is as for every approval.
+
+From the owner's mirrored sessions:
+
+| tool | arguments | |
+|---|---|---|
+| `plugin_outbound_batch_get` | `{batch_id?}` | the open batches (or one): entries `{draft_id, plugin, venue, action, person, target_ref, because_ref, engagement, reason, created_at, blocked?}`, `waiting`, `batch_sha256`. Read-only |
+| `plugin_outbound_batch_decide` | `{batch_id, batch_sha256, approve_ids}` | the same decision as the card (`approve_ids: []` rejects them all); on a machine that runs a host officer it is a step-up [confirmation card](officers-builtin.md#-before-you-declare-one-on-a-real-deployment) |
+
+### Chief instructions
+
+A plugin with `chief_extension` may give your chief ONE section of standing
+guidance about the plugin's own system: where its requests go, which of its
+tools to use. muster never reads it as a rule. It reaches the chief only once
+you have approved its exact text, and it grants the chief no muster tool,
+permission or approval.
+
+- **`PUT /plugin/v1/chief/instructions`** `{"markdown": "<text>"}` stores the
+  plugin's section, replacing any earlier one. The text is 1 to 4096 bytes of
+  UTF-8 (`400` past that), not blank, with no control or invisible character
+  but a line feed and a tab. It may not carry an `@` that Claude Code could
+  read as a file import: an `@` is refused unless the character right before
+  it is a letter, a digit, `.`, `_`, `-` or `+` (so `name@example.test` is
+  fine, and `@notes.md` or `see @notes.md` is not). Claude Code expands an
+  `@path` import in CLAUDE.md even inside the quote the section is rendered
+  in, which would pull a file into the chief's context. It answers `200` with `{plugin_id, markdown, sha,
+  approved_sha, approved_at, updated_at, state, changed}`: `sha` is the
+  text's sha256 (hex), `state` is `pending` or `approved`, and `changed` says
+  whether this PUT stored new text. **New text is pending**: any approval is
+  cleared in the same write, so a changed section never reaches the chief
+  until you approve it again. Text A, then B, then A again is pending too.
+  The same text again changes nothing and keeps its approval, so a plugin may
+  PUT on every start. That is also how a plugin learns whether its section
+  is approved: there is no GET.
+
+The route needs `chief_extension` (`403` naming it otherwise). It acts as the
+token's owner, on the token's own plugin only.
+
+**Known limit: a team's chief gets no plugin sections today.** A team's plugin
+tokens are viewer tokens, and the team door serves them the hand-off redeem
+and `/self` alone, so a team's plugins cannot propose a section. The rendering
+already scopes a team's chief to the team's OWN plugins, never a member's
+personal one. Letting team tokens propose sections, a `chief_extension`
+option at mint on `/teams/{id}/plugins` and a manager's approval there are a
+later follow-up.
+
+**Approving it.** On `/plugins`, a plugin with `chief_extension` shows its
+section on its card **as text** (escaped, never rendered as markdown or HTML),
+its state and the first 12 characters of its sha. A pending one has
+**Approve these instructions** (`POST /plugins/{id}/approve-chief-instructions`,
+`sha=<the sha the card showed>`). It needs a signed-in, same-origin session
+and a **fresh sign-in** (the confirm dialog asks for one), as approving a
+pairing request does, because the text becomes standing guidance to your
+chief. 🔴 It approves only the text you were shown: if the plugin changed it
+after the page was drawn, the sha no longer matches and the approval is
+refused (`409`, "The plugin changed its chief instructions after this page was
+drawn"); read the new text and approve that. Each stored text and each
+approval write a `plugin.chief_instructions.stored` or
+`plugin.chief_instructions.approved` audit row.
+
+**Turning it on or off.** Each live plugin's card has **Turn on Chief
+instructions** (or **Turn off**), `POST /plugins/{id}/chief-extension`, `on=1`
+or `0`, gated like **Checks replies**: a signed-in session and a same-origin
+form, with no fresh sign-in, because turning it on only lets the plugin
+propose text. Turning it **off** deletes the plugin's section, approved or
+not. A plugin whose only capability is `chief_extension` has no Turn off;
+revoke it instead. **Revoking** a plugin deletes its section too.
+
+**Where it appears, and when.** See
+[chief.md](chief.md#instructions-from-your-plugins). In short: after every
+rule of muster's own, quoted line by line under a fixed line naming the plugin
+and the day you approved it. It takes effect at the chief's **next provision
+or restart**, as a connector does: approving, changing or revoking a section
+does not touch a running chief. **If the sections cannot be read when the
+chief starts, that start is refused and retried**, rather than starting the
+chief without guidance you approved. Only the claude-code chief on Kubernetes
+reads plugin sections. The Docker Compose chief, the gateway chief and every worker
+read none.
+
+### Pairing a plugin without handling its token
+
+A plugin can ask for its own token, so the `mpl_` token is never typed, pasted
+or seen by anyone — the plugin receives it straight from muster.
+
+1. The plugin calls `POST /plugin/v1/pair` (no credential) and prints the
+   `code` it gets back.
+2. Its owner sees the request in Attention and on `/plugins`, and approves it
+   by typing the code the plugin printed (only its hash is stored, so the page
+   cannot show it: typing it IS the comparison), or denies it.
+3. The plugin polls `GET /plugin/v1/pair/{request_id}` with its
+   `poll_secret`, and receives the token **once**.
+
+#### `POST /plugin/v1/pair`
+
+```json
+{"owner": "owner@example.invalid", "name": "example-relay", "label": "Example relay",
+ "data_scope": "example", "capabilities": ["messages", "draft_checks"],
+ "deliver_to": "officer:example:main"}
+```
+
+| field | required | rule |
+|---|---|---|
+| `owner` | yes | the owner's login (their email, as `GET /plugin/v1/self` names it) |
+| `name`, `label` | yes | as on `/plugins` |
+| `data_scope` | no | as on `/plugins`; default the `name` |
+| `capabilities` | yes | `messages`, optionally with `draft_checks`. `viewer` cannot be paired |
+| `deliver_to` | no | `officer:<id>`, checked again when the owner approves |
+
+| answer | meaning |
+|---|---|
+| `202 {"request_id", "code", "poll_secret", "expires_at"}` | the request is waiting for the owner. `code` is 8 characters as `XXXX-XXXX` (no `0`, `1`, `I`, `L`, `O`, `U`); show it to the owner. Keep `poll_secret` private |
+| `400 {"error"}` | a field breaks a rule |
+| `429 {"error"}` | too many requests: 5 per source address in 10 minutes, 50 on the server. Retry after `Retry-After`. ⚠ The server-wide allowance is one anyone can spend; when it is spent, mint the token on `/plugins` instead |
+
+The answer is the same `202` whether or not `owner` names an account, so the
+route says nothing about who has one; a request for no account simply
+expires. A request expires **10 minutes** after it was made. muster stores
+only the SHA-256 of the code and of the poll secret.
+
+#### `GET /plugin/v1/pair/{request_id}`
+
+`Authorization: Bearer <poll_secret>`.
+
+| answer | meaning |
+|---|---|
+| `200 {"status": "pending", "expires_at"}` | not decided yet: poll again in a few seconds |
+| `200 {"status": "approved", "token": "mpl_…", "plugin_id", "plugin_name", "capabilities", "deliver_to"}` | the plugin is minted now and this is its token. `deliver_to` is there only when the plugin is bound to an officer: an unbound plugin's answer omits it. **This answer is given once**: store the token (0600) before anything else |
+| `200 {"status": "redeemed"}` | the token was already handed out. If you lost it, revoke the plugin and pair again |
+| `200 {"status": "denied"}` / `{"status": "expired"}` | nothing was minted |
+| `404 {"error"}` | no such request, or the poll secret is missing or wrong (the same answer for all three) |
+| `409 {"status": "pending", "error"}` | approved, but the owner now has a live plugin of that name, or the officer is no longer defined: nothing was minted. Revoke or define, and it can still be redeemed until it expires |
+
+#### Deciding a pairing request
+
+On `/plugins`, each pending request shows its name, label, capabilities,
+`deliver_to` and when it expires, with a **Code the plugin printed** field and
+**Approve** (a sign-in from the last 12 hours, as approving a reply; a code
+that does not match is refused) and **Deny**. From your own mirrored Claude
+Code session:
+
+| tool | what it does |
+|---|---|
+| `plugin_requests_list` | your pending pairing requests: `id`, name, label, capabilities, `deliver_to`, `created_at`, `expires_at`. The code is **not** listed: you read it from the plugin |
+| `plugin_request_decide {id, decision, code}` | `approve` or `deny`. `code` must be the code the plugin printed (case and the dash are ignored); a mismatch is refused, and so is an expired, decided or another owner's request |
+
+Approving checks what minting checks: the name is free among your live
+plugins, the capabilities are allowed, and `deliver_to` names an officer
+defined for you. Each decision writes a `plugin.pair.approved` or
+`plugin.pair.denied` audit row, and the token's hand-out `plugin.created`.
 
 ### `POST /plugin/v1/tasks`: one task per upstream record
 
@@ -284,6 +1306,247 @@ The task is filed the way `POST /api/tasks` files one, and you get the usual
 "New task" push. It has no `gate:` or `auto:` tag, so nothing dispatches it
 until you do. The comment's author is `plugin:<plugin name>`.
 
+### Task references
+
+A task filed with `create` is a **copy**: from then on it and the upstream
+record drift apart, because a status or comment written on one never reaches
+the other. A **reference** is the alternative. The upstream stays canonical,
+and muster keeps the key, a read-only **snapshot** of the record that it
+renders, and its own links to the task (routes, agents, attention, sessions).
+A status or comment that you or an agent write on a reference is not stored.
+It is **queued** for the plugin, which applies it upstream and then pushes a
+fresh snapshot. muster never calls the plugin: the plugin claims the queue.
+
+```json
+{"key": "tracker:4711",
+ "reference": {
+   "title": "Rotate the build key", "url": "https://tracker.example.invalid/t/4711",
+   "status": "in_progress", "status_label": "in progress", "rev": "5",
+   "updated_at": "2026-11-03T10:00:00Z", "body": "…", "creator": "A. Person",
+   "comments": [{"id": "c1", "author": "A. Person", "body": "…", "created_at": "2026-11-02T09:00:00Z"}],
+   "detach": false},
+ "route_to_chief": true, "notice": "assigned", "event_id": "upstream-msg-123"}
+```
+
+| field | rule |
+|---|---|
+| `reference.status` | One of muster's four: `open`, `in_progress`, `ready_for_review`, `complete`. Anything else is a `400`. Mapping the upstream's own statuses onto these is the plugin's job. |
+| `reference.status_label` | Shown verbatim on the card and the task page: one line of plain text, cut at 100 characters. |
+| `reference.updated_at` | Required (RFC 3339). It decides staleness (below). |
+| `reference.title`, `body` | The task's title and body follow them. `body` is cut at 16 KiB. An empty title shows the key. |
+| `reference.url` | Linked from the task page. A link that is not `http(s)`, or is over 2 KiB, is dropped. |
+| `reference.creator` | Optional. The upstream's display name for whoever created the record. The task's [notifications](push.md) name it (`by A. Person`). One line of plain text, cut at 200 characters. Leave it out when the upstream has none. A muster from before this field refuses it like any unknown field (`400`), so send it only to a muster that documents it. |
+| `reference.claimants` | Optional. Who **picked the record up** upstream: `[{"agent_session": "…", "agent": "…", "name": "…"}]` — the coding-agent session that took it (`agent_session`, **required**: a claimant without a valid session id is dropped, an agent alone claims nothing), the agent it ran as, and an optional display name (the card shows `name`, else `agent`, else the session's prefix). `agent` and `name` are one line, cut at 200 characters. At most 20 are kept. A non-empty list makes the task [claimed](tasks.md#claims); a claimant whose `agent_session` is one of your mirrored sessions a host lists now is also linked to the task (`worked`). Send only a real pickup — a field the upstream stamps on every record (its filer, say) is not one. For example, the HQ tasks plugin sends the session that moved the HQ task **into "in progress"**: the latest such status change in the task's history made by an actor carrying a session, released by a later move to a not-started status ("to do", "proposal", "planning", "to discuss") or a done one, or by the claiming agent removing itself from the task's agent assignees (a hand-off); "pending review" and "paused" keep it; a move by hand (no session), the create, and HQ's `agent`/`agent_session` row fields — stamped with the filer's at create — are never a claim, and a history that cannot be read sends none. Leave it out (or send `[]`) when nobody picked it up: the status is never read as a claim. A muster from before this field refuses it (`400`), so send it only to a muster that documents it. |
+| `reference.comments` | The upstream's thread, shown read-only. At most 50 are kept: the newest, by `created_at`. Each body is cut at 16 KiB. |
+| `reference.detach` | `true` dismisses the reference (the soft dismissal an owner's dismiss is; an agent on it is left running). A later upsert for the key files a new row. |
+| `event_id` | 1 to 200 bytes, no spaces or control characters. It names the upstream event for routing, as `comment` does for a copy, and it is required with `route_to_chief`. Resending the same `event_id` never routes twice. |
+
+With `reference`, `create` and `comment` are refused (`400`): a reference has
+no relay comment. Text is cut, never refused.
+
+**One row per key.** The upsert works on the live reference for the key (there
+is at most one per owner). If there is none, it **converts** the copy row your
+plugin filed for the key, in place: the same id, so routes, agents and links
+survive. The copy row is the oldest open one, or else the newest complete one.
+Your plugin's own relay comments on it (author `plugin:<name>`) are retracted,
+and every other comment stays on the task as muster-only history. With no row
+at all, a new one is filed, with the usual "New task" push.
+
+**A rotated plugin takes its references over.** A plugin has no token
+rotation: rotating is revoking it and creating a new one, with a new id. A
+reference held by a plugin that has been revoked (or deleted) is **adopted**
+by the next of your plugins to upsert its key: the reference moves to the new
+plugin, and so do its unfinished writes (a write the old plugin had claimed
+but not reported is pending again, `attempts` kept). While the holding plugin
+is still live, another plugin's upsert is a `409`. The listing below shows a
+revoked plugin's references to your other plugins, so a rotated plugin's first
+reconcile adopts them all.
+
+**Stale snapshots apply nothing.** An upsert whose `updated_at` is older than
+the stored snapshot's is accepted (`200`, `"applied": false`) but changes
+nothing. An equal one applies again, so a resend is harmless. A snapshot
+identical to the stored one (title, body, status, label, url, comments, rev
+and `updated_at` all the same) does not rewrite the task, move its
+`updated_at` or notify open pages: only the time it was last synced moves,
+which clears the **stale** badge.
+
+A reference's title and body are the upstream's. Editing either on muster
+(the edit form, `PATCH /api/tasks/{id}`) is refused with `409` ("this task is
+a reference; edit it upstream"), and the edit form shows them read-only. Its
+other fields (tags, directory, model, repository, branch) stay editable.
+
+The status follows the snapshot through the task-status writer
+`plugin_reference`: it is logged like any status write and sends the usual
+pushes. The ready-for-review push names who moved the task
+([push.md](push.md)):
+
+- `· agent <name> via <namespace>` when the snapshot reports a write an agent
+  queued on the reference (`· agent via <namespace>` when the write names no
+  agent; `· machine via <namespace>` for `PATCH /api/tasks/{id}/status` by a
+  caller that is not known to be an agent);
+- no label when it reports your own queued write;
+- `· upstream (<namespace>)` when it reports a change made in the upstream
+  itself.
+
+A snapshot reports a queued write when it moves the task to the status that
+write asked for, and the write has not reported a move before. The newest such
+write is used, as long as it has not failed. A write still pending or claimed
+counts, because the snapshot may arrive before your result does. So an agent
+that queued `in_progress` is not named when the upstream then sets
+`ready_for_review`. Once a write has reported a move it never reports another.
+A write already done upstream is also used up by the next move, whatever its
+status, unless it was queued after the write that move reports: that later
+write's own snapshot is still to come. A later upstream move back to a used-up
+write's status therefore reads as the upstream's. A snapshot that leaves the
+status as it was reports no write.
+
+But an upstream close does **not** stop the agent your chief started
+on the task ([below](#completing-a-task-stops-the-chiefs-agent)): an upstream
+close is not you stopping an agent.
+
+| answer | meaning |
+|---|---|
+| `201 {"id", "created": true, "reference": true, "applied": true, …}` | A reference was filed. |
+| `200 {"id", "created": false, "reference": true, "applied", "converted", "detached"}` | The reference (or the copy row it converted) was updated, left alone as stale, or detached. |
+| `200 {"id": null, …}` | A detach found nothing to detach. |
+| `409 {"error"}` | Another of your plugins holds the live reference for this key, and that plugin is live. |
+
+With `route_to_chief` the answer carries `"routed"`, and the routing answers
+(`503`, `429`, `409`) are the copy route's. The chief's task event quotes the
+snapshot's status label and its newest comment.
+
+#### Writes on a reference are queued
+
+Every status write (the card, `PATCH /api/tasks/{id}/status`, `muster task
+status`, the `task_set_status` tool, an agent's own route and tool, the
+dispatch advance, which on a reference is queued only while the snapshot
+is `open`) and every comment from a person or agent (the card,
+`POST /api/tasks/{id}/comments`, the `task_comment` tool, an agent's own
+route and tool, a task route's answer) on a reference:
+
+- does not change the task's status and stores no comment;
+- queues a write for the plugin that owns the reference, with the author the
+  local write would have carried, and the agent and session when known;
+- answers success with `"queued": true` (`202` on HTTP; a tool says the write
+  was sent to the upstream and will show once the plugin confirms).
+
+The usual rules still apply first: an agent may not set `complete`, and may
+not move a task out of it. muster's own comments (the idle reaper's `stale`
+note, a merge record, a gate release) stay on the task as muster-only
+history and are never queued. A reference cannot be the loser of a merge
+(`409`): retiring the loser would close the upstream task. Destroying an
+agent on a reference does not reopen it (on an ordinary task it does), for
+the same reason. Your chief may start an agent on a reference that is `open`
+or `in_progress` (the upstream often has it in progress before muster starts
+one), as long as no live agent is already on it.
+
+The task page shows queued writes in the thread as "sending…" or "failed:
+\<error\>", when the snapshot was last applied, and a **stale** badge once
+that was more than 15 minutes ago. Keeping snapshots fresh is the plugin's
+job: muster never asks for one, so a plugin should push a snapshot for each
+of its live references on a schedule (a reconcile), as well as on each
+upstream notice.
+
+A **failed** write (the plugin reported a failure, it was handed out 10 times
+without a result, or its task stopped being the plugin's reference) stays on
+the task page with **Retry** and **Dismiss**. Only the task's owner can use
+them, from the task page (a signed-in session, from muster's own page). There
+is no machine API for them. An agent's token, the chief and a plugin token are
+refused (`401`).
+
+| route | what it does |
+|---|---|
+| `POST /tasks/{id}/ref-writes/{wid}/retry` | Puts the write back to `pending` with `attempts` 0, no error and no lease, for the plugin that holds the reference **now** (after a rotation, the adopting plugin). |
+| `POST /tasks/{id}/ref-writes/{wid}/dismiss` | Takes it off the task page. The write is kept, still `failed`, and is never sent. |
+
+With htmx the card is re-rendered in place; a plain form post answers `303`
+back to the task page.
+
+Only a failed write that has not been dismissed can be retried or dismissed:
+anything else (pending, claimed, done, dismissed) is `409`, and nothing
+changes. A retry on a task that is no longer a reference is `409` (dismiss
+it instead). An unknown task, a write on another task and another owner's
+write are `404`.
+
+A failed `status` write is **not** retried once a later status write on the
+same task was sent upstream — it is done, or it is pending again after its
+lease lapsed (the plugin may have applied it): `409`, and the page offers
+only Dismiss. The older status would undo the newer one. The same rule holds
+at the claim: a status write retried while a newer one was still claimed is
+not handed out once the newer one is sent; it is failed with
+`superseded: a later status write on this task was already sent upstream`.
+A comment, and the latest status write, can always be retried.
+
+A retried write keeps its place in its task's order: it is handed out after
+any earlier write on the task that is still pending, before the writes
+queued after it, and never while another write on the task is claimed.
+
+#### `POST /plugin/v1/task-writes/claim`
+
+`{"wait_s": 0-25, "limit": 1-20}` long-polls for your plugin's queued writes
+(out-of-range values are clamped). The answer is always
+`200 {"writes": [...]}`, empty when nothing arrived within `wait_s`. Each
+write is now leased to you for 2 minutes:
+
+```json
+{"id": 7, "task_id": 42, "key": "tracker:4711", "kind": "status",
+ "status": "complete", "author": "user", "agent": "", "session": "",
+ "state": "claimed", "attempts": 1, "lease_until": "…", "created_at": "…"}
+```
+
+`kind` is `status` (with `status`) or `comment` (with `body`). Only
+writes on references your plugin owns are handed to you. A write whose lease
+lapses goes back to pending and is handed out again, with `attempts` one
+higher, so keep your own ledger by write `id`: a crash between applying the
+write upstream and reporting it must not apply it twice. A write handed out
+10 times without a result is failed with `gave up after 10 attempts`. One
+task's writes are handed out **in order, one at a time**: a write is not
+handed out while an earlier write on the same task is still pending, or
+while any other write on the task is claimed, so report each one before the
+next on that task arrives. A write whose task is no longer your live
+reference (it was dismissed, say) is failed with a reason and not handed
+out. The owner can [retry or dismiss](#writes-on-a-reference-are-queued) a
+failed write. A retried write comes back with the same `id` and `attempts`
+counting from 1 again, so a ledger keyed by write `id` must let a write you
+recorded as failed be applied once it is handed out again.
+
+#### `POST /plugin/v1/task-writes/{id}/result`
+
+`{"ok": true|false, "error": "…", "conflict": false, "reference": {…}}`
+records the result of a write you claimed: `done`, or `failed` with `error`
+(`conflict: true` marks a failure because the upstream moved under the
+write). Include a fresh `reference` snapshot whenever you have one. It is
+applied exactly like an upsert, except that it never files a new row.
+`200 {"id", "state", "applied"}`. The first result wins: sending it again,
+either way, answers the stored state. A write your plugin was never leased is
+`404`, and a bad snapshot is `400` and records nothing. Your own `complete`,
+once reported done, stops the agent your chief started on the task, just as a
+`complete` stored locally does.
+
+#### `GET /plugin/v1/tasks?namespace=<ns>&live=true`
+
+The live tasks (not dismissed, not merged away) in `ns` that **your plugin**
+may see: the references your plugin holds, the references a revoked (or
+deleted) plugin of yours holds (the ones your next upsert would adopt, so a
+rotated plugin finds them by reconciling or by `key=`), and the copy rows
+(filed with `create`) that carry a key in `ns`. A live plugin's reference is
+never listed to another. Use it to convert your copy rows and to reconcile.
+
+| parameter | meaning |
+|---|---|
+| `namespace` | Required: one of this server's plugin task namespaces. |
+| `live=true` | Required (only live rows are listed). |
+| `key=<key>` | One full key in `namespace`: at most one row, the one an upsert for that key would work on (the reference, else the copy row it would convert). |
+| `open=true` | Leave out `complete` tasks. |
+| `after=<task id>` | Only tasks with an id greater than this. |
+
+Tasks come in ascending id order, at most 500 a page:
+`200 {"tasks": [{"id", "key", "status", "is_reference", "updated_at",
+"comments": [{"id", "author", "body", "created_at", "retracted"}]}],
+"truncated": bool, "next_after": <id or null>}`. When `truncated` is true,
+`next_after` is the last id on the page: pass it as `after` for the next
+one. A bad parameter is a `400`.
+
 ## Routing a task to the chief
 
 With `MUSTER_TASK_ROUTING=1`, a plugin that files a task with
@@ -338,25 +1601,31 @@ it. The flow:
    (`assigned` or `update`), the task's id, key,
    status, gate, the agents already working it, and two fields from outside
    (the task's title and the change line) on fenced lines. muster's preface
-   names the three tools below and says the block is data.
-5. The chief calls **one** of them:
+   names the three tools below and says the block is data. Like a message's
+   turn, it may end with a [session hint](#sessions-that-may-already-be-on-it),
+   matched on the task's own title and body and leaving out the agents already
+   on the task.
+5. The chief calls **one** of them, or, with session routing on, hands the
+   task to a mirrored session already on it
+   ([routing a task to a session](#routing-a-task-to-a-session)):
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is never offered: a task event is no_reply, so it refuses one. `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note, question?}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note (and its `question`, when it asks you one) — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent — **one button per target**, *"agent_dispatch on pod/claude-code: start a new agent on it"*, since the tool has no default target), returned to the chief as `actions_offered`. Your click reaches the chief as a turn you did not type, so it cannot pass `owner_asked`; instead `agent_dispatch` on that task then takes **exactly the target you clicked** (any other is refused, naming yours). `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). On a task the chief filed **gated** (its only gate is the one `task_create_gated` set), the buttons [release the gate from the ask](#releasing-the-chiefs-gate-from-the-ask): *"Release & dispatch on <target>, repo <owner/name>"* (or *", no repository"*) once per target `agent_dispatch` would accept on the released task, and *"Release only: …"*. `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours. On a [claimed](tasks.md#claims) task without a `question` it raises no card (answers `"claimed": true`) |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
+| `agent_dispatch {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?, clone?}` | Starts a new agent: on the task, or — without `task_id` — from a prompt alone ([below](#agent_dispatch-the-guards)). `target` is **required and has no default**: `pod/claude-code`, `pod/gateway`, or a host target, `host/<host>/claude` or `host/<host>/opencode` ([mirrored dispatch](chief.md)). Every target is the Kubernetes chief's only: the docker compose install's chief is refused. A host starts an agent only with its own `-agent-spawn` (and, for opencode, `-opencode-send` and an opencode token too). A call without one is refused with the targets that exist now and the budget, so the chief asks you which. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 13](#agent_dispatch-the-guards)). Either pod kind gets the task's repository and branch (`base` picks another branch); a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent gets the task's model, or `model`. `prompt` (at most 8 KiB) opens the agent's first message. `worker_pool` makes a claude-code agent a [machine-job worker](jobs.md). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. The retired name `task_dispatch` answers *"task_dispatch is replaced by agent_dispatch, which needs a target: ask your owner where to run it"*. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
-to the chief never starts anything by itself: only `task_dispatch` does.
+to the chief never starts anything by itself: only `agent_dispatch` does.
 
 **Until your chief routes the task** the task is listed on `/attention` as
 **Task to route**: while you have no chief or it is not running, busy or
 unreachable (the event stays queued and is retried at each plugin claim), and
 also when the chief took the event and did not act on it (its turn failed, it
 called no tool, or its call was refused). It leaves the list once the chief
-routes the task (`task_route_attention`, `task_forward`, or a `task_dispatch`
-answered `already_dispatched` while an agent is running on the task,
+routes the task (`task_route_attention`, `task_forward`, `route_to_session`
+with its `task_id`, or an `agent_dispatch` answered `already_dispatched` while an
+agent is running on the task,
 recorded as a `task.chief_routed` audit row) or starts an agent on it, or once the task is
 complete or dismissed. "Routes" is measured per event, from the event's latest
 delivery attempt, successful or not, or from when it was stored if it has had
@@ -364,72 +1633,321 @@ none: an action before that does not count. So a new event for a task already
 in progress is listed again until the chief routes it, and a queued event can
 reappear on the list after a later failed attempt to hand it over.
 
-### `task_dispatch`: the guards
+### An assigned task muster places itself
+
+The chief's turn for an `assigned` task event is formulaic. It looks for the
+agent or session already on the task. When one is clearly on it, the chief
+hands the task there. Otherwise it puts the task on your board with
+`task_route_attention`. muster now makes that decision itself, with **no chief
+turn**, whenever the answer is certain. It runs the chief's own calls:
+`task_forward`, `route_to_session` with `task_id`, or `task_route_attention`.
+The result is the same forward, route or "Task #N needs you" ask, with the
+same buttons (Release & dispatch on a gated task).
+
+muster decides from the same evidence the chief's turn would get: the agents
+bound to the task, and the turn's
+[session hint](#sessions-that-may-already-be-on-it). The rule is conservative:
+
+| What muster sees | What it does |
+|---|---|
+| Exactly one agent that `task_forward` can reach is bound to the task. No other live agent is bound, and the hint names no session. | Forwards the task to that agent. |
+| Otherwise, the task is [**claimed**](tasks.md#claims): a session picked it up through muster's task tools, or its reference's upstream names a claimant (`agent`, `agent_session`); a status alone is not a claim. | Leaves it alone: **no** "needs you" card and no chief turn. Settled `muster: task triage — left it alone: it is already claimed by <who>`; it leaves "Task to route". |
+| No agent is bound, and the hint names exactly one session through a **strong** link: a pull request or branch the task names, which muster recorded that session creating or pushing (`session_prs`, owner-scoped), or a repository name that only that one online session reports. The hint names no other session. | Routes the task to that session. |
+| No agent is bound, and the hint names no session at all. | Puts the task on your board. |
+| Anything else: two candidates, a focus-title match (weak), a live agent muster cannot send to, or a gated task with any candidate. | Hands the event to the chief, exactly as before. |
+
+Only you can release a gated task, so muster never forwards or routes one;
+it can still put one on the board. A session that merely read the task
+(`task_sessions`) is not a strong link and is not consulted. If the call is
+refused, the chief gets the event; for example, the window closed between the
+hint and the route. With no chief, a chief that is turned off, or no plugin
+deliverer, nothing changes: the event waits for the chief.
+
+When muster handles the event, it is settled as
+`muster: task triage — <what it did>`. The event is also logged in the chief's
+chat with muster's note, so the chief holds it at no turn's cost. The usage
+page counts each outcome (`task_forward`, `task_route`, `task_board`,
+`task_claimed`, or `chief`): [usage.md](usage.md). The chief's own
+`task_route_attention` on a claimed task raises no "pick this up" card either:
+it answers `"claimed": true` with `claimed_by`, and routes the task off "Task to
+route". With a `question` (the chief asking you something about the task) it
+raises the card all the same, naming the question and who is working the task. The plugin's answer still says
+`routed: "chief"`, because the event was handed to the chief's side of muster.
+
+### Releasing the chief's gate from the ask
+
+A task the chief files with `task_create_gated` — typically feedback a plugin
+message brought — stays gated until you release it. When the chief routes it
+to you (`task_route_attention`), the ask on `/attention` and on your phone
+offers, beside Dismiss:
+
+- **Release & dispatch on `<target>`, repo `<owner/name>`** (or *no
+  repository*) — one per target `agent_dispatch` would start on the task once
+  released (the same predicate as the ungated offer: your opt-in, the
+  deployment, the task, the budget), naming the task's repository. muster
+  removes the gate as it records your answer; the answer then reaches the
+  chief like any other, and the chief calls `agent_dispatch` on the task with
+  **exactly that target and that repository** (guard 12a refuses any other
+  target, and any `repo` that would put the agent somewhere else than the
+  button said). If the chief cannot start it
+  after all (the budget filled in between, say), the task is simply an
+  ungated task and the chief comes back to you with `task_route_attention`.
+- **Release only** — muster removes the gate and nothing is started: a
+  dispatch without `owner_asked` on that task is refused.
+
+When a start would not be possible even once released (you have not opted in
+to the chief starting agents, or its budget is full), only Release only is
+offered, and the ask says why. The release options come first — Release &
+dispatch on the first target, then Release only — because a phone
+notification draws at most two options beside Dismiss. A repository name long
+enough to push its button past the phone's 140-character chip leaves that
+button off the notification (it stays on the Attention view).
+
+**Your Release answer stands.** Once you tap Release only (or Release &
+dispatch), a newer answer about the same task given through
+`attention_answer` does not undo it: only another answer of yours on the
+Attention view or your phone replaces it.
+
+**Who can release.** Only your own tap: an answer on the Attention view from
+your signed-in browser, or from your paired phone (a signed device action).
+The same option given through a mirrored session's `attention_answer` is
+refused before it is recorded, with *"only your owner can release a gate,
+tapping it on muster's Attention view or their phone …"*; and the answer path
+itself refuses any principal that is not you through one of those two doors
+(an agent's, a plugin's, a personal API token's, the hook's), so a door added
+later does not inherit the power. The chief has
+no way to answer its own ask (its `chief_ask` answers reach only questions put
+to it). The release keys on structure, never on words: the ask must be one
+muster linked to the task (`task_route_attention`'s, never an agent's
+`attention_ask`) and the answer one of the options stored with it, so the same
+words typed as free text, or offered on any other ask, release nothing.
+
+**A stale ask fails closed.** If the task changed after the ask was filed —
+its gate was already released on the board, a gate of yours was added, it is
+no longer open, or it is gone — the tap is refused with a sentence saying
+which (*"Not released: …"*), nothing is recorded or released, and the ask
+stays open for Dismiss.
+
+**What is recorded.** An `audit_log` row `task.gate_released_by_answer` on
+`note:<id>`, whose actor is you and the door you used (`session` or
+`device`), with the ask's id, the gates and your answer; and a comment on the
+task by muster naming the ask. The audit row is written **before** the gate
+is removed: if it cannot be written, the gate stays on and the comment says
+so. These writes run without the answer request's cancellation, so closing
+the page right after tapping does not leave the gate half-released. The
+checks, the answer and the removal are separate statements: a gate added
+between them stays on (only the verified tag is removed), so the start is
+still refused.
+
+**The trust boundary.** The feedback's text never chooses where an agent runs:
+the targets on the buttons are the deployment's (`agent_dispatch`'s own target
+list), and the start is held to the one you tapped and to the repository the
+button showed. The task's repository may itself have been written while the
+chief read the feedback; that is why the button shows it before you tap (and
+it must still be one of your connected repositories, guard 12b). The task's
+body is the one thing the text still shapes: the started agent reads it as
+data under muster's rules.
+
+### `agent_dispatch`: the guards
 
 Each refusal has its own sentence, in this order:
 
 1. `MUSTER_CHIEF_DISPATCH_OWNERS` is empty: the tool is not offered, and
    refused if called by name.
-2. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
+2. The arguments do not decode, or carry a field outside the table above (an
+   old `kind` or `instructions`, a typo): *"arguments are {target, prompt?,
+   task_id?, repo?, base?, model?, worker_pool?, request_key?,
+   owner_asked?}"*. Unknown fields are refused, never ignored.
+3. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
    in.
-3. The deployment cannot start agents (no provisioner, or a first message
-   could not be delivered).
-4. `instructions` are over 1 KiB.
-5. `instructions` are given and are not **your own words**: not, verbatim,
-   your answer to an attention ask linked to **this** task. An ask is linked
-   to its task only when muster filed it on the task's behalf
-   (`task_route_attention`, or a mention's route to `/attention`) — never by
-   its question's text, which any asker can write. The answer must be given
-   **through that ask** — on `/attention`, or from one of your mirrored
-   sessions' `attention_answer`, which counts the same (operator decision;
-   the accepted risk is in [attention.md](attention.md#mirrored-claude-code-sessions)) —
-   while a message you write into the
-   chief's chat also settles its open asks, but every one of them at once, on
-   every task, so it counts for none. The comparison is exact
-   after trimming surrounding whitespace and normalising line endings: one
-   word added, a changed letter case or a doubled space is refused. Your
-   answer on another task, another user's answer, the task's own text and
-   the chief's note are all refused. The chief should pass your answer as you
-   typed it; to get one, it calls `task_route_attention` and waits.
-6. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
-   one you have no credential for.
-7. The **effective** repository — `repo`, or else the task's own — is not
+4. The deployment cannot start agents (no provisioner, or a first message
+   could not be delivered). This refuses a `worker_pool` agent with no prompt
+   too, so every call meets one order.
+5. **The target.** No `target`: *"target is required and has no default: ask
+   your owner where to run this, offering the targets below. Never choose one
+   they did not name."* A target that is not one of the shapes, a pod kind the
+   deployment does not enable (`MUSTER_AGENT_KINDS`), and a host target (no
+   host can start agents yet) each have their own sentence. Every one of them
+   carries `targets` — the pod kinds enabled here that you have a credential
+   for, and the hosts that can spawn now (none yet) — and the `budget`:
+
+   ```json
+   {"error": "target is required and has no default: …",
+    "targets": {"pods": ["pod/claude-code"], "hosts": []},
+    "budget": {"live": 1, "live_cap": 5, "today": 3, "daily_cap": 10, "live_agents": ["…"]}}
+   ```
+6. `request_key` is not 1-64 of `[A-Za-z0-9._:-]`.
+7. `worker_pool`: the target is not `pod/claude-code`, a `task_id` is given (a
+   pool worker serves machine jobs, not a task), or the name is not 1-63 of
+   `[a-z0-9-]` not starting with `-`.
+8. `model` on any target but `pod/gateway` (*"this target takes its model from
+   its own configuration"*).
+9. With **no task**: `owner_asked: true` is missing, `request_key` is missing,
+   or `prompt` is missing (a `worker_pool` agent may have none).
+10. `prompt` is over 8 KiB.
+11. **`request_key`**, when given — decided **first under the lock**
+   (guard 14), so guards 12–13 still run for a retry. A key is the chief's,
+   per request of yours: the same key with the same parameters (target, task, repository
+   ignoring case, base, model, worker pool, the cleaned prompt, owner_asked)
+   within 24 hours **replays** — the first start's result as it stands now,
+   `{"replayed": true, "agent_id", "agent", "status", "budget"}`, starting
+   nothing and spending nothing, and running none of the checks under the lock
+   after it (your turn among them). The same
+   key with any parameter changed is refused (*"request_key %q was used in the
+   last 24 hours for a different dispatch: use a new key for a new request"*).
+   Keys are per owner. A start released because its create was refused does
+   not hold its key; one whose create failed after it was spent does: that
+   failure is recorded (`task.chief_dispatch_failed`, naming the reservation),
+   and its replay answers `{"started": false}`. Each ledger write after the
+   reservation (that marker, and the record of the agent started) is retried
+   once; if it fails again the call answers with an error saying a retry's
+   answer would be wrong — never a silent "starting". A reservation with no agent and
+   no such record replays `"status": "starting"`. The key lives in the reservation's audit row
+   (`detail.request_key`, `detail.request_hash`), looked up through migration
+   0074's index.
+12. Without `owner_asked` (only possible on a task), a `prompt` that is not
+   **your own words**: not, verbatim, your answer to an attention ask linked
+   to **this** task. An ask is linked to its task only when muster filed it on
+   the task's behalf (`task_route_attention`, or a mention's route to
+   `/attention`) — never by its question's text, which any asker can write.
+   The answer must be given **through that ask** — on `/attention`, or from
+   one of your mirrored sessions' `attention_answer`, which counts the same
+   (operator decision; the accepted risk is in
+   [attention.md](attention.md#mirrored-claude-code-sessions)) — while a
+   message you write into the chief's chat also settles its open asks, but
+   every one of them at once, on every task, so it counts for none. The
+   comparison is exact after trimming surrounding whitespace and normalising
+   line endings: one word added, a changed letter case or a doubled space is
+   refused. Your answer on another task, another user's answer, the task's own
+   text and the chief's note are all refused. The chief should pass your
+   answer as you typed it; to get one, it calls `task_route_attention` and
+   waits.
+
+   12a. On a task whose newest answer of yours to an ask about it is one of
+   `task_route_attention`'s per-target buttons, a call without `owner_asked`
+   names another target (*"your owner chose pod/gateway for this task …"*).
+   A *"Release & dispatch on <target>, …"* answer binds the target and the
+   repository it names, an owner's Release answer is not undone by a newer
+   `attention_answer` one, and a
+   *"Release only"* answer refuses any start without `owner_asked`
+   (*"your owner released this task's gate and chose to start nothing …"*).
+   This only narrows: it lets nothing through the other guards refuse.
+
+   12a′. The pod kind is one you have no credential for.
+
+   12b. The **effective** repository — `repo`, or else the task's own — is not
    `owner/name`, you have no GitHub connection, or it is not one of your
-   connected repositories. This holds for every kind. The chief picks `repo`
+   connected repositories. This holds for every target. The chief picks `repo`
    while reading outside text, and a task's repository may have been written
    by an agent (`task_create_gated`), so either may only be one of your own.
    The task is re-read under the lock below, and a repository changed in
    between is refused.
-8. Under a per-owner lock: **one start per task** — until you destroy the
-   agent it made. A task the chief already started an agent for answers with
-   that start (`already_dispatched`) and starts nothing, whatever became of the
-   agent, **unless you destroyed that agent** (the Agents page's Delete, or
-   `agent_destroy` from your mirrored session): that destroy records a release
-   (`task.chief_dispatch_released`; nothing is deleted) and the chief may
-   start **one** new agent on the task (operator decision: *"Owner's destroy
-   resets the chief's allowance"*). The chief cannot release its own start,
-   destroying an agent it did not start releases nothing, and a failed
-   teardown releases nothing. A second agent alongside a live one is yours to
-   start, from its card.
-9. The task is not yours, is gated (`gate:` tag), names a different
+13. **`owner_asked: true` always runs the owner's-turn check**, on a task the
+   chief gated, on an ungated task and with no task. A turn a plugin message,
+   a task event, mail or the chief itself started can therefore never start an
+   agent with no task, nor get its text accepted as your wishes. On an open
+   **gated** task muster starts the agent and releases the gate on **a turn
+   you typed** — and only on one — when all of these hold, each refused with
+   its own sentence otherwise (the gate stays on and nothing starts); on an
+   ungated task or with no task the same conditions apply, worded without "the
+   gate" (and, with no task, without `task_route_attention`, which needs one):
+   - the gate is the one the chief set with `task_create_gated` (muster records
+     it when the task is filed). A gate you put on a task yourself — even on a
+     task the chief filed — is never released here; only the board removes it;
+   - **your turn is running on the chief right now**: you typed a message in
+     its muster chat (its page's chat or composer, signed in as the chief's
+     owner), the chief's runtime **accepted** it, and muster's turn call has not
+     returned yet. The chief's ccd says so (an informational `103`, which muster
+     asks for) the moment the CLI submits the very text it pasted, naming the
+     session it runs in; a text the runtime refused (the CLI busy with
+     another turn, not ready) never counts, even though it is stored in the
+     chat. The mark is kept on the agent's row (so every replica sees it),
+     cleared when the turn returns and lapses after the turn budget. A plugin
+     message, a relayed attention answer, a route note, a nudge, a forward,
+     `muster chief ask`, a turn Claude Code started by itself and anything typed
+     straight into the chief's terminal never mark one;
+   - **your turn is the only Claude Code CLI working in the chief's pod.** A
+     chief's sessions run side by side (one Claude Code CLI each, ccd's
+     lanes), and a tool call does not say which one made it. So muster asks
+     the chief's ccd (`GET /v1/clis`) which CLIs are working, by each CLI's
+     own account (the status Claude Code writes in its sessions file), and
+     requires every CLI but the one running your turn to be idle. A live
+     `claude` process with no sessions file to say what it is doing counts as
+     working (its own refusal). That refuses a turn ccd gave up on that the
+     CLI is still running, a turn the CLI started by itself (a background task
+     finishing), `muster chief ask`, a job, and another session's delivery. A
+     ccd that cannot answer — unreachable, or an image without the route —
+     refuses. Also refused while muster holds the chief's session claim for a
+     turn it started — a claim taken before your turn was accepted: no
+     delivery takes it while your turn is in flight
+     (`agents.Store.ClaimKickoffForDelivery`; plugin messages, route answers
+     and hand-backs, answers to asks, session questions, nudges, memos and
+     officer re-prompts wait for your turn to end instead), so a delivery that
+     arrives during your turn never voids it. The same check serves
+     `agent_dispatch`, `route_to_session`, the host dispatch and the end of a
+     session (`ownerTurnFor`, one place). 🔴 This holds against Claude Code CLIs, **not against
+     any process** running as the pod's user — an accepted risk: one a tool
+     call left behind (a detached loop a Bash call started; the claude-code
+     chief runs every tool with no prompt, and a job's session runs with
+     `bypassPermissions`) holds the agent's muster token, can wait for your
+     turn and call muster's MCP door with your authority, and nothing in the
+     pod can tell it from the CLI
+     ([chief.md](chief.md#the-chief-runs-without-permission-prompts));
+   - the call came over MCP, from a Claude Code session. A chief session on
+     the gateway runtime runs its tools inside muster and is no CLI, so it
+     can never pass `owner_asked`.
+
+   With `owner_asked` passed, the `prompt` is accepted as the chief's relay of
+   that message of yours, without guard 12. The chief names no message: muster
+   takes the one your running turn stored. Your turn is checked **once, under
+   the lock below** (guard 15), on the turn in flight then; on a gated task
+   `verifyGateRelease` also reads it after guard 12b, and the lock then
+   requires the same message. The gate is removed only **after** the agent was
+   created, so a refusal from guard 14 on (a cap, say) leaves the task gated.
+   On a release the task gets a comment by `muster` naming your message and
+   quoting it verbatim, you get a push ("your chief released the gate on task
+   #N on your message: …"), and the start's audit row and result carry
+   `gate_released_by_owner_message`. Muster cannot tell whether your message
+   was **about** this task: the chief decides that, and the push shows you at
+   once if it misread you. A gated task filed before this release has no
+   record of its gate, so only the board releases it. If the agent starts but
+   the gate tag cannot be removed, the comment, the push and the result
+   (`gate_not_removed`) say so.
+14. Under a per-owner lock: the `request_key` again (two concurrent calls with
+   one key start one agent), then — on a task — **one start per task**, until
+   you destroy the agent it made. A task the chief already started an agent
+   for answers with that start (`already_dispatched`) and starts nothing,
+   whatever became of the agent, **unless you destroyed that agent** (its
+   page's Delete, or `agent_destroy` from your mirrored session): that destroy
+   records a release (`task.chief_dispatch_released`; nothing is deleted) and
+   the chief may start **one** new agent on the task (operator decision:
+   *"Owner's destroy resets the chief's allowance"*). The chief cannot release
+   its own start, destroying an agent it did not start releases nothing, and a
+   failed teardown releases nothing. A second agent alongside a live one is
+   yours to start, from its card. A start with no task is its own ledger
+   object (`dispatch:<32 hex>`), so this rule has nothing to bind to; its
+   `request_key` is its retry guard instead.
+15. The task is not yours, is gated (`gate:` tag), names a different
    repository than `repo`, is not `open`, or already has a live agent (use
-   `task_forward`).
-10. **5** of the agents the chief started are still live (pending,
+   `task_forward`). With `owner_asked`, your turn is checked here.
+16. **5** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet. Live is the agent row's **stored** status; a
    stopped agent does not count, and completing a task stops the chief's
-   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)).
-11. The chief started **10** agents in the last 24 hours.
+   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)). Starts
+   with and without a task share the caps, and a `worker_pool` agent holds its
+   slot for as long as it runs.
+17. The chief started **10** agents in the last 24 hours.
 
 #### The chief's dispatch budget
 
-The two caps (guards 10 and 11) are **data the chief reads at the call**, not
-numbers it is told: `task_dispatch`'s description says only that limits on
+The two caps (guards 16 and 17) are **data the chief reads at the call**, not
+numbers it is told: `agent_dispatch`'s description says only that limits on
 live agents and on daily starts apply. The chief's conversation survives
 restarts, so a number in a tool description is a number it remembers — after
 the live cap was raised it kept quoting the old one ("at most 2") from its
-own history. Instead, every `task_dispatch` answer — a start, an
-`already_dispatched`, and every refusal from guard 4 on (the live-cap and
+own history. Instead, every `agent_dispatch` answer — a start, a replay, an
+`already_dispatched`, and every refusal from guard 5 on (the live-cap and
 daily-cap refusals included) — carries the current `budget`, as does
 `task_route_attention`'s result when you opted in:
 
@@ -437,8 +1955,8 @@ daily-cap refusals included) — carries the current `budget`, as does
 "budget": {
   "live": 2, "live_cap": 5, "today": 3, "daily_cap": 10,
   "live_agents": [
-    {"id": 41, "name": "quiet-owl", "task": 17},
-    {"id": null, "name": null, "task": 23}
+    {"id": 41, "name": "quiet-owl", "task": 17, "target": "pod/claude-code"},
+    {"id": null, "name": null, "task": 0, "target": "pod/gateway"}
   ]
 }
 ```
@@ -447,25 +1965,26 @@ daily-cap refusals included) — carries the current `budget`, as does
   agent the chief started whose stored status is live, by id and name, oldest
   first; then each start from the last 10 minutes whose agent is **not
   recorded yet** — a start in flight, or one that failed before any agent
-  existed and was not released — with `id` and `name` null and only its
-  `task`. A start released because its create was refused holds no slot.
+  existed and was not released — with `id` and `name` null. `task` is `0`
+  for a start with no task, and `target` is where it runs. A start released
+  because its create was refused holds no slot.
 - `today` is the chief's starts in the last 24 hours, recorded or not.
 - A refusal is `{"error": "<its sentence>", "budget": {…}}` and is still a
   failed call (MCP `isError`). A cap refusal carries the budget the reservation
   compared, under its lock; any other answer reads it fresh, so it can be one
   start stale against a concurrent call.
-- Guards 1–3 (the flag, the opt-in, the deployment) refuse before there is
-  a budget the chief could spend, and carry none.
+- Guards 1–4 (the flag, the arguments, the opt-in, the deployment) refuse
+  before there is a budget the chief could spend, and carry none.
 - If the budget cannot be read the answer goes out without it (logged); it
   never fails the call. `task_route_attention` then does not offer
-  `task_dispatch`.
+  `agent_dispatch`.
 
 The count is the audit log, one function for both uses
 (`internal/plugins/chief_dispatch.go`, `chiefBudget`): the caps refuse on the
 same numbers the budget reports.
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
-with the kind, any instructions and the id of the attention ask they are your
+with the kind, the target, any prompt (`instructions`) and the id of the attention ask it is your
 answer to (`instructions_ask`) — and, for an answer given over MCP,
 `instructions_via: "mcp"` and `instructions_from: "<host>/<session>"` — so you
 can read what the chief told the agent and where it came from) **before** the agent is created, so a start that then fails still
@@ -477,26 +1996,29 @@ caps are counted from those rows.
 Only a start whose agent was **recorded** (`task.chief_dispatch_agent`) can be
 released, by destroying that agent. ⚠ A start that failed before any agent
 existed stays spent for good — there is nothing to destroy — and
-`task_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
+`agent_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
 that task is yours to start, from its card.
 
-The agent's first message is the chief's `instructions`, if any (control
-characters removed, fenced under a line saying the chief relayed them — and,
-for an MCP answer, that they were your answer given over MCP from
-`<host>`/`<session>` rather than on the Attention view), then
-the task's text, then muster's rules for the run, which come last and win:
-open any pull request as a **draft**, never merge, never mark the task complete
-(set it `ready_for_review` with the pull request's URL in a comment). Marking a
+The agent's first message is the chief's `prompt`, if any (control
+characters removed, fenced under a line saying the chief relayed it — from a
+message you typed in its chat, with `owner_asked`; or, for an MCP answer, as
+your answer given over MCP from `<host>`/`<session>` rather than on the
+Attention view), then the task's text, then muster's rules for the run, which
+come last and win: open any pull request as a **draft**, never merge, never
+mark the task complete (set it `ready_for_review` with the pull request's URL
+in a comment). An agent started with no task is told to report back in the
+chief's chat with `chief_ask`, or through the pull request. Marking a
 task complete is refused to every agent anyway. ⚠ The draft rule is an
 instruction, not enforced by muster: pushing and opening the pull request go
-through the `github` connector, which you approve per agent.
+through the `github` connector, which you approve once per repository
+([connectors.md](connectors.md#shared-approvals)).
 
 #### Completing a task stops the chief's agent
 
 When a task becomes `complete` — by any path: the task card, **Mark complete**,
 `PATCH /api/tasks/{id}/status`, or a merge retiring the loser — muster
 **stops** (never destroys) the agent the task's latest, unreleased chief start
-made, at once: the provisioner's `Stop`, the same call as the Agents page's
+made, at once: the provisioner's `Stop`, the same call as the agent page's
 Stop, scales its instance to zero, so a turn it is running is cut off.
 **Start** brings it back. It runs in the background after the status write; a
 failed stop is logged and the write stands. Only the move **into** `complete`
@@ -508,9 +2030,12 @@ running), and only while its row is still bound to the task. Left alone: an
 agent you started yourself, an agent already stopped or in `error`, and every
 agent of a task set to `ready_for_review` (it must stay reachable through
 `task_forward`). The task's one start stays **spent**: a stop is not a destroy
-and records no release, so `task_dispatch` on the task still answers
-`already_dispatched`. A stopped agent is not live, so it frees its slot under
-guard 10.
+and records no release, so `agent_dispatch` on the task still answers
+`already_dispatched`. A stopped agent left stopped for
+`MUSTER_AGENT_REAP_STOPPED_AFTER` (14 days by default) is then destroyed by
+the [stopped-agent reaper](provisioner.md#reaping-stopped-agents), which does
+record the release. A stopped agent is not live, so it frees its slot under
+guard 16.
 
 ⚠ The live cap reads the stored status, so an agent whose instance died while
 its row still says `running` keeps its slot until something writes the row (a
@@ -623,7 +2148,11 @@ descriptions and the preface on each message.
 
 - The task is created **gated**. The server adds `gate:<reason>`, a slug of
   `gate_reason` (`gate:awaiting-approval` when it is empty). Nothing dispatches
-  it until you remove the gate.
+  it until you release the gate: remove it on the board, or tell your chief in
+  its chat to do the work — its instructions say to call `agent_dispatch` with
+  the target you named and `owner_asked: true` in its answer, and muster checks
+  that the turn is yours before it releases the gate
+  ([guard 13](#agent_dispatch-the-guards)).
 - A caller tag in the `gate:` or `auto:` namespace is **refused**, in any
   spelling the tag grammar folds together.
 - You get the usual "New task" push. The tool creates through the same path as
@@ -641,14 +2170,17 @@ descriptions and the preface on each message.
 
 ## Replying: drafts you approve
 
-The chief answers a message with `reply_draft`. It is offered only to your
-chief, on the agent gateway and over `/mcp`, and only while plugins are on.
+The Kubernetes chief answers a message with `reply_draft`. It is offered only
+to your chief, on the agent gateway and over `/mcp`, and only while plugins are
+on. The Docker Compose chief is not offered it
+([chief.md](chief.md#on-the-docker-compose-install)): there, a reply draft is
+written by a session the chief [routed the message to](#routing-a-message-to-a-session).
 
 ```json
 {"message_id": 42, "body": "Thanks, noon works."}
 ```
 
-- **Nothing is sent.** The tool files a draft. You read it on `/plugins` and
+- **Nothing is sent.** The tool files a draft. You read it on the Asks page's Drafts tab (`/attention?tab=drafts`) and
   approve or reject it.
 - `message_id` must be a plugin message delivered, or being delivered, to this
   chief (so the chief can draft on the turn that delivers it), and not marked
@@ -669,10 +2201,10 @@ card.
 
 ### The card
 
-Each draft is a card on `/plugins`:
+Each draft is a card on the Asks page's Drafts tab (`/attention?tab=drafts`; decided ones under Archived):
 
-- The message it answers, from the outside sender, is shown escaped in its own
-  box, labelled untrusted.
+- The message it answers, from the outside sender, is shown escaped as a
+  quote, labelled untrusted.
 - The reply is shown **exactly as it will be sent**: printable ASCII as itself,
   and every other character spelled out (`\u{e9}` for é, `\n` for a new line),
   with its length in characters. Nothing invisible can ride along.
@@ -685,18 +2217,50 @@ Each draft is a card on `/plugins`:
   direction. An approved draft no plugin has collected yet shows **Withdraw the
   approval**, which rejects it the same way; once a plugin has collected it, it
   cannot be withdrawn.
+- Both take an optional **reason**: plain text, at most 1,000 characters (a
+  newline or tab is fine; any other control or invisible character is
+  refused). It is stored on the draft (migration `0123`), written to the
+  decision's audit row, and drawn on the card's history as *Your reason: …*.
+  For a reply draft that is all it does: the chief or session that wrote it is
+  not told. For an officer's [outbound draft](#the-result) its officer is told
+  it, as the `detail` of a `draft.refused` item.
 - If an earlier reply to the same message is unconfirmed, a pending card says
   the sender may get both.
+
+### Deciding a draft from your own session
+
+One of your own **mirrored** Claude Code sessions can decide a draft for you,
+over the mirror MCP door ([attention.md](attention.md#mirrored-claude-code-sessions)),
+with two tools no dispatched agent (the chief included) is offered:
+
+| tool | what it does |
+|---|---|
+| `plugin_drafts_list` | Your **pending** drafts, newest first, at most 50 (past 50 the oldest are left out; `total` and `truncated` say so): id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from, if any. Read-only. |
+| `plugin_draft_decide {id, decision, body_sha256, reason?}` | `decision` is `approve` (it is **queued**, not yet sent: the plugin's next claim collects it and tries to send it; a refusal [comes back](#when-the-plugin-refuses-a-reply)) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), an approval of a draft its plugin has [not checked yet](#check-a-reply-before-it-can-be-approved) or refused, a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). `reason` goes with a `reject` only (an approval naming one is refused): the card's reason, with the same bound and the same effect. |
+
+Every decision's `plugin.draft.*` audit row records where it was made
+(`decided_via`): `browser` for the card, `mcp from <host>/<session>` for
+`plugin_draft_decide`.
+
+🔴 **Accepted risk: a mirror token can send a reply.** An approval over MCP
+sends text to an outside party in your name with no fresh sign-in. **Any** of
+your mirrored sessions can approve any of your pending drafts — including the
+session a message was routed to, which can approve the reply it wrote itself.
+That is the accepted cost of no step-up. A leaked mirror token, or a mirrored
+session talked into it, can therefore read every pending draft (the sender,
+subject and full text of the message it answers, and the reply) and approve
+any of them (never edit one: the text is fixed when it is written, and the
+hash must match it). Revoke a token you suspect.
 
 ### What happens to a draft
 
 | state | meaning |
 |---|---|
-| `pending` | awaiting your decision |
+| `pending` | awaiting your decision — or, for a [`draft_checks`](#check-a-reply-before-it-can-be-approved) plugin, its check first |
 | `approved` | the next claim will hand it to the plugin, or already has (leased) |
 | `sent` / `failed` | the plugin's result |
 | `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Never offered again, and it cannot be approved again. |
-| `rejected` | you said no |
+| `rejected` | you said no, or the plugin's check refused it |
 | `superseded` | the chief wrote a newer draft for the same message; or another reply to the same message was reported sent before a plugin collected this one (it may then still carry its approval time) |
 | `expired` | not sent within 7 days of being written, whether pending or approved |
 
@@ -724,6 +2288,72 @@ turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
 
+A session is also listed by **its repo**, whether or not its focus matches:
+an online mirrored Claude Code window, however long it has been idle, whose
+repository name (as its host reports it, split on `-`, `_` and `.`) the
+message covers in at least two parts. A run counts when the message spells
+parts of the name in a row (`yt-thumbnail` or "YT Thumbnail" for
+`acme-app-yt-thumbnail`) and the run holds a part that is an identifier on
+its own (a word with digits, or one that is not a dictionary word — so
+`new-project` is never named by "a new project") and a part no other live
+repo's name has — so "acme app" names none of a family of `acme-app-*` repos.
+These come after the focus matches, within the three; between two windows
+covering as many parts, the more recently active goes first. The
+window label is not matched here: a Claude window's label is its host's
+codename (`<codename>:<n>`), not a task title. Such a session's line says it
+was listed by its repo, with the repo and when it was last active: a session
+open on a job but idle for days has no focus in the window, and
+`sessions_overview` lists only the last 24 hours. The repo name is the host's
+words, inside the fence like the titles. `focus_search` does the same after
+its focus matches, and there the label counts too (a codename typed on
+purpose): an online mirrored session whose repo or label matches the query
+comes back with `matched: "repo or window label"`.
+
+A session is also listed by **its pull request**, and these come **first**:
+an online mirrored Claude Code window, however long idle, that muster
+recorded (`session_prs`, the
+[pull-request review mail](#a-pull-request-review-mail)'s record, so only with
+that feature on) creating a pull request the message names, or pushing a
+branch it spells. A pull request reference finds the session that created it;
+a branch name finds a session that pushed it. A
+pull request is named as `<repo>#N`, `<owner>/<repo>#N` or its
+`github.com/<owner>/<repo>/pull/N` URL, compared case-insensitively — **a bare
+`#N` names none**, nor does `PR 2855` — and only one muster recorded for that
+very repository and number counts, so `issue#12` names nothing unless a
+recorded repository is called `issue`. A `gh pr create` row matches by its
+number; a `git push` row names no number and matches by its branch only. A
+branch counts when the message
+spells it as a whole word (`feat/stage-c-job`, and also after `refs/heads/`,
+in a `…/tree/<branch>` URL or either side of a `...` compare range; not inside
+`feat/stage-c-job-2` or `origin/feat/stage-c-job`), it is at least five
+characters, and it holds a `/`, a digit, or a `-`/`_`-separated part of three
+or more letters that is not a dictionary word: `main`, `master` or `develop` —
+what a trunk-deployed session pushes every day — and words like `follow-up`,
+`read-only` or `gh-pages` never name a session. muster narrows the stored rows
+to the pull requests and branches the message names before it reads at most
+500 of them, so busy sessions' newer rows never push an idle author out. This finds the session a repo match
+cannot: one in a local clone named differently from the pull request's
+repository, whose focus never spelled the number. Its line says it was listed
+by its pull request, with what it was listed by (at most two) and when it was
+last active; that text is a host hook's report, inside the fence. They come
+before the focus matches because they are exact: three loose focus matches
+would otherwise fill the three places and push out the session the message
+names. Only the owner's own rows are read (`session_prs` is under row-level
+security) and only for windows online now; a row unseen for 30 days never
+counts. A **merged or closed** pull request still counts: its state is known
+only through the optional GitHub App, and a follow-up on what a pull request
+shipped is as much its session's. `focus_search` lists these first too, with
+`matched: "pull request or branch"` and `pull_requests`. The mirror wire does
+not carry a window's current git branch, so a branch is matched only when its
+session's hook reported pushing it.
+
+A **task event** gets the block too, matched on the task's own title and
+body (as muster stores them) and its change line, never on the event's JSON,
+and **leaving out the agents bound to the task** — those the event records and
+those bound since. Its routing line hands the task over with
+`route_to_session(task_id, subject)`. A `no_reply` message's routing line says
+it goes as a [one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered).
+
 The block is muster's own, not the message's. It follows the message's
 closing marker and is fenced under its own nonce, and every message line sits
 behind the message fence's content prefix, so a message that spells the
@@ -731,30 +2361,131 @@ block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
 chief's standing instructions tell it to check those sessions, and
 `sessions_overview`, before filing a task or drafting a reply, and to route
-with `route_to_session` only when one is clearly on it. When none is and
-the message asks you to do or decide something (a question to you, a request,
-an approval), they tell it not to stop at reading it: it raises an
-`attention_ask` summarising who the message is from and what it asks, so it
-reaches your Attention view. A message that only informs gets no ask: asks
-stay open a day and every agent shares your open-ask limit.
+with `route_to_session` only when one is clearly on it. A message it acts on
+in none of those ways is not left to its judgement: muster puts it in front of
+you itself ([below](#a-message-the-chief-does-not-act-on)).
 
 This is pushed rather than left to the chief because a chief that was not
 told called no session tool at all. See [focus](focus.md#why-a-time-window-over-history-and-not-the-current-focus)
 for why the lookup reads a time window of history.
 
+## A message the chief does not act on
+
+A message that can be replied to (not `no_reply`) and was delivered to your
+chief **awaits a disposition**. It is dispositioned once it is settled, or once
+the chief **acted on it**:
+
+- a **live** reply draft: pending, approved, sent or unconfirmed;
+- a **live** route to a session: routed, answered or relayed;
+- a gated task filed citing it (`task_create_gated` with its `message_id`).
+
+That "acted on it" rule is the same one that keeps a message off the
+[retry list](#retrying-an-unconfirmed-message) (`chiefActed`, one predicate
+for both). Live, not any state: a draft rejected, superseded, expired or
+failed, and a route timed out or failed, ended without an answer, so the
+message is back where it started — except a
+[pull-request review](#a-pull-request-review-mail) the session had (its paste
+was sent), which muster settles itself when its route ends, and a review whose
+route failed **only** because a review of a **newer head** of the same pull
+request superseded it (`superseded by a newer review round, a newer head
+commit (route rt_…)`, naming a route of another message): that one is
+dispositioned, and the newer round's
+message raises the ask instead if its own route fails for a real reason. An
+ask already open for such a message is closed by the sweep.
+
+A **settle** is the chief's `plugin_message_settle {message_id, reason}`: its
+judgement that the message needs nothing more (a notice, a status update, a
+newsletter, or one dealt with some other way), with why. The reason is stored
+on the message (`settle_reason`, at most 2000 characters) and in the
+`plugin.message.settled` audit row, and travels with the message
+(`settleReason`). A second settle keeps the first reason. Only the chief is
+offered the tool, and only for a message delivered to it: another owner's
+message, or one still queued, is *"not a plugin message delivered to you"*.
+
+**Route first.** Before the chief files feedback, or decides what happens to
+a [task event](#routing-a-task-to-the-chief), its standing instructions say to
+look for the live session already on it: the
+[session hint](#sessions-that-may-already-be-on-it) on the turn, and
+`focus_search` when that does not settle it. When exactly one live session is
+clearly on it, the chief hands it to that session with `route_to_session` — a
+message by its `message_id` (one that cannot be answered goes as a
+[one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered)),
+a task event's task by its `task_id` — and muster
+[tells you where it went](#you-are-told-where-the-chief-routed-it). When no
+session is, or several might be, it puts the item in front of you instead, as
+below.
+
+**Feedback** gets a decision every time. A provisioned chief's standing
+instructions say that a plugin message which is feedback (someone using your
+work reports a bug, asks for a feature or says something confused them),
+whichever plugin brought it, is routed, filed or settled. When it can be acted
+on and no live session took it (route first, above), the chief files it with `task_create_gated`, then, when
+[task routing](#routing-a-task-to-the-chief) is on, calls
+`task_route_attention` with the new task's id and a one-line note, so the
+task reaches your phone with that note. The task is gated, so the ask's
+buttons are yours to [release it from the ask](#releasing-the-chiefs-gate-from-the-ask):
+**Release & dispatch** (muster releases the gate, then the chief starts the
+agent on the target you tapped) and **Release only**, beside Dismiss. You can
+also approve it on the board, or tell the chief in its chat. Thanks, a +1, chatter, or a duplicate
+of a task already open is settled with a short reason instead. This is the
+chief's judgement under its instructions. muster does not check it: the
+15-minute ask below covers only agent-mail and ClankMail.
+
+An **agent-mail** or **ClankMail** message — one from the plugin named
+`agent-mail` or `clankmail` (`plugins.ThreadPlugins`; plugins are named this
+way everywhere, as in the route allowlist) — still awaiting a disposition **15 minutes** after its
+delivery is put in front of you by muster: the attention sweep (every 30 s)
+raises an [ask](attention.md), asked by `muster`, showing the sender (with the
+**UNVERIFIED** mark unless the plugin verified the sender), the subject, the
+plugin and id, and the first 600 characters. Messages from every other plugin
+never raise one: Discord DMs, for one, you already read in Discord, and a
+chief that answers few of them would otherwise turn each into an ask. An
+unconfirmed delivery (its turn was cut off) is not judged either: it waits on
+the [retry list](#retrying-an-unconfirmed-message).
+
+- **One ask per message, ever.** `attention_asks.plugin_message_id` is unique,
+  so a sweep run again, two processes sweeping at once or a retry after a
+  crash cannot raise a second; whatever the ask's fate, the message is not
+  asked about again. A disposition that races the raise is caught by the next
+  sweep's close.
+- **Answer it** — **No action needed**, or anything you type — and the message
+  is settled with your answer as the reason. Nothing is sent and the chief is
+  not told: to reply, ask your chief for a draft.
+- **A later disposition closes it**: the next sweep cancels the ask and clears
+  its notification.
+- **Dismiss without answering** withdraws it and leaves the message unsettled.
+- **Capped like any ask.** They count toward your limit of open asks (50,
+  shared with your agents) and expire after a day. At the limit the sweep
+  raises none and tries again on the next one (one log line per sweep).
+- **Muster's, not the chief's**, so the chief cannot `attention_cancel` one:
+  only a disposition closes it.
+
+**Nothing fires at the deploy.** Migration `0051` settles every message already
+awaiting a disposition, from any plugin, with the reason `pre-existing`, using
+the sweep's own predicate (`awaitsDisposition`). A message still queued then is
+judged when it is delivered.
+
 ## Routing a message to a session
 
-With `MUSTER_SESSION_ROUTING=1` (and plugins on), your chief can hand a plugin
+With `MUSTER_SESSION_ROUTING=1` and plugins on, your chief can hand a plugin
 message to the session best placed to answer it, instead of drafting the reply
-itself. It finds the session by [focus](focus.md) (`focus_search`,
+itself. (Session routing alone, without plugins, routes
+[your own typed requests](#routing-your-own-request-to-a-session) and
+[tasks](#routing-a-task-to-a-session).) It finds the session by [focus](focus.md) (`focus_search`,
 `fleet_list`) and calls `route_to_session(message_id, subject)`. The chief's
 turn for each message says when to do this.
 
 1. **The route.** muster records a route (`session_routes`, migration `0021`):
-   the message, the chief, the target and a deadline, `MUSTER_ROUTE_TIMEOUT`
-   away (30 minutes unless set; [configuration](configuration.md)). The
-   message must be one delivered to that chief, replyable, not already routed,
-   and with no reply already approved and on its way.
+   the message, the chief, the target and a deadline 30 minutes away (4 hours
+   for a [pull-request review](#a-pull-request-review-mail) muster routes
+   itself, and for a message its plugin marked `human_conversation`: a person
+   in a conversation, whose answer is often yours to give, and for
+   [your own typed request](#routing-your-own-request-to-a-session); every other
+   route, the chief's, yours and a route by thread, has 30 minutes). A still-queued paste has no deadline of its own: it waits as long
+   as its route does. The
+   message must be one delivered to that chief, not already routed, and with
+   no reply already approved and on its way. A message its plugin marked
+   `no_reply` is routed [one-way](#a-one-way-heads-up-for-a-message-that-cannot-be-answered).
 2. **Into the session.** Only a **mirrored Claude Code window** can take a
    routed message (`mirror:<claude session id>`). muster queues it through the
    window's [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle),
@@ -764,7 +2495,10 @@ turn for each message says when to do this.
    wrote: a preface saying it is an untrusted external message, its `route_id`
    and how to answer, then the message behind the fence's content prefix. It
    appears in that window's queue like any queued message, and you can Cancel
-   it there.
+   it there: a cancelled routed message — by you, or by a disable or a
+   sign-out everywhere — ends its route and goes back to the chief at once,
+   not at its deadline. So does one still queued when no online window has
+   shown its session for 2 minutes.
 3. **The answer.** The session answers with the `route_reply {route_id, body}`
    tool of its [muster MCP server](attention.md#mirrored-claude-code-sessions)
    (`POST /mirror/mcp`, the mirror host's token). It is bound to the route's
@@ -789,6 +2523,12 @@ turn for each message says when to do this.
    addresses. It no longer asks the session to leave out infrastructure names:
    the reply screen below still refuses the deployment's own names, with an
    error the session can act on.
+
+   A session that needs to know something before it answers can ask the
+   chief: `chief_ask {question, route_id}` ([attention.md](attention.md#asking-the-chief)).
+   The chief gets the question with the message quoted; its answer comes back
+   through the session's `attention_wait`. The route keeps its own deadline
+   meanwhile.
 4. **Back to the sender**, exactly once, as the message's reply draft:
    - when the message's sender is on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`)
      **for the plugin that delivered it**, and that plugin marked the sender
@@ -797,7 +2537,7 @@ turn for each message says when to do this.
      claim and result routes;
    - otherwise — an unverified sender, the same address arriving through
      another plugin, an address that is not plain ASCII — it is an ordinary
-     **pending** draft that you approve on `/plugins`, with the usual push. It
+     **pending** draft that you approve on the Asks page (`/attention?tab=drafts`), with the usual push. It
      counts toward the chief's 20 pending drafts, like any draft; at that limit
      the route fails and the message is handed back to the chief (a turn, or
      a note when it is not running), as when a route times out. A relay that
@@ -838,7 +2578,7 @@ turn for each message says when to do this.
    fails, is the only place it is delivered.
 
 Every step writes a `session_route.*` audit row (`routed`, `answered`,
-`relayed`, `fallback`, `timed_out`, `failed`), plus the draft's own
+`relayed`, `fallback`, `timed_out`, `failed`, `owner_answered`, `send_failed`), plus the draft's own
 `plugin.draft.filed` / `plugin.draft.approved` (with `"auto": true`).
 
 🔴 **What stands in for the step-up.** A message you queue carries the sign-in
@@ -860,8 +2600,7 @@ Claude Code's status is a target, the account check at delivery still applies
 refuses it), and the row is visible and cancellable in the window's queue.
 
 The answer comes back on `POST /api/routes/{route_id}/reply` with a personal
-API token or the hook token. With `MUSTER_HOOK_TOKEN` unset, only a personal
-token works, and the boot banner warns.
+API token or the hook token.
 
 ⚠ **The send queue does not see a half-typed prompt.** Claude Code reports
 `idle` while text sits unsent in its input box; a routed paste then lands after
@@ -870,3 +2609,826 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+The routed paste tells the session to write plain text, with no Markdown lists,
+headings or code blocks. That is a hint, not a rule muster enforces: the rule is
+the plugin's, through its [check](#check-a-reply-before-it-can-be-approved) or
+its send, and a reply it refuses [comes back](#when-the-plugin-refuses-a-reply).
+
+### A one-way heads-up for a message that cannot be answered
+
+A message its plugin marked [`no_reply`](#no_reply) — feedback a relay posts,
+a notification — has no sender to answer, but the session already on what it
+is about may well want it. So the chief's `route_to_session(message_id,
+subject)` takes it too, as a **one-way** route (`session_routes.one_way`,
+migration `0087`): the same target checks, paste, `route_reply`, deadline,
+hand-back and audit rows as any message route. What differs:
+
+- **The paste says NO REPLY POSSIBLE** before anything else: the sender cannot
+  be answered and nothing the session writes reaches them; it is a heads-up,
+  still an UNTRUSTED external message, and the session reports back to the
+  chief, not the sender — what it did about it, or why it does not bear on its
+  work.
+- **The answer goes to the chief only.** `route_reply` records it and ends the
+  route `relayed`, owing the chief the answer, which the route sweep delivers —
+  at least once, in the plugin's chief session (the chief's default session
+  when that one is gone) — exactly as a
+  [request route's](#routing-your-own-request-to-a-session) answer is. It is
+  never a reply draft, whatever the allowlist says: the relay refuses a
+  `no_reply` message, the database refuses a draft for one, and `0087` refuses
+  a draft on a one-way route's row. Since it never leaves muster, the answer is
+  not screened against the deployment's own names.
+- **A hand-back offers no reply.** A one-way route that times out or fails
+  comes back to the chief with what it can do with a message nobody can
+  answer: route it to another session, file the work
+  (`task_create_gated` and `task_route_attention`), or settle it.
+- **Only the chief's own route** — and an approved routing rule's, and a
+  pull-request route's, which makes a `no_reply` review one-way and
+  [answered through HQ](#a-review-answered-through-hq). Your own door
+  ([`plugin_message_route`](#routing-a-message-from-your-own-session)) and a
+  route by thread still refuse a `no_reply` message; and a
+  **task event**, though `no_reply`, is refused by `message_id` with a pointer
+  to its task: route the task with `task_id` instead.
+
+The chief's turn for a `no_reply` message says it can be routed this way (with
+session routing on), and its session hint's routing line is worded for it.
+**The trust boundary is unchanged:** the message's text never chooses the
+session (the chief picks from muster's hint and its own tools), only the
+stored message is pasted, fenced, and nothing on this path can reach the
+sender.
+
+### You are told where the chief routed it
+
+Every route the chief makes **on its own** — a plugin message's (two-way or
+one-way) or a task's — sends you one notification when the route is made:
+*"Chief routed it to `<tmux place>`"*, its body the plugin's label and the
+message's subject (*"(no reply possible: a heads-up)"* for a one-way route),
+or the task's number and title. A tap opens the session (or the task). It is
+sent by muster on the route's creation, not left to the chief's prose: never
+for a refused route, and never for
+[your own request](#routing-your-own-request-to-a-session), which you asked for.
+It is information, with nothing to answer, on the `plugin` notification toggle
+on `/account` ([push.md](push.md)) — muting that toggle silences it. The body
+quotes the message's subject: outside text, shown on one line and never acted
+on.
+
+### When the owner answers it directly
+
+A routed message's sender can get their answer **directly** — through the
+plugin's own sending tool, by the routed session or by you — rather than
+through `route_reply`. muster never sees that reply, so the route would time
+out and go back to the chief as if nobody had answered. So a sending tool that
+knows which message it answers **stamps** the send with that message's id, and
+after a send it has verified, the plugin reports it:
+
+```json
+POST /plugin/v1/messages/{message_id}/owner-answered
+{"thread": "dm-123"}
+```
+
+with the plugin token. `thread` is the conversation the reply was **sent
+to**, as the sending tool knew it; it must equal the `thread` the message was
+stored with. That binds the stamp to its conversation: a stamp carrying a
+wrong message id cannot settle another conversation's route. If the thread
+matches and the message's route is still waiting (`routed`), it ends
+`owner_answered`: a paste still queued is cancelled, a
+session's late `route_reply` is refused ("its reply was already sent to the
+sender directly"), the chief's conversation gets a note (never a turn), and
+the route records when muster took the report (`owner_replied_at`) with a
+`session_route.owner_answered` audit row.
+
+| answer | meaning |
+|---|---|
+| `200 {"message_id", "route_id", "state": "owner_answered", "settled": true}` | the route was waiting and is settled |
+| `200 {…, "settled": false, "state": "owner_answered"}` | already settled: a repeat of the stamp changes nothing |
+| `409 {…, "settled": false, "state", "error"}` | the stamp's `thread` is not the message's, or the message was stored with no `thread` (the error says which); or the route is not waiting — `answered`, `relayed`, `fallback`, `timed_out`, `failed`, or `none` (never routed). Nothing changes, and a hand-back already owed or delivered stands. Final: do not retry. |
+| `400` | the body is not `{"thread": "<thread id>"}` (for a message of this plugin) |
+| `404` | not a message of this plugin (another plugin's, another owner's, or none), or routing is off |
+
+⚠ **A stamp on a `fallback` route is a 409 and leaves its draft pending.**
+`fallback` means the session already answered through `route_reply` and its
+reply draft awaits your approval. The stamp does not touch that draft: if you
+approve it afterwards, the sender gets a **second** reply. Reject it on the
+draft card if the direct reply was enough.
+
+🔴 **The signal is a stamp on a send, never an inference.** muster settles the
+one message the stamp names, and only a message the same plugin delivered. A
+reply typed by hand carries no stamp and settles nothing: its route times out
+as usual. muster reads no message text for who wrote what.
+
+### A reply on a thread a session started
+
+When one of your mirrored Claude Code sessions sends **agent mail** or
+**ClankMail** that starts a thread, a later reply on that thread goes **straight back to that session**:
+the chief's route (`routeItem`), made by muster, with no chief decision.
+
+1. **The binding.** Whatever sent the thread's first message reports it — for
+   agent mail, the session's PostToolUse hook (outside muster); for ClankMail,
+   whoever sent the thread's first message (the root is the signed message's own
+   `m_` id). `muster-clankmail` only replies and has no send command yet, so
+   today that is you, by hand ([muster-clankmail, Pairing](https://github.com/ZacxDev/muster-clankmail#pairing)): `POST /api/plugin-threads {thread,
+   claude_session}`, with route reply's credential (a personal token or the
+   hook token). `201`: bound. `200`: the thread was already bound; **the first
+   report wins** and the binding is unchanged. `409`: no online mirrored window
+   shows the session, so nothing is bound. `404` with routing off. No response
+   body on success. Stored in `plugin_threads` (migration `0054`).
+2. **The route.** A NEW message from the plugin named `agent-mail` or
+   `clankmail` (`plugins.ThreadPlugins`) — only those; a Discord DM never is —
+   that carries a bound `thread` and is not
+   `no_reply` is routed to the bound session, when an online mirrored window
+   shows that session and you have a chief.
+   The message is handed to the chief **without a turn**, in the same
+   transaction as the route (`plugin.delivered` with `"routed": true`), and is
+   recorded in the chief's conversation as its delivery turn would have shown
+   it, with a line naming the route. Then everything is the chief's route: the
+   paste after the idle wait, `route_reply`, the relay, the deadline and the
+   hand-back to the chief (which holds the message). The routed block says it
+   was routed by muster; the `session_route.routed` audit row carries
+   `routed_via: "thread <thread> started by <session>"`.
+3. **Otherwise, the ordinary delivery.** An unbound thread, a session no online
+   window shows, no chief, or a route that could not
+   be made: the message goes to your chief exactly as any other. A route made
+   but not pasted (the window's queue refused it) fails and is handed back.
+4. A routed message is a live route, so it never also becomes an
+   [unrouted ask](#a-message-the-chief-does-not-act-on); a repeat of its
+   `external_id` routes nothing again.
+
+The accepted risk: [auth.md](auth.md#threads-a-session-started).
+
+### A pull-request review mail
+
+A review of a pull request — mail from a hosted review gate — goes **straight
+to the mirrored session that created that pull request or pushed its branch**,
+the same way a reply on a thread does. Off unless `MUSTER_PR_MAIL_SENDERS` lists
+the gate's agent-mail address ([configuration](configuration.md)) and session
+routing is on.
+
+1. **Who authored what.** A PostToolUse hook on your host (outside muster)
+   reports a successful `gh pr create` or
+   `git push` that the session ran: `POST /api/pr-sessions {repo, pr,
+   head_ref, claude_session, kind}`, with route reply's credential (a personal
+   token or the hook token). `kind` is `gh-pr-create` (with `pr`, and
+   `head_ref` when the create named its head) or `git-push` (with `head_ref`
+   and no `pr`). `201`: recorded; `200`: the same authorship again, now the
+   most recent; `400`: not a well-formed report; `404` with this feature off.
+   No response body on success. Stored in `session_prs` (migration `0055`,
+   owned, under row-level security) **whether or not a mirrored window shows
+   the session** — unlike a thread bind — because the row is also what names
+   the author to the chief when its window is gone (step 4); the window's host
+   is recorded when one does. A report also deletes the owner's rows unseen
+   for 30 days. A hook fired for a Bash call inside a **subagent** carries the
+   parent session's `session_id`, so a subagent's pull request is the parent
+   session's.
+2. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
+   is on the list **and** that the plugin marked `sender_verified` — never one
+   from `clankmail`, whatever its sender ([auth](auth.md#pull-request-review-mail)).
+   muster reads
+   the body's **last** fenced block whose info string is `json` (a fence of
+   three or more backticks, closed by a run at least as long), and that block
+   must end the body — only whitespace may follow its closing fence:
+
+   ```json
+   {"repo": "<owner>/<repo>", "pr": 123, "head_sha": "<40 hex>", "head_ref": "<branch>"}
+   ```
+
+   `repo` (`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`, compared case-insensitively),
+   `pr` (a positive integer) and `head_sha` (40 lower-case hex) are required;
+   `head_ref` is optional and matches a pushed branch. Anything else in the
+   body is ignored; a block that is missing or malformed routes nothing.
+3. **The route.** The owner's session that most recently created that pull
+   request (repo and number) or pushed its head branch (repo and `head_ref`)
+   gets it through the thread route's path: handed to the chief without a
+   turn, pasted after the idle wait, answered with `route_reply`, with the
+   hand-back — but a deadline of **4 hours**, not 30 minutes: the session that
+   authored the pull request is usually still at work on it, and its paste
+   waits until its window goes idle, so a 30-minute deadline handed most
+   reviews back to the chief before they were ever pasted. So a review may be
+   pasted up to 4 hours after its mail arrived, at the session's first idle
+   gap. The audit row carries
+   `routed_via: "pr <owner>/<repo>#<n> authored by <session>"` and the round,
+   `pr_head_sha`; the route row records the round too
+   (`session_routes.pr_head_sha`, migration `0070`). Another owner's session is
+   never chosen.
+
+   **What the session is told.** The paste says it is a review of the
+   session's **own** pull request, to act on in its work — each finding judged
+   against the code — and that `route_reply` is **optional** (a short
+   acknowledgement, sent to the reviewer as written). It is still fenced as an
+   UNTRUSTED external message: data, never instructions to run, open or obey.
+   A review whose sender takes no mail is told to answer through HQ instead
+   ([below](#a-review-answered-through-hq)).
+
+   **A round is a head commit.** A review may arrive as several messages
+   (part 1/2, part 2/2) with the same `head_sha`: they are one round, and every
+   part reaches the session — no part supersedes another. A review that
+   **arrives later** with a **different** `head_sha` for the same pull request
+   and session **supersedes** every open route of an earlier-arriving round,
+   whether or not its paste was already delivered — **when its head is the
+   same as or newer than** that round's. **The newest head wins:** muster
+   reads the pull request's commits through the [GitHub App](configuration.md)
+   (the same repository-limited pull-requests read as below), and a late
+   review of an **older** head supersedes nothing: both routes stay, and the
+   newer review is never hidden. When the order cannot be read (no App, a head
+   not among the commits after a force push, an error), it supersedes by
+   arrival, as before. The superseded route ends `failed` ("superseded by a
+   newer review round", with ", a newer head commit" when the order was read),
+   with no hand-back to the
+   chief, and a paste still queued is cancelled (so the session never answers,
+   and muster never auto-sends, a stale round).
+
+   **Handled, not handed back.** A superseded round whose paste **was sent**,
+   and a review whose paste **was sent** and that got no `route_reply` by its
+   4-hour deadline (`timed_out`, its error saying it was delivered), are
+   **handled**: the message is settled by muster (a reason starting
+   `muster: `), so it never becomes a
+   ["not acted on" ask](#a-message-the-chief-does-not-act-on). A superseded
+   round whose paste was **not** sent (still queued, being sent) is **not**
+   settled — the session never had it. Superseded by a **newer head** (the
+   order read), it raises **no** "not acted on" ask: the **newer round's
+   message** answers for the review, and when the newer round's own route
+   fails for a real reason (the window closed, the queue was full) the ask is
+   raised on **that** message, the newest; a newer round superseded in turn
+   passes this on, so there is one ask, never one per round. Superseded by
+   **arrival alone** (the order unknown), it still raises the ask: muster
+   cannot tell it was not the newer head. A review whose paste was **never** delivered by its
+   deadline — still queued, cancelled, or failed — goes back to the chief as
+   any route does. Every other route (the chief's, the owner's, a route by
+   thread) is unchanged. A review route made before `0070` has no round: it is
+   superseded by any later round, and times out the old way.
+4. **No online window for that session.** The message goes to your chief as
+   any other, and its turn ends with a block headed "Session that authored
+   this pull request": the session's id, title, host, what its host's hook reported it did
+   and when, and that no window shows it — so the chief can raise an ask with
+   a resume pointer instead of guessing.
+5. **No author recorded**, or not a review muster reads: the ordinary
+   delivery, unchanged.
+
+#### Which session created a pull request
+
+`GET /api/pr-sessions?repo=<owner>/<repo>&pr=<n>` reads the rows step 1
+recorded: every one of **your** sessions recorded as creating that pull request
+(`kind` `gh-pr-create`; a push names no number, so it is never one of them),
+newest first by `first_seen`, at most 100. The same credential as the report,
+on the same fail-closed door (a server with no `MUSTER_HOOK_TOKEN` answers 503
+with `"unarmed": true` to the hook token); row-level security answers the
+caller's own rows only.
+
+```json
+{"repo": "acme/widget", "pr": 12, "sessions": [
+  {"claude_session": "<id>", "host": "<mirror host>" | null, "kind": "gh-pr-create",
+   "repo": "acme/widget", "pr": 12, "head_ref": "<branch>" | null,
+   "first_seen": "<RFC 3339>", "last_seen": "<RFC 3339>"}]}
+```
+
+`repo` is matched case-insensitively. `200` with `"sessions": []` when none is
+recorded; `400` when `repo` is not `<owner>/<repo>` or `pr` is not a positive
+integer. The read is served **only where pull-request routing is configured**
+(plugins on, `MUSTER_SESSION_ROUTING=1` and a non-empty
+`MUSTER_PR_MAIL_SENDERS`, which is what wires the store); anywhere else it
+answers `404` (`feature_disabled`), as the report does. Rows are listed while
+they are stored — a report prunes the owner's rows unseen for 30 days.
+
+The list is the sessions that **created** the pull request (create rows,
+newest `first_seen` first, not limited to routing's 30-day window), which can
+differ from the session a review is routed to: routing takes the newest
+`last_seen` inside that window and also matches a pushed head branch. From the CLI:
+[`muster pr-session`](cli.md#which-session-created-a-pull-request).
+
+#### A review answered through HQ
+
+Some review senders take **no mail** — HQ's own PR-review address refuses
+everything sent to it — so a `route_reply` to such a review would become a
+reply draft that can never be delivered. Their plugin marks such a message
+`no_reply`, and a `no_reply` review is **answered through HQ**:
+
+- **It is still routed by pull request** to the session that authored it (a
+  route by pull request is the one muster-made route that takes a `no_reply`
+  message), as a **one-way** route (`session_routes.one_way`), so the schema
+  forbids it a reply draft (migration `0087`). That pair — a round
+  (`pr_head_sha`) and one-way — is how the row itself says it.
+- **The paste tells the session to answer through HQ, never through muster.**
+  It says it is a review of the session's own pull request, to act on, and
+  that the reviewer takes no mail. What else it says is fitted to the round
+  by the machine block's `findings` array — never by the mail's prose:
+  - **a round with findings**: why a finding stays unfixed is recorded with
+    HQ's PR-review respond channel: the `pr_review_why_respond` tool of HQ's
+    MCP server, or `hq pr-review why respond <finding id> --pr
+    <owner>/<repo>#<n> --kind <reason_kind> --reason "…"` (both `POST
+    /api/v1/pr-reviews/why/respond`, with the session's own HQ token, which
+    needs the `ack` scope). The paste names the round's `review_id` and each
+    finding's short id and severity (`review_id`; `findings[].id`, `f_` and 12
+    hex; `findings[].severity`) — only values in those grammars, since they
+    stand outside the untrusted fence;
+  - **a round with none** (`"findings": []`): the respond channel is not
+    named — there is nothing to answer finding by finding.
+
+  Both say where to record the pull request's **intent** if HQ has none:
+  `pr_review_why_set` (pr and intent, at least 80 characters), or `hq
+  pr-review why set <pr> --intent-file <path>`. HQ asks for one in front of
+  every round's findings mail until it is recorded; the ask is prose ahead of
+  the machine block, which carries nothing that says it is there, so muster
+  does not detect it and the sentence is conditional on it. The paste names
+  the pull request either way and does not mention `route_reply`. muster calls
+  HQ for nothing: it holds no HQ credential for this.
+- **`route_reply` is refused, every time**, with `400` (`"refused":
+  "hq_review"`) and the same pointer to HQ's channel. Nothing is recorded.
+- **It closes as handled** as every delivered review does: once its paste was
+  sent, its 4-hour deadline ends it `timed_out` (its error saying it was
+  delivered), with no hand-back to the chief and no "not acted on" ask, its
+  message settled by muster.
+
+A review whose message is not `no_reply` is unchanged: `route_reply` is
+optional and files a reply as before. What muster does not see: whether the
+session's call to HQ succeeded — HQ answers the session, not muster.
+
+#### A review of a pull request already merged or closed
+
+With the [GitHub App](configuration.md) configured, muster asks GitHub for the
+pull request's state (`GET /repos/<owner>/<repo>/pulls/<n>`, with a token the
+App mints for that one repository with **Pull requests: read** and metadata
+read — muster's own read, never handed to an agent) at each point a review
+would otherwise reach a person. When GitHub reports it **closed**, merged or
+not, the review needs nothing more, and muster settles its message itself.
+The reason says which:
+
+- `muster: a review of pull request <owner>/<repo>#<n>, which GitHub reports
+  already merged: nothing left to act on`;
+- `… already closed WITHOUT being merged: nothing left to act on there` — and,
+  because such work is sometimes re-filed as another pull request, the chief's
+  conversation also gets a one-line note naming the message (it costs the
+  chief no turn).
+
+Where it is checked:
+
+- **on arrival** — no route, no paste into the session, no chief turn (the
+  message is recorded as handed to the chief, already settled);
+- **when its route would be handed back** — a review timed out or superseded
+  before its paste was sent: settled instead of going back to the chief;
+- **when the ["not acted on" ask](#a-message-the-chief-does-not-act-on) is
+  due** — a review the chief holds, a round superseded by arrival alone, or the newest round whose own route
+  failed: settled instead of asked about.
+
+**Only a closed answer settles.** These are all **unknown**, and an unknown
+review is handled exactly as above, so a review of an open pull request is
+never dropped on a guess:
+
+- an open pull request;
+- a repository whose owner has no installation of the App;
+- a GitHub error;
+- no answer within 5 seconds;
+- a token mint already in progress, which the read does not wait for.
+
+Without the App the check is off.
+
+**How often GitHub is asked.** Each answer is cached per pull request:
+
+- a closed one for 24 hours (a reopen is rare);
+- an open or unknown one for 10 minutes.
+
+So the same pull request is read again only after that. One pass of the
+attention sweep (every 30 seconds), and one pass of the route sweep, each make
+**at most 5** reads. A review past that cap is unknown for that pass: its ask
+is raised, or its route handed back, as before. A slow GitHub therefore holds
+a pass up by at most 5 × 5 seconds, and a backlog of reviews cannot exhaust
+the App's rate limit. Arrivals are not capped: each is one read, unless the
+answer is cached.
+
+What is not reported: a pull request created or a branch pushed by anything
+but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
+command behind a wrapper the hook does not read), and anything from a host
+without the hook.
+
+### A fleet-report request
+
+A team console's standup can ask your muster what you worked on. A **fleet-report
+request** is answered by muster itself, in code, with no chief turn and no
+owner in between. Off unless `MUSTER_FLEET_REPORT_SENDERS` lists the asking
+agent-mail address; `MUSTER_FLEET_REPORT_PATHS` must then name the working
+directories whose sessions a reply may describe ([configuration](configuration.md)).
+
+1. **The mail.** Only a NEW message from the `agent-mail` plugin (never
+   `clankmail`) whose sender is on the list **and** that the plugin marked
+   `sender_verified`, and whose
+   **whole body** is one JSON object (the subject is not read):
+
+   ```json
+   {"type": "fleet_report_request", "v": 1, "request_id": "<opaque, at most 64 bytes>",
+    "member": "<github login>",
+    "window": {"since": "<RFC 3339>", "until": "<RFC 3339>", "zone": "<IANA zone>"}}
+   ```
+
+   `member` is part of the contract but **not checked**: every read runs as
+   the owner the plugin acts for, under row-level security, so the reply is
+   always that owner's, and the asking side binds the reply to its request by
+   its own target, sender and thread. A body that is not such an object
+   (prose, another `type`, anything after the object), an unverified or
+   unlisted sender, a `no_reply` message, or an owner with no chief: the
+   ordinary delivery, unchanged.
+2. **The reply.** muster hands the message to your chief **without a turn**,
+   settled (it never becomes an [unrouted ask](#a-message-the-chief-does-not-act-on)),
+   and files its reply draft **already approved**; the plugin's next claim
+   sends it on the request's thread through the usual claim and result
+   routes. The reply's whole body is JSON:
+
+   ```json
+   {"type": "fleet_report", "v": 1, "request_id": "<echoed>", "generated_at": "<RFC 3339>",
+    "window": {"since": "…", "until": "…", "zone": "…"},
+    "coverage": {"sessions": 2, "omitted": 0, "hosts": [], "gaps": ["<what was left out or did not answer>"]},
+    "sessions": [{"id": "mirror:<claude session id>", "kind": "mirror",
+      "name": "<window name>", "host": "", "repo": "<repo> | null",
+      "state": "active | waiting | ended", "first_seen": "<RFC 3339>", "last_seen": "<RFC 3339>",
+      "focus": [{"title": "<focus title>", "at": "<RFC 3339>"}], "prs": ["<owner>/<repo>#<n>"]}]}
+   ```
+
+   It is the chief's [`fleet_report`](focus.md#the-tools) over the request's
+   window, narrowed as below and capped at **16 KiB** (a reply draft's limit,
+   not the tool's 32): the least recently active sessions are left out first
+   and counted in `omitted`. `gaps` counts what was left out or could not be
+   known (sessions whose working directory is unknown, offline mirror hosts,
+   a store that did not answer, titles beyond 20 per session,
+   secret-shaped strings removed). Every character outside ASCII is written
+   as a JSON `\u` escape.
+3. **An error** — a version other than 1, a malformed field, or a window that
+   is empty or longer than 4 days — is the same reply with no data:
+
+   ```json
+   {"type": "fleet_report", "v": 1, "request_id": "<echoed, or empty>", "error": "<plain English>"}
+   ```
+
+🔴 **What leaves muster.** The reply goes to the asking service and, from
+there, to whatever model reads it. So, unlike the chief's tool:
+
+- **Only sessions working under `MUSTER_FLEET_REPORT_PATHS`.** Each
+  session's working directory is the one its transcript last named, stored
+  with its focus ([focus](focus.md#the-working-directory)); the session is
+  described only when that directory is one of the prefixes or inside one, on
+  a path-component boundary (`/srv/example-work` covers
+  `/srv/example-work/app`, never `/srv/example-work-x`). The directory
+  decides; it is never written into the reply. Fail closed: a session whose
+  directory is **unknown** — a dispatched agent, an opencode window, a host that
+  predates it, a focus not written since the upgrade — is left out and
+  counted in `gaps`; a session **outside** the prefixes is left out and not
+  mentioned at all. No permission router is involved.
+- **No host labels.** Every `host` is `""` and `hosts` is empty; a session's
+  `name` is its window's **unqualified** title (`main:1`, or the label its
+  host gave it) — never the name the pages show, which adds ` · <host>` when
+  two hosts' windows share a title; an offline mirror host is a counted gap,
+  unnamed.
+- **Which sessions, decided once.** A session is included or left out by the
+  directory its **newest** prompt named, as last stored; when it is included,
+  up to 20 of its focus titles in the window (the newest; the rest counted as
+  a gap) are reported — including any written while it worked somewhere else
+  earlier in the window.
+- **Caps count only what may be described.** At most 200 sessions and, per
+  session, 50 pull requests (more is a counted gap). `omitted` counts only
+  sessions under the prefixes that a cap left out: the prefix filter runs
+  first, so the count never reveals sessions outside them.
+- **Titles, names and repositories are not screened** for infrastructure
+  words, dotted host names or the deployment's own names — only
+  **secret-shaped** runs (a credential-shaped string, a long token-shaped
+  string) are cut out, replaced by `[removed]`, and counted.
+- Focus **titles** only: never a focus description, transcript text, a
+  command or tool output.
+
+🔴 **Accepted risk: a listed sender reads your work sessions' titles.** Anyone
+who can send verified agent mail as a listed address gets, for any window of
+up to 4 days, the names, repositories and focus titles of every session
+working under your configured prefixes, without your approval. List only a
+sender you would show your standup to, and only the prefixes whose work you
+would show it. Every reply writes `plugin.delivered`,
+`plugin.message.settled`, `plugin.draft.filed` and `plugin.draft.approved`
+(`"auto": true`, `"via": "fleet_report"`) audit rows.
+
+### Resuming an ended session
+
+When agent mail or ClankMail would be routed by muster itself — a [reply on a thread a
+session started](#a-reply-on-a-thread-a-session-started) or a [pull-request
+review](#a-pull-request-review-mail) — but **no window shows that session any
+more**, muster can ask the session's host to **resume it** and then route the
+message there. Off unless `MUSTER_MAIL_RESUME_ALLOW` lists the sender
+([configuration](configuration.md)); it needs session routing too.
+
+1. **The gate.** All of these, or the message goes to your chief exactly as
+   before (step 4 of the section above):
+   - the plugin, sender and owner are on `MUSTER_MAIL_RESUME_ALLOW` (the
+     [relay allowlist's](#routing-a-message-to-a-session) grammar), and the
+     plugin marked the sender `sender_verified`;
+   - `MUSTER_MAIL_RESUME_OFF` is not `1` (the kill switch);
+   - no host lists a window running the session — online, or offline but
+     still remembered, in its active pane or another;
+   - a host offers resumes: it runs `muster-mirror -interactive -resume-spawn`.
+     A pull-request author's recorded host is the only one asked; for a thread,
+     each online host that offers resumes is asked in turn until one holds the
+     transcript;
+   - the message has not resumed a session before (one row per message in
+     `mail_resumes`, migration `0056`), the session was resumed fewer than
+     **2** times in the last hour, and the host started fewer than **6**
+     windows in the last hour.
+2. **On the host.** muster sends the session id and nothing else. The host
+   refuses unless it holds exactly one transcript
+   `~/.claude/projects/*/<id>.jsonl`, that transcript records a working
+   directory whose project slug is the directory it is filed under, the
+   directory still exists, no Claude Code process or tmux pane on the host runs
+   the session, and its own limits allow it (one resume per session per 10
+   minutes, 6 an hour). Then it starts a **detached** tmux window named
+   `resume-<first 8 of the id>` in the tmux session `muster-resume`
+   (`-resume-session`), running `claude --resume <id>` (`-resume-claude`) in
+   that directory, with your login environment (see
+   [mirroring](mirroring.md#resuming-an-ended-session--resume-spawn)) — and
+   lists its windows at once. A window started there is mirrored like any
+   other.
+3. **The route.** muster makes the thread's or pull request's ordinary route
+   into that window — the send queue's idle wait, the fenced block,
+   `route_reply`, the deadline and the hand-back — trying again each second
+   for up to **90 s** while the window cannot take it yet (not listed, not
+   `-interactive`, not reporting Claude Code's status, no chief to own the
+   route). Only a refusal no wait can change ends it early: the message was
+   taken by another delivery, is `no_reply`, or is routed already. **The
+   message never travels on the host's command line**; it is pasted as data
+   once the window is up. Until the resume ends, the message stays queued and
+   your chief's retry (each plugin claim retries queued messages) **leaves it
+   alone** — for at most 10 minutes, so a resume a restart cut off cannot hold
+   it for ever.
+4. **Otherwise, the chief.** A refusal at any step, or no window in time,
+   records why on the `mail_resumes` row (`refused`, naming the refusal, or
+   `timed_out`, naming the last attempt's) and hands the message to your chief
+   as before. A window the host did start is left running.
+
+A second message for a session being resumed right now waits for that window
+instead of starting another. Every resume is logged with the message id,
+sender and session.
+
+### Routing a task to a session
+
+The chief can hand one of your **tasks** to a mirrored session the same way:
+`route_to_session {task_id, subject}`, with exactly one of `message_id`,
+`task_id` and `text` (two, or none, is refused as `bad_arguments`). It needs
+session routing only, not plugins. It is the same
+route (`session_routes.task_id`, migration `0053`) and the same path after it:
+the same target checks, the paste through the window's send queue after the
+idle wait, `route_reply` bound to the target session, the 30-minute deadline,
+the hand-back, and the `session_route.*` audit rows. What differs:
+
+- **The task must be yours.** Another owner's task is refused as
+  `task_not_found`, by the tool and again by the database (a trigger checks
+  the route's owner owns the task). A task already routed and not yet answered
+  is `already_routed`; once that route has ended, it can be routed again.
+- **What is pasted** is the task as stored: its id, status, title and body,
+  fenced as data, with the `route_id` and how to answer.
+- **The answer becomes a comment on the task.** `route_reply` records it
+  (`answered`), adds it to the task once as a comment by
+  `mirror:<claude session id> via <route_id>`, and ends the route `relayed`;
+  no draft is filed and no allowlist applies. A task that is no longer open
+  (completed or dismissed meanwhile) takes no comment: the route fails and
+  the task is handed back.
+- **The chief hears about it in its default session**, where its task
+  deliveries go: the note when the answer is added, and the hand-back when the
+  route times out or fails.
+- **The task leaves "Task to route"**: routing it records `task.chief_routed`
+  with `tool: route_to_session`, like the other task tools.
+
+### Routing your own request to a session
+
+When you **type** an idea or a request in your chief's chat — "send this to
+whoever is on the changelog" — the chief hands it straight to the mirrored
+session already on it: `route_to_session {text, subject, owner_asked: true}`.
+No task is filed, and **plugins are not needed**: session routing
+(`MUSTER_SESSION_ROUTING=1`, with a database) is enough. A **claude-code**
+chief's standing instructions tell it to find the session with `focus_search`
+and `fleet_list` (or `sessions_overview`), to route only when one session is
+clearly on it, and otherwise to ask you which, naming the candidates. A
+**gateway** chief is not told to: its tool calls run inside muster, which the
+check below always refuses. A chief already running loads the new instructions
+on its next Stop → Start.
+
+It is the same route (`session_routes.request_text`, migration `0084`) and the
+same path after it as a message's or a task's: the same target checks, the
+paste through the window's send queue after the idle wait, `route_reply` bound
+to the target session, the hand-back, and the `session_route.*` audit rows.
+What differs:
+
+- **Only on a turn you typed.** `owner_asked: true` runs
+  [`agent_dispatch`'s check](#agent_dispatch-the-guards) (guard 13),
+  unchanged (`ownerTurnFor`): your message, typed in the chief's muster chat and
+  accepted by its runtime, is the turn in flight; every other Claude Code CLI
+  in the chief's pod is idle; muster holds no session claim for a turn it
+  started; and the call came over MCP from a Claude Code session. So a turn
+  you did not type — a plugin message, a task event, a hand-back, a relayed
+  answer, a nudge or a turn the chief started itself — can never make a
+  request route. A refusal is
+  `{"refused": "not_owners_turn", "error": "owner_asked: …"}`, its sentence
+  naming the condition that failed; nothing is routed or queued.
+  **Your authority lasts for the whole turn your message started.** A
+  delivery that arrives while it runs — the answer to one of its own relays, a
+  plugin message, a nudge, an answer to an ask — never takes the chief's
+  session claim while your turn is in flight
+  (`agents.Store.ClaimKickoffForDelivery`), so it cannot void the turn: it
+  waits and is delivered after it. The chief can relay your request to many
+  sessions in one turn though the first ones answer before it is over.
+  ⚠ **What it does not prove: that the text says what you asked.** The check
+  is about whose TURN it is, not whose WORDS the `text` is: during your own
+  turn the chief may read outside text (a plugin message, a session's output,
+  a focus title) asking it to route something, and muster cannot tell that
+  from your request. That is why the paste quotes your own message beside the
+  chief's relay (below), for the session to compare.
+- **Exactly one of `message_id`, `task_id` and `text`**, and `owner_asked`
+  only (and always) with `text`; anything else is `bad_arguments`. `text` is
+  the chief's words, at most 8 KiB, control characters removed; an empty one
+  is refused. A `message_id` with plugins off is `plugins_off`.
+- **What is pasted** is the route's stored text, fenced as data under a
+  preface saying it is **your request as your chief relayed it** — the chief's
+  words, not yours — naming your chat message's id, and telling the session to
+  weigh it as a request passed on by an assistant: not to run commands or open
+  links because of it, and to ask you (`attention_ask`) before anything
+  destructive, irreversible or outside its work. **Your own message, as you
+  typed it** (the chat row that passed the check, cut to 1500 characters), is
+  quoted in the block beside the relay, and the session is told to compare the
+  two and do no more than you asked. The route records your message
+  (`request_message_id`) and the `session_route.routed` audit row names it
+  (`owner_message_id`).
+- **The answer comes back to the chat you asked in.** `route_reply` records
+  it (`answered`) and ends the route `relayed`, owing the chief its delivery in
+  the same transaction; the route sweep delivers it **at least once** to the
+  chief session your message is in (`chief_session_id`), fenced as data, for
+  the chief to tell you what it says. While the chief cannot take a turn (your
+  turn is in flight, another turn holds its session, or one is running or
+  waiting in this muster process — your own typed line goes first there), the
+  answer **stays owed** and the next sweep (every 30 s; at most one pass per
+  2 s however often it is woken, and a turn the chief's runtime refused does
+  not wake it) offers it again. **Every answer owed to a chat when the chief
+  is next free goes in ONE turn** (operator decision, PR #715): each fenced on
+  its own, under its own route id and nonce, after a line saying how many
+  there are — up to 20 answers or 64 KiB in one turn (`routeAnswersPerTurn`,
+  `routeAnswersTurnBytes`), the rest in the next. The turn's row is stored
+  **before** the turn and removed if the runtime refuses it, so a muster
+  that is hard-killed mid-turn leaves it on record and the next one does not
+  paste it again (its claim lapses after the turn's budget). A graceful
+  rollout instead cancels the turn and lets its claim go, the row staying as
+  the record. **What that promises:** each answer is on record in the chat at
+  least once and sent to the chief at most once — a muster hard-killed
+  between storing the row and sending it leaves the answer in the chat for
+  you but never delivered to the chief, and it is not sent again. The
+  answer is written as a plain note — a row the chief's Claude Code session
+  never reads — only as a last resort: a chief that cannot take a turn at all
+  (not running, no gateway), or an answer that has not been delivered for
+  2 hours (`routeChiefWaitMax`), runtime refusals included; never while its
+  own turn is still running. A route's timed-out or failed hand-back goes the
+  same way: a turn of its own when the chief is free, taken only once that
+  turn is on record; one already taken (a failed redraft) that the runtime
+  refuses is written as a note, never dropped. The route owes the answer until
+  it is on record in that session; a row already there is not written again.
+  If that session is gone, cannot be read or is not this chief's, the
+  **chief's default session** gets it instead, and muster logs it. That turn
+  is muster's, not yours, so `owner_asked` refuses in it. No draft is filed and
+  no allowlist applies, and the answer is not screened for the deployment's
+  own names (`MUSTER_FLOW_AGENT_DENY_WORDS`): it goes only to your chief. The
+  rest of the reply screen (hidden characters, credentials, the size cap) still
+  applies; a message route's answer keeps the whole screen.
+- **A 4-hour deadline**, as a pull-request review's: the session already on
+  the work is usually busy, and its paste waits for its window to go idle. A
+  route that times out, or whose paste is cancelled or whose window moves on,
+  is handed back to the same chat session, saying why (*"it was never
+  delivered"* when the paste never left the queue).
+- **One open route per message and session.** The same request to the same
+  session again is `already_routed`; to another session it is a second route.
+- **Offered over MCP only.** A gateway-runtime chief's tool calls run inside
+  muster, which the check always refuses, so the `route_to_session` it is
+  given has no `text` or `owner_asked` (messages and tasks only).
+
+### Routing a message from your own session
+
+You can make the same route yourself, in one step, from one of your own
+**mirrored** Claude Code sessions, over the mirror MCP door
+([attention.md](attention.md#mirrored-claude-code-sessions)) — instead of
+asking the chief to. Two tools, offered only there, only with routing on, and
+to no dispatched agent (the chief included):
+
+| tool | what it does |
+|---|---|
+| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you), `send_failed` (the plugin [refused the reply](#when-the-plugin-refuses-a-reply): not sent), `owner_answered` ([answered directly](#when-the-owner-answers-it-directly)) or `handed_back` (timed out or failed: back with the chief). Read-only. |
+| `plugin_message_route {message_id, subject?}` | Routes that message. **With no `subject` it goes to the calling session** — pasted once that session has been idle for `MUSTER_SEND_QUEUE_IDLE`, so the session ends its turn to receive it, then answers with `route_reply`. `subject` names another session, exactly as `mirror:<claude session id>` (the chief's form). Any other value — a bare id, an empty id, a window title — or a session no online window shows is refused `subject_not_found`, listing the online sessions as `candidates`: the way to find a subject on this door. |
+
+It is **the chief's route**, not a copy (`routeMessage`): the same target
+check, the same `session_routes` row, the same send-queue injection and
+step-up exemption, the same `route_reply` answer and relay, the same deadline
+and hand-back. The route's agent is still the chief the message was delivered
+to — the reply draft is filed as the chief's, and a timed-out route goes back
+to the chief. Two things differ: the pasted block says it was routed by you,
+and the `session_route.routed` audit row is yours (via `mirror-host`) and
+carries `routed_via: "mcp from <host>/<session>"`.
+
+Refused, saying why (`refused` is a code a session can branch on): a message
+that already has a route waiting for an answer (`already_routed`, the route
+store's own one-open-route check); a message not yet delivered to your chief
+(`not_delivered` — route it once the chief has it); a subject that is not
+`mirror:<claude session id>` of an online session (`subject_not_found`, with the
+`candidates`); another owner's message and a
+missing id (both *"no such plugin message: N"*); a `no_reply` message (every
+task event is one: only the chief's own route takes one, as a
+[one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered));
+and everything the chief's route refuses — a message with
+a reply already on its way, and a target that cannot take one now (an offline
+or read-only host, a window that does not report Claude Code's status — the
+session must be the active pane of its window).
+
+⚠ What a mirror token can read and do with these tools, and the accepted risk
+of a session routing a message to itself: [auth.md](auth.md#mirror-tokens-and-session-routing).
+
+## Routing rules
+
+Most messages your chief handles are placed the same way every time: the same
+newsletter is settled, and every report from one CI sender goes to the session
+that works on it. Each one is still a chief turn, and turns cost tokens (see
+[usage.md](usage.md)). A **routing rule** places such a message
+deterministically, **before the chief and with no chief turn**. The chief
+proposes rules. You approve each one with one tap.
+
+1. **The chief proposes.** After it routes or settles a message the way it
+   would route or settle every message like it, the chief may call
+   `routing_rule_propose`. The call names that message (`message_id`), which
+   of its fields to match on, and the action:
+   - `match_sender`: the sender, exactly;
+   - `match_thread`: the thread, exactly (a Discord channel arrives in
+     `thread` or in `sender`, depending on the plugin; match the field it is
+     in);
+   - `external_id_prefix`: a prefix of the message's `external_id`, 8 to 200
+     bytes;
+   - `subject_prefix`: a prefix of its subject, 3 to 80 characters. It is
+     anchored at the start and matched as plain text. There is no regular
+     expression, and the body is never matched.
+
+   **Every rule names who or where**: `match_sender` or `match_thread`, or
+   both. A prefix only narrows that match and never matches on its own, so a
+   short prefix shared by most of a plugin's mail cannot sweep it all up. The
+   `external_id` minimum of 8 bytes is the shortest prefix that names more than
+   a plugin's own id scheme (`msg-`, a date's `2026-`). The card says exactly
+   which senders a rule takes. On a sender, it says whether its plugin must
+   have verified that sender. On a thread alone, it says the rule takes any
+   sender: any one its plugin verified, or anyone at all.
+
+   **muster copies every value from the stored message.** The chief only picks
+   which fields to use, and the rule must match the message it came from. The
+   action is either `route` to one mirrored session (`subject`,
+   `mirror:<claude session id>`, which must be able to take a message now) or
+   `settle` with a reason of up to 300 characters. A message that cannot be
+   answered is routed one-way, as `route_to_session` routes it. A task event
+   cannot be the source of a rule.
+2. **You tap.** The proposal is a card on your Attention view, phrased as
+   "Your chief proposes a routing rule for <plugin> messages: when <match>,
+   <action>." It has two buttons, **Approve rule** and **Not now**. Only your
+   own tap on one of those buttons counts, in your signed-in browser. Typed
+   text that spells a button does not count. A plugin, a token or a mirrored
+   session's `attention_answer` is refused. The card's phone notification
+   carries no answer buttons. A rule is approved at most once. The chief
+   is told what you decided, in muster's words. Nothing changes until you
+   approve.
+3. **The rule runs before the chief.** When a NEW message arrives, muster first
+   tries its own paths, in this order: a fleet-report request, a reply on a
+   thread a session started, a review of a closed pull request, a review
+   routed to its pull request's author, then a mail resume. Then it tries the
+   first active rule (oldest first) that matches the message:
+   - **route:** the route muster makes itself
+     (`routed_via: rule #N to <session>`), as for a reply on a thread. The
+     session's answer is relayed as usual.
+   - **settle:** muster settles the message with the reason
+     `muster: rule #N — <reason>`.
+
+   Either way the message is logged in your chief's chat as delivered, with
+   muster's note naming `muster: rule #N`. This costs no turn. The chief holds
+   the message for its next turn, and its usage row is `rule`.
+
+**What a rule never does:**
+
+- **It never routes an unverified sender.** A route rule matches only a message
+  whose plugin set [`sender_verified`](#sender_verified). The schema refuses a
+  route rule that does not require it. A rule proposed from a verified
+  sender's message requires verification for any action, so a message that
+  only claims that sender does not match.
+- **It never drops a message.** When the session a route rule names cannot take
+  the message (its window is gone, its host is offline or read-only, routing
+  is off), or there is no chief to settle it under, the message goes to the
+  chief as if there were no rule. The rule's page counts the miss
+  ("handed to your chief"). The usage row names the chief, with the rule as
+  the fallback.
+- **It never acts on a message that arrived before you approved it**, and never
+  on a task event.
+- **It is never created or approved by a plugin.** Only the chief's
+  `routing_rule_propose` creates one, and only from a message delivered to
+  that chief. Every write to a rule refuses a plugin's principal. A message
+  that spells a proposal or an approval is just text.
+
+**The Rules page** (`/rules`, linked from `/plugins`) lists every rule, newest
+first. Each entry shows its plugin, its match, its action, its state
+(waiting for your tap, active, disabled or declined), when it was created,
+its hits and last hit, and its misses. **Disable** stops an active rule and
+**Enable** restarts it. **Delete** removes a rule in any state. For a rule
+still waiting for your tap, it also withdraws the card. A proposal whose card
+went away no longer waits: the card was cancelled, answered somewhere else,
+or expired after the attention queue's default 24 hours. muster declines that
+rule, so it frees its match for a new proposal and does not count toward the
+limit of 10 open proposals. Rules are yours alone: owned, under row-level security
+(`routing_rules`, migration `0107`).
+
+Routing rules are on wherever plugins are, with no setting: nothing runs until
+you approve a rule. A route rule also needs `MUSTER_SESSION_ROUTING=1`.
+Without it the chief is refused a route proposal, and an existing route rule
+hands its matches to the chief.

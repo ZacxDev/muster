@@ -1,0 +1,1124 @@
+// Package officers is muster's officer RUNTIME: the long-lived, queue-driven
+// agents whose durable identity, work queue and claim lock live in an HQ
+// server (the "officers" contract), and whose running sessions — instances —
+// muster provisions, wakes and scales to zero.
+//
+// What lives here is the part that knows nothing about muster's server: the
+// declared configuration (config.go), the reserved agent slugs (slug.go), the
+// HQ client (hq.go), the wake/scale decision and loop (wake.go), and the
+// first message and re-prompt an instance is given (kickoff.go, wake.go). internal/api binds it to agents, the provisioner and the MCP
+// tool registry; cmd/muster-server reads the environment and runs the loop.
+//
+// 🔴 THE OFFICER TOKEN NEVER LEAVES muster-server. It is read from the
+// server's own environment (MUSTER_OFFICER_TOKEN_<NAME>), held in [Officer]
+// behind a field JSON and fmt never print, and spent only by [Client] on the
+// way to HQ. An instance's pod reaches HQ through muster's MCP tools, which
+// attach the token server-side; the pod's spec, env, files and first message
+// carry no trace of it. See docs/officers.md.
+package officers
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"regexp"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/podagent"
+)
+
+// Defaults applied to a declared officer that leaves a field out.
+const (
+	DefaultMaxInstances = 1
+	DefaultIdleAfter    = 30 * time.Minute
+	DefaultPollInterval = time.Minute
+	// MinPollInterval bounds how often muster asks HQ, whatever is declared:
+	// a typo of "1s" for "1m" must not become sixty requests a minute per
+	// officer.
+	MinPollInterval = 10 * time.Second
+	// MaxInstancesCap bounds max_instances. Each instance is a pod, a PVC and a
+	// Claude account for life, so a fat-fingered 100 is refused at boot.
+	MaxInstancesCap = 8
+	// MaxReadRepos bounds read_repos. Each entry is one more repository an
+	// approval of the officer's `github` grant reaches, so the list is kept
+	// short enough to read on the approve card.
+	MaxReadRepos = 5
+)
+
+// Officer is one declared officer: the HQ identity muster runs instances for.
+type Officer struct {
+	// ID is HQ's officer id, `<type>:<area>` (e.g. `release:example-web`).
+	ID string `json:"id"`
+	// HQURL is HQ's API base, including `/api/v1` (e.g.
+	// `https://hq.example.com/api/v1`). Paths are appended to it.
+	HQURL string `json:"hq_url"`
+	// MaxInstances is how many instances may run at once (1..MaxInstancesCap).
+	MaxInstances int `json:"max_instances"`
+	// IdleAfter is how long the officer must be idle — no claimable item and
+	// no live claim held by any of its instances — before its instances are
+	// scaled to zero.
+	IdleAfter time.Duration `json:"-"`
+	// PollInterval is how often HQ's open-items list is read when nothing
+	// else wakes the loop.
+	PollInterval time.Duration `json:"-"`
+	// Owner is the muster user the instance agents belong to (default 1, the
+	// operator). Row-level security scopes the agents to that user.
+	Owner int64 `json:"owner"`
+	// CCAccount optionally pins the Claude account instances run on; empty
+	// lets the account pool choose (an instance keeps its account until an
+	// account failover moves it, internal/ccfailover).
+	CCAccount string `json:"cc_account,omitempty"`
+	// CCFailover opts instances pinned by CCAccount in to account failover
+	// (internal/ccfailover): without it a pinned instance stays on its
+	// account when that account hits its limit. Unpinned instances fail over
+	// whatever it says (unless MUSTER_AGENT_CC_FAILOVER=off).
+	CCFailover bool `json:"cc_failover,omitempty"`
+	// Model is the model the instances' Claude Code sessions run ("opus", a
+	// full model id); "" leaves the account's default.
+	Model string `json:"model,omitempty"`
+	// Image, when set, is the runner image the instances' pods run instead of
+	// the deployment's claude-code image (image.go): pinned, and in a
+	// repository ImageRegistriesEnv allows. For a tiered officer it is the
+	// pool's (tiers.<pool>.image), as Model is. "" runs the deployment's.
+	Image string `json:"image,omitempty"`
+	// Repo is the GitHub repository (owner/name) the officer's instances act
+	// on as their OWN repository for connectors; "" for none. It is what the
+	// GitHub App connector mints a token for (internal/api Server.agentRepo
+	// feeds it to connectors.Caller.Repo), so an approved `github` grant gives
+	// an instance exactly this one repository — read-only on a deployment
+	// with MUSTER_GITHUB_APP_ACCESS=read. It is NOT checked out: the instance
+	// reads it through muster's connector proxy.
+	Repo string `json:"repo,omitempty"`
+	// ReadRepos are further GitHub repositories (owner/name) the officer's
+	// instances may READ through the same `github` connector: a proxied request
+	// that targets one of them is served with a READ-ONLY installation token
+	// minted for that one repository (internal/githubapp App.Credential),
+	// whatever MUSTER_GITHUB_APP_ACCESS says. Lowercased, sorted and unique —
+	// so a reordered or re-cased declaration is the same set and does not
+	// re-open an approved grant (connectors.RepoScope). Requires Repo, never
+	// holds it, at most MaxReadRepos, and accepted beside any ship stage (never
+	// one of ship.repos).
+	ReadRepos []string `json:"read_repos,omitempty"`
+	// ReadGrant is how ReadRepos are granted: "" (the default) is the
+	// per-instance `github` approval above; ReadGrantStanding serves them with
+	// NO approval, anonymously, reads only, each verified PUBLIC with GitHub
+	// (connectors' standing public read). Standing is accepted only on a
+	// builtin officer, never beside ship, and does not need Repo.
+	// StandingReadRepos and ApprovalReadRepos are the one read of it.
+	ReadGrant string `json:"read_grant,omitempty"`
+	// ReadAt is where a standing read is pointed: "" names no ref (the
+	// default branch), ReadAtRelease names muster's own release tag
+	// (ReleaseTag). Accepted only with ReadGrantStanding.
+	ReadAt string `json:"read_at,omitempty"`
+	// ReleaseTag is the git tag of the muster release this server runs
+	// ("v0.221.0"), stamped by StampReleaseTag for an officer with ReadAt
+	// ReadAtRelease; "" when the build's version is not a release.
+	ReleaseTag string `json:"-"`
+	// Ship, when set, lets the officer push branches, open pull requests, and
+	// (by stage) merge its own pull requests and tag releases in Repo — every
+	// write filtered or performed by muster (ship.go). nil for every other
+	// officer, whose GitHub access stays read-only.
+	Ship *Ship `json:"-"`
+	// CILogs, when set (a shipping officer only), offers officer_ci_logs: the
+	// failing tests and error lines of the officer's own pull request's CI,
+	// read by muster-server from a Tekton namespace (cilogs.go).
+	CILogs *CILogs `json:"-"`
+	// Transcript, when set and enabled, forwards each instance's live session
+	// transcript to HQ while it holds a claimed item
+	// (internal/officers/transcript). nil (the default) forwards nothing.
+	Transcript *Transcript `json:"-"`
+	// Connectors are the connectors, besides `github`, the officer's instances
+	// may REQUEST (internal/api officerConnectorRefusal), by name — e.g. a
+	// postgres connector for read-only SQL. Declaring one grants nothing: each
+	// instance's request is still decided explicitly by the owner, and is never
+	// approved from a shared approval. Sorted and deduplicated.
+	Connectors []string `json:"connectors,omitempty"`
+	// Tiers, when set, splits the officer's instances into two pools — routine
+	// and judgement — each with its own model and max instances (tiers.go).
+	// nil (no `tiers` block) is one untiered pool: today's behaviour.
+	Tiers *Tiers `json:"-"`
+	// Tier is the pool this value describes: "" for an untiered officer, else
+	// TierJudgement or TierRoutine (Officer.Pool). Parse returns a tiered
+	// officer as its judgement pool.
+	Tier string `json:"-"`
+	// LLM, when set, lets the officer's ROUTINE pool reach its model
+	// (tiers.routine.model) through muster's LLM proxy (llm.go,
+	// internal/llmproxy), within the daily USD budget and per-item token cap
+	// it holds. It needs Tiers. nil (the default) refuses every proxy request
+	// of the routine pool. The judgement pool's own block is
+	// Tiers.Judgement.LLM (tiers.judgement.llm); Officer.PoolLLM answers either.
+	LLM *LLM `json:"-"`
+	// Kube, when set, offers the officer's JUDGEMENT instances
+	// officer_kube_read over the clusters it names (kube.go). It needs Tiers.
+	// nil (the default) offers no cluster read.
+	Kube *Kube `json:"-"`
+	// Backend is which officer backend serves the officer: BackendHQ (an
+	// external HQ over HTTPS with the officer's token, the default) or
+	// BackendBuiltin (muster's own Postgres, internal/officers/builtin).
+	// Parse sets it; "" reads as BackendHQ (Officer.BackendKind).
+	Backend string `json:"-"`
+	// Runtime is where the officer's instances run: RuntimePod (a pod per
+	// instance, through the provisioner: the default) or RuntimeHost (a
+	// host-spawned Claude Code window per instance on the mirror host Host,
+	// docs/design/officers-on-hosts.md). Parse sets it; "" reads as RuntimePod
+	// (Officer.OnHost).
+	Runtime string `json:"-"`
+	// Host is the mirror host (its token's name) a RuntimeHost officer's
+	// instances are spawned on; "" for a pod officer.
+	Host string `json:"-"`
+	// InstanceSlug is a DB-declared officer's server-allocated agent slug
+	// (officer_defs.instance_slug, migration 0136): globally unique, so two
+	// owners' `marketing:main` never build the same agent name. "" for an env
+	// officer, whose slug is Slug(ID). Read it through AgentSlug.
+	InstanceSlug string `json:"instance_slug,omitempty"`
+	// ManagedBy is where the officer is declared: ManagedByEnv
+	// (MUSTER_OFFICERS, read-only through the API) or ManagedByDB (officer_defs,
+	// created, changed and deleted through the admin API with no restart).
+	// "" reads as ManagedByEnv.
+	ManagedBy string `json:"managed_by,omitempty"`
+	// Budget is a builtin officer's daily spend cap and routine batching
+	// (`daily_budget_usd`, `routine_kinds`, `routine_wake_at`; budget.go).
+	// The zero value caps nothing and batches nothing.
+	Budget Budget `json:"-"`
+
+	// chatSessions is the declared `chat_sessions` (0: none declared): how
+	// many chat lanes each instance runs at once. Read it through
+	// ChatSessions (chat.go).
+	chatSessions int
+
+	// token is the officer's HQ token. Unexported, so encoding/json never
+	// writes it; String and GoString never print it. Token() is the one read.
+	token string
+}
+
+// Token returns the officer's HQ token. Its only callers are the HQ client
+// and tests asserting it does not appear where it must not.
+func (o Officer) Token() string { return o.token }
+
+// WithToken returns o carrying token. Exported for tests and for wiring that
+// builds an Officer outside Parse.
+func (o Officer) WithToken(token string) Officer { o.token = token; return o }
+
+// Where an officer is declared (Officer.ManagedBy).
+const (
+	ManagedByEnv = "env"
+	ManagedByDB  = "db"
+)
+
+// FromDB reports whether o is DB-declared (officer_defs, migration 0136).
+func (o Officer) FromDB() bool { return o.ManagedBy == ManagedByDB }
+
+// Key is o's registry key: unique across every officer the registry holds,
+// env and DB alike. An env officer's is its ID (always `<type>:<area>`, so it
+// contains a `:`); a DB-declared officer's is its InstanceSlug (never a `:`),
+// because two owners may each declare the same ID. The wake loop's state, the
+// backend cache and Registry.Get are keyed on it.
+func (o Officer) Key() string {
+	if o.InstanceSlug != "" {
+		return o.InstanceSlug
+	}
+	return o.ID
+}
+
+// BackendKind is the officer's backend: BackendBuiltin, or BackendHQ (also
+// for an Officer built outside Parse with no Backend). THE one read of
+// Officer.Backend.
+func (o Officer) BackendKind() string {
+	if o.Backend == BackendBuiltin {
+		return BackendBuiltin
+	}
+	return BackendHQ
+}
+
+// IsBuiltin reports whether muster's built-in backend serves o.
+func (o Officer) IsBuiltin() bool { return o.BackendKind() == BackendBuiltin }
+
+// OnHost reports whether o's instances run as host-spawned sessions
+// (RuntimeHost) rather than pods. THE one read of Officer.Runtime: the fleet,
+// the tool rule, the kickoff and the boot lines all ask it.
+func (o Officer) OnHost() bool { return o.Runtime == RuntimeHost }
+
+// RuntimeKind is o's runtime: RuntimeHost, or RuntimePod (also for an Officer
+// built outside Parse with no Runtime).
+func (o Officer) RuntimeKind() string {
+	if o.OnHost() {
+		return RuntimeHost
+	}
+	return RuntimePod
+}
+
+// String names the officer without its token.
+func (o Officer) String() string {
+	where := "hq " + o.HQURL
+	if o.IsBuiltin() {
+		where = "backend builtin"
+	}
+	if o.OnHost() {
+		where += ", runtime host on " + o.Host
+	}
+	if o.Tiers != nil {
+		return fmt.Sprintf("officer %s (%s, judgement max %d, routine max %d, idle %s, poll %s)", o.ID, where, o.Tiers.Judgement.MaxInstances, o.Tiers.Routine.MaxInstances, o.IdleAfter, o.PollInterval)
+	}
+	return fmt.Sprintf("officer %s (%s, max %d, idle %s, poll %s)", o.ID, where, o.MaxInstances, o.IdleAfter, o.PollInterval)
+}
+
+// GoString is String, so %#v cannot print the token either.
+func (o Officer) GoString() string { return o.String() }
+
+// declared is the JSON shape of one MUSTER_OFFICERS entry.
+type declared struct {
+	ID           string   `json:"id"`
+	HQURL        string   `json:"hq_url"`
+	MaxInstances int      `json:"max_instances"`
+	IdleAfter    string   `json:"idle_scale_to_zero_after"`
+	PollInterval string   `json:"poll_interval"`
+	Owner        int64    `json:"owner"`
+	CCAccount    string   `json:"cc_account"`
+	CCFailover   bool     `json:"cc_failover"`
+	Model        string   `json:"model"`
+	Image        string   `json:"image"`
+	Repo         string   `json:"repo"`
+	ReadRepos    []string `json:"read_repos"`
+	ReadGrant    string   `json:"read_grant"`
+	ReadAt       string   `json:"read_at"`
+	Connectors   []string `json:"connectors"`
+	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
+	Ship json.RawMessage `json:"ship"`
+	// CILogs is parsed by parseCILogs (cilogs.go); it needs Ship.
+	CILogs json.RawMessage `json:"ci_logs"`
+	// Transcript is parsed by parseTranscript.
+	Transcript json.RawMessage `json:"transcript"`
+	// Tiers is parsed by parseTiers (tiers.go).
+	Tiers json.RawMessage `json:"tiers"`
+	// LLM is parsed by parseLLM (llm.go), which reads its own key.
+	LLM json.RawMessage `json:"llm"`
+	// Kube is parsed by parseKube (kube.go), which reads each cluster's
+	// sealed environment.
+	Kube json.RawMessage `json:"kube"`
+	// Backend is which officer backend serves the officer (BackendHQ, the
+	// default, or BackendBuiltin): parseBackend.
+	Backend string `json:"backend"`
+	// Runtime is where the instances run (RuntimePod, the default, or
+	// RuntimeHost) and Host the mirror host of a RuntimeHost officer:
+	// parseRuntime.
+	Runtime string `json:"runtime"`
+	Host    string `json:"host"`
+	// DailyBudgetUSD, RoutineKinds and RoutineWakeAt are a builtin officer's
+	// spend cap and routine batching: parseBudget (budget.go).
+	DailyBudgetUSD float64  `json:"daily_budget_usd"`
+	RoutineKinds   []string `json:"routine_kinds"`
+	RoutineWakeAt  string   `json:"routine_wake_at"`
+	// ChatSessions is how many chat sessions (ccd lanes) each instance runs
+	// at once, 1..MaxChatSessions; 0 (absent) is DefaultChatSessions (chat.go).
+	ChatSessions int `json:"chat_sessions"`
+	// InstanceSlug is never in MUSTER_OFFICERS: a DB-declared officer's
+	// server-allocated slug (Declaration.Officer), so the instance-name
+	// length check measures the names it will really have.
+	InstanceSlug string `json:"-"`
+}
+
+// The runtimes a declaration may name (`runtime`).
+const (
+	// RuntimePod runs each instance as a pod through the provisioner: the
+	// default, and the only runtime before officers-on-hosts.
+	RuntimePod = "pod"
+	// RuntimeHost runs each instance as a host-spawned Claude Code window on
+	// the mirror host `host` (docs/design/officers-on-hosts.md).
+	RuntimeHost = "host"
+)
+
+// parseRuntime is the declaration's runtime and host: "" and "pod" are
+// RuntimePod (and `host` is refused beside it), "host" is RuntimeHost —
+// refused at boot, FAIL CLOSED and naming every field, when the officer
+// declares anything a host-spawned session cannot honour
+// (docs/design/officers-on-hosts.md, "What works on the host runtime"). It
+// runs after parseBackend, so backend is already known.
+func (d declared) parseRuntime(backend string) (runtime, host string, err error) {
+	host = strings.TrimSpace(d.Host)
+	switch strings.TrimSpace(d.Runtime) {
+	case "", RuntimePod:
+		if host != "" {
+			return "", "", fieldErr("host", fmt.Errorf("host %q is only for \"runtime\": %q (a pod officer runs in the cluster)", host, RuntimeHost))
+		}
+		return RuntimePod, "", nil
+	case RuntimeHost:
+	default:
+		return "", "", fieldErr("runtime", fmt.Errorf("runtime %q is not %q or %q", d.Runtime, RuntimePod, RuntimeHost))
+	}
+	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
+	var refused []FieldError
+	refuse := func(field, msg string) { refused = append(refused, FieldError{Field: field, Err: errors.New(msg)}) }
+	if backend != BackendBuiltin {
+		refuse("backend", `backend "hq" (v1: an HQ officer's usage, transcript and pools ledgers read its instances' pods; use "backend": "builtin")`)
+	}
+	switch {
+	case host == "":
+		refuse("host", "no host (name the mirror host its instances start on)")
+	case mirror.ValidHost(host) != nil:
+		refuse("host", fmt.Sprintf("host %q (not a mirror host name: a lowercase DNS label)", host))
+	}
+	// No repo is ALLOWED: such an officer's instances start in a private
+	// scratch directory on the host (mirror.AgentSpawnReq.Scratch), which
+	// every current host with -agent-spawn offers. With a repo, the host cuts each
+	// instance's worktree from its clone of it, as before.
+	if present(d.Tiers) {
+		refuse("tiers", "tiers (each pool runs its own model, and a host spawn of Claude Code takes none)")
+	}
+	if strings.TrimSpace(d.Model) != "" {
+		refuse("model", "model (the host's Claude Code runs its own default)")
+	}
+	if strings.TrimSpace(d.Image) != "" {
+		refuse("image", "image (a pod setting)")
+	}
+	if strings.TrimSpace(d.CCAccount) != "" || d.CCFailover {
+		refuse("cc_account", "cc_account/cc_failover (the host runs its own claude on its own login)")
+	}
+	// connectors are ALLOWED: a host instance has an agent row (migration
+	// 0125) its grants hang on, each decided by the owner per request, and
+	// they are used through MCP tools muster runs server-side
+	// (postgres_query) — no token reaches the session.
+	if len(d.ReadRepos) > 0 {
+		refuse("read_repos", "read_repos (further repositories are read through the github connector's HTTP proxy, "+
+			"which takes the agent's token in the session's environment, and none is put there; read them from a clone on the host)")
+	}
+	if present(d.LLM) {
+		refuse("llm", "llm (the LLM proxy routes a pod's Claude Code through it, and needs tiers)")
+	}
+	if present(d.Kube) {
+		refuse("kube", "kube (kube reads are the judgement pool's, and need tiers)")
+	}
+	if d.ChatSessions != 0 {
+		refuse("chat_sessions", "chat_sessions (a chat runs in a ccd lane of a pod instance; a host instance has no ccd)")
+	}
+	if len(refused) > 0 {
+		return "", "", &FieldErrors{Prefix: `runtime "host" refuses `, List: refused}
+	}
+	return RuntimeHost, host, nil
+}
+
+// FieldError is a declaration refused for one field (Field, the JSON name a
+// declaration spells it with): what the admin API answers per field. Its
+// Error is the refusal's own text, so an env declaration's boot refusal reads
+// exactly as it always has.
+type FieldError struct {
+	Field string
+	Err   error
+}
+
+func (e *FieldError) Error() string { return e.Err.Error() }
+func (e *FieldError) Unwrap() error { return e.Err }
+
+// fieldErr tags err with field.
+func fieldErr(field string, err error) error { return &FieldError{Field: field, Err: err} }
+
+// FieldErrors is several refusals at once (a host officer's): Error is Prefix
+// then each refusal's text, joined with "; ".
+type FieldErrors struct {
+	Prefix string
+	List   []FieldError
+}
+
+func (e *FieldErrors) Error() string {
+	parts := make([]string, 0, len(e.List))
+	for _, f := range e.List {
+		parts = append(parts, f.Err.Error())
+	}
+	return e.Prefix + strings.Join(parts, "; ")
+}
+
+// Fields is err as per-field refusals: every refusal a FieldErrors holds
+// (each prefixed with its Prefix), else the one FieldError, else err as one
+// refusal of no particular field (Field "").
+func Fields(err error) []FieldError {
+	if err == nil {
+		return nil
+	}
+	var many *FieldErrors
+	if errors.As(err, &many) {
+		out := make([]FieldError, 0, len(many.List))
+		for _, f := range many.List {
+			out = append(out, FieldError{Field: f.Field, Err: errors.New(many.Prefix + f.Err.Error())})
+		}
+		return out
+	}
+	var one *FieldError
+	if errors.As(err, &one) {
+		return []FieldError{*one}
+	}
+	return []FieldError{{Err: err}}
+}
+
+// The officer backends a declaration may name (`backend`).
+const (
+	// BackendHQ is an external HQ over HTTPS with the officer's token: the
+	// default, and the only backend before officer-backend/v1.
+	BackendHQ = "hq"
+	// BackendBuiltin is muster's own Postgres (internal/officers/builtin):
+	// the officer's type, charter, switch and queue live in muster's database,
+	// written through the owner-scoped admin API (#503 slice 7).
+	BackendBuiltin = "builtin"
+)
+
+// parseBackend is the declaration's backend: "" and "hq" are BackendHQ, and
+// "builtin" is BackendBuiltin — refused at boot, FAIL CLOSED, when the
+// officer declares anything that only means something with an external HQ:
+// hq_url, a token in the environment, ship or ci_logs (the ship gates'
+// notices, preflight and switch are HQ's), or transcript forwarding (HQ's
+// transcript store).
+func (d declared) parseBackend(getenv func(string) string) (string, error) {
+	switch strings.TrimSpace(d.Backend) {
+	case "", BackendHQ:
+		return BackendHQ, nil
+	case BackendBuiltin:
+	default:
+		return "", fmt.Errorf("backend %q is not %q or %q", d.Backend, BackendHQ, BackendBuiltin)
+	}
+	var refused []string
+	if strings.TrimSpace(d.HQURL) != "" {
+		refused = append(refused, "hq_url (a builtin officer's backend is muster itself)")
+	}
+	if v := TokenEnvPrefix + TokenEnvSuffix(strings.TrimSpace(d.ID)); strings.TrimSpace(getenv(v)) != "" {
+		refused = append(refused, v+" (a builtin officer has no token: unset it)")
+	}
+	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
+	if present(d.Ship) {
+		refused = append(refused, "ship (the ship gates need an HQ's notices, preflight and switch)")
+	}
+	if present(d.CILogs) {
+		refused = append(refused, "ci_logs (a shipping officer's)")
+	}
+	if present(d.Transcript) {
+		refused = append(refused, "transcript (forwarding goes to an HQ's transcript store)")
+	}
+	if len(refused) > 0 {
+		return "", fmt.Errorf(`backend "builtin" refuses %s`, strings.Join(refused, "; "))
+	}
+	return BackendBuiltin, nil
+}
+
+// Transcript is an officer's `transcript` block: whether its instances' live
+// session transcripts are forwarded to HQ (POST …/items/{item}/transcript)
+// while they hold a claimed item.
+type Transcript struct {
+	Enabled bool `json:"enabled"`
+}
+
+// TranscriptEnabled reports whether o's instances' transcripts are forwarded
+// to HQ. THE one switch: the forwarder asks it before every read and post.
+func (o Officer) TranscriptEnabled() bool { return o.Transcript != nil && o.Transcript.Enabled }
+
+// parseTranscript reads a `transcript` block strictly: an unknown key is a
+// refusal, as everywhere in MUSTER_OFFICERS.
+func parseTranscript(raw json.RawMessage) (*Transcript, error) {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var t Transcript
+	if err := dec.Decode(&t); err != nil {
+		return nil, fmt.Errorf("transcript must be {\"enabled\": true|false}: %v", err)
+	}
+	return &t, nil
+}
+
+// idPart is one half of an officer id: lowercase alphanumerics and single
+// hyphens, not starting or ending with one.
+const idPart = `[a-z0-9]+(?:-[a-z0-9]+)*`
+
+var idRE = regexp.MustCompile(`^` + idPart + `:` + idPart + `$`)
+
+// connectorNameRE is internal/connectors' connector-name rule (ValidateName),
+// repeated here because this package does not import the connector store.
+var connectorNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// MayRequestConnector is THE rule for which connectors officer o's instances
+// may request and use: `github`, plus the ones o declares in `connectors`.
+func MayRequestConnector(o Officer, name string) bool {
+	// 🔴 NOT github ON A HOST: the github connector is used through the HTTP
+	// proxy with the agent's own token, which never reaches a host session —
+	// a grant would be approved for nothing. A host instance reads its
+	// repository from its worktree.
+	if name == GitHubConnector {
+		return !o.OnHost()
+	}
+	// kube-read: the judgement pool of an officer with a `kube` block only
+	// (kube.go). Never by declaring it in `connectors`, which is refused.
+	if name == KubeConnector {
+		return len(o.KubeClusters()) > 0
+	}
+	for _, c := range o.Connectors {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
+// parseReadRepos checks an officer's `read_repos` against its `repo` and
+// returns it canonical: trimmed, lowercased (GitHub names are
+// case-insensitive) and sorted. It refuses, naming the entry, a value that is
+// not a GitHub owner/name (github.ValidRepoName, `repo`'s own check), an entry
+// listed twice (in any case), an entry that is `repo` itself, more than
+// MaxReadRepos entries, and any entry when there is no `repo`.
+//
+// 🔴 read_repos NEEDS repo — unless standing. The GitHub App refuses a caller
+// with no repository of its own (githubapp.App.Credential), and a request
+// whose path names no repository (/graphql, /rate_limit) is served with the
+// token for `repo`; an officer with read_repos alone would have neither. A
+// standing read (read_grant "standing") uses no App token at all, so it does
+// not need one.
+func parseReadRepos(repo string, in []string, standing bool) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if repo == "" && !standing {
+		return nil, errors.New("read_repos needs `repo`: the officer's own repository is what a request that names " +
+			"no repository is served for, and the GitHub App refuses an agent without one")
+	}
+	if len(in) > MaxReadRepos {
+		return nil, fmt.Errorf("read_repos lists %d repositories, over the cap of %d", len(in), MaxReadRepos)
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		r = strings.TrimSpace(r)
+		if !github.ValidRepoName(r) {
+			return nil, fmt.Errorf("read_repos entry %q is not a GitHub owner/name", r)
+		}
+		lr := strings.ToLower(r)
+		if strings.EqualFold(r, repo) {
+			return nil, fmt.Errorf("read_repos entry %q is the officer's own `repo`; remove it", r)
+		}
+		if seen[lr] {
+			return nil, fmt.Errorf("read_repos lists %q twice", r)
+		}
+		seen[lr] = true
+		out = append(out, lr)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// The values of an officer's `read_grant` and `read_at`.
+const (
+	// ReadGrantStanding serves read_repos with no approval: anonymously, reads
+	// only, each verified public (Officer.ReadGrant).
+	ReadGrantStanding = "standing"
+	// ReadAtRelease points a standing read at muster's own release tag
+	// (Officer.ReadAt, Officer.ReleaseTag).
+	ReadAtRelease = "release"
+)
+
+// parseReadGrant reads `read_grant` and `read_at`, FAIL CLOSED: "standing" is
+// refused on an officer that is not builtin (an HQ officer's grants are
+// unchanged by it; a builtin officer cannot ship, parseBackend refuses `ship`)
+// and without read_repos; `read_at` is
+// refused without "standing"; any other value is refused.
+func parseReadGrant(o Officer, d declared) (grant, at string, err error) {
+	switch g := strings.TrimSpace(d.ReadGrant); g {
+	case "":
+	case ReadGrantStanding:
+		switch {
+		case !o.IsBuiltin():
+			return "", "", errors.New(`read_grant "standing" is for a builtin officer only ("backend": "builtin"); ` +
+				"an HQ officer's read_repos are approved per instance")
+		case len(d.ReadRepos) == 0:
+			return "", "", errors.New(`read_grant "standing" needs read_repos: it grants nothing else`)
+		}
+		grant = g
+	default:
+		return "", "", fmt.Errorf("read_grant %q is not %q (leave it out for the per-instance approval)", d.ReadGrant, ReadGrantStanding)
+	}
+	switch a := strings.TrimSpace(d.ReadAt); a {
+	case "":
+	case ReadAtRelease:
+		if grant != ReadGrantStanding {
+			return "", "", errors.New(`read_at needs read_grant "standing"`)
+		}
+		at = a
+	default:
+		return "", "", fmt.Errorf("read_at %q is not %q", d.ReadAt, ReadAtRelease)
+	}
+	return grant, at, nil
+}
+
+// StandingReadRepos are the repositories o's instances READ through the
+// standing public read (connectors.Caller.PublicReadRepos): its read_repos
+// when it is a builtin officer that declares read_grant "standing" and does
+// not ship; nil for every other officer. 🔴 THE ONE RULE for who gets a
+// standing read: internal/api reads it, and nothing else decides it.
+func (o Officer) StandingReadRepos() []string {
+	if o.ReadGrant != ReadGrantStanding || !o.IsBuiltin() || o.Ship != nil {
+		return nil
+	}
+	return o.ReadRepos
+}
+
+// ApprovalReadRepos are o's read_repos served under the per-instance `github`
+// grant (connectors.Caller.ReadRepos, part of the grant's RepoScope): all of
+// them, unless they are standing (StandingReadRepos), when none are.
+func (o Officer) ApprovalReadRepos() []string {
+	if len(o.StandingReadRepos()) > 0 {
+		return nil
+	}
+	return o.ReadRepos
+}
+
+// releaseVersionRE is a release build's version (api.BuildVersion): x.y.z.
+var releaseVersionRE = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// ReleaseTagOf is the git tag of the muster release whose version is version
+// ("0.221.0" -> "v0.221.0"), "" for a build that is not a release ("dev").
+func ReleaseTagOf(version string) string {
+	v := strings.TrimSpace(version)
+	if !releaseVersionRE.MatchString(v) {
+		return ""
+	}
+	return "v" + strings.TrimPrefix(v, "v")
+}
+
+// StampReleaseTag returns list with ReleaseTag set, from version (the
+// server's build version), on every officer whose standing read is pointed at
+// muster's release (ReadAt ReadAtRelease).
+func StampReleaseTag(list []Officer, version string) []Officer {
+	out := append([]Officer(nil), list...)
+	for i := range out {
+		if out[i].ReadAt == ReadAtRelease {
+			out[i].ReleaseTag = ReleaseTagOf(version)
+		}
+	}
+	return out
+}
+
+// TokenEnvPrefix is the prefix of the variable each officer's HQ token is read
+// from: MUSTER_OFFICER_TOKEN_<NAME>, where NAME is [TokenEnvSuffix] of its id.
+const TokenEnvPrefix = "MUSTER_OFFICER_TOKEN_"
+
+// TokenEnvSuffix is the officer id as an environment-variable suffix:
+// upper-cased, with every non-alphanumeric byte written as '_'
+// (`release:example-web` -> `RELEASE_EXAMPLE_WEB`).
+func TokenEnvSuffix(id string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(id) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// Parse reads MUSTER_OFFICERS — a JSON array of officer declarations — and
+// each declared officer's token through getenv. Empty raw is no officers.
+//
+// It refuses (and names the reason) rather than guessing: an unknown field, an
+// id that is not `<type>:<area>`, two officers whose slugs collide,
+// a missing token, a base URL that is not http(s), a repo that is not a GitHub
+// owner/name (github.ValidRepoName, the task repositories' own check), a bad
+// read_repos (parseReadRepos). Instances always run on the
+// claude-code kind; there is no kind field.
+//
+// namespacePrefix is the deployment's resolved MUSTER_AGENT_NAMESPACE_PREFIX:
+// an officer whose highest instance name would not fit a namespace under it is
+// refused here, at boot, rather than when its first instance is created.
+func Parse(raw string, getenv func(string) string, namespacePrefix string) ([]Officer, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var in []declared
+	if err := dec.Decode(&in); err != nil {
+		return nil, fmt.Errorf("MUSTER_OFFICERS: not a JSON array of officers: %w", err)
+	}
+	images, err := parseImageRegistries(getenv(ImageRegistriesEnv))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Officer, 0, len(in))
+	seenID := map[string]bool{}
+	seenSlug := map[string]string{}
+	seenSuffix := map[string]string{}
+	for i, d := range in {
+		o, err := d.officer(getenv, MaxInstanceNameLen(namespacePrefix), images)
+		if err != nil {
+			return nil, fmt.Errorf("MUSTER_OFFICERS[%d]: %w", i, err)
+		}
+		if seenID[o.ID] {
+			return nil, fmt.Errorf("MUSTER_OFFICERS[%d]: officer %q is declared twice", i, o.ID)
+		}
+		seenID[o.ID] = true
+		if other, ok := seenSlug[Slug(o.ID)]; ok {
+			return nil, fmt.Errorf("MUSTER_OFFICERS[%d]: officers %q and %q have the same agent slug %q", i, other, o.ID, Slug(o.ID))
+		}
+		seenSlug[Slug(o.ID)] = o.ID
+		if other, ok := seenSuffix[TokenEnvSuffix(o.ID)]; ok {
+			return nil, fmt.Errorf("MUSTER_OFFICERS[%d]: officers %q and %q read the same token variable %s%s", i, other, o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID))
+		}
+		seenSuffix[TokenEnvSuffix(o.ID)] = o.ID
+		out = append(out, o)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if err := validateShepherds(out); err != nil {
+		return nil, fmt.Errorf("MUSTER_OFFICERS: %w", err)
+	}
+	return out, nil
+}
+
+func (d declared) officer(getenv func(string) string, maxName int, images []string) (Officer, error) {
+	o := Officer{
+		ID:           strings.TrimSpace(d.ID),
+		HQURL:        strings.TrimRight(strings.TrimSpace(d.HQURL), "/"),
+		MaxInstances: d.MaxInstances,
+		Owner:        d.Owner,
+		CCAccount:    strings.TrimSpace(d.CCAccount),
+		CCFailover:   d.CCFailover,
+		Model:        strings.TrimSpace(d.Model),
+		Image:        strings.TrimSpace(d.Image),
+		Repo:         strings.TrimSpace(d.Repo),
+		IdleAfter:    DefaultIdleAfter,
+		PollInterval: DefaultPollInterval,
+		// A DB-declared officer's (Declaration.Officer): set before the
+		// instance-name length check below, which measures ITS names.
+		InstanceSlug: d.InstanceSlug,
+	}
+	if d.InstanceSlug != "" {
+		o.ManagedBy = ManagedByDB
+	}
+	if !idRE.MatchString(o.ID) {
+		return Officer{}, fieldErr("id", fmt.Errorf("id %q is not <type>:<area> (lowercase letters, digits and single hyphens on each side)", d.ID))
+	}
+	// The backend first: a builtin officer is refused (naming everything it
+	// may not declare) before any HQ-only check reads as the reason.
+	backend, err := d.parseBackend(getenv)
+	if err != nil {
+		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+	}
+	o.Backend = backend
+	// The runtime next, for the same reason: a host officer is refused naming
+	// everything a host-spawned session cannot honour, before any pod-only
+	// check reads as the reason.
+	runtime, host, err := d.parseRuntime(backend)
+	if err != nil {
+		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+	}
+	o.Runtime, o.Host = runtime, host
+	// 🔴 hq_url and the token are HQ's: a builtin officer has neither
+	// (parseBackend refused both), and its backend is muster's own database.
+	if !o.IsBuiltin() {
+		u, err := url.Parse(o.HQURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Officer{}, fieldErr("hq_url", fmt.Errorf("officer %s: hq_url %q is not an http(s) URL", o.ID, d.HQURL))
+		}
+		if u.User != nil {
+			return Officer{}, fieldErr("hq_url", fmt.Errorf("officer %s: hq_url must not carry credentials; the token comes from %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID)))
+		}
+	}
+	if o.Model != "" {
+		if err := podagent.ValidModel(o.Model); err != nil {
+			return Officer{}, fieldErr("model", fmt.Errorf("officer %s: %w", o.ID, err))
+		}
+	}
+	hasLLM := len(d.LLM) > 0 && string(d.LLM) != "null"
+	// A shipping officer may have `llm`: the LLM proxy serves only the ROUTINE
+	// pool (llm needs tiers), and a routine pool never holds the ship tools,
+	// gate or App token (Officer.Pool).
+	if len(d.Tiers) > 0 && string(d.Tiers) != "null" {
+		// 🔴 ONE SOURCE PER VALUE. With tiers, the judgement pool's model and
+		// max are tiers.judgement's; a top-level one beside it would be a second
+		// answer to the same question, so it is refused rather than ranked.
+		if o.Model != "" {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's model as tiers.judgement.model; remove the top-level model", o.ID)
+		}
+		if d.MaxInstances != 0 {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's size as tiers.judgement.max_instances; remove the top-level max_instances", o.ID)
+		}
+		if o.Image != "" {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set each pool's image as tiers.<pool>.image; remove the top-level image", o.ID)
+		}
+		// 🔴 A TIERED SHIPPING OFFICER SHIPS FROM ITS JUDGEMENT POOL ONLY.
+		// Officer.Pool(TierRoutine) has no Ship and no CILogs, so a routine
+		// instance gets no ship tool, no push gate and no officer App token:
+		// it is an ordinary read-only officer instance.
+		t, err := parseTiers(d.Tiers, hasLLM)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Tiers, o.Tier = t, TierJudgement
+		o.Model, o.MaxInstances, o.Image = t.Judgement.Model, t.Judgement.MaxInstances, t.Judgement.Image
+	}
+	// 🔴 EVERY IMAGE AN INSTANCE OF THIS OFFICER COULD RUN IS CHECKED HERE, AT
+	// BOOT: the officer's own (untiered) or each pool's.
+	for _, p := range o.Pools() {
+		if p.Image == "" {
+			continue
+		}
+		if err := ImageAllowed(p.Image, images); err != nil {
+			where := "image"
+			if p.Tier != "" {
+				where = "tiers." + p.Tier + ".image"
+			}
+			return Officer{}, fmt.Errorf("officer %s: %s: %w", o.ID, where, err)
+		}
+	}
+	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
+		return Officer{}, fieldErr("repo", fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo))
+	}
+	grant, at, err := parseReadGrant(o, d)
+	if err != nil {
+		return Officer{}, fieldErr("read_repos", fmt.Errorf("officer %s: %w", o.ID, err))
+	}
+	o.ReadGrant, o.ReadAt = grant, at
+	readRepos, err := parseReadRepos(o.Repo, d.ReadRepos, grant == ReadGrantStanding)
+	if err != nil {
+		return Officer{}, fieldErr("read_repos", fmt.Errorf("officer %s: %w", o.ID, err))
+	}
+	o.ReadRepos = readRepos
+	seenConn := map[string]bool{}
+	for _, c := range d.Connectors {
+		c = strings.TrimSpace(c)
+		if !connectorNameRE.MatchString(c) {
+			return Officer{}, fieldErr("connectors", fmt.Errorf("officer %s: connector %q is not a connector name (lowercase letters, digits and '-', at most 63)", o.ID, c))
+		}
+		if c == GitHubConnector {
+			return Officer{}, fieldErr("connectors", fmt.Errorf("officer %s: connectors lists %q, which every officer may already request; remove it", o.ID, c))
+		}
+		if c == KubeConnector {
+			return Officer{}, fieldErr("connectors", fmt.Errorf("officer %s: connectors lists %q, which only a `kube` block grants (to the judgement pool); remove it", o.ID, c))
+		}
+		if !seenConn[c] {
+			seenConn[c] = true
+			o.Connectors = append(o.Connectors, c)
+		}
+	}
+	sort.Strings(o.Connectors)
+	if o.MaxInstances == 0 {
+		o.MaxInstances = DefaultMaxInstances
+	}
+	if o.MaxInstances < 1 || o.MaxInstances > MaxInstancesCap {
+		return Officer{}, fieldErr("max_instances", fmt.Errorf("officer %s: max_instances %d is not 1..%d", o.ID, d.MaxInstances, MaxInstancesCap))
+	}
+	if d.ChatSessions < 0 || d.ChatSessions > MaxChatSessions {
+		return Officer{}, fieldErr("chat_sessions", fmt.Errorf("officer %s: chat_sessions %d is not 1..%d (leave it out for %d)", o.ID, d.ChatSessions, MaxChatSessions, DefaultChatSessions))
+	}
+	o.chatSessions = d.ChatSessions
+	if o.Owner == 0 {
+		o.Owner = 1
+	}
+	if o.Owner < 0 {
+		return Officer{}, fieldErr("owner", fmt.Errorf("officer %s: owner %d is not a user id", o.ID, d.Owner))
+	}
+	if s := strings.TrimSpace(d.IdleAfter); s != "" {
+		v, err := time.ParseDuration(s)
+		if err != nil || v <= 0 {
+			return Officer{}, fieldErr("idle_scale_to_zero_after", fmt.Errorf("officer %s: idle_scale_to_zero_after %q is not a positive duration", o.ID, s))
+		}
+		o.IdleAfter = v
+	}
+	if s := strings.TrimSpace(d.PollInterval); s != "" {
+		v, err := time.ParseDuration(s)
+		if err != nil || v <= 0 {
+			return Officer{}, fieldErr("poll_interval", fmt.Errorf("officer %s: poll_interval %q is not a positive duration", o.ID, s))
+		}
+		o.PollInterval = v
+	}
+	if o.PollInterval < MinPollInterval {
+		return Officer{}, fieldErr("poll_interval", fmt.Errorf("officer %s: poll_interval %s is below the %s floor", o.ID, o.PollInterval, MinPollInterval))
+	}
+	for _, p := range o.Pools() {
+		if n := p.InstanceName(p.MaxInstances); len(n) > maxName {
+			return Officer{}, fieldErr("id", fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
+				o.ID, n, len(n), maxName, MaxNamespaceLen))
+		}
+	}
+	if len(d.Ship) > 0 && string(d.Ship) != "null" {
+		// read_repos beside ship: a READ to one of them is admitted by the push
+		// gate (it admits no write outside the ship repositories) and served
+		// with the DEPLOYMENT App's read-only token for that one repository
+		// (PushGate.ReadCred), never the officer App's; with no deployment App
+		// muster-server refuses to boot (config.validateShipReadRepos). A
+		// read_repos entry that is also a ship repository is refused below: it
+		// would have two answers.
+		ship, err := parseShip(o.ID, o.Repo, d.Ship, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		for _, rr := range o.ReadRepos {
+			if _, dup := ship.RepoFor(o.Repo, rr); dup {
+				return Officer{}, fmt.Errorf("officer %s: read_repos entry %q is one of ship.repos, which the officer already reads; remove it", o.ID, rr)
+			}
+		}
+		o.Ship = ship
+	}
+	if len(d.CILogs) > 0 && string(d.CILogs) != "null" {
+		ci, err := parseCILogs(o.Ship, d.CILogs)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.CILogs = ci
+	}
+	if len(d.Transcript) > 0 && string(d.Transcript) != "null" {
+		tr, err := parseTranscript(d.Transcript)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Transcript = tr
+	}
+	if len(d.Kube) > 0 && string(d.Kube) != "null" {
+		k, err := parseKube(d.Kube, o.Tiers != nil, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Kube = k
+	}
+	if hasLLM {
+		l, err := parseLLM(o, d.LLM, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.LLM = l
+	}
+	if o.Tiers != nil && o.Tiers.Judgement.llmRaw != nil {
+		l, err := parseJudgementLLM(o, o.Tiers.Judgement.llmRaw, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Tiers.Judgement.LLM, o.Tiers.Judgement.llmRaw = l, nil
+	}
+	b, err := parseBudget(o, d)
+	if err != nil {
+		return Officer{}, err
+	}
+	o.Budget = b
+	if o.IsBuiltin() {
+		return o, nil
+	}
+	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
+	if tok == "" {
+		return Officer{}, fmt.Errorf("officer %s: no token: set %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID))
+	}
+	o.token = tok
+	return o, nil
+}
+
+// ErrUnknownOfficer is a lookup of an id no declared officer has.
+var ErrUnknownOfficer = errors.New("officers: no such officer")
+
+// Registry is the declared officers, looked up by key or by instance agent
+// name.
+//
+// 🔴 IT IS MUTABLE, BY ONE ATOMIC SWAP (Swap): every read takes one immutable
+// snapshot, so a reader never sees half a roster, and every consumer — the
+// wake loop (re-read every tick), hostOfficersOn, the mirror door's step-up
+// gate, the tool binding (ForAgentName) — reads the roster LIVE. The env
+// officers are fixed at boot; the DB-declared ones (migration 0136) are
+// swapped in by internal/api's loader whenever they change, with no restart.
+type Registry struct {
+	cur atomic.Pointer[regSnapshot]
+}
+
+// regSnapshot is one immutable roster: list sorted by key, byKey its index.
+type regSnapshot struct {
+	list  []Officer
+	byKey map[string]Officer
+}
+
+func newSnapshot(list []Officer) *regSnapshot {
+	sn := &regSnapshot{byKey: make(map[string]Officer, len(list))}
+	for _, o := range list {
+		sn.list = append(sn.list, o)
+		sn.byKey[o.Key()] = o
+	}
+	sort.SliceStable(sn.list, func(i, j int) bool { return sn.list[i].Key() < sn.list[j].Key() })
+	return sn
+}
+
+// NewRegistry indexes list. It does not re-validate: Parse did (and
+// Declaration.Officer, for a DB-declared one).
+func NewRegistry(list []Officer) *Registry {
+	r := &Registry{}
+	r.cur.Store(newSnapshot(list))
+	return r
+}
+
+// Swap replaces the whole roster with list, atomically: a reader sees the old
+// roster or the new one, never a mix. The caller (internal/api's loader)
+// passes every officer — env and DB — each time.
+func (r *Registry) Swap(list []Officer) { r.cur.Store(newSnapshot(list)) }
+
+func (r *Registry) snap() *regSnapshot {
+	if r == nil {
+		return nil
+	}
+	return r.cur.Load()
+}
+
+// All returns the declared officers, sorted by key (an env officer's key is
+// its id).
+func (r *Registry) All() []Officer {
+	sn := r.snap()
+	if sn == nil {
+		return nil
+	}
+	return append([]Officer(nil), sn.list...)
+}
+
+// Get returns the officer whose Key is key (an env officer's id).
+func (r *Registry) Get(key string) (Officer, error) {
+	sn := r.snap()
+	if sn == nil {
+		return Officer{}, ErrUnknownOfficer
+	}
+	o, ok := sn.byKey[key]
+	if !ok {
+		return Officer{}, ErrUnknownOfficer
+	}
+	return o, nil
+}
+
+// ForOwner returns owner's officer with id: the env officer declared for that
+// owner, or that owner's DB-declared one. An id another owner declares is not
+// owner's.
+func (r *Registry) ForOwner(owner int64, id string) (Officer, bool) {
+	sn := r.snap()
+	if sn == nil {
+		return Officer{}, false
+	}
+	for _, o := range sn.list {
+		if o.Owner == owner && o.ID == id {
+			return o, true
+		}
+	}
+	return Officer{}, false
+}
+
+// ForAgentName answers which declared officer an agent named name is an
+// instance of, and which instance (1..its pool's MaxInstances). It is THE
+// binding rule: the MCP tools act for the officer this returns and no other,
+// and an agent whose name it does not parse is not an officer instance at all.
+//
+// The officer returned is the instance's POOL (Officer.Pool): for a tiered
+// officer's routine instance, Tier routine with the routine model and max; for
+// an untiered officer, the officer itself, as before.
+func (r *Registry) ForAgentName(name string) (Officer, int, bool) {
+	sn := r.snap()
+	if sn == nil {
+		return Officer{}, 0, false
+	}
+	return forAgentName(sn.list, name)
+}
+
+func forAgentName(list []Officer, name string) (Officer, int, bool) {
+	for _, o := range list {
+		if p, n, ok := parseInstance(o, name); ok {
+			return p, n, true
+		}
+	}
+	return Officer{}, 0, false
+}

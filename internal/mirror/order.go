@@ -13,6 +13,8 @@ import (
 // facts beside its own. HostView.Entries and HostView.Find are the only
 // producers.
 type SessionView struct {
+	// Owner is its host's (HostView.Owner).
+	Owner   int64
 	Host    string
 	Session string
 	// Window is the tmux window id (Window.ID) the entry is; "" = the entry is
@@ -46,38 +48,127 @@ type SessionView struct {
 	// per-session host's entry. What its focus is keyed by.
 	ClaudeSession string
 	// Runtime is the window's non-Claude agent runtime (Window.Runtime:
-	// RuntimeHermes, or ""), and AgentSession that runtime's session id
-	// (Window.AgentSession), "" when the host names none — for Hermes, when
-	// the window has no rendered view.
+	// RuntimeOpenCode, or ""), and AgentSession that runtime's session id
+	// (Window.AgentSession), "" when the host names none — when the window
+	// has no rendered view.
 	Runtime      string
 	AgentSession string
+	// AgentNote is the host's line for the person about the window
+	// (Window.AgentNote): why it has no rendered view, or what its credential
+	// needs. Shown on its card.
+	AgentNote string
+	// AgentSend is Window.AgentSend: the host sends to this window's session
+	// through its runtime's gated send (launcher-bound opencode). SendWhy says,
+	// with the host's hello, whether a send can go and why not.
+	AgentSend bool
+	// AgentBind is Window.AgentBind: how a hand-opened pane of a gated-send
+	// runtime is bound (verified: sent to), or why it is not sent to.
+	AgentBind string
+	// LiveCopy is the session id of another transcript of the entry's Claude
+	// Code conversation that is still running elsewhere (Window.LiveCopy), ""
+	// for none. LiveCopyWarning is its words.
+	LiveCopy string
 	// Qualifier is what the entry's Title needs beside it to be told apart from
 	// every OTHER entry listed with it ("" = its Title is already unique). Set
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
 	// or Find alone has none — Qualified gives one the list's.
 	Qualifier string
+	// CodeQualifier is Qualifier's rule over the CODENAME (Title, tmux's window
+	// index and all) rather than the plain title — "mango:1 · laptop",
+	// "Gold:1 · scratch3:1" — for a text that names a window technically, to
+	// an agent or in a stored label (CodeTitle). Set by Ordered (qualify) and
+	// only there.
+	CodeQualifier string
 	// Repo is the short name of the repository the entry works in
 	// (HostView.Repos, repos.go), "" when its host did not say.
 	Repo string
+	// GitHubRepo is the GitHub <owner>/<name> the entry's checkout's origin
+	// names (HostView.GitHubRepos, repos.go), "" when its host did not say. It
+	// can differ from Repo (a folder named unlike its repository); the chief is
+	// shown both, and dispatches with this one.
+	GitHubRepo string
+	// Dispatch is the host dispatch the entry's window was started for
+	// (Window.Dispatch): an agent the chief started. 0 for every other window.
+	Dispatch int64
 	// Work is what the entry's Claude Code session has running now
 	// (HostView.Work, work.go); the zero value when its host did not say.
 	Work WindowWork
+	// Previews is what the entry's window has to preview now
+	// (HostView.Previews, previews.go); the zero value when its host did not
+	// say — which draws no Preview button and no sidebar mark.
+	Previews WindowPreviews
 	// Color is the entry's tmux identity colour, lowercase #rrggbb
 	// (HostView.Colors, work.go), "" when its host did not say.
 	Color string
+	// Status and StatusSince are the window's Window.Status / StatusSince —
+	// only from a host that advertised StatusReport (the wire's rule: no other
+	// host is believed about status); "" and 0 otherwise, and always for a
+	// per-session host's entry.
+	Status      string
+	StatusSince int64
 }
 
-// QualifierSep joins a Title and its Qualifier: "mango:1 · laptop".
+// QualifierSep joins a Title and its Qualifier: "mango · laptop".
 const QualifierSep = " · "
 
 // DisplayTitle is the entry's name as every surface shows it — the card, the
-// rendered view's and the terminal's header and <title>: its Title, then its
-// Qualifier when it has one.
+// rendered view's and the terminal's header and <title>: its PlainTitle, then
+// its Qualifier when it has one.
 func (s SessionView) DisplayTitle() string {
 	if s.Qualifier == "" {
+		return s.PlainTitle()
+	}
+	return s.PlainTitle() + QualifierSep + s.Qualifier
+}
+
+// CodeTitle is the entry's name as muster spelled it before names dropped
+// tmux's window index: its Title (the codename, "mango:1"), then its
+// CodeQualifier. For a text that names the window technically — the chief's
+// labels (internal/api mirrorLabel), never the top layer of a page.
+func (s SessionView) CodeTitle() string {
+	if s.CodeQualifier == "" {
 		return s.Title()
 	}
-	return s.Title() + QualifierSep + s.Qualifier
+	return s.Title() + QualifierSep + s.CodeQualifier
+}
+
+// PlainTitle is the entry's Title as a person reads it: the codename with
+// tmux's window index dropped (PlainCode) — "mango", not "mango:1". The index
+// is how tmux numbers a window, not a name; it stays in the entry's Address,
+// its Where and its Place (what "Show tmux sessions" and the ⓘ details show),
+// and comes back as a qualifier ("window 2") only when two listed entries of
+// one host would otherwise read the same (qualify).
+func (s SessionView) PlainTitle() string { return PlainCode(s.Title()) }
+
+// PlainCode is code without a trailing tmux window index: "mango:1" is
+// "mango", "retry-test:12" is "retry-test"; a code with no index ("mango",
+// "a:b") — or one that IS only an index (":1") — is returned unchanged.
+//
+// 🔴 ONE RULE, ONE PLACE: every surface that names a window by its codename
+// for a person (DisplayTitle, the ui's card and switcher names, an attention
+// card's title) drops the index here, so no two of them disagree about
+// whether "mango:1" and "mango" are the same window.
+func PlainCode(code string) string {
+	i := strings.LastIndexByte(code, ':')
+	if i <= 0 || i == len(code)-1 {
+		return code
+	}
+	for _, c := range code[i+1:] {
+		if c < '0' || c > '9' {
+			return code
+		}
+	}
+	return code[:i]
+}
+
+// PlaceWords is where a window runs, as the top layer of every surface says
+// it: "on <host>". The exact tmux address (Where) is behind the surface's ⓘ
+// details, never in its words.
+func PlaceWords(host string) string {
+	if host == "" {
+		return ""
+	}
+	return "on " + host
 }
 
 // Address is the entry's tmux address on its host, as an operator types it:
@@ -86,59 +177,189 @@ func (s SessionView) DisplayTitle() string {
 // session per name and one window per index in a session — which is what
 // makes it the tie-break for two entries of one host that share a Title.
 func (s SessionView) Address() string {
-	if s.Window != "" {
-		return s.Session + ":" + strconv.Itoa(s.Index)
+	return tmuxAddress(s.Session, s.Window, s.Index)
+}
+
+// tmuxAddress is Address's rule, for a caller that holds the window's fields
+// rather than a SessionView (Where).
+func tmuxAddress(session, window string, index int) string {
+	if window != "" {
+		return session + ":" + strconv.Itoa(index)
 	}
-	return s.Session
+	return session
+}
+
+// Where is the entry's exact place, for every text that sends the operator to
+// it (an ask, a waiting session, a notification): see the function Where.
+func (s SessionView) Where() string {
+	return Where(s.Host, s.Session, s.Window, s.Index, s.Label)
+}
+
+// Where names a mirrored window so the operator can go to it in a terminal:
+// "tmux <session>:<window index> @ <host>" — the tmux session name and window
+// index, exactly as tmux's own target syntax takes them (Address) — led by the
+// host's label for it when it has one that is not that same address:
+//
+//	tmux build:4 @ laptop
+//	mango:1 · tmux scratch3:5 @ laptop
+//
+// A per-session host's entry (window "") is "tmux <session> @ <host>".
+//
+// 🔴 ONE RULE, ONE PLACE. Every attention surface that names a mirrored window
+// (a chief nudge's ask, a waiting session or held question, the session asker
+// of an ask, their notifications and the ask page's header) takes its words
+// from here. The label is a host's codename and is NOT a tmux name — on its
+// own it named a window nobody could find — so it is never the only name, and
+// the session name alone (no index) is not a target either.
+//
+// The index is a SNAPSHOT: tmux renumbers windows, so text built from it says
+// where the window was when the text was made. Links resolve the window by its
+// Claude session id when followed and stay the source of truth.
+func Where(host, session, window string, index int, label string) string {
+	addr := tmuxAddress(session, window, index)
+	out := WhereTarget(host, session, window, index)
+	if label != "" && label != addr {
+		out = label + QualifierSep + out
+	}
+	return out
+}
+
+// WhereTarget is Where's machine part, "tmux <session>:<index> @ <host>",
+// without the label: what a surface that plains a title for display must
+// keep VERBATIM (textplain.TitleKeeping) — a tmux session named "_scratch_"
+// is typed as "_scratch_", never as the "scratch" a markdown stripper reads.
+func WhereTarget(host, session, window string, index int) string {
+	return "tmux " + tmuxAddress(session, window, index) + " @ " + host
+}
+
+// TitleAt is how muster named the entry before sessions had names: its Title
+// — the host's label for the window ("mango:1"), else its tmux address
+// ("scratch3:5") — and its host: "mango:1 @ atlas". It is what a notification
+// that names a session by its human name adds after it when its owner turned
+// on "Show tmux sessions" (internal/api notifyName).
+func (s SessionView) TitleAt() string {
+	return s.Place().String()
+}
+
+// Place is a window's place as "Show tmux sessions" adds it (internal/api
+// tmuxPlace): its codename — the host's label for it ("mango:1"), else its
+// tmux address — and its host, kept APART so a session whose name already IS
+// the codename can be told without parsing "mango:1 @ atlas" back. The zero
+// value is "no window".
+type Place struct {
+	Code, Host string
+	// Addr is the window's tmux address on its host ("scratch13:1", Address),
+	// "" when unknown; Offline marks a window whose host has dropped and the hub
+	// still lists. Neither is shown by String: they are for a title that must
+	// name a window by its typeable target too (internal/api codenamePlace).
+	Addr    string
+	Offline bool
+}
+
+// String is the place as it is shown: "mango:1 @ atlas" (TitleAt).
+func (p Place) String() string { return p.Code + " @ " + p.Host }
+
+// Place is the entry's Place: Title and Host (and its Address, and whether its
+// host is offline).
+func (s SessionView) Place() Place {
+	return Place{Code: s.Title(), Host: s.Host, Addr: s.Address(), Offline: !s.Online}
+}
+
+// WhereTarget is the entry's WhereTarget.
+func (s SessionView) WhereTarget() string {
+	return WhereTarget(s.Host, s.Session, s.Window, s.Index)
 }
 
 // qualify sets every entry's Qualifier over list — the WHOLE list, across
 // hosts, as Ordered produces it.
 //
-// 🔴 ONE RULE, ONE PLACE. The Agents card and the pages it opens (their header
-// and their <title>) all take an entry's name from here, so they cannot
-// disagree about whether "mango:1" needs its host. It is decided over the list
+// 🔴 ONE RULE, ONE PLACE. The sidebar's row, the switcher's pill and the pages
+// they open (their header and their <title>) all take an entry's name from here, so they cannot
+// disagree about whether "mango" needs its host. It is decided over the list
 // as it is NOW, so a host connecting with a clashing label — or the one it
 // clashed with going away — changes the answer on the next render; the hub
 // re-renders on exactly those changes (a connect, a drop, a list change).
 //
-// The rule, over entries whose Title is identical (exact bytes):
-//   - a Title no other entry has: no qualifier — the name is unchanged;
-//   - a Title shared ACROSS hosts: each entry gets its host ("mango:1 · laptop");
-//   - a Title shared by two entries of ONE host (two sessions whose label is
-//     the same, say): each of those gets its tmux Address too, after the host
-//     when the Title is also shared across hosts ("Gold:1 · laptop · scratch3:1"),
-//     alone when it is not ("Gold:1 · scratch3:1"). Address is unique per host,
-//     so every listed entry ends up with a distinct DisplayTitle.
+// The rule, over entries whose PlainTitle is identical (exact bytes) — the
+// name a person reads, with tmux's window index dropped:
+//   - a PlainTitle no other entry has: no qualifier — the name is unchanged;
+//   - a PlainTitle shared ACROSS hosts: each entry gets its host ("mango · laptop");
+//   - a PlainTitle shared by two entries of ONE host (two windows of one tmux
+//     session, "mango:1" and "mango:2"; or two sessions whose label is the
+//     same): each of those gets its window, after the host when the title is
+//     also shared across hosts ("mango · laptop · window 2"), alone when it is
+//     not ("mango · window 2"). The window is said by its index ("window 2")
+//     when the indexes tell that host's entries apart, else by its tmux
+//     Address ("Gold · scratch3:1": two sessions labelled alike, both window
+//     1). Address is unique per host, so every listed entry ends up with a
+//     distinct DisplayTitle.
 func qualify(list []SessionView) {
+	plain := qualifiers(list, SessionView.PlainTitle, true)
+	code := qualifiers(list, SessionView.Title, false)
+	for i := range list {
+		list[i].Qualifier, list[i].CodeQualifier = plain[i], code[i]
+	}
+}
+
+// qualifiers is THE qualifying rule (qualify), over the names title gives:
+// for each entry of list, what tells it apart from every other entry whose
+// title is the same — its host when the title is shared across hosts, and,
+// when it is shared within one host, its window. words says how a window is
+// said: "window <index>" (the plain names a person reads) when EVERY entry of
+// that host sharing the title is a window and their indexes all differ — else
+// (and always without words: the chief's code names) its tmux Address, unique
+// per host. A group is said one way or the other as a whole: "Gold ·
+// scratch3:1", "Gold · scratch4:1" beside a "Gold · window 2" would leave
+// "window 2" naming no session.
+func qualifiers(list []SessionView, title func(SessionView) string, words bool) []string {
 	type hostTitle struct{ host, title string }
 	byTitle := map[string]int{}
 	hostsOf := map[string]map[string]bool{}
-	byHostTitle := map[hostTitle]int{}
-	for _, s := range list {
-		t := s.Title()
+	group := map[hostTitle][]int{}
+	for i, s := range list {
+		t := title(s)
 		byTitle[t]++
 		if hostsOf[t] == nil {
 			hostsOf[t] = map[string]bool{}
 		}
 		hostsOf[t][s.Host] = true
-		byHostTitle[hostTitle{s.Host, t}]++
+		ht := hostTitle{s.Host, t}
+		group[ht] = append(group[ht], i)
 	}
-	for i := range list {
-		t := list[i].Title()
-		list[i].Qualifier = ""
+	inWords := map[hostTitle]bool{}
+	for ht, members := range group {
+		seen := map[int]bool{}
+		ok := words
+		for _, i := range members {
+			if list[i].Window == "" || seen[list[i].Index] {
+				ok = false
+				break
+			}
+			seen[list[i].Index] = true
+		}
+		inWords[ht] = ok
+	}
+	out := make([]string, len(list))
+	for i, s := range list {
+		t := title(s)
 		if byTitle[t] < 2 {
 			continue
 		}
 		var parts []string
 		if len(hostsOf[t]) > 1 {
-			parts = append(parts, list[i].Host)
+			parts = append(parts, s.Host)
 		}
-		if byHostTitle[hostTitle{list[i].Host, t}] > 1 {
-			parts = append(parts, list[i].Address())
+		ht := hostTitle{s.Host, t}
+		if len(group[ht]) > 1 {
+			if inWords[ht] {
+				parts = append(parts, "window "+strconv.Itoa(s.Index))
+			} else {
+				parts = append(parts, s.Address())
+			}
 		}
-		list[i].Qualifier = strings.Join(parts, QualifierSep)
+		out[i] = strings.Join(parts, QualifierSep)
 	}
+	return out
 }
 
 // Qualified is e with the Qualifier Ordered(hosts) gives the same entry (host,
@@ -146,10 +367,10 @@ func qualify(list []SessionView) {
 // card it was opened from say the same name. An entry hosts does not list
 // keeps no qualifier.
 func Qualified(hosts []HostView, e SessionView) SessionView {
-	e.Qualifier = ""
+	e.Qualifier, e.CodeQualifier = "", ""
 	for _, s := range Ordered(hosts) {
-		if s.Host == e.Host && s.Session == e.Session && s.Window == e.Window {
-			e.Qualifier = s.Qualifier
+		if s.Owner == e.Owner && s.Host == e.Host && s.Session == e.Session && s.Window == e.Window {
+			e.Qualifier, e.CodeQualifier = s.Qualifier, s.CodeQualifier
 			break
 		}
 	}
@@ -162,37 +383,82 @@ func (s SessionView) Title() string {
 	switch {
 	case s.Label != "":
 		return s.Label
-	case s.Window != "":
-		return s.Session + ":" + strconv.Itoa(s.Index)
 	}
-	return s.Session
+	return s.Address()
 }
 
 // HasRenderedView reports whether the entry has a rendered view: a connected
-// v2 host reporting Claude Code in its pane — or Hermes, with the session it
-// shows (only a host that can stream a Hermes conversation names one).
+// v2 host reporting Claude Code in its pane — or another runtime with a view,
+// with the session it shows (AgentView).
 func (s SessionView) HasRenderedView() bool {
-	return s.Online && s.Rendered && (s.Claude || s.HermesView())
+	return s.Online && s.Rendered && (s.Claude || s.AgentView())
+}
+
+// The Terminal view's line for an entry with no rendered view, when its host
+// gave no reason of its own (TerminalOnlyReason).
+const (
+	// TerminalOnlyNoClaude: nothing in the window's pane is a Claude Code
+	// conversation this host could find — a shell, Codex, Gemini CLI, or a
+	// Claude Code its host could not see (an older muster-mirror says no more).
+	TerminalOnlyNoClaude = "muster found no Claude Code conversation in this window."
+	// TerminalOnlyOldHost: the host's muster-mirror predates rendered views.
+	TerminalOnlyOldHost = "This host's muster-mirror is too old to send the Rendered view. Update it to read Claude Code as a chat."
+)
+
+// TerminalOnlyReason is the one line the Terminal view shows about WHY the
+// entry has no Rendered view, "" when it has one (HasRenderedView) or its host
+// is offline (the page says offline on its own). In order: a host too old for
+// rendered views; the host's own reason (AgentNote: a Claude Code transcript
+// not written yet or not found, an opencode pairing, …); a runtime with no
+// view yet; and otherwise TerminalOnlyNoClaude.
+//
+// 🔴 ONE RULE, ONE PLACE: the Terminal view takes it from here, so a window
+// that opens in the terminal always says why instead of silently falling back
+// — the silent fallback is what read as "muster only has a terminal".
+func (s SessionView) TerminalOnlyReason() string {
+	switch {
+	case !s.Online || s.HasRenderedView():
+		return ""
+	case !s.Rendered:
+		return TerminalOnlyOldHost
+	case s.AgentNote != "":
+		return s.AgentNote
+	}
+	if r, ok := s.Spec(); ok {
+		return "This " + r.Kind + " window has no conversation muster can show yet."
+	}
+	return TerminalOnlyNoClaude
 }
 
 // SessionKey is the key the entry's conversation is stored by (a focus):
-// a Claude session id as itself, a Hermes one runtime-qualified
-// ("hermes:<id>", Window.SessionKey's rule); "" when the entry names none.
+// a Claude session id as itself, another runtime's runtime-qualified
+// ("opencode:<id>", Window.SessionKey's rule); "" when the entry names none.
 func (s SessionView) SessionKey() string {
 	switch {
 	case s.Claude:
 		return s.ClaudeSession
-	case s.HermesView():
-		return HermesKeyPrefix + s.AgentSession
+	case s.AgentView():
+		r, _ := s.Spec()
+		return r.AgentKey(s.AgentSession)
 	}
 	return ""
 }
 
-// HermesView reports whether the entry is a Hermes window whose host names
-// its conversation: one with a rendered view (read-only: muster sends nothing
-// into Hermes before Phase 3).
-func (s SessionView) HermesView() bool {
-	return !s.Claude && s.Runtime == RuntimeHermes && s.AgentSession != ""
+// Spec is the RuntimeSpec of the entry's non-Claude runtime (Runtime), false
+// for none or a Claude Code entry.
+func (s SessionView) Spec() (RuntimeSpec, bool) {
+	if s.Claude {
+		return RuntimeSpec{}, false
+	}
+	return wireRuntime(s.Runtime)
+}
+
+// AgentView reports whether the entry is a window of a non-Claude runtime
+// whose host names its conversation, and so has a rendered view
+// (RuntimeSpec.HasView).
+func (s SessionView) AgentView() bool {
+	r, ok := s.Spec()
+	return ok && s.AgentSession != "" && r.HasView(s.AgentSession)
 }
 
 // CanPaste reports whether a message can be sent into the entry's active pane
@@ -218,39 +484,36 @@ var shells = []string{"ash", "bash", "csh", "dash", "fish", "ksh", "nu", "pwsh",
 // The kinds Kind names itself. Anything else it returns is the command.
 const (
 	KindClaudeCode = "Claude Code"
-	// KindHermes: the host reports a Hermes CLI in the pane
-	// (Window.Runtime), whether or not it names the session.
-	KindHermes   = "Hermes"
-	KindOpenCode = "opencode"
-	KindShell    = "shell"
+	KindOpenCode   = "opencode"
+	KindShell      = "shell"
 )
 
 // Kind is what runs in the entry's pane, as a list names it: KindClaudeCode
-// when the host resolved a Claude Code session there, KindHermes when it
-// reports a Hermes CLI (its command reads python3.14, S10), KindOpenCode / KindShell
+// when the host resolved a Claude Code session there, KindOpenCode / KindShell
 // from the pane's command, else the command itself; "" when the host said
 // nothing (a per-session host, which reports no command).
 func (s SessionView) Kind() string {
-	switch {
-	case s.Claude:
+	if s.Claude {
 		return KindClaudeCode
-	case s.Runtime == RuntimeHermes:
-		return KindHermes
-	case s.Command == "opencode":
-		return KindOpenCode
-	case slices.Contains(shells, s.Command):
+	}
+	if r, ok := s.Spec(); ok {
+		return r.Kind
+	}
+	// A pane whose command is "opencode" is KindOpenCode by the fall-through
+	// below: the label is the command.
+	if slices.Contains(shells, s.Command) {
 		return KindShell
 	}
 	return s.Command
 }
 
-// ActiveAt is the time the entry's card prints as "active … ago": its
-// Activity (already floored to ActivityBucket by NormalizeActivity /
-// NormalizeWindows), or zero for unknown so the card prints no "active" at all
-// rather than "active 56y ago".
+// ActiveAt is the entry's last activity, as the sidebar row's recency dot reads
+// it: its Activity (already floored to ActivityBucket by NormalizeActivity /
+// NormalizeWindows), or zero for unknown so no time is drawn at all rather than
+// one 56 years ago.
 //
-// 🔴 ONE RULE, ONE PLACE: the Agents view's card takes its time from here, and
-// the hub decides from here (listed) whether an update moved a card's time.
+// 🔴 ONE RULE, ONE PLACE: the sidebar takes an entry's time from here, and the
+// hub decides from here (listed) whether an update moved an entry's time.
 func (s SessionView) ActiveAt() time.Time {
 	if s.Activity <= 0 {
 		return time.Time{}
@@ -261,7 +524,7 @@ func (s SessionView) ActiveAt() time.Time {
 // Entries is every entry of the host, in its own stable order: a per-window
 // host's windows (session, then index), a per-session host's sessions (name).
 func (h HostView) Entries() []SessionView {
-	base := SessionView{Host: h.Host, Online: h.Online, Interactive: h.Interactive, Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
+	base := SessionView{Owner: h.Owner, Host: h.Host, Online: h.Online, Interactive: h.Interactive, Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	if h.Windows != nil {
 		out := make([]SessionView, 0, len(h.Windows))
 		for _, w := range h.Windows {
@@ -271,9 +534,15 @@ func (h HostView) Entries() []SessionView {
 			// else tmux's window activity — the one number the list orders by,
 			// prints and decides the Idle section by.
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.CardActivity(), w.Claude, w.ClaudeSession
-			e.Runtime, e.AgentSession = w.Runtime, w.AgentSession
-			e.Repo = h.Repos[w.ID]
+			e.Runtime, e.AgentSession, e.AgentNote, e.LiveCopy = w.Runtime, w.AgentSession, w.AgentNote, w.LiveCopy
+			e.AgentSend, e.AgentBind = w.AgentSend, w.AgentBind
+			e.Dispatch = w.Dispatch
+			e.Repo, e.GitHubRepo = h.Repos[w.ID], h.GitHubRepos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
+			e.Previews = h.Previews[w.ID]
+			if h.StatusReport {
+				e.Status, e.StatusSince = w.Status, w.StatusSince
+			}
 			out = append(out, e)
 		}
 		return out
@@ -333,7 +602,7 @@ func (v HostView) CanPaste(session string) bool {
 // muster-mirror) comes after all that did, in that same order. With no
 // activity anywhere the result is exactly the old list.
 //
-// 🔴 ONE RULE, ONE PLACE. The Agents view renders this list and the hub
+// 🔴 ONE RULE, ONE PLACE. The sidebar renders this list and the hub
 // decides from this same list (listed) whether a host's update changed what the
 // view shows: the order, which it re-renders for at once, and each entry's
 // ActiveAt, which it re-renders for throttled. A second copy of either

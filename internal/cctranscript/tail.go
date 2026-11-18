@@ -15,10 +15,17 @@ import (
 // point: every byte before it was a complete line, decoded exactly once.
 
 // Line is the events of one complete transcript line, and the offset just past
-// its newline: a resume point that comes AFTER every one of its events.
+// its newline: a resume point that comes AFTER every one of its events. At is
+// the record's own timestamp (Unix ms; 0 when it has none).
 type Line struct {
-	Events []Event
-	End    int64
+	Events []Event `json:"events"`
+	End    int64   `json:"end"`
+	At     int64   `json:"at,omitempty"`
+	// Queue is a queue-operation record's change to Claude Code's input queue
+	// (queue.go), on a Line with no Events. 🔴 NEVER ON THE WIRE (json:"-"):
+	// muster-mirror folds it into a Queue and sends the queue's list on its
+	// own; a reader that wants only what draws drops such lines (Drawn).
+	Queue *QueueOp `json:"-"`
 }
 
 // ReadLines decodes the complete lines in r between off and size, reading at
@@ -60,17 +67,31 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 	for _, line := range bytes.Split(buf[:last], []byte{'\n'}) {
 		pos += int64(len(line)) + 1
 		if rec, ok := DecodeLine(line); ok {
-			if evs := Events(rec); len(evs) > 0 {
+			if evs := lineEvents(rec); len(evs) > 0 {
 				for i := range evs {
 					if evs[i].Kind == KindPrompt {
 						evs[i].Line = pos // what Prompts names it by
 					}
 				}
-				out = append(out, Line{Events: evs, End: pos})
+				out = append(out, Line{Events: evs, End: pos, At: rec.Time()})
+			} else if q := queueOpOf(rec); q != nil {
+				out = append(out, Line{End: pos, At: rec.Time(), Queue: q})
 			}
 		}
 	}
 	return out, off + int64(last) + 1, nil
+}
+
+// lineEvents is a record's events as the mirrored view reads them: Events, plus
+// one KindInjected for a record the CLI wrote to inject context into the next
+// request (an attachment record), which Events drops and the tool-context
+// ledger (toolctx.go) must see.
+func lineEvents(rec Record) []Event {
+	if rec.Type == "attachment" && !rec.IsSidechain {
+		// Text: the attachment's type, which the ledger judges it by.
+		return []Event{{Kind: KindInjected, Text: Cap(rec.Attachment.Type, 64)}}
+	}
+	return Events(rec)
 }
 
 // ReadEvents is ReadLines' events, flattened.
@@ -143,6 +164,67 @@ func Backfill(r io.ReaderAt, size int64, window, maxEvents int) ([]Line, int64, 
 			start = nl + 1
 		}
 	}
+	// 🔴 FROM THE END, AND ONLY AS FAR BACK AS maxEvents NEEDS. A line's
+	// events depend on that line alone (ReadLines decodes each on its own), so
+	// the newest maxEvents events are the same whether the window is decoded
+	// forwards and trimmed or backwards and stopped — and backwards stops after
+	// the lines it keeps instead of decoding all of the window. (MEASURED by
+	// BenchmarkBackfill, a 4 MiB window capped at 300 events: 57 ms forwards,
+	// 1.4 ms backwards.) backfillForward is the reference the test
+	// holds this to.
+	buf := make([]byte, size-start)
+	got, err := r.ReadAt(buf, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, 0, err
+	}
+	buf = buf[:got]
+	last := bytes.LastIndexByte(buf, '\n')
+	if last < 0 {
+		// No complete line in the window: ReadLines' rules decide (a partial
+		// line waits; one longer than the window is skipped).
+		return backfillForward(r, start, size, window, maxEvents)
+	}
+	off := start + int64(last) + 1
+	var out []Line
+	n := 0
+	end := off
+	for i := last; i >= 0; {
+		j := bytes.LastIndexByte(buf[:i], '\n') // the newline before this line, or -1
+		line := buf[j+1 : i]
+		if rec, ok := DecodeLine(line); ok {
+			if evs := lineEvents(rec); len(evs) > 0 {
+				for k := range evs {
+					if evs[k].Kind == KindPrompt {
+						evs[k].Line = end
+					}
+				}
+				if n+len(evs) > maxEvents {
+					if keep := maxEvents - n; keep > 0 {
+						out = append(out, Line{Events: evs[len(evs)-keep:], End: end, At: rec.Time()})
+					}
+					break
+				}
+				n += len(evs)
+				out = append(out, Line{Events: evs, End: end, At: rec.Time()})
+			} else if q := queueOpOf(rec); q != nil {
+				// No events, so it costs none of maxEvents.
+				out = append(out, Line{End: end, At: rec.Time(), Queue: q})
+			}
+		}
+		end = start + int64(j) + 1
+		i = j
+	}
+	for a, b := 0, len(out)-1; a < b; a, b = a+1, b-1 {
+		out[a], out[b] = out[b], out[a]
+	}
+	return out, off, nil
+}
+
+// backfillForward is Backfill's window, from start, decoded forwards with
+// ReadLines and trimmed to its newest maxEvents events: what Backfill did
+// before it read backwards, and what it still does for a window with no
+// complete line.
+func backfillForward(r io.ReaderAt, start, size int64, window, maxEvents int) ([]Line, int64, error) {
 	var out []Line
 	off := start
 	for off < size {
@@ -156,8 +238,6 @@ func Backfill(r io.ReaderAt, size int64, window, maxEvents int) ([]Line, int64, 
 		}
 		off = next
 	}
-	// Keep the newest maxEvents events: whole lines from the end, then the tail
-	// of the line that straddles the cap.
 	n := 0
 	for i := len(out) - 1; i >= 0; i-- {
 		if n+len(out[i].Events) > maxEvents {

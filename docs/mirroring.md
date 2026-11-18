@@ -1,14 +1,92 @@
 # Mirrored sessions
 
-A **mirrored session** is a tmux window on one of your own machines, shown as a
-card on muster's Agents list. You can watch it, open its terminal, read a Claude
+A **mirrored session** is a tmux window on one of your own machines, listed in
+muster's sidebar (and the bottom bar's views). You can watch it, open its terminal, read a Claude
 Code conversation as a chat, and send it a message, all from a phone.
 
 Mirroring is off unless the server runs with `MUSTER_MIRROR=1`, and it needs a
 database. When it is off, `GET /mirror/connect` and the mirror routes answer
 404, and nothing mirrored is drawn.
 
+A web server running in a mirrored window (a dev server an agent started) can
+be shown to you inside muster or in a new tab, through the preview gateway:
+see [previews.md](previews.md). It is off unless the host runs with `-preview`.
+
 ![A mirrored Claude Code window rendered as a chat](img/mirror-rendered.png)
+
+## Mirrored sessions and dispatched agents
+
+They are easy to confuse, and they behave differently:
+
+| | mirrored session | dispatched agent |
+|---|---|---|
+| what it is | a session **you** started, in tmux, on your machine | a new session **muster** starts, in a Kubernetes pod |
+| a message from muster | is typed into that same session | goes to the agent's own session |
+| at your keyboard afterwards | the same session, with everything in it | nothing: it never ran on your machine |
+| history | the session's own | its own, separate from yours |
+| set up by the one-prompt install | yes | no: opt-in, needs a cluster ([provisioner.md](provisioner.md)) |
+
+**Permission prompts.** muster assumes your sessions run without permission
+prompts (Claude Code in `bypassPermissions` or auto mode, opencode allowing by
+default), and has no approve button for a Claude Code prompt. One that does
+appear in a mirrored session waits for you in the Terminal view, and muster
+never types into it ([sending-and-step-up.md](sending-and-step-up.md)). (An
+opencode permission request is the exception: on an `-interactive` host its
+card offers Allow once and Reject, [below](#opencodes-permission-requests-and-questions).)
+The agents a host starts for your chief are started in their normal permission
+mode by default; starting them without permission prompts is opt-in
+([below](#permission-prompts-in-a-spawned-agent)).
+
+A mirrored session is a window onto a session you are already running. muster
+starts no process for it, and keeps no copy of the conversation. So when you
+answer it from your phone and come back to your machine, the conversation is
+already there.
+
+**muster sees only sessions inside tmux.** If you start Claude Code in a plain
+terminal tab or in an editor, muster cannot see it. A second session that you
+start in tmux to "get it into muster" is a separate conversation: it may share
+the project's memory files, but your messages from muster go to it, and the
+session you left open never hears about them. Run the session you actually use
+inside tmux instead.
+
+### Bring a session you already have into tmux
+
+Quit Claude Code where it runs now, then, from the same directory:
+
+```sh
+tmux new -A -s work \; new-window -c "$PWD" 'claude --resume || claude'
+```
+
+This opens a new window in the tmux session `work` (creating `work` if it does
+not exist yet) and starts the conversation picker there; pick the conversation
+you were in. Already inside tmux,
+`tmux new-window -c "$PWD" 'claude --resume || claude'` does the same.
+
+- **Why not `tmux new -A -s work 'claude …'`:** `-A` attaches to `work` when it
+  already exists and **ignores the command**, so nothing is resumed.
+- **Why `--resume`, not `--continue`:** `--continue` takes the most recent
+  conversation in the directory, which may be the separate session muster was
+  typing into, not the one you had open. Use `claude --continue || claude` in
+  place of `claude --resume || claude` only when you are sure the newest one is
+  yours.
+- **Why `|| claude`:** with no conversation to resume, `claude --continue`
+  prints "No conversation found to continue" and exits, and pressing Esc in the
+  `--resume` picker exits too (both with status 1, measured on Claude Code
+  2.1.289). Without a fallback the tmux window closes with it; with one, a new
+  conversation starts instead.
+
+**Quit it first.** `claude --resume` of a conversation that is still open in
+another terminal does not attach to it: Claude Code copies the conversation
+into a NEW session and carries on there. muster mirrors that copy, and your
+messages from muster go to it, not to the session you left open. When the other
+copy is a Claude Code session on the same host, in the same project directory,
+the window's Rendered and Terminal views say **Running in two
+places** and name the other session's id. See [Two copies of one
+conversation](#two-copies-of-one-conversation).
+
+**Resuming an ended session** (`-resume-spawn`, below) is the one way a host
+starts a Claude Code process itself. It is off by default, needs settings on
+both the host and the server, and the one-prompt install sets neither.
 
 ## How it connects
 
@@ -43,23 +121,38 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 
 ## What you see
 
-- **One card per tmux window.** Each window is addressed by its session and
-  tmux's own window id (`@12`), not by its index, which tmux renumbers. A card
-  says what runs in the window's active pane: Claude Code, opencode, a shell, or
-  the command name. A host lists up to 512 windows and reads them with one tmux
-  call per refresh, every 5 seconds.
-- **Titles.** A card is titled `<session>:<index>`. With `-labels-file` you can
-  map a session to a codename: a JSON object `{"<session>": "<codename>"}`. Each
-  of that session's windows is then titled `<codename>:<index>`, with the raw
-  session name shown beside it. Each entry is checked on its own: an invalid one
-  is logged and skipped, and a missing or unreadable file is logged and ignored,
-  never fatal.
+- **One entry per tmux window.** Each window is addressed by its session and
+  tmux's own window id (`@12`), not by its index, which tmux renumbers. An
+  entry knows what runs in the window's active pane: Claude Code, opencode, a
+  shell, or the command name (the search finds it by that kind). A host lists up
+  to 512 windows and reads them with one tmux call per refresh, every 5 seconds.
+- **Where they are listed.** The **sidebar** lists every entry like channels in
+  a chat app: your chief first (if you turned one on), then every entry waiting
+  on you, then the rest. The **session switcher**, the bar under the message box
+  of a window's Rendered view, its terminal and an agent's chat page, has the
+  same entries in four views (below). Home (`/`) opens your chief's chat, or the
+  session you opened last.
+- **Titles.** An entry is titled `<session>:<index>`. With `-labels-file` you
+  can map a session to a codename: a JSON object `{"<session>": "<codename>"}`.
+  Each of that session's windows is then titled `<codename>:<index>`. The raw
+  session name is not drawn beside the title anywhere (the headers' room is the
+  session's [tags](#session-tags)); it is the title's tooltip, it is in the
+  Rendered view's full title (tap the title), and the search finds it. Each entry is checked on its
+  own: an invalid one is logged and skipped, and a missing or unreadable file is
+  logged and ignored, never fatal.
   When the same title appears on more than one host, every one of them carries
   its host (`mango:1 · <host>`); when it repeats on one host (two sessions given
   one codename), each also carries its tmux address (`mango:1 · <session>:<index>`).
-  The card, both view headers and the page title always agree.
-- **Most recently active first.** One flat list across all your hosts AND your
-  dispatched agents, ordered by last activity, newest first. A **Claude Code**
+  The sidebar, the switcher, both view headers and the page title always agree.
+  These titles are the **fallback**: once a window's conversation has a
+  [name](focus.md#a-sessions-name) (frozen from its first good focus title, or
+  one you gave it with **Rename…** in the session's ⋯ menu), every one of those
+  places calls it by that name instead, with no host or address beside it, and
+  the codename, the tmux address and the host move to the name's tooltip (and
+  the Rendered view's full title). The search still finds the entry by its
+  codename first.
+- **Most recently active first.** One flat order across all your hosts AND
+  your dispatched agents, by last activity, newest first. A **Claude Code**
   window's last activity is its conversation's last message (the newest user or
   assistant message in its transcript, to the minute — not tmux's activity,
   which a tmux restart resets for every window, and not the rows a resumed
@@ -67,89 +160,108 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   itself); while that session is WORKING — a turn running, waiting on you, a
   background shell of its own — it is now, since Claude Code writes nothing
   meanwhile. A host from before this reports none, and the window falls back to
-  tmux's. Any other window's is when its host last saw it
-  active, to the minute; output in a pane counts as activity, not only
-  keystrokes. A dispatched agent's is the newer of
-  its last chat message and its last change (a status write, a rename). The
-  host is not a section: it is the icon on each card. A window whose host did
-  not report activity comes last. Ties keep a stable order: agents first, then
-  windows by host, session and index. An open list reorders only when the order
-  actually changes.
-- **How recent, at a glance.** Beside "active 3m ago" each card draws a small
-  dot tinted on the same 8-step Gruvbox scale as tmux's idle-fade window colours:
-  bright green under 10 minutes, green to 30, aqua to an hour, yellow to 2
-  hours, orange to 4, red to 8, purple to a day, grey past it. It re-tints as
-  time passes, without a refresh. The card's border is not used for this.
-- **Long titles.** A card's title longer than 60 characters is cut and ends
-  in a **…** button — its name, and its focus title when it has one
-  ([focus.md](focus.md)). Tap it (or press Enter on it) to see the whole title
-  in a popover; it never opens the card. On a desktop, hovering a long name
-  shows it too.
+  tmux's. Any other window's is when its host last saw it active, to the
+  minute; output in a pane counts as activity, not only keystrokes. A
+  dispatched agent's is the newer of its last chat message and its last change
+  (a status write, a rename). The host is not a section: it is the icon on each
+  entry. A window whose host did not report activity comes last. Ties keep a
+  stable order: agents first, then windows by host, session and index.
+- **How recent, at a glance.** Each sidebar row draws a small dot tinted on the
+  same 8-step Gruvbox scale as tmux's idle-fade window colours: bright green
+  under 10 minutes, green to 30, aqua to an hour, yellow to 2 hours, orange to
+  4, red to 8, purple to a day, grey past it.
+- **Idle.** An entry with no activity for longer than `MUSTER_AGENTS_IDLE_AFTER`
+  (14 days by default; [configuration](configuration.md)) is drawn last in the
+  sidebar, under a collapsed **Idle (N)** group — never one waiting on you, the
+  chief, or the page you are on. The group remembers whether you opened it.
+  Nothing on a host is closed.
+- **Officers.** Every officer you can see has one row in an **Officers**
+  group below the sessions (and any team's group) and above **Superseded** and
+  **Idle**; an officer's instance is not listed as a session of its own unless
+  it waits on you ([officers-builtin.md](officers-builtin.md#the-officers-page)).
+- **What a row says.** Besides its name: how many things wait on you there, a
+  dot when it waits on you with nothing to count (an agent at a permission
+  prompt), **offline** while its host is not serving it, and how many
+  subagents and background shells it has running, and a small browser-window
+  mark when it has a web server to preview or a preview open
+  ([previews.md](previews.md)). A long name is cut; the
+  whole name is the row's tooltip. A window's own Rendered view and terminal
+  say under their header when its host is offline, and show the host's note
+  about it.
 - **Not an agent, and not stored.** muster keeps each connected host's window
   list in memory, under the token owner's account. A mirrored window cannot be
   dispatched, deleted, or mistaken for a muster agent. A disconnected host stays
   listed as `offline` for a day. The database holds `mirror_tokens`, as sha256
-  hashes, and your pins (below), both under row-level security.
-- **Pins.** The pin button on a card (and **Pin to top** in an agent card's ⋯
-  menu) puts that entry first in your list, on every device you sign in on.
-  Pinned entries keep their own most-recently-active order, ahead of the rest.
+  hashes, and your pins and session tags (below), all under row-level security.
+- **Pins.** On a session's own page (a window's Rendered view, an agent's chat
+  page, or the Terminal view of either) the session switcher's **⋯** menu — at
+  the switcher's right end, or, on a window's Rendered view, in the message
+  box's row beside Send — has **Pin this session** / **Unpin this session** — a window with no
+  Rendered view is pinned from its Terminal view. Your pins are the session switcher's **Pins** view (below),
+  on every device you sign in on, and come first in its **All** view.
   A mirrored pin is the window's address — host, session and tmux window id —
   so it survives renumbering, a list refresh and a muster restart. A pin whose
   window is gone is kept and shown nothing; it comes back with the window. A
   tmux-server restart (a reboot) reissues window ids, so after one a pin names
   whichever window now has that id in a same-named session, or nothing — re-pin.
-  The filter still hides a pinned card that does not match.
-- **A filter.** One box above the cards narrows dispatched agents and mirrored
-  windows together. It is case-insensitive, and every word must match. It shows
-  an "N of M" count and runs entirely in the page. A `field:value` term looks
-  at one field only, as a substring: `host:<name>` (a dispatched pod agent's
-  host is `cluster`), `status:`, `kind:`, `repo:`, `name:`, `account:`,
-  `session:`, `ns:`, `mode:`, `state:`, `type:` (`agent` or `mirrored`). Quote a
-  value with a space in it: `kind:"claude code"`. A term whose prefix is not one
-  of those fields is plain text, so `gold:8` still finds a window called
-  `Gold:8`. `field=value` matches the whole field instead of a substring. The
-  filter is kept in the page's `?q=`, so a link reproduces it.
-- **Quick filters.** Under the box, five chips:
-  - **Waiting on ask**: something on the card asked you to decide. Either an
-    agent or a Claude Code session called `attention_ask` and waits for your
-    answer, or a mirrored Claude Code session is stopped at a prompt (a
-    permission prompt: the session asking to go on) — the
-    [attention queue](attention.md)'s **Question** and **Session waiting**
-    items — or a dispatched agent is blocked at a permission prompt (its
-    **awaiting approval** badge).
-  - **Waiting on question**: a mirrored Claude Code session holds an
-    `AskUserQuestion` picker open for you (the queue's **Session question**).
-  - **Idle >15m**, **Idle >1h**, **Idle >1d**: no activity for more than that
-    long (the same activity time the list is ordered by). A window with no
-    reported activity is never counted as idle.
+- **Session tags.** The same **⋯** menu has **Tags…**, your own labels on the
+  session, drawn in its headers and found by the search: see
+  [Session tags](#session-tags).
+- **The session switcher.** The bar under the message box of a window's
+  Rendered view and an agent's chat page, and at the bottom of the Terminal
+  view of either (whether or not that view can send), so you switch sessions
+  without going back to the Rendered view. Its left button shows the current
+  view's icon — a clock, a bell, a pin, a grid — and opens a menu of four
+  views, each named beside its icon: **Recent** (the entries you last opened, on any device), **Waiting**
+  (the entries waiting on you: an agent or a Claude Code session called
+  `attention_ask`, a mirrored Claude Code session stopped at a prompt or
+  holding an `AskUserQuestion` picker — the [attention queue](attention.md)'s
+  **Question**, **Session waiting** and **Session question** items — or a
+  dispatched agent blocked at a permission prompt; a reply draft does not
+  count), **Pins** and **All** (every entry, pins first). Each pill shows the
+  entry's whole name, a window's codename with its `:<index>` (`wheat:2`).
+- **Search.** The magnifier on the switcher, the magnifier at the top of the
+  sidebar, or `/` outside a text field, opens one search box that finds any
+  entry by its tmux codename (`mango`, `wheat:2`) or its title as you type —
+  and, after those, by its repository, its kind (`opencode`, `shell`), a
+  window's raw tmux session name (`scratch11`), its **host's name**
+  (`laptop`; `cluster` for dispatched agents) or one of your
+  [tags](#session-tags) on it (`needs-review`). The Sessions dock's filter
+  matches the same words. The arrows move and Enter opens
+  it. On a page with no switcher it searches the sidebar's list.
+- **Host icons.** Every entry draws its host's icon beside its name — in the
+  sidebar, its session-switcher entry and the badge on its own pages — with the
+  host's name in the icon's tooltip. Dispatched pod agents draw the cluster's
+  icon, which no mirrored host ever draws. A host given an icon in
+  `MUSTER_HOST_ICONS` (`laptop=laptop`) draws it, and no other host does. Any
+  other host's icon is picked by when its first mirror token was minted, so
+  your first hosts usually each draw a different one, and minting a token for
+  a new host (or a second token for an old one) never changes an existing
+  host's icon.
 
-  The chips combine with OR: a card is shown when it matches ANY chosen chip
-  (waiting on an ask, or on a question, or idle that long). Only one idle chip
-  is on at a time. The chips together, the box and the host tab must all match.
-  A reply draft counts as neither waiting chip. The chosen chips are remembered
-  on this device, and a list refresh never resets them; **Clear**, shown while
-  any chip is on, turns them all off. A card that crosses an idle threshold
-  while the list is open is not shown or hidden by itself — that would move
-  the cards around it — it waits behind the **N new ↑** pill like an arrival,
-  and is applied on the tap.
-- **Host tabs.** Above the box: **All**, then one tab per host on the list
-  (dispatched pod agents under **cluster**), each counting its cards that match
-  the box. A tab narrows the list to that host exactly, together with the box.
-  The chosen tab is remembered by the browser (not in `?q=`). While its host is
-  not listed (a restart, a laptop asleep) the list shows **All**, and goes back
-  to that host when it returns; only picking another tab changes the choice. A
-  shared link carrying its own `?q=` opens on **All**. A refresh that changes
-  only cards the current tab and search hide is applied at once, with no
-  "N new ↑". On a phone the strip scrolls sideways.
-- **Host icons.** Every entry draws its host's icon beside its name — on its
-  card, its "Recently viewed" entry, its host tab and the badge on its own
-  pages — with the host's name in the icon's tooltip. Dispatched pod agents
-  draw the cluster's icon, which no mirrored host ever draws. A host's icon is
-  picked by when its first mirror token was minted, so your first twelve hosts
-  each draw a different one, and minting a token for a new host (or a second
-  token for an old one) never changes an existing host's icon.
+![The sidebar's search open, matching Claude Code windows on two hosts by their kind](img/sidebar-search.png)
+![A session page with the switcher's search open, finding a session by its name](img/switcher-search.png)
 
-![The Agents list filtered with the search box](img/agents-filter.png)
+### Session tags
+
+On a session's own page the **⋯** menu (see **Pins** above) has **Tags…**: a
+small editor with your tags on the session as chips (× removes one) and a box
+that adds one.
+
+- **Spelled as a [task tag](tasks.md) is:** lower case, spaces become `-`,
+  letters, digits and `. _ / -`, at most one `:`, up to 64 characters. A
+  session carries at most 20. The task tags' reserved namespaces (`gate:`,
+  `project:`, …) mean nothing on a session: every session tag is a plain label.
+- **Yours alone.** Tags are kept by the server, so they follow you across
+  devices, and nobody else — an admin included — sees them.
+- **What they are on.** A mirrored window's tags are on its **tmux session**,
+  so every window of that session carries them. A dispatched agent's are on
+  the agent, and are deleted with it.
+- **Where they show.** The Rendered and Terminal views draw them in the header
+  after the title: one tag as its chip, more as the first chip and **+N**,
+  which opens the full list. An edit shows at once, without a reload.
+- **Search.** The search box (above) and the Sessions dock's filter find a
+  session by any of its tags.
 
 ## Viewing never moves your terminal
 
@@ -175,10 +287,122 @@ with a "Fit width" control.
 
 ## Rendered and terminal views
 
-When a window's active pane runs Claude Code, its card opens a **rendered** view
+When a window's active pane runs Claude Code, its entry opens a **rendered** view
 by default. Prompts and replies appear as chat bubbles, and each tool call as one
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
+
+A conversation too short to fill the screen sits at the bottom, next to the
+composer. A bubble longer than about 15 lines is shortened, with a **Show more** control.
+A reply from the agent shows its **last** lines, because the end of a reply is
+usually what matters. Its **Show more** is at the top of the bubble. Opening it
+reveals the earlier text above, and the part already on screen stays where it
+is. **Show less**, also at the top, shortens it again. Your own long messages
+show their **first** lines, with **Show more** under them. Tapping a shortened
+bubble also opens it, but only **Show less** shortens it again. A message
+streaming in is never shortened. The agent chat page and the chief panel
+shorten bubbles the same way.
+
+The **Rendered | Terminal** switch in the header moves between the two. On a
+phone it is one icon button, for the view you are not on: a speech bubble opens
+the Rendered view, a `>_` prompt opens the Terminal view. The Rendered view is
+meant to be where you do everything; the Terminal view is the fallback for
+anything it does not show. A window that has no Rendered view says why at the top of
+its Terminal view ([below](#why-a-window-opens-in-the-terminal)).
+
+muster measures how much conversation context each tool call and its result
+added, but **does not draw the number**: a token count means nothing to most
+people. The row, a subagent's card and a question card keep only the
+measurement's kind and size on a hidden slot (`data-tool-ctx`: `measured`,
+`split` or `estimate`; `data-tool-ctx-tokens`). The number is the context of the
+turn after the call, minus the context of the turn that made it; several calls
+in one turn split that growth by size; and where nothing can be measured
+(opencode, which records no usage, or something else entered the context, or it
+shrank) it is an estimate. A run of calls is one row, "3 steps".
+
+![A Claude Code session's tool calls, grouped as steps](img/tool-context.png)
+
+A **background** subagent's card counts only its launch: the call's result is
+the acknowledgement that it started. Its report reaches the conversation later,
+as a task notification (a harness notice the view draws as its own row), which
+is not attributed to the card. The context the report adds shows in the
+header's total, not on the card.
+
+A call still running when the page's connection drops is still numbered when
+its next turn arrives: each batch the server sends leaves a checkpoint of the
+attribution, and a connection that resumes from exactly that place picks it up.
+After a server restart, or a resume from anywhere else, such a call shows no
+number.
+
+### How the estimate is calibrated
+
+An estimate is the calling turn's own `output_tokens` (its share of them, by the
+size of each call's input, when it made several calls) plus the result's size at
+**2.2 bytes per token**. With no `output_tokens` known (opencode, an older host),
+it is the call and result size at that rate. That rate was fitted on Claude
+Code transcripts only, so for another runtime or model the figure is not
+validated, in either direction.
+
+The rate and the negligible attachments are fitted, not assumed.
+`go run ./cmd/muster-toolctx-calibrate` reads a directory of transcripts and
+prints aggregates only (counts, medians, percentiles), never a path, id or any
+text. Its samples are single-call gaps: one call, its result and the next turn,
+with no prompt, notice or error between.
+
+**Which attachments are negligible.** A gap's *excess* is its growth − the
+turn's output − the result's tokens: what entered the context that is neither.
+The baseline is the median excess of gaps with no attachment. A type is
+negligible when at least 30 gaps hold it and otherwise only negligible types,
+their median excess is within 50 tokens of the baseline, and their p75 within
+100. The set is grown from the most frequent type down until nothing more joins.
+The command prints the table and says whether the set matches the code's.
+`TestTheNegligibleSetIsTheCalibratedOne` pins it. On a local set of 697
+transcripts (baseline −1, n = 1,493):
+
+| attachment type | gaps holding it | gaps judged | median excess | p75 | decision |
+|---|---|---|---|---|---|
+| `total_tokens_reminder` | 119,330 | 96,292 | 27 | 43 | negligible |
+| `hook_permission_decision` | 70,087 | 56,944 | 29 | 46 | negligible |
+| `task_reminder` | 8,674 | 7,913 | 152 | 166 | spoils the gap |
+| `diagnostics` | 4,158 | 3,385 | 401 | 839 | spoils the gap |
+| `silent_turn_reminder` | 3,055 | 2,830 | 57 | 76 | spoils the gap |
+| `queued_command` | 2,151 | 1,667 | 450 | 1,675 | spoils the gap |
+| `hook_success` | 1,717 | 17 | −4 | 4 | spoils the gap (too few to judge) |
+| `hook_additional_context` | 1,693 | 0 | – | – | spoils the gap (too few to judge) |
+| `command_permissions` | 1,533 | 1,169 | 8,364 | 17,108 | spoils the gap |
+| `deferred_tools_record` | 1,508 | 1,319 | 36 | 438 | spoils the gap |
+| `skill_listing` | 1,398 | 982 | 284 | 1,114 | spoils the gap |
+| `edited_text_file` | 1,151 | 890 | 1,449 | 3,632 | spoils the gap |
+| `prompt_snapshot` | 456 | 176 | 30 | 80 | negligible |
+| `deferred_tools_delta` | 351 | 60 | 221 | 247 | spoils the gap |
+| `mcp_instructions_delta` | 252 | 0 | – | – | spoils the gap (too few to judge) |
+| `credential_org` | 177 | 120 | 20 | 40 | negligible |
+| `environment` | 166 | 152 | 108 | 150 | spoils the gap |
+| `read_truncation_notice` | 74 | 49 | −1,164 | −771 | spoils the gap |
+
+Rarer types (fewer than 30 gaps) all spoil the gap, as does any type the table
+does not name. Under this set, 100,487 of the 124,442 single-call gaps are
+measured.
+
+**The rate.** The measured growth minus the turn's `output_tokens` was never
+negative, so the turn's output re-enters the context in full and the rest is the
+result's. Transcripts are split in half by a hash of their path: the rate is
+fitted on one half and the error reported on the other. The median of result
+bytes / (growth − output), over results of 400 bytes or more, was 2.16 (p25
+1.94, p75 2.40; n = 27,366), used as 2.2. On the held-out half (47,797 gaps),
+|estimate − measured| / measured was:
+
+| estimate | median | p90 | measured / estimate, median |
+|---|---|---|---|
+| before: (call + result bytes) / 4 | 0.61 | 0.78 | 2.55 |
+| after: output + result bytes / 2.2 | 0.05 | 0.12 | 1.03 |
+| after, with the output withheld: (call + result bytes) / 2.2 | 0.29 | 0.60 | 1.40 |
+
+The last row is Claude Code's own gaps with the output withheld. It is not a
+measurement of opencode or any other runtime.
+
+`TestTheEstimateIsTheCalibratedSplit` pins the rate. Changing the rate or the
+set is a decision made with that tool's numbers, not a drift.
 Every window has its own view: two Claude Code windows in the same directory each
 show their own conversation.
 
@@ -195,7 +419,7 @@ list or reloading closes both connections. Reloading opens the view you were
 on, and Back leaves the window, because a switch does not add a history entry.
 A dispatched claude-code agent's chat and Terminal switch the same way.
 
-![A mirrored terminal view with the message box (the screenshot's host is the e2e harness's fake tmux, which prints what reached it)](img/mirror-terminal.png)
+![A mirrored terminal view with the message box (the screenshot's host is the e2e harness's fake tmux; the shell lines are canned text it draws, not commands muster sent)](img/mirror-terminal.png)
 
 Rendered views stream bounded events: at most 300 when opened, taken from the
 last 4 MiB of the transcript, with each field capped. Anything in them that
@@ -208,6 +432,95 @@ running an older `muster-mirror` sends the transcript unredacted. The
 transcript file itself is never sent, and nothing is stored on the server. Limits per host: 8 open
 terminals, 8 rendered views. Limit per server: 64 hosts.
 
+### A rendered view's snapshot, kept on this device
+
+Each rendered view keeps a copy, in this browser (IndexedDB), of what it drew
+and where its stream stood. Opening the window again paints that copy at once
+and resumes the stream from where the copy ends, instead of waiting for the
+host to send the conversation again. Until the stream answers, the status line
+says "Connecting…"; after a second without an answer an **Updating…** chip
+shows, in room the header always keeps for it. If the stream is refused or
+closes before it answers, the copy is removed from the page and from the
+browser, and the view starts again from the beginning.
+
+- **What is kept** is what the page already showed, as the server sent it
+  (redacted on the host as above), plus the stream's position. At most 2 MiB
+  per window and 12 windows; the oldest go first.
+- **Five minutes since it was written, thirty since a full read.** A copy is
+  shown only within five minutes of its last save, and only within thirty
+  minutes of the last time its conversation was read in full from the host
+  (a copy that is only ever resumed keeps the HTML it was first drawn with, so
+  after thirty minutes the window is read from the start again). Both are
+  checked whenever a copy is read: when a window opens, and when warming
+  resumes one.
+- **Per user and per build.** A copy names the signed-in user and the muster
+  version, and is checked against both before it is shown. Any other user's or
+  version's copy is deleted unread.
+- **When copies are deleted.** A copy that fails any of these checks is deleted
+  when it is read, or when the next muster page that keeps copies (the Agents
+  list, an agent's page, a rendered view) is loaded and sweeps them. Until
+  then it stays in the browser's storage, unread: a session that ends at a
+  sign-in proxy in front of muster, or a tab that is simply closed, leaves its
+  copies there until the next such page load or a visit to muster's sign-in
+  page. At most 12 copies of at most 2 MiB each are ever kept.
+- **Signing out deletes them all.** The sign-in page (and every other page
+  shown signed out) deletes them, and a sign-out ends there. Another tab still
+  open on a rendered view stops keeping copies at that moment, for as long as
+  it stays open.
+- **Warming.** While you are on an agent's page or a rendered view, muster
+  refreshes the copies of up to three windows you are likely to open next
+  (pinned, then recently viewed, then the ones this browser has copies of), one
+  at a time when the browser is idle, every two minutes at most, skipping a
+  copy saved in the last two and a half minutes. It reads each
+  through the window's stream, never its page, so a warmed window is not
+  recorded as visited and does not move in **Recent**. It stops on a hidden
+  tab, with Save-Data on, or on a 2G connection, and reads at most 3 MiB per
+  pass. Refreshing a copy resumes its stream, so only what is new is read.
+
+### Why a window opens in the terminal
+
+The Rendered view is the main way to read a Claude Code session; the Terminal
+view is the fallback. A window with no Rendered view opens in the Terminal view,
+and a line under its header says why. The reasons:
+
+| line | what it means | what to do |
+|---|---|---|
+| muster found no Claude Code conversation in this window. | nothing in the pane is Claude Code (a shell, Codex, Gemini CLI) | nothing; or start `claude` in it |
+| Claude Code has not written this conversation yet. … | Claude Code started, but you have not sent its first message | send one; the window opens the Rendered view from the next refresh |
+| Claude Code is running here, but muster-mirror cannot match it to a transcript … | neither Claude Code's sessions file nor its working directory leads to a transcript that is this window's alone: none at all, or only a guess another window in the same directory makes too | see the cases below; update Claude Code if it is old (a current one names its conversation in a sessions file); on the host, `muster-mirror -list -claude` lists the Claude Code windows it did resolve |
+| Claude Code is running here, but muster-mirror cannot read its environment … | Claude Code runs, nothing else resolved it, and its environment cannot be read (another user's process; on macOS, a process the kernel returns no environment for), so its config directory is unknown | run Claude Code as the user muster-mirror runs as; on the host, `muster-mirror -list -claude` |
+| muster-mirror cannot read this host's process table … | the host's OS has no process lookup (Linux and macOS have one), or reading it failed, and the window's command is `claude` | on the host, `muster-mirror -list -claude` |
+| This host's muster-mirror is too old to send the Rendered view. … | the host runs a muster-mirror from before rendered views | update it |
+
+A muster-mirror older than these reasons sends none, so its windows show the
+first line whatever the cause.
+
+Cases checked against the code:
+
+- **A custom `CLAUDE_CONFIG_DIR`.** muster-mirror reads the variable from the
+  Claude Code process's own environment (`/proc/<pid>/environ` on Linux, the
+  `kern.procargs2` sysctl on macOS), so a value
+  you export in your shell profile is followed even though muster-mirror's
+  service never reads that profile. A process that sets none uses its own
+  home's `.claude`, whatever muster-mirror's service sets. Only an absolute
+  path is followed; a relative value, or an environment muster-mirror cannot
+  read, falls back to muster-mirror's own `$CLAUDE_CONFIG_DIR` or `~/.claude`.
+- **`claude` through `npx`, an npm global install, a NixOS wrapper or a
+  wrapper script.** The process walk finds the Claude Code process anywhere
+  below the pane's shell, by its name (`claude`, `.claude-wrapped`), its
+  `argv[0]`, or the npm package's entry script in its arguments.
+- **A session started before muster-mirror.** It makes no difference:
+  every refresh reads the panes as they are now.
+- **macOS (experimental).** macOS has no `/proc`, so muster-mirror asks the
+  system instead, as your own user and with no root: one `ps` for the process
+  table, the `kern.procargs2` sysctl for each of your processes' arguments and
+  environment, and one `lsof` for working directories. The native installer's
+  binary (`~/.local/share/claude/versions/<version>`) is recognised by that
+  path. This lookup is tested against the documented formats but has not yet
+  been run on a real Mac. The Terminal view's attach is Linux-only today
+  (`internal/mirrorhost/pty_other.go`): on a Mac, a window without a Rendered
+  view cannot be viewed at all.
+
 ### How a pane's transcript is found
 
 The host walks the pane's process tree to the `claude` process. Then it tries
@@ -218,8 +531,13 @@ each of these in order:
    for pane `%N`. Its first JSON value is:
 
    ```json
-   {"runtime":"claude","pane_id":"%N","tmux_pid":"<tmux server pid>","session_id":"…","transcript_path":"…","claude_pid":"<the claude process>","claude_start":"<its /proc/<pid>/stat start time>"}
+   {"runtime":"claude","pane_id":"%N","tmux_pid":"<tmux server pid>","session_id":"…","transcript_path":"…","claude_pid":"<the claude process>","claude_start":"<its start time>"}
    ```
+
+   The start time is field 22 of `/proc/<pid>/stat` on Linux, and on macOS
+   the output of `LC_ALL=C TZ=UTC ps -o lstart= -p <pid>` with the ends
+   trimmed: the same token Claude Code writes as `procStart` in its sessions
+   file on each OS.
 
    An entry is used only while it still describes the pane: the same tmux
    server, the same Claude process (pid and start time), and a transcript that
@@ -236,15 +554,48 @@ each of these in order:
 If the sessions file exists but its transcript cannot be found, the window has
 no rendered view; the host does not guess.
 
-The Claude config directory is `$CLAUDE_CONFIG_DIR`, or `~/.claude` when that is
-unset. `muster-mirror -list -claude` prints one row per Claude Code window,
+The Claude config directory is the `CLAUDE_CONFIG_DIR` in the Claude Code
+process's own environment when that is an absolute path, else that process's
+own `~/.claude` (see the cases above for the fallbacks). `muster-mirror -list -claude` prints one row per Claude Code window,
 ending in how its transcript was resolved: `pane-map`, `sessions` or `guessed`.
 `-list -windows` prints every window that would be registered.
 
+### Two copies of one conversation
+
+A copy made by `claude --resume` starts with the same rows as the original,
+each with the same `uuid` and `timestamp`; only `sessionId` differs. No row
+names the session it was copied from, so the host cannot tell which of the two
+is the copy, and the warning does not claim to. The host compares the first
+row that has both a `uuid` and a `timestamp` (the conversation's origin) with
+the other transcripts in the same project directory. It warns on a window when
+another transcript with the same origin is still running elsewhere, meaning
+either:
+
+- a running Claude Code process other than the window's own names it in its
+  sessions file (`sessions/<pid>.json`, the same pid and start time); or
+- no sessions file names it, and its last message is less than 5 minutes old
+  (`LiveCopyWindow` in `internal/mirrorhost/livecopy.go`). A recent change time
+  alone does not count: Claude Code appends bookkeeping rows to transcripts it
+  is not running.
+
+A `/bg` job's transcript is a copy too, but one you asked for: it is never
+warned about. The host reads only each transcript's first rows, once, and
+lists a project directory at most every 15 seconds.
+
+Claude Code deletes its sessions file when it exits, so when you close the
+other copy it falls to the second rule: the warning stays until 5 minutes have
+passed since that copy's last message, then clears.
+
+**Scope:** only Claude Code transcripts on the mirrored host, in the same
+project directory (the same config directory and working directory) as the
+window. A copy running on another machine, or under another config directory,
+is not seen.
+
 ## Read-only, interactive, and sending
 
-`muster-mirror` is **read-only by default**. muster then offers no Live keys
-switch and refuses an interactive attach. Read-only is enforced in three places:
+`muster-mirror` is **read-only by default**. muster then draws the Terminal
+view's keys disabled and refuses an interactive attach. Read-only is enforced
+in three places:
 
 - muster refuses it;
 - the host refuses it, and drops keystrokes on a read-only stream;
@@ -255,306 +606,380 @@ The host opens only windows it listed itself.
 
 🔴 **`-interactive` is a shell on the host.** An interactive tmux client can
 switch to any session on that tmux server, or open a new window. So anyone who
-can use muster's Live keys switch for the host can run commands there, as the
-user `muster-mirror` runs as. The "only listed windows" rule limits what a
+can type into the host's Terminal view in muster can run commands there, as the
+user `muster-mirror` runs as. Live keys are **always on** in that view — there
+is no switch — but they still need a recent sign-in: with a stale one the
+terminal attaches without them, and the first key you press asks you to
+confirm it's you (see [sending-and-step-up.md](sending-and-step-up.md)). The "only listed windows" rule limits what a
 read-only viewer can see. It does not limit an attached interactive client.
 
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
-### muster pastes into Hermes only through its gated send
+On a touch screen the **Rendered view's** box starts collapsed, to give the
+conversation the room: its row is **Type a message** (a keyboard) beside the
+mic, the session's **⋯** and Send. Tapping **Type a message** opens the box and
+focuses it, and it stays open until you leave the page. Anything that puts text
+in the box opens it too — a draft kept from before, the mic's transcript, a `/`
+command, a suggested reply, a message put back with **Send again**, an attached
+file — so text is never hidden. With a mouse (a fine pointer) the box is always
+shown, as is the Terminal view's.
 
-🔴 The host refuses to type into a pane that runs
-[Hermes](design/hermes.md), except through the one gated send described in
-[Sending to a Hermes window](#sending-to-a-hermes-window--hermes-send). On
-Hermes's approval prompt, a pasted message followed by Enter **approves the
-command**, whatever the message says. This covers every other way muster types
-into a pane: the Terminal view's message box, a Claude Code send, and an
-answer typed into Claude Code's question picker. Nothing reaches the pane, and
-the page says why, whether or not script ran: "Not sent: Hermes runs in this
-pane…". Type into Hermes in the terminal itself (Live keys, or the terminal on
-the host), or send from its window's rendered view on a host that runs with
-`-hermes-send`.
+### What the host never types into
 
-The host decides this itself, by what runs in the pane at the moment it
-types. It does not depend on the server's version. It walks the pane's process
-tree from its root process and refuses when any process in it is one of
-these:
+🔴 Before the host types anything into a pane — the Terminal view's message
+box, a Claude Code send, an answer typed into Claude Code's question picker —
+it walks the pane's process tree from its root process, at that moment, and
+refuses when the tree holds:
 
-- a process named `hermes` whose second argument is a `hermes` launcher (the
-  Nix wrapper, a pip or uv install), whatever follows: `chat`,
-  `-p <profile> chat`, `gateway run`;
-- a Python interpreter with any argument that names `hermes_cli` (`-m
-  hermes_cli…`, a script under `hermes_cli/`, `-c` code importing it) or a
-  script named `hermes`, or a `cli.py` beside a `hermes_cli/` directory;
+- an opencode on the pane's terminal ([below](#muster-never-types-into-opencode));
 - a terminal multiplexer client: `tmux`, `screen`, `dtach`, `abduco` or
   `zellij`. A tmux started inside the pane can show a session of another
   server, whose programs the host cannot see from this pane, so the host
-  refuses rather than guess. The message says so.
+  refuses rather than guess: "Not sent: this pane runs another terminal
+  multiplexer…";
+- a process it cannot read (its `stat` or its command line), which is not
+  presumed safe: "Not sent: muster-mirror could not check what runs in this
+  pane…". A process forked after the host read the process table — a busy
+  Claude Code pane's tool calls fork all the time — is read on its own then,
+  and walked like any other; only one that still cannot be read refuses.
 
-When no process matches, the host also looks at the pane's **screen**: one
-showing Hermes's input area (its status bar's `☤`, two rules around a `❯`
-line) is refused too. That catches a Hermes run over `ssh` or `docker exec`
-while its chrome is drawn. It is a best-effort extra and misses a Hermes whose
-chrome is not drawn (for a moment after a resize, in a pane under 64 columns,
-or with its status bar turned off).
+Nothing reaches the pane, and the page says why, whether or not script ran.
+The host decides this itself, by what runs in the pane at the moment it
+types. It does not depend on the server's version. Shells, Claude Code and
+other programs are otherwise unaffected. A host with no `/proc` (macOS)
+cannot see processes, and types as before.
 
-The gateway counts, so a pane running `hermes gateway run` is refused too. So
-is a Claude Code pane whose tree holds Hermes: one where Hermes was started in
-the foreground after Claude Code (`claude &`, then `hermes chat`), or one where
-Claude Code itself runs `hermes mcp serve` or `hermes acp`. If the host cannot
-read a process in the pane's tree, it refuses rather than assume.
-Shells, Claude Code and other programs are otherwise unaffected.
+### muster never types into opencode
 
-These refusals are accepted as safe even when no Hermes is there: a nested
-tmux, screen or zellij session, a hand-run gateway, and a Claude Code pane
-whose Claude started a Hermes subprocess.
+🔴 The same host guard refuses to type into a pane whose process tree holds
+[opencode](https://github.com/anomalyco/opencode): a process whose name or
+first argument is `opencode` (the Nix wrapper's `.opencode-wrapped`
+included), **and that is on the pane's terminal**: its stdin, or its
+controlling terminal, is the pane's. An opencode started with no terminal
+(Claude Code's Bash tool running `opencode run`, stdin `/dev/null`) does not
+make its Claude pane refuse. When either terminal cannot be read, the host
+refuses. An npm or bun install's JavaScript shim is refused through the
+native `opencode` it starts, which is in the same tree. A paste
+into opencode is blind, because nothing checks what its screen shows, and
+Enter there can answer a permission request it is showing. Every paste is
+refused this way, the Terminal view's box included, and the page says "Not
+sent from here: opencode runs in this pane, and muster never types into
+it…". A message reaches opencode only through its own API, from the Rendered
+view of a pane started with `muster-mirror opencode` ([sending to
+opencode](#sending-to-opencode)).
 
-Known gaps:
+The host decides this itself, from the pane's processes at the moment it
+types, not from the window's `opencode` label: a window labelled `zsh` whose
+pane runs opencode is refused too.
 
-- a Hermes run over `ssh` or `docker exec` inside the pane, whose chrome the
-  screen check above does not see;
-- a Hermes started under a renamed interpreter or from a copied tree;
-- a host with no `/proc`, which means macOS. There the host cannot see
-  processes, and it types as before. Refusing every message there would take
-  the message box away from every macOS user, and no deployment runs Hermes on
-  a macOS host.
+Known gaps (the host types into these panes as into any other):
 
-### Hermes windows
+- an opencode that runs inside a JavaScript runtime (`bun` or `node`) and
+  starts no native `opencode` binary: neither process is named opencode;
+- an opencode over `ssh`, or inside a container (`docker exec`, `podman
+  exec`): its processes are not in the pane's tree;
+- a renamed binary, or one run through a symlink of another name: its name
+  and first argument do not say opencode.
 
-A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
-listed as a **Hermes window**: a process named `hermes`, a Python running a
-`hermes` launcher, no `gateway` argument, reading the pane's terminal
-(`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
-as one; the paste refusal above still covers it. Its card carries the kind
-chip **Hermes** (`kind:hermes` in the filter), whatever its pane's command
-reads. muster sends into it only from its rendered view, and only on a host
-that runs with `-hermes-send` (below); elsewhere Send, Queue and Send now all
-refuse it.
+### opencode's token (`muster-mirror opencode-pair`)
 
-**Rendered view.** A Hermes window whose session the host can name
-(below) opens in a Rendered view of its conversation, read from Hermes's
-session store as it is written: the prompts, the replies, the tool calls and
-their results, and a compact row for what Hermes adds itself (a process
-finishing, a model switch). Thinking is never shown. On a host without
-`-hermes-send` its message box is drawn disabled and says why, with no send
-queue. Terminal is one tap away, as for Claude Code. A compression that
-rewrites the conversation redraws the view from the start.
+muster-mirror reads a host's opencode v2 server (the background service every
+opencode TUI on the host is a client of, `127.0.0.1:<port>`) through its HTTP
+API, with a **pair token** of its own — never the server's password. It needs
+**opencode 2 or later**: opencode 1 has no background service and writes no
+registration file (upgrade a 1.x with `opencode upgrade --major`;
+`opencode-pair` reads `opencode --version` and says which case it is).
+opencode's plain installer, `curl -fsSL https://opencode.ai/install | bash`,
+installs opencode **1**; `curl -fsSL https://opencode.ai/v2/install | bash`
+installs 2 (into `~/.opencode/bin`). The registration file exists only once an
+opencode 2 server has run on the host, so **run opencode once first** (the TUI,
+or `opencode serve`). Then pair each host once:
 
-**Which session.** The host finds the window's Hermes session from the
-breadcrumb Hermes writes for its terminal,
-`~/.hermes/terminal-sessions/tty-<terminal>`, and looks it up in Hermes's
-session store, `~/.hermes/state.db`, read-only. A breadcrumb is believed only
-when it is newer than the Hermes process in the pane. A conversation that
-Hermes compressed into a new session is followed to its newest one. 🔴 **After
-`/resume` or `/branch` at the terminal, Hermes leaves the breadcrumb on the old
-session**, which Hermes marks as ended. The window then has no session and its
-status is unknown, until `/new` or a restart of the CLI writes a new
-breadcrumb. muster never shows the abandoned session's status as this window's.
+```sh
+muster-mirror opencode-pair
+```
 
-**Status.** Hermes reports no status of its own, so the host reads one that a
-Hermes shell hook writes: `muster-mirror hermes-hook`, one small file per
-session in `~/.muster/hermes-status/` (0700; it holds the status, its time and
-a request's kind and id, never a prompt or a command). `busy` is believed only
-while Hermes holds the conversation's turn lease and the gateway that wrote it
-is running; `idle` only while no lease is held and no message is newer than it.
-Anything else is **unknown**. An unknown window holds the send queue, and its
-card shows no status.
+It reads the service's **registration file**, `$XDG_STATE_HOME/opencode/service-prod.json`
+(else `~/.local/state/opencode/…`; `service.json` for the latest, dev, beta
+and next channels; `-registration <file>` names another). That file is where
+opencode keeps the server's url and password for its own clients. The pairing
+step then:
 
-The host reads only these Hermes files: `state.db` (and its `-wal` and `-shm`),
-`terminal-sessions/tty-*`, and `shell-hooks-allowlist.json` — and, only with
-`-hermes-send`, `config.yaml`'s `display.vim_mode` (that key alone). It never
-opens `auth.json`, `.env`, `pastes/`, `memories/`, `logs/` or
-`runtime/active_sessions.json`. The Hermes home is `$HERMES_HOME`, else
-`~/.hermes` (`-hermes-home` overrides it).
+1. refuses a url that is not a loopback address;
+2. asks the server for a pairing code with the password (`POST /api/pair`);
+3. redeems the code for a token (`GET /auth/connect/<code>`);
+4. writes `{"url", "token"}` to `~/.muster/opencode-token` (mode 0600;
+   `-token-file`, or `MUSTER_MIRROR_OPENCODE_TOKEN_FILE`).
 
-#### Sending to a Hermes window (`-hermes-send`)
+It prints the file it read, the server, the token's fingerprint (the first 8
+hex digits of its SHA-256) and its expiry, and the file it wrote. The password
+is used for that one request and kept nowhere, and nothing prints the password,
+the code or the token.
 
-Sending to Hermes is **off** unless the host's `muster-mirror` runs with
-`-interactive` **and** `-hermes-send` (`MUSTER_MIRROR_HERMES_SEND`). It needs
-the status hook (below). Turn it on per host, and only:
+The daemon reads the same file (`-opencode-token-file`,
+`MUSTER_MIRROR_OPENCODE_TOKEN_FILE`; default `~/.muster/opencode-token`). It
+refuses a file others can read, a symlink, and a url that is not loopback. A
+token lives 30 days. Within 10 days of its expiry, the daemon mints its
+replacement with the token itself, writes it to the same file (0600, whole),
+and only then uses it. It checks hourly and logs each renewal and each failure
+by fingerprint. A failing renewal, a token within 3 days of expiry and an
+expired token are also shown in the opencode window's rendered view and by
+`-list -opencode`.
 
-- after `make test-livehermes` has ended with `HERMES HARNESS VERDICT: GREEN`
-  against the Hermes commit that host runs;
-- 🔴 **never in vi mode**, and the host enforces it: it reads
-  `display.vim_mode` from the Hermes home's `config.yaml` (that one section
-  and key) on every connect and every send, and while it is on — or the file
-  cannot be read — advertises nothing and sends nothing. One Escape there
-  would enter vi navigation, where the message's characters would be read as
-  commands. The startup log and `muster-mirror -list -hermes` (`vi-mode`)
-  say which.
+### opencode windows
 
-With it on, the window's rendered view offers Send, Queue and Send now. Every
-send goes through the host's **gated send**, in this order:
+A window whose pane runs the opencode TUI is listed as an **opencode window**.
+The TUI is an `opencode` process on the pane's terminal (its stdin) with no
+subcommand (`serve`, `run`, `pair`… are not the TUI). With a token, the host
+also resolves the session the pane shows, **by the pane's title**. The TUI
+names its pane `OC | <session title>` and cuts a long title with `…`. The host
+matches that title against the server's root sessions: the whole title, or the
+part before `…` as a prefix. It shows a session only when **exactly one** root
+session matches. Two sessions with one title (opencode's default title, say)
+match nothing, and that window gets no view rather than a guess. A TUI started
+with `--standalone` or `--server` runs on another server and is never matched.
 
-1. muster refuses unless the window is **idle** (busy, waiting and unknown are
-   refused, saying why), and sends the status time it decided on;
-2. the host refuses a message whose text starts with `/` or `!` (Hermes would
-   run it as a command), ends with `\` (Enter would continue the line), or is
-   only a number (after `/resume` Hermes takes it as a session to switch to), and
-   one so long, on one line, that Hermes's input box could not show it whole
-   (about 8 rows: shorten it, or send six or more lines, which Hermes collapses);
-3. the host checks again that Hermes is idle at exactly that time;
-4. it checks the screen: Hermes's status bar is there (it is blank while the
-   command palette or the model picker is open) with at least one row above
-   it (a pane of 4 rows is refused as too short), no stash panel (found by its
-   header, even when a short pane cuts the rest of it), no vi label,
-   no images attached, the idle prompt `❯ ` with an empty box, nothing below
-   it. Any approval, question, password prompt, confirm or running turn
-   changes that prompt, so it is refused here;
-5. it types one Escape, waits 1.5 s and checks the screen again;
-6. it pastes the message, waits 150 ms, checks the status again and that the
-   box shows exactly the message (or Hermes's `[Pasted text #N: L lines → …]`
-   placeholder), then presses Enter;
-7. it waits up to 8 s for the message to appear in Hermes's session store.
+The window opens a **rendered view**: the session's prompts,
+the agent's replies, and each tool call by its name and target (the command,
+the file). It never shows a tool's input or output, nor the model's reasoning.
+The view opens with a row naming the session in plain words: "muster started
+this opencode session" for a pane the launcher bound, or "Showing “<its
+title>”" for a pane found by its title. Opening the row says how it was found:
+by its launcher, by its title and checked with opencode (a pane muster also
+sends to: [hand-opened panes](#hand-opened-opencode-panes)), or by its title
+alone (a heuristic: a renamed session, or a TUI that switched sessions, moves
+it). Text appears once
+it is final (a reply streams in place upstream), and the view starts over when
+something it drew changes. The busy marker comes from the server's event
+stream (`session.status`). While that stream is down the status is unknown, and
+unknown fails closed.
 
-What you see: **Sent** (the message is in the conversation); **Not sent…
-Nothing was pasted** (refused at steps 1–5, possibly after some Escapes);
-**Pasted, not submitted** (the text is in Hermes's input box and Enter was not
-pressed: check the terminal); or **May have been submitted: check the
-conversation before sending again** (Enter was pressed and Hermes recorded no
-message in time). After a "may have been submitted", muster will not send the
-same message again by itself: sending it again is refused, and the message
-box offers **Send again** for when you have checked. Queued messages and Send
-now say the same words, never "Not sent". A send takes about five seconds. Right after a turn ends,
-Hermes can say it is idle while its screen still shows the turn finishing; a
-send in that moment is refused, and a queued message waits its idle time
-anyway.
+When the token needs the person — a renewal is failing, it is within 3 days
+of expiry — the view's first row says so, in the same words `-list -opencode`
+prints (and the window's note, below).
 
-⚠ **Accepted residual risk** ([design](design/hermes.md#residual-cases-accepted)):
-a person opening an overlay at the terminal in the second before muster's
-Enter; an overlay a future Hermes adds before the harness is re-run; and a
-turn Hermes starts on its own between the last check and Enter. Hermes's `/busy queue` (it saves `display.busy_input_mode: queue`)
-turns the last one into a queued message instead of an interrupted turn; with
-it, Hermes can still submit a queued message up to about 2 s after it says
-idle, under load. A pasted message of 2,000 characters or more is saved by
-Hermes in `~/.hermes/pastes/`; muster never reads that directory.
+The composer of a window muster does not send to — a title match it could not
+verify, or any opencode window on a host that did not opt in — is disabled and
+says why. What the session **waits on** does reach muster (below).
 
-#### Hermes's approvals, questions and sudo prompts (`-hermes-answer`)
+**The header** shows the session's model and how much context it fills, as
+a chip "`<model> · 47k/188k`" (the model without its provider prefix: a
+`vendor/name` id shows `name`): the newest completed step's input + cache
+read + cache write tokens (what the model was sent for that request, the same
+count a Claude Code view shows), out of the model's context window from
+opencode's `GET /api/model` (`limit.context`). Output and reasoning are not
+counted: they are in the next request's input. opencode's own TUI adds them,
+so its figure reads higher. A model the list does not name shows the count
+alone; a session with no completed step shows nothing. A tap on the chip (or
+its tooltip) shows the whole model id and the exact counts, "`<vendor>/<model>
+— 46,809 of 187,500 tokens (25%)`", and how the number is made. The chip turns
+amber at 70% of the window and red at 90%, only when the window is known; at a
+phone's width its model name is cut short, never its numbers.
 
-A Hermes window waiting on you is in the **Attention** queue (and counts on
-its card's badge), saying what it waits on, as Hermes's status hook recorded
-it:
+**A turn that failed** is a row in the view, as before. The host also reports
+it with the window, as it does for Claude Code (`Window.TurnError`: the error's
+name, its time, and how many turns in a row each failed within 10 s of their
+prompt with no reply). So the send queue's circuit breaker holds after two
+such failures instead of sending into the same wall ("Held — the last 2
+messages each failed at once (api error); retries at …"). A usage limit is not
+derived from an opencode error: which errors are one was not measured.
 
-- **an approval** — Hermes wants to run a command. On a host that runs with
-  `-interactive` **and** `-hermes-answer` (`MUSTER_MIRROR_HERMES_ANSWER`),
-  the host attaches Hermes's **gateway viewer** to that session while it
-  waits, the queue shows the command (`terminal: rm -r ./build`) and why
-  Hermes asks, and offers **Allow once** and **Deny**. muster never offers
-  `session` or `always`, and offers **Allow once** only for a plain terminal
-  command it can show whole: the approval must be Hermes's terminal gate's
-  (not a file write, a plugin's rule or computer use, whose "command" is only
-  a label), its command must be the very command pending in the conversation,
-  plain ASCII on one line within the card's length, with nothing redacted or
-  masked out of it. Otherwise only **Deny** is offered. An answer needs a fresh
-  sign-in, as answering Claude's questions does, and goes through the gateway,
-  never as keys into the pane. After it, the terminal keeps showing Hermes's
-  prompt until a key is pressed there (the queue says so); the answer has
-  already been taken. Without `-hermes-answer`, or when the host cannot reach
-  the gateway (none running, not the pinned commit — `-list -hermes` names
-  it), the item says to answer in the terminal.
-- **a question** (Hermes's clarify tool): the queue shows the first question,
-  its choices and how many more there are, read from the conversation; answer
-  it in the terminal.
-- **a sudo password**: listed only. muster never answers a password prompt.
+#### Sending to opencode
 
-The viewer is attached only while a session waits on an approval, and only
-to the pinned Hermes's gateway; it keeps nothing of the session but the
-approval's command, description and choices (docs/design/hermes.md, Phase 4).
+A message is sent to an opencode session through the opencode server's API,
+never as keys, when all of these hold (each checked by muster and again by the
+host):
 
-#### Installing the Hermes status hook
+- the host's muster-mirror runs with `-interactive` and `-opencode-send`
+  (`MUSTER_MIRROR_OPENCODE_SEND`, off by default) and holds an opencode token;
+- the pane was started with **`muster-mirror opencode`** (below), so the host
+  knows its session, not by its title — or it is a [hand-opened
+  pane](#hand-opened-opencode-panes) whose title match the host verified;
+- the window still shows the session the message was **written for**: the
+  one your Rendered view was showing when you typed it, carried with the
+  message (and stored with it when you queue it). muster refuses it when the
+  window's session has changed since — a queued message then fails, saying
+  so, rather than landing in the new session — and the host refuses it again
+  if the pane shows any other at the moment it posts ("this opencode pane
+  shows another session now"). A message for a hand-opened pane that names no
+  session (typed on a page from before this, or queued then) is refused too;
+- the session is idle (a queued message waits until it is), with nothing it
+  is waiting on;
+- your sign-in is fresh, as for every send.
 
-The hook runs inside Hermes's gateway. Hermes runs a configured hook only when
-the exact `(event, command)` pair is in its allowlist,
-`~/.hermes/shell-hooks-allowlist.json`. A configured hook that is not
-allowlisted is skipped, and every new Hermes CLI then stops before its UI on
-`Allow this hook to run? [y/N]:`. So the host's configuration must declare both
-halves, with the same command string. `<muster-mirror>` below is the absolute
-path of the `muster-mirror` binary, for example
-`${pkgs.muster-mirror}/bin/muster-mirror` in Home Manager.
+Send, Queue and the optimistic pending bubble work as for Claude Code
+([sending](sending-and-step-up.md)), and so do attachments (each a line with a
+signed link, as for Claude Code) and dictation. A message muster could not
+confirm is **Not confirmed**, and its **Send again** posts the same opencode
+message id, which opencode admits once. A message whose first word is one of
+opencode's slash commands (`/review`, `/init`, …) is refused: sent as a
+message, the model would read it as text. Type it in the terminal.
 
-1. **The hooks**, in Hermes's `config.yaml` (with Home Manager, through the
-   `hermes-agent` module's `settings`, as `settings.hooks`):
+**`muster-mirror opencode [flags] [<directory>]`** starts the opencode TUI
+inside tmux on a session it names: a new one it creates first (so you can send
+to it before typing anything), or `-s <session id>`. It records the pane and
+its session for the host, then runs `opencode --session <id> …`. It refuses to
+start when the TUI's version differs from the running opencode service (the
+TUI would restart the service, which can sign other clients out), naming both
+versions and the fix, `opencode service restart` — whether or not it can bind
+the pane. A TUI whose version cannot be read starts all the same, with a
+warning. Outside tmux, or with
+`--standalone`, `--server` or `-c`, it starts opencode unbound and says why.
 
-   ```yaml
-   hooks:
-     pre_llm_call:            [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_human_input_request:  [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_human_input_resolved: [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_session_end:          [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_session_finalize:     [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-   ```
+If the TUI then switches to another session, the window's note says so, and a
+message still goes to the session the Rendered view shows (the one the pane
+was started on).
 
-2. **The allowlist entries**: one `{event, command}` approval per hook above.
-   Write them with the allowlist writer, in a Home Manager activation step
-   ordered after the `hermes-agent` module's own:
+#### Hand-opened opencode panes
 
-   ```sh
-   <muster-mirror> hermes-allowlist -command "<muster-mirror> hermes-hook"
-   ```
+opencode reports no endpoint or event naming the session a TUI shows, so a
+pane `opencode` was started in by hand is bound by its title. The host sends to
+it when **all** of these hold, and says why when one does not:
 
-   It writes the way Hermes does: under Hermes's lock
-   (`shell-hooks-allowlist.json.lock`), as a real 0600 file through a temp file
-   and a rename. Never link a read-only file there: Hermes writes the same file
-   when someone answers `[y/N]` (a Home Manager link into the Nix store is
-   replaced by a real file; any other symlink there is refused). It keeps every
-   other approval, removes entries for an older `muster-mirror hermes-hook`
-   path (every Nix upgrade changes it), carries nothing but approvals over,
-   and changes nothing when the five pairs are already there. It refuses to
-   replace an allowlist that is not valid JSON.
+- the TUI runs on the host's own opencode server (no `--standalone`, no
+  `--server`) and the server answers with its sessions;
+- its event stream is open, so that list is current (every session event
+  makes the host read it again) — else "the opencode server's event stream is
+  not answering";
+- exactly **one** session carries the pane's title — counting subagents'
+  sessions as well as top-level ones — whether the title is whole or cut
+  (`…`, then every title starting with what precedes it). Two top-level
+  sessions sharing it are no match at all (no view). A subagent's session
+  sharing it keeps the view but is not sent to — "a subagent's opencode
+  session has the same title as this pane" — because the TUI can be showing
+  that subagent's session;
+- the TUI's own command line names no session, or names that one (`-s`) —
+  else "started on one session (its -s) but its title names another".
 
-3. **The daemon** must run with `-write-hook-config`
-   (`MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`), as for `muster-mirror ask`, so the hook
-   writes where the daemon reads (`-hermes-status-dir`, default
-   `~/.muster/hermes-status`).
+At the moment of sending the host reads the title again, requires the session
+muster named, and reads that session from opencode's API once more: it must
+still be a top-level session whose title the pane shows. A session renamed,
+deleted or replaced since is refused, and nothing is posted.
 
-The hook prints nothing, always exits 0, and gives up after a second rather
-than hold Hermes up. If it cannot write, the window's status is unknown, never
-idle.
 
-#### Diagnosing a Hermes window
+#### opencode's permission requests and questions
 
-`muster-mirror -list -windows` prints a Hermes window as
-`hermes <pane> <state> <session id> <source>`, with `-` for the session of a
-window that has no rendered view and `unknown` for a status muster does not
-believe. `muster-mirror -list -hermes` says why:
+When the session a window shows — or a subagent's child session under it —
+asks the person something, the host reads it from the opencode server's event
+stream and the window becomes **waiting**, exactly as a Claude Code window with
+a prompt does:
 
-- `hook-declared`: each `muster-mirror hermes-hook` command Hermes's
-  `config.yaml` declares, per event (only its `hooks:` section is read).
-  `hook-config` says when it declares none, or several.
-- `hook-consent`, per declared command: `ok for <command>`, or `MISSING for
-  <command>` with the events whose `(event, command)` pair is not in the
-  allowlist, and the command that fixes it (`muster-mirror hermes-allowlist
-  -hermes-home … -command <the declared command>`; none when several are
-  declared). `hook-undeclared` names events the config does not hook;
-  `hook-other` names allowlisted entries of a command that is not declared
-  (an older binary's, which the next `hermes-allowlist` removes).
-- per Hermes window: its pane, CLI process, terminal, session and status; the
-  `breadcrumb` (its session and time, or `none`); the `lineage` and how its tip
-  ended; the newest `status-file`; and, when there is one, the `no-view` and
-  `unknown` reasons (no breadcrumb, a breadcrumb older than the CLI, a switched
-  session, no status file, a stale busy, an idle under a live turn).
+- a **permission request** (`permission.asked`: a tool call its rules say to
+  ask about) is a *Session waiting* item, notified as "A session is waiting on
+  you", "Waiting: <tool> · <window>" — the tool's name only on the lock
+  screen, the command on the page;
+- a **question** (the question tool's form, `form.created`) is a *Session
+  question* item, notified as "<window> is asking" with its question and, for
+  one question, its options — when muster can relay its answer; one it cannot
+  keeps its card (which says to answer it in the terminal) and is notified as
+  a plain waiting window.
 
-- `gateway`: the home's Hermes gateway, as its control socket's `identify`
-  names it — `none running`, `code_sha <sha> (the pin)`, `NOT THE PIN` (the
-  commit it booted from is not the one muster supports), or `refused` with
-  why (a control path another user could reach, a gateway that is not ready).
-  muster attaches its gateway viewer (to answer Hermes approvals) only to the
-  pin; otherwise every Hermes approval is answered in the terminal. It asks
-  `identify` only: no ticket, no attach.
+Either notification waits 60 seconds and is sent only if the window still
+waits then ([attention.md](attention.md#stalled--waiting-session-state)); the
+item itself is on the page at once.
 
-muster also refuses every send into a window the host reports as Hermes on
-its own side, before anything reaches the host. A Hermes the host does not
-report as one (a profile-launched CLI, or any Hermes on a host older than this
-release) is refused by the host alone, as above; a host older than that
-refusal has no protection at all, so upgrade every host that runs Hermes.
+Answered, rejected or cancelled in the terminal (`permission.replied`,
+`form.replied`, `form.cancelled`), the window stops waiting and the item and
+its notification are withdrawn. An ask that was pending before the host's
+event stream opened is read from the session's pending lists when its window
+is first matched. If the stream drops, the asks last known stay up — no
+notification is withdrawn — until the reconnect re-reads them; an interrupted
+turn takes its permission request with it (opencode sends nothing else that
+says so). A subagent's ask is shown on its root's window only when the
+stream saw the subagent's session created; one started while the stream was
+down is the terminal's.
+
+**Answering from muster** follows the same gate as answering Claude Code's
+questions: an `-interactive` host (with an opencode token) relays an answer
+through opencode's API with its own token, never keys:
+
+- a permission request: **Allow once** or **Reject**. muster never sends
+  "always", which widens the session's rules past the one call;
+- a question, from the **Attention item**: one of its options, when it is
+  **one single-select question** of at most 4 options whose labels muster can
+  show unchanged; any other form's item says to open the session;
+- a question or a permission request, from the **session's Rendered view**:
+  a card at the end of the conversation, as a Claude Code question gets. A
+  question's card shows its whole form — every question, its options and
+  their descriptions, checkboxes for a multi-select, and a box for an answer
+  of your own — read from the host when the card is drawn; one Submit answers
+  them all. The answer names each option by its place in that form, and the
+  host maps it to the option's value for the session the ask came from.
+  A permission request's card offers Allow once and Reject. A phone
+  notification opens this view.
+
+The answer needs a sign-in from the last few minutes. muster re-checks, at the
+moment it sends, that the window still waits on exactly that ask and offers
+that answer, and the host checks again against what opencode holds now. On a
+read-only host (`-interactive` off), the ask still reaches the queue and
+notifies; its card says the answer can't be relayed from there. A non-default
+tenant's daemon follows its own `-interactive`: `-opencode-read-only` (set on
+every `muster-mirror@<tenant>`) is about **renewing the token** only, and
+decides nothing about answers.
+
+A window has no view, and an unknown status, when the host has no token, the
+server refuses the token (it expired, or the server's password was rotated),
+the title matches no root session or several, or the TUI is on another server.
+The window's terminal page says which, in one line ("opencode is not paired on this
+host: run muster-mirror opencode-pair", "… ambiguous, so none is shown", …);
+an open view that loses its session closes with the same line. The host sends
+the line with the window (`Window.AgentNote`: at most 200 bytes, on at most 8
+windows of a list). `muster-mirror -list -opencode` says it too, with the
+detail:
+
+- `token`: the token file, its fingerprint and expiry, or `none` and why;
+  `token-health`: the token's line, when it has one (failing renewal, close to
+  expiry, expired);
+- `server`: `ok` and the server's version, `REFUSED the token`, or
+  `unreachable`;
+- per opencode window: its pane, TUI process, session (`-` for none), status
+  and `source` (`title` when matched); its `pane-title`; the `match` ("matched
+  by title", noting a prefix match); and `no-view` with the reason.
+
+`-list -windows` prints an opencode window as
+`opencode <pane> <state> <session id or -> <source>`.
+
+🔴 **A token is not scoped and cannot be revoked on its own** (upstream at
+`6ec5682`, docs/design/opencode.md). It reaches the whole opencode API. muster
+only ever reads with it, except the renewal's `POST /api/pair` and — on a
+`-interactive` host — the answer to a permission
+request or question you gave in muster (`POST …/permission/<id>/reply`,
+`POST …/form/<id>/reply`). To take muster's access away, rotate the opencode service
+password. That revokes every token, muster's and every other paired client's.
+
+### Hermes support was removed
+
+muster no longer mirrors, views, sends to or answers the Hermes CLI. A pane
+running Hermes is a plain terminal window: the Terminal view shows it, and
+the host's message box types into it like any shell's (the guard above
+refuses only what it lists).
+
+An older `muster-mirror` may still be running on a host until its pin moves.
+A newer muster takes its Hermes wire without an error: its hello's
+`hermesSend` and `hermesAnswer` are ignored, a window it names
+`runtime: "hermes"` is listed as a plain terminal window (no rendered view,
+status, session key, pending approval or note), and its paste guard's
+`hermes` refusal is shown as a plain refusal in the host's own words.
+
+A newer `muster-mirror` has no Hermes flags or subcommands: one started with
+a removed flag fails as with any unknown flag, and a leftover word
+(`hermes-hook`, `hermes-allowlist`, a typo) fails with "unknown command or
+argument". Remove them from a host's configuration before moving its pin.
+
+Migration `0085` deleted the focus history Hermes windows left
+(`hermes:<id>` keys) and narrowed the session-key CHECKs back to Claude Code
+ids and `opencode:` keys ([schema.md](schema.md)).
 
 ## Answering Claude's questions
 
 When Claude Code calls `AskUserQuestion`, the question shows in **both places
 at once**: the terminal draws its own picker, and the window's Rendered view
 draws the same questions as a form. Answer in either. Whichever is answered
-first counts, and the other side shows what happened. This needs a Claude Code
+first counts, and the other side shows what happened. Your phone is notified
+only if the question is still open 60 seconds after Claude asked it
+([attention.md](attention.md#stalled--waiting-session-state)), so a question
+you answer at the terminal, or in muster, within a minute never buzzes it. This needs a Claude Code
 hook on the host: `muster-mirror ask`. Add it to that machine's Claude Code
 `settings.json`, with no flags:
 
@@ -589,6 +1014,24 @@ development `muster-mirror` never repoints the hook. The hook reads the file
 when it has no `-url` and no `MUSTER_MIRROR_URL`. It then uses the recorded
 token file, or `~/.muster/mirror-token` when none is recorded.
 
+The record also names the **tmux server** the daemon mirrors (its socket path,
+worked out from `-tmux-socket` / `-tmux-socket-path` and `TMUX_TMPDIR`, so it
+is right even when the daemon starts before tmux does). The hook uses the
+record only for a session in that tmux server: it compares the socket path at
+the start of the session's `$TMUX`. A session outside tmux, or in another tmux
+server, keeps its question in the terminal. A record written by an older
+`muster-mirror` names no socket and matches only the default tmux server.
+
+With [a second muster server on this machine](multi-tenant-hosts.md),
+each server's `muster-mirror@<tenant>` writes its own record to
+`~/.muster/mirror-hook.d/<tenant>.json`, and the hook picks the one record whose
+tmux server is the session's. If none matches, or two daemons mirror the same
+tmux server, the question stays in the terminal. A per-tenant record must name
+its token file: such a daemon given its token in `MUSTER_MIRROR_TOKEN` writes no
+record, and the hook never uses `~/.muster/mirror-token` (tenant `default`'s)
+for one. The tmux server decides where a question goes; it is not a security
+boundary, since anything running as your user can read every tenant's files.
+
 🔴 **The recorded token goes only to the recorded URL.** A hook given a URL by
 `-url` or `MUSTER_MIRROR_URL` must also be given its own token (`-token-file`,
 `MUSTER_MIRROR_TOKEN_FILE` or `MUSTER_MIRROR_TOKEN`); otherwise the question
@@ -597,9 +1040,11 @@ one line to stderr, which appears in Claude Code's debug log.
 
 How it works:
 
-- The window's Rendered view shows a card above the message box as soon as the
-  hook registers the question (the view's connection is told; it does not wait
-  for a poll). It has one section per question: the question's header, its
+- The window's Rendered view shows a card at the end of the conversation as
+  soon as the hook registers the question (the view's connection is told; it
+  does not wait for a poll), and scrolls it into view. It is part of the
+  conversation, not a box over it: scroll up to read what led to the question.
+  It has one section per question: the question's header, its
   options with their descriptions (radio buttons, or checkboxes for a
   multi-select question), and an **Other** box for your own answer. One
   **Submit** sends every answer. The question is also one item in the
@@ -618,9 +1063,14 @@ How it works:
   switching to the terminal to watch does not stop it; a key that changes
   the picker does. Only one answer is typed into a pane at a time (another
   one is refused: *another answer is being typed*). The keys go in with tmux
-  `paste-buffer -S`, which works while muster's read-only viewer is attached.
-  🔴 **It needs tmux 3.7 or later** (3.7 added `-S`); on an older tmux the
-  host says so in its log and does not offer answering. A multi-select answer
+  `paste-buffer`, which works while muster's read-only viewer is attached:
+  with `-S` on tmux 3.7 or later (3.7 made a plain paste sanitize control
+  keys, and added `-S` to turn that off), and without it on an older tmux,
+  whose paste never sanitized. The host log says once which one it uses.
+  Which one is decided by the running tmux server: it rejects `-S` only
+  if it is older than 3.7, and muster confirms that from the server's
+  reported version (a server that rejects `-S` yet reports 3.7 or later is
+  refused). Tested against real tmux 3.2a, 3.3a, 3.4 and 3.7c. A multi-select answer
   is its options joined by `, `, in the question's order.
 - **The card follows what Claude Code recorded.** muster reads the call's result
   from the conversation's transcript: answered with the answers you typed in
@@ -643,8 +1093,40 @@ How it works:
   review screen lists exactly your answers — an earlier answer changed in the
   terminal is caught there, said as someone answering in the terminal, and
   nothing is submitted. A muster restart, or a typing whose outcome the host
-  never reported, records nothing to continue: the picker is then the
-  terminal's to finish.
+  never reported, records nothing to continue.
+- **Try again after any recoverable failure.** A card offers **Try again**
+  for every reason the [table below](#which-failures-a-card-recovers-from)
+  marks *retry*. Before its first key the host re-reads the picker: exactly
+  as muster's own keys left it, it continues (above); untouched, it types; on
+  the first question with only its cursor moved — or, on a multi-select
+  question, options ticked — it first puts the picker back to the first option
+  (Up a row at a time to the first option, then each ticked option's digit
+  there — never a digit on the "Type something" row, where it would be typed
+  as text — every key checked like any other), then types the answer again. A picker on a later question, or
+  with an answer of one's own typed in, is not reset: it is refused as
+  someone answering in the terminal, and nothing is typed. (Up's effect is
+  the fake picker's model of Claude Code; `make test-liveclaude` does not
+  measure the reset yet.) A host whose `muster-mirror` predates it ignores the
+  reset and refuses a moved picker as before.
+- **Send as a message.** When typing again cannot work — the picker is gone
+  (*no-picker*), or muster cannot read it (*unreadable*, *unrecognised*) — the
+  card offers **Send as a message** instead. It dismisses the picker with the
+  same single Escape as **Cancel question** (unless the failure said it is not
+  on screen; a host that answers "no picker" counts as dismissed), then queues
+  the answer muster was typing as an ordinary message through the
+  [send queue](#read-only-interactive-and-sending), one line per question:
+  `Answer to “<header, or the question's first words>”: <your answer>`. The
+  page never names the text — the server sends the answer the card was typing.
+  It passes the queue's gates, recent sign-in included (403 and the step-up
+  dialog when it is stale). The card is claimed before anything is done, so
+  a second **Send as a message** while one is under way is refused with the
+  card, and one answer is never queued twice. A host that finds no picker to
+  dismiss (the screen is not a picker at all) counts as dismissed: nothing
+  there can take the message's keys. If a picker is there but cannot be
+  dismissed (one muster cannot read), nothing is sent — a message typed into
+  an open picker would be keys into it — and the card says so and stops
+  offering it: press Esc in the terminal, then send the answer from the
+  composer.
 - **Options with previews.** When a question's options carry a `preview`,
   Claude Code draws them in a column with the highlighted option's preview
   boxed beside them, and no row for your own answer (measured, 2.1.289). The
@@ -667,9 +1149,8 @@ How it works:
   dismissed. Same gates as an answer — your own host, `-interactive`, a
   same-origin request, one key at a time per pane — but no recent sign-in is
   asked: the dialog is the confirmation. A host whose `muster-mirror` predates
-  it does not offer it, and muster never sends it one. (Hermes approval and
-  clarify cards have no Cancel: they are answered through Hermes's gateway,
-  not by keys.)
+  it does not offer it, and muster never sends it one. (An opencode ask's
+  card has no Cancel: it is answered through opencode's API, not by keys.)
 - **One answer at a time.** Once you submit, closing the page does not stop
   it: muster waits for the host to report how it went. No second answer for
   the question starts until it has (or until 90 seconds have passed, when the
@@ -681,8 +1162,16 @@ How it works:
   window closes before the question is answered, the card says so once the
   host has been connected for 30 seconds without listing the session, and the
   question leaves the attention queue. Time the host is disconnected does not
-  count. If the transcript later shows the question answered (the session came
-  back), the card still changes to that answer.
+  count. If the listing only missed the session for a while (Claude Code
+  restarting in the pane, a window moved) and it is listed waiting on the same
+  question again, the same card is reopened and can be answered
+  ([below](#a-question-survives-a-muster-restart-and-a-host-reconnect)); if the
+  transcript shows it answered (the session came back), the card changes to
+  that answer.
+- **No time limit while the session runs.** A question stays open for as long
+  as its host lists the session asking it. Only a question whose session has
+  not been listed for 6 hours (a host that went away for good) expires on its
+  own.
 - **When Claude Code changes its picker.** If the host cannot read the picker
   — including one showing this question with its rows drawn in a layout muster
   does not know, which is never blamed on someone in the terminal —
@@ -707,8 +1196,153 @@ How it works:
 - Afterwards the conversation also shows the call read-only, with the answers it
   was given, wherever they were given.
 
-Questions live in muster's memory only. A restart forgets them; the terminal's
-picker is unaffected.
+### Answer attempts
+
+Every **Submit** and **Dismiss** of a question card is recorded, one row each
+(`ask_attempts`, migration 0113; `internal/askattempt`), for Claude Code and
+opencode, from every door that answers one:
+
+| door | what it is |
+|---|---|
+| `card` | the card in a session's rendered view, in a browser: an answer, **Cancel question**, **Send as a message**, an opencode card |
+| `phone` | the same card in the Android app's shell (the page's `window.musterApp` bridge marks it) |
+| `attention` | the Attention list's own answer buttons for an opencode ask (a Claude question there links to its card) |
+
+The phone's signed actions (`/api/device/actions/attention/asks/…`) answer
+`attention_ask` questions, not question cards; those are in the
+[ask log](asks.md), not here.
+
+A row holds when, the owner (row-level security: nobody else's rows are
+visible, on the page or anywhere), the host, session and window, the runtime,
+the door, the card's id (the call's `tool_use` id, or opencode's prompt id),
+the action (`submit`, `dismiss`) and method (`typed`, `relayed`, `escape`,
+`message`), the question's **shape** — how many questions, each one's option
+count and whether it is multi-select, and whether an answer of one's own was
+used — the outcome (`ok`, `refused` before anything reached the host,
+`failed` after, `noop`) and its reason code, the keys that reached the
+picker, how long it took, and which attempt on the card it was (a retry is
+attempt 2).
+
+🔴 **It never holds the question's or the answer's text.** The one exception
+is a failure's **snapshot**: the terminal pane as the host read it when the
+answer stopped. A pane can show the question and what was typed into the
+picker, so it is redacted with muster's secret redactor (`redact.Secrets`)
+and capped — redacted on the host first, then its tail from a line start,
+under a "the top of the pane was cut" line, 16 KiB on the wire; redacted
+again and its last 8000 characters stored — and kept
+only as long as the row. A `muster-mirror` that predates it sends none. An
+opencode relay has no pane to send.
+
+A row is written after the door has answered (the response never waits for
+it), at most 64 writes at once; a row past that, or a write that fails, is a
+log line. Rows are deleted after **30 days** (the attention sweep prunes them
+hourly).
+Nothing alerts on them.
+
+#### The Answers page
+
+`/answers` (linked from `/usage`) shows the success rate — of answers, not
+dismissals, nor the same answer submitted twice — overall, by runtime and by
+question shape, over the last 24 hours and 7 days; every failure or refusal
+grouped by its reason, with counts; and each failure expandable to its
+snapshot and to its card's timeline (`/answers?card=<id>`: every attempt on
+that card, oldest first). A failed card links to its own timeline (*What
+happened*).
+
+#### Which failures a card recovers from
+
+The reasons are one enumerated set (`askattempt.Reasons`); the store refuses
+any other, and a test pins the set every door can produce to it.
+
+| reason | outcome | what happened | the card offers |
+|---|---|---|---|
+| `typed` | ok | typed into the picker | — |
+| `relayed` | ok | answered through opencode's API | — |
+| `dismissed` | ok | Esc sent | — |
+| `queued` | ok | sent as a message | — |
+| `duplicate` | noop | the same answers again | — |
+| `too-large` | refused | the form was too large | — |
+| `not-found` | refused | no such card for the window (muster restarted; another owner's) | — |
+| `read-only` | refused | the host is not `-interactive` | — |
+| `step-up` | refused | the sign-in was stale | Try again (after the step-up) |
+| `invalid` | refused | not answers the question takes | — |
+| `closed` | refused | the question was no longer open | — |
+| `in-progress` | refused | another answer was being typed into it | Try again |
+| `unsupported` | refused | the host's `muster-mirror` cannot | — |
+| `not-waiting` | refused | opencode no longer waits on that ask | — |
+| `unanswerable` | refused | the card cannot be answered here (offline host, no relay) | — |
+| `not-offered` | refused | Send as a message was not offered for the card | — |
+| `queue-refused` | refused | the send queue refused the message | — |
+| `dismiss-failed` | failed | the picker could not be dismissed, so no message was sent | — |
+| `not-sent` | failed | the answer never reached the host | Try again |
+| `no-picker` | failed | the picker was not on screen | Send as a message |
+| `unreadable` | failed | the question could not be read off the screen | Send as a message |
+| `touched` | failed | someone was answering in the terminal | — (finish it there) |
+| `lost` | failed | the picker changed part-way through typing | Try again |
+| `unrecognised` | failed | the picker's layout was not recognised | Send as a message |
+| `busy` | failed | another answer was being typed into the terminal | Try again |
+| `timeout` | failed | the host did not report back in time | Try again (after 90 s) |
+| `error` | failed | anything else | Try again |
+| `gone` | failed | opencode moved on from the ask | — |
+| `unreachable` | failed | the host could not reach opencode | Try again |
+| `answer-unknown` | failed | opencode did not say whether it took the answer | — |
+| `answer-refused` | failed | opencode refused the answer | — |
+
+The typing reasons are also `muster_mirror_ask_typing_total`'s `result`
+labels.
+
+### A question survives a muster restart and a host reconnect
+
+muster keeps questions in memory, and the hook registers each one once, when
+Claude asks it. The **transcript** is what says a question is still open:
+Claude Code writes the call to it when its picker opens, and writes its result
+only when it is answered or dismissed (measured, Claude Code 2.1.289). So for
+every window whose Claude Code session the host reports **waiting**, muster
+reads the transcript's tail through the host — the same stream the rendered
+view reads — and, when the newest unanswered call is an `AskUserQuestion`,
+registers it:
+
+- when a host connects — after a muster restart, such as a deploy, or after
+  the host's own network gap;
+- when a window starts waiting (including one that disappeared from its
+  host's listing and came back).
+
+Each waiting window is read once while it waits; it is not read while its
+session already has an open question, nor when the host says the session waits
+on another tool. These reads use the same host slots as rendered views (8 per
+host), so muster runs at most **2 of one host's reads at a time** and queues
+the rest. That leaves room to open a view while a host with many waiting
+windows connects. A read counts only when it is complete. If a read fails, is
+refused because the host's slots are full, or is cut short, muster tries again
+after 2 s, then 4, 8, 16 and 30 s, up to 6 reads in all. The retries stop when
+the window stops waiting or its host goes. A read that was still running when
+its window stopped waiting does not count, and nothing is registered from it.
+
+A read never replaces a newer question. If the window's session has another
+open question by the time the read finishes, the read registers nothing. That
+question was registered while the read ran, from the picker on screen now.
+
+muster registers what it reads under the same key the hook used (owner, host,
+Claude session, `tool_use` id), so it is the same card, answered the same way:
+never a second card, never reopened once Claude Code recorded it answered,
+dismissed or replaced. A question that expired because its session looked
+gone is reopened. A call whose result is already in the transcript is never
+registered, and a question past muster's size limits stays in the terminal
+only. Nothing changes on the host: this works with every `muster-mirror` that
+reports its windows' status.
+
+A question read back this way is **not notified again**. With session state on
+its push belongs to the window's stop, recorded in the database: one pushed
+before the restart is not pushed again, and one that was never pushed (its 60
+seconds had not passed) is pushed once they have, if it is still open
+([attention.md](attention.md#stalled--waiting-session-state)). Before
+the follow-up to #463 a restart re-sent every question it read back.
+
+When muster has no card for an open call, the conversation still shows it,
+with *Muster isn't tracking this question, so it can't answer it from here —
+answer it in the terminal.* That line appears only when muster has no card for
+the call; while it has one, the card takes its place and says itself why it
+cannot be answered here, if it cannot (a read-only, offline or older host).
 
 ## Scrolling history
 
@@ -769,6 +1403,691 @@ nothing. Its page wires no gesture, and touch pans the terminal as before.
 An agent pod's Terminal view has no drag-to-scroll in this release. Only
 mirrored windows do.
 
+## Resuming an ended session (`-resume-spawn`)
+
+A host started with `-interactive` **and** `-resume-spawn`
+(`MUSTER_MIRROR_RESUME_SPAWN`) lets muster resume an ended Claude Code session
+when agent mail or ClankMail arrives for it ([plugins](plugins.md#resuming-an-ended-session)).
+It is off by default, because it starts a process on the host.
+
+muster's request names the session id and nothing else. The host finds the
+transcript in its own config directory's `projects/` (muster-mirror's
+`$CLAUDE_CONFIG_DIR`, else `~/.claude`: an ended session has no process to say
+where it wrote, so if your profile sets `CLAUDE_CONFIG_DIR`, put the same line
+in `~/.config/muster-mirror/env` or the resume is refused), takes the working
+directory the transcript records, and refuses unless that directory still
+exists and no Claude Code process or pane on the host runs the session (a
+process is checked under its own config directory too). Then it starts a detached
+window in the tmux session `muster-resume` (`-resume-session`), running
+`claude --resume <id>` (`-resume-claude`). The window is mirrored like any
+other. A host resumes one session at most once per 10 minutes, and at most 6
+sessions an hour.
+
+The window gets **your login environment, not muster-mirror's.** tmux gives a
+new window the PATH of the client that asked for it, and muster-mirror usually
+runs as a service whose PATH holds little more than tmux — a session started
+with that PATH finds no shell tools and its hooks fail. So the window is
+started with no PATH of muster-mirror's, which leaves it the tmux server's own,
+and `claude` runs under tmux's `default-shell` as a login shell (`<shell> -l -c
+'exec "$@"' claude claude --resume <id>`), which reads your profile — what
+builds the PATH when this resume is what started the tmux server. The shell
+interprets nothing but that constant `exec "$@"`; the binary, `--resume` and the
+id reach it as separate arguments. A `default-shell` that is not `sh`, `bash`,
+`zsh`, `dash`, `ksh` or `mksh` is passed over for `/bin/sh`, as is any shell when no tmux server is running
+yet.
+
+## Starting agents for the chief (`-agent-spawn`)
+
+A host started with `-interactive` **and** `-agent-spawn`
+(`MUSTER_MIRROR_AGENT_SPAWN`), on its **default** tmux server, lets your chief
+start a Claude Code agent there (or an opencode one, when the host also has
+`-opencode-send`, an opencode token, `opencode` on its tmux server's `PATH` and
+an absolute path to its muster-mirror binary, [above](#sending-to-opencode)) — or, on a tenant's mirror that also opts in
+with `-agent-spawn-tenant-server`, into that tenant's tmux server (below) ([design](design/chief-dispatch.md), section 3).
+It is off by default, because it starts a process on the host. Your chief
+starts nothing until you also list repositories; an [officer](officers-builtin.md#officers-in-the-compose-stack-host-sessions)
+with no repository starts in a private scratch directory with `-agent-spawn` alone:
+
+| flag | env | default | |
+|---|---|---|---|
+| `-agent-spawn` | `MUSTER_MIRROR_AGENT_SPAWN` | off | turn it on (needs `-interactive`, and the default tmux server: a tenant's mirror refuses unless it also sets `-agent-spawn-tenant-server`) |
+| `-agent-spawn-tenant-server` | `MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER` | empty | a tenant's mirror only: opt in to spawning on its tmux server. The value must name **the same server** as the mirror's own `-tmux-socket` (a socket name) or `-tmux-socket-path` (an absolute path); see [tenants](#starting-agents-on-a-tenants-tmux-server) |
+| `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in, or `<owner>/*` for every repository of that owner (case-insensitive; the owner must match exactly, never as a prefix). With a wildcard, which repositories have a clone under `-agent-spawn-roots` (and are connected in muster) is the bound within that owner. Empty means your chief spawns nothing (an officer with no repository still starts, in a scratch directory) |
+| `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are your clones |
+| `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where worktrees go |
+| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit on the chief's spawns, counted from the audit log. Officer spawns do not count against it |
+| `-agent-spawn-officer-rate` | `MUSTER_MIRROR_AGENT_SPAWN_OFFICER_RATE` | `20/10m,400/24h` | this host's own ceiling on every officer spawn together ([below](#officer-spawns-have-their-own-ceiling)) |
+| `-claude-path` | `MUSTER_MIRROR_CLAUDE_PATH` | (the tmux server's PATH) | the absolute path of the `claude` a spawn runs, when the tmux server's PATH does not reach it |
+| `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log |
+| `-agent-spawn-skip-permissions` | `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | **off** | opt-in: start each spawned agent **without permission prompts** ([below](#permission-prompts-in-a-spawned-agent)). Unset, each starts in its normal permission mode; set it (env `1` or `true`) to skip them; a value that is not a bool stops the daemon |
+
+**What the host decides, whatever muster sends.** muster names a runtime, a
+repository, a base branch, the prompt and a display name. The host:
+
+- writes the request to its audit log (JSON lines, `0600`) **before anything
+  else**, prompt included, and refuses the spawn if it cannot; a second line
+  records the result. Every field is capped before it is written, so no line
+  passes 64 KiB, and a log over 64 MB refuses every spawn until you rotate it.
+  `muster-mirror agent-spawn-log [-n N]` prints the last lines. A copy of each
+  request goes to the mirror's own log;
+- offers nothing when there is no `git` on its `PATH` at startup (it resolves
+  `git` once, to an absolute path);
+- refuses a repository not on `-agent-spawn-repos` before any git command, and
+  needs exactly one clone of it directly under a root (matched by its configured
+  `origin` URL). A worktree of that clone counts as the clone, and the new
+  worktree is cut from the clone itself;
+- with **several** clones of it under the roots, cuts from the one muster names
+  — and only when that is one of the clones it finds itself. Before a start,
+  muster asks the host (`agent-clones`) for its clones of the repository; the
+  host answers with its own list, each marked live when one of its listed
+  windows (not a muster-started agent's) works in it, by the same rule as the
+  repo chip (a worktree resolves to its main working tree through its
+  `commondir`). muster picks the only live one, or asks you on the card, and
+  sends the path back as a hint. The host re-enumerates and refuses a hint that
+  is not one of its clones (`bad_clone`, written to the audit log with the
+  request), and refuses several clones with no hint (`no_repo`), as before. A
+  mirror older than this sends no list and is sent no hint;
+- counts its rate limits from the audit log (an `admit` line, written before the
+  next request is checked), so a restart does not reset them and concurrent
+  requests cannot pass them: the chief's spawns against `-agent-spawn-rate`, and
+  officer spawns against `-agent-spawn-officer-rate` ([below](#officer-spawns-have-their-own-ceiling));
+- starts an officer with no repository in a private scratch directory,
+  `<agent-spawn-dir>/scratch/<dispatch>`, made `0700` by the spawn, with the
+  same trust-entry checks, and removes it (and its trust entry) once its window
+  is gone. Only an officer's prompt starts there;
+- writes the trust entry in Claude Code's state file under Claude Code's own
+  lock (`<file>.lock`), keeping the file's mode and never through a symlink; if
+  the lock is not had within 5 seconds the window shows the trust dialog;
+- refuses a prompt that does not begin with muster's fixed preface (Claude Code
+  reads a first word that names one of its subcommands as that subcommand, even
+  after `--`);
+- fetches `origin/<base>` and cuts a **new worktree** at
+  `<agent-spawn-dir>/<owner>__<repo>/<dispatch>` on the branch
+  `muster/<dispatch>-<slug>` (on a tenant's server, under its namespace:
+  [tenants](#starting-agents-on-a-tenants-tmux-server)). Your own checkout is never touched; a dirty clone
+  is fine. Submodules are initialised under a time budget, as a warning if they
+  do not finish;
+- writes Claude Code's folder-trust entry for that worktree and nothing else
+  (`projects[<worktree>].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json`
+  when muster-mirror's environment sets `CLAUDE_CONFIG_DIR`, else
+  `~/.claude.json`: give muster-mirror's env file your `CLAUDE_CONFIG_DIR` if you
+  set one, or the window stops at the trust dialog);
+- writes the prompt to a `0600` file under `$XDG_RUNTIME_DIR/muster-mirror/prompts/`
+  (no `XDG_RUNTIME_DIR`: nothing spawns), which a constant wrapper reads and
+  deletes, and opens a window `cc-<dispatch>-<slug>` in the session `agents`
+  running `claude --session-id <uuid> -- <prompt>` under your login shell
+  (with `-agent-spawn-skip-permissions`, `claude --session-id <uuid>
+  --permission-mode bypassPermissions -- <prompt>`). An opencode window runs
+  `muster-mirror opencode --opencode-bin <opencode> -s <session>` (with
+  `--auto` when the setting is on). The window carries
+  the tmux window option
+  `@muster-dispatch <dispatch>`; a global or `agents`-session value of it blocks
+  spawning;
+- gives up 120 seconds after it received the request, and never opens a window
+  past that.
+
+A paste muster makes for the chief's forward names its dispatch, and the host
+types it only into the window whose own `@muster-dispatch` matches, at most 12
+times an hour per window. An hourly sweep removes a spawned worktree whose window
+is gone **only** when it is clean and its branch has no commit the remote lacks;
+anything else stays, logged.
+
+**How a spawned agent says it finished.** A Claude Code agent calls
+`agent_report_done` on the mirror MCP. An opencode agent is not offered it (its
+muster tools are the attention and task tools only:
+[attention.md](attention.md#mirrored-opencode-sessions)), so the host reads it
+instead: for each idle window carrying `@muster-dispatch` and
+running a launcher-bound opencode session, it reads that session's final reply
+from the opencode server (once per change of the session) and sends its last
+three lines on an `outcomes` message. muster records **done** only when the
+reply's last line is `MUSTER-DONE: <summary>`, and **waiting** otherwise; a
+later turn in the window puts the card back to Working. An older host sends no
+`outcomes` message, so its opencode dispatches stay Working until their window
+closes. Details: [design](design/chief-dispatch.md), section 3.7.
+
+### Officer spawns have their own ceiling
+
+A spawn whose prompt begins with muster's officer preface is an **officer's**:
+it counts against `-agent-spawn-officer-rate` (default `20/10m,400/24h`, every
+officer on the host together) and **not** against `-agent-spawn-rate`, which is
+the chief's alone. muster also limits each officer below that ceiling by its own
+budget (its idle window, poll and shortest schedule), so one officer's restart
+loop cannot spend the others' share.
+
+🔴 **What bounds a misbehaving server.** Only the prompt prefix, which the
+server chooses, marks a spawn as an officer's. So a muster that sent every
+spawn as an officer's could start up to 400 a day under the officer ceiling
+(beside the chief's 10), where before the ceiling the chief's limit of 10 a
+day bounded every spawn. Lower
+`-agent-spawn-officer-rate` if that is more than you would let this host start
+unattended.
+
+**Upgrading from a muster-mirror without this ceiling.** Before it, every spawn,
+officers' included, counted against `-agent-spawn-rate`. After the upgrade:
+
+- officer spawns stop counting against `-agent-spawn-rate`, and start counting
+  against the new `-agent-spawn-officer-rate` with no action from you. Set it
+  explicitly if the default is too high for this host;
+- the audit log's older `admit` lines carry no officer flag, so they cannot be
+  told apart. For the next 24 hours they count against **neither** limit, rather
+  than all of them against the chief's (which could hold the chief at its limit
+  for a day); new lines count as above.
+
+### Permission prompts in a spawned agent
+
+The agents a host starts for your chief start in their **normal permission
+mode by default**: a tool use your settings do not allow waits for you in the
+Terminal view. Starting them **without permission prompts is opt-in**
+(`-agent-spawn-skip-permissions`). Skipping permissions means **the agent runs
+every tool — shell commands, file edits, network fetches — without asking
+anyone first**. Nobody approves a tool call; what bounds the agent is what
+bounds the host spawn anyway: the repository allow-list, the fresh worktree,
+the rate limit and audit log above, whatever deny rules your own CLI
+configuration has, and the [step-up gate](#a-machine-that-starts-agents-is-step-up-gated)
+on your own authority.
+
+🔴 **Why it is opt-in.** A spawned agent runs as your user on that machine, so
+it can do anything your user can there — including calling muster through
+another of your sessions (naming its pane to the host's MCP endpoint), clearing
+its own window's `@muster-dispatch` tag, or reading this mirror's token. In
+normal permission mode each of those is a command you see and can refuse;
+without prompts nothing asks you. What it cannot do either way is act with your
+authority on muster without your phone: see below.
+
+| runtime | by default | with `-agent-spawn-skip-permissions` |
+|---|---|---|
+| Claude Code | normal permission mode: each tool use your settings do not allow waits for you in the Terminal view | `--permission-mode bypassPermissions` (Claude Code's own flag, the same mode as `--dangerously-skip-permissions`) |
+| opencode | opencode's own default: it already runs without asking unless a rule of yours says `ask`, and such an ask reaches the [Attention view](attention.md) | `--auto` ("Auto-approve permissions that are not explicitly denied", `opencode --help`): your `deny` rules still hold, your `ask` rules are approved. ⚠ Unverified against a live opencode: that the TUI's `--auto` also approves asks raised by a prompt muster posted through the API (the launcher passes the flag on; `cmd/muster-mirror/opencode_launch.go`) |
+
+- **Turning it on.** Start the mirror with `-agent-spawn-skip-permissions`, or
+  set `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=1` in its environment, and
+  restart it. A running agent keeps the mode it was started with. ⚠ A host
+  that relied on the old default (on) now starts its agents with permission
+  prompts until you set it.
+- **What the agent and your chief are told.** The host says in its hello
+  whether it skips permissions, and muster words the spawned agent's first
+  message and the chief's answer by it: "You run without permission prompts …"
+  or "You run in normal permission mode: your owner answers your asks on
+  muster." A host from before this setting says nothing, and is described as
+  normal permission mode, which is what it does.
+- **Claude Code's one-time consent.** Claude Code started in bypass mode
+  shows a one-time screen ("WARNING: Claude Code running in Bypass
+  Permissions mode … No, exit / Yes, I accept") and waits there unless
+  `skipDangerousModePermissionPrompt` is true in its user, local, flag or
+  policy settings; answering "Yes, I accept" writes it to your user settings.
+  A spawn that skips permissions passes that key **for its own process only**,
+  as `--settings '{"skipDangerousModePermissionPrompt":true}'` (Claude Code's
+  flag settings source, which is always read), so a spawned agent starts its
+  task without stopping at the screen, and **nothing on disk changes**: your
+  `~/.claude/settings.json` is not written, and a `claude` you start yourself
+  in bypass mode still asks you once. A spawn in normal permission mode
+  (the default, or a root mirror) passes neither flag. Read from Claude Code
+  2.1.289's own source and measured against it with an isolated config
+  directory; `internal/mirrorhost/agentspawn.go` (`claudeBypassAccepted`)
+  says how.
+- **A window waiting at a startup screen is still its dispatch.** Claude Code
+  writes no transcript until it is past its startup screens, so the host does
+  not list such a window as Claude yet. muster tracks a spawned window by its
+  tmux window id for its whole life: while the window is there its dispatch
+  stays running, and its card reads **Waiting at a prompt** ("its window is
+  open, but Claude Code has not started its first turn"). Open the window to
+  answer whatever it shows. The dispatch ends "window gone" only once that
+  window id is missing from two listings in a row.
+- **When your settings disable bypass mode.** If Claude Code's settings set
+  `permissions.disableBypassPermissionsMode`, a spawned claude does not refuse
+  to start: it prints "Bypass permissions mode was disabled by settings" and
+  runs in its default mode, so it **asks** — while the host's hello, and so
+  what the agent and your chief are told, still say it runs without prompts.
+  muster does not read your Claude Code settings and cannot tell. On such a
+  host, leave this setting off so the wording matches what runs.
+- **A mirror running as root.** Claude Code exits at once (status 1) when it
+  is started with `bypassPermissions` as root outside a sandbox of its own. So
+  when the mirror's effective uid is 0, the host starts **claude in normal
+  permission mode whatever this setting says** — its argv is the default
+  one — and says in its hello that it does not skip them, so the
+  agent and your chief are told normal permission mode; the startup line says
+  why. opencode's `--auto` is unaffected. The hello carries one bool per host
+  rather than one per runtime because Claude Code's is the only wording that
+  depends on it: an opencode agent is told it runs without asking either way.
+- **What it does not change.** Sessions you start yourself are yours: start
+  them with `--permission-mode bypassPermissions` (or auto mode) if you want
+  them to match. A resumed session (`-resume-spawn`) runs `<-resume-claude>
+  --resume <id>` as before. Agents in Kubernetes pods have their own settings
+  (`CCD_PERMISSION_MODE`, `MUSTER_AGENT_CC_BYPASS_POOLS`,
+  [configuration](configuration.md)). And muster's own refusal to type into a
+  window that is waiting on a prompt stays
+  ([sending-and-step-up.md](sending-and-step-up.md)): if a prompt does appear,
+  you answer it in the Terminal view.
+
+### A machine that starts agents is step-up gated
+
+The mirror door names its caller by a header, and every process of your user
+on a machine can set it, a spawned agent included. So muster does not take
+the owner-authority tools (`attention_answer`, `connector_request_decide`,
+`plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`,
+`plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`,
+`agent_destroy`, `chief_restart`) from such a machine as your decision. On a
+machine that **starts agents for the chief**, each of them is a **confirmation
+card on your paired phone**, whichever of your sessions the call names, and
+nothing runs until you answer Confirm there (a signed action; a browser answer
+is refused). It is the same gate a machine running a
+[host officer](design/officers-on-hosts.md) has. A call counts as coming from
+such a machine when:
+
+- the **host token** it came with is marked as a spawning host's: muster marks
+  a token, in its database, the first time its host's mirror advertises
+  `-agent-spawn` (before it admits that connection: if the mark cannot be
+  written, the connection is refused and retried), or a host dispatch is
+  started on that host; or
+- an agent muster started on that host for the chief has not ended yet (an
+  open host dispatch), whatever token the call came with; or
+- the host's mirror advertises `-agent-spawn` now.
+
+🔴 **The mark belongs to the token and is cleared only by rotating it.** A
+spawned agent runs as your user and can read that token, so neither a muster
+restart, nor the host no longer advertising `-agent-spawn`, nor a new
+connection made with the same token clears it. **When you turn `-agent-spawn`
+off on a machine, rotate its host token — but only after the agents it
+started have ended** (their dispatches show ended): mint a new one for the
+host, put it in the mirror's config, revoke the old one. The new token is
+unmarked, and the old one opens nothing. While a spawned agent is still
+running there, the host stays gated whatever token a call uses, because that
+agent can read the new token too.
+
+None of these triggers is anything a window can set, so an agent that names
+your pane, clears its own window's tag, or calls muster with this host's token
+directly — from that machine or from anywhere — is gated, with ONE exception,
+below: the reply to a routed message.
+
+- **Replies to routed messages are not carded — while no spawned agent runs
+  there.** `route_reply` runs at once when it comes from the very session the
+  chief routed the message to, on the very host it was routed to (muster
+  records both on the route), and no agent muster started on that host is
+  still running. ⚠ A session id is the caller's claim: an agent running on
+  that host that names your routed pane would match, which is why the reply
+  is carded while any agent muster started there is running. A reply naming a
+  route sent to another session, or to the same session on another host, is
+  carded (and then refused).
+- **A held start's card shows the start.** `dispatch_approve`'s card names
+  the target, the runtime and model, the task, the pool and the Claude
+  account, then the instructions with their length and the SHA-256 of the
+  full text: in full when they fit (up to 1,500 characters), otherwise
+  **labelled as an excerpt** of their first 1,500 characters, with a plain
+  warning of how many characters the card does not show. A card is capped at
+  4,000 characters and a held prompt may be 8 KiB, so a long one cannot be
+  shown whole; refuse a start whose rest you have not read. A hold that
+  cannot be read files no card.
+- **Reads are not carded.** The owner-authority reads (`agents_list`,
+  `connector_requests_list`, `plugin_drafts_list`, `plugin_messages_list`,
+  `plugin_requests_list`, `plugin_outbound_batch_get`) answer your own
+  sessions at once.
+
+What it costs: on such a machine your own sessions' other owner-authority
+calls are cards too. Deciding in muster's web UI (Attention, Connectors, the
+Reply drafts tab) is never gated.
+
+Separately, every owner-authority tool — the decisions **and the reads above**,
+whose answers carry outside parties' messages — refuses a session muster
+started for the chief outright ("a session muster started for the chief
+cannot use it"), read from muster's own record of the host's dispatches (the
+session and window the host's spawn reply named), not from the window's tag.
+No card is filed for such a call.
+
+### Starting agents on a tenant's tmux server
+
+A `muster-mirror@<tenant>` unit mirrors its own tmux server (`-tmux-socket
+<tenant>`). Setting `-agent-spawn` there **alone still refuses** every spawn
+(`not the default tmux server`), so a tenant unit that inherits the flag by
+mistake starts nothing. To let that tenant's muster start agents on this host,
+set both, and name the unit's own server:
+
+```
+MUSTER_MIRROR_INTERACTIVE=1
+MUSTER_MIRROR_TMUX_SOCKET=acme
+MUSTER_MIRROR_AGENT_SPAWN=1
+MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER=acme
+MUSTER_MIRROR_AGENT_SPAWN_REPOS=acme-org/widgets
+```
+
+- The opt-in must resolve to the server the mirror mirrors (`acme` and
+  `-tmux-socket-path <realpath(${TMUX_TMPDIR:-/tmp})>/tmux-<uid>/acme` are the
+  same server). Naming any other server — another tenant's, or `default` —
+  refuses every spawn with `-agent-spawn-tenant-server names another tmux
+  server than the one this mirror mirrors`. A value that is neither a socket
+  name nor an absolute path stops the mirror at startup.
+- **The tenant's tmux server must already be running.** The host never starts
+  it: a spawn while it is down is refused, `the tenant tmux server is not
+  running (this host never starts it)`. (A server started by the host would
+  load your default tmux configuration, whose session-saving plugins would
+  write over the default server's saved sessions and restore your own sessions
+  into the tenant's server, where its mirror shows them to the tenant.) Start
+  it yourself with its own configuration, e.g. `tmux -L acme -f
+  ~/.config/tmux/acme.conf new-session -d`. Should the server exit between the
+  host's check and the window, the `new-session` the spawn sends carries
+  `-f /dev/null`, so it loads no configuration.
+- The window opens in session `agents` **of the tenant's server**, so the
+  agent's `$TMUX` names that server: its MCP calls (`agent_report_done`,
+  `chief_ask`, …) are answered by the tenant mirror's `-mcp-listen` endpoint
+  (every other mirror's endpoint gives a session from another tmux server no
+  tools), and its `AskUserQuestion` hook picks the tenant's hook record. Claude
+  Code needs that tenant's MCP server registered, as for any session on the
+  tenant's server.
+- Worktrees, branches and prompt files carry the tenant's namespace:
+  `<agent-spawn-dir>/tenant-<tenant>/<owner>__<repo>/<dispatch>` on
+  `muster/tenant-<tenant>-<dispatch>-<slug>` (an `-S` server's namespace is a
+  short hash of its path). Two muster servers number dispatches independently,
+  so the same number never shares a worktree, and each mirror's hourly sweep
+  reads only its own directory.
+- opencode spawns follow the same rules (with `-opencode-send`): the launcher
+  runs in the tenant's server and the tenant mirror binds it.
+- The audit log and rate limit are per `-agent-spawn-log`: left at its default,
+  the tenant and default mirrors share one log, hence one host-wide limit.
+  Give the tenant unit its own `-agent-spawn-log` for a limit of its own.
+- Only the host changes: the tenant's muster server offers a host for
+  dispatch once its mirror advertises spawning, as for any host.
+
+**Turning it on, one step at a time.** Ship the binary with `-agent-spawn` unset
+(nothing changes); then set `-agent-spawn` and **one** repository in
+`-agent-spawn-repos` on one host's default mirror unit only, and restart it.
+A `muster-mirror@<tenant>` unit also needs `-agent-spawn-tenant-server`
+([above](#starting-agents-on-a-tenants-tmux-server)). To turn it off, drop either and
+restart: a window already running keeps running, with its worktree.
+
+## Several muster instances
+
+One `muster-mirror` mirrors its host's sessions to **one** muster: the
+**primary**, `-url` and `-token-file` as ever. It can also name **other muster
+instances** as MCP targets, so the host's Claude Code sessions can call those
+instances' admin tools (`dispatch_request`, `agents_list`, …) through the same
+local MCP endpoint, by passing `instance: "<name>"`. An extra target **never
+receives this host's sessions**: the mirror connection dials the primary only.
+
+### Setting it up
+
+1. On each other instance (it runs `MUSTER_MIRROR=1` and a muster with this
+   feature), mint a mirror token for this host, under the same host name:
+
+   ```sh
+   muster-server mirror token create <host>
+   ```
+
+   The host never connects there. It is an **MCP-only host** on that instance.
+2. Put the token in a file only you can read (`chmod 600`).
+3. List the instances in a targets file and point the mirror at it with
+   `-mcp-targets-file` (`MUSTER_MIRROR_MCP_TARGETS_FILE`):
+
+   ```json
+   [
+     {"name": "work", "url": "https://muster.work.example", "token_file": "~/.config/muster-mirror/work.token"}
+   ]
+   ```
+
+   The primary is named `default` unless `-mcp-primary-name` says otherwise.
+   The file is checked when the daemon starts. A failure is logged, naming the entry
+   and never the token, and the file is ignored: MCP then reaches the primary
+   only. Like every MCP setting, it is never fatal, so mirroring goes on. The rules are in
+   [configuration.md](configuration.md#muster-mirror-host-agent).
+
+The startup log names each target and its URL, never its token.
+
+### What an extra target is sent
+
+Only `POST /mirror/mcp`, with **that instance's** token for this host, the
+header `X-Muster-Client: remote` and nothing of this host but the calling
+session's id:
+
+- `tools/list`, when a session lists its tools, on each tool-list watch
+  (below), and before a call when the last read is older than the watch
+  interval;
+- `tools/call`, only for a call that names that instance. It carries the
+  arguments the session passed, without `instance`, and the calling Claude
+  session's id in `X-Muster-Remote-Session`.
+
+It is never sent the window listing, a transcript, a terminal, the primary's
+token, or the pane and tmux headers, and never an `initialize`.
+
+### Which tools take `instance`
+
+A tool that **some** muster offers a remote caller is an admin tool. Its
+definition gains an optional `instance` argument, an enum of the instances that
+offer it, and without it the call runs on the primary. A muster serves a remote
+caller exactly these tools, when its features have them on (`internal/api`'s
+`remoteMirrorTools`):
+
+`attention_answer`, `agent_destroy`, `agents_list`, `chief_restart`,
+`connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`,
+`plugin_draft_decide`, `plugin_requests_list`, `plugin_request_decide`,
+`dispatch_request`, `dispatch_approve`, the task tools (over the tasks that
+session created on that instance: `muster task create` run from the session
+with `MUSTER_API_URL` pointing at that instance records the session's id on
+the task, so the scope is real, not empty) and `muster_help`.
+
+Everything else is **session-bound** and runs on the primary only. That covers
+`attention_ask`, `attention_wait` and `attention_cancel`, and `chief_ask`,
+whose answer is collected with `attention_wait`. It covers `track_task`, the
+session's own [declared tasks](focus.md#a-sessions-tasks). It covers `route_reply`,
+`plugin_messages_list` and `plugin_message_route`, because a route targets a
+session the instance lists. It covers `agent_report_done` and the host-officer
+tools, and the page tools.
+
+The tool list a session sees is the **union** of the instances' tools:
+
+- An argument only some instances take says which, in its description. A
+  call that passes it to an instance without it is **refused**, never sent
+  with the argument dropped.
+- A tool the primary lacks requires `instance`. Its description says it is not
+  on the primary.
+- Only the arguments every offering instance requires are marked required.
+- A tool whose own definition already has an argument named `instance` keeps
+  it, runs on the primary, and is never routed by it.
+
+### Refusals
+
+A refused call is a tool error the model reads, and nothing is sent anywhere:
+
+- an instance the mirror does not know, naming the ones it does. It is never
+  sent to the primary instead;
+- a session-bound tool named with another instance;
+- an instance that does not offer the tool, or an argument it does not take;
+- an instance whose muster is too old to serve an MCP-only host (its tool list
+  lacks the remote mark), or that could not be reached for its tool list;
+- a window muster started for the chief (a host dispatch). The other instance
+  has no listing of this host to check that against, so the host refuses it.
+  The same window still reaches the primary, which checks it there;
+- an instance other than the primary's name while a configured targets file
+  was **ignored** at start. The refusal says the file was ignored and why. A
+  call naming the primary, or none, runs there with `instance` taken out.
+
+With extra targets configured, every answer to a call starts with a text item
+naming the instance that gave it: `[muster instance: <name>]`.
+
+### The tool list stays current
+
+Claude Code caches a server's tool list when it connects, so after a muster
+upgrade a session kept a stale schema. The mirror now re-reads every
+instance's list every `-mcp-tools-refresh` (default `1m`; `0` turns it off).
+When what `/mcp` would serve changes, it sends
+`notifications/tools/list_changed` on every open `GET /mcp` stream. It also
+advertises `capabilities.tools.listChanged` in its `initialize` answer. Claude
+Code 2.1.289's client registers its list-changed handler only when a server's
+`initialize` sets that capability, which is why the mirror sets it. The handler
+then re-reads `tools/list`, and Claude Code also re-reads it when the stream
+reopens, for example after the mirror restarts. This works with the primary
+alone too.
+
+The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
+server, at most 64 at once. Everyone else gets the transport's 405: an outsider,
+an opencode caller, `/preview-mcp`, anyone while the watch is off, and anyone
+past the 64. Shutting the mirror down ends every open stream at once, while a
+call in flight still finishes.
+
+After a change, each connected session re-reads `tools/list`. Within 2 seconds
+of the watch's read, those re-reads reuse it for the other instances' lists, so
+the instances are read once rather than once per session. The primary's own
+list is always forwarded live.
+
+**opencode callers are unchanged.** Their requests go to the primary exactly
+as before: no `instance`, no merged list and no stream.
+
+### On the other instance
+
+A remote-marked call is served by `POST /mirror/mcp` under the auth model it
+already had. The token is a mirror token scoped to its host and owner, and the
+session id is the caller's claim, as it is on the primary, where a host's
+listing is its own claim too. What changes is the tool set, which shrinks to
+the admin tools above. The call is also refused:
+
+- when the token's host is **known** to that instance's hub, online or offline.
+  Its sessions are mirrored there, so its calls are bound to them. "Known" is
+  the hub's memory: an offline host is kept for 24 hours, in memory only. After
+  a `muster-server` restart, or more than 24 hours offline, a host that does
+  mirror there is not known, and its remote-marked calls are served unbound
+  (the admin tools only, owner-authority ones still behind the phone). A
+  durable record would need a migration;
+- when it also names a bound caller's session (`X-Muster-Claude-Session`, or
+  an opencode key);
+- when its session is not a Claude session id.
+
+**An owner-authority tool always needs the owner's phone.** These are
+`attention_answer`, `agent_destroy`, `chief_restart`, `connector_request_decide`,
+`plugin_draft_decide`, `plugin_request_decide` and `dispatch_approve` (the
+step-up ledger, `hostStepUpTools`). That instance cannot see whether the
+caller's machine runs a host officer, because officers are declared on the
+muster the host is mirrored to. So every such call from a remote caller files a
+step-up confirmation card and runs nothing until the owner confirms it from
+their paired phone. A browser or MCP answer to the card is refused. Then it runs
+once, as the session that asked. `dispatch_request` itself is not gated: it
+files a hold, so starting an agent there is `dispatch_request`, then
+`dispatch_approve`, then one confirmation on the phone.
+
+The rows those tools write name the host and the claimed session, as they do
+for a bound caller. For example, `attention_answer` records
+`answered_via_host` and `answered_via_session`, and `dispatch_request`'s hold
+row records the host and session.
+
+## Team hosts
+
+A **team host** is a `muster-mirror` connected with a **team host token**: a
+mirror token owned by a team (team sharing phase 2b.2). Run it on a machine, or
+a dedicated Unix user on one, that the team treats as shared, with its own tmux
+server and its own `muster-mirror`.
+
+- **Getting a token.** A manager of the team mints one on `/teams/<id>/hosts`
+  (it is shown once), or the server's shell mints it:
+
+  ```sh
+  muster-server mirror token create build-01 --team 12
+  ```
+
+  Put it in the token file of that Unix user's `muster-mirror` and restart the
+  unit. Host names are unique per owner: `build-01` may be a team host and a
+  member's personal host at the same time, and the two never mix.
+- **What it reaches.** The host registers under the team, and its sessions'
+  `AskUserQuestion` prompts are the team's questions. Its sessions' MCP door
+  offers the session's own asks, the tasks it created and `agent_report_done`
+  only; every owner-authority tool, estate read and page tool is refused
+  ([auth.md](auth.md#teams), "Team hosts"). A team host token is never served
+  to another muster instance's remote calls.
+- **What members see (team sharing 2b.3).** Every member — viewer and up —
+  sees the team host's sessions in the sidebar and the session switcher,
+  under the team's name, below their own; a member's own host of the same
+  name is a separate entry. A team session's pages and sockets name the team
+  (`owner=<team id>` beside `host=&session=&window=`). A member can open the
+  Rendered view and the terminal **read-only**, see its subagents and its
+  questions, and scroll its terminal (which moves it for every watcher). A
+  team host session's `attention_ask` shows on every member's Attention, and
+  an operator answers it there.
+- **Typing (team sharing 2b.4).** An **operator** or a **manager** of the
+  team types into a team session: the composer, the terminal's live keys,
+  the send queue and answering a question in the pane, each with their own
+  fresh sign-in ([sending-and-step-up.md](sending-and-step-up.md#a-team-sessions-queue)).
+  A **viewer**'s composer is drawn disabled and says so, their question cards
+  are drawn unanswerable (on the session's view and on the Asks page, where
+  a team's ask, its end card included, shows no option, answer box or
+  Dismiss, and is not counted on the Asks badge as waiting on them), and
+  every typing route answers them 403. The
+  composer on a team session keeps no draft (drafts are keyed by host name)
+  and has no paperclip (an upload is the uploader's own file).
+- **Not on a team session in this version.** The chief panel, proposals,
+  succession and suggested replies are **off** on
+  team sessions (they would send the team's transcript to a person's model or
+  chief), and their routes answer 403. A team session has no focus title,
+  and none of the viewer's own pins, tags or names. Its Preview button runs
+  on the TEAM's viewer plugin, never the viewer's own; with none, a team
+  session has no Preview button ([team previews](previews.md#team-previews-manual-step-for-the-gateways-admin)). Opening
+  a team session does not settle its waiting stop: it settles when the window
+  moves on.
+- **Waiting and done pushes.** A team host session that waits on a prompt,
+  or stops, is an episode of the team's, like a person's: its operators and
+  managers get one push each (never a viewer), under each member's own
+  notify switch, mutes and rate cap. No stall classifier runs for a team.
+- **Leaving a team ends what you hold open.** A member removed from the team
+  (here, on another replica, or from the CLI) has the team host's pages,
+  sockets and their event stream ended within 10 seconds; the page
+  reconnects with the teams they are in then. A member who is added sees the
+  team's sessions from their next page load.
+- **A personal host becoming a team host.** That is the same machine
+  reconnecting with a team token: its personal entry goes offline and a team
+  entry comes online, and the team's view of its sessions **starts empty**.
+  Nothing the sessions had moves: their history, asks, queued sends, names,
+  pins and tags stay the personal owner's. To keep both, run two
+  `muster-mirror` daemons on two tmux servers on the machine, one personal and
+  one team; they show as two hosts, and neither's sessions appear under the
+  other owner.
+- **One connection at a time.** While the team host is connected, a second
+  connection with its token is held for a manager's confirmation on
+  `/teams/<id>/hosts`, instead of replacing it (a personal host's newer
+  connection replaces the older one). The held `muster-mirror` logs "pending
+  a manager's confirmation" and keeps retrying.
+- **Moving the host: give the manager the code.** Each `muster-mirror`
+  process draws an **attempt code** when it starts and sends it on every
+  connect (the `X-Muster-Attempt-Code` header; the tunnel protocol is
+  unchanged). A held one logs
+
+  ```
+  muster-mirror: held: team host build-01 is already connected from another machine; give this code to a team manager: K7QM-2XWD-9RTB
+  ```
+
+  once per process (later holds say "`muster doctor` shows this machine's
+  code"), and `muster doctor` there reports "held: … give this code to a
+  team manager: K7QM-2XWD-9RTB". 🔴 Anyone who can read that log (the
+  user's journal, an admin, wherever it is shipped) can learn the code. The
+  code is also in the file
+  `-attempt-code-file` names (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`, else
+  `muster-mirror/attempt-code` in the user config directory, mode 0600;
+  `-attempt-code-file=` on the command line writes none), removed when
+  muster-mirror exits. The manager types it on the hosts page
+  (case, dashes and spaces do not matter): that code's next attempt takes
+  over within 3 minutes, and no other connection does, whatever its
+  address. A restart draws a new code, so type the one the running process
+  shows.
+- **A `muster-mirror` that sends no code** (older than the code) cannot be
+  confirmed: behind a proxy or a Kubernetes NodePort every machine shares one
+  address, so nothing tells it apart. It is held with "upgrade muster-mirror
+  on this machine, or stop the live host"; the hosts page says the same.
+  Upgrade it, or stop the live host (the next connection is then taken at
+  once).
+- A held machine (or any kept copy of the token) can still use `/mirror/mcp`
+  and `/mirror/ask` as any session the connected host lists; revoking and
+  re-minting the token is what stops it. A host that disconnected first (a
+  restart) is taken back at once. A muster-mirror whose old connection is
+  half-open waits for the keepalive to end it, and then reconnects.
+- **Team host officers (team sharing 2b.5).** A team's `"runtime": "host"`
+  officer runs its instances on the team host its `host` names, as windows
+  in that host's `agents` session, so the host needs `-interactive
+  -agent-spawn` (and the officer's `repo`, if it names one), as a personal
+  host does. Only the
+  team's host is used: a member's personal `build-01` is never spawned on,
+  even if it is the only `build-01` online. An instance's officer tools are
+  served on the team host's MCP door. No session there is offered an
+  owner-authority tool, so no step-up card is ever filed for a team. A team
+  host officer that declares `connectors` is refused
+  ([officers-builtin.md](officers-builtin.md#a-teams-host-officer-team-hosts)).
+- **Leaving.** A manager revokes the token: the connection ends at the next
+  recheck and the team's sessions on that host vanish. When an operator or a
+  manager leaves, drops to viewer or is disabled, the team's tokens are marked
+  rotate on that page: revoke and re-mint them.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends
@@ -788,7 +2107,7 @@ side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
 pasting into non-Claude panes, per-window registration, scrolling a pane's
-history, and reporting each
+history, resuming an ended session, and reporting each
 Claude Code window's status (`busy`, `idle`, `waiting`) with the time Claude
 Code wrote it (`statusSince`, from its sessions file's `statusUpdatedAt`), which
 the [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle)
@@ -799,13 +2118,34 @@ so a `muster-mirror` older than the mapping reports `shell` as unknown,
 whatever muster runs.
 The same way, a host reports each Claude Code window's **session id**
 (`claudeSession`), which its [focus](focus.md) is keyed by. A host that does not
-report it still works; its windows have no focus.
+report it still works; its windows have no focus, and a message queued for one
+records no session and is delivered as before (see below).
+
+A **queued Claude Code message** records the Claude session the window held
+when it was queued, and muster refuses to paste it into a window whose
+reported session has changed since (Claude Code restarted in the same pane,
+or `/clear`): it fails, saying "the window no longer holds the Claude session
+this was queued for", rather than landing in the new session. The paste then
+carries that session (`agentSession`, the field opencode's gated send already
+uses) and a current `muster-mirror` checks it against the pane's session at
+the moment it types, before the paste and again before its Enter. That closes
+the gap between the host's last report and the paste. 🔴 **Compatibility:**
+an older `muster-mirror` ignores the field on a Claude Code paste (its paste
+path never reads it), so muster's own check against the reported session is
+then the only one; an older muster never sends it, and a current host checks
+nothing for a paste that names no session. A row queued before this (no
+session recorded) is delivered as before.
 And a waiting window's **pending action** (`pending`: a one-line summary of the
 tool call it waits on, its tool's name, and the last thing Claude said — each
 capped, with anything that looks like a secret redacted on the host — on at most 8
 windows per report), which the [attention queue](attention.md#what-is-in-it)
 shows. An older muster ignores it; a host that does not send it gets muster's
 generic "waiting" line.
+And, with `-preview`, how many web servers each window offers to preview and
+how many previews of it are open (a `previews` message of its own, counts
+only: [previews.md](previews.md#what-muster-is-told)), from which the session
+views draw their Preview button. An older muster drops the message; a host
+that does not send it has no Preview button on its windows.
 
 The time is Claude Code's, measured on Claude Code 2.1.289 (2026-10-15, one
 Linux host, about 40 minutes of every live sessions file, read-only). The

@@ -33,3 +33,32 @@ func TestTheChiefIsToldAboutPluginsExactlyWhenTheStoreIsWired(t *testing.T) {
 		}
 	}
 }
+
+// TestTheChiefIsToldToRouteRequestsExactlyWhenRoutingIsWired: agentspec.Config's
+// SessionRouting flag (the request-routing section of the chief's prose) comes
+// from config.sessionRoutingEnabled — the predicate buildApp wires ext.Routes on
+// — and does NOT depend on plugins: routing without plugins is the case that
+// discriminates it from a flag read off pluginsEnabled.
+func TestTheChiefIsToldToRouteRequestsExactlyWhenRoutingIsWired(t *testing.T) {
+	for _, c := range []struct {
+		name             string
+		routing, plugins bool
+		database         string
+		want             bool
+	}{
+		{"routing and database, no plugins", true, false, "postgres://unused", true},
+		{"routing, plugins and database", true, true, "postgres://unused", true},
+		{"routing, no database", true, false, "", false},
+		{"plugins only", false, true, "postgres://unused", false},
+	} {
+		cfg := config{SessionRouting: c.routing, Plugins: c.plugins, Database: c.database}
+		got, err := agentSpecConfig(cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got.SessionRouting != c.want || cfg.sessionRoutingEnabled() != c.want {
+			t.Errorf("%s: agentspec.Config.SessionRouting = %v, sessionRoutingEnabled() = %v, want %v",
+				c.name, got.SessionRouting, cfg.sessionRoutingEnabled(), c.want)
+		}
+	}
+}

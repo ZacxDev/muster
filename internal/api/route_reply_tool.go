@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -48,14 +47,16 @@ const routeReplyToolName = "route_reply"
 
 func routeReplyToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeReplyToolName,
-		Description: "Answer a plugin message your owner's chief ROUTED to this session (the pasted block names its route_id). " +
-			"body is your reply to the outside sender, exactly as it should be sent — it goes back as the message's reply: " +
-			"at once when your owner allowlisted the sender, otherwise after your owner approves it. Only the session the " +
+		Description: "Answer a plugin message or a task your owner's chief ROUTED to this session (the pasted block names its route_id). " +
+			"For a message, body is your reply to the outside sender, exactly as it should be sent — it goes back as the message's reply: " +
+			"at once when your owner allowlisted the sender, otherwise after your owner approves it — unless the block says NO " +
+			"REPLY POSSIBLE: then body is your report to the chief, which never reaches the sender. For a task, body is your " +
+			"answer, added to the task as a comment. Only the session the " +
 			"route was sent to may answer it, only once, and only while the route is still waiting (not after it timed out " +
 			"back to the chief). Never put credentials in it.",
 		Parameters: objSchema(map[string]any{
 			"route_id": strProp("The route_id from the routed block (rt_…)."),
-			"body":     strProp("Your answer, as it should reach the sender."),
+			"body":     strProp("Your answer, as it should reach the sender (for a NO REPLY POSSIBLE block: your report to the chief)."),
 		}, "route_id", "body")}
 }
 
@@ -65,10 +66,13 @@ const routeReplyMirrorOnly = "route_reply is available only to the mirrored Clau
 
 // toolRouteReply is route_reply for caller c (handleMirrorMCP's bound session).
 func (s *Server) toolRouteReply(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr(routeReplyMirrorOnly)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(routeReplyMirrorOnly)
+		}
+		return toolErr("%s", why)
 	}
-	if !routingOn(s.ext) {
+	if !routesOn(s.ext) {
 		return toolErr("session routing is off on this server")
 	}
 	var in struct {
@@ -83,7 +87,7 @@ func (s *Server) toolRouteReply(ctx context.Context, c toolCaller, arguments str
 		// Another owner's route reads exactly as a missing one (row-level security).
 		return toolErr("no such route: %s", in.RouteID)
 	}
-	if r.TargetKind != string(focus.KindMirror) || r.TargetKey != c.asker.MirrorSession {
+	if !r.SentToMirrorSession(c.asker.MirrorSession) || !r.FromItsHost(c.asker.MirrorHost) {
 		s.logger.Printf("routes: %s: route_reply REFUSED from %s/%s: the route was sent to %s:%s",
 			r.RouteID, c.asker.MirrorHost, c.asker.MirrorSession, r.TargetKind, r.TargetKey)
 		return toolErr("route %s was not routed to this session: only the session it was sent to may answer it", r.RouteID)
@@ -112,6 +116,11 @@ func routeClosedHint(st plugins.RouteState) string {
 		return ": its deadline passed and the message went back to the chief"
 	case plugins.RouteFailed:
 		return ": it failed and the message went back to the chief"
+	case plugins.RouteOwnerAnswered:
+		return ": its reply was already sent to the sender directly, so no reply is needed"
+	case plugins.RouteSendFailed:
+		return ": its reply was refused by the plugin and not sent. If muster pasted the message back into this session, " +
+			"answer the route_id in that newer paste"
 	}
 	return ""
 }

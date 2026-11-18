@@ -2,6 +2,7 @@ package ui
 
 import (
 	"hash/fnv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -10,13 +11,15 @@ import (
 // HOST ICONS: every listed agent carries an icon that says which host it runs
 // on — a mirrored tmux window its host's, a dispatched pod agent the cluster's —
 // next to its name, with the host in the icon's tooltip and accessible name.
-// The same host draws the same icon everywhere it appears: the Agents list's
-// cards, the "Recently viewed" strip, the host tabs (cloned off a card by
-// agentsFilterScript) and the badge on a mirrored window's own pages.
+// The same host draws the same icon everywhere it appears: the sidebar's rows,
+// the session switcher's pills and the badge on a mirrored window's own pages
+// (mirrorBadge).
 //
-// 🔴 THE ICON IS PICKED BY THE HOST'S REGISTRATION RANK, NOT BY A HASH OF ITS
-// NAME. The rank is the host's place among its owner's hosts in the order
-// their first mirror token was minted (mirror.RanksByRegistration). A hash of
+// 🔴 A HOST THE OPERATOR NAMED AN ICON FOR DRAWS IT (HostPreferences.Icons,
+// MUSTER_HOST_ICONS: "laptop" a laptop, whatever its rank). EVERY OTHER HOST'S
+// ICON IS PICKED BY ITS REGISTRATION RANK, NOT BY A HASH OF ITS NAME. The rank is the host's place
+// among its owner's hosts in the order their first mirror token was minted
+// (mirror.RanksByRegistration). A hash of
 // the name can give two of an operator's first three hosts the same icon; a
 // rank cannot until there are more hosts than icons. And a rank is STABLE: a
 // host minted later takes the next rank, so adding one never changes an
@@ -29,14 +32,14 @@ import (
 
 // hostIconDef is one icon: its key (what data-host-icon says, and what a test
 // compares) and its SVG body in the repo's icon style (24×24, 2px round
-// strokes in currentColor — mirroredIcon's).
+// strokes in currentColor).
 type hostIconDef struct {
 	Key  string
 	Body string
 }
 
-// hostIconSet is the curated set a mirrored host's icon is picked from, in
-// rank order: the first host registered draws the first. Every key and every
+// hostIconSet is the curated set a mirrored host's icon is picked from: by
+// name (HostPreferences.Icons), else in rank order over rankedIcons. Every key and every
 // body is distinct (TestHostIconSetIsDistinct).
 var hostIconSet = []hostIconDef{
 	{"laptop", `<rect x="4" y="5" width="16" height="11" rx="1"/><path d="M2 19h20"/>`},
@@ -57,22 +60,54 @@ var hostIconSet = []hostIconDef{
 // NOT a member of hostIconSet.
 var clusterIcon = hostIconDef{"cluster", `<path d="M12 2l8.7 5v10L12 22l-8.7-5V7z"/><circle cx="12" cy="12" r="3"/>`}
 
-// HostIconFor is the icon key of a mirrored host: by its registration rank in
-// ranks (mirror.RanksByRegistration — rank r draws hostIconSet[r mod N]), or,
-// for a host ranks does not hold, by a hash of its name. This is the one rule;
-// every surface that draws a host's icon is handed its result.
+// rankedIcons is hostIconSet without the glyphs the operator gave named hosts
+// (HostPreferences.Icons): what a host with no named icon is picked from, in
+// rank order.
+func rankedIcons() []hostIconDef {
+	reserved := map[string]bool{}
+	for _, k := range hostPrefs.Icons {
+		reserved[k] = true
+	}
+	var out []hostIconDef
+	for _, d := range hostIconSet {
+		if !reserved[d.Key] {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// namedIcon is host's icon by name (HostPreferences.Icons), if it has one.
+func namedIcon(host string) (string, bool) {
+	k, ok := hostPrefs.Icons[strings.ToLower(host)]
+	return k, ok
+}
+
+// HostIconFor is the icon key of a mirrored host: its named icon
+// (HostPreferences.Icons) when it has one; else by its registration rank in
+// ranks (mirror.RanksByRegistration) — rank r draws rankedIcons()[r mod N] — or,
+// for a host ranks does not hold, by a hash of its name. A glyph named for a
+// host is never drawn for another. This is the one rule; every surface that
+// draws a host's icon is handed its result.
 func HostIconFor(ranks map[string]int, host string) string {
+	if k, ok := namedIcon(host); ok {
+		return k
+	}
+	set := rankedIcons()
+	if len(set) == 0 { // every glyph named: nothing is left to keep apart
+		set = hostIconSet
+	}
 	if r, ok := ranks[host]; ok && r >= 0 {
-		return hostIconSet[r%len(hostIconSet)].Key
+		return set[r%len(set)].Key
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(host))
-	return hostIconSet[h.Sum32()%uint32(len(hostIconSet))].Key
+	return set[h.Sum32()%uint32(len(set))].Key
 }
 
 // hostIconDefOf is the icon a key names: the cluster's, one of the set, or —
 // for a key that is neither (a view built without one) — the hash fallback of
-// HostIconFor for host, so a card is never drawn without its icon.
+// HostIconFor for host, so an entry is never drawn without its icon.
 func hostIconDefOf(key, host string) hostIconDef {
 	if key == clusterIcon.Key {
 		return clusterIcon
@@ -95,8 +130,8 @@ func hostIconSVG(d hostIconDef, size string) string {
 // moves nothing), the host in its tooltip and its accessible name. key is the
 // icon (HostIconFor, or the cluster's); host is what the tooltip names.
 //
-// It is NOT a button: it sits inside a card's nav anchor, where a tap opens the
-// card. A phone has no hover, so a mirrored card's footer also spells the host.
+// It is NOT a button: it sits inside a switcher pill's link, where a tap opens
+// the session.
 func hostMark(host, key string) g.Node {
 	d := hostIconDefOf(key, host)
 	label := "Host: " + host
@@ -110,5 +145,16 @@ func hostMark(host, key string) g.Node {
 	)
 }
 
-// clusterMark is a dispatched pod agent's host mark.
-func clusterMark() g.Node { return hostMark(podHost, clusterIcon.Key) }
+// hostMarkDecorative is hostMark for a place whose text already names the host
+// (a sidebar row, or a switcher pill whose label carries it): the same icon and tooltip, but
+// aria-hidden, so a screen reader does not read the host twice.
+func hostMarkDecorative(host, key string) g.Node {
+	d := hostIconDefOf(key, host)
+	return Span(
+		g.Attr("data-host-icon", d.Key),
+		g.Attr("aria-hidden", "true"),
+		g.Attr("title", "Host: "+host),
+		Class("inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg2"),
+		g.Raw(hostIconSVG(d, "h-4 w-4")),
+	)
+}

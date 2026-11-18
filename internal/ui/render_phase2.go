@@ -2,9 +2,6 @@ package ui
 
 import (
 	"io"
-	"time"
-
-	g "maragu.dev/gomponents"
 
 	"github.com/ZacxDev/muster/internal/notes"
 )
@@ -25,8 +22,8 @@ func RenderTagDatalist(w io.Writer, vocab []notes.TagCount) error {
 }
 
 // RenderNotesModal writes the /ui/notes/new partial (the create-note form body).
-func RenderNotesModal(w io.Writer, directories []string, directoriesFailed bool, prefill string) error {
-	return NotesModalBodyWith(directories, directoriesFailed, prefill).Render(w)
+func RenderNotesModal(w io.Writer, directories []string, directoriesFailed bool, prefill string, owners []TaskOwnerOption) error {
+	return NotesModalBodyFor(directories, directoriesFailed, prefill, owners).Render(w)
 }
 
 // RenderNotesEditModal writes the /ui/tasks/{id}/edit partial (the edit-task form
@@ -56,45 +53,10 @@ func RenderTaskNotFound(w io.Writer, id string, feat Features) error {
 	return TaskNotFoundPage(id, feat).Render(w)
 }
 
-// RenderAgentsCards writes the /ui/agents partial (just the cards, morphed into
-// #agents-list).
-func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
-	return AgentsCards(list).Render(w)
-}
-
-// RenderAgentsList writes the /ui/agents partial: the agent cards and, when the
-// mirror plugin is on, the viewer's mirrored sessions, as ONE list by activity
-// (AgentsCardsWithMirrors) — plus, out of
-// band, the recently-viewed strip resolved against those same cards
-// (recentStrip). recent is the viewer's recently opened entries, newest first.
-//
-// idleAfter is the Idle section's threshold, for its header's hint (0 = none).
-func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef, idleAfter time.Duration) error {
-	return g.Group{agentsListBody(list, mirrors, idleAfter), recentStrip(recentItems(list, mirrors, recent), true)}.Render(w)
-}
-
-// RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form
-// body: Model, Repository, Existing task, ad-hoc task).
-func RenderDispatchModal(w io.Writer, k KindChoices) error {
-	return DispatchModalBodyFor(k).Render(w)
-}
-
-// RenderDispatchModalTask writes the /ui/agents/new?note=<id> partial: the
-// TASK-SCOPED dispatch confirm (fixed Model/Repository rows pre-filled
-// from the task, each with an inline Edit override).
-func RenderDispatchModalTask(w io.Writer, v TaskDispatchView) error {
-	return DispatchModalTaskBody(v).Render(w)
-}
-
 // RenderAgentDetail writes the full agent detail page (logs + chat).
 func RenderAgentDetail(w io.Writer, v AgentDetailView, feat Features) error {
 	return AgentDetailPage(v, feat).Render(w)
 }
 
-// RenderAgentChatLog writes the inner content of #chat-log (transcript bubbles +
-// provisioning/working indicators) for the active session — the GET
-// /ui/agents/{name}/chat-log partial swapped in on a sse:chat.reply refresh so a
-// server-side (kickoff) turn appears live without a page reload.
-func RenderAgentChatLog(w io.Writer, v AgentDetailView) error {
-	return chatLogInner(v).Render(w)
-}
+// The GET /ui/agents/{name}/chat-log partial (the inner content of #chat-log) is
+// rendered by ChatLogBody, which also gives its version (agents_detail.go).

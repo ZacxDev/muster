@@ -68,6 +68,13 @@ func TestTheLifecycleAdapterSatisfiesTheConsumerInterface(t *testing.T) {
 			"not delete it. See cmd/muster-server/doc_seams.go entry 3.")
 	}
 
+	// Credential rotation (team_admin.go) type-asserts for CredentialRotator in
+	// the same silent way: without the method the route answers 501 for ever.
+	if _, ok := any(adapter).(CredentialRotator); !ok {
+		t.Errorf("*agentprovision.Adapter does NOT satisfy api.CredentialRotator: " +
+			"POST /agents/{id}/credentials/rotate would answer 501 on every deployment")
+	}
+
 	if _, ok := any(adapter).(Gateway); ok {
 		t.Error("*agentprovision.Adapter satisfies api.Gateway, which it must not.\n" +
 			"    Gateway is the CHAT half. The adapter is built over " +

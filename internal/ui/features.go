@@ -21,23 +21,25 @@ package ui
 // stale page still reaches a dead route, and without this a live page mounts a
 // panel whose only possible content is a refusal.
 type Features struct {
-	// GitHub is true when the server holds a GitHub connection store. False
-	// removes the Repos tab from the navigation and its panel from the shell.
-	//
-	// 🔴 FALSE IS THE SHIPPING DEFAULT, NOT AN EDGE CASE. The store is built only
-	// when an encryption key is set, so an ordinary deployment renders with this
-	// false — which is why the zero value is the unbuilt state rather than the
-	// built one. A caller that forgets to populate this draws LESS than it could,
-	// which is the safe direction: the opposite default draws a tab over nothing.
-	GitHub bool
 	// Connectors is true when the server holds a connector store (an encryption
-	// key is configured). False removes the Connectors tab and its panel, for the
-	// reason GitHub's false removes Repos: the store is built only with a key.
+	// key is configured). False removes the Connectors tab and its panel: the
+	// store is built only with a key.
+	//
+	// 🔴 FALSE IS THE SHIPPING DEFAULT, NOT AN EDGE CASE, which is why the zero
+	// value is the unbuilt state. A caller that forgets to populate this draws
+	// LESS than it could, which is the safe direction: the opposite default
+	// draws a tab over nothing.
 	Connectors bool
 	// Admin is true when the viewer is an admin and the admin pages are
 	// served (accounts PR 5). It draws the sidebar's Admin link and nothing
 	// else: the pages refuse a member on their own (requireAdmin).
 	Admin bool
+	// Setup is true when the viewer's role is admin — the password operator
+	// included, where no admin pages are served: they may see SETUP details
+	// (how to turn a feature on, the muster-mirror setting a computer lacks).
+	// Anyone else is told to ask their admin (InfoSheet.Withheld). Not Admin,
+	// which is the Admin LINK and needs the admin pages too.
+	Setup bool
 	// Push is true when the server holds VAPID keys and a subscription store
 	// (muster-native Web Push). False draws no Enable button, no "on" pill and
 	// no subscribe script: the routes behind them would only answer 503, and an
@@ -47,6 +49,27 @@ type Features struct {
 	// (internal/attention). False draws no Attention link and no badge: the
 	// routes behind them would only answer 404.
 	Attention bool
+	// Pages is true when shareable pages are served (internal/pages, the
+	// feature not called off). It draws the sidebar's Pages link; false draws
+	// none, since /pages would only answer that the feature is off.
+	Pages bool
+	// Officers is true when the server keeps officers (the built-in officer
+	// store: a database). It draws the sidebar's Officers link; false draws
+	// none, since /officers would only answer that there are none here.
+	Officers bool
+	// SnapUser and SnapBuild are the signed-in user and the running build: the
+	// key, and the check, of the mirrored view's snapshot store
+	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.
+	SnapUser  int64
+	SnapBuild string
+	// FleetDigest is true when the fleet digest is on (MUSTER_FLEET_DIGEST=1,
+	// internal/api fleet_digest.go). It draws the digest card's slot in the
+	// chief panel; false draws none, since its route would only answer 404.
+	FleetDigest bool
+	// Brand is the instance's logo and name (brand.go): the header's and the
+	// sidebar's brand, and the shell's favicon. The zero value draws the
+	// wordmark and muster's own icons.
+	Brand Brand
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may
@@ -58,12 +81,17 @@ type Features struct {
 // directions: a link with no panel shows nothing when clicked, and a panel with
 // no link is unreachable. ui.TabKeys() deliberately does NOT go through here; it
 // feeds route registration, which is unconditional.
+// FeaturesPagePath is the Features page (internal/api features.go): every
+// feature this server runs or does not, with the line(s) that turn each on.
+const FeaturesPagePath = "/account/features"
+
+// FeatureHref is a feature's row on the Features page — where every hint
+// beside a control that is hidden because its feature is off links to.
+func FeatureHref(id string) string { return FeaturesPagePath + "#" + id }
+
 func visibleTabs(f Features) []tab {
 	out := make([]tab, 0, len(musterTabs))
 	for _, t := range musterTabs {
-		if t.Key == "repos" && !f.GitHub {
-			continue
-		}
 		if t.Key == "connectors" && !f.Connectors {
 			continue
 		}
@@ -104,9 +132,9 @@ func defaultVisibleTab(f Features) string {
 // actually draws, defaulting to defaultVisibleTab.
 //
 // 🔴 IT IS WHAT MAKES A DEEP LINK TO A HIDDEN TAB LAND SOMEWHERE. Every tab is a
-// real route whether or not its subsystem was built, so /repos is served on a
-// deployment with no GitHub store. Clamping only against the full registry would
-// render the shell with `activeTab = "repos"`, i.e. with no panel un-hidden at
+// real route whether or not its subsystem was built, so /connectors is served on
+// a deployment with no connector store. Clamping only against the full registry
+// would render the shell with `activeTab = "connectors"`, i.e. with no panel un-hidden at
 // all: a blank page under a correct-looking URL. Clamping here sends that URL to
 // the default tab, which is what an unrouted path already does.
 func normalizeVisibleTab(t string, f Features) string {

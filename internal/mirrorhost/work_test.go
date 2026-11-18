@@ -234,7 +234,7 @@ func TestTmuxCountsAClaudeWindowsShellsFromItsProcessTree(t *testing.T) {
 	}
 	bin := filepath.Join(t.TempDir(), "tmux")
 	listing := filepath.Join(t.TempDir(), "listing")
-	must(t, os.WriteFile(listing, []byte("1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tclaude\t/dev/pts/3\t\t\twork\n"), 0o644))
+	must(t, os.WriteFile(listing, []byte("1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tclaude\t/dev/pts/3\t\t\t\twork\n"), 0o644))
 	must(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat '"+listing+"'\n"), 0o755))
 	tm := Tmux{Bin: bin, Claude: ClaudeLocator{Proc: proc.root, Home: home.root}}
 	work := func() map[string]mirror.WindowWork {
@@ -285,9 +285,9 @@ func TestWindowColorTakesTheFirstValidField(t *testing.T) {
 // holding spaces and colons is still taken whole, and its window still gets
 // its colour. (A name with a tab is no valid session at all: ValidSession.)
 func TestParseWindowsReadsTheColourAndKeepsTheSessionNameWhole(t *testing.T) {
-	out := "1\t@1\t0\t1\t%1\t101\t1\t1\tzsh\t/dev/pts/1\t%079921\t#D79921\ta b: c\n" +
-		"1\t@2\t1\t0\t%2\t102\t1\t1\tzsh\t/dev/pts/2\t#3a7bd5\t#{?…}\tplain\n" +
-		"1\t@3\t2\t0\t%3\t103\t1\t1\tzsh\t/dev/pts/3\t\t\tplain\n"
+	out := "1\t@1\t0\t1\t%1\t101\t1\t1\tzsh\t/dev/pts/1\t%079921\t#D79921\t\ta b: c\n" +
+		"1\t@2\t1\t0\t%2\t102\t1\t1\tzsh\t/dev/pts/2\t#3a7bd5\t#{?…}\t\tplain\n" +
+		"1\t@3\t2\t0\t%3\t103\t1\t1\tzsh\t/dev/pts/3\t\t\t\tplain\n"
 	got := parseWindows(out)
 	if len(got) != 3 {
 		t.Fatalf("parseWindows = %+v, want 3 windows", got)
@@ -312,7 +312,7 @@ func TestTheListingReadsTheMusterColorOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(args)
-	want := "\t#{s/[^ -~]/!/;E:@muster-color}\t#{s/[^ -~]/!/:@muster-color}\t#{session_name}\n"
+	want := "\t#{s/[^ -~]/!/;E:@muster-color}\t#{s/[^ -~]/!/:@muster-color}\t#{s/[^0-9]//:@muster-dispatch}\t#{session_name}\n"
 	if !strings.HasSuffix(string(b), want) {
 		t.Fatalf("the listing's format is %q, want it to end %q", b, want)
 	}

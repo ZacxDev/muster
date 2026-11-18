@@ -29,3 +29,21 @@ func TestTheShippedBuildAlwaysOffersItsCatalog(t *testing.T) {
 		t.Fatal("e2eNoCatalog is set in a build without -tags e2emirror; a shipped muster-mirror could advertise no catalog")
 	}
 }
+
+// TestTheShippedBuildSpawnsForReal: without the e2emirror tag nothing replaces
+// the agent spawn with the browser suite's fake (mirrorhost.Config.FakeSpawn).
+func TestTheShippedBuildSpawnsForReal(t *testing.T) {
+	if e2eSpawn != nil || e2eSpawnRuntimes != nil {
+		t.Fatal("e2eSpawn is set in a build without -tags e2emirror; a shipped muster-mirror would fake its agent spawns")
+	}
+}
+
+// TestTheShippedBuildTakesItsPreviewCountsFromPreviewAlone: without the
+// e2emirror tag nothing can make a shipped muster-mirror report preview counts
+// a spec wrote: they come from -preview's Host alone.
+func TestTheShippedBuildTakesItsPreviewCountsFromPreviewAlone(t *testing.T) {
+	t.Setenv("MUSTER_MIRROR_E2E_PREVIEWS_FILE", "/dev/null")
+	if e2ePreviews != nil {
+		t.Fatal("e2ePreviews is set in a build without -tags e2emirror; a shipped muster-mirror could report preview counts from a file")
+	}
+}

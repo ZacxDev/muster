@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +28,8 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/ccusage"
+	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
@@ -34,17 +37,22 @@ import (
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
 	"github.com/ZacxDev/muster/internal/users"
@@ -138,12 +146,19 @@ var isolationClasses = map[string]routeClass{
 	"GET /health":                           classPublic,
 	"GET /login":                            classPublic,
 	"GET /manifest.webmanifest":             classPublic,
-	"GET /metrics":                          classPublic,
+	"GET /.well-known/assetlinks.json":      classPublic,
+	"GET /api/device/web":                   classPublic,
 	"GET /readyz":                           classPublic,
 	"GET /static/":                          classPublic,
 	"GET /sw.js":                            classPublic,
 	"POST /login":                           classPublic,
 	"POST /logout":                          classPublic,
+	// Instance branding (branding.go): the server's public name and logo,
+	// read before sign-in; nothing per-user.
+	"GET /api/instance":       classPublic,
+	"GET /brand/logo.png":     classPublic,
+	"GET /brand/icon-192.png": classPublic,
+	"GET /brand/icon-512.png": classPublic,
 	// accounts PR 4: the admin claim (token in a form field) and the account page.
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
@@ -171,15 +186,30 @@ var isolationClasses = map[string]routeClass{
 	// routes act on the caller's OWN passkeys at GoTrue with the caller's own
 	// access token, so GoTrue — not muster's database — scopes them; delete
 	// names a passkey by id (param: A's passkey id).
-	"POST /auth/passkey/options":         classPublic,
-	"POST /auth/passkey/verify":          classPublic,
-	"GET /account/passkeys":              classList,
+	"POST /auth/passkey/options": classPublic,
+	"POST /auth/passkey/verify":  classPublic,
+	"GET /account/passkeys":      classList,
+	// The feature registry's page: server configuration, the same for every user.
+	"GET /account/features":              classList,
 	"POST /account/passkeys/options":     classList,
 	"POST /account/passkeys/verify":      classList,
 	"POST /account/passkeys/{id}/delete": classParam,
 	"GET /api/whoami":                    classAdmin,
-	"GET /api/tokens":                    classAPIToken,
-	"DELETE /api/tokens/{id}":            classAPIToken,
+	// `muster doctor` (doctor.go): the hook tier, armed; it reports the
+	// caller's own mirror hosts and server-wide booleans.
+	"GET /api/doctor":         classAdmin,
+	"GET /api/tokens":         classAPIToken,
+	"DELETE /api/tokens/{id}": classAPIToken,
+	// The attention summary: the token owner's own queue and hosts.
+	"GET /api/attention/summary": classAPIToken,
+	// Reading the ask log (ask_log_read.go): the token owner's own asks.
+	"GET /api/asks/log":     classAPIToken,
+	"GET /api/asks/summary": classAPIToken,
+	// Creating an agent (agent_create_api.go): an agent-create token only. Its
+	// note_id is read under the caller's row-level security, so B naming A's
+	// task is "no such task" (TestAnAgentCreateNamingAnotherUsersTaskIsNotFound).
+	// Not in namesObject: the walk's full tokens are refused at its door.
+	"POST /api/agents": classAPIToken,
 	// muster-native Web Push (migration 0013). The key and the subscribe /
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
@@ -189,17 +219,24 @@ var isolationClasses = map[string]routeClass{
 	// device tier is the device credential's alone.
 	"POST /account/devices/pair":        classList,
 	"POST /account/devices/{id}/remove": classParam,
+	"GET /account/devices/live":         classList, // the caller's paired phones (A's is canary-named) and, out of band, push devices
 	"POST /api/device/pair":             classPublic,
 	"DELETE /api/device":                classDevice,
 	"GET /api/device/config":            classDevice,
 	"PUT /api/device/push":              classDevice,
 	"DELETE /api/device/push":           classDevice,
-	"GET /api/push/vapid-public-key":    classList,
-	"POST /api/push/subscribe":          classList,
-	"POST /api/push/unsubscribe":        classList,
-	"POST /account/push/test":           classList,
-	"POST /account/push/{id}/remove":    classParam,
-	"POST /account/push/preferences":    classList,
+	// The signed ask actions (device_actions.go): {id} names an ask, answered
+	// under the device owner's principal (row-level security), and nothing
+	// is done without a challenge THIS device asked for and signed.
+	"POST /api/device/challenge":                          classDevice,
+	"POST /api/device/actions/attention/asks/{id}/answer": classDevice,
+	"POST /api/device/actions/attention/asks/{id}/cancel": classDevice,
+	"GET /api/push/vapid-public-key":                      classList,
+	"POST /api/push/subscribe":                            classList,
+	"POST /api/push/unsubscribe":                          classList,
+	"POST /account/push/test":                             classList,
+	"POST /account/push/{id}/remove":                      classParam,
+	"POST /account/push/preferences":                      classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -207,51 +244,75 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/reset":  classPublic,
 	"POST /auth/reset": classPublic,
 
-	"GET /admin/invites":                     classAdminOnly,
-	"GET /admin/users":                       classAdminOnly,
-	"POST /admin/invites":                    classAdminOnly,
-	"POST /admin/invites/{id}/revoke":        classAdminOnly,
-	"POST /admin/users/{id}/disable":         classAdminOnly,
-	"POST /admin/users/{id}/enable":          classAdminOnly,
-	"POST /admin/users/{id}/reset-link":      classAdminOnly,
-	"POST /admin/users/{id}/role":            classAdminOnly,
-	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
+	"GET /admin/invites":                           classAdminOnly,
+	"GET /admin/teams":                             classAdminOnly,
+	"POST /admin/teams":                            classAdminOnly,
+	"POST /admin/teams/{id}/members":               classAdminOnly,
+	"POST /admin/teams/{id}/members/{user}/remove": classAdminOnly,
+	"GET /admin/users":                             classAdminOnly,
+	"POST /admin/invites":                          classAdminOnly,
+	"POST /admin/invites/{id}/revoke":              classAdminOnly,
+	"POST /admin/users/{id}/disable":               classAdminOnly,
+	"POST /admin/users/{id}/enable":                classAdminOnly,
+	"POST /admin/users/{id}/reset-link":            classAdminOnly,
+	"POST /admin/users/{id}/role":                  classAdminOnly,
+	"POST /admin/users/{id}/passkeys/delete":       classAdminOnly,
+	// Instance branding's writes (branding.go, requireAdminRole): an admin's
+	// session only, in either sign-in mode.
+	"PUT /api/instance/branding":             classAdminOnly,
+	"DELETE /api/instance/branding/logo":     classAdminOnly,
+	"DELETE /api/instance/branding/app-icon": classAdminOnly,
 
-	"GET /{$}":                     classList,
-	"GET /agents":                  classList,
-	"GET /api/directories":         classList,
-	"GET /api/openrouter/models":   classList,
-	"GET /connectors":              classList,
-	"GET /events":                  classList,
-	"GET /github/callback":         classList,
-	"GET /github/connect":          classList,
-	"GET /repos":                   classList,
-	"GET /share":                   classList,
-	"GET /tasks":                   classList,
-	"GET /ui/agents":               classList,
-	"GET /ui/agents/new":           classList,
-	"GET /ui/agents/notes":         classList,
+	"GET /{$}":                   classList,
+	"GET /agents":                classList,
+	"GET /api/directories":       classList,
+	"GET /api/openrouter/models": classList,
+	// The chief sessions' model search (chief_session_llm.go): names no
+	// object, reads the public catalogue; served only to the owner whose chief
+	// the spend door serves (ChiefLLMOwner), 403 to anyone else.
+	"GET /api/chief/openrouter-models": classList,
+	"GET /connectors":                  classList,
+	"GET /events":                      classList,
+	// The browser telemetry relay (faro_relay.go): names no object; it
+	// forwards the caller's own batch, rate-limited per user.
+	"POST /telemetry/faro": classList,
+	"GET /share":           classList,
+	"GET /tasks":           classList,
+	"GET /ui/nav/agents":   classList,
+	// The ☰ button's waiting badge: a count over the caller's own entries
+	// (agentsListEntries, as the list above).
+	"GET /ui/nav/waiting": classList,
+	// The palette's server search (palette.go): a session route naming no
+	// object — its live set is the caller's own entries; owner isolation is
+	// pinned by TestThePaletteServerSearchIsOwnerScoped and focus's
+	// TestSearchTitlesIsPerOwner.
+	"GET /ui/palette/history":      classList,
 	"GET /ui/agents/repos":         classList,
 	"GET /ui/chief/panel":          classList,
 	"GET /ui/chief/threads/search": classList,
-	"GET /ui/connector-requests":   classList,
-	"GET /ui/connectors":           classList,
-	"GET /ui/connectors/new":       classList,
-	"GET /ui/notifications":        classList,
-	"GET /ui/repos":                classList,
-	"GET /ui/tags":                 classList,
-	"GET /ui/tasks":                classList,
-	"GET /ui/tasks/new":            classList,
-	"GET /ui/tasks/review-count":   classList,
-	"POST /agents":                 classList, // the form names A's task as note_id
-	"POST /chief/provision":        classList,
-	"POST /connectors":             classList,
-	"POST /github/disconnect":      classList,
-	"POST /tasks":                  classList,
-	"POST /tasks/merge":            classList, // the form names A's task as the loser
+	// The fleet digest (fleet_digest.go): the caller's own fleet reader. The
+	// drill-in's ?id= and the Fleet chat's about= are resolved only inside the
+	// caller's own fleet (TestTheDigestIsTheOwnersOwnFleet).
+	"GET /ui/chief/fleet":         classList,
+	"GET /ui/chief/fleet/session": classList,
+	"POST /ui/chief/fleet/chat":   classList,
+	"GET /ui/connector-requests":  classList,
+	"GET /ui/connectors":          classList,
+	"GET /ui/connectors/new":      classList,
+	"GET /ui/notifications":       classList,
+	"GET /ui/tags":                classList,
+	"GET /ui/tasks":               classList,
+	"GET /ui/tasks/new":           classList,
+	"GET /ui/tasks/review-count":  classList,
+	"POST /chief/provision":       classList,
+	"POST /connectors":            classList,
+	"POST /tasks":                 classList,
+	"POST /tasks/merge":           classList, // the form names A's task as the loser
 
-	"DELETE /agents/{id}":                      classParam,
-	"DELETE /connector-grants/{id}":            classParam,
+	"DELETE /agents/{id}":           classParam,
+	"DELETE /connector-grants/{id}": classParam,
+	// A shared approval (0043) is named by id; A's is the object.
+	"DELETE /connector-standing-grants/{id}":   classParam,
 	"DELETE /connectors/{name}":                classParam,
 	"DELETE /tasks/{id}":                       classParam,
 	"DELETE /tasks/{id}/comments/{cid}":        classParam,
@@ -263,11 +324,11 @@ var isolationClasses = map[string]routeClass{
 	"GET /agents/{name}/ws":                    classParam,
 	"GET /tasks/{id}":                          classParam,
 	"GET /tasks/{id}/attachments/{aid}":        classParam,
-	"GET /ui/agents/{id}/card":                 classParam,
+	"GET /ui/agents/{id}/header":               classParam,
 	"GET /ui/focus/history":                    classParam,
-	"GET /ui/agents/{id}/rename":               classParam,
 	"GET /ui/agents/{id}/status":               classParam,
 	"GET /ui/agents/{name}/chat-log":           classParam,
+	"GET /ui/dispatch-card":                    classParam,
 	"GET /ui/agents/{name}/task":               classParam,
 	"GET /ui/connectors/{name}/rotate":         classParam,
 	"GET /ui/tasks/{id}/card":                  classParam,
@@ -278,40 +339,104 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents/{id}/name":                   classParam,
 	"POST /agents/{id}/sessions":               classParam,
 	"POST /agents/{id}/sessions/{sid}/default": classParam,
-	"POST /agents/{id}/start":                  classParam,
-	"POST /agents/{id}/stop":                   classParam,
-	"POST /connectors/{name}/rotate":           classParam,
-	"POST /tasks/{id}/comments":                classParam,
-	"POST /tasks/{id}/edit":                    classParam,
-	"POST /tasks/{id}/complete":                classParam,
-	"POST /tasks/{id}/tags":                    classParam,
-	"POST /ui/connector-requests/{id}/approve": classParam,
-	"POST /ui/connector-requests/{id}/deny":    classParam,
+	// The chief's primary and side chats (chief_chats.go): A's chief, A's chat.
+	"POST /agents/{id}/sessions/side":            classParam,
+	"POST /agents/{id}/sessions/fresh-primary":   classParam,
+	"POST /agents/{id}/sessions/{sid}/continue":  classParam,
+	"POST /agents/{id}/sessions/{sid}/archive":   classParam,
+	"POST /agents/{id}/sessions/{sid}/unarchive": classParam,
+	"GET /ui/agents/{name}/chat-context":         classParam,
+	"POST /agents/{id}/start":                    classParam,
+	"POST /agents/{id}/stop":                     classParam,
+	"POST /connectors/{name}/rotate":             classParam,
+	"POST /tasks/{id}/comments":                  classParam,
+	"POST /tasks/{id}/edit":                      classParam,
+	"POST /tasks/{id}/complete":                  classParam,
+	"POST /tasks/{id}/tags":                      classParam,
+	"POST /ui/connector-requests/{id}/approve":   classParam,
+	"POST /ui/connector-requests/{id}/deny":      classParam,
+	// A failed reference write's Retry and Dismiss (0076): {id} is A's
+	// reference, {wid} A's write on it (fill).
+	"POST /tasks/{id}/ref-writes/{wid}/retry":   classParam,
+	"POST /tasks/{id}/ref-writes/{wid}/dismiss": classParam,
+	// Move one of your own tasks into a team (team sharing 4.3): {id} is A's
+	// task, the form's team is A's team.
+	"POST /tasks/{id}/move": classParam,
 
-	"DELETE /api/tasks/{id}":                classAdmin,
-	"DELETE /api/tasks/{id}/comments/{cid}": classAdmin,
-	"GET /api/agents":                       classAdmin,
-	"GET /api/agents/{name}/messages":       classAdmin,
-	"GET /api/projects":                     classAdmin,
-	"GET /api/sessions/{id}/tasks":          classAdmin,
-	"GET /api/tags":                         classAdmin,
-	"GET /api/tasks":                        classAdmin,
-	"GET /api/tasks/{id}":                   classAdmin,
-	"PATCH /api/tasks/{id}":                 classAdmin,
-	"PATCH /api/tasks/{id}/status":          classAdmin,
-	"POST /api/agents/{name}/messages":      classAdmin,
+	"DELETE /api/tasks/{id}":                   classAdmin,
+	"DELETE /api/tasks/{id}/comments/{cid}":    classAdmin,
+	"GET /api/agents":                          classAdmin,
+	"GET /api/agents/{name}/account-failovers": classAdmin,
+	"GET /api/agents/{name}/messages":          classAdmin,
+	"GET /api/projects":                        classAdmin,
+	"GET /api/sessions/{id}/tasks":             classAdmin,
+	"GET /api/tags":                            classAdmin,
+	"GET /api/tasks":                           classAdmin,
+	"GET /api/tasks/{id}":                      classAdmin,
+	"PATCH /api/tasks/{id}":                    classAdmin,
+	"PATCH /api/tasks/{id}/status":             classAdmin,
+	"POST /api/agents/{name}/messages":         classAdmin,
 	// Chief replacement (chief_replace.go), hook tier, acting as the caller.
 	"POST /api/chief/replace": classAdmin,
 	"POST /api/tasks":         classAdmin,
 	// Session routing (0021): a mirrored session's answer, on the hook tier
 	// (requireArmedHookToken), acting as the route's owner.
 	"POST /api/routes/{id}/reply": classAdmin,
+	// A thread a mirrored session started (thread_routes.go): route reply's
+	// door, acting as the owner.
+	"POST /api/plugin-threads": classAdmin,
+	// A pull request a session authored (pr_routes.go): route reply's door,
+	// acting as the owner.
+	"POST /api/pr-sessions": classAdmin,
+	// …and the read over those rows (handlePRSessionList), on the same door;
+	// row-level security answers B's query with B's rows only.
+	"GET /api/pr-sessions": classAdmin,
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
-	"POST /api/tasks/{id}/comments":         classAdmin,
+	// Binding a plugin to a builtin officer (plugin_outbound.go), hook tier, as its owner.
+	"PUT /api/plugins/{id}/deliver-to": classAdmin,
+	// The built-in officer store's admin API (officer_admin.go): hook tier
+	// (personal token: its owner; shared hook token: the operator), every
+	// store call naming the caller's owner and under its principal.
+	// `muster agent rm` (agent_rm.go): hook tier, as its owner — the row is
+	// read and destroyed under the caller's principal.
+	"DELETE /api/agents/{name}":                                        classAdmin,
+	"GET /api/officers/types":                                          classAdmin,
+	"GET /api/officers/types/{key}":                                    classAdmin,
+	"PUT /api/officers/types/{key}":                                    classAdmin,
+	"DELETE /api/officers/types/{key}":                                 classAdmin,
+	"GET /api/officers/defs":                                           classAdmin,
+	"PUT /api/officers/defs/{officer}":                                 classAdmin,
+	"DELETE /api/officers/defs/{officer}":                              classAdmin,
+	"GET /api/officers/defs/{officer}/items":                           classAdmin,
+	"POST /api/officers/defs/{officer}/items":                          classAdmin,
+	"POST /api/officers/defs/{officer}/items/{id}/resolve":             classAdmin,
+	"GET /api/officers/defs/{officer}/schedules":                       classAdmin,
+	"GET /api/officers/defs/{officer}/usage":                           classAdmin,
+	"PUT /api/officers/defs/{officer}/schedules/{name}":                classAdmin,
+	"DELETE /api/officers/defs/{officer}/schedules/{name}":             classAdmin,
+	"GET /api/officers/defs/{officer}/contacts":                        classAdmin,
+	"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}":       classAdmin,
+	"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags": classAdmin,
+	"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}":    classAdmin,
+	"POST /api/tasks/{id}/comments":                                    classAdmin,
+	// Officers declared in the database (0136, officer_declared.go): the
+	// caller's own; {officer} is A's def, which declares no runtime, so A's
+	// own answer is 409 and the ghost's (and B's) 404.
+	"GET /api/officers/declared":                   classAdmin,
+	"POST /api/officers/declared":                  classAdmin,
+	"GET /api/officers/declared/{officer}":         classAdmin,
+	"PUT /api/officers/declared/{officer}":         classAdmin,
+	"DELETE /api/officers/declared/{officer}":      classAdmin,
+	"POST /api/officers/declared/{officer}/pause":  classAdmin,
+	"POST /api/officers/declared/{officer}/resume": classAdmin,
+	"GET /api/officers/runtime-options":            classAdmin,
 	// The machine job API (jobs.go): the service tier, acting as user 1.
 	"GET /api/jobs/{id}": classAdmin,
 	"POST /api/jobs":     classAdmin,
+	// Claude account usage (cc_usage.go): the service tier as user 1, or a
+	// personal token (account-usage or full) as its owner; owner-scoped reads.
+	"GET /api/cc-accounts/usage": classAdmin,
 
 	"DELETE /agent/approvals/{id}": classAgentToken,
 	"GET /agent/approvals/{id}":    classAgentToken,
@@ -320,14 +445,23 @@ var isolationClasses = map[string]routeClass{
 	"PATCH /agent/task/status":     classAgentToken,
 	"POST /agent/approvals":        classAgentToken,
 	"POST /agent/blocked":          classAgentToken,
-	"POST /agent/work":             classAgentToken,
-	"POST /agent/task/comment":     classAgentToken,
+	// An officer instance's workspace image for an ask (officers.go): its own
+	// token decides the officer; any other agent is refused.
+	"POST /agent/officer/ask-images": classAgentToken,
+	// A dispatched agent's ask attachment (ask_media.go): stored as the
+	// agent's owner's own upload; it names no object.
+	"POST /agent/ask-attachments": classAgentToken,
+	"POST /agent/work":            classAgentToken,
+	"POST /agent/task/comment":    classAgentToken,
 
 	"/connect/{connector}/{host}/{path...}": classConnect,
 	"GET /agent/connectors":                 classConnect,
 	"GET /agent/connectors/{name}":          classConnect,
 	"POST /agent/connectors/{name}/request": classConnect,
 	"POST /mcp":                             classConnect,
+	"POST /llm/v1/messages":                 classConnect,
+	// Refused 404 for every caller, before any credential is read.
+	"/llm/": classPublic,
 
 	// The mirrored terminal names its object in the QUERY (?host=&session=),
 	// and fill() puts A's mirrored host there. The tunnel door is public to
@@ -335,10 +469,17 @@ var isolationClasses = map[string]routeClass{
 	// open nothing on it and leak nothing.
 	"GET /mirror/connect": classPublic,
 	// The AskUserQuestion hook's door: like the tunnel, a mirror token only.
-	"POST /mirror/ask":        classPublic,
-	"POST /mirror/mcp":        classMirrorHost,
-	"GET /mirror/terminal":    classMirror,
-	"GET /mirror/terminal/ws": classMirror,
+	"POST /mirror/ask": classPublic,
+	"POST /mirror/mcp": classMirrorHost,
+	// A session's ask attachment, sent by its host (ask_media.go): the host's
+	// token, a session it lists; it names no object.
+	"POST /mirror/ask-attachments": classMirrorHost,
+	// …and its take-back (the host owner's own upload, by id, under row-level
+	// security; mirror_mcp_pg_test-style refusal walked in ask_media_mirror_pg_test.go).
+	"DELETE /mirror/ask-attachments/{id}": classMirrorHost,
+	"GET /mirror/host":                    classMirrorHost,
+	"GET /mirror/terminal":                classMirror,
+	"GET /mirror/terminal/ws":             classMirror,
 
 	// Browser flows (0012). The page and its forms are the session tier; the
 	// JSON API is a personal token only; the runner door is a runner token
@@ -354,6 +495,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/flows/jobs":               classAPIToken,
 	"GET /api/flows/jobs/{id}":          classAPIToken,
 	"POST /api/flows/jobs":              classAPIToken,
+	"POST /api/flows/jobs/{id}/cancel":  classAPIToken,
 	"POST /runner/flows/claim":          classRunner,
 	"POST /runner/flows/{id}/heartbeat": classRunner,
 	"POST /runner/flows/{id}/result":    classRunner,
@@ -361,14 +503,61 @@ var isolationClasses = map[string]routeClass{
 	// Plugins (0015). The page and its forms are the session tier and the
 	// revoke names A's plugin by id; the message route is a plugin token only
 	// and names no object (a message lands in the token owner's own rows).
-	"GET /plugins":              classList,
-	"POST /plugins":             classList,
+	"GET /plugins":  classList,
+	"POST /plugins": classList,
+	// A viewer hand-off (plugin_handoffs.go) names its plugin and window in the
+	// BODY, not the path, so the walk's A-ids never reach it: another owner's
+	// plugin and host are refused by TestAHandoffNamesOnlyTheOwnersPluginAndWindow.
+	"POST /plugin-handoffs":     classList,
 	"POST /plugins/{id}/revoke": classParam,
+	// Checks replies on an existing plugin names A's plugin by id: B's session
+	// must get the ghost's 404 (row-level security).
+	"POST /plugins/{id}/draft-checks": classParam,
+	"POST /plugins/{id}/deliver-to":   classParam,
+	// A plugin's chief instructions (0141): the toggle and the approval name
+	// A's plugin by id; B's session must get the ghost's 404 (row-level
+	// security and the store's owner filter).
+	"POST /plugins/{id}/chief-extension":            classParam,
+	"POST /plugins/{id}/approve-chief-instructions": classParam,
+	// A pairing request's decisions name it by id; another owner's is the
+	// ghost's 404 (row-level security).
+	"POST /plugins/pair/{id}/approve": classParam,
+	"POST /plugins/pair/{id}/deny":    classParam,
+	// The pairing door: no credential (the request) or a poll secret no walker
+	// holds (the poll).
+	"POST /plugin/v1/pair":             classPublic,
+	"GET /plugin/v1/pair/{request_id}": classPublic,
+	// An outbound draft's medium, its owner's (row-level security).
+	"GET /plugins/drafts/{id}/media/{n}": classParam,
+	// Routing rules (routing_rules.go, 0107): the page lists the caller's own
+	// rules; each write names a rule by id, and another owner's is not found.
+	// The usage page reads the caller's own telemetry rows only.
+	"GET /rules":               classList,
+	"POST /rules/{id}/disable": classParam,
+	"POST /rules/{id}/enable":  classParam,
+	"POST /rules/{id}/delete":  classParam,
+	"GET /usage":               classList,
+	"GET /answers":             classList,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.
 	"POST /agents/pins":        classList,
 	"POST /agents/pins/delete": classList,
+	// Session tags (internal/sessiontags): pins' shape. The form (the list's
+	// query) names A's agent as agent_id: B's add is refused as no such agent
+	// (the owner trigger, as a ghost's), B's remove deletes only B's rows, and
+	// B's read is B's own (none); A's seeded tags spell the canary and are in
+	// the snapshot, so either reaching A's would show.
+	"GET /sessions/tags":         classList,
+	"POST /sessions/tags":        classList,
+	"POST /sessions/tags/delete": classList,
+	// A mirrored session's name (session_names.go): addressed by
+	// host=&session=&window=, which B's hub does not list — B's post is a 404,
+	// as for a ghost.
+	"POST /sessions/name": classMirror,
+	// "Keep the name" (name_drift.go): the form names A's agent as
+	// agent_id; B's post is a 404, as for a ghost, and writes nothing.
+	"POST /sessions/name/drift-dismiss": classList,
 	// The send queue (0019): the queue form, the list and the plain confirm
 	// page name A's mirrored window; Cancel, Retry and Delete name A's queued
 	// message by id.
@@ -395,24 +584,58 @@ var isolationClasses = map[string]routeClass{
 	"POST /send-queue/{id}/edit/cancel":       classParam,
 	"POST /send-queue/confirm":                classMirror,
 	"POST /plugin/v1/messages":                classPlugin,
+	// Who the presented plugin token is: it names nothing, and answers only
+	// the token's own plugin and owner.
+	"GET /plugin/v1/self": classPlugin,
+	// A hand-off redeem names a code, which RLS and the plugin id confine.
+	"POST /plugin/v1/handoffs/redeem": classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
-	"POST /plugins/drafts/{id}/approve":  classParam,
-	"POST /plugins/drafts/{id}/reject":   classParam,
-	"POST /plugins/messages/{id}/retry":  classParam,
-	"POST /plugin/v1/drafts/claim":       classPlugin,
-	"POST /plugin/v1/drafts/{id}/result": classPlugin,
+	"POST /plugins/drafts/{id}/approve":          classParam,
+	"POST /plugins/drafts/{id}/reject":           classParam,
+	"POST /plugins/outreach-batches/{id}/decide": classParam,
+	"POST /plugins/messages/{id}/retry":          classParam,
+	"POST /plugin/v1/drafts/claim":               classPlugin,
+	"POST /plugin/v1/drafts/{id}/result":         classPlugin,
+	"POST /plugin/v1/drafts/{id}/renew":          classPlugin,
+	// The pre-approval check (draft_checks): the listing names nothing (the
+	// token owner's own plugin's drafts) and the verdict names A's draft — which
+	// B's plugin must not decide (CheckDraft joins the draft to its plugin).
+	"GET /plugin/v1/drafts/checks":      classPlugin,
+	"POST /plugin/v1/drafts/{id}/check": classPlugin,
+	"POST /plugin/v1/drafts/{id}/media": classPlugin,
+	// A plugin's chief instructions (0141): it names nothing — the token's
+	// own plugin's one section (TestAnotherOwnersChiefSectionNeverRenders).
+	"PUT /plugin/v1/chief/instructions": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
+	// Plugin task references (plugin_task_refs.go): the listing names a
+	// namespace and the claim names nothing — both see only the token owner's
+	// rows (row-level security) and the claim only this plugin's writes; the
+	// result names A's write by id, which B's plugin must not settle (404).
+	"GET /plugin/v1/tasks":                    classPlugin,
+	"POST /plugin/v1/task-writes/claim":       classPlugin,
+	"POST /plugin/v1/task-writes/{id}/result": classPlugin,
+	// A stamped direct reply (owner_replies.go): it names A's message by id,
+	// which B's plugin must not settle (404, as a missing one).
+	"POST /plugin/v1/messages/{id}/owner-answered": classPlugin,
 
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the
 	// send carries host and session in its FORM, which fill() also sets.
-	"GET /mirror/view":       classMirror,
-	"GET /mirror/view/ws":    classMirror,
-	"POST /mirror/view/send": classMirror,
+	"GET /mirror/view": classMirror,
+	// A session view's Preview button (plugin_chip.go): the window's counts,
+	// addressed like the view (?host=&session=&window=), read from the hub's
+	// OWNER-SCOPED host list. NOT an object route (namesObject): it answers an
+	// empty 200 alike for a window with nothing to preview, one it does not
+	// list and one of another owner's, by design — so it cannot tell A's
+	// window from a ghost even to A, and the walk holds it to the stricter
+	// rule instead: no identifier of A's in an outsider's answer.
+	"GET /ui/mirror/preview-button": classMirror,
+	"GET /mirror/view/ws":           classMirror,
+	"POST /mirror/view/send":        classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
 	// Drag-to-scroll: the same address fields, plus `lines`.
@@ -424,29 +647,74 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/confirm-send": classMirror,
 	// AskUserQuestion (mirror_ask.go): the live region (address in the query)
 	// and the answers (address in the form, plus the call's tool id).
-	"GET /mirror/view/asks":        classMirror,
-	"POST /mirror/view/ask":        classMirror,
-	"POST /mirror/view/ask/cancel": classMirror,
-	// A Hermes approval's answer (attention_hermes.go): addressed by the
+	"GET /mirror/view/asks":         classMirror,
+	"POST /mirror/view/ask":         classMirror,
+	"POST /mirror/view/ask/cancel":  classMirror,
+	"POST /mirror/view/ask/message": classMirror,
+	// An opencode ask's answer (attention_opencode.go): addressed by the
 	// window's host and session in the form, like a send.
-	"POST /attention/hermes/approve": classMirror,
+	"POST /attention/opencode/answer": classMirror,
 	// The Rendered view composer's `/` and `:` menu data: the same address in
 	// the query; B asking for A's window's catalog must 404 before the plugin.
 	"GET /mirror/view/complete": classMirror,
 	// An opened subagent card's steps: the same address in the query, plus
 	// the agent id.
 	"GET /mirror/view/subagent": classMirror,
+	// The view's chief mode (view_chief.go): addressed by the window like a
+	// send (form for the POST, query for the GETs). B naming A's window must
+	// 404 before anything is stored or read.
+	"POST /mirror/view/chief":    classMirror,
+	"GET /mirror/view/chief":     classMirror,
+	"GET /mirror/view/chief/log": classMirror,
+	// A succession of a view's session (succession.go): its read and the
+	// card's tap, both naming the window by its address (mirrorEntry).
+	"GET /mirror/view/successor": classMirror,
+	"POST /mirror/view/proposal": classMirror,
+	// A proposal read by id (an ended session's view): the principal's own row.
+	"GET /mirror/view/proposal": classMirror,
+	// Suggested replies (suggest.go): the window's set (address in the query)
+	// — B naming A's window must 404; the toggle is the caller's own row (list).
+	"GET /mirror/view/suggest": classMirror,
+	"POST /account/suggest":    classList,
+	// The chief's on/off switch (chief_toggle.go): the caller's own row, and
+	// the caller's own chief (list).
+	"POST /account/chief": classList,
+	// "Show tmux sessions" (notify_prefs.go): the caller's own
+	// row (list).
+	"POST /account/notifications/tmux": classList,
+	// "Start notification titles with the tmux name" (notify_prefs.go): the
+	// caller's own row (list).
+	"POST /account/notifications/codename": classList,
+	"POST /account/pages/agent-share":      classList,
+	// The chip row's reports (numbers only): the window's address in the
+	// form — B naming A's window must 404.
+	"POST /mirror/view/suggest/event": classMirror,
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
 	// The attention queue (0025). The page, its live list and the badge name
 	// no object (each reads the caller's own queue); the answer and dismiss
 	// forms name A's ask by id.
-	"GET /attention":                   classList,
-	"GET /attention/items":             classList,
-	"GET /attention/badge":             classList,
-	"POST /attention/asks/{id}/answer": classParam,
-	"POST /attention/asks/{id}/cancel": classParam,
+	"GET /attention":        classList,
+	"GET /attention/items":  classList,
+	"GET /attention/drafts": classList,
+	// The Log tab's panel reads the caller's own asks (row-level security;
+	// TestTheAskLogReadsAreTheCallersOwn drives B against A's rows).
+	"GET /attention/log": classList,
+	// A session page's asks block names its asker by query (?agent=): A's
+	// agent's asks, never B's view of them. The tap route names an item by key.
+	"GET /attention/asker":      classParam,
+	"GET /attention/open/{key}": classParam,
+	// An ask's own page names A's ask by id (row-level security, and an
+	// explicit owner check).
+	"GET /attention/asks/{id}": classParam,
+	// An ask's attachment (ask_media.go): A's ask by id, and A's upload it
+	// carries by its public id — row-level security on the ask, an explicit
+	// owner-or-team check, and only an upload the ask names.
+	"GET /attention/asks/{id}/attachments/{upload}": classParam,
+	"GET /attention/badge":                          classList,
+	"POST /attention/asks/{id}/answer":              classParam,
+	"POST /attention/asks/{id}/cancel":              classParam,
 	// An unconfirmed answer delivery's Retry (migration 0031): one of the
 	// caller's asks by id, under row-level security.
 	"POST /attention/asks/{id}/redeliver": classParam,
@@ -461,26 +729,101 @@ var isolationClasses = map[string]routeClass{
 	"GET /uploads/{id}/file":    classParam,
 	"POST /uploads/{id}/revoke": classParam,
 	"GET /f/{id}":               classPublic,
+	// Shareable pages (pages.go). The owner's screen lists the caller's pages;
+	// a page, its preview, a version's content and the three writes name A's
+	// page (and link, version) by id. The four share-link routes are public:
+	// the token in the path is the credential, which no walker holds
+	// (sideEffectControlled).
+	"GET /pages":      classList,
+	"GET /pages/{id}": classParam,
+	// A team's manager pages (phase 2a): {id} is a team A manages.
+	"GET /teams/{id}":                        classParam,
+	"POST /teams/{id}/members":               classParam,
+	"POST /teams/{id}/members/{user}/remove": classParam,
+	// Account -> Teams (phase 2b.1): the caller's own teams (list), and the
+	// notify switch of a team {id} A is a member of (param).
+	"GET /account/teams":              classList,
+	"POST /account/teams/{id}/notify": classParam,
+	// A team's officers (phase 3): {id} is a team A manages, {key} and
+	// {officer} A's team's type and officer.
+	"GET /teams/{id}/officers":                 classParam,
+	"POST /teams/{id}/officers/types/{key}":    classParam,
+	"POST /teams/{id}/officers/defs/{officer}": classParam,
+	"GET /teams/{id}/chief":                    classParam,
+	"POST /teams/{id}/chief/provision":         classParam,
+	"POST /teams/{id}/chief/stop":              classParam,
+	"POST /teams/{id}/chief/restart":           classParam,
+	// A team's connector requests (slice 4.8): {id} is a team A manages,
+	// {grant} one of that team's requests.
+	"GET /teams/{id}/connectors":                             classParam,
+	"POST /teams/{id}/connectors/{grant}/approve":            classParam,
+	"POST /teams/{id}/connectors/{grant}/deny":               classParam,
+	"POST /teams/{id}/connectors/standing/{standing}/revoke": classParam,
+	"POST /agents/{id}/credentials/rotate":                   classParam,
+	// A team's host tokens (phase 2b.2): {id} is a team A manages, {token} a
+	// token of that team's.
+	"GET /teams/{id}/hosts":                 classParam,
+	"POST /teams/{id}/hosts":                classParam,
+	"POST /teams/{id}/hosts/{token}/revoke": classParam,
+	"POST /teams/{id}/hosts/replace":        classParam,
+	// A team's viewer plugins (2b.3b): {id} is a team A manages.
+	"GET /teams/{id}/plugins":                  classParam,
+	"POST /teams/{id}/plugins":                 classParam,
+	"POST /teams/{id}/plugins/{plugin}/revoke": classParam,
+	// Host officer spawns and their team lend (phase 3): the list shows the
+	// caller's own (and those lent to their teams); {id} is A's spawn.
+	"GET /officers/spawns":               classList,
+	"POST /officers/spawns/{id}/share":   classParam,
+	"POST /officers/spawns/{id}/unshare": classParam,
+	// The Officers pages (officers O-C): the list is the caller's own (and
+	// their teams'); every other route names A's officer {officer} (and a
+	// schedule {name} of it), or creates the caller's own (new).
+	"GET /officers":                                    classList,
+	"GET /officers/new":                                classList,
+	"POST /officers/new":                               classList,
+	"GET /officers/{officer}":                          classParam,
+	"GET /officers/{officer}/edit":                     classParam,
+	"POST /officers/{officer}/edit":                    classParam,
+	"POST /officers/{officer}/pause":                   classParam,
+	"POST /officers/{officer}/resume":                  classParam,
+	"POST /officers/{officer}/mode":                    classParam,
+	"POST /officers/{officer}/run":                     classParam,
+	"POST /officers/{officer}/delete":                  classParam,
+	"POST /officers/{officer}/schedules":               classParam,
+	"POST /officers/{officer}/schedules/{name}/delete": classParam,
+	"GET /pages/{id}/preview":                          classParam,
+	"GET /pages/{id}/versions/{v}/content":             classParam,
+	"POST /pages/{id}/links/{link}/revoke":             classParam,
+	"POST /pages/{id}/share":                           classParam,
+	"POST /pages/{id}/share/rotate":                    classParam,
+	"POST /pages/{id}/share/revoke":                    classParam,
+	"GET /pages/{id}/card":                             classParam,
+	"POST /pages/{id}/rollback":                        classParam,
+	"POST /pages/{id}/delete":                          classParam,
+	"GET /s/{token}":                                   classPublic,
+	"GET /s/{token}/content":                           classPublic,
+	"POST /s/{token}/submit":                           classPublic,
+	"POST /s/{token}/upload":                           classPublic,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
-	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
-	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
+	// Host officer spawns (phase 3): A's spawn's host is the canary.
+	"GET /officers/spawns",
+	"GET /ui/nav/agents", "GET /ui/connector-requests", "GET /ui/connectors",
+	"GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope
 	// hides (plan §Recon 4). A's tag and project are identities, its unread
 	// assistant message names its agent.
-	// (/ui/tasks/new and /ui/agents/new carry no per-user aggregate: the
-	// first lists the router's directories, admin-only and checked by the
-	// operator canary; the second is the bare dispatch form.)
+	// (/ui/tasks/new carries no per-user aggregate: it lists the router's
+	// directories, admin-only and checked by the operator canary.)
 	"GET /ui/tags", "GET /ui/notifications",
 	// The caller's own credentials: A's Claude account is NAMED with the canary,
-	// so it shows on A's credentials page and on A's dispatch form's account
-	// pin (which lists the caller's own accounts since bring-your-own).
-	"GET /account/credentials", "GET /ui/agents/new",
+	// so it shows on A's credentials page.
+	"GET /account/credentials",
 	// Accounts PR 6: A's tokens are canary-named, so the token page and the
 	// token API must show A its own — and a machine-tier list read through A's
 	// personal token must show A's tasks (the hook tier had no such control
@@ -490,10 +833,21 @@ var wantCanaryForA = []string{
 	// token list and A's runner's claim (of A's second job) each show it.
 	"GET /flows", "GET /api/flows/jobs", "POST /runner/flows/claim",
 	// Web Push: the account page lists the caller's devices, and A's carries
-	// the canary in its user agent.
-	"GET /account",
+	// the canary in its user agent. The Devices list's re-fetch shows A's
+	// canary-named paired phone.
+	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
+	// The attention asks: A's agent's asks block and A's ask's own page show
+	// A's canary-carrying question. (The tap on A's ask opens that page, by
+	// its id — controlMarkers has its own control.)
+	"GET /attention/asker", "GET /attention/asks/{id}",
+	// The attention summary through A's personal token: A's canary-carrying
+	// ask is on it (its why is the question).
+	"GET /api/attention/summary",
+	// Shareable pages: A's page is canary-titled, so A's Pages screen and A's
+	// page show it.
+	"GET /pages", "GET /pages/{id}",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -572,6 +926,7 @@ type isoWorld struct {
 	aTag         string
 	aChatSession agents.ChatSession
 	aConnName    string
+	aTeam        int64 // a team A manages (phase 2a), its name carrying the canary
 	aGrantID     int64
 	aSessionLink string
 	aChief       agents.Agent
@@ -624,6 +979,8 @@ type isoWorld struct {
 	// (canary-named), the object Remove names.
 	deviceTokens map[int64]string
 	aDevice      devices.Device
+	// officerStore is the built-in officer store both servers serve.
+	officerStore *builtin.Store
 	aPlugin2     plugins.Plugin
 	aDraft       plugins.Draft
 }
@@ -657,10 +1014,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ns := notes.NewPG(pool)
 	as := agents.NewPG(pool)
 	cs, err := connectors.NewPG(pool, bytes.Repeat([]byte{3}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	gh, err := github.NewPG(pool, bytes.Repeat([]byte{4}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +1113,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a canary-named connector")
 	must(cs.Audit(ua, connectors.AuditEntry{Kind: "proxy", AgentID: w.a.agent.ID, AgentName: w.a.agent.Name,
 		Connector: w.aConnName, Method: "GET", Host: w.upHost, Path: "/", Status: 200, Detail: w.canary + " audit"}), "a audit")
-	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
 
 	// Personal tokens: one credential each for A and B, and A's second token
 	// (canary-named) as the object. Minted through the real store as each
@@ -768,11 +1120,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ts := apitokens.NewPG(pool)
 	w.apiTokens = map[int64]string{}
 	for _, u := range []isoUser{w.a, w.b} {
-		tok, _, err := ts.Create(as2(u), u.name+" cli", 0)
+		tok, _, err := ts.Create(as2(u), u.name+" cli", 0, apitokens.ScopeFull)
 		must(err, u.name+" api token")
 		w.apiTokens[u.uid] = tok
 	}
-	_, w.aToken2, err = ts.Create(ua, w.canary+" token", 0)
+	_, w.aToken2, err = ts.Create(ua, w.canary+" token", 0, apitokens.ScopeFull)
 	must(err, "a second api token")
 	w.aTokTask, err = ns.Create(ua, notes.Note{Title: w.canary + " token-control", Status: notes.StatusOpen})
 	must(err, "a token-control task")
@@ -809,7 +1161,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.pluginTokens = map[int64]string{}
 	var aPlugin1 plugins.Plugin
 	for _, u := range []isoUser{w.a, w.b} {
-		tok, p, err := ps.Create(as2(u), "iso-inbox", "Iso inbox", "iso")
+		// With draft_checks too, so the check routes are walked past the
+		// capability: A's own check of A's draft (awaiting it) differs from a
+		// ghost's, and B's plugin must get the ghost's answer.
+		tok, p, err := ps.CreatePlugin(as2(u), plugins.NewPlugin{Name: "iso-inbox", Label: "Iso inbox", DataScope: "iso",
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}})
 		must(err, u.name+" plugin")
 		w.pluginTokens[u.uid] = tok
 		if u.uid == w.a.uid {
@@ -818,6 +1174,21 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	_, w.aPlugin2, err = ps.Create(ua, "iso-second", w.canary+" plugin", "iso")
 	must(err, "a second plugin")
+	// A's routing rules (0107), approved: the Rules page's write routes name
+	// them by id (isoObjs.rule, ruleOff, ruleDel).
+	aRule := func(sender string, off bool) int64 {
+		r, err := ps.CreateRuleProposal(ua, plugins.RuleNew{PluginID: w.aPlugin2.ID, PluginName: w.aPlugin2.Name,
+			Match: plugins.RuleMatch{Sender: sender + "@iso.example.test"}, Action: plugins.RuleSettle, SettleReason: w.canary + " rule",
+			ChiefAgent: w.a.agent.ID, SourceMessage: 1})
+		must(err, "a rule "+sender)
+		_, err = ps.ApproveRule(ua, r.ID)
+		must(err, "approve a rule "+sender)
+		if off {
+			must(ps.SetRuleEnabled(ua, r.ID, false), "disable a rule "+sender)
+		}
+		return r.ID
+	}
+	aRuleOn, aRuleOff, aRuleDel := aRule("on", false), aRule("off", true), aRule("del", false)
 	// A's agent was handed a message (the canary in its body) and drafted a
 	// reply (the canary in it too): the object the draft routes name. Through
 	// A's FIRST plugin, the one whose token the walk holds, so A's own result
@@ -831,6 +1202,18 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a plugin message delivered")
 	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")
 	must(err, "a reply draft")
+	// A's plugin task REFERENCE (0072), owned by A's FIRST plugin, with a write
+	// on it that plugin holds leased: the object POST
+	// /plugin/v1/task-writes/{id}/result names. A's own result settles it (200)
+	// where a ghost's is 404; B's plugin must get the ghost's answer.
+	aRef, err := ns.UpsertReference(ua, notes.RefUpsertIn{Key: "isoref:a" + w.suffix, PluginID: aPlugin1.ID, Create: true,
+		Snapshot: notes.RefSnapshot{Title: w.canary + " reference", Status: notes.StatusOpen, UpdatedAt: time.Now()}})
+	must(err, "a plugin task reference")
+	aRefWrite, _, err := ns.EnqueueRefWrite(ua, notes.RefWrite{NoteID: aRef.Note.ID, Kind: notes.RefWriteComment,
+		Body: w.canary + " queued", Author: "user"})
+	must(err, "a write queued on the reference")
+	_, err = ns.ClaimRefWrites(ua, aPlugin1.ID, 1, time.Hour)
+	must(err, "the reference's write leased to A's plugin")
 	// A's chief routed that message to a mirrored session (0021): the object
 	// POST /api/routes/{id}/reply names.
 	aRoute, err := ps.CreateRoute(ua, w.a.agent.ID, w.a.uid, aMsg.ID,
@@ -847,6 +1230,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	recentStore := recents.NewPG(pool)
 	must(recentStore.VisitAgent(ua, w.a.agent.ID), "a agent visit")
 	must(recentStore.VisitMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror visit")
+	// A's session tags (internal/sessiontags): on A's agent and on A's mirrored
+	// session, each spelling the canary. B's tag routes read and write B's own
+	// rows only (the snapshot holds A's; a read leaking one shows the canary).
+	tagStore := sessiontags.NewPG(pool)
+	_, terr := tagStore.Add(ua, sessiontags.Target{AgentID: w.a.agent.ID}, w.canary+"-tag")
+	must(terr, "a agent tag")
+	_, terr = tagStore.Add(ua, sessiontags.Target{Host: w.canary + "-host", Session: "main"}, w.canary+"-tag")
+	must(terr, "a mirror tag")
 	// A's session focus (0020): B's tools and pages read and write B's own.
 	_, ferr := focus.NewPG(pool).Upsert(ua, focus.AgentSubject(w.a.agent.ID), focus.Write{Title: w.canary + " focus", Source: focus.SourceSummarizer})
 	must(ferr, "a focus")
@@ -867,29 +1258,109 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
 	// A's open ask (0025), asked by A's agent, its question carrying the canary.
+	// It carries A's upload as an attachment (0145), which its attachment
+	// route names.
 	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
-		Question: w.canary + " asks", Options: []string{"yes", "no"}})
+		Question: w.canary + " asks", Options: []string{"yes", "no"},
+		Attachments: []attention.Attachment{{ID: aUpload.PublicID, Name: aUpload.Filename, Type: aUpload.ContentType, Size: aUpload.Size}}})
 	must(err, "an ask")
+	// A's shareable page (0116): canary-titled, two versions (so A's rollback
+	// has one to move to), a live link and a canary-carrying response — the
+	// objects the Pages routes name by id.
+	pgs := pages.NewPG(pool)
+	pgBlocks, pgSize, err := pages.Parse([]byte(`[{"type":"question","id":"q1","label":"` + w.canary + ` question"}]`))
+	must(err, "a page's blocks")
+	aPage, _, err := pgs.Create(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, w.canary+" page", pgBlocks, pgSize)
+	must(err, "a page")
+	_, _, err = pgs.AddVersion(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, aPage.ID, w.canary+" page", pgBlocks, pgSize)
+	must(err, "a page's second version")
+	aPageLink, err := pgs.CreateLink(ua, aPage.ID, pages.LinkLive, w.a.agent.Name, true)
+	must(err, "a page link")
+	_, err = pgs.AddResponse(ua, aPageLink, 2, "q1", pages.KindSubmit, []byte(`{"answer":"`+w.canary+` answered"}`), "")
+	must(err, "a page response")
+	// …and a second page of A's, the one POST /pages/{id}/delete names, so A's
+	// own delete (the control) leaves the first for every other route.
+	{
+		tm, err := users.NewPG(pool).CreateTeam(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
+			"iso-a-team "+w.canary, w.a.uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.aTeam = tm.ID
+		t.Cleanup(func() {
+			bg := authz.System(context.Background())
+			_, _ = pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, tm.ID)
+			_, _ = pool.Exec(bg, `DELETE FROM audit_log WHERE team_id = $1 OR object = $2`, tm.ID, users.TeamObject(tm.ID))
+			_, _ = pool.Exec(bg, `DELETE FROM users WHERE id = $1`, tm.ID)
+		})
+	}
+	aPageDel, _, err := pgs.Create(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, w.canary+" page to delete", pgBlocks, pgSize)
+	must(err, "a page to delete")
+
+	// A's built-in officer (0118): a type whose charter, and an item whose
+	// payload, carry the canary — what the /api/officers routes name.
+	ost := builtin.NewStore(pool)
+	aOffType := "iso-" + w.suffix
+	must(ost.PutType(ua, w.a.uid, builtin.Type{Key: aOffType, Name: "iso", Charter: w.canary + " charter"}), "an officer type")
+	must(ost.PutDef(ua, w.a.uid, builtin.Def{Officer: aOffType + ":a", Enabled: true}), "an officer")
+	aOffItem, _, err := ost.Enqueue(ua, w.a.uid, builtin.NewItem{Officer: aOffType + ":a", Kind: "iso", SubjectKey: "iso",
+		Payload: json.RawMessage(`{"note":"` + w.canary + ` item"}`)}, time.Now())
+	must(err, "an officer item")
+	_, err = ost.PutSchedule(ua, w.a.uid, aOffType+":a", builtin.Schedule{Name: "nightly", Cron: "0 6 * * *", Kind: "iso",
+		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
+	must(err, "an officer schedule")
+	// A's officer's model spend (0075): numbers only, so the owner's answer is
+	// told from the ghost's by a request count no other row carries
+	// (controlMarkers). Today, so the route's default window holds it.
+	_, err = pool.Exec(ua, `INSERT INTO officer_llm_usage (owner_id, officer, pool, instance, day, requests)
+		VALUES ($1, $2, 'judgement', 1, (now() AT TIME ZONE 'UTC')::date, 4242421)`, w.a.uid, aOffType+":a")
+	must(err, "an officer's usage row")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(authz.System(context.Background()), `DELETE FROM officer_llm_usage WHERE officer = $1`, aOffType+":a")
+	})
+	// A's officer's people (0132): one the read and flag routes name (its
+	// display carries the canary) and one the erase route names.
+	for _, h := range []string{"isoperson", "isodelete"} {
+		_, err = pool.Exec(ua, `INSERT INTO officer_contacts (owner_id, officer, venue, handle, display) VALUES ($1, $2, 'iso', $3, $4)`,
+			w.a.uid, aOffType+":a", h, w.canary+" person")
+		must(err, "an officer contact")
+	}
+	w.officerStore = ost
+	// A's host officer spawn (0125): its host carries the canary, so the
+	// spawns page shows it to A and to nobody else.
+	aSpawn, err := officers.NewPGHostSpawnStore(pool).InsertHostSpawn(ua, aOffType+":a", "officer-iso-1", w.canary)
+	must(err, "a host spawn")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
+	// The invite token is random: one byte repeated 32 times has only 256
+	// values, so two worlds alive at once in one package database (test
+	// processes sharing it) collided on invites_token_hash_key.
+	opToken := make([]byte, 32)
+	_, err = rand.Read(opToken)
+	must(err, "op invite token")
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
-		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
+		opToken, "", time.Now().Add(time.Hour))
 	must(err, "op invite")
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
-		pluginMsg: aMsg.ID}
+		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
+		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, team: w.aTeam,
+		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
-	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+	w.ghost = isoObjs{team: ghostID, spawn: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID,
-		device: ghostID}
+		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
+		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
+		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
+		page: ghostID, pageLink: ghostID, pageDel: ghostID,
+		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -937,23 +1408,26 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "account pool")
 	ext := Extensions{
 		Kinds: isoKinds{pool: ccp, plane: plane}, Credentials: isoCredPage{PGStore: w.creds, plane: plane},
-		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
-			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
+		CCUsage: ccusage.NewPG(pool),
+		Notes:   ns, Agents: as, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
+		PublicURL:   "http://muster.test",
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		Flows:  flows.NewPG(pool),
 		// Plugins ON, with no gateway: a message B's plugin posts is stored as
 		// B's and stays queued.
-		Plugins: plugins.NewPG(pool),
-		Pins:    pins.NewPG(pool),
-		Recents: recents.NewPG(pool),
+		Plugins:     plugins.NewPG(pool),
+		Pins:        pins.NewPG(pool),
+		SessionTags: sessiontags.NewPG(pool),
+		Recents:     recents.NewPG(pool),
 		// Session routing (0021), on: A's route is a real object B must not reach.
 		Routes:    plugins.NewPG(pool),
 		Routing:   &Routing{},
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
 		Uploads:   w.uploadSvc,
+		// Shareable pages (0116): A's page is a real object B must not reach.
+		Pages: pages.NewPG(pool),
 		// The attention queue (0025): A's ask is a real object B must not reach.
 		Attention: attention.NewPG(pool),
 		Devices:   devices.NewPG(pool),
@@ -966,7 +1440,15 @@ func newIsoWorld(t *testing.T) *isoWorld {
 				return nil, fmt.Errorf("no such host %s", host)
 			}},
 	}
+	// Suggested replies (0048): A's window's set and A's toggle are A's.
+	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool), Usage: suggest.NewPGUsage(pool)}
+	// The chief's on/off switch (0060): A's choice is A's.
+	ext.ChiefPrefs = chiefpref.NewPG(pool)
+	// "Show tmux sessions" (0094): A's switch is A's.
+	ext.NotifyPrefs = notifypref.NewPG(pool)
 	srv.UseExtensions(ext)
+	srv.EnableOfficerStore(w.officerStore)
+	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	// The admin pages need GoTrue and the account store; the session tier stays
@@ -985,6 +1467,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	gtSrv := New(w.bus, AuthConfig{Mode: AuthModeGoTrue, HookToken: isoHookToken, ServiceToken: isoServiceToken},
 		log.New(io.Discard, "", 0))
 	gtSrv.UseExtensions(ext)
+	gtSrv.EnableOfficerStore(w.officerStore)
+	gtSrv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
 	gtSrv.UseRouter(w.router)
 	gtSrv.UseApprovalGate(&isoGate{})
 	// Accounts too, so the twin SERVES the admin pages (accounts PR 5): a
@@ -1031,9 +1515,18 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	w.aChief, err = as.GetByName(ua, agents.ChiefNameFor(w.a.uid))
 	must(err, "a chief")
+	// A side chat of A's chief, carrying the canary (chief_chats.go's routes).
+	aSide, err := as.CreateSession(ua, w.aChief.ID, w.aChief.Name)
+	must(err, "a chief side chat")
+	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.aChief.ID, SessionID: aSide.ID, Role: "user", Content: w.canary + " side chat", TypedBy: w.a.uid})
+	must(err, "a chief side chat line")
+	w.objA.chief, w.objA.chiefChat, w.objA.chiefName = w.aChief.ID, aSide.ID, w.aChief.Name
 	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
 		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
 	w.objA.grant = w.aGrantID
+	// A's shared approval (a standing grant, 0043): the target B's revoke names.
+	must(pool.QueryRow(w.sys, `INSERT INTO connector_standing_grants (owner_id, connector_name, source)
+		VALUES ($1, $2, 'stored') RETURNING id`, w.a.uid, w.aConnName).Scan(&w.objA.standing), "a standing grant")
 	// An ACTIVE TURN of A's chief (round-2 audit 🟡1): the notifications
 	// panel's ACTIVE section reads a SERVER-WIDE in-memory registry, not a
 	// table, so row-level security never sees it. The chief has no unread
@@ -1068,11 +1561,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		ids := []int64{w.a.uid, w.b.uid}
 		for _, q := range []string{
 			`DELETE FROM connector_audit WHERE owner_id = ANY($1)`, `DELETE FROM connector_grants WHERE owner_id = ANY($1)`,
+			`DELETE FROM connector_standing_grants WHERE owner_id = ANY($1)`,
 			`DELETE FROM connectors WHERE owner_id = ANY($1)`, `DELETE FROM chat_messages WHERE owner_id = ANY($1)`,
 			`DELETE FROM chat_sessions WHERE owner_id = ANY($1)`, `DELETE FROM agents WHERE owner_id = ANY($1)`,
 			`DELETE FROM task_sessions WHERE owner_id = ANY($1)`, `DELETE FROM note_attachments WHERE owner_id = ANY($1)`,
 			`DELETE FROM note_comments WHERE owner_id = ANY($1)`, `DELETE FROM notes WHERE owner_id = ANY($1)`,
-			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM user_credentials WHERE owner_id = ANY($1)`,
+			`DELETE FROM user_credentials WHERE owner_id = ANY($1)`,
 			`DELETE FROM cc_account_marks WHERE owner_id = ANY($1)`,
 			`DELETE FROM push_subscriptions WHERE owner_id = ANY($1)`, `DELETE FROM push_preferences WHERE owner_id = ANY($1)`,
 			`DELETE FROM device_pairing_codes WHERE owner_id = ANY($1)`, `DELETE FROM devices WHERE owner_id = ANY($1)`,
@@ -1187,23 +1681,49 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	// The built-in officer store (officer_admin.go): a type key, an officer
+	// id (<type>:a) and an item of it.
+	officerType, officer                      string
+	officerItem                               int64
 	ccAccount                                 string
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
-	token                                     int64  // a personal API token's id
-	flowJob, runnerTok, flowReq               int64  // a browser-flow job's, runner token's and agent request's id
-	plugin                                    int64  // a plugin's id (0015)
-	draft                                     int64  // a plugin reply draft's id (0015/0016)
-	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
-	pushDevice                                int64  // a Web Push device's id
-	device                                    int64  // a paired device's id (0039)
-	agentName, connName, tag, link            string
-	mirrorHost, mirrorSession                 string
-	queued                                    int64  // a queued message's id (0019)
-	upload                                    string // a file attachment's public id (0024)
-	route                                     string // a session route's id (0021)
-	pluginMsg                                 int64  // a plugin message's id (its retry route)
-	ask                                       int64  // an attention ask's id (0025)
+	// The chief's chats (chief_chats.go): the chief's id and name, and a side
+	// chat of it — the routes only a CHIEF answers (o.agent is a worker).
+	chief, chiefChat               int64
+	chiefName                      string
+	token                          int64  // a personal API token's id
+	flowJob, runnerTok, flowReq    int64  // a browser-flow job's, runner token's and agent request's id
+	plugin                         int64  // a plugin's id (0015)
+	draft                          int64  // a plugin reply draft's id (0015/0016)
+	passkey                        string // a GoTrue passkey id (the gotrue twin's fake)
+	pushDevice                     int64  // a Web Push device's id
+	device                         int64  // a paired device's id (0039)
+	agentName, connName, tag, link string
+	mirrorHost, mirrorSession      string
+	// mirrorOwner, when set, is a TEAM whose host the mirror routes name
+	// (`owner=`, team sharing 2b.3): the team-host leg of teamRoleWalks.
+	mirrorOwner int64
+	queued      int64  // a queued message's id (0019)
+	upload      string // a file attachment's public id (0024)
+	route       string // a session route's id (0021)
+	pluginMsg   int64  // a plugin message's id (its retry route)
+	refWrite    int64  // a write queued on a plugin task reference (0072)
+	refTask     int64  // the reference refWrite is on (its retry/dismiss routes' {id})
+	ask         int64  // an attention ask's id (0025)
+	standing    int64  // a shared approval's id (0043)
+	// Routing rules (0107): one per write route, so the walk's order cannot
+	// make A's own answer the ghost's — rule is active (Disable's), ruleOff
+	// disabled (Enable's), ruleDel active (Delete's).
+	rule, ruleOff, ruleDel int64
+	// Shareable pages (0116): a page's id and one of its links', and the
+	// page the delete route names (its own, for ruleDel's reason).
+	page, pageLink, pageDel int64
+	// A team (phase 2a): one A manages, whose name carries the canary.
+	team int64
+	// A host officer spawn of A's (0125), its host the canary (phase 3's
+	// lend routes).
+	spawn int64
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1213,10 +1733,51 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if i := strings.IndexByte(pattern, ' '); i > 0 {
 		method, path = pattern[:i], pattern[i+1:]
 	}
+	if strings.HasPrefix(path, "/api/officers/") {
+		// The built-in officer store's admin API: its own path names, and a
+		// body each route accepts, so a refusal is about WHOSE row.
+		path = strings.NewReplacer("{key}", o.officerType, "{officer}", url.PathEscape(o.officer),
+			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly", "{venue}", "iso").Replace(path)
+		handle := "isoperson"
+		if method == http.MethodDelete {
+			handle = "isodelete"
+		}
+		path = strings.ReplaceAll(path, "{handle}", handle)
+		switch {
+		case method == http.MethodGet || method == http.MethodDelete:
+			return method, path, ""
+		case strings.HasSuffix(path, "/resolve"):
+			return method, path, `{"outcome":"no_action","summary":"iso"}`
+		case strings.HasSuffix(path, "/items"):
+			return method, path, `{"kind":"iso-write","subject_key":"iso-` + strconv.FormatInt(actor.uid, 10) + `"}`
+		case strings.Contains(path, "/types/"):
+			return method, path, `{"name":"iso","charter":"iso-write"}`
+		case strings.HasSuffix(path, "/flags"):
+			return method, path, `{"bot":true}`
+		case strings.Contains(path, "/schedules/"):
+			return method, path, `{"cron":"0 6 * * *","kind":"iso","subject_key":"iso"}`
+		}
+		return method, path, `{}`
+	}
 	id := strconv.FormatInt(o.task, 10)
+	sid := strconv.FormatInt(o.chat, 10)
+	name := o.agentName
 	switch {
+	// The chief's chats (chief_chats.go): A's CHIEF and its side chat, named
+	// before the generic /agents/{id} below, which names A's worker.
+	case strings.HasSuffix(path, "/sessions/side") || strings.HasSuffix(path, "/sessions/fresh-primary") ||
+		strings.HasSuffix(path, "/sessions/{sid}/continue") ||
+		strings.HasSuffix(path, "/sessions/{sid}/archive") || strings.HasSuffix(path, "/sessions/{sid}/unarchive"):
+		id, sid = strconv.FormatInt(o.chief, 10), strconv.FormatInt(o.chiefChat, 10)
+	case path == "/ui/agents/{name}/chat-context":
+		name = o.chiefName
+		path += "?" + url.Values{"session": {strconv.FormatInt(o.chiefChat, 10)}}.Encode()
 	case strings.Contains(path, "/agents/{id}") || strings.HasPrefix(path, "/ui/agents/{id}"):
 		id = strconv.FormatInt(o.agent, 10)
+	case strings.Contains(path, "connector-standing-grants/{id}"):
+		// Before "connector-grants/{id}" below, which it does not contain, but
+		// kept apart so a rename cannot fold it into the per-agent grant.
+		id = strconv.FormatInt(o.standing, 10)
 	case strings.Contains(path, "connector-grants/{id}") || strings.Contains(path, "connector-requests/{id}"):
 		id = strconv.FormatInt(o.grant, 10)
 	case strings.Contains(path, "/agent/approvals/{id}"):
@@ -1231,8 +1792,21 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.runnerTok, 10)
 	case strings.HasPrefix(path, "/plugins/{id}"):
 		id = strconv.FormatInt(o.plugin, 10)
+	case strings.HasPrefix(path, "/rules/{id}/enable"):
+		id = strconv.FormatInt(o.ruleOff, 10)
+	case strings.HasPrefix(path, "/rules/{id}/delete"):
+		id = strconv.FormatInt(o.ruleDel, 10)
+	case strings.HasPrefix(path, "/rules/{id}"):
+		id = strconv.FormatInt(o.rule, 10)
 	case strings.HasPrefix(path, "/plugins/drafts/{id}") || strings.HasPrefix(path, "/plugin/v1/drafts/{id}"):
 		id = strconv.FormatInt(o.draft, 10)
+	case strings.HasPrefix(path, "/plugin/v1/task-writes/{id}"):
+		id = strconv.FormatInt(o.refWrite, 10)
+	case strings.Contains(path, "/ref-writes/{wid}"):
+		// The owner's retry/dismiss: {id} is the reference the write is on
+		// ({wid} is replaced below). A's write is leased (then settled by A's
+		// own result walk), so A's answer is a 409 where the ghost's is a 404.
+		id = strconv.FormatInt(o.refTask, 10)
 	case strings.Contains(path, "/flows/requests/{id}"):
 		id = strconv.FormatInt(o.flowReq, 10)
 	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
@@ -1253,14 +1827,31 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.queued, 10)
 	case strings.HasPrefix(path, "/api/routes/{id}"):
 		id = o.route
-	case strings.HasPrefix(path, "/plugins/messages/{id}") || strings.HasPrefix(path, "/api/plugins/messages/{id}"):
+	case strings.HasPrefix(path, "/plugins/messages/{id}") || strings.HasPrefix(path, "/api/plugins/messages/{id}") ||
+		strings.HasPrefix(path, "/plugin/v1/messages/{id}"):
 		id = strconv.FormatInt(o.pluginMsg, 10)
 	case strings.HasPrefix(path, "/uploads/{id}") || strings.HasPrefix(path, "/f/{id}"):
 		id = o.upload
 	case strings.HasPrefix(path, "/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
+	case path == "/pages/{id}/delete":
+		id = strconv.FormatInt(o.pageDel, 10)
+	case strings.HasPrefix(path, "/pages/{id}"):
+		id = strconv.FormatInt(o.page, 10)
+	case strings.HasPrefix(path, "/teams/{id}") || strings.HasPrefix(path, "/account/teams/{id}"):
+		id = strconv.FormatInt(o.team, 10)
+		path = strings.NewReplacer("/types/{key}", "/types/"+o.officerType, "/defs/{officer}", "/defs/"+url.PathEscape(o.officer),
+			"/declared/{officer}", "/declared/"+url.PathEscape(o.officer)).Replace(path)
+	case strings.HasPrefix(path, "/officers/spawns/{id}"):
+		id = strconv.FormatInt(o.spawn, 10)
+	case strings.HasPrefix(path, "/officers/{officer}"):
+		// The Officers pages (O-C): A's officer, and its schedule.
+		path = strings.NewReplacer("{officer}", url.PathEscape(o.officer), "{name}", "nightly").Replace(path)
 	}
-	name := o.agentName
+	if path == "/attention/asker" {
+		// The asks block of A's agent (the agent page's), by name.
+		path += "?" + url.Values{"agent": {o.agentName}}.Encode()
+	}
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
 	}
@@ -1270,37 +1861,54 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	path = strings.NewReplacer(
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
 		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
-		"{tag}", url.PathEscape(o.tag), "{sid}", strconv.FormatInt(o.chat, 10),
-		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe",
+		"{wid}", strconv.FormatInt(o.refWrite, 10),
+		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1",
+		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
+		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
+		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload,
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" ||
-		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/hermes/approve" {
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" ||
+		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/opencode/answer" {
+		q := url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}
+		if o.mirrorOwner != 0 {
+			// A team host's entry: owner= on every route, in the URL (where
+			// mirrorTeamGate reads it on every route) and, for a POST, in its
+			// form too (where the scroll's view rule and mirrorEntry read it).
+			path += "?" + url.Values{"owner": {strconv.FormatInt(o.mirrorOwner, 10)}}.Encode()
+			if method != http.MethodPost {
+				path += "&"
+			}
+			q.Set("owner", strconv.FormatInt(o.mirrorOwner, 10))
+		} else if method != http.MethodPost {
+			path += "?"
+		}
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.
-			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
-				"kind": {"terminal"}, "password": {"iso-not-the-password"}, "lines": {"3"}}.Encode()
+			q.Set("text", "iso-write")
+			q.Set("kind", "terminal")
+			q.Set("password", "iso-not-the-password")
+			q.Set("lines", "3")
+			return method, path, q.Encode()
 		}
-		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
+		path += q.Encode()
 	}
 	if path == "/ui/focus/history" {
 		// Focus history (0022) names its session by a query parameter: A's agent.
 		path += "?" + url.Values{"subject": {"agent:" + strconv.FormatInt(o.agent, 10)}}.Encode()
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
-		if strings.HasPrefix(path, "/github/callback") {
-			path += "?state=x&code=y"
-		}
 		return method, path, ""
 	}
 	if strings.HasPrefix(path, "/plugin/") {
 		// A whole valid message: what B's plugin posts is accepted as B's own.
-		// The draft routes' fields ride along: a claim that does not wait, and a
-		// result (so a refusal is about WHOSE draft, not a malformed body).
+		// The draft routes' fields ride along: a claim that does not wait, a
+		// result and a check verdict (so a refusal is about WHOSE draft, not a
+		// malformed body).
 		return method, path, `{"external_id":"iso-` + w.suffix + `-` + strconv.FormatInt(actor.uid, 10) +
-			`","sender":"iso","subject":"iso-write","body":"iso-write","wait_seconds":0,"ok":true}`
+			`","sender":"iso","subject":"iso-write","body":"iso-write","wait_seconds":0,"ok":true,"sendable":true}`
 	}
 	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") ||
 		strings.HasPrefix(path, "/runner/") {
@@ -1309,6 +1917,28 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		return method, path, `{"jsonrpc":"2.0","id":1,"method":"tools/list","title":"iso-write","body":"iso-write",` +
 			`"status":"in_progress","message":"iso-write","answer":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls",` +
 			`"instances":["isoinst"],"waitSeconds":1,"outcome":"done"}`
+	}
+	if strings.HasPrefix(path, "/officers/") && !strings.HasPrefix(path, "/officers/spawns/") {
+		// The Officers pages' forms: a body each write accepts for its owner
+		// (a whole wizard answer, a mode, the delete's confirmation), so a
+		// refusal is about whose officer, not a missing field.
+		return method, path, url.Values{"template": {"blank"}, "name": {"iso-write"}, "charter": {"iso-write"}, "runtime": {"auto"},
+			"wake": {"manual"}, "mode": {"shadow"}, "confirm": {o.officer}, "schedule_preset": {"hourly"}}.Encode()
+	}
+	if strings.HasPrefix(path, "/officers/spawns/") {
+		// A share names a team the ACTOR operates where it has one (A
+		// manages its team), so a refusal is about whose spawn, not a
+		// missing field.
+		team := w.aTeam
+		if actor.uid != w.a.uid {
+			team = w.ghost.team
+		}
+		return method, path, url.Values{"team": {strconv.FormatInt(team, 10)}}.Encode()
+	}
+	if strings.HasPrefix(path, "/account/teams/") {
+		// A member's own notify switch (phase 2b.1): a valid value, so a
+		// refusal is about whose team, not a missing field.
+		return method, path, url.Values{"on": {"1"}}.Encode()
 	}
 	winner := actor.task.ID
 	if actor.uid == w.a.uid {
@@ -1323,12 +1953,31 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// names o's task.
 		"winner": {strconv.FormatInt(winner, 10)}, "loser": {strconv.FormatInt(o.task, 10)},
 		"note_id": {strconv.FormatInt(o.task, 10)},
+		// A page's rollback names a version of it.
+		"version": {"1"},
+		// The move-to-team form names o's team (team sharing 4.3).
+		"team": {strconv.FormatInt(o.team, 10)},
 	}
 	// The pin routes name o's agent. Only on them: `kind` is also the dispatch
 	// form's agent-kind field.
 	if strings.HasPrefix(pattern, "POST /agents/pins") {
 		f.Set("kind", "agent")
 		f.Set("agent_id", strconv.FormatInt(o.agent, 10))
+	}
+	// The session tag routes name o's agent too (the list in its query).
+	if strings.HasSuffix(pattern, " /sessions/tags") || strings.HasSuffix(pattern, " /sessions/tags/delete") {
+		f.Set("kind", "agent")
+		f.Set("agent_id", strconv.FormatInt(o.agent, 10))
+		f.Set("tag", w.canary+"-tag")
+		if method == http.MethodGet {
+			return method, path + "?" + url.Values{"kind": {"agent"}, "agent_id": {strconv.FormatInt(o.agent, 10)}}.Encode(), ""
+		}
+	}
+	// "Keep the name" names o's agent the same way.
+	if pattern == "POST /sessions/name/drift-dismiss" {
+		f.Set("kind", "agent")
+		f.Set("agent_id", strconv.FormatInt(o.agent, 10))
+		f.Set("title", w.canary+" title")
 	}
 	if pattern == "POST /tasks" {
 		return method, path, "multipart:" + f.Encode()
@@ -1356,15 +2005,16 @@ func (w *isoWorld) leaks(body string, withIdentities bool) []string {
 func (w *isoWorld) snapshot() map[string]string {
 	w.t.Helper()
 	out := map[string]string{}
-	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
-		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
+	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents", "agent_secrets",
+		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
-		"devices", "device_pairing_codes"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "session_tags", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
+		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage", "chief_preferences",
+		"task_ref_writes", "pages", "page_versions", "page_links", "page_responses"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
-			// task_sessions/github_connection have no `id` ordering column in every
-			// shape; fall back to a stable text ordering.
+			// task_sessions and the owner-keyed tables have no `id` ordering column;
+			// fall back to a stable text ordering.
 			if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t::text)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 				w.t.Fatalf("snapshot %s: %v", tbl, err)
 			}
@@ -1440,12 +2090,13 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 }
 
 // namesObject reports whether a route names an object — in its path, or (for
-// the dispatch and merge forms) in its body.
+// the merge form) in its body.
 func namesObject(route string) bool {
-	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
+	return paramRE.MatchString(route) || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
+		route == "POST /mirror/view/chief" || route == "POST /mirror/view/proposal" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /mirror/view/ask/message" || route == "POST /attention/opencode/answer" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent
@@ -1491,7 +2142,28 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
-	"POST /agents/{id}/start": "the provisioner acted for A (isoProvisioner records it), never for B",
+	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
+	// session the host lists, which the walk names none of, so A's own call and
+	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the
+	// host's take-back revokes its owner's upload, and another owner's host
+	// naming that id gets 404 and leaves it live.
+	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
+	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
+	// so A's own PUT and a PUT naming a ghost both succeed — there is no
+	// "someone else's object" for the status to tell apart. That B's PUT of A's
+	// key writes a row of B's and leaves A's untouched is
+	// TestTheAdminAPIIsOwnerScoped's (officer_builtin_attention_pg_test.go).
+	"PUT /api/officers/types/{key}":                     "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}":                  "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}/schedules/{name}": "an upsert of the caller's own officer's schedule: B's names B's own (absent) officer → 404 like a ghost; controlled in TestTheAdminAPIIsOwnerScoped",
+	"POST /agents/{id}/start":                           "the provisioner acted for A (isoProvisioner records it), never for B",
+	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
+	// challenge its own device asked for, signed by that device's step-up key,
+	// so A's device's bare request is refused like the ghost's. Its control is
+	// device_actions_pg_test.go: the SAME route, A's device signing, answers A's
+	// ask; B's device signing for A's ask is not_found and A's ask stays open.
+	"POST /api/device/actions/attention/asks/{id}/answer": "a signed action: controlled in device_actions_pg_test.go",
+	"POST /api/device/actions/attention/asks/{id}/cancel": "a signed action: controlled in device_actions_pg_test.go",
 	// 🔴 A BEARER CAPABILITY, NOT A SIDE EFFECT: the signed link's credential is
 	// the HMAC in its query, which no walker holds — the walk sends the bare
 	// path, so A's own answer is the ghost's 404, as it must be. Its control is
@@ -1499,13 +2171,35 @@ var sideEffectControlled = map[string]string{
 	// route with A's valid signature serves A's bytes, and unsigned, tampered,
 	// expired or revoked it is that 404.
 	"GET /f/{id}": "a signed link (uploads.go): its credential is the HMAC no walker holds; controlled in uploads_test.go",
+	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a page's share link is the token
+	// in its path, which no walker holds, so A's own answer is the ghost's 404.
+	// Its control is pages_pg_test.go: the SAME routes with A's live token serve
+	// A's page (and record A's responses), another user's token serves only its
+	// own page, and an unknown, pending, denied or revoked token is that 404.
+	"GET /s/{token}":         "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/content": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/submit": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/upload": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
 	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier
 	// only (requireServiceToken), which acts as user 1, so no credential of a
 	// member — A's included — opens it, and A's answer is the ghost's 401. Its
 	// owner isolation is pinned at the store, where it is enforced:
 	// TestThePGStoreDedupsAnIdempotencyKeyPerOwner (internal/jobs) reads another
 	// owner's job as ErrNotFound and refuses a job on another owner's agent.
-	"GET /api/jobs/{id}":                    "the service tier only (user 1); per-owner isolation controlled in internal/jobs's pg tests",
+	"GET /api/jobs/{id}": "the service tier only (user 1); per-owner isolation controlled in internal/jobs's pg tests",
+	// The view's chief mode answers about A's window only once A has a chief
+	// (this world's A has none, so A's own answer is the ghost's). Its control
+	// is view_chief_pg_test.go: the owner's own window is accepted (and its strip
+	// drawn), another owner's same address is 404 and stores nothing.
+	"POST /mirror/view/chief":    "needs A's chief; controlled in view_chief_pg_test.go (TestTheViewChiefDoorRefuses)",
+	"GET /mirror/view/chief/log": "needs A's chief; controlled in view_chief_pg_test.go (TestTheViewChiefStripShowsThisSessionsExchangeOnly)",
+	// A succession needs A's chief to have proposed one (this world's A has
+	// none, so A's own answer is the ghost's). Controlled in
+	// succession_pg_test.go: another owner's tap and read of the owner's card are
+	// not found and start nothing.
+	"GET /mirror/view/successor":            "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
+	"POST /mirror/view/proposal":            "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
+	"GET /mirror/view/proposal":             "needs A's proposal; read as the principal (row-level security plus the owner in the WHERE)",
 	"POST /agents/{id}/stop":                "as start",
 	"DELETE /agents/{id}":                   "as start (Destroy)",
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",
@@ -1517,6 +2211,22 @@ var sideEffectControlled = map[string]string{
 	// passkey (303, gone from GoTrue), after a fresh session of B's was
 	// refused it (404, still there).
 	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
+	// 🔴 THE OUTBOUND-DRAFT ROUTES NAME AN OUTBOUND DRAFT OR A PLUGIN THIS
+	// WORLD'S WALK CANNOT REACH: A's draft here is a reply draft (no media),
+	// a medium upload is refused on its headers before any lookup, and the
+	// admin door's {id} is not substituted. Their owner isolation — B's
+	// plugin cannot upload to A's draft, B's session cannot read A's medium,
+	// B's token cannot rebind A's plugin, each answering what a ghost gets —
+	// is TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go).
+	"POST /plugin/v1/drafts/{id}/media":  "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	"GET /plugins/drafts/{id}/media/{n}": "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	"PUT /api/plugins/{id}/deliver-to":   "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a pairing poll's credential is
+	// the poll secret no walker holds, so A's own answer is the ghost's 404.
+	// Its control is TestAPairedTokenIsHandedOutOnceAndOnlyWithTheCode: the
+	// same route with the secret answers pending, then the token once; with
+	// none or a wrong one, that 404.
+	"GET /plugin/v1/pair/{request_id}": "a poll secret no walker holds; controlled in plugin_pairing_pg_test.go",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where
@@ -1524,6 +2234,11 @@ var sideEffectControlled = map[string]string{
 var controlMarkers = map[string]string{
 	"GET /agent/connectors/{name}":          `"exists":true`,
 	"POST /agent/connectors/{name}/request": `"exists":true`,
+	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
+	// another owner's) to its place on the queue.
+	"GET /attention/open/{key}": `href="/attention/asks/`,
+	// A's officer's usage row (numbers only: no canary can ride it).
+	"GET /api/officers/defs/{officer}/usage": `"requests":4242421`,
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a
@@ -1541,7 +2256,7 @@ func (w *isoWorld) checkOutsider(t *testing.T, who string, results []isoResult) 
 	t.Helper()
 	for _, res := range results {
 		named := namesObject(res.route)
-		if l := w.leaks(res.body, !named); len(l) > 0 {
+		if l := w.leaks(res.body, !named || idFreePaths[res.route]); len(l) > 0 {
 			t.Errorf("LEAK: %s %s %s → %d carries A's %v\n  body: %s", who, res.via, res.route, res.status, l, truncate(res.body, 300))
 		}
 		if named && res.status != res.ghost {
@@ -1554,11 +2269,40 @@ func (w *isoWorld) checkOutsider(t *testing.T, who string, results []isoResult) 
 	}
 }
 
+// idFreePaths are routes that name A's object by a bare number, never by an
+// identity of A's: the request carries none of A's names, so an answer that
+// carries one (a redirect to A's agent page) is a leak even though the route
+// names an object.
+var idFreePaths = map[string]bool{
+	"GET /attention/open/{key}": true,
+}
+
 func is2xx(code int) bool { return code >= 200 && code < 300 }
 
 // TestNoRouteLetsOneUserReachAnothersData is the walk. See the file header.
 func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	w := newIsoWorld(t)
+	// Teams (docs/design/team-sharing.md): A and B are TEAMMATES — A manages
+	// a team in which B is an operator — and the team itself owns a task
+	// carrying the TEAM's canary. Membership never gives B any of A's
+	// PERSONAL rows (every assertion below holds unchanged), and after the
+	// main walk B walks again as a non-member, a viewer, an operator and a
+	// manager of the team (teamRoleWalks, phase 2a).
+	team, teamCanary := w.addTeamOf(t, w.a.uid, w.b.uid)
+	// Every principal in this walk reads its role AND memberships from the
+	// database, as production does, so B walks AS a member of A's team.
+	w.srv.ext.Users = users.NewPG(w.pool)
+	if p := w.srv.principalFor(w.sys, w.b.uid, authz.ViaSession); p.Team || p.Role != authz.RoleMember {
+		t.Fatalf("control: B's principal = %v", p)
+	} else if r, ok := p.Teams.RoleIn(team); !ok || r != authz.TeamOperator {
+		t.Fatalf("control: B's request principal carries memberships %q; want operator of team %d", p.Teams, team)
+	}
+	teamTask := func() string {
+		var js string
+		_ = w.pool.QueryRow(w.sys, `SELECT COALESCE(json_agg(n ORDER BY n.id)::text, '') FROM notes n WHERE owner_id = $1`, team).Scan(&js)
+		return js
+	}
+	teamBefore := teamTask()
 	routes := sortedRoutes()
 	before := w.snapshot()
 	w.router.reset()
@@ -1597,9 +2341,13 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		t.Errorf("CONTROL: B's personal API token was admitted on only %d routes — the leg is not walking", tokAdmitted)
 	}
 	// The plugin-token leg too: B's plugin must have been ADMITTED on its own
-	// door (its message stored as B's, its claim answered "nothing for you"),
-	// or its clean answers everywhere else are only the refusal of an unknown
-	// token. The result route names A's draft, so it is NOT among them.
+	// door (its message stored as B's, its two claims — the drafts' and the
+	// task writes' — answered "nothing for you", and GET /plugin/v1/self naming
+	// B's own plugin, and GET /plugin/v1/drafts/checks listing only B's own
+	// drafts awaiting a check), or its clean answers
+	// everywhere else are only the refusal of an unknown token. The result
+	// routes name A's draft and A's write, so they are NOT among them; the
+	// reference listing names no namespace in the walk (400).
 	plugAdmitted := 0
 	for _, res := range bResults {
 		if strings.HasPrefix(res.via, "plugin-token") && is2xx(res.status) && isolationClasses[res.route] != classPublic {
@@ -1609,8 +2357,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			}
 		}
 	}
-	if plugAdmitted != 2 {
-		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message and claim routes", plugAdmitted)
+	if plugAdmitted != 5 {
+		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message, two claim routes, its drafts awaiting a check and its self", plugAdmitted)
 	}
 	// The device-credential leg: B's device must have been ADMITTED on its own
 	// tier (its config read, its own unpair) and nowhere else. The push PUT is
@@ -1646,6 +2394,10 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	// --- the mutation leg ---
 	w.sameRows(t, "B's walk", before)
+	if after := teamTask(); after != teamBefore || !strings.Contains(after, teamCanary) {
+		t.Errorf("B's walk changed the TEAM's task (or the fixture has none):\n before %s\n after  %s", teamBefore, after)
+	}
+	w.teamRoleWalks(t, team, teamCanary, routes, teamTask)
 	// --- the connect leg ---
 	if got := w.up.sawSecret(w.canary + "-SECRET"); got != 0 {
 		t.Errorf("A's connector secret was injected upstream %d time(s) during B's walk", got)
@@ -1991,11 +2743,30 @@ func (s *isoStream) text() string {
 type isoMirror struct {
 	owner int64
 	host  string
+	// teamOwner, when set, is a TEAM owning teamHost (team sharing 2b.3):
+	// listed by VisibleHosts to its members (Principal.TeamScope), as
+	// mirror.Service does, and nobody else. teamHost carries the TEAM's
+	// canary, so the walk can tell its leak from one of A's.
+	teamOwner int64
+	teamHost  string
 }
 
 func (m *isoMirror) mine(ctx context.Context) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && p.UserID == m.owner
+}
+
+// teamVisible is the team's host, for a principal that is a member of it on a
+// door that carries teams (Principal.TeamScope), else nothing.
+func (m *isoMirror) teamVisible(ctx context.Context) []mirror.HostView {
+	p, ok := authz.From(ctx)
+	if m.teamOwner == 0 || !ok || p.All() {
+		return nil
+	}
+	if _, in := p.TeamScope().RoleIn(m.teamOwner); !in {
+		return nil
+	}
+	return []mirror.HostView{{Owner: m.teamOwner, Host: m.teamHost, Sessions: []string{"main"}, Online: true}}
 }
 
 func (m *isoMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -2017,13 +2788,13 @@ func (m *isoMirror) AttachWindow(ctx context.Context, host, _, _ string, _ bool,
 	return err
 }
 
-// AnswerHermesApproval: A's own host has no such approval (a 409, which is
-// still A reaching the route); anyone else's request never gets this far.
-func (m *isoMirror) AnswerHermesApproval(ctx context.Context, host, _, _, _, _ string) error {
+// AnswerOpenCodeAsk: A's own host has no such ask (a 409, which is still A
+// reaching the route); anyone else's request never gets this far.
+func (m *isoMirror) AnswerOpenCodeAsk(ctx context.Context, host, _, _, _, _ string) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline
 	}
-	return mirror.ErrHermesApprovalGone
+	return mirror.ErrOpenCodeAskGone
 }
 
 // isoUpstream records the credentials the proxy injected.
@@ -2134,6 +2905,7 @@ type isoProvisioner struct {
 	store agents.Store
 	mu    sync.Mutex
 	acted map[[2]int64]int // (agent id, acting uid) -> successful actions
+	vias  map[int64]authz.Via
 }
 
 func (p *isoProvisioner) check(ctx context.Context, id int64) error {
@@ -2147,7 +2919,18 @@ func (p *isoProvisioner) check(ctx context.Context, id int64) error {
 		p.acted = map[[2]int64]int{}
 	}
 	p.acted[[2]int64{id, pr.UserID}]++
+	if p.vias == nil {
+		p.vias = map[int64]authz.Via{}
+	}
+	p.vias[id] = pr.Via
 	return nil
+}
+
+// lastVia is the door of the last successful action on agent id.
+func (p *isoProvisioner) lastVia(id int64) authz.Via {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.vias[id]
 }
 
 // actedOn waits briefly for the handlers' background actions, then reports
@@ -2164,6 +2947,10 @@ func (p *isoProvisioner) Dispatch(ctx context.Context, id int64, _ bool) error {
 func (p *isoProvisioner) Start(ctx context.Context, id int64) error   { return p.check(ctx, id) }
 func (p *isoProvisioner) Stop(ctx context.Context, id int64) error    { return p.check(ctx, id) }
 func (p *isoProvisioner) Destroy(ctx context.Context, id int64) error { return p.check(ctx, id) }
+func (p *isoProvisioner) RotateCredentials(ctx context.Context, id int64) (bool, error) {
+	err := p.check(ctx, id)
+	return err == nil, err
+}
 func (p *isoProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
 }
@@ -2203,4 +2990,150 @@ func (p *isoPusher) sentTo(endpoint string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.sent[endpoint]
+}
+
+// isoNoSuggestions is the walk's model: it answers no suggestions, so the
+// walk spends nothing and a set is never the object under test.
+type isoNoSuggestions struct{}
+
+func (isoNoSuggestions) Generate(context.Context, int64, string) (suggest.Generation, error) {
+	return suggest.Generation{}, nil
+}
+
+// addTeamOf makes a team managed by manager with operator as an operator, and
+// a task the TEAM owns that carries the world's canary (written as System:
+// nothing in phase 1 writes a team-owned row). The positive control is that
+// B's membership is what a request principal reads (users.Account), so the
+// walk runs with it.
+func (w *isoWorld) addTeamOf(t *testing.T, manager, operator int64) (int64, string) {
+	t.Helper()
+	store := users.NewPG(w.pool)
+	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	team, err := store.CreateTeam(w.sys, by, "iso-team-"+w.suffix, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTeamMember(w.sys, by, team.ID, operator, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	var note int64
+	if err := w.pool.QueryRow(w.sys, `INSERT INTO notes (owner_id, title) VALUES ($1, $2) RETURNING id`,
+		team.ID, "team task cnryt"+w.suffix).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM notes WHERE owner_id = $1`, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.TeamObject(team.ID))
+		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, team.ID)
+	})
+	acct, err := store.Account(w.sys, operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := acct.Teams.RoleIn(team.ID); !ok || r != authz.TeamOperator {
+		t.Fatalf("control: the member's account reads %q; want operator of team %d", acct.Teams, team.ID)
+	}
+	return team.ID, "cnryt" + w.suffix
+}
+
+// objTeamHost is A's objects with the mirror routes aimed at team's host
+// (isoMirror.teamHost, named with teamCanary) instead of A's own.
+func (w *isoWorld) objTeamHost(team int64, teamCanary string) isoObjs {
+	o := w.objA
+	o.mirrorHost, o.mirrorOwner = teamCanary+"-host", team
+	if m, ok := w.srv.ext.Mirror.(*isoMirror); ok {
+		m.teamOwner, m.teamHost = team, o.mirrorHost
+	}
+	return o
+}
+
+// mirrorRoutes is the routes of routes that name a mirrored entry
+// (mirrorTeamRoutes, but for the host doors, which take no owner=).
+func mirrorRoutes(routes []string) []string {
+	var out []string
+	for _, r := range routes {
+		if rule, ok := mirrorTeamRoutes[r]; ok && rule != mirrorTeamHostDoor {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// teamRoleWalks walks B's browser session over every route once per role B
+// can hold in team — none, viewer, operator, manager (phase 2a). In EVERY
+// role B sees none of A's personal rows (checkOutsider, A's canary). As a
+// non-member B sees nothing of the team (no route carries the team's canary)
+// and changes nothing of it; as a viewer B changes nothing of it; as a
+// viewer, an operator and a manager B DOES see the team's task through a real
+// route — the positive control that the team arm is live end to end, so the
+// non-member's clean bodies are a fact about membership.
+func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, routes []string, teamTask func() string) {
+	t.Helper()
+	store := users.NewPG(w.pool)
+	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	// The team's host is online for the whole walk, every route included —
+	// the sidebar's too, which lists it to members only (VisibleHosts).
+	teamHost := w.objTeamHost(team, teamCanary)
+	for _, role := range []string{"none", "viewer", "operator", "manager"} {
+		if role == "none" {
+			if err := store.RemoveTeamMember(w.sys, by, team, w.b.uid); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := store.SetTeamMember(w.sys, by, team, w.b.uid, authz.TeamRole(role)); err != nil {
+			t.Fatal(err)
+		}
+		before, aBefore := teamTask(), w.snapshot()
+		results := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}}, routes)
+		// THE TEAM HOST LEG (team sharing 2b.3; design E, the isolation walk):
+		// every mirror route again, naming the TEAM's host (owner=), whose
+		// name carries the team's canary. Counted with the rest below: a
+		// non-member sees it on no route; a member (viewer and up) does.
+		hostResults := w.walkAs(w.b, teamHost, []cred{{sessionUser: w.b.uid}}, mirrorRoutes(routes))
+		hostSaw := 0
+		for _, res := range hostResults {
+			if strings.Contains(res.body, teamCanary+"-host") {
+				hostSaw++
+				if role == "none" {
+					t.Errorf("LEAK: B, NOT a member, %s %s → %d carries the team HOST's canary\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+				}
+			}
+		}
+		if role != "none" && hostSaw == 0 {
+			t.Errorf("CONTROL: B as the team's %s saw the team's HOST on no mirror route: the team-host leg is not reaching it", role)
+		}
+		if role == "none" {
+			// No oracle: a non-member naming the team's REAL host is answered
+			// exactly as naming a host the team does not have.
+			ghost := teamHost
+			ghost.mirrorHost = "ghost-host"
+			byRoute := map[string]int{}
+			for _, res := range w.walkAs(w.b, ghost, []cred{{sessionUser: w.b.uid}}, mirrorRoutes(routes)) {
+				byRoute[res.via+" "+res.route] = res.status
+			}
+			for _, res := range hostResults {
+				if g := byRoute[res.via+" "+res.route]; g != res.status {
+					t.Errorf("DISTINGUISHABLE: B, NOT a member, %s %s answered %d about the team's host but %d about a host it does not have", res.via, res.route, res.status, g)
+				}
+			}
+		}
+		w.checkOutsider(t, "B as the team's "+role, results)
+		w.sameRows(t, "B's walk as the team's "+role, aBefore)
+		saw := 0
+		for _, res := range results {
+			if strings.Contains(res.body, teamCanary) {
+				saw++
+				if role == "none" {
+					t.Errorf("LEAK: B, NOT a member, %s %s → %d carries the team's canary\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+				}
+			}
+		}
+		if role != "none" && saw == 0 {
+			t.Errorf("CONTROL: B as the team's %s saw the team's task on no route: the team arm is not reaching a real route", role)
+		}
+		if (role == "none" || role == "viewer") && teamTask() != before {
+			t.Errorf("MUTATION: B as the team's %s changed the team's task:\n before %s\n after  %s", role, before, teamTask())
+		}
+	}
 }

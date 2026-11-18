@@ -3,8 +3,11 @@ package main
 import (
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/officers"
+	"maps"
 	"net/url"
 	"os"
 	"regexp"
@@ -17,17 +20,26 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/clientaddr"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
+	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -64,6 +76,9 @@ const defaultPort = 8105
 const (
 	envPort     = "MUSTER_PORT"
 	envDatabase = "DATABASE_URL"
+	// The /metrics listener's port (api.MetricsHandler): unset means /metrics
+	// is not served at all. Never the main, browser or connect port.
+	envMetricsPort = "MUSTER_METRICS_PORT"
 
 	envUIPassword    = "MUSTER_UI_PASSWORD"
 	envHookToken     = "MUSTER_HOOK_TOKEN"
@@ -77,19 +92,27 @@ const (
 	envGoTrueSecret = "MUSTER_GOTRUE_JWT_SECRET"
 	envBrowserPort  = "MUSTER_BROWSER_PORT"
 
-	envGitHubToken     = "MUSTER_GITHUB_TOKEN"
-	envGitHubEncKey    = "MUSTER_GITHUB_ENCRYPTION_KEY"
-	envPublicURL       = "MUSTER_PUBLIC_URL"
-	envGitHubClientID  = "GITHUB_CLIENT_ID"
-	envGitHubClientSec = "GITHUB_CLIENT_SECRET"
+	envPublicURL = "MUSTER_PUBLIC_URL"
 
-	// The GitHub App (internal/githubapp): muster's GitHub identity (for admins)
-	// when set, taking precedence over the OAuth connection above (deprecated).
-	// The ID and the key are a pair, and the account allowlist is REQUIRED with
+	// Whose forwarding header names a request's client (internal/clientaddr):
+	// both or neither. Unset, the TCP peer on every listener.
+	envTrustedProxies = "MUSTER_TRUSTED_PROXIES"
+	envClientIPHeader = "MUSTER_CLIENT_IP_HEADER"
+	// envDirectClients declares the other topology: clients connect straight to
+	// muster, with no proxy in front. In gotrue mode one of the two is required
+	// (validateClientTopology).
+	envDirectClients = "MUSTER_DIRECT_CLIENTS"
+
+	// The GitHub App (internal/githubapp): muster's GitHub identity (for
+	// admins), and the only one. The ID and the key are a pair, and the account allowlist is REQUIRED with
 	// them: the App is public, so anyone can install it.
 	envGitHubAppID       = "MUSTER_GITHUB_APP_ID"
 	envGitHubAppKey      = "MUSTER_GITHUB_APP_PRIVATE_KEY"
 	envGitHubAppAccounts = "MUSTER_GITHUB_APP_ACCOUNTS"
+	// What every agent token the App mints may do (githubapp.Access): `write`
+	// (the default: contents + pull_requests write) or `read` (all four
+	// permissions read). Anything else refuses to boot.
+	envGitHubAppAccess = "MUSTER_GITHUB_APP_ACCESS"
 
 	// How long a claude-code agent's first turn waits for its repository checkout
 	// (agents.CheckoutWaitTimeout) before the agent is marked error.
@@ -107,26 +130,64 @@ const (
 	envFaroURL     = "MUSTER_FARO_URL"
 	envFaroKey     = "MUSTER_FARO_API_KEY"
 	envFaroTracing = "MUSTER_FARO_TRACING"
+	// The Faro receiver muster RELAYS the browser's telemetry to
+	// (api.FaroRelayPath): the page posts same-origin and never learns it.
+	envFaroUpstream = "MUSTER_FARO_UPSTREAM"
+
+	// The operator's own hosts (ui.HostPreferences): a host's icon by its name.
+	envHostIcons = "MUSTER_HOST_ICONS"
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
+	// The stopped-agent reaper (internal/api agent_reap.go): how long an agent
+	// may stay stopped before it is destroyed. A Go duration, 336h when unset,
+	// "0"/"off" turns the reaper off, refused below 1h otherwise.
+	envAgentReapStoppedAfter = "MUSTER_AGENT_REAP_STOPPED_AFTER"
+	// The officer runtime (internal/officers, docs/officers.md): MUSTER_OFFICERS
+	// is a JSON array of declared officers, each officer's HQ token is read from
+	// MUSTER_OFFICER_TOKEN_<NAME> (officers.TokenEnvPrefix, read inside
+	// officers.Parse). Officers are woken by polling HQ; there is no webhook.
+	envOfficers = "MUSTER_OFFICERS"
+	// The registry credential an officer pool's OWN runner image (`image`,
+	// docs/officers.md "A private runner image") is pulled with: the NAME of a
+	// kubernetes.io/dockerconfigjson Secret in muster's own namespace
+	// (MUSTER_AGENT_NETPOL_FROM_NAMESPACE), copied into each such instance's
+	// namespace and listed in its pod's imagePullSecrets. Unset: none.
+	envOfficerImagePullSecret = "MUSTER_OFFICER_IMAGE_PULL_SECRET"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
 	envSendQueueIdle = "MUSTER_SEND_QUEUE_IDLE"
 	// Session focus (internal/focus): how often the server recomputes each
 	// session's focus. A Go duration, 15m when unset, "0" turns the periodic
-	// pass off (focus_refresh still works), refused outside 1m–24h otherwise.
+	// pass off (and so every refresh), refused outside 1m–24h otherwise.
 	envFocusInterval = "MUSTER_FOCUS_INTERVAL"
 	// How long a mirrored session's focus is kept after a pass last saw the
 	// session on any host. A Go duration, 168h when unset, refused outside
 	// 1h–2160h (90 days).
 	envFocusRetention = "MUSTER_FOCUS_RETENTION"
-	// The Agents list's Idle section (internal/ui/idle_section.go): how long an
-	// entry must have had no activity to be drawn under the collapsed "Idle"
-	// header. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
+	// The OpenRouter model focus is computed with (focus.DefaultModel when
+	// unset), spelled as OpenRouter's model list names it.
+	envFocusModel = "MUSTER_FOCUS_MODEL"
+	// Suggested replies (internal/suggest): "off" is the kill switch — no set
+	// is generated or served. Anything else, or unset, is ON (operator
+	// decision); each user can still turn them off for themselves.
+	envSuggest = "MUSTER_SUGGEST"
+	// The OpenRouter model suggestions are generated with (suggest.DefaultModel
+	// when unset), spelled as OpenRouter's model list names it.
+	envSuggestModel = "MUSTER_SUGGEST_MODEL"
+	// The Idle section (internal/ui/idle_section.go): how long an entry must
+	// have had no activity to be drawn in the sidebar's collapsed "Idle" group. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
 	// off, refused outside 1h–365d otherwise.
 	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
+	// The outcome watchdog (internal/agentoutcome, internal/api
+	// agent_watchdog.go): a started agent with no first reply and no activity
+	// for NO_REPLY after its kickoff, or no activity for SILENT once it has
+	// replied, is called stuck (one push, a note to the chief that started it).
+	// Go durations, at least 1s; 5m, 30m and 1m when unset.
+	envAgentStuckNoReply     = "MUSTER_AGENT_STUCK_NO_REPLY"
+	envAgentStuckSilent      = "MUSTER_AGENT_STUCK_SILENT"
+	envAgentWatchdogInterval = "MUSTER_AGENT_WATCHDOG_INTERVAL"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -137,6 +198,10 @@ const (
 	// envPluginTaskNamespaces lists the tag namespaces POST /plugin/v1/tasks
 	// accepts keys in (internal/api/plugin_tasks.go), comma-separated.
 	envPluginTaskNamespaces = "MUSTER_PLUGIN_TASK_NAMESPACES"
+	// envPluginOrigins lists the https origin patterns a viewer plugin may be
+	// given (plugins.ParseOrigins); a request whose Host is under one is refused
+	// 421 on every listener. Unset: nothing is refused.
+	envPluginOrigins = "MUSTER_PLUGIN_ORIGINS"
 	// SESSION ROUTING (internal/plugins/routes.go): "1" lets the chief hand a
 	// plugin message to one of its owner's sessions (route_to_session) and relay
 	// the session's answer. Needs the plugin interface on. Off, the routing
@@ -147,12 +212,35 @@ const (
 	// or owner/*>,…", each matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
-	// How long a routed message waits for its session's answer before it is
-	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
-	// duration between api.MinRouteTimeout and api.MaxRouteTimeout, and — with
-	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
-	// boot.
-	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
+	// PULL-REQUEST → SESSION ROUTING (internal/api/pr_routes.go): the agent-mail
+	// senders ("<owner>/<handle>,…") whose VERIFIED mail is read as a review of
+	// a pull request and routed to the mirrored session that authored it (as
+	// its host's hook reported to POST /api/pr-sessions). Needs session routing
+	// on. Unset (the default): off — the route answers 404 and every message is
+	// handed on as before.
+	envPRMailSenders = "MUSTER_PR_MAIL_SENDERS"
+	// A FLEET-REPORT REQUEST (internal/api/fleet_report.go): the agent-mail
+	// senders ("<owner>/<handle>,…", MUSTER_PR_MAIL_SENDERS's grammar) whose
+	// VERIFIED mail, when its body is a fleet_report_request, muster answers
+	// itself with a report of the owner's sessions over the requested window,
+	// filed as an already-approved reply. Needs the plugin interface and
+	// MUSTER_FLEET_REPORT_PATHS. Unset (the default): off — such mail goes to
+	// the chief, as before.
+	envFleetReportSenders = "MUSTER_FLEET_REPORT_SENDERS"
+	// The working-directory prefixes ("/abs/path,…") whose sessions a fleet
+	// report REPLY may describe; every other session never leaves muster.
+	// Required with the senders (fail closed: refuse to boot).
+	envFleetReportPaths = "MUSTER_FLEET_REPORT_PATHS"
+	// RESUMING AN ENDED SESSION FOR ITS MAIL (internal/api/mail_resume.go): the
+	// senders, per owner and plugin, VERIFIED only, in MUSTER_ROUTE_RELAY_ALLOW's
+	// grammar, whose mail for a session muster would route itself (by thread,
+	// by pull request) but that no window shows may have muster ask the
+	// session's host to resume it in a new tmux window. Needs session routing
+	// on. Unset (the default): off — such mail goes to the chief, as before.
+	envMailResumeAllow = "MUSTER_MAIL_RESUME_ALLOW"
+	// The mail resume's kill switch: "1" turns it off whatever the allowlist
+	// says.
+	envMailResumeOff = "MUSTER_MAIL_RESUME_OFF"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -160,19 +248,98 @@ const (
 	envTaskRouting = "MUSTER_TASK_ROUTING"
 	// The users (ids, comma-separated) who opted in to their chief starting
 	// agents. Non-empty (with task routing on) is what offers the chief
-	// task_dispatch, for the listed owners only; empty, it is not offered.
+	// agent_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
+	// envTeamsOnServerPool is the TEAMS (ids, comma-separated) whose Claude Code
+	// agents — the team chief first — run on the server's Claude pool
+	// (MUSTER_AGENT_CC_ACCOUNTS), as an admin's do (team sharing phase 4,
+	// slice 4.5; credentials.Plane.TeamsOnServerPool). Boot is refused when an
+	// id is a person or names nobody, so a typo cannot lend a member the pool.
+	envTeamsOnServerPool = "MUSTER_TEAMS_ON_SERVER_POOL"
+	// envTeamsOnGitHubApp is the TEAMS (ids, comma-separated) whose agents may
+	// use the deployment's GitHub App, as an admin's do (team sharing phase 4,
+	// slice 4.8; githubapp.Admits): its repositories for a dispatch, and the
+	// `github` connector a manager approves once per repository for the team.
+	// Boot is refused when an id is a person or names nobody, as for
+	// MUSTER_TEAMS_ON_SERVER_POOL, and when no GitHub App is configured.
+	envTeamsOnGitHubApp = "MUSTER_TEAMS_ON_GITHUB_APP"
+	// envChiefDispatchModels is the OpenRouter models a mirrored opencode
+	// dispatch's model card offers (docs/design/chief-dispatch.md 2.8,
+	// decision 15): comma-separated <vendor>/<model> ids, or "none".
+	envChiefDispatchModels = "MUSTER_CHIEF_DISPATCH_MODELS"
+	// THE CHIEF'S STALL NUDGES (internal/api/chief_nudge.go,
+	// docs/chief-nudges.md): the sweep's switch (off by default; on, every
+	// owner is in SHADOW mode — decisions recorded, nothing sent), how long a
+	// session must be idle, the global hourly cap, and the owners whose nudges
+	// are sent (live).
+	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
+	envSessionState         = "MUSTER_SESSION_STATE"
+	envFleetDigest          = "MUSTER_FLEET_DIGEST"
+	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
+	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
+	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
+	// envChiefNudgeNeedsYouLiveOwners: the owners whose NEEDS-YOU nudges are
+	// sent too — live only for an owner ALSO in envChiefNudgeLiveOwners
+	// (operator decision 2026-11-04, "Separate shadow gate").
+	envChiefNudgeNeedsYouLiveOwners = "MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS"
+	// envChiefNudgeChiefChatQuotesLiveOwners: the owners whose nudges QUOTING
+	// THEIR CHIEF CHAT are sent too — live only for an owner also on every list
+	// the nudge is otherwise under (session-state step 3b-1, "Chief chat
+	// first"). Unset: every Chief-chat quote is shadow.
+	envChiefNudgeChiefChatQuotesLiveOwners = "MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS"
+	// The stall classifier's ask-score line: at or over it a stall defaults
+	// to an ask (internal/chiefnudge jev.go).
+	envChiefNudgeAskThreshold = "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD"
 	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
-	// chief chat session may be started on, comma-separated — claude-code (a CLI
+	// chief chat session may be started on, comma-separated. claude-code (a CLI
 	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
-	// a ccd that runs one CLI per session) and gateway (an OpenRouter model, on
-	// the gateway runtime — in a claude-code chief, the one beside ccd). Unset is
-	// OFF: no picker, and a session is the chief's own kind as before.
+	// a ccd that runs one CLI per session) is the only one. Unset is OFF: no
+	// picker, and a session is the chief's own kind as before.
+	//
+	// ⚠ `gateway` WAS THE OTHER ENTRY, AND IS IGNORED WITH ONE WARNING (its
+	// runtime, run beside a claude-code chief's ccd, was removed), so a
+	// deployment still naming it boots on this image unchanged. Any other
+	// unknown entry still refuses to boot.
 	envChiefSessionRuntimes = "MUSTER_CHIEF_SESSION_RUNTIMES"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
 	envStepUpWindow = "MUSTER_STEPUP_WINDOW"
+	// How often every live socket and event stream a page holds sends a
+	// heartbeat (internal/ui/live.go): a Go duration, 15s when unset, refused
+	// outside 250ms–5m. A page replaces a stream silent for about two of them.
+	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
+
+	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
+	// asklog_config.go parses them): its switch (off by default), how long
+	// question and answer text is kept, and whether a kept plain-text question
+	// is classified at capture.
+	envAskLog         = "MUSTER_ASK_LOG"
+	envAskLogTextTTL  = "MUSTER_ASK_LOG_TEXT_TTL"
+	envAskLogClassify = "MUSTER_ASK_LOG_CLASSIFY"
+
+	// SHAREABLE PAGES (internal/pages, internal/api/pages.go, docs/pages.md):
+	// agents publish pages and ask for share links; off by default, and it
+	// needs a database.
+	envPages = "MUSTER_PAGES"
+	// The bytes one page's files may hold in all (pages.DefaultUploadBytesPerPage
+	// when unset), a byte count from 1 MiB to 100 GiB.
+	envPagesUploadBytes = "MUSTER_PAGES_UPLOAD_BYTES"
+
+	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
+	// account usage"; ccusage_config.go parses them): its switch (off by
+	// default) and its interval; and its optional pusher, which PUTs each
+	// cycle's readings to an external dashboard (off unless the URL is set).
+	envCCUsagePoll         = "MUSTER_CC_USAGE_POLL"
+	envCCUsagePollInterval = "MUSTER_CC_USAGE_POLL_INTERVAL"
+	envCCUsagePushURL      = "MUSTER_CC_USAGE_PUSH_URL"
+	envCCUsagePushToken    = "MUSTER_CC_USAGE_PUSH_TOKEN"
+	envCCUsagePushInstance = "MUSTER_CC_USAGE_PUSH_INSTANCE"
+	// …and the consumer usage push (internal/consumerusage, docs/officers.md
+	// "Consumer usage to HQ"): a NON-officer muster's instances' Claude usage
+	// per session and hour, labelled with this consumer, to the pool push's
+	// HQ (off unless set; needs the pool push).
+	envCCConsumerUsage = "MUSTER_CC_CONSUMER_USAGE"
 
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
@@ -193,6 +360,10 @@ const (
 	// config.validateSTT.
 	envSTTURL   = "MUSTER_STT_URL"
 	envSTTToken = "MUSTER_STT_TOKEN"
+	// The `model` form field sent with each recording (stt.Client.WithModel).
+	// Unset sends none, which the bundled stt-cohere server wants; OpenAI's
+	// API and faster-whisper servers refuse a request without one.
+	envSTTModel = "MUSTER_STT_MODEL"
 	// File attachments (internal/uploads; internal/api/uploads.go): the
 	// S3-compatible store the composer's files are kept in, the key the agent's
 	// links are signed with, and the two knobs. All five of endpoint, bucket,
@@ -211,6 +382,13 @@ const (
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
 	envRouterActor = "MUSTER_ROUTER_ACTOR"
+	// The header names the router reads the actor and the token from; empty
+	// means router.DefaultActorHeader / router.DefaultTokenHeader.
+	envRouterActorHeader = "MUSTER_ROUTER_ACTOR_HEADER"
+	envRouterTokenHeader = "MUSTER_ROUTER_TOKEN_HEADER"
+	// The header prefix installed clients that predate the X-Muster-* spelling
+	// send the task-provenance headers under; unset means none is read.
+	envLegacyProvenancePrefix = "MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX"
 
 	envStandalone = "MUSTER_STANDALONE"
 
@@ -227,14 +405,71 @@ const (
 	envVAPIDPublicKey  = "MUSTER_VAPID_PUBLIC_KEY"
 	envVAPIDPrivateKey = "MUSTER_VAPID_PRIVATE_KEY"
 	envVAPIDSubject    = "MUSTER_VAPID_SUBJECT"
+
+	// The _FILE twins (secretfiles.go): the value is the named file's
+	// contents, read when the plain variable is empty. The Compose stack's
+	// muster-init one-shot writes these files (compose-init), so a stack with
+	// no .env has its secrets generated once and kept on a volume.
+	envDatabaseFile        = "DATABASE_URL_FILE"
+	envUIPasswordFile      = "MUSTER_UI_PASSWORD_FILE"
+	envHookTokenFile       = "MUSTER_HOOK_TOKEN_FILE"
+	envVAPIDPublicKeyFile  = "MUSTER_VAPID_PUBLIC_KEY_FILE"
+	envVAPIDPrivateKeyFile = "MUSTER_VAPID_PRIVATE_KEY_FILE"
+	// The Compose stack's database password, read by compose-init ONLY (it is
+	// in the stack's old .env files): written to Postgres's password file and
+	// into muster's DATABASE_URL file.
+	envPostgresPassword = "POSTGRES_PASSWORD"
 	// The operator's own push hosts (exact names, https, default port), added to
 	// the browser push services an endpoint may be on — a self-hosted ntfy for
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
 	envPushExtraHosts = "MUSTER_PUSH_EXTRA_HOSTS"
+	// The opt-in dial guard (internal/safedial): with it on, the postgres
+	// connector refuses a database that is, or resolves to, a loopback,
+	// private, link-local, CGNAT, unspecified or multicast address, checked at
+	// connect time. Off by default: a self-hoster's own LAN database stays
+	// reachable. The HTTP connector proxy refuses those ranges always. Web
+	// Push sends are not covered (internal/push.Allowlist).
+	envDialDenyPrivate = "MUSTER_DIAL_DENY_PRIVATE"
+	// The internal_http connectors (internal/connectors internal_http.go): a
+	// JSON array of {name, base_url, path_prefix?, max_response_bytes?,
+	// timeout_seconds?}, each one fixed service an approved agent may call
+	// through internal_http_request with a bearer token read from
+	// MUSTER_INTERNAL_HTTP_TOKEN_<NAME> (connectors.InternalHTTPTokenEnvPrefix).
+	// The private-address rule does not apply to these destinations: the admin
+	// names them, the agent never does.
+	envInternalHTTPConnectors = "MUSTER_INTERNAL_HTTP_CONNECTORS"
 	// The Android app's PIN-key policy (docs/design/android.md, "The step-up
 	// key"): set, a phone with no strong biometric may pair with a
 	// biometric-or-PIN step-up key; unset, it pairs read-only.
 	envAndroidAllowPINKeys = "MUSTER_ANDROID_ALLOW_PIN_KEYS"
+	// The Android app's Digital Asset Links (internal/api/assetlinks.go): its
+	// package name and the SHA-256 fingerprints of its signing certificates
+	// (comma-separated). Both set, /.well-known/assetlinks.json lets the app's
+	// WebView use this site's passkeys; both unset, that path is 404. One
+	// without the other refuses boot.
+	envAndroidPackage    = "MUSTER_ANDROID_PACKAGE"
+	envAndroidCertSHA256 = "MUSTER_ANDROID_CERT_SHA256"
+	// The Android shell's sign-in origins (internal/api/device_web.go), for a
+	// deployment behind a single sign-on proxy: comma-separated exact https
+	// origins the app may load in its WebView, served open at
+	// GET /api/device/web. Empty: none. A malformed entry refuses boot.
+	envAndroidSSOOrigins = "MUSTER_ANDROID_SSO_ORIGINS"
+
+	// --- the chief on the docker compose install (see composechief.go) ---
+	envChiefRuntime     = "MUSTER_CHIEF_RUNTIME"
+	envChiefSpecDir     = "MUSTER_CHIEF_SPEC_DIR"
+	envChiefClaudeToken = "MUSTER_CHIEF_CLAUDE_TOKEN"
+	envChiefLLMModel    = "MUSTER_CHIEF_LLM_MODEL"
+	// The Kubernetes chief on the LLM proxy (chiefllm.go): "openrouter" or unset.
+	envChiefLLM = "MUSTER_CHIEF_LLM"
+	// TEST ONLY (testllm.go): the chief's LLM proxy upstream.
+	envTestLLMUpstream = "MUSTER_TEST_LLM_UPSTREAM"
+	// The chief's OpenRouter sessions on the LLM proxy (chiefsessions.go):
+	// the switch, their own key, and the daily and per-session caps.
+	envChiefSessionsOpenRouter = "MUSTER_CHIEF_SESSIONS_OPENROUTER"
+	envChiefSessionsKey        = "MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY"
+	envChiefSessionsDailyUSD   = "MUSTER_CHIEF_SESSIONS_DAILY_USD"
+	envChiefSessionsSessionUSD = "MUSTER_CHIEF_SESSIONS_SESSION_USD"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -254,9 +489,12 @@ const (
 	envAgentNamespace      = "MUSTER_AGENT_NAMESPACE"
 	envAgentNSPrefix       = "MUSTER_AGENT_NAMESPACE_PREFIX"
 	envAgentNSShared       = "MUSTER_AGENT_NAMESPACE_SHARED"
-	envAgentWorkspaceKeep  = "MUSTER_AGENT_WORKSPACE_PERSIST"
-	envAgentStorageClass   = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
-	envAgentEndpointTmpl   = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+	// The least-privilege RBAC layout: the ClusterRole muster binds its own
+	// ServiceAccount to inside each per-instance namespace (k8s rolebinding.go).
+	envAgentNSClusterRole = "MUSTER_AGENT_NAMESPACE_CLUSTERROLE"
+	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
+	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
+	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
 
 	// The hosted subsystem-store ("cairn") coordinates handed to the SUPERVISOR
 	// agent only. Both unset is the state this ships in, and in that state nothing
@@ -292,6 +530,10 @@ const (
 	// ccpool.DefaultCooldown; unset cap is NO cap (the cap is opt-in).
 	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
 	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
+	// envAgentCCFailover switches the per-agent account failover
+	// (internal/ccfailover): on (the default) moves a claude-code agent whose
+	// account hit its limit to another usable account; off never moves one.
+	envAgentCCFailover = "MUSTER_AGENT_CC_FAILOVER"
 
 	// envAgentCCBypassPools is a comma list of worker-pool names whose
 	// claude-code agents run their JOB lanes with permissions BYPASSED
@@ -304,12 +546,26 @@ const (
 	// name agents.ValidWorkerPool refuses.
 	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
 
-	// The hermes kind (docs/design/hermes.md): its image (tag or digest pinned;
-	// no default, for MUSTER_AGENT_CC_IMAGE's reason) and its /data volume size.
-	// Its provider credential is the OpenRouter key the gateway kind uses
-	// (MUSTER_AGENT_OPENROUTER_KEY, or a member's own) — no variable of its own.
-	envAgentHermesImage   = "MUSTER_AGENT_HERMES_IMAGE"
-	envAgentHermesStorage = "MUSTER_AGENT_HERMES_STORAGE_SIZE"
+	// envAgentCCPoolDeployKeys gives worker pools a PRIVATE repository: a comma
+	// list of `<pool>=<owner>/<name>:<secret>` (parsePoolDeployKeys). Each
+	// listed pool's workers clone, and its jobs fetch, that one repository over
+	// SSH with the read-only deploy key in the Secret <secret> (key
+	// ssh-privatekey), kept in muster's own namespace and copied into each
+	// worker's (k8s secretcopy.go), mounted read-only into each
+	// worker (agentspec.ClaudeCodeConfig.PoolDeployKeys). Unset is none: every
+	// pool clones and fetches anonymously. A worker of a listed pool on another
+	// repository is refused, and so is a job naming another repository. Refused
+	// at boot without the claude-code kind, and for a malformed entry.
+	envAgentCCPoolDeployKeys = "MUSTER_AGENT_CC_POOL_DEPLOY_KEYS"
+
+	// envAgentCCEgressLockedPools names worker pools to egress-lock, a comma
+	// list (splitList, lower-cased), on top of every deploy-key pool, which is
+	// locked anyway (agentspec.PoolEgressLocked). A locked worker's
+	// NetworkPolicy has no DNS and no public rule, and its pod carries
+	// muster.agent/egress=locked: what it may reach is the operator's cluster
+	// policy. Refused at boot without the claude-code kind, and for a name
+	// agents.ValidWorkerPool refuses.
+	envAgentCCEgressLockedPools = "MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS"
 
 	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
 	//
@@ -326,6 +582,25 @@ const (
 	envAgentNetpolFromNS     = "MUSTER_AGENT_NETPOL_FROM_NAMESPACE"
 	envAgentNetpolFromLabels = "MUSTER_AGENT_NETPOL_FROM_POD_LABELS"
 
+	// --- officer egress (kubernetes driver only; #503 slice 9) ---
+	//
+	// An officer instance is egress-locked (agentspec.claudeCodeNetworkFor): no
+	// public rule and no DNS rule, only muster's connect port. On a cluster with
+	// FQDN policies the operator admits the Anthropic API cluster-side; on one
+	// without them (flannel + the k3s NetworkPolicy controller) these two let
+	// muster admit it itself, by address. OFFICERS ONLY — never a locked pool
+	// worker, a task agent or the chief.
+	//
+	// envOfficerEgressCIDRs is a comma list of `<ipv4-cidr>:<port>` blocks an
+	// officer instance may open TCP connections to (parseOfficerEgressCIDRs:
+	// public, IPv4, canonical, no wider than a /16, no duplicates — refused at
+	// boot otherwise). Unset is none, and the spec is byte-identical to before.
+	envOfficerEgressCIDRs = "MUSTER_OFFICER_EGRESS_CIDRS"
+	// envOfficerEgressDNS=unfiltered gives an officer instance back the
+	// cluster-DNS rule (UDP/TCP 53 to the DNS pods, ANY name — a tunnel
+	// channel). Any other non-empty value is refused at boot. Unset is off.
+	envOfficerEgressDNS = "MUSTER_OFFICER_EGRESS_DNS"
+
 	// --- browser-test fixture (read ONLY by a `-tags e2eterm` build) ---
 	//
 	// A directory gating the e2e fake driver's readiness: with it set, every
@@ -341,6 +616,10 @@ const (
 	// by e2eupstreams.go.
 	envE2EGitHubAPI        = "MUSTER_E2E_GITHUB_API"
 	envE2EOpenRouterModels = "MUSTER_E2E_OPENROUTER_MODELS"
+	// A fake chat-completions URL the suggested replies' model is pointed at
+	// (on a fixed invented key), so the chip row's spec never calls a real
+	// model. Read only by e2eupstreams.go.
+	envE2ESuggestURL = "MUSTER_E2E_SUGGEST_URL"
 	// The GoTrue verifier's clock skew (a Go duration) instead of
 	// gotrue.DefaultSkew, so the specs that outlive an access token wait
 	// seconds rather than 35 s. Read only by e2egotrue.go.
@@ -453,6 +732,11 @@ const routerReservedActor = "pre-0035-unattributed"
 // when MUSTER_ROUTER_ACTOR is unset. The router validates it as an actor label.
 const defaultRouterActor = "muster"
 
+// headerName is what MUSTER_ROUTER_ACTOR_HEADER and MUSTER_ROUTER_TOKEN_HEADER
+// must look like: an HTTP header field name, restricted to the letters, digits
+// and hyphens every real header name uses.
+var headerName = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
+
 // config is everything this binary reads from the environment, resolved once.
 //
 // 🔴 IT IS A VALUE, NOT A PILE OF os.Getenv CALLS SCATTERED THROUGH main(), SO
@@ -463,6 +747,9 @@ const defaultRouterActor = "muster"
 type config struct {
 	Port     int
 	Database string
+	// MetricsPort, when non-zero, binds the metrics listener: the only one that
+	// serves /metrics (api.MetricsHandler), and nothing else.
+	MetricsPort int
 
 	UIPassword    string
 	HookToken     string
@@ -483,11 +770,7 @@ type config struct {
 	// only personal mst_ tokens on the /api/ tier (refuseSharedTokenOnBrowserListener).
 	BrowserPort int
 
-	GitHubToken        string
-	GitHubEncKey       []byte
-	PublicURL          string
-	GitHubClientID     string
-	GitHubClientSecret string
+	PublicURL string
 
 	// GitHubAppID / GitHubAppKey configure the GitHub App (both or neither;
 	// loadConfig refuses half, and a key that does not parse).
@@ -495,6 +778,9 @@ type config struct {
 	GitHubAppID       int64
 	GitHubAppKey      *rsa.PrivateKey
 	GitHubAppAccounts []githubapp.Account
+	// GitHubAppAccess is the agent tokens' permission mode (never "" once
+	// loaded with an App; AccessWrite when unset).
+	GitHubAppAccess githubapp.Access
 
 	// CheckoutWaitTimeout is agents.CheckoutWaitTimeout for this server: 0 means
 	// the default (agents.DefaultCheckoutWaitTimeout).
@@ -513,9 +799,32 @@ type config struct {
 	FaroURL     string
 	FaroKey     string
 	FaroTracing bool
+	// FaroUpstream is MUSTER_FARO_UPSTREAM: the Faro receiver the relay
+	// forwards to. Set, it takes precedence over FaroURL.
+	FaroUpstream string
+
+	// HostPrefs is MUSTER_HOST_ICONS, checked
+	// (ui.HostPreferences.Normalized); the zero value names no host.
+	HostPrefs ui.HostPreferences
 
 	TagAutoDispatch bool
 	TaskReapAfter   time.Duration
+	// AgentReapStoppedAfter is MUSTER_AGENT_REAP_STOPPED_AFTER
+	// (api.DefaultAgentReapStoppedAfter when unset; 0 = the reaper is off).
+	AgentReapStoppedAfter time.Duration
+	// Officers is MUSTER_OFFICERS parsed, each with its token
+	// (officers.Parse). Empty: the officer runtime is off.
+	Officers []officers.Officer
+	// OfficersSet is MUSTER_OFFICERS being set at all, an empty `[]`
+	// included: with a database it turns on the built-in officer store (the
+	// admin API and the Attention sweep) whether or not any officer is
+	// declared — the "on, empty roster" state.
+	OfficersSet bool
+	// OfficerImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET, trimmed;
+	// "" is none. OfficerImageRegistries is whether
+	// MUSTER_OFFICER_IMAGE_REGISTRIES is set (validateOfficerImagePullSecret).
+	OfficerImagePullSecret string
+	OfficerImageRegistries bool
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -524,11 +833,27 @@ type config struct {
 	FocusInterval time.Duration
 	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
 	FocusRetention time.Duration
+	// FocusModel is MUSTER_FOCUS_MODEL (focus.DefaultModel unset).
+	FocusModel string
+	// SuggestOff is MUSTER_SUGGEST=off: the suggested-replies kill switch.
+	SuggestOff bool
+	// SuggestOn is MUSTER_SUGGEST=on (set explicitly): with no database, where
+	// nobody can save a choice, it turns suggestions on for everyone
+	// (suggest.Engine.On). With a database it changes nothing: each user's own
+	// switch, off until they turn it on, governs.
+	SuggestOn bool
+	// SuggestModel is MUSTER_SUGGEST_MODEL (suggest.DefaultModel unset).
+	SuggestModel string
 	// AgentsIdleAfter is MUSTER_AGENTS_IDLE_AFTER (ui.DefaultIdleSectionAfter
 	// when unset; 0 = no Idle section). AgentsIdleAfterRaw is the value as
 	// set ("" unset), for the banner.
 	AgentsIdleAfter    time.Duration
 	AgentsIdleAfterRaw string
+	// AgentStuck is the outcome watchdog's thresholds (MUSTER_AGENT_STUCK_NO_REPLY,
+	// MUSTER_AGENT_STUCK_SILENT) and AgentWatchdogInterval its sweep
+	// (MUSTER_AGENT_WATCHDOG_INTERVAL), defaults filled.
+	AgentStuck            agentoutcome.Thresholds
+	AgentWatchdogInterval time.Duration
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -536,26 +861,103 @@ type config struct {
 	Plugins bool
 	// PluginTaskNamespaces is MUSTER_PLUGIN_TASK_NAMESPACES, split on commas.
 	PluginTaskNamespaces []string
+	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed (nil when unset).
+	PluginOrigins []plugins.OriginPattern
+	// ClientAddr is MUSTER_TRUSTED_PROXIES with MUSTER_CLIENT_IP_HEADER,
+	// parsed; never nil after loadConfig (an unset pair is the strict policy).
+	ClientAddr *clientaddr.Policy
+	// DirectClients is MUSTER_DIRECT_CLIENTS=1: no proxy in front of muster.
+	DirectClients bool
 	// SessionRouting is MUSTER_SESSION_ROUTING=1; RouteRelayAllow is
 	// MUSTER_ROUTE_RELAY_ALLOW, parsed (validate refuses one that does not parse).
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
-	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
-	// a route's deadline.
-	RouteTimeout time.Duration
+	// PRMailSenders is MUSTER_PR_MAIL_SENDERS, parsed (loadConfig refuses one
+	// that does not parse); empty is pull-request routing off.
+	PRMailSendersRaw string
+	PRMailSenders    plugins.PRMailSenders
+	// FleetReportSenders and FleetReportPaths are MUSTER_FLEET_REPORT_SENDERS
+	// and MUSTER_FLEET_REPORT_PATHS, parsed (loadConfig refuses either that
+	// does not parse, and senders without paths); empty senders is off.
+	FleetReportSenders plugins.AgentMailSenders
+	FleetReportPaths   plugins.FleetReportPaths
+	// MailResumeAllow is MUSTER_MAIL_RESUME_ALLOW, parsed (loadConfig refuses
+	// one that does not parse); empty is the mail resume off. MailResumeOff is
+	// MUSTER_MAIL_RESUME_OFF=1, its kill switch.
+	MailResumeAllowRaw string
+	MailResumeAllow    plugins.RelayAllowlist
+	MailResumeOff      bool
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
-	// parse) — non-empty turns task_dispatch on.
+	// parse) — non-empty turns agent_dispatch on.
 	TaskRouting            bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
+	// TeamsOnServerPool is MUSTER_TEAMS_ON_SERVER_POOL, parsed (loadConfig
+	// refuses one that does not parse; boot refuses an id that is not a team,
+	// checkTeamsOnServerPool).
+	TeamsOnServerPool map[int64]bool
+	// TeamsOnGitHubApp is MUSTER_TEAMS_ON_GITHUB_APP, parsed (loadConfig
+	// refuses one that does not parse or has no App; boot refuses an id that
+	// is not a team, checkTeamsOnGitHubApp).
+	TeamsOnGitHubApp map[int64]bool
+	// ChiefDispatchModels is MUSTER_CHIEF_DISPATCH_MODELS, parsed
+	// (parseDispatchModels): the model card's OpenRouter models.
+	ChiefDispatchModels []string
+	// ChiefNudges is MUSTER_CHIEF_NUDGES=1; ChiefNudgeIdle, ChiefNudgeHourlyCap
+	// and ChiefNudgeLiveOwners its settings (loadConfig refuses a value that
+	// does not parse).
+	ChiefNudges          bool
+	ChiefNudgeIdle       time.Duration
+	ChiefNudgeHourlyCap  int
+	ChiefNudgeLiveOwners map[int64]bool
+	// ChiefNudgeNeedsYouLiveOwners is MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS:
+	// a needs-you nudge is live only for an owner in both lists.
+	ChiefNudgeNeedsYouLiveOwners map[int64]bool
+	// ChiefNudgeChiefChatQuotesLiveOwners is
+	// MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS: a nudge quoting the
+	// owner's typed Chief chat is live only for an owner in it too.
+	ChiefNudgeChiefChatQuotesLiveOwners map[int64]bool
+	// SessionState runs session state's pass (MUSTER_SESSION_STATE=1; off by
+	// default): every session's state and its episodes (internal/sessionstate).
+	SessionState bool
+	// FleetDigest turns on the chief panel's fleet digest card and
+	// fleet_list's fleet fields (MUSTER_FLEET_DIGEST=1; off by default).
+	FleetDigest            bool
+	ChiefNudgeAskThreshold float64
+
+	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
+	// postgres connector dials its database through safedial (dialGuard).
+	DialDenyPrivate bool
+
+	// InternalHTTP are the MUSTER_INTERNAL_HTTP_CONNECTORS connectors, each
+	// with its token (nil: none).
+	InternalHTTP []*connectors.InternalHTTP
+
+	// AskLog is the ask log's configuration (asklog_config.go).
+	AskLog askLogConfig
+
+	// Pages turns shareable pages on (MUSTER_PAGES=1; off by default).
+	Pages bool
+	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES (0: the default).
+	PagesUploadBytes int64
+
+	// CCUsage is the Claude account usage poller's (ccusage_config.go).
+	CCUsage ccUsageConfig
+
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
-	// (validateSessionRuntimes refuses an unknown or repeated entry).
-	ChiefSessionRuntimes []string
+	// (validateSessionRuntimes refuses an unknown or repeated entry), without
+	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
+	// named it (the banner's warning).
+	ChiefSessionRuntimes              []string
+	ChiefSessionRuntimeGatewayIgnored bool
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
+	// LiveHeartbeat is MUSTER_LIVE_HEARTBEAT (0 when unset: ui's default).
+	// loadConfig refuses an out-of-bounds one.
+	LiveHeartbeat time.Duration
 
 	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
 	FlowAgentDenyWords []string
@@ -567,11 +969,15 @@ type config struct {
 	// MemoScopeMap is MUSTER_MEMO_SCOPE_MAP as written; validate parses it.
 	MemoScopeMap string
 	// STTURL and STTToken are the speech-to-text service behind the message
-	// box's microphone. Dictation is on iff STTToken is set; STTURL alone is a
-	// valid, inert state (the deployment names the service before its secret
-	// exists), and a token with no URL refuses to boot.
+	// box's microphone. Dictation is on iff STTToken is set; STTURL alone
+	// boots, inert (the deployment names the service before its secret
+	// exists), but the feature registry reports it MISCONFIGURED, so the
+	// doctor fails it (features.go); a token with no URL refuses to boot.
 	STTURL   string
 	STTToken string
+	// STTModel is MUSTER_STT_MODEL: the `model` field each request carries,
+	// "" for none.
+	STTModel string
 	// Uploads: the raw MUSTER_S3_* / MUSTER_UPLOAD_* values. buildUploads
 	// parses and validates them; nothing here refuses to boot.
 	S3Endpoint       string
@@ -586,6 +992,14 @@ type config struct {
 	RouterURL   string
 	RouterToken string
 	RouterActor string
+	// RouterActorHeader and RouterTokenHeader name the headers the router
+	// reads; empty means the router package's defaults.
+	RouterActorHeader string
+	RouterTokenHeader string
+
+	// LegacyProvenancePrefix is MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX; see
+	// api.Extensions.LegacyProvenanceHeaderPrefix.
+	LegacyProvenancePrefix string
 
 	// Standalone is the operator's EXPLICIT declaration that this deployment has
 	// no permission router behind it, and therefore no session transcripts.
@@ -630,12 +1044,43 @@ type config struct {
 	PushExtraHosts string
 	// AndroidAllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS.
 	AndroidAllowPINKeys bool
+	// AndroidPackage / AndroidCertSHA256 are MUSTER_ANDROID_PACKAGE and
+	// MUSTER_ANDROID_CERT_SHA256 as read; validate builds them
+	// (api.BuildAssetLinks) and assetLinks returns the body.
+	AndroidPackage    string
+	AndroidCertSHA256 string
+	// AndroidSSOOrigins is MUSTER_ANDROID_SSO_ORIGINS as read; validate parses
+	// it (api.ParseSSOOrigins) and ssoOrigins returns the clean list.
+	AndroidSSOOrigins string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
 	// api.Extensions.Provisioner nil and every lifecycle route refusing exactly
 	// as it did before this knob existed.
 	AgentProvisioner string
+
+	// ChiefRuntime is MUSTER_CHIEF_RUNTIME: "" or "compose" (composechief.go),
+	// which runs the chief in the docker compose install's `chief` container
+	// and sets the agent plane above itself. ChiefSpecDir is the shared
+	// volume's mount point (MUSTER_CHIEF_SPEC_DIR); ChiefClaudeToken is the
+	// chief's Claude subscription token (MUSTER_CHIEF_CLAUDE_TOKEN), "" for the
+	// OpenRouter key through the LLM proxy.
+	ChiefRuntime     string
+	ChiefSpecDir     string
+	ChiefClaudeToken string
+	// ChiefLLMModel is MUSTER_CHIEF_LLM_MODEL: the OpenRouter model the
+	// chief's requests are pinned to when it runs on the OpenRouter key
+	// (api.DefaultChiefLLMModel when unset).
+	ChiefLLMModel string
+	// ChiefLLM is MUSTER_CHIEF_LLM: "" or "openrouter" (chiefllm.go), which
+	// puts the Kubernetes deployment's admin chief on the LLM proxy.
+	ChiefLLM string
+	// LLMTestUpstream is MUSTER_TEST_LLM_UPSTREAM, accepted only with the
+	// Compose chief runtime (testllm.go).
+	LLMTestUpstream string
+	// ChiefSessions is the chief's OpenRouter sessions' spend door
+	// (chiefsessions.go): On when MUSTER_CHIEF_SESSIONS_OPENROUTER=1.
+	ChiefSessions chiefSessionsConfig
 
 	// AgentGateway names the agent runtime whose chat wire this deployment talks:
 	// one of gatewayChoices. Default gatewayNone, which leaves
@@ -757,6 +1202,12 @@ type config struct {
 	AgentNamespaceShared bool
 	AgentNamespace       string
 	AgentNamespacePrefix string
+	// AgentNamespaceClusterRole turns on the least-privilege RBAC layout: muster
+	// writes a RoleBinding of its own ServiceAccount to this ClusterRole into
+	// each per-instance namespace before anything else there, so its
+	// cluster-wide grant shrinks to namespaces and RoleBindings. Empty: no
+	// RoleBinding, the namespaced rights must be cluster-wide (as before).
+	AgentNamespaceClusterRole string
 
 	// AgentWorkspacePersist asks for a workspace that survives a restart.
 	//
@@ -793,16 +1244,22 @@ type config struct {
 	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
 	AgentCCCooldown time.Duration
 	AgentCCMaxJobs  int
+	// AgentCCFailoverOff is MUSTER_AGENT_CC_FAILOVER=off: no claude-code agent
+	// is moved to another Claude account (unset or on: they are).
+	AgentCCFailoverOff bool
 	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS read by splitList:
 	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
 	// "Pr-Review" names the pool "pr-review"). Empty is none.
 	AgentCCBypassPools []string
-
-	// AgentHermesImage is the hermes kind's FULL image reference (tag or digest
-	// required; no default), and AgentHermesStorage its /data volume size
-	// ("" = 10Gi).
-	AgentHermesImage   string
-	AgentHermesStorage string
+	// AgentCCPoolDeployKeys is MUSTER_AGENT_CC_POOL_DEPLOY_KEYS parsed
+	// (parsePoolDeployKeys): pool -> its repository and deploy-key Secret. nil is
+	// none. AgentCCPoolDeployKeysErr is the parse's refusal, reported by
+	// validateKinds.
+	AgentCCPoolDeployKeys    map[string]agentspec.PoolDeployKey
+	AgentCCPoolDeployKeysErr error
+	// AgentCCEgressLockedPools is MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS read by
+	// splitList. Empty is none (deploy-key pools are locked regardless).
+	AgentCCEgressLockedPools []string
 
 	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
 	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
@@ -811,6 +1268,100 @@ type config struct {
 	// kind is enabled on the kubernetes driver, and refused otherwise.
 	AgentNetpolFromNS     string
 	AgentNetpolFromLabels string
+
+	// OfficerEgressCIDRs is MUSTER_OFFICER_EGRESS_CIDRS parsed
+	// (parseOfficerEgressCIDRs): sorted by block then port. nil is none.
+	OfficerEgressCIDRs []provision.CIDRPort
+	// OfficerEgressDNS is MUSTER_OFFICER_EGRESS_DNS=unfiltered.
+	OfficerEgressDNS bool
+}
+
+// officerEgressDNSUnfiltered is the one value MUSTER_OFFICER_EGRESS_DNS takes.
+const officerEgressDNSUnfiltered = "unfiltered"
+
+// officerEgressSet reports whether either officer egress setting is set.
+func (c config) officerEgressSet() bool { return len(c.OfficerEgressCIDRs) > 0 || c.OfficerEgressDNS }
+
+// parseOfficerEgressCIDRs parses MUSTER_OFFICER_EGRESS_CIDRS: a comma list of
+// `<cidr>:<port>`, each held to provision.CheckEgressCIDR (the one rule, also
+// applied by Spec.Validate at dispatch). Blank entries are skipped (a trailing
+// comma). It REFUSES rather than skips a malformed entry or a duplicate: an
+// allow-list that silently dropped an entry the operator wrote would boot
+// with a different allow-list than the one they read. The result is sorted
+// by block then port, so the banner and the spec do not depend on order.
+func parseOfficerEgressCIDRs(v string) ([]provision.CIDRPort, error) {
+	var out []provision.CIDRPort
+	seen := map[provision.CIDRPort]bool{}
+	for _, raw := range strings.Split(v, ",") {
+		e := strings.TrimSpace(raw)
+		if e == "" {
+			continue
+		}
+		i := strings.LastIndex(e, ":")
+		if i < 0 {
+			return nil, fmt.Errorf("invalid %s entry %q: want <ipv4-cidr>:<port>, e.g. 192.0.2.0/24:443",
+				envOfficerEgressCIDRs, e)
+		}
+		port, err := strconv.Atoi(e[i+1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s entry %q: the port %q is not a number (want <ipv4-cidr>:<port>)",
+				envOfficerEgressCIDRs, e, e[i+1:])
+		}
+		c := provision.CIDRPort{CIDR: e[:i], Port: port}
+		if err := provision.CheckEgressCIDR(c); err != nil {
+			return nil, fmt.Errorf("invalid %s entry %q: %v", envOfficerEgressCIDRs, e, err)
+		}
+		if seen[c] {
+			return nil, fmt.Errorf("invalid %s: %s is listed twice", envOfficerEgressCIDRs, c)
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b provision.CIDRPort) int {
+		if a.CIDR != b.CIDR {
+			return strings.Compare(a.CIDR, b.CIDR)
+		}
+		return a.Port - b.Port
+	})
+	return out, nil
+}
+
+// officerEgressBannerLine is the boot banner's `officer egress:` line, drawn
+// under the claude-code network line whenever an agent NetworkPolicy is
+// written (validateOfficerEgress refuses either setting otherwise, so there is
+// no other state to announce).
+func officerEgressBannerLine(c config) string {
+	blocks := "no address blocks (" + envOfficerEgressCIDRs + " unset)"
+	if len(c.OfficerEgressCIDRs) > 0 {
+		s := make([]string, 0, len(c.OfficerEgressCIDRs))
+		for _, b := range c.OfficerEgressCIDRs {
+			s = append(s, b.String())
+		}
+		blocks = "TCP to [" + strings.Join(s, ", ") + "] (" + envOfficerEgressCIDRs + ")"
+	}
+	dns := "no cluster DNS (" + envOfficerEgressDNS + " unset)"
+	if c.OfficerEgressDNS {
+		dns = "cluster DNS UNFILTERED, any name (" + envOfficerEgressDNS + "=" + officerEgressDNSUnfiltered + ")"
+	}
+	return fmt.Sprintf("officer egress: an officer instance's lock admits %s and %s, on top of muster's connect port; "+
+		"officers only (never a locked pool worker, a task agent or the chief), applied when an officer instance is "+
+		"started", blocks, dns)
+}
+
+// validateOfficerEgress refuses an officer egress setting this deployment
+// writes no NetworkPolicy for: without one there is no lock for it to widen,
+// and an operator reading the setting would believe officers are confined to
+// it. It runs from validate() directly, not under the provisioner's checks,
+// so a deployment with no provisioner at all still hears it.
+func (c config) validateOfficerEgress() error {
+	if !c.officerEgressSet() || c.agentNetworkPolicy() {
+		return nil
+	}
+	return fmt.Errorf("%s or %s is set but this deployment writes no agent NetworkPolicy (it needs %s=%s and %s "+
+		"in %s): there is no officer egress lock for it to widen, so it would be an allow-list that confines "+
+		"nothing. Unset it, or run officers on the %s driver",
+		envOfficerEgressCIDRs, envOfficerEgressDNS, envAgentProvisioner, provisionerK8s, agents.KindClaudeCode,
+		envAgentKinds, provisionerK8s)
 }
 
 // agentKinds resolves the unset list to the gateway kind alone, for the reason
@@ -832,26 +1383,16 @@ func (c config) claudeCodeEnabled() bool {
 	return false
 }
 
-// hermesEnabled reports whether the hermes kind is in the list.
-func (c config) hermesEnabled() bool {
-	for _, k := range c.agentKinds() {
-		if k == agents.KindHermes {
-			return true
-		}
-	}
-	return false
-}
-
 // confinedKindsEnabled reports whether a kind whose pod is confined and keeps a
-// persistent /data volume is enabled: claude-code or hermes. Both declare
-// network isolation unconditionally (agentspec.ClaudeCodeNetwork, which the
-// hermes profile shares) and a persistent workspace.
+// persistent /data volume is enabled: claude-code, which declares network
+// isolation unconditionally (agentspec.ClaudeCodeNetwork) and a persistent
+// workspace.
 func (c config) confinedKindsEnabled() bool {
-	return c.claudeCodeEnabled() || c.hermesEnabled()
+	return c.claudeCodeEnabled()
 }
 
 // agentNetworkPolicy reports whether this deployment renders a NetworkPolicy
-// for its confined agents (claude-code, hermes): such a kind is enabled AND the
+// for its confined agents (claude-code): such a kind is enabled AND the
 // driver is the one that has NetworkPolicies.
 //
 // 🔴 ONE PREDICATE, THREE READERS, AND THEY MUST NOT DISAGREE: validateKinds
@@ -907,7 +1448,83 @@ func parsePodLabels(v string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseHostIcons parses MUSTER_HOST_ICONS: a comma list of `<host>=<icon>`.
+// Which hosts and icons are allowed is ui.HostPreferences.Normalized's; this
+// refuses only an entry that is not host=icon. Empty is none.
+func parseHostIcons(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		host, icon, ok := strings.Cut(part, "=")
+		host, icon = strings.TrimSpace(host), strings.TrimSpace(icon)
+		if !ok || host == "" || icon == "" {
+			return nil, fmt.Errorf("entry %q is not host=icon", part)
+		}
+		if _, dup := out[strings.ToLower(host)]; dup {
+			return nil, fmt.Errorf("host %q is given two icons", host)
+		}
+		out[strings.ToLower(host)] = icon
+	}
+	return out, nil
+}
+
 // splitList parses a comma list: trimmed, lower-cased, empties dropped.
+// parsePoolDeployKeys reads MUSTER_AGENT_CC_POOL_DEPLOY_KEYS: a comma list of
+// `<pool>=<owner>/<name>:<secret>`. The pool is lower-cased (as
+// MUSTER_AGENT_CC_BYPASS_POOLS') and must be a valid pool name; the repository
+// must be owner/name; the Secret a DNS subdomain. A pool listed twice is
+// refused: two keys for one pool would leave which one a worker gets to map
+// order. "" is nil.
+func parsePoolDeployKeys(v string) (map[string]agentspec.PoolDeployKey, error) {
+	entries := strings.Split(v, ",")
+	out := map[string]agentspec.PoolDeployKey{}
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		pool, rest, ok := strings.Cut(e, "=")
+		repo, secret, ok2 := strings.Cut(rest, ":")
+		pool, repo, secret = strings.ToLower(strings.TrimSpace(pool)), strings.TrimSpace(repo), strings.TrimSpace(secret)
+		switch {
+		case !ok || !ok2:
+			return nil, fmt.Errorf("invalid %s entry %q: want <pool>=<owner>/<name>:<secret>", envAgentCCPoolDeployKeys, e)
+		case !agents.ValidWorkerPool(pool):
+			return nil, fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCPoolDeployKeys, e)
+		case !jobs.ValidRepo(repo):
+			return nil, fmt.Errorf("invalid %s entry %q: the repository must be owner/name", envAgentCCPoolDeployKeys, e)
+		case len(validation.IsDNS1123Subdomain(secret)) != 0:
+			return nil, fmt.Errorf("invalid %s entry %q: the Secret's name must be a DNS subdomain (lower case)",
+				envAgentCCPoolDeployKeys, e)
+		}
+		if _, dup := out[pool]; dup {
+			return nil, fmt.Errorf("invalid %s: pool %q is listed twice", envAgentCCPoolDeployKeys, pool)
+		}
+		out[pool] = agentspec.PoolDeployKey{Repo: repo, Secret: secret}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// egressLockedPools is every egress-locked pool, sorted: the listed ones and
+// every deploy-key pool (agentspec.PoolEgressLocked's set).
+func (c config) egressLockedPools() []string {
+	set := map[string]bool{}
+	for _, p := range c.AgentCCEgressLockedPools {
+		set[p] = true
+	}
+	for p := range c.AgentCCPoolDeployKeys {
+		set[p] = true
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
 func splitList(v string) []string {
 	var out []string
 	for _, part := range strings.Split(v, ",") {
@@ -919,6 +1536,46 @@ func splitList(v string) []string {
 }
 
 // parseOwnerIDs parses a comma list of positive user ids. Empty is no owners.
+// defaultDispatchModels is MUSTER_CHIEF_DISPATCH_MODELS when it is unset: four
+// coding models, each in OpenRouter's public model list when the design was
+// written. Configuration, not a recommendation: the host still checks each one
+// against its own opencode's list at the spawn (bad_model).
+var defaultDispatchModels = []string{"qwen/qwen3-coder", "moonshotai/kimi-k2-0905", "z-ai/glm-4.6", "deepseek/deepseek-v3.2"}
+
+// maxDispatchModels bounds the list: the card holds Claude, the list and the
+// typed-id option, at most attention.MaxOptions (10) together.
+const maxDispatchModels = 8
+
+// parseDispatchModels reads MUSTER_CHIEF_DISPATCH_MODELS: unset or blank is
+// the default list; "none" is no listed model (the card then offers Claude and
+// a typed id); otherwise comma-separated OpenRouter ids, each in
+// mirror.ValidSpawnModel's shape. A malformed or repeated entry, or more than
+// maxDispatchModels, refuses to boot, naming it.
+func parseDispatchModels(v string) ([]string, error) {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "":
+		return slices.Clone(defaultDispatchModels), nil
+	case strings.EqualFold(v, "none"):
+		return []string{}, nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		id := strings.TrimSpace(part)
+		if !mirror.ValidSpawnModel(id) {
+			return nil, fmt.Errorf("invalid %s: %q is not an OpenRouter model id (<vendor>/<model>)", envChiefDispatchModels, id)
+		}
+		if slices.Contains(out, id) {
+			return nil, fmt.Errorf("invalid %s: %q is listed twice", envChiefDispatchModels, id)
+		}
+		out = append(out, id)
+	}
+	if len(out) > maxDispatchModels {
+		return nil, fmt.Errorf("invalid %s: %d models; at most %d fit on the card", envChiefDispatchModels, len(out), maxDispatchModels)
+	}
+	return out, nil
+}
+
 func parseOwnerIDs(v string) (map[int64]bool, error) {
 	out := map[int64]bool{}
 	for _, part := range strings.Split(v, ",") {
@@ -959,17 +1616,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 		UIPassword:           getenv(envUIPassword),
 		HookToken:            getenv(envHookToken),
 		ServiceToken:         getenv(envServiceToken),
-		SecureCookies:        envFlag(getenv, envSecureCookies),
+		SecureCookies:        secureCookies(getenv(envSecureCookies), getenv(envPublicURL)),
 		AuthMode:             strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
 		GoTrueURL:            strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
 		GoTrueSecret:         strings.TrimSpace(getenv(envGoTrueSecret)),
-		GitHubToken:          strings.TrimSpace(getenv(envGitHubToken)),
 		PublicURL:            strings.TrimSpace(getenv(envPublicURL)),
-		GitHubClientID:       strings.TrimSpace(getenv(envGitHubClientID)),
-		GitHubClientSecret:   strings.TrimSpace(getenv(envGitHubClientSec)),
 		FaroURL:              strings.TrimSpace(getenv(envFaroURL)),
 		FaroKey:              strings.TrimSpace(getenv(envFaroKey)),
 		FaroTracing:          envFlag(getenv, envFaroTracing),
+		FaroUpstream:         strings.TrimSpace(getenv(envFaroUpstream)),
 		TagAutoDispatch:      envFlag(getenv, envTagAutoDispatch),
 		Mirror:               envFlag(getenv, envMirror),
 		Plugins:              envFlag(getenv, envPlugins),
@@ -982,6 +1637,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		MemoScopeMap:         strings.TrimSpace(getenv(envMemoScopeMap)),
 		STTURL:               strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
 		STTToken:             strings.TrimSpace(getenv(envSTTToken)),
+		STTModel:             strings.TrimSpace(getenv(envSTTModel)),
 		S3Endpoint:           strings.TrimRight(strings.TrimSpace(getenv(envS3Endpoint)), "/"),
 		S3Bucket:             strings.TrimSpace(getenv(envS3Bucket)),
 		S3AccessKey:          strings.TrimSpace(getenv(envS3AccessKey)),
@@ -993,6 +1649,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		RouterURL:            strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:          strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:          strings.TrimSpace(getenv(envRouterActor)),
+		RouterActorHeader:    strings.TrimSpace(getenv(envRouterActorHeader)),
+		RouterTokenHeader:    strings.TrimSpace(getenv(envRouterTokenHeader)),
 		Standalone:           envFlag(getenv, envStandalone),
 		ApprovalGateURL:      strings.TrimSpace(getenv(envApprovalGateURL)),
 		ApprovalGateToken:    strings.TrimSpace(getenv(envApprovalGateToken)),
@@ -1001,6 +1659,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		VAPIDSubject:         strings.TrimSpace(getenv(envVAPIDSubject)),
 		PushExtraHosts:       strings.TrimSpace(getenv(envPushExtraHosts)),
 		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
+		AndroidPackage:       strings.TrimSpace(getenv(envAndroidPackage)),
+		AndroidCertSHA256:    strings.TrimSpace(getenv(envAndroidCertSHA256)),
+		AndroidSSOOrigins:    strings.TrimSpace(getenv(envAndroidSSOOrigins)),
+
+		LegacyProvenancePrefix: strings.TrimSpace(getenv(envLegacyProvenancePrefix)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1011,31 +1674,32 @@ func loadConfig(getenv func(string) string) (config, error) {
 		// changes meaning when surrounding whitespace is removed. What it buys is
 		// that a key holding only a newline reads as EMPTY and hits the refusal
 		// below, rather than reaching an instance as a one-byte script.
-		AgentRuntimeConfig:    strings.TrimSpace(getenv(envAgentRuntimeConfig)),
-		AgentRuntimeInstall:   strings.TrimSpace(getenv(envAgentRuntimeInstall)),
-		AgentImageRepo:        strings.TrimSpace(getenv(envAgentImageRepo)),
-		AgentImageTag:         strings.TrimSpace(getenv(envAgentImageTag)),
-		AgentAPIURL:           strings.TrimSpace(getenv(envAgentAPIURL)),
-		AgentModel:            strings.TrimSpace(getenv(envAgentModel)),
-		AgentOpenRouterKey:    strings.TrimSpace(getenv(envAgentOpenRouterKey)),
-		AgentNamespaceShared:  envFlag(getenv, envAgentNSShared),
-		AgentNamespace:        strings.TrimSpace(getenv(envAgentNamespace)),
-		AgentNamespacePrefix:  strings.TrimSpace(getenv(envAgentNSPrefix)),
-		AgentWorkspacePersist: envFlag(getenv, envAgentWorkspaceKeep),
-		AgentStorageClass:     strings.TrimSpace(getenv(envAgentStorageClass)),
-		AgentEndpointTemplate: strings.TrimSpace(getenv(envAgentEndpointTmpl)),
-		AgentCairnURL:         strings.TrimSpace(getenv(envAgentCairnURL)),
-		AgentCairnToken:       strings.TrimSpace(getenv(envAgentCairnToken)),
-		AgentKinds:            splitList(getenv(envAgentKinds)),
-		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
-		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
-		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
-		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
-		AgentHermesImage:      strings.TrimSpace(getenv(envAgentHermesImage)),
-		AgentHermesStorage:    strings.TrimSpace(getenv(envAgentHermesStorage)),
-		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
-		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
+		AgentRuntimeConfig:        strings.TrimSpace(getenv(envAgentRuntimeConfig)),
+		AgentRuntimeInstall:       strings.TrimSpace(getenv(envAgentRuntimeInstall)),
+		AgentImageRepo:            strings.TrimSpace(getenv(envAgentImageRepo)),
+		AgentImageTag:             strings.TrimSpace(getenv(envAgentImageTag)),
+		AgentAPIURL:               strings.TrimSpace(getenv(envAgentAPIURL)),
+		AgentModel:                strings.TrimSpace(getenv(envAgentModel)),
+		AgentOpenRouterKey:        strings.TrimSpace(getenv(envAgentOpenRouterKey)),
+		AgentNamespaceShared:      envFlag(getenv, envAgentNSShared),
+		AgentNamespace:            strings.TrimSpace(getenv(envAgentNamespace)),
+		AgentNamespacePrefix:      strings.TrimSpace(getenv(envAgentNSPrefix)),
+		AgentNamespaceClusterRole: strings.TrimSpace(getenv(envAgentNSClusterRole)),
+		AgentWorkspacePersist:     envFlag(getenv, envAgentWorkspaceKeep),
+		AgentStorageClass:         strings.TrimSpace(getenv(envAgentStorageClass)),
+		AgentEndpointTemplate:     strings.TrimSpace(getenv(envAgentEndpointTmpl)),
+		AgentCairnURL:             strings.TrimSpace(getenv(envAgentCairnURL)),
+		AgentCairnToken:           strings.TrimSpace(getenv(envAgentCairnToken)),
+		AgentKinds:                splitList(getenv(envAgentKinds)),
+		AgentCCImage:              strings.TrimSpace(getenv(envAgentCCImage)),
+		AgentCCAccountNames:       splitList(getenv(envAgentCCAccounts)),
+		AgentCCStorage:            strings.TrimSpace(getenv(envAgentCCStorage)),
+		AgentCCBypassPools:        splitList(getenv(envAgentCCBypassPools)),
+		AgentNetpolFromNS:         strings.TrimSpace(getenv(envAgentNetpolFromNS)),
+		AgentNetpolFromLabels:     strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
+	c.AgentCCPoolDeployKeys, c.AgentCCPoolDeployKeysErr = parsePoolDeployKeys(getenv(envAgentCCPoolDeployKeys))
+	c.AgentCCEgressLockedPools = splitList(getenv(envAgentCCEgressLockedPools))
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
 		for _, name := range c.AgentCCAccountNames {
@@ -1081,6 +1745,26 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.AgentCCCooldown = d
 	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envAgentCCFailover))); v {
+	case "", "on", "1", "true":
+	case "off", "0", "false":
+		c.AgentCCFailoverOff = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want on (the default) or off", envAgentCCFailover, v)
+	}
+	cidrs, err := parseOfficerEgressCIDRs(getenv(envOfficerEgressCIDRs))
+	if err != nil {
+		return config{}, err
+	}
+	c.OfficerEgressCIDRs = cidrs
+	switch v := strings.TrimSpace(getenv(envOfficerEgressDNS)); v {
+	case "":
+	case officerEgressDNSUnfiltered:
+		c.OfficerEgressDNS = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want %s, or unset (officer instances get no cluster DNS)",
+			envOfficerEgressDNS, v, officerEgressDNSUnfiltered)
+	}
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 64 {
@@ -1096,6 +1780,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535", envPort, v)
 		}
 		c.Port = p
+	}
+	if v := strings.TrimSpace(getenv(envMetricsPort)); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535, or unset to serve no /metrics", envMetricsPort, v)
+		}
+		c.MetricsPort = p
 	}
 
 	// 🔴 PARSED HERE, AND REFUSED HERE, FOR THE REASON EVERY OTHER AGENT-SPEC
@@ -1125,11 +1816,41 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.AgentGatewayPort = p
 	}
 
+	origins, err := plugins.ParseOrigins(getenv(envPluginOrigins))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s %w: want comma-separated https://<host> or https://*.<zone>", envPluginOrigins, err)
+	}
+	// muster's own public host under a plugin origin would refuse muster itself.
+	if u, perr := url.Parse(c.PublicURL); perr == nil && u.Host != "" && plugins.AnyMatchesHost(origins, u.Host) {
+		return config{}, fmt.Errorf("invalid %s: it covers %s's host %q, so muster would refuse its own pages (421)",
+			envPluginOrigins, envPublicURL, u.Host)
+	}
+	c.PluginOrigins = origins
+
+	if c.ClientAddr, err = clientaddr.New(clientaddr.Config{
+		TrustedProxies: getenv(envTrustedProxies), Header: getenv(envClientIPHeader),
+		TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader,
+	}); err != nil {
+		return config{}, fmt.Errorf("invalid client address settings: %w", err)
+	}
+	switch v := strings.TrimSpace(getenv(envDirectClients)); v {
+	case "", "0":
+	case "1":
+		c.DirectClients = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want 1 (clients connect straight to muster) or unset", envDirectClients, v)
+	}
+
 	w, err := stepup.ParseWindow(getenv(envStepUpWindow))
 	if err != nil {
 		return config{}, fmt.Errorf("invalid %s: %w", envStepUpWindow, err)
 	}
 	c.StepUpWindow = w
+	hb, err := ui.ParseLiveHeartbeat(strings.TrimSpace(getenv(envLiveHeartbeat)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %w", envLiveHeartbeat, err)
+	}
+	c.LiveHeartbeat = hb
 	if v := strings.TrimSpace(getenv(envTaskReapAfter)); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -1140,6 +1861,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.TaskReapAfter = d
 	}
+	d, err := parseAgentReapStoppedAfter(getenv(envAgentReapStoppedAfter))
+	if err != nil {
+		return config{}, err
+	}
+	c.AgentReapStoppedAfter = d
+	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
+		return config{}, err
+	}
+	// read_at "release": the tag of the release this binary IS, from its own
+	// build version — the one source, never configured by hand.
+	c.Officers = officers.StampReleaseTag(c.Officers, api.BuildVersion)
+	// Set at all — `[]` included — turns the officer runtime's built-in store
+	// on (its admin API and Attention sweep) even with no officer declared.
+	c.OfficersSet = strings.TrimSpace(getenv(envOfficers)) != ""
+	c.OfficerImagePullSecret = strings.TrimSpace(getenv(envOfficerImagePullSecret))
+	c.OfficerImageRegistries = strings.TrimSpace(getenv(officers.ImageRegistriesEnv)) != ""
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1163,6 +1900,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v", envAgentsIdleAfter, err)
 	}
 	c.AgentsIdleAfter = idleAfter
+	def := agentoutcome.DefaultThresholds()
+	for _, v := range []struct {
+		name string
+		dst  *time.Duration
+		def  time.Duration
+	}{
+		{envAgentStuckNoReply, &c.AgentStuck.NoReply, def.NoReply},
+		{envAgentStuckSilent, &c.AgentStuck.Silent, def.Silent},
+		{envAgentWatchdogInterval, &c.AgentWatchdogInterval, agentoutcome.DefaultInterval},
+	} {
+		d, err := agentoutcome.ParseThreshold(getenv(v.name), v.def)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %v", v.name, err)
+		}
+		*v.dst = d
+	}
 	c.FocusRetention = focus.DefaultRetention
 	if v := strings.TrimSpace(getenv(envFocusRetention)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1171,31 +1924,71 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.FocusRetention = d
 	}
-	c.RouteTimeout = api.DefaultRouteTimeout
-	if v := strings.TrimSpace(getenv(envRouteTimeout)); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < api.MinRouteTimeout || d > api.MaxRouteTimeout {
-			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30m)",
-				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
-		}
-		c.RouteTimeout = d
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envSuggest))); v {
+	case "":
+	case "on", "1", "true":
+		c.SuggestOn = true
+	case "off", "0", "false":
+		c.SuggestOff = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want off (the kill switch) or on", envSuggest, v)
+	}
+	c.FocusModel = strings.TrimSpace(getenv(envFocusModel))
+	if c.FocusModel == "" {
+		c.FocusModel = focus.DefaultModel
+	}
+	c.SuggestModel = strings.TrimSpace(getenv(envSuggestModel))
+	if c.SuggestModel == "" {
+		c.SuggestModel = suggest.DefaultModel
 	}
 	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
 	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline
 	// no longer than that wait times the route out before its message can
 	// reach the session — every route would go back to the chief unread.
 	// Checked only with routing on: with it off neither value is about routes,
-	// and a long idle wait alone is a valid setting.
-	if c.SessionRouting && c.RouteTimeout <= c.SendQueueIdle {
-		return config{}, fmt.Errorf("invalid %s %s: it must be longer than %s (%s), the idle wait before a routed message is even pasted",
-			envRouteTimeout, c.RouteTimeout, envSendQueueIdle, c.SendQueueIdle)
+	// and a long idle wait alone is a valid setting. Against RouteTimeout, the
+	// shortest deadline (api.PRRouteTimeout and api.ConversationRouteTimeout
+	// are longer; TestRouteTimeoutIsTheShortestDeadline pins that).
+	if c.SessionRouting && api.RouteTimeout <= c.SendQueueIdle {
+		return config{}, fmt.Errorf("invalid %s %s: with %s=1 it must be shorter than a route's deadline (%s), or every route would time out before its message is even pasted",
+			envSendQueueIdle, c.SendQueueIdle, envSessionRouting, api.RouteTimeout)
 	}
+	c.PRMailSendersRaw = strings.TrimSpace(getenv(envPRMailSenders))
+	prSenders, err := plugins.ParsePRMailSenders(c.PRMailSendersRaw)
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envPRMailSenders, err)
+	}
+	c.PRMailSenders = prSenders
+	frSenders, err := plugins.ParseAgentMailSenders(strings.TrimSpace(getenv(envFleetReportSenders)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envFleetReportSenders, err)
+	}
+	frPaths, err := plugins.ParseFleetReportPaths(strings.TrimSpace(getenv(envFleetReportPaths)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want absolute directory prefixes, comma-separated)", envFleetReportPaths, err)
+	}
+	// 🔴 FAIL CLOSED: requests on with no prefix would describe nothing — or,
+	// to a later reader "fixing" that, everything. Refuse instead.
+	if len(frSenders) > 0 && len(frPaths) == 0 {
+		return config{}, fmt.Errorf("invalid %s: it is set but %s is not, so muster does not know which sessions a reply may "+
+			"describe", envFleetReportSenders, envFleetReportPaths)
+	}
+	c.FleetReportSenders, c.FleetReportPaths = frSenders, frPaths
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
 		if err != nil {
 			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<plugin>:<ASCII address, *@domain, agent-mail owner/handle or owner/*>, comma-separated)", envRouteRelayAllow, err)
 		}
 		c.RouteRelayAllow = l
+	}
+	c.MailResumeOff = envFlag(getenv, envMailResumeOff)
+	c.MailResumeAllowRaw = strings.TrimSpace(getenv(envMailResumeAllow))
+	if c.MailResumeAllowRaw != "" {
+		l, err := plugins.ParseRelayAllowlist(c.MailResumeAllowRaw)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<plugin>:<ASCII address, *@domain, agent-mail owner/handle or owner/*>, comma-separated)", envMailResumeAllow, err)
+		}
+		c.MailResumeAllow = l
 	}
 	c.TaskRouting = envFlag(getenv, envTaskRouting)
 	c.ChiefDispatchOwnersRaw = strings.TrimSpace(getenv(envChiefDispatchOwners))
@@ -1204,18 +1997,93 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
-	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
-
-	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
-		key, err := decodeEncryptionKey(v)
-		if err != nil {
-			return config{}, fmt.Errorf("invalid %s: %w", envGitHubEncKey, err)
+	if c.TeamsOnServerPool, err = parseOwnerIDs(strings.TrimSpace(getenv(envTeamsOnServerPool))); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want team ids, comma-separated)", envTeamsOnServerPool, err)
+	}
+	if c.TeamsOnGitHubApp, err = parseOwnerIDs(strings.TrimSpace(getenv(envTeamsOnGitHubApp))); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want team ids, comma-separated)", envTeamsOnGitHubApp, err)
+	}
+	if c.ChiefDispatchModels, err = parseDispatchModels(getenv(envChiefDispatchModels)); err != nil {
+		return config{}, err
+	}
+	c.ChiefNudges = envFlag(getenv, envChiefNudges)
+	c.SessionState = envFlag(getenv, envSessionState)
+	c.FleetDigest = envFlag(getenv, envFleetDigest)
+	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
+	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envInternalHTTPConnectors, err)
+	}
+	c.Pages = envFlag(getenv, envPages)
+	if v := strings.TrimSpace(getenv(envPagesUploadBytes)); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1<<20 || n > 100<<30 {
+			return config{}, fmt.Errorf("invalid %s %q: want a byte count from %d (1 MiB) to %d (100 GiB)", envPagesUploadBytes, v, 1<<20, int64(100<<30))
 		}
-		c.GitHubEncKey = key
+		c.PagesUploadBytes = n
+	}
+	if c.AskLog, err = parseAskLog(getenv); err != nil {
+		return config{}, err
+	}
+	if c.CCUsage, err = parseCCUsage(getenv); err != nil {
+		return config{}, err
+	}
+	c.ChiefNudgeIdle = chiefnudge.DefaultIdle
+	if v := strings.TrimSpace(getenv(envChiefNudgeIdle)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < chiefnudge.MinIdle || d > chiefnudge.MaxIdle {
+			return config{}, fmt.Errorf("invalid %s %q: want a duration from %s to %s", envChiefNudgeIdle, v, chiefnudge.MinIdle, chiefnudge.MaxIdle)
+		}
+		c.ChiefNudgeIdle = d
+	}
+	c.ChiefNudgeHourlyCap = chiefnudge.DefaultHourlyCap
+	if v := strings.TrimSpace(getenv(envChiefNudgeHourlyCap)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			return config{}, fmt.Errorf("invalid %s %q: want a whole number from 1 to 1000", envChiefNudgeHourlyCap, v)
+		}
+		c.ChiefNudgeHourlyCap = n
+	}
+	liveOwners, err := parseOwnerIDs(strings.TrimSpace(getenv(envChiefNudgeLiveOwners)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeLiveOwners, err)
+	}
+	c.ChiefNudgeLiveOwners = liveOwners
+	needsYouOwners, err := parseOwnerIDs(strings.TrimSpace(getenv(envChiefNudgeNeedsYouLiveOwners)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeNeedsYouLiveOwners, err)
+	}
+	c.ChiefNudgeNeedsYouLiveOwners = needsYouOwners
+	chiefChatOwners, err := parseOwnerIDs(strings.TrimSpace(getenv(envChiefNudgeChiefChatQuotesLiveOwners)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeChiefChatQuotesLiveOwners, err)
+	}
+	c.ChiefNudgeChiefChatQuotesLiveOwners = chiefChatOwners
+	c.ChiefNudgeAskThreshold = chiefnudge.DefaultAskThreshold
+	if v := strings.TrimSpace(getenv(envChiefNudgeAskThreshold)); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 2 {
+			return config{}, fmt.Errorf("invalid %s %q: want a number above 0 and at most 2 (the sum of two probabilities)", envChiefNudgeAskThreshold, v)
+		}
+		c.ChiefNudgeAskThreshold = f
+	}
+	c.ChiefSessionRuntimes, c.ChiefSessionRuntimeGatewayIgnored = withoutRetiredSessionRuntime(splitList(getenv(envChiefSessionRuntimes)))
+
+	icons, err := parseHostIcons(getenv(envHostIcons))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want <host>=<icon>, comma-separated)", envHostIcons, err)
+	}
+	if c.HostPrefs, err = (ui.HostPreferences{Icons: icons}).Normalized(); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envHostIcons, err)
 	}
 
 	if err := c.loadGitHubApp(getenv); err != nil {
 		return config{}, err
+	}
+	// 🔴 A TEAM LIST WITH NO APP REFUSES TO BOOT: it would promise the listed
+	// teams' managers repositories nothing could serve.
+	if len(c.TeamsOnGitHubApp) > 0 && c.GitHubAppID == 0 {
+		return config{}, fmt.Errorf("%s is set but %s is not: the list lends the deployment's GitHub App to "+
+			"each team, and there is no App. Configure the App, or unset %s", envTeamsOnGitHubApp, envGitHubAppID, envTeamsOnGitHubApp)
 	}
 	if v := strings.TrimSpace(getenv(envCheckoutWaitTimeout)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1251,8 +2119,48 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.AuthMode == "" {
 		c.AuthMode = string(api.AuthModePassword)
 	}
+	if err := c.applyTestLLMUpstream(getenv); err != nil {
+		return config{}, err
+	}
+	if err := c.applyChiefLLM(getenv); err != nil {
+		return config{}, err
+	}
+	if err := c.applyChiefSessions(getenv); err != nil {
+		return config{}, err
+	}
+	// Last: it refuses agent-plane variables set beside it, so every one of
+	// them must already be read.
+	if err := c.applyComposeChief(getenv); err != nil {
+		return config{}, err
+	}
+	// Push's contact address, when the keypair is set and the subject is not
+	// (defaultVAPIDSubject).
+	if c.VAPIDSubject == "" && c.VAPIDPublicKey != "" && c.VAPIDPrivateKey != "" {
+		c.VAPIDSubject = defaultVAPIDSubject(c.PublicURL)
+	}
 
 	return c, nil
+}
+
+// fallbackVAPIDSubject is the push contact of a server with no https URL.
+const fallbackVAPIDSubject = "mailto:muster@localhost"
+
+// defaultVAPIDSubject is MUSTER_VAPID_SUBJECT when the keypair is set and it
+// is not: MUSTER_PUBLIC_URL's origin when that is https, else
+// fallbackVAPIDSubject.
+//
+// 🔴 NEVER AN http:// URL. A push service refuses a subject that is not
+// mailto: or https (push.validSubject refuses it at boot), and copying an
+// http MUSTER_PUBLIC_URL into the subject is exactly how a local install
+// restart-looped (an earlier INSTALL.md did it). The subject is only a contact
+// for the push service's operator; a mailto: with no real mailbox behind it
+// sends push the same.
+func defaultVAPIDSubject(publicURL string) string {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fallbackVAPIDSubject
+	}
+	return "https://" + u.Host
 }
 
 // gotrueIssuer and gotrueAudience are what muster's GoTrue stamps on its
@@ -1277,6 +2185,11 @@ const minGoTrueSecretLen = 32
 // here rather than spelling it twice.
 func (c config) pluginsEnabled() bool { return c.Plugins && c.Database != "" }
 
+// sessionRoutingEnabled is session routing's ONE predicate (MUSTER_SESSION_ROUTING=1
+// with a database), with or without plugins: buildApp wires the routes store
+// on it, and the chief's spec carries the request-routing section on it.
+func (c config) sessionRoutingEnabled() bool { return c.SessionRouting && c.Database != "" }
+
 func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSecret != "" }
 
 // validateAuthMode refuses an auth configuration that would boot unsafe.
@@ -1286,11 +2199,7 @@ func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSe
 //
 //   - MUSTER_GOTRUE_URL and MUSTER_GOTRUE_JWT_SECRET (≥32 characters): without
 //     them no session can be minted or verified.
-//   - an ARMED hook tier (MUSTER_HOOK_TOKEN set). The hook tier is
-//     enforce-when-set: unset, every hook route admits ANYONE as the machine
-//     user, user 1 — the admin. In password mode that is the documented
-//     back-compat debt; once other people have accounts it is an anonymous
-//     admin door beside a per-user login, so gotrue mode will not boot with it.
+//   - (MUSTER_HOOK_TOKEN is required too, as in every mode: validateListeners.)
 //   - MUSTER_BROWSER_PORT, distinct from the main and connect ports: the only
 //     listener a browser session is served on.
 //
@@ -1323,22 +2232,106 @@ func (c config) validateAuthMode() error {
 		return fmt.Errorf("%s=%d collides with another listener's port", envBrowserPort, c.BrowserPort)
 	}
 	if api.AuthMode(c.AuthMode) != api.AuthModeGoTrue {
-		return nil
+		return c.validateClientTopology()
 	}
 	if !c.goTrueConfigured() {
 		return fmt.Errorf("%s=gotrue needs %s and %s: without them no session can be minted or verified",
 			envAuthMode, envGoTrueURL, envGoTrueSecret)
 	}
-	if c.HookToken == "" {
-		return fmt.Errorf("%s=gotrue refuses to boot with %s unset: the hook tier is enforce-when-set, so "+
-			"unset it admits ANYONE as the machine user — user 1, the admin. With per-user logins that is an "+
-			"anonymous admin door. Set %s", envAuthMode, envHookToken, envHookToken)
-	}
 	if c.BrowserPort == 0 {
 		return fmt.Errorf("%s=gotrue needs %s: browser sessions are served only on that listener, and the "+
 			"main port serves machine tokens only. Route the public edge to it", envAuthMode, envBrowserPort)
 	}
+	return c.validateClientTopology()
+}
+
+// validateClientTopology: gotrue mode must declare how clients reach muster.
+//
+// 🔴 WHY GoTrue MODE REFUSES AN UNDECLARED TOPOLOGY. muster forwards each
+// request's client address to GoTrue (X-Muster-Client-IP), and GoTrue keys its
+// own per-address limits on it — password sign-in and session refresh, passkey
+// sign-in, password-reset links. Behind a proxy that is not declared trusted,
+// that address is the PROXY's for every user, so every user shares one GoTrue
+// bucket, and anyone can empty it and have GoTrue refuse everyone's correct
+// sign-in. There is no safe guess: the operator must say either "these are my
+// proxies" (MUSTER_TRUSTED_PROXIES) or "there is no proxy"
+// (MUSTER_DIRECT_CLIENTS=1). Both at once contradict each other. Password mode
+// has no GoTrue and is not held to this.
+func (c config) validateClientTopology() error {
+	trusted := c.ClientAddr.Header() != ""
+	switch {
+	case trusted && c.DirectClients:
+		return fmt.Errorf("%s and %s=1 are both set: one says a proxy is in front of muster, the other that there is "+
+			"none. Keep the one that is true", envTrustedProxies, envDirectClients)
+	case api.AuthMode(c.AuthMode) != api.AuthModeGoTrue:
+		return nil
+	case !trusted && !c.DirectClients:
+		return fmt.Errorf("%s=gotrue needs the client topology declared: set %s and %s to the proxy in front of "+
+			"muster, or %s=1 if clients connect straight to muster with no proxy. Without either, every user behind "+
+			"a proxy has the proxy's address, so GoTrue's per-address limits become one bucket anyone can empty "+
+			"(docs/configuration.md#client-addresses-behind-a-proxy)",
+			envAuthMode, envTrustedProxies, envClientIPHeader, envDirectClients)
+	}
 	return nil
+}
+
+// validateOfficerImagePullSecret refuses a MUSTER_OFFICER_IMAGE_PULL_SECRET
+// that could not work, naming the variable:
+//
+//   - not a Secret name (a DNS subdomain): every officer instance on its own
+//     image would be refused at apply;
+//   - without the kubernetes provisioner and muster's own namespace
+//     (MUSTER_AGENT_NETPOL_FROM_NAMESPACE, the driver's SecretSourceNamespace):
+//     nothing would copy the Secret into an instance's namespace (and only the
+//     kubernetes driver can pull with one);
+//   - without MUSTER_OFFICER_IMAGE_REGISTRIES: no officer `image` can be
+//     allowed, so the credential would never be used — an armed switch that
+//     does nothing, refused rather than read as enabled.
+func (c config) validateOfficerImagePullSecret() error {
+	name := c.OfficerImagePullSecret
+	if name == "" {
+		return nil
+	}
+	if msgs := validation.IsDNS1123Subdomain(name); len(msgs) > 0 {
+		return fmt.Errorf("invalid %s %q: it names a Secret, and a Secret's name is a DNS subdomain (%s)",
+			envOfficerImagePullSecret, name, strings.Join(msgs, "; "))
+	}
+	if !c.agentNetworkPolicy() || c.AgentNetpolFromNS == "" {
+		return fmt.Errorf("%s is set but nothing would copy the Secret into an officer instance's namespace: it needs "+
+			"%s=%s with the %s kind and %s (muster's own namespace, where the Secret is kept). Set those, or unset it",
+			envOfficerImagePullSecret, envAgentProvisioner, provisionerK8s, agents.KindClaudeCode, envAgentNetpolFromNS)
+	}
+	if !c.OfficerImageRegistries {
+		return fmt.Errorf("%s is set but %s is not, so no officer `image` can be allowed and the Secret would never "+
+			"be used. Set %s, or unset %s", envOfficerImagePullSecret, officers.ImageRegistriesEnv,
+			officers.ImageRegistriesEnv, envOfficerImagePullSecret)
+	}
+	if !anyOfficerImage(c.Officers) {
+		return fmt.Errorf("%s is set but no officer in %s declares an `image` (or a tiers.<pool>.image), so the Secret "+
+			"would never be used. Declare the image, or unset %s", envOfficerImagePullSecret, envOfficers, envOfficerImagePullSecret)
+	}
+	// 🔴 ONE SECRET, ONE USE: a deploy-key pool's Secret is a key holder's
+	// mount source; the pull Secret is never also one (each copy holds exactly
+	// its own keys).
+	for _, pool := range slices.Sorted(maps.Keys(c.AgentCCPoolDeployKeys)) {
+		if c.AgentCCPoolDeployKeys[pool].Secret == name {
+			return fmt.Errorf("%s=%s is also pool %s's deploy-key Secret in %s (a key holder mounts it): one Secret cannot be "+
+				"both an image pull Secret and a key holder's; use two Secrets", envOfficerImagePullSecret, name, pool, envAgentCCPoolDeployKeys)
+		}
+	}
+	return nil
+}
+
+// anyOfficerImage reports whether any declared officer pool runs its own
+// runner image: an untiered officer's `image`, or a tiered one's
+// tiers.<pool>.image.
+func anyOfficerImage(os []officers.Officer) bool {
+	for _, o := range os {
+		if o.Image != "" || (o.Tiers != nil && (o.Tiers.Routine.Image != "" || o.Tiers.Judgement.Image != "")) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateConnectors refuses a connector configuration that could only fail
@@ -1352,31 +2345,43 @@ func (c config) validateAuthMode() error {
 //     would be handed a URL that answers 503, or isolated agents a network
 //     allowance to a port nothing serves the connector surface on.
 //   - a connect port without the store: a listener serving routes that all 503.
-//   - 🔴 the store WITHOUT the agent connect URL. Every agent-facing piece of
-//     the store (the connector tools, the gateway prompt's push recipe, a
-//     claude-code pod's MCP server and git routing) tells the agent to use
-//     $MUSTER_CONNECT_URL, and with no URL configured that variable is empty in
-//     every pod: agents would be offered tools and instructions that lead
-//     nowhere. Refusing here makes "the store is on" imply "agents can reach
-//     it", so the API server's one predicate (Extensions.Connectors != nil)
-//     stays true to what agents can actually do, with no second flag to keep in
-//     step with it.
+//   - a connect port with the key but without the agent connect URL: the
+//     listener would serve a connector surface no agent is told about.
+//   - an internal_http connector or a GitHub App without the AGENT-facing
+//     store (the key AND the agent connect URL): both reach agents only
+//     through it, so either would be configured and do nothing.
+//
+// 🔴 THE KEY ALONE IS ACCEPTED, AND IT TURNS ON ONLY THE MEMBER HALF. The key
+// seals two stores: members' own Claude and OpenRouter credentials (Account →
+// Credentials, internal/credentials) and the agent-facing connector store.
+// The first needs nothing else. The second is built only with
+// MUSTER_AGENT_CONNECT_URL too (connectorStoreConfigured), because every
+// agent-facing piece of it (the connector tools, the gateway prompt's push
+// recipe, a claude-code pod's MCP server and git routing) tells the agent to
+// use $MUSTER_CONNECT_URL: with no URL that variable is empty in every pod.
+// So "Extensions.Connectors != nil" still implies "agents can reach it", and
+// a key without the URL boots with the agent half OFF and says so (the boot
+// banner's `connector store:` line and the connectors feature's reason)
+// instead of refusing to boot.
 func (c config) validateConnectors() error {
-	if c.GitHubAppID != 0 && len(c.ConnectorEncKey) == 0 {
-		return fmt.Errorf("%s is set but %s is not: the GitHub App's tokens reach agents only through the "+
-			"connector proxy, whose grants live in the connector store. Set %s too", envGitHubAppID,
-			envConnectorEncKey, envConnectorEncKey)
+	agentStore := len(c.ConnectorEncKey) > 0 && c.AgentConnectURL != ""
+	if len(c.InternalHTTP) > 0 && !agentStore {
+		return fmt.Errorf("%s is set but the agent connector store is not (it needs %s and %s, with %s): an "+
+			"internal_http connector is granted through it. Set them too", envInternalHTTPConnectors,
+			envConnectorEncKey, envAgentConnectURL, envConnectPort)
 	}
-	if len(c.ConnectorEncKey) > 0 && len(c.GitHubEncKey) > 0 && string(c.ConnectorEncKey) == string(c.GitHubEncKey) {
-		return fmt.Errorf("%s is the same key as %s: generate a separate key for each store", envConnectorEncKey, envGitHubEncKey)
+	if c.GitHubAppID != 0 && !agentStore {
+		return fmt.Errorf("%s is set but the agent connector store is not (it needs %s and %s, with %s): the "+
+			"GitHub App's tokens reach agents only through the connector proxy, whose grants live in that store. "+
+			"Set them too", envGitHubAppID, envConnectorEncKey, envAgentConnectURL, envConnectPort)
 	}
 	if c.ConnectPort != 0 && len(c.ConnectorEncKey) == 0 {
 		return fmt.Errorf("%s is set but %s is not: the connect listener would serve only refusals", envConnectPort, envConnectorEncKey)
 	}
-	if len(c.ConnectorEncKey) > 0 && c.AgentConnectURL == "" {
-		return fmt.Errorf("%s is set but %s is not: agents would be told to use a connector store they cannot "+
-			"reach. Set %s (with %s) to the connect listener's in-cluster URL, or unset %s",
-			envConnectorEncKey, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
+	if c.ConnectPort != 0 && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s is set but %s is not: the connect listener would serve a connector surface no "+
+			"agent is told about. Set %s to its in-cluster URL, or unset %s (%s alone turns on members' own "+
+			"credentials)", envConnectPort, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
 	if c.ConnectPort != 0 && c.ConnectPort == c.Port {
 		return fmt.Errorf("%s (%d) is the same as the main port: pick a separate port for the connect listener", envConnectPort, c.ConnectPort)
@@ -1395,10 +2400,34 @@ func (c config) validateConnectors() error {
 	return nil
 }
 
+// validateShipReadRepos refuses a shipping officer (a `ship` block) that
+// declares `read_repos` on a deployment with no GitHub App of its own.
+//
+// 🔴 A shipping officer's read_repos are read with the DEPLOYMENT App's
+// read-only token (PushGate.ReadCred = Server.deploymentReadCred), and that App
+// exists only when MUSTER_GITHUB_APP_ID is set (buildApp). Without it the push
+// gate would forward those reads anonymously while the officer's kickoff and
+// its approve card promise a read-only token for each, so this configuration
+// cannot boot.
+func (c config) validateShipReadRepos() error {
+	if c.GitHubAppID != 0 {
+		return nil
+	}
+	for _, o := range c.Officers {
+		if o.Ship != nil && len(o.ReadRepos) > 0 {
+			return fmt.Errorf("officer %s declares `read_repos` beside a `ship` block, but %s is not set: a shipping officer "+
+				"reads its read_repos with the deployment's own GitHub App (a read-only token for each), and without one those "+
+				"reads would go anonymously. Set %s (with %s and %s), or remove read_repos",
+				o.ID, envGitHubAppID, envGitHubAppID, envGitHubAppKey, envGitHubAppAccounts)
+		}
+	}
+	return nil
+}
+
 // githubLoginRE is a GitHub user or organization login.
 var githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 
-// loadGitHubApp reads the GitHub App's three variables.
+// loadGitHubApp reads the GitHub App's four variables.
 //
 // 🔴 HALF A PAIR, AND A KEY THAT DOES NOT PARSE, REFUSE TO BOOT. Either would
 // boot a server whose `github` connector fails every token mint — visible only
@@ -1407,9 +2436,20 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 	id := strings.TrimSpace(getenv(envGitHubAppID))
 	key := getenv(envGitHubAppKey)
 	accounts := splitList(getenv(envGitHubAppAccounts))
+	accessRaw := getenv(envGitHubAppAccess)
+	// 🔴 AN ACCESS MODE THAT IS NOT `read` OR `write` REFUSES TO BOOT. A typo of
+	// `read` that fell back to the default would mint WRITE tokens on a
+	// deployment whose operator asked for read-only ones.
+	access, err := githubapp.ParseAccess(accessRaw)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %v", envGitHubAppAccess, err)
+	}
 	if id == "" && strings.TrimSpace(key) == "" {
 		if len(accounts) > 0 {
 			return fmt.Errorf("%s is set but %s is not: an account allowlist needs its App", envGitHubAppAccounts, envGitHubAppID)
+		}
+		if strings.TrimSpace(accessRaw) != "" {
+			return fmt.Errorf("%s is set but %s is not: an access mode needs its App", envGitHubAppAccess, envGitHubAppID)
 		}
 		return nil
 	}
@@ -1464,31 +2504,65 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 		seen[aid] = a
 		parsed = append(parsed, githubapp.Account{Login: login, ID: aid})
 	}
-	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, parsed
+	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts, c.GitHubAppAccess = n, k, parsed, access
 	return nil
 }
 
-// decodeEncryptionKey decodes the 32-byte AES key the GitHub token is encrypted
-// at rest with. Standard or raw base64, padded or not.
+// decodeEncryptionKey decodes a 32-byte AES key (the connector store's).
+// Standard or raw base64, padded or not.
 //
 // 🔴 THERE IS NO "GENERATE ONE IF UNSET" BRANCH, AND ITS ABSENCE IS THE POINT.
-// An ephemeral key would make every previously stored GitHub token undecryptable
-// on the next restart, which presents as "the Repos tab forgot my account" with
-// nothing in the log — the failure is a DATA loss dressed as a UI bug. Unset
-// means the GitHub store is not built at all, which is visible on screen.
+// An ephemeral key would make every previously stored secret undecryptable on
+// the next restart — a DATA loss dressed as a UI bug. Unset means the store is
+// not built at all, which is visible on screen.
+//
+// It takes the 32 bytes in either of two encodings, and the two cannot be
+// confused: hex is exactly 64 hex digits, and base64 of 32 bytes is 43 or 44
+// characters. A 64-hex-digit value is therefore read as hex (as base64 it
+// would be 48 bytes, never a key). Anything else must be base64 of exactly 32
+// bytes. The refusal names the encoding it read: a value of hex digits only
+// is reported as a hex key of the wrong length (the INSTALL.md helper's
+// shape), not as base64 of some odd number of bytes.
 func decodeEncryptionKey(v string) ([]byte, error) {
+	const want = "want 32 random bytes as 64 hex digits (openssl rand -hex 32) or as base64 (openssl rand -base64 32)"
+	hexOnly := isHexDigits(v)
+	if hexOnly && len(v) == 64 {
+		return hex.DecodeString(v)
+	}
+	got := -1
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.RawStdEncoding,
 		base64.URLEncoding, base64.RawURLEncoding,
 	} {
 		if b, err := enc.DecodeString(v); err == nil {
-			if len(b) != 32 {
-				return nil, fmt.Errorf("decodes to %d bytes, want 32 (AES-256)", len(b))
+			if len(b) == 32 {
+				return b, nil
 			}
-			return b, nil
+			got = len(b)
+			break
 		}
 	}
-	return nil, errors.New("not valid base64 (want 32 random bytes, base64-encoded)")
+	switch {
+	case hexOnly:
+		return nil, fmt.Errorf("is %d hex digits, %s", len(v), want)
+	case got >= 0:
+		return nil, fmt.Errorf("is base64 of %d bytes, %s", got, want)
+	}
+	return nil, errors.New("is neither hex nor base64: " + want)
+}
+
+// isHexDigits reports whether v is non-empty and every character is 0-9, a-f
+// or A-F.
+func isHexDigits(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 // validate refuses a configuration this binary must not serve behind.
@@ -1514,6 +2588,9 @@ func (c config) validate() error {
 	if reason := c.authConfig().SharedSecretPrefixRefusal(); reason != "" {
 		return errors.New(reason)
 	}
+	if reason := hookTokenRefusal(c.HookToken); reason != "" {
+		return errors.New(reason)
+	}
 	if c.Database == "" {
 		return fmt.Errorf("%s is not set: muster is its Postgres database, and a server "+
 			"started without one serves an EMPTY board that is indistinguishable from a "+
@@ -1528,6 +2605,17 @@ func (c config) validate() error {
 			"configuration would boot a relay that can never file a card. Set both or neither",
 			envApprovalGateURL, envApprovalGateToken, envApprovalGateURL, presence(c.ApprovalGateURL),
 			envApprovalGateToken, presence(c.ApprovalGateToken))
+	}
+	for _, h := range []struct{ env, v string }{
+		{envRouterActorHeader, c.RouterActorHeader}, {envRouterTokenHeader, c.RouterTokenHeader},
+	} {
+		if h.v != "" && !headerName.MatchString(h.v) {
+			return fmt.Errorf("%s=%q is not an HTTP header name (%s): the router would "+
+				"never see the value sent under it. Fix or unset it", h.env, h.v, headerName)
+		}
+	}
+	if err := api.ValidLegacyProvenancePrefix(c.LegacyProvenancePrefix); err != nil {
+		return fmt.Errorf("%s: %v. Fix or unset it", envLegacyProvenancePrefix, err)
 	}
 	if c.ApprovalGateURL != "" {
 		actor := c.RouterActor
@@ -1550,7 +2638,34 @@ func (c config) validate() error {
 	if _, err := push.ParseExtraHosts(c.PushExtraHosts); err != nil {
 		return fmt.Errorf("%s: %v", envPushExtraHosts, err)
 	}
+	if _, err := c.assetLinks(); err != nil {
+		return err
+	}
+	if _, err := c.ssoOrigins(); err != nil {
+		return err
+	}
 	if err := c.validateSTT(); err != nil {
+		return err
+	}
+	// 🔴 OFFICERS NEED THE CONNECTOR DOOR. An officer instance reaches its
+	// tools only over muster's MCP server, served on the connect listener; with
+	// it unset the instance boots with no officer tools and nothing says so.
+	// validateConnectors (below) already holds MUSTER_AGENT_CONNECT_URL to the
+	// key and the port, so this names the one variable and the set.
+	// ⚠ POD officers only: a "runtime": "host" instance is a mirrored session
+	// and reaches its officer tools through the mirror door (its host's
+	// muster-mirror), not the connect listener — the Compose stack's officers,
+	// which have no connect URL to set (onboarding: the .env.example officers
+	// example could not boot).
+	if slices.ContainsFunc(c.Officers, func(o officers.Officer) bool { return !o.OnHost() }) && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s declares pod officers but %s is not set: pod officer instances reach their tools only over muster's "+
+			"MCP server on the connect listener, so they would boot with no officer tools. Set %s, %s and %s",
+			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
+	}
+	if err := c.validateShipReadRepos(); err != nil {
+		return err
+	}
+	if err := c.validateOfficerImagePullSecret(); err != nil {
 		return err
 	}
 	if err := c.validateConnectors(); err != nil {
@@ -1562,7 +2677,77 @@ func (c config) validate() error {
 	if err := notes.ValidatePluginTaskNamespaces(c.PluginTaskNamespaces); err != nil {
 		return fmt.Errorf("%s: %w", envPluginTaskNamespaces, err)
 	}
-	return c.validateProvisioner()
+	if c.FaroUpstream != "" {
+		if u, err := url.Parse(c.FaroUpstream); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%s=%q is not an http(s) URL: the browser telemetry relay would forward every "+
+				"post to nowhere. Set the Faro receiver's collect URL (http://<alloy>:<port>/collect) or unset it", envFaroUpstream, c.FaroUpstream)
+		}
+	}
+	if err := c.validateChiefLLM(); err != nil {
+		return err
+	}
+	if err := c.validateOfficerEgress(); err != nil {
+		return err
+	}
+	if err := c.validateProvisioner(); err != nil {
+		return err
+	}
+	return c.validateListeners()
+}
+
+// validateListeners refuses a configuration this server must not boot with: a
+// metrics port that collides with another listener, and no MUSTER_HOOK_TOKEN.
+//
+// 🔴 THE HOOK TOKEN IS REQUIRED IN BOTH AUTH MODES, ON EVERY LAYOUT. It is the
+// machine tier's credential and acts as user 1, the admin. The tier used to be
+// "enforce-when-set", so a server started without it served every machine route
+// to anyone who could reach it. No listener layout makes that safe to infer:
+// a loopback bind behind a proxy on the same host is reachable from anywhere,
+// and the request looks exactly like a local one. So the token is simply
+// required, and the API fails closed without it too (api.requireHookToken).
+//
+// An EMPTY or blank value is unset: a Secret whose key holds "" arms nothing.
+func (c config) validateListeners() error {
+	if c.MetricsPort != 0 && (c.MetricsPort == c.Port || c.MetricsPort == c.BrowserPort || c.MetricsPort == c.ConnectPort) {
+		return fmt.Errorf("%s=%d collides with another listener's port: /metrics gets a listener of its own", envMetricsPort, c.MetricsPort)
+	}
+	if strings.TrimSpace(c.HookToken) == "" {
+		return fmt.Errorf("%s is not set: it is the credential of every machine route, and muster does not "+
+			"start without one. Set it to a secret, e.g. %s=$(openssl rand -hex 32), and give the same value "+
+			"to the hosts and hooks that call muster", envHookToken, envHookToken)
+	}
+	return nil
+}
+
+// secureCookies resolves MUSTER_SECURE_COOKIES: an explicit value wins (an
+// affirmative is on, anything else — 0, false, off — is the opt-out), and
+// UNSET follows the public URL, on when it is https. A deployment reached over
+// TLS therefore gets a Secure cookie without having to know the variable
+// exists; a plain-http LAN port, where a Secure cookie would never be sent,
+// keeps working.
+func secureCookies(v, publicURL string) bool {
+	if strings.TrimSpace(v) != "" {
+		return envFlag(func(string) string { return v }, envSecureCookies)
+	}
+	return httpsURL(publicURL)
+}
+
+// httpsURL reports whether raw is an https URL with a host.
+func httpsURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != ""
+}
+
+// faroSettings is the page's Faro configuration: with a relay upstream the
+// page posts to muster's own relay route, same-origin; without one, to
+// MUSTER_FARO_URL directly (the older, cross-origin arrangement).
+func (c config) faroSettings(version string) ui.FaroSettings {
+	f := ui.FaroSettings{URL: c.FaroURL, Key: c.FaroKey, Version: version, Tracing: c.FaroTracing}
+	if c.FaroUpstream != "" {
+		// The key never reaches the page: the relay adds it upstream.
+		f.URL, f.Key, f.Relay = api.FaroRelayPath, "", true
+	}
+	return f
 }
 
 // pushConfigured reports whether the VAPID triple is set (validate has
@@ -1584,6 +2769,39 @@ func (c config) pushAllowlist() push.Allowlist {
 	return push.NewAllowlist(hosts)
 }
 
+// dialGuard is the ONE answer to "are configured-address dials guarded": the
+// strict safedial.Guard with MUSTER_DIAL_DENY_PRIVATE=1, nil (no guard) without
+// it. The postgres connector (api.Extensions.DialGuard) and the boot banner
+// read it.
+func (c config) dialGuard() *safedial.Guard {
+	if !c.DialDenyPrivate {
+		return nil
+	}
+	return &safedial.Guard{}
+}
+
+// assetLinks is the body of /.well-known/assetlinks.json, nil when neither
+// MUSTER_ANDROID_PACKAGE nor MUSTER_ANDROID_CERT_SHA256 is set.
+func (c config) assetLinks() ([]byte, error) {
+	body, err := api.BuildAssetLinks(c.AndroidPackage, c.AndroidCertSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%s / %s: %v", envAndroidPackage, envAndroidCertSHA256, err)
+	}
+	return body, nil
+}
+
+// ssoOrigins is MUSTER_ANDROID_SSO_ORIGINS parsed: the exact https origins
+// GET /api/device/web serves, empty (never nil) when unset. A malformed value
+// is an error naming the variable, and validate refuses boot on it: a typo
+// would otherwise ship as a sign-in that silently leaves the app.
+func (c config) ssoOrigins() ([]string, error) {
+	origins, err := api.ParseSSOOrigins(c.AndroidSSOOrigins)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v. Fix or unset it", envAndroidSSOOrigins, err)
+	}
+	return origins, nil
+}
+
 // validateVAPID refuses a partial VAPID triple, and a complete one that is not
 // a working identity.
 //
@@ -1603,8 +2821,8 @@ func (c config) validateVAPID() error {
 	}
 	if set != 3 {
 		return fmt.Errorf("%s, %s and %s are a triple and only %d of them are set (%s=%s, %s=%s, %s=%s): "+
-			"half a push configuration would boot with no push. Set all three (`muster-server vapid generate`) "+
-			"or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
+			"half a push configuration would boot with no push. Set the keypair (`muster-server vapid generate`; "+
+			"the subject then defaults when unset) or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
 			envVAPIDPublicKey, presence(c.VAPIDPublicKey), envVAPIDPrivateKey, presence(c.VAPIDPrivateKey),
 			envVAPIDSubject, presence(c.VAPIDSubject))
 	}
@@ -1666,6 +2884,12 @@ func oneOf(value string, choices []string) bool {
 // refusal: the same misconfiguration is either one fatal line at start or a card
 // that silently never provisions.
 func (c config) validateProvisioner() error {
+	// The Compose chief sets the agent plane itself and refused every variable
+	// below that was set beside it (applyComposeChief): it has its own
+	// requirements and none of these.
+	if c.chiefCompose() {
+		return c.validateComposeChief()
+	}
 	named := c.agentProvisioner()
 	if !oneOf(named, provisionerChoices) {
 		return fmt.Errorf("invalid %s %q: want one of %s", envAgentProvisioner,
@@ -1771,6 +2995,10 @@ func (c config) validateProvisioner() error {
 		return err
 	}
 
+	if err := c.validateNamespaceClusterRole(); err != nil {
+		return err
+	}
+
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
 		// operator who set the image repository and forgot to name a driver is
@@ -1803,6 +3031,47 @@ func (c config) validateProvisioner() error {
 	return nil
 }
 
+// validateNamespaceClusterRole refuses MUSTER_AGENT_NAMESPACE_CLUSTERROLE where
+// nothing would act on it — any driver but kubernetes, or the shared layout,
+// where muster creates no namespace to bind itself in. Each refusal is an armed
+// switch that would otherwise boot and do nothing. (A name that is not a
+// ClusterRole's surfaces at the first dispatch, from waitForAccess, naming it.)
+func (c config) validateNamespaceClusterRole() error {
+	role := c.AgentNamespaceClusterRole
+	if role == "" {
+		return nil
+	}
+	if c.agentProvisioner() != provisionerK8s {
+		return fmt.Errorf("%s is set but %s=%s: only the kubernetes driver writes the per-namespace RoleBinding",
+			envAgentNSClusterRole, envAgentProvisioner, c.agentProvisioner())
+	}
+	if c.AgentNamespaceShared {
+		return fmt.Errorf("%s is set with %s=1: in the shared layout muster creates no namespace to bind itself "+
+			"in; grant muster a Role in %s instead, and unset %s",
+			envAgentNSClusterRole, envAgentNSShared, envAgentNamespace, envAgentNSClusterRole)
+	}
+	return nil
+}
+
+// retiredSessionRuntime is the MUSTER_CHIEF_SESSION_RUNTIMES entry this binary
+// ignores rather than refuses: the gateway runtime that ran beside a
+// claude-code chief's ccd, removed.
+const retiredSessionRuntime = "gateway"
+
+// withoutRetiredSessionRuntime is list without retiredSessionRuntime, and
+// whether it held it.
+func withoutRetiredSessionRuntime(list []string) ([]string, bool) {
+	out, dropped := list[:0:0], false
+	for _, rt := range list {
+		if rt == retiredSessionRuntime {
+			dropped = true
+			continue
+		}
+		out = append(out, rt)
+	}
+	return out, dropped
+}
+
 // validateKinds refuses an agent-kinds configuration that could only fail at a
 // dispatch.
 //
@@ -1824,15 +3093,6 @@ func (c config) validateSessionRuntimes() error {
 			return fmt.Errorf("invalid %s: %q is listed twice", envChiefSessionRuntimes, rt)
 		}
 		seen[rt] = true
-	}
-	// A claude-code chief's gateway sessions run on the gateway runtime BESIDE
-	// ccd, built from the same runtime bundle as a gateway-kind agent: without
-	// it, the chief's next Start would fail to build its spec.
-	if seen[agents.SessionRuntimeGateway] && c.claudeCodeEnabled() && c.agentGateway() == gatewayNone {
-		return fmt.Errorf("invalid %s: it names %s and %s enables %s, so a %s chief runs the gateway runtime beside "+
-			"ccd — and %s is %s, so there is no runtime bundle to build it from",
-			envChiefSessionRuntimes, agents.SessionRuntimeGateway, envAgentKinds, agents.KindClaudeCode,
-			agents.KindClaudeCode, envAgentGateway, gatewayNone)
 	}
 	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
 		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",
@@ -1859,20 +3119,17 @@ func (c config) validateKinds() error {
 	}
 	// 🔴 THE NETWORK-POLICY SELECTOR IS REFUSED WHEREVER NOTHING WOULD RENDER IT,
 	// AND THIS RUNS BEFORE THE KIND CHECKS BELOW ON PURPOSE. It has two ways to be
-	// an armed switch — no confined kind (claude-code, hermes) is enabled, or one
+	// an armed switch — no confined kind (claude-code) is enabled, or one
 	// is enabled on a driver that has no NetworkPolicies — and an operator who set
 	// it believes their agents are confined to callers they named.
 	if !c.agentNetworkPolicy() && (c.AgentNetpolFromNS != "" || c.AgentNetpolFromLabels != "") {
 		return fmt.Errorf("%s or %s is set but nothing would render a NetworkPolicy from it: that needs %s to "+
-			"include %s or %s AND %s=%s (it is %s). Left set it would be an armed switch that does nothing — "+
+			"include %s AND %s=%s (it is %s). Left set it would be an armed switch that does nothing — "+
 			"agents you believe are confined, with no policy. Unset both, or enable the kind on that driver",
-			envAgentNetpolFromNS, envAgentNetpolFromLabels, envAgentKinds, agents.KindClaudeCode, agents.KindHermes,
+			envAgentNetpolFromNS, envAgentNetpolFromLabels, envAgentKinds, agents.KindClaudeCode,
 			envAgentProvisioner, provisionerK8s, c.agentProvisioner())
 	}
 	if err := c.validateClaudeCodeKind(); err != nil {
-		return err
-	}
-	if err := c.validateHermesKind(); err != nil {
 		return err
 	}
 	// 🔴 THE KUBERNETES DRIVER WRITES A CONFINED AGENT'S NetworkPolicy BEFORE ITS
@@ -1884,12 +3141,12 @@ func (c config) validateKinds() error {
 	// name nothing an operator can set. Refused here first, naming both variables.
 	if c.agentNetworkPolicy() {
 		if c.AgentNetpolFromNS == "" || c.AgentNetpolFromLabels == "" {
-			return fmt.Errorf("%s enables a confined kind (%s, %s) on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+
+			return fmt.Errorf("%s enables a confined kind (%s) on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+
 				"confined agent is created with a NetworkPolicy that admits connections from this server's own pods "+
 				"and nothing else, and those two say which pods that is — the namespace this server runs in "+
 				"and its pods' labels as key=value,key=value. There is no default: both are read off this "+
 				"deployment's own pod template",
-				envAgentKinds, agents.KindClaudeCode, agents.KindHermes, envAgentProvisioner, provisionerK8s,
+				envAgentKinds, agents.KindClaudeCode, envAgentProvisioner, provisionerK8s,
 				envAgentNetpolFromNS, envAgentNetpolFromLabels,
 				envAgentNetpolFromNS, presence(c.AgentNetpolFromNS),
 				envAgentNetpolFromLabels, presence(c.AgentNetpolFromLabels))
@@ -1906,10 +3163,13 @@ func (c config) validateKinds() error {
 	return nil
 }
 
-// connectorStoreConfigured reports whether this deployment builds a connector
-// store: a database to hold it and a key to seal its secrets.
+// connectorStoreConfigured reports whether this deployment builds the
+// AGENT-FACING connector store (Extensions.Connectors): a database to hold it,
+// a key to seal its secrets, and the agent connect URL agents reach it on.
+// The key without the URL builds only members' own credential store (buildApp
+// keys that on the key alone); see validateConnectors.
 func (c config) connectorStoreConfigured() bool {
-	return c.Database != "" && len(c.ConnectorEncKey) > 0
+	return c.Database != "" && len(c.ConnectorEncKey) > 0 && c.AgentConnectURL != ""
 }
 
 // ccPoolLimits is the account pool's limits: the configured values, with
@@ -1939,12 +3199,55 @@ func (c config) validateClaudeCodeKind() error {
 				"them to limit. Add %s to %s, or unset them", envAgentCCCooldown, envAgentCCMaxJobs, envAgentKinds,
 				agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
 		}
+		if c.AgentCCFailoverOff {
+			return fmt.Errorf("%s=off is set but %s does not include %s: there are no Claude accounts to fail "+
+				"over between. Add %s to %s, or unset it", envAgentCCFailover, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
 		if len(c.AgentCCBypassPools) > 0 {
 			return fmt.Errorf("%s is set but %s does not include %s: there are no Claude Code job lanes for it to "+
 				"bypass permissions on, so it would be an armed switch that does nothing. Add %s to %s, or unset it",
 				envAgentCCBypassPools, envAgentKinds, agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
 		}
+		if len(c.AgentCCPoolDeployKeys) > 0 || c.AgentCCPoolDeployKeysErr != nil {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no worker pools for it to give a "+
+				"deploy key. Add %s to %s, or unset it", envAgentCCPoolDeployKeys, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
+		if len(c.AgentCCEgressLockedPools) > 0 {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no worker pools for it to lock. "+
+				"Add %s to %s, or unset it", envAgentCCEgressLockedPools, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
 		return nil
+	}
+	if c.AgentCCPoolDeployKeysErr != nil {
+		return c.AgentCCPoolDeployKeysErr
+	}
+	for _, p := range c.AgentCCEgressLockedPools {
+		if !agents.ValidWorkerPool(p) {
+			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCEgressLockedPools, p)
+		}
+	}
+	// 🔴 A LOCKED POOL'S NAME IS A LABEL VALUE (muster.agent/pool). A pool name
+	// may end in "-", which a label value may not, and the apiserver would then
+	// refuse every object of such a worker with 422 at dispatch. Refused here,
+	// naming the variable that locks it.
+	for _, l := range []struct {
+		env   string
+		pools []string
+	}{
+		{envAgentCCEgressLockedPools, c.AgentCCEgressLockedPools},
+		{envAgentCCPoolDeployKeys, slices.Sorted(maps.Keys(c.AgentCCPoolDeployKeys))},
+	} {
+		for _, p := range l.pools {
+			if msgs := validation.IsValidLabelValue(p); len(msgs) > 0 {
+				return fmt.Errorf("invalid %s entry %q: the pool is egress-locked and its name is the value of the "+
+					"pod label %s, but it is not a valid label value (%s); rename the pool (it must also end with a "+
+					"letter or digit)", l.env, p, agentspec.LabelPool, strings.Join(msgs, "; "))
+			}
+		}
 	}
 	for _, p := range c.AgentCCBypassPools {
 		if !agents.ValidWorkerPool(p) {
@@ -1991,40 +3294,6 @@ func (c config) validateClaudeCodeKind() error {
 	return nil
 }
 
-// validateHermesKind checks the hermes kind's own settings, as
-// validateClaudeCodeKind does the claude-code kind's. Its provider credential is
-// the OpenRouter key, which may be a member's own, so it is not required here;
-// a dispatch without one is refused per owner (credentials.Plane.Unavailable).
-func (c config) validateHermesKind() error {
-	if !c.hermesEnabled() {
-		if c.AgentHermesImage != "" || c.AgentHermesStorage != "" {
-			return fmt.Errorf("%s or %s is set but %s does not include %s: those settings would be an armed "+
-				"switch that does nothing. Add %s to %s, or unset them",
-				envAgentHermesImage, envAgentHermesStorage, envAgentKinds, agents.KindHermes, agents.KindHermes, envAgentKinds)
-		}
-		return nil
-	}
-	if c.agentProvisioner() == provisionerNone {
-		return fmt.Errorf("%s includes %s but %s=%s: a kind is something a DRIVER provisions, so there is "+
-			"nothing to build it with", envAgentKinds, agents.KindHermes, envAgentProvisioner, provisionerNone)
-	}
-	if c.AgentHermesImage == "" {
-		return fmt.Errorf("%s includes %s but %s is not set: there is no default image (a reference names "+
-			"a registry, which is installation state)", envAgentKinds, agents.KindHermes, envAgentHermesImage)
-	}
-	if !imagePinned(c.AgentHermesImage) {
-		return fmt.Errorf("invalid %s %q: it must pin a tag or a digest — the image carries Hermes at one pinned "+
-			"commit and hermesd's wire contract, and an unpinned reference lets two agents run different ones",
-			envAgentHermesImage, c.AgentHermesImage)
-	}
-	if c.AgentHermesStorage != "" {
-		if _, err := resource.ParseQuantity(c.AgentHermesStorage); err != nil {
-			return fmt.Errorf("invalid %s %q: %v (want a Kubernetes quantity, e.g. 10Gi)", envAgentHermesStorage, c.AgentHermesStorage, err)
-		}
-	}
-	return nil
-}
-
 // imagePinned reports whether an image reference names a digest or a tag (a ':'
 // after the last '/').
 func imagePinned(ref string) bool {
@@ -2038,3 +3307,64 @@ func imagePinned(ref string) bool {
 // osGetenv is os.Getenv as a value, so main() can hand loadConfig the real
 // environment and tests can hand it a map.
 func osGetenv(name string) string { return os.Getenv(name) }
+
+// minAgentReapStoppedAfter is the shortest stopped window accepted. The reaper
+// DESTROYS what it selects, so a value meant as days but written as minutes
+// ("14m") is refused at boot rather than destroying every stopped agent on the
+// next sweep.
+const minAgentReapStoppedAfter = time.Hour
+
+// parseAgentReapStoppedAfter reads MUSTER_AGENT_REAP_STOPPED_AFTER: unset is
+// api.DefaultAgentReapStoppedAfter, "0" or "off" is 0 (the reaper is off), and
+// anything else must be a Go duration of at least minAgentReapStoppedAfter.
+func parseAgentReapStoppedAfter(raw string) (time.Duration, error) {
+	v := strings.TrimSpace(raw)
+	switch strings.ToLower(v) {
+	case "":
+		return api.DefaultAgentReapStoppedAfter, nil
+	case "0", "off":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w (want a Go duration, e.g. 336h, or 0/off)", envAgentReapStoppedAfter, v, err)
+	}
+	if d < minAgentReapStoppedAfter {
+		return 0, fmt.Errorf("invalid %s %q: must be at least %s (or 0/off to turn the reaper off)", envAgentReapStoppedAfter, v, minAgentReapStoppedAfter)
+	}
+	return d, nil
+}
+
+// minHookTokenLen is the shortest MUSTER_HOOK_TOKEN muster boots with — the same
+// floor as MUSTER_UI_PASSWORD's (api.minUIPasswordLen).
+const minHookTokenLen = 12
+
+// hookTokenPlaceholder is deploy/.env.example's placeholder value.
+const hookTokenPlaceholder = "CHANGE-ME"
+
+// hookTokenRefusal is why a SET MUSTER_HOOK_TOKEN is refused at boot, or "".
+//
+// 🔴 THE HOOK TOKEN ACTS AS USER 1, THE ADMIN, ON EVERY MACHINE ROUTE. The
+// public deploy/.env.example ships it as CHANGE-ME, and before this check a
+// stack whose operator filled in the UI password but missed this line came up
+// healthy with a world-known admin bearer (measured: `Bearer CHANGE-ME` answered
+// 200 on /api/tasks). MUSTER_UI_PASSWORD's placeholder was already refused (the
+// web tier fails closed); this is the same rule for the machine tier, applied
+// at boot because a machine credential has no page on which to explain itself.
+//
+// UNSET is refused too, in every mode, by validateListeners (one refusal for
+// both modes, which says how to make a value).
+func hookTokenRefusal(token string) string {
+	switch {
+	case token == "":
+		return ""
+	case strings.EqualFold(strings.TrimSpace(token), hookTokenPlaceholder):
+		return fmt.Sprintf("%s is the placeholder %q from .env.example: it is the admin credential "+
+			"of every machine route, and that value is public. Set it to a secret (openssl rand -hex 32)",
+			envHookToken, hookTokenPlaceholder)
+	case len(token) < minHookTokenLen:
+		return fmt.Sprintf("%s is shorter than %d characters: it is the admin credential of every "+
+			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
+	}
+	return ""
+}

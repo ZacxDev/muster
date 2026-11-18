@@ -157,3 +157,23 @@ func TestRequireUserVerificationSetsTheRightField(t *testing.T) {
 		t.Fatalf("registration options: %s", out)
 	}
 }
+
+// TestCredentialIdentityIsReadOffTheRawID: the id the Signal API needs is the
+// base64url of the RAW id (not the `id` field, which a client could make
+// disagree), unpadded; the user handle is returned as sent.
+func TestCredentialIdentityIsReadOffTheRawID(t *testing.T) {
+	raw := []byte{0xfb, 0xff, 0x00, 0x3e}
+	as := []byte(`{"id":"not-the-raw-id","rawId":"` + base64.RawURLEncoding.EncodeToString(raw) + `","type":"public-key",` +
+		`"response":{"clientDataJSON":"e30","authenticatorData":"AAAA","signature":"c2ln","userHandle":"` +
+		base64.RawURLEncoding.EncodeToString([]byte("0f0f0f0f-0f0f-4f0f-af0f-0f0f0f0f0f0f")) + `"}}`)
+	id, handle, err := gotrue.AssertionIdentity(as)
+	if err != nil || id != "-_8APg" || string(handle) != "0f0f0f0f-0f0f-4f0f-af0f-0f0f0f0f0f0f" {
+		t.Fatalf("AssertionIdentity = %q %q %v", id, handle, err)
+	}
+	if id, err := gotrue.AttestationCredentialID(gotruetest.Attestation("cred-7", 0x05)); err != nil || id != "Y3JlZC03" {
+		t.Fatalf("AttestationCredentialID = %q %v", id, err)
+	}
+	if _, _, err := gotrue.AssertionIdentity([]byte(`{"type":"public-key","id":"x"}`)); err == nil {
+		t.Fatal("an assertion with no rawId has an identity")
+	}
+}

@@ -10,17 +10,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
 
+// runWith runs the daemon's run with env and args, answering its exit code,
+// stdout and stderr. Its writers are locked: a goroutine the daemon started
+// that still logs as run returns (a background loop not yet stopped) must not
+// race the read of what it wrote.
 func runWith(t *testing.T, env map[string]string, args ...string) (int, string, string) {
 	t.Helper()
-	var out, errb bytes.Buffer
+	var out, errb lockedBuffer
 	rc := run(args, func(k string) string { return env[k] }, &out, &errb)
 	return rc, out.String(), errb.String()
+}
+
+// lockedBuffer is a bytes.Buffer safe for concurrent writes and reads.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // TestTheTokenNeverHasToBeAnArgument: there is no -token flag (argv is visible
@@ -28,6 +51,22 @@ func runWith(t *testing.T, env map[string]string, args ...string) (int, string, 
 func TestTheTokenNeverHasToBeAnArgument(t *testing.T) {
 	if rc, _, errs := runWith(t, nil, "-token", "mmt_x"); rc != 2 || !strings.Contains(errs, "flag provided but not defined: -token") {
 		t.Fatalf("-token was accepted (rc %d): %s", rc, errs)
+	}
+}
+
+// TestALeftoverArgumentIsRefusedNotRunAsTheDaemon: a word the parser leaves
+// over — a subcommand this binary does not have, or a typo — fails with
+// usage status 2 and says which word, before anything dials or lists. The
+// control is the same word missing: the daemon's own usage error instead.
+func TestALeftoverArgumentIsRefusedNotRunAsTheDaemon(t *testing.T) {
+	for _, args := range [][]string{{"no-such-subcommand"}, {"-allow-http", "stray"}} {
+		rc, out, errs := runWith(t, map[string]string{envURL: "https://m.example"}, args...)
+		if rc != 2 || out != "" || !strings.Contains(errs, `unknown command or argument "`+args[len(args)-1]+`"`) {
+			t.Fatalf("%q: rc %d, stdout %q, stderr %q; want 2 naming the word", args, rc, out, errs)
+		}
+	}
+	if rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example"}, "-allow-http"); rc != 2 || strings.Contains(errs, "unknown command") || !strings.Contains(errs, "are required") {
+		t.Fatalf("CONTROL: no leftover word: rc %d, %s; want the missing-token usage error", rc, errs)
 	}
 }
 
@@ -45,8 +84,57 @@ func TestMissingURLOrTokenIsAUsageError(t *testing.T) {
 	if rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example", envHost: "laptop"}, "-token-file", f); rc != 2 || !strings.Contains(errs, "not a mirror token") {
 		t.Fatalf("hook token in the file: rc %d %s", rc, errs)
 	}
-	if rc, _, errs := runWith(t, map[string]string{envURL: "http://192.0.2.1:30306", envToken: "mmt_x", envHost: "laptop"}); rc != 2 || !strings.Contains(errs, "cleartext") {
+	if rc, _, errs := runWith(t, map[string]string{envURL: "http://192.0.2.1:8105", envToken: "mmt_x", envHost: "laptop"}); rc != 2 || !strings.Contains(errs, "cleartext") {
 		t.Fatalf("http without -allow-http: rc %d %s", rc, errs)
+	}
+}
+
+// TestABadTenantSpawnServerStopsTheDaemon: a -agent-spawn-tenant-server that is
+// neither a socket name nor an absolute socket path is a usage error, from the
+// flag or its env var, before anything dials. CONTROL: a valid one gets past it
+// to the next check (the cleartext URL's).
+func TestABadTenantSpawnServerStopsTheDaemon(t *testing.T) {
+	env := map[string]string{envURL: "http://192.0.2.1:8105", envToken: "mmt_x", envHost: "laptop"}
+	if rc, _, errs := runWith(t, env, "-agent-spawn-tenant-server", "x/teamq"); rc != 2 || !strings.Contains(errs, `-agent-spawn-tenant-server "x/teamq"`) {
+		t.Fatalf("flag: rc %d %s", rc, errs)
+	}
+	env[envAgentSpawnTenantServer] = "team q"
+	if rc, _, errs := runWith(t, env); rc != 2 || !strings.Contains(errs, `-agent-spawn-tenant-server "team q"`) {
+		t.Fatalf("env: rc %d %s", rc, errs)
+	}
+	env[envAgentSpawnTenantServer] = "teamq"
+	if rc, _, errs := runWith(t, env); rc != 2 || strings.Contains(errs, "agent-spawn-tenant-server") || !strings.Contains(errs, "cleartext") {
+		t.Fatalf("CONTROL, a valid value: rc %d %s; want the cleartext refusal", rc, errs)
+	}
+}
+
+// TestTheTenantSpawnOptInReachesTheHost: a tenant's daemon (-tmux-socket
+// teamq) with -agent-spawn says at startup that it starts agents on that
+// tenant's server only when -agent-spawn-tenant-server names it; without it,
+// that it starts none, for the old reason. The daemon's context is ended
+// before it dials, so only its startup runs.
+func TestTheTenantSpawnOptInReachesTheHost(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", tmp) // a private, absent tenant server: nothing to touch
+	t.Setenv("TMUX", "")
+	prevC := runContext
+	t.Cleanup(func() { runContext = prevC })
+	for _, c := range []struct{ optIn, want string }{
+		{"teamq", `STARTING AGENTS IS ON (-agent-spawn): your chief may start claude (or opencode, with -opencode-send and a token) in tmux session "agents" on the tenant tmux server "teamq"`},
+		{"", "-agent-spawn is set but this host starts no agent: not the default tmux server"},
+	} {
+		runContext = func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, cancel
+		}
+		rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example", envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envSocket: "teamq", envInteractive: "1", envAgentSpawn: "1", envAgentSpawnRepos: "acme/widgets", envAgentSpawnTenantServer: c.optIn,
+			"XDG_RUNTIME_DIR": filepath.Join(tmp, "run"), "XDG_DATA_HOME": filepath.Join(tmp, "data"), "XDG_STATE_HOME": filepath.Join(tmp, "state"),
+			envAgentSpawnRoots: filepath.Join(tmp, "src"), "HOME": tmp})
+		if rc != 0 || !strings.Contains(errs, c.want) {
+			t.Fatalf("opt-in %q: rc %d, log:\n%s\nwant %q", c.optIn, rc, errs, c.want)
+		}
 	}
 }
 
@@ -144,21 +232,30 @@ func TestListClaudeIsOneRowPerClaudeWINDOW(t *testing.T) {
 	}
 }
 
+// TestTheTmuxBackendLooksForLiveCopies: the host the daemon runs warns about a
+// conversation that also runs elsewhere (mirrorhost's livecopy.go) — the
+// scanner is on, not merely written.
+func TestTheTmuxBackendLooksForLiveCopies(t *testing.T) {
+	if b := tmuxBackend("", "", "").(mirrorhost.Tmux); b.LiveCopies == nil {
+		t.Fatal("the tmux backend has no LiveCopies: no window would ever say its conversation runs elsewhere")
+	}
+}
+
 // TestThePaneMapDirReachesTheTmuxBackend: the flag/env is not decoration — the
 // backend the host runs reads the map from it.
 func TestThePaneMapDirReachesTheTmuxBackend(t *testing.T) {
-	b, ok := tmuxBackend("s", "", "/fx/ledger", nil).(mirrorhost.Tmux)
+	b, ok := tmuxBackend("s", "", "/fx/ledger").(mirrorhost.Tmux)
 	if !ok || b.Claude.PaneMapDir != "/fx/ledger" || b.Socket != "s" {
 		t.Fatalf("tmuxBackend = %+v, want PaneMapDir /fx/ledger", b)
 	}
-	if b := tmuxBackend("", "", "", nil).(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
+	if b := tmuxBackend("", "", "").(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
 		t.Fatalf("no pane map dir configured, yet the backend has %q", b.Claude.PaneMapDir)
 	}
 	// And run passes it: from the environment, and from the flag (which wins).
 	prev := newTmuxBackend
 	t.Cleanup(func() { newTmuxBackend = prev })
 	var got []string
-	newTmuxBackend = func(s, sp, dir string, _ *mirrorhost.HermesSource) mirrorhost.Backend {
+	newTmuxBackend = func(s, sp, dir string) mirrorhost.Backend {
 		got = append(got, dir)
 		return listBackend{}
 	}
@@ -184,8 +281,7 @@ func TestVersion(t *testing.T) {
 
 // TestCatalogPrintsWhatTheHostWouldReport: -catalog prints the composer menu's
 // catalog for a pane in the current directory — the user's skills (through
-// CLAUDE_CONFIG_DIR), and the snippets from -snippets-file / its variable —
-// without dialling anything.
+// CLAUDE_CONFIG_DIR) — without dialling anything.
 func TestCatalogPrintsWhatTheHostWouldReport(t *testing.T) {
 	cfg := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cfg, "skills", "printed"), 0o755); err != nil {
@@ -194,23 +290,13 @@ func TestCatalogPrintsWhatTheHostWouldReport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg, "skills", "printed", "SKILL.md"), []byte("---\nname: printed\ndescription: shown by -catalog\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snip := filepath.Join(t.TempDir(), "s.json")
-	if err := os.WriteFile(snip, []byte(`[{"trigger":":pc","label":"Printed snippet","body":"b"}]`), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	for _, args := range [][]string{{"-catalog", "-snippets-file", snip}, {"-catalog"}} {
-		env := map[string]string{}
-		if len(args) == 1 {
-			env[envSnippets] = snip
-		}
-		rc, out, errs := runWith(t, env, args...)
-		if rc != 0 {
-			t.Fatalf("%v: rc %d %s", args, rc, errs)
-		}
-		if !strings.Contains(out, "user\tskill\t/printed\tshown by -catalog\n") || !strings.Contains(out, "snippet\t:pc\tPrinted snippet\n") {
-			t.Fatalf("%v printed:\n%s", args, out)
-		}
+	rc, out, errs := runWith(t, map[string]string{}, "-catalog")
+	if rc != 0 {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if !strings.Contains(out, "user\tskill\t/printed\tshown by -catalog\n") {
+		t.Fatalf("printed:\n%s", out)
 	}
 }
 
@@ -237,7 +323,7 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	type result struct {
 		rc        int
@@ -267,6 +353,61 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 	}
 }
 
+// TestTheMCPSecretFileExpandsHome: MUSTER_MIRROR_MCP_SECRET_FILE=~/… (a
+// settings file no shell expanded) is under this user's home, as `muster
+// doctor` reads it — not a directory named "~" under the working directory.
+func TestTheMCPSecretFileExpandsHome(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(work)
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen := free.Addr().String()
+	free.Close()
+	muster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	defer muster.Close()
+	prevB, prevC := newTmuxBackend, runContext
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	type result struct {
+		rc   int
+		errs string
+	}
+	done := make(chan result, 1)
+	go func() {
+		rc, _, errs := runWith(t, map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envAllowHTTP: "1", envMCPListen: listen, envMCPSecret: "~/mm/mcp-secret"})
+		done <- result{rc, errs}
+	}()
+	want := filepath.Join(home, "mm", "mcp-secret")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if fi, err := os.Stat(want); err == nil && fi.Size() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			r := <-done
+			t.Fatalf("no secret at %s after 10s (rc %d); log:\n%s", want, r.rc, r.errs)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	r := <-done
+	if _, err := os.Stat(filepath.Join(work, "~")); err == nil {
+		t.Fatalf("a literal ~ directory was made under the working directory")
+	}
+	if !strings.Contains(r.errs, "(secret in "+want+")") {
+		t.Fatalf("the log does not name the expanded path %s:\n%s", want, r.errs)
+	}
+}
+
 // TestADanglingSymlinkSecretNeverDelaysMirroring: with the MCP secret file a
 // dangling symlink, the host still dials muster at once (the endpoint is off,
 // and says so) — setting MCP up never stands between the host and mirroring.
@@ -290,12 +431,12 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	done := make(chan string, 1)
 	go func() {
 		_, _, errs := runWith(t, map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
-			envAllowHTTP: "1", envMCPListen: "127.0.0.1:0", envMCPSecret: secret})
+			envAllowHTTP: "1", envMCPListen: "127.0.0.1:47999", envMCPSecret: secret})
 		done <- errs
 	}()
 	select {
@@ -311,5 +452,82 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("run did not stop")
+	}
+}
+
+// TestSpawnedAgentsKeepPermissionPromptsUnlessTurnedOn: with -agent-spawn on,
+// the daemon's startup line says its spawned agents start in NORMAL permission
+// mode by default (skipping prompts is opt-in);
+// MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=1 (or true), or
+// -agent-spawn-skip-permissions, says WITHOUT permission prompts instead; =0
+// keeps them; as root (geteuid 0) with the setting on, claude keeps its
+// prompts and the line says why; and a value that is not a bool stops the
+// daemon (rc 2) naming the variable and the values strconv.ParseBool accepts.
+// The line is worded from the built AgentSpawnConfig, so it also pins the
+// flag-to-config assignment. The daemon's context is ended before it dials.
+func TestSpawnedAgentsKeepPermissionPromptsUnlessTurnedOn(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", tmp) // a private, absent tmux server: nothing to touch
+	t.Setenv("TMUX", "")
+	prevC := runContext
+	t.Cleanup(func() { runContext = prevC })
+	runContext = func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, cancel
+	}
+	prevE := geteuid
+	t.Cleanup(func() { geteuid = prevE })
+	const (
+		on   = ", WITHOUT permission prompts (-agent-spawn-skip-permissions): they run their tools without asking"
+		off  = ", in normal permission mode (without -agent-spawn-skip-permissions)"
+		root = ", claude in normal permission mode because this mirror runs as root (effective uid 0) and Claude Code refuses " +
+			"bypassPermissions as root, opencode WITHOUT permission prompts (-agent-spawn-skip-permissions, --auto)"
+	)
+	env := func(skip string) map[string]string {
+		e := map[string]string{envURL: "https://m.example", envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envSocket: "teamq", envInteractive: "1", envAgentSpawn: "1", envAgentSpawnRepos: "acme/widgets", envAgentSpawnTenantServer: "teamq",
+			"XDG_RUNTIME_DIR": filepath.Join(tmp, "run"), "XDG_DATA_HOME": filepath.Join(tmp, "data"), "XDG_STATE_HOME": filepath.Join(tmp, "state"),
+			envAgentSpawnRoots: filepath.Join(tmp, "src"), "HOME": tmp}
+		if skip != "" {
+			e[envAgentSpawnSkipPermissions] = skip
+		}
+		return e
+	}
+	for _, c := range []struct {
+		name, env string
+		args      []string
+		euid      int
+		want      string
+	}{
+		// 🔴 OPT-IN: the default keeps the prompts.
+		{"the default", "", nil, 1000, off},
+		{"env 1", "1", nil, 1000, on},
+		{"env true", "true", nil, 1000, on},
+		{"env T", "T", nil, 1000, on},
+		{"env 0", "0", nil, 1000, off},
+		{"the flag", "", []string{"-agent-spawn-skip-permissions"}, 1000, on},
+		{"the flag over env 0", "0", []string{"-agent-spawn-skip-permissions=true"}, 1000, on},
+		{"the flag =false over env 1", "1", []string{"-agent-spawn-skip-permissions=false"}, 1000, off},
+		// As root claude keeps its prompts (Claude Code refuses
+		// bypassPermissions as root) and the line says why; off is off.
+		{"root, env 1", "1", nil, 0, root},
+		{"root, the default", "", nil, 0, off},
+	} {
+		geteuid = func() int { return c.euid }
+		rc, _, errs := runWith(t, env(c.env), c.args...)
+		if rc != 0 || !strings.Contains(errs, "STARTING AGENTS IS ON") || !strings.Contains(errs, c.want) {
+			t.Fatalf("%s: rc %d, log:\n%s\nwant %q", c.name, rc, errs, c.want)
+		}
+		for _, other := range []string{on, off, root} {
+			if other != c.want && strings.Contains(errs, other) {
+				t.Fatalf("%s: the log also says %q:\n%s", c.name, other, errs)
+			}
+		}
+	}
+	geteuid = func() int { return 1000 }
+	if rc, _, errs := runWith(t, env("off")); rc != 2 || !strings.Contains(errs,
+		`MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS="off" is not a bool (1, t, T, TRUE, true, True, 0, f, F, FALSE, false or False)`) {
+		t.Fatalf("a value that is not a bool: rc %d: %s", rc, errs)
 	}
 }

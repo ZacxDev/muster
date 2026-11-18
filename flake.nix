@@ -140,6 +140,11 @@
           # and the CLI compiles `internal/agentspec` through `internal/api` (see
           # the `.sh` note above).
           || rel == "internal/agentspec/autosave.sh"
+          # 🔴 ONE FILE, NOT A SUFFIX: `cmd/muster/doctor.go` embeds the spoken
+          # sample `muster doctor` sends through /transcribe. Without this row
+          # `nix build .#muster-cli` dies with `pattern doctor_sample.wav: no
+          # matching files found`.
+          || rel == "cmd/muster/doctor_sample.wav"
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
           # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
           # RUNS: `cmd/muster/one_service_test.go` opens
@@ -166,16 +171,21 @@
       # bump would move it again silently. Move this, `go.mod`'s `go` directive
       # and the CI job's toolchain together or not at all.
       #
-      # 🔴 IT IS `buildGo125Module`, NOT `buildGoModule` WITH THE COMPILER IN
+      # 🔴 IT IS `buildGo126Module`, NOT `buildGoModule` WITH THE COMPILER IN
       # `nativeBuildInputs`. That spelling is a NO-OP for the pin:
       # `buildGoModule` uses the `go` from its OWN scope, so the build would
-      # fetch whatever nixpkgs' default is while the derivation advertised 1.25
+      # fetch whatever nixpkgs' default is while the derivation advertised 1.26
       # in its inputs — a pin that reads as one and is not.
       #
-      # ⚠ `go_1_25` TRACKS A SERIES, NOT A PATCH RELEASE. The property this pin
-      # holds is the MINOR version, which is what a language-version skew would
-      # break.
-      buildGoPinned = pkgs: pkgs.buildGo125Module;
+      # ⚠ `go_1_26` TRACKS A SERIES, NOT A PATCH RELEASE. This binding holds
+      # the MINOR version; the PATCH floor is held by `go.mod`'s `go` directive
+      # (`go 1.26.11`), which makes a toolchain older than that refuse to build
+      # the module at all. So a `flake.lock` whose `go_1_26` is below the floor
+      # fails loudly instead of building an unpatched binary — move the lock
+      # forward, never the directive back.
+      # `internal/modulegate/gotoolchain_test.go` pins that every Go build site
+      # names the `go` directive's minor.
+      buildGoPinned = pkgs: pkgs.buildGo126Module;
 
       # 🔴 ONE BINDING, READ BY EVERY GO DERIVATION, BECAUSE THERE IS ONE
       # MODULE. Several literals would be several chances for one to go stale,
@@ -198,7 +208,7 @@
       # here with the value nix printed for the first fetch that actually
       # succeeded, and the `nix` CI job added with this change is what will
       # contradict it next time.
-      goVendorHash = "sha256-U8EbKTAeF4/I7DJtvt7aOBgOdf1ukOyHquJ9IC/pq8c=";
+      goVendorHash = "sha256-HzG3NMHIid3WRUngGX5XEZaPiKuDytZBtYMAaHR9Qv0=";
 
       # goCheckPhase builds a check phase for one of this flake's Go
       # derivations. `testPaths` is the package pattern `go test` is given.
@@ -534,8 +544,12 @@
         doCheck = true;
 
         # The untagged tests only: the real-tmux suite (`-tags tmuxit`) runs in
-        # CI's ccd-tmux job, and the nix sandbox has no tmux.
-        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/... ./internal/hermeshost/...";
+        # CI's ccd-tmux job, and the nix sandbox has no tmux. git is a CHECK
+        # input only: the -agent-spawn tests build throwaway repositories (with
+        # their own identity and no global config); at run time spawning uses
+        # the host's own git, like tmux.
+        nativeCheckInputs = [ pkgs.git ];
+        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/...";
 
         meta = with pkgs.lib; {
           description = "Show this machine's tmux sessions in muster as mirrored sessions (dials out; no listener; read-only unless -interactive)";
@@ -543,35 +557,6 @@
           license = licenses.mit;
           mainProgram = "muster-mirror";
           platforms = platforms.unix;
-        };
-      };
-
-      # hermesd: the in-pod supervisor of the `hermes` agent kind (cmd/hermesd).
-      # It is built HERE, from this module and `goVendorHash`, and the image that
-      # carries it is a separate flake (images/hermes-agent/flake.nix) that takes
-      # this package through a relative `path:` input: the image needs upstream
-      # Hermes's flake at a pinned sha, and that input — with its own nixpkgs,
-      # uv2nix and the rest — stays out of THIS flake's lock, so nothing that
-      # builds muster fetches it.
-      mkHermesd = pkgs: (buildGoPinned pkgs) {
-        pname = "hermesd";
-        inherit version;
-        src = onlyGo pkgs;
-        vendorHash = goVendorHash;
-
-        subPackages = [ "cmd/hermesd" ];
-
-        doCheck = true;
-        # hermesd's tests write git routing with the real `git`.
-        nativeCheckInputs = [ pkgs.git ];
-        checkPhase = goCheckPhase "./cmd/hermesd/... ./internal/podagent/...";
-
-        meta = with pkgs.lib; {
-          description = "The in-pod supervisor that makes Hermes a muster agent runtime (the hermes agent kind)";
-          homepage = "https://github.com/ZacxDev/muster";
-          license = licenses.mit;
-          mainProgram = "hermesd";
-          platforms = platforms.linux;
         };
       };
 
@@ -630,7 +615,6 @@
           (builtins.elem pkgs.stdenv.hostPlatform.system linuxSystems)
           {
             migrate-image = mkMigrateImage pkgs;
-            hermesd = mkHermesd pkgs;
           });
 
       # 🔴 `apps.default` AND `packages.default` MOVE TOGETHER OR NOT AT ALL.
@@ -678,7 +662,7 @@
           packages = [
             # The same toolchain the package and the CI job use — see
             # `buildGoPinned` above for why it is pinned rather than inherited.
-            pkgs.go_1_25
+            pkgs.go_1_26
             pkgs.git
             pkgs.python3
             # For `make test-db` and the compose file.

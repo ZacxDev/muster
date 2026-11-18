@@ -42,11 +42,11 @@ import (
 // false positive is therefore a signal to add a real global to jsKnownGlobals,
 // never to loosen the scan.
 // ⚠ IT SWEEPS BOTH ui.Features SHAPES, AND THAT IS NOT BOILERPLATE. Features
-// decides whether the Repos tab, its panel and its entries in the browser's tab
+// decides whether the Connectors tab, its panel and its entries in the browser's tab
 // registry are drawn at all, and appScript's own TABS/HEADINGS/DEFAULT_TAB are
 // generated FROM it (navRegistryJS). Scanning only the zero value — the shipping
 // default, and the one that draws LESS — would make a dead call reachable only on
-// a GitHub-enabled deployment structurally invisible to this guard, which is the
+// a connector-enabled deployment structurally invisible to this guard, which is the
 // same "the config pinned a dimension" blindness the defect class above is made
 // of. See forEachFeatureShape.
 func TestNoInlineScriptCallsAnUndefinedFunction(t *testing.T) {
@@ -282,10 +282,11 @@ var jsKnownGlobals = map[string]bool{
 	"MutationObserver": true, "IntersectionObserver": true, "ResizeObserver": true,
 	"CustomEvent": true, "Event": true, "KeyboardEvent": true, "FormData": true,
 	"URL": true, "URLSearchParams": true, "EventSource": true, "WebSocket": true,
-	"Notification": true, "AbortController": true, "Blob": true, "Image": true,
+	"Notification": true, "AbortController": true, "Blob": true, "Image": true, "ClipboardItem": true,
 	"Intl": true, "TextEncoder": true, "TextDecoder": true,
 	"MouseEvent": true, "DOMParser": true, "Uint8Array": true, "Uint16Array": true,
 	"ArrayBuffer": true, "FileReader": true, "XMLHttpRequest": true, "Element": true,
+	"MessageChannel": true,
 }
 
 // inlineScriptBodies returns the JavaScript body of every inline <script> in a

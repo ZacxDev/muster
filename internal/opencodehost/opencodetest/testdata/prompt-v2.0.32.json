@@ -1,0 +1,211 @@
+{
+ "commands": {
+  "data": [
+   {
+    "description": "guided AGENTS.md setup",
+    "name": "init"
+   },
+   {
+    "description": "review changes [commit|branch|pr], defaults to uncommitted",
+    "name": "review"
+   }
+  ],
+  "location": {
+   "directory": "/srv/fixture"
+  }
+ },
+ "create": {
+  "data": {
+   "cost": 0,
+   "id": "ses_e4e753e36ffebDzZGza3l7y1oV",
+   "location": {
+    "directory": "/srv/fixture"
+   },
+   "projectID": "3ca479c86d533fd7c8d9dd2f71519a0ecfc456ae",
+   "time": {
+    "created": 1793980057938,
+    "updated": 1793980057938
+   },
+   "tokens": {
+    "cache": {
+     "read": 0,
+     "write": 0
+    },
+    "input": 0,
+    "output": 0,
+    "reasoning": 0
+   }
+  }
+ },
+ "getsession": {
+  "data": {
+   "cost": 0,
+   "id": "ses_e4e753e36ffebDzZGza3l7y1oV",
+   "location": {
+    "directory": "/srv/fixture"
+   },
+   "projectID": "3ca479c86d533fd7c8d9dd2f71519a0ecfc456ae",
+   "time": {
+    "created": 1793980057938,
+    "updated": 1793980057938
+   },
+   "tokens": {
+    "cache": {
+     "read": 0,
+     "write": 0
+    },
+    "input": 0,
+    "output": 0,
+    "reasoning": 0
+   }
+  }
+ },
+ "messages": {
+  "cursor": {
+   "next": "eyJpZCI6Im1zZ18xYjE4Yjc1YzMwMDFIaGw5WjlOQnQ1NVVHOCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ",
+   "previous": "eyJpZCI6Im1zZ18xYjE4YjgzNzYwMDEwcFNJZWpDajU3T0U0WCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0"
+  },
+  "data": [
+   {
+    "id": "msg_1b18b83760010pSIejCj57OE4X",
+    "outcome": "succeeded",
+    "time": {
+     "created": 1793980072822
+    },
+    "type": "idle"
+   },
+   {
+    "agent": "build",
+    "content": [
+     {
+      "text": "second",
+      "type": "text"
+     }
+    ],
+    "cost": 0,
+    "finish": "stop",
+    "id": "msg_1b18b7b5b001i7tFY52SDzRwWo",
+    "model": {
+     "id": "big-pickle",
+     "providerID": "opencode"
+    },
+    "rawFinish": "stop",
+    "time": {
+     "completed": 1793980072815,
+     "created": 1793980070763,
+     "streamed": 1793980072813
+    },
+    "tokens": {
+     "cache": {
+      "read": 5248,
+      "write": 0
+     },
+     "input": 91,
+     "output": 3,
+     "reasoning": 0
+    },
+    "type": "assistant"
+   },
+   {
+    "id": "msg_1b18b765c001KGTaClXGpalIkr",
+    "text": "Then reply with the single word second.",
+    "time": {
+     "created": 1793980070738
+    },
+    "type": "user"
+   },
+   {
+    "agent": "build",
+    "content": [
+     {
+      "text": "ready",
+      "type": "text"
+     }
+    ],
+    "cost": 0,
+    "finish": "stop",
+    "id": "msg_1b18b762c001YgNAWNLeaGxMSs",
+    "model": {
+     "id": "big-pickle",
+     "providerID": "opencode"
+    },
+    "rawFinish": "stop",
+    "time": {
+     "completed": 1793980070726,
+     "created": 1793980069436,
+     "streamed": 1793980070724
+    },
+    "tokens": {
+     "cache": {
+      "read": 1792,
+      "write": 0
+     },
+     "input": 3533,
+     "output": 3,
+     "reasoning": 0
+    },
+    "type": "assistant"
+   },
+   {
+    "id": "msg_1b18b75c3001Hhl9Z9NBt55UG8",
+    "text": "Reply with the single word ready.",
+    "time": {
+     "created": 1793980069388
+    },
+    "type": "user"
+   }
+  ]
+ },
+ "prompt-404": {
+  "_tag": "SessionNotFoundError",
+  "message": "Session not found: ses_doesnotexist000000000000",
+  "sessionID": "ses_doesnotexist000000000000"
+ },
+ "prompt-409": {
+  "_tag": "ConflictError",
+  "message": "Prompt message ID conflicts with an existing durable record: msg_1b18b75c3001Hhl9Z9NBt55UG8",
+  "resource": "msg_1b18b75c3001Hhl9Z9NBt55UG8"
+ },
+ "prompt1": {
+  "data": {
+   "delivery": "queue",
+   "id": "msg_1b18b75c3001Hhl9Z9NBt55UG8",
+   "payload": {
+    "text": "Reply with the single word ready."
+   },
+   "sessionID": "ses_e4e753e36ffebDzZGza3l7y1oV",
+   "time": {
+    "created": 1793980069336
+   },
+   "type": "user"
+  }
+ },
+ "prompt1-again": {
+  "data": {
+   "delivery": "queue",
+   "id": "msg_1b18b75c3001Hhl9Z9NBt55UG8",
+   "payload": {
+    "text": "Reply with the single word ready."
+   },
+   "sessionID": "ses_e4e753e36ffebDzZGza3l7y1oV",
+   "time": {
+    "created": 1793980069388
+   },
+   "type": "user"
+  }
+ },
+ "prompt2": {
+  "data": {
+   "delivery": "queue",
+   "id": "msg_1b18b765c001KGTaClXGpalIkr",
+   "payload": {
+    "text": "Then reply with the single word second."
+   },
+   "sessionID": "ses_e4e753e36ffebDzZGza3l7y1oV",
+   "time": {
+    "created": 1793980069488
+   },
+   "type": "user"
+  }
+ }
+}

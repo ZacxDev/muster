@@ -418,6 +418,39 @@ func TestAStopFailureHookUpdatesTheAuthStateEvenWithNoTurnPending(t *testing.T) 
 	}
 }
 
+// 🔴 THE EDGE-CHALLENGE SEAM, end to end: the transcript records an edge/CDN
+// challenge page as error=authentication_failed with apiErrorStatus 403 (the
+// fixture is turn_auth_failed_2.1.296.jsonl with that message and status). The
+// wire must say turn_failed — muster's gateway marks an account only on
+// rate_limited / auth_failed — and /healthz's auth state must not flip.
+func TestAnEdgeChallengeTurnIsTurnFailedOnTheWireAndLeavesAuthAlone(t *testing.T) {
+	for _, stop := range []string{"Stop", "StopFailure"} {
+		t.Run(stop, func(t *testing.T) {
+			srv, _ := newScripted(t, cliScript{transcript: fixture(t, "turn_edge_challenge_403.jsonl"), stopEvent: stop,
+				stopError: "authentication_failed", lastMsg: observedEdgeChallenge})
+			srv.auth.set(authOK, "")
+			code, body := postResponses(t, gatewayServer(t, srv).URL, pinnedDerivation, "hi")
+			if code != http.StatusBadGateway || errType(t, body) != failTurn {
+				t.Fatalf("%d %s, want 502 %s", code, body, failTurn)
+			}
+			if got := srv.auth.snapshot().Auth; got != authOK {
+				t.Fatalf("auth state %q after an edge challenge, want %q", got, authOK)
+			}
+		})
+	}
+}
+
+// The hook-only path (a turn typed in the attached terminal): a StopFailure
+// carrying the challenge page leaves the auth state alone.
+func TestAStopFailureEdgeChallengeHookLeavesTheAuthStateAlone(t *testing.T) {
+	srv, _ := newScripted(t, cliScript{})
+	srv.auth.set(authOK, "")
+	srv.onHook(hookEvent{Event: "StopFailure", Error: "authentication_failed", LastAssistantMessage: observedEdgeChallenge})
+	if got := srv.auth.snapshot().Auth; got != authOK {
+		t.Fatalf("auth = %q", got)
+	}
+}
+
 func TestSessionEndMakesTheSessionNotReadyUntilTheNextStart(t *testing.T) {
 	srv, cli := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
 	ts := gatewayServer(t, srv)

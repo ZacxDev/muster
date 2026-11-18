@@ -12,7 +12,27 @@
 # (cmd/ccd), which is the point — its /v1/responses wire is tested against
 # muster's own client in the same module, so the two cannot drift.
 
-FROM golang:1.25-alpine AS build
+# The OPTIONAL named build context `hq`: a directory holding a statically
+# linked `hq` CLI, the program ccd runs as the chief's HQ MCP server
+# (cmd/ccd/hqmcp.go). A build that wants it passes
+#
+#   docker build --build-context hq=<dir holding only the hq binary> …
+#
+# and a build that does not (CI's smoke build, any plain `docker build`) gets
+# this EMPTY stage instead: a named build context replaces the stage of the
+# same name, and copying the root of an empty stage copies nothing. ccd then
+# finds no `hq` on PATH and registers no HQ server.
+#
+# 🔴 THE DEFAULT STAGE IS NOT EMPTY, AND THAT IS LOAD-BEARING. With an EMPTY
+# scratch stage, BuildKit served a plain build the cached `COPY --from=hq` layer
+# of an earlier build that HAD the context (measured, docker 29.8): the "plain"
+# image carried hq; `--no-cache` did not. The marker file gives the default
+# stage content of its own, so its COPY can never share a cache key with a
+# context's. It lands in /opt/hq inert (only a file named `hq` is linked).
+FROM scratch AS hq
+COPY images/claude-code-agent/hq-absent /hq-absent
+
+FROM golang:1.26.11-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -30,8 +50,21 @@ FROM node:22-bookworm-slim
 # `curl -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" "$MUSTER_CONNECT_URL/connect/<connector>/<host>/<path>"`,
 # and muster replaces it with the credential (see cmd/ccd/connect.go). git goes
 # through the proxy by routing `ccd serve` keeps in step with the agent's grants
-# (`ccd connect-git` applies it at once). `gh` is NOT installed: it only speaks HTTPS to a
-# fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
+# (`ccd connect-git` applies it at once). The real `gh` is NOT installed: it only speaks
+# HTTPS to a fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
+# 🔴 NOR IS ANY `gh` ON PATH: ccd carries a READ-ONLY gh subset (`gh pr view --json`,
+# `gh pr diff`, `gh api` GET, through the proxy with the pod's own token, every write
+# refused — cmd/ccd/ghshim.go), but it is OPT-IN. An officer that wants it runs its
+# own image built FROM this one with `RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh`
+# (docs/officers.md "Reading pull requests with gh"); every other pod keeps finding
+# no gh, so a script's `command -v gh` fallback to curl is unchanged. cc-smoke checks.
+#
+# openssh-client is for a PRIVATE-repository worker pool's read-only deploy key
+# (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): the pod's KEY HOLDER — this image, run as
+# a second container under uid 1001, the only one the key is mounted into —
+# reaches ssh.github.com:443 with it to mirror the repository and fetch each
+# job's commits (internal/podagent deploykey.go). Nothing in the agent's own
+# container is configured to use ssh.
 #
 # 🔴 PINNED. A floating CLI is a different program on every rebuild, and ccd parses
 # that program's transcript and hook payloads. Bump deliberately, re-record the
@@ -40,16 +73,23 @@ ARG CLAUDE_CODE_VERSION=2.1.296
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl \
+ && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl openssh-client \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force \
  && claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
+# The `hq` context (above) lands in its own directory, and ONLY a file named
+# `hq` is linked onto PATH: anything else a context carries stays inert, and
+# nothing in it can replace ccd or the entrypoint. Absent, /opt/hq is empty.
+COPY --from=hq / /opt/hq/
+RUN if [ -e /opt/hq/hq ]; then chmod 0755 /opt/hq/hq && ln -s /opt/hq/hq /usr/local/bin/hq; fi
 COPY --from=build /ccd /usr/local/bin/ccd
 COPY images/claude-code-agent/settings.json /etc/ccd/settings.json
+COPY images/claude-code-agent/credentials.sh /usr/local/lib/cc/credentials.sh
 COPY --chmod=0755 images/claude-code-agent/entrypoint.sh /usr/local/bin/cc-entrypoint
 COPY --chmod=0755 images/claude-code-agent/smoke.sh /usr/local/bin/cc-smoke
+COPY --chmod=0755 images/claude-code-agent/deploykey-smoke.sh /usr/local/bin/cc-deploykey-smoke
 
 # /data is the persistent volume's mount point: the CLI's config (credentials from
 # /login, settings, and the session transcripts `--resume <id>` resumes) and the
@@ -63,6 +103,16 @@ ENV CLAUDE_CONFIG_DIR=/data/claude \
     DISABLE_AUTOUPDATER=1 \
     HOME=/home/node
 RUN install -d -o 1000 -g 1000 -m 0700 /data /data/claude /data/workspace
+
+# uid/gid 1001 is a deploy-key pool's KEY HOLDER (internal/agentspec
+# DeployKeyHolderUID): the second container that alone mounts the key. It
+# needs a passwd entry because OpenSSH refuses to run for a uid without one
+# ("No user exists for uid 1001", exit 255). No login shell and no home: the
+# holder's ssh reads no ~/.ssh (-F /dev/null, explicit UserKnownHostsFile and
+# IdentityFile, StrictHostKeyChecking=yes, so it never writes known_hosts).
+# cc-deploykey-smoke checks it on this image.
+RUN groupadd -g 1001 muster-keyholder \
+ && useradd -u 1001 -g 1001 -M -d /nonexistent -s /usr/sbin/nologin muster-keyholder
 
 # uid 1000 is the base image's `node` user.
 USER 1000:1000

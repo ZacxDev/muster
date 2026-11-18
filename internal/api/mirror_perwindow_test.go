@@ -34,50 +34,54 @@ func ref(session, window string) ui.MirrorRef {
 	return ui.MirrorRef{Host: "ws", Session: session, Window: window}
 }
 
-// cardFor is the mirrored card whose link is href, in the list markup.
+// cardFor is the sidebar row (its whole <a>) whose link is href, in a GET
+// ui.NavAgentsPath answer.
 func cardFor(t *testing.T, markup, href string) string {
 	t.Helper()
 	marker := `href="` + amp(href) + `"`
 	i := strings.Index(markup, marker)
 	if i < 0 {
-		t.Fatalf("no mirrored card links to %s in:\n%s", href, markup)
+		t.Fatalf("no sidebar row links to %s in:\n%s", href, markup)
 	}
-	rest := markup[strings.LastIndex(markup[:i], "<article"):]
-	if j := strings.Index(rest, "</article>"); j >= 0 {
+	rest := markup[strings.LastIndex(markup[:i], "<a "):]
+	if j := strings.Index(rest, "</a>"); j >= 0 {
 		rest = rest[:j]
 	}
 	return rest
 }
 
-// TestAPerWindowHostsWindowsAreEachACard: four windows, four cards — where one
-// card per session showed two. Each is titled by its own label (or
-// "<session>:<index>" with none), says what runs in it, opens the rendered view
-// when that is Claude Code and the terminal otherwise, and its link carries the
-// window's ID. The raw session name stays visible beside a codename.
+// TestAPerWindowHostsWindowsAreEachACard: four windows, four entries — where
+// one per session showed two. In the sidebar (where the retired list's cards
+// went) each row is named by its own label (or "<session>:<index>" with none),
+// opens the rendered view when that is Claude Code and the terminal otherwise,
+// and its link carries the window's ID; what runs in it and its raw session
+// name are what the palette finds it by (data-switcher-words), never drawn as
+// the row's text beside a codename.
 func TestAPerWindowHostsWindowsAreEachACard(t *testing.T) {
 	s, ts := viewServer(t, goldHost())
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
-	if n := strings.Count(list, "data-mirror-card"); n != 4 {
-		t.Fatalf("a host with 4 windows drew %d mirrored cards", n)
+	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	if n := strings.Count(list, `data-nav-agent="mirror"`); n != 4 {
+		t.Fatalf("a host with 4 windows drew %d mirrored rows", n)
 	}
 	for _, tc := range []struct {
-		href, title, small, kind string
+		href, title, small, words string
 	}{
-		{ref("scratch2", "@4").TerminalPath(), "Gold:1", "scratch2", "shell"},
-		{ref("scratch2", "@7").ViewPath(), "Gold:8", "scratch2", "Claude Code"},
-		{ref("scratch2", "@9").ViewPath(), "Gold:11", "scratch2", "Claude Code"},
-		{ref("solo", "@2").TerminalPath(), "solo:3", "", "opencode"},
+		// Three windows labelled "Gold:<n>": one plain name, told apart by
+		// their window; an unlabelled window is its session's name.
+		{ref("scratch2", "@4").TerminalPath(), "Gold · window 1", "scratch2", "shell scratch2 ws"},
+		{ref("scratch2", "@7").ViewPath(), "Gold · window 8", "scratch2", "claude code scratch2 ws"},
+		{ref("scratch2", "@9").ViewPath(), "Gold · window 11", "scratch2", "claude code scratch2 ws"},
+		{ref("solo", "@2").TerminalPath(), "solo", "", "opencode solo ws"},
 	} {
-		card := cardFor(t, list, tc.href)
-		if tc.small != "" {
-			if !strings.Contains(card, `data-mirror-label="">`+tc.title+`<`) || !strings.Contains(card, `>`+tc.small+`</span>`) {
-				t.Errorf("%s: the card is not titled %q with %q beside it:\n%s", tc.href, tc.title, tc.small, card)
-			}
-		} else if !strings.Contains(card, `data-mirror-name="">`+tc.title+`<`) || strings.Contains(card, "data-mirror-label") {
-			t.Errorf("%s: a window with no codename should be titled %q and nothing else:\n%s", tc.href, tc.title, card)
+		row := cardFor(t, list, tc.href)
+		if !strings.Contains(row, `title="`+tc.title+`"`) || !strings.Contains(row, `truncate">`+tc.title+`</span>`) {
+			t.Errorf("%s: the row is not named %q:\n%s", tc.href, tc.title, row)
 		}
-		if !strings.Contains(card, ">"+tc.kind+"</span>") {
-			t.Errorf("%s: the card does not say %q runs there:\n%s", tc.href, tc.kind, card)
+		if tc.small != "" && strings.Contains(row, `>`+tc.small+`</span>`) {
+			t.Errorf("%s: the row draws the raw session %q beside its codename:\n%s", tc.href, tc.small, row)
+		}
+		if !strings.Contains(row, `data-switcher-words="`+tc.words+`"`) {
+			t.Errorf("%s: the row is not found by %q (what runs there, its session, its host):\n%s", tc.href, tc.words, row)
 		}
 		if !strings.Contains(tc.href, "window=%40") {
 			t.Fatalf("fixture: %s carries no window id", tc.href)
@@ -153,7 +157,13 @@ func TestAWindowsPagesSocketAndComposerAllNameThatWindow(t *testing.T) {
 	if !strings.Contains(term, `id="view-rendered" href="`+amp(nine.ViewPath())+`"`) {
 		t.Error("the terminal page's Rendered switch does not lead to window @9's view")
 	}
-	if !strings.Contains(term, "Gold:11") || strings.Contains(term, "Gold:8") {
+	// Its <title> and header — not the whole page: the session switcher at the
+	// page's foot lists the session's other windows (Gold:8 among them).
+	head := term
+	if i := strings.Index(term, "</header>"); i >= 0 {
+		head = term[:i]
+	}
+	if !strings.Contains(head, "window 11") || strings.Contains(head, "window 8") {
 		t.Error("the terminal page is not titled by its own window's label")
 	}
 
@@ -233,7 +243,34 @@ func TestAWindowParameterThatIsNotAWindowIDIsNotFound(t *testing.T) {
 	// Well-formed, not listed: the plugin's refusal, as a 409.
 	fm.v2.pasteErr = mirror.ErrWindowGone
 	code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"scratch2"}, "window": {"@99"}, "text": {"hi"}})
-	if code != http.StatusConflict || !strings.Contains(body, "no longer lists this tmux window") {
+	if code != http.StatusConflict || !strings.Contains(body, "Not sent: ws no longer shows this window. It may have been closed.") {
 		t.Fatalf("a send to a window the host no longer lists: %d %q, want 409 saying so", code, body)
+	}
+}
+
+// TestTheMirrorTerminalPageSaysWhyAWindowIsTerminalOnly: the Terminal view of
+// a window with no rendered view carries its one-line reason — the host's own
+// (AgentNote) when it gave one, else muster's — and a Claude window's carries
+// none. The seam between the hub's entry and the page (handleMirrorTerminalPage
+// sets AgentTerminalView.TerminalOnly), which the ui render test cannot see.
+func TestTheMirrorTerminalPageSaysWhyAWindowIsTerminalOnly(t *testing.T) {
+	const why = "Claude Code has not written this conversation yet. The Rendered view appears after its first message."
+	fm := goldHost()
+	fm.windows = append(fm.windows, mirror.Window{Session: "fresh", ID: "@5", Index: 1, Active: true, Command: "claude", AgentNote: why})
+	s, ts := viewServer(t, fm)
+	for _, c := range []struct {
+		window, session, want string
+	}{
+		{"@5", "fresh", `<span data-terminal-only-reason="">` + why + `</span>`},
+		{"@4", "scratch2", `<span data-terminal-only-reason="">muster found no Claude Code conversation in this window.</span>`},
+	} {
+		resp, body := mirrorGet(t, s, ts, "/mirror/terminal?"+url.Values{"host": {"ws"}, "session": {c.session}, "window": {c.window}}.Encode())
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, c.want) {
+			t.Errorf("terminal page of %s: %d, want it to contain %s", c.window, resp.StatusCode, c.want)
+		}
+	}
+	resp, body := mirrorGet(t, s, ts, "/mirror/terminal?"+url.Values{"host": {"ws"}, "session": {"scratch2"}, "window": {"@7"}}.Encode())
+	if resp.StatusCode != http.StatusOK || strings.Contains(body, "data-terminal-only") || !strings.Contains(body, `id="view-rendered"`) {
+		t.Errorf("a Claude window's terminal page: %d; want the Rendered switch and no terminal-only line", resp.StatusCode)
 	}
 }

@@ -1,0 +1,244 @@
+package api
+
+import (
+	"context"
+	"html"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/textplain"
+	"github.com/ZacxDev/muster/internal/ui"
+)
+
+// THE "CHIEF NUDGES" TAB of the Asks page (docs/chief-nudges.md): every
+// decision the stall sweep recorded for the viewer, newest first. It is drawn
+// while the feature is on.
+//
+// ⚠ ONLY CLASSES THE STYLESHEET ALREADY EMITS. This file is not one of
+// Tailwind's content globs (tailwind.config.js), so every class here is ui's
+// (internal/ui/asks_list.go, the Asks list's own) or copied from markup that
+// is scanned — a new class would ship unstyled with css-check green.
+
+const (
+	asksTabNudges = "nudges"
+	// chiefNudgesShown is how many decisions the tab lists.
+	chiefNudgesShown = 50
+)
+
+// chiefNudgesPanelHTML is the tab's panel for ctx's principal.
+func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string {
+	esc := html.EscapeString
+	var b strings.Builder
+	owner := requestOwner(ctx)
+	// One short line for the mode (the design pass: no explanatory prose —
+	// docs/chief-nudges.md explains it).
+	if s.chiefNudgeLive(owner) {
+		b.WriteString(`<p class="px-1 text-xs text-fg2" data-nudges-mode="live">Live: nudges and notices are sent.</p>`)
+	} else {
+		b.WriteString(`<p class="px-1 text-xs text-fg2" data-nudges-mode="shadow">Shadow mode: recorded only, nothing is sent.</p>`)
+	}
+	list, err := s.ext.ChiefNudges.List(ctx, chiefNudgesShown)
+	if err != nil {
+		s.logger.Printf("chief nudges: list: %v", err)
+		b.WriteString(problemNode("The chief's nudge decisions could not be read."))
+	}
+	b.WriteString(ui.AsksGroupLabel("nudges-decisions", "Decisions", len(list)) + `
+<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="nudges-decisions" data-testid="nudges-list">`)
+	if len(list) == 0 {
+		b.WriteString(`<li class="text-sm text-fg2" data-nudges-empty>No decisions yet. The chief looks at a session once it has been idle for ` +
+			esc(s.chiefNudgeIdle().String()) + `.</li>`)
+	}
+	for _, d := range list {
+		b.WriteString(chiefNudgeCardHTML(d, now))
+	}
+	b.WriteString(`</ul>`)
+	return b.String()
+}
+
+// nudgeSessionName is a session as the tab names it: its focus title and where.
+func nudgeWhere(title, kind, key, host string) string {
+	where := "agent " + key
+	if kind == chiefnudge.KindMirror {
+		where = "@ " + host
+	}
+	if strings.TrimSpace(title) == "" {
+		return where
+	}
+	return title + " (" + where + ")"
+}
+
+// nudgeQuoteFrom names where a decision's quote was checked (step 3b-1): the
+// owner's Chief chat, their messages to the session, or — a decision from
+// before 0081, or with session state off — just "Quote".
+func nudgeQuoteFrom(source string) string {
+	switch source {
+	case chiefnudge.SourceChiefChat:
+		return "Quote from your Chief chat"
+	case chiefnudge.SourceSession:
+		return "Quote from your messages to this session"
+	}
+	return "Quote"
+}
+
+// chiefNudgeCardHTML is one decision's card (the design pass): the session as
+// its title, the decision and its age under it and the mode as a pill; then
+// what the chief would send or asked, and the outcome — the two things read at
+// a glance — and the rest (the quote, what it covers, the classifier, the
+// chief's reason) folded under one small Details.
+func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
+	esc := html.EscapeString
+	id := strconv.FormatInt(d.ID, 10)
+	mode := "Shadow"
+	if d.Mode == chiefnudge.ModeLive {
+		mode = "Live"
+	}
+	var b strings.Builder
+	b.WriteString(`<li id="nudge-` + id + `" class="` + ui.AsksCardClass + `" data-nudge data-nudge-id="` + id + `" data-decision="` + esc(d.Decision) +
+		`" data-outcome="` + esc(d.Outcome) + `" data-mode="` + esc(d.Mode) + `">
+<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="break-words text-sm font-semibold text-fg" data-nudge-session>` +
+		esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host)) + `</span>
+<span class="` + ui.AsksSubClass + `"><span data-nudge-decision>` + esc(nudgeDecisionLabel(d.Decision)) + `</span> · <time datetime="` +
+		d.DecidedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.DecidedAt))) + `</time></span></div>
+<span class="` + ui.AsksPillClass + `" data-nudge-mode>` + mode + `</span></div>
+`)
+	switch {
+	case d.Message != "":
+		label := "Would send: "
+		if d.Mode == chiefnudge.ModeLive {
+			label = "Message: "
+		}
+		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-message>` + label + esc(d.Message) + `</p>
+`)
+	case d.Question != "":
+		q := d.Question
+		if len(d.Options) > 0 {
+			q += "\nOptions: " + strings.Join(d.Options, " · ")
+		}
+		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-question>Question: ` + esc(q) + `</p>
+`)
+	}
+	out := nudgeOutcomeLabel(d.Outcome)
+	if d.Outcome == chiefnudge.Suppressed(chiefnudge.GuardQuote) && d.QuoteSource == chiefnudge.SourceChiefChat {
+		out = "Suppressed: the quote is not in a line you typed in your Chief chat in the last 6 hours"
+	}
+	if d.Detail != "" {
+		out += " — " + d.Detail
+	}
+	b.WriteString(`<p class="break-words text-sm font-medium text-fg" data-nudge-outcome>` + esc(out) + `</p>
+`)
+	var more strings.Builder
+	if d.QuoteText != "" {
+		when := ""
+		if !d.QuoteAt.IsZero() {
+			when = " · " + d.QuoteAt.UTC().Format(time.RFC3339)
+		}
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-quote data-quote-source="` + esc(d.QuoteSource) + `">` +
+			esc(nudgeQuoteFrom(d.QuoteSource)) + ` [` + esc(d.QuoteID) + esc(when) + `]: "` + esc(d.QuoteText) + `"</p>
+`)
+	}
+	if d.Covered != "" {
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-covers>Covers: ` + esc(d.Covered) + `</p>
+`)
+	}
+	if line := nudgeJevLine(d); line != "" {
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-jev data-jev-label="` + esc(d.JevLabel) + `">` + esc(line) + `</p>
+`)
+	}
+	if d.Reason != "" {
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-reason>Reason: ` + esc(d.Reason) + `</p>
+`)
+	}
+	if more.Len() > 0 {
+		b.WriteString(`<details class="` + ui.AsksDetailsClass + `" data-nudge-more><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>
+<div class="` + ui.AsksDetailsBodyClass + `">` + more.String() + `</div></details>
+`)
+	}
+	b.WriteString("</li>\n")
+	return b.String()
+}
+
+// nudgeJevLine is the stall classifier's verdict as the card shows it: the
+// label, the ask score and the three probabilities, the model served and the
+// call's time — or its error; "" when it was not run.
+func nudgeJevLine(d chiefnudge.Decision) string {
+	switch {
+	case d.JevError != "":
+		return "Classifier: failed (" + d.JevError + "); the chief decided alone"
+	case d.JevLabel == "":
+		return ""
+	}
+	f := func(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
+	return "Classifier: " + d.JevLabel + " · ask score " + f(d.JevAskScore) + " (needs_input " + f(d.JevNeedsInput) +
+		", asks_permission " + f(d.JevAsksPermission) + ", neither " + f(d.JevNeither) + ") · " + d.JevModel +
+		" · " + strconv.Itoa(d.JevLatencyMS) + " ms"
+}
+
+func nudgeDecisionLabel(decision string) string {
+	switch decision {
+	case chiefnudge.DecisionNudge:
+		return "Nudge"
+	case chiefnudge.DecisionAsk:
+		return "Point you at it"
+	case chiefnudge.DecisionLeave:
+		return "Leave it"
+	case chiefnudge.DecisionNotify:
+		return "Notify you"
+	}
+	return "Unreadable answer"
+}
+
+// nudgeOutcomeLabel is an outcome in words.
+func nudgeOutcomeLabel(outcome string) string {
+	if g, ok := strings.CutPrefix(outcome, chiefnudge.SuppressedPrefix); ok {
+		switch g {
+		case chiefnudge.GuardQuote:
+			return "Suppressed: the quote is not in one of your messages to this session"
+		case chiefnudge.GuardHourlyCap:
+			return "Suppressed: the hourly cap was reached"
+		case chiefnudge.GuardInvalid:
+			return "Suppressed: the chief's answer could not be read"
+		case chiefnudge.GuardNoQuestion:
+			return "Suppressed: the chief asked nothing"
+		case chiefnudge.GuardMovedOn:
+			return "Suppressed: the session moved on first"
+		case chiefnudge.GuardAskCap:
+			return "Suppressed: your open asks are at their cap"
+		case chiefnudge.GuardSuperseded:
+			return "Not sent: the session moved on before it was pasted"
+		case chiefnudge.GuardAskFailed:
+			return "Suppressed: the notice could not be raised"
+		case chiefnudge.GuardLanesFull:
+			return "Not asked: the chief's lanes stayed full (every one held by your own sessions)"
+		case chiefnudge.GuardChiefNotReady:
+			return "Not asked: the chief's runtime stayed not ready"
+		}
+		return "Suppressed: " + g
+	}
+	switch outcome {
+	case chiefnudge.OutcomeWouldSend:
+		return "Would have been sent (shadow mode)"
+	case chiefnudge.OutcomeWouldAsk:
+		return "Would have pointed you at it (shadow mode)"
+	case chiefnudge.OutcomeLeft:
+		return "Left alone"
+	case chiefnudge.OutcomeQueued:
+		return "Queued for the session"
+	case chiefnudge.OutcomeSent:
+		return "Sent"
+	case chiefnudge.OutcomeAsked:
+		return "On your Asks page, until the session moves on"
+	case chiefnudge.OutcomeRelayQueued:
+		return "Your answer is queued for the session"
+	case chiefnudge.OutcomeRelayed:
+		return "Your answer was sent into the session"
+	case chiefnudge.OutcomeFailed:
+		return "Not sent"
+	case chiefnudge.OutcomeAskClosed:
+		return "Closed"
+	case chiefnudge.OutcomeNotified:
+		return "Notify: no notice; the stop is not quieted, so its own push and row stand"
+	}
+	return outcome
+}

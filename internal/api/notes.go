@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/taskstatus"
@@ -46,8 +47,8 @@ var taskSourceAllowlist = map[string]bool{
 //     or moz-extension:// Origin → "extension"; else the default "api".
 //   - sessionID: the trimmed session-id header ("" when absent).
 //
-// 🔴 BOTH HEADERS ARE READ UNDER TWO SPELLINGS — the current X-Muster-* and the
-// pre-extraction X-Clawgate-* that installed clients still send — via the single
+// 🔴 BOTH HEADERS ARE READ UNDER UP TO TWO SPELLINGS — the current X-Muster-* and,
+// when legacyPrefix is configured, the legacy one installed clients send — via the single
 // provenanceHeader lookup in provenance_headers.go, which also holds the measured
 // account of what the rename cost. Do NOT re-open-code the preference here.
 //
@@ -63,15 +64,15 @@ var taskSourceAllowlist = map[string]bool{
 // render path already truncates+escapes, this protects storage.
 const maxSessionIDLen = 128
 
-func taskSource(r *http.Request) (source, sessionID string) {
-	sessionID = provenanceHeader(r, headerSessionID, legacyHeaderSessionID)
+func taskSource(r *http.Request, legacyPrefix string) (source, sessionID string) {
+	sessionID = provenanceHeader(r, headerSessionID, legacyPrefix, legacySuffixSessionID)
 	if rs := []rune(sessionID); len(rs) > maxSessionIDLen {
 		// rune-safe cap: byte-slicing could split a multibyte rune into invalid
 		// UTF-8, which Postgres rejects on INSERT (a failed task-create, not a
 		// bounded store). Cap by runes so the stored value stays valid text.
 		sessionID = string(rs[:maxSessionIDLen])
 	}
-	if h := provenanceHeader(r, headerSource, legacyHeaderSource); h != "" {
+	if h := provenanceHeader(r, headerSource, legacyPrefix, legacySuffixSource); h != "" {
 		if taskSourceAllowlist[h] {
 			return h, sessionID
 		}
@@ -121,11 +122,18 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 			s.logger.Printf("notes: agents by note ids: %v", err)
 		}
 	}
+	// The linked agents' latest sessions, in one read: the "Open chat" link names
+	// it (ui.AgentSessionHref).
+	agentIDs := make([]int64, 0, len(byNote))
+	for _, a := range byNote {
+		agentIDs = append(agentIDs, a.ID)
+	}
+	latest := s.latestSessionIDs(ctx, agentIDs)
 	views := make([]ui.TaskCardView, 0, len(list))
 	for _, n := range list {
 		v := ui.TaskCardView{Note: n}
 		if a, ok := byNote[n.ID]; ok {
-			v.Agent = agentBrief(a)
+			v.Agent = agentBrief(a, latest[a.ID])
 		}
 		views = append(views, v)
 	}
@@ -134,13 +142,20 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 
 // taskCardView builds the single-card view (task + its latest linked agent) for
 // the outerHTML re-render after a status change / comment. Best-effort agent
-// lookup (nil on miss/failure ⇒ the card falls back to the Dispatch button).
+// lookup (nil on miss/failure ⇒ the card draws no agent chip).
 func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView {
 	v := ui.TaskCardView{Note: n}
+	if n.IsReference() {
+		if ws, err := s.ext.Notes.RefWrites(ctx, n.ID); err == nil {
+			v.RefWrites = ws
+		} else {
+			s.logger.Printf("notes: queued writes of reference %d: %v", n.ID, err)
+		}
+	}
 	if s.ext.Agents != nil {
 		if m, err := s.ext.Agents.AgentsByNoteIDs(ctx, []int64{n.ID}); err == nil {
 			if a, ok := m[n.ID]; ok {
-				v.Agent = agentBrief(a)
+				v.Agent = agentBrief(a, s.latestSessionIDs(ctx, []int64{a.ID})[a.ID])
 			}
 		}
 	}
@@ -148,9 +163,10 @@ func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView
 }
 
 // agentBrief projects a stored agent into the minimal linked-agent view a task
-// card renders (id, slug name, display name, stored status).
-func agentBrief(a agents.Agent) *ui.AgentBrief {
-	return &ui.AgentBrief{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: a.Status}
+// card renders (id, slug name, display name, stored status) plus its latest
+// session id (0 for none), which the card's "Open chat" link names.
+func agentBrief(a agents.Agent, sessionID int64) *ui.AgentBrief {
+	return &ui.AgentBrief{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: a.Status, SessionID: sessionID}
 }
 
 // maxAttachmentBytes caps a single note attachment. Attachments are stored
@@ -171,30 +187,44 @@ const maxAttachmentBytes = 10 << 20 // 10 MiB
 // htmx:configRequest listener landed (internal/ui/components.go) a
 // trigger-driven refetch of #tasks-list carried nothing at all.
 func (s *Server) handleNotesContent(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	filter := queryTags(q)
-	status := queryStatus(q)
-	limit := queryTaskLimit(q)
-	// 🔴 ALL THREE NARROW TOGETHER. They are one ListFilter and therefore one
-	// query — a tag filter, a project (which IS a tag) and a status compose by
-	// construction rather than by each combination being remembered.
-	page, err := s.ext.Notes.ListPage(r.Context(), notes.ListFilter{
-		Tags:     filter,
-		Statuses: statusPredicate(status),
-		Limit:    limit,
-	})
+	v, err := s.tasksView(r.Context(), r.URL.Query())
 	if err != nil {
 		s.logger.Printf("notes: list: %v", err)
 		http.Error(w, "could not load notes", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderNotesCards(w, v); err != nil {
+		s.logger.Printf("notes: render: %v", err)
+	}
+}
+
+// tasksView builds the board for one query (?tag=, ?status=, ?limit=) — the
+// ONE build behind both the /ui/tasks partial and the board the shell draws on
+// its first paint (shellData), so the two cannot disagree.
+func (s *Server) tasksView(ctx context.Context, q url.Values) (ui.TasksView, error) {
+	filter := queryTags(q)
+	status := queryStatus(q)
+	limit := queryTaskLimit(q)
+	// 🔴 ALL THREE NARROW TOGETHER. They are one ListFilter and therefore one
+	// query — a tag filter, a project (which IS a tag) and a status compose by
+	// construction rather than by each combination being remembered.
+	page, err := s.ext.Notes.ListPage(ctx, notes.ListFilter{
+		Tags:     filter,
+		Statuses: statusPredicate(status),
+		Limit:    limit,
+	})
+	if err != nil {
+		return ui.TasksView{}, err
+	}
 	// One vocabulary read serves BOTH filter rows — the project row is derived from
 	// the same tag counts, so the two can never disagree (and it costs no extra
 	// query). Best-effort like the tag row: a failure degrades to no chips, not a 500.
-	vocab := s.tagVocabulary(r.Context())
-	if err := ui.RenderNotesCards(w, ui.TasksView{
-		Cards:        s.taskCardViews(r.Context(), page.Notes),
+	vocab := s.tagVocabulary(ctx)
+	cards := s.taskCardViews(ctx, page.Notes)
+	return ui.TasksView{
+		Cards:        cards,
+		Groups:       s.taskOwnerGroups(ctx, cards),
 		Vocabulary:   vocab,
 		ActiveTags:   filter,
 		Projects:     notes.ProjectsFromVocabulary(vocab),
@@ -214,9 +244,7 @@ func (s *Server) handleNotesContent(w http.ResponseWriter, r *http.Request) {
 		// trigger-driven refetch carried it, and the tag filter had been silently
 		// resetting on the same channel since it shipped.
 		NextLimit: nextTaskLimit(limit),
-	}); err != nil {
-		s.logger.Printf("notes: render: %v", err)
-	}
+	}, nil
 }
 
 // directorySeed reads the picker's SEED set — the most recently used working
@@ -247,7 +275,7 @@ func (s *Server) handleNoteNewModal(w http.ResponseWriter, r *http.Request) {
 	// `body` pre-fills the task text: ComposePage (a share, the New-task
 	// shortcut) opens the sheet with it. Display only — nothing is written until
 	// the operator presses Save, which is the ordinary POST /tasks.
-	if err := ui.RenderNotesModal(w, dirs, failed, r.URL.Query().Get("body")); err != nil {
+	if err := ui.RenderNotesModal(w, dirs, failed, r.URL.Query().Get("body"), s.operatorTeams(r.Context())); err != nil {
 		s.logger.Printf("notes: render modal: %v", err)
 	}
 }
@@ -359,9 +387,24 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Optional dispatch config from the create form (mirrors handleAgentCreate's
-	// parse of the same field names): model + repo + repo_branch.
+	// The Owner select (team sharing phase 4): you, or a team you are at
+	// least an operator in. Checked BEFORE anything is written; Postgres
+	// refuses the same insert below operator (42501) regardless.
+	// (A handler test that calls this with no principal files for nobody in
+	// particular: an empty owner is all it may name.)
+	p, _ := authz.From(ctx)
+	owner, ownerOK := taskOwnerFromForm(p, r.FormValue("owner"))
+	if !ownerOK {
+		http.Error(w, "you can file a task only for yourself or a team you are an operator or manager of", http.StatusForbidden)
+		return
+	}
+
+	// Optional dispatch config from the create form: model + repo + repo_branch
+	// (the field names POST /api/agents takes too).
 	note, err := s.ext.Notes.Create(ctx, notes.Note{
+		Owner: owner,
+		// The board's own create: the signed-in owner filed it.
+		CreatedBy:  nilIfEmpty(notes.CreatedByOwner),
 		Directory:  directory,
 		Body:       body,
 		Model:      strings.TrimSpace(r.FormValue("model")),
@@ -452,11 +495,15 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	source, sessionID := taskSource(r)
+	source, sessionID := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
 	note, err := s.createTask(r.Context(), taskCreateInput{
 		Directory: body.Directory, Title: body.Title, Body: body.Body,
 		Model: body.Model, Repo: body.Repo, Branch: body.Branch, Tags: body.Tags,
 		Source: source, SessionID: sessionID,
+		// No CreatedBy: this route is behind requireHookToken, whose callers (the
+		// shared hook token, a personal token) name no one — an X-Muster-Actor
+		// header is never read here. The push falls back to the producer
+		// (source_type); TestNoCreateDoorNamesACreatorItCannotKnow pins it.
 	}, func(id int64) {
 		// Task thread (migration 0023): the creating session joins its own task's
 		// thread with the TERMINAL `created` role. This is the live twin of the 0023
@@ -495,6 +542,9 @@ type taskCreateInput struct {
 	Model, Repo, Branch    string
 	Tags                   []string
 	Source, SessionID      string
+	// CreatedBy is who files it (notes.Note.CreatedBy), when the door knows:
+	// nil records nothing.
+	CreatedBy *string
 }
 
 // errTaskBodyRequired: the create carried no body (a 400).
@@ -557,6 +607,7 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 		Tags:            tags,
 		SourceType:      storedSourceType(in.Source),
 		SourceSessionID: nilIfEmpty(in.SessionID),
+		CreatedBy:       in.CreatedBy,
 	}
 	var note notes.Note
 	created, commented := true, false
@@ -572,6 +623,17 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 	if !created {
 		return note, false, commented, nil
 	}
+	s.taskCreatedEffects(ctx, note, in.Source, linked)
+	return note, true, commented, nil
+}
+
+// taskCreatedEffects is every side effect a machine-created task has, in the
+// order createTaskOnce always ran them: the thread link (linked, nil for none),
+// the task-changed broadcast, the created-tasks and routing-tag metrics, the
+// auto-dispatch log line and the coalesced `created` push. It is shared with a
+// plugin task REFERENCE filed new (applyReference), so the second door cannot
+// forget one.
+func (s *Server) taskCreatedEffects(ctx context.Context, note notes.Note, source string, linked func(id int64)) {
 	if linked != nil {
 		linked(note.ID)
 	}
@@ -581,7 +643,7 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 	// Bounded label — taskSource only emits allowlisted values. Note this uses the
 	// full derived source (incl. "api"), so the metric label behavior is UNCHANGED
 	// from pre-0017 even though "api" is stored as a NULL source_type.
-	metrics.TasksCreated.WithLabelValues(in.Source).Inc()
+	metrics.TasksCreated.WithLabelValues(source).Inc()
 	// Routing-tag telemetry (namespace only — never a tag value; see metrics.RoutingTags)
 	// + the auto:dispatch plumbing log line.
 	observeRoutingTags(note.Tags)
@@ -591,7 +653,6 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 	// only — the FAB create (handleNoteCreate) intentionally does NOT notify, the
 	// user just made that task themselves. Best-effort + nil-push-safe.
 	s.notifyTaskCreated(note)
-	return note, true, commented, nil
 }
 
 // --- machine task reads: the agent join + server-side filtering ---
@@ -1076,6 +1137,10 @@ func (s *Server) handleAPITaskEdit(w http.ResponseWriter, r *http.Request) {
 		v := capRunes(*body.Branch, maxTaskFieldLen)
 		patch.RepoBranch = &v
 	}
+	if msg := refEditRefusal(cur, patch.Title, patch.Body); msg != "" {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": msg})
+		return
+	}
 
 	// Validate the MERGE keys before any mutation, so an invalid addTags never
 	// half-applies alongside a valid field edit.
@@ -1305,17 +1370,25 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 		if m, err := s.ext.Agents.AgentsByNoteIDs(ctx, []int64{id}); err == nil {
 			if a, ok := m[id]; ok {
 				linkedAgentID = a.ID
+				// 🔴 A MEMBER'S DISMISS NEVER TEARS DOWN A TEAM'S AGENT. Destroy
+				// would run under the member's principal — the lifecycle every
+				// direct door refuses a member (teamAgentRoutes). The task is
+				// dismissed; the agent is left running for its managers' door.
+				if memberOnTeamAgent(ctx, a) {
+					s.logger.Printf("dismiss task %d: linked agent %d is a team's (owner %d), dismissed by a member; leaving the agent running", id, a.ID, a.OwnerID)
+					linkedAgentID = 0
+				}
 			}
 		}
 	}
 	if linkedAgentID != 0 {
-		_, chief, err := s.agentIsChief(ctx, linkedAgentID)
+		_, chief, err := s.agentIsDeleteProtected(ctx, linkedAgentID)
 		switch {
 		case err != nil:
 			s.logger.Printf("dismiss task %d: chief check for linked agent %d: %v; leaving the agent running", id, linkedAgentID, err)
 			linkedAgentID = 0
 		case chief:
-			s.logger.Printf("dismiss task %d: linked agent %d is the chief; dismissing the task and leaving the agent running", id, linkedAgentID)
+			s.logger.Printf("dismiss task %d: linked agent %d is the chief or a declared officer's instance; dismissing the task and leaving the agent running", id, linkedAgentID)
 			linkedAgentID = 0
 		}
 	}
@@ -1453,20 +1526,18 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 		return notes.Note{}, errInvalidStatus
 	}
 	note, err := s.setNoteStatus(ctx, writer, id, status)
+	if errors.Is(err, errQueuedUpstream) {
+		// A reference: queued for its plugin, nothing changed here (the queue
+		// broadcast the new pending write). The task comes back as it stands.
+		return note, err
+	}
 	if err != nil {
 		return notes.Note{}, err
 	}
-	// Background push when this task ENTERS ready_for_review (deduped so a re-save
-	// doesn't re-buzz). Best-effort + nil-push-safe.
-	s.notifyTaskDone(note)
-	// ⚠ NOTHING CLOSES THAT NOTIFICATION WHEN THE TASK LEAVES REVIEW, so the
-	// Android icon dot (Android's badge is the unread-notification count; it has
-	// no badging API) is NOT cleared by muster. A router-relayed close was tried
-	// and removed (PR #38, round 0): as deployed, muster runs standalone — no
-	// router, no push routes — so it could never reach a device, and it cost a DB
-	// read before every status write. Clearing the dot needs muster-native Web Push — a
-	// separate arc. The desktop badge (setAppBadge, /ui/tasks/review-count) is
-	// unaffected: it re-reads the count on task.changed.
+	// The ready-for-review push — and its withdrawal when the task leaves review
+	// (notifyTaskDone's "resolved") — already went from setNoteStatus, the funnel
+	// that stamps the writer the push's title names. The desktop badge
+	// (setAppBadge, /ui/tasks/review-count) re-reads the count on task.changed.
 	// 🔴 BROADCAST HERE, FOR EVERY CALLER, AND AFTER THE WRITE — the human route
 	// used to broadcast NOTHING while the machine route broadcast from its own
 	// handler. That split is what let the two disagree, and two comments in this
@@ -1502,7 +1573,14 @@ func (s *Server) handleNoteStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	note, err := s.applyTaskStatus(r.Context(), writerHumanUI, id, r.FormValue("status"))
+	note, err := s.applyTaskStatus(withRefOrigin(r.Context(), refOrigin{Author: "user"}), writerHumanUI, id, r.FormValue("status"))
+	if errors.Is(err, errQueuedUpstream) {
+		// A reference: the status went to the upstream's queue. 202 with the card
+		// as it stands; the task page shows the write as "sending…".
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		err = nil
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, errInvalidStatus):
@@ -1522,14 +1600,14 @@ func (s *Server) handleNoteStatus(w http.ResponseWriter, r *http.Request) {
 // the agent page's Mark-complete (ui.TaskCompletePath). It sets the task
 // complete through applyTaskStatus — the session path's one core, so the
 // broadcast and every side effect are the PATCH route's — and redirects to
-// the Agents list (ui.AgentsListPath), where the htmx path lands too.
+// home (ui.HomePath), where the htmx path lands too.
 func (s *Server) handleNoteComplete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.applyTaskStatus(r.Context(), writerHumanUI, id, notes.StatusComplete); err != nil {
+	if _, err := s.applyTaskStatus(withRefOrigin(r.Context(), refOrigin{Author: "user"}), writerHumanUI, id, notes.StatusComplete); err != nil && !errors.Is(err, errQueuedUpstream) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -1538,7 +1616,8 @@ func (s *Server) handleNoteComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update status", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, ui.AgentsListPath, http.StatusSeeOther)
+	// Home, leaving the agent whose page the form was on (ui.HomeLeavingPath).
+	http.Redirect(w, r, ui.HomeLeavingPath(r.PostFormValue(ui.HomeLeaveParam)), http.StatusSeeOther)
 }
 
 // handleAPITaskStatus handles PATCH /api/tasks/{id}/status (machine,
@@ -1585,14 +1664,37 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	// into complete, never out of it, the latter decided by the row itself
 	// (notes.ForAgent). The operator's hook token, a personal token and an
 	// attributed service that is not an agent are unchanged.
+	origin := s.machineRefOrigin(r)
 	if actor, ok := serviceActorFromContext(ctx); ok && s.actorIsAgent(ctx, actor) {
 		if notes.ValidStatus(status) && !notes.StatusAllowedForAgent(status) {
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal("", status)})
 			return
 		}
 		ctx = notes.ForAgent(ctx)
+		// The one caller of this route that is KNOWN to be an agent: the
+		// ready-for-review push names it (reviewSourceLabel), and a write
+		// queued on a reference records it. Every other caller (the shared
+		// hook token, a personal token, a non-agent service) names no agent.
+		origin.Agent = actor
 	}
-	note, err := s.applyTaskStatus(ctx, writerMachineAPI, id, status)
+	note, err := s.applyTaskStatus(withRefOrigin(ctx, origin), writerMachineAPI, id, status)
+	if err == nil || errors.Is(err, errQueuedUpstream) {
+		// A session picking the task up (in_progress) claims it, whether the
+		// status was stored or only queued for a reference's upstream
+		// (task_claims.go; the release half is setNoteStatus's).
+		_, sid := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
+		if s.claimOnStatus(ctx, note.ID, status,
+			s.requestClaimant(ctx, sid)) {
+			if fresh, ferr := s.ext.Notes.Get(ctx, note.ID); ferr == nil {
+				note = fresh
+			}
+		}
+	}
+	if errors.Is(err, errQueuedUpstream) {
+		// A reference: queued for the upstream. 202, the task as it stands.
+		s.writeJSON(w, http.StatusAccepted, queuedTask{apiTask: s.apiTaskOne(ctx, note), Queued: true})
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, notes.ErrCompleteLocked):
@@ -1685,6 +1787,7 @@ func (s *Server) handleNoteEditModal(w http.ResponseWriter, r *http.Request) {
 		// The tag input's <datalist> suggestions come from the live vocabulary, so
 		// the human reuses existing labels instead of minting near-duplicates.
 		Vocabulary: s.tagVocabulary(r.Context()),
+		MoveTeams:  s.moveTeamsFor(r.Context(), note),
 	}); err != nil {
 		s.logger.Printf("notes: render edit modal: %v", err)
 	}
@@ -1738,22 +1841,40 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := strings.TrimSpace(r.FormValue("body"))
-	if body == "" {
-		http.Error(w, "task body required", http.StatusBadRequest)
+	// A reference's edit form renders its title and body read-only and submits
+	// neither (NotesEditModalBody): absent there means "leave them", and a
+	// present one that differs is refused (refEditRefusal). Every other task's
+	// form submits both, and the body stays required.
+	var titleP, bodyP *string
+	_, hasTitle := r.Form["title"]
+	_, hasBody := r.Form["body"]
+	if !cur.IsReference() || hasBody {
+		body := strings.TrimSpace(r.FormValue("body"))
+		if body == "" {
+			http.Error(w, "task body required", http.StatusBadRequest)
+			return
+		}
+		body = capRunes(body, maxTaskBodyLen)
+		bodyP = &body
+	}
+	if !cur.IsReference() || hasTitle {
+		title := capRunes(strings.TrimSpace(r.FormValue("title")), maxTaskFieldLen)
+		titleP = &title
+	}
+	if msg := refEditRefusal(cur, titleP, bodyP); msg != "" {
+		http.Error(w, msg, http.StatusConflict)
 		return
 	}
-	body = capRunes(body, maxTaskBodyLen)
 	directory := capRunes(r.FormValue("directory"), maxTaskFieldLen)
-	title := capRunes(strings.TrimSpace(r.FormValue("title")), maxTaskFieldLen)
 	model := capRunes(strings.TrimSpace(r.FormValue("model")), maxTaskFieldLen)
 	repo := capRunes(strings.TrimSpace(r.FormValue("repo")), maxTaskFieldLen)
 	branch := capRunes(strings.TrimSpace(r.FormValue("repo_branch")), maxTaskFieldLen)
-	// The form submits every editable field → set them all.
+	// The form submits every editable field → set them all (a reference's
+	// title and body excepted, above).
 	updated, err := s.ext.Notes.UpdateNote(r.Context(), id, notes.NoteUpdate{
 		Directory:  &directory,
-		Title:      &title,
-		Body:       &body,
+		Title:      titleP,
+		Body:       bodyP,
 		Model:      &model,
 		Repo:       &repo,
 		RepoBranch: &branch,
@@ -1779,7 +1900,7 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 //   - "user" is the human (handleNoteComment hardcodes it) — only the operator/
 //     human may declare a task complete, and commentAuthor renders the author
 //     string VERBATIM on the card, so an impersonated "user" comment would read
-//     as something Zach wrote.
+//     as something the operator wrote.
 //   - "operator" is the reserved privileged agent NAME (reservedOperatorSlug, in
 //     internal/api/reserved_names.go — operator.go was deleted by upstream task #653
 //     phase two, and that file's header says why the constant did NOT move to
@@ -1806,8 +1927,8 @@ var reservedCommentAuthors = map[string]bool{"user": true, "operator": true}
 // non-human, and reuses the provenance vocabulary rather than inventing a second
 // one. It can never be "user"/"operator" because the allowlist cannot produce
 // them.
-func taskCommentAuthor(r *http.Request) string {
-	source, _ := taskSource(r)
+func taskCommentAuthor(r *http.Request, legacyPrefix string) string {
+	source, _ := taskSource(r, legacyPrefix)
 	if source == "" {
 		return "api"
 	}
@@ -1885,11 +2006,18 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not load task"})
 		return
 	}
-	c, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
+	c, queued, err := s.addTaskComment(withRefOrigin(r.Context(), s.machineRefOrigin(r)), commentByActor, notes.Comment{
 		NoteID: id,
-		Author: taskCommentAuthor(r),
+		Author: taskCommentAuthor(r, s.ext.LegacyProvenanceHeaderPrefix),
 		Body:   text,
 	})
+	if err == nil && queued != nil {
+		// A reference: queued for its upstream (task_ref_queue.go). The session
+		// still worked the task; nothing local to push about.
+		s.noteTaskSession(r, id, notes.RoleWorked)
+		s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "write": queued, "message": refQueuedText})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
@@ -1940,11 +2068,11 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 // ⚠ "AUTHORED BY THE HUMAN" IS TRUE, BUT IT DOES NOT NAME ONE. This route is
 // wrapped in `requireSession`, which refuses a caller with no valid signed
 // session cookie, so `Author: "user"` is stamped only for someone who completed
-// a login — on the LAN NodePort as well as behind the Authelia edge. What the
-// tier cannot supply is WHICH human: it is one shared operator password, so
-// "user" means "whoever holds the operator session". Same scope caveat as
-// merge.go's mergeCommentAuthor — see upstream task #394 for the decision, and do
-// not restate this as an unqualified guarantee about a person.
+// a login — whether the request came directly or through a forward-auth proxy.
+// What the tier cannot supply is WHICH human: it is one shared operator
+// password, so "user" means "whoever holds the operator session". Same scope
+// caveat as merge.go's mergeCommentAuthor, and do not restate this as an
+// unqualified guarantee about a person.
 func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -1960,7 +2088,9 @@ func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "comment body required", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{NoteID: id, Author: "user", Body: body}); err != nil {
+	_, queued, err := s.addTaskComment(withRefOrigin(r.Context(), refOrigin{Author: "user"}), commentByActor,
+		notes.Comment{NoteID: id, Author: "user", Body: body})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -1974,6 +2104,18 @@ func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("notes: get %d after comment: %v", id, err)
 		http.Error(w, "could not load task", http.StatusInternalServerError)
 		return
+	}
+	// A member's comment on a TEAM task reaches the team's other operators
+	// and managers (team sharing phase 2b.1); on your own task it is still
+	// yours alone, as the comment above says.
+	if queued == nil {
+		s.teamTaskCommented(r.Context(), note, body)
+	}
+	if queued != nil {
+		// A reference: the comment went to the upstream's queue; the card shows
+		// it as "sending…" until the plugin confirms.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
 	}
 	s.renderNoteCard(w, r, note)
 }
@@ -2146,4 +2288,12 @@ func (s *Server) actorIsAgent(ctx context.Context, actor string) bool {
 		}
 	}
 	return false
+}
+
+// agentCreatedBy is the notes.Note.CreatedBy for a task agent a filed.
+func agentCreatedBy(a agents.Agent, chief bool) *string {
+	if chief {
+		return nilIfEmpty(notes.CreatedByChief)
+	}
+	return notes.CreatedByAgent(a.Name)
 }

@@ -17,6 +17,8 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -55,15 +57,6 @@ const (
 	terminalModeReadOnly    = "ro"
 	terminalModeInteractive = "rw"
 
-	// terminalPingInterval keeps an idle terminal's socket alive through
-	// proxies that close quiet connections (a read-only view of an idle TUI
-	// can send nothing for minutes), and detects a peer that vanished without
-	// a close frame — a phone that lost signal — so its exec does not stay
-	// attached until TCP gives up.
-	terminalPingInterval = 25 * time.Second
-	// terminalWriteTimeout bounds one write to the browser. A stalled browser
-	// ends the exec rather than backing the pod's output up into muster.
-	terminalWriteTimeout = 10 * time.Second
 	// terminalMaxDim clamps a client-sent size; tmux has its own limits and a
 	// browser has no business sending more.
 	terminalMaxDim = 1000
@@ -80,11 +73,21 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("agent %q is a %s agent, which has no terminal", a.Name, agents.KindLabel(a.Kind)), http.StatusNotFound)
 		return
 	}
-	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName,
+	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(r.Context(), a),
 		// The Rendered | Terminal switch: the agent's chat is its rendered view.
-		RenderedHref: ui.AgentPath(a.Name)}
+		RenderedHref: s.agentPageHref(r.Context(), a)}
+	// 🔴 A TEAM agent's terminal is an operator's or a manager's WITH A FRESH
+	// SIGN-IN (teamAgentTerminal): the whole attach is gated, so the page
+	// carries the confirm dialog and asks before it attaches on a stale one.
+	if memberOnTeamAgent(r.Context(), a) && !teamWatcherOf(r.Context(), a.OwnerID) {
+		v.StepUp = s.stepUpView(r)
+		v.StepUp.Why = TeamAgentTerminalWhy()
+		v.StepUpAttach = true
+	}
 	if s.ext.Provisioner == nil {
 		v.Unavailable = "this build has no agent provisioner wired, so it cannot attach a terminal"
+	} else if s.ext.ComposeChief != nil {
+		v.Unavailable = ComposeChiefNoTerminal
 	}
 	// 🔴 THE TERMINAL HAS A MESSAGE BOX TOO — the SAME composer as a mirrored
 	// session's views (ui.ComposerView), posting to the agent's send route, which
@@ -95,7 +98,8 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	c := ui.ComposerView{SendPath: ui.AgentSendPath(a.Name),
 		Extra:       []ui.ComposerField{{Name: "from", Value: ui.AgentSendFromTerminal}},
 		Placeholder: "Message the agent…", Aria: "Send a message to this agent", DisabledPlaceholder: "Cannot be sent a message",
-		Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(), DraftKey: ui.AgentTerminalDraftKey(draftUser(r.Context()), a.Name)}
+		Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(), DraftKey: ui.AgentTerminalDraftKey(draftUser(r.Context()), a.Name),
+		DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == ""}
 	c.Notice, c.NoticeOK = composerNotice(r)
 	switch {
 	case s.ext.Gateway == nil:
@@ -104,10 +108,23 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		c.Disabled = AgentNotRunningNotice
 	}
 	v.Composer = &c
+	// The viewer opened this agent (best-effort): the Terminal view counts as
+	// a visit, as the agent's chat page and a mirrored window's Terminal view
+	// do — a reload or a shared link of this view lands here, not on the chat.
+	// (The switcher's Recent leaves the page's own session out whatever is
+	// recorded: ui.NewSwitcher.)
+	s.recordAgentVisit(r.Context(), a)
+	// The session switcher at the page's foot (ui/switcher.go), as the chat
+	// page draws it — its pin posting back to THIS view.
+	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{AgentID: a.ID, Back: ui.AgentTerminalPath(a.Name)})
+	// The viewer's tags on the agent, in the header (ui/session_tags.go).
+	v.Tags = s.sessionTagsFor(r.Context(), sessiontags.Target{AgentID: a.ID})
+	v.TagTarget = ui.SessionTagTarget{AgentID: a.ID}
 	// The Terminal half of the switch, which the agent's chat opens in a frame
 	// (ui/view_swap.go).
-	allowSameOriginFrame(w)
-	formDocument(w)
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	allowSameOriginFrame(w, "")
+	viewDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("agents: render terminal page: %v", err)
@@ -138,6 +155,7 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
+	defer forgetPage(c)
 
 	// Registered so a shutdown can end it: a hijacked connection is outside
 	// http.Server.Shutdown's reach, and a process that exits with a terminal
@@ -148,15 +166,23 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
+	// The page judges the socket alive by hearing from it (ui/live.go); a
+	// protocol ping is answered by the browser itself and never reaches the
+	// page's script, and an idle TUI prints nothing, so it beats too. Deferred
+	// HERE, not in bridgeTerminal: its stop forgets the stalled note, which
+	// this handler reads to classify the end.
+	defer socketHeartbeat(ctx, s.logger, c)()
 
 	mode := terminalModeInteractive
 	if readOnly {
 		mode = terminalModeReadOnly
 	}
 	s.logger.Printf("agents: terminal %s attached (%s)", a.Name, mode)
-	err = bridgeTerminal(ctx, s.logger, c, readOnly, initial, hasInitial,
+	err = bridgeTerminal(ctx, s.logger, c, "", false, readOnly, initial, hasInitial,
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
-			return s.ext.Provisioner.AttachTerminal(ctx, a, readOnly, stdin, stdout, resize)
+			// The open ends at the first output (telemetry.OpenDone).
+			return s.ext.Provisioner.AttachTerminal(ctx, a, readOnly, stdin,
+				&firstWriter{w: stdout, first: func() { telemetry.OpenDone(r, telemetry.ReasonOK) }}, resize)
 		})
 	s.logger.Printf("agents: terminal %s detached: %v", a.Name, errOrNone(err))
 }
@@ -179,7 +205,7 @@ type terminalSet struct {
 	mu      sync.Mutex
 	closed  bool
 	next    uint64
-	cancels map[uint64]context.CancelFunc
+	cancels map[uint64]context.CancelCauseFunc
 	wg      sync.WaitGroup
 }
 
@@ -193,9 +219,9 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 		return nil, nil, false
 	}
 	if t.cancels == nil {
-		t.cancels = map[uint64]context.CancelFunc{}
+		t.cancels = map[uint64]context.CancelCauseFunc{}
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	id := t.next
 	t.next++
 	t.cancels[id] = cancel
@@ -204,7 +230,7 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 		t.mu.Lock()
 		delete(t.cancels, id)
 		t.mu.Unlock()
-		cancel()
+		cancel(nil)
 		t.wg.Done()
 	}, true
 }
@@ -219,8 +245,10 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 func (t *terminalSet) endAll(logger *log.Logger, giveUp <-chan time.Time) bool {
 	t.mu.Lock()
 	t.closed = true
+	// 🔴 WITH A CAUSE: a stream ended here is a DEPLOY, not the browser
+	// leaving (telemetry.EndedBy), and its page is told so (shutdownFrame).
 	for _, cancel := range t.cancels {
-		cancel()
+		cancel(telemetry.ErrShuttingDown)
 	}
 	t.mu.Unlock()
 	finished := make(chan struct{})
@@ -272,9 +300,19 @@ type attachFunc func(ctx context.Context, stdin io.Reader, stdout io.Writer, res
 // running after its stream is gone. Ending it is attach's own job
 // (Provisioner.AttachTerminal releases it before returning), so this function
 // waits for attach to return rather than abandoning it.
-func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Conn, readOnly bool, initial provision.TermSize, hasInitial bool, attach attachFunc) error {
+//
+// host is the mirrored computer a refusal is worded for (mirror.PlainWords),
+// "" for an agent's terminal; setup is whether the viewer is an admin, the
+// only one whose error frame carries the exact error (terminalErrorWords).
+func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Conn, host string, setup, readOnly bool, initial provision.TermSize, hasInitial bool, attach attachFunc) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	// sockCtx is what the SOCKET's own reads and pings run on: ended with the
+	// bridge, but NOT by parent. coder/websocket closes the connection when a
+	// read's context ends, and a shutdown ends parent — which would close the
+	// socket before the page could be told why (shutdownFrame).
+	sockCtx, sockCancel := context.WithCancel(context.WithoutCancel(parent))
+	defer sockCancel()
 
 	stdinR, stdinW := io.Pipe()
 	resize := make(chan provision.TermSize, 8)
@@ -288,7 +326,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 		defer cancel()
 		defer stdinW.Close()
 		for {
-			typ, data, err := c.Read(ctx)
+			typ, data, err := c.Read(sockCtx)
 			if err != nil {
 				return
 			}
@@ -342,8 +380,22 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, terminalWriteTimeout)
+				// ⚠ THE ONE PAGE WRITE NOT BOUNDED BY armStall, on purpose.
+				// coder/websocket caps the ping FRAME's write at 5 s and closes
+				// the connection itself then, before Ping returns, so output
+				// queued behind a stalled ping can fail before the note below
+				// and be marked as the page gone (audit #713 round 1). That
+				// reaches only the text of the terminal's "detached" log line:
+				// the metric is right (streamEndReason runs after pingDone,
+				// once the note has landed). Bounding it with armStall would
+				// mean telling a blocked frame from an unanswered pong, which
+				// coder/websocket does not expose; doing it at the frame cap
+				// cut the wait for a pong from terminalWriteTimeout (10 s) to
+				// 4 s, which was declined (2026-11-16). Pinned by
+				// TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout.
+				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
 				err := c.Ping(pctx)
+				notePageWrite(c, err)
 				pcancel()
 				if err != nil {
 					cancel()
@@ -360,13 +412,19 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 	err := attach(ctx, stdinR, &terminalWriter{ctx: ctx, c: c, mode: mode}, resize)
 	_ = stdinR.Close()
 
-	// The last word, unless the browser is already gone.
-	if ctx.Err() == nil {
+	// The last word, unless the browser is already gone — or muster is
+	// shutting down, which the page is told in a closed word it reports.
+	if errors.Is(context.Cause(parent), telemetry.ErrShuttingDown) {
+		shutdownFrame(c)
+	} else if ctx.Err() == nil {
 		if err != nil {
-			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": terminalErrorText(err)})
+			// reason is the closed word the page reports a disconnect by
+			// (mirror.Reason; open_trace.go), beside the words it shows.
+			msg, detail := terminalErrorWords(err, host, setup)
+			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg, "detail": detail, "reason": mirror.Reason(err)})
 			_ = c.Close(websocket.StatusInternalError, "terminal refused")
 		} else {
-			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "exit", "message": "the terminal's session client exited"})
+			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "exit", "message": "The terminal closed."})
 			_ = c.Close(websocket.StatusNormalClosure, "terminal exited")
 		}
 	}
@@ -388,15 +446,218 @@ func terminalErrorText(err error) string {
 	return "the terminal ended with an error: " + err.Error()
 }
 
+// terminalErrorWords is an error frame's two texts: the plain line the page
+// shows, and the exact error behind its ⓘ. A MIRRORED session's (host the
+// window's computer, not "") end is said plainly — a refusal by
+// mirror.PlainWords, anything else as MirrorTerminalEndedPlain — and its
+// exact error is the detail only when setup (an admin: ui.Features.Setup).
+// An agent's terminal (host "") keeps terminalErrorText, its own remedy text,
+// as the line.
+func terminalErrorWords(err error, host string, setup bool) (msg, detail string) {
+	if host == "" {
+		return terminalErrorText(err), ""
+	}
+	msg = MirrorTerminalEndedPlain
+	if mirror.IsAttachRefusal(err) {
+		msg = mirror.PlainWords(err, host)
+	}
+	if setup {
+		detail = err.Error()
+	}
+	return msg, detail
+}
+
+// MirrorTerminalEndedPlain is what a mirrored session's Terminal view that
+// ended on an error it has no words for says; the error itself is its ⓘ.
+const MirrorTerminalEndedPlain = "The terminal stopped unexpectedly. Reconnect to carry on."
+
+// shutdownFrame tells a socket's page that muster is shutting down — an error
+// frame with reason "shutdown" — and closes it as going away. The stream's own
+// context has ended by then, so it writes on a short context of its own.
+func shutdownFrame(c *websocket.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": "muster is restarting; reconnecting", "reason": telemetry.ReasonShutdown})
+	_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+}
+
+// terminalPingInterval keeps an idle terminal's socket alive through proxies
+// that close quiet connections (a read-only view of an idle TUI can send
+// nothing for minutes), and detects a peer that vanished without a close
+// frame — a phone that lost signal — so its exec does not stay attached until
+// TCP gives up. A variable so a test can ping in less than 25 seconds.
+var terminalPingInterval = 25 * time.Second
+
+// terminalWriteTimeout bounds one write to the browser. A stalled browser
+// ends the exec rather than backing the pod's output up into muster. A
+// variable so a test can stall a page in less than ten seconds.
+var terminalWriteTimeout = 10 * time.Second
+
+// pageWriteGrace is how long a write to the page may still take once its
+// stream's context has been CANCELLED (a shutdown, the bridge ending) — whether
+// the write was already in flight then or started after. A variable so a test
+// can measure it in less than a second.
+var pageWriteGrace = time.Second
+
+// pageWriteContext is the context ONE write to the page runs on. It ends at
+// the EARLIEST of:
+//   - terminalWriteTimeout from now (a stalled page);
+//   - ctx's own deadline, if it has one — as context.DeadlineExceeded, exactly
+//     as a write on ctx would (shutdownFrame's one second stays one second);
+//   - pageWriteGrace after ctx is CANCELLED — not at that instant.
+//
+// 🔴 coder/websocket CLOSES THE CONNECTION, WITH NO CLOSE FRAME, WHEN A WRITE'S
+// CONTEXT ENDS WHILE THE FRAME IS BEING WRITTEN (Conn.setupWriteTimeout). A
+// shutdown (EndTerminals) ends every stream's context, so a page write that
+// happened to be in flight at that instant cut the socket: the page read EOF
+// and was never told "shutdown" (shutdownFrame) — measured as about 1 in 30
+// runs of TestADeployIsReportedAsShutdownNotTheBrowserLeaving under load
+// (63 of 1800 on origin/main at 237d535b), 0 of 1800 with this. The grace is
+// short so a stalled page cannot hold a shutdown up for the whole write
+// timeout; the heartbeat's writePing applies the same rule (a context the
+// stream's end does not cancel).
+func pageWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(terminalWriteTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	wctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	grace := pageWriteGrace
+	stop := context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// ctx ran out of time: wctx carries the same deadline and ends
+			// at it, as DeadlineExceeded. No grace past a deadline.
+			return
+		}
+		time.AfterFunc(grace, cancel)
+	})
+	return wctx, func() { stop(); cancel() }
+}
+
 func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	wctx, cancel := context.WithTimeout(ctx, terminalWriteTimeout)
-	defer cancel()
-	return c.Write(wctx, websocket.MessageText, b)
+	return pageWrite(ctx, c, websocket.MessageText, b)
 }
+
+// pageWrite writes one message to the page's socket c, bounded as
+// pageWriteContext(ctx) says, with the bound kept by armStall: a write not done
+// by then is a stalled page, NOTED and then the connection closed.
+//
+// 🔴 coder/websocket CLOSES THE CONNECTION ITSELF WHEN A WRITE'S CONTEXT
+// EXPIRES — from a goroutine of its own, before Write returns — and every
+// other writer on c then fails "use of closed network connection" at once: a
+// batch queued behind the asks relay's stalled write failed before the relay's
+// note, written after Write returned, existed, and was marked as the page gone
+// (audit #713 F1). So the write's own context runs stallGrace past the bound
+// (still cancelled, as pageWriteContext cancels, pageWriteGrace after the
+// stream's), and the bound's timer — note first, then close — is what ends it.
+func pageWrite(ctx context.Context, c *websocket.Conn, typ websocket.MessageType, b []byte) error {
+	bounded, cancel := pageWriteContext(ctx)
+	defer cancel()
+	deadline, _ := bounded.Deadline() // pageWriteContext always sets one
+	wctx, wcancel := context.WithDeadline(context.WithoutCancel(bounded), deadline.Add(stallGrace))
+	defer wcancel()
+	// bounded's CANCELLATION ends the write as before; its deadline is the
+	// stall timer's.
+	defer context.AfterFunc(bounded, func() {
+		if !errors.Is(bounded.Err(), context.DeadlineExceeded) {
+			wcancel()
+		}
+	})()
+	disarm := armStall(c, deadline)
+	pageWriteStarting(ctx)
+	err := c.Write(wctx, typ, b)
+	pageWriteReturned(ctx)
+	if disarm() {
+		return stalledWriteErr(err)
+	}
+	notePageWrite(c, err)
+	return err
+}
+
+// stallGrace is how much longer than its bound a write to the page may run,
+// so that the bound's own timer (armStall) — not the write's context — ends a
+// stalled one.
+const stallGrace = time.Second
+
+// armStall arms the bound of one write to c: at deadline it notes the stall
+// (notePageWrite) and then closes the connection, IN THAT ORDER, so a writer
+// that finds c closed by the stall always finds the note (markPageGone,
+// streamEndReason). disarm stops it and reports whether it fired; a fired
+// callback has finished noting and closing by the time disarm returns.
+func armStall(c *websocket.Conn, deadline time.Time) (disarm func() (fired bool)) {
+	done := make(chan struct{})
+	t := time.AfterFunc(time.Until(deadline), func() {
+		defer close(done)
+		stallFiring()
+		notePageWrite(c, context.DeadlineExceeded)
+		_ = c.CloseNow()
+	})
+	return func() bool {
+		if t.Stop() {
+			return false
+		}
+		<-done
+		return true
+	}
+}
+
+// stalledWriteErr is the error of a write whose stall bound fired: a timeout,
+// whatever the write itself returned (it may have landed as the timer fired,
+// or failed on the connection the timer closed).
+func stalledWriteErr(err error) error {
+	switch {
+	case err == nil:
+		return context.DeadlineExceeded
+	case errors.Is(err, context.DeadlineExceeded):
+		return err
+	}
+	return fmt.Errorf("%w: %w", errPageStalled, err)
+}
+
+// Test seams around one write to the page, no-ops in production:
+// pageWriteStarting runs just before the write, pageWriteReturned once it has
+// returned and before its outcome is noted. A test orders writers with them.
+var (
+	pageWriteStarting = func(context.Context) {}
+	pageWriteReturned = func(context.Context) {}
+)
+
+// stalledPages is every page socket a write to which has TIMED OUT — a page
+// alive but not reading. The stall's bound closes the connection then
+// (armStall, after noting it here), so the next write by anyone else (a batch
+// after the asks relay's or the suggestions' write stalled) fails as if the
+// page had left; this is how the end is still told apart (pageStalled). Only
+// a stalled socket is stored, and its handler forgets it (forgetPage) when it
+// returns.
+var stalledPages sync.Map // *websocket.Conn → struct{}
+
+// notePageWrite records that a write to c timed out, when err says so.
+func notePageWrite(c *websocket.Conn, err error) {
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		stalledPages.Store(c, struct{}{})
+		pageStallNoted()
+	}
+}
+
+// pageStallNoted is called each time a stall is noted: a test's count of the
+// notes made, which a note forgotten moments later leaves no other trace of.
+var pageStallNoted = func() {}
+
+// pageStalled reports whether a write to c has timed out.
+func pageStalled(c *websocket.Conn) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := stalledPages.Load(c)
+	return ok
+}
+
+// forgetPage drops c from stalledPages: its handler is done with it.
+func forgetPage(c *websocket.Conn) { stalledPages.Delete(c) }
 
 // terminalWriter sends the terminal's output to the browser as binary frames.
 //
@@ -418,9 +679,7 @@ func (w *terminalWriter) Write(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	wctx, cancel := context.WithTimeout(w.ctx, terminalWriteTimeout)
-	defer cancel()
-	if err := w.c.Write(wctx, websocket.MessageBinary, p); err != nil {
+	if err := pageWrite(w.ctx, w.c, websocket.MessageBinary, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil

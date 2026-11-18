@@ -42,6 +42,9 @@ BEGIN
         'chat_sessions', 'chat_messages', 'connectors', 'connector_grants',
         'connector_audit', 'github_connection'
     ] LOOP
+        -- 0059 drops github_connection; skip that ONE table when it is absent
+        -- (any other table missing here is still an error).
+        CONTINUE WHEN t = 'github_connection' AND to_regclass('public.github_connection') IS NULL;
         EXECUTE format('ALTER TABLE public.%I NO FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I DISABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I ALTER COLUMN owner_id SET DEFAULT 1', t);
@@ -171,6 +174,253 @@ BEGIN
         ALTER TABLE public.device_pairing_codes NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.device_pairing_codes DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.device_pairing_codes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0043 (connector_standing_grants), when this schema has it; same reason
+    -- as 0011.
+    IF to_regclass('public.connector_standing_grants') IS NOT NULL THEN
+        ALTER TABLE public.connector_standing_grants NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.connector_standing_grants DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.connector_standing_grants ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0048 (suggest_preferences), when this schema has it; same reason as
+    -- 0011.
+    IF to_regclass('public.suggest_preferences') IS NOT NULL THEN
+        ALTER TABLE public.suggest_preferences NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.suggest_preferences DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.suggest_preferences ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0049 (suggest_usage), when this schema has it; same reason as 0011.
+    IF to_regclass('public.suggest_usage') IS NOT NULL THEN
+        ALTER TABLE public.suggest_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.suggest_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.suggest_usage ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0054 (plugin_threads), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_threads') IS NOT NULL THEN
+        ALTER TABLE public.plugin_threads NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_threads DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_threads ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0055 (session_prs), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_prs') IS NOT NULL THEN
+        ALTER TABLE public.session_prs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_prs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_prs ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0056 (mail_resumes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.mail_resumes') IS NOT NULL THEN
+        ALTER TABLE public.mail_resumes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.mail_resumes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.mail_resumes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0058 (device_challenges), when this schema has it; same reason as 0011.
+    IF to_regclass('public.device_challenges') IS NOT NULL THEN
+        ALTER TABLE public.device_challenges NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.device_challenges DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.device_challenges ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0060 (chief_preferences), when this schema has it; same reason as 0011.
+    IF to_regclass('public.chief_preferences') IS NOT NULL THEN
+        ALTER TABLE public.chief_preferences NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_preferences DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_preferences ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0064 (chief_nudges), when this schema has it; same reason as 0011.
+    IF to_regclass('public.chief_nudges') IS NOT NULL THEN
+        ALTER TABLE public.chief_nudges NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_nudges DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_nudges ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0066 (cc_account_failovers), when this schema has it; same reason as
+    -- 0011.
+    IF to_regclass('public.cc_account_failovers') IS NOT NULL THEN
+        ALTER TABLE public.cc_account_failovers NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_failovers DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_failovers ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0072 (task_ref_writes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.task_ref_writes') IS NOT NULL THEN
+        ALTER TABLE public.task_ref_writes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.task_ref_writes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.task_ref_writes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0073 (session_episodes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_episodes') IS NOT NULL THEN
+        ALTER TABLE public.session_episodes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_episodes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_episodes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0075 (officer_llm_usage), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_llm_usage') IS NOT NULL THEN
+        ALTER TABLE public.officer_llm_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_llm_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_llm_usage ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0082 (officer_judgement_sessions), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_judgement_sessions') IS NOT NULL THEN
+        ALTER TABLE public.officer_judgement_sessions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_judgement_sessions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_judgement_sessions ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0122 (plugin_pair_requests), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_pair_requests') IS NOT NULL THEN
+        ALTER TABLE public.plugin_pair_requests NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_pair_requests DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_pair_requests ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0125 (officer_host_spawns), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_host_spawns') IS NOT NULL THEN
+        ALTER TABLE public.officer_host_spawns NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_host_spawns DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_host_spawns ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0128 (agent_secrets), when this schema has it; same reason as 0011.
+    IF to_regclass('public.agent_secrets') IS NOT NULL THEN
+        ALTER TABLE public.agent_secrets NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.agent_secrets DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.agent_secrets ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0132 (officer_contacts, officer_contact_events), when this schema has
+    -- them; same reason as 0011.
+    IF to_regclass('public.officer_contacts') IS NOT NULL THEN
+        ALTER TABLE public.officer_contacts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contacts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contacts ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_contact_events NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contact_events DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contact_events ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0138 (officer_public_branches), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_public_branches') IS NOT NULL THEN
+        ALTER TABLE public.officer_public_branches NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_public_branches DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_public_branches ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0141 (plugin_chief_instructions), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_chief_instructions') IS NOT NULL THEN
+        ALTER TABLE public.plugin_chief_instructions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_chief_instructions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_chief_instructions ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0144 (chief_session_llm_usage, chief_session_llm_reservations), when this schema has them; same reason as 0011.
+    IF to_regclass('public.chief_session_llm_usage') IS NOT NULL THEN
+        ALTER TABLE public.chief_session_llm_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_session_llm_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_session_llm_usage ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.chief_session_llm_reservations NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_session_llm_reservations DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_session_llm_reservations ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0147 (fleet_owner_marks), when this schema has it; same reason as 0011.
+    IF to_regclass('public.fleet_owner_marks') IS NOT NULL THEN
+        ALTER TABLE public.fleet_owner_marks NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.fleet_owner_marks DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.fleet_owner_marks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
+        ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_connector_blocks DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_connector_blocks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0119 (officer_pr_loops), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_pr_loops') IS NOT NULL THEN
+        ALTER TABLE public.officer_pr_loops NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_pr_loops DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_pr_loops ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0086 (session_tags), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_tags') IS NOT NULL THEN
+        ALTER TABLE public.session_tags NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_tags DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_tags ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0089 (asks), when this schema has it; same reason as 0011.
+    IF to_regclass('public.asks') IS NOT NULL THEN
+        ALTER TABLE public.asks NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.asks DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.asks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0093 (host_dispatches), when this schema has it; same reason as 0011.
+    IF to_regclass('public.host_dispatches') IS NOT NULL THEN
+        ALTER TABLE public.host_dispatches NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_dispatches DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_dispatches ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0094 (notify_preferences), when this schema has it; same reason as 0011.
+    IF to_regclass('public.notify_preferences') IS NOT NULL THEN
+        ALTER TABLE public.notify_preferences NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.notify_preferences DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.notify_preferences ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0118 (officer_types, officer_defs, officer_items, officer_schedules),
+    -- when this schema has them; same reason as 0011.
+    IF to_regclass('public.officer_types') IS NOT NULL THEN
+        ALTER TABLE public.officer_types NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_types DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_types ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_defs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_defs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_defs ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_items NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_items DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_items ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_schedules NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_schedules DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_schedules ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0116 (pages, page_versions, page_links, page_responses), when this
+    -- schema has them; same reason as 0011.
+    IF to_regclass('public.pages') IS NOT NULL THEN
+        ALTER TABLE public.pages NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.pages DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.pages ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_versions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_versions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_versions ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_links NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_links DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_links ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_responses NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_responses DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_responses ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0108 (cc_account_usage), when this schema has it; same reason as 0011.
+    IF to_regclass('public.cc_account_usage') IS NOT NULL THEN
+        ALTER TABLE public.cc_account_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_usage ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0113 (ask_attempts), when this schema has it; same reason as 0011.
+    IF to_regclass('public.ask_attempts') IS NOT NULL THEN
+        ALTER TABLE public.ask_attempts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.ask_attempts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.ask_attempts ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0100 (chief_proposals), when this schema has it; same reason as 0011.
+    IF to_regclass('public.chief_proposals') IS NOT NULL THEN
+        ALTER TABLE public.chief_proposals NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_proposals DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_proposals ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0104 (plugin_handoffs), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_handoffs') IS NOT NULL THEN
+        ALTER TABLE public.plugin_handoffs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_handoffs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_handoffs ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0107 (routing_rules, chief_turn_usage, plugin_message_handling), when
+    -- this schema has them; same reason as 0011.
+    IF to_regclass('public.routing_rules') IS NOT NULL THEN
+        ALTER TABLE public.routing_rules NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.routing_rules DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.routing_rules ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.chief_turn_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_turn_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_turn_usage ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.plugin_message_handling NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_message_handling DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_message_handling ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
 END
 $$;

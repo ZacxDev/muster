@@ -114,6 +114,67 @@ type Plugin struct {
 	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
 	ChiefAgentID   *int64     `json:"-"`
 	ChiefSessionID *int64     `json:"-"`
+	// Capabilities is what the token may open (migration 0102). A route names
+	// the one it needs, and requirePluginToken (internal/api) refuses a token
+	// without it. Every token minted before 0102 has CapMessages.
+	Capabilities []Capability `json:"capabilities"`
+	// Origin and EntryURL are a `viewer` token's origin pattern (one of
+	// MUSTER_PLUGIN_ORIGINS at mint) and the URL under it a hand-off is sent
+	// to (migration 0104); nil on every other token.
+	Origin   *string `json:"origin,omitempty"`
+	EntryURL *string `json:"entryUrl,omitempty"`
+	// DeliverTo binds the plugin to a builtin officer (migration 0121):
+	// "officer:<id>" — its messages become items in that officer's queue
+	// instead of chief turns, and the officer's outbound drafts are its
+	// (outbound.go). nil: the plugin is the chief's, as before.
+	DeliverTo *string `json:"deliverTo,omitempty"`
+	// OwnerLogin is how the owner's account is named to a person: its email,
+	// or its display name when it has none (the admin Users page's spelling).
+	// Set by Authenticate only, for GET /plugin/v1/self.
+	OwnerLogin string `json:"-"`
+	// RotateAt is when a team viewer plugin was marked rotate (0134): an
+	// operator or a manager of its team left, dropped to viewer or was
+	// disabled. nil: not marked (always, for a person's).
+	RotateAt *time.Time `json:"rotateAt,omitempty"`
+	// OwnerTeam: the owner is a TEAM (team sharing 2b.3b: a team viewer
+	// plugin, minted by a manager on /teams/<id>/plugins). Set by
+	// Authenticate only; OwnerLogin is then the team's name.
+	OwnerTeam bool `json:"-"`
+}
+
+// Capability is one thing a plugin token may open (plugins.capabilities).
+type Capability string
+
+const (
+	// CapMessages opens every /plugin/v1/* route a plugin token opened before
+	// capabilities existed: messages, drafts, tasks and task writes.
+	CapMessages Capability = "messages"
+	// CapViewer opens the viewer seams (docs/design/previews.md): the plugin's
+	// chip on session views, and redeeming hand-off codes.
+	CapViewer Capability = "viewer"
+	// CapDraftChecks is a plugin that CHECKS each pending reply draft before
+	// its owner may approve it (migration 0112): it opens GET
+	// /plugin/v1/drafts/checks and POST /plugin/v1/drafts/{id}/check, and a
+	// draft filed for one of its messages awaits that verdict (drafts.go,
+	// Draft.AwaitingCheck). A plugin without it behaves as before 0112.
+	CapDraftChecks Capability = "draft_checks"
+	// CapChiefExtension is a plugin that may store ONE instruction section
+	// for its owner's chief (migration 0141, chief_instructions.go): it opens
+	// PUT /plugin/v1/chief/instructions. The section is rendered only
+	// once the owner approves that exact text on /plugins, and grants the
+	// chief nothing. Chosen at mint, and toggled on the plugin's card, as
+	// CapDraftChecks is.
+	CapChiefExtension Capability = "chief_extension"
+)
+
+// Has reports whether p's token carries c.
+func (p Plugin) Has(c Capability) bool {
+	for _, have := range p.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
 }
 
 // MessageIn is one inbound message as a plugin POSTs it.
@@ -132,6 +193,31 @@ type MessageIn struct {
 	// equivalent). Only with it can a routed answer be auto-approved
 	// (RelayAllowlist). Optional; false when absent. Immutable once stored.
 	SenderVerified bool `json:"sender_verified"`
+	// Thread is the upstream's thread id, when the plugin knows one (migration
+	// 0054): a reply on a thread one of the owner's mirrored sessions started is
+	// routed straight to that session (threads.go). Optional; "" when absent.
+	Thread string `json:"thread"`
+	// HumanConversation is the plugin's mark that the sender is a PERSON in a
+	// direct conversation (a chat DM), whose answer can take hours: a route of
+	// the message waits ConversationRouteTimeout instead of RouteTimeout
+	// (internal/api's routeTimeout; migration 0062). Optional; false when absent.
+	HumanConversation bool `json:"human_conversation"`
+	// Kind and Venue are a plugin bound to an officer's (outbound.go): what
+	// the message is (MessageKinds; "" is note) and where it happened.
+	// Refused on any other plugin.
+	Kind  string `json:"kind"`
+	Venue string `json:"venue"`
+	// URL is where the message can be read upstream (a post's permalink),
+	// when the plugin knows one: an absolute http(s) URL (fence.WebURL), a
+	// bound plugin's alone. It rides in the officer item's payload and is
+	// shown to the owner AS TEXT on an ask about the item, never as a link.
+	// Optional; "" when absent. Not stored on the message row.
+	URL string `json:"url"`
+	// Person and Event are an ENGAGEMENT message's (kind "engagement",
+	// engagement.go): who engaged with the owner's posts, and how. Refused on
+	// any other kind.
+	Person *EngagementPerson `json:"person,omitempty"`
+	Event  *EngagementEvent  `json:"event,omitempty"`
 }
 
 // Message is one row of plugin_messages.
@@ -163,6 +249,19 @@ type Message struct {
 	// RoutedDoneAt is when that route's action completed; nil while it is
 	// reserved and not yet done (or never finished: NoticeRouteReclaimAfter).
 	RoutedDoneAt *time.Time `json:"routedDoneAt,omitempty"`
+	// SettleReason is why the message needs nothing more (migration 0051,
+	// unrouted.go): the chief's plugin_message_settle reason, the owner's
+	// answer to the ask raised for it, or "pre-existing". nil: not settled.
+	SettleReason *string `json:"settleReason,omitempty"`
+	// Thread is MessageIn.Thread as stored; nil when the plugin sent none.
+	Thread *string `json:"thread,omitempty"`
+	// HumanConversation is MessageIn.HumanConversation as stored.
+	HumanConversation bool `json:"humanConversation"`
+	// Kind and Venue are MessageIn's as stored (a bound plugin's message);
+	// OfficerItemID is the officer item it became (routed_to "officer").
+	Kind          *string `json:"kind,omitempty"`
+	Venue         *string `json:"venue,omitempty"`
+	OfficerItemID *int64  `json:"officerItemId,omitempty"`
 }
 
 // Errors the API maps to status codes.
@@ -277,5 +376,29 @@ func (in MessageIn) Validate() error {
 			return invalid("external_id may not carry spaces, control or invisible characters")
 		}
 	}
+	if in.Thread != "" && !ValidThread(in.Thread) {
+		return invalid("thread is 1-%d bytes with no spaces, control or invisible characters", MaxThreadLen)
+	}
+	if in.URL != "" && fence.WebURL(in.URL) == "" {
+		return invalid("url is an absolute http or https URL with a host, at most %d bytes, with no spaces, control or invisible characters", fence.MaxURLBytes)
+	}
 	return nil
+}
+
+// MaxThreadLen bounds a thread id (0054's checks).
+const MaxThreadLen = 200
+
+// ValidThread reports whether t is a thread id: external_id's rule — 1 to
+// MaxThreadLen bytes of UTF-8 with no NUL, space, control or invisible
+// character — because it is matched exactly, never normalised.
+func ValidThread(t string) bool {
+	if t == "" || len(t) > MaxThreadLen || !utf8.ValidString(t) {
+		return false
+	}
+	for _, r := range t {
+		if r == 0 || r == ' ' || fence.Unsafe(r) {
+			return false
+		}
+	}
+	return true
 }

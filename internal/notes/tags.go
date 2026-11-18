@@ -35,7 +35,7 @@ const (
 
 // Reserved (routing) namespaces. These are a CLOSED Go allowlist on purpose:
 // adding one is a code change, because each carries behaviour. Any other
-// `namespace:value` prefix (e.g. `civitai:frontend`) is just a descriptive tag.
+// `namespace:value` prefix (e.g. `acme:frontend`) is just a descriptive tag.
 //
 // ⚠ `runbook:` WAS ONE, AND IS NOT ANY MORE. Runbooks were removed (migration
 // 0005 dropped their tables), so `runbook:<name>` carries no behaviour and is now

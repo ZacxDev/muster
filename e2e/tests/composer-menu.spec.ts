@@ -5,10 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import { binDir, composerMenuPort, dsn, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
+import { revealBox } from '../lib/composer';
 
 // THE RENDERED VIEW COMPOSER'S SPLIT SEND/QUEUE BUTTON AND ITS `/` AND `:` MENU,
 // in a real browser, against a real muster-server (MUSTER_MIRROR=1, password
@@ -17,7 +19,7 @@ import { writeFileAtomic } from '../lib/atomic';
 // CATALOG is read by the real scanner from fixture directories this spec
 // writes — CLAUDE_CONFIG_DIR (the user's skills and commands, an enabled
 // plugin), the window's PROJECT (MUSTER_MIRROR_E2E_CWD, a repository with its
-// own .claude) and MUSTER_MIRROR_SNIPPETS_FILE. The second host plays an older
+// own .claude). The second host plays an older
 // muster-mirror that reports no catalog (MUSTER_MIRROR_E2E_NO_CATALOG=1).
 //
 // The window's Claude Code reports BUSY the whole time, so a queued message is
@@ -41,7 +43,6 @@ const trOld = path.join(dir, 'ffffffff-0002.jsonl');
 const pane = '%e2e-work-@1';
 const cfg = path.join(dir, 'claude-config');
 const proj = path.join(dir, 'repo');
-const snippetsFile = path.join(dir, 'snippets.json');
 const EVIL = `<img src=x onerror="window.__pwned=1">`;
 let server: Running | undefined;
 const procs: ChildProcess[] = [];
@@ -68,15 +69,6 @@ function fixtures() {
   w(path.join(cfg, 'settings.json'), JSON.stringify({ enabledPlugins: { 'stripe@mkt': true } }));
   w(path.join(proj, '.git', 'HEAD'), 'ref: refs/heads/main\n');
   w(path.join(proj, '.claude', 'commands', 'proj-build.md'), '---\ndescription: Build this project\n---\n');
-  w(snippetsFile, JSON.stringify([
-    { trigger: ':eos', label: 'End of session ritual', body: 'reflect on work done, then write the handoff FIRST' },
-    { trigger: ':kickoff', label: 'Kickoff message for next session', body: 'give the kickoff message for next session' },
-    { trigger: ':mt', label: 'Meantime: tee up independent parallel work', body: 'tee up what we can do in the meantime' },
-    // Two the measured misfires reached through the old rules: ":D" (letters in
-    // order / label) and ":P" (":par").
-    { trigger: ':dacq', label: 'Process feedback: dispatch subagent + elicit scope', body: 'do light recon and ask clarifying questions' },
-    { trigger: ':par', label: 'Proceed as recommended', body: 'proceed as recommended' },
-  ]));
 }
 
 function startMirror(host: string, transcript: string, extra: Record<string, string>) {
@@ -98,7 +90,6 @@ function startMirror(host: string, transcript: string, extra: Record<string, str
       MUSTER_MIRROR_E2E_REFRESH: '250ms',
       MUSTER_MIRROR_E2E_CWD: proj,
       CLAUDE_CONFIG_DIR: cfg,
-      MUSTER_MIRROR_SNIPPETS_FILE: snippetsFile,
       ...extra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -141,20 +132,6 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// One password sign-in, its cookie handed to every context (sign-in is
-// throttled); a password sign-in is a FRESH one.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 // makeStale replaces the session cookie with one the server signed 13 hours
 // ago (internal/auth.SignSession: "<issued>|<expiry>|hex(hmac)", keyed by
 // sha256("muster-ui-session-v1\0" + password)).
@@ -167,7 +144,7 @@ async function makeStale(context: BrowserContext) {
 }
 
 async function openView(page: Page, host = newHost) {
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + viewPath(host));
   await expect(page.locator('#mv-input'), `the composer is enabled (muster-mirror log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
 }
@@ -196,7 +173,9 @@ test.describe('desktop 1280×800', () => {
   test('Send is the face: a click, Enter and Ctrl+Enter each send now, and nothing is queued', async ({ page }) => {
     await openView(page);
     const before = pasted().length;
-    await expect(page.locator('#mv-send')).toHaveText('Send');
+    // Send is the paper-plane icon button: named Send, no visible text.
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveAttribute('id', 'mv-send');
+    await expect(page.locator('#mv-send')).toHaveText('');
     await input(page).fill('one by click');
     await page.locator('#mv-send').click();
     await expect.poll(pasted).toEqual(expect.arrayContaining([`${pane} one by click`]));
@@ -208,6 +187,27 @@ test.describe('desktop 1280×800', () => {
     await expect.poll(() => pasted().slice(before)).toEqual([`${pane} one by click`, `${pane} two by enter`, `${pane} three by ctrl+enter`]);
     await expect(queued(page)).toHaveCount(0);
     await expect(page.locator('#mv-send-menu')).toBeHidden();
+  });
+
+  // 🔴 A SEND CLOSES AN OPEN `/` MENU. Send keeps the box focused
+  // (sendKeepsFocusJS), so the menu's close-on-blur never runs, and the box is
+  // emptied without an input event: the menu would stay open over the empty
+  // box, and the next Enter would put the command back in it.
+  test('a click on Send with the / menu open sends, closes the menu, and the next Enter does nothing', async ({ page }) => {
+    await openView(page);
+    const before = pasted().length;
+    await input(page).click();
+    await page.keyboard.type('/hand');
+    await expect(menu(page)).toBeVisible();
+    await expect.poll(() => optionNames(page)).toContain('handoff');
+    await page.locator('#mv-send').click();
+    await expect.poll(() => pasted().slice(before)).toEqual([`${pane} /hand`]);
+    await expect(input(page)).toHaveValue('');
+    await expect(menu(page), 'the menu closed with the send').toBeHidden();
+    await input(page).press('Enter');
+    await expect(input(page), 'Enter put nothing back in the box').toHaveValue('');
+    await page.waitForTimeout(500);
+    expect(pasted().slice(before), 'and sent nothing more').toEqual([`${pane} /hand`]);
   });
 
   test('Queue is behind the caret, by pointer and by keyboard; it queues and never sends', async ({ page }) => {
@@ -322,33 +322,7 @@ test.describe('desktop 1280×800', () => {
     await expect.poll(() => sends).toEqual([204]);
   });
 
-  test(': lists the snippets and inserts the text, editable before it is sent; a click inserts too', async ({ page }) => {
-    await openView(page);
-    await input(page).click();
-    await page.keyboard.type('please :');
-    await expect(menu(page)).toBeVisible();
-    await expect.poll(() => optionNames(page)).toEqual([':eos', ':kickoff', ':mt', ':dacq', ':par']);
-    // By the trigger's prefix alone — a label word ("meantime") is not a match.
-    await page.keyboard.type('meant');
-    await expect(menu(page), 'a label word opens nothing').toBeHidden();
-    for (let i = 0; i < 5; i++) await page.keyboard.press('Backspace');
-    await page.keyboard.type('mt');
-    await expect.poll(() => optionNames(page)).toEqual([':mt']);
-    await page.keyboard.press('Enter');
-    await expect(input(page)).toHaveValue('please tee up what we can do in the meantime');
-    await expect(menu(page)).toBeHidden();
-    // Editable: the text is the box's, typed onto like any other.
-    await page.keyboard.type(', then report');
-    await expect(input(page)).toHaveValue('please tee up what we can do in the meantime, then report');
-
-    await input(page).fill('');
-    await page.keyboard.type(':k');
-    await page.locator('#mv-complete [data-trigger=":kickoff"]').click();
-    await expect(input(page)).toHaveValue('give the kickoff message for next session');
-    await expect(input(page)).toBeFocused();
-  });
-
-  test('Enter sends ordinary text the menu could have rewritten — "thanks :D", "ok :P", "ok :p", "see /etc" — and completes only a typed prefix', async ({ page }) => {
+  test('Enter sends ordinary text the menu could have rewritten — "thanks :D", "ok :P", "see /etc" — and completes only a typed prefix', async ({ page }) => {
     await openView(page);
     const sends: number[] = [];
     page.on('response', (r) => {
@@ -356,13 +330,12 @@ test.describe('desktop 1280×800', () => {
     });
     const before = pasted();
     const sent: string[] = [];
-    for (const text of ['thanks :D', 'ok :P', 'ok :p', 'see /etc', 'see /tmp']) {
+    for (const text of ['thanks :D', 'ok :P', 'see /etc', 'see /tmp']) {
       await input(page).fill('');
       await input(page).click();
       await page.keyboard.type(text);
-      // Nothing is offered for a face or a path; ":p" may offer ":par", and
-      // Enter must still send it.
-      if (text !== 'ok :p') await expect(menu(page), `"${text}" offers nothing`).toBeHidden();
+      // Nothing is offered for a face or a path.
+      await expect(menu(page), `"${text}" offers nothing`).toBeHidden();
       await page.keyboard.press('Enter');
       sent.push(`${pane} ${text}`);
       await expect.poll(pasted, `"${text}" + Enter is sent as typed`).toEqual([...before, ...sent]);
@@ -372,11 +345,6 @@ test.describe('desktop 1280×800', () => {
     await page.keyboard.type('/hand');
     await page.keyboard.press('Enter');
     await expect(input(page)).toHaveValue('/handoff ');
-    await input(page).fill('');
-    await page.keyboard.type('note :ki');
-    await expect.poll(() => optionNames(page)).toEqual([':kickoff']);
-    await page.keyboard.press('Enter');
-    await expect(input(page)).toHaveValue('note give the kickoff message for next session');
     expect(pasted(), 'no completion was sent').toEqual([...before, ...sent]);
     // "/etc" offers no letters-in-order match at all.
     await input(page).fill('');
@@ -384,7 +352,7 @@ test.describe('desktop 1280×800', () => {
     await expect(menu(page)).toBeHidden();
   });
 
-  test('an inserted command or snippet is undone by Ctrl+Z', async ({ page }) => {
+  test('an inserted command is undone by Ctrl+Z', async ({ page }) => {
     await openView(page);
     await input(page).click();
     await page.keyboard.type('/hand');
@@ -393,12 +361,6 @@ test.describe('desktop 1280×800', () => {
     await expect(input(page)).toHaveValue('/handoff ');
     await page.keyboard.press('Control+z');
     await expect(input(page)).toHaveValue('/hand');
-    await input(page).fill('');
-    await page.keyboard.type('do :eo');
-    await page.keyboard.press('Enter');
-    await expect(input(page)).toHaveValue('do reflect on work done, then write the handoff FIRST');
-    await page.keyboard.press('Control+z');
-    await expect(input(page)).toHaveValue('do :eo');
   });
 
   test('/ in the middle of a word or a path does not open the menu; Escape closes it and it stays closed for that word', async ({ page }) => {
@@ -456,7 +418,7 @@ test.describe('desktop 1280×800', () => {
     expect(bad).toEqual([]);
   });
 
-  test('an older muster-mirror: the menu offers the built-in commands alone, says why, and has no snippets', async ({ page }) => {
+  test('an older muster-mirror: the menu offers the built-in commands alone and says why', async ({ page }) => {
     await openView(page, oldHost);
     await input(page).click();
     await page.keyboard.type('/');
@@ -466,9 +428,6 @@ test.describe('desktop 1280×800', () => {
     expect(names).not.toContain('handoff');
     expect(names).not.toContain('proj-build');
     await expect(page.locator('#mv-complete-note')).toHaveText(/^Built-in commands only: this host's muster-mirror does not report/);
-    await input(page).fill('');
-    await page.keyboard.type(':');
-    await expect(menu(page), 'no snippets: `:` opens nothing').toBeHidden();
   });
 
   test('a stale sign-in: Send and Queue each ask to confirm, then do what was asked — Send sends, Queue queues', async ({ page, context }) => {
@@ -504,12 +463,14 @@ test.describe('desktop 1280×800', () => {
 test.describe('phone 390×844 touch', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test('the menu never covers the input — also on a viewport the keyboard shrank — and a tap inserts; the split button is two 44px targets', async ({ page }) => {
+  test('the menu never covers the input — also on a viewport the keyboard shrank — and a tap inserts; the split button is two 40px targets', async ({ page }) => {
     await openView(page);
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
     for (const id of ['#mv-send', '#mv-send-more']) {
       const b = (await page.locator(id).boundingBox())!;
-      expect(b.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
-      expect(b.width, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
+      expect(b.height, `${id} is a 40px target`).toBeGreaterThanOrEqual(40);
+      expect(b.width, `${id} is a 40px target`).toBeGreaterThanOrEqual(40);
       expect(b.x + b.width).toBeLessThanOrEqual(390);
     }
     const covers = async () => {
@@ -542,6 +503,8 @@ test.describe('phone 390×844 touch', () => {
 
   test('a tap on Send sends; the caret then Queue queues', async ({ page }) => {
     await openView(page);
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
     const before = pasted();
     await input(page).fill('tapped send');
     await page.locator('#mv-send').tap();
@@ -553,6 +516,36 @@ test.describe('phone 390×844 touch', () => {
     expect(pasted()).toEqual([...before, `${pane} tapped send`]);
     await cancelQueued(page);
   });
+
+  // THE FIRST TAP ON SEND SENDS WITH THE KEYBOARD UP. The keyboard is
+  // simulated the way the switcher spec does it: the box focused, the
+  // viewport shrunk, so the bar steps aside (<html data-keyboard>). Send is
+  // then pressed as a finger presses: down, a held moment, up at the same
+  // spot. Were the press to take focus from the box, the bar would come back
+  // between down and up (focusout, then switcherKeyboardJS), the composer
+  // would grow under the finger, and the up would land off Send: no click,
+  // nothing sent — the second tap is the one that sends. Send keeps the box
+  // focused instead, so the keyboard stays up and nothing moves.
+  test('with the keyboard up, the first tap on Send sends and the box keeps focus', async ({ page }) => {
+    await openView(page);
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
+    const before = pasted();
+    await input(page).tap();
+    await page.setViewportSize({ width: 390, height: 500 });
+    await expect(page.locator('html'), 'the simulated keyboard is up').toHaveAttribute('data-keyboard', '');
+    await input(page).fill('first tap');
+    const b = (await page.locator('#mv-send').boundingBox())!;
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(150);
+    await expect(input(page), 'pressing Send leaves the box focused').toBeFocused();
+    await page.mouse.up();
+    await expect.poll(pasted, { message: 'ONE press sent the message' }).toEqual([...before, `${pane} first tap`]);
+    await expect(input(page)).toBeFocused();
+    await expect(page.locator('html'), 'the keyboard stays up').toHaveAttribute('data-keyboard', '');
+    await page.setViewportSize({ width: 390, height: 844 });
+  });
 });
 
 // CLS on the mirrored view: the page load, then opening both menus, at both
@@ -563,7 +556,7 @@ for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
   test.describe(`layout shift at ${vp.width}×${vp.height}`, () => {
     test.use({ viewport: vp });
     test(`the mirrored view with its split button and menus shifts less than 0.01`, async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.addInitScript(clsInit);
 
       await page.goto(origin + viewPath(newHost));

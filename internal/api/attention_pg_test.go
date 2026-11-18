@@ -190,8 +190,11 @@ func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-"+key {
 		t.Fatalf("pushes after the ask: %v", got)
 	}
-	// Who is asking, never what (the question is on the page, behind the sign-in).
-	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention#"+key || p.Body != f.op.Name+" is asking" {
+	// Who is asking (the title) and what — the question and its options, in
+	// full (operator decision "Full text always"); a tap opens the tap route,
+	// which resolves it then (attention_push_target.go).
+	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention/open/"+key || p.Title != f.op.Name+" is asking" ||
+		p.Body != "Ship the migration tonight?\nOptions: ship it · wait for Monday" {
 		t.Fatalf("payload %+v", p)
 	}
 	body := f.page(t, "/attention")
@@ -314,11 +317,11 @@ func TestAnAskIsOnlyItsAskersToWaitOnOrCancel(t *testing.T) {
 }
 
 // TestTheChiefOnlyToolsAreRefusedToEveryoneElse: a worker is not offered
-// attention_list, attention_answer or session_transcript, and calling one by
+// attention_list or attention_answer, and calling one by
 // name is refused on BOTH transports; the chief is offered and served them.
 func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 	f := newAttnFixture(t)
-	chiefOnly := []string{attentionListTool, sessionTranscript}
+	chiefOnly := []string{attentionListTool}
 	allAgents := []string{attentionAskTool, attentionWaitTool, attentionCancelTool, tasksListTool, taskGetTool, taskCommentTool, taskSetStatusTool}
 	wl, cl := f.listed(t, f.workerTok), f.listed(t, f.chiefTok)
 	for _, n := range chiefOnly {
@@ -361,30 +364,6 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 	text, _, _ := f.tool(t, f.chiefTok, attentionListTool, map[string]any{})
 	if !strings.Contains(text, `"ask_id":`+strconv.FormatInt(id, 10)) || !strings.Contains(text, "Which region?") {
 		t.Fatalf("chief list: %s", text)
-	}
-	// session_transcript: the worker's own conversation, size-capped.
-	sess, err := agents.NewPG(f.pool).CreateSession(asUser(f.member), f.worker.ID, f.worker.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range []agents.ChatMessage{{Role: "user", Content: "port the importer"}, {Role: "assistant", Content: strings.Repeat("x", transcriptEntryMax+50)}} {
-		m.AgentID, m.SessionID = f.worker.ID, sess.ID
-		if _, err := agents.NewPG(f.pool).AddChatMessage(asUser(f.member), m); err != nil {
-			t.Fatal(err)
-		}
-	}
-	text, _, _ = f.tool(t, f.chiefTok, sessionTranscript, map[string]any{"subject": "agent:" + strconv.FormatInt(f.worker.ID, 10)})
-	var tr struct {
-		Entries []struct{ Role, Text string } `json:"entries"`
-		Trunc   bool                          `json:"truncated"`
-	}
-	if err := json.Unmarshal([]byte(text), &tr); err != nil || len(tr.Entries) != 2 || tr.Entries[0].Text != "port the importer" ||
-		len([]rune(tr.Entries[1].Text)) != transcriptEntryMax+1 || !tr.Trunc {
-		t.Fatalf("transcript: %v %.300s", err, text)
-	}
-	// Another owner's agent is not a session of the chief's owner.
-	if text, isErr, _ := f.tool(t, f.chiefTok, sessionTranscript, map[string]any{"subject": "agent:" + strconv.FormatInt(f.op.ID, 10)}); !isErr || !strings.Contains(text, "not a session") {
-		t.Fatalf("another owner's transcript: %s", text)
 	}
 }
 
@@ -587,7 +566,7 @@ func TestTheReadModelHasEachSource(t *testing.T) {
 	if got := kinds(); len(got["session"]) != 0 {
 		t.Fatalf("an offline host's window is listed: %v", got)
 	}
-	if _, err := f.plugins.DecideDraft(ctx, d.ID, false); err != nil {
+	if _, err := f.plugins.DecideDraftFrom(ctx, d.ID, plugins.DraftDecision{Approve: false}); err != nil {
 		t.Fatal(err)
 	}
 	if got := kinds(); containsStr(got["plugin"], draftKey(d.ID)) {
@@ -633,11 +612,15 @@ func TestAWaitingSessionIsPushedOncePerEpisode(t *testing.T) {
 		f.srv.BroadcastAgentsChangedFor(1)
 		f.srv.WaitForPushes()
 	}
-	cycle := func() { // busy, then waiting again (nudged twice)
+	cycle := func() { // busy, then waiting again (nudged twice), then its grace passes
 		f.setWindows(mirror.StatusBusy)
 		nudge()
 		f.setWindows(mirror.StatusWaiting)
 		nudge()
+		nudge()
+		// Since the follow-up to #463 a new wait's push is held for its grace
+		// (insideGrace): the re-push window below is timed from the push.
+		clock = clock.Add(EpisodeWaitingGrace + time.Second)
 		nudge()
 	}
 	nudge() // the host's first observation: @1 is already waiting

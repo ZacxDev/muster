@@ -3,15 +3,12 @@ package api
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -22,7 +19,7 @@ import (
 // the one after answers already_dispatched (the release freed exactly one).
 func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want string, fix func()) {
 	t.Helper()
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if !strings.Contains(text, `"error"`) || !strings.Contains(text, "could not be started") || !strings.Contains(text, want) {
 		t.Fatalf("the refused start: %s; want a refusal naming %q", text, want)
 	}
@@ -33,14 +30,14 @@ func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want st
 		t.Fatalf("reservations after the refusal: %d, want 1 (the unit is spent)", r)
 	}
 	fix()
-	text = f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text = f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if strings.Contains(text, `"error"`) || strings.Contains(text, "already_dispatched") || !strings.Contains(text, `"agent_id"`) {
 		t.Fatalf("the call after the refusal: %s; want a started agent (the refused start released)", text)
 	}
 	if got := f.agentsOn(t, n.ID); len(got) != 1 {
 		t.Fatalf("agents on the task after the retry: %d, want 1", len(got))
 	}
-	if again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
+	if again := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
 		t.Fatalf("a third call: %s", again)
 	}
 }
@@ -84,20 +81,16 @@ func TestARepositoryDisconnectedAfterTheReservationReleasesTheStart(t *testing.T
 	}
 	var mu sync.Mutex
 	dropAfterReserve := true
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.promoteOwner(t)
+	f.srv.ext.GitHubApp = &changingApp{list: func() []string {
 		mu.Lock()
 		drop := dropAfterReserve
 		mu.Unlock()
-		if r.URL.Path != "/user/repos" || r.URL.Query().Get("page") != "1" || (drop && f.reservations(t, n.ID) > 0) {
-			_, _ = w.Write([]byte(`[]`))
-			return
+		if drop && f.reservations(t, n.ID) > 0 {
+			return nil
 		}
-		_, _ = w.Write([]byte(`[{"full_name":"example/app"}]`))
-	}))
-	t.Cleanup(srv.Close)
-	github.UseAPIBaseURL(srv.URL)
-	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
-	f.srv.ext.GitHub = fakeGitHubConn{}
+		return []string{"example/app"}
+	}}
 	refusedThenRetried(t, f, n, chiefDispatchRepo, func() {
 		mu.Lock()
 		dropAfterReserve = false

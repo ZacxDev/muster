@@ -22,10 +22,10 @@ import (
 //
 // A path that is not in the embedded tree is returned unchanged — the
 // static-assets test in internal/api fails on it first.
-func Asset(path string) string { return assets.url(Static, path) }
+func Asset(path string) string { return assets.url(Files, path) }
 
 // AssetHash is the hash Asset appends for path ("" if it does not ship).
-func AssetHash(path string) string { return assets.hash(Static, path) }
+func AssetHash(path string) string { return assets.hash(Files, path) }
 
 // assetHashLen is how many hex digits of the SHA-256 the URL carries: 48 bits,
 // ample to tell one build's file from the last.
@@ -50,6 +50,12 @@ func (c *assetCache) hash(fsys fs.FS, path string) string {
 	}
 	c.hashes[path] = h
 	return h
+}
+
+func (c *assetCache) forget(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.hashes, path)
 }
 
 func (c *assetCache) url(fsys fs.FS, path string) string {

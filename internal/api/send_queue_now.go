@@ -21,7 +21,12 @@ import (
 // pasted, by the dispatcher's own Claim (sendqueue.Dispatcher.SendNow), so the
 // dispatcher can never also send it — whichever claims first sends, and the
 // other finds it no longer queued. It ends sent, or failed with the reason; it
-// is never put back to queued.
+// is never put back to queued. (A send a usage limit bounced is marked failed
+// afterwards by the dispatcher, like any of its sends: sendqueue.Bounced.)
+//
+// 🔴 IT IS THE OVERRIDE OF A HELD QUEUE: a usage limit or the circuit breaker
+// holds the dispatcher (sendqueue.Decide), never this. It sends the ONE
+// message it was tapped on; the rest stay held.
 //
 // 🔴 THE NEXT MESSAGE STILL WAITS FOR THIS ONE'S TURN: the paste is recorded
 // like a Send's (mirrorPaste notes it, in the hub and on the open rows), and the
@@ -41,10 +46,6 @@ const (
 	SendQueueNotQueuedNow   = "Not sent: that message is no longer queued (it is being sent, or has finished)."
 	SendQueueSendingAnother = "Not sent: another message for this window is being sent right now. Try again in a moment."
 	SendQueueWaitingNow     = "Not sent: Claude Code is waiting for you (a prompt or a question). Answer it first."
-	// A Hermes window's (docs/design/hermes.md, the gated send, step 1).
-	SendQueueHermesWaitingNow = "Not sent: Hermes is waiting for you (an approval or a question). Answer it in the terminal first."
-	SendQueueHermesBusyNow    = "Not sent: Hermes is working, and Enter would interrupt its turn. Leave it queued."
-	SendQueueHermesUnknownNow = "Not sent: muster cannot tell whether Hermes is idle, and Enter could answer a prompt it is showing. Leave it queued."
 )
 
 // handleSendQueueSendNow is POST /send-queue/{id}/send-now: send the
@@ -79,10 +80,19 @@ func (s *Server) handleSendQueueSendNowConfirm(w http.ResponseWriter, r *http.Re
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(w, sendQueueSendNowConfirmPath(id), nil, q.back, o.Error)
+		s.sendQueueStepUpPage(r.Context(), w, sendQueueSendNowConfirmPath(id), q, sendNowAgainFields(r), q.back, o.Error)
 		return
 	}
 	s.sendQueueSendNow(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
+}
+
+// sendNowAgainFields carries a Send now's Send again (ui.SendAgainField)
+// through its confirm page; nothing otherwise.
+func sendNowAgainFields(r *http.Request) []ui.ComposerField {
+	if r.PostFormValue(ui.SendAgainField) != "1" {
+		return nil
+	}
+	return []ui.ComposerField{{Name: ui.SendAgainField, Value: "1"}}
 }
 
 func sendQueueSendNowConfirmPath(id int64) string { return ui.SendQueueSendNowPath(id) + "/confirm" }
@@ -131,20 +141,27 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 	// A Send's gates, in mirrorSend's order.
 	switch {
 	case !q.h.Online:
-		refuse(http.StatusConflict, unprefixed(mirror.ErrHostOffline), noticeOffline)
+		refuse(http.StatusConflict, notSent(mirror.ErrHostOffline, q.h.Host), noticeOffline)
 		return
 	case !q.h.Interactive:
-		refuse(http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		refuse(http.StatusConflict, notSent(mirror.ErrInteractiveRefused, q.h.Host), noticeReadOnly)
 		return
 	case !stepup.Fresh(ctx, s.stepUpNow()):
 		if nav {
-			s.sendQueueStepUpPage(w, sendQueueSendNowConfirmPath(id), nil, q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, sendQueueSendNowConfirmPath(id), q, sendNowAgainFields(r), q.back, "")
 		} else {
 			refuseStale(w)
 		}
 		return
 	case !q.listed:
-		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
+		refuse(http.StatusConflict, notSent(mirror.ErrWindowGone, q.h.Host), noticeWindowGone)
+		return
+	}
+	// 🔴 A message a Send may already have delivered is not sent now without
+	// the person's Send again (isHeldFor), like a Send of it: the row stays
+	// queued.
+	if s.isHeldFor(ctx, q.t.Host, q.t.Session, q.t.Window, mirror.PasteClaude, it.Body, r.PostFormValue(ui.SendAgainField) == "1") {
+		s.heldRefusal(r.Context(), w, nav, ownerQuery(ui.SendQueueSendNowPath(id), q.h.Owner), nil, it.Body, "Send it now anyway", q.back)
 		return
 	}
 	// The window's status now, read BEFORE the claim so a refusal leaves the
@@ -202,29 +219,13 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 // sendNowRefusal is why a Send now into a window whose state is st is refused
 // before anything is claimed, and its notice; "" to send.
 //
-//   - 🔴 NEVER INTO A WINDOW WAITING ON THE PERSON, either runtime: the paste
+//   - 🔴 NEVER INTO A WINDOW WAITING ON THE PERSON: the paste
 //     ends with Enter, which would answer the prompt on screen — confirm a
 //     highlighted option, approve a permission. The dispatcher never sends on
 //     waiting either.
 //   - Claude Code: busy, idle, its "shell" (idle) and unknown are pasted into
 //     like a Send — it queues typed input itself.
-//   - 🔴 Hermes: ONLY IDLE. Enter during a turn interrupts it (Hermes's
-//     default busy_input_mode), and unknown is not idle: an approval modal
-//     takes a pasted Enter as "approve once". (The hermesSend switch in the
-//     plugin refuses a Hermes window anyway until its host opts in; this rule
-//     is what holds once it has.)
 func sendNowRefusal(st mirror.AgentState) (msg, notice string) {
-	if st.Runtime == mirror.RuntimeHermes {
-		switch {
-		case st.Unknown != nil:
-			return SendQueueHermesUnknownNow, noticeHermesUnknownNow
-		case st.Status == mirror.StatusWaiting:
-			return SendQueueHermesWaitingNow, noticeHermesWaitingNow
-		case st.Status != mirror.StatusIdle:
-			return SendQueueHermesBusyNow, noticeHermesBusyNow
-		}
-		return "", ""
-	}
 	if st.Unknown == nil && st.Status == mirror.StatusWaiting {
 		return SendQueueWaitingNow, noticeWaitingNow
 	}

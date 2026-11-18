@@ -35,6 +35,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
 	"net"
@@ -49,40 +52,58 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentkickoff"
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/askattempt"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/ccusage"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/chiefpref"
+	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/consumerusage"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 const (
@@ -106,6 +127,10 @@ const (
 	// router's own exit path records against reusing a drain context.
 	pushDrainTimeout = 5 * time.Second
 
+	// askSuggestDrainTimeout bounds the wait for asks' suggestion generations
+	// (and the re-push each starts) at shutdown, before the push drain.
+	askSuggestDrainTimeout = 3 * time.Second
+
 	// kickoffDrainTimeout bounds the wait for the kickoff deliverer to RECORD the
 	// turns SIGTERM cancelled (agentkickoff.Deliverer.Done). A cancelled turn returns
 	// at once and its record is one UPDATE, so this is slack, not a turn budget.
@@ -123,10 +148,32 @@ const (
 )
 
 func main() {
+	// `muster-server compose-init` (secretfiles.go): the Compose stack's
+	// one-shot. It writes the secret files the rest of this function reads.
+	if len(os.Args) > 1 && os.Args[1] == "compose-init" {
+		os.Exit(runComposeInit(os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+	}
+	// Every _FILE twin resolved (secretfiles.go), for every command below: the
+	// mirror-token admin and the account commands need DATABASE_URL as much as
+	// the server does.
+	getenv, err := withSecretFiles(osGetenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(1)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "show-secret" {
+		os.Exit(runShowSecret(os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+	}
+	// `muster-server healthcheck` (selfcmds.go): no database, no configuration.
+	// Before the account-command catch-all below, which would otherwise read it
+	// as an unknown account command.
+	if isHealthcheck(os.Args[1:]) {
+		os.Exit(runHealthcheck(context.Background(), getenv, os.Stdout, os.Stderr))
+	}
 	// `muster-server mirror …` is the operator's mirror-token admin, run where
 	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
 	if len(os.Args) > 1 && os.Args[1] == "mirror" {
-		os.Exit(runMirrorCLI(context.Background(), os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+		os.Exit(runMirrorCLI(context.Background(), os.Args[2:], getenv, os.Stdout, os.Stderr))
 	}
 	// `muster-server vapid generate`: mint muster's Web Push keypair. Needs no
 	// database and no configuration.
@@ -138,10 +185,10 @@ func main() {
 	// One-shot account commands (`muster-server invite --claim-admin`,
 	// `muster-server user disable <id>`): run and exit. See accounts_cmd.go.
 	if len(os.Args) > 1 {
-		os.Exit(runAccountCommand(context.Background(), os.Args[1:], osGetenv, os.Stdout, os.Stderr))
+		os.Exit(runAccountCommand(context.Background(), os.Args[1:], getenv, os.Stdout, os.Stderr))
 	}
 
-	cfg, err := loadConfig(osGetenv)
+	cfg, err := loadConfig(getenv)
 	if err != nil {
 		logger.Fatalf("config: %v", err)
 	}
@@ -151,6 +198,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing (internal/telemetry): on only when an OTLP endpoint is set.
+	// BEFORE buildApp: the pool's query tracer and the handler's server spans
+	// are decided when they are built.
+	flushTraces, err := telemetry.Setup(ctx, osGetenv, telemetry.Options{Service: "muster-server", Version: api.BuildVersion, Logger: logger})
+	if err != nil {
+		logger.Printf("telemetry: tracing stays off: %v", err)
+	}
+	defer func() { _ = flushTraces(context.Background()) }()
+	db.SetQueryTracer(telemetry.QueryTracer())
 
 	app, err := buildApp(ctx, cfg, logger)
 	if err != nil {
@@ -177,7 +234,20 @@ type app struct {
 	// browser is the listener gotrue mode serves browser sessions on
 	// (api.BrowserListener); nil unless MUSTER_BROWSER_PORT is set.
 	browser *http.Server
+	// metrics is the listener that serves /metrics and nothing else
+	// (api.MetricsHandler); nil unless MUSTER_METRICS_PORT is set. /metrics is
+	// on no other listener.
+	metrics *http.Server
 	pool    *pgxpool.Pool
+	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
+	// declares none.
+	officers *officers.Reconciler
+	// officerPools pushes the declared officers' pools to their HQ
+	// (api.Server.OfficerPoolsReporter); nil without officers.
+	officerPools interface{ Run(context.Context) }
+	// gw is the agent gateway, nil when none is built; kept so a booted test
+	// can read the account it marks for an agent (AccountOf).
+	gw *agentgateway.Gateway
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -187,6 +257,20 @@ type app struct {
 	// memo relays cairn scope memos to the operator's agents; nil unless the
 	// relay's credential is set and a gateway exists. See buildMemoRelay.
 	memo *memorelay.Relay
+	// ccUsage is the Claude account usage poller (nil: MUSTER_CC_USAGE_POLL off).
+	ccUsage *ccusage.Poller
+	// chiefReapplied is closed when the boot re-apply of a running Compose
+	// chief is done; nil without the Compose chief runtime.
+	chiefReapplied <-chan struct{}
+	// askSweepEvery and jobReapEvery override the question-store sweep and job
+	// reaper intervals; zero (production) means the default. Tests set them on
+	// their own app — see askSweepInterval for why they are not package vars.
+	askSweepEvery time.Duration
+	jobReapEvery  time.Duration
+	// pluginsBound is whether a live plugin was bound to an officer at boot
+	// (pluginsBoundAtBoot): with no agent gateway, whether anything delivers
+	// a plugin message (the plugins feature's state).
+	pluginsBound bool
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -217,15 +301,24 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// Frontend RUM. An empty MUSTER_FARO_URL disables it entirely (no script
 	// tags rendered), which is the local and test default. The API key is
 	// client-public by design — it gates the public Faro collect endpoint only.
-	ui.SetFaroConfig(ui.FaroSettings{
-		URL:     cfg.FaroURL,
-		Key:     cfg.FaroKey,
-		Version: api.BuildVersion,
-		Tracing: cfg.FaroTracing,
-	})
+	//
+	// With MUSTER_FARO_UPSTREAM the page posts to muster's own relay route
+	// (same-origin; api.FaroRelayPath) and the relay forwards to the receiver,
+	// so no LAN address and no key reach the browser.
+	ui.SetFaroConfig(cfg.faroSettings(api.BuildVersion))
+	// The update pill's "Update <this build> → <new>".
+	ui.SetBuildVersion(api.BuildVersion)
+	// The operator's own hosts: their icons by name. Checked
+	// by loadConfig; installed here, before any page is rendered.
+	if err := ui.SetHostPreferences(cfg.HostPrefs); err != nil {
+		return nil, fmt.Errorf("host preferences: %w", err)
+	}
 	// Without this the page's connect-src stays 'self' and every telemetry send
-	// is blocked by CSP, silently, in the browser only.
-	api.SetTelemetryConnectSrc(cfg.FaroURL)
+	// is blocked by CSP, silently, in the browser only. The relay is 'self'
+	// already, so it needs none.
+	if cfg.FaroUpstream == "" {
+		api.SetTelemetryConnectSrc(cfg.FaroURL)
+	}
 
 	metrics.BuildInfo.WithLabelValues(api.BuildVersion).Set(1)
 
@@ -245,11 +338,19 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		BaseURL: cfg.RouterURL,
 		Token:   cfg.RouterToken,
 		Actor:   cfg.RouterActor,
+
+		ActorHeader: cfg.RouterActorHeader,
+		TokenHeader: cfg.RouterTokenHeader,
 	})
 
 	ext := api.Extensions{
-		TagAutoDispatch: cfg.TagAutoDispatch,
-		AgentsIdleAfter: cfg.AgentsIdleAfter,
+		LegacyProvenanceHeaderPrefix: cfg.LegacyProvenancePrefix,
+		TagAutoDispatch:              cfg.TagAutoDispatch,
+		AgentsIdleAfter:              cfg.AgentsIdleAfter,
+		// Every door that sets an agent's model checks it against OpenRouter's
+		// catalogue (internal/api model_validate.go) — the cache the dispatch
+		// form's model picker already reads.
+		ModelCatalog: api.OpenRouterCatalog(),
 		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
 		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
 		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same
@@ -259,15 +360,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// this line is ever dropped, because an empty prefix beside a wired
 		// Provisioner reproduces that defect exactly.
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
-		GitHubOAuth: api.GitHubOAuthConfig{
-			ClientID:     cfg.GitHubClientID,
-			ClientSecret: cfg.GitHubClientSecret,
-			BaseURL:      cfg.PublicURL,
-		},
+		PublicURL:            cfg.PublicURL,
+		PluginOrigins:        cfg.PluginOrigins,
+		ClientAddr:           cfg.ClientAddr,
 	}
 
 	if cfg.Database != "" {
-		pool, err := db.Connect(ctx, cfg.Database)
+		pool, err := connectDB(ctx, cfg.Database, logger)
 		if err != nil {
 			return nil, fmt.Errorf("db connect: %w", err)
 		}
@@ -284,6 +383,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Unwrapping it here re-opens that blind spot for every writer at once.
 		ext.Notes = notes.WithStatusLogging(notes.NewPG(pool), logger)
 		ext.Agents = agents.NewPG(pool)
+		// A started agent's outcome (migration 0088, internal/agentoutcome):
+		// done / failed / stuck, pushed once per change; RunAgentWatchdog sweeps it.
+		ext.Outcomes = agentoutcome.NewPG(pool)
+		ext.AgentWatchdog = cfg.AgentStuck
 		// The request Principal's role comes from users.role (accounts PR 3b);
 		// without this store only user 1 would be admin, by fallback.
 		ext.Users = users.NewPG(pool)
@@ -297,9 +400,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
 		ext.Flows = flows.NewPG(pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
-		// The Agents list's per-user pins (migration 0017).
+		// The per-user pins the session switcher sets (migration 0017).
 		ext.Pins = pins.NewPG(pool)
-		// The Agents list's per-user recently viewed entries (migration 0018).
+		// The per-user session tags (internal/sessiontags): ⋯ → Tags…, the headers, the search.
+		ext.SessionTags = sessiontags.NewPG(pool)
+		// The per-user recently viewed entries (migration 0018): the switcher's Recent.
 		ext.Recents = recents.NewPG(pool)
 		// The server-side send queue (migration 0019); RunSendQueue delivers it.
 		ext.SendQueue = sendqueue.NewPG(pool)
@@ -309,11 +414,31 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
-		// The machine job API (migration 0037). A job runs inside the process
-		// that accepted it; what a dead process left unfinished is failed by
-		// the reaper (startBackgroundLoops → RunJobReaper), and only once it is
-		// past its own deadline. NOT here at boot: during a rolling update the
-		// old pod is still running its jobs while this one boots.
+		// Shareable pages (migration 0116): off unless MUSTER_PAGES=1.
+		if cfg.Pages {
+			ps := pages.NewPG(pool)
+			// A page's one reusable link keeps its token sealed under a key
+			// derived from the connector key (internal/pages seal.go). Without
+			// that key, every link is hash-only and its address is shown once.
+			if len(cfg.ConnectorEncKey) > 0 {
+				if _, err := ps.WithLinkKey(cfg.ConnectorEncKey); err != nil {
+					a.Close()
+					return nil, fmt.Errorf("page link store: %w", err)
+				}
+			}
+			ext.Pages = ps
+		}
+		// The ask log (migration 0089): off unless MUSTER_ASK_LOG=1.
+		if cfg.AskLog.On {
+			ext.AskLog = &api.AskLog{Store: asklog.NewPG(pool), TextTTL: cfg.AskLog.TextTTL, JevAtCapture: cfg.AskLog.JevAtCapture}
+		}
+		// The machine job API (migration 0037). A job's turn runs inside the
+		// process that started it; the queue is the table, so what a dead
+		// process left queued is run by the reaper's pass (startBackgroundLoops
+		// → RunJobReaper, which also dispatches), and what it left running is
+		// failed only once it is past its own deadline. NOT here at boot:
+		// during a rolling update the old pod is still running its jobs while
+		// this one boots.
 		ext.Jobs = jobs.NewPG(pool)
 
 		if cfg.connectorStoreConfigured() {
@@ -325,50 +450,63 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ext.Connectors = cs
 		}
 
-		// The GitHub App, when configured, is muster's GitHub identity: the Repos
-		// tab and every connected-repository check read its installation
-		// repositories (api/github_source.go), and it backs the `github`
+		// The GitHub App, when configured, is muster's GitHub identity: every
+		// connected-repository check reads its installation repositories
+		// (api/github_source.go), and it backs the `github`
 		// connector — presented through the SAME connector store, so the agent's
 		// status route, the request card, the approve route and the proxy all see
 		// one connector (connectors.WithVirtual). validateConnectors refuses an App
 		// without a connector store; buildApp only skips the wrap.
 		if cfg.GitHubAppID != 0 {
 			gapp, err := githubapp.New(githubapp.Config{AppID: cfg.GitHubAppID, PrivateKey: cfg.GitHubAppKey,
-				Accounts: cfg.GitHubAppAccounts, Logger: logger})
+				Accounts: cfg.GitHubAppAccounts, Access: cfg.GitHubAppAccess, Logger: logger})
 			if err != nil {
 				a.Close()
 				return nil, fmt.Errorf("github app: %w", err)
 			}
-			ext.GitHubApp = gapp
-			if ext.Connectors != nil {
-				// Admins only: the App is the deployment's (connectors.WithVirtual).
-				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp, authz.IsAdmin)
+			// MUSTER_TEAMS_ON_GITHUB_APP: every id must be a team, read before
+			// the App is lent to it (checkTeamsOnGitHubApp).
+			appTeams, err := checkTeamsOnGitHubApp(ctx, users.NewPG(pool), cfg.TeamsOnGitHubApp)
+			if err != nil {
+				a.Close()
+				return nil, err
 			}
-			// Backgrounded, like connectStaticGitHub: a boot that blocks on a third
-			// party is a boot that party's outage can stop. Its outcome is logged and
+			if len(appTeams) > 0 {
+				logger.Printf("team GitHub App: ON — %s: these teams' agents may use the deployment's GitHub App "+
+					"(a manager approves each repository once): %s", envTeamsOnGitHubApp, teamListLine(appTeams))
+			}
+			ext.GitHubApp = gapp
+			ext.GitHubAppTeams = cfg.TeamsOnGitHubApp
+			// The fleet reader's pull-request states (internal/api fleet_read.go):
+			// the App's own server-side read, behind the reader's two-minute cache.
+			ext.FleetPRStates = gapp
+			if ext.Connectors != nil {
+				// Admins, and the listed teams' own agents: the App is the
+				// deployment's (connectors.WithVirtual). ONE predicate,
+				// githubapp.Admits, which api's githubApp also applies.
+				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp, githubapp.Admits(cfg.TeamsOnGitHubApp))
+			}
+			// Backgrounded: a boot that blocks on a third party is a boot that
+			// party's outage can stop. Its outcome is logged and
 			// recorded as the App's problem (the request and agent cards show it).
 			go checkGitHubApp(ctx, gapp, logger)
 		}
 
-		if len(cfg.GitHubEncKey) > 0 {
-			gh, err := github.NewPG(pool, cfg.GitHubEncKey)
-			if err != nil {
-				a.Close()
-				return nil, fmt.Errorf("github store: %w", err)
-			}
-			ext.GitHub = gh
-			// The OAuth state's MAC key, derived from the same secret under its
-			// own label (github.OAuthStateKey) — never from the UI password.
-			if ext.GitHubOAuth.StateKey, err = github.OAuthStateKey(cfg.GitHubEncKey); err != nil {
-				a.Close()
-				return nil, fmt.Errorf("github oauth state key: %w", err)
-			}
-			if cfg.GitHubToken != "" {
-				// Backgrounded: it is one network round trip to github.com and a
-				// boot that blocks on a third party is a boot that a third party's
-				// outage can stop.
-				go connectStaticGitHub(ctx, gh, cfg.GitHubToken, logger)
-			}
+		// The kube-read connector (officer_kube_read, internal/kuberead) is
+		// presented through the same store when an officer declares `kube`,
+		// so its instances' requests for it are filed and approved by hand
+		// like any connector grant. It holds no credential and has no HTTP
+		// face: the proxy refuses it. Wrapped OVER the App's (VirtualOf
+		// looks through both).
+		if ext.Connectors != nil && declaresKube(cfg.Officers) {
+			ext.Connectors = connectors.WithVirtual(ext.Connectors, connectors.KubeReadVirtual(), authz.IsAdmin)
+		}
+		// The internal_http connectors (MUSTER_INTERNAL_HTTP_CONNECTORS): each
+		// presented through the same store, to admins' agents only, so a
+		// request for one is filed and approved by hand like any connector
+		// grant. Only internal_http_request reaches them; the proxy refuses them.
+		if ext.Connectors != nil {
+			ext.Connectors = withInternalHTTP(ext.Connectors, cfg.InternalHTTP, logger)
 		}
 	}
 
@@ -414,6 +552,21 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			credStore, personal = cs, cs
 		}
 	}
+	// MUSTER_TEAMS_ON_SERVER_POOL: every id must be a team, read before the
+	// plane lends the pool to it (checkTeamsOnServerPool).
+	var namer teamNamer
+	if a.pool != nil {
+		namer = users.NewPG(a.pool)
+	}
+	poolTeams, err := checkTeamsOnServerPool(context.Background(), namer, cfg.TeamsOnServerPool)
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	if len(poolTeams) > 0 {
+		logger.Printf("team server pool: ON — %s: these teams' Claude Code agents run on the server's Claude pool: %s",
+			envTeamsOnServerPool, teamListLine(poolTeams))
+	}
 	plane, err := buildCredentialPlane(cfg, personal, roles, logger)
 	if err != nil {
 		a.Close()
@@ -422,12 +575,82 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if credStore != nil {
 		ext.Credentials = credentialPage{PGStore: credStore, plane: plane}
 	}
+	// The Claude account usage poller (internal/ccusage): the environment
+	// pool, as its owner (plane.EnvPoolOwner, the owner its marks are kept
+	// under), read through the plane (the one place tokens come
+	// from), every MUSTER_CC_USAGE_POLL_INTERVAL. Off unless MUSTER_CC_USAGE_POLL.
+	if reason := cfg.ccUsageRefusal(a.pool != nil); reason != "" {
+		a.Close()
+		return nil, errors.New(reason)
+	}
+	if cfg.CCUsage.On {
+		a.ccUsage = &ccusage.Poller{Source: plane, Store: ccusage.NewPG(a.pool),
+			Fetch:    ccusage.HTTPFetcher{Client: &http.Client{Timeout: 15 * time.Second}},
+			Interval: cfg.CCUsage.Interval, Logger: logger}
+		ext.CCUsageInterval = cfg.CCUsage.Interval
+	}
 	// The focus summarizer: ScaleDown through OpenRouter, on the OWNER's
 	// OpenRouter key exactly as that owner's gateway pods get it (the plane: the
 	// environment's for an admin, the member's own otherwise, none refused).
 	if ext.Focus != nil {
-		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}
+		ext.FocusSummarizer = focusSummarizer(cfg, plane)
 		ext.FocusRetention = cfg.FocusRetention
+	}
+	// Suggested replies: the same per-owner OpenRouter key as focus, through
+	// the same plane — no new credential. MUSTER_SUGGEST=off kills them
+	// everywhere. With a database each user's own toggle governs, OFF until
+	// they turn it on (suggest.DefaultDisabled). With no database nobody can
+	// choose, so they are off unless MUSTER_SUGGEST=on turns them on for
+	// everyone (On; it changes nothing when there is a database).
+	ext.Suggest = &suggest.Engine{Off: cfg.SuggestOff, On: cfg.SuggestOn, Logger: logger,
+		Gen: &suggest.OpenRouter{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.SuggestModel}}
+	if e2eSuggestGen != nil {
+		// 🔴 ONLY A `-tags e2eterm` BUILD: the browser suite's fake model.
+		if g := e2eSuggestGen(cfg.SuggestModel); g != nil {
+			ext.Suggest.Gen = g
+		}
+	}
+	if a.pool != nil {
+		ext.Suggest.Prefs = suggest.NewPGPrefs(a.pool)
+		// The counts and the auto-pause survive a restart (migration 0049).
+		ext.Suggest.Usage = suggest.NewPGUsage(a.pool)
+	}
+	if a.pool != nil {
+		// The chief's per-user on/off toggle (migration 0060). Off by default
+		// for a user with no chief agent; see internal/api chief_toggle.go.
+		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
+		// Each user's notification preferences (migration 0094): off for
+		// everyone until they turn one on; see internal/api notify_prefs.go.
+		ext.NotifyPrefs = notifypref.NewPG(a.pool)
+		// Each Claude account's latest utilization (migration 0108), read by
+		// GET /api/cc-accounts/usage and Account → Credentials; written only
+		// by the poller (MUSTER_CC_USAGE_POLL), below.
+		ext.CCUsage = ccusage.NewPG(a.pool)
+		// The instance's logo and name (migration 0105): nothing set until an
+		// admin uploads on the Account page; see internal/api branding.go.
+		ext.Branding = branding.NewPG(a.pool)
+		// Session state's episodes (migration 0073): off unless
+		// MUSTER_SESSION_STATE=1, and then independent of the chief's nudges.
+		if cfg.SessionState {
+			ext.Episodes = sessionstate.NewPG(a.pool)
+		}
+		// The fleet digest's marks (migration 0148): the "since you last
+		// looked" baseline and the Fleet side chat (internal/api fleet_digest.go).
+		ext.Fleet = fleet.NewPG(a.pool)
+		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
+		// fleet_list's fleet fields. Off by default; it needs a database.
+		ext.FleetDigest = cfg.FleetDigest
+		// The chief's stall nudges (migration 0064): off unless
+		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
+		if cfg.ChiefNudges {
+			ext.ChiefNudges = chiefnudge.NewPG(a.pool)
+			// The stall classifier runs on the owner's OpenRouter key, resolved
+			// exactly as the focus summarizer's (the credential plane).
+			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners,
+				NeedsYouLive: cfg.ChiefNudgeNeedsYouLiveOwners, ChiefChatQuotesLive: cfg.ChiefNudgeChiefChatQuotesLiveOwners,
+				AskThreshold: cfg.ChiefNudgeAskThreshold,
+				Classifier:   &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
+		}
 	}
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
@@ -435,6 +658,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("claude account pool: %w", err)
 	}
 	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool, plane: plane}
+	// The usage poller reads the pool's cooldown for each account, keeps
+	// reading an account that is cooling, and clears its rate-limit mark when
+	// the live reading shows the account usable again (ccusage.LiveUsable).
+	if a.ccUsage != nil {
+		if ccPool == nil {
+			a.Close()
+			return nil, errors.New(envCCUsagePoll + " needs the claude-code account pool, whose rate-limit marks it reads and clears; there is none")
+		}
+		a.ccUsage.Cooling = ccPool.Cooldown
+		a.ccUsage.ClearCooling = ccPool.ClearRateLimit
+	}
 	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, plane, logger)
 	if err != nil {
 		a.Close()
@@ -444,6 +678,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// configuration.
 		return nil, fmt.Errorf("agent plane: %w", err)
 	}
+	if prov != nil && cfg.chiefCompose() {
+		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane), OpenRouterKey: plane.OpenRouterKey,
+			Spec: composeSpec(cfg.ChiefSpecDir), StartIfLive: prov.StartIfLive}
+	}
 	if prov != nil {
 		ext.Provisioner = prov
 		// The job API's sha checkout and result_path read exec through the
@@ -451,6 +689,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.JobWorkspace = prov
 		// The job-lane bypass veto (wireGitHubGrantVeto): after the connector
 		// store is built, or boot is refused.
+		// A team's chief is told its owner is a team (agentspec.TeamChiefSection).
+		if a.pool != nil {
+			prov.UseTeamOwner(teamOwnerLookup(users.NewPG(a.pool)))
+		}
 		if err := wireGitHubGrantVeto(cfg, prov, ext.Connectors); err != nil {
 			a.Close()
 			return nil, err
@@ -459,9 +701,36 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
+	// The claude-code account failover (internal/ccfailover): with the pool, the
+	// lifecycle adapter and the gateway that reports the failures it acts on.
+	if f, err := buildAccountFailover(cfg, ccPool, ext.Agents, prov, a.pool, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("account failover: %w", err)
+	} else if f != nil {
+		ext.AccountFailover = f
+		if gw != nil {
+			gw.UseFailover(f)
+		}
+	}
 	// The runtimes a chief session may be started on (MUSTER_CHIEF_SESSION_RUNTIMES;
 	// internal/api/session_runtime.go). Empty: the picker is not drawn.
 	ext.SessionRuntimes = cfg.ChiefSessionRuntimes
+	// The Android app's Digital Asset Links (MUSTER_ANDROID_PACKAGE and
+	// MUSTER_ANDROID_CERT_SHA256): nil, /.well-known/assetlinks.json is 404.
+	// No database needed: it is configuration, not data. validate has already
+	// refused a bad pair.
+	assetLinks, err := cfg.assetLinks()
+	if err != nil {
+		return nil, err
+	}
+	ext.AssetLinks = assetLinks
+	// The Android shell's sign-in origins (MUSTER_ANDROID_SSO_ORIGINS): empty,
+	// GET /api/device/web answers `[]`. validate has already refused a bad one.
+	ssoOrigins, err := cfg.ssoOrigins()
+	if err != nil {
+		return nil, err
+	}
+	ext.SSOOrigins = ssoOrigins
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
 	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
@@ -469,6 +738,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if e2eConnectorPolicy != nil {
 		ext.ConnectorPolicy = *e2eConnectorPolicy
 	}
+	// MUSTER_DIAL_DENY_PRIVATE: the postgres connector's dial guard (nil: off).
+	ext.DialGuard = cfg.dialGuard()
 
 	// The mirrored-agents plugin: only with MUSTER_MIRROR=1 AND a database (its
 	// tokens and rows live there; config.validate already refuses a deployment
@@ -482,6 +753,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			return nil, err
 		}
 	}
+	// The live heartbeat (internal/ui/live.go) is process-wide too: every
+	// stream's server beats at it and every page derives its staleness bounds
+	// from it. Zero keeps the default.
+	if cfg.LiveHeartbeat != 0 {
+		if err := ui.SetLiveHeartbeat(cfg.LiveHeartbeat); err != nil {
+			return nil, err
+		}
+	}
 	// The plugin interface: only with MUSTER_PLUGINS=1 AND a database (its
 	// tokens and messages are rows). A message is handed to the owner's chief
 	// through the agent gateway; with none, messages are stored and stay queued.
@@ -491,18 +770,48 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// "agent text bound for an outside party" (internal/plugins/drafts.go).
 		pluginStore := plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		ext.Plugins = pluginStore
+		// A claude-code chief's CLAUDE.md renders its owner's APPROVED plugin
+		// instruction sections (chief_extension; docs/plugins.md#chief-instructions).
+		if prov != nil {
+			prov.UseChiefPluginSections(chiefSectionsLookup(pluginStore))
+		}
 		// Session routing (MUSTER_SESSION_ROUTING=1): the same store's routes
 		// half, and the allowlist whose routed answers relay without approval.
-		if cfg.SessionRouting {
+		if cfg.sessionRoutingEnabled() {
 			ext.Routes = pluginStore
 			ext.Routing = sessionRouting(cfg)
+			// Pull-request routing (MUSTER_PR_MAIL_SENDERS): a review mail from a
+			// listed, verified sender goes to the session that authored its PR.
+			if len(cfg.PRMailSenders) > 0 {
+				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
+				ext.PRSessions = pluginStore
+				// A review of a pull request already merged or closed is settled
+				// by muster (api/pr_closed.go) — only with the GitHub App, its
+				// one source of a pull request's state.
+				if gapp, ok := ext.GitHubApp.(*githubapp.App); ok {
+					ext.ClosedPRs = &api.ClosedPRs{States: gapp, Store: pluginStore}
+				}
+			}
+			// Resuming an ended session for its mail (MUSTER_MAIL_RESUME_ALLOW):
+			// off unless senders are listed; the kill switch is read by the
+			// feature itself, so the banner can say it is set.
+			if cfg.MailResumeAllow.Owners() > 0 {
+				ext.MailResume = &api.MailResume{Allow: cfg.MailResumeAllow, Off: cfg.MailResumeOff}
+				ext.MailResumes = pluginStore
+			}
+		}
+		// A fleet-report request (MUSTER_FLEET_REPORT_SENDERS): muster answers a
+		// listed, verified sender's request itself. Not gated on session
+		// routing: it routes nothing.
+		if len(cfg.FleetReportSenders) > 0 {
+			ext.FleetReport = &api.FleetReport{Senders: cfg.FleetReportSenders, Paths: cfg.FleetReportPaths, Replies: pluginStore}
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
 		// start an agent on one, for the listed owners only. The caps are counted
 		// from the same store's audit rows.
 		if cfg.TaskRouting {
-			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners}
+			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners, DispatchModels: cfg.ChiefDispatchModels}
 			ext.ChiefDispatch = pluginStore
 		}
 		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot
@@ -513,6 +822,24 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if gw != nil {
 			ext.PluginGateway = gw
 		}
+	}
+	// Session routing WITHOUT the plugin interface (MUSTER_SESSION_ROUTING=1, a
+	// database, MUSTER_PLUGINS unset): the plugin store's routes half alone, so
+	// the chief can route the owner's own request (route_to_session's text) or a
+	// task. ext.Plugins stays nil, so nothing that carries a plugin message is
+	// routed: api.messageRoutingOn is false.
+	if cfg.sessionRoutingEnabled() && a.pool != nil && ext.Routes == nil {
+		ext.Routes = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		ext.Routing = sessionRouting(cfg)
+	}
+	// The chief's token telemetry (internal/chiefusage; the usage page): with
+	// a database, always — it records numbers and tags only, owner-scoped.
+	if a.pool != nil {
+		ext.ChiefUsage = chiefusage.NewPG(a.pool)
+		// The answer-attempt log (internal/askattempt; the Answers page): with
+		// a database, always — shapes and reason codes, never question or
+		// answer text; a failure's pane snapshot redacted and capped.
+		ext.AskAttempts = askattempt.NewPG(a.pool)
 	}
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {
@@ -541,23 +868,57 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// banner (logUploadsBanner) — never a refusal to boot.
 	ext.Uploads = buildUploads(cfg, a.pool, logger)
 	if ext.Uploads != nil {
-		checkUploadBucket(ext.Uploads, logger)
+		checkUploadBucket(ext.Uploads, ext.Pages != nil, logger)
 	}
+	// Shareable pages keep their files under pages/, which the access key's
+	// policy must reach too: proven at boot, or the boot is refused.
+	if err := probePagesStore(ctx, ext.Pages != nil, ext.Uploads); err != nil {
+		a.Close()
+		return nil, err
+	}
+	ext.PagesUploadBytes = cfg.PagesUploadBytes
 
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
+	// The usage pusher (MUSTER_CC_USAGE_PUSH_URL): after each poll cycle the
+	// readings, exactly as GET /api/cc-accounts/usage answers the admin, are
+	// PUT to the dashboard. parseCCUsagePush refused it without the poller.
+	if a.ccUsage != nil && cfg.CCUsage.Push.URL != "" {
+		push := cfg.CCUsage.Push
+		a.ccUsage.AfterPass = (&ccusage.Pusher{URL: push.URL, Token: push.Token, Logger: logger,
+			Client: &http.Client{Timeout: ccusage.PushTimeout},
+			Body: func(ctx context.Context, now time.Time) ([]byte, error) {
+				// The owner the pass just read (the poller reads the plane's
+				// EnvPoolOwner: ccusage.PoolOwned).
+				owner, ok := plane.EnvPoolOwner(ctx)
+				if !ok {
+					return nil, errors.New("the server pool has no owner to read (no enabled admin could be read)")
+				}
+				return srv.CCUsagePushBody(ctx, owner, push.Instance, now)
+			}}).PushAfterPass
+	}
 	if cfg.goTrueConfigured() && a.pool != nil {
 		srv.UseGoTrue(goTrueAuth(cfg, a.pool))
 	}
 	if mirrorSvc != nil {
 		// No agent name: a mirrored session is not an agent. The nudge makes the
-		// host OWNER's open Agents views re-fetch — and only that owner's: an SSE
+		// host OWNER's open sidebars re-fetch — and only that owner's: an SSE
 		// event reaches its owner's streams alone (accounts PR 3b), so a nudge
 		// with no owner would reach nobody.
 		mirrorSvc.SetNotify(srv.BroadcastAgentsChangedFor)
 		// A window starting (or stopping) to wait on the person changes no
 		// card, so the attention queue hears it through its own hook.
 		mirrorSvc.SetWaitingNotify(srv.AttentionMirrorChanged)
+		// A turn ending (busy → idle) changes no card and no waiting set: the
+		// ask log hears every status change through its own hook.
+		mirrorSvc.SetStatusNotify(srv.AskLogMirrorChanged)
+		// The host-dispatch reconciler's two inputs (host_dispatch_reconcile.go):
+		// every agent-spawned frame, late or not, and every applied listing.
+		mirrorSvc.SetSpawnReplyNotify(srv.HostDispatchSpawnReply)
+		mirrorSvc.SetListingNotify(srv.HostDispatchListing)
+		// And its outcome half (host_dispatch_outcome.go): an opencode
+		// dispatch's final reply, and a later turn re-arming a done one.
+		mirrorSvc.SetOutcomesNotify(srv.HostDispatchOutcomes)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -570,6 +931,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.TaskReapAfter > 0 {
 		srv.SetTaskReapAfter(cfg.TaskReapAfter)
 	}
+	srv.SetAgentReapStoppedAfter(cfg.AgentReapStoppedAfter)
+	// The browser telemetry relay (faro_relay.go): off (404) without an upstream.
+	srv.SetFaroRelay(cfg.FaroUpstream, cfg.FaroKey)
 	if a.pool != nil {
 		// Readiness pings the database, so a pod whose Postgres is unreachable is
 		// pulled from rotation rather than serving 500s. It runs AFTER the wiring
@@ -578,12 +942,158 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.SetReadyCheck(func(ctx context.Context) error { return db.Ping(ctx, pool) })
 	}
 	a.srv = srv
+	// The officer runtime (docs/officers.md): its wake loop is started by
+	// startBackgroundLoops. Refused at boot, like any contradictory
+	// configuration, when officers are declared without what they need.
+	// The built-in officer store (internal/officers/builtin): on whenever
+	// there is a database: the admin API (`muster officer`), the Attention
+	// sweep, and officers DECLARED IN THE DATABASE (migration 0136), which the
+	// runtime below runs beside MUSTER_OFFICERS' with no restart. Before 0136
+	// it needed MUSTER_OFFICERS set; an officer can now be created with none.
+	// A host officer spawn's team lending (team sharing phase 3:
+	// /officers/spawns, the chief's officer_spawn_share), wherever spawns can
+	// be kept.
+	if a.pool != nil {
+		srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(a.pool))
+	}
+	var officerStore *builtin.Store
+	if a.pool != nil {
+		officerStore = builtin.NewStore(a.pool)
+		srv.EnableOfficerStore(officerStore)
+	}
+	if len(cfg.Officers) > 0 || officerStore != nil {
+		ocfg := officersConfig(cfg, prov)
+		if a.pool != nil {
+			// The LLM proxy's daily budget lives here (migration 0075); an
+			// officer that declares `llm` with no database is refused.
+			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
+			// The judgement session cap's count lives here too (migration
+			// 0082), shared by every replica; a cap with no database is
+			// refused.
+			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
+			// A draft officer's review-loop announcements (migration 0119):
+			// shared by replicas, kept across a restart.
+			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
+			// A draft officer's public branches and their items (migration
+			// 0138): the only proof a public branch is the officer's.
+			ocfg.PublicBranches = officers.NewPGPublicBranchStore(a.pool)
+			// Which items an officer instance held while a pending connector
+			// grant refused it (migration 0148): an approval days later, after
+			// a restart or on the other replica, still re-runs them.
+			ocfg.ConnectorBlocks = officers.NewPGConnectorBlockStore(a.pool)
+			// A builtin officer's type, charter, switch and queue live here
+			// too (migration 0118); one declared with no database is refused.
+			ocfg.Builtin = officerStore
+			// A host officer's spawned sessions (migration 0125,
+			// docs/design/officers-on-hosts.md); one declared with no database
+			// is refused.
+			ocfg.HostSpawns = officers.NewPGHostSpawnStore(a.pool)
+		}
+		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s: %w", envOfficers, err)
+		}
+		// The declared pools push (docs/officers.md "Pools to HQ"): run with
+		// the background loops, its first push at once.
+		if p := srv.OfficerPoolsReporter(); p != nil {
+			a.officerPools = p
+		}
+		// A declared cluster with no allowlist reads nothing (fail closed):
+		// say so at startup, so a missing setting is not a silent "off".
+		for _, line := range officers.KubeReadDisabled(cfg.Officers) {
+			logger.Printf("officers: %s", line)
+		}
+	}
+	// The consumer usage push (MUSTER_CC_CONSUMER_USAGE, docs/officers.md
+	// "Consumer usage to HQ"): this muster's non-officer instances' Claude
+	// usage, to the pool push's HQ with its token and label. Refused at boot,
+	// as parseCCConsumerUsage refused a contradictory configuration, when the
+	// server cannot do it.
+	if cc := cfg.CCUsage.Consumer; cc.Consumer != "" {
+		if _, err := srv.EnableConsumerUsage(api.ConsumerUsageConfig{Consumer: cc.Consumer, Instance: cfg.CCUsage.Push.Instance,
+			URL: cc.URL, Token: cfg.CCUsage.Push.Token, HTTPClient: &http.Client{Timeout: ccusage.PushTimeout},
+			InstallBeforeStop: beforeStopOn(prov)}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s: %w", envCCConsumerUsage, err)
+		}
+	}
+
+	// The Compose chief on the OpenRouter key reaches its model through the
+	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, the model
+	// pinned, no muster budget (the key's own credit limit is the cap).
+	//
+	// 🔴 ON COMPOSE THE PROXY ASKS ext.ComposeChief ON EVERY REQUEST: it serves the chief
+	// only when composeChiefCredential says OpenRouter (never a chief on its
+	// subscription token), on the key the credential plane gives the owner.
+	// Without ext.ComposeChief it would serve on ChiefLLM.Key whatever the rule
+	// said, so that is a boot refusal.
+	//
+	// On Kubernetes, MUSTER_CHIEF_LLM=openrouter (chiefllm.go): the admin's
+	// chief on MUSTER_AGENT_OPENROUTER_KEY (validateChiefLLM refused boot
+	// without it); the spec builder puts that chief's pod on the route by the
+	// same rule (chiefLLMRoute).
+	if cfg.chiefOnLLMProxy() {
+		if cfg.chiefCompose() && ext.ComposeChief == nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=%s: the Compose chief's credential rule is not wired (no agent provisioner), "+
+				"so the LLM proxy could not ask it", envChiefRuntime, chiefRuntimeCompose)
+		}
+		upstream := chiefLLMUpstream
+		if cfg.LLMTestUpstream != "" {
+			logger.Printf("llm proxy: 🔴 the chief's upstream is OVERRIDDEN to %s by %s — TEST ONLY: every chief "+
+				"request, and the OpenRouter key muster attaches to it, goes there", cfg.LLMTestUpstream, envTestLLMUpstream)
+			upstream = cfg.LLMTestUpstream
+		}
+		// Off Compose the proxy asks the spec builder's own predicate over
+		// the same rule (chiefLLMRoute) on every request, so it serves exactly
+		// the chief whose pod is built on the route.
+		rule := chiefLLMRoute(cfg, plane)
+		routed := func(ctx context.Context, ag agents.Agent) (bool, error) {
+			return agentprovision.ChiefLLMRouted(ctx, ag, rule)
+		}
+		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream,
+			Routed: routed}); err != nil {
+			a.Close()
+			if cfg.chiefCompose() {
+				return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
+			}
+			return nil, fmt.Errorf("%s=%s: %w", envChiefLLM, chiefLLMOpenRouter, err)
+		}
+	}
+
+	// The chief's OpenRouter sessions' spend door (chiefsessions.go,
+	// api.EnableChiefSessionsLLM): their own key, the daily and per-session
+	// caps, and the spend book in the database. Without a database the
+	// budget could not survive a restart, so that is a boot refusal.
+	if cs := cfg.ChiefSessions; cs.On {
+		if a.pool == nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=1: the chief sessions' budget is kept in the database, and this server has none",
+				envChiefSessionsOpenRouter)
+		}
+		if err := srv.EnableChiefSessionsLLM(api.ChiefSessionsLLM{Key: cs.Key, DailyUSD: cs.DailyUSD, SessionUSD: cs.SessionUSD,
+			Store: chiefusage.NewPG(a.pool)}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=1: %w", envChiefSessionsOpenRouter, err)
+		}
+	}
+
+	// 🔴 A CLAUDE-CODE AGENT ON THE LLM PROXY MARKS NO SHARED CLAUDE ACCOUNT AND
+	// IS FAILED OVER FROM NONE (api.Server.NoClaudeAccount: an officer pool's
+	// instance on the proxy, or the chief on the route above): its row still
+	// names an account, but the proxy passes an upstream provider's 429 back as
+	// it is. Installed here, on the concrete gateway, once: after srv is built
+	// and both of its inputs (EnableOfficers, EnableChiefLLM) are set.
+	if gw != nil {
+		gw.UseNoAccount(srv.NoClaudeAccount)
+		a.gw = gw
+	}
 
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
 	// deliverability was computed from, so "a dispatch is accepted" and "something
 	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after
-	// srv so its card changes reach open Agents lists through srv's broadcast.
-	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, logger); err != nil {
+	// srv so its changes reach open agent pages and sidebars through srv's broadcast.
+	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), srv.KickoffTurnTools, logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("kickoff deliverer: %w", err)
 	}
@@ -591,10 +1101,25 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.Close()
 		return nil, fmt.Errorf("status promoter: %w", err)
 	}
-	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, logger); err != nil {
+	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, srv.OutcomeHold, logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("memo relay: %w", err)
 	}
+	if a.memo != nil {
+		// A memo to the chief goes to its primary chat (memorelay.SetSession).
+		a.memo.SetSession(srv.DeliveryRoute)
+	}
+
+	// The feature registry (features.go): evaluated once, from what was wired.
+	if ps, ok := ext.Plugins.(*plugins.PGStore); ok && ext.PluginGateway == nil {
+		a.pluginsBound = pluginsBoundAtBoot(ctx, ps, logger)
+	}
+	feats, err := a.buildFeatures(ext, port)
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	srv.UseFeatures(feats)
 
 	handler := srv.Handler()
 	a.http = &http.Server{
@@ -616,18 +1141,78 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
+	if cfg.MetricsPort != 0 {
+		a.metrics = &http.Server{
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.MetricsPort)),
+			Handler:           api.MetricsHandler(),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
+	}
 
 	a.logBanner(ext, port)
+	a.logFeatures(feats)
+	// 🔴 A RUNNING COMPOSE CHIEF IS RE-APPLIED ON THE CURRENT CONFIG: its spec
+	// (the CLI's credential) is built only when it starts, and a .env change
+	// restarts muster, not the chief's container (api.ReapplyComposeChiefAtBoot;
+	// audit #469 F3). In the background: a boot never waits on it.
+	if ext.ComposeChief != nil {
+		a.chiefReapplied = srv.ReapplyComposeChiefAtBoot(ctx)
+	}
 	return a, nil
 }
 
-// askSweepEvery is how often the question store's expiry runs
-// (askq.SweepEvery; a test shortens it).
-var askSweepEvery = askq.SweepEvery
+// installSessionOn is prov's session-source installer for the officer
+// runtime, or nil when there is no provisioner (EnableOfficers then refuses).
+// officersConfig is the officer runtime's configuration from the environment:
+// the declared officers, the provisioner's session source and the officer
+// image pull Secret. EnableOfficers' database-backed stores are added by the
+// caller.
+func officersConfig(cfg config, prov *agentprovision.Adapter) api.OfficersConfig {
+	return api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov),
+		ImagePullSecret: cfg.OfficerImagePullSecret}
+}
 
-// jobReapEvery is how often the job reaper runs after its boot pass
-// (api.JobReapInterval; a test shortens it).
-var jobReapEvery = api.JobReapInterval
+func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
+	if prov == nil {
+		return nil
+	}
+	return prov.UseClaudeCodeSession
+}
+
+// beforeStopOn is prov's pre-stop hook installer for the consumer usage
+// collector, or nil when there is no provisioner (EnableConsumerUsage then
+// refuses).
+func beforeStopOn(prov *agentprovision.Adapter) func(func(context.Context, agents.Agent)) {
+	if prov == nil {
+		return nil
+	}
+	return prov.UseBeforeStop
+}
+
+// askSweepInterval is how often the question store's expiry runs:
+// a.askSweepEvery when set (a test shortens it), else askq.SweepEvery.
+//
+// 🔴 A FIELD ON THE APP, NOT A PACKAGE VARIABLE. It used to be a package var a
+// test overwrote, and the supervised loops of an EARLIER test's app (api.Supervise
+// goroutines, not joined when Run returns) read it with no happens-before edge
+// to that write: `go test -race` failed main CI on it. Each app now owns its
+// interval, so no test can reach another test's loops through it.
+func (a *app) askSweepInterval() time.Duration {
+	if a.askSweepEvery > 0 {
+		return a.askSweepEvery
+	}
+	return askq.SweepEvery
+}
+
+// jobReapInterval is how often the job reaper runs after its boot pass:
+// a.jobReapEvery when set (a test shortens it), else api.JobReapInterval. A
+// field for the reason askSweepInterval gives.
+func (a *app) jobReapInterval() time.Duration {
+	if a.jobReapEvery > 0 {
+		return a.jobReapEvery
+	}
+	return api.JobReapInterval
+}
 
 // approvalGateFor builds the gate the claude-code approval relay files through:
 // a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
@@ -654,6 +1239,7 @@ func approvalGateFor(cfg config) api.GatePort {
 	}
 	if p := router.NewPort(router.Config{
 		BaseURL: cfg.ApprovalGateURL, Token: cfg.ApprovalGateToken, Actor: cfg.RouterActor,
+		ActorHeader: cfg.RouterActorHeader, TokenHeader: cfg.RouterTokenHeader,
 	}); p.Configured() {
 		return p
 	}
@@ -661,10 +1247,10 @@ func approvalGateFor(cfg config) api.GatePort {
 }
 
 // sessionRouting is session routing's configuration from cfg: the relay
-// allowlist and the route deadline (MUSTER_ROUTE_TIMEOUT). buildApp wires it
-// when MUSTER_SESSION_ROUTING=1 and the plugin interface is on.
+// allowlist. buildApp wires it when MUSTER_SESSION_ROUTING=1 with a database,
+// with or without the plugin interface.
 func sessionRouting(cfg config) *api.Routing {
-	return &api.Routing{Allow: cfg.RouteRelayAllow, Timeout: cfg.RouteTimeout}
+	return &api.Routing{Allow: cfg.RouteRelayAllow}
 }
 
 // buildSessionLiveness decides what answers "does this session still have a
@@ -730,7 +1316,7 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", a.http.Addr, err)
 	}
-	var connectLn, browserLn net.Listener
+	var connectLn, browserLn, metricsLn net.Listener
 	if a.connect != nil {
 		if connectLn, err = net.Listen("tcp", a.connect.Addr); err != nil {
 			ln.Close()
@@ -746,13 +1332,23 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 			return fmt.Errorf("listen %s (%s): %w", a.browser.Addr, envBrowserPort, err)
 		}
 	}
+	if a.metrics != nil {
+		if metricsLn, err = net.Listen("tcp", a.metrics.Addr); err != nil {
+			for _, l := range []net.Listener{ln, connectLn, browserLn} {
+				if l != nil {
+					l.Close()
+				}
+			}
+			return fmt.Errorf("listen %s (%s): %w", a.metrics.Addr, envMetricsPort, err)
+		}
+	}
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
 	a.startBackgroundLoops(ctx)
 
-	serveErr := make(chan error, 3)
+	serveErr := make(chan error, 4)
 	go func() {
 		a.logger.Printf("muster %s listening on %s (auth tiers reported above)", api.BuildVersion, ln.Addr())
 		serveErr <- a.http.Serve(ln)
@@ -767,6 +1363,12 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 		go func() {
 			a.logger.Printf("muster browser listener on %s (%s)", browserLn.Addr(), envBrowserPort)
 			serveErr <- a.browser.Serve(browserLn)
+		}()
+	}
+	if metricsLn != nil {
+		go func() {
+			a.logger.Printf("muster metrics listener on %s (%s; /metrics only)", metricsLn.Addr(), envMetricsPort)
+			serveErr <- a.metrics.Serve(metricsLn)
 		}()
 	}
 
@@ -804,59 +1406,122 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// delivery takes a per-agent claim (agents.Store.ClaimKickoff) and re-reads the
 	// row under it, so replicas cannot both pay one turn.
 	if a.kickoff != nil {
-		go a.kickoff.Run(ctx, agentkickoff.DefaultInterval)
+		a.loop(ctx, "a.kickoff.Run", func(ctx context.Context) { a.kickoff.Run(ctx, agentkickoff.DefaultInterval) })
 	}
 	// Same reasoning, and it needs no leader either: each promotion is a write
 	// conditional on the row not having moved (agents.Store.MarkRunning), so two
 	// replicas promoting one row apply it once.
 	if a.status != nil {
-		go a.status.Run(ctx, agentstatus.DefaultInterval)
+		a.loop(ctx, "a.status.Run", func(ctx context.Context) { a.status.Run(ctx, agentstatus.DefaultInterval) })
 	}
 	// The memo relay needs no leader either: each delivery takes the agent's
 	// session claim (agents.Store.ClaimKickoff) and re-reads the agent and its
 	// delivery record under it, so two replicas cannot both send one agent a memo.
 	if a.memo != nil {
-		go a.memo.Run(ctx, memorelay.DefaultInterval)
+		a.loop(ctx, "a.memo.Run", func(ctx context.Context) { a.memo.Run(ctx, memorelay.DefaultInterval) })
+	}
+	// The usage poller is unguarded at replicas > 1: two pods each read every
+	// account once per interval (two calls instead of one), and the last
+	// write of a row wins — both are readings of the same account.
+	if a.ccUsage != nil {
+		a.loop(ctx, "a.ccUsage.Run", func(ctx context.Context) { a.ccUsage.Run(ctx) })
+	}
+	// The officer wake loop. Unguarded at replicas > 1 like the loops below:
+	// two pods would both start an instance, which is one Create winning on
+	// the unique agent name and one logged failure, and both stop one, which
+	// is idempotent (docs/officers.md).
+	if a.officers != nil {
+		a.loop(ctx, "a.officers.Run", func(ctx context.Context) { a.officers.Run(ctx) })
+	}
+	// The built-in officer store's Attention sweep (held draft.refused items
+	// delivered, asks back onto items, escalation notices out). Unguarded at
+	// replicas > 1: every write it makes is conditional on the row it read (a
+	// held item still held, under the bound's lock; an ask still open, a
+	// notice still unraised), so two pods settle each once and the loser of a
+	// notice race withdraws its copy.
+	if a.srv != nil && a.srv.OfficerStoreOn() {
+		a.loop(ctx, "a.srv.RunOfficerAttentionSweep", func(ctx context.Context) { a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep) })
+		// Schedules: unguarded at replicas > 1 — a fire is a compare-and-set
+		// on next_fire_at, so of two pods exactly one fires each due time.
+		a.loop(ctx, "a.srv.RunOfficerScheduler", func(ctx context.Context) { a.srv.RunOfficerScheduler(ctx, builtin.DefaultScheduleInterval) })
+	}
+	// The officers' declared pools, to each officer's HQ: at once (boot), then
+	// every 10 minutes. Unguarded at replicas > 1: each pod pushes the same
+	// set, and HQ replaces it.
+	if a.officerPools != nil {
+		a.loop(ctx, "a.officerPools.Run", func(ctx context.Context) { a.officerPools.Run(ctx) })
 	}
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
 	// question with no result seen in askq.MaxOpen ends as expired (and leaves
 	// the attention queue) without waiting for a page to ask. In memory, no
 	// database.
 	if a.srv != nil {
-		go a.srv.RunAskSweep(ctx, askSweepEvery)
+		a.loop(ctx, "a.srv.RunAskSweep", func(ctx context.Context) { a.srv.RunAskSweep(ctx, a.askSweepInterval()) })
 	}
 	// The machine job API's reaper: a pass now (boot) and every
-	// jobReapEvery, failing only jobs past their own deadline, so it is safe
-	// while the other pod of a rolling update still runs jobs. Before the pool
+	// a.jobReapInterval(), failing only jobs past their own deadline, so it is safe
+	// while the other pod of a rolling update still runs jobs, then running
+	// each free agent's oldest queued job (a job a crash left queued). Before the pool
 	// guard because it keys on the job store, not the pool: it returns at once
 	// when there is none.
 	if a.srv != nil {
-		go a.srv.RunJobReaper(ctx, jobReapEvery)
+		a.loop(ctx, "a.srv.RunJobReaper", func(ctx context.Context) { a.srv.RunJobReaper(ctx, a.jobReapInterval()) })
+	}
+	// Suggested replies' text leaves memory past its TTL (suggest.CacheTTL).
+	// In memory, no database.
+	if a.srv != nil {
+		a.loop(ctx, "a.srv.RunSuggestSweep", func(ctx context.Context) { a.srv.RunSuggestSweep(ctx) })
 	}
 	if a.pool == nil {
 		return
 	}
-	go a.srv.RunTaskRetention(ctx, retentionInterval)
+	a.loop(ctx, "a.srv.RunTaskRetention", func(ctx context.Context) { a.srv.RunTaskRetention(ctx, retentionInterval) })
 	// 🔴 ITS OWN LOOP, ON ITS OWN INTERVAL, NOT THE DAILY ONE. A ticker's first
 	// tick lands a full interval in, so on a 24h ticker a pod had to survive a
 	// day to reap even once — upstream, across 11 pod lifetimes, only 2 did, and
 	// the reaper had effectively never run. api.TaskReapInterval carries the
 	// measurement.
-	go a.srv.RunTaskReap(ctx, api.TaskReapInterval)
+	a.loop(ctx, "a.srv.RunTaskReap", func(ctx context.Context) { a.srv.RunTaskReap(ctx, api.TaskReapInterval) })
 	// The send queue's dispatcher. ONE replica: its startup recovery fails any
 	// message a previous process left mid-send, which would be a peer's live
 	// send with two (the mirror hub is single-replica state already).
-	go a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval)
+	a.loop(ctx, "a.srv.RunSendQueue", func(ctx context.Context) { a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval) })
 	// Session focus's periodic refresh (MUSTER_FOCUS_INTERVAL; 0 = off), and
 	// its retention sweep, which runs whether or not the refresh does.
 	if a.cfg.FocusInterval > 0 {
-		go a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval)
+		a.loop(ctx, "a.srv.RunFocusRefresh", func(ctx context.Context) { a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval) })
 	}
-	go a.srv.RunFocusRetention(ctx)
+	a.loop(ctx, "a.srv.RunFocusRetention", func(ctx context.Context) { a.srv.RunFocusRetention(ctx) })
 	// Session routing's deadline: due routes are timed out and handed back.
-	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
+	a.loop(ctx, "a.srv.RunRouteTimeouts", func(ctx context.Context) { a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval) })
 	// The attention queue: lapsed asks expire and leave the owner's devices.
-	go a.srv.RunAttentionSweep(ctx, 0)
+	a.loop(ctx, "a.srv.RunAttentionSweep", func(ctx context.Context) { a.srv.RunAttentionSweep(ctx, 0) })
+	// The ask log's retention (MUSTER_ASK_LOG=1; returns at once when off).
+	a.loop(ctx, "a.srv.RunAskLogSweep", func(ctx context.Context) { a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval) })
+	// Host dispatches whose host was not seen for a day end (and free their slot).
+	a.loop(ctx, "a.srv.RunHostDispatchSweep", func(ctx context.Context) { a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval) })
+	// Task claims whose session ended (its window gone from a reporting host)
+	// are released (returns at once without a mirror).
+	a.loop(ctx, "a.srv.RunClaimSweep", func(ctx context.Context) { a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval) })
+	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
+	a.loop(ctx, "a.srv.RunChiefNudgeSweep", func(ctx context.Context) { a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval) })
+	// The outcome watchdog: a started agent gone quiet is called stuck, once
+	// (returns at once with no outcome store). Unguarded at replicas > 1 like
+	// the sweeps above: each verdict is a conditional write, so two pods apply —
+	// and push — it once.
+	a.loop(ctx, "a.srv.RunAgentWatchdog", func(ctx context.Context) { a.srv.RunAgentWatchdog(ctx, a.cfg.AgentWatchdogInterval) })
+	// Session state: every session's state and its episodes
+	// (MUSTER_SESSION_STATE=1; returns at once when off).
+	a.loop(ctx, "a.srv.RunSessionStateSweep", func(ctx context.Context) { a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval) })
+}
+
+// loop starts one background loop under api.Supervise: a panic in it is logged
+// and counted, and the loop is restarted after a backoff, instead of killing
+// the process (a bare `go` has no recover: one panicking pass — a principal
+// built for an owner it must not act as — took every request down with it).
+// TestEveryBackgroundLoopIsSupervised pins startBackgroundLoops to it.
+func (a *app) loop(ctx context.Context, name string, run func(context.Context)) {
+	api.Supervise(ctx, a.logger, name, run)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for
@@ -867,6 +1532,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 // — an HTTP handler, or the deliverer's card-change broadcast — so waiting for
 // fan-outs before either has stopped would wait on a set that is still growing.
 func (a *app) shutdown() {
+	// FIRST: this process takes no more machine jobs from the table
+	// (api.StopJobs). During a rolling update the other pod is accepting them,
+	// and a job taken now would be failed below, or started and abandoned.
+	a.srv.StopJobs()
 	// Streams end FIRST, by one explicit call, before EITHER server's Shutdown.
 	// Shutdown waits for active connections and an SSE stream never goes idle,
 	// so an open stream would otherwise hold the drain to its deadline — see
@@ -901,6 +1570,11 @@ func (a *app) shutdown() {
 			a.logger.Printf("browser listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
+	if a.metrics != nil {
+		if err := a.metrics.Shutdown(drainCtx); err != nil {
+			a.logger.Printf("metrics listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
+		}
+	}
 	// The machine jobs this process accepted and will now never finish: fail
 	// them, theirs only (api.FailOwnJobs), bounded. AFTER the HTTP drain, so no
 	// submission lands behind it. A crash skips this; the deadline reaper is
@@ -927,6 +1601,18 @@ func (a *app) shutdown() {
 		a.srv.WaitForPluginDeliveries()
 		// An answer delivered into an agent's session, the same way.
 		a.srv.WaitForAttentionDeliveries()
+		// An officer re-prompt, the same way: cancelled by EndStreams, it
+		// releases the instance's session claim before the process exits. The
+		// wake loop is joined FIRST (its ctx is the signal's, already
+		// cancelled), so no pass can start a re-prompt during the wait.
+		if a.officers != nil {
+			select {
+			case <-a.officers.Done():
+			case <-time.After(kickoffDrainTimeout):
+				a.logger.Printf("officers: the wake loop did not stop within %s", kickoffDrainTimeout)
+			}
+		}
+		a.srv.WaitForOfficerReprompts()
 	}()
 	a.waitForKickoffs(kickoffDrainTimeout)
 	<-memoDone
@@ -934,6 +1620,22 @@ func (a *app) shutdown() {
 	case <-pluginsDone:
 	case <-time.After(kickoffDrainTimeout):
 		a.logger.Printf("plugin deliveries did not record their outcome within %s; exiting anyway", kickoffDrainTimeout)
+	}
+
+	// An ask's suggested replies, still being generated, re-push the ask when
+	// they land: give them a short bound to do so BEFORE the push drain below,
+	// so a re-push they start is waited for there. One still running past it
+	// is abandoned — the ask keeps its first notification and simply has no
+	// chips (a model call that outlives a rollout is not worth holding it).
+	sugDone := make(chan struct{})
+	go func() {
+		a.srv.WaitForAskSuggestions()
+		close(sugDone)
+	}()
+	select {
+	case <-sugDone:
+	case <-time.After(askSuggestDrainTimeout):
+		a.logger.Printf("ask suggestions did not finish within %s; exiting without them", askSuggestDrainTimeout)
 	}
 
 	done := make(chan struct{})
@@ -1001,13 +1703,69 @@ func displayOrDefault(v string) string {
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
 
-	// The Agents list's Idle section (internal/ui/idle_section.go), in both
+	// The dial guard (internal/safedial), in both directions. It reads the
+	// WIRED guard (ext.DialGuard, set from config.dialGuard), not the variable.
+	if ext.DialGuard != nil {
+		l.Printf("dial guard: ON (%s=1) — postgres connectors refuse a database that is, or resolves to, a "+
+			"loopback, private, link-local, CGNAT, unspecified or multicast address (checked at connect time); "+
+			"the HTTP connector proxy refuses those always", envDialDenyPrivate)
+	} else {
+		l.Printf("dial guard: OFF — %s is unset, so a postgres connector may name a loopback or private address "+
+			"(the HTTP connector proxy refuses those always)", envDialDenyPrivate)
+	}
+
+	// The Idle section (internal/ui/idle_section.go), in both
 	// directions: the threshold in force, or OFF.
 	if a.cfg.AgentsIdleAfter > 0 {
-		l.Printf("agents list: idle section ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" header (%s=%s)",
+		l.Printf("sidebar: idle group ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" group (%s=%s)",
 			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
 	} else {
-		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+		l.Printf("sidebar: idle group OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+	}
+
+	// The outcome watchdog (internal/api agent_watchdog.go), in both
+	// directions: its thresholds and sweep, or OFF with no outcome store.
+	if ext.Outcomes != nil {
+		l.Printf("agent watchdog: ON — a started agent is stuck after %s with no first reply (%s), or %s silent once it "+
+			"replied (%s); swept every %s (%s)", a.cfg.AgentStuck.NoReply, envAgentStuckNoReply, a.cfg.AgentStuck.Silent,
+			envAgentStuckSilent, a.cfg.AgentWatchdogInterval, envAgentWatchdogInterval)
+	} else {
+		l.Printf("agent watchdog: OFF — no database, so no agent's outcome is tracked (%s, %s and %s are not read)",
+			envAgentStuckNoReply, envAgentStuckSilent, envAgentWatchdogInterval)
+	}
+
+	// The officer runtime (docs/officers.md), in both directions. Each
+	// declared officer also gets its own `officers: <id> on: …` line from
+	// api.Server.EnableOfficers. It reports the CONFIG: a declared officer the
+	// server could not enable refuses the boot (newApp), so the two agree.
+	if len(a.cfg.Officers) > 0 {
+		var hq, bi, onHost int
+		for _, o := range a.cfg.Officers {
+			if o.IsBuiltin() {
+				bi++
+			} else {
+				hq++
+			}
+			if o.OnHost() {
+				onHost++
+			}
+		}
+		l.Printf("officers: ON — %d declared in %s (%d on HQ, %d on the built-in backend; %d in pods, %d on hosts); woken by polling their backends",
+			len(a.cfg.Officers), envOfficers, hq, bi, len(a.cfg.Officers)-onHost, onHost)
+	} else if a.srv != nil && a.srv.OfficerStoreOn() {
+		l.Printf("officers: ON — %s declares none; officers declared in the database (`muster officer create`) run with no restart", envOfficers)
+	} else if a.cfg.OfficersSet {
+		l.Printf("officers: ON — empty roster (%s declares none)", envOfficers)
+	} else {
+		l.Printf("officers: OFF (%s declares none, and there is no database to declare one in)", envOfficers)
+	}
+
+	switch {
+	case a.srv != nil && a.srv.OfficerStoreOn():
+		l.Printf("officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every %s, schedules every %s (UTC cron)",
+			api.DefaultOfficerAttentionSweep, builtin.DefaultScheduleInterval)
+	case a.cfg.OfficersSet:
+		l.Printf("officers: built-in store OFF — %s is set but there is no database (%s)", envOfficers, envDatabase)
 	}
 
 	if a.pool != nil {
@@ -1040,8 +1798,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// this banner said so. That is exactly the "silent healthy state and silent
 	// refusing state are byte-identical" case this function's own header is about.
 	if a.cfg.SecureCookies {
-		l.Printf("session cookie: SECURE — %s is set, so the cookie is sent over HTTPS only. "+
-			"A plain-HTTP LAN port will NOT be able to log in against this process",
+		l.Printf("session cookie: SECURE — %s is on (or unset, with an https public URL), so the cookie is sent over HTTPS only. "+
+			"A plain-HTTP LAN port will NOT be able to log in against this process. The one exception is "+
+			"a page this machine serves itself over http://localhost, 127.0.0.1 or [::1]: it gets the cookie "+
+			"without Secure, so every browser keeps it, and that traffic never leaves the loopback interface",
 			envSecureCookies)
 	} else {
 		gotrueNote := ""
@@ -1049,18 +1809,23 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			gotrueNote = " (this is the PASSWORD-mode cookie, unused here: gotrue mode's " +
 				"cookies are always Secure — see the auth mode line)"
 		}
-		l.Printf("session cookie: NOT Secure — %s is unset, which is the DEFAULT and is "+
+		l.Printf("session cookie: NOT Secure — %s is off, or unset with no https public URL, which is "+
 			"correct for a plain-HTTP LAN port. ⚠ If this deployment is reached over TLS, "+
-			"set it: without it the session cookie travels with no Secure attribute and any "+
+			"give it its https public URL: without it the session cookie travels with no Secure attribute and any "+
 			"plain-HTTP request to the same host carries it%s", envSecureCookies, gotrueNote)
 	}
 
 	if a.cfg.HookToken != "" {
 		l.Printf("machine hook tier: ENFORCED — %s is set and required on the hook endpoints", envHookToken)
 	} else {
-		l.Printf("machine hook tier: OPEN — %s is unset, so the hook endpoints require NO "+
-			"credential. That is enforce-when-set back-compat, not a default anyone chose; "+
-			"the LAN port is included", envHookToken)
+		l.Printf("machine hook tier: CLOSED — %s is unset, so every hook endpoint refuses every caller "+
+			"(only a server built without config validation can get here)", envHookToken)
+	}
+	if a.cfg.MetricsPort != 0 {
+		l.Printf("metrics: ON — /metrics is served on its own listener, %s=%d, and on no other port",
+			envMetricsPort, a.cfg.MetricsPort)
+	} else {
+		l.Printf("metrics: OFF — %s is unset, so /metrics is served on no port", envMetricsPort)
 	}
 
 	if reason := a.cfg.serviceWriteRefusal(); reason != "" {
@@ -1111,8 +1876,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			envRouterURL, a.cfg.RouterURL, missingRouterCredential(a.cfg))
 	default:
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
-			"server will NOT report ready while a notes store is wired, on purpose: see "+
-			"/readyz for the reason", envRouterURL, envStandalone)
+			"server will NOT report ready while a notes store is wired, on purpose: /readyz "+
+			"answers 503 and logs the reason (a \"readyz: not ready\" line)", envRouterURL, envStandalone)
 	}
 
 	// The claude-code approval relay's gate, on its own line: it is configurable
@@ -1158,6 +1923,24 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("android pairing: %s is unset, so a phone with no strong biometric pairs read-only "+
 			"(a biometric-or-PIN step-up key is refused)", envAndroidAllowPINKeys)
 	}
+	// The Android app's passkeys, in both directions: off, the app's
+	// sign-in and "Confirm it's you" can offer a passkey that Android refuses.
+	if len(ext.AssetLinks) > 0 {
+		l.Printf("android passkeys: %s serves %s=%s with certificate(s) %s=%s",
+			api.AssetLinksPath, envAndroidPackage, a.cfg.AndroidPackage, envAndroidCertSHA256, a.cfg.AndroidCertSHA256)
+	} else {
+		l.Printf("android passkeys: OFF — %s and %s are unset, so %s is 404 and Android refuses the app's passkeys for this site",
+			envAndroidPackage, envAndroidCertSHA256, api.AssetLinksPath)
+	}
+	// The Android shell's sign-in origins, in both directions: off, a sign-on
+	// proxy's redirect leaves the app's WebView and its sign-in never returns.
+	if len(ext.SSOOrigins) > 0 {
+		l.Printf("android sign-in origins: ON — %s serves %d origin(s) from %s that the app may load in its "+
+			"WebView: %s", api.DeviceWebPath, len(ext.SSOOrigins), envAndroidSSOOrigins, strings.Join(ext.SSOOrigins, ", "))
+	} else {
+		l.Printf("android sign-in origins: OFF — %s is unset, so %s answers none and the app opens every other "+
+			"origin outside its WebView", envAndroidSSOOrigins, api.DeviceWebPath)
+	}
 
 	if ext.Connectors != nil {
 		listener := "no dedicated listener (" + envConnectPort + " unset): the connector routes are on the main port only"
@@ -1170,6 +1953,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		}
 		l.Printf("connector store: ENABLED — %s is set; secrets are sealed with AES-256-GCM and agents use them "+
 			"only through the proxy. %s; %s", envConnectorEncKey, listener, agentsTold)
+	} else if ext.Credentials != nil && a.cfg.AgentConnectURL == "" {
+		l.Printf("connector store: MEMBERS' CREDENTIALS ONLY — %s is set, so each member's own Claude and OpenRouter "+
+			"credentials are stored (Account → Credentials); %s. Until then every connector route answers 503 and "+
+			"the Connectors tab is hidden", envConnectorEncKey, agentConnectorsOff())
 	} else {
 		l.Printf("connector store: DISABLED — %s is unset, so every connector route answers 503, the "+
 			"Connectors tab is hidden, and %s / %s have no effect", envConnectorEncKey, envConnectPort, envAgentConnectURL)
@@ -1191,29 +1978,76 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("plugins: ENABLED (%s=1) — owners mint plugin tokens on /plugins; a plugin POSTs messages to "+
 			"/plugin/v1/messages and each is handed to its owner's chief as a fenced turn", envPlugins)
 	case ext.Plugins != nil:
-		l.Printf("WARNING — plugins: ENABLED (%s=1) but there is NO agent gateway (%s), so plugin messages are "+
-			"stored and stay queued: nothing is delivered to any chief", envPlugins, envAgentGateway)
+		l.Printf("plugins: ENABLED (%s=1) with NO agent gateway (%s): a plugin bound to an officer (Deliver to officer:<id>) is "+
+			"delivered to it; an unbound plugin's messages are stored and stay queued, since no chief can be reached", envPlugins, envAgentGateway)
 	default:
 		l.Printf("plugins: OFF — %s is unset (or there is no database), so every /plugin/* route and /plugins "+
 			"answer 404", envPlugins)
 	}
 	switch {
+	case ext.Routing != nil && ext.Plugins == nil:
+		l.Printf("session routing: ON (%s=1) WITHOUT plugins — the chief may hand one of its owner's mirrored sessions an "+
+			"idea the owner typed in its chat (route_to_session's text, on a turn the owner typed: owner_asked) or one of the "+
+			"owner's tasks; a plugin message is never routed (%s is off); a route unanswered after %s (%s for the owner's "+
+			"request) goes back to the chief", envSessionRouting, envPlugins, api.RouteTimeout, api.RequestRouteTimeout)
 	case ext.Routing != nil:
-		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
-			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
+		l.Printf("session routing: ON (%s=1) — the chief may hand one of its owner's sessions a plugin message, a task or an "+
+			"idea the owner typed in its chat (route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
 			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
-			"answers relay without approval (%s); a route unanswered after %s goes back to the chief (%s)",
-			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, ext.Routing.Timeout, envRouteTimeout)
-		if a.cfg.HookToken == "" {
-			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
-				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
-				"out back to the chief", envHookToken)
-		}
+			"answers relay without approval (%s); a route unanswered after %s (%s for a pull-request review muster routes "+
+			"itself, %s; %s for a message its plugin marks human_conversation) goes back to the chief, unless its plugin "+
+			"reports a reply sent directly, stamped with that message, first (POST /plugin/v1/messages/{id}/owner-answered)",
+			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, api.RouteTimeout, api.PRRouteTimeout, envPRMailSenders,
+			api.ConversationRouteTimeout)
 	case a.cfg.SessionRouting:
-		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
+		l.Printf("session routing: INERT — %s=1 but there is no database, so nothing is routed", envSessionRouting)
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
-			"answers 404 (%s and %s are not read)", envSessionRouting, envRouteRelayAllow, envRouteTimeout)
+			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
+	}
+	switch {
+	case ext.PRMail != nil:
+		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
+			"session that created or pushed its pull request, as its host's hook reported it (POST /api/pr-sessions)",
+			envPRMailSenders, len(ext.PRMail.Senders))
+		if ext.ClosedPRs != nil {
+			l.Printf("pull-request routing: a review of a pull request the GitHub App reports already merged or closed is settled by " +
+				"muster (no paste, no hand-back, no ask); a pull request it cannot read is handled as open")
+		} else {
+			l.Printf("pull-request routing: no GitHub App (%s unset), so a review of a merged or closed pull request is handled as any other", envGitHubAppID)
+		}
+	case len(a.cfg.PRMailSenders) > 0:
+		l.Printf("pull-request routing: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so "+
+			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)
+	default:
+		l.Printf("pull-request routing: OFF — %s is unset, so POST /api/pr-sessions answers 404 and review mail goes to the chief", envPRMailSenders)
+	}
+	switch {
+	case ext.FleetReport != nil:
+		l.Printf("fleet-report requests: ON (%s) — %d agent-mail sender(s) whose VERIFIED fleet_report_request muster answers "+
+			"itself, with an already-approved reply listing the owner's sessions in the requested window (focus titles, "+
+			"repos, pull requests; no host labels, window titles unqualified, never transcripts), only those working under %d "+
+			"prefix(es) (%s)",
+			envFleetReportSenders, len(ext.FleetReport.Senders), len(ext.FleetReport.Paths), envFleetReportPaths)
+	case len(a.cfg.FleetReportSenders) > 0:
+		l.Printf("fleet-report requests: INERT — %s is set but the plugin interface is off, so nothing is answered", envFleetReportSenders)
+	default:
+		l.Printf("fleet-report requests: OFF — %s is unset, so a fleet_report_request goes to the chief as any other mail", envFleetReportSenders)
+	}
+	switch {
+	case ext.MailResume != nil && ext.MailResume.Off:
+		l.Printf("mail resume: OFF by its kill switch (%s=1) — %s lists %d owner(s), but mail for a session no window shows goes to the chief",
+			envMailResumeOff, envMailResumeAllow, ext.MailResume.Allow.Owners())
+	case ext.MailResume != nil:
+		l.Printf("mail resume: ON (%s) — for %d owner(s), VERIFIED mail from a listed sender for a session no window shows asks "+
+			"that session's host to resume it (claude --resume, a host with -resume-spawn only), at most %d per session and %d per host an hour, "+
+			"then routes it there; %s=1 turns it off", envMailResumeAllow, ext.MailResume.Allow.Owners(),
+			api.MailResumePerSessionPerHour, api.MailResumePerHostPerHour, envMailResumeOff)
+	case a.cfg.MailResumeAllow.Owners() > 0:
+		l.Printf("mail resume: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so nothing is resumed (%s is not read)",
+			envMailResumeAllow, envSessionRouting, envMailResumeOff)
+	default:
+		l.Printf("mail resume: OFF — %s is unset, so mail for a session no window shows goes to the chief (%s is not read)", envMailResumeAllow, envMailResumeOff)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:
@@ -1229,8 +2063,123 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("task routing: OFF — %s is unset, so route_to_chief is ignored and the chief has no task-routing tools", envTaskRouting)
 	}
+	switch {
+	case ext.ChiefNudge != nil && chiefNudgesProblem(a.cfg, ext) != "":
+		// The registry's verdict, from the same predicate (features.go).
+		l.Printf("chief nudges: MISCONFIGURED — %s; nothing is judged or sent", chiefNudgesProblem(a.cfg, ext))
+	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) > 0:
+		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall classifier "+
+			"first, ask score %.2f defaults to an ask); LIVE for %d owner(s) (%s), shadow for everyone else; needs-you nudges "+
+			"LIVE for %d of them (%s), shadow for the rest; nudges quoting the Chief chat LIVE for %d of them (%s), shadow "+
+			"for the rest; at most %d nudges an hour",
+			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold,
+			len(ext.ChiefNudge.Live), envChiefNudgeLiveOwners, needsYouLiveCount(ext.ChiefNudge), envChiefNudgeNeedsYouLiveOwners,
+			chiefChatQuotesLiveCount(ext.ChiefNudge), envChiefNudgeChiefChatQuotesLiveOwners, ext.ChiefNudge.HourlyCap)
+	case ext.ChiefNudge != nil:
+		l.Printf("chief nudges: ON in SHADOW (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall "+
+			"classifier first, ask score %.2f defaults to an ask) and the decision is recorded; nothing is sent (%s is empty, "+
+			"so %s and %s do nothing)",
+			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold, envChiefNudgeLiveOwners,
+			envChiefNudgeNeedsYouLiveOwners, envChiefNudgeChiefChatQuotesLiveOwners)
+	case a.cfg.ChiefNudges:
+		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
+	default:
+		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
+	}
+	switch {
+	case ext.Pages != nil:
+		quota := ext.PagesUploadBytes
+		if quota <= 0 {
+			quota = pages.DefaultUploadBytesPerPage
+		}
+		reuse := "each page keeps one reusable link, its token sealed under " + envConnectorEncKey
+		if !ext.Pages.LinksReusable() {
+			reuse = "links are hash-only, each address shown once (" + envConnectorEncKey + " is unset)"
+		}
+		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner, and ask before a share link goes live unless the owner "+
+			"lets their agents share without asking (a per-owner Account setting); %s; "+
+			"links are served at %s<token>, sandboxed (an opaque origin, no page network); a page's files are kept under %s "+
+			"until it is deleted, %d bytes per page at most (%s)", envPages, reuse, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
+	case a.cfg.Pages:
+		l.Printf("shareable pages: INERT — %s=1 but there is no database", envPages)
+	default:
+		l.Printf("shareable pages: OFF — %s is unset", envPages)
+	}
+	switch {
+	case ext.AskLog != nil:
+		classify := "off (" + envAskLogClassify + " is unset): the classifier's columns stay empty"
+		if ext.AskLog.JevAtCapture {
+			classify = "ON (" + envAskLogClassify + "=1): a kept plain-text question is classified, one call per turn end the stall sweep has not classified"
+		}
+		l.Printf("ask log: ON (%s=1) — every question an agent asks its owner is recorded with its answer (asks), redacted, "+
+			"owner-only; question and answer text cleared after %s (%s), rows deleted after %s; classification at capture %s",
+			envAskLog, ext.AskLog.TextTTL, envAskLogTextTTL, asklog.RowTTL, classify)
+	case a.cfg.AskLog.On:
+		l.Printf("ask log: INERT — %s=1 but there is no database", envAskLog)
+	default:
+		l.Printf("ask log: OFF — %s is unset; nothing agents ask is recorded", envAskLog)
+	}
+	// The poller is refused at boot without its pool and database
+	// (ccUsageRefusal), so ON here is ON for real.
+	if ext.CCUsageInterval > 0 {
+		l.Printf("claude account usage: ON (%s=1) — every %s each of the admin's pooled Claude accounts is read with its own "+
+			"token, from %s when the token may use it, else from a one-token probe of %s (one output token of quota per read; "+
+			"never an account the pool marks cooling); numbers only, in cc_account_usage, served at %s", envCCUsagePoll,
+			ext.CCUsageInterval, ccusage.Endpoint, ccusage.ProbeURL, api.CCAccountUsagePath)
+		if a.cfg.CCUsage.Push.URL != "" {
+			l.Printf("claude account usage push: ON (%s) — after each poll cycle the readings are PUT to the configured URL "+
+				"as source_instance %q (expects 204; a failure is logged and counted, and the next cycle pushes again)",
+				envCCUsagePushURL, a.cfg.CCUsage.Push.Instance)
+		} else {
+			l.Printf("claude account usage push: OFF — %s is unset", envCCUsagePushURL)
+		}
+		if c := a.cfg.CCUsage.Consumer; c.Consumer != "" {
+			l.Printf("claude consumer usage push: ON (%s=%s) — this muster's non-officer instances' usage per session and hour is PUT to the "+
+				"pool push's HQ route %s as instance %q", envCCConsumerUsage, c.Consumer, consumerusage.ConsumerUsageSuffix, a.cfg.CCUsage.Push.Instance)
+		} else {
+			l.Printf("claude consumer usage push: OFF — %s is unset", envCCConsumerUsage)
+		}
+	} else {
+		l.Printf("claude account usage: OFF — %s is unset; no account's utilization is read", envCCUsagePoll)
+	}
+	switch {
+	case ext.Episodes != nil:
+		l.Printf("session state: ON (%s=1) — every %s each owner's sessions are given a state and every stop an episode "+
+			"(session_episodes); each stop is pushed ONCE, with no session text (a waiting window after a %s hold, unless it ended inside it; an idle stop on the chief's decision), "+
+			"shown in the Asks page's Stalled / waiting section, and a live chief ask raises no notice", envSessionState, api.SessionStateInterval, api.EpisodeWaitingGrace)
+	case a.cfg.SessionState:
+		l.Printf("session state: INERT — %s=1 but there is no database", envSessionState)
+	default:
+		l.Printf("session state: OFF — %s is unset", envSessionState)
+	}
+	// 🔴 WHAT THE PULL-REQUEST GROUPS NEED IS SAID ON THE LINE (audit round 1
+	// 🟡3): their pull requests are session_prs' (wired only with session
+	// routing and PR mail) and their states the GitHub App's, so without either
+	// Waiting on CI and Done stay empty however the card looks.
+	fleetPRs := "pull-request groups ON (session_prs and the GitHub App; states read only for an owner the App admits)"
+	switch {
+	case ext.PRSessions == nil:
+		fleetPRs = "pull-request groups EMPTY: they need session routing + PR mail (" + envSessionRouting + "=1, " + envPRMailSenders + ") for session_prs"
+	case ext.FleetPRStates == nil:
+		fleetPRs = "pull-request groups EMPTY: every state is unknown with no GitHub App"
+	}
+	switch {
+	case ext.FleetDigest && ext.Episodes != nil:
+		l.Printf("fleet digest: ON (%s=1) — the chief panel shows the fleet digest card (each of the owner's own sessions grouped by "+
+			"what it needs, no model, no chief turn) and fleet_list carries state, episode, prs and the owner facts; %s", envFleetDigest, fleetPRs)
+	case ext.FleetDigest:
+		l.Printf("fleet digest: ON (%s=1) — but %s is unset, so the card says there are no states and fleet_list carries none", envFleetDigest, envSessionState)
+	case a.cfg.FleetDigest:
+		l.Printf("fleet digest: INERT — %s=1 but there is no database", envFleetDigest)
+	default:
+		l.Printf("fleet digest: OFF — %s is unset", envFleetDigest)
+	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
+	}
+	if a.cfg.ChiefSessionRuntimeGatewayIgnored {
+		l.Printf("WARNING — %s names %q, which is no longer a chief session runtime (the gateway runtime beside the "+
+			"chief was removed); it is ignored — drop it from the deployment", envChiefSessionRuntimes, retiredSessionRuntime)
 	}
 	if rts := ext.SessionRuntimes; len(rts) > 0 {
 		l.Printf("chief session runtimes: ON (%s=%s) — a chief chat session may be started on %s, with a model of its own",
@@ -1250,6 +2199,25 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("plugin tasks: OFF — %s is unset, so POST /plugin/v1/tasks answers 503 when plugins are on",
 			envPluginTaskNamespaces)
 	}
+	if pats := a.cfg.PluginOrigins; len(pats) > 0 {
+		names := make([]string, len(pats))
+		for i, p := range pats {
+			names[i] = p.String()
+		}
+		l.Printf("plugin origins: ON (%s=%s) — a request whose Host is under one is refused 421 on every listener",
+			envPluginOrigins, strings.Join(names, ","))
+	} else {
+		l.Printf("plugin origins: OFF — %s is unset, so no Host is refused as a plugin's", envPluginOrigins)
+	}
+	addrPolicy := a.cfg.ClientAddr
+	if addrPolicy == nil { // a config not from loadConfig: the strict default, named
+		addrPolicy, _ = clientaddr.New(clientaddr.Config{TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader})
+	}
+	direct := envDirectClients + " unset (no declaration that clients connect straight to muster)"
+	if a.cfg.DirectClients {
+		direct = envDirectClients + "=1 (declared: clients connect straight to muster, no proxy in front)"
+	}
+	l.Printf("%s; %s", addrPolicy.Describe(), direct)
 
 	// The agent door to browser flows. The deployment's own names are
 	// configuration, and their ABSENCE is a state an operator must be told
@@ -1271,21 +2239,21 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 
 	if ext.GitHubApp != nil {
 		agentsSee := "the `github` connector is backed by it for ADMINS' agents: each approved agent's requests to " +
-			"its own repository carry a 1-hour installation token limited to that repository (contents + " +
-			"pull_requests write, checks + statuses read), other repositories go out anonymously, and an agent " +
-			"with NO repository (a chief) gets no github access"
+			"its own repository carry a 1-hour installation token limited to that repository (" +
+			envGitHubAppAccess + "=" + string(ext.GitHubApp.Access()) + ": " + ext.GitHubApp.Access().Scope() +
+			"), other repositories go out anonymously, and an agent with NO repository (a chief) gets no github access"
 		if ext.Connectors == nil {
 			agentsSee = "NO connector store, so agents cannot use it"
 		}
 		l.Printf("github app: ON — %s=%d (its JWT signed with the key in %s) is the admins' GitHub identity (their "+
-			"Repos tab and connected-repository checks list its installation repositories; members keep their "+
-			"OAuth connection, deprecated); only installations on %s=%s are used; %s",
+			"connected-repository checks list its installation repositories; members have none); only "+
+			"installations on %s=%s are used; %s",
 			envGitHubAppID, a.cfg.GitHubAppID, envGitHubAppKey, envGitHubAppAccounts,
 			githubAppAccountList(a.cfg.GitHubAppAccounts), agentsSee)
 	} else {
-		l.Printf("github app: OFF — %s/%s/%s are unset, so muster's GitHub identity is the OAuth connection "+
-			"(deprecated) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
-			envGitHubAppAccounts)
+		l.Printf("github app: OFF — %s/%s/%s are unset, so muster has no GitHub identity (no repository is "+
+			"connected for dispatch), %s does not apply, and a `github` connector needs a stored token (which "+
+			"that setting does not limit)", envGitHubAppID, envGitHubAppKey, envGitHubAppAccounts, envGitHubAppAccess)
 	}
 	if a.cfg.CheckoutWaitTimeout > 0 {
 		l.Printf("checkout wait: %s=%s — a claude-code agent's first turn waits that long for its repository "+
@@ -1294,13 +2262,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("checkout wait: the default %s — a claude-code agent's first turn waits that long for its "+
 			"repository checkout (the github approval) before the agent is marked error (%s unset)",
 			agents.DefaultCheckoutWaitTimeout, envCheckoutWaitTimeout)
-	}
-	if ext.GitHub != nil {
-		l.Printf("github connection: ENCRYPTED AT REST (%s set). %s",
-			envGitHubEncKey, githubAuthPosture(a.cfg))
-	} else {
-		l.Printf("github connection: DISABLED — %s is unset, so there is nowhere to store a "+
-			"token encrypted and the Repos tab has no account to connect", envGitHubEncKey)
 	}
 
 	// 🔴 THE SEAM, ANNOUNCED ON EVERY BOOT. See doc_seams.go.
@@ -1439,22 +2400,38 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 						"a running agent keeps its mode until its spec is re-applied (Start or reapply), and leaving "+
 						"bypass means destroying and recreating the agent.", envAgentCCBypassPools)
 				}
-			}
-			if a.cfg.hermesEnabled() {
-				line += fmt.Sprintf(" %s: image %s (%s), on the OpenRouter key (%s, or each member's own), "+
-					"per-agent PVC at /data, no ServiceAccount token, termination grace %ds, turn budget %s.",
-					agents.KindHermes, a.cfg.AgentHermesImage, envAgentHermesImage, envAgentOpenRouterKey,
-					agentspec.HermesTerminationGraceSeconds, agents.HermesTurnTimeout)
-			}
-			l.Print(line)
-			// The confined kinds' network line, labelled with the ones enabled.
-			var confined []string
-			for _, k := range []string{agents.KindClaudeCode, agents.KindHermes} {
-				if slices.Contains(a.cfg.agentKinds(), k) {
-					confined = append(confined, k)
+				// Private-repository pools, in both states: which pools clone and fetch
+				// with a deploy key (names of the pool, repository and Secret only —
+				// the key is never read by this process).
+				if len(a.cfg.AgentCCPoolDeployKeys) > 0 {
+					pools := make([]string, 0, len(a.cfg.AgentCCPoolDeployKeys))
+					for p, k := range a.cfg.AgentCCPoolDeployKeys {
+						pools = append(pools, p+"="+k.Repo+" (Secret "+k.Secret+")")
+					}
+					slices.Sort(pools)
+					line += fmt.Sprintf(" Read-only deploy keys CONFIGURED for worker pools [%s] (%s): those pools' "+
+						"workers clone, and their jobs fetch, that one repository through a key holder (a second container, "+
+						"another uid) that alone mounts the key, and their jobs get none of its agent configuration; a "+
+						"worker gets the holder when its spec is applied (dispatch, Start, reapply).",
+						strings.Join(pools, ", "), envAgentCCPoolDeployKeys)
+				} else {
+					line += fmt.Sprintf(" No worker pool has a deploy key (%s unset): every pool clones and fetches "+
+						"anonymously, so pools serve public repositories only.", envAgentCCPoolDeployKeys)
+				}
+				// Egress-locked pools: listed in MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS
+				// or given a deploy key. muster removes their egress and labels
+				// them; the operator's cluster policy is their only allow.
+				if pools := a.cfg.egressLockedPools(); len(pools) > 0 {
+					line += fmt.Sprintf(" Egress LOCKED for worker pools [%s] (%s, and every deploy-key pool): their "+
+						"NetworkPolicy allows no DNS and no public address, and their pods carry %s=%s and %s=<pool>, so "+
+						"the operator's cluster policy selecting that label is their ONLY egress allow (none = nothing "+
+						"public); applied when a worker's spec is applied.", strings.Join(pools, ", "),
+						envAgentCCEgressLockedPools, agentspec.LabelEgress, agentspec.EgressLocked, agentspec.LabelPool)
 				}
 			}
-			label := strings.Join(confined, "/")
+			l.Print(line)
+			// The confined kind's network line (claude-code is the one confined kind).
+			label := agents.KindClaudeCode
 			// ⚠ "WRITTEN", NOT "ENFORCED". This process writes a NetworkPolicy object;
 			// the cluster's network plugin is what enforces one, and nothing here can
 			// observe that. The line says what a NEW or RE-APPLIED agent gets — an
@@ -1465,14 +2442,23 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			if a.cfg.agentNetworkPolicy() {
 				l.Printf("%s network: a NetworkPolicy is WRITTEN per agent before its pod, and the agent is "+
 					"refused if it cannot be — ingress only from pods labelled [%s] (%s) in namespace %s (%s), "+
-					"egress only DNS and TCP %d to public IPv4 addresses. Enforcement is the cluster network "+
+					"egress only DNS and TCP %d to public IPv4 addresses. An OFFICER instance (its session "+
+					"runs with permissions bypassed) gets that policy WITHOUT the public rule and WITHOUT the DNS "+
+					"rule — egress the connect port only — so name-filtered DNS and the Anthropic API must be "+
+					"allowed by a cluster-side FQDN policy (docs/officers.md); an officer started by an older "+
+					"build keeps its old rules until it is "+
+					"stopped and started. Enforcement is the cluster network "+
 					"plugin's, not this server's. That selector is what a policy written FROM NOW ON gets: an "+
 					"agent created before this build has NO policy, and an existing policy keeps its old "+
 					"selector, until that agent is stopped and started. This server's ServiceAccount needs "+
 					"%s on networkpolicies.networking.k8s.io — to create a %s agent, and to DESTROY ANY agent",
 					label, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
 					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort,
-					strings.Join(networkPolicyVerbs(), "/"), strings.Join(confined, " or "))
+					strings.Join(networkPolicyVerbs(), "/"), label)
+				// Officer egress, in both states: what an officer's lock admits
+				// on top of the connect port (officers only; agentspec.
+				// claudeCodeNetworkFor).
+				l.Print(officerEgressBannerLine(a.cfg))
 			} else {
 				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
 					"driver only)",
@@ -1656,23 +2642,6 @@ func missingRouterCredential(c config) string {
 	}
 }
 
-// githubAuthPosture names which of the two ways into a GitHub account is armed.
-// Both may be: the static token connects at boot, the OAuth App lets an operator
-// connect a different account from the Repos tab.
-func githubAuthPosture(c config) string {
-	switch {
-	case c.GitHubToken != "" && c.GitHubClientID != "":
-		return fmt.Sprintf("both %s and the OAuth App (%s) are configured", envGitHubToken, envGitHubClientID)
-	case c.GitHubToken != "":
-		return fmt.Sprintf("%s is configured; no OAuth App", envGitHubToken)
-	case c.GitHubClientID != "":
-		return fmt.Sprintf("the OAuth App (%s) is configured; no static token", envGitHubClientID)
-	default:
-		return fmt.Sprintf("no credential: neither %s nor %s is set, so no account can be connected",
-			envGitHubToken, envGitHubClientID)
-	}
-}
-
 // authConfig is the ONE place this binary's config becomes an api.AuthConfig.
 //
 // 🔴 A SECOND CONSTRUCTION SITE IS HOW THE BOOT BANNER STOPS DESCRIBING THE
@@ -1687,6 +2656,7 @@ func (c config) authConfig() api.AuthConfig {
 		SecureCookies: c.SecureCookies,
 		Mode:          api.AuthMode(c.AuthMode),
 		PublicURL:     c.PublicURL,
+		BrowserPort:   c.BrowserPort,
 	}
 }
 
@@ -1708,9 +2678,6 @@ func (c config) browserAuthRefusal() string { return c.authConfig().BrowserAuthR
 // serviceWriteRefusal reports why the service-to-service tier will refuse, or "".
 func (c config) serviceWriteRefusal() string { return c.authConfig().ServiceWriteRefusal() }
 
-// connectStaticGitHub resolves the static token's login and stores it encrypted,
-// so the Repos tab and agent dispatch work WITHOUT an OAuth App.
-//
 // checkGitHubApp lists the App's installations once at boot and logs the
 // outcome. A failure (a 401 from a wrong key or a skewed clock) is also recorded
 // as the App's problem, which the connector request card and the agent cards
@@ -1745,26 +2712,61 @@ func githubAppAccountList(accs []githubapp.Account) string {
 	return strings.Join(parts, ",")
 }
 
-// 🔴 A FAILURE HERE IS LOGGED, NOT FATAL. The token may be expired or the
-// network may be down at boot, and neither is a reason to refuse to serve a task
-// board. The Repos tab shows "not connected", which is what is true.
-//
-// 🔴 IT ACTS AS THE OPERATOR (authz.Operator), BECAUSE THE STATIC TOKEN IS THE
-// OPERATOR'S. There is no request to take a principal from, and row-level
-// security (accounts PR 3a) scopes the write to whoever the context names: with
-// none it would write nothing. NOT authz.System — that names no user, and this
-// is one user's connection, not a sweep over everyone's.
-func connectStaticGitHub(ctx context.Context, store github.Store, token string, logger *log.Logger) {
-	ctx = authz.Operator(ctx)
-	login, err := github.FetchLogin(ctx, token)
-	if err != nil {
-		logger.Printf("github: %s is set but its login could not be resolved (%v); no account connected",
-			envGitHubToken, err)
-		return
+// chiefChatQuotesLiveCount is how many owners' Chief-chat quotes can be live:
+// those in BOTH MUSTER_CHIEF_NUDGE_LIVE_OWNERS and
+// MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS (a needs-you one needs the
+// needs-you list as well; one listed only in the Chief-chat list is shadow,
+// and is not counted).
+func chiefChatQuotesLiveCount(c *api.ChiefNudges) int {
+	n := 0
+	for id := range c.ChiefChatQuotesLive {
+		if c.Live[id] {
+			n++
+		}
 	}
-	if err := store.Save(ctx, login, "", token); err != nil {
-		logger.Printf("github: could not store the connection for %q: %v", login, err)
-		return
+	return n
+}
+
+// needsYouLiveCount is how many owners' needs-you nudges are live: those in
+// BOTH MUSTER_CHIEF_NUDGE_LIVE_OWNERS and
+// MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS (one listed only in the second is
+// shadow, and is not counted).
+func needsYouLiveCount(c *api.ChiefNudges) int {
+	n := 0
+	for id := range c.NeedsYouLive {
+		if c.Live[id] {
+			n++
+		}
 	}
-	logger.Printf("github: connected as %q from %s", login, envGitHubToken)
+	return n
+}
+
+// withInternalHTTP presents each internal_http connector through store, to
+// admins' agents ONLY (authz.IsAdmin: the service is the deployment's, and it
+// reaches inside the network), logging one boot line per connector.
+func withInternalHTTP(store connectors.Store, list []*connectors.InternalHTTP, logger *log.Logger) connectors.Store {
+	for _, ih := range list {
+		ih.Logger = logger
+		store = connectors.WithVirtual(store, ih, authz.IsAdmin)
+		logger.Printf("internal_http connector %s: %s under %s (cap %d bytes, timeout %s; admins' agents, approved "+
+			"per agent)", ih.Name(), ih.BaseURL(), ih.PathPrefix(), ih.MaxResponseBytes(), ih.Timeout())
+	}
+	return store
+}
+
+// declaresKube reports whether any declared officer has a `kube` block.
+func declaresKube(list []officers.Officer) bool {
+	for _, o := range list {
+		if o.Kube != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// focusSummarizer is the focus summarizer for cfg: ScaleDown's client on
+// OpenRouter, spending each owner's key from plane, with MUSTER_FOCUS_MODEL's
+// model (cfg.FocusModel).
+func focusSummarizer(cfg config, plane *credentials.Plane) *focus.ScaleDown {
+	return &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.FocusModel}
 }

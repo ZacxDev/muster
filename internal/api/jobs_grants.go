@@ -13,7 +13,8 @@ import (
 // running it must not be able to write to the repository under review. The one
 // way an agent gets a GitHub credential is a grant on a connector that reaches
 // github.com — the `github` connector (the GitHub App's one-repository token,
-// contents:write, docs/github-app.md) or any stored connector with a github.com
+// contents:write in the default write mode, docs/github-app.md) or any stored
+// connector with a github.com
 // host: with such a grant APPROVED, ccd routes every https://github.com/ git
 // request of the pod through muster's proxy, which adds the credential
 // (internal/podagent gitroute.go). So the rule, in one predicate
@@ -89,6 +90,23 @@ type errPoolWorkerGitHubGrant struct{ agent, pool, connector string }
 func (e errPoolWorkerGitHubGrant) Error() string {
 	return fmt.Sprintf("%s is a member of worker pool %s, and a pool worker holds no GitHub credential "+
 		"(connector %s reaches github.com); the request was not approved", e.agent, e.pool, e.connector)
+}
+
+// refuseGrantApproval is why the owner may not approve grant g, or nil: THE
+// refusal every approval door asks (the card's Approve, connector_request_decide,
+// a credential entered for a request) — a worker-pool member's GitHub-reaching
+// grant (refusePoolWorkerGitHubGrant), or an officer instance's grant on any
+// connector but `github` (officerConnectorRefusal), e.g. one filed before that
+// rule existed. It FAILS CLOSED on an unreadable agent.
+func (s *Server) refuseGrantApproval(ctx context.Context, g connectors.Grant) error {
+	if err := s.refusePoolWorkerGitHubGrant(ctx, g); err != nil {
+		return err
+	}
+	a, err := s.ext.Agents.Get(ctx, g.AgentID)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errGrantUnreadable, err)
+	}
+	return s.officerConnectorRefusal(a, g.Connector)
 }
 
 // refusePoolWorkerGitHubGrant is errPoolWorkerGitHubGrant when approving grant

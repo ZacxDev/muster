@@ -97,10 +97,19 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 	}
 	applyTurnRoute(req)
 
-	resp, err := client.Do(req)
+	// The send fence, if the turn carries one (sendfence.go). This path sends
+	// no 103 and its status line comes after the turn, so its hold ends at
+	// the cap (SendFenceHoldCap).
+	freq, fenced, err := fenceRequest(req)
 	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(freq)
+	if err != nil {
+		fenced(false)
 		return "", fmt.Errorf("request: %w", err)
 	}
+	fenced(resp.StatusCode == http.StatusOK)
 	defer resp.Body.Close()
 	observeTurnRoute(req, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -127,7 +136,7 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 	}
 
 	var full strings.Builder
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(activityBody(ctx, resp.Body))
 	// The cap matches responses.go's deliberately: an SSE "line" here is one delta and
 	// is normally tiny, but a runtime is free to emit a large one, and a line over the
 	// cap is a SCANNER ERROR rather than a skipped line — it ends the stream and is

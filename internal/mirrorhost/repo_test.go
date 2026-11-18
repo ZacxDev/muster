@@ -180,7 +180,17 @@ func TestTheLargestReposMessageFitsOneFrame(t *testing.T) {
 			t.Fatalf("instrument check: a name was cut to %d bytes, so this is not the worst case", len(v))
 		}
 	}
-	b, err := json.Marshal(mirror.Msg{Type: mirror.TypeRepos, Repos: kept})
+	// Beside each name, the longest GitHub owner/name (39 + 1 + 100 bytes), as
+	// the same message carries it (Msg.GitHubRepos).
+	gh := map[string]string{}
+	for _, w := range windows {
+		gh[w.ID] = strings.Repeat("o", 39) + "/" + strings.Repeat("n", 100)
+	}
+	keptGH := mirror.NormalizeGitHubRepos(gh, mirror.NormalizeWindows(windows, 0))
+	if len(keptGH) != mirror.MaxWindows {
+		t.Fatalf("instrument check: %d GitHub repositories kept, want %d", len(keptGH), mirror.MaxWindows)
+	}
+	b, err := json.Marshal(mirror.Msg{Type: mirror.TypeRepos, Repos: kept, GitHubRepos: keptGH})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +219,8 @@ func TestTmuxReadsEveryWindowsWorkingDirectory(t *testing.T) {
 	proc.add(300, 1, "zsh", filepath.Join(root, "src/fixture-repo/cmd/tool"), "-zsh")
 	proc.add(400, 1, "vim", "", "vim") // no cwd link
 	bin := filepath.Join(t.TempDir(), "tmux")
-	out := "1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tzsh\t/dev/pts/3\t\t\tshells\n" +
-		"1\t@4\t2\t0\t%4\t400\t1791903000\t1791903000\tvim\t/dev/pts/4\t\t\tshells\n"
+	out := "1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tzsh\t/dev/pts/3\t\t\t\tshells\n" +
+		"1\t@4\t2\t0\t%4\t400\t1791903000\t1791903000\tvim\t/dev/pts/4\t\t\t\tshells\n"
 	listing := filepath.Join(t.TempDir(), "listing")
 	must(t, os.WriteFile(listing, []byte(out), 0o644))
 	must(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat '"+listing+"'\n"), 0o755))

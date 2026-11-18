@@ -49,10 +49,10 @@ var htmxAjaxCall = regexp.MustCompile(`htmx\.ajax\(\s*'([A-Z]+)'\s*,\s*'([^']+)'
 // copied out of another application.
 func TestEveryHTMXAjaxCallInTheShellNamesARouteAndATargetThatExist(t *testing.T) {
 	var buf bytes.Buffer
-	if err := ui.RenderPage(&buf, "tasks", ui.Features{GitHub: true}); err != nil {
+	if err := ui.RenderPage(&buf, "tasks", ui.Features{Connectors: true}); err != nil {
 		t.Fatalf("rendering the shell: %v", err)
 	}
-	shell := buf.String()
+	shell := expandStaticScripts(t, buf.String())
 
 	calls := htmxAjaxCall.FindAllStringSubmatch(shell, -1)
 	// 🔴 POSITIVE CONTROL. Zero matches is what this test reports for a shell that

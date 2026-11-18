@@ -29,6 +29,7 @@ func storeFor(t *testing.T) (*PGStore, *pgxpool.Pool) {
 		for _, q := range []string{
 			`DELETE FROM audit_log`,
 			`DELETE FROM invites`,
+			`DELETE FROM team_members`,
 			`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 			`DELETE FROM users WHERE id <> 1`,
 		} {

@@ -388,8 +388,9 @@ func TestTheTerminalPageCarriesTheFreshnessWindowAndTheConfirmRoute(t *testing.T
 	if ff > want || ff <= want-1000 {
 		t.Fatalf("data-fresh-for = %d, want (%d, %d]", ff, want-1000, want)
 	}
-	if !strings.Contains(page, `data-remember="mirror:ws"`) {
-		t.Fatalf("the Interactive choice is not remembered per host: %s", attrOf(page, "data-remember"))
+	// Live keys are always on: no choice is remembered, so nothing names one.
+	if strings.Contains(page, `data-remember=`) {
+		t.Fatalf("the page still carries a remembered Interactive choice: %s", attrOf(page, "data-remember"))
 	}
 	agentPage := ui.AgentTerminalPage(ui.AgentTerminalView{Name: "x"})
 	var b strings.Builder

@@ -1,0 +1,460 @@
+package chiefnudge
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/users"
+)
+
+// Owner is a user the sweep visits.
+type Owner struct {
+	ID   int64
+	Name string // display name, "" for none
+}
+
+// Store is chief_nudges.
+type Store interface {
+	// Owners is every user who is not disabled (system scope).
+	Owners(ctx context.Context) ([]Owner, error)
+	// Decided reports whether the caller's session (kind, key) already has a
+	// decision for streak.
+	Decided(ctx context.Context, kind, key, streak string) (bool, error)
+	// Insert records d for the caller, with its audit row; inserted false (and
+	// nothing written) when another decision for the same streak — or, with
+	// d.EpisodeID set, the same episode — won.
+	Insert(ctx context.Context, d Decision, action string) (Decision, bool, error)
+	// NudgesForAnchor counts the caller's nudges (would_send, queued, sent) to
+	// (kind, key) since the owner message anchor.
+	NudgesForAnchor(ctx context.Context, kind, key, anchor string) (int, error)
+	// NudgesSince counts every owner's LIVE nudges (queued, sent) decided at
+	// or after since: the global hourly cap, which bounds what is sent and
+	// never holds shadow mode back (system scope).
+	NudgesSince(ctx context.Context, since time.Time) (int, error)
+	// Injected is what the sweep pasted into the caller's session (kind, key):
+	// every live nudge, and any relay text a row from before notices holds.
+	Injected(ctx context.Context, kind, key string) ([]string, error)
+	// Pending is every owner's live decision still in flight (queued, asked,
+	// a notice still open; relay_queued, which only an older replica can still
+	// write during a rolling deploy, for the sweep to fail), system scope.
+	Pending(ctx context.Context, limit int) ([]Decision, error)
+	// Get is the caller's decision id.
+	Get(ctx context.Context, id int64) (Decision, error)
+	// ByAsk is the caller's decision that raised ask id.
+	ByAsk(ctx context.Context, askID int64) (Decision, error)
+	// ByAsks is ByAsk for several asks in ONE read: the caller's decisions
+	// that raised any of askIDs, by ask id (an id no decision of the caller's
+	// raised is absent). What the attention queue joins its notices to.
+	ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error)
+	// Move sets the caller's decision id from one of from to outcome, with its
+	// detail and (when non-zero) its ask and queued row,
+	// writing action's audit row when action is not ""; moved false when the
+	// row was not in one of from.
+	Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error)
+	// List is the caller's newest decisions.
+	List(ctx context.Context, limit int) ([]Decision, error)
+	// ForEpisode is the caller's decision taken in session-state episode id,
+	// ok false when it has none (the sweep judges an episode at most once; the
+	// 0078 unique index is the guarantee).
+	ForEpisode(ctx context.Context, episodeID int64) (Decision, bool, error)
+}
+
+// Move is what Store.Move writes.
+type Move struct {
+	Outcome     string
+	Detail      string
+	AskID       int64
+	SendQueueID int64
+}
+
+// ErrNotFound: no such decision among the caller's.
+var ErrNotFound = errors.New("chiefnudge: no such decision")
+
+// Object is the audit_log object naming decision id.
+func Object(id int64) string { return "chief_nudge:" + strconv.FormatInt(id, 10) }
+
+// PG is Store on Postgres, under row-level security.
+type PG struct{ pool *pgxpool.Pool }
+
+// NewPG is Store over pool.
+func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
+
+const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_session, mirror_window, coalesce(agent_id, 0), coalesce(chat_session_id, 0),
+	title, streak_key, anchor_key, coalesce(idle_since, 'epoch'::timestamptz), decided_at, decision, message, quote_id,
+	coalesce(quote_at, 'epoch'::timestamptz), quote_text, covered_action, question, options, reason, mode, outcome, detail,
+	coalesce(ask_id, 0), coalesce(send_queue_id, 0), relay_text, updated_at,
+	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error,
+	coalesce(episode_id, 0), quote_source, chief_chat_in_view`
+
+func scan(row pgx.Row) (Decision, error) {
+	var d Decision
+	var opts []byte
+	err := row.Scan(&d.ID, &d.Owner, &d.Kind, &d.Key, &d.Host, &d.TmuxSession, &d.Window, &d.AgentID, &d.ChatSessionID,
+		&d.Title, &d.StreakKey, &d.AnchorKey, &d.IdleSince, &d.DecidedAt, &d.Decision, &d.Message, &d.QuoteID,
+		&d.QuoteAt, &d.QuoteText, &d.Covered, &d.Question, &opts, &d.Reason, &d.Mode, &d.Outcome, &d.Detail,
+		&d.AskID, &d.SendQueueID, &d.RelayText, &d.UpdatedAt,
+		&d.JevLabel, &d.JevNeedsInput, &d.JevAsksPermission, &d.JevNeither, &d.JevAskScore, &d.JevModel, &d.JevLatencyMS, &d.JevError,
+		&d.EpisodeID, &d.QuoteSource, &d.ChiefChatInView)
+	if err != nil {
+		return Decision{}, err
+	}
+	for _, t := range []*time.Time{&d.IdleSince, &d.QuoteAt} {
+		if t.Unix() == 0 {
+			*t = time.Time{}
+		}
+	}
+	if len(opts) > 0 {
+		_ = json.Unmarshal(opts, &d.Options)
+	}
+	return d, nil
+}
+
+func collect(rows pgx.Rows, err error) ([]Decision, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Decision
+	for rows.Next() {
+		d, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func nullID(id int64) any {
+	if id <= 0 {
+		return nil
+	}
+	return id
+}
+
+// audit appends one audit_log row about decision id as ctx's principal, in tx.
+func audit(ctx context.Context, tx pgx.Tx, action string, id int64, detail map[string]any) error {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return errors.New("chiefnudge: an audited write needs a user principal")
+	}
+	return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, action, Object(id), detail)
+}
+
+// auditDetail is what every audit row carries about d: never the session's
+// text, only the decision's own fields and where it went.
+func auditDetail(d Decision) map[string]any {
+	m := map[string]any{"session_kind": d.Kind, "session_key": d.Key, "decision": d.Decision, "mode": d.Mode, "outcome": d.Outcome}
+	if d.Host != "" {
+		m["host"] = d.Host
+	}
+	if d.QuoteID != "" {
+		m["quote_id"] = d.QuoteID
+	}
+	if d.QuoteSource != "" {
+		m["quote_source"] = d.QuoteSource
+	}
+	if d.ChiefChatInView {
+		m["chief_chat_in_view"] = true
+	}
+	if d.AskID > 0 {
+		m["ask_id"] = d.AskID
+	}
+	if d.SendQueueID > 0 {
+		m["send_queue_id"] = d.SendQueueID
+	}
+	if d.EpisodeID > 0 {
+		m["episode_id"] = d.EpisodeID
+	}
+	if d.Detail != "" {
+		m["detail"] = d.Detail
+	}
+	return m
+}
+
+// sys is the store's one system-scope helper (internal/authz's ledger names
+// it): the sweep's three cross-owner reads — the owners it visits, the global
+// hourly count and the live decisions in flight — and the session-state
+// pass's team owners (TeamHostOwners). Every one of those decisions is then
+// acted on as its own owner, never under System.
+func sys(ctx context.Context) context.Context { return authz.System(ctx) }
+
+// Owners implements Store.
+func (p *PG) Owners(ctx context.Context) ([]Owner, error) {
+	rows, err := p.pool.Query(sys(ctx), `SELECT id, coalesce(display_name, '') FROM users WHERE id IN (`+users.EnabledPersonIDs+`) ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Owner
+	for rows.Next() {
+		var o Owner
+		if err := rows.Scan(&o.ID, &o.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// TeamHost is one team the session-state pass visits (TeamHostOwners): Live
+// when it holds an unrevoked mirror token.
+type TeamHost struct {
+	ID   int64
+	Live bool
+}
+
+// TeamHostOwners is every TEAM the session-state pass's team arm visits
+// (internal/sessionstate PG.OwnerKinds, team sharing 2b.3), by id: each team
+// holding an unrevoked mirror token (Live), and each that holds none but still
+// has an open episode or a shown, uncleared one — its last token revoked
+// mid-wait (#690 round 1, 🟡2), so its pass ends and withdraws them. NOT the
+// nudge sweep's owners (Owners stays persons only: a team session gets no
+// chief nudge until a team chief binds to team hosts).
+func (p *PG) TeamHostOwners(ctx context.Context) ([]TeamHost, error) {
+	rows, err := p.pool.Query(sys(ctx), `SELECT u.id,
+			EXISTS (SELECT 1 FROM mirror_tokens t WHERE t.owner_id = u.id AND t.revoked_at IS NULL)
+		FROM users u WHERE u.kind = 'team' AND (
+			EXISTS (SELECT 1 FROM mirror_tokens t WHERE t.owner_id = u.id AND t.revoked_at IS NULL)
+			OR EXISTS (SELECT 1 FROM session_episodes e WHERE e.owner_id = u.id
+				AND (e.ended_at IS NULL OR (e.pushed_at IS NOT NULL AND e.cleared_at IS NULL))))
+		ORDER BY u.id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (TeamHost, error) {
+		var t TeamHost
+		err := r.Scan(&t.ID, &t.Live)
+		return t, err
+	})
+}
+
+// Decided implements Store.
+func (p *PG) Decided(ctx context.Context, kind, key, streak string) (bool, error) {
+	var n int
+	err := p.pool.QueryRow(ctx, `SELECT count(*) FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND streak_key = $3`,
+		kind, key, streak).Scan(&n)
+	return n > 0, err
+}
+
+// JevForStreak is the stall classifier's answer recorded on the caller's
+// decision for (kind, key, streak): ok false when no decision holds a usable
+// one (none recorded, or it failed). Session state reads it so the classifier
+// is billed once per streak whichever pass ran first.
+func (p *PG) JevForStreak(ctx context.Context, kind, key, streak string) (Result, bool, error) {
+	var r Result
+	var ni, ap, ne float64
+	err := p.pool.QueryRow(ctx, `SELECT jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error
+		FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND streak_key = $3`, kind, key, streak).
+		Scan(&r.Label, &ni, &ap, &ne, &r.AskScore, &r.Model, &r.LatencyMS, &r.Err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, false, nil
+	}
+	if err != nil {
+		return Result{}, false, err
+	}
+	r.Scores = map[string]float64{LabelNeedsInput: ni, LabelAsksPermission: ap, LabelNeither: ne}
+	return r, r.OK(), nil
+}
+
+// ForStreak is the caller's decision for (kind, key, streak): ok false when the
+// streak has none yet. Session state's episode push reads it, so what the
+// chief decided about a stop decides whether the stop pushes
+// (docs/design/session-state.md, "Who decides what").
+func (p *PG) ForStreak(ctx context.Context, kind, key, streak string) (Decision, bool, error) {
+	d, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND streak_key = $3`,
+		kind, key, streak))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, false, nil
+	}
+	if err != nil {
+		return Decision{}, false, err
+	}
+	return d, true, nil
+}
+
+// ForEpisode is the caller's decision taken in session-state episode id: ok
+// false when the episode has none yet. The sweep reads it so an episode is put
+// to the chief at most once (docs/design/session-state.md, "The Chief: nudge,
+// leave or notify").
+func (p *PG) ForEpisode(ctx context.Context, episodeID int64) (Decision, bool, error) {
+	d, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM chief_nudges WHERE episode_id = $1`, episodeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, false, nil
+	}
+	if err != nil {
+		return Decision{}, false, err
+	}
+	return d, true, nil
+}
+
+// Insert implements Store.
+func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, bool, error) {
+	d = Clean(d)
+	opts, err := json.Marshal(d.Options)
+	if err != nil {
+		return Decision{}, false, err
+	}
+	var out Decision
+	inserted := false
+	err = pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `INSERT INTO chief_nudges (session_kind, session_key, mirror_host, mirror_session, mirror_window, agent_id,
+				title, streak_key, anchor_key, idle_since, decision, message, quote_id, quote_at, quote_text, covered_action,
+				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text, chat_session_id,
+				jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error,
+				episode_id, quote_source, chief_chat_in_view)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
+				$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+			-- Either claim: one decision per streak (chief_nudges_one_per_streak)
+			-- and, with session state on, one per episode
+			-- (chief_nudges_one_per_episode, migration 0078).
+			ON CONFLICT DO NOTHING
+			RETURNING `+cols,
+			d.Kind, d.Key, d.Host, d.TmuxSession, d.Window, nullID(d.AgentID), d.Title, d.StreakKey, d.AnchorKey, nullTime(d.IdleSince),
+			d.Decision, d.Message, d.QuoteID, nullTime(d.QuoteAt), d.QuoteText, d.Covered, d.Question, opts, d.Reason, d.Mode,
+			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText, nullID(d.ChatSessionID),
+			d.JevLabel, d.JevNeedsInput, d.JevAsksPermission, d.JevNeither, d.JevAskScore, d.JevModel, d.JevLatencyMS, d.JevError,
+			nullID(d.EpisodeID), d.QuoteSource, d.ChiefChatInView)
+		var err error
+		out, err = scan(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		inserted = true
+		if action == "" {
+			return nil
+		}
+		return audit(ctx, tx, action, out.ID, auditDetail(out))
+	})
+	if err != nil {
+		return Decision{}, false, err
+	}
+	return out, inserted, nil
+}
+
+// nudgeOutcomes are the outcomes that count as a nudge given (the caps).
+var nudgeOutcomes = []string{OutcomeWouldSend, OutcomeQueued, OutcomeSent}
+
+// NudgesForAnchor implements Store.
+func (p *PG) NudgesForAnchor(ctx context.Context, kind, key, anchor string) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx, `SELECT count(*) FROM chief_nudges WHERE session_kind = $1 AND session_key = $2
+		AND anchor_key = $3 AND decision = 'nudge' AND outcome = ANY($4)`, kind, key, anchor, nudgeOutcomes).Scan(&n)
+	return n, err
+}
+
+// NudgesSince implements Store.
+func (p *PG) NudgesSince(ctx context.Context, since time.Time) (int, error) {
+	var n int
+	err := p.pool.QueryRow(sys(ctx), `SELECT count(*) FROM chief_nudges WHERE decided_at >= $1
+		AND decision = 'nudge' AND mode = 'live' AND outcome = ANY($2)`, since, nudgeOutcomes).Scan(&n)
+	return n, err
+}
+
+// Injected implements Store.
+func (p *PG) Injected(ctx context.Context, kind, key string) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `SELECT message FROM chief_nudges WHERE session_kind = $1 AND session_key = $2
+			AND mode = 'live' AND message <> '' AND outcome IN ('queued', 'sent', 'failed')
+		UNION ALL
+		SELECT relay_text FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND relay_text <> ''`, kind, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// Pending implements Store.
+func (p *PG) Pending(ctx context.Context, limit int) ([]Decision, error) {
+	return collect(p.pool.Query(sys(ctx), `SELECT `+cols+` FROM chief_nudges
+		WHERE outcome IN ('queued', 'asked', 'relay_queued') ORDER BY id LIMIT $1`, limit))
+}
+
+// Get implements Store.
+func (p *PG) Get(ctx context.Context, id int64) (Decision, error) {
+	d, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM chief_nudges WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, ErrNotFound
+	}
+	return d, err
+}
+
+// ByAsk implements Store.
+func (p *PG) ByAsk(ctx context.Context, askID int64) (Decision, error) {
+	d, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM chief_nudges WHERE ask_id = $1`, askID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, ErrNotFound
+	}
+	return d, err
+}
+
+// ByAsks implements Store, under row-level security like ByAsk.
+func (p *PG) ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error) {
+	out := map[int64]Decision{}
+	if len(askIDs) == 0 {
+		return out, nil
+	}
+	list, err := collect(p.pool.Query(ctx, `SELECT `+cols+` FROM chief_nudges WHERE ask_id = ANY($1)`, askIDs))
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range list {
+		out[d.AskID] = d
+	}
+	return out, nil
+}
+
+// Move implements Store.
+func (p *PG) Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error) {
+	clean := Clean(Decision{Detail: m.Detail})
+	moved := false
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		d, err := scan(tx.QueryRow(ctx, `UPDATE chief_nudges SET outcome = $3, detail = $4,
+				ask_id = coalesce($5, ask_id), send_queue_id = coalesce($6, send_queue_id),
+				updated_at = now()
+			WHERE id = $1 AND outcome = ANY($2) RETURNING `+cols,
+			id, from, m.Outcome, clean.Detail, nullID(m.AskID), nullID(m.SendQueueID)))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		moved = true
+		if action == "" {
+			return nil
+		}
+		return audit(ctx, tx, action, d.ID, auditDetail(d))
+	})
+	return moved, err
+}
+
+// List implements Store.
+func (p *PG) List(ctx context.Context, limit int) ([]Decision, error) {
+	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM chief_nudges ORDER BY decided_at DESC, id DESC LIMIT $1`, limit))
+}

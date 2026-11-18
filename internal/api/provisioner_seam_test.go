@@ -90,7 +90,7 @@ import (
 //	  handler can reach s.ext.Provisioner unguarded through this package's call
 //	  graph MUST be wrapped, and every wrapped one must be able to. The ledger
 //	  plays no part in this half, which is why a matching two-line edit cannot
-//	  satisfy it: `POST /agents` still resolves to handleAgentCreate, which
+//	  satisfy it: `POST /api/agents` still resolves to handleAPIAgentCreate, which
 //	  still reaches Dispatch through createAndDispatchAgent.
 //
 // A plain "every wrapped route refuses" check would be satisfied by wrapping
@@ -133,22 +133,28 @@ var provisionerDeps = []provisionerDep{
 			"DELETE /agents/{id}",
 			"GET /agents/{name}/logs/stream",
 			"GET /agents/{name}/terminal/ws",
-			"POST /agents",
 			"POST /agents/{id}/start",
 			"POST /agents/{id}/stop",
+			"POST /api/agents",
 			"POST /api/chief/replace",
 			"POST /chief/provision",
+			// The team chief's manager door (team_admin.go).
+			"POST /teams/{id}/chief/provision",
+			"POST /teams/{id}/chief/restart",
+			"POST /teams/{id}/chief/stop",
 		},
 		callers: []string{
-			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision
-			"(*Server).handleAgentCreate",      // KickoffUndeliverableReason, the synchronous pre-flight before the row
+			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAPIAgentCreate, provisionChief
+			"(*Server).handleAPIAgentCreate",   // KickoffUndeliverableReason, the synchronous pre-flight before the row
 			"(*Server).handleAgentDelete",      // Destroy (passed to destroyAgent)
 			"(*Server).handleAgentLogsStream",  // StreamLogs
-			"(*Server).handleAgentStart",       // Start
-			"(*Server).handleAgentStop",        // Stop
 			"(*Server).handleAgentTerminalWS",  // AttachTerminal
-			"(*Server).handleChiefProvision",   // Start
+			"(*Server).provisionChief",         // Start; reached from handleChiefProvision, and handleAccountChief's nil-checked branch
 			"(*Server).replaceChief",           // Destroy + Start; reached from handleChiefReplace
+			// Start / Stop / Stop+Start: THE browser lifecycle (agents.go), reached
+			// from the agent page's Start and Stop and the team chief page's
+			// Start, Stop and Restart (team_admin.go), all through goLifecycle.
+			"(*Server).runLifecycleStep",
 		},
 	},
 	{
@@ -160,11 +166,21 @@ var provisionerDeps = []provisionerDep{
 			"POST /agents/{name}/send",
 			"POST /api/agents/{name}/messages",
 			"POST /api/jobs",
+			// The view's chief mode (view_chief.go): the owner's line runs as a
+			// chief turn (startAgentTurn → chatTurn), as POST /agents/{name}/send.
+			"POST /mirror/view/chief",
+			// A fresh primary's handover (chief_chats.go handOverPrimary): two
+			// chief turns, runUserTurn → chatTurn.
+			"POST /agents/{id}/sessions/fresh-primary",
+			// A side chat continued in a new session (chief_continue.go
+			// continueSession): two chief turns, runUserTurn → chatTurn.
+			"POST /agents/{id}/sessions/{sid}/continue",
 		},
 		callers: []string{
-			"(*Server).askTurn",    // Chat, or ChatWithTools + Chat for the gateway sidecar; reached from handleAPIAgentSendMessage
-			"(*Server).chatTurn",   // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
-			"(*Server).runJobTurn", // Chat; reached from runJob, started only by handleJobCreate (POST /api/jobs)
+			"(*Server).chatTurn",         // Chat for a team's gateway agent (teamGatewayToolless); reached from every chat door, as runTurnWithTools is
+			"(*Server).gatewayTurn",      // Chat (or runTurnWithTools); reached only from handleAPIAgentSendMessage (POST /api/agents/{name}/messages)
+			"(*Server).runJobTurn",       // Chat; reached from runJob, started only by handleJobCreate (POST /api/jobs)
+			"(*Server).runTurnWithTools", // ChatWithTools + Chat; reached from chatTurn (runUserTurn: handleAgentWS, handleAgentSend) and gatewayTurn
 		},
 	},
 }
@@ -550,6 +566,17 @@ func inspectProvisionerUse(body *ast.BlockStmt, field string) (calls, nilChecked
 			if ok && isProvisionerExpr(sel.X, field) {
 				calls = true
 			}
+			// s.lifecycleServed() and s.dispatchServed() ARE the Provisioner's
+			// nil check, named (ext.go): lifecycleServed is `s.ext.Provisioner !=
+			// nil` and dispatchServed is lifecycleServed AND not the Compose
+			// chief. internal/modulegate's TestEveryProvisionerGateIsLedgered pins
+			// both bodies, so a call to either is a guard by construction.
+			if ok && field == "Provisioner" {
+				if recv, isIdent := sel.X.(*ast.Ident); isIdent && recv.Name == "s" &&
+					(sel.Sel.Name == "lifecycleServed" || sel.Sel.Name == "dispatchServed") {
+					nilChecked = true
+				}
+			}
 		case *ast.BinaryExpr:
 			if e.Op != token.EQL && e.Op != token.NEQ {
 				return true
@@ -638,7 +665,7 @@ type routeRegistration struct {
 // "unchecked", they are outside the seam. A handler that closes over s does not
 // belong here; give it a name on *Server instead.
 var unnameableRouteAllowlist = map[string]string{
-	"GET /metrics": "promhttp.Handler() — built by the Prometheus client over the default registry; takes no Server",
+	"GET /metrics": "promhttp.Handler() inside MetricsHandler, the metrics listener's own mux — built by the Prometheus client over the default registry; takes no Server",
 	"GET /static/": "staticHandler() — a zero-argument constructor over the embedded web FS; takes no Server",
 }
 

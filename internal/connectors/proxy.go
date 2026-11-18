@@ -20,10 +20,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/safedial"
 )
 
 // Policy is the proxy's network policy for upstream connections.
@@ -46,107 +46,23 @@ type Policy struct {
 // owner's role could not be read). Retryable.
 var ErrRoleUncertain = errors.New("connectors: the agent's owner's role could not be read; retry shortly")
 
-// ErrForbiddenAddress is the dial refusal for a non-public destination.
-var ErrForbiddenAddress = errors.New("connectors: refusing to connect to a non-public address")
+// ErrForbiddenAddress is the dial refusal for a non-public destination
+// (internal/safedial's, so errors.Is matches whichever dialer refused).
+var ErrForbiddenAddress = safedial.ErrForbiddenAddress
 
-// nonPublic are the ranges no connector may reach, beyond what netip's own
-// predicates (private, loopback, link-local, multicast, unspecified) cover.
-var nonPublic = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
-	netip.MustParsePrefix("100.64.0.0/10"),  // RFC 6598 shared address space (CGNAT, mesh overlays)
-	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
-	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
-	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and broadcast
-	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64: maps onto IPv4, private ranges included
-	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
-	netip.MustParsePrefix("2002::/16"),      // 6to4: embeds an IPv4 address
-	netip.MustParsePrefix("100::/64"),       // discard-only
-	netip.MustParsePrefix("2001:db8::/32"),  // documentation
-	netip.MustParsePrefix("fec0::/10"),      // deprecated site-local
-	netip.MustParsePrefix("::ffff:0:0/96"),  // IPv4-mapped (unmapped before the check; belt and braces)
+// guard is this policy's dialer. The address rule itself — which ranges are
+// non-public, and checking the RESOLVED address at connect time — lives in
+// internal/safedial, shared with every other guarded dial site.
+func (p Policy) guard() safedial.Guard {
+	return safedial.Guard{AllowLoopback: p.AllowLoopback, Resolve: p.Resolve}
 }
 
-// AllowedAddr reports whether the policy permits connecting to ip.
-func (p Policy) AllowedAddr(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if !ip.IsValid() {
-		return false
-	}
-	if ip.IsLoopback() {
-		return p.AllowLoopback
-	}
-	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	for _, pfx := range nonPublic {
-		if pfx.Contains(ip) {
-			return false
-		}
-	}
-	return true
-}
-
-func (p Policy) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
-	if p.Resolve != nil {
-		return p.Resolve(ctx, host)
-	}
-	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-}
-
-// dialContext resolves the host itself, refuses the connection if ANY resolved
-// address is non-public, and dials a checked ADDRESS rather than the name.
-//
-// 🔴 DIALLING THE CHECKED ADDRESS IS WHAT DEFEATS DNS REBINDING. Checking a
-// name's resolution and then handing the NAME to the dialer resolves twice; an
-// attacker-controlled zone can answer public the first time and private the
-// second. The Dialer's Control hook re-checks the socket's actual destination as
-// a backstop for any path that reaches the dialer without coming through here.
+// dialContext is safedial.Guard.DialContext under this policy: resolve, refuse
+// if ANY answer is non-public, dial a checked ADDRESS (which is what defeats DNS
+// rebinding), and re-check the socket's destination in the Dialer's Control
+// hook.
 func (p Policy) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	var ips []netip.Addr
-	if ip, perr := netip.ParseAddr(host); perr == nil {
-		ips = []netip.Addr{ip}
-	} else {
-		ips, err = p.resolve(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("connectors: %s resolved to no address", host)
-	}
-	for _, ip := range ips {
-		if !p.AllowedAddr(ip) {
-			return nil, fmt.Errorf("%w (%s resolves to one)", ErrForbiddenAddress, host)
-		}
-	}
-	d := &net.Dialer{
-		Timeout: 15 * time.Second,
-		Control: func(_, address string, _ syscall.RawConn) error { return p.checkSocketAddr(address) },
-	}
-	var lastErr error
-	for _, ip := range ips {
-		c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		if err == nil {
-			return c, nil
-		}
-		lastErr = err
-	}
-	return nil, lastErr
-}
-
-// checkSocketAddr is the dialer's last-moment check on the address a socket is
-// about to connect to ("ip:port").
-func (p Policy) checkSocketAddr(address string) error {
-	ap, err := netip.ParseAddrPort(address)
-	if err != nil || !p.AllowedAddr(ap.Addr()) {
-		return fmt.Errorf("%w (socket destination)", ErrForbiddenAddress)
-	}
-	return nil
+	return p.guard().DialContext(ctx, network, addr)
 }
 
 // Transport builds the upstream transport for this policy.
@@ -175,6 +91,212 @@ type Caller struct {
 	// without one. A virtual connector that scopes its credential to the agent's
 	// repository (the GitHub App) reads it; a stored connector ignores it.
 	Repo string
+	// ReadRepos are further repositories (owner/name) the caller may READ
+	// through a virtual connector that scopes its credential per repository
+	// (the GitHub App): a request that targets one of them gets a READ-ONLY
+	// credential for that one repository, whatever ReadOnly and the
+	// connector's own mode say. Set for an officer instance from its
+	// officer's `read_repos` (api.Server.agentReadRepos); nil for every other
+	// caller. A stored connector ignores it. The grant is approved for
+	// RepoScope(Repo, ReadRepos).
+	ReadRepos []string
+	// PublicReadRepos are PUBLIC repositories (owner/name) the caller may READ
+	// through the `github` connector with NO grant: the standing public read
+	// (public_read.go) — anonymous, reads only, each verified public with
+	// GitHub. Set for an instance of a builtin officer that declares
+	// read_grant "standing" (api.Server.agentPublicReadRepos); nil for every
+	// other caller. They are never part of the grant's RepoScope.
+	PublicReadRepos []string
+	// ReadOnly asks a virtual connector that mints a credential (the GitHub
+	// App) for a READ-ONLY one for this caller, whatever its own mode. Set for
+	// an officer instance (api.Server.callerOf). A stored connector ignores
+	// it: its secret is whatever the operator stored.
+	ReadOnly bool
+	// Gate, when set, REPLACES the connector's own credential for this caller
+	// and decides every request before a credential exists (see [Gate]). Set
+	// for an officer instance that ships code (api.Server.callerOf); nil for
+	// every other caller.
+	Gate Gate
+}
+
+// Gate is a per-caller WRITE POLICY with its own credential: an officer
+// instance whose writes muster must filter, because the platform it writes to
+// enforces nothing itself (a private repository with no branch protection).
+//
+// 🔴 THE GATE RUNS IN muster-server, BEFORE ANY CREDENTIAL IS MINTED, AND IT IS
+// THE ONLY WAY A GATED CALLER'S REQUEST GETS ONE. Serve asks Admit first; a
+// refusal is a 403 and the upstream never sees a byte. Only an admitted request
+// is handed a credential, and it comes from Gate.Credential — never from the
+// connector's stored secret or the deployment's App — so a gated caller cannot
+// reach an ungated credential by any path through this proxy.
+type Gate interface {
+	// Connector is the connector name the gate serves. A gated caller's
+	// request for any other connector is refused.
+	Connector() string
+	// Describe is the connector's description as the gate serves it: its
+	// hosts (the allowlist) and auth shape.
+	Describe() Connector
+	// Admit decides one request (host on Describe().Hosts; rest escaped, no
+	// leading slash). It may return a request whose body was re-wrapped after
+	// inspection. A refusal must wrap [ErrGateRefused]; its text is shown to
+	// the agent and must carry no secret. Any other error is a 502.
+	Admit(r *http.Request, host, rest string) (*http.Request, error)
+	// Credential is the secret for an admitted request (anonymous=true: send
+	// none), as [Virtual.Credential].
+	Credential(ctx context.Context, caller Caller, host, rest string) (secret string, anonymous bool, err error)
+	// Rejected is told the upstream answered 401 to a request that carried
+	// Credential's secret.
+	Rejected(caller Caller)
+}
+
+// ErrGateRefused is a [Gate]'s refusal of one request.
+var ErrGateRefused = errors.New("connectors: refused by this agent's write policy")
+
+// ErrGateConflict is a [Gate]'s refusal of a write whose CONTENT conflicts with
+// the policy (a forbidden path, a secret shape): answered 409, not 403. It
+// wraps [ErrGateRefused], so every check for a refusal still sees one.
+var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
+
+// afterForwardKey carries a gate's after-forward hook in an admitted
+// request's context.
+type afterForwardKey struct{}
+
+// ForwardResult is what the proxy saw of the upstream's answer to an admitted
+// request, handed to its after-forward hook.
+type ForwardResult struct {
+	// Forwarded: the request was handed to the upstream (false: the proxy
+	// answered it itself after Admit, e.g. no credential could be minted).
+	Forwarded bool
+	// Status is the upstream's status, 0 when no answer head arrived.
+	Status int
+	// Body is the start of the upstream's response body as the proxy read it
+	// (before redaction, at most MaxAfterForwardBody bytes), and Complete
+	// whether it was read to its end within that bound. A client that went
+	// away stops the relay, and with it the read: Complete is then false.
+	Body     []byte
+	Complete bool
+}
+
+// MaxAfterForwardBody bounds ForwardResult.Body.
+const MaxAfterForwardBody = 1 << 20
+
+// afterForward is the hook and what the proxy captured for it.
+type afterForward struct {
+	f        func(ctx context.Context, res ForwardResult)
+	mu       sync.Mutex
+	res      ForwardResult
+	once     sync.Once
+	captured bool
+}
+
+// WithAfterForward returns r carrying f: a [Gate]'s Admit returns it so that
+// the proxy calls f ONCE with what it saw of the upstream's answer.
+//
+// 🔴 f RUNS WHATEVER THE CLIENT DOES. Serve defers it as soon as Admit has
+// admitted the request, so it runs on every path out of Serve: a forwarded
+// request, a proxy refusal after Admit (Forwarded false), and a client that
+// went away mid-relay (ReverseProxy's panic(http.ErrAbortHandler) unwinds
+// through deferred calls only). Its ctx is detached from the request's
+// (context.WithoutCancel): a client that drops its connection cannot cancel
+// it. f runs in the handler; it must bound its own work. The push gate's
+// re-check of a push and of a new pull request is the user
+// (internal/officership's afterPush and afterCreate).
+func WithAfterForward(r *http.Request, f func(ctx context.Context, res ForwardResult)) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), afterForwardKey{}, &afterForward{f: f}))
+}
+
+// responseRewriteKey carries a gate's response rewrite in an admitted
+// request's context.
+type responseRewriteKey struct{}
+
+// WithResponseRewrite returns r carrying f: a [Gate]'s Admit returns it so that
+// the proxy calls f with the upstream's answer BEFORE any of it is relayed to
+// the client. f may read resp.Body and replace it (and resp.Header); the
+// proxy's own handling (redaction, the Location rewrite, the after-forward
+// tee, which sees the upstream's bytes) still applies around it. An error
+// from f is answered 502 and nothing of the upstream's answer is relayed.
+//
+// It is for a gate that must act on the upstream's answer before the client
+// learns it: the shepherd's push lands a commit only after it is verified, and
+// tells the client what landed (internal/officership shepherd.go).
+func WithResponseRewrite(r *http.Request, f func(ctx context.Context, resp *http.Response) error) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), responseRewriteKey{}, f))
+}
+
+// ResponseRewriteOf is the function WithResponseRewrite attached to r, nil when
+// none.
+func ResponseRewriteOf(r *http.Request) func(ctx context.Context, resp *http.Response) error {
+	f, _ := r.Context().Value(responseRewriteKey{}).(func(ctx context.Context, resp *http.Response) error)
+	return f
+}
+
+// AfterForwardOf is the function WithAfterForward attached to r, nil when none.
+func AfterForwardOf(r *http.Request) func(ctx context.Context, res ForwardResult) {
+	if af := afterForwardOf(r); af != nil {
+		return af.f
+	}
+	return nil
+}
+
+func afterForwardOf(r *http.Request) *afterForward {
+	af, _ := r.Context().Value(afterForwardKey{}).(*afterForward)
+	return af
+}
+
+// run calls the hook once, with ctx detached from the request; a panic in it
+// is logged, never propagated (it may run while a client abort unwinds).
+func (af *afterForward) run(ctx context.Context, logf func(string, ...any)) {
+	af.once.Do(func() {
+		defer func() {
+			if v := recover(); v != nil {
+				logf("connectors: an after-forward hook panicked: %v", v)
+			}
+		}()
+		af.mu.Lock()
+		res := af.res
+		res.Body = append([]byte(nil), af.res.Body...)
+		af.mu.Unlock()
+		af.f(context.WithoutCancel(ctx), res)
+	})
+}
+
+// teeBody copies what is read of an upstream body into af, up to
+// MaxAfterForwardBody, and marks it Complete at a clean EOF within the bound.
+type teeBody struct {
+	io.ReadCloser
+	af *afterForward
+}
+
+func (t teeBody) Read(p []byte) (int, error) {
+	n, err := t.ReadCloser.Read(p)
+	t.af.mu.Lock()
+	defer t.af.mu.Unlock()
+	if room := MaxAfterForwardBody - len(t.af.res.Body); room > 0 && n > 0 {
+		t.af.res.Body = append(t.af.res.Body, p[:min(n, room)]...)
+	}
+	if n > 0 && len(t.af.res.Body) >= MaxAfterForwardBody {
+		t.af.res.Complete = false
+	}
+	if errors.Is(err, io.EOF) && len(t.af.res.Body) < MaxAfterForwardBody {
+		t.af.res.Complete = true
+	}
+	return n, err
+}
+
+// callerKey carries the Caller of a gated request into Admit.
+type callerKey struct{}
+
+// CallerOf is the caller Serve resolved for a gated request, as Admit sees it
+// in the request's context (ok false outside Serve: a test calling Admit
+// directly sets it with WithCaller).
+func CallerOf(ctx context.Context) (Caller, bool) {
+	c, ok := ctx.Value(callerKey{}).(Caller)
+	return c, ok
+}
+
+// WithCaller returns ctx carrying c for CallerOf.
+func WithCaller(ctx context.Context, c Caller) context.Context {
+	return context.WithValue(ctx, callerKey{}, c)
 }
 
 // Proxy forwards an agent's request to a connector's upstream with the
@@ -186,6 +308,21 @@ type Proxy struct {
 	// OnGrantRequested is called (synchronously; keep it cheap) when a proxied
 	// request files a NEW pending grant, so the operator can be prompted.
 	OnGrantRequested func(context.Context, Grant)
+	// AutoApprove, when set, is offered every request a check FILES, BEFORE
+	// OnGrantRequested: it returns the grant approved and true when an owner's
+	// standing grant covers it (the api package's approveFromStanding, the one
+	// rule every door shares), and the owner is then not prompted. false leaves
+	// the grant as it was. A grant RE-OPENED because its connector's credential
+	// source changed is not offered: that change asks the owner again (0033),
+	// and their approval is then shared as any other.
+	AutoApprove func(context.Context, Grant) (Grant, bool)
+	// OnPendingRefusal is called (synchronously) when CheckAccess answers a
+	// caller whose grant is PENDING — every door (the proxy, the query and
+	// internal_http tools, the kube read) refuses on that answer — so the api
+	// package can record which officer item the refusal blocked and re-run it
+	// once THAT grant is approved (officer_connector_rerun.go). A denied or
+	// revoked grant is not reported: no approval of it will follow.
+	OnPendingRefusal func(context.Context, Caller, Grant)
 	// StreamsEnd is the server's shutdown signal for streams: once it is done, a
 	// proxied GET EVENT STREAM in flight ends, and one that starts later ends at
 	// once (endsAtShutdown says which exchanges, and why only GET).
@@ -196,7 +333,15 @@ type Proxy struct {
 	// cmd/muster-server's shutdown, before either listener drains. See
 	// endOnShutdown.
 	StreamsEnd context.Context
+	// Now is the clock the standing public read's verdict cache reads; nil is
+	// time.Now (tests set it).
+	Now func() time.Time
+	// GitHubGitHost and GitHubAPIHost are the hosts a standing public read is
+	// served on; "" is GitHubGitHost / GitHubAPIHost. The api package sets
+	// them from a configured GitHub App's own hosts.
+	GitHubGitHost, GitHubAPIHost string
 
+	public        publicCache // the standing public read's verdicts
 	transportOnce sync.Once
 	built         http.RoundTripper // Policy.Transport(), built once
 	transport     http.RoundTripper // SetTransport's override
@@ -256,19 +401,22 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 	switch {
 	case err == nil:
 		// An approval about another credential source than the connector now
-		// has (the GitHub App configured, or removed) is pending again.
-		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g)
+		// has (the GitHub App configured, or removed), or made for another
+		// repository than the caller's now (0061), is pending again.
+		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g, RepoScope(caller.Repo, caller.ReadRepos))
 		if rerr != nil {
 			return Access{}, rerr
 		}
-		if reopened {
-			p.recordGrantEvent(ctx, g, "re-opened: the connector's credential source changed")
+		if reopened != "" {
+			p.recordGrantEvent(ctx, g, reopened)
 			if p.OnGrantRequested != nil {
 				p.OnGrantRequested(ctx, g)
 			}
 		}
 		// approved -> usable; pending, denied, revoked -> refused as they stand.
-		return Access{Grant: g, Usable: g.Usable()}, nil
+		acc := Access{Grant: g, Usable: g.Usable()}
+		p.pendingRefusal(ctx, caller, acc)
+		return acc, nil
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return Access{}, err
 	}
@@ -279,11 +427,33 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 	}
 	if created {
 		p.recordGrantEvent(ctx, ng, "requested")
-		if p.OnGrantRequested != nil {
-			p.OnGrantRequested(ctx, ng)
+		ng = p.pending(ctx, ng)
+	}
+	acc := Access{Grant: ng, Usable: ng.Usable(), Filed: created}
+	p.pendingRefusal(ctx, caller, acc)
+	return acc, nil
+}
+
+// pendingRefusal tells OnPendingRefusal about an access check refused for a
+// PENDING grant (the one rule both of CheckAccess's answers pass through).
+func (p *Proxy) pendingRefusal(ctx context.Context, caller Caller, acc Access) {
+	if !acc.Usable && acc.Grant.Status == StatusPending && p.OnPendingRefusal != nil {
+		p.OnPendingRefusal(ctx, caller, acc.Grant)
+	}
+}
+
+// pending handles a request this check filed: approved by a standing grant
+// (AutoApprove), or else the owner prompted (OnGrantRequested).
+func (p *Proxy) pending(ctx context.Context, g Grant) Grant {
+	if p.AutoApprove != nil {
+		if ag, ok := p.AutoApprove(ctx, g); ok {
+			return ag
 		}
 	}
-	return Access{Grant: ng, Usable: ng.Usable(), Filed: created}, nil
+	if p.OnGrantRequested != nil {
+		p.OnGrantRequested(ctx, g)
+	}
+	return g
 }
 
 func (p *Proxy) recordGrantEvent(ctx context.Context, g Grant, detail string) {
@@ -333,6 +503,7 @@ var (
 	errEncodedResponse   = errors.New("connectors: the upstream sent an encoded (compressed) body it was asked not to")
 	errOffHostRedirect   = errors.New("connectors: the upstream redirected outside the connector's allowlist")
 	errSwitchedProtocols = errors.New("connectors: the upstream tried to switch protocols")
+	errGateRewrite       = errors.New("connectors: the write policy could not finish the request")
 )
 
 // Serve proxies one request. connector and host are the path's first two
@@ -378,6 +549,20 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		return
 	}
 
+	// 🔴 A STANDING PUBLIC READ IS DECIDED BEFORE ANY GRANT IS READ OR FILED:
+	// it needs none, so the owner is never prompted for it (public_read.go).
+	// Only a request that targets one of the caller's PublicReadRepos takes
+	// this branch, and it never falls through: a write to one is refused here.
+	if repo, ok := p.publicReadTarget(caller, connector, host, rest); ok {
+		if pr, ok := authz.From(ctx); ok && pr.RoleUncertain {
+			w.Header().Set("Retry-After", "5")
+			refuse(http.StatusServiceUnavailable, RefusalBody{Error: ErrRoleUncertain.Error()}, "role uncertain")
+			return
+		}
+		p.servePublicRead(w, r, caller, connector, host, rest, repo, &status, &detail, refuse)
+		return
+	}
+
 	acc, err := p.CheckAccess(ctx, caller, connector, "")
 	if errors.Is(err, ErrRoleUncertain) {
 		w.Header().Set("Retry-After", "5")
@@ -409,11 +594,84 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		return
 	}
 
+	// A GATED caller (an officer that ships code) is served by its gate and
+	// nothing else: its connector only, the gate's hosts, Admit before any
+	// credential, and the gate's own credential.
+	if caller.Gate != nil {
+		g := caller.Gate
+		c := g.Describe()
+		if connector != g.Connector() {
+			refuse(http.StatusForbidden, RefusalBody{Error: "this agent's write policy serves connector " + g.Connector() +
+				" only; " + connector + " was refused"}, "gate: other connector")
+			return
+		}
+		if !c.AllowsHost(host) {
+			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
+				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
+			return
+		}
+		admitted, err := g.Admit(r.WithContext(WithCaller(r.Context(), caller)), strings.ToLower(host), rest)
+		if err == nil {
+			if af := afterForwardOf(admitted); af != nil {
+				// 🔴 DEFERRED: it runs on every path out of here, a client
+				// abort's panic included (WithAfterForward).
+				defer af.run(ctx, p.logf)
+			}
+		}
+		switch {
+		case errors.Is(err, ErrGateConflict):
+			refuse(http.StatusConflict, RefusalBody{Error: err.Error()}, "gate refused: conflict")
+			return
+		case errors.Is(err, ErrGateRefused):
+			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "gate refused")
+			return
+		case err != nil:
+			p.logf("connectors: gate for agent %q: %v", caller.AgentName, err)
+			refuse(http.StatusBadGateway, RefusalBody{Error: "the write policy could not decide this request: " + err.Error()},
+				"gate failed")
+			return
+		}
+		secret, anonymous, err := g.Credential(ctx, caller, strings.ToLower(host), rest)
+		switch {
+		case errors.Is(err, ErrTargetRefused):
+			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "target refused")
+			return
+		case err != nil:
+			p.logf("connectors: gate credential for agent %q: %v", caller.AgentName, err)
+			refuse(http.StatusBadGateway, RefusalBody{Error: "connector " + connector + " could not obtain a credential: " +
+				err.Error()}, "credential unavailable")
+			return
+		}
+		var onStatus func(int)
+		if !anonymous {
+			onStatus = func(code int) {
+				if code == http.StatusUnauthorized {
+					g.Rejected(caller)
+				}
+			}
+		}
+		p.forward(w, admitted, caller, acc, c, secret, anonymous, onStatus, connector, host, rest, &status, &detail, refuse)
+		return
+	}
+
 	// A virtual connector (the GitHub App) mints its credential for THIS caller
 	// and THIS target. The host allowlist is checked FIRST, so a request for a
 	// host the connector does not serve mints nothing.
 	if v, ok := VirtualOf(ctx, p.Store, connector); ok {
 		c := v.Describe()
+		// kube-read has no HTTP face: muster-server runs its reads itself.
+		if c.Scheme == SchemeKubeRead {
+			refuse(http.StatusForbidden, RefusalBody{Error: "connector " + connector + " is served by the " + KubeReadTool +
+				" tool only, never through the proxy"}, "kube-read: not proxied")
+			return
+		}
+		// Nor has an internal_http connector: its destination is the admin's,
+		// and only the internal_http_request tool reaches it.
+		if c.Scheme == SchemeInternalHTTP {
+			refuse(http.StatusForbidden, RefusalBody{Error: "connector " + connector + " is served by the " + InternalHTTPTool +
+				" tool only, never through the proxy"}, "internal_http: not proxied")
+			return
+		}
 		if !c.AllowsHost(host) {
 			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
 				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
@@ -458,6 +716,14 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	case err != nil:
 		p.logf("connectors: load connector %q: %v", connector, err)
 		refuse(http.StatusInternalServerError, RefusalBody{Error: "could not load the connector"}, "load failed")
+		return
+	}
+	// 🔴 A DATABASE PASSWORD IS NEVER SENT OVER HTTP. A postgres connector is
+	// used through the postgres_query tool, where muster-server makes the
+	// connection; forwarding here would put its password in a header.
+	if c.Scheme == SchemePostgres {
+		refuse(http.StatusBadRequest, RefusalBody{Error: "connector " + connector + " is a postgres connector: " +
+			"query it with the postgres_query tool, not through the HTTP proxy"}, "postgres connector")
 		return
 	}
 	if !c.AllowsHost(host) {
@@ -505,6 +771,15 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		red = newRedactor(secretForms(c, secret))
 	}
 	prefix := "/connect/" + connector + "/"
+	// A gate's after-forward hook sees what the upstream answered (WithAfterForward).
+	af := afterForwardOf(r)
+	// A gate's response rewrite acts on the answer before the client sees it.
+	rw := ResponseRewriteOf(r)
+	if af != nil {
+		af.mu.Lock()
+		af.res.Forwarded = true
+		af.mu.Unlock()
+	}
 
 	// The upstream request runs on outCtx, which only an event stream's shutdown
 	// end cancels (ModifyResponse below); r.Context() still cancels it as before.
@@ -540,11 +815,27 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		Transport: p.upstreamTransport(),
 		ModifyResponse: func(resp *http.Response) error {
 			*status = resp.StatusCode
+			if af != nil {
+				af.mu.Lock()
+				af.res.Status = resp.StatusCode
+				af.mu.Unlock()
+				// Innermost: the hook sees the upstream's bytes as they were
+				// read, before any wrap below changes them.
+				resp.Body = teeBody{ReadCloser: resp.Body, af: af}
+			}
 			if onStatus != nil {
 				onStatus(resp.StatusCode)
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return errSwitchedProtocols
+			}
+			if rw != nil {
+				// Inside the tee (the hook sees the upstream's bytes), outside
+				// everything below (the client's bytes are redacted as ever).
+				if err := rw(context.WithoutCancel(ctx), resp); err != nil {
+					p.logf("connectors: a gate's response rewrite for agent %q: %v", caller.AgentName, err)
+					return errGateRewrite
+				}
 			}
 			// The redactor scans bytes. A body compressed despite
 			// `Accept-Encoding: identity` would be scanned compressed, so it is
@@ -593,6 +884,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 					strings.Join(c.Hosts, ", ") + "); muster neither follows nor forwards such a redirect"
 			case errors.Is(err, errSwitchedProtocols):
 				why = "the upstream tried to switch protocols; refused"
+			case errors.Is(err, errGateRewrite):
+				why = "this agent's write policy could not finish the request after the upstream answered"
 			}
 			p.logf("connectors: proxy agent=%q connector=%q host=%q: %s", caller.AgentName, connector, host, why)
 			refuse(http.StatusBadGateway, RefusalBody{Error: why}, why)
@@ -630,6 +923,11 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		*detail = "event stream ended at server shutdown"
 	}
 
+	// A standing public read (Access{}) has no grant and uses no connector's
+	// credential: nothing to stamp.
+	if acc.Grant.ID == 0 {
+		return
+	}
 	bg := context.WithoutCancel(ctx)
 	if err := p.Store.TouchGrant(bg, acc.Grant.ID); err != nil {
 		p.logf("connectors: touch grant %d: %v", acc.Grant.ID, err)

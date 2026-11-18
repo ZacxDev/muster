@@ -216,6 +216,10 @@ type ChiefPanelView struct {
 	// (chief_sessions.go).
 	SessionRuntimes []SessionRuntimeView
 	ClaudeModels    []string
+	// Prefill is a draft for the chat box (the fleet digest's "Ask the chief
+	// about this", fleet_digest.go): the panel script puts it in the box once
+	// the body lands, after any draft already there, and sends nothing.
+	Prefill string
 }
 
 // ChiefPanelToggle is the launcher, rendered by the tmux panel body.
@@ -243,7 +247,10 @@ func ChiefPanelToggle() g.Node {
 // them — along with the operator's half-typed message and the live WebSocket —
 // so it is a sibling of the FABs and popovers, which are body-level for exactly
 // this reason.
-func ChiefPanel() g.Node {
+//
+// fleet draws the fleet digest card's slot (Features.FleetDigest,
+// MUSTER_FLEET_DIGEST); off, the panel is exactly as it was before the digest.
+func ChiefPanel(fleet bool) g.Node {
 	return Aside(
 		ID(chiefPanelID),
 		g.Attr(chiefPanelAttr, ""),
@@ -299,6 +306,10 @@ func ChiefPanel() g.Node {
 				g.Text("✕"),
 			),
 		),
+		// The fleet digest (fleet_digest.go): pinned above whichever chat the
+		// body below shows, in a slot of its own, so a thread switch swaps the
+		// chat and leaves the card.
+		g.If(fleet, fleetDigestSlot()),
 		// The body: an hx-swap target, fetched the first time the panel opens and
 		// on every open after that.
 		//
@@ -401,9 +412,17 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// ⚠ IT IS ALSO WHAT MAKES THE CHAT LAZY. This script is several hundred
 			// lines including a markdown renderer; putting it in the shell would charge
 			// every page load in the app for a panel most of them never open.
+			// 🔴 THE BUBBLE CLAMP, SO A LONG CHIEF REPLY SHOWS ITS END: the panel's
+			// bubbles are chatBubbleOf's, so a reply carries data-clamp-from="tail"
+			// and is drawn with its last lines, "Show more" above it
+			// (bubble_clamp.go). Before agentChatScript, so the transcript the
+			// swap brought in is clamped before that script pins the log to its
+			// end. Re-executable like it: a second open only rescans, and its
+			// observers (bound once, on <body>) clamp every #chat-log refresh.
+			bubbleClampScript(),
 			agentChatScript(v.Chat.Name),
-			// ⚠ NO bubbleClampScript HERE, deliberately: the panel's bubbles are
-			// never clamped (bubble_clamp.go).
+			DispatchCardGuard(),
+			chiefPrefill(v.Prefill),
 		),
 	}
 }
@@ -420,10 +439,23 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 	return Div(
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
-		Class("ml-auto flex items-center gap-0.5"),
-		g.If(v.Configured, chiefNewThreadButton(v.Chat.ID)),
+		Class("ml-auto flex min-w-0 items-center gap-0.5"),
+		// A chief chat's context chip (chief_chats.go), where the page draws it
+		// in its header. Its new chat is "New side chat" under the thread list
+		// (chiefPanelChatActions); the title bar keeps the thread list.
+		g.If(v.Configured, chiefPanelContext(v.Chat.ChiefChat)),
+		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
 	)
+}
+
+// chiefPanelContext is the panel title bar's context chip slot; nothing off a
+// chief's chat.
+func chiefPanelContext(b *ChiefChatBar) g.Node {
+	if b == nil {
+		return nil
+	}
+	return Span(Class("mr-1 inline-flex min-w-0"), chiefContextSlot(b.AgentName, b.SessionID))
 }
 
 // chiefNewThreadButton opens a fresh thread WITHOUT leaving the grid.
@@ -632,8 +664,21 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		}
 		return chiefThreadNotice(state, msg, "text-muted")
 	}
-	rows := make([]g.Node, 0, len(v.Threads))
+	rows := make([]g.Node, 0, len(v.Threads)+1)
+	archivedShown := false
+	// The thread the panel is on: a row's Make primary keeps the panel on it.
+	var current int64
 	for _, sess := range v.Threads {
+		if sess.Active {
+			current = sess.ID
+		}
+	}
+	for _, sess := range v.Threads {
+		// The archived chats come last (agents.SwitcherOrder), under their heading.
+		if sess.Archived && !archivedShown {
+			archivedShown = true
+			rows = append(rows, H3(Class("mt-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(chiefArchivedLabel)))
+		}
 		title := textplain.Title(sess.Title)
 		if title == "" {
 			title = "New thread"
@@ -656,7 +701,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 			Div(
 				Class("flex w-full items-baseline gap-2"),
 				Span(Class("mr-auto truncate"), g.Text(title)),
-				sessionDefaultBadge(sess),
+				chiefChatRowExtras(sess),
 				g.If(!sess.LastActive.IsZero(),
 					Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 				),
@@ -672,7 +717,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		)
 		// "Make default" sits BESIDE the row, never inside it: a form in a button is
 		// not valid HTML, and a tap meant to open the thread must not move the default.
-		if mk := makeDefaultControl(sess); mk != nil {
+		if mk := makeDefaultControl(sess, current); mk != nil {
 			rows = append(rows, Div(Class("flex items-stretch gap-1"), row, mk))
 		} else {
 			rows = append(rows, row)
@@ -803,6 +848,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				// this one got that rule wrong for a truncated read, and the next call site
 				// would have had the same chance to.
 				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
+				// The chief's chat actions — "+ New side chat", and Fresh primary /
+				// Archive / Unarchive for the chat the panel is on — under the list
+				// (chief_chats.go): what the chat bar over the transcript held.
+				chiefPanelChatActions(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
 			),
 		),
 	}
@@ -823,8 +872,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 // re-BINDING; it must not suppress re-APPLYING. A boosted navigation re-executes
 // this script against a fresh DOM, and that fresh panel starts shut at the
 // default width until restore() puts the stored state back.
-func chiefPanelScript() g.Node {
-	return Script(g.Raw(`
+func chiefPanelScript() g.Node { return staticScript(chiefPanelScriptSrc) }
+
+// chiefPanelScriptSrc is the path chiefPanelScript's code is served at, /static/js/chief-panel.js (static_script.go).
+var chiefPanelScriptSrc = staticJS("chief-panel", `
 (function () {
   var PANEL_ID = '` + chiefPanelID + `';
   // 🔴 THE KEYS ARE BUILT FROM THE ELEMENT ID — A STABLE REFERENCE. Rank 11
@@ -873,6 +924,74 @@ func chiefPanelScript() g.Node {
   var LOADED_ATTR = '` + chiefPanelBodyLoadedAttr + `';
   var ACTIVE_ATTR = '` + chiefActiveSessionAttr + `';
   var PANEL_PATH = '/ui/chief/panel';
+  var FLEET_ID = '` + fleetDigestSlotID + `';
+  var FLEET_PATH = '` + FleetDigestPath + `';
+  var FLEET_OPEN_EVENT = '` + fleetOpenEvent + `';
+  var FLEET_REQUESTED = '` + fleetRequestedAttr + `';
+  // openFleet asks the digest card to load: look is true only for a real
+  // open (the panel tapped open), which records a look.
+  function openFleet(look) {
+    document.dispatchEvent(new CustomEvent(FLEET_OPEN_EVENT, { bubbles: true, detail: { look: !!look } }));
+  }
+  var PREFILL_ATTR = '` + ChiefPrefillAttr + `';
+
+  // fillInput puts text in #chat-input and focuses it — 🔴 NEVER SENDING, AND
+  // NEVER DESTROYING A DRAFT: a non-empty box is kept and text goes after it on
+  // a line of its own (a whitespace-only box counts as empty). The quick
+  // actions and the fleet digest's "Ask the chief about this" both fill the
+  // box through here; #chat-form's Send stays the only way a message leaves.
+  function fillInput(text) {
+    var input = document.getElementById('chat-input');
+    if (!input) return false;
+    var draft = input.value || '';
+    // The newline is safe in this control: #chat-input is a <textarea> whose
+    // Enter-to-send lives on a keydown handler, so text CONTAINING a newline
+    // sends nothing by itself.
+    input.value = draft.trim() === '' ? text : draft.replace(/\s+$/, '') + '\n' + text;
+    // An 'input' event so the box's listeners see the change — the composer's
+    // autosize fallback (composer_fit.go) and the draft keeper among them. A
+    // value assigned by script fires nothing on its own.
+    try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (err) {}
+    input.focus();
+    // Caret at the end, so a follow-on keystroke appends rather than replacing
+    // a fully-selected value.
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch (err) {}
+    return true;
+  }
+
+  // The fleet digest's phone sheets (fleet_digest.go fleetSheet).
+  function fleetSlot() { return document.getElementById(FLEET_ID); }
+  function closeSheets() {
+    var f = fleetSlot();
+    if (!f) return false;
+    var open = f.querySelectorAll('[` + fleetSheetAttr + `]:not([hidden])');
+    for (var i = 0; i < open.length; i++) open[i].setAttribute('hidden', '');
+    var chips = f.querySelectorAll('[` + fleetChipAttr + `]');
+    for (var j = 0; j < chips.length; j++) chips[j].setAttribute('aria-expanded', 'false');
+    return open.length > 0;
+  }
+  function openSheet(key) {
+    var f = fleetSlot();
+    if (!f) return;
+    closeSheets();
+    var sh = f.querySelector('[` + fleetSheetAttr + `="' + key + '"]');
+    if (!sh) return;
+    sh.removeAttribute('hidden');
+    var chip = f.querySelector('[` + fleetChipAttr + `="' + key + '"]');
+    if (chip) chip.setAttribute('aria-expanded', 'true');
+    var close = sh.querySelector('[` + fleetSheetCloseAttr + `]');
+    if (close) { try { close.focus(); } catch (err) {} }
+  }
+  // musterFleetShown is the digest's live-refresh filter: refresh only while
+  // the panel is open and the owner is not inside a group, a sheet or a
+  // drill-in — a refresh replaces the card, and would close what they opened.
+  window.musterFleetShown = function () {
+    var p = panel();
+    if (!p || p.getAttribute('` + chiefPanelOpenAttr + `') !== '1') return false;
+    var f = fleetSlot();
+    if (!f) return false;
+    return !f.querySelector('details[open], [` + fleetSheetAttr + `]:not([hidden]), [` + fleetDrillSlotAttr + `]:not(:empty)');
+  };
 
   // Every storage access is wrapped: localStorage throws on access in a
   // partitioned context and on setItem when the quota is full. A storage failure
@@ -990,6 +1109,8 @@ func chiefPanelScript() g.Node {
       // Ask the body to (re)fetch. Dispatched on 'document' so the body's
       // 'from:document' trigger catches it wherever the panel sits.
       document.dispatchEvent(new CustomEvent(OPEN_EVENT, { bubbles: true }));
+      // The digest card: a real open, so a look.
+      openFleet(true);
     }
   }
 
@@ -1045,6 +1166,17 @@ func chiefPanelScript() g.Node {
     // fresh element a boosted navigation builds.
     if (open && !bodyLoaded()) {
       document.dispatchEvent(new CustomEvent(OPEN_EVENT, { bubbles: true }));
+    }
+    // 🔴 THE CARD IS FETCHED ONCE PER SLOT ELEMENT, NOT ON EVERY SETTLE: the
+    // mark is set when its request STARTS (htmx:beforeRequest, below), not
+    // when it lands, so neither the card's own settle nor a fetch that keeps
+    // failing asks again. Until a request has started, a restore asks — the
+    // first restore can run before htmx has bound the slot's trigger. A
+    // boosted navigation's fresh slot carries no mark and is fetched once.
+    // Not a look.
+    var fs = fleetSlot();
+    if (open && fs && !fs.hasAttribute(FLEET_REQUESTED)) {
+      openFleet(false);
     }
   }
 
@@ -1125,24 +1257,17 @@ func chiefPanelScript() g.Node {
       // treating it as a draft would leave a blank line above every prefill for ever.
       var qa = t.closest('[` + chiefQuickActionAttr + `]');
       if (qa) {
-        var input = document.getElementById('chat-input');
-        if (!input) return;
-        var prompt = qa.getAttribute('` + chiefQuickActionAttr + `') || '';
-        var draft = input.value || '';
-        // The newline is safe in this control: #chat-input is a <textarea> whose
-        // Enter-to-send lives on a keydown handler, so text CONTAINING a newline
-        // sends nothing by itself.
-        input.value = draft.trim() === '' ? prompt : draft.replace(/\s+$/, '') + '\n' + prompt;
-        // An 'input' event so the box's listeners see the change — the composer's
-        // autosize fallback (composer_fit.go) among them. A value assigned by script
-        // fires nothing on its own.
-        try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (err) {}
-        input.focus();
-        // Caret at the end, so a follow-on keystroke appends rather than replacing
-        // a fully-selected value.
-        try { input.setSelectionRange(input.value.length, input.value.length); } catch (err) {}
+        fillInput(qa.getAttribute('` + chiefQuickActionAttr + `') || '');
         return;
       }
+      // The fleet digest's chips and sheets (phone): a chip opens its group's
+      // sheet, the sheet's close button shuts it. Both are this card's buttons.
+      var chip = t.closest('[` + fleetChipAttr + `]');
+      if (chip) {
+        if (!chip.disabled) openSheet(chip.getAttribute('` + fleetChipAttr + `'));
+        return;
+      }
+      if (t.closest('[` + fleetSheetCloseAttr + `]')) { closeSheets(); return; }
       var toggle = t.closest('[` + chiefPanelToggleAttr + `]');
       if (!toggle) return;               // not ours — observed, not swallowed
       var p = panel();
@@ -1154,6 +1279,8 @@ func chiefPanelScript() g.Node {
     // close the panel while the operator was dismissing a modal on top of it.
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // An open fleet sheet is the top layer: Escape shuts it, not the panel.
+      if (closeSheets()) return;
       var p = panel();
       if (p && p.getAttribute('` + chiefPanelOpenAttr + `') === '1') setOpen(false);
     });
@@ -1249,6 +1376,56 @@ func chiefPanelScript() g.Node {
       if (want) evt.detail.path = want;
     });
 
+    // The fleet digest's fetch ON OPEN records a look (the "since you last
+    // looked" line's baseline, fleet.Store.Look); its live refreshes do not.
+    // Scoped by the slot's id, like the body's rewrite above.
+    document.addEventListener('htmx:configRequest', function (evt) {
+      var el = evt && evt.target;
+      if (!el || el.id !== FLEET_ID || !evt.detail) return;
+      var te = evt.detail.triggeringEvent;
+      if (te && te.type === FLEET_OPEN_EVENT && te.detail && te.detail.look) evt.detail.path = FLEET_PATH + '?look=1';
+    });
+
+    // The card's request has started: restore() asks no more (see restore).
+    document.addEventListener('htmx:beforeRequest', function (evt) {
+      var el = evt && evt.target;
+      if (el && el.id === FLEET_ID) el.setAttribute(FLEET_REQUESTED, '');
+    });
+
+    // A drill-in's name toggles it: open (the fetch), or shut when it is open —
+    // the second tap empties it and cancels the fetch.
+    document.addEventListener('htmx:confirm', function (evt) {
+      var el = evt && evt.target;
+      if (!el || !el.hasAttribute || !el.hasAttribute('` + fleetDrillAttr + `')) return;
+      var slot = el.nextElementSibling;
+      if (slot && slot.hasAttribute('` + fleetDrillSlotAttr + `') && slot.innerHTML.trim() !== '') {
+        evt.preventDefault();
+        slot.innerHTML = '';
+        el.setAttribute('aria-expanded', 'false');
+      }
+    });
+    document.addEventListener('htmx:afterSwap', function (evt) {
+      var t = evt && evt.target;
+      if (!t || !t.hasAttribute || !t.hasAttribute('` + fleetDrillSlotAttr + `')) return;
+      var btn = t.previousElementSibling;
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+    });
+
+    // A body that carries a draft (the Fleet chat's "Ask the chief about
+    // this") puts it in the box once it has settled — after the box's own
+    // draft is restored — and the mark is removed so a refresh cannot apply
+    // it twice. A sheet the tap came from is shut, so the chat is in view.
+    document.addEventListener('htmx:afterSettle', function (evt) {
+      var t = evt && evt.target;
+      if (!t || t.id !== BODY_ID) return;
+      var mark = t.querySelector('[' + PREFILL_ATTR + ']');
+      if (!mark) return;
+      var text = mark.getAttribute(PREFILL_ATTR) || '';
+      mark.removeAttribute(PREFILL_ATTR);
+      closeSheets();
+      setTimeout(function () { fillInput(text); }, 0);
+    });
+
     // Re-apply after ANY htmx settle. The panel itself is body-level and is not
     // swapped, but a boosted navigation rebuilds the body's children — including
     // it — so the fresh element needs the stored state put back.
@@ -1261,5 +1438,4 @@ func chiefPanelScript() g.Node {
     restore();
   }
 })();
-`))
-}
+`)

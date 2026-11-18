@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page } from '@playwright/test';
+import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, mirrorChatPort, password, repoRoot } from '../lib/env';
-import { MirrorRig } from '../lib/mirrorhost';
+import { signIn } from '../lib/signin';
+import { dsn, mirrorChatPort, repoRoot } from '../lib/env';
+import { entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 
 // THE MIRRORED RENDERED VIEW'S CHAT, on a phone with touch (412×915), against a
 // REAL muster-server and a REAL muster-mirror built with `-tags e2emirror`
@@ -40,18 +41,6 @@ test.afterEach(async () => {
 test.afterAll(async () => {
   await rig.stop();
 });
-
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
 
 const rec = (o: object) => JSON.stringify(o) + '\n';
 const prompt = (t: string) => rec({ type: 'user', promptId: 'p', origin: { kind: 'human' }, message: { role: 'user', content: t } });
@@ -89,17 +78,19 @@ const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 //
 // The signal is the new process's own "connected to" line: muster registers
 // the connection BEFORE it sends the welcome that line follows, so once it is
-// logged the view resolves to this connection. The card must also be online.
+// logged the view resolves to this connection. The entry must also be online.
 async function openView(page: Page, transcript: string, extra: NodeJS.ProcessEnv = {}) {
   await startMirror(transcript, extra);
-  await login(page);
+  await signIn(page, origin);
   await expect
     .poll(
       async () => {
         if (!rig.log.includes('muster-mirror: connected to ')) return 'muster-mirror not connected yet';
-        const html = await (await page.request.get(origin + '/ui/agents')).text();
-        if (!html.includes('data-mirror-claude')) return 'main not reported as a Claude pane';
-        if (html.includes('data-mirror-offline')) return 'the host is listed offline';
+        // The sidebar's rows (GET /ui/nav/agents): main is a row that opens a
+        // Rendered view (a Claude pane), and it is online.
+        const rows = mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => entryMatches(e.markup, 'data-mirror-claude'));
+        if (!rows.length) return 'main not reported as a Claude pane';
+        if (rows.some((e) => e.state === 'offline')) return 'the host is listed offline';
         return 'ready';
       },
       { message: `this test's muster-mirror connected, main online as a Claude pane (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
@@ -128,6 +119,28 @@ test('a human-origin pasted notice is a user bubble; a command record with an ex
   await expect(users.nth(1)).toContainText('Set model to Example');
   await expect(users.nth(2)).toContainText('secret extra instruction');
   await expect(users.nth(2)).toContainText('<command-name>/model</command-name>');
+});
+
+// SNAKE_CASE IS NOT EMPHASIS: `_` cannot open or close emphasis inside a word
+// (CommonMark), so the block route_to_session pastes into a session shows its
+// route_id as written. On origin/main the user bubble drew
+// route<em>id rt</em>8f51… — the ids are synthetic.
+test('snake_case identifiers in a routed prompt are not italicised; _real emphasis_ still is', async ({ page }) => {
+  const id = 'rt_8f51ffceb101b6c0faaf3b9b';
+  const tr = newTranscript(
+    prompt('Routed to you by your owner\'s chief: route_id ' + id + ', owner message 42. Call the route_reply tool with route_id ' + id + '.') +
+      reply('Answered via route_reply; see focus_search and file_path. This is _real emphasis_.'),
+  );
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const user = log.locator('[data-bubble="user"]').first();
+  await expect(user).toContainText('route_id ' + id + ', owner message 42');
+  await expect(user).toContainText('Call the route_reply tool with route_id ' + id + '.');
+  await expect(user.locator('em')).toHaveCount(0);
+  const asst = log.locator('[data-bubble="assistant"]').first();
+  await expect(asst).toContainText('Answered via route_reply; see focus_search and file_path.');
+  await expect(asst.locator('em')).toHaveCount(1);
+  await expect(asst.locator('em')).toHaveText('real emphasis');
 });
 
 // 🔴 A TOKEN IN THE TRANSCRIPT NEVER REACHES THE PAGE: the host redacts every
@@ -205,7 +218,7 @@ const lines = (n: number, what: string) => Array.from({ length: n }, (_, i) => `
 const fromBottom = (page: Page, sel = '#mv-log') =>
   page.locator(sel).evaluate((l) => l.scrollHeight - l.scrollTop - l.clientHeight);
 
-// B2: a bubble over ~12 lines is clamped with a fade and a control; a tap opens
+// B2: a bubble over ~15 lines is clamped with a fade and a control; a tap opens
 // it to its full height (animated), "Show less" closes it; a short one is untouched;
 // opening the newest at the bottom keeps the log at the bottom.
 test('a long bubble is clamped, a tap expands it to full height and back, a short one is not clamped, and the log stays at the bottom', async ({ page }) => {
@@ -219,15 +232,19 @@ test('a long bubble is clamped, a tap expands it to full height and back, a shor
   // Short: not clamped, no control.
   await expect(short).toContainText('a short question');
   await expect(short).not.toHaveAttribute('data-clamp', /.*/);
-  expect(await short.evaluate((e) => e.nextElementSibling?.hasAttribute('data-clamp-toggle') ?? false), 'no control under a short bubble').toBe(false);
+  // (The control right after it, if any, is the long reply's: a tail-first
+  // bubble's control sits ABOVE it, marked data-clamp-toggle="tail".)
+  expect(await short.evaluate((e) => e.nextElementSibling?.getAttribute('data-clamp-toggle') === ''), 'no control under a short bubble').toBe(false);
 
-  // Long: clamped to about twelve lines — content hidden below, a control under it.
+  // Long: clamped to about fifteen lines — content hidden, and a control (under
+  // the reader's own message; the reply's, tail-first, is above it:
+  // tail-clamp.spec.ts).
   for (const b of [answer, newest]) {
     await expect(b).toHaveAttribute('data-clamp', 'closed');
     const [h, sh, lh] = await b.evaluate((e) => [e.clientHeight, e.scrollHeight, parseFloat(getComputedStyle(e).lineHeight)]);
     expect(sh, 'there is more content than is shown').toBeGreaterThan(h + lh);
-    expect(h, 'about 12 lines tall').toBeGreaterThanOrEqual(lh * 11);
-    expect(h, 'about 12 lines tall').toBeLessThanOrEqual(lh * 14);
+    expect(h, 'about 15 lines tall').toBeGreaterThanOrEqual(lh * 14);
+    expect(h, 'about 15 lines tall').toBeLessThanOrEqual(lh * 17);
   }
   const toggle = newest.locator('xpath=following-sibling::*[1]');
   await expect(toggle).toHaveAttribute('data-clamp-toggle', '');
@@ -283,9 +300,10 @@ test('with reduced motion the clamp opens with no transition', async ({ page }) 
 // B2 round 1: a tap on a control INSIDE a bubble is the control's. A fenced
 // code block in a mirrored reply is a collapsed <details> (internal/ui/
 // markdown.go); tapping its summary opens the code block and leaves the
-// clamped bubble alone.
+// clamped bubble alone. The code block is the reply's LAST block: a reply is
+// clamped tail-first, so its end is what shows.
 test('tapping a code block summary inside a clamped bubble toggles only the code block', async ({ page }) => {
-  const tr = newTranscript(prompt('show me') + reply('```\ncode line one\ncode line two\n```\n\n' + lines(30, 'after the code')));
+  const tr = newTranscript(prompt('show me') + reply(lines(30, 'before the code') + '\n\n```\ncode line one\ncode line two\n```'));
   await openView(page, tr);
   const b = page.locator('#mv-log [data-bubble="assistant"]').first();
   await expect(b).toHaveAttribute('data-clamp', 'closed');
@@ -349,7 +367,7 @@ test('a tap opens a clamped bubble, a second tap leaves it open, and only Show l
 
 // The agent chat specs below drive an agent of their OWN (e2e/mkchat) with a
 // persisted chat, so their bubbles are the server's real chatBubble markup
-// (data-md, data-msg-id) without adding rows to a seeded agent other specs
+// (data-md-rendered, data-msg-id) without adding rows to a seeded agent other specs
 // count. It is deleted after.
 //
 // The delete is armed BEFORE mkchat runs, and the delete is idempotent: a run
@@ -379,6 +397,13 @@ test.afterAll(() => {
 
 // refreshChatLog fires task:changed on <body>, as the completion banner's
 // Mark-complete does, and resolves once #chat-log has been swapped.
+//
+// 🔴 IT DROPS #chat-log's data-chat-version FIRST, so the refetch is answered in
+// full and really swaps. With the version the page was drawn with, an unchanged
+// transcript is answered 204 and NOT swapped (ui.ChatLogBody's handshake) — the
+// real Mark-complete changes the task banner, so its refetch does swap; this
+// spec changes nothing server-side, so it has to ask for the full answer to test
+// what a swap does to an opened bubble. unchangedRefresh pins the 204 path.
 async function refreshChatLog(page: Page) {
   await page.evaluate(
     () =>
@@ -390,6 +415,34 @@ async function refreshChatLog(page: Page) {
           requestAnimationFrame(() => resolve());
         };
         document.body.addEventListener('htmx:afterSwap', on);
+        document.getElementById('chat-log')!.removeAttribute('data-chat-version');
+        document.body.dispatchEvent(new Event('task:changed'));
+      }),
+  );
+}
+
+// unchangedRefresh is the same refresh WITH the page's version: the status the
+// partial answered (204 when nothing changed), and whether htmx swapped.
+async function unchangedRefresh(page: Page): Promise<{ status: number; swapped: boolean }> {
+  return page.evaluate(
+    () =>
+      new Promise<{ status: number; swapped: boolean }>((resolve) => {
+        let swapped = false;
+        const onSwap = (e: Event) => {
+          if ((e as CustomEvent).detail?.target?.id === 'chat-log') swapped = true;
+        };
+        const onDone = (e: Event) => {
+          const d = (e as CustomEvent).detail;
+          if (d?.elt?.id !== 'chat-log') return;
+          document.body.removeEventListener('htmx:afterRequest', onDone);
+          // afterSwap would have fired before afterRequest; give it a frame anyway.
+          requestAnimationFrame(() => {
+            document.body.removeEventListener('htmx:afterSwap', onSwap);
+            resolve({ status: d.xhr.status, swapped });
+          });
+        };
+        document.body.addEventListener('htmx:afterSwap', onSwap);
+        document.body.addEventListener('htmx:afterRequest', onDone);
         document.body.dispatchEvent(new Event('task:changed'));
       }),
   );
@@ -401,7 +454,7 @@ async function refreshChatLog(page: Page) {
 // drawn open again at once, by its row id, without animating.
 test('an opened persisted message stays open across a chat-log refresh', async ({ page }) => {
   makeChatAgent();
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + '/agents/' + chatAgent);
   const log = page.locator('#chat-log');
   const long = log.locator('[data-bubble="user"]').last();
@@ -421,6 +474,11 @@ test('an opened persisted message stays open across a chat-log refresh', async (
       if (m.type === 'attributes' && t.hasAttribute('data-msg-id')) (window as any).__states.push(t.getAttribute('data-clamp'));
     })).observe(l, { subtree: true, attributes: true, attributeFilter: ['data-clamp'] });
   }, id);
+  // Nothing changed server-side: the refresh is answered 204 and the opened
+  // bubble is not even redrawn.
+  expect(await unchangedRefresh(page), 'an unchanged refresh is a 204 with no swap').toEqual({ status: 204, swapped: false });
+  expect(await log.locator(`[data-msg-id="${id}"]`).evaluate((e) => !!(e as any).__old), 'the same element is still drawn').toBe(true);
+  await expect(long).toHaveAttribute('data-clamp', 'open');
   await refreshChatLog(page);
   const fresh = log.locator(`[data-msg-id="${id}"]`);
   await expect(fresh).toHaveCount(1);
@@ -445,15 +503,15 @@ test('an opened persisted message stays open across a chat-log refresh', async (
 // tap.
 test('the agent chat clamps a long bubble and leaves its short seeded ones alone', async ({ page }) => {
   makeChatAgent();
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + '/agents/' + chatAgent);
   const log = page.locator('#chat-log');
   const seeded = log.locator('[data-bubble="user"]').first();
   await expect(seeded).toContainText('Check the docs build.');
-  await expect(seeded).toHaveAttribute('data-md-done', '');
+  await expect(seeded).toHaveAttribute('data-md-rendered', '');
   await expect(seeded).not.toHaveAttribute('data-clamp', /.*/);
   const long = log.locator('[data-bubble="user"]').last();
-  await expect(long).toHaveAttribute('data-md', '');
+  await expect(long).toHaveAttribute('data-md-rendered', '');
   await expect(long).toContainText('agent line 30');
   await expect(long).toHaveAttribute('data-clamp', 'closed');
   await expect.poll(() => fromBottom(page, '#chat-log'), { message: 'the agent log opened at the bottom' }).toBeLessThan(2);
@@ -590,7 +648,7 @@ test('against a host that predates the index, the list is the loaded messages an
   await page.locator('#chat-index-open').tap();
   const sheet = page.locator('#chat-index');
   await expect(sheet.locator('#chat-index-partial')).toBeVisible();
-  await expect(sheet.locator('#chat-index-partial')).toContainText('Only loaded messages shown');
+  await expect(sheet.locator('#chat-index-partial')).toContainText('Only the messages loaded so far are listed');
   await expect(sheet.locator('[data-chat-index-item]')).toHaveCount(150);
   await expect(sheet.locator('[data-chat-index-unloaded]')).toHaveCount(0);
   await expect(sheet.locator('[data-chat-index-item]').first()).toContainText('message number 51');
@@ -621,10 +679,11 @@ test('the header shows the context token count from the host, follows it live, a
 
   fs.appendFileSync(tr, modelAttachment('claude-opus-5-5[1m]') + prompt('more') + replyUsage('first', 'claude-opus-5-5', 249_500));
   await expect(ctx).toBeVisible();
-  await expect(ctx).toHaveText('250k context');
+  await expect(ctx).toHaveText('250k');
+  await expect(ctx).toHaveAttribute('title', '250,000 tokens');
   // Live: the next turn's usage replaces it.
   fs.appendFileSync(tr, prompt('again') + replyUsage('second', 'claude-opus-5-5', 611_500));
-  await expect(ctx).toHaveText('612k context');
+  await expect(ctx).toHaveText('612k');
   // It fits the phone's header with nothing scrolling sideways.
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw).toBeLessThanOrEqual(cw);
@@ -740,4 +799,100 @@ test('an older host draws an Agent call as the plain tool row, with no card', as
   await expect(log.locator('[data-tool-row]')).toHaveCount(1);
   await expect(log.locator('[data-tool-row]')).toContainText('Agent');
   await expect(log.locator('[data-subagent-card]')).toHaveCount(0);
+});
+
+// CLAUDE CODE'S OWN QUEUE: a message sent while Claude is busy waits in the
+// CLI's input queue, and reaches the transcript as a prompt only when Claude
+// takes it. The CLI records each change as a queue-operation record (shapes
+// measured from CLI 2.1.289; internal/cctranscript/queue.go), and the view
+// shows what is waiting UNDER the conversation, labelled — redacted, gone the
+// moment Claude takes it, and without moving what the reader is looking at.
+const queueOp = (operation: string, content?: string) =>
+  rec({ type: 'queue-operation', operation, timestamp: '2000-01-01T00:00:00.000Z', sessionId: 's', ...(content === undefined ? {} : { content }) });
+
+test('a message Claude Code queued is shown under the conversation until Claude takes it', async ({ page }) => {
+  // Long enough to SCROLL with every reply clamped (four of them): a log
+  // shorter than its box sits at its bottom (input.css), and then a region
+  // appearing under it moves it, as a messaging app's would.
+  let earlier = '';
+  for (let i = 1; i <= 4; i++) earlier += prompt(`step ${i} of the long job`) + reply(lines(60, `Earlier reply ${i}`));
+  const tr = newTranscript(earlier);
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const region = page.locator('#mv-ccq');
+  await expect(region).toBeHidden();
+
+  // The reader scrolls up to read: what is at the top must not move.
+  await log.evaluate((l) => (l.scrollTop = 200));
+  expect(await log.evaluate((l) => l.scrollTop), 'control: the log really scrolled').toBe(200);
+  const anchor = log.locator('[data-bubble="assistant"]').first();
+  const before = (await anchor.boundingBox())!.y;
+
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E then ship it with TOKEN=ghp_E2EQueuedToken01'));
+  await expect(region).toBeVisible({ timeout: 15_000 });
+  await expect(region).toContainText('Queued in Claude Code');
+  const item = region.locator('[data-cc-queued-item]');
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText('QUEUED-E2E then ship it with');
+  // Not a sent message: no bubble for it in the conversation yet.
+  await expect(log).not.toContainText('QUEUED-E2E');
+  expect((await page.content()).includes('ghp_E2EQueuedToken01'), 'the token is not in the page').toBe(false);
+  expect((await anchor.boundingBox())!.y, 'the text being read did not move').toBe(before);
+  // A harness envelope queued beside it is not listed.
+  fs.appendFileSync(tr, queueOp('enqueue', '<task-notification>\n<task-id>t2</task-id>\n</task-notification>'));
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E second'));
+  await expect(item).toHaveCount(2);
+  await expect(region).toContainText('Queued in Claude Code · 2');
+
+  // Claude takes the first: it becomes the prompt bubble and leaves the list.
+  fs.appendFileSync(tr, queueOp('dequeue') + prompt('QUEUED-E2E then ship it with TOKEN=ghp_E2EQueuedToken01'));
+  await expect(log.locator('[data-bubble="user"]').last()).toContainText('QUEUED-E2E then ship it with');
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText('QUEUED-E2E second');
+  // The second is absorbed into the running turn: the list empties.
+  fs.appendFileSync(tr, queueOp('remove', 'QUEUED-E2E second'));
+  await expect(region).toBeHidden();
+
+  // Up pulled a newly queued one back into the input box (popAll): gone too.
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E third'));
+  await expect(region).toBeVisible();
+  fs.appendFileSync(tr, queueOp('popAll', 'QUEUED-E2E third'));
+  await expect(region).toBeHidden();
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw);
+});
+
+// 🔴 THE CLI EXITS WITH A MESSAGE QUEUED: its queue died with it, so the
+// region empties when the view ends (the window is no longer Claude Code) —
+// never left listing a message nothing will ever send.
+test('a queued message leaves the view when the window stops running Claude Code', async ({ page }) => {
+  const tr = newTranscript(prompt('start the long job') + reply('working'));
+  await openView(page, tr);
+  const region = page.locator('#mv-ccq');
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E then the CLI exits'));
+  await expect(region.locator('[data-cc-queued-item]')).toContainText('QUEUED-E2E then the CLI exits', { timeout: 15_000 });
+  // The CLI exits (what it writes then: last-prompt, cost-state — nothing
+  // that resolves the enqueue), and the pane stops being Claude Code.
+  fs.appendFileSync(tr, rec({ type: 'last-prompt', lastPrompt: 'start the long job', leafUuid: 'l', sessionId: 's' }) + rec({ type: 'cost-state', sessionId: 's' }));
+  fs.writeFileSync(tr + '.gone', '');
+  await expect(page.locator('#mv-error')).toBeVisible({ timeout: 15_000 });
+  await expect(region).toBeHidden();
+  await expect(region.locator('[data-cc-queued-item]')).toHaveCount(0);
+});
+
+// A RELOAD while a message is queued shows it from the start (the host sends
+// the list on every open), and one taken meanwhile is not resurrected from the
+// page's snapshot.
+test('a reload shows what is queued now, never what a snapshot drew', async ({ page }) => {
+  const tr = newTranscript(prompt('start') + reply('working') + queueOp('enqueue', 'QUEUED-E2E waiting'));
+  await openView(page, tr);
+  const region = page.locator('#mv-ccq');
+  await expect(region.locator('[data-cc-queued-item]')).toContainText('QUEUED-E2E waiting');
+  // Taken while the page is away.
+  await page.goto('about:blank');
+  fs.appendFileSync(tr, queueOp('dequeue') + prompt('QUEUED-E2E waiting') + reply('done'));
+  await page.goto(origin + viewPath);
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+  await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText('QUEUED-E2E waiting');
+  await expect(region).toBeHidden();
 });

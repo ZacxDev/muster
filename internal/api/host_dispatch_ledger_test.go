@@ -1,0 +1,157 @@
+package api
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// THE HOST-DISPATCH SEAM LEDGERS (docs/design/chief-dispatch.md 3.7, 5.1):
+// asserted over the Go source, each failing when its set GROWS or SHRINKS.
+
+// callersIn is every "<file>:<func>" in the non-test Go files of dir whose body
+// calls a method or function named name.
+func callersIn(t *testing.T, dir, name string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fn := call.Fun.(type) {
+				case *ast.SelectorExpr:
+					if fn.Sel.Name == name {
+						out = append(out, filepath.Base(f)+":"+fd.Name.Name)
+					}
+				case *ast.Ident:
+					if fn.Name == name {
+						out = append(out, filepath.Base(f)+":"+fd.Name.Name)
+					}
+				}
+				return true
+			})
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+func assertCallers(t *testing.T, dir, name string, want []string) {
+	t.Helper()
+	got := callersIn(t, dir, name)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("%s is called from %v\nwant exactly %v", name, got, want)
+	}
+}
+
+// TestHostSpawnHasOneDoor: the ONLY code that asks a host to start an agent is
+// agent_dispatch's host path (spawnReserved, from toolHostDispatch). No HTTP
+// route, token or CLI verb reaches it.
+func TestHostSpawnHasOneDoor(t *testing.T) {
+	// 🔴 The second door is the officer runtime's: a host officer's instance
+	// (officer_host.go hostStart), reached only from the wake loop's
+	// officerFleet.Start (TestTheHostOfficerSeamsAreALedger) — never a route,
+	// token or tool.
+	assertCallers(t, ".", "SpawnAgent", []string{"host_dispatch.go:spawnReserved", "officer_host.go:hostStart"})
+	// 🔴 The second caller is the owner's TAP on a succession's card (operator
+	// decision, chief-in-agent-view phase 2): an HTTP route reaches a host
+	// spawn there, but only through the owner's own door (answerAskFrom's
+	// proposal hook, attention.IsOwnerDoor), never a token.
+	assertCallers(t, ".", "spawnReserved", []string{"host_dispatch.go:toolHostDispatch", "succession.go:reserveSuccession"})
+	assertCallers(t, ".", "reserveSuccession", []string{"succession.go:startSuccession"})
+	assertCallers(t, ".", "startSuccession", []string{"succession.go:acceptSuccession"})
+	assertCallers(t, ".", "acceptSuccession", []string{"chief_proposal.go:acceptProposal"})
+	assertCallers(t, ".", "acceptProposal", []string{"chief_proposal.go:proposalForAnswer"})
+	assertCallers(t, ".", "proposalForAnswer", []string{"attention.go:answerAskFrom"})
+	assertCallers(t, ".", "toolHostDispatch", []string{"agent_dispatch.go:toolAgentDispatch"})
+}
+
+// TestTheHostDispatchWritersAreALedger: in internal/api the reconciler is the
+// only caller of UpdateHostDispatch and SetHostDispatchOrphanNotice;
+// EndHostDispatch (the only writer of ended) is reached only through
+// endHostDispatch, whose callers are the reconciler (a reply, a listing, the
+// sweep) and agent_destroy; the pending insert is ReserveHostDispatch, from
+// toolHostDispatch only.
+func TestTheHostDispatchWritersAreALedger(t *testing.T) {
+	assertCallers(t, ".", "UpdateHostDispatch", []string{"host_dispatch_reconcile.go:applySpawnReply", "host_dispatch_reconcile.go:reconcileListing"})
+	assertCallers(t, ".", "SetHostDispatchOrphanNotice", []string{"host_dispatch_reconcile.go:orphanWindow"})
+	assertCallers(t, ".", "EndHostDispatch", []string{"host_dispatch.go:endHostDispatch"})
+	assertCallers(t, ".", "endHostDispatch", []string{"agent_destroy_tool.go:destroyHostDispatch",
+		"host_dispatch_reconcile.go:applySpawnReply", "host_dispatch_reconcile.go:reconcileListing", "host_dispatch_reconcile.go:sweepHostDispatches"})
+	assertCallers(t, ".", "ReserveHostDispatch", []string{"host_dispatch.go:toolHostDispatch", "succession.go:reserveSuccession"})
+	// MarkHostDispatchDone (0097: done_at/done_summary only, never ended) is
+	// agent_report_done's on the mirror door alone.
+	assertCallers(t, ".", "MarkHostDispatchDone", []string{"host_dispatch_done.go:toolHostReportDone"})
+	// 0099's three (an opencode reply's outcome, a later turn's re-arm, a
+	// Claude done settled) are the outcome reconciler's alone.
+	assertCallers(t, ".", "RecordHostDispatchOutcome", []string{"host_dispatch_outcome.go:recordHostReply"})
+	assertCallers(t, ".", "RearmHostDispatch", []string{"host_dispatch_outcome.go:rearmHostDispatch"})
+	assertCallers(t, ".", "SettleHostDispatchDone", []string{"host_dispatch_outcome.go:claudeHostTurn"})
+	assertCallers(t, ".", "recordHostReply", []string{"host_dispatch_outcome.go:reconcileOutcomes"})
+	assertCallers(t, ".", "rearmHostDispatch", []string{"host_dispatch_outcome.go:claudeHostTurn", "host_dispatch_outcome.go:reconcileOutcomes"})
+	assertCallers(t, ".", "claudeHostTurn", []string{"host_dispatch_outcome.go:reconcileOutcomes"})
+	// In the store, the SQL that writes host_dispatches is in exactly these
+	// eight functions.
+	src, err := os.ReadFile(filepath.Join("..", "plugins", "host_dispatches.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, "host_dispatches.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writers []string
+	for _, d := range af.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		body := string(src[fset.Position(fd.Body.Pos()).Offset:fset.Position(fd.Body.End()).Offset])
+		if strings.Contains(body, "INSERT INTO host_dispatches") || strings.Contains(body, "UPDATE host_dispatches") {
+			writers = append(writers, fd.Name.Name)
+		}
+	}
+	slices.Sort(writers)
+	want := []string{"EndHostDispatch", "MarkHostDispatchDone", "RearmHostDispatch", "RecordHostDispatchOutcome", "ReserveHostDispatch",
+		"SetHostDispatchOrphanNotice", "SettleHostDispatchDone", "UpdateHostDispatch"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("host_dispatches is written by %v\nwant exactly %v", writers, want)
+	}
+	// And no other file in the store writes it.
+	files, _ := filepath.Glob(filepath.Join("..", "plugins", "*.go"))
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || filepath.Base(f) == "host_dispatches.go" {
+			continue
+		}
+		b, _ := os.ReadFile(f)
+		if strings.Contains(string(b), "INSERT INTO host_dispatches") || strings.Contains(string(b), "UPDATE host_dispatches") {
+			t.Errorf("%s writes host_dispatches", f)
+		}
+	}
+}

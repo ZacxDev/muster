@@ -1,9 +1,9 @@
 # The GitHub App
 
 A GitHub App is the GitHub identity of muster's **admins** when one is
-configured. It replaces the per-user OAuth connection (`GITHUB_CLIENT_ID`,
-`MUSTER_GITHUB_TOKEN`), which is **deprecated**. The OAuth connection stays as
-the fallback for a deployment without an App, and for members (see below).
+configured, and muster's only GitHub identity. The per-user OAuth connection it
+replaced (`GITHUB_CLIENT_ID`, `MUSTER_GITHUB_TOKEN`, the Repos tab) has been
+removed; see [Removing the OAuth connection](#removing-the-oauth-connection).
 
 With the App configured:
 
@@ -11,9 +11,10 @@ With the App configured:
   the App. Each request an approved agent makes through muster's proxy
   (`/connect/github/…`, which is how `ccd` clones, fetches and pushes) carries
   an installation token that GitHub issues for **that agent's one repository**.
-  The token has exactly `contents: write`, `pull_requests: write`,
-  `checks: read` and `statuses: read`, plus the `metadata: read` that GitHub
-  always adds. muster caches each token in memory until five minutes before it
+  In the default write mode the token has exactly `contents: write`,
+  `pull_requests: write`, `checks: read` and `statuses: read`; in
+  [read-only mode](#read-only-mode) (`MUSTER_GITHUB_APP_ACCESS=read`) all four
+  are `read`. Both add the `metadata: read` that GitHub always adds. muster caches each token in memory until five minutes before it
   expires (GitHub issues them for one hour), and drops it early if GitHub
   answers 401. It is never stored, logged or given to the agent.
 - **Other repositories are reached anonymously.** With an approved grant, all
@@ -21,7 +22,10 @@ With the App configured:
   for any repository other than the agent's own carries **no credential at
   all**, so a public dependency or submodule clones as it would for anyone and
   a private one fails as it would for anyone. The App token is never attached
-  to it. muster compares the path's repository without case, after fully
+  to it. (The one exception is an [officer's `read_repos`](officers.md#reading-a-repository-repo):
+  a request to one of them carries a token minted for **that** repository
+  alone, always read only — one token per repository, never one for several.)
+  muster compares the path's repository without case, after fully
   decoding it. It refuses, before minting anything, any path whose repository
   it cannot decide: a `.` or `..` segment, a doubly encoded or backslashed
   path, a leading empty segment, or `/repositories/<id>/…` (use
@@ -29,9 +33,12 @@ With the App configured:
   for example) carry the token, which can reach only the agent's repository.
 - **An agent with no repository gets no github access** while the App is
   configured. A chief, for example, has no repository to scope a token to.
-- **You still approve each agent.** An agent's `github` request still waits
-  for you under Connectors. The App changes where the credential comes from,
-  not who decides. A request filed before the App was configured (when no
+- **You approve each repository once.** The first agent's `github` request
+  for a repository waits for you under Connectors; approving it is shared
+  with every later agent of yours dispatched on **that same repository**
+  ([connectors.md](connectors.md#shared-approvals)), and never with an agent
+  on another repository. The App changes where the credential comes from, not
+  who decides. A request filed before the App was configured (when no
   `github` connector existed) shows **Approve** once the App is configured.
   Approve it and the agent's next clone retry (every 30 s) succeeds, with no
   new dispatch.
@@ -39,10 +46,10 @@ With the App configured:
   (or one on any connector reaching github.com) for an agent in a worker pool
   is refused, and a worker holding one is skipped for jobs: a pool worker holds
   no GitHub credential ([jobs.md](jobs.md#worker-pools)).
-- **The Repos tab lists the installation's repositories** (for an admin). So do
-  the dispatch pickers and the "connected repository" check that every
-  claude-code dispatch and `task_dispatch` applies. The OAuth connection is not
-  consulted for an admin while the App is configured.
+- **The installation's repositories are the connected ones** (for an admin):
+  the task forms' repository picker lists them, and they are what the
+  "connected repository" check that every claude-code dispatch and
+  `agent_dispatch` applies accepts.
 - **Only installations on `MUSTER_GITHUB_APP_ACCOUNTS` count, matched by the
   account's numeric id.** The App has to be installable on "Any account", so
   anyone can install it on their own repositories. An installation on an
@@ -65,11 +72,49 @@ With the App configured:
 
 **The App is the admins', not every user's.** It belongs to the deployment.
 On a multi-user muster, only admin-role users see it: their agents get the
-App-backed `github` connector, and their dispatch checks and Repos tab list its
-repositories. For a **member**, muster behaves as if no App were configured.
-Their agents do not see the App connector, their `github` requests cannot be
-approved onto it (whoever clicks Approve), and their repository list and
-dispatch checks come from their own OAuth connection.
+App-backed `github` connector, and their dispatch checks and repository picker
+list its repositories. For a **member**, muster behaves as if no App were
+configured. Their agents do not see the App connector, their `github` requests
+cannot be approved onto it (whoever clicks Approve), and they have no connected
+repositories: a member cannot dispatch a claude-code agent into a repository.
+
+**Teams an admin lists.** `MUSTER_TEAMS_ON_GITHUB_APP=<team ids>` lends the App
+to those [teams](design/team-sharing.md)' own agents, as an admin's agents use
+it: the team's chief sees the App's repositories and can start a team agent
+in one, and the team's agents see the App-backed `github` connector. It is
+the team's, never its members': a member of a listed team still has no
+repositories for their own chief or agents. A listed id that is a person, or
+names nobody, refuses to boot, as does the list with no App.
+
+- **A manager approves each repository once for the team.** A team agent's
+  `github` request waits on the team's **Connectors** page
+  (`/teams/<id>/connectors`, linked from the team chief's page). Only a
+  manager of the team approves it, and approving needs a recent sign-in
+  (Confirm it's you). The approval is the team's for that repository: the
+  team's later agents on the same repository are approved when they ask; an
+  agent on another repository asks again. A manager may deny without
+  signing in again. A team agent's request is pushed to the team's
+  managers, linking that page. Each decision is in the team's audit log,
+  naming the manager.
+- **A manager revokes an approved repository.** The same page lists the
+  repositories approved for the team, each with **Revoke** (a manager, with
+  a recent sign-in). A revoke ends the team's approval of that repository
+  and every agent grant it gave, so the team's next agent there asks again.
+  It is in the team's audit log (`connector.revoke`), naming the manager.
+  **Unlisting a team only pauses its approvals:** while the team is not in
+  `MUSTER_TEAMS_ON_GITHUB_APP` the App is not its connector and none of its
+  agents is served, and listing it again restores the approvals it had.
+  Revoke is the way to remove one.
+- **The repository picker is the object's owner's.** On a team's task the
+  picker lists the repositories the team's agents may use, whoever opens it
+  (an operator or above of the team): a listed team's App repositories, and
+  none for a team that is not listed, even to an admin. It decides what the
+  form offers, and it is not a secrecy boundary: every member of a listed
+  team, a viewer included, can already see the App's repository names, on
+  the team's repo card and through the team chief's `repos_list`.
+- **Team members have to trust each other.** A team agent's token reaches
+  its own repository with the App's access (`MUSTER_GITHUB_APP_ACCESS`), and
+  everything a team agent prints is readable by every member of the team.
 
 ## Register the App
 
@@ -108,8 +153,8 @@ Click **Create GitHub App**. On the App's page:
    this page.
 
 muster only ever asks for exactly those four repository permissions (Contents
-and Pull requests read and write, Checks and Commit statuses read), whatever
-the App was granted. If the App lacks one of them, GitHub refuses the token
+and Pull requests read and write, Checks and Commit statuses read — or all four
+read in [read-only mode](#read-only-mode)), whatever the App was granted. If the App lacks one of them, GitHub refuses the token
 (a 422 on the agent's card). But give the App no more than this table, so that a leaked
 key cannot do more.
 
@@ -139,6 +184,29 @@ That account must be on `MUSTER_GITHUB_APP_ACCOUNTS`.
 | `MUSTER_GITHUB_APP_ID` | The App ID |
 | `MUSTER_GITHUB_APP_PRIVATE_KEY` | The whole `.pem` file's contents. A value with its line breaks written as `\n` is accepted too. |
 | `MUSTER_GITHUB_APP_ACCOUNTS` | **Required.** Comma-separated `<login>:<id>` entries for the accounts whose installations muster may use, e.g. `example-org:12345,your-user:67890`. Get each id with `gh api users/<login> -q .id` (it works for organizations too). An entry without an id refuses to boot. |
+| `MUSTER_GITHUB_APP_ACCESS` | Optional. `write` (the default when unset) or `read`: what every agent token is minted with. See [Read-only mode](#read-only-mode). Any other value refuses to boot, as does setting it without the App. |
+
+### Read-only mode
+
+`MUSTER_GITHUB_APP_ACCESS=read` makes every agent token muster mints ask for
+`contents: read`, `pull_requests: read`, `checks: read` and `statuses: read`
+(plus GitHub's implicit `metadata: read`). The repository-listing token is
+`metadata: read` in both modes. With a read token, a `git push` or a
+pull-request write through the proxy is **refused by GitHub** (403); muster
+never mints a wider token in its place. Use it for a deployment whose agents
+must only read GitHub, even when it shares an App with a write-mode deployment:
+the mode is the deployment's, the App's own permissions stay as in the table
+above. An [officer](officers.md#reading-a-repository-repo) instance's token is
+read-only in **both** modes (`connectors.Caller.ReadOnly`): a write-mode
+deployment mints write for its task agents and read for its officers. So is
+each token minted for an officer's `read_repos` (`connectors.Caller.ReadRepos`),
+whatever the mode and whoever the caller.
+
+In read mode, every place muster describes the connector says so: the
+Connectors tab, the approve card and `connector_requests_list`
+(`approving_grants`), the boot banner, the GitHub preset's help (which also
+says that the setting does **not** limit a stored token), and a task agent's
+close-out instructions, which tell it to report its branch instead of pushing.
 
 The App also needs the connector store (`MUSTER_CONNECTOR_ENCRYPTION_KEY`,
 [connectors.md](connectors.md)), because agents reach GitHub only through the
@@ -186,7 +254,6 @@ installations in the background:
 A failure that blocks agents is also shown on the connector request card and on
 each affected agent's card (`GitHub: …`). Examples are the credentials refused,
 a rate limit, or a repository that is not in the installation (GitHub's 422).
-The Repos tab shows it above the list.
 
 ## The kickoff wait
 
@@ -199,6 +266,14 @@ its deadline becomes `updated_at` plus the new value.
 
 ## Removing the OAuth connection
 
-The OAuth code (`/github/connect`, the per-user token store,
-`MUSTER_GITHUB_TOKEN`) is still in this release as the fallback. It will be
-removed once the App has been verified on a live deployment.
+The OAuth connection has been removed: the Repos tab, `/github/connect`,
+`/github/callback`, `/github/disconnect`, the per-user token store and the
+static-token connect at boot. Without an App, muster has no GitHub identity and
+no repository counts as connected.
+
+Nothing reads `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
+`MUSTER_GITHUB_ENCRYPTION_KEY` or `MUSTER_GITHUB_TOKEN` any more. muster does
+not refuse unknown variables, so a deployment that still sets them boots; drop
+them from the deployment. The `github_connection` table was left in the schema, unread and
+unwritten, so that change could be rolled back; migration `0059` drops it, and with it every
+stored OAuth token ([schema.md](schema.md)).

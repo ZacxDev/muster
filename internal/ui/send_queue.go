@@ -2,6 +2,8 @@ package ui
 
 import (
 	"strconv"
+	"strings"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -13,8 +15,11 @@ import (
 // "Queue for when idle" item behind Send's caret (composer_menu.go), and the
 // window's queue under the status line — what is waiting, what
 // it is waiting for, a ⋯ menu for each message not yet being sent (Send now,
-// Copy message, Cancel: sendQueueRowMenu), and the last few outcomes, each
-// with a Delete.
+// Copy message, Cancel: sendQueueRowMenu), and each of the person's own
+// failures not yet handled, with a Retry and a Delete. A sent or cancelled
+// message leaves the list (sendqueue.PGStore.List), and so does a failed
+// routed message or chief nudge (it goes back to the chief); a person's own
+// failure stays until it is retried, deleted, or pruned. A tap on any row's preview shows its whole text (sendQueuePreview).
 //
 // 🔴 THE QUEUE IS THE SERVER'S, NOT THE PAGE'S. Queue posts the message to
 // SendQueuePath and the server sends it when the target has been idle long
@@ -89,8 +94,11 @@ const SendQueueMayHaveSentText = "May already have been sent."
 // list as it was when the page was drawn.
 type ComposerQueue struct {
 	// Src is the list's URL (SendQueuePath with the window's address).
-	Src  string
-	List SendQueueListView
+	Src string
+	// Owner is a TEAM window's owner (team sharing 2b.4), 0 for the viewer's
+	// own: Queue then posts naming it (owner=).
+	Owner int64
+	List  SendQueueListView
 	// Disabled, when set, draws Queue disabled and says why under the list —
 	// a host whose muster-mirror does not report whether Claude Code is busy,
 	// a window that is not Claude Code. The server refuses such a queue
@@ -105,8 +113,9 @@ type SendQueueItem struct {
 	State string
 	// Preview is the start of the message (the owner's own text).
 	Preview string
-	// Body is the whole message, for a queued one's Copy message; "" for the
-	// others, which have no Copy.
+	// Body is the whole message: what a tap on the preview shows
+	// (sendQueuePreview), and a queued one's Copy message. "" draws the
+	// preview alone, with nothing to open.
 	Body string
 	// Detail is the outcome in words, for a finished one.
 	Detail string
@@ -117,9 +126,10 @@ type SendQueueItem struct {
 	Answered string
 	// Retryable: it failed and has not been retried; drawn with a Retry.
 	Retryable bool
-	// Deletable: it is finished (sent, failed, cancelled), so its owner may
-	// remove it from the list; drawn with a Delete. Never a queued message
-	// (that is Cancel) or one being sent.
+	// Deletable: it is finished, so its owner may remove it from the list;
+	// drawn with a Delete. The list holds only failed ones among the finished
+	// (sendqueue.PGStore.List). Never a queued message (that is Cancel) or one
+	// being sent.
 	Deletable bool
 	// MayHaveDelivered: muster stopped while sending it, so it may have
 	// reached the window. Its Retry warns, and asks once before it queues it.
@@ -143,7 +153,36 @@ type SendQueueItem struct {
 	Editing    bool
 	HoldToken  string
 	HoldLeftMS int64
+	// Owner is a TEAM's id when the row is in a team window's queue (team
+	// sharing 2b.4), 0 for the viewer's own: every action's URL then names
+	// it (owner=), so the server acts on the team's queue and no other.
+	Owner int64
+	// QueuedBy names who queued a team row that is NOT the viewer's ("" for
+	// the viewer's own, and on a personal queue): the row then offers no Send
+	// now, Edit or Retry — only its queuer does those — and Cancel and
+	// Delete only to a manager (the server decides; it draws Cancellable and
+	// Deletable so).
+	QueuedBy string
 }
+
+// SendQueueQueuedByText is what a team row someone else queued says.
+func SendQueueQueuedByText(name string) string { return "Queued by " + name + "." }
+
+// ownerPath is p naming owner as its owner= (team sharing 2b.4), p itself for
+// the viewer's own (0): an own row's URLs are what they always were.
+func ownerPath(p string, owner int64) string {
+	if owner == 0 {
+		return p
+	}
+	sep := "?"
+	if strings.Contains(p, "?") {
+		sep = "&"
+	}
+	return p + sep + "owner=" + strconv.FormatInt(owner, 10)
+}
+
+// path is p for this row: its owner named (ownerPath).
+func (it SendQueueItem) path(p string) string { return ownerPath(p, it.Owner) }
 
 // What a held, a lapsed and an edited message say under their preview.
 const (
@@ -180,6 +219,18 @@ type SendQueueListView struct {
 	// Waiting is what the next message is waiting for (sendqueue.Decide's
 	// reason), "" when nothing is queued or it is about to send.
 	Waiting string
+	// Held: the queue is held on how the window's latest turn failed — a usage
+	// limit, or the circuit breaker (sendqueue.Decision.Held). Waiting says
+	// why; Send now still sends one.
+	Held bool
+	// ResumeAt is when a held queue resumes — a usage limit's reset, the
+	// breaker's next retry — zero when it names none. Drawn after Waiting in
+	// the READER's zone (a <time data-clock> the list's script formats); the
+	// server, which does not know that zone, draws it in UTC, saying so.
+	ResumeAt time.Time
+	// Now is the server's clock when the view was drawn: whether ResumeAt is
+	// today decides whether its date is drawn (utcClock).
+	Now time.Time
 	// Error is why the list could not be read.
 	Error string
 }
@@ -246,7 +297,7 @@ func SendQueueList(v SendQueueListView) g.Node {
 			Class("flex items-start gap-2 py-1"),
 			Span(Class("mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold "+tone), g.Text(label)),
 			Div(Class("min-w-0 flex-1"),
-				P(Class("line-clamp-2 text-xs text-fg [overflow-wrap:anywhere]"), g.Text(it.Preview)),
+				sendQueuePreview(it),
 				g.If(it.Detail != "" && it.State != "queued" && it.State != "sending",
 					P(Class("text-[11px] text-muted [overflow-wrap:anywhere]"), g.Text(it.Detail))),
 				g.If(it.Answered != "", P(g.Attr("data-queue-answered", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
@@ -260,12 +311,14 @@ func SendQueueList(v SendQueueListView) g.Node {
 					g.Text(SendQueueLapsedText))),
 				g.If(it.Edited && it.State == "queued" && !it.Held && !it.HoldLapsed,
 					P(g.Attr("data-queue-edited", ""), Class("text-[11px] text-muted"), g.Text(SendQueueEditedText))),
+				g.If(it.QueuedBy != "", P(g.Attr("data-queue-by", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
+					g.Text(SendQueueQueuedByText(it.QueuedBy)))),
 			),
 			g.If(it.Retryable, sendQueueRetryForm(it)),
 			g.If(it.Cancellable, sendQueueRowMenu(it)),
 			g.If(it.Deletable, Form(
 				Method("post"),
-				Action(SendQueueDeletePath(it.ID)),
+				Action(it.path(SendQueueDeletePath(it.ID))),
 				g.Attr("data-delete", ""),
 				Class("shrink-0"),
 				Button(Type("submit"),
@@ -280,11 +333,129 @@ func SendQueueList(v SendQueueListView) g.Node {
 		g.If(v.active(), g.Attr("data-active", "")),
 		Class("px-3 pt-2"),
 		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
-			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when Claude Code has been idle a while"))),
-		g.If(v.Waiting != "", P(ID("mv-queue-waiting"), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
-			g.Text("Next: "+v.Waiting))),
+			g.Text(SendQueueHead(open)))),
+		g.If(v.Waiting != "", sendQueueWaiting(v)),
+		g.If(v.Waiting != "", sendQueueWaitingFull()),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
 	)
+}
+
+// SendQueueFullLabel is the start of what a screen reader names a row's
+// preview, which a tap opens whole (sendQueuePreview).
+const SendQueueFullLabel = "Show the whole message"
+
+// SendQueueFullID is the popover holding message id's whole text.
+func SendQueueFullID(id int64) string { return "mv-qf-" + strconv.FormatInt(id, 10) }
+
+// sendQueuePreviewClass is a row's preview: at most two lines.
+const sendQueuePreviewClass = "line-clamp-2 text-xs text-fg [overflow-wrap:anywhere]"
+
+// sendQueuePreview is a row's preview — the start of the message, clamped to
+// two lines — and, when the row carries the whole text (Body), a tap on it
+// shows all of it: the preview is a button opening a popover with the whole
+// message (and a Close).
+//
+// IT WORKS WITHOUT SCRIPT: the button opens the popover itself
+// (popovertarget), which closes on Escape, on a tap outside and on its Close.
+// Enter and Space are the button's own.
+//
+// 🔴 OUT OF FLOW, like the row's ⋯ menu: the popover is in the top layer, so
+// opening it moves nothing on the page (the preview stays clamped), and the
+// list's poll does not redraw the rows while it is open (sendQueueScript's
+// menuOpen counts every popover in the list).
+func sendQueuePreview(it SendQueueItem) g.Node {
+	if it.Body == "" {
+		return P(Class(sendQueuePreviewClass), g.Text(it.Preview))
+	}
+	full := SendQueueFullID(it.ID)
+	return g.Group([]g.Node{
+		Button(
+			Type("button"),
+			g.Attr("popovertarget", full),
+			g.Attr("aria-haspopup", "dialog"),
+			g.Attr("aria-controls", full),
+			g.Attr("aria-label", SendQueueFullLabel+": "+it.Preview),
+			g.Attr("data-queue-full-open", ""),
+			Class("block min-h-[44px] w-full cursor-pointer rounded-lg text-left hover:bg-s2 focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+			Span(Class(sendQueuePreviewClass), g.Text(it.Preview)),
+		),
+		Div(
+			ID(full),
+			g.Attr("popover", ""),
+			g.Attr("role", "dialog"),
+			g.Attr("aria-label", "The whole message"),
+			g.Attr("data-queue-full", ""),
+			Class("m-auto max-h-[70dvh] w-[min(90vw,32rem)] overflow-y-auto rounded-xl border-0 bg-s1 p-3 text-fg shadow-lg ring-1 ring-line"),
+			P(g.Attr("data-queue-full-text", ""), Class("whitespace-pre-wrap text-sm [overflow-wrap:anywhere]"), g.Text(it.Body)),
+			Div(Class("mt-2 flex justify-end"),
+				Button(Type("button"), g.Attr("popovertarget", full), g.Attr("popovertargetaction", "hide"),
+					Class("press min-h-[44px] rounded-lg px-3 text-sm font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
+					g.Text("Close"))),
+		),
+	})
+}
+
+// sendQueueWaiting is the line saying what the next message waits for. It
+// RESERVES two lines whatever it says, so the queue going from "working" (one
+// line) to held on a usage limit (two, at a phone's width) does not grow the
+// composer — which is anchored to the bottom, so a line more moved its top: a
+// layout shift of 0.005–0.006 measured without the reservation (two runs), 0 with it. The turn
+// that hit the limit is not the reader's input, so any shift counts against
+// the page (e2e send-queue: "going from working to held … moves nothing").
+//
+// Held, it says so in the queue's own words (Waiting: "Held — usage limit,
+// resumes") and then the time it resumes, if any, in the READER's zone — "10:30
+// PM" — through a <time data-clock> the list's script formats. Without script
+// the server, which cannot know that zone, draws the time in UTC and says so.
+//
+// The line is drawn only while something is queued (Waiting is set only for a
+// head), so an idle composer with an empty queue reserves nothing.
+func sendQueueWaiting(v SendQueueListView) g.Node {
+	// At most two lines, whatever the width (a 320px phone included): the
+	// line is clamped, and its whole text is its title.
+	cls := "min-h-[2lh] line-clamp-2 text-[11px] [overflow-wrap:anywhere]"
+	// A tap (or Enter) shows the whole line in a popover (sendQueueWaitingFull):
+	// it opens in the top layer, so nothing on the page moves.
+	tap := g.Group([]g.Node{g.Attr("tabindex", "0"), g.Attr("role", "button"), g.Attr("aria-controls", SendQueueWaitingFullID),
+		g.Attr("aria-label", "Show the whole line")})
+	if !v.Held {
+		text := "Next: " + v.Waiting
+		return P(ID("mv-queue-waiting"), g.Attr("title", text), tap, Class(cls+" cursor-pointer text-muted"), g.Text(text))
+	}
+	text := v.Waiting
+	if !v.ResumeAt.IsZero() {
+		text += " " + utcClock(v.ResumeAt, v.Now)
+	}
+	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), g.Attr("title", text), tap, Class(cls+" cursor-pointer font-semibold text-st-warning-fg"),
+		g.Text(v.Waiting),
+		g.If(!v.ResumeAt.IsZero(), g.Group([]g.Node{g.Text(" "),
+			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
+				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(utcClock(v.ResumeAt, v.Now)))})))
+}
+
+// SendQueueWaitingFullID is the popover that shows the waiting line whole.
+const SendQueueWaitingFullID = "mv-queue-waiting-full"
+
+// sendQueueWaitingFull is the waiting line's popover: empty until the list's
+// script fills it with the line's whole text, as drawn (its time in the
+// reader's zone), and opens it. A popover is in the top layer: opening it
+// moves nothing on the page — the line itself stays clamped to two lines.
+func sendQueueWaitingFull() g.Node {
+	return Div(ID(SendQueueWaitingFullID), g.Attr("popover", ""), g.Attr("role", "status"),
+		Class("m-auto max-w-[min(90vw,28rem)] rounded-xl border-0 bg-s1 p-3 text-xs text-fg shadow-lg ring-1 ring-line [overflow-wrap:anywhere]"))
+}
+
+// utcClock is t as the server draws it for a reader whose zone it does not
+// know: in UTC, saying so — "22:30 UTC" when it falls on now's UTC date,
+// "Oct 27 22:30 UTC" when not (a weekly limit's reset is days away), and
+// with the date whenever now is unknown. The list's script redraws it in the
+// reader's own zone, the same way.
+func utcClock(t, now time.Time) string {
+	t = t.UTC()
+	if !now.IsZero() && t.Format("2006-01-02") == now.UTC().Format("2006-01-02") {
+		return t.Format("15:04") + " UTC"
+	}
+	return t.Format("Jan 2 15:04") + " UTC"
 }
 
 // The labels of a queued message's ⋯ menu.
@@ -323,7 +494,7 @@ func sendQueueEditRow(it SendQueueItem) g.Node {
 		Form(
 			ID("mv-qe-"+id),
 			Method("post"),
-			Action(SendQueueEditSavePath(it.ID)),
+			Action(it.path(SendQueueEditSavePath(it.ID))),
 			g.Attr("data-queue-edit-form", ""),
 			g.Attr("data-hold-left-ms", strconv.FormatInt(max(it.HoldLeftMS, 0), 10)),
 			g.Attr("novalidate", ""),
@@ -347,7 +518,7 @@ func sendQueueEditRow(it SendQueueItem) g.Node {
 				g.Text(it.Body),
 			),
 			Div(Class("flex justify-end gap-2"),
-				Button(Type("submit"), g.Attr("formaction", SendQueueEditCancelPath(it.ID)), g.Attr("data-queue-edit-cancel", ""),
+				Button(Type("submit"), g.Attr("formaction", it.path(SendQueueEditCancelPath(it.ID))), g.Attr("data-queue-edit-cancel", ""),
 					g.Attr("aria-label", SendQueueEditCancelLabel),
 					Class("press min-h-[44px] rounded-lg px-3 text-sm font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
 					g.Text("Cancel")),
@@ -370,7 +541,7 @@ const sendQueueMenuItemClass = "press flex min-h-[44px] w-full items-center roun
 // opens itself (popovertarget), which closes on Escape and on a tap outside
 // with no script at all, and Send now and Cancel are each a real form. Copy
 // message needs the clipboard, so it is drawn hidden and the list's script
-// shows it; the whole message rides in the row (a template), because the
+// shows it; the whole message rides in the row (sendQueuePreview's popover), because the
 // preview is cut. sendQueueScript adds the menu-button keyboard pattern,
 // places the menu beside its button and keeps aria-expanded true.
 //
@@ -401,23 +572,23 @@ func sendQueueRowMenu(it SendQueueItem) g.Node {
 			g.Attr("role", "menu"),
 			g.Attr("aria-label", "Queued message"),
 			Class("m-0 min-w-[12rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
-			Form(Method("post"), Action(SendQueueSendNowPath(it.ID)), g.Attr("data-send-now", ""),
+			// Only its queuer sends it now (a team row someone else queued:
+			// QueuedBy set).
+			g.If(it.QueuedBy == "", Form(Method("post"), Action(it.path(SendQueueSendNowPath(it.ID))), g.Attr("data-send-now", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("title", "Send it now, without waiting for Claude Code to be idle"),
-					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueSendNowLabel))),
+					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueSendNowLabel)))),
 			// Edit HOLDS the message first (the server), and only then is its text
 			// drawn for editing: a form, so it works without script.
-			g.If(it.Editable, Form(Method("post"), Action(SendQueueEditPath(it.ID)), g.Attr("data-edit", ""),
+			g.If(it.Editable, Form(Method("post"), Action(it.path(SendQueueEditPath(it.ID))), g.Attr("data-edit", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"),
 					g.Attr("title", "Change its text; it is held (not sent) while you edit, and keeps its place"),
 					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueEditLabel)))),
 			Button(Type("button"), g.Attr("role", "menuitem"), g.Attr("data-queue-copy", ""), g.Attr("hidden", ""),
 				Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueCopyLabel)),
-			Form(Method("post"), Action(SendQueueCancelPath(it.ID)), g.Attr("data-cancel", ""),
+			Form(Method("post"), Action(it.path(SendQueueCancelPath(it.ID))), g.Attr("data-cancel", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("aria-label", SendQueueCancelLabel),
 					Class(sendQueueMenuItemClass+" text-st-error-fg"), g.Text("Cancel"))),
 		),
-		// The whole message, for Copy message: inert, never rendered.
-		Template(g.Attr("data-queue-body", ""), g.Text(it.Body)),
 	)
 }
 
@@ -432,7 +603,7 @@ func sendQueueRetryForm(it SendQueueItem) g.Node {
 	}
 	return Form(
 		Method("post"),
-		Action(SendQueueRetryPath(it.ID)),
+		Action(it.path(SendQueueRetryPath(it.ID))),
 		g.Attr("data-retry", ""),
 		g.If(it.MayHaveDelivered, g.Attr("data-confirm", SendQueueMayHaveSentText+" Queue it again anyway?")),
 		Class("shrink-0"),
@@ -446,8 +617,8 @@ func sendQueueRetryForm(it SendQueueItem) g.Node {
 // SendQueueRetryConfirmPage is a whole document asking once before a message
 // that may already have been sent is queued again: the browser's own answer
 // to a Retry posted without the confirm (no script ran). It posts to action
-// with field=1.
-func SendQueueRetryConfirmPage(action, field, question, back string) g.Node {
+// with field=1. brand is the instance's, for the page's favicon.
+func SendQueueRetryConfirmPage(action, field, question, back string, brand Brand) g.Node {
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
 			Head(
@@ -455,7 +626,7 @@ func SendQueueRetryConfirmPage(action, field, question, back string) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(brand),
 				TitleEl(g.Text("Queue it again? · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),
@@ -506,7 +677,7 @@ func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 		ID("mv-queue-send"),
 		Type("submit"),
 		g.Attr("role", "menuitem"),
-		g.Attr("formaction", SendQueuePath),
+		g.Attr("formaction", ownerPath(SendQueuePath, q.Owner)),
 		g.If(q.Disabled != "", g.Attr("disabled", "")),
 		g.Attr("aria-label", "Queue: send when Claude Code is idle"),
 		g.If(q.Disabled == "", g.Attr("title", "Send when Claude Code has been idle for a while — even after this page is closed")),
@@ -534,10 +705,10 @@ func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 
 // sendQueueScript keeps #mv-queue current: re-read every 3 s while anything is
 // open there, every 15 s otherwise, at once on a Queue (the composer's script
-// dispatches mv-queued) and when the page is shown again — never while a row's
-// menu is open; it sends each Send now, Cancel, Retry and Delete without
-// leaving the page; it copies a queued message; and it drives the rows' ⋯
-// menus (sendQueueRowMenu).
+// dispatches mv-queued) and when the page is shown again — never while one of
+// its popovers (a row's menu, a row's whole message) is open; it sends each
+// Send now, Cancel, Retry and Delete without leaving the page; it copies a
+// queued message; and it drives the rows' ⋯ menus (sendQueueRowMenu).
 func sendQueueScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -553,11 +724,12 @@ func sendQueueScript() g.Node {
     clearTimeout(timer);
     timer = setTimeout(load, box.querySelector('[data-active]') ? 3000 : 15000);
   }
-  // menuOpen: a row's ⋯ menu is open. The list is not redrawn under it (a
-  // redraw would close it, and drop the focus inside it); the next load after
-  // it closes catches up.
+  // menuOpen: a popover of the list is open — a row's ⋯ menu, a row's whole
+  // message (sendQueuePreview), the whole waiting line. The list is not
+  // redrawn under it (a redraw would close it, and drop the focus inside it);
+  // the next load after it closes catches up.
   function menuOpen() {
-    var ms = box.querySelectorAll('[data-queue-menu] [popover]');
+    var ms = box.querySelectorAll('[popover]');
     for (var i = 0; i < ms.length; i++) {
       try { if (ms[i].matches(':popover-open')) return true; } catch (e) { return false; }
     }
@@ -569,6 +741,27 @@ func sendQueueScript() g.Node {
     var cs = box.querySelectorAll('[data-queue-copy]');
     for (var i = 0; i < cs.length; i++) cs[i].hidden = false;
   }
+  // clocks draws each <time data-clock> (a held queue's "resumes 10:30 PM")
+  // in the reader's own local time; the server's text stays if it cannot.
+  // A time that is not today carries its date ("Oct 27, 10:00 PM": a weekly
+  // limit's reset is days away). The line's title follows what it now says.
+  function clocks() {
+    var ts = box.querySelectorAll('time[data-clock]');
+    for (var i = 0; i < ts.length; i++) {
+      var ms = parseInt(ts[i].getAttribute('data-clock'), 10);
+      try {
+        if (!ms) continue;
+        var d = new Date(ms);
+        ts[i].textContent = d.toDateString() === new Date().toDateString()
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        var p = ts[i].closest('[title]');
+        if (p) p.setAttribute('title', p.textContent);
+      } catch (e) {}
+    }
+  }
+  // drawn is what follows every draw of the list.
+  function drawn() { copyable(); clocks(); }
   // editing: a row is open for editing (sendQueueEditRow). The list is not
   // redrawn under it either — that would throw away what is being typed; the
   // edit's own Save, Cancel or running out redraws it (show).
@@ -584,7 +777,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         loading = false;
         if (g !== gen) { load(); return; }
-        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; copyable(); }
+        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; drawn(); }
         schedule();
       }, function () { loading = false; schedule(); });
   }
@@ -602,7 +795,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         if (t === null) return;
         box.innerHTML = t;
-        copyable();
+        drawn();
         armHold();
         var ta = id ? box.querySelector('[data-queue-edit-form] textarea') : null;
         if (ta) { ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {} }
@@ -616,6 +809,7 @@ func sendQueueScript() g.Node {
     var input = document.getElementById('mv-input');
     if (!ta || !input || input.value.trim() || !ta.value.trim()) return '';
     input.value = ta.value;
+    ` + composerRevealCallJS("input") + `
     try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
     return ' Your edited text is in the message box.';
   }
@@ -690,6 +884,21 @@ func sendQueueScript() g.Node {
   box.addEventListener('click', function (e) {
     var b = e.target && e.target.closest ? e.target.closest('[aria-haspopup=menu]') : null;
     if (b) focusFirst = true;
+    var w = e.target && e.target.closest ? e.target.closest('#mv-queue-waiting') : null;
+    if (w) showWaiting(w);
+  });
+  // showWaiting opens the waiting line, whole, in its popover.
+  function showWaiting(w) {
+    var full = document.getElementById('mv-queue-waiting-full');
+    if (!full || typeof full.showPopover !== 'function') return;
+    full.textContent = w.textContent;
+    try { full.showPopover(); } catch (e) {}
+  }
+  box.addEventListener('keydown', function (e) {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.id === 'mv-queue-waiting') {
+      e.preventDefault();
+      showWaiting(e.target);
+    }
   });
   box.addEventListener('keydown', function (e) {
     var t = e.target;
@@ -723,7 +932,7 @@ func sendQueueScript() g.Node {
     if (m) { try { m.hidePopover(); } catch (err) {} }
   }
 
-  // Copy message: the WHOLE message (the row's template; the preview is cut),
+  // Copy message: the WHOLE message (the row's popover text; the preview is cut),
   // to the clipboard, then a brief "Copied." Where the async clipboard is
   // refused (no secure context), a selected textarea and execCommand.
   function copyText(text) {
@@ -747,28 +956,36 @@ func sendQueueScript() g.Node {
     var c = e.target && e.target.closest ? e.target.closest('[data-queue-copy]') : null;
     if (!c) return;
     var row = c.closest('[data-queue-id]');
-    var tpl = row ? row.querySelector('template[data-queue-body]') : null;
-    var text = tpl ? (tpl.content ? tpl.content.textContent : tpl.textContent) : '';
+    var whole = row ? row.querySelector('[data-queue-full-text]') : null;
+    var text = whole ? whole.textContent : '';
     closeMenu(c);
     copyText(text).then(function () { noteOK('Copied.'); }, function () { note('Not copied: this browser did not allow it.'); });
   });
 
   // Send now: sends a queued message at once, under this session's sign-in; a
-  // stale one asks "Confirm it's you" and sends.
-  function sendNow(f) {
+  // stale one asks "Confirm it's you" and sends. A message a Send may already
+  // have delivered is refused (its answer carries the Send-again header):
+  // asked once, like a Retry's, and sent again only on a yes (again=1).
+  function sendNow(f, again) {
     var b = f.querySelector('button');
     if (b) b.disabled = true;
-    return fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
-      headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    var body = new URLSearchParams();
+    if (again) body.append('` + SendAgainField + `', '1');
+    return fetch(f.getAttribute('action'), { method: 'POST', body: body, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
         if (r.ok) { noteOK('Sent.'); return; }
         if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
           window.musterStepUp.stale();
-          window.musterStepUp.ask('', function () { return sendNow(f); });
+          window.musterStepUp.ask('', function () { return sendNow(f, again); });
           return;
         }
         if (b) b.disabled = false;
-        return r.text().then(function (t) { note(t.trim() || ('Not sent (HTTP ' + r.status + ')')); });
+        var held = !again && r.status === 409 && r.headers.get('` + SendAgainHeader + `');
+        return r.text().then(function (t) {
+          if (held && window.confirm(t.trim() + ' Send it now anyway?')) return sendNow(f, true);
+          note(t.trim() || ('Not sent (HTTP ' + r.status + ')'));
+        });
       })
       .then(load, load);
   }
@@ -928,11 +1145,20 @@ func sendQueueScript() g.Node {
   });
   document.addEventListener('mv-queued', load);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
-  copyable();
+  drawn();
   // A page drawn with a row open for editing (a no-script Edit came back here,
   // and script runs after all): count its hold down too.
   armHold();
   schedule();
 })();
 `))
+}
+
+// SendQueueHead is the queue's line over its open messages, in plain words
+// ("waiting", "free" — not "queued", "idle"): open is how many there are.
+func SendQueueHead(open int) string {
+	if open == 1 {
+		return "1 message waiting — it sends when Claude is free."
+	}
+	return strconv.Itoa(open) + " messages waiting — they send one at a time, each when Claude is free."
 }

@@ -98,7 +98,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentprovision/scrubexec"
@@ -213,9 +215,10 @@ const KickoffDeliveryWired = true
 // mechanism, and nothing else.
 //
 // 🔴 IT EXISTS BECAUSE THE FULL REASON IS ~900 CHARACTERS AND THE SURFACE THAT NOW
-// SHOWS IT IS A TOAST. internal/api answers POST /agents with action=dispatch 409 +
-// this text, which internal/ui's htmx:responseError handler prints verbatim; the
-// full mechanism paragraph in a toast is a wall of text an operator scrolls past.
+// SHOWED IT WAS A TOAST. internal/api answers POST /api/agents with start: true 409 +
+// this text (it answered the deleted dispatch form's POST /agents the same way,
+// which a toast printed verbatim); the full mechanism paragraph is a wall of text
+// an operator scrolls past.
 // It is a PREFIX of [KickoffRefusalReason] rather than a second sentence of its own,
 // so the two cannot drift into saying different things — pinned by
 // TestTheShortRefusalIsAPrefixOfTheLongOne.
@@ -234,8 +237,8 @@ const KickoffDeliveryWired = true
 const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: this deployment " +
 	"cannot deliver an agent's first turn, so beginning the work is impossible and creating the " +
 	"instance would only produce a pod that reads healthy and was never told what to do. " +
-	"Use \"Save for later\", then Start the agent — that brings the instance up without " +
-	"claiming a first turn nothing can deliver."
+	"Create it with `muster agent create --start=false`, then Start it from its page, which brings " +
+	"the instance up without claiming a first turn."
 
 // KickoffRefusalReason is the operator-facing text of that refusal. It is logged,
 // written to the agent row's error message, and carried in the returned error.
@@ -253,8 +256,9 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // deployment reading it and the refusal fired anyway, because nothing called the
 // gateway. The text then said in as many words that setting the variable was NOT
 // sufficient. With the deliverer wired the refusal fires ONLY when no gateway was
-// built, so the variable is exactly the remedy — and "Save for later, then Start"
-// stays in the summary as the move that works without it.
+// built, so the variable is exactly the remedy — and "create it stopped, then
+// Start" (`muster agent create --start=false`) stays in the summary as the move
+// that works without it.
 //
 // ⚠ THE SPEC AND CREDENTIAL CLAUSE SURVIVES AND IS STILL LOAD-BEARING. The text
 // tells the operator NOT to go looking at the rendered port or the gateway token,
@@ -278,12 +282,14 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // THE HTTP RESPONSE OF THE POST THAT ASKED. That last one was the open half and this
 // paragraph used to say so: "IT DOES *NOT* REACH THE HTTP RESPONSE OF THE POST THAT
 // ASKED … CLOSING CONDITION: a pull request in which POST /agents with
-// action=dispatch answers 4xx carrying this text." internal/api's handleAgentCreate
-// now asks [Adapter.KickoffUndeliverableReason] BEFORE the row is created and answers
-// 409 with [KickoffRefusalSummary], which is this string's own prefix.
+// action=dispatch answers 4xx carrying this text." That form is gone
+// (docs/design/chief-dispatch.md phase 2); internal/api's handleAPIAgentCreate, POST
+// /api/agents with start: true, asks [Adapter.KickoffUndeliverableReason] BEFORE the
+// row is created and answers 409 with [KickoffRefusalSummary], which is this
+// string's own prefix.
 // ⚠ ONE CALLER IS STILL ASYNCHRONOUS AND THAT IS DELIBERATE: handleChiefProvision
 // reaches Dispatch through createAndDispatchAgent inside safeGo, so its refusal is
-// recorded on the row rather than returned. It has no "Save for later" affordance
+// recorded on the row rather than returned. It has no "create stopped" affordance
 // to be sent to; the row it creates can be brought up with Start, which is the
 // same escape by a different door.
 const KickoffRefusalReason = KickoffRefusalSummary + " CAUSE: this deployment names no agent " +
@@ -358,6 +364,17 @@ type Config struct {
 	// Empty is [DefaultAnonymousGitBase], the only production value; tests
 	// point it at a local directory (file://…/).
 	AnonymousGitBase string
+
+	// ChiefLLMRoute is set when a chief may run on the LLM route
+	// (cmd/muster-server chiefllm.go: the docker compose install's chief
+	// runtime, or MUSTER_CHIEF_LLM=openrouter on Kubernetes). For a claude-code
+	// chief (the reserved slug) it answers whether the chief runs on the LLM
+	// route — the server's OpenRouter key through muster's proxy — instead of
+	// the Claude subscription token its account holds, or an error naming what
+	// to add. On Compose it is the same rule the api's Account page and refusal
+	// read (api.ComposeChief.Credential), so the two cannot disagree. nil:
+	// every agent's credential comes from Credentials, as before.
+	ChiefLLMRoute func(ctx context.Context, owner int64) (route bool, err error)
 }
 
 // CredentialResolver answers which credentials an OWNER's agent is built with.
@@ -394,10 +411,83 @@ type Adapter struct {
 	kickoffDeliverable bool
 	creds              CredentialResolver
 	anonGitBase        string
+	chiefRoute         func(ctx context.Context, owner int64) (bool, error)
 	// githubGrant answers whether an agent holds an approved grant reaching
 	// GitHub (connectors.GitHubGrantLookup); set by UseGitHubGrants. nil is
 	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
 	githubGrant func(ctx context.Context, agentID int64) (string, error)
+	// ccSession answers a claude-code agent's per-agent session settings (the
+	// officer runtime's pre-allowed tools, model and permission bypass); nil =
+	// none for anyone.
+	ccSession func(agents.Agent) (agentspec.ClaudeCodeSession, bool)
+	// beforeStop is handed the agent's row before every Stop scales it to zero
+	// and every Destroy removes it (UseBeforeStop); nil = nothing.
+	beforeStop func(ctx context.Context, ag agents.Agent)
+	// teamOwner names a TEAM owner (UseTeamOwner): a team's chief is told its
+	// owner is a team (agentspec.TeamChiefSection). nil = no team ever.
+	teamOwner func(ctx context.Context, owner int64) (name string, team bool, err error)
+	// pluginSections reads an owner's approved plugin instruction sections
+	// (UseChiefPluginSections). nil = none for anyone.
+	pluginSections func(ctx context.Context, owner int64) ([]agentspec.PluginSection, error)
+	// lifecycle serialises Start, Stop, Destroy and Rebind per agent in this
+	// process (lockAgent), so an account failover cannot race a Stop or a
+	// Destroy into bringing a stopped agent back or re-creating a deleted one.
+	lifecycleMu sync.Mutex
+	lifecycle   map[int64]*sync.Mutex
+}
+
+// lockAgent blocks until no other lifecycle operation of agentID holds its
+// lane in this process, and returns the release. The map only grows (one
+// mutex per agent ever operated on), which is bounded by the agents table.
+func (a *Adapter) lockAgent(agentID int64) func() {
+	a.lifecycleMu.Lock()
+	if a.lifecycle == nil {
+		a.lifecycle = make(map[int64]*sync.Mutex)
+	}
+	m, ok := a.lifecycle[agentID]
+	if !ok {
+		m = &sync.Mutex{}
+		a.lifecycle[agentID] = m
+	}
+	a.lifecycleMu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
+// UseClaudeCodeSession installs the source of claude-code agents' per-agent
+// session settings (agentspec.ClaudeCodeSession). internal/api's officer
+// runtime is the one caller: an officer instance's own tools pre-allowed, its
+// configured model and every tool allowed (BypassPermissions); every other
+// agent answers ok=false.
+func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
+	a.ccSession = f
+}
+
+// UseBeforeStop installs f, handed the agent's row on every Stop and Destroy
+// BEFORE the driver scales the instance to zero or removes it — while its pod
+// can still answer. internal/api's consumer usage collector is the one caller
+// (its last push of the instance's Claude usage). f must be bounded and must
+// not fail the stop: it returns nothing, and it runs under the agent's
+// lifecycle lock. Call it before the adapter serves.
+func (a *Adapter) UseBeforeStop(f func(ctx context.Context, ag agents.Agent)) {
+	a.beforeStop = f
+}
+
+// UseTeamOwner installs f, which reports whether an owner is a TEAM and its
+// name (internal/users TeamNames, under System). A chief whose owner is a team
+// gets the team section of its instructions (agentspec.TeamChiefSection):
+// several people talk to it in one shared room, and it acts as the team. Call
+// it before the adapter serves.
+func (a *Adapter) UseTeamOwner(f func(ctx context.Context, owner int64) (name string, team bool, err error)) {
+	a.teamOwner = f
+}
+
+// UseChiefPluginSections installs f, which reads an owner's APPROVED plugin
+// instruction sections (internal/plugins ApprovedChiefSections): a claude-code
+// chief's CLAUDE.md renders them after every core rule
+// (agentspec.PluginSectionsBlock). Call it before the adapter serves.
+func (a *Adapter) UseChiefPluginSections(f func(ctx context.Context, owner int64) ([]agentspec.PluginSection, error)) {
+	a.pluginSections = f
 }
 
 // UseGitHubGrants wires the lookup jobBypassVeto asks. Call it before the
@@ -412,9 +502,11 @@ func (a *Adapter) UseGitHubGrants(f func(ctx context.Context, agentID int64) (st
 //
 // 🔴 AN AGENT HOLDING AN APPROVED GRANT THAT REACHES GITHUB IS NEVER BYPASSED.
 // With such a grant ccd routes the pod's git through muster's proxy, which adds a
-// GitHub App token with contents:write and pull_requests:write
-// (internal/githubapp), so a prompt-injected lane running unapproved could push
-// and merge. The approval doors already refuse such a grant to every pool worker
+// GitHub App token with contents:write and pull_requests:write in the default
+// write mode (internal/githubapp; read-only only under
+// MUSTER_GITHUB_APP_ACCESS=read, and a stored github.com connector is never
+// limited by it), so a prompt-injected lane running unapproved could push and
+// merge. The approval doors already refuse such a grant to every pool worker
 // (internal/api refusePoolWorkerGitHubGrant), so this is the third door: it is
 // asked every time the spec is built — Dispatch, Start and ReapplyProfiles — and
 // it FAILS CLOSED: an unreadable grant state, or no lookup wired, is a veto too.
@@ -471,6 +563,7 @@ func New(cfg Config) (*Adapter, error) {
 		kickoffDeliverable: cfg.KickoffDeliverable,
 		creds:              cfg.Credentials,
 		anonGitBase:        cfg.AnonymousGitBase,
+		chiefRoute:         cfg.ChiefLLMRoute,
 	}
 	if a.anonGitBase == "" {
 		a.anonGitBase = DefaultAnonymousGitBase
@@ -551,8 +644,9 @@ func (a *Adapter) KickoffUndeliverableReason() string {
 // its release either way and then stores `stopped` — and carrying that across
 // turned a consumer-side comment into a falsehood and bypassed a guard. The caller
 // is internal/api's createAndDispatchAgent, where `kickoff` is
-// `action == "dispatch"`: the OTHER action is the UI's "Save for later" button,
-// and the gate check four lines above it refuses a dispatch of a
+// `start` on POST /api/agents (it was `action == "dispatch"` on the deleted
+// dispatch form): the OTHER value creates the agent stopped (the form's "Save for
+// later"), and the gate check before it refuses a dispatch of a
 // `gate:<reason>`-tagged task while allowing a save, giving as its reason that a
 // save "provisions nothing". That was TRUE for as long as this module had no
 // provisioner at all. Wiring one made it false in the worst direction: a save on a
@@ -568,7 +662,9 @@ func (a *Adapter) KickoffUndeliverableReason() string {
 //	                 delivers it once the instance is ready. WITHOUT: REFUSE —
 //	                 create nothing, store `error` carrying KickoffRefusalReason,
 //	                 and return ErrKickoffUndeliverable.
-//	kickoff=false -> create nothing, store `stopped`. The status is now TRUE
+//	kickoff=false -> create nothing, store `stopped` (only tests call this now:
+//	                 createAndDispatchAgent inserts a save `stopped` and no
+//	                 longer dispatches it — see the branch). The status is now TRUE
 //	                 rather than a statement about what this service is waiting
 //	                 for, which is also what makes the model-change roll in
 //	                 internal/api correct for such an agent: it branches on the
@@ -586,7 +682,18 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 	if err != nil {
 		return fmt.Errorf("agentprovision: dispatch agent %d: load row: %w", agentID, err)
 	}
+	if err := refuseHostRow(ag, "dispatch"); err != nil {
+		return err
+	}
 	if !kickoff {
+		// ⚠ NO PRODUCTION CALLER REACHES THIS BRANCH ANY MORE: internal/api's
+		// createAndDispatchAgent inserts a save `stopped` and starts no background
+		// Dispatch for it (this write was redundant, and unconditional — a Start
+		// landing first was overwritten back to `stopped`; guarded there by
+		// TestAStartRightAfterASaveIsNotOverwrittenBackToStopped). Only tests call
+		// Dispatch(kickoff=false) now. It is kept because Provisioner.Dispatch
+		// still takes the flag and what it does for false stays the safe answer.
+		//
 		// 🔴 NO DRIVER CALL AT ALL ON THIS PATH. It is not a route answering 200
 		// and doing nothing — the caller asked for a saved agent and gets exactly
 		// that: a row, a status that is true, and no cluster objects. The token is
@@ -630,6 +737,18 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 	return a.setStatus(ctx, ag.ID, agents.StatusProvisioning)
 }
 
+// refuseHostRow is THE adapter's refusal of a host officer instance's row
+// (agents.Agent.Provisioned): every lifecycle method loads its row and asks it
+// before any driver call, so no caller — a route, a reaper, a loop — can
+// provision, stop, re-apply or tear down such a row through this adapter
+// (TestAHostRowIsNeverProvisioned).
+func refuseHostRow(ag agents.Agent, op string) error {
+	if ag.Provisioned() {
+		return nil
+	}
+	return fmt.Errorf("agentprovision: %s agent %d (%s): %w (host %s)", op, ag.ID, ag.Name, agents.ErrHostRow, ag.RunsOnHost)
+}
+
 // Start scales a stopped instance back up, creating it first when the backend
 // does not have it.
 //
@@ -665,10 +784,35 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
+	defer a.lockAgent(agentID)()
+	return a.startLocked(ctx, agentID)
+}
 
+// StartIfLive is Start, only when live reports the agent live, with the check
+// and the start both under the agent's lifecycle lock (lockAgent): a Stop
+// cannot land between them, so a Stop is never undone by a start that read the
+// agent as live before it. It reports whether it started. The Compose chief's
+// boot re-apply is the caller (internal/api reapplyComposeChief); live reads
+// its spec's replicas.
+func (a *Adapter) StartIfLive(ctx context.Context, agentID int64, live func() (bool, error)) (bool, error) {
+	ctx, cancel := a.opCtx(ctx)
+	defer cancel()
+	defer a.lockAgent(agentID)()
+	ok, err := live()
+	if err != nil || !ok {
+		return false, err
+	}
+	return true, a.startLocked(ctx, agentID)
+}
+
+// startLocked is Start's work; the caller holds lockAgent(agentID).
+func (a *Adapter) startLocked(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "start"); err != nil {
+		return err
 	}
 	// 🔴 A START RE-APPLIES THE SPEC instead of only scaling WHENEVER THE SPEC
 	// CARRIES A CREDENTIAL THAT CAN HAVE CHANGED SINCE CREATE: always for
@@ -731,10 +875,17 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
+	defer a.lockAgent(agentID)()
 
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: stop agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "stop"); err != nil {
+		return err
+	}
+	if a.beforeStop != nil {
+		a.beforeStop(ctx, ag)
 	}
 	// 🔴 provision.ErrNotFound IS ALREADY-STOPPED, NOT A FAILURE, AND TREATING IT
 	// AS ONE LEFT THE ROW PERMANENTLY WRONG. An instance that was evicted or
@@ -781,10 +932,17 @@ func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
 func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
+	defer a.lockAgent(agentID)()
 
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: destroy agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "destroy"); err != nil {
+		return err
+	}
+	if a.beforeStop != nil {
+		a.beforeStop(ctx, ag)
 	}
 	err = a.driver.Destroy(ctx, agents.RefOf(ag))
 	if err != nil && !errors.Is(err, provision.ErrNotFound) {
@@ -805,18 +963,17 @@ func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 		//   - agents.ComputeStatus returns StatusError FIRST, so a stored `error` is
 		//     not refined away by a live read.
 		//   - internal/ui renders that status as a coloured DOT with a title
-		//     attribute (statusIcon / cardStatusIcon / liveStatusIcon). The colour
+		//     attribute (statusIcon, on the agent page's status strip). The colour
 		//     changes; no text does.
 		//
 		// WHAT THE DEAD DRAFTS CLAIMED, so nobody re-derives them:
 		//   1. "a red card NAMING an ownership refusal" — Agent.ErrorMessage reaches
 		//      no HTML surface at all.
-		//   2. "a red PILL" — ui.statusDot IS a labelled pill and has ZERO callers
-		//      tree-wide. It is not what renders. The CARD's border is unconditional.
+		//   2. "a red PILL" — ui.statusDot WAS a labelled pill with ZERO callers
+		//      tree-wide (since deleted). It was not what rendered, and the retired
+		//      Agents list card's border was unconditional.
 		//   3. "reaches exactly ONE surface, the hook-token-gated GET /api/agents" —
-		//      newAgentJSON is also called from the task API (internal/api/notes.go),
-		//      and requireHookToken is ENFORCE-WHEN-SET, so on a server with no
-		//      MUSTER_HOOK_TOKEN it is gated by nothing.
+		//      newAgentJSON is also called from the task API (internal/api/notes.go).
 		//
 		// So the operator gets a dot that turns red instead of a card that silently
 		// reappears, and the REASON is machine-readable only. That is worth having and
@@ -967,6 +1124,9 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: reapply agent %d: load row: %w", agentID, err)
 	}
+	if err := refuseHostRow(ag, "reapply"); err != nil {
+		return err
+	}
 	ag, err = a.ensureHooksToken(ctx, ag)
 	if err != nil {
 		return err
@@ -979,6 +1139,90 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 		return fmt.Errorf("agentprovision: reapply agent %d (%s): %w", ag.ID, ag.Name, err)
 	}
 	return nil
+}
+
+// RotateCredentials gives agent agentID NEW credentials — a new hooks token
+// (its muster identity) and, for a claude-code agent, a new turn credential —
+// and, when the agent is live (stored running or provisioning), re-applies its
+// spec so the instance holds them. The old token is refused by muster the
+// moment the store holds the new one (agents.Store.GetByHooksToken).
+//
+// rotated reports whether the NEW credentials were committed: true with a
+// non-nil err is a rotation whose re-apply failed (the old token is dead, the
+// instance does not hold the new one yet); false with err is a rotation that
+// changed nothing.
+//
+// It is the remedy for a credential printed where it should not be: a team's
+// agent is steered into printing its token into the team's chat (the team
+// trust model, docs/chief.md), and rotation is what makes that copy worthless.
+//
+// 🔴 BOTH CREDENTIALS ARE WRITTEN IN ONE TRANSACTION (agents.CredentialsWriter):
+// neither changes unless both do, so a failed write never leaves the agent on
+// a new token beside its old turn credential. A store without the method is
+// refused before anything is minted. For a TEAM owner the credentials land in
+// agent_secrets ONLY: migration 0131's agents_team_no_secret trigger blanks the
+// shared row's legacy columns on every write. A person's agent is still
+// dual-written, as every mint is.
+//
+// ⚠ A STOPPED AGENT IS NOT RE-APPLIED HERE: its next Start re-applies the spec
+// (always for claude-code, and for every kind once credentials resolve per
+// owner — startLocked), so it comes up holding the new credentials. A gateway
+// agent on a deployment with no credential resolver is the one case whose
+// Start only scales; it would come up on the old token, which muster now
+// refuses (a loud 401, not a silent one) until its next re-apply.
+func (a *Adapter) RotateCredentials(ctx context.Context, agentID int64) (rotated bool, err error) {
+	ctx, cancel := a.opCtx(ctx)
+	defer cancel()
+	defer a.lockAgent(agentID)()
+	w, ok := a.store.(agents.CredentialsWriter)
+	if !ok {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: this store cannot write an agent's credentials together", agentID)
+	}
+	ag, err := a.store.Get(ctx, agentID)
+	if err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "rotate"); err != nil {
+		return false, err
+	}
+	token, err := mintCredential()
+	if err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: mint hooks token: %w", agentID, err)
+	}
+	secret := ""
+	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
+		if secret, err = mintCredential(); err != nil {
+			return false, fmt.Errorf("agentprovision: rotate agent %d: mint turn credential: %w", agentID, err)
+		}
+	}
+	if err := w.SetCredentials(ctx, ag.ID, token, secret); err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: store the new credentials: %w", agentID, err)
+	}
+	if ag.Status != agents.StatusRunning && ag.Status != agents.StatusProvisioning {
+		return true, nil
+	}
+	// ensureHooksToken reads the credentials just written (agents.WithSecrets),
+	// so the spec is built from them and mints nothing.
+	if ag, err = a.ensureHooksToken(ctx, ag); err != nil {
+		return true, err
+	}
+	spec, err := a.buildSpec(ctx, ag)
+	if err != nil {
+		return true, a.fail(ctx, ag, "build spec after rotating credentials", err)
+	}
+	if err := a.driver.Update(ctx, spec); err != nil {
+		return true, a.fail(ctx, ag, "apply instance after rotating credentials", err)
+	}
+	return true, nil
+}
+
+// mintCredential is one new random credential, hex, of the hooks token's size.
+func mintCredential() (string, error) {
+	buf := make([]byte, hooksTokenBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,7 +1288,16 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 // It also gives a claude-code agent its turn credential (ensureGatewaySecret):
 // every path that builds a spec comes through here first, so no claude-code spec
 // is built without one.
+//
+// 🔴 IT READS THE CREDENTIALS FIRST (agents.WithSecrets). The row it is handed
+// came from an ordinary read, which carries none (agents.Secrets); deciding "none
+// yet" from that row would mint a NEW identity on every Start and re-apply, and
+// hand the pod a token that no longer matches the one its running session holds.
 func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents.Agent, error) {
+	ag, err := agents.WithSecrets(ctx, a.store, ag)
+	if err != nil {
+		return ag, a.fail(ctx, ag, "read credentials", err)
+	}
 	if ag.HooksToken == "" {
 		buf := make([]byte, hooksTokenBytes)
 		if _, err := rand.Read(buf); err != nil {
@@ -1124,15 +1377,25 @@ func (a *Adapter) ensureGatewaySecret(ctx context.Context, ag agents.Agent) (age
 // note defending a form that carries no invariant is worse than no note: it sends
 // the next reader to protect a formatting choice.
 func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spec, error) {
-	cfg, err := a.specFor(ctx, ag)
+	route, err := a.chiefLLMRoute(ctx, ag)
+	if err != nil {
+		return provision.Spec{}, err
+	}
+	cfg, err := a.specFor(ctx, ag, route)
 	if err != nil {
 		return provision.Spec{}, err
 	}
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
-		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
-	case agents.KindHermes:
-		return buildHermesSpec(ag, cfg)
+		team, err := a.chiefTeam(ctx, ag)
+		if err != nil {
+			return provision.Spec{}, err
+		}
+		sections, err := a.chiefPluginSections(ctx, ag, cfg)
+		if err != nil {
+			return provision.Spec{}, err
+		}
+		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg), route, team, sections)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
@@ -1171,9 +1434,20 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 //
 // jobBypassVeto is Adapter.jobBypassVeto's answer for a worker; a chief is never
 // listed for bypass (agentspec.JobBypassListed), so it is unused there.
-func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string) (provision.Spec, error) {
+//
+// team is the owning team's name when the chief's owner is a team ("" for a
+// person): its prose then carries agentspec.TeamChiefSection. sections are the
+// owner's approved plugin sections (chiefPluginSections), rendered last; the
+// Compose chief gets none.
+func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string, route bool, team string, sections []agentspec.PluginSection) (provision.Spec, error) {
 	if !agents.IsChiefName(ag.Name) {
-		return agentspec.Build(ag, cfg, agentspec.Options{JobBypassVeto: jobBypassVeto})
+		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
+		if a.ccSession != nil {
+			if sess, ok := a.ccSession(ag); ok {
+				opts.ClaudeCodeSession = sess
+			}
+		}
+		return agentspec.Build(ag, cfg, opts)
 	}
 	if !cfg.ClaudeCodeMCPOffered() {
 		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which reaches muster's tools only "+
@@ -1183,33 +1457,95 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		a.log.Printf("agentprovision: chief %q is kind %s: the subsystem store (cairn) is configured but is SKIPPED "+
 			"for this kind — the client is not in its image and its network policy cannot reach the store", ag.Name, agents.KindClaudeCode)
 	}
-	opts := agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins)}
-	// The gateway runtime beside ccd, for the chief's sessions on it
-	// (agentspec/chief_sidecar.go). Start re-applies the spec, so a deployment
-	// turning this on reaches a running chief on its next Stop→Start.
-	if cfg.ChiefGatewaySidecar {
-		opts.GatewaySidecar = &agentspec.GatewaySidecar{}
+	// HQMCP: the chief, and no other agent, is offered the HQ MCP server with
+	// every tool allowed (internal/podagent/hqmcp.go) — except the Compose
+	// chief, whose pre-allowed tools are exactly agentspec.ComposeChiefAllowedMCPTools
+	// (operator decision): no blanket HQ approval there.
+	// The Compose chief's prose names exactly the tools it can run there
+	// (agentspec.ChiefInstructionsCompose).
+	// ChiefBypass: the same chief, and no other agent, runs every tool with no
+	// permission prompt and public egress kept (operator decision, PR #626): an
+	// unanswered prompt falls back to a terminal nobody watches and hangs the
+	// chief mid-turn; the token-exfiltration risk is accepted. Not the Compose
+	// chief, which keeps its nine tools and deny-if-unanswered.
+	// The owner's approved plugin sections (internal/plugins
+	// ApprovedChiefSections) render after every core rule, the team section
+	// included. 🔴 THE COMPOSE CHIEF GETS NONE: every tool its prose names
+	// must be pre-allowed there, and its prose is fixed.
+	var instructions string
+	if cfg.ComposeContainer {
+		instructions = agentspec.ChiefInstructionsCompose(cfg.Plugins, cfg.SessionRouting)
+		if team != "" {
+			instructions += agentspec.TeamChiefSection(team)
+		}
+	} else {
+		instructions = agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting, team, sections)
 	}
-	return agentspec.Build(ag, cfg, opts)
+	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: instructions,
+		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, ChiefBypass: !cfg.ComposeContainer,
+			LLMRoute: route}})
 }
 
-// buildHermesSpec is buildSpec for a hermes row.
-//
-// 🔴 A WORKER GETS NO INSTRUCTIONS, as a claude-code worker gets none:
-// WorkerInstructions teaches the in-pod `muster` CLI and the autosave daemon,
-// and the hermes image carries neither. Its task reaches it as its kickoff turn.
-//
-// 🔴 A HERMES CHIEF IS REFUSED, for now. Every chief tool is reached over
-// muster's MCP server, and Hermes's MCP client against muster's /mcp has not
-// been exercised; a chief that boots with a prompt promising tools it cannot
-// call reads as a working chief. The chief replacement refuses the kind first
-// (internal/api/chief_replace.go); this is the backstop for any other path.
-func buildHermesSpec(ag agents.Agent, cfg agentspec.Config) (provision.Spec, error) {
-	if agents.IsChiefName(ag.Name) {
-		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which cannot be the chief yet "+
-			"(its MCP client against muster's tools is unverified)", ag.Name, agents.KindHermes)
+// chiefPluginSections is the approved plugin instruction sections chief ag
+// renders (UseChiefPluginSections): its OWNER's — for a team's chief the
+// team's own plugins, never a member's personal one, because the owner IS the
+// team. None for any agent but a claude-code chief, for the Compose chief, or
+// with no lookup wired. They take effect at this provision: a section approved
+// later reaches the chief at its next provision or restart. 🔴 A LOOKUP THAT
+// FAILS REFUSES THE SPEC, as chiefTeam's does: the chief would otherwise start
+// silently without guidance its owner approved; the start is retried.
+func (a *Adapter) chiefPluginSections(ctx context.Context, ag agents.Agent, cfg agentspec.Config) ([]agentspec.PluginSection, error) {
+	if a.pluginSections == nil || !agents.IsChiefName(ag.Name) || ag.OwnerID <= 0 || cfg.ComposeContainer {
+		return nil, nil
 	}
-	return agentspec.Build(ag, cfg, agentspec.Options{})
+	secs, err := a.pluginSections(ctx, ag.OwnerID)
+	if err != nil {
+		return nil, fmt.Errorf("agentprovision: chief %q: could not read its owner's approved plugin sections: %w", ag.Name, err)
+	}
+	return secs, nil
+}
+
+// chiefTeam is the name of the TEAM that owns chief ag, or "" when ag is not a
+// chief or its owner is a person (or no team lookup is wired). 🔴 A LOOKUP THAT
+// FAILS REFUSES THE SPEC rather than build a team's chief with a person's prose
+// (or the reverse): the start is refused, naming why, and retried by the next.
+func (a *Adapter) chiefTeam(ctx context.Context, ag agents.Agent) (string, error) {
+	if a.teamOwner == nil || !agents.IsChiefName(ag.Name) || ag.OwnerID <= 0 {
+		return "", nil
+	}
+	name, team, err := a.teamOwner(ctx, ag.OwnerID)
+	if err != nil {
+		return "", fmt.Errorf("agentprovision: chief %q: could not tell whether its owner %d is a team: %w", ag.Name, ag.OwnerID, err)
+	}
+	if !team {
+		return "", nil
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "team " + strconv.FormatInt(ag.OwnerID, 10)
+	}
+	return name, nil
+}
+
+// ChiefLLMRouted is THE predicate for whether agent ag runs on the LLM route
+// under rule (Config.ChiefLLMRoute): a claude-code agent with the reserved
+// chief slug whose owner the rule routes; false for every other agent, and
+// for every agent when rule is nil. The spec builder asks it (chiefLLMRoute)
+// and so does the LLM proxy on Kubernetes (api.ChiefLLM.Routed, wired from
+// the same rule), so the proxy serves exactly the chief the pod was built for.
+func ChiefLLMRouted(ctx context.Context, ag agents.Agent, rule func(ctx context.Context, owner int64) (bool, error)) (bool, error) {
+	if rule == nil || !agents.IsChiefName(ag.Name) || agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
+		return false, nil
+	}
+	return rule(ctx, ag.OwnerID)
+}
+
+// chiefLLMRoute is ChiefLLMRouted for ag under Config.ChiefLLMRoute.
+func (a *Adapter) chiefLLMRoute(ctx context.Context, ag agents.Agent) (bool, error) {
+	route, err := ChiefLLMRouted(ctx, ag, a.chiefRoute)
+	if err != nil {
+		return false, fmt.Errorf("agentprovision: chief %q: %w", ag.Name, err)
+	}
+	return route, nil
 }
 
 // specFor is the deployment-wide spec config with the model-provider
@@ -1219,7 +1555,7 @@ func buildHermesSpec(ag agents.Agent, cfg agentspec.Config) (provision.Spec, err
 // USES: a claude-code spec gets an empty OpenRouter key and a gateway spec an
 // empty account map. agentspec places each only for its own kind today; zeroing
 // the other means a future kind that reads both still cannot carry the admin's.
-func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Config, error) {
+func (a *Adapter) specFor(ctx context.Context, ag agents.Agent, route bool) (agentspec.Config, error) {
 	cfg := a.spec
 	if a.creds == nil {
 		return cfg, nil
@@ -1235,25 +1571,17 @@ func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Confi
 		if cfg.ClaudeCode == nil || ag.CCAccount == "" {
 			return cfg, nil // agentspec refuses this row, naming why
 		}
+		// A chief on the LLM route places no subscription token (the Compose
+		// chief without one, or MUSTER_CHIEF_LLM=openrouter; chiefLLMRoute): its account has none to look up.
+		if route {
+			return cfg, nil
+		}
 		tok, err := a.creds.ClaudeToken(ctx, ag.OwnerID, ag.CCAccount)
 		if err != nil {
 			// The account NAME and the error only — never a token.
 			return cfg, fmt.Errorf("agentprovision: agent %q: Claude account %q of its owner: %w", ag.Name, ag.CCAccount, err)
 		}
 		cfg.ClaudeCode.Accounts[ag.CCAccount] = tok
-		// A chief running the gateway runtime beside ccd needs its owner's
-		// OpenRouter key for that runtime. Without one the chief still starts —
-		// its Claude Code sessions do not need it — and its gateway sessions fail
-		// at the model call, naming the provider; that is said here too.
-		if cfg.ChiefGatewaySidecar && agents.IsChiefName(ag.Name) {
-			key, err := a.creds.OpenRouterKey(ctx, ag.OwnerID)
-			if err != nil {
-				a.log.Printf("agentprovision: chief %q: no OpenRouter key of its owner for the gateway runtime beside it "+
-					"(%v); its gateway sessions will fail at the model call", ag.Name, err)
-			} else {
-				cfg.OpenRouterAPIKey = key
-			}
-		}
 	default:
 		key, err := a.creds.OpenRouterKey(ctx, ag.OwnerID)
 		if err != nil {

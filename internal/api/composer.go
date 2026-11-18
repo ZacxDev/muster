@@ -54,12 +54,16 @@ const (
 	noticeFailed     = "failed"
 	noticeNotRunning = "not-running"
 	noticeNoGateway  = "no-gateway"
+	// The view's chief mode (view_chief.go): no chief, or it is off.
+	noticeNoChief = "no-chief"
 	// The send queue's (send_queue.go).
 	noticeQueued       = "queued"
 	noticeQueueOff     = "queue-off"
 	noticeQueueFull    = "queue-full"
 	noticeCancelled    = "cancelled"
 	noticeNotCancelled = "not-cancelled"
+	// noticeNotYours: a team row someone else queued (sendQueueRowRefusal).
+	noticeNotYours = "not-yours"
 	// noticeCancelledAnswered: cancelled, but the message had already answered
 	// a question in the session (attention.go's askerAddressed) — that answer
 	// was delivered and stays.
@@ -76,28 +80,29 @@ const (
 	noticeSendingAnother = "sending-another"
 	noticeSendNowFailed  = "send-now-failed"
 	noticeWaitingNow     = "waiting-now"
-	// A Hermes window's Send now refusals.
-	noticeHermesWaitingNow = "hermes-waiting-now"
-	noticeHermesBusyNow    = "hermes-busy-now"
-	noticeHermesUnknownNow = "hermes-unknown-now"
-	// A Hermes window's Send (Phase 3): the hub's idle gate, and the host's
-	// gated send by how it ended.
-	noticeHermesBusy        = "hermes-busy"
-	noticeHermesWaiting     = "hermes-waiting"
-	noticeHermesUnknown     = "hermes-unknown"
-	noticeHermesNotSent     = "hermes-not-sent"
-	noticeHermesPasted      = "hermes-pasted"
-	noticeHermesUnconfirmed = "hermes-unconfirmed"
+	// The Claude prompt guard (mirror.PasteRefusalClaude*).
+	noticeClaudeWaiting = "claude-waiting"
+	noticeClaudePasted  = "claude-pasted"
+	noticeClaudeBox     = "claude-box"
 	// Any send the host never confirmed, and its repeat with the same nonce.
 	noticeUnconfirmed       = "unconfirmed"
 	noticeUnconfirmedRepeat = "unconfirmed-repeat"
-	// Send now: the message may have landed, or sits pasted in Hermes's box.
+	// Send now: the message may have landed, or sits pasted in the agent's
+	// input box.
 	noticeSendNowUnconfirmed = "send-now-unconfirmed"
 	noticeSendNowPasted      = "send-now-pasted"
-	// The host's Hermes paste guard (mirror.PasteRefusal*).
-	noticeHermes      = "hermes"
+	// The host's paste guard (mirror.PasteRefusal*).
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
+	noticeOpenCode    = "opencode"
+	// The opencode gated send (mirror.PasteRefusalOpenCode*).
+	noticeOpenCodeOff     = "opencode-off"
+	noticeOpenCodeUnbound = "opencode-unbound"
+	noticeOpenCodeNotIdle = "opencode-not-idle"
+	noticeOpenCodeSlash   = "opencode-slash"
+	noticeOpenCodeGone    = "opencode-gone"
+	noticeOpenCodeConflict = "opencode-conflict"
+	noticeOpenCodeMoved    = "opencode-moved"
 	// A queued message's Edit (send_queue_edit.go).
 	noticeEditing           = "editing"
 	noticeEdited            = "edited"
@@ -114,31 +119,29 @@ const (
 	noticeEditedAnswered = "edited-answered"
 )
 
-// pasteGuardNotices is the notice for each kind of Hermes paste-guard refusal
-// a host names.
+// pasteGuardNotices is the notice for each kind of paste-guard refusal a host
+// names. A kind not here (an older host's "hermes…") is a plain refusal in the
+// host's own words.
 var pasteGuardNotices = map[string]string{
-	mirror.PasteRefusalHermes:      noticeHermes,
 	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
+	mirror.PasteRefusalOpenCode:    noticeOpenCode,
+	// The opencode gated send's (the hub's or the host's).
+	mirror.PasteRefusalOpenCodeOff:     noticeOpenCodeOff,
+	mirror.PasteRefusalOpenCodeUnbound: noticeOpenCodeUnbound,
+	mirror.PasteRefusalOpenCodeNotIdle: noticeOpenCodeNotIdle,
+	mirror.PasteRefusalOpenCodeSlash:   noticeOpenCodeSlash,
+	mirror.PasteRefusalOpenCodeGone:    noticeOpenCodeGone,
+	mirror.PasteRefusalOpenCodeConflict: noticeOpenCodeConflict,
+	mirror.PasteRefusalOpenCodeMoved:    noticeOpenCodeMoved,
 }
 
-// hermesNotIdleNotices is the notice for each status the hub's idle gate
-// refuses a Hermes send in ("" unknown).
-var hermesNotIdleNotices = map[string]string{
-	mirror.StatusBusy:    noticeHermesBusy,
-	mirror.StatusWaiting: noticeHermesWaiting,
-	"":                   noticeHermesUnknown,
-	// idle with no status time: the host could not check it, so unknown.
-	mirror.StatusIdle: noticeHermesUnknown,
-}
-
-// hermesSendNotices is the notice for each way the host's gated send into
-// Hermes can end short of "sent" (mirror.PasteRefusalHermes*).
-var hermesSendNotices = map[string]string{
-	mirror.PasteRefusalHermesNotSubmitted: noticeHermesNotSent,
-	mirror.PasteRefusalHermesSuperseded:   noticeHermesNotSent,
-	mirror.PasteRefusalHermesPasted:       noticeHermesPasted,
-	mirror.PasteRefusalHermesUnconfirmed:  noticeHermesUnconfirmed,
+// claudeGuardNotices is the notice for each kind of Claude prompt guard
+// refusal (the hub's, or a host's).
+var claudeGuardNotices = map[string]string{
+	mirror.PasteRefusalClaudeWaiting: noticeClaudeWaiting,
+	mirror.PasteRefusalClaudePasted:  noticeClaudePasted,
+	mirror.PasteRefusalClaudeBox:     noticeClaudeBox,
 }
 
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
@@ -157,21 +160,23 @@ var composerNotices = map[string]struct {
 	noticeSent:              {"Sent.", true},
 	noticeEmpty:             {ui.MirrorComposeEmpty, false},
 	noticeAgain:             {ComposerNoticeAgain, false},
-	noticeOffline:           {unprefixed(mirror.ErrHostOffline), false},
-	noticeGone:              {unprefixed(mirror.ErrSessionGone), false},
-	noticeWindowGone:        {unprefixed(mirror.ErrWindowGone), false},
-	noticeReadOnly:          {unprefixed(mirror.ErrInteractiveRefused), false},
-	noticeNotClaude:         {unprefixed(mirror.ErrNotClaude), false},
-	noticeUpgrade:           {unprefixed(mirror.ErrPanePasteUnsupported), false},
+	noticeOffline:           {notSent(mirror.ErrHostOffline, ""), false},
+	noticeGone:              {notSent(mirror.ErrSessionGone, ""), false},
+	noticeWindowGone:        {notSent(mirror.ErrWindowGone, ""), false},
+	noticeReadOnly:          {notSent(mirror.ErrInteractiveRefused, ""), false},
+	noticeNotClaude:         {notSent(mirror.ErrNotClaude, ""), false},
+	noticeUpgrade:           {notSent(mirror.ErrPanePasteUnsupported, ""), false},
 	noticeBadText:           {"Not sent: a message is plain text (newlines and tabs only), up to 16 KiB.", false},
 	noticeFailed:            {"Not sent: the message could not be delivered.", false},
 	noticeNotRunning:        {AgentNotRunningNotice, false},
+	noticeNoChief:           {"Not sent: " + ViewChiefNoChief + ".", false},
 	noticeNoGateway:         {"Not sent: this server has no agent gateway to deliver a message through.", false},
 	noticeQueued:            {"Queued: it is sent when the session has been idle for a while, even if you close this page.", true},
 	noticeQueueOff:          {"Not queued: muster cannot tell when this Claude Code session is idle, so it cannot queue for it. Send it now, or upgrade muster-mirror.", false},
 	noticeQueueFull:         {"Not queued: " + strings.TrimPrefix(sendqueue.ErrFull.Error(), "sendqueue: ") + ".", false},
 	noticeCancelled:         {"Cancelled: that queued message will not be sent.", true},
 	noticeNotCancelled:      {"Not cancelled: that message is already being sent, or has been.", false},
+	noticeNotYours:          {SendQueueNotYours, false},
 	noticeCancelledAnswered: {SendQueueCancelledAnsweredText(""), false},
 	noticeNotRetried:        {"Not queued again: only a message that failed can be retried, and only once.", false},
 	noticeRoutedNotRetried:  {"Not queued again: your chief routed that message, and a failed route goes back to the chief rather than being retried here.", false},
@@ -180,23 +185,24 @@ var composerNotices = map[string]struct {
 	noticeNotQueuedNow:      {SendQueueNotQueuedNow, false},
 	noticeSendingAnother:    {SendQueueSendingAnother, false},
 	noticeWaitingNow:        {SendQueueWaitingNow, false},
-	noticeHermesWaitingNow:  {SendQueueHermesWaitingNow, false},
-	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},
-	noticeHermesUnknownNow:  {SendQueueHermesUnknownNow, false},
+	noticeClaudeWaiting:     {mirror.ClaudeWaitingText, false},
+	noticeClaudeBox:         {mirror.ClaudeBoxText, false},
+	noticeClaudePasted:      {"Pasted, not submitted: the text is in Claude Code's input box, and Enter was not pressed, because a dialog opened. Check the terminal.", false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
-	noticeHermesBusy:        {mirror.HermesBusyText, false},
-	noticeHermesWaiting:     {mirror.HermesWaitingText, false},
-	noticeHermesUnknown:     {mirror.HermesUnknownText, false},
-	noticeHermesNotSent:     {"Not sent: Hermes's screen or status was not safe to send into. Nothing was pasted.", false},
-	noticeHermesPasted:      {"Pasted, not submitted: the text is in Hermes's input box, and Enter was not pressed. Check the terminal.", false},
-	noticeHermesUnconfirmed: {"May have been submitted: check the conversation before sending again.", false},
 	noticeUnconfirmed:        {MirrorSendUnconfirmed, false},
 	noticeUnconfirmedRepeat:  {MirrorSendUnconfirmedRepeat, false},
 	noticeSendNowUnconfirmed: {"May have been sent: check the conversation before sending again. Its row in the queue says more.", false},
-	noticeSendNowPasted:      {"Pasted, not submitted: the text is in Hermes's input box. Check the terminal. Its row in the queue says more.", false},
-	noticeHermes:            {mirror.PasteRefusedHermesText, false},
+	noticeSendNowPasted:      {"Pasted, not submitted: the text is in the agent's input box, and Enter was not pressed. Check the terminal. Its row in the queue says more.", false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
+	noticeOpenCode:          {mirror.PasteRefusedOpenCodeText, false},
+	noticeOpenCodeOff:       {mirror.PasteRefusedOpenCodeOffText, false},
+	noticeOpenCodeUnbound:   {mirror.PasteRefusedOpenCodeUnboundText, false},
+	noticeOpenCodeNotIdle:   {"Not sent: opencode is not idle right now (working, or waiting for you). Queue it instead.", false},
+	noticeOpenCodeSlash:     {mirror.PasteRefusedOpenCodeSlashText, false},
+	noticeOpenCodeGone:      {mirror.PasteRefusedOpenCodeGoneText, false},
+	noticeOpenCodeConflict:  {mirror.PasteRefusedOpenCodeConflictText, false},
+	noticeOpenCodeMoved:     {mirror.PasteRefusedOpenCodeMovedText, false},
 	noticeEditing:           {SendQueueEditingText, true},
 	noticeEdited:            {SendQueueEditedText, true},
 	noticeEditCancelled:     {SendQueueEditCancelledText, true},
@@ -240,6 +246,33 @@ func SendQueueCancelledAnsweredText(asker string) string {
 	return "Cancelled — but this message had already answered " + whose + ", and that answer was delivered: it can't be un-sent."
 }
 
+// notSent is a send's refusal by err in plain words (mirror.PlainWords; the
+// operator rule: no raw error, flag or "mirror:" in the top layer), naming
+// host ("" = "this computer").
+func notSent(err error, host string) string {
+	w := mirror.PlainWords(err, host)
+	if host == "" {
+		w = strings.ToLower(w[:1]) + w[1:]
+	}
+	return "Not sent: " + w
+}
+
+// hostNotices are the notices about a computer: each is said naming its host
+// (noticeText), the map's own text being the host-less fallback.
+var hostNotices = map[string]error{
+	noticeOffline: mirror.ErrHostOffline, noticeGone: mirror.ErrSessionGone, noticeWindowGone: mirror.ErrWindowGone,
+	noticeReadOnly: mirror.ErrInteractiveRefused, noticeNotClaude: mirror.ErrNotClaude, noticeUpgrade: mirror.ErrPanePasteUnsupported,
+}
+
+// noticeText is code's notice as a page shows it for a window on host: a
+// notice about the computer names it, any other is composerNotices' text.
+func noticeText(code, host string) string {
+	if err, ok := hostNotices[code]; ok {
+		return notSent(err, host)
+	}
+	return composerNotices[code].text
+}
+
 func unprefixed(err error) string {
 	msg := strings.TrimPrefix(err.Error(), "mirror: ")
 	return strings.ToUpper(msg[:1]) + msg[1:] + "."
@@ -248,11 +281,14 @@ func unprefixed(err error) string {
 // composerNotice is the notice a page was redirected to with: its text and
 // whether it is good news. An unknown code is no notice.
 func composerNotice(r *http.Request) (text string, ok bool) {
-	n, known := composerNotices[r.URL.Query().Get("notice")]
+	code := r.URL.Query().Get("notice")
+	n, known := composerNotices[code]
 	if !known {
 		return "", false
 	}
-	return n.text, n.ok
+	// The page's own host (its address carries it): a notice about the
+	// computer names it.
+	return noticeText(code, r.URL.Query().Get("host")), n.ok
 }
 
 // keepNotice is path with the request's own notice carried over: a view that
@@ -286,6 +322,9 @@ func withNotice(path, code string) string {
 // stores these documents (web/static/sw.js caches the shell, the stylesheet
 // and the manifest, and nothing else); this is the same statement to the
 // browser's own caches.
+//
+// The four VIEW documents no longer say it: viewDocument replaces this guard
+// with a build check on restore. Every other caller keeps it.
 func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store") }
 
 // formDocument marks a page that carries one of the forms a browser may submit
@@ -303,6 +342,42 @@ func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store"
 // none of these pages has a secret in its URL.
 func formDocument(w http.ResponseWriter) {
 	noStore(w)
+	w.Header().Set("Referrer-Policy", "same-origin")
+}
+
+// viewDocumentCacheControl is what a VIEW document says to caches: the agent
+// page, the mirrored Rendered view and both terminals (viewDocument).
+const viewDocumentCacheControl = "private, no-cache"
+
+// viewDocument is formDocument for the four VIEW documents — an agent's chat
+// page, the mirrored Rendered view, a mirrored window's terminal and an agent's
+// terminal — minus no-store, so Back and Forward can RESTORE them from the
+// back/forward cache instead of loading them again (operator ask: "so that I
+// don't have to wait for full reloads every time I hit the back button").
+//
+// 🔴 no-store WAS THE BUILD GUARD (noStore), AND IT IS REPLACED, NOT DROPPED.
+// A restored document runs the script of the build that rendered it. The
+// page's restore handler (ui restoreJS, in appScript) answers that instead: on
+// a restore it asks /health which build is serving and reloads when it is not
+// the page's, reloads a page that was hidden for more than ten minutes, and
+// re-requests the page itself, so a refused one (signed out) reloads to the
+// sign-in. Sign-out also sends Clear-Site-Data: "cache" (handleLogout), which
+// drops these documents from both caches.
+//
+// 🔴 ANY VALUE BUT no-store LETS THE HTTP CACHE KEEP THE DOCUMENT, AND A
+// HISTORY LOAD THAT IS NOT A RESTORE TAKES IT FROM THERE WITHOUT ASKING.
+// MEASURED (Chromium 153, a two-page probe): with no header, `no-cache` or
+// `max-age=0, must-revalidate`, Back with the back/forward cache unavailable
+// made no request and ran the stored document (navigation type back_forward,
+// transferSize 0); only no-store made it ask. So restoreJS runs the same
+// checks on such a load as on a restore. private keeps every shared cache
+// (an edge, a proxy) out of a per-user page; no-cache makes every ordinary
+// navigation ask the server.
+//
+// ⚠ ONLY THESE FOUR. Every page that shows or takes a secret keeps no-store:
+// TestTheNoStoreLedger names both sets and fails when either changes.
+func viewDocument(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", viewDocumentCacheControl)
 	w.Header().Set("Referrer-Policy", "same-origin")
 }
 
@@ -347,7 +422,20 @@ const (
 type sendNonces struct {
 	mu   sync.Mutex
 	seen map[string]sendNonce
+	// held: a message that MAY have landed, by its owner, its destination
+	// and its text — WHATEVER its nonce (hold): when, and the key its first
+	// try was sent under (heldEntry.key).
+	held map[string]heldEntry
 	now  func() time.Time
+}
+
+// heldEntry is one held message: when it was held, and the key (the nonce)
+// its first may-have-landed try was sent under — what a "Send again" of it is
+// sent under too, so a gated send (opencode, mirror.MessageKey) posts the SAME
+// message id and lands at most once.
+type heldEntry struct {
+	at  time.Time
+	key string
 }
 
 // sendNonce is one claimed message: when it was claimed, or delivered.
@@ -447,6 +535,82 @@ func (n *sendNonces) begin(owner int64, nonce, text string) (repeat bool, finish
 			fin(nonceFailed)
 		}
 	}
+}
+
+// 🔴 A MESSAGE THAT MAY HAVE LANDED IS HELD BY ITS TEXT, NOT ONLY BY ITS
+// NONCE. claim refuses a repeat of an unconfirmed send under the SAME nonce,
+// and the composer keeps that nonce while it offers "Send again". But a page
+// can be shown again WITHOUT the composer's state: a Back answered from the
+// HTTP cache runs the document as first served (no offer, and restore.go
+// renews its nonce, because a page shown again must not have a delivered
+// message's nonce swallow the next one). A plain Send of the same words from
+// that copy carried a fresh nonce and was delivered a second time (audit #270,
+// round 2's residual). So the server, which is the one party that knows the
+// first try may have landed, refuses a plain send of the same text to the same
+// destination by the same owner — under any nonce — until the person says
+// "Send again" (again), or a send of it is confirmed.
+//
+// dest names where the message goes (mirrorDestKey). Kept as long as a nonce
+// is (sendNonceTTL), and bounded the same way.
+func sendHeldKey(owner int64, dest, text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return strconv.FormatInt(owner, 10) + "|" + dest + "|" + hex.EncodeToString(sum[:])
+}
+
+// isHeld reports whether text to dest may already have landed (hold).
+func (n *sendNonces) isHeld(owner int64, dest, text string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	e, ok := n.held[sendHeldKey(owner, dest, text)]
+	return ok && n.clock().Sub(e.at) < sendNonceTTL
+}
+
+// heldKey is the key text to dest was first sent under while it is held
+// (hold), "" when it is not.
+func (n *sendNonces) heldKey(owner int64, dest, text string) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	e, ok := n.held[sendHeldKey(owner, dest, text)]
+	if !ok || n.clock().Sub(e.at) >= sendNonceTTL {
+		return ""
+	}
+	return e.key
+}
+
+// hold records that text to dest, sent under key, may have landed; release
+// forgets it (a send of it was confirmed). A message held already keeps the
+// key of its FIRST try.
+func (n *sendNonces) hold(owner int64, dest, text, key string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	now := n.clock()
+	if n.held == nil {
+		n.held = map[string]heldEntry{}
+	}
+	if len(n.held) >= sendNonceMax {
+		oldest, oldestAt := "", now
+		for k, e := range n.held {
+			if now.Sub(e.at) >= sendNonceTTL {
+				delete(n.held, k)
+			} else if !e.at.After(oldestAt) {
+				oldest, oldestAt = k, e.at
+			}
+		}
+		if len(n.held) >= sendNonceMax && oldest != "" {
+			delete(n.held, oldest)
+		}
+	}
+	hk := sendHeldKey(owner, dest, text)
+	if e, ok := n.held[hk]; ok && now.Sub(e.at) < sendNonceTTL && e.key != "" {
+		key = e.key
+	}
+	n.held[hk] = heldEntry{at: now, key: key}
+}
+
+func (n *sendNonces) release(owner int64, dest, text string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.held, sendHeldKey(owner, dest, text))
 }
 
 // evict makes room for one more claim: expired ones go, and at the cap the

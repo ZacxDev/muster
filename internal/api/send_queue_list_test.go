@@ -79,11 +79,45 @@ func TestAFailedRowDrawsRetryOnce(t *testing.T) {
 	}
 }
 
-// TestDeleteIsDrawnOnExactlyTheFinishedStates: through the real list route, a
-// row in each state the schema allows (0019's send_queue_state_check) draws a
-// Delete exactly when it is finished — sent, failed, cancelled — and never
-// when it is queued (that is Cancel) or being sent.
-func TestDeleteIsDrawnOnExactlyTheFinishedStates(t *testing.T) {
+// TestEveryListedRowCarriesItsWholeText: through the real list route, the
+// server cuts each preview at sendQueuePreview bytes, and a queued, a sending
+// and a failed row each carry the WHOLE text in the popover a tap on the
+// preview opens (ui.SendQueueFullID) — the tail past the cut included.
+func TestEveryListedRowCarriesItsWholeText(t *testing.T) {
+	q := &memQueue{}
+	s, ts := queueServer(t, queueMirror(), q, &turnGateway{})
+	states := []sendqueue.State{sendqueue.Queued, sendqueue.Sending, sendqueue.Failed}
+	for _, st := range states {
+		body := strings.Repeat(string(st)+" filler ", 40) + "tail of the " + string(st) + " one"
+		it, err := q.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: queueTarget, Body: body, StepUpAt: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.mu.Lock()
+		q.items[it.ID-1].State = st
+		q.mu.Unlock()
+	}
+	_, page := mirrorGet(t, s, ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
+	for i, st := range states {
+		id := ui.SendQueueFullID(int64(i + 1))
+		at := strings.Index(page, `id="`+id+`"`)
+		if at < 0 {
+			t.Fatalf("the %s row has no #%s: %s", st, id, page)
+		}
+		end := strings.Index(page[at:], "</li>")
+		if end < 0 || !strings.Contains(page[at:at+end], "tail of the "+string(st)+" one") {
+			t.Fatalf("the %s row's popover lacks the tail: %s", st, page[at:])
+		}
+	}
+}
+
+// TestDeleteIsDrawnOnAFailedRowOnly:through the real list route, with a row
+// in each state the schema allows (0019's send_queue_state_check), the failed
+// row draws a Delete, and the queued (that is Cancel) and sending rows do not.
+// The sent and cancelled rows are not drawn at all: the store does not list
+// them (memQueue as PGStore.List: internal/sendqueue's
+// TestListShowsOnlyWhatStillNeedsSomething pins the real one).
+func TestDeleteIsDrawnOnAFailedRowOnly(t *testing.T) {
 	q := &memQueue{}
 	s, ts := queueServer(t, queueMirror(), q, &turnGateway{})
 	states := []sendqueue.State{sendqueue.Queued, sendqueue.Sending, sendqueue.Sent, sendqueue.Failed, sendqueue.Cancelled}
@@ -97,11 +131,15 @@ func TestDeleteIsDrawnOnExactlyTheFinishedStates(t *testing.T) {
 		q.mu.Unlock()
 	}
 	_, page := mirrorGet(t, s, ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
-	want := map[sendqueue.State]bool{sendqueue.Sent: true, sendqueue.Failed: true, sendqueue.Cancelled: true}
+	want := map[sendqueue.State]bool{sendqueue.Failed: true}
 	for i, st := range states {
 		drawn := strings.Contains(page, `action="`+ui.SendQueueDeletePath(int64(i+1))+`"`)
 		if drawn != want[st] {
 			t.Errorf("a %s row draws Delete: %v; want %v", st, drawn, want[st])
+		}
+		listed := strings.Contains(page, "row "+string(st))
+		if wantListed := st.Open() || st == sendqueue.Failed; listed != wantListed {
+			t.Errorf("a %s row is drawn: %v; want %v", st, listed, wantListed)
 		}
 	}
 	if !strings.Contains(page, "row sending") {

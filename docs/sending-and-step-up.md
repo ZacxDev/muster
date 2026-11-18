@@ -5,13 +5,14 @@
 | view | message goes to | needs |
 |---|---|---|
 | A mirrored window's **Rendered** view (Claude Code) | the Claude Code pane, pasted as typed | the host's `-interactive`, plus a fresh sign-in |
-| A mirrored window's **Terminal** view (any program except Hermes) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
+| A mirrored window's **Terminal** view (any program but opencode) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
 | A dispatched agent's chat and **Terminal** view | `POST /agents/<name>/send`: one agent turn, run in the background | a running agent with chat wired ([provisioner.md](provisioner.md)) |
 | The chief panel | the chief agent | as above |
 
 Each box can also have a microphone; see [dictation.md](dictation.md). Each
 box also keeps what you type as a draft on this device; see
-[Drafts](#drafts-kept-on-this-device).
+[Drafts](#drafts-kept-on-this-device). What a message looks like on its way
+is in [A sent message shows at once](#a-sent-message-shows-at-once).
 
 **Mirrored sends:**
 
@@ -19,16 +20,53 @@ box also keeps what you type as a draft on this device; see
 - On the Rendered view, it goes only into a pane that is **still** running Claude
   Code, never into a shell left behind after Claude exits. A leading `/` or `!`
   is passed through as typed.
-- On the Terminal view, the box does not need the Live keys switch. That switch
-  is a live keyboard; the box is one gated paste per Send. So the page never
-  calls itself "read-only" while its box can send: with live keys off the status
-  reads just "Connected". A read-only host says so once, in the box's disabled
-  note.
-- On either view, the host refuses a message into a pane that runs Hermes
-  (or a nested terminal multiplexer, or processes it cannot read), and nothing
-  is pasted — except the rendered view's send to a Hermes window on a host
-  started with `-hermes-send`, which goes through Hermes's gated send
-  ([mirroring.md](mirroring.md#muster-pastes-into-hermes-only-through-its-gated-send)).
+- On the Terminal view, **live keys are always on** (there is no switch): your
+  keystrokes and the quick keys go straight into the session, behind the same
+  gate as a send. With a recent sign-in the terminal attaches with them at
+  once; with a stale one it attaches without them, the status reads
+  "Connected · confirm it's you to type", and the first key you press asks you
+  to confirm it's you. The box is one gated paste per Send either way. The page
+  never calls itself "read-only" while its box can send. A read-only host says
+  so once, in the box's disabled note (its status reads "Connected · this host
+  takes no keys").
+- On either view, the host refuses a message into a pane that runs opencode
+  on its terminal, a nested terminal multiplexer, or processes it cannot read,
+  and nothing is pasted
+  ([mirroring.md](mirroring.md#what-the-host-never-types-into)).
+- 🔴 **Never into a Claude Code prompt.** muster assumes sessions run without
+  permission prompts (the agents a host starts for your chief do by default,
+  [mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)), so this
+  is the guard for one that appears anyway. The Rendered view's Send, Send now and
+  a queued or routed message are refused while the window's Claude Code is
+  waiting on you (a permission prompt, a question, a menu): the paste's Enter
+  would answer it, for example approve a tool call. muster refuses a window its
+  host reports `waiting`, and the host checks again at the moment it types —
+  Claude Code's own session status and the pane's screen (ccd's dialog reading,
+  [`internal/ccdialog`](../internal/ccdialog/ccdialog.go)), before the paste and
+  again before its Enter — so a prompt that opened after the host's last report
+  is caught too. The refusal says "Claude is waiting on a permission prompt —
+  answer it first", and nothing is typed. The host also refuses while Claude's
+  input box already holds text ("Claude's input box already has text — clear
+  or send it first"): a message pasted after it would be submitted with it as
+  one turn. If a prompt opens between the paste and its Enter, the Enter is
+  withheld and the reply says "Pasted, not submitted"; the text stays in the
+  box, so it counts as possibly delivered — the queue waits for the turn after
+  it, and its Retry asks first.
+  - **A queued message is held, not failed**, and sent once the prompt is
+    answered (or the box is cleared). When the host refused it on what it read
+    at the moment of typing, the queue shows the host's reason and tries again
+    after 4 s, 8 s, 16 s, then every 30 s, until the window's status changes.
+  - **A Send or Send now that is refused is not held.** A Send says why, its
+    bubble turns failed with **Retry**, and its text is put back in the box. A Send now that the host refuses at the moment
+    of typing ends its row failed, saying why; Retry queues it again.
+
+  The Terminal view's box is not gated: it is you typing into the pane you are
+  looking at. It is a check before each key, not a lock: a prompt that opens in
+  the milliseconds between the last check and a key is not caught. A host
+  whose muster-mirror cannot read the screen and check the paste refuses every
+  Rendered-view message into Claude Code. Deploy muster before upgrading the
+  hosts' muster-mirror: an older muster shows the new host's refusals as plain
+  failures and fails a queued message instead of holding it.
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an
@@ -44,13 +82,126 @@ box also keeps what you type as a draft on this device; see
   why.
 - A failed turn is stored in the conversation, where the reply would have been.
 
+## A sent message shows at once
+
+Send does not wait for the host. The moment you press Send (or Enter), the
+box empties and the message is drawn, then the request goes out. The rule
+behind everything below: **a message you typed is never silently lost, and
+never sent twice.**
+
+- **On the Rendered view** the message is drawn at the end of the
+  conversation as a **pending bubble**: muted, with a status line under it
+  ("Sending…", read out to screen readers). When the host confirms the paste
+  it says "Sent", and when the conversation's own row for it arrives the
+  bubble is replaced by that row in the same moment: never both, never a gap.
+  The row can arrive before the host's answer does; it replaces the bubble
+  then all the same, but decides nothing: the answer still does. An OK is
+  the end of it; a refusal or a "Not confirmed" brings the bubble back at the
+  end of the conversation, with its Retry or Send again and its text kept,
+  and a confirm-it's-you brings it back waiting for the confirm. If Claude
+  Code is busy and holds it, its "Queued in Claude Code" row replaces the
+  bubble instead. A message that was sent but whose row never arrives (a command Claude Code records differently) is taken off after
+  30 seconds; the host confirmed it.
+- **Queue** says "Queuing…" in the status line under the box (it is not sent
+  yet, so nothing is drawn in the conversation), then "Queued." when the
+  server has it, and the queue list shows it.
+- **On a Terminal view** (no conversation) the status line under the box
+  says "Sending…", and the message shows in the pane when it is typed.
+- **Several messages** sent quickly are drawn at once and posted one at a
+  time, in the order you sent them.
+- **Refused** (Claude is waiting on a prompt, the window is gone, a rate
+  limit, a server error, offline): the bubble turns red, says why, and offers
+  **Retry** and **Dismiss**. The reason is said once, on the bubble. The text
+  goes back in the box if the box is empty; if you have typed something since,
+  that is not overwritten, and Retry still has the message. A refusal that
+  says the message **may have been delivered** turns the bubble **Not
+  confirmed** instead (with the server's reason, such as "Pasted, not
+  submitted … Check the terminal."), and its button is the
+  [Send again](#it-works-without-javascript-and-a-message-is-delivered-once).
+  Sending the same text yourself counts as its Retry. On a Queue or a
+  Terminal view there is no bubble: the reason is in the status line under
+  the box, with the text back in the box, and **Retry** (or **Send again**,
+  when it may have been delivered) and **Dismiss** beside it.
+- **A refusal holds what you sent after it.** Messages sent after the refused
+  one that have not gone out yet wait, marked "Waiting — an earlier message
+  wasn't sent", until you **Retry** the refused one (it then goes first, and
+  they follow in order) or **Dismiss** it (they go). Without this, a later
+  message would reach Claude Code before an earlier one. A **new** message
+  you send once the refusal is showing is you moving on: what waited goes,
+  in order, then it, and the refused message keeps its Retry (or Send again)
+  and Dismiss; retried later, it goes after them. With no bubble (a Queue, a
+  Terminal view) the refused message's Retry and **Dismiss** stay beside the
+  status line until you use one. The status line says the newest message's
+  progress ("Sending…", "Queued."); while it does, the refusal's reason is
+  shown beside its buttons, and once that message is done the line shows the
+  refusal again.
+- **A "Not confirmed" message stays until you Dismiss it or Send it
+  again.** Muster cannot tell from the conversation whether it landed: a row
+  is matched by its text, and the same words can be an earlier message's, a
+  later one's that begins with them, or a copy you retyped. So nothing takes
+  it away for you, not even a row that looks like it. Check the terminal (or
+  the transcript) first to see whether it landed: if it did, **Dismiss** it;
+  if not, **Send again**. Until then its text stays (in the box, or the draft
+  after a reload). **Dismiss forgets the text**: it leaves the box (if the box
+  still holds just that message) and the draft, so a reload does not bring it
+  back and a later Send cannot deliver it twice. (Dismissing a *failed*
+  message — one the server said it did not take — keeps its text in the box:
+  it cannot be a duplicate.)
+- **Step-up**: a send refused because the sign-in is stale stays pending,
+  "Confirm it's you to send", while the dialog asks, and is sent once you
+  confirm. Cancelling the dialog turns it failed, with the text back in the
+  box. In the view switch's frame the dialog is the top window's. If that
+  window is an older page that cannot report a cancel, closing its dialog
+  without confirming still counts as a cancel (and so does no answer within
+  two minutes), so the send never waits for good.
+- **A reload, a navigation, or a send the browser could not make either**
+  does not lose it. The message stays in the box's
+  [draft](#drafts-kept-on-this-device) from the press until the server says
+  it has it (or you Send it again, or Dismiss it — a Not confirmed message's
+  text then goes, a failed one's stays in the box), so the page you come back
+  to has the text in the box. It is not drawn again
+  as a bubble and is never sent again by itself: you decide whether to send
+  it.
+- **A network failure just after the page started to leave but stayed** (a
+  download link fires the same "leaving" event) is not taken for the page
+  going: once the page is still there after 3 seconds, the send is refused,
+  with its text kept and Retry, and what you sent after it waits.
+- **Back to the page after the browser sent the message itself** (from the
+  back/forward cache): the page checks the draft first. If the page the send
+  landed on took the message out (it went), the box does not show it again;
+  if not, it is refused, with Retry, before anything sent after it goes.
+
+⚠ A "Sent" bubble is matched to its row by its text, only to take the bubble
+away; the server has already confirmed the message, so a wrong match only
+takes a bubble away a little early or late. The row carries the prompt
+as Claude Code's transcript holds it, before it is drawn as markdown (where a
+link shows as its label and a code fence as a code block), and both are
+compared as letters and digits only, lower-cased: the row must begin with
+what you typed (attachments are drawn as chips in the row, so they are not
+compared). Only a message the server answered OK can be matched, never one
+still waiting its turn, refused or Not confirmed. Only a row drawn after the message was sent can match
+it, and each row settles one bubble. A message with no letters or digits (an
+emoji, attachments alone) is matched to the first new row that has none
+either. After the conversation is redrawn from the start (a reconnect that
+could not resume, a reload), every row is new, so only the newest rows are
+compared.
+
+The chief panel and an agent's chat page send over their socket and already
+drew your message at once; they are unchanged.
+
 ## Queue: send when Claude Code is idle
+
+An opencode window started with `muster-mirror opencode`, on a host that runs
+with `-opencode-send`, has the same Send and Queue: its messages go through
+opencode's API instead of being pasted, and wait for opencode's own idle
+status ([sending to opencode](mirroring.md#sending-to-opencode)). What
+follows says Claude Code; for such a window read opencode.
 
 Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of
 yours shows the same queue under the box. Each message not yet being sent has a **⋯**
-menu with **Send now**, **Edit** (not on a message your chief routed), **Copy message**
+menu with **Send now**, **Edit** (not on a message your chief routed, nor on a [chief nudge](chief-nudges.md#live-mode) or a relayed answer), **Copy message**
 and **Cancel**. It is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
 dispatched agents and the chief panel have no Queue.
@@ -94,8 +245,38 @@ dispatched agents and the chief panel have no Queue.
   a queue post is refused saying why. A message already queued for such a
   window is held with the reason shown. So is one for a host that reports the
   status without its time.
-- **At most 20** messages can wait per window. Finished ones are shown for a
-  while and deleted after 7 days, or sooner with their **Delete** (below).
+- 🔴 **Only into the Claude session it was queued for.** Queue records the
+  Claude Code session the window holds at that moment (the session id its
+  host reports). If `claude` exits and a new one starts in the same pane —
+  or `/clear` starts a new conversation — before the message is sent, it is
+  not pasted into the new session: it fails, saying "Not sent: the window no
+  longer holds the Claude session this was queued for", and nothing is typed.
+  It never waits, because waiting does not bring the old session back.
+  muster checks the session its host last reported; a current
+  `muster-mirror` checks it again at the moment it types, so a restart
+  between the host's last report and the paste is caught too (an older one
+  does not, and muster's check is then the only one:
+  [mirroring.md](mirroring.md#rolling-upgrades)). The same applies to **Send
+  now** of a queued message and to a failed question's **Send as a
+  message**, which are queued messages too; **Retry** queues it again for the
+  same session, so it fails again — write it again in the session shown now.
+  Your own **Send**, which goes at once from the page you are looking at,
+  names no session and is unchanged. A message queued before muster recorded
+  the session, or for a host that reports none, is delivered as before. A
+  message your chief routes is pinned the same way by its route
+  ([plugins.md](plugins.md#routing-a-message-to-a-session)).
+- 🔴 **A usage limit holds the queue.** See
+  [A usage limit holds the queue](#a-usage-limit-holds-the-queue) below.
+- **At most 20** messages can wait per window. The list shows only what still
+  needs something: messages queued or being sent, and your own failed messages
+  that you have not retried or deleted. A sent or cancelled message leaves the
+  list at once. A failed message of your own stays until you **Retry** or
+  **Delete** it, or until it is deleted 7 days after it failed (every finished
+  message is); only the 20 newest are listed. A failed message your chief
+  routed, or a chief nudge that failed, is not listed: its outcome goes back to
+  the chief, which handles it.
+  A tap on a message in the list shows its whole text (the list shows the first
+  two lines).
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
   and never put back once anything may have reached the window. (The one way
   back to `queued` is the Send-wins case above, where nothing was pasted.) The
@@ -123,6 +304,83 @@ message is being edited. **Copy message** copies the whole message, and is not
 offered without JavaScript. The menu works without JavaScript (Send now, Edit
 and Cancel are forms). The list is not redrawn while a menu is open, or while a
 message is open for editing.
+
+### A team session's queue
+
+A team host's window ([mirroring.md](mirroring.md#team-hosts)) has one queue,
+shared by the team's operators and managers (team sharing 2b.4). Queueing
+into it needs **your own** fresh sign-in, as a Send does; the message is the
+team's, and the list says "Queued by ben." on a message someone else queued.
+
+- 🔴 **It is checked against who queued it, when it is sent.** The server
+  sends it as the team, and first re-reads the person who queued it: still
+  enabled, still an operator or a manager of the team, and not signed out of
+  every session since. A message that fails is not sent ("Not sent: the
+  person who queued it is no longer an operator of the team that owns this
+  session."). A message queued by the team itself, with no person behind
+  it, is not sent either: nothing queues one yet.
+- **Leaving cancels it.** Removing someone from the team, or making them a
+  viewer, cancels what they queued into the team's windows at once; a
+  disable or a sign-out everywhere cancels it on every team.
+- **Whose it is to change.** Only the person who queued a message edits it,
+  retries it or sends it now. A manager may also cancel or delete anyone's.
+  A viewer sees no queue.
+
+### A usage limit holds the queue
+
+When Claude Code hits a usage limit it ends the turn at once with a message of
+its own ("You've hit your session limit · resets 10:30pm (…)") and goes back to
+its prompt. Its status then reads idle, with a newer time, exactly as after an
+answer. Before this, the queue sent the next message into the same limit, and
+the next, until the queue was empty: every message used up by the limit.
+
+`muster-mirror` now reads, from the transcript of each idle Claude Code
+window, how the latest turn ended. When it ended in a message Claude Code wrote
+itself (model `<synthetic>` with an error flag), muster is told the kind, the
+reset time when the message names one, and whether the prompt it answered got
+any real reply at all. With that:
+
+- **The queue holds.** It shows **Held — usage limit, resumes 10:30 PM**, the
+  time in your own local time, until the reset time plus one minute; then it
+  sends again. If the limit names no reset time muster can place, it holds
+  until Claude Code gives a real answer (for example to a message you send by
+  hand) or you tap **Send now**. A real answer lifts the hold at once. The reset
+  time is the record's `quotaLimits.resetsAt` when it has one (newer Claude
+  Code), else the time its text names, read in the zone it names.
+- **A message Claude Code refused is failed, for a Retry by hand.** If a
+  queued message was sent and Claude Code refused it before working on it — a
+  usage limit, "Not logged in", an API error, as its only reply — that message
+  is marked failed, *Rejected: …*, with its ordinary **Retry**. Nothing
+  re-sends it on its own. muster marks it only when the transcript shows it
+  was THAT message (the refused prompt's text matches, in the same Claude
+  Code session it was pasted into — muster remembers that in memory, so after
+  a restart it marks nothing) and nothing came
+  between its paste and the refusal (the newest record before the refused
+  prompt is no later than the status it was pasted on). A message Claude
+  answered, followed by another prompt typed in the terminal that hit the
+  limit, stays sent; so does one whose text a fresh `claude` in the same
+  pane happens to start with; so does any message the transcript cannot show
+  was refused. A Retry of a message that was in fact answered would run it twice.
+- **The limit is the account's — and muster assumes ONE account per host.**
+  When any Claude Code window on a host hits it, `muster-mirror` also reports
+  it for the whole host, and every Claude Code window there holds — until the
+  reset, or until any of its windows gets a real answer (which lifts it for
+  all of them). A window on that host signed in to another account, or using
+  another provider, is held too, until the reset, unless you tap **Send now**.
+  If the newer of a window's own limit and its host's is the host's, that one
+  holds.
+- **Other immediate failures trip a breaker that backs off.** When the last 2
+  turns each ended within 10 seconds of their prompt in another error Claude
+  Code wrote itself ("Not logged in", an API error), the queue holds, saying
+  so and when it retries: 1 minute after muster saw the failure, then 2, then
+  5, then every 15 minutes, one message each time. A real answer resets it.
+- **When.** The time a held queue resumes is shown in your local time, with
+  its date when it is not today (a weekly limit). The line takes at most two
+  lines; tap it (or press Enter on it) for the whole text.
+- **Send now** still works while the queue is held, and sends only the one
+  message you tapped.
+- A `muster-mirror` that predates this reports nothing about how a turn ended,
+  and its windows' queues behave as before.
 
 ### Editing a queued message
 
@@ -191,14 +449,15 @@ must be fresh like a queue post's. A message that may already have been sent
 asks you to confirm first. A message your chief routed has no Retry: its failed
 route goes back to the chief instead.
 
-A finished message (sent, failed, expired or cancelled) has a **Delete**, which
-removes it from the list on every device at once (`POST /send-queue/{id}/delete`).
-A message still queued has no Delete (Cancel it first), and neither has one
-being sent: the send in progress still holds it. Deleting a sent message does
-not let the next one in early: the next message still waits for the turn the
-deleted one started. Deleting a failed message your chief routed is fine: its
-route is not affected, and if the route times out, the message still goes back
-to the chief.
+A failed message (expired included) has a **Delete**, which removes it from the
+list on every device at once (`POST /send-queue/{id}/delete`). The route deletes
+any finished message (sent, failed or cancelled), though the list draws only
+failed ones. A message still queued has no Delete (Cancel it first), and
+neither has one being sent: the send in progress still holds it. Deleting a
+sent message does not let the next one in early: the next message still waits
+for the turn the deleted one started. A failed message your chief routed is not
+listed, but deleting one through the route is fine: its route is not affected,
+and if the route times out, the message still goes back to the chief.
 
 🔴 **A queued message does not outlive the account that queued it.** When a
 message is sent, the server checks the account again, from the database: if it
@@ -216,8 +475,17 @@ Cancel the message instead.
 
 What you type into a message box is kept in this browser as you type
 (`localStorage`), and put back when you come back to the same box: after a
-navigation away, a reload, or a closed tab. It is removed once the message is
-sent or queued, and when you empty the box. It is kept per device: another
+navigation away, a reload, or a closed tab. It is removed when you send or
+queue the message and the server has it, and when you empty the box. A
+mirrored window's box empties at the press, but its draft keeps the message
+until the server says it has it, or you dismiss it or send it again: a
+reload, a navigation or a failed submit meanwhile brings it back in the box,
+and a message the server has never comes back. A **Not confirmed** message
+is kept too (a row in the conversation never removes it), since whether it
+landed is yours to check. Several messages not yet confirmed come back together in the order you pressed Send, a blank
+line between — a refused one put back in the box keeps its place ahead of one
+waiting behind it — then anything typed since. It is
+kept per device: another
 device, or another browser, does not see it.
 
 | box | kept for |
@@ -262,10 +530,31 @@ the first answer was lost, it is delivered once. Delivered nonces are remembered
 in memory for 15 minutes, up to 4096 of them, keyed by owner, nonce and text. A
 server restart forgets them.
 
-Pages that carry such a form are served with `Referrer-Policy: same-origin` and
-`Cache-Control: no-store`. The rest of the app uses `no-referrer`. Under that
-policy, a browser sends `Origin: null` with a form it submits itself, and the
-same-origin check refuses `Origin: null`.
+A mirrored send that **may have been delivered** (the host never confirmed it,
+whether it was your Send, a queued message's delivery, or Send now) offers
+**Send again**. Until you press it, or a delivery of the same text is
+confirmed, muster refuses the same text to the same window and pane by any of
+the three ways you send: Send, Queue, and a queued message's Send now. That
+holds whatever the nonce, so it covers a page shown again without the offer: a
+Back that the browser answers from its HTTP cache shows the page as first
+served. Send again posts `again=1`. Without JavaScript the refusal is a page
+with a Send again button of its own; on the queue list, Send now asks once.
+Like the nonces, this is in memory for 15 minutes.
+
+Pages that carry such a form are served with `Referrer-Policy: same-origin`. The
+rest of the app uses `no-referrer`. Under that policy, a browser sends
+`Origin: null` with a form it submits itself, and the same-origin check refuses
+`Origin: null`.
+
+The plain confirm pages are also `Cache-Control: no-store`, because they carry
+the message. The four view pages (an agent's chat, the Rendered view and both
+terminals) are `Cache-Control: private, no-cache`, so Back and Forward can
+restore them from the browser's back/forward cache. A restored page checks
+that the same build is still serving and reloads if not. It also reloads if it
+was hidden for more than 10 minutes (Chromium drops a cached page at 10 minutes
+on its own; Safari and Firefox keep one for 30), and when re-requesting it is refused (for
+example after you signed out). Otherwise it reconnects its streams and catches
+up. Signing out sends `Clear-Site-Data: "cache"`.
 
 ## Step-up: "Confirm it's you"
 
@@ -287,6 +576,9 @@ read-only never is.
 - 🔴 **Freshness belongs to one browser session, never to the user.** It is read
   from the session each request presents, and nothing is recorded per user.
   Confirming on one device leaves your other devices as stale as they were.
+  On a team session (team sharing 2b.4) it is the typing member's own: a team
+  has no sign-in of its own, and one member's confirmation counts for nobody
+  else.
 
 When a send or attach is refused as stale, the page shows "Confirm it's you" and
 then completes what was waiting: the attach, or sending the **same** text. Nothing
@@ -299,9 +591,27 @@ you typed is lost while the dialog is open. You can confirm in two ways:
   not at all for an account with no passkey. Routes:
   `POST /auth/confirm/passkey/options`, then `POST /auth/confirm/passkey/verify`.
 - **With the password again** (`POST /auth/confirm`). In password mode this is
-  `MUSTER_UI_PASSWORD`.
+  `MUSTER_UI_PASSWORD`. When a passkey is offered, the password sits in a
+  collapsed "Use your password instead" section under it. When no passkey can be
+  used (none on the account, none on the server, or a browser without WebAuthn),
+  the password is the only option and is shown open.
 
 Both are same-origin only and throttled like sign-in.
+
+The same dialog guards every other write that needs a fresh sign-in. **The
+rule: wherever muster would refuse a write as stale, the page you made it from
+offers "Confirm it's you" in place.** A form asks before it submits and, once
+you confirm, submits the same form, with what you typed and the button you
+tapped kept. A terminal that needs a fresh sign-in to open at all (a team
+agent's) asks before it attaches. A write the server still refuses as stale
+(the page believed the sign-in fresh) is answered with the same page, saying
+so, and the next try asks. Every such write in the server is listed in one
+ledger, and a test fails when one is added without saying how you confirm it.
+
+**A host officer's machine is stricter** ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)):
+an owner-authority tool reached through that machine's MCP door is confirmed
+on the owner's paired phone, one decision per signed action — not by this
+window.
 
 The Interactive choice is remembered per host for the browser session. Adding a
 passkey has its own fixed window of five minutes, separate from the step-up

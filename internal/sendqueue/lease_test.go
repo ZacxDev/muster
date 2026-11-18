@@ -254,13 +254,17 @@ func TestALeaseIsOnTheDatabasesClockNotThePods(t *testing.T) {
 // B's next pass fails it — may have been delivered, saying so — and nobody
 // sends it again.
 func TestAnExpiredLeaseIsFailedMayHaveDelivered(t *testing.T) {
-	s, _ := pgStore(t)
+	s, pool := pgStore(t)
 	t0 := time.Now()
 	c := &clock{t: t0}
 	f := &fakeTarget{st: idleSince(t0.Add(-time.Hour))}
 	m := mustEnqueue(t, s, 2, mirrorItem("A stopped mid-send"))
 	const lease = 300 * time.Millisecond
-	if _, ok, err := s.Claim(context.Background(), m.ID, t0, Claim{By: "pod-a", Lease: lease}); err != nil || !ok {
+	// The "inside the lease" checks run under a minute's lease, not the short
+	// one: the lease is judged on Postgres's clock, so under 300 ms a loaded
+	// runner's delay before them could let it run out first and they would
+	// flake.
+	if _, ok, err := s.Claim(context.Background(), m.ID, t0, Claim{By: "pod-a", Lease: time.Minute}); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	b := pod(s, "pod-b", f, c, f.send, lease, 20*time.Millisecond)
@@ -269,6 +273,13 @@ func TestAnExpiredLeaseIsFailedMayHaveDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	rowState(t, s, m.ID, "inside the lease, after another pod's pass and Finish", Sending)
+	// Pod A stopped: its lease now ends lease from the database's now() (as a
+	// claim of lease would have set it) and is left to run out on that clock.
+	// Everything after the sleep holds however late it runs.
+	if _, err := pool.Exec(authzAll(), `UPDATE send_queue SET lease_until = now() + $2 * interval '1 microsecond' WHERE id = $1`,
+		m.ID, leaseMicros(lease)); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(2 * lease)
 	tick(t, b)
 	got := rowState(t, s, m.ID, "after the lease expired", Failed)

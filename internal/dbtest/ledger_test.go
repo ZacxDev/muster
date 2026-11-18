@@ -108,6 +108,11 @@ var pgBackedPackages = []string{
 	// agents.DecideReconcile's retry branch — so only the real store can show the
 	// escalation firing at the dwell boundary.
 	"internal/agentkickoff",
+	// Added by the outcome tracker. Its "one push per change" IS the SQL: every
+	// transition is a write conditional on the outcome it leaves (and a stuck
+	// verdict on the activity it was read with), so only the real store can show
+	// a second writer of one change seeing applied=false.
+	"internal/agentoutcome",
 	// Added by the status promoter. Its guard IS the SQL: MarkRunning promotes
 	// only a row still `provisioning` at the updated_at the tick read, and only a
 	// real store can show a Stop or a Start landing mid-tick winning that race.
@@ -123,7 +128,26 @@ var pgBackedPackages = []string{
 	// "a revoked token / a disabled owner stops authenticating" are claims
 	// about SQL and row-level security.
 	"internal/apitokens",
+	// The answer-attempt log (ask_attempts, 0113): "owner B cannot read A's
+	// attempts", "no column holds the question or answer text" and "the
+	// snapshot is redacted and capped" are claims about what reaches Postgres
+	// and row-level security.
+	"internal/askattempt",
+	// Instance branding (migration 0105): "only an admin writes" and "a user's
+	// principal sees nothing" are claims about the store's check and row-level
+	// security.
+	"internal/branding",
+	// The account failover's event store (cc_account_failovers, 0066).
+	"internal/ccfailover",
 	"internal/ccpool",
+	// The Claude account usage store (cc_account_usage, 0108) and its
+	// attribution reads over agents and jobs: "one owner's readings are theirs"
+	// and "an agent counts in the window it was live in" are claims about SQL.
+	"internal/ccusage",
+	// The chief's on/off switch (migration 0060): "one user's choice is theirs
+	// alone" is a claim about row-level security.
+	"internal/chiefpref",
+	"internal/chiefusage",
 	// Added by the connector store. "The stored row never contains the plaintext"
 	// and "the wrong key fails closed" are claims about what reaches Postgres, and
 	// the proxy's grant checks are SQL (the partial unique index) — only a real database can falsify either.
@@ -132,6 +156,10 @@ var pgBackedPackages = []string{
 	// security — its isolation and seal-binding tests need the real database.
 	"internal/credentials",
 	"internal/db",
+	// Added by the fleet digest (migration 0147). "The log is append-only for
+	// the app role" and "one owner's actions and marks are invisible to
+	// another" are a trigger's and row-level security's claims.
+	"internal/fleet",
 	// Added by the mirrored-sessions plugin. "Only the token's hash is stored",
 	// "another user's principal cannot find, list or revoke a token" and "a
 	// revoked token stops authenticating" are claims about SQL and row-level
@@ -144,6 +172,20 @@ var pgBackedPackages = []string{
 	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
+	// Notification preferences (migration 0094): "off for every user who never
+	// chose" and "one user's switch is theirs alone" are claims about a table
+	// default and row-level security.
+	"internal/notifypref",
+	// The judgement session cap's ledger (migration 0082). "Two replicas at
+	// cap-1 admit exactly one" and "the count survives a new server" are
+	// claims about one SQL statement's row lock and about the table, not
+	// about Go: only a real Postgres can make them.
+	"internal/officers",
+	// The built-in officer backend (migration 0118). "Two callers never claim
+	// one item", "a lease is judged by muster's clock", "a live subject is
+	// deduplicated" and "another owner's officer is invisible" are claims about
+	// FOR UPDATE SKIP LOCKED, a partial unique index and row-level security.
+	"internal/officers/builtin",
 	// Pins (migration 0017). "Another user cannot see, delete or make a pin of
 	// yours" and "deleting an agent deletes its pin" are claims about row-level
 	// security and a foreign key cascade.
@@ -158,6 +200,23 @@ var pgBackedPackages = []string{
 	// retried" are claims about row-level security, a unique index and a
 	// conditional UPDATE.
 	"internal/sendqueue",
+	// Session state's episodes (migration 0073). "One open episode per
+	// session, claimed once under a race" is a claim about a partial unique
+	// index, and "another user cannot see your episodes" about row-level
+	// security.
+	"internal/sessionstate",
+	// Session tags (session_tags). "Another user cannot read or change your
+	// tags", "a tag is one row in any case" and "an agent's tags die with it"
+	// are claims about row-level security, a unique index and a cascade.
+	"internal/sessiontags",
+	// Suggested replies' per-user toggle (migration 0048). "Another user cannot
+	// read or flip your toggle" is a claim about row-level security.
+	"internal/suggest",
+	// The ask log (asks, migration 0089). "Another owner cannot read your
+	// asks", "a capture that runs twice is one row" and "the sweep clears
+	// exactly the text past the TTL" are claims about row-level security, a
+	// unique index and an UPDATE's predicate.
+	"internal/asklog",
 	// The attention queue (migration 0023). "Another user cannot read, answer or
 	// cancel your asks", "an answer and a cancel cannot both land" and "an
 	// agent names only its owner's agent" are claims about row-level security, a
@@ -169,6 +228,11 @@ var pgBackedPackages = []string{
 	// key is the id and nothing else" are claims about row-level security and a
 	// CHECK constraint.
 	"internal/uploads",
+	// Shareable pages (migration 0116). "Another user cannot read or change
+	// your page, its links or its responses", "a link serves only while live"
+	// and "a response through a revoked link records nothing" are claims about
+	// row-level security, composite keys and a row lock.
+	"internal/pages",
 	// Recents (migration 0018). "Another user cannot see or write your recently
 	// viewed entries", "a visit upserts" and "the oldest past the bound are
 	// pruned" are claims about row-level security and SQL.

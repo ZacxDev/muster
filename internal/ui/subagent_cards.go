@@ -102,7 +102,7 @@ func pad2(n int) string {
 }
 
 // subagentSummary is a card's <summary>: what is redrawn as the agent moves.
-func subagentSummary(id string, c subagentCall, s *mirror.Subagent) g.Node {
+func subagentSummary(id string, c subagentCall, s *mirror.Subagent, badge g.Node) g.Node {
 	desc, typ, state, last := c.description, c.agentType, subagentStarting, ""
 	var started, ended int64
 	background := false
@@ -138,6 +138,8 @@ func subagentSummary(id string, c subagentCall, s *mirror.Subagent) g.Node {
 		Div(Class("flex min-w-0 items-center gap-2"),
 			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("🤖")),
 			Span(g.Attr("data-subagent-desc", ""), Class("min-w-0 truncate font-medium text-fg"), g.Text(desc)),
+			// The call's context badge (tool_context.go): before the status.
+			badge,
 			Span(g.Attr("data-subagent-status", state), Class("ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset "+cls),
 				g.Text(label)),
 		),
@@ -152,7 +154,7 @@ func subagentSummary(id string, c subagentCall, s *mirror.Subagent) g.Node {
 
 // subagentCard is a whole card: its summary, the tail the page fills while it
 // is open, and the call's result once it has one.
-func subagentCard(id string, c subagentCall, s *mirror.Subagent) g.Node {
+func subagentCard(id string, c subagentCall, s *mirror.Subagent, badge g.Node) g.Node {
 	state, agent := subagentStarting, ""
 	if s != nil {
 		state, agent = s.State, s.Agent
@@ -167,7 +169,7 @@ func subagentCard(id string, c subagentCall, s *mirror.Subagent) g.Node {
 		g.Attr("data-subagent-state", state),
 		g.If(agent != "", g.Attr("data-agent", agent)),
 		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
-		subagentSummary(id, c, s),
+		subagentSummary(id, c, s, badge),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"),
 			Div(g.Attr("data-subagent-tail", ""), Class("flex flex-col gap-1"),
 				P(Class("text-muted"), g.Text("Loading its steps…"))),
@@ -192,7 +194,7 @@ func (t *MirrorTranscript) subagentCallOps(ev cctranscript.Event) []MirrorOp {
 	}
 	t.cards[ev.ToolID] = c
 	t.endRun()
-	html := render(subagentCard(id, c, t.subOf(ev.ToolID)))
+	html := render(subagentCard(id, c, t.subOf(ev.ToolID), t.ctxBadge(ev.ToolID)))
 	if seen {
 		return []MirrorOp{{Op: "replace", ID: id, HTML: html}}
 	}
@@ -205,7 +207,7 @@ func (t *MirrorTranscript) subagentResultOps(ev cctranscript.Event) []MirrorOp {
 	c.result = &ChatLine{Kind: "tool_result", ToolID: ev.ToolID, ToolOK: ev.OK, Content: ev.Output}
 	t.cards[ev.ToolID] = c
 	id := toolRowID(ev.ToolID)
-	return []MirrorOp{{Op: "replace", ID: id, HTML: render(subagentCard(id, c, t.subOf(ev.ToolID)))}}
+	return []MirrorOp{{Op: "replace", ID: id, HTML: render(subagentCard(id, c, t.subOf(ev.ToolID), t.ctxBadge(ev.ToolID)))}}
 }
 
 func (t *MirrorTranscript) subOf(toolID string) *mirror.Subagent {
@@ -237,7 +239,7 @@ func (t *MirrorTranscript) SubagentOps(list []mirror.Subagent) []MirrorOp {
 		}
 		id := toolRowID(s.ToolID)
 		ops = append(ops,
-			MirrorOp{Op: "patch", ID: id + "-s", HTML: render(subagentSummary(id, c, &s))},
+			MirrorOp{Op: "patch", ID: id + "-s", HTML: render(subagentSummary(id, c, &s, t.ctxBadge(s.ToolID)))},
 			MirrorOp{Op: "attr", ID: id, Name: "data-subagent-state", Value: s.State},
 			MirrorOp{Op: "attr", ID: id, Name: "data-agent", Value: s.Agent},
 		)

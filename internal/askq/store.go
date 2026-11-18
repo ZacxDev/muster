@@ -18,7 +18,17 @@ import (
 // 🔴 IN MEMORY, AND NOTHING HERE IS NEEDED TO ANSWER. The terminal's picker is
 // always there; the store is what lets muster show the question and type an
 // answer into that picker. A muster restart forgets the open questions: their
-// pickers stay on screen, unaffected. The transcript is the history.
+// pickers stay on screen, unaffected, and muster registers them again
+// (Restore) when it reads them open in their waiting sessions' transcripts
+// (internal/api's open-question scan) — the TRANSCRIPT is the source of truth
+// for what is open, and the history.
+//
+// 🔴 AN OPEN QUESTION ENDS ONLY BY ITS SESSION: a result recorded (Resolve), a
+// newer question in the session (Superseded), or the session gone from its
+// host (Gone; the watcher decides that, after a grace). There is no age limit
+// on a question whose session is still listed: the watcher marks it Seen while
+// it is, and only a question NOT SEEN for MaxOpen expires (a host that went
+// away for good). An expired question read open again is reopened (Restore).
 //
 // 🔴 HOW A QUESTION ENDS IS THE CLI'S WORD, NOT MUSTER'S. Resolve records what
 // the transcript says the call returned (its toolUseResult); an answer typed
@@ -42,8 +52,9 @@ const (
 	// Declined: the CLI recorded the call ended with no answers (the picker
 	// was dismissed in the terminal).
 	Declined State = "declined"
-	// Expired: no result was seen within MaxOpen, or the session went away
-	// (Gone; Note says so).
+	// Expired: the session went away (Gone; Note says so), or the question was
+	// not seen in a listed session for MaxOpen. Read open again in its
+	// transcript, it is reopened (Restore).
 	Expired State = "expired"
 	// Superseded: a newer question was asked in the same Claude session, so
 	// this one's picker is no longer on screen; it is never typed into.
@@ -86,6 +97,12 @@ type Entry struct {
 	// Retry (Failed) says the failure leaves the question answerable from
 	// muster again: typing can be tried again (Failure.Retry).
 	Retry bool
+	// Reason (Failed) is the failure's reason code (Failure.Reason,
+	// internal/askattempt's Reasons): what the card offers to recover with.
+	Reason string
+	// Sending (Failed) says a "Send as a message" holds the question
+	// (BeginMessage): the card offers nothing until it ends.
+	Sending bool
 	// Left is what muster's typing is KNOWN to have left in the terminal's
 	// picker: the choices it was typing and how many keys of their plan it
 	// sent (nil: nothing known to be there). A drive that stopped part way
@@ -94,6 +111,9 @@ type Entry struct {
 	Left     *Progress
 	Created  time.Time
 	Resolved time.Time
+	// Seen is when the question's session was last seen listed by its host
+	// (Store.Seen); zero until then — Created counts instead.
+	Seen time.Time
 }
 
 // Progress is how far muster's typing of an answer got into the terminal's
@@ -102,6 +122,15 @@ type Entry struct {
 type Progress struct {
 	Choices []Choice `json:"choices"`
 	Keys    int      `json:"keys"`
+	// Reset asks the drive, when the picker is neither untouched nor exactly
+	// as Keys of Choices left it, to put it back to the first option of its
+	// first question before typing (internal/askdrive's DriveFrom) — a card's
+	// Try again after a recoverable failure (internal/askattempt's
+	// RecoverRetry). The drive re-reads the screen first, and resets only a
+	// picker on its first question with no answer of one's own typed in.
+	// 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host ignores it (and refuses
+	// a touched picker as before); an older muster never sets it.
+	Reset bool `json:"reset,omitempty"`
 }
 
 // clone is a deep copy of p (nil for nil).
@@ -109,7 +138,7 @@ func (p *Progress) clone() *Progress {
 	if p == nil {
 		return nil
 	}
-	out := &Progress{Keys: p.Keys, Choices: make([]Choice, len(p.Choices))}
+	out := &Progress{Keys: p.Keys, Reset: p.Reset, Choices: make([]Choice, len(p.Choices))}
 	for i, c := range p.Choices {
 		out.Choices[i] = Choice{Picks: append([]int(nil), c.Picks...), Other: c.Other}
 	}
@@ -118,7 +147,10 @@ func (p *Progress) clone() *Progress {
 
 // The store's bounds and clocks.
 const (
-	// MaxOpen is how long a question stays open with no result seen.
+	// MaxOpen is how long an open question stays open while its session is NOT
+	// SEEN listed (Store.Seen; from Created until it first is). A question
+	// whose session is listed never reaches it: the watcher marks it seen. It
+	// bounds what a host that went away for good leaves open.
 	MaxOpen = 6 * time.Hour
 	// Retain is how long a resolved question is kept, so a page that loads
 	// after it still shows how it went.
@@ -228,13 +260,22 @@ func (s *Store) notify(fire []Entry) {
 	}
 }
 
-// sweepLocked expires open questions past MaxOpen and forgets resolved ones
-// past Retain.
+// lastSeen is when e's session was last known to be listed: Seen, or Created
+// before it ever was.
+func (e *entry) lastSeen() time.Time {
+	if e.Seen.After(e.Created) {
+		return e.Seen
+	}
+	return e.Created
+}
+
+// sweepLocked expires open questions not seen for MaxOpen and forgets
+// resolved ones past Retain.
 func (s *Store) sweepLocked(fire *[]Entry) {
 	now := s.now()
 	for id, e := range s.byID {
 		switch {
-		case e.State.Open() && now.Sub(e.Created) > MaxOpen:
+		case e.State.Open() && now.Sub(e.lastSeen()) > MaxOpen:
 			e.State, e.Resolved = Expired, now
 			s.touch(e, fire)
 		case !e.State.Open() && now.Sub(e.Resolved) > Retain:
@@ -330,29 +371,138 @@ func (s *Store) Open(key Key, qs []Question, id string) (Entry, error) {
 			return e.snapshot(), nil
 		}
 	}
+	return s.openLocked(key, qs, id, &fire)
+}
+
+// openLocked opens a new Pending entry for key under id ("" lets the store
+// choose), superseding the session's other open questions.
+func (s *Store) openLocked(key Key, qs []Question, id string, fire *[]Entry) (Entry, error) {
 	if err := s.evictLocked(key.Owner); err != nil {
 		return Entry{}, err
 	}
 	if id == "" {
 		id = NewID()
 	}
-	// 🔴 A NEWER QUESTION IN THE SESSION REPLACES THE OLDER ONES: Claude Code
-	// shows one picker at a time, so theirs is gone — and the driver matches a
-	// picker by its text, so an older card must never type into a newer
-	// picker that asks the same thing.
-	for _, o := range s.byID {
-		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
-			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
-			o.State, o.Resolved = Superseded, s.now()
-			s.touch(o, &fire)
-		}
-	}
+	s.supersedeLocked(key, fire)
 	e := &entry{Entry: Entry{ID: id, Key: key, Questions: append([]Question(nil), qs...), State: Pending,
 		Created: s.now()}}
 	s.byID[e.ID] = e
 	s.byKey[key] = e.ID
-	fire = append(fire, e.snapshot())
+	*fire = append(*fire, e.snapshot())
 	return e.snapshot(), nil
+}
+
+// supersedeLocked marks every OTHER open question of key's session
+// Superseded.
+//
+// 🔴 A NEWER QUESTION IN THE SESSION REPLACES THE OLDER ONES: Claude Code
+// shows one picker at a time, so theirs is gone — and the driver matches a
+// picker by its text, so an older card must never type into a newer picker
+// that asks the same thing.
+func (s *Store) supersedeLocked(key Key, fire *[]Entry) {
+	for _, o := range s.byID {
+		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
+			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
+			o.State, o.Resolved = Superseded, s.now()
+			s.touch(o, fire)
+		}
+	}
+}
+
+// Restore registers qs for key because the session's TRANSCRIPT shows the
+// call open now — the session waiting, the call the newest unanswered one
+// with no result (cctranscript.OpenAskOf; internal/api's open-question scan) —
+// IDEMPOTENTLY, whatever was registered before:
+//
+//   - no entry for key (a restarted muster, a hook that never reached it):
+//     a new Pending one, as Open would make;
+//   - an OPEN entry: left exactly as it is — never a second card, and an
+//     answer being typed is not disturbed;
+//   - an EXPIRED one (its session looked gone, or it was not seen for
+//     MaxOpen): REOPENED, Pending, under the same id — the transcript says
+//     its picker is there;
+//   - an ANSWERED, DECLINED or SUPERSEDED one: left as it is. The CLI's
+//     record (or a newer question) ended it; a late or stale read never
+//     reopens it.
+//
+// 🔴 A READ NEVER REPLACES A NEWER QUESTION: when key is missing or Expired
+// and its session already has ANOTHER open question, Restore does nothing
+// (key's entry as it is, or a zero Entry; unchanged). The read began before Restore runs, and whatever
+// is open by then was registered during it — by the hook, from the picker on
+// screen now — so it is the newer call; opening key would supersede it, and
+// key's card (same text) would type into ITS picker.
+//
+// changed reports whether it opened or reopened the question.
+func (s *Store) Restore(key Key, qs []Question) (e Entry, changed bool, err error) {
+	if key.Owner <= 0 || key.Source == "" || key.Session == "" || key.ToolUseID == "" {
+		return Entry{}, false, invalid("a question needs an owner, a source, a session and a tool_use id")
+	}
+	if len(qs) == 0 {
+		return Entry{}, false, invalid("no questions")
+	}
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	en, ok := s.byID[s.byKey[key]]
+	if ok && en.State != Expired {
+		return en.snapshot(), false, nil
+	}
+	if s.otherOpenLocked(key) {
+		if ok {
+			return en.snapshot(), false, nil
+		}
+		return Entry{}, false, nil
+	}
+	if ok {
+		if s.openCountLocked(key.Owner) >= MaxPendingPerOwner {
+			return en.snapshot(), false, ErrFull
+		}
+		now := s.now()
+		en.State, en.Note, en.Retry, en.Resolved, en.Seen = Pending, "", false, time.Time{}, now
+		en.Typed, en.Left, en.driveUntil = nil, nil, time.Time{}
+		s.touch(en, &fire)
+		return en.snapshot(), true, nil
+	}
+	got, err := s.openLocked(key, qs, "", &fire)
+	return got, err == nil, err
+}
+
+// otherOpenLocked reports whether key's session has an open question other
+// than key's.
+func (s *Store) otherOpenLocked(key Key) bool {
+	for _, o := range s.byID {
+		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
+			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
+			return true
+		}
+	}
+	return false
+}
+
+// openCountLocked is how many of owner's questions are open.
+func (s *Store) openCountLocked(owner int64) int {
+	n := 0
+	for _, e := range s.byID {
+		if e.Key.Owner == owner && e.State.Open() {
+			n++
+		}
+	}
+	return n
+}
+
+// Seen records that the session (owner, source, scope, session) is listed by
+// its host now: its open questions do not age towards MaxOpen.
+func (s *Store) Seen(owner int64, source, scope, session string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	for _, e := range s.byID {
+		if e.Key.Owner == owner && e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session && e.State.Open() {
+			e.Seen = now
+		}
+	}
 }
 
 // Get is entry id, if the store has it.
@@ -421,14 +571,15 @@ func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again 
 	case Failed:
 		// 🔴 A HOST MAY STILL BE TYPING the last answer (its outcome never
 		// came back): no second drive into the same picker until it is known
-		// or MaxDrive has passed.
-		if s.now().Before(en.driveUntil) {
+		// or MaxDrive has passed. Nor while its answer is being sent as a
+		// message (BeginMessage).
+		if s.now().Before(en.driveUntil) || en.Sending {
 			return en.snapshot(), false, ErrBusy
 		}
 	}
 	// Left stays: it is what this drive finds in the picker (the caller hands
 	// it to the host), until this drive's outcome replaces it.
-	en.State, en.Typed, en.Note, en.Retry = Typing, maps.Clone(answers), "", false
+	en.State, en.Typed, en.Note, en.Retry, en.Reason = Typing, maps.Clone(answers), "", false, ""
 	en.driveUntil = s.now().Add(MaxDrive)
 	s.touch(en, &fire)
 	return en.snapshot(), false, nil
@@ -457,6 +608,8 @@ type Failure struct {
 	Left *Progress
 	// Retry says the question can be answered from muster again (Entry.Retry).
 	Retry bool
+	// Reason is the failure's reason code (Entry.Reason).
+	Reason string
 }
 
 // TypingFailed records that muster could not type the answer in (f): a
@@ -484,10 +637,61 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 		en.Left = nil
 	}
 	if en.State == Typing {
-		en.State, en.Note, en.Retry = Failed, f.Note, f.Retry
+		en.State, en.Note, en.Retry, en.Reason = Failed, f.Note, f.Retry, f.Reason
 		s.touch(en, &fire)
 	}
 	return en.snapshot(), nil
+}
+
+// BeginMessage CLAIMS a Failed question for internal/api's "Send as a
+// message", under the store's lock: offered(e) says the card offers it (its
+// reason, an answer muster was typing). 🔴 ONE CLAIM AT A TIME: a second
+// request while one holds it is ErrBusy (and so is a question a host may
+// still be typing into), so two concurrent requests never both dismiss and
+// queue. While claimed (Entry.Sending) the card offers no recovery, no
+// typing begins (BeginTyping's ErrBusy) and nothing else dismisses it.
+// ErrNotFound for a question not there; ErrClosed for one not Failed, or
+// whose card does not offer it. EndMessage releases the claim.
+func (s *Store) BeginMessage(key Key, offered func(Entry) bool) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	en, ok := s.byID[s.byKey[key]]
+	switch {
+	case !ok:
+		return Entry{}, ErrNotFound
+	case en.Sending, s.now().Before(en.driveUntil):
+		return en.snapshot(), ErrBusy
+	case en.State != Failed || !offered(en.snapshot()):
+		return en.snapshot(), ErrClosed
+	}
+	en.Sending = true
+	s.touch(en, &fire)
+	return en.snapshot(), nil
+}
+
+// EndMessage releases BeginMessage's claim on key. note "" puts the card back
+// as it was (the attempt failed before anything was done, so it still offers
+// what it did); otherwise note is what the card says from now on and it
+// offers no recovery any more (no Retry, no Reason) — the answer was sent, or
+// muster cannot send it — until the CLI's record of the call resolves it.
+func (s *Store) EndMessage(key Key, note string) Entry {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	en, ok := s.byID[s.byKey[key]]
+	if !ok {
+		return Entry{}
+	}
+	en.Sending = false
+	if note != "" && en.State == Failed {
+		en.Note, en.Retry, en.Reason = note, false, ""
+	}
+	s.touch(en, &fire)
+	return en.snapshot()
 }
 
 // Dismissing reports whether the question at key (key.Owner is the request's
@@ -507,7 +711,7 @@ func (s *Store) Dismissing(key Key) (Entry, error) {
 		return Entry{}, ErrNotFound
 	case !en.State.Open():
 		return en.snapshot(), ErrClosed
-	case en.State == Typing, s.now().Before(en.driveUntil):
+	case en.State == Typing, s.now().Before(en.driveUntil), en.Sending:
 		return en.snapshot(), ErrBusy
 	}
 	return en.snapshot(), nil

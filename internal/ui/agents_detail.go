@@ -1,8 +1,15 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +21,6 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/textplain"
-	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -45,6 +51,29 @@ type ChatLine struct {
 	// data-msg-id, the same after the chat-log refresh redraws the transcript,
 	// so the bubble clamp keeps a message the reader opened open (bubble_clamp.go).
 	ID int64
+	// Typed: a person typed this user line into muster's chat (the stored row's
+	// typed_by) — not a plugin message, a hand-back or muster's own note. Only a
+	// typed line answers a question card (chiefToolCard).
+	Typed bool
+	// Relay is set on a user line muster wrote to relay a plugin message (or a
+	// task event) to the chief: drawn as a collapsed system row (relayRow),
+	// never as the person's bubble. nil for every other line — internal/api
+	// chatLinesOf (relayOf) sets it only on an untyped user row that carries a
+	// stored plugin-message link (migration 0096), or — a row from before
+	// 0096 — whose text is muster's own relay preface (plugins.ParseRelayTurn).
+	Relay *ChatRelay
+}
+
+// ChatRelay is what a relay row names: the plugin it came through and the
+// message's subject (a task event's title), "" for none. Task marks a task
+// event.
+type ChatRelay struct {
+	Source, Subject string
+	Task            bool
+	// MessageID is the plugin message's id (the row's stored link, or the id
+	// its preface names); Source "" draws "a plugin" and, with no Subject, the
+	// id names it.
+	MessageID int64
 }
 
 // ChatSurface names WHERE a chat pane is being rendered.
@@ -69,21 +98,36 @@ const (
 	ChatSurfacePage ChatSurface = ""
 	// ChatSurfaceChiefPanel is the chief slide-out inside the home shell.
 	ChatSurfaceChiefPanel ChatSurface = "chief-panel"
+	// ChatSurfaceViewStrip is the chief strip on a mirrored session's Rendered
+	// view (view_chief.go): the chief's chat about that session, log only — no
+	// form, no drawer — served by internal/api handleViewChiefLog.
+	ChatSurfaceViewStrip ChatSurface = "view-strip"
 )
 
 // AgentDetailView is the data the agent detail page renders.
 type AgentDetailView struct {
-	ID          int64
+	ID int64
+	// Tags is the viewer's own tags on the agent (internal/sessiontags), drawn
+	// in the header after the title (sessionTagsHead); nil for none.
+	Tags        []string
 	Name        string
 	DisplayName string
-	Status      string
-	Repo        string
-	Model       string // OpenRouter slug; "" = cluster default
+	// SessionName is the agent's name (internal/sessionname): the header and
+	// the <title> draw it (agentTitle, agentDocTitle).
+	SessionName sessionname.Name
+	// Drift is the page's rename offer (driftBanner), nil for none.
+	Drift  *SessionDrift
+	Status string
+	Repo   string
+	Model  string // OpenRouter slug; "" = cluster default
 	// Kind is the agent's kind. A claude-code agent shows its kind and account
 	// instead of the model picker: it has no per-agent model (the server refuses
 	// one), so a picker there would be a control that can only fail.
 	Kind      string
 	CCAccount string
+	// LastFailover is the agent's latest Claude account failover, one line
+	// ("from north · rate_limited · resets …"); "" when it has none.
+	LastFailover string
 	// WorkerPool is the agent's machine-job worker pool; "" for none.
 	WorkerPool string
 	Messages   []ChatLine
@@ -96,6 +140,27 @@ type AgentDetailView struct {
 	DraftUser int64
 	// Surface is where this pane is being rendered. See ChatSurface.
 	Surface ChatSurface
+	// TurnInFlight: a turn is running in this conversation right now (internal/api
+	// sessionTurnCount), so #chat-working is drawn SHOWING. A page opened or
+	// reloaded mid-turn then says the agent is working, and the chat.reply
+	// refetch that brings the reply draws it hidden again.
+	TurnInFlight bool
+	// ChiefChat is the chief chat's bar (chief_chats.go): set on the chief's
+	// chat only, nil on every other agent's — which keeps the header's ＋ and
+	// draws no bar.
+	ChiefChat *ChiefChatBar
+	// DispatchCards is each agent_dispatch call's card, by its tool id
+	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
+	DispatchCards map[string]DispatchCard
+	// PageCards is each muster page tool call's page card, by its tool id,
+	// read from the page itself under the viewer's principal (internal/api
+	// pageCardsFor); a call whose page the viewer cannot see has none.
+	PageCards map[string]PageCardView
+	// OwnerCards is each STORED ask_owner card's state — its attention ask —
+	// by the call's tool id (internal/api ownerCardsFor). A call whose result
+	// names no stored ask draws from the transcript alone (a server with no
+	// attention store).
+	OwnerCards map[string]OwnerCardState
 
 	// Source task (Task 6): when this agent was dispatched from a Task, NoteID is
 	// its task id and TaskStatus its current lifecycle status. Both are populated
@@ -114,9 +179,33 @@ type AgentDetailView struct {
 	// Dictate is where the chat form's microphone posts a recording
 	// (TranscribePath), or "" for none. See dictate.go.
 	Dictate string
+	// DictateOff: the server has no dictation, so the chat form draws the
+	// muted mic linking to its Features row (dictateOffControl) instead.
+	DictateOff bool
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
+	// Asks is the agent's OPEN attention asks as the queue draws them, with
+	// their answer forms (internal/api attention_asker.go), "" for none; AsksSrc
+	// is that block's fragment URL, "" when the queue is not served (no block).
+	Asks    string
+	AsksSrc string
+	// Switcher is the session switcher below the chat form (switcher.go), on
+	// the page surface only; nil for none.
+	Switcher *Switcher
+	// Mentions links the sessions, agents and tasks an assistant's reply names
+	// (mentions.go); nil links none.
+	Mentions *MentionIndex
+	// Card is the agent as its card was composed (internal/api's
+	// cardViewIndexed, the one composer): what the page's status strip, its ⋯
+	// menu and its notices draw (agent_actions.go). Zero (Card.ID 0) draws
+	// none of them — the chief panel's pane, and a minimal test view.
+	Card AgentCardView
+	// StepUp is the "Confirm it's you" dialog the page's step-up gated forms
+	// ask with before they submit (StepUpFormScript): the ⋯ menu's Rotate
+	// credentials (agentRotateConfirm), a team card in the asks block. The
+	// server sets it only for a page that can draw such a form. nil: none.
+	StepUp *StepUpView
 }
 
 // SessionView is one chat session in the switcher.
@@ -168,6 +257,10 @@ type SessionView struct {
 	// alone — the title is already on screen, so repeating it as a snippet would
 	// claim a body match that does not exist.
 	Snippet string
+	// Unread (a chief's chat, agents.ChatListing): a reply arrived since the
+	// chat was last opened — the switcher's unread dot. Archived: the chat is
+	// archived, listed apart under "Archived".
+	Unread, Archived bool
 }
 
 // AgentDetailPage renders the full agent detail document: live logs (SSE) and a
@@ -180,11 +273,12 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(feat.Brand),
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
-				TitleEl(g.Text(plainOr(v.DisplayName, v.Name)+" · muster")),
+				TitleEl(g.Text(agentDocTitle(v))),
+				UserMarker(feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
@@ -209,16 +303,24 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// its tabs are boosted <a>s that navigate to the shell, so the detail
 				// page gets the same chrome as the home shell.
 				//
-				// currentTab = "agents": /agents/<name> is a child of the Agents
-				// section AND appScript's tabFromPath('/agents/x') resolves to
-				// 'agents', so the server's first paint and the client's show()
-				// agree on which link is current. Marking the section index for a
-				// detail view is standard practice.
-				sidebar("agents", "agents", false, feat),
+				// No nav entry is current: the Agents section this page used to be
+				// a child of (the list page) is retired. The page's own ROW in the
+				// sidebar's agent list is marked instead (navAgentRow).
+				sidebar("", "", false, feat),
 				// Content column: offset right of the persistent desktop sidebar (lg+),
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
+				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
+				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
+				// the (server-rendered) transcript is clamped and scrolled to its end
+				// before its first paint. The clamp script's MutationObserver must
+				// already be watching when the bubbles are parsed. Neither script
+				// needs anything later in the document:
+				// agentChatScript's start() still waits for DOMContentLoaded.
+				bubbleClampScript(),
+				agentChatScript(v.Name),
+				DispatchCardGuard(),
 				// The detail page IS the chat: a single full-height chat pane between the
 				// header and the input bar at its bottom (flex-1 + min-h-0 so it fills + scrolls).
 				// 🔴 TWO ELEMENTS, NOT ONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
@@ -256,17 +358,33 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// body is fine — fixed escapes overflow clipping (no ancestor transform).
 				Div(ID("task-modal")),
 				// The agent's focus history (focus_history.go): a dialog the header's
-				// focusHistoryButton opens.
-				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
-				g.If(v.FocusHistory != "", focusHistoryScript()),
-				agentChatScript(v.Name),
-				bubbleClampScript(),
+				// focusHistoryButton opens. The chief's page has the mirrored
+				// session's sheet instead (chat_index.go), its Chats tab first and
+				// its focus history a tab.
+				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
+				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
+				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chiefChatsPanel(v), chatIndexPartialPage)),
+				g.If(v.ChiefChat != nil, chatIndexScript()),
+				// The rename form the header's ⋯ menu opens (agent_actions.go).
+				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
+				// Rotate credentials' "Confirm it's you" (agentRotateConfirm).
+				g.If(v.StepUp != nil, g.Group{StepUpDialog(v.StepUp), g.Raw(StepUpFormScript)}),
+				// Places the header's full-title popover (agentTitle) beside its "…"
+				// and keeps that button's aria-expanded in step, and places the ⋯
+				// menu (agentActionsMenu).
+				floatingMenuScript(),
+				// Shows that "…" whenever the title is visibly clipped, not only
+				// when the server clamped it (agentTitle).
+				agentTitleFitScript(),
 				// appScript wires the sidebar open/close + the SPA tab router AND the
 				// model combobox (its combobox copy supports the hidden-mode autosave
 				// used by the header model form). It is now the SINGLE combobox
 				// implementation — the old standalone comboboxScript was deleted,
 				// retiring the two-copies-of-the-combobox-JS debt.
 				appScript(feat),
+				// The mirrored views' snapshot store, which warms the likely-next
+				// windows from here (mirror_snap.go).
+				SnapScript(feat),
 				// The worker, update toast and app badge — on every document, not
 				// just the shell, so an update is offered wherever the operator is.
 				pwaChrome(),
@@ -276,6 +394,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 }
 
 func agentDetailHeader(v AgentDetailView) g.Node {
+	if headerFolded(v) {
+		return foldedHeader(v)
+	}
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
@@ -293,62 +414,285 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// boosted tabs are how you leave this page now. Same markup/classes as
 				// the shell header()'s hamburger.
 				sidebarOpenButton(),
-				// Compact title: the DisplayName carries the whole "#<n> · <title>", so a
-				// smaller weight/size keeps the header tight without truncating it. The
-				// title is rendered as INLINE markdown (the task title often carries
-				// **bold**/`code`), escape-first so it can't inject markup. When the agent
-				// is task-linked, the title is a button that opens the full task detail in
-				// a modal (hx-loads /ui/agents/{name}/task into #task-modal).
+				// Compact title: the DisplayName carries the whole "#<n> · <title>",
+				// plained (textplain.Title) and clamped to ONE line — a long one ends
+				// in a "…" that opens it whole (agentTitle). When the agent is
+				// task-linked, the title is a button that opens the full task detail
+				// in a modal (hx-loads /ui/agents/{name}/task into #task-modal).
 				agentTitle(v),
-				newChatButton(v.ID),
-				chatHistoryButton(sessionDrawerID),
-				g.If(v.FocusHistory != "", focusHistoryButton()),
+				// The viewer's tags on the agent (session_tags.go), after the title.
+				sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
+				agentHeaderTools(v),
 			),
-			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
-			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
-			// card opens this page. A claude-code agent also has a Terminal — the
-			// same Rendered | Terminal switch a mirrored Claude Code window has
-			// (viewToggle), on both of its pages. An agent of a kind with no
-			// terminal has one view and no switch.
-			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
-					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
-					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
-			// A hermes agent has no Terminal in this release (agents.TerminalCommand
-			// refuses the kind): its chip and nothing else.
-			g.If(agents.ResolveKind(v.Kind) == agents.KindHermes,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)))),
+			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
+			// (agent_actions.go): the live status strip and the ⋯ menu, at the
+			// row's START — the first row stays the title's, and the row's right
+			// end keeps what it had: the update pill (pwa.go placeToast) slides
+			// down the right edge past every control there, and a ⋯ at the end
+			// pushed it from under the header to mid-screen on a phone held
+			// sideways (e2e update.spec's 844×390 placement).
+			//
+			// 🔴 AND THE ROW IS THE ⋯'S HEIGHT FROM ITS OPENING TAG (menuRowMin).
+			// It centres its items, and the strip before the ⋯ is shorter than
+			// the ⋯'s 44px: a frame painted with the strip parsed and the ⋯ not
+			// yet drew the row at the strip's height, and the ⋯'s arrival grew it
+			// and moved the status icon down (main's CI re-run: 0.00002 from
+			// #agent-status's `span.relative.inline-flex.shrink-0`; e2e
+			// cls-long-transcript's stall after the strip makes it deterministic).
+			//
+			// ⚠ ONLY A GATEWAY AGENT'S PAGE HAS THIS ROW: a claude-code agent's
+			// returned foldedHeader above (one row; its account, failover, pool
+			// and Terminal in the ⋯ menu — agent_header_folded.go, PR #527).
+			Div(
+				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
+				g.If(v.Card.ID != 0, agentStrip(v.Card)),
+				// A chief chat's context chip (chief_chats.go): in this row, as a
+				// mirrored session's is in its header's second row.
+				chiefHeaderContext(v.ChiefChat, "shrink-0"),
+				agentMenuSlot(v.Card),
+				agentModelControl(v),
+			),
 		),
+		// A restore's "Updating…" (restore.go): hung just below the header (a
+		// sticky box, so it is the chip's containing block), over the top of
+		// the transcript, taking no room in either.
+		updatingChip("agent-updating", "right-3 top-full mt-1 z-10"),
 	)
 }
 
-// agentTitle renders the header title. For a task-linked agent it is a clickable
-// button opening the task-detail modal; otherwise a plain H1. Both render the
-// title as inline markdown.
-func agentTitle(v AgentDetailView) g.Node {
-	// textplain.Title, the SAME treatment agentCard gives this string in the list.
-	// It used to be mdInlineNode — inline markdown — which is how the list and the
-	// detail page came to render one name two ways (raw `**` on the card, bold
-	// here, and a backtick that survived on both). Stripping on both is the fix;
-	// see textplain.Title.
-	title := g.Text(plainOr(v.DisplayName, v.Name))
-	if v.NoteID == nil {
-		return H1(Class("mr-auto break-all text-sm font-medium"), title)
+// agentHeaderTools is the first header row's controls right of the title: new
+// chat, chat history and (when the agent has one) focus history.
+//
+// 🔴 THEIR BOX IS ITS FINAL WIDTH FROM ITS OPENING TAG. The parser can yield
+// anywhere, and under load it did inside this row: a frame painted the
+// new-chat button with the controls after it not yet parsed, pushed to the
+// row's right end by the title's mr-auto, and the next frame moved it left by a
+// control and a gap for each that arrived (CI: 0.00017 from
+// `button.press.inline-flex.h-11` at 1280px; e2e cls-long-transcript's stall
+// after the new-chat button makes it deterministic). With the width reserved,
+// the controls fill from the box's fixed left edge and the title's width is
+// settled before any of them is parsed. The width is the controls' own — each
+// h-11 w-11 (2.75rem), gap-3 (0.75rem) between — and a unit test pins it
+// against the rendered children.
+func agentHeaderTools(v AgentDetailView) g.Node { return agentHeaderToolsWith(v, false) }
+
+// agentHeaderToolsWith is agentHeaderTools; compact sets the controls 0.25rem
+// apart (gap-1) instead of 0.75rem, for a claude-code agent's one-row header (foldedHeader),
+// which also holds the status dot, the asks badge and the ⋯ beside them.
+func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
+	gap := "gap-3 "
+	if compact {
+		gap = "gap-1 "
 	}
-	return H1(Class("mr-auto min-w-0 break-all"),
-		Button(
-			Type("button"),
-			g.Attr("aria-label", "View task details"),
-			g.Attr("title", "View task details"),
-			Class("group flex min-h-[44px] w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-accent"),
-			hx("hx-get", "/ui/agents/"+v.Name+"/task"),
-			hx("hx-target", "#task-modal"),
-			hx("hx-swap", "innerHTML"),
-			Span(Class("min-w-0 break-all"), title),
-			// A subtle chevron hints the title is tappable.
-			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-muted transition group-hover:text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
-		),
+	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
+	// header has (chatIndexButton), opening the same sheet — with its Chats tab
+	// first, where the chief's chats are switched, made and archived
+	// (chief_chats.go), then Your messages and Focus history. No ＋, no clock,
+	// no target: the operator asked for the same icons a mirrored session has,
+	// and for the chat management in one place. Every other agent is unchanged.
+	if v.ChiefChat != nil {
+		return Div(
+			g.Attr("data-header-tools", ""),
+			Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
+			chatIndexButtonNamed("chat-log", chatIndexChatsLabel),
+		)
+	}
+	n := 2
+	if v.FocusHistory != "" {
+		n = 3
+	}
+	return Div(
+		g.Attr("data-header-tools", ""),
+		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(n, compact)),
+		newChatButton(v.ID),
+		chatHistoryButton(sessionDrawerID),
+		g.If(v.FocusHistory != "", focusHistoryButton()),
 	)
+}
+
+// menuRowMin is the header second row's minimum height: the ⋯ trigger's own
+// (agentActionsMenu, h-11), when the row has one (agentMenuSlot) — so the row
+// is its final height before the ⋯ is parsed.
+func menuRowMin(a AgentCardView) string {
+	if a.ID == 0 {
+		return ""
+	}
+	return " min-h-11"
+}
+
+// agentHeaderToolsWidth is the width class of n 2.75rem controls with 0.75rem
+// gaps between them — 0.25rem when compact — spelled as literals so Tailwind's
+// content scan sees them.
+func agentHeaderToolsWidth(n int, compact bool) string {
+	switch {
+	case n == 3 && compact:
+		return "w-[8.75rem]"
+	case n == 3:
+		return "w-[9.75rem]"
+	case n == 1:
+		return "w-11"
+	case compact:
+		return "w-[5.75rem]"
+	}
+	return "w-[6.25rem]"
+}
+
+// agentTitle renders the header title. For a task-linked agent it is a clickable
+// button opening the task-detail modal; otherwise a plain H1.
+//
+// 🔴 A TITLE OF ANY LENGTH OR SHAPE MUST FIT ONE HEADER LINE. A dispatched
+// agent's name is its task's title, which is operator- or LLM-written and has
+// no length limit. This used to draw it WHOLE with break-all, so a long one
+// wrapped into a wall of lines that pushed the header controls and the chat
+// down the screen. Two guards now, because either alone leaves a hole:
+//   - the TEXT is clamped to cardTitleMax runes (clampTitle — the same budget
+//     and the same rune-safe cut the retired Agents list's cards used);
+//   - the BOX is one line that can only shrink (min-w-0 on every flex parent,
+//     nowrap + overflow hidden), so even the clamped words cannot widen the row.
+//
+// 🔴 AND THE "…" FOLLOWS WHAT IS SEEN, NOT ONLY THE RUNE BUDGET. On a 390px
+// phone the header row leaves the title ~10 characters, so a 30-character
+// title is CLIPPED by the box though it is well inside the budget — and with
+// the "…" drawn only for a rune-clamped title, its full text was unreadable on
+// the operator's main device. So the "…" (titleMoreButton) and the full-title
+// popover (fullTitlePopover — the pair the retired cards used) are ALWAYS rendered; the
+// button starts `hidden` unless the server clamped, and agentTitleFitScript
+// shows it whenever the text is clipped (scrollWidth > clientWidth), re-checked
+// by a ResizeObserver (rotation, resize, a late font). The button sits INSIDE
+// the flex-1 title box, so showing it narrows the title and moves no other
+// header control. The text clips rather than drawing a CSS ellipsis: the "…"
+// button IS the ellipsis.
+//
+// textplain.Title (via plainOr), the SAME treatment the sidebar and the
+// switcher give this string — see textplain.Title for why it is stripped, not rendered.
+func agentTitle(v AgentDetailView, extra ...g.Node) g.Node {
+	full := sessionTitle(v.SessionName, v.DisplayName, v.Name)
+	short, clamped := clampTitle(full)
+	const line = "overflow-hidden text-clip whitespace-nowrap"
+	text := g.Attr("data-agent-title-text", "")
+	var heading g.Node
+	// The tooltip also carries the agent's technical id (its slug) when it is
+	// called by a human name: where the slug the header no longer spells is.
+	tip := full
+	if v.SessionName.Human() && v.SessionName.Technical != "" && v.SessionName.Technical != full {
+		tip += " · " + v.SessionName.Technical
+	}
+	if v.NoteID == nil {
+		heading = H1(text, Class("min-w-0 "+line+" text-sm font-medium"), g.Attr("title", tip), g.Text(short))
+	} else {
+		heading = H1(Class("flex min-w-0"),
+			Button(
+				Type("button"),
+				g.Attr("aria-label", "View task details"),
+				g.Attr("title", "View task details"),
+				Class("group flex min-h-[44px] min-w-0 max-w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-accent"),
+				hx("hx-get", "/ui/agents/"+v.Name+"/task"),
+				hx("hx-target", "#task-modal"),
+				hx("hx-swap", "innerHTML"),
+				Span(text, Class("min-w-0 "+line), g.Text(short)),
+				// A subtle chevron hints the title is tappable.
+				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-muted transition group-hover:text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
+			),
+		)
+	}
+	// The "…" sits BESIDE the heading, never inside the task button (a button
+	// inside a button is invalid and its tap would open the task modal).
+	// `[&[hidden]]:hidden`: the button's inline-flex utility would otherwise
+	// beat the UA's [hidden] rule and draw a "hidden" button anyway.
+	return Div(
+		// The id a rename's in-place answer swaps (AgentPageRenamed);
+		// extra is that answer's hx-swap-oob.
+		ID(AgentTitleID),
+		g.Group(extra),
+		// Focusable by script only: where a rename's in-place answer moves
+		// focus (renameScript), the control that now says the new name.
+		g.Attr("tabindex", "-1"),
+		g.Attr("data-agent-title", ""),
+		g.If(clamped, g.Attr("data-title-clamped", "")),
+		Class("mr-auto flex min-w-0 flex-1 items-center gap-0.5"),
+		heading,
+		titleMoreButton(agentTitlePopoverID, "items-center text-base [&[hidden]]:hidden", g.If(!clamped, g.Attr("hidden", ""))),
+		fullTitlePopover(agentTitlePopoverID, full),
+	)
+}
+
+// agentTitleFitScript shows the header's "…" (agentTitle) exactly while the
+// title is clipped or was clamped by the server, and hides it — closing an
+// open popover — when the title fits again. A ResizeObserver on the title text
+// re-checks on every size change of it: a window resize, a rotation, a late
+// web font. (No separate resize listener: the text's box changes with the
+// window, and every browser with the popover attribute has ResizeObserver.)
+//
+// It cannot oscillate: the check runs WITH the button's current state, and
+// showing the button only narrows the text (still clipped), hiding it only
+// widens it (still fits). Bound once per document (__musterAgentTitleFit);
+// each run of this in-body script (htmx re-executes it on a boosted swap)
+// binds the title on the page now, and a title htmx removes is unobserved.
+//
+// ONE RULE FOR EVERY TITLE THAT CLIPS INTO A POPOVER: the rendered view's
+// header (mirrorViewTitle) uses this script too. Its box carries
+// data-title-fit="disable" because its trigger is the title itself — the
+// button is disabled while the title fits, not hidden. Enabling or disabling
+// it changes no size, so that mode cannot oscillate either.
+func agentTitleFitScript() g.Node {
+	return Script(g.Raw(`(function () {
+  function fit(box) {
+    var t = box.querySelector('[data-agent-title-text]');
+    var b = box.querySelector('[data-title-more]');
+    if (!t || !b) return;
+    var clipped = box.hasAttribute('data-title-clamped') || t.scrollWidth > t.clientWidth + 1;
+    // data-title-fit="disable": the trigger IS the title (the rendered view's,
+    // mirrorViewTitle), so it is disabled while the title fits, never hidden.
+    var disable = box.getAttribute('data-title-fit') === 'disable';
+    if (clipped) {
+      if (disable) b.disabled = false;
+      else if (b.hasAttribute('hidden')) b.removeAttribute('hidden');
+      return;
+    }
+    if (disable) b.disabled = true;
+    else if (!b.hasAttribute('hidden')) b.setAttribute('hidden', '');
+    var p = document.getElementById(b.getAttribute('popovertarget'));
+    if (p && p.matches(':popover-open')) p.hidePopover();
+  }
+  var w = window.__musterAgentTitleFit;
+  if (!w) {
+    w = window.__musterAgentTitleFit = {
+      ro: new ResizeObserver(function (es) {
+        es.forEach(function (e) { var box = e.target.closest('[data-agent-title]'); if (box) fit(box); });
+      }),
+      bind: function () {
+        document.querySelectorAll('[data-agent-title]').forEach(function (box) {
+          fit(box);
+          var t = box.querySelector('[data-agent-title-text]');
+          if (t && !t.__musterFit) { t.__musterFit = true; w.ro.observe(t); }
+        });
+      }
+    };
+    document.addEventListener('htmx:load', function () { w.bind(); });
+    document.addEventListener('htmx:beforeCleanupElement', function (e) {
+      var el = e.target;
+      if (el && el.__musterFit) { w.ro.unobserve(el); el.__musterFit = false; }
+    });
+  }
+  w.bind();
+})();`))
+}
+
+// agentTitlePopoverID is the header's full-title popover, AgentTitleID the
+// title's box (agentTitle). One of each per document.
+const (
+	agentTitlePopoverID = "agent-title-full"
+	AgentTitleID        = "agent-title"
+)
+
+// agentDocTitle is the agent page's <title>: the same clamp as the header, so
+// a 600-character name does not become a 600-character tab label either.
+func agentDocTitle(v AgentDetailView) string {
+	short, clamped := clampTitle(sessionTitle(v.SessionName, v.DisplayName, v.Name))
+	if clamped {
+		short += "…"
+	}
+	return short + " · muster"
 }
 
 // TaskModalView is the data the task-detail modal renders (opened from the chat
@@ -529,38 +873,20 @@ func newChatButton(agentID int64) g.Node {
 	)
 }
 
-// liveStatusIcon is the header status indicator: a bare colored dot (no text
-// label) that self-refreshes. It renders statusIcon(status) for an instant first
-// paint, then polls GET /ui/agents/{id}/status on load + every 10s and swaps the
-// fresh icon into itself — so the header reflects the agent's live pod state
-// without a label. htmx only (boost-safe). Shared by the agent-detail and
-// operator headers.
-func liveStatusIcon(agentID int64, status string) g.Node {
-	return Span(
-		ID("agent-status"),
-		hx("hx-get", "/ui/agents/"+strconv.FormatInt(agentID, 10)+"/status"),
-		hx("hx-trigger", "load, every 10s"),
-		hx("hx-target", "this"),
-		hx("hx-swap", "innerHTML"),
-		statusIcon(status),
-	)
-}
-
 // agentModelControl renders the agent's model directly AS the searchable model
 // combobox (no separate badge chip, no "change" expander): the combobox shows the
 // current model as its trimmed display value and hx-posts the chosen model to
 // POST /agents/{id}/model with form field `model` (empty = cluster default). A
 // repo chip sits alongside when the agent is repo-backed. A successful post
-// returns 200 + HX-Trigger: agents:changed; the list/detail refresh via the
+// returns 200 + HX-Trigger: agents:changed; the sidebar/strip refresh via the
 // existing agents:changed/SSE wiring. Changing the model restarts the agent, so a
 // clear hint says so and a brief "restarting…" state is shown after the request.
 func agentModelControl(v AgentDetailView) g.Node {
 	ids := strconv.FormatInt(v.ID, 10)
-	return Div(
-		// Single compact row: the model selector flexes to fill and the repo chip
-		// sits alongside it (shrink-0, truncates) — keeps the header tight instead
-		// of spending a second row on the repo.
-		Class("flex items-center gap-2 pl-11 text-xs"),
+	// The header's second row (agentDetailHeader) holds these: the model
+	// selector flexes to fill and the repo chip sits alongside it (shrink-0,
+	// truncates) — keeps the header tight instead of spending a row on the repo.
+	return g.Group{
 		Form(
 			hx("hx-post", "/agents/"+ids+"/model"),
 			// Autosave: picking a model dispatches `change` on the hidden #model
@@ -589,7 +915,18 @@ func agentModelControl(v AgentDetailView) g.Node {
 			Class("inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full bg-s2/80 px-2.5 py-1 text-[11px] text-muted ring-1 ring-inset ring-line"),
 			g.Text(v.Repo),
 		)),
-	)
+	}
+}
+
+// agentMenuSlot is the header's ⋯ menu (agentActionsMenu) in its own element,
+// drawn once with the page — the strip's refresh never replaces it (its
+// Start/Stop follows the strip's status by a stylesheet rule); nothing for a
+// view with no card.
+func agentMenuSlot(a AgentCardView) g.Node {
+	if a.ID == 0 {
+		return nil
+	}
+	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenu(a))
 }
 
 // ChatSurfaceQueryParam is the query-string name the chat-log partial reads its
@@ -607,6 +944,7 @@ func chatLogSurfaceQuery(s ChatSurface) string {
 }
 
 func agentChatPane(v AgentDetailView) g.Node {
+	withSwitcher := v.Surface == ChatSurfacePage && v.Switcher != nil
 	return Section(
 		// hx-ext="sse" + sse-connect establishes the /events EventSource on the
 		// detail page (the home shell connects on its own wrapper; the standalone
@@ -615,7 +953,20 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// (from:body) catches them.
 		hx("hx-ext", "sse"),
 		hx("sse-connect", "/events"),
-		Class("flex flex-1 flex-col gap-2 min-h-0"),
+		// relative: the session switcher is placed at its bottom, in the room
+		// THIS SECTION reserves (switcherRoom, its bottom padding).
+		//
+		// 🔴 THE ROOM IS THE SECTION'S PADDING, NOT THE CHAT FORM'S, AND THAT IS
+		// WHAT PINS THE COMPOSER ABOVE THE BAR (an operator report: with questions
+		// waiting, the message bar was pushed down under the bottom bar). The bar
+		// is absolute in the padding; the column's in-flow content — the
+		// transcript, the asks block, the composer last — is laid out in the
+		// content box above it, so the composer's box ends at the bar's top. The
+		// form used to carry the padding itself, which put the bar inside the
+		// form's own box and let an overgrown column carry the composer down
+		// under it. With the asks block shrinking (askerAsksSection) and the
+		// transcript's floor (#chat-log), the content never outgrows the column.
+		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative "+switcherRoom(false))),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
 		// `translate-x-full` makes the panel the containing block for every fixed
@@ -624,10 +975,46 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// it. The panel renders chiefThreadList instead: an absolutely-positioned
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
-		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
+		//
+		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the header sheet's Chats tab
+		// (chiefChatsPanel), and nothing there opens a drawer.
+		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
+		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
+		// session does, with the chip in its header (foldedHeader); see below.
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// What the retired list's card said under its title (agent_actions.go).
+		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
+		// The rename offer, when the agent's work has moved on from its name.
+		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
+		// 🔴 NO CHAT BAR OVER A CHIEF'S TRANSCRIPT: its chats are managed in the
+		// header sheet's Chats tab (page) or under the panel's thread list, and
+		// its context chip is in the header (chief_chats.go).
 		Div(
 			ID("chat-log"),
-			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0"),
+			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the
+			// page, as a mirrored session's Rendered view draws them (#mv-log). It
+			// was a bordered, tinted, rounded box with its own padding — on the
+			// chief's page that read as a different kind of screen from every
+			// other session (an operator report). py-1 keeps a focus ring at the
+			// scroll edge from being clipped; the column's own gutter is the sides'.
+			//
+			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. Beside it the
+			// asks block shrinks (askerAsksSection) and the composer does not, so
+			// what is left after the composer and this floor is all the asks block
+			// can take — the conversation keeps a strip on screen however many
+			// questions wait, and the column's in-flow content never outgrows it
+			// (which is what slid the composer under the switcher).
+			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-[7.5rem] [&[data-cg-unlaid]>*]:invisible"),
+			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
+			// can paint mid-document — under load, between any two tags — and a
+			// frame of this log before window.__cgLayoutLog runs shows it raw and
+			// scrolled to the top, then everything moves (measured: 0.50 at 390px,
+			// one open in three, with the host at load 64). Its children are
+			// invisible (still laid out, so the clamp can measure them) until the
+			// layout call, or start(), removes this; content that becomes visible
+			// is not a layout shift. A <noscript> rule shows them without script.
+			// #chat-form carries the same marker (see there).
+			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// Live-refresh the transcript from the canonical server state when a chat
 			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
 			// streams server-side, NOT over this page's WS — appear live without a
@@ -648,9 +1035,27 @@ func agentChatPane(v AgentDetailView) g.Node {
 			hx("hx-get", "/ui/agents/"+v.Name+"/chat-log?session="+strconv.FormatInt(v.ActiveSessionID, 10)+chatLogSurfaceQuery(v.Surface)),
 			hx("hx-trigger", chatLogTrigger(v.Name)),
 			hx("hx-target", "this"),
-			hx("hx-swap", "innerHTML"),
-			chatLogInner(v),
+			// 🔴 settle:0ms IS LOAD-BEARING: IT IS WHAT KEEPS A LIVE CARD LISTENING
+			// ACROSS A RE-RENDER. htmx attaches a swapped-in element's listeners at
+			// SETTLE, 20ms after the swap by default, and the swap has already cleaned
+			// up the old elements, so for those 20ms a dispatch card this log draws
+			// (ui.liveCard) hears nothing: an agent.changed landing in the gap was
+			// dropped and the card kept the state the log rendered (measured: after
+			// the chief note's re-render, an agent.changed landing 2ms and 1ms
+			// before the new card's htmx:load, in 2 runs of 6, each lost; the card
+			// ended on a stale state). At 0 htmx settles in the same task as the swap, so
+			// there is no gap for an event to land in. Pinned by TestTheChatLogSettlesInTheSwap.
+			hx("hx-swap", "innerHTML "+ChatLogSettle),
+			// The version of the transcript drawn here (ChatLogBody): every refetch
+			// above sends it back, and the server answers 204 — no body, no swap —
+			// when what it would draw is still exactly this.
+			chatLogVersioned(v),
 		),
+		// A claude-code agent's asks: between the transcript and the composer, where a
+		// mirrored session's Rendered view puts its own (MirrorViewPage), so a
+		// question never sits between the header and the conversation. Its
+		// "N waiting" chip is the header's badge (askerAsksBadge).
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && headerFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
@@ -716,7 +1121,19 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
-			Class("flex-none border-t border-line pt-3"),
+			// No divider above it: the transcript is not a card (see #chat-log),
+			// so there is no box for a rule to close.
+			// The switcher's room is the pane's padding, below this form (see
+			// agentChatPane's section).
+			Class("flex-none pt-1 [&[data-cg-unlaid]]:invisible"),
+			// 🔴 INVISIBLE UNTIL THE TRANSCRIPT IS LAID OUT, LIKE #chat-log's
+			// children. The parser can stop mid-form (measured: a frame with only
+			// its first hidden <input> parsed, the form 58px tall, then 102px when
+			// its row arrived — a 0.00578 shift of the form at 390px, 3 opens in
+			// 25 on two loaded cores, throttled). The layout call, the form's last
+			// child, removes the marker from both; a hidden form growing moves
+			// nothing a reader sees.
+			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// The outcome of a send the browser submitted (see above), drawn by the
 			// server on the page its redirect lands on.
 			g.If(v.SendNotice != "", P(ID("chat-note"), g.Attr("role", "status"),
@@ -726,8 +1143,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 			Div(
 				Class("flex w-full items-end gap-2"),
 				// The SAME look as every other message box (composerInputClass,
-				// composerSendClass): a 16px input — iOS zooms the page on focusing a
-				// smaller one, and this one was 14px — and 44px targets.
+				// composerSendIconClass): a 16px input — iOS zooms the page on focusing
+				// a smaller one, and this one was 14px — and 44px targets; Send is
+				// the paper-plane icon button, named by aria-label and title.
 				Textarea(
 					ID("chat-input"),
 					Name("text"),
@@ -739,21 +1157,45 @@ func agentChatPane(v AgentDetailView) g.Node {
 					Placeholder("Message the agent…"),
 					Class(composerInputClass),
 				),
+				// The recording's waveform takes the box's place (dictate.go).
+				dictateWave(v.Dictate, "chat-dictate"),
 				dictateControl(v.Dictate, "chat-input", "chat-dictate-note", "chat-dictate"),
+				g.If(v.Dictate == "" && v.DictateOff, dictateOffControl("chat-dictate-off")),
+				// Send's place while recording: the ↑ that transcribes and
+				// sends by clicking #chat-send (dictate.go).
+				dictateSend(v.Dictate, "chat-dictate", DictateSendIcon, []string{"chat-send"}, []string{"chat-send"}),
 				Button(
 					Type("submit"),
 					ID("chat-send"),
-					Class(composerSendClass),
-					g.Text("Send"),
+					g.Attr("aria-label", "Send"),
+					g.Attr("title", "Send"),
+					Class(composerSendIconClass),
+					sendIcon(),
 				),
 			),
+			// The transcript's layout, applied before it can be painted (see
+			// window.__cgLayoutLog in agentChatScript): the form's LAST child, so
+			// a frame the parser yields after this long script paints a whole
+			// form, and nothing between the log and it is a script the parser
+			// could yield after. The page surface only: the chief panel's body
+			// arrives by an htmx swap, whose afterSwap hook lays it out in the
+			// same task.
+			g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		),
+		// Without script nothing removes data-cg-unlaid: show the transcript
+		// and the form anyway.
+		g.If(v.Surface == ChatSurfacePage, NoScript(StyleEl(g.Raw(`#chat-form, #chat-log > * { visibility: visible !important; }`)))),
 		// The box grows with its text (composer_fit.go), the same one script as
 		// the mirrored composer's — it travels with the pane for the chief panel.
 		// First after the form, with the draft's (composer_draft.go), so a
 		// restored draft is in the box, sized, before the pane is painted.
 		composerFitScript(),
 		composerDraftScript(),
+		// The session switcher, below the input (switcher.go): the page's
+		// only — the chief panel is a pane inside another page. After the
+		// draft's script, which must size a restored draft before anything
+		// below the form is parsed.
+		g.If(withSwitcher, switcherBar(v.Switcher, false)),
 		// The microphone's script travels WITH the pane, so the chief panel —
 		// which renders this pane into another page — gets it too. It is built
 		// to run again on every swap (dictate.go).
@@ -764,18 +1206,28 @@ func agentChatPane(v AgentDetailView) g.Node {
 	)
 }
 
+// ChatLogSettle is #chat-log's swap modifier: settle in the swap's own task (see there).
+const ChatLogSettle = "settle:0ms"
+
 // chatLogTrigger is #chat-log's hx-trigger: the events on which the transcript
 // re-fetches its partial from the server.
 //
 //   - sse:chat.reply — a turn was persisted (the kickoff turn included).
 //   - task:changed — the completion banner's Mark-complete button.
 //   - sse:agent.changed for THIS agent — its status moved.
+//   - sse:chat.turn for THIS agent — a conversation of it started or stopped
+//     working (internal/api countSessionTurn), from ANY door: another tab,
+//     `muster chief ask`, a plugin delivery, a hand-back. The refetch draws
+//     "working…" from the server's count, so an open chat shows a turn it did
+//     not start (and hides it when the turn ends).
 //   - htmx:sseOpen — the page's /events stream (re)opened. 🔴 A broadcast is
 //     sent ONCE; one fired before this page's stream was open (a turn stored in
 //     the moment between the page rendering and its stream connecting, or while
 //     it was reconnecting) never arrives, and the page showed "working" for
 //     ever. Re-fetching when the stream opens catches up on whatever it missed
 //     (e2e agent-composer: "a reply stored before the event stream connects").
+//     A page restored from the back/forward cache reopens its stream
+//     (restore.go), so this arm is also how the restored transcript catches up.
 //
 // 🔴 THE agent.changed ARM IS WHAT CLEARS "Provisioning agent…" WHEN NO MESSAGE
 // EVER ARRIVES. The provisioning row and the empty state are both decided
@@ -808,10 +1260,65 @@ func chatNoteTone(ok bool) string {
 	return "text-st-error-fg"
 }
 
+// ChatLogVersionHeader carries the #chat-log version both ways: the server's
+// version of the partial it sent (response), and the version the page holds
+// (request). A refetch whose version still matches is answered 204, which htmx
+// does not swap (its default responseHandling), so the page keeps its DOM.
+const ChatLogVersionHeader = "Muster-Chat-Log-Version"
+
+// ChatLogBody renders #chat-log's inner HTML for v and its version: a hash of
+// exactly those bytes. The page (chatLogVersioned) and the partial
+// (api.Server.handleAgentChatLog) both get theirs from here, so "unchanged"
+// means "the server would draw the same bytes" — new messages, a status move
+// (the provisioning row), the task banner and the surface all change it, with
+// no list of inputs to keep in step.
+//
+// 🔴 WHY THE REFETCH IS CONDITIONAL: every open of an agent page sent its whole
+// transcript TWICE. The document carries it, and then the htmx:sseOpen arm of
+// chatLogTrigger re-fetched all of it (~72 KB at chatHistoryCap's 200 messages)
+// the moment the event stream connected, and swapped it in again. That arm
+// exists to catch a broadcast missed between render and connect, so it cannot
+// simply go; with the version it costs a 204 unless something really did change.
+func ChatLogBody(v AgentDetailView) ([]byte, string, error) {
+	var b bytes.Buffer
+	if err := chatLogInner(v).Render(&b); err != nil {
+		return nil, "", err
+	}
+	return b.Bytes(), chatLogVersionOf(b.Bytes()), nil
+}
+
+// dispatchVersionInLog matches a card's version attribute inside the log.
+var dispatchVersionInLog = regexp.MustCompile(` data-dispatch-version="[0-9]+"`)
+
+// chatLogVersionOf is the log's version: its bytes' digest, with every card's
+// data-dispatch-version left out. 🔴 A card's version changes on every render
+// (it is the render's clock), so hashing it made every refetch a 200 and a
+// re-render; it orders card swaps (dispatchCardGuardJS), it is not content.
+func chatLogVersionOf(body []byte) string {
+	sum := sha256.Sum256(dispatchVersionInLog.ReplaceAll(body, nil))
+	return hex.EncodeToString(sum[:12])
+}
+
+// chatLogVersioned is #chat-log's content plus its data-chat-version, which
+// agentChatScript sends back on every #chat-log refetch (ChatLogVersionHeader)
+// and replaces from each 200's header.
+func chatLogVersioned(v AgentDetailView) g.Node {
+	body, ver, err := ChatLogBody(v)
+	if err != nil {
+		return chatLogInner(v) // no version: every refetch is answered in full
+	}
+	return g.Group{g.Attr("data-chat-version", ver), g.Raw(string(body))}
+}
+
+// ChatLogRefetchEvent is dispatched on #chat-log itself to re-fetch it:
+// agentChatScript's owedRefetch, when a turn ends with a refetch owed.
+const ChatLogRefetchEvent = "muster:chat-refetch"
+
 func chatLogTrigger(agentName string) string {
 	quoted, _ := json.Marshal(agentName) // a string always marshals
-	return "sse:chat.reply from:body, task:changed from:body, " +
+	return ChatLogRefetchEvent + ", sse:chat.reply from:body, task:changed from:body, " +
 		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
+		"sse:chat.turn[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
 		"htmx:sseOpen from:body"
 }
 
@@ -842,10 +1349,15 @@ func chatLogTrigger(agentName string) string {
 // sessions to /operator rather than /agents/{name}. Task #633 deleted that page,
 // so every agent's drawer links into the agent-detail route.
 func sessionDrawer(v AgentDetailView) g.Node {
-	base := "/agents/" + v.Name
-
-	links := make([]g.Node, 0, len(v.Sessions))
+	links := make([]g.Node, 0, len(v.Sessions)+1)
+	archivedShown := false
 	for _, sess := range v.Sessions {
+		// A chief's archived chats come last (agents.SwitcherOrder), under a
+		// heading of their own.
+		if sess.Archived && !archivedShown {
+			archivedShown = true
+			links = append(links, H3(Class("mt-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(chiefArchivedLabel)))
+		}
 		// A chat title is LLM- or user-written and routinely carries markdown;
 		// the drawer shows what a reader of it would see (textplain).
 		title := textplain.Title(sess.Title)
@@ -859,13 +1371,13 @@ func sessionDrawer(v AgentDetailView) g.Node {
 			cls += "bg-s1 text-fg2 ring-line hover:bg-s2"
 		}
 		links = append(links, A(
-			Href(base+"?session="+strconv.FormatInt(sess.ID, 10)),
+			Href(AgentSessionHref(v.Name, sess.ID)),
 			// Boosted SPA nav: picking a session body-swaps the page (transcript +
 			// fresh data-session); agentChatScript's boost-safe init reconnects the WS
-			// to the picked session. The link is NOT inside #agents-list, so boosting
-			// is a safe top-level body swap.
+			// to the picked session. Boosting is a safe top-level body swap.
 			Class(cls+" gap-2"),
 			Span(Class("mr-auto truncate"), g.Text(title)),
+			g.If(v.ChiefChat != nil, chiefChatRowExtras(sess)),
 			g.If(!sess.LastActive.IsZero(),
 				Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 			),
@@ -986,7 +1498,21 @@ func chatLogInner(v AgentDetailView) g.Node {
 					break
 				}
 			}
+			// The chief's two cards are not tool rows: each ends a run of rows
+			// (a card is never folded into a collapsed group). A call either card
+			// cannot read falls through to its plain row.
+			if card, ok := chiefToolCard(v, i, m, result); ok {
+				items = append(items, logItem{node: card})
+				continue
+			}
 			items = append(items, logItem{chatToolChip(m, result), toolChipState(result)})
+			// A page tool's result is followed by its page card (page_card.go),
+			// which ends the run of rows like any card — as the SERVER read the
+			// page (PageCards), never as the result tells it; a page the viewer
+			// cannot see has none.
+			if pc, ok := v.PageCards[m.ToolID]; ok && result != nil && result.ToolOK {
+				items = append(items, logItem{node: PageCard(pc, PageCardID(m.ToolID))})
+			}
 		case "tool_result":
 			if paired[i] {
 				continue // drawn with its call
@@ -1001,7 +1527,13 @@ func chatLogInner(v AgentDetailView) g.Node {
 			if m.Role == "assistant" && isSentinelReply(m.Content) {
 				continue
 			}
-			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID)})
+			// A plugin message muster relayed to the chief is muster's turn, not
+			// the person's: a collapsed system row, never their bubble.
+			if m.Relay != nil {
+				items = append(items, logItem{node: relayRow(m)})
+				continue
+			}
+			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID, v.Mentions)})
 		}
 	}
 	msgs := groupToolRuns(items)
@@ -1063,8 +1595,12 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// The chief panel keeps chiefIntro() (its own, richer copy) and the
 		// provisioning row below owns the still-coming-up case, so neither is
 		// doubled up.
-		g.If(v.Surface != ChatSurfaceChiefPanel && len(msgs) == 0 && !chatIsProvisioning(v.Status),
+		g.If(v.Surface != ChatSurfaceChiefPanel && v.Surface != ChatSurfaceViewStrip && len(msgs) == 0 && !chatIsProvisioning(v.Status),
 			chatEmptyState()),
+		// The view's chief strip with nothing in it yet: one line, not the
+		// page's tall empty state.
+		g.If(v.Surface == ChatSurfaceViewStrip && len(msgs) == 0,
+			P(g.Attr("data-chief-strip-empty", ""), Class("text-xs text-muted"), g.Text(ViewChiefStripEmpty))),
 		g.Group(msgs),
 		// Completion banner (Task 6): rendered inside #chat-log so the existing
 		// sse:chat.reply / task:changed re-fetch of this partial re-evaluates the
@@ -1083,21 +1619,117 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// first server message, hidden again on done/error. The script toggles its
 		// `hidden` class and keeps it as the last child of #chat-log so it sits at
 		// the bottom of the transcript. aria-live so assistive tech announces it.
+		//
+		// 🔴 IT IS DRAWN SHOWING WHEN THE SERVER HAS A TURN IN FLIGHT FOR THIS
+		// CONVERSATION (TurnInFlight). It used to be drawn hidden always, so a page
+		// reloaded mid-turn lost it while the turn ran on — the reply then appeared
+		// from nowhere. The refetch chat.reply asks for once the reply is stored
+		// draws it from the server again, hidden by then.
 		Div(
 			ID("chat-working"),
-			Class("hidden max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
+			g.If(v.TurnInFlight, g.Attr("data-turn-in-flight", "")),
+			// The SAME row a mirrored session draws (#mv-working): one line of
+			// small muted pulsing text, not a bubble with bouncing dots — a bubble
+			// reads as a message the agent sent.
+			Class(workingClass(v.TurnInFlight)+" items-center self-start text-xs text-muted"),
 			g.Attr("role", "status"),
 			g.Attr("aria-live", "polite"),
-			Span(Class("animate-pulse"), g.Text("working")),
-			Span(
-				g.Attr("aria-hidden", "true"),
-				Class("inline-flex gap-1"),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.3s]")),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.15s]")),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted")),
-			),
+			Span(Class("animate-pulse"), g.Attr("data-working-label", ""), g.Text("working…")),
 		),
 	}
+}
+
+// workingClass is #chat-working's display class: the script's own pair
+// (showWorking adds `flex`, hideWorking `hidden`), so a row drawn showing is
+// exactly the row the script would have shown.
+func workingClass(inFlight bool) string {
+	if inFlight {
+		return "flex"
+	}
+	return "hidden"
+}
+
+// chiefToolCard draws the stored call at index i (m, with its result when there
+// is one) as one of the chief's cards — ask_owner's question card, or
+// agent_dispatch's agent card — and ok false for any other call, or one the
+// card cannot read.
+func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.Node, bool) {
+	switch {
+	case musterToolIs(m.ToolName, OwnerAskTool):
+		ask, err := DecodeOwnerAsk(m.Content)
+		if err != nil {
+			return nil, false // the tool refused it too: its row says so
+		}
+		if result != nil && !result.ToolOK {
+			return nil, false
+		}
+		// ONE CARD PER ANSWER (#496), stored or not: one typed reply answers one
+		// card, so a second ask_owner since the owner last typed (two in one
+		// turn — a claude-code chief's CLI is not stopped call by call) is drawn
+		// as its plain row, never as a second card the same reply answers. The
+		// store agrees: that reply settles only the oldest open card
+		// (attention AnswerInSession); the other stays open on the Attention view.
+		for j := i - 1; j >= 0; j-- {
+			p := v.Messages[j]
+			if p.Role == "user" && p.Typed && p.Kind != "tool_result" {
+				break
+			}
+			if p.Kind == "tool_call" && musterToolIs(p.ToolName, OwnerAskTool) && askCallOK(v.Messages, j) {
+				return nil, false
+			}
+		}
+		// A STORED card (its result names its attention ask): its state is the
+		// ask's — answered here, on the Attention view or on the phone — never
+		// the transcript's. One that EXPIRED unanswered is drawn as #496 drew
+		// every card, from the transcript (below): the owner's next typed reply
+		// still answers it in the chat, as it did before cards were stored.
+		if result != nil {
+			if id, ok := ReadOwnerCardResult(result.Content); ok {
+				st, have := v.OwnerCards[m.ToolID]
+				if !have {
+					st = OwnerCardState{AskID: id, Status: OwnerCardOpen}
+				}
+				if !st.Expired {
+					return storedOwnerAskCard(m.ToolID, ask, st), true
+				}
+			}
+		}
+		// Answered by the next line a person TYPED in the conversation, if any: a
+		// plugin message or a hand-back landing after the question is not an answer.
+		for j := i + 1; j < len(v.Messages); j++ {
+			if n := v.Messages[j]; n.Role == "user" && n.Typed && n.Kind != "tool_result" {
+				return ownerAskCard(m.ToolID, ask, true, n.Content), true
+			}
+		}
+		return ownerAskCard(m.ToolID, ask, false, ""), true
+	case musterToolIs(m.ToolName, AgentDispatchTool) && result != nil:
+		// A HELD mirrored dispatch: muster raised a card for the owner's answer.
+		if st, ok := v.OwnerCards[m.ToolID]; ok {
+			return StoredOwnerCard(m.ToolID, st), true
+		}
+		if c, ok := v.DispatchCards[m.ToolID]; ok {
+			return DispatchAgentCard(c), true
+		}
+		// A refusal needs nothing but its own sentence.
+		if r, ok := ReadDispatchResult(result.Content); ok && r.Refused != "" {
+			return DispatchAgentCard(DispatchCard{Refused: r.Refused}), true
+		}
+	}
+	return nil, false
+}
+
+// askCallOK reports whether the ask_owner call at index i was drawn as a card:
+// its arguments read, and its result (when stored) is not a failure.
+func askCallOK(msgs []ChatLine, i int) bool {
+	if _, err := DecodeOwnerAsk(msgs[i].Content); err != nil {
+		return false
+	}
+	for j := i + 1; j < len(msgs); j++ {
+		if r := msgs[j]; r.Kind == "tool_result" && r.ToolID == msgs[i].ToolID {
+			return r.ToolOK
+		}
+	}
+	return true
 }
 
 // chatProvisioningIndicator renders an animated "Provisioning agent…" row while
@@ -1147,12 +1779,54 @@ func chatProvisioningIndicator(status string) g.Node {
 	)
 }
 
-// AgentsListPath is where marking a task complete from an agent's page lands:
-// the Agents list, on both the htmx and the no-JS path.
-const AgentsListPath = "/agents"
+// HomePath is home: the chief's chat, or the session opened last
+// (internal/api homeTarget). Marking a task complete from an agent's page
+// lands there, on both the htmx and the no-JS path — it used to land on the
+// Agents list page, which is retired.
+const HomePath = "/"
+
+// The parameters on HomePath naming the session home must not open: the page
+// the viewer is leaving — an agent by name (HomeLeaveParam, HomeLeavingPath),
+// or a mirrored window by its address (the three below, HomeLeavingMirrorPath).
+const (
+	HomeLeaveParam        = "leave"
+	HomeLeaveHostParam    = "leave_host"
+	HomeLeaveSessionParam = "leave_session"
+	HomeLeaveWindowParam  = "leave_window"
+)
+
+// HomeLeavingPath is home, leaving the agent named name out — where a page
+// that sends the viewer away from that agent (Mark complete) sends them.
+// Without it, home with no chief is the session opened last: the very page
+// being left.
+func HomeLeavingPath(name string) string {
+	if name == "" {
+		return HomePath
+	}
+	return HomePath + "?" + HomeLeaveParam + "=" + url.QueryEscape(name)
+}
+
+// HomeLeavingMirrorPath is home, leaving the mirrored window at r out — where
+// that window's Rendered view and terminal send their Home arrow. Opening the
+// view records a visit, so without it home with no chief is this very window.
+func HomeLeavingMirrorPath(r MirrorRef) string {
+	if r.Host == "" {
+		return HomePath
+	}
+	v := url.Values{HomeLeaveHostParam: {r.Host}, HomeLeaveSessionParam: {r.Session}}
+	if r.Window != "" {
+		v.Set(HomeLeaveWindowParam, r.Window)
+	}
+	return HomePath + "?" + v.Encode()
+}
+
+// HomeFallbackPath is the retired Agents list page's URL, GET /agents: home's
+// redirect, or — when home has nothing to open — the onboarding page
+// (RenderAgentsHome).
+const HomeFallbackPath = "/agents"
 
 // TaskCompletePath is the no-JS Mark-complete form's action: a POST that
-// completes the task and redirects to AgentsListPath.
+// completes the task and redirects to HomePath.
 func TaskCompletePath(id int64) string { return "/tasks/" + strconv.FormatInt(id, 10) + "/complete" }
 
 // agentTaskBanner renders the completion banner for a TASK-LINKED agent whose
@@ -1192,19 +1866,25 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	if !complete {
 		children = append(children, Form(
 			// THE NO-JS PATH: a plain POST to TaskCompletePath, which completes
-			// the task and answers 303 → AgentsListPath. htmx's hx-patch below
+			// the task and answers 303 → home leaving this agent
+			// (HomeLeavingPath, from the `leave` field). htmx's hx-patch below
 			// takes precedence over method/action whenever the script runs.
 			Method("post"),
 			Action(TaskCompletePath(*v.NoteID)),
 			hx("hx-patch", "/tasks/"+id+"/status"),
 			hx("hx-swap", "none"),
-			// On success, leave the agent and go back OUT to the Agents list (operator
+			// On success, leave the agent and go back OUT home (operator
 			// ask: "after marking a task complete, it should just redirect back out of
 			// the agent instead of to another page" — it used to open /tasks). Full
 			// navigation, the same place the no-JS path's redirect lands.
-			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+AgentsListPath+"'}"),
+			//
+			// 🔴 HOME LEAVING THIS AGENT (HomeLeavingPath), not bare home: with no
+			// chief, home is the session opened LAST — this one — so a bare `/`
+			// landed straight back on the page the operator was leaving.
+			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+HomeLeavingPath(v.Name)+"'}"),
 			Class("contents"),
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
+			Input(Type("hidden"), Name(HomeLeaveParam), Value(v.Name)),
 			Button(
 				Type("submit"),
 				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),
@@ -1250,31 +1930,107 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	)
 }
 
-func chatBubble(role, content string, id int64) g.Node {
-	// A message carrying an attachment line (attach.go) is drawn on the server,
-	// its line as a chip: the raw signed URL is never what the bubble shows.
-	if role == "user" && len(uploads.FindRefs(content)) > 0 {
-		return chatBubbleOf(role,
-			g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
-			g.Attr("data-md-rendered", ""),
-			promptBody(content),
-		)
+// relayRow draws a relayed plugin message (ChatLine.Relay) the way a mirrored
+// session draws a harness notice (noticeRow): a compact row in the tool rows'
+// frame, collapsed, saying where it came from and what it is about —
+// "Message from <plugin> · <subject>" — and opening to the whole stored turn,
+// exactly as the chief received it. It used to be a full-width USER bubble
+// (clamped, with a fade and "Show more"), drawn as though the owner had typed
+// muster's relay preface and the fenced message.
+func relayRow(m ChatLine) g.Node {
+	what := "Message from "
+	if m.Relay.Task {
+		what = "Task event from "
 	}
+	source := m.Relay.Source
+	if source == "" {
+		source = "a plugin"
+	}
+	label := what + source
+	switch {
+	case m.Relay.Subject != "":
+		label += " · " + m.Relay.Subject
+	case m.Relay.Source == "" && m.Relay.MessageID > 0:
+		// Nothing in the text names it: the stored link's id does.
+		label += " · #" + strconv.FormatInt(m.Relay.MessageID, 10)
+	}
+	return Details(
+		g.Attr("data-relay-row", ""),
+		g.If(m.ID > 0, g.Attr("data-msg-id", strconv.FormatInt(m.ID, 10))),
+		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
+		Summary(
+			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
+			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("✉")),
+			Span(Class("shrink-0 font-mono text-muted"), g.Text("plugin")),
+			Span(g.Attr("data-relay-label", ""), Class("min-w-0 truncate"), g.Text(label)),
+		),
+		Div(
+			Class("px-3 pb-2"),
+			Pre(Class("max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg/80 p-2 text-[11px] leading-relaxed text-muted"), g.Text(m.Content)),
+		),
+	)
+}
+
+func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
 	return chatBubbleOf(role,
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
 		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
-		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
-		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
-		g.Attr("data-md", ""),
-		g.Text(content),
+		// data-md-rendered: says the body is server-rendered markdown. No
+		// runtime code reads it (nothing converts bubbles any more); the browser
+		// specs count bubbles by it, as they do the mirrored view's.
+		g.Attr("data-md-rendered", ""),
+		chatMessageBody(role, content, mx, false),
 	)
 }
 
+// chatMessageBody is one chat message's text as the agent chat draws it: the
+// Go markdown renderer (markdown.go), and for a user's message every
+// attachment line (attach.go) as its chip, never the raw signed URL.
+//
+// 🔴 THE ONE RENDERER FOR /agents/{name}. The page used to carry a second, JS
+// copy of the markdown renderer (mdRender / mdInline / mdUnderEm in
+// agentChatScript) that drew the transcript bubbles and the streamed reply in
+// the browser; every inline fix had to land twice and the two drifted (a `_`
+// in a bare URL corrupted the JS anchor's target attribute; combining marks
+// were word runes in neither). It is gone: the transcript is drawn here, the
+// streamed reply's HTML is drawn by ChatMessageHTML on the server (the chat
+// socket's delta "html", internal/api wsChatStream), and so is the echo of the
+// owner's own sent message. TestAgentChatHTMLComesOnlyFromTheServer holds the
+// page to that.
+//
+// mx links the mentions in an assistant's reply (mentions.go); the owner's own
+// message is drawn as typed. nil links none. partial: content is a reply still
+// streaming, whose last token is not linked yet.
+func chatMessageBody(role, content string, mx *MentionIndex, partial bool) g.Node {
+	if role == "user" {
+		return promptBody(content)
+	}
+	return g.Raw(markdownRender(content, false, mentionFor(mx, content, partial)))
+}
+
+// ChatMessageHTML is chatMessageBody as an HTML string: what the chat socket
+// sends the page for a streamed reply's text so far and for the echo of a
+// sent message. Escape-first (markdownHTML), so it is safe to assign to
+// innerHTML.
+func ChatMessageHTML(role, content string) string {
+	var b strings.Builder
+	_ = chatMessageBody(role, content, nil, false).Render(&b)
+	return b.String()
+}
+
+// ChatStreamHTML is ChatMessageHTML for a reply STILL STREAMING (internal/api
+// wsChatStream), linking the mentions mx resolves — except its last token,
+// which may not have finished arriving ("#12" of "#1234").
+func ChatStreamHTML(role, content string, mx *MentionIndex) string {
+	var b strings.Builder
+	_ = chatMessageBody(role, content, mx, true).Render(&b)
+	return b.String()
+}
+
 // chatBubbleOf is the chat bubble's frame — a user's on the right, an
-// assistant's on the left — around body. The agent chat fills it with raw text
-// its script renders as markdown; the mirrored view with server-rendered
-// markdown (it has no chat script).
+// assistant's on the left — around body. Both the agent chat and the mirrored
+// view fill it with server-rendered markdown.
 func chatBubbleOf(role string, body ...g.Node) g.Node {
 	mine := role == "user"
 	tone := "bg-s2 text-fg self-start"
@@ -1283,6 +2039,9 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 	}
 	return Div(append([]g.Node{
 		g.Attr("data-bubble", role),
+		// An agent's reply is clamped TAIL-first: its end is what shows
+		// (bubble_clamp.go). Declared here from the role, never read off the text.
+		clampFrom(role),
 		Class("max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm " + tone),
 	}, body...)...)
 }
@@ -1294,8 +2053,9 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "") }
 
 // toolChip is chatToolChip with an element id (the mirrored view replaces a
-// running row in place when its result arrives).
-func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
+// running row in place when its result arrives) and, from the mirrored view,
+// extra nodes drawn just before the status (its context badge).
+func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Node {
 	name := call.ToolName
 	if name == "" && result != nil {
 		name = result.ToolName
@@ -1332,8 +2092,11 @@ func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
 			// every visible summary).
 			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
 			Span(Class("shrink-0"), g.Text("🔧")),
-			Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(name)),
+			// The name truncates past half the row (a long MCP tool name), so the
+			// context badge and the status always fit beside it at a phone's width.
+			Span(g.Attr("data-tool-name", ""), Class("min-w-0 max-w-[50%] shrink-0 truncate font-mono text-st-review-fg"), g.Text(name)),
 			g.If(target != "", Span(g.Attr("data-tool-target", ""), Class("min-w-0 truncate font-mono text-muted"), g.Text(target))),
+			g.Group(extra),
 			Span(Class(statusClass), g.Attr("aria-label", "status: "+state), g.Text(status)),
 		),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),
@@ -1374,138 +2137,14 @@ func agentChatScript(name string) g.Node {
 (function () {
   var AGENT = '` + name + `';
 
-  // --- Minimal, XSS-safe markdown renderer (escape-first, dependency-free) ---
-  // HTML is escaped BEFORE any markdown transform, so raw HTML / <script> /
-  // onerror in agent or user text can never execute. Covers the common chat
-  // cases: fenced + inline code, bold/italic, headings, ordered/unordered lists,
-  // http(s) links, paragraphs/line breaks. Used for both the streamed messages
-  // and the server-rendered transcript bubbles ([data-md], converted in start()).
-  function mdEsc(s) {
-    // Strip the private-use sentinel (\uE000) used by mdInline's tokenizer so a
-    // crafted message can't collide with / spoof a placeholder token.
-    return String(s == null ? '' : s)
-      .replace(/\uE000/g, '')
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
-  function mdInline(s) { // s is ALREADY escaped
-    // Tokenize FIRST: pull inline code spans (and markdown links) OUT of the
-    // string into placeholder tokens before any other inline transform runs, so
-    // md chars / bare URLs INSIDE code — and a URL already inside a [text](url)
-    // link — are never re-processed (bold/italic/autolink run only on the rest).
-    // Tokens are restored verbatim at the end. \uE000 is a private-use sentinel
-    // that mdEsc strips from the raw input, so it can't appear in user text.
-    var toks = [];
-    function stash(html) { toks.push(html); return '\uE000' + (toks.length - 1) + '\uE000'; }
-    // Inline ` + "`" + `code` + "`" + ` → token (verbatim; no further markdown/autolink).
-    s = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function (_, c) {
-      return stash('<code class="rounded bg-bg/60 px-1 py-0.5 font-mono text-[0.85em]">' + c + '</code>');
-    });
-    // [text](url) markdown links → token, so the bare-URL autolinker below can't
-    // double-link the href.
-    // Both groups exclude the \uE000 sentinel for the same reason the autolink below does: a
-    // code span inside a link (label OR url) has already been stashed, so without
-    // the exclusion its PLACEHOLDER is captured — the code span is restored first
-    // (lower index) and the raw sentinel ends up inside the emitted href, or the
-    // code text vanishes from the label. Excluding it leaves such input literal,
-    // which is what it was before the tokenizer existed. Same fix as the Go
-    // renderer's mdLink (internal/ui/markdown.go).
-    s = s.replace(/\[([^\]\uE000]+)\]\((https?:\/\/[^\s)\uE000]+)\)/g, function (_, t, u) {
-      return stash('<a href="' + u + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + t + '</a>');
-    });
-    // Autolink bare http(s) URLs. Trailing punctuation (. , ) ] ! ? : ; ") stays
-    // OUT of the href. Code + markdown-link URLs are already tokenized out above;
-    // the \uE000 sentinel is excluded from the URL so a URL directly abutting a
-    // token can't swallow the placeholder into the href.
-    s = s.replace(/https?:\/\/[^\s<\uE000]+/g, function (m) {
-      var trail = '';
-      var mm = m.match(/[.,)\]!?:;"']+$/);
-      if (mm) { trail = mm[0]; m = m.slice(0, m.length - trail.length); }
-      return '<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>' + trail;
-    });
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-    s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
-    // Restore tokens verbatim (their content was already escaped before stashing).
-    s = s.replace(/\uE000(\d+)\uE000/g, function (_, i) { return toks[+i]; });
-    return s;
-  }
-  // mdTableCells splits one pipe-table row into trimmed cells, dropping the
-  // optional leading/trailing pipe (so both "| a | b |" and "a | b" work).
-  function mdTableCells(line) {
-    var s = line.trim();
-    if (s.charAt(0) === '|') s = s.slice(1);
-    if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
-    return s.split('|').map(function (c) { return c.trim(); });
-  }
-  // mdIsTableSep matches a GFM separator row: every cell is dashes with optional
-  // surrounding colons (e.g. "| --- | :--: |" or "---|:--").
-  function mdIsTableSep(line) {
-    if (line.indexOf('|') < 0) return false;
-    return mdTableCells(line).every(function (c) { return /^:?-+:?$/.test(c); });
-  }
-  function mdRender(src) {
-    var lines = mdEsc(src).split('\n'), out = [], i = 0;
-    while (i < lines.length) {
-      var line = lines[i];
-      if (/^` + "```" + `/.test(line)) { // fenced code block
-        var code = []; i++;
-        while (i < lines.length && !/^` + "```" + `\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
-        i++;
-        out.push('<pre class="overflow-auto rounded-lg bg-bg/60 p-2 my-1 font-mono text-[0.85em] leading-relaxed"><code>' + code.join('\n') + '</code></pre>');
-        continue;
-      }
-      // Thematic break (--- / *** / ___ alone on a line). Checked before the
-      // list branches and excluded from the paragraph gather below, for the same
-      // reason the Go renderer does both (internal/ui/markdown.go): the gather
-      // runs last and would otherwise emit the rule as literal text.
-      if (/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) { out.push('<hr class="my-2 border-line">'); i++; continue; }
-      var h = line.match(/^(#{1,6})\s+(.*)$/);
-      if (h) { out.push('<div class="mt-1 font-semibold text-fg ' + (h[1].length <= 2 ? 'text-base' : 'text-sm') + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
-      if (/^\s*[-*]\s+/.test(line)) {
-        var ul = [];
-        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { ul.push('<li>' + mdInline(lines[i].replace(/^\s*[-*]\s+/, '')) + '</li>'); i++; }
-        out.push('<ul class="my-1 list-disc space-y-0.5 pl-5">' + ul.join('') + '</ul>'); continue;
-      }
-      if (/^\s*\d+\.\s+/.test(line)) {
-        var ol = [];
-        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { ol.push('<li>' + mdInline(lines[i].replace(/^\s*\d+\.\s+/, '')) + '</li>'); i++; }
-        out.push('<ol class="my-1 list-decimal space-y-0.5 pl-5">' + ol.join('') + '</ol>'); continue;
-      }
-      // Pipe table: a header row containing '|' immediately followed by a
-      // separator row (dashes + optional colons). Checked before the '|' line is
-      // treated as a paragraph. Cells run through the inline-md pass (escape-first,
-      // so still XSS-safe). Wrapped in overflow-x-auto so it scrolls on mobile.
-      if (line.indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1])) {
-        var headCells = mdTableCells(line);
-        i += 2; // consume header + separator
-        var head = '<thead><tr>' + headCells.map(function (c) {
-          return '<th class="border border-line px-2 py-1 text-left">' + mdInline(c) + '</th>';
-        }).join('') + '</tr></thead>';
-        var rows = [];
-        while (i < lines.length && lines[i].indexOf('|') >= 0 && !/^\s*$/.test(lines[i])) {
-          var cells = mdTableCells(lines[i]);
-          rows.push('<tr>' + cells.map(function (c) {
-            return '<td class="border border-line px-2 py-1">' + mdInline(c) + '</td>';
-          }).join('') + '</tr>');
-          i++;
-        }
-        out.push('<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs">' + head + '<tbody>' + rows.join('') + '</tbody></table></div>');
-        continue;
-      }
-      if (/^\s*$/.test(line)) { i++; continue; }
-      var para = [];
-      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^` + "```" + `/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !(lines[i].indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1]))) { para.push(lines[i]); i++; }
-      out.push('<p class="my-1">' + mdInline(para.join('<br>')) + '</p>');
-    }
-    return out.join('');
-  }
-  // Convert any server-rendered transcript bubbles ([data-md]) once.
-  function mdConvert(root) {
-    (root || document).querySelectorAll('[data-md]:not([data-md-done])').forEach(function (el) {
-      el.innerHTML = mdRender(el.textContent);
-      el.setAttribute('data-md-done', '');
-    });
-  }
+  // 🔴 NO MARKDOWN RENDERER LIVES HERE. Every message's HTML is drawn by the
+  // server's one renderer (ui.ChatMessageHTML, internal/ui/markdown.go): the
+  // transcript bubbles arrive rendered, a streamed reply's delta carries the
+  // reply so far as "html", and a sent message is echoed back as "sent" with
+  // its html. What this script draws itself is plain text (textContent): the
+  // optimistic bubble of a message until its echo lands, a delta's tail until
+  // the next html, an error's words. TestAgentChatHTMLComesOnlyFromTheServer
+  // (agent_chat_md_test.go) holds every HTML sink in this script to a ledger.
 
   // Boost-safe init: this page's body may be swapped in via hx-boost (no
   // DOMContentLoaded), and the prior page's WebSocket must be torn down so it
@@ -1518,9 +2157,6 @@ func agentChatScript(name string) g.Node {
     if (!c) return;
     c.disposed = true;            // stop the reconnect loop
     try { if (c.ws) { c.ws.onclose = null; c.ws.close(); } } catch (e) {}
-    // Tear down the kickoff-stream EventSource too, so a boosted navigate-away
-    // doesn't leak it (mirrors the WS teardown).
-    try { if (c.es) { c.es.close(); } } catch (e) {}
     try { if (c.ro) { c.ro.disconnect(); } } catch (e) {}
     window.__cgChat = null;
   }
@@ -1529,6 +2165,7 @@ func agentChatScript(name string) g.Node {
   var form = document.getElementById('chat-form');
   var input = document.getElementById('chat-input');
   var sendBtn = document.getElementById('chat-send');
+  (` + sendKeepsFocusJS + `)(sendBtn);
   var logEl = document.getElementById('chat-log');
   // Re-resolve #chat-working on each use: the sse:chat.reply refresh swaps
   // #chat-log's innerHTML, replacing this node — a captured reference would go
@@ -1542,8 +2179,9 @@ func agentChatScript(name string) g.Node {
     if (p) p.classList.add('hidden');
   }
   if (!form || !input || !logEl) return;
-  // Render any server-rendered transcript bubbles as markdown (idempotent).
-  mdConvert(logEl);
+  // Laid out now, if window.__cgLayoutLog did not run (see #chat-log's data-cg-unlaid).
+  logEl.removeAttribute('data-cg-unlaid');
+  form.removeAttribute('data-cg-unlaid');
   // Already wired for this exact form (e.g. DOMContentLoaded + htmx:load both
   // fired for the same body): don't double-bind.
   if (form.hasAttribute('data-cg-chat')) return;
@@ -1564,15 +2202,31 @@ func agentChatScript(name string) g.Node {
   // global htmx:beforeRequest hook reads it to CANCEL a sse:chat.reply #chat-log
   // refresh mid-stream (so it can't clobber the in-flight streamed turn); the
   // trailing chat.reply fired after 'done' then refreshes to canonical state.
-  var session = { ws: null, es: null, disposed: false, streaming: false };
+  var session = { ws: null, disposed: false, streaming: false };
   window.__cgChat = session;
 
   function scheme() { return location.protocol === 'https:' ? 'wss:' : 'ws:'; }
   var ws = null;
+` + liveRetryJS + `
+  // Liveness and reconnection (live.go): when the socket last spoke, whether
+  // it has sent a heartbeat (only then can it be judged stale), when it was
+  // made, the failed attempts in a row and the pending retry.
+  var lastAt = 0, beat = false, madeAt = 0, retry = 0, retryTimer = 0;
+  // silent: the socket has gone a heartbeat and a margin without a word —
+  // a send over it could be lost, so the form takes the message instead.
+  function silent() {
+    var lim = (window.__musterRestore && window.__musterRestore.wakeStaleMs) || 0;
+    return !!lim && beat && Date.now() - lastAt > lim;
+  }
   // Per-turn render state. turn = the container div for the active assistant turn;
   // text = the current text bubble (created lazily on first delta after any
   // chip/thinking); think = the thinking <details>'s body; tools = id->chip map.
   var turn = null, text = null, think = null, tools = {};
+  // pendingSent: the bubbles of messages sent over THIS socket whose 'sent'
+  // echo (their server-rendered html) has not arrived yet, oldest first. The
+  // server reads a socket's messages in order and echoes each, so the next
+  // echo is always the oldest's. A new socket starts empty (connect).
+  var pendingSent = [];
 
   // Sticky autoscroll: follow new content ONLY while the user is pinned near the
   // bottom. If they scroll up (to read back) session.stick goes false and new
@@ -1605,11 +2259,57 @@ func agentChatScript(name string) g.Node {
     // point is to SEE that the agent is working.
     forceScroll();
   }
+  // The global #chat-log afterSwap re-shows the row while this page's own turn
+  // streams (see there).
+  session.showWorking = showWorking;
+  // workingFromServer redraws ONLY the "working…" row from the server's count
+  // of this conversation's turns: it reads #chat-log's own partial and looks
+  // for the row's data-turn-in-flight mark, and touches nothing else.
+  //
+  // 🔴 NOT A #chat-log REFETCH. A socket closing or reopening mid-turn used to
+  // force one, and the swap removed what this page drew that the server never
+  // stored — a sent bubble still waiting for its echo — so the next echo had no
+  // bubble of its own to fill (e2e agent-chat-markdown "after a reconnect…").
+  // The partial is read as TEXT, never parsed into the page: no HTML from it is
+  // drawn here (TestAgentChatHTMLComesOnlyFromTheServer).
+  function workingFromServer() {
+    var src = logEl.getAttribute('hx-get');
+    if (!src || !window.fetch) return;
+    fetch(src, { credentials: 'include', cache: 'no-store' }).then(function (res) {
+      return res.ok ? res.text() : null;
+    }).then(function (body) {
+      if (body == null || session.disposed || session.streaming) return;
+      // The id is matched with '.' for its quotes so this script never itself
+      // contains the row's id attribute as text: a reader of the page that finds
+      // the row by it (the Go tests' workingShown) must find the row.
+      var running = new RegExp('id=.chat-working.[^>]*data-turn-in-flight').test(body);
+      var w = workingEl();
+      if (running) {
+        showWorking();
+        if (w) w.setAttribute('data-turn-in-flight', '');
+      } else {
+        hideWorking();
+        if (w) w.removeAttribute('data-turn-in-flight');
+      }
+    }).catch(function () {});
+  }
   function hideWorking() {
     var working = workingEl();
     if (!working) return;
     working.classList.add('hidden');
     working.classList.remove('flex');
+    workingLabel(null);
+  }
+  // workingLabel sets the working row's words: a "queued" notice while the
+  // message waits for the agent's turn in flight (internal/api chat_busy.go),
+  // or back to its own "working" (null).
+  function workingLabel(notice) {
+    var working = workingEl();
+    var lab = working && working.querySelector('[data-working-label]');
+    if (!lab) return;
+    if (lab._orig == null) lab._orig = lab.textContent;
+    lab.textContent = notice || lab._orig;
+    if (notice) working.setAttribute('data-queued', ''); else working.removeAttribute('data-queued');
   }
 
   // A standalone bubble (user messages, and assistant text when there's no turn
@@ -1620,6 +2320,9 @@ func agentChatScript(name string) g.Node {
     // data-bubble, like chatBubbleOf's: what bubbleClampScript clamps. (The
     // streamed reply's bubble, ensureText, deliberately has none.)
     d.setAttribute('data-bubble', role);
+    // clampFrom's rule: an agent's reply is clamped tail-first.
+    if (role === 'assistant') d.setAttribute('data-clamp-from', 'tail');
+    d.setAttribute('data-chat-local', ''); // drawn here, not by the server (see configRequest)
     d.className ='max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
       (mine ? 'bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30'
             : 'bg-s2 text-fg self-start');
@@ -1636,6 +2339,7 @@ func agentChatScript(name string) g.Node {
     t.className = 'flex max-w-[92%] flex-col gap-1.5 self-start';
     // Names the streamed turn (tool-groups.spec.ts reads its layout).
     t.setAttribute('data-chat-turn', '');
+    t.setAttribute('data-chat-local', ''); // drawn here, not by the server (see configRequest)
     var w = workingEl();
     logEl.insertBefore(t, (w && w.parentNode === logEl) ? w : null);
     return t;
@@ -1701,7 +2405,9 @@ func agentChatScript(name string) g.Node {
     // A second call in a row joins the first in one "N tool calls" row, and
     // every call after that ticks its count up (tool_groups.go — the same rule
     // and the same markup the persisted transcript is drawn with).
-    if (window.musterToolGroups) window.musterToolGroups.adopt(d);
+    // A call the chief's chat draws as a CARD (chiefToolCard) is never folded
+    // into a group: its row is replaced by the card when its result lands.
+    if (window.musterToolGroups && !cardTool(nm)) window.musterToolGroups.adopt(d);
     var chip = { details: d, status: stat, body: body, args: null, result: null };
     tools[id] = chip;
     return chip;
@@ -1715,27 +2421,124 @@ func agentChatScript(name string) g.Node {
     return wrap;
   }
 
+  // keepOpenHTML replaces el's content with serverHTML (a streaming bubble's
+  // next html) and opens again every <details> that was open, by position: a
+  // fenced code block is drawn collapsed, and one the owner opened while the
+  // reply streamed must not snap shut at the next update (#538 round 1 F2).
+  // The bubble's earlier blocks are a prefix of its later ones, so a position
+  // names the same block.
+  function keepOpenHTML(el, serverHTML) {
+    var open = [];
+    el.querySelectorAll('details').forEach(function (d, i) { if (d.open) open.push(i); });
+    el.innerHTML = serverHTML;
+    var ds = el.querySelectorAll('details');
+    open.forEach(function (i) { if (ds[i]) ds[i].open = true; });
+  }
   function resetTurn() { turn = null; text = null; think = null; tools = {}; }
+  // keepOrResetTurn is a send's reset of the turn being drawn: none while a
+  // reply still streams. The server reads this socket's next message only
+  // after the turn in flight, so its bubble does not end at the send, and its
+  // next delta's html is that bubble's WHOLE text so far: a fresh bubble here
+  // would draw the reply twice, the old part above and all of it below
+  // (#538 round 1 F1). The reply goes on in the bubble it was in; the turn's
+  // end resets as always.
+  function keepOrResetTurn() { if (!session.streaming) resetTurn(); }
 
-  // Shared stream renderer for BOTH the user-turn WebSocket and the server-side
-  // KICKOFF stream (SSE agent.stream): both translate their wire messages into this
-  // same {type, content/id/name/args/ok/output} shape so a delta/thinking/tool_call/
-  // tool_result/user/error/done render IDENTICALLY. This is the single renderer —
-  // the SSE path maps agent.stream fields to this shape (see connectStream) rather
-  // than duplicating the DOM logic.
+  // owedRefetch pays a #chat-log refetch the streaming guard cancelled (see the
+  // htmx:beforeRequest note): the turn is over, so the stored transcript is
+  // drawn now. ` + ChatLogRefetchEvent + ` is one of chatLogTrigger's arms.
+  function owedRefetch() {
+    if (!session.refetchOwed) return;
+    session.refetchOwed = false;
+    if (window.htmx) window.htmx.trigger(logEl, ` + strconv.Quote(ChatLogRefetchEvent) + `);
+  }
+
+  // cardTool: which of the chief's carded tools a call is ('' for none), as a
+  // gateway chief names it or a claude-code chief does over MCP.
+  function cardTool(nm) {
+    nm = String(nm || '').replace(/^mcp__muster__/, '');
+    return (nm === 'agent_dispatch' || nm === 'ask_owner') ? nm : '';
+  }
+  // dispatchCard swaps a streamed agent_dispatch row for its card: the agent it
+  // started, or the refusal's sentence (ui.ReadDispatchResult's reading). A
+  // result it cannot read keeps its row.
+  function dispatchCard(row, output) {
+    var r; try { r = JSON.parse(output || ''); } catch (e) { return; }
+    if (!r || typeof r !== 'object') return;
+    var src = '';
+    if (r.agent_id > 0) src = ` + strconv.Quote(DispatchCardPath+"?agent=") + ` + encodeURIComponent(r.agent_id);
+    else if (r.error) src = ` + strconv.Quote(DispatchCardPath+"?refused=") + ` + encodeURIComponent(String(r.error));
+    if (!src) return;
+    fetch(src, { credentials: 'include' }).then(function (res) { return res.ok ? res.text() : ''; }).then(function (html) {
+      if (!html || !row.parentNode) return;
+      var t = document.createElement('template'); t.innerHTML = html.trim();
+      var card = t.content.firstElementChild;
+      if (!card) return;
+      row.parentNode.replaceChild(card, row);
+      if (window.htmx) window.htmx.process(card);
+    }).catch(function () {});
+  }
+
+  // pageCard draws a streamed page tool's result as its page card, by the
+  // server's one renderer (ui.PageCard, served at PageCardPath), AFTER its row
+  // — after the row's group when it is in one, so a folded group cannot hide
+  // it. A result it cannot read draws nothing more.
+  function pageCard(row, name, ok, output) {
+    var m = /^(?:mcp__muster__)?(page_create|page_update|page_share_request)$/.exec(String(name || ''));
+    if (!ok || !m) return;
+    var r; try { r = JSON.parse(output || ''); } catch (e) { return; }
+    if (!r || typeof r !== 'object' || r.error || !(r.page_id > 0)) return;
+    var src = '/pages/' + encodeURIComponent(r.page_id) + '/card?tool=' + encodeURIComponent(m[1]) +
+      (r.status ? '&status=' + encodeURIComponent(String(r.status)) : '') +
+      (r.version ? '&version=' + encodeURIComponent(String(r.version)) : '');
+    fetch(src, { credentials: 'include' }).then(function (res) { return res.ok ? res.text() : ''; }).then(function (html) {
+      var anchor = row.closest('[data-tool-group]') || row;
+      if (!html || !anchor.parentNode) return;
+      var t = document.createElement('template'); t.innerHTML = html.trim();
+      var card = t.content.firstElementChild;
+      if (!card) return;
+      anchor.parentNode.insertBefore(card, anchor.nextSibling);
+    }).catch(function () {});
+  }
+
+  // The stream renderer for the user-turn WebSocket's {type, content/id/name/args/
+  // ok/output} messages: delta/thinking/tool_call/tool_result/user/error/done.
+  //
+  // ⚠ IT USED TO SERVE A SECOND SOURCE TOO, a raw EventSource on /events listening
+  // for "agent.stream" (the server-side kickoff, rendered live). Nothing has
+  // published that event since bcdd60bf (#66) removed EventAgentStream /
+  // BroadcastAgentStream, so that stream was a second /events connection carrying
+  // every event of the owner's bus for a listener that never fired; it is gone. A
+  // kickoff turn shows once it persists, by the chat.reply refetch of #chat-log.
   function renderStreamMsg(msg) {
+    // 🔴 A QUEUED MESSAGE IS SENT THE MOMENT ANY OF ITS TURN ARRIVES: the
+    // "queued" words must not sit under a reply that is already streaming (an
+    // owner reading them would send it again). "accepted" says so first; any
+    // part of the reply says so too, for a server that sends no "accepted".
+    if (msg.type !== 'queued' && msg.type !== 'error' && msg.type !== 'done') workingLabel(null);
     switch (msg.type) {
-      case 'user': {
-        // His kickoff message, streamed first so the chat shows the prompt before
-        // the model runs (mdRender is escape-first, so it's XSS-safe). Force the
-        // view to the bottom: once provisioning ends and his message renders, it
-        // should be in view (req: scroll to bottom after my message renders).
-        var ub = bubble('user'); ub.innerHTML = mdRender(msg.content || '');
-        forceScroll();
+      // ⚠ A 'user' case used to draw a streamed kickoff prompt here. Nothing on
+      // the server sends that type (the kickoff shows once it persists, by the
+      // chat.reply refetch), so it went with the client renderer it called.
+      case 'sent': {
+        // The server's echo of a message this page sent (handleAgentWS): its
+        // html replaces the plain text of the oldest bubble still waiting.
+        var sb = pendingSent.shift();
+        if (sb && msg.html != null) { sb.innerHTML = msg.html; sb.classList.remove('whitespace-pre-wrap'); }
         break;
       }
       case 'delta': {
-        var dt = ensureText(); dt._raw = (dt._raw || '') + (msg.content || ''); dt.innerHTML = mdRender(dt._raw);
+        // The server renders the reply: "html" is this bubble's whole text so
+        // far, drawn by ui.ChatMessageHTML. A delta without it (the socket
+        // renders at most every so often, internal/api wsChatStream) is shown
+        // as plain text after it, until the next html replaces both.
+        var dt = ensureText();
+        if (msg.html != null) {
+          keepOpenHTML(dt, msg.html); dt._tail = null;
+        } else if (msg.content) {
+          if (!dt._tail) { dt._tail = document.createElement('span'); dt._tail.className = 'whitespace-pre-wrap'; dt.appendChild(dt._tail); }
+          dt._tail.textContent += msg.content;
+        }
         scroll();
         break;
       }
@@ -1758,6 +2561,10 @@ func agentChatScript(name string) g.Node {
       }
       case 'tool_result': {
         var r = toolChip(msg.id, msg.name); // defensive: create if missing
+        // agent_dispatch's result is drawn as its card, by the server's one
+        // renderer (ui.DispatchAgentCard), in place of the row.
+        if (cardTool(msg.name) === 'agent_dispatch') dispatchCard(r.details, msg.output);
+        pageCard(r.details, msg.name, msg.ok, msg.output);
         r.status.textContent = msg.ok ? '✓' : '✗';
         r.status.className = 'ml-auto shrink-0 font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
@@ -1769,12 +2576,35 @@ func agentChatScript(name string) g.Node {
         scroll();
         break;
       }
+      case 'queued':
+        // The message is held for the agent's turn in flight; it will be sent.
+        showWorking();
+        workingLabel(msg.content || '');
+        break;
+      case 'accepted':
+        // The runtime took the queued message (reset above): working on it.
+        break;
       case 'error':
-        var et = ensureText(); et._raw = (et._raw ? et._raw + '\n' : '') + '[error] ' + (msg.content || ''); et.innerHTML = mdRender(et._raw);
+        var et = ensureText();
+        // The words go in as plain text, on a line of their own after whatever
+        // the reply had streamed (the server flushed its html first).
+        var note = document.createElement('p');
+        note.className = 'my-1 whitespace-pre-wrap';
+        if (msg.unsent) {
+          // Never sent (the agent stayed busy): a notice in words, and the
+          // text back in the composer unless something new was typed there.
+          et.setAttribute('data-unsent', '');
+          note.textContent = msg.content || '';
+          if (msg.text && !input.value.trim()) { input.value = msg.text; if (window.musterComposerFit) window.musterComposerFit(input); }
+        } else {
+          note.textContent = '[error] ' + (msg.content || '');
+        }
+        et.appendChild(note);
         hideWorking();
         resetTurn();
         session.streaming = false;
         sendBtn.disabled = false;
+        owedRefetch();
         scroll();
         break;
       case 'done':
@@ -1782,6 +2612,7 @@ func agentChatScript(name string) g.Node {
         resetTurn();
         session.streaming = false;
         sendBtn.disabled = false;
+        owedRefetch();
         // Mark this session read: a reply we just watched shouldn't linger as
         // "unread" in the notification FAB. Best-effort; ignore errors.
         if (sessionId) {
@@ -1793,80 +2624,133 @@ func agentChatScript(name string) g.Node {
     }
   }
 
-  // Re-fetch #chat-log to reconcile the streamed (kickoff) bubbles with the
-  // canonical server transcript once the turn persists: this replaces the ephemeral
-  // thinking/tool chips with the persisted user+assistant bubbles and reveals the
-  // completion banner. Deterministic (driven off OUR ordered EventSource, after the
-  // 'done' clears the streaming guard) so the guard can't cancel it. The existing
-  // htmx sse:chat.reply refresh is redundant-but-harmless (idempotent GET).
-  function reconcileChatLog() {
-    if (!window.htmx) return;
-    var el = document.getElementById('chat-log');
-    var url = el && el.getAttribute('hx-get');
-    if (!url) return;
-    try { window.htmx.ajax('GET', url, { target: '#chat-log', swap: 'innerHTML' }); } catch (e) {}
+  // The open, measured (faro.go's musterOpen; absent while telemetry is off).
+  // The transcript is in the document, so it is painted by the time this
+  // runs; the chat is usable once its socket is open.
+  var opening = null, live = null;
+  // drop detaches the current socket and closes it: its close is nobody's.
+  function drop() {
+    var old = ws;
+    ws = null; session.ws = null;
+    if (!old) return;
+    old.onopen = null; old.onmessage = null; old.onclose = null;
+    try { old.close(); } catch (e) {}
   }
-
-  // Live-render the server-side KICKOFF stream over the shared /events SSE. The
-  // kickoff runs server-side (NOT over this page's user-turn WS), so without this
-  // the chat jumps from "provisioning" straight to the persisted reply. A raw
-  // EventSource (filtered to THIS agent) keeps agent.stream events strictly ordered
-  // on one connection — his message → thinking → text → done — so the terminal
-  // 'done' reliably clears the streaming guard before we reconcile. Best-effort: any
-  // failure to open it must never break the chat.
-  function connectStream() {
-    if (session.disposed || !window.EventSource) return;
-    var es;
-    try { es = new EventSource('/events'); } catch (e) { return; }
-    session.es = es;
-    es.addEventListener('agent.stream', function (ev) {
-      var d;
-      try { d = JSON.parse(ev.data); } catch (e) { return; }
-      if (!d || d.agent !== agent) return; // only THIS page's agent
-      // First stream event: mark streaming (so the htmx sse:chat.reply refresh is
-      // cancelled mid-stream and can't clobber the live bubbles), drop the
-      // provisioning indicator, and show the animated "working…" row — the kickoff
-      // often runs for a while (thinking / tool loop) BEFORE any text delta arrives,
-      // and without this that gap showed nothing. It's cleared on 'done' (hideWorking
-      // in renderStreamMsg) and stays pinned to the bottom as text streams above it.
-      if (!session.streaming) { session.streaming = true; hideProvisioning(); showWorking(); }
-      switch (d.kind) {
-        case 'user': renderStreamMsg({ type: 'user', content: d.text }); break;
-        case 'text': renderStreamMsg({ type: 'delta', content: d.text }); break;
-        case 'thinking': renderStreamMsg({ type: 'thinking', content: d.text }); break;
-        case 'tool_call': renderStreamMsg({ type: 'tool_call', id: d.toolId, name: d.toolName, args: d.toolArgs }); break;
-        case 'tool_result': renderStreamMsg({ type: 'tool_result', id: d.toolId, name: d.toolName, ok: d.toolOk, output: d.toolOutput }); break;
-        case 'done':
-          renderStreamMsg({ type: 'done' }); // clears session.streaming
-          reconcileChatLog();
-          break;
-      }
-    });
-    // A dropped SSE connection is non-fatal (the trailing chat.reply refresh still
-    // reconciles); let the browser auto-reconnect. No manual retry loop needed.
-  }
-
-  function connect() {
+  // connect opens the chat's socket; why is the reconnect's reason
+  // (live.go), nothing for the page's first open.
+  function connect(why) {
+    clearTimeout(retryTimer); retryTimer = 0;
     if (session.disposed) return;
+    // 🔴 ONE SOCKET: the one before is detached and closed first.
+    drop();
+    // A socket REPLACED mid-turn (a wake judged it stale) never says "done" to
+    // this page: the new one knows nothing of the turn. The page stops waiting
+    // on it, and the new socket's open redraws the log — and the row — from the
+    // server (onopen).
+    if (session.streaming) { session.streaming = false; sendBtn.disabled = false; resetTurn(); }
+    // Its echoes will never come: a bubble it left waiting keeps its plain
+    // text (the chat log's refetch redraws it), and no echo on this socket may
+    // land in it.
+    pendingSent = [];
     var url = scheme() + '//' + location.host + '/agents/' + agent + '/ws';
     if (sessionId) url += '?session=' + encodeURIComponent(sessionId);
-    ws = new WebSocket(url);
+    if (window.musterOpen) {
+      opening = window.musterOpen.begin('agent', why ? { reconnect: true, reconnect_reason: why } : undefined);
+      opening.mark('first_paint');
+    }
+    var tp = opening ? opening.tp() : '';
+    if (tp) url += (url.indexOf('?') < 0 ? '?' : '&') + 'tp=' + encodeURIComponent(tp);
+    var sock = ws = new WebSocket(url);
     session.ws = ws;
-    ws.onmessage = function (ev) {
+    madeAt = lastAt = Date.now(); beat = false;
+    sock.onopen = function () {
+      retry = 0; lastAt = Date.now();
+      // A RECONNECT redraws "working…" from the server: a turn that started or
+      // ended while there was no socket is the server's to say.
+      if (why) workingFromServer();
+      if (opening) { opening.mark('stream_connected'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
+    };
+    sock.onmessage = function (ev) {
+      lastAt = Date.now();
+      // A heartbeat says only that the socket is alive.
+      if (ev.data === ` + strconv.Quote(LivePingFrame) + `) { beat = true; return; }
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       renderStreamMsg(msg);
     };
-    ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
+    sock.onclose = function (ev) {
+      if (session.disposed || ws !== sock) return;
+      ws = null; session.ws = null;
+      var o = opening || live, why = 'closed_' + (ev && ev.code);
+      if (opening) opening.end(why);
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code });
+      opening = null; live = null;
+      // A turn streaming over it is over as far as this socket goes — but NOT
+      // over as far as the server goes: the turn runs on to its end detached
+      // from the socket (handleAgentWS). 🔴 SO THE ROW IS NOT HIDDEN HERE. It used
+      // to be, and then nothing redrew it: a dropped or replaced socket mid-turn
+      // left "working…" gone while the chief worked, until the reply landed.
+      // The row is redrawn from the server's count — showing while the turn
+      // runs (workingFromServer). A refetch the guard cancelled is still paid,
+      // as before.
+      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; resetTurn(); owedRefetch(); workingFromServer(); }
+      retry++;
+      // A hidden or offline page waits for its wake (live.go).
+      if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
+    };
+  }
+  // wake (restore.go): a closed socket reconnects at once; an open one that
+  // has heard no heartbeat for staleMs is replaced; one still opening is left
+  // to finish unless it has been opening for that long too.
+  function wake(why, staleMs) {
+    if (session.disposed) return;
+    var now = Date.now();
+    if (!ws || ws.readyState > 1) {
+      if (!liveCanRetry() || (why === 'tick' && retryTimer)) return;
+      retry = 0;
+      connect(why === 'tick' ? 'retry' : why);
+      return;
+    }
+    if (ws.readyState === 0) { if (now - madeAt > staleMs) connect(why === 'tick' ? 'stale' : why); return; }
+    if (beat && now - lastAt > staleMs) connect(why === 'tick' ? 'stale' : why);
   }
   connect();
-  // Open scrolled to the latest message: the transcript is converted + laid out
+  // Back and Forward (restore.go): the socket is closed as the page is hidden
+  // and opened again, at once, when it is restored. Caught up is the chat
+  // log's refetch, which the restore's reopened event stream starts
+  // (chatLogTrigger's htmx:sseOpen arm).
+  ` + restoreJoinJS(`{
+    alive: function () { return !session.disposed; },
+    hide: function () { clearTimeout(retryTimer); retryTimer = 0; drop(); },
+    wake: wake,
+    show: function (why) {
+      retry = 0;
+      if (!ws || ws.readyState > 1) connect(why || 'pageshow');
+      return new Promise(function (resolve) {
+        function done(e) {
+          if (!e.detail || !e.detail.elt || e.detail.elt.id !== 'chat-log') return;
+          document.body.removeEventListener('htmx:afterRequest', done);
+          resolve();
+        }
+        document.body.addEventListener('htmx:afterRequest', done);
+      });
+    }
+  }`) + `
+  // The interim observer of window.__cgLayoutLog, when it ran for THIS log:
+  // torn down, and a reader who scrolled away meanwhile stays where they are.
+  // ⚠ NOT NAMED pre: start() already has a function pre() (the tool chip's
+  // <pre> blocks), and a var of that name, hoisted, replaced it — every tool
+  // result then threw.
+  var interim = window.__cgLayout;
+  window.__cgLayout = null;
+  if (interim) {
+    if (interim.ro) interim.ro.disconnect();
+    interim.log.removeEventListener('scroll', interim.onScroll);
+    if (interim.log !== logEl) interim = null;
+  }
+  // Open scrolled to the latest message: the transcript is laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
-  forceScroll();
-  // Live-render the server-side kickoff stream (agent.stream over /events) with the
-  // same renderer as the WS turn. Opened after the initial scroll so it never races
-  // the open-at-bottom behaviour.
-  connectStream();
+  if (interim && interim.away) session.stick = false; else forceScroll();
 
   // 🔴 NEVER A SILENT SEND. With the socket open the message goes over it and
   // the reply streams back. With it NOT open — still connecting, dropped, or
@@ -1890,11 +2774,21 @@ func agentChatScript(name string) g.Node {
     for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
     n.value = s;
   }
+  // sentBubble draws the owner's own message the moment it is sent, as plain
+  // text (its line breaks kept), and queues it for the server's 'sent' echo,
+  // which replaces the text with the message's rendered html.
+  function sentBubble(t) {
+    var ub = bubble('user');
+    ub.classList.add('whitespace-pre-wrap');
+    ub.textContent = t;
+    pendingSent.push(ub);
+    return ub;
+  }
   function send() {
     var t = input.value.trim();
     if (!t) return;
-    if (!ws || ws.readyState !== 1) { nativeSend(); return; }
-    var ub = bubble('user'); ub.innerHTML = mdRender(t);
+    if (!ws || ws.readyState !== 1 || silent()) { nativeSend(); return; }
+    sentBubble(t);
     forceScroll(); // his own send always brings the latest into view
     ws.send(JSON.stringify({ type: 'message', text: t }));
     try { window.cgTrack('chat.sent', { agent: (form.getAttribute('data-agent') || '') }); } catch (e) {}
@@ -1904,8 +2798,34 @@ func agentChatScript(name string) g.Node {
     if (window.musterDraft) window.musterDraft.sent(input);
     renewNonce();
     sendBtn.disabled = true;
+    keepOrResetTurn();
     session.streaming = true;
-    resetTurn();
+    showWorking();
+  }
+  // sendText sends text as the owner's next message WITHOUT touching the
+  // composer's box or its draft (a question card's answer): send()'s socket
+  // path minus the box, or a form post of its own (nativeSend's door).
+  function sendText(t) {
+    if (!ws || ws.readyState !== 1 || silent()) {
+      var f = document.createElement('form');
+      f.method = 'post';
+      f.action = form.getAttribute('action') || '';
+      f.style.display = 'none';
+      form.querySelectorAll('input[type=hidden]').forEach(function (h) {
+        var c = document.createElement('input'); c.type = 'hidden'; c.name = h.name; c.value = h.value; f.appendChild(c);
+      });
+      var tx = document.createElement('input'); tx.type = 'hidden'; tx.name = input.name || 'text'; tx.value = t; f.appendChild(tx);
+      document.body.appendChild(f);
+      HTMLFormElement.prototype.submit.call(f);
+      return;
+    }
+    sentBubble(t);
+    forceScroll();
+    ws.send(JSON.stringify({ type: 'message', text: t }));
+    renewNonce();
+    sendBtn.disabled = true;
+    keepOrResetTurn();
+    session.streaming = true;
     showWorking();
   }
   // preventDefault only once send() has taken the message: if it throws, the
@@ -1914,6 +2834,56 @@ func agentChatScript(name string) g.Node {
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
+
+  // THE CHIEF'S QUESTION CARDS (ui/owner_ask.go): a tapped option, the picks
+  // of a multi-select card, or an "Other" answer is sent as the owner's next
+  // message — through send(), so by the socket or, without one, the form post,
+  // exactly as if they had typed it. The card shows itself answered from the
+  // stored transcript on the refetch that follows; until then it is disabled,
+  // so a second tap cannot send a second answer. Bound once per #chat-log (the
+  // element outlives its refetches); send is this start's.
+  //
+  // 🔴 THE ANSWER NEVER GOES THROUGH THE COMPOSER'S BOX. It used to be written
+  // into #chat-input and sent with send(), which cleared the box and the saved
+  // draft — a half-typed message the owner had there was lost by a tap. So the
+  // answer is sent DIRECTLY (sendText): over the socket, or, without one, as
+  // its own form post carrying the chat form's hidden fields; the box and its
+  // draft are left exactly as they were.
+  logEl.__ownerAskSend = function (card, text) {
+    text = String(text || '').trim();
+    if (!text || !card || card.getAttribute('data-owner-ask-state') !== 'waiting') return;
+    card.setAttribute('data-owner-ask-state', 'sending');
+    card.querySelectorAll('button, input, textarea').forEach(function (el) { el.disabled = true; });
+    sendText(text);
+  };
+  if (!logEl.__ownerAskBound) {
+    logEl.__ownerAskBound = true;
+    logEl.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('[data-owner-ask-pick]') : null;
+      if (!b || !logEl.contains(b)) return;
+      e.preventDefault();
+      logEl.__ownerAskSend(b.closest('[data-owner-ask]'), b.getAttribute('data-owner-ask-pick'));
+    });
+    logEl.addEventListener('submit', function (e) {
+      var f = e.target && e.target.closest ? e.target.closest('[data-owner-ask-form]') : null;
+      if (!f) return;
+      e.preventDefault();
+      var other = f.querySelector('[data-owner-ask-other]');
+      var parts = [];
+      f.querySelectorAll('[data-owner-ask-check]:checked').forEach(function (c) { parts.push(c.value); });
+      if (other && other.value.trim()) parts.push(other.value.trim());
+      logEl.__ownerAskSend(f.closest('[data-owner-ask]'), parts.join(` + strconv.Quote(OwnerAskMultiSep) + `));
+    });
+    // Enter in the Other box sends it (Shift+Enter: a new line), like the composer.
+    logEl.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (!t || !t.hasAttribute || !t.hasAttribute('data-owner-ask-other')) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        if (t.form && t.form.requestSubmit) t.form.requestSubmit(); else if (t.form) t.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+      }
+    });
+  }
   // A notice the server drew for a send the browser made has been shown: take
   // it out of the address, so a reload does not repeat it.
   try {
@@ -1924,6 +2894,67 @@ func agentChatScript(name string) g.Node {
     }
   } catch (e) {}
   } // end start
+
+  // 🔴 THE TRANSCRIPT IS LAID OUT BEFORE ITS FIRST PAINT, NOT AT start().
+  // start() waits for DOMContentLoaded, and DOMContentLoaded waits for the
+  // DEFERRED vendor scripts (htmx, sse.js in <head>). When they arrive after the
+  // document has parsed — a cold cache, a slow network — the browser paints the
+  // transcript in between: raw text (a message's blank lines collapsed),
+  // unclamped, scrolled to the TOP. start() then converts the markdown, the
+  // clamp shrinks the tall bubbles and the log jumps to its end, and every
+  // bubble on screen moves. Measured on a 200-message transcript at 1280px with
+  // 150 ms RTT and a 4x CPU: CLS 0.37 (markdown) and 0.43 (plain text), one
+  // shift each, the bubbles as its sources. A frame log of a cold-browser
+  // open that shifted showed two frames painted with 0 of 200 bubbles
+  // converted and scrollTop 0 before start() ran.
+  // (The bubbles have since come from the server already rendered — there is
+  // no conversion left to wait for — but the scroll to the end and the clamp
+  // still are, so this still runs before the first paint.)
+  //
+  // So agentChatPane emits a call to this right after #chat-form and the
+  // composer's fit and draft scripts, while the parser is still blocked on that
+  // inline script: the scroll to the end is applied in the same task that
+  // inserted the bubbles, before anything can paint them, and the clamp
+  // follows at the microtask checkpoint that ends the script, still before the
+  // parser goes on.
+  // A clamp that shrinks the log after the scroll leaves it at its end: the
+  // scroll position is clamped to the new height. It needs nothing htmx
+  // provides. start() later runs the same steps again, as no-ops.
+  //
+  // ⚠ THIS SCRIPT AND bubbleClampScript MUST THEREFORE BE PARSED BEFORE
+  // #chat-log (AgentDetailPage emits them ahead of the content column). Emitted
+  // after it, window.__cgLayoutLog is undefined at the call and the transcript
+  // is laid out at DOMContentLoaded again; the clamp script after it would
+  // clamp only when it ran.
+  //
+  // 🔴 AFTER THE FORM, NOT BETWEEN THE LOG AND THE FORM. The call is a long
+  // script, and the parser may yield after one: placed straight after
+  // #chat-log, a frame then painted #chat-form before #chat-input was parsed
+  // (13px tall, then 57px) — a shift of the form on every size, in about half
+  // of the opens of a seven-message agent, where main read 0.
+  //
+  // Until start() runs, an observer here keeps a reader who has not scrolled
+  // away at the end (the header, say, may still change the log's box), and
+  // records whether they HAVE scrolled away: start() reads that (.away)
+  // instead of pinning to the end, so a reader who scrolled up while the
+  // deferred scripts were loading is not pulled back down, and then tears the
+  // observer and its listener down.
+  window.__cgLayoutLog = function () {
+    var log = document.getElementById('chat-log');
+    if (!log) return;
+    log.scrollTop = log.scrollHeight;
+    log.removeAttribute('data-cg-unlaid');
+    var cf = document.getElementById('chat-form');
+    if (cf) cf.removeAttribute('data-cg-unlaid');
+    var pre = { log: log, away: false, ro: null };
+    pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
+    log.addEventListener('scroll', pre.onScroll, { passive: true });
+    if (typeof ResizeObserver !== 'undefined') {
+      pre.ro = new ResizeObserver(function () { if (!pre.away) log.scrollTop = log.scrollHeight; });
+      pre.ro.observe(log);
+    }
+    window.__cgLayout = pre;
+  };
 
   // Global, document-lifetime hooks (the <body> survives hx-boost swaps, so
   // these must bind exactly once — guarded). start() reads its target agent from
@@ -1944,19 +2975,53 @@ func agentChatScript(name string) g.Node {
     // Guard the sse:chat.reply #chat-log refresh: never let it fire WHILE a WS turn
     // is mid-stream (it would replace the in-flight streamed bubbles). chat.reply
     // fires again after 'done' (streaming=false), which refreshes canonically.
+    //
+    // 🔴 A REFETCH CANCELLED HERE IS OWED, NOT DROPPED. 'done' (the socket) and
+    // chat.reply (the event stream) travel on two connections, and the server
+    // sends 'done' FIRST but nothing orders their arrival: chat.reply can land
+    // while 'done' is still in flight, and was then cancelled with no second one
+    // to follow — the stored turn never drawn. A streamed text reply hid that (its
+    // bubbles were already on screen); a turn the server draws differently from
+    // its stream — an ask_owner question card, a dispatched agent's card — stayed
+    // a plain tool row. So the cancel records the debt, and the turn's end pays it
+    // (owedRefetch in agentChatScript).
     document.body.addEventListener('htmx:beforeRequest', function (e) {
       var elt = e.detail && e.detail.elt;
       if (elt && elt.id === 'chat-log' && window.__cgChat && window.__cgChat.streaming) {
+        window.__cgChat.refetchOwed = true;
         e.preventDefault();
       }
     });
-    // After a #chat-log refresh swap: convert the fresh transcript bubbles to
-    // markdown and pin to the bottom (the WS client only runs mdConvert/scroll on
-    // its own events, so a server-driven refresh needs this).
+    // Conditional #chat-log refetch (ui.ChatLogBody): send the version this log
+    // was last drawn from; the server answers 204 (no swap) when it would draw
+    // the same thing. A 200 carries the new version, recorded on afterSwap below.
+    //
+    // 🔴 NOT WHILE THE LOG HOLDS ANYTHING THE SERVER DID NOT DRAW. A WS turn draws
+    // its bubbles here (bubble/newTurn mark them data-chat-local) — the user's own
+    // message, the streamed reply, an "[error]" from a turn that failed. A turn
+    // that failed may have stored nothing, so the server's version is still the
+    // page's and a 204 would keep made-up content on screen for ever. With any
+    // local node present the refetch asks for the full answer, which redraws the
+    // log from what the server really holds.
+    document.body.addEventListener('htmx:configRequest', function (e) {
+      var elt = e.detail && e.detail.elt;
+      var ver = elt && elt.id === 'chat-log' && elt.getAttribute('data-chat-version');
+      if (ver && !elt.querySelector('[data-chat-local]')) e.detail.headers['` + ChatLogVersionHeader + `'] = ver;
+    });
+    // After a #chat-log refresh swap: pin to the bottom (the WS client only
+    // scrolls on its own events, so a server-driven refresh needs this). The
+    // fresh bubbles arrive rendered by the server (chatBubble).
     document.body.addEventListener('htmx:afterSwap', function (e) {
       var t = e.detail && e.detail.target;
       if (t && t.id === 'chat-log') {
-        mdConvert(t);
+        var xhr = e.detail.xhr;
+        var ver = xhr && xhr.getResponseHeader('` + ChatLogVersionHeader + `');
+        if (ver) t.setAttribute('data-chat-version', ver); else t.removeAttribute('data-chat-version');
+        // While THIS page's own turn streams, the row stays up whatever the
+        // render said: the page knows a turn is running that a render can
+        // have been drawn before (the guard below cancels most refetches then,
+        // not every one — a reconnect's is let through).
+        if (window.__cgChat && window.__cgChat.streaming && window.__cgChat.showWorking) window.__cgChat.showWorking();
         // Respect sticky scroll: only pin to bottom if the user hasn't scrolled up
         // (stick !== false). Default to pinning when there's no live chat session.
         if (!window.__cgChat || window.__cgChat.stick !== false) t.scrollTop = t.scrollHeight;

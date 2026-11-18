@@ -84,10 +84,9 @@ const (
 )
 
 // NeedsCheckout reports whether an agent's first turn depends on a repository
-// checkout: a claude-code or hermes agent dispatched with a repository (its
-// supervisor, ccd or hermesd, clones it before the agent starts and reports
-// `repo.state` the same way). A gateway agent, or one without a repository,
-// never waits.
+// checkout: a claude-code agent dispatched with a repository (its supervisor,
+// ccd, clones it before the agent starts and reports `repo.state`). A gateway
+// agent, or one without a repository, never waits.
 func NeedsCheckout(a Agent) bool {
 	return RunsPodSupervisor(a.Kind) && a.Repo != ""
 }
@@ -102,8 +101,8 @@ func CheckoutGates(a Agent, inst *provision.Instance) bool {
 }
 
 // KickoffAwaitingGrant reports a first turn held because the agent's github
-// connector request is not approved yet: the card's "waiting for your github
-// approval" line. Like [KickoffOwed] it is a separate boolean, never a status.
+// connector request is not approved yet: the agent page's "waiting for your
+// github approval" notice. Like [KickoffOwed] it is a separate boolean, never a status.
 // An errored row answers false: the wait ended (see [DecideFirstTurn]).
 func KickoffAwaitingGrant(a Agent) bool {
 	return KickoffOwed(a) && a.Status != StatusError && strings.HasPrefix(a.KickoffError, KickoffAwaitingGrantReason)

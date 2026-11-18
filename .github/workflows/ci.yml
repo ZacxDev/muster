@@ -19,44 +19,117 @@ name: ci
 # check-runs on the head commit. Trade-off: a branch pushed WITHOUT an open PR
 # gets no CI — run the `make` targets locally (see above).
 #
-# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
-# publishes the muster image under that release version (the `image-*` jobs at
-# the end). No release tags exist yet: the Harbor releases are versioned by
-# devrc's `muster-ops release`, outside this repository, and this trigger is the
-# GHCR spelling of the same version for whoever starts tagging.
+# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too — UNLESS the
+# same commit's main run concluded success, when the test jobs are skipped
+# (the `main-verdict` job; fail-closed) — and then publishes the muster and claude-code-agent images under that release version
+# (the `image-*` jobs at the end). A downstream release tool may version its own releases outside
+# this repository and push the matching vX.Y.Z tag here on each of them, so a
+# tag usually lands on a commit `main` already built: every
+# tag-only job is idempotent for that (see `image-muster`, `image-stt-cohere`
+# and `release`).
+#
+# A vX.Y.Z TAG ALSO PUBLISHES A GITHUB RELEASE (the `release` job at the end):
+# binaries, docker-compose.yml, env.example and checksums.txt, built by
+# scripts/release-build.sh — the same script the `release-dry-run` job runs on
+# every pull request that is ready for review (not on a draft), so a tag
+# publishes nothing a PR did not already build.
 #
 # 🔴 THE TAG FILTER IS STRICT SEMVER, NOT `v*`, BECAUSE A RED RUN HERE IS NOT
-# CHEAP. `muster-ops release` refuses a sha unless EVERY CI run for it concluded
-# success, and `image-muster` refuses a non-semver version — so a `v*` filter
-# let a tag like `v1.2.3-rc1` turn that sha's runs permanently red and block its
-# Harbor release for good. In GitHub's filter syntax `.` is literal and `+` is
+# CHEAP. A downstream release tool that refuses a sha unless EVERY CI run for
+# it concluded success, plus `image-muster` refusing a non-semver version, means
+# a `v*` filter let a tag like `v1.2.3-rc1` turn that sha's runs permanently red
+# and block that release for good. In GitHub's filter syntax `.` is literal and `+` is
 # "one or more of the preceding": this matches `v1.2.3` and `v10.20.30`, not
 # `v1.2.3-rc1`, `v1.2` or `vfoo`. (image-muster keeps its own semver check.)
 on:
   push:
     branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  # 🔴 `ready_for_review` IS A TRIGGER BECAUSE A DRAFT PR RUNS NO E2E (the
+  # `e2e-leg` and `e2e` jobs). Without it, marking a draft ready starts no run,
+  # and the PR never gets the required `e2e (playwright, chromium)` check. The
+  # ready run is a FULL run in the PR's usual concurrency group: it cancels a
+  # draft run still in progress and gives the head commit one complete verdict.
+  # The first four types are GitHub's defaults (`edited` and
+  # `converted_to_draft` start nothing). Pinned by
+  # TestCIRunsE2EOnlyOnceAPullRequestIsReady (internal/modulegate).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # ⚠ NO `schedule` (nightly) TRIGGER, ON PURPOSE (PR #691): a scheduled run
+  # lands on main's HEAD sha, and the downstream release tool refuses a sha
+  # unless EVERY CI run for it succeeded (see the tag filter above) — so one
+  # flaky nightly would block releasing that sha. The `schedule` branches in
+  # the `test` job (restore no cache) are ready for a nightly that does not
+  # count against a release; adding one is the operator's call.
 
-# 🔴 ONLY A PULL REQUEST'S RUNS CANCEL EACH OTHER; A PUSH TO `main` IS NEVER
-# CANCELLED OR DROPPED. A newer commit on a PR supersedes the older run of the
-# SAME PR (group `refs/pull/N/merge`), so that run is cancelled. A commit on
-# `main` is a distinct state of the trunk, and a cancelled run there is a commit
-# nobody ever got a verdict on — which happened under the previous
-# `ci-${{ github.ref }}` group, where a later push to `main` cancelled one.
+# 🔴 A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR OR ON `main`; A
+# vX.Y.Z TAG RUN IS NEVER CANCELLED OR DROPPED.
 #
-# ⚠ SO A NON-PR RUN GETS A GROUP OF ITS OWN (`run_id`), NOT MERELY
-# `cancel-in-progress: false`. A concurrency group holds one running and ONE
-# pending run, and a newer pending run REPLACES (cancels) the older pending one
-# whatever `cancel-in-progress` says — three quick pushes to `main` sharing a
-# group would silently drop the middle one. A group nothing else can join has
-# no pending slot to lose. Pinned as an exact string by
-# TestCIConcurrencyCancelsOnlyPullRequestRuns (internal/modulegate).
+# PULL REQUESTS: a newer commit on a PR cancels the older run of the SAME PR
+# (group `refs/pull/N/merge`).
+#
+# `main` (operator decision 2026-11-16): a newer push to `main` cancels the
+# older in-progress `main` run (group `refs/heads/main`). Until then every
+# `main` push ran in full in a group of its own, so a burst of merges queued
+# several full suites, each verdict landing after the commit was already
+# history. A cancelled `main` run leaves THAT commit without a verdict — the
+# reason this was once ruled out — and that is now accepted because the
+# release path no longer needs one: the downstream release tool, asked to
+# release a commit whose `main` run was cancelled, waits for the newest `main`
+# run whose head CONTAINS that commit and releases that green descendant
+# instead. A FAILED run still refuses. A shared group also means a newer PENDING run
+# replaces an older pending one (that is GitHub's rule whatever
+# `cancel-in-progress` says): the dropped middle commit of a burst is contained
+# in the run that replaced it, which is the same trade.
+#
+# 🔴 A TAG RUN KEEPS A GROUP OF ITS OWN (`run_id`) AND `cancel-in-progress:
+# false`. It publishes the release images and the GitHub release (`image-*`,
+# `release`); cancelling it part-way could leave a version half-published, and
+# the release tool pushed that tag expecting it to complete. Only a ref equal
+# to `refs/heads/main` or a pull_request event joins a shared group, so a tag —
+# or any trigger added later — can never be cancelled by, or replace, another
+# run. (A `main` run's own `image-*` jobs publish only `:<sha7>`; cancelling one
+# part-way leaves that sha unpublished, never a release version moved, and
+# ghcr-push.sh never overwrites a published tag.)
+#
+# Pinned as an exact string by TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags
+# (internal/modulegate).
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 jobs:
+  # Local: python3 .github/scripts/tag_gate.py decide --repo ZacxDev/muster \
+  #          --workflow ci.yml --sha <sha> --ref-type tag     (needs `gh` auth)
+  #
+  # 🔴 ON A vX.Y.Z TAG, THE TEST JOBS RUN ONLY IF THE SAME COMMIT'S MAIN RUN DID
+  # NOT SUCCEED. 110 of 110 tag runs (2026-10-30 → 11-13) landed on a commit
+  # whose main run had concluded success; re-testing it cost 72 runner-hours
+  # and turned 10 of them red on flakes, each holding a release back (the
+  # downstream release tool takes only a sha whose CI runs ALL succeeded).
+  # Operator decision, PR #655. Every test job below `needs` this one and runs
+  # unless it answered retest=false; the image and release jobs always run.
+  # FAIL-CLOSED: a lookup error, no completed main run, or one that did not
+  # succeed answers retest=true (.github/scripts/tag_gate.py; its tests are
+  # tests/tag_gate_test.py). Skipped on every non-tag run, where its skip is
+  # what lets the suite start at once.
+  main-verdict:
+    name: tag on a commit main already passed? (tags only)
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      retest: ${{ steps.decide.outputs.retest }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: decide from main's run for this commit
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/tag_gate.py decide --repo "$GITHUB_REPOSITORY" --workflow ci.yml --sha "$GITHUB_SHA" --ref-type "$GITHUB_REF_TYPE" >> "$GITHUB_OUTPUT"
+
   # Local: make build && make vet
   #
   # ⚠ THIS JOB NEEDS NO CSS STEP, AND THE REASON CHANGED. It used to read "muster
@@ -68,6 +141,8 @@ jobs:
   # "stale", which is what the `css` job below exists to catch.
   build:
     name: build + vet
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -94,10 +169,31 @@ jobs:
       - name: verb ledger (the built CLI exposes exactly its specified verbs)
         run: make verb-ledger
 
-  # Local: make test-db && make test
+  # Local: make test-db && make test (the whole suite in one run; the shards
+  # below are a CI-only split of exactly that set).
+  #
+  # 🔴 THE SUITE RUNS AS SHARDS, EACH ON ITS OWN RUNNER WITH ITS OWN POSTGRES.
+  # One package was this job's wall time: internal/api, 950-1522 s of a 20-31
+  # min job on main (runs 43473563533, 43478905382) — 2,678 serial top-level
+  # tests sharing one database — while every other package together summed
+  # 1,113-1,405 s across the runner's cores. `-p` cannot split a package, so:
+  # shard 0 runs every package except internal/api, and shards 1.. run
+  # internal/api's tests round-robin by name (tests/goshard.py). The partition
+  # is total by construction because every shard is handed the runner's own
+  # `strategy.job-index` / `strategy.job-total` — NOT matrix values, so editing
+  # the matrix list cannot leave an index unrun or run one twice. Adding a
+  # shard is one more matrix entry and nothing else.
   test:
-    name: test (postgres)
+    name: test (postgres, shard ${{ strategy.job-index }})
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard always finishes, so one red shard never hides another's.
+      fail-fast: false
+      matrix:
+        # ⚠ COSMETIC: only the COUNT matters (see above).
+        shard: [0, 1, 2]
 
     # 🔴 A `services:` CONTAINER, NOT A `docker run` FROM INSIDE THE SUITE. It
     # gives the external-DSN path for free on a hosted runner: no Docker-daemon
@@ -134,28 +230,204 @@ jobs:
       # executed all of it. A skip is invisible in a verdict. With it, an
       # unavailable database is a hard failure that names the variable.
       MUSTER_TEST_REQUIRE_DB: "1"
+      # 🔴 MULTI-PROCESS internal/api: each api shard runs its share as
+      # this many `go test` PROCESSES at once, process k against its own Postgres
+      # server on port 5431+k, so no two processes share a server (internal/dbtest
+      # names a package's database after the package, so two processes on one
+      # server would collide). internal/api's tests are serial within a process
+      # and the runner has 4 vCPU; shard 0 stays one process.
+      MUSTER_TEST_PROCS: ${{ strategy.job-index == 0 && 1 || 3 }}
+      # 🔴 A PER-RUN VALUE, READ ONLY BY THE TESTS WHOSE RESULT GO'S TEST CACHE
+      # MUST NEVER REPLAY: each runs `go list ./...` (or similar) in a subprocess,
+      # whose reads the cache cannot see. Go keys a cached result on every
+      # variable the test read, so a new value here is always a cache miss for
+      # them. The readers: `git grep -n MUSTER_TEST_NOCACHE -- '*_test.go'`.
+      MUSTER_TEST_NOCACHE: ${{ github.run_id }}-${{ github.run_attempt }}
+      # No __pycache__ in the tree from the python steps: a directory listing a
+      # Go test reads would then differ on every run.
+      PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
       - uses: actions/checkout@v6
 
+      # 🔴 `cache: false`: setup-go's own cache is keyed on go.sum ALONE, with no
+      # restore-keys, and is saved only when that key misses — so it was saved
+      # once per go.sum by whichever job got there first and then restored,
+      # frozen, forever. Every test in this job re-ran on every run (0 of the
+      # suite's packages reported `(cached)` on main run 43722000476). The
+      # cache below replaces it for this job.
       - uses: actions/setup-go@v6
+        id: go
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
+
+      # 🔴 GO'S BUILD AND TEST CACHE, ENFORCED. Go re-runs a package whenever its
+      # test binary, the files and directories its tests opened inside the
+      # module, the environment variables they read, or the cacheable flags
+      # (-run, -timeout, …) changed; anything else replays the recorded events,
+      # which tests/verdict.py counts exactly as it counts a real run. What Go
+      # cannot see, and how each is covered:
+      #   - a file's BYTES (it keys a file on size+mode+mtime): tests/gomtime.py
+      #     below makes the mtime a function of the git object id.
+      #   - what a SUBPROCESS reads: MUSTER_TEST_NOCACHE above.
+      #   - tools outside the module (git, tmux, sh): the runner IMAGE VERSION
+      #     is in every SAVED key, and a restore with an unchanged go.sum
+      #     prefers a cache from the same image version, but FALLS BACK to
+      #     another image version of the same OS (and once go.sum changes, the
+      #     last prefix takes the newest cache from any image version).
+      #     Operator decision 2026-11-15: two hosted image versions are in
+      #     rotation at once, and requiring a match left shard 0 cold on main
+      #     run 43741778087. 🔴 RESIDUAL RISK, ACCEPTED: a test that shells out
+      #     to a system binary the image changed (e.g. git) can replay a stale
+      #     pass until one of its own inputs changes, because Go keys nothing on
+      #     the binaries a test executes. The real-tmux legs below stay uncached.
+      #   - the Postgres SERVICE container, which is NOT part of the runner
+      #     image and floats on its tag: its image DIGEST is in the key and
+      #     every prefix too, so a new server (a tag bump or a minor under
+      #     `16-alpine`) starts cold rather than replaying another server's pass.
+      # One cache per shard SHAPE — shard index, shard count and processes per
+      # shard (MUSTER_TEST_PROCS) are all in the prefix, because each changes the
+      # shard's -run sets, and a cache key is written once. A restore prefix may come from an older commit;
+      # that is the point, and Go's own keys decide what it can replay.
+      # ⚠ NO NIGHTLY EXISTS (removed in #691, see the `on:` block): nothing on
+      # `main` currently re-runs the suite uncached, so a cache-replayed green is
+      # caught only when the package's own inputs next change. The restore below
+      # still skips a `schedule` event, so a nightly would be uncached — but
+      # adding one is gated on the release tool's rule that EVERY CI run on a
+      # sha must pass.
+      - name: Go cache key
+        id: gocache
+        run: |
+          {
+            pg=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
+            pg=${pg#sha256:}
+            [ -n "$pg" ] || { echo "no Postgres service image digest" >&2; exit 1; }
+            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}p${MUSTER_TEST_PROCS}"
+            echo "image=img${ImageVersion}"
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+      - name: restore Go's build and test cache
+        if: ${{ github.event_name != 'schedule' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.gocache.outputs.build }}
+            ${{ steps.gocache.outputs.mod }}
+          # Most specific first: same go.sum AND image version, then same
+          # go.sum on any image version of this OS, then anything for the shard.
+          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-
+            ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}-
+
+      - name: start this shard's extra Postgres servers (one per extra process)
+        if: ${{ strategy.job-index != 0 }}
+        run: |
+          img=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
+          for k in $(seq 2 "$MUSTER_TEST_PROCS"); do
+            docker run -d --name "pg$k" -p "$((5431 + k)):5432" \
+              -e POSTGRES_USER=muster -e POSTGRES_PASSWORD=muster -e POSTGRES_DB=muster_test "$img"
+          done
+          for k in $(seq 2 "$MUSTER_TEST_PROCS"); do
+            for _ in $(seq 60); do
+              docker exec "pg$k" pg_isready -U muster -d muster_test -h 127.0.0.1 >/dev/null 2>&1 && break
+              sleep 1
+            done
+            docker exec "pg$k" pg_isready -U muster -d muster_test -h 127.0.0.1
+          done
 
       # Migrate the TEMPLATE once. Skipping this does not break anything — each
       # package would bootstrap its own copy — but it is the difference between
       # one schema build and one per package.
-      - name: migrate the template database
-        run: go run ./cmd/muster-migrate
-        env:
-          DATABASE_URL: ${{ env.MUSTER_TEST_DATABASE_URL }}
+      - name: migrate the template database (one per server)
+        run: |
+          go build -o "$RUNNER_TEMP/muster-migrate" ./cmd/muster-migrate
+          for k in $(seq 1 "$MUSTER_TEST_PROCS"); do
+            DATABASE_URL="postgres://muster:muster@127.0.0.1:$((5431 + k))/muster_test?sslmode=disable" "$RUNNER_TEMP/muster-migrate"
+          done
 
       # The verdict below is an instrument, so its refusals are exercised first:
       # one synthetic stream per refusal (skip, zero verdicts, failed test, failed
-      # package, unreadable input). Milliseconds, and no database.
-      - name: verdict.py can refuse
-        run: python3 tests/verdict_test.py
+      # package, unreadable input). Milliseconds, and no database. So is the
+      # shard planner: its partition (every test in exactly one shard) and its
+      # refusals, on synthetic lists. Both in EVERY shard, before either is used.
+      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed, main_red.py acts only on main's head
+        run: |
+          python3 tests/verdict_test.py
+          python3 tests/goshard_test.py
+          python3 tests/tag_gate_test.py
+          python3 tests/main_red_test.py
+          python3 tests/gomtime_test.py
+
+      # The repository-level checks below run once, in shard 0.
+      # INSTALL.md's shell blocks against faked docker/curl/tailscale/ssh.
+      - name: INSTALL.md's blocks do what they say
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/install_guide_test.py
+
+      # docs/features.md's anchors (the feature hints link to them), and the
+      # compose file, .env.example and the server's variables agreeing.
+      - name: docs/features.md, .env.example and the compose file agree
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/features_config_test.py
+
+      # `make run`'s development hook token: made without openssl, once, mode
+      # 600, and never an empty or short value written or reused.
+      - name: make run's development hook token is never empty
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/dev_hook_token_test.py
+
+      # Every install and test input still boots: the e2e launcher arms the hook
+      # tier, nothing sets an empty MUSTER_HOOK_TOKEN, nothing scrapes /metrics
+      # from a main listener (kind, e2e and the release dry run skip drafts).
+      - name: every way the repository starts muster-server satisfies its boot rules
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/boot_inputs_test.py
+
+      # docs/guides/*.md and docs/README.md's table of them agree, each guide
+      # has its five parts and spells no port or model id, and docs/features.md
+      # links every feature page and has a Contents row per section.
+      - name: the guides, their index and docs/features.md agree
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/docs_guides_test.py
+
+      # The front door: the community files exist, the issue templates parse,
+      # no internal notes are tracked or linked, the README's and the docs
+      # index's links and images resolve, its badges, and its install table
+      # matching the asset set scripts/release-build.sh builds.
+      - name: the README, the docs index and the community files
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/repo_front_door_test.py
+
+      # The Claude Code plugin marketplace: names, source path, skill
+      # frontmatter, and the setup skill pointing at INSTALL.md's URL.
+      - name: the Claude Code plugin is what the README installs
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/claude_plugin_test.py
+
+      # 🔴 THE REQUIRED TESTS ARE GIVEN TO THE PLANNER, NOT TO verdict.py
+      # DIRECTLY: each is in exactly one internal/api shard, so goshard.py hands
+      # its `--require` on only to the shard that runs it, and REFUSES (in every
+      # api shard) if one is not in internal/api's test list at all — a rename,
+      # deletion or build tag still fails CI by name. The `-race -cover` after
+      # `--` are the run's flags, so `go test -list` reuses the run's build.
+      #
+      # ⚠ THE OUTPUT FILES ARE WORD-SPLIT BY `$(cat …)` BELOW; goshard.py refuses
+      # any token with whitespace or a glob character, so that is safe.
+      - name: plan this shard (every package but internal/api, or a share of internal/api's tests)
+        run: >-
+          python3 tests/goshard.py
+          --shard ${{ strategy.job-index }} --of ${{ strategy.job-total }}
+          --split ./internal/api
+          --require TestEveryRouteIsClassifiedForIsolation
+          --require TestNoRouteLetsOneUserReachAnothersData
+          --require TestAnotherUsersWritesNeverReachYourEventStream
+          --procs ${{ env.MUSTER_TEST_PROCS }}
+          --args-out "$RUNNER_TEMP/go-test-args" --verdict-out "$RUNNER_TEMP/verdict-args"
+          -- -race -cover
 
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
@@ -195,25 +467,141 @@ jobs:
       # 🔴 THE ISOLATION WALK IS REQUIRED BY NAME (accounts PR 3c). `--require`
       # refuses the run unless each named test is IN it and PASSED, so the gate
       # cannot stop running quietly — a rename, a deletion or a build tag that
-      # filters it out fails this step the same way a red walk does.
+      # filters it out fails this step the same way a red walk does. The names
+      # reach verdict.py through the plan step above (its owning shard only).
+      #
+      # ⚠ `-timeout 20m`, NOT go test's default 10m, which is PER PACKAGE: under
+      # -race -cover internal/api took 460-575 s on main's runs and passed 600 s
+      # on a runner that was slower across every package (agentprovision 123 s vs
+      # 91 s), panicking mid-suite with nothing hung. A real hang still fails here.
+      # ⚠ RAISED TO 30m (PR #572): by then internal/api took 1093 s on main
+      # (run 42870914465) and 1179 s on that branch (run 42866998195), against the
+      # 1200 s cap; two runs of the branch rebased onto main then panicked at
+      # 1200 s mid-suite with nothing hung (running tests: 0-1 s each). Since
+      # the split, no shard comes near it; the cap stays as the hang detector.
+      # Directly before the suite, so no earlier step can re-stamp a file.
+      - name: content-addressed mtimes (so Go's test cache can match a fresh checkout)
+        run: python3 tests/gomtime.py
+
       - name: go test, and assert nothing skipped (one run)
+        # gocachetest=1 makes `go` say, per package on stderr, whether Go's
+        # test cache answered and why not ("input file … too new", a changed
+        # variable): the only account of a miss. Go hashes GODEBUG into every
+        # cached result's key, so removing it costs one cold run, nothing else.
+        env:
+          GODEBUG: gocachetest=1
+        # The MUSTER_TEST_PROCS processes run at once, each to its own
+        # -json file, and each exit status is written down; this step itself
+        # always exits 0 so the verdict below always reads the streams. The log
+        # arrives when the processes end, not streamed.
+        run: |
+          pids=()
+          for k in $(seq 1 "$MUSTER_TEST_PROCS"); do
+            MUSTER_TEST_DATABASE_URL="postgres://muster:muster@127.0.0.1:$((5431 + k))/muster_test?sslmode=disable" \
+              go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args.$k") \
+              > "$RUNNER_TEMP/go-test.$k.json" 2> "$RUNNER_TEMP/go-test.$k.err" &
+            pids+=("$!")
+          done
+          : > "$RUNNER_TEMP/go-test.rcs"
+          for pid in "${pids[@]}"; do
+            rc=0; wait "$pid" || rc=$?
+            echo "$rc" >> "$RUNNER_TEMP/go-test.rcs"
+          done
+          cat "$RUNNER_TEMP"/go-test.*.err >&2
+          echo "go test exit status per process: $(tr '\n' ' ' < "$RUNNER_TEMP/go-test.rcs")"
+
+      # ONE verdict over every process's stream (it counts tests, so the union
+      # is the shard's total), then every process's exit status: a run that
+      # exited non-zero over a clean stream still fails here, which is what
+      # pipefail carried when go test was the left side of the pipe.
+      - name: the verdict over every process, and every exit status
         run: |
           set -o pipefail
-          go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
+          cat "$RUNNER_TEMP"/go-test.*.json | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)
+          [ "$(wc -l < "$RUNNER_TEMP/go-test.rcs")" = "$MUSTER_TEST_PROCS" ] || { echo "missing exit statuses" >&2; exit 1; }
+          while read -r rc; do [ "$rc" = 0 ] || exit "$rc"; done < "$RUNNER_TEMP/go-test.rcs"
+
+      # PER-TEST TIMINGS: the `-json` stream above, tee'd (the SAME union of the
+      # shard's processes the verdict read, never a second run), kept for an external weekly
+      # per-test timing report, which ranks slow and flaky tests across runs. `!cancelled()` so a red run's timings are kept too: a flake
+      # is a pass and a fail on one sha. Its own `test-times-` name, so no
+      # download pattern in this workflow (`e2e-results-*`) can pick it up.
+      # One artifact per ATTEMPT (`-a<run_attempt>`): a re-run of a red shard would
+      # otherwise collide on the name, and the red attempt plus its green re-run on
+      # one sha is exactly the flake the reader counts.
+      - name: keep the go test -json stream (per-test timings)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test.json
+          if-no-files-found: warn
+          retention-days: 8
+
+      # Saved even when a test failed: Go never caches a failing result, and
+      # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
+      # set is ~0.55-0.75 GB per shard (measured on PR #691), the repository's
+      # cache budget is 10 GB, and a PR's cache serves only that PR — so saving
+      # per PR run would evict main's, the one every PR restores. Not on a
+      # `schedule` run (it would restore nothing) or a tag.
+      - name: save Go's build and test cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.gocache.outputs.build }}
+            ${{ steps.gocache.outputs.mod }}
+          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
       # too: its choice and its refusals, each on a synthetic artifact tree.
       # Here, on every PR, rather than in the aggregate itself, so a red here
       # never stands in for the suite's own verdict. AFTER the Go suite, so a
       # binder failure never skips it, and `!cancelled()` so a red Go suite
-      # never skips this. Node only, < 1 s.
+      # never skips this. Node only, < 1 s. Shard 0 only.
       - uses: actions/setup-node@v4
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         with:
           node-version: 22
       - name: pick-legs.mjs can choose and refuse
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/pick-legs.test.mjs
+      # The mirrored view's snapshot store's own rules (web/static/mirror-snap.js):
+      # whose record may be painted, the TTL, the size bound. Node only, < 1 s.
+      - name: mirror-snap.js keys, checks and bounds its snapshots
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/mirror-snap.test.mjs
+      # The service worker stores a page script only when its bytes are the
+      # ones its ?v= names (web/static/sw.js namesItsBytes): a rollout's other
+      # pod must not seed the cache-first store. Node only, < 1 s.
+      - name: sw.js stores only scripts whose bytes match their URL
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/sw-install.test.mjs
+      # The server switcher's list rules (web/static/servers.js): addresses
+      # (https only but loopback, no credentials, origin only), dedupe, the
+      # cap, labels, the logo path, and that the script makes no request of
+      # its own. Node only, < 1 s.
+      - name: servers.js keeps only origins and reads nothing from other servers
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/servers.test.mjs
+      # The step-up form script (internal/ui StepUpFormScript): a stale submit
+      # asks first and, once confirmed, submits WITH the button that was
+      # tapped, under the form's own sentence. Node only, < 1 s.
+      - name: the step-up form script keeps the tapped button
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/stepup-form.test.mjs
+      # A team agent's terminal (its whole attach behind a fresh sign-in) rides
+      # out a restart with the ordinary backoff and asks only when the sign-in
+      # is stale: the rendered script (e2e/testdata, kept current by
+      # internal/ui TestTheTerminalScriptFixtureIsCurrent) on a fake socket
+      # and clock. Node only, < 1 s.
+      - name: a team agent's terminal reconnects without asking a fresh operator
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/terminal-gate.test.mjs
+      # Every e2e port offset in e2e/lib/env.ts is its own. Node only, < 1 s.
+      - name: e2e ports are unique
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/env-ports.test.mjs
 
   # Local: make leakscan
   #
@@ -221,9 +609,19 @@ jobs:
   # job rather than a step inside `build` because a security gate buried in
   # another job's log does not appear in the checks list, and a check nobody can
   # see is one nobody notices going missing.
+  #
+  # 🔴 THE DENYLIST'S HMAC KEY IS THE REPOSITORY ACTIONS SECRET
+  # MUSTER_LEAKSCAN_KEY. Without it the scan FAILS CLOSED on this repository's
+  # own pushes and pull requests; on a pull request from a fork, which GitHub
+  # gives no secrets, it warns and skips only the denied-identifier check (the
+  # run on `main` after merge has the key). See tests/leakscan.py.
   leakscan:
     name: leak gate
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
+    env:
+      MUSTER_LEAKSCAN_KEY: ${{ secrets.MUSTER_LEAKSCAN_KEY }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -236,11 +634,57 @@ jobs:
       # the way a clean tree does. (`leakscan.py` also runs the controls
       # internally on every invocation and exits 2 if one misbehaves — this step
       # is the belt to that braces, and it is the one a human reads.)
+      - name: the denylist's key, digest and matching
+        run: python3 tests/leakscan_test.py
+
       - name: self-test — the gate must be able to REFUSE
         run: python3 tests/leakscan.py --self-test
 
       - name: scan
         run: python3 tests/leakscan.py
+
+  # Local: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > govulncheck.json
+  #        python3 .github/scripts/vulngate.py --allowlist .github/govulncheck-allowlist.txt < govulncheck.json
+  #
+  # 🔴 BLOCKING. It fails when a vulnerable symbol is REACHABLE from muster's
+  # own code (call graph, not merely imported) and the advisory is not on
+  # .github/govulncheck-allowlist.txt with an unexpired date, or when any
+  # allowlist entry has expired. The standard library is judged by the
+  # toolchain setup-go installs from go.mod, so this is also the gate that the
+  # `go` directive names a patched Go release, not only that the dependencies
+  # are patched.
+  #
+  # ⚠ IT CAN GO RED WITH NO CODE CHANGE when a new advisory is published. The
+  # fix is the bump its output names (a dependency, or the `go` directive plus
+  # every site internal/modulegate/gotoolchain_test.go lists). Only when no
+  # fixed release exists yet does an advisory go on the allowlist, dated.
+  #
+  # The scan runs in JSON mode, which exits 0 whatever it finds; vulngate.py is
+  # the verdict, and it refuses an output with no scan in it. Its own tests run
+  # first, so a verdict that cannot go red is visible as its own failed step.
+  #
+  # Its own job, like `leakscan`, so the verdict shows in the checks list. It is
+  # in publish-gate's needs, which blocks images and the release on it.
+  govulncheck:
+    name: govulncheck (reachable vulnerabilities)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: the verdict can refuse (allowlist expiry, unlisted advisory, malformed input)
+        run: python3 tests/vulngate_test.py
+      - name: scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > govulncheck.json
+      - name: verdict (reachable advisories against the allowlist)
+        run: python3 .github/scripts/vulngate.py --allowlist .github/govulncheck-allowlist.txt < govulncheck.json
 
   # Local: nix build .#muster-cli .#muster-migrate .#muster-mirror --no-link -L
   #
@@ -269,6 +713,8 @@ jobs:
   # named attributes would reach.
   nix:
     name: nix outputs
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -304,6 +750,8 @@ jobs:
   # the only thing that can see that.
   css:
     name: stylesheet
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -349,6 +797,8 @@ jobs:
   # suite is the `mirror-tmux` job below.
   ccd-tmux:
     name: ccd (real tmux)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -364,6 +814,13 @@ jobs:
           sudo apt-get install -y -qq tmux
           command -v tmux
           tmux -V
+
+      # docs/mirroring.md's "bring a session you already have into tmux"
+      # commands, run against a private tmux server with a fake claude: the
+      # advice must start the conversation even when a `work` session already
+      # exists, and must not close the window when there is nothing to resume.
+      - name: the docs' tmux one-liners do what they say
+        run: python3 tests/docs_tmux_test.py
 
       # CCD_TMUXIT_RAW_ESC=1: Ubuntu 24.04's tmux (3.4 — measured in an
       # ubuntu:24.04 container, as is the image's 3.3a) delivers ESC raw inside a
@@ -382,21 +839,24 @@ jobs:
           set -o pipefail
           go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all
 
-  # Local: go test -tags tmuxit -race -run '^TestTmux' ./internal/mirror/ ./internal/mirrorhost/
+  # Local: go test -tags tmuxit -race -run '^TestTmux' ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/
   #
   # The mirrored-agents tunnel and muster-mirror's tmux backend against real
   # tmux, on private sockets — the same suite discipline as `ccd-tmux` above
   # (tmux asserted, the suite fails rather than skips, the verdict counts).
   #
-  # 🔴 THE HOSTS' tmux, NOT THE RUNNER'S. muster-mirror runs on the operators'
-  # hosts, whose tmux is nixpkgs' (3.7c when written). It types AskUserQuestion
-  # answers with `paste-buffer -S`, which tmux 3.7 added (CHANGES 3.6b -> 3.7;
-  # mirrorhost.MinRawPasteTmux) — on the runner's 3.4 the flag does not exist
-  # and `send-keys` is not refused for a read-only viewer. So this suite runs
-  # against tmux from THIS FLAKE'S locked nixpkgs, asserted to be at least 3.7
-  # before any test, so an older one fails by name.
+  # 🔴 TWO tmux VERSIONS, BECAUSE muster-mirror TYPES ANSWERS TWO WAYS.
+  # It types AskUserQuestion answers with `paste-buffer -S` on tmux 3.7+ (3.7
+  # added -S together with the sanitizing it turns off; CHANGES 3.6b -> 3.7,
+  # tmuxver.MinRawPaste) and with plain `paste-buffer` before 3.7, which never
+  # sanitized (mirrorhost.Tmux.KeyPaste). This job runs the suite against the
+  # flake's locked nixpkgs tmux, asserted to be at least 3.7 before any test;
+  # `mirror-tmux-pre37` below runs it against tmux 3.4 — what Ubuntu 24.04
+  # ships — asserted to be older than 3.7.
   mirror-tmux:
     name: muster-mirror (real tmux, the hosts' version)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -439,7 +899,90 @@ jobs:
       - name: go test (tmuxit), and assert the tmux tests ran and none skipped
         run: |
           set -o pipefail
-          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all
+          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches --require TestTmuxATenantSpawnLandsInItsServerAndReachesItsOwnMuster --require TestTmuxATenantSpawnNeverStartsItsServer --require TestTmuxAMisSetTenantUnitNeitherSpawnsNorSweepsTheDefaultsWorktrees --require TestTmuxATenantOpenCodeSpawnBindsInItsServer
+
+  # Local: PATH="$(nix build --no-link --print-out-paths 'github:NixOS/nixpkgs/nixos-24.05#tmux^out')/bin:$PATH" \
+  #          go test -tags tmuxit -race -run '^TestTmux' ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/
+  #
+  # The same suite against a tmux BEFORE 3.7 — 3.4, Ubuntu 24.04's — where
+  # `paste-buffer -S` does not exist and answers are typed with the plain paste
+  # (mirrorhost.KeyPastePlain). Pinned from the frozen nixos-24.05 branch, not
+  # the runner's apt, so a runner upgrade cannot turn this into a second 3.7+
+  # run without failing the version assertion by name.
+  # TestTmuxKeyPasteMatchesTheVersion is --require'd (it fails unless the
+  # server reports the plain paste on this tmux), and so are the answer and
+  # the picker Escape: the only tests that fail when AnswerAsk or CancelAsk
+  # stops passing the paste mode on (a -S paste is refused by tmux 3.4; 3.7+
+  # never sees it).
+  mirror-tmux-pre37:
+    name: muster-mirror (real tmux 3.4, before paste-buffer -S)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: install zsh, and fail if it is not there
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zsh
+          command -v zsh
+          zsh --version
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: tmux 3.4 from nixos-24.05, and fail unless it is older than 3.7
+        run: |
+          bin="$(nix build --no-link --print-out-paths 'github:NixOS/nixpkgs/nixos-24.05#tmux^out')/bin"
+          v="$("$bin/tmux" -V)"
+          echo "$v"
+          python3 - "$v" <<'PY'
+          import re, sys
+          m = re.match(r"tmux (?:next-)?(\d+)\.(\d+)", sys.argv[1])
+          assert m, f"cannot read the tmux version {sys.argv[1]!r}"
+          assert (int(m[1]), int(m[2])) < (3, 7), f"{sys.argv[1]} is not older than 3.7: this job would not exercise the plain paste"
+          PY
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: go test (tmuxit), and assert the tmux tests ran, none skipped, and the plain paste was the one used
+        run: |
+          set -o pipefail
+          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all --require TestTmuxKeyPasteMatchesTheVersion --require TestTmuxAnswerAskTypesThroughAReadOnlyViewer --require TestTmuxCancelAskSendsOneEscape
+
+  # Local (on a Mac): go test -race ./internal/mirrorhost/... ./cmd/muster-mirror/...
+  #
+  # 🔴 THE ONLY PLACE THE macOS PROCESS LOOKUP RUNS FOR REAL. Linux CI tests its
+  # parsers against synthetic fixtures; this job runs the same packages on a
+  # GitHub macOS runner, where procsrc_darwin_test.go reads the runner's own
+  # processes through the real `ps`, kern.procargs2 sysctl and `lsof`.
+  # TestDarwinSourceReadsThisHostsOwnProcesses is --require'd, so a build tag or
+  # rename that stops it running fails the job instead of passing it. No tmux
+  # and no database: neither package needs one outside its tmuxit tests.
+  mirror-macos:
+    name: muster-mirror (macOS, real ps/sysctl/lsof)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: go test (darwin), and assert the real-process test ran
+        run: |
+          set -o pipefail
+          go test -race -json ./internal/mirrorhost/... ./cmd/muster-mirror/... | python3 -u tests/verdict.py --echo summary --require TestDarwinSourceReadsThisHostsOwnProcesses
 
   # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \
   #          && docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 -e CC_SMOKE_VOLUME=fresh claude-code-agent cc-smoke
@@ -449,8 +992,13 @@ jobs:
   # hook arriving at ccd through `ccd hook` — under ccd's supervisor, which
   # restarts it in-pod after a typed `/exit`. It is given NO credential (the smoke
   # supplies a deliberately invalid token) and sends no turn.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see "DRAFT PULL REQUESTS SKIP THE
+  # INTEGRATION JOBS" above `e2e-leg`).
   ccd-image:
     name: claude-code-agent image smoke
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -461,6 +1009,13 @@ jobs:
       # A FRESH volume at /data, shaped as local-path + fsGroup 1000 makes one
       # (root:1000, 2777). A tmpfs, not a named volume: docker copies the image's
       # own uid-1000 /data into an empty named volume, which hides the shape.
+      # A deploy-key pool's two uids on this image: the key holder's ssh runs
+      # as 1001, and the session (1000) clones and fetches the holder's
+      # mirror with production's flags (pinned; see the script). Root only to
+      # switch uids.
+      - name: cc-deploykey-smoke (holder uid 1001, session uid 1000)
+        run: docker run --rm --user 0 claude-code-agent:ci cc-deploykey-smoke
+
       - name: cc-smoke (fresh volume)
         run: docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 -e CC_SMOKE_VOLUME=fresh claude-code-agent:ci cc-smoke
 
@@ -480,6 +1035,14 @@ jobs:
           docker run --rm --user 0 -v cc-smoke-legacy:/data:nocopy claude-code-agent:ci \
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume claude-code-agent:ci cc-smoke
+
+      # The image as deploy/docker-compose.yml's own `chief` service (`ccd
+      # compose`), with a stand-in for muster writing spec.json: the real ccd
+      # and CLI started, restarted, wiped and refused through specs muster
+      # never writes. Runs on the runner, not in the image: it drives
+      # `docker compose`.
+      - name: compose-smoke (ccd compose, real ccd and CLI)
+        run: images/claude-code-agent/compose-smoke.sh claude-code-agent:ci
 
       - uses: actions/setup-go@v6
         with:
@@ -528,8 +1091,38 @@ jobs:
   # the JSON report and fails on any failure or ANY skip — the PAIR is printed,
   # never a bare exit code. `playwright test` exits 0 when everything skipped; that is the green
   # this step exists to refuse.
+  #
+  # 🔴 NOT ON A DRAFT PULL REQUEST (operator decision, 2026-11-16). 166 of the
+  # 184 CI runs of the last 50 merged PRs ran while the PR was a draft, and the
+  # four legs were half of each run's job-minutes and its longest path. A
+  # draft's runs skip the legs; marking it ready starts a full run that has
+  # them (the `ready_for_review` trigger), and every push to `main` or a tag
+  # runs them as before. The `e2e` job below is the required check and is never
+  # satisfied by a draft run (see there).
+  #
+  # 🔴 DRAFT PULL REQUESTS SKIP THE INTEGRATION JOBS TOO, NOT ONLY THE LEGS.
+  # With the legs gone a draft run still started more jobs than the account
+  # runs at once, so every job queued for a slot (measurements: PR #778). The
+  # jobs below that build images, clusters or the whole compose stack are
+  # skipped on a draft as the legs are: `release-dry-run`, `chart-kind`,
+  # `ccd-image`, `docshots` and `image-pr`. A draft keeps the fast feedback:
+  # build + vet, the Go suite, the leak gate, nix, the stylesheet, the
+  # real-tmux and macOS suites, and the chart's lint and ledgers. Marking the
+  # PR ready runs all of them (`ready_for_review`), and so does every push to
+  # `main` and every tag.
+  #
+  # ⚠ NONE OF THEM IS A REQUIRED CHECK (only `e2e (playwright, chromium)` is),
+  # and a SKIPPED job counts as passing for branch protection — so if one is
+  # ever made required, it needs the treatment the `e2e` job has (a draft name
+  # that never carries the required one), or a ready PR could merge on a
+  # draft run's skip. `publish-gate` is skipped on a draft too, so it never
+  # reads these skips as refusals; on a ready PR it still refuses any skip.
+  # The set is pinned as a ledger by
+  # TestCIDraftRunsSkipExactlyTheIntegrationJobs (internal/modulegate).
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     strategy:
       # Every leg always finishes, so one red leg never hides another's verdict.
@@ -541,7 +1134,12 @@ jobs:
         # here and not in the JSON throws at config load. It is not GENERATED
         # from the JSON because that takes a job of its own ahead of the legs:
         # one more runner slot and one more serial hop on every run.
-        leg: [1, 2]
+        #
+        # ⚠ FOUR LEGS (was two): at two, each leg was 29-31 min on main
+        # (runs 43473563533, 43478905382) and the e2e path was the run's
+        # longest. Measured sum of every spec: ~3,330 s, so four legs carry
+        # ~830 s each plus ~2 min of global-setup per leg. See e2e/legs.mjs.
+        leg: [1, 2, 3, 4]
     services:
       postgres:
         image: postgres:16-alpine
@@ -637,19 +1235,43 @@ jobs:
   # not red. Not `always()`: that also ran it on a CANCELLED run (a PR run
   # superseded by a newer push), where it went red on a verdict nobody needs and
   # took a runner slot to do it.
+  #
+  # 🔴 `e2e (playwright, chromium)` IS THE CHECK BRANCH PROTECTION REQUIRES ON
+  # `main`, AND A DRAFT RUN NEVER PRODUCES A CHECK OF THAT NAME. Branch
+  # protection counts a SKIPPED job as passing, so a job that merely skipped on
+  # a draft would leave a passing `e2e (playwright, chromium)` on the head
+  # commit, and the PR could merge the moment it was marked ready, before the
+  # ready run's e2e had started. So on a draft this job still RUNS, but under
+  # another name, `e2e (draft PR, not run)`, and
+  # it only asserts that the legs were skipped. The required name exists only
+  # on a non-draft run, where it fails unless every leg succeeded. A ready PR
+  # therefore waits for e2e that actually ran. Pinned by
+  # TestCIRunsE2EOnlyOnceAPullRequestIsReady (internal/modulegate).
   e2e:
-    name: e2e (playwright, chromium)
-    needs: e2e-leg
-    if: ${{ !cancelled() }}
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'e2e (draft PR, not run)' || 'e2e (playwright, chromium)' }}
+    needs: [main-verdict, e2e-leg]
+    # Skipped with the legs on a tag whose main run vouched for it (main-verdict).
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
+    env:
+      E2E_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
     steps:
+      - name: a draft PR runs no e2e, so the legs must have been skipped
+        if: ${{ env.E2E_DRAFT == 'true' }}
+        run: |
+          echo "draft pull request: e2e-leg result: ${{ needs.e2e-leg.result }} (the legs run once the PR is marked ready)"
+          test "${{ needs.e2e-leg.result }}" = skipped
+
       - uses: actions/checkout@v6
+        if: ${{ env.E2E_DRAFT != 'true' }}
 
       - uses: actions/setup-node@v4
+        if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           node-version: 22
 
       - name: every leg succeeded
+        if: ${{ env.E2E_DRAFT != 'true' }}
         run: |
           echo "e2e-leg result: ${{ needs.e2e-leg.result }}"
           test "${{ needs.e2e-leg.result }}" = success
@@ -657,6 +1279,7 @@ jobs:
       # Every attempt's leg artifacts, each in a directory of its own (they are
       # named by attempt, so none overwrites another).
       - uses: actions/download-artifact@v4
+        if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           pattern: e2e-results-leg-*
           path: e2e-legs
@@ -673,39 +1296,465 @@ jobs:
       # passing test (NOT RUN: a spec in no leg, or a misspelled legs.json
       # entry), none in two reports (RAN TWICE: a spec in two legs).
       - name: verdict — the pass floor and the skip cap, over every leg
+        if: ${{ env.E2E_DRAFT != 'true' }}
         working-directory: e2e
         run: |
           node pick-legs.mjs ../e2e-legs > ../e2e-legs-picked.txt
           mapfile -t picked < ../e2e-legs-picked.txt
           node verdict.mjs --all "${picked[@]}"
 
+  # Local: make docshots-check (what `make e2e` needs, plus Docker).
+  #
+  # 🔴 THE DOCS SCREENSHOT SPEC (e2e/docshots), RUN AS A CHECK. It is the
+  # generator behind docs/img and the README's GIFs, and nothing ran it between
+  # UI changes: #479 collapsed the touch composer, the suite moved to
+  # revealBox() and this spec did not, so `make screenshots` failed at its
+  # step-up (passkey) shot and the README kept a GIF of a page that no longer
+  # existed. Every shot is taken here, into a temp dir — CI never rewrites
+  # docs/img — and `verdict.mjs --docshots` judges the JSON report: no failure, no
+  # skip, every test from docshots/docs.spec.ts.
+  #
+  # ⚠ DELIBERATELY NOT IN `publish-gate`'s needs: a red docshots run cannot hold
+  # back an image publish, because what it guards is the docs generator, not
+  # what ships. It is still part of the `ci` run, so — like every job here — a
+  # red result on a main or tag run leaves that sha refused by the downstream
+  # release, which takes only a sha whose CI runs are ALL success.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`).
+  docshots:
+    name: docshots (screenshot spec, chromium)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: muster
+          POSTGRES_PASSWORD: muster
+          POSTGRES_DB: muster_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U muster -d muster_e2e"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      MUSTER_E2E_DATABASE_URL: postgres://muster:muster@127.0.0.1:5432/muster_e2e?sslmode=disable
+      MUSTER_E2E_REQUIRE_FULL: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: install the harness
+        working-directory: e2e
+        run: npm ci --no-audit --no-fund
+
+      - name: install chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: make docshots-check
+        run: make docshots-check
+
+      - name: keep the report (and traces of failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docshots-results-attempt-${{ github.run_attempt }}
+          path: e2e/test-results/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # RELEASE DRY RUN — the tag-time release pipeline, exercised on every run.
+  #
+  # Local, in order:
+  #   scripts/release-build.sh 0.0.0                 (make release-dry-run)
+  #   tests/compose-default-test.sh && scripts/check-compose-default.sh --images
+  #   tests/install-linger-test.sh
+  #   tests/compose-check.sh                          (make compose-check)
+  #   tests/release-publish-test.sh && tests/stt-cohere-source-test.sh
+  #   make image IMAGE=muster-local VERSION=0.0.0 && tests/compose-up.sh muster-local 0.0.0
+  #   tests/compose-default-image.sh                  (the published default, as a clone runs it)
+  #   python3 images/stt-cohere/test_app.py           (needs fastapi, httpx,
+  #                                                    python-multipart, numpy, ffmpeg)
+  #
+  # 🔴 THE SAME SCRIPT THE `release` JOB RUNS, WITH A PLACEHOLDER VERSION. It
+  # builds every asset, refuses an asset set that differs from the contract by
+  # one file, verifies checksums.txt and runs each native binary's version flag.
+  # The compose stack is then brought up for real from the image this run
+  # builds, and must answer /readyz, the sign-in page and a password sign-in.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`): "every pull request"
+  # above means every run of one that is ready for review.
+  release-dry-run:
+    name: release dry run (assets + compose + stt-cohere contract)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
+    runs-on: ubuntu-latest
+    steps:
+      # Full history and tags: the compose default is checked against the
+      # newest release tag below this commit.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build the release assets (placeholder version 0.0.0)
+        run: scripts/release-build.sh 0.0.0
+
+      # 🔴 A CLONE RUNS THE NEWEST RELEASE, IT CAN RUN THIS FILE, AND IT EXISTS.
+      # With no .env, deploy/docker-compose.yml runs the version written in it:
+      # that must be at least the file's x-muster-min-version (except the
+      # documented bootstrap: the minimum is the next release, not yet cut),
+      # and the newest vX.Y.Z tag below this commit — the previous one only
+      # WARNS for 3 days after a release, while the bump PR the release flow
+      # (`muster-ops verify`) opens is merged; see the script's header — and
+      # every image it names must be on GHCR under that tag
+      # (`docker manifest inspect`; NEGATIVE CONTROL: a version never released
+      # must be reported missing by the same probe). The rule itself is tested
+      # against a scratch repository first.
+      - name: the compose default is the newest release, and its images exist
+        run: |
+          set -o pipefail
+          tests/compose-default-test.sh
+          scripts/check-compose-default.sh --images | tee /tmp/compose-default.log
+          test "$(grep -c '^ok   ghcr.io/.*:.* exists$' /tmp/compose-default.log)" = 3
+          scripts/stamp-compose-version.sh 0.0.1 < deploy/docker-compose.yml > /tmp/never-released.yml
+          if CHECK_COMPOSE_FILE=/tmp/never-released.yml scripts/check-compose-default.sh --images-only 2> /tmp/never.err; then
+            echo "negative control FAILED: images at 0.0.1 (never released) were reported present"; exit 1
+          fi
+          test "$(grep -c 'does not exist' /tmp/never.err)" = 3
+          echo "ok   negative control: the same probe reports every image at a never-released version missing"
+
+      # 🔴 AND ON AN OLD COMPOSE, NOT ONLY THE RUNNER'S. Compose validates the
+      # whole file before it applies a profile, so a key an old Compose does not
+      # know refuses `up` for EVERY user (#474 round 1 F1: a volume `subpath`,
+      # refused before 2.25). The oldest Compose v2 this file is held to, pinned
+      # by checksum; compose-check's old tier first shows it refuses a subpath.
+      - name: compose file is valid (docker compose config, every profile; and on Compose 2.20.3)
+        run: |
+          set -o pipefail
+          curl -fsSLo /tmp/docker-compose-2.20.3 https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-linux-x86_64
+          echo "f45e4cb687df8b48a57f656097ce7175fa8e8bef70be407b011e29ff663f475f  /tmp/docker-compose-2.20.3" | sha256sum -c -
+          chmod +x /tmp/docker-compose-2.20.3
+          COMPOSE_CHECK_OLD=/tmp/docker-compose-2.20.3 tests/compose-check.sh | tee /tmp/compose-check.log
+          test "$(grep -c '^ok   \[compose 2.20.3' /tmp/compose-check.log)" = 6
+
+      # The tag-only jobs' decision logic, without a tag or GitHub writes:
+      # release-publish.sh against a fake `gh` (create, draft, no-op, refusals)
+      # and the stt-cohere build-or-retag decision against a scratch repo.
+      - name: tag-run logic (release publish, stt-cohere build-or-retag)
+        run: |
+          tests/release-publish-test.sh
+          tests/stt-cohere-source-test.sh
+          tests/install-linger-test.sh
+
+      # Node and the two browsers the zero-config phase signs in with
+      # (e2e/localhost: Chromium and WebKit on http://localhost).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # The zero-config stack first (NO .env: muster-init's generated secrets,
+      # the localhost cookie in Chromium and WebKit, a muster-mirror on
+      # http://localhost with no -allow-http), then the .env stack (an install
+      # from before generated secrets, unchanged) and the fail-fast check,
+      # then the s3, stt and chief profiles with the .env lines
+      # docs/features.md gives. espeak-ng speaks the stt phase's test clips.
+      # The chief phase runs this run's claude-code-agent image against a fake
+      # model behind muster's LLM proxy (tests/compose-chief.override.yml,
+      # tests/fake-llm): real CLI turns and real muster tool calls, no key.
+      - name: bring the compose stack up from this run's images
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng tmux >/dev/null
+          (cd e2e && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium webkit)
+          python3 tests/fake-llm/fake_llm_test.py
+          make image IMAGE=muster-local VERSION=0.0.0
+          docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent-local:0.0.0 .
+          go build -o /tmp/muster-mirror ./cmd/muster-mirror
+          COMPOSE_UP_MIRROR=/tmp/muster-mirror COMPOSE_UP_BROWSERS=1 tests/compose-up.sh muster-local 0.0.0
+
+      # 🔴 THE FILE AT HEAD RUNS THE RELEASE IT DEFAULTS TO, as a clone runs it:
+      # the published image, nothing overridden (#707 round 2, F1 — every
+      # other compose test runs the image this run built, so none could see
+      # that HEAD's file needed a newer muster than its default). SKIPPED only
+      # in the bootstrap (scripts/check-compose-default.sh --state). Both
+      # controls run on every run, bootstrap or not:
+      #   NEGATIVE: the newest release BELOW x-muster-min-version, under this
+      #   file, must NOT SERVE it (COMPOSE_DEFAULT_IMAGE_EXPECT=fail): any
+      #   failure counts — muster-init failing, the server refusing, no ready
+      #   state in time — never one failure's text (#707 round 3); it goes red
+      #   if that release serves, or if its images cannot be pulled;
+      #   POSITIVE: this run's image, tagged as that GHCR name at 0.0.0, under
+      #   a copy stamped 0.0.0, must serve (the harness can go green).
+      - name: the compose file at HEAD runs its default release (and its two controls)
+        run: |
+          set -o pipefail
+          min="$(sed -nE 's/^x-muster-min-version:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?[[:space:]]*$/\1/p' deploy/docker-compose.yml)"
+          test -n "$min"
+          below="$( { git tag --list 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//'; echo "$min"; } | sort -uV | grep -B1 -xF "$min" | head -1)"
+          if [ -n "$below" ] && [ "$below" != "$min" ]; then
+            scripts/stamp-compose-version.sh "$below" < deploy/docker-compose.yml > deploy/.compose-below-min.yml
+            COMPOSE_DEFAULT_IMAGE_EXPECT=fail COMPOSE_DEFAULT_IMAGE_TIMEOUT=120 COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-below-min.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 \
+              tests/compose-default-image.sh | tee /tmp/below.log
+            test "$(grep -c '^ok   compose-default-image: did not serve, as the negative control requires: ' /tmp/below.log)" = 1
+            echo "ok   negative control: the release below the minimum ($below) does not serve this file"
+          else
+            echo "note no release below the minimum $min: no negative control"
+          fi
+          docker tag muster-local:0.0.0 ghcr.io/zacxdev/muster:0.0.0
+          scripts/stamp-compose-version.sh 0.0.0 < deploy/docker-compose.yml > deploy/.compose-this-run.yml
+          COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-this-run.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 tests/compose-default-image.sh | tee /tmp/positive.log
+          test "$(grep -c '^ok   compose-default-image: ' /tmp/positive.log)" = 1
+          echo "ok   positive control: this run's image under the same harness serves the file"
+          tests/compose-default-image.sh | tee /tmp/default-image.log
+          test "$(grep -cE '^(ok   compose-default-image: |SKIP compose-default-image: the bootstrap)' /tmp/default-image.log)" = 1
+
+      # THE ONE-LINER, as a person runs it: `curl -fsSL <release>/install.sh |
+      # sh`, from the 0.0.0 assets built above (served on loopback, so the
+      # release's own checksums.txt verifies every download) and this run's
+      # image. As a FRESH user with a real systemd user manager (linger): a
+      # container has no user manager, so the user service — the step under
+      # test — could not run in one. It must exit 0 (the doctor passed), the
+      # mirror service must be active and this machine connected; run again it
+      # must change nothing (same password, same token) and keep a hand-added
+      # settings line; and it must refuse, changing nothing, a second install
+      # under the same project name and a ~/muster it did not make.
+      - name: install.sh end to end (a fresh user), twice, and its refusals
+        run: tests/install-sh.sh dist muster-local
+
+      # setup-python, not the runner's system python: that one is
+      # "externally managed" (PEP 668) and refuses `pip install`.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # STT_TEST_REQUIRE_FFMPEG turns the suite's "ffmpeg missing" SKIP into a
+      # failure, so a runner image without ffmpeg cannot pass by running nothing.
+      - name: stt-cohere speaks muster's transcription contract (model stubbed)
+        env:
+          STT_TEST_REQUIRE_FFMPEG: "1"
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
+          python -m pip install --quiet fastapi httpx python-multipart numpy
+          python images/stt-cohere/test_app.py
+
+  # ---------------------------------------------------------------------------
+  # THE HELM CHART (charts/muster; docs/kubernetes.md).
+  #
+  # Local (no cluster needed; helm + kubeconform on PATH):
+  #   for f in charts/muster/ci/*.yaml; do helm lint charts/muster -f $f; done
+  #   python3 tests/chart/chart_render_test.py
+  #   go test -tags chart -run '^TestChart' ./internal/modulegate/ ./internal/provision/k8s/
+  #   go build -o /tmp/muster-server ./cmd/muster-server && for f in charts/muster/ci/*.yaml; do
+  #     helm template t charts/muster -n muster -f $f > /tmp/r.yaml &&
+  #     python3 tests/chart/boot_config_check.py /tmp/muster-server /tmp/r.yaml; done
+  #
+  # 🔴 FOUR DIFFERENT CLAIMS, FOUR STEPS — none implies another: the chart
+  # renders and lints (helm); what it renders is valid Kubernetes (kubeconform,
+  # strict, with a negative control); every variable it sets is a row of
+  # configuration.md for the binary that reads it, and its RBAC covers an
+  # instance's whole life through the real driver (go test -tags chart); and
+  # the REAL muster-server accepts each value set's configuration
+  # (boot_config_check.py, with a value set it must refuse as the control).
+  # The released chart's version/appVersion = the release: the last step.
+  chart:
+    name: helm chart (lint, kubeconform, env + RBAC ledgers, boot config)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: install helm and kubeconform (pinned by checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLo helm.tgz https://get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz
+          echo "896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea  helm.tgz" | sha256sum -c -
+          curl -fsSLo kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tgz" | sha256sum -c -
+          mkdir -p bin && tar -xzf helm.tgz -C bin --strip-components=1 linux-amd64/helm && tar -xzf kubeconform.tgz -C bin kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: helm lint and render, every value set
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rendered"
+          n=0
+          for f in charts/muster/ci/*.yaml; do
+            helm lint --strict charts/muster -f "$f"
+            helm template t charts/muster -n muster -f "$f" > "$RUNNER_TEMP/rendered/$(basename "$f")"
+            n=$((n + 1))
+          done
+          test "$n" -ge 4
+          # The schema refuses a value it does not know (a typo would otherwise do nothing).
+          if helm template t charts/muster -f charts/muster/ci/minimal.yaml --set agents.enabeld=true >/dev/null 2>"$RUNNER_TEMP/typo.err"; then
+            echo "NEGATIVE CONTROL FAILED: a misspelled value rendered"; exit 1
+          fi
+          grep -q "enabeld" "$RUNNER_TEMP/typo.err"
+
+      - name: what the chart renders and refuses for values no test set covers
+        run: python3 tests/chart/chart_render_test.py
+
+      - name: kubeconform (strict), every rendered value set, and a negative control
+        run: |
+          set -euo pipefail
+          kc() { kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' "$@"; }
+          kc "$RUNNER_TEMP"/rendered/*.yaml | tee "$RUNNER_TEMP/kc.log"
+          grep -Eq 'Invalid: 0, Errors: 0, Skipped: 0' "$RUNNER_TEMP/kc.log"
+          # A field Kubernetes does not have must be refused (the instrument can go red).
+          sed 's/containerPort:/containerPortz:/' "$RUNNER_TEMP/rendered/minimal.yaml" > "$RUNNER_TEMP/bad.yaml"
+          if kc "$RUNNER_TEMP/bad.yaml"; then echo "NEGATIVE CONTROL FAILED: kubeconform accepted an unknown field"; exit 1; fi
+
+      - name: the chart's env and RBAC ledgers (go test -tags chart)
+        run: |
+          set -o pipefail
+          go test -tags chart -count=1 -run '^TestChart' -json ./internal/modulegate/ ./internal/provision/k8s/ | python3 -u tests/verdict.py --echo all --require TestChartEnvIsDocumentedForTheBinaryThatReadsIt --require TestChartEnvCheckerRefusesWhatItMust --require TestChartRBACCoversAnInstancesWholeLife --require TestChartRBACEvaluatorRefusesWhatItMust
+
+      - name: muster-server accepts every value set's configuration (and refuses the control)
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/muster-server" ./cmd/muster-server
+          for f in "$RUNNER_TEMP"/rendered/*.yaml; do
+            python3 tests/chart/boot_config_check.py "$RUNNER_TEMP/muster-server" "$f"
+          done
+          # The control: a subject the chart's schema lets through (mailto:…) and
+          # the server refuses (not a clean address).
+          helm template t charts/muster -f charts/muster/ci/minimal.yaml --set push.enabled=true \
+            --set-string 'push.subject=mailto:Ops <ops@example.com>' > "$RUNNER_TEMP/refused.yaml"
+          python3 tests/chart/boot_config_check.py "$RUNNER_TEMP/muster-server" "$RUNNER_TEMP/refused.yaml" --expect-refusal 'VAPID_SUBJECT'
+
+      - name: the release's chart carries the release's version (scripts/release-build.sh)
+        run: |
+          set -euo pipefail
+          DIST="$RUNNER_TEMP/dist" scripts/release-build.sh 9.8.7 > /dev/null
+          helm show chart "$RUNNER_TEMP/dist/muster-9.8.7.tgz" | tee "$RUNNER_TEMP/chart.txt"
+          grep -qx 'version: 9.8.7' "$RUNNER_TEMP/chart.txt"
+          grep -qx 'appVersion: 9.8.7' "$RUNNER_TEMP/chart.txt"
+          helm template t "$RUNNER_TEMP/dist/muster-9.8.7.tgz" | grep -q 'image: ghcr.io/zacxdev/muster:9.8.7$'
+
+  # Local: DO NOT run it on a shared workstation (it creates a cluster).
+  #   kind create cluster && make image IMAGE=muster-local VERSION=ci &&
+  #   kind load docker-image muster-local:ci && tests/chart/kind-e2e.sh muster-local ci least-privilege
+  #
+  # The chart on a real cluster. Once per RBAC layout, with the admission
+  # policy on (its default): minimal install -> /readyz -> sign in -> upgrade
+  # with the agent plane on (secrets kept) -> the policy refuses muster a
+  # namespace outside its prefix -> an agent through POST /api/agents -> its
+  # namespace, pod and NetworkPolicy -> destroy -> namespace gone -> no RBAC
+  # refusal in muster's log. The agent is NOT a real Claude session (no
+  # subscription token in CI): see the script. And the `services` leg: the
+  # bundled GoTrue, S3 store and STT RUNNING (a sign-in, an upload into the
+  # store, two clips transcribed), doctor as the notes print it, push and
+  # connector keys kept across off/on, and the documented password rotation.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`); the `chart` job
+  # (lint, kubeconform, ledgers) still runs on drafts.
+  chart-kind:
+    name: helm chart on kind (${{ matrix.leg }})
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [least-privilege, cluster-wide, services]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        if: matrix.leg == 'services'
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: the muster CLI and espeak-ng (services leg)
+        if: matrix.leg == 'services'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/muster" ./cmd/muster
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
+
+      - name: install helm and kind (pinned by checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLo helm.tgz https://get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz
+          echo "896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea  helm.tgz" | sha256sum -c -
+          curl -fsSLo kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
+          mkdir -p bin && tar -xzf helm.tgz -C bin --strip-components=1 linux-amd64/helm && install -m 0755 kind bin/kind
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: build this commit's muster image
+        run: make image IMAGE=muster-local VERSION=ci
+
+      - name: a kind cluster holding the image
+        run: |
+          set -euo pipefail
+          kind create cluster --wait 3m --image kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+          kind load docker-image muster-local:ci
+
+      - name: the chart end to end (${{ matrix.leg }})
+        run: tests/chart/kind-e2e.sh muster-local ci "${{ matrix.leg }}"
+
   # ---------------------------------------------------------------------------
   # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent}).
   #
-  # 🔴 THIS ADDS A REGISTRY; IT DOES NOT MOVE OFF HARBOR. The existing
-  # deployment pulls from a private Harbor, which devrc's `muster-ops release`
-  # (and `make hermes-image` by hand) push to from an operator's host; nothing
-  # here touches that. GHCR exists for clusters that cannot reach that registry.
+  # 🔴 THIS IS ONE REGISTRY, NOT NECESSARILY THE ONLY ONE. A deployment may
+  # also publish to its own private registry with a downstream release tool;
+  # nothing here touches that. GHCR exists for anyone who cannot reach one.
   #
-  # TAGS ARE THE HARBOR TAGS, so a deploy can pin either registry the same way:
-  #   claude-code-agent:<7-char commit sha>               (muster-ops' tag)
+  # TAGS FOLLOW ONE SCHEME, so a deploy can pin any registry the same way:
+  #   claude-code-agent:<7-char commit sha>
   #   muster:<MAJOR.MINOR.PATCH>                          on a v<version> tag push,
-  #       stamped with that VERSION, as muster-ops does;
+  #       stamped with that VERSION;
   #   muster:<7-char sha>                                 on every push to main,
-  #       stamped VERSION=<sha>. The semver is minted by muster-ops at release
-  #       time, outside this repository, so a main push has no version to give it.
-  #
-  # ⚠ THE hermes-agent IMAGE IS DELIBERATELY NOT PUBLISHED HERE: no GHCR
-  # consumer runs the hermes kind, and its nix build costs ~6 minutes per run.
-  # It stays Harbor-only, via `make hermes-image`.
+  #       stamped VERSION=<sha>. The semver is minted at release time, outside
+  #       this repository, so a main push has no version to give it.
   #
   # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a vX.Y.Z tag), AND ONLY AFTER
-  # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`). A pull request builds every
-  # image the same way and pushes nothing; it does log in read-only and probe the
-  # tag it WOULD push, so the registry path is exercised before merge.
+  # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`) — with ONE deliberate
+  # exception, `docshots`, which is not in publish-gate's needs (see that job).
   #
-  # ⚠ THESE JOBS ARE PART OF THE `ci` RUN, SO A GHCR FAILURE BLOCKS A HARBOR
-  # RELEASE. `muster-ops release` refuses a sha whose CI runs are not ALL
+  # 🔴 ON A PULL REQUEST THESE JOBS DO NOT RUN; `image-pr` DOES, WITH NO `needs`.
+  # They used to run on PRs too, pushing nothing — but `needs: publish-gate` made
+  # them wait for the whole suite and then add ~6 min (image-muster) to every
+  # PR's wall time, to build what other jobs had already built: the single-arch
+  # `make image` is release-dry-run's, and the claude-code-agent build + its
+  # cc-smoke and compose-smoke runs are ccd-image's, on the same commit. What a
+  # PR alone checked here — the multi-arch build and the read-only probe of the
+  # tag each image WOULD get — is `image-pr`, in parallel with the suite.
+  #
+  # ⚠ THESE JOBS ARE PART OF THE `ci` RUN, SO A GHCR FAILURE CAN BLOCK A
+  # DOWNSTREAM RELEASE that refuses a sha whose CI runs are not ALL
   # success; a GHCR outage during a `main` run leaves that sha refused until the
   # failed image job is re-run (`gh run rerun --failed`). Accepted.
   #
@@ -718,19 +1767,133 @@ jobs:
   #
   # 🔴 A PUBLISHED TAG IS NEVER OVERWRITTEN (.github/scripts/ghcr-push.sh): a
   # re-run keeps the image already under a commit's tag, and a release version
-  # that already exists fails the job.
+  # that already exists is KEPT only if this commit built it (its revision
+  # label) and fails the job if another commit did (mode `release`).
   #
   # Local: make image IMAGE=muster VERSION=<v>; docker build -f
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, ccd-image, e2e]
+    needs: [main-verdict, build, test, leakscan, govulncheck, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
+    # 🔴 `!cancelled()`, AND THE VERDICT IS THE STEP BELOW, NOT `success()`: a
+    # test job SKIPPED because main-verdict answered retest=false must not skip
+    # this gate (and every publish behind it). tag_gate.py gate passes a job
+    # only if it SUCCEEDED, or was skipped on a run whose main-verdict succeeded
+    # with retest=false; any failure, cancellation or undecided skip refuses.
+    #
+    # 🔴 AND EVERY JOB BELOW IT NEEDS AN EXPLICIT `!cancelled() && needs.<x>.result
+    # == 'success'` CONDITION. A job `if:` without a status function is an implicit
+    # `success()`, and that checks every ANCESTOR, not only the direct needs
+    # (actions/runner#491): main-verdict is skipped on every non-tag run and the
+    # test jobs on a vouched tag, so an implicit success() would skip the images
+    # and the release while this gate passed. Pinned by
+    # TestCIPublishJobsCheckTheirNeedsExplicitly (internal/modulegate).
+    #
+    # 🔴 NOT ON A DRAFT PULL REQUEST: a draft run skips several of its needs
+    # (see above `e2e-leg`), which tag_gate.py gate rightly refuses. On a
+    # ready pull request it still runs, and there it is the one check that
+    # goes red when a test job SKIPPED that should have run (a mis-edited
+    # `if:`): a skip is green to the run and to branch protection.
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo "every test job succeeded for $GITHUB_SHA"
+      - uses: actions/checkout@v6
+      - name: every test job succeeded, or was skipped behind a green main run
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/tag_gate.py gate
+
+  # 🔴 MAIN IS RED, AND SOMEBODY HEARS ABOUT IT. A push to main that goes red
+  # opens (or comments on) ONE issue labelled main-red, which GitHub notifies the
+  # repository's watchers about; the next green main run closes it — that is the
+  # issue's closing condition. Operator decision 2026-11-18, after main HEAD
+  # 4c3d54f was red with nobody notified. The verdict is every job publish-gate
+  # needs plus docshots (the release tool refuses a sha whose docshots went red),
+  # pinned by TestCIMainRedNeedsWhatPublishGateNeeds and read by
+  # .github/scripts/main_red.py: any failure, or any skip other than
+  # main-verdict's (an undecided skip, as tag_gate.py gate treats it), is red; a
+  # cancellation decides nothing; only main's current head may open or close
+  # the issue. The issue is ASSIGNED to the repository owner, because an
+  # assignee is notified whether or not they watch the repository.
+  # ⚠ NOT COVERED: the image jobs downstream of publish-gate (a failed GHCR push).
+  # They would make this job downstream of publish-gate, and every such job must
+  # require publish-gate's success (TestCIPublishJobsCheckTheirNeedsExplicitly).
+  # `!cancelled()` and not success(): it must run when its needs FAILED.
+  # The ONLY job that can write issues, and it can do nothing else.
+  main-red:
+    name: main red? (open or close the main-red issue)
+    needs: [main-verdict, build, test, leakscan, govulncheck, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind, docshots]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: open, update or close the main-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          python3 .github/scripts/main_red.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"
+          --assignee "$GITHUB_REPOSITORY_OWNER"
+          --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # Local: docker buildx build --platform linux/amd64,linux/arm64 .
+  #
+  # The pull-request half of the image jobs below (see the note above
+  # publish-gate): the muster image's multi-arch build — the arm64 half is
+  # cross-compiled, and nothing else on a PR builds it — and the read-only
+  # probe of both tags the push jobs would publish, so the registry path is
+  # exercised before merge. Pushes nothing. No `needs`: it runs beside the suite.
+  # Not on a draft (see above `e2e-leg`): marking the PR ready runs it.
+  image-pr:
+    name: images (multi-arch build + GHCR probe; pull request, pushes nothing)
+    if: ${{ github.event_name == 'pull_request' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: the tags the push jobs would publish
+        id: tag
+        run: |
+          ns="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          short="${GITHUB_SHA::7}"
+          {
+            echo "short=$short"
+            echo "muster=$ns/muster:$short"
+            echo "cca=$ns/claude-code-agent:$short"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same-repository pull requests only: a fork's token cannot read packages.
+      - name: log in to ghcr.io
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: probe the tags it would push (pushes nothing)
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.muster }}'
+          .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.cca }}'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: multi-arch build (pushes nothing)
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION='${{ steps.tag.outputs.short }}' .
 
   image-muster:
     name: muster image (GHCR)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.publish-gate.result == 'success' }}
     needs: publish-gate
     runs-on: ubuntu-latest
     concurrency:
@@ -752,7 +1915,10 @@ jobs:
               echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>; no muster image is published for it"
               exit 1
             fi
-            mode=refuse
+            # `release`, not `refuse`: a re-pushed tag or a re-run keeps an image
+            # this commit already published, and still refuses one built from
+            # any other commit (.github/scripts/ghcr-push.sh).
+            mode=release
           else
             v="${GITHUB_SHA::7}"
             mode=reuse
@@ -769,25 +1935,36 @@ jobs:
           make image IMAGE=muster VERSION='${{ steps.tag.outputs.version }}' \
             DOCKER_BUILD_FLAGS="--label org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY --label org.opencontainers.image.revision=$GITHUB_SHA"
 
-      # Same-repository pull requests only: a fork's token cannot read packages.
       - name: log in to ghcr.io
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: probe the tag it would push (pull request; pushes nothing)
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
+      # 🔴 MULTI-ARCH (linux/amd64 + linux/arm64). The Dockerfile cross-compiles
+      # on the build platform, so the arm64 half needs no emulation: its only
+      # arm64 stage is the distroless COPY. A docker-container builder is
+      # required because the default `docker` driver cannot build more than one
+      # platform. The single-arch `make image` above stays: it is what every
+      # local spelling builds. (A pull request's multi-arch build is `image-pr`.)
+      - uses: docker/setup-buildx-action@v3
 
-      - name: push
-        if: ${{ github.event_name == 'push' }}
-        run: .github/scripts/ghcr-push.sh push 'muster:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.mode }}'
+      - name: push (multi-arch)
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: |
+          .github/scripts/ghcr-push.sh buildx '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.mode }}' \
+            linux/amd64,linux/arm64 -- \
+            --build-arg VERSION='${{ steps.tag.outputs.version }}' \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            .
 
   image-claude-code-agent:
     name: claude-code-agent image (GHCR)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.publish-gate.result == 'success' }}
     needs: publish-gate
     runs-on: ubuntu-latest
     concurrency:
@@ -799,15 +1976,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: the tag this run publishes
+      # The short-sha tag on every run, and on a vX.Y.Z tag push ALSO the
+      # release version (X.Y.Z), derived and checked as `image-muster` does.
+      - name: the tags this run publishes
         id: tag
         run: |
+          ns="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           short="${GITHUB_SHA::7}"
           echo "short=$short" >> "$GITHUB_OUTPUT"
-          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
+          echo "ref=$ns/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>; no claude-code-agent image is published for it"
+              exit 1
+            fi
+            echo "release_ref=$ns/claude-code-agent:${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "claude-code-agent image: $ns/claude-code-agent:$short and :${GITHUB_REF_NAME#v}"
+          else
+            echo "claude-code-agent image: $ns/claude-code-agent:$short"
+          fi
 
-      # The build muster-ops runs, with its revision label (the provenance it
-      # checks before reusing a tag) and the source label.
+      # The build, with its revision label (the provenance ghcr-push.sh checks
+      # before reusing a tag) and the source label.
       - name: docker build
         run: |
           docker build \
@@ -817,9 +2007,10 @@ jobs:
 
       # 🔴 THE IMAGE THIS JOB PUSHES IS SMOKED, NOT ONLY THE `ccd-image` JOB'S.
       # This is a fresh build on floating base images, so it is not byte-for-byte
-      # the image `ccd-image` tested. Same three runs as that job and as
-      # muster-ops' cc_smoke: a fresh volume, a legacy root-owned
-      # /data/workspace, and the resume of that legacy volume's transcript.
+      # the image `ccd-image` tested. The same four runs as that job, all
+      # BEFORE the push and the release retag below: the three cc-smoke runs (a
+      # fresh volume, a legacy root-owned /data/workspace, and the resume of
+      # that legacy volume's transcript) here, and compose-smoke next.
       - name: cc-smoke the image it will push (fresh, legacy, legacy-resume)
         env:
           IMG: claude-code-agent:${{ steps.tag.outputs.short }}
@@ -833,18 +2024,244 @@ jobs:
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume "$IMG" cc-smoke
 
+      # The compose mode (`ccd compose`) on the bits this job publishes: the
+      # X.Y.Z tag exists for the compose install, so its image is compose-smoked
+      # too, not only `ccd-image`'s. A failure here stops the job before `push`
+      # and `tag the release version`, so no tag names an unsmoked image.
+      - name: compose-smoke the image it will push (ccd compose, real ccd and CLI)
+        env:
+          IMG: claude-code-agent:${{ steps.tag.outputs.short }}
+        run: images/claude-code-agent/compose-smoke.sh "$IMG"
+
       - name: log in to ghcr.io
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: probe the tag it would push (pull request; pushes nothing)
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
+      - name: push
+        run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
+
+      # 🔴 THE RELEASE VERSION IS A REGISTRY-SIDE COPY OF THE SHORT-SHA IMAGE,
+      # NOT A SECOND BUILD. A tag usually lands on a commit `main` already
+      # published, and the `push` above then KEEPS that image (`reuse`): the
+      # version must name the same digest, which a rebuild would not. `retag`
+      # keeps a version already pointing at that digest (a re-run, a re-pushed
+      # tag), and refuses one built from another commit (ghcr-push.sh).
+      - name: tag the release version (vX.Y.Z tag push only)
+        if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh retag '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.release_ref }}'
+
+  # ---------------------------------------------------------------------------
+  # THE DICTATION SERVER IMAGE (ghcr.io/<owner>/muster-stt-cohere:<X.Y.Z>).
+  #
+  # 🔴 ON A vX.Y.Z TAG ONLY, NEVER A PULL REQUEST OR `main`. The image is a CUDA
+  # PyTorch base plus transformers — about 9 GB unpacked — so building it on
+  # every run would cost minutes and most of a hosted runner's disk for a file
+  # that changes rarely. Its CODE is gated on every run instead: the
+  # `release-dry-run` job runs images/stt-cohere/test_app.py against app.py
+  # with the model stubbed. linux/amd64 only (the base has no arm64 build).
+  # Never overwritten: a version already published from THIS commit is kept
+  # (a re-run is a no-op), one from any other commit fails the job.
+  #
+  # ⚠ A RE-RUN STILL REBUILDS BEFORE IT FINDS THE IMAGE PRESENT. Accepted: the
+  # probe is in ghcr-push.sh, which is the one place that decision lives.
+  #
+  # Local: docker build -t muster-stt-cohere images/stt-cohere
+  image-stt-cohere:
+    name: stt-cohere image (GHCR, tags only)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.publish-gate.result == 'success' }}
+    needs: publish-gate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-stt-cohere-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Full history and tags: the build-or-retag decision diffs against the
+      # previous release tag.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: the tag this run publishes
+        id: tag
+        run: |
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>"
+            exit 1
+          fi
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-cohere:$v" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 🔴 REBUILT ONLY WHEN images/stt-cohere/ CHANGED. Every live release is
+      # tagged, and most change nothing here; a rebuild would re-resolve apt's
+      # ffmpeg against a moving archive and spend most of a runner's disk for
+      # an image that should be byte-identical. So: retag the previous
+      # release's image when the directory is unchanged since that tag AND that
+      # image exists; otherwise build. (stt-cohere-source.sh decides from git;
+      # tests/stt-cohere-source-test.sh covers it.)
+      - name: build, or retag the previous release's image?
+        id: src
+        run: |
+          d="$(.github/scripts/stt-cohere-source.sh "$GITHUB_SHA" "$GITHUB_REF_NAME")"
+          echo "decision from git: $d"
+          mode=build
+          if [[ "$d" == retag\ * ]]; then
+            prev="${d#retag }"
+            src="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-cohere:${prev#v}"
+            if [ "$(.github/scripts/ghcr-push.sh probe "$src")" = present ]; then
+              mode=retag
+              echo "src=$src" >> "$GITHUB_OUTPUT"
+            else
+              echo "previous image $src is not published; building"
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "stt-cohere: $mode"
+
+      - name: retag (images/stt-cohere unchanged since the previous release)
+        if: ${{ steps.src.outputs.mode == 'retag' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh retag '${{ steps.src.outputs.src }}' '${{ steps.tag.outputs.ref }}'
+
+      # The base image alone is several GB; a hosted runner starts with too
+      # little free disk for it plus the pip layer. These are preinstalled
+      # toolchains this job never uses.
+      - name: free disk space
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: docker build
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t 'muster-stt-cohere:${{ steps.tag.outputs.version }}' images/stt-cohere
+
+      # The image's own dependencies resolve and import, without a GPU or the
+      # gated model, and pip installed EXACTLY the pinned set.
+      - name: smoke the image (imports, ffmpeg, the Cohere ASR model class, the pins)
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          docker run --rm --entrypoint sh 'muster-stt-cohere:${{ steps.tag.outputs.version }}' -euc '
+            command -v ffmpeg
+            python -c "import fastapi, librosa, numpy, transformers, transformers.models.cohere_asr; print(transformers.__version__)"
+            python -c "import ast; ast.parse(open(\"/app/app.py\").read())"
+            python - <<PY
+          import re, subprocess
+          frozen = {l.split("==")[0].lower().replace("_", "-"): l.split("==")[1]
+                    for l in subprocess.run(["python", "-m", "pip", "freeze"], capture_output=True, text=True).stdout.split() if "==" in l}
+          bad = []
+          for l in open("/app/requirements.txt"):
+              l = l.strip()
+              if not l or l.startswith("#"):
+                  continue
+              n, v = l.split("==")
+              if frozen.get(n.lower().replace("_", "-")) != v:
+                  bad.append((l, frozen.get(n.lower().replace("_", "-"))))
+          assert not bad, bad
+          print("pins: all", sum(1 for l in open("/app/requirements.txt") if "==" in l), "installed as pinned")
+          PY
+          '
 
       - name: push
-        if: ${{ github.event_name == 'push' }}
-        run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh push 'muster-stt-cohere:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' release
+
+  # ---------------------------------------------------------------------------
+  # THE GITHUB RELEASE, on a vX.Y.Z tag, after BOTH images are published.
+  #
+  # Tags are pushed by the operator's release tooling on every live release,
+  # so a tag can land on a commit `main` already built and published images
+  # for. The image jobs above handle that (mode `release`); this job is
+  # idempotent too:
+  #
+  #   * no release for the tag  -> create it with every asset;
+  #   * a release that exists   -> every asset it holds must be byte-identical
+  #     to this build's (the assets are reproducible: same commit, same
+  #     bytes); only the assets it is MISSING are uploaded, and a DRAFT left by
+  #     an attempt that died mid-upload is published. Different bytes or a
+  #     foreign asset fail the job without touching the release.
+  #     (.github/scripts/release-publish.sh)
+  #
+  # 🔴 LAST, AND GATED ON THE IMAGES. The release's docker-compose.yml names
+  # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z>; publishing
+  # the release before them would hand people a compose file that cannot pull.
+  #
+  # RELEASE NOTES: GitHub's generated notes — the pull requests merged since
+  # the previous release tag — under a short header naming the images and the
+  # install files. `--verify-tag` refuses to create a tag that was not pushed.
+  #
+  # Local (no publishing): scripts/release-build.sh <X.Y.Z>
+  release:
+    name: GitHub release (tags only)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.image-muster.result == 'success' && needs.image-stt-cohere.result == 'success' && needs.image-claude-code-agent.result == 'success' }}
+    # image-claude-code-agent: the release's docker-compose.yml names
+    # claude-code-agent:<version> (the chief profile), so the release waits
+    # for that tag to exist.
+    needs: [image-muster, image-stt-cohere, image-claude-code-agent]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: github-release-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build the release assets
+        run: scripts/release-build.sh "$GITHUB_REF_NAME"
+
+      # The decision logic lives in a script so every branch is tested
+      # without GitHub (tests/release-publish-test.sh, fake `gh`): create;
+      # complete-and-publish a DRAFT a died attempt left; a no-op on a complete
+      # release; refuse different bytes or a foreign asset, untouched.
+      - name: publish the release (create, or complete an existing one)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"; v="${tag#v}"; owner="${GITHUB_REPOSITORY_OWNER,,}"
+          {
+            echo "## Install"
+            echo
+            echo "Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64) and \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64)."
+            echo
+            echo "This machine, in one line: \`curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/install.sh | sh\` (docs/quickstart-local.md)."
+            echo "Server by hand: download \`docker-compose.yml\` and \`docker compose up -d --wait\` (no .env needed: the secrets are generated; \`env.example\`, saved as \`.env\`, sets your own)."
+            echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
+            echo "Kubernetes: the Helm chart \`muster-$v.tgz\` (its default image is this release): \`helm install muster https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/muster-$v.tgz\` (docs/kubernetes.md)."
+            echo
+            # Transition notice for the ClankMail plugin's move out of the image:
+            # remove this line (and the blank echo after it) once v0.250.0 ships.
+            echo "ClankMail plugin: the muster image no longer ships \`/muster-clankmail\` (earlier releases did). Use its own image, \`ghcr.io/$owner/muster-clankmail\` (https://github.com/ZacxDev/muster-clankmail; docs/clankmail.md)."
+            echo
+          } > "$RUNNER_TEMP/notes-header.md"
+          .github/scripts/release-publish.sh "$tag" dist "$RUNNER_TEMP/notes-header.md"

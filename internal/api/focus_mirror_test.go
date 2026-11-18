@@ -16,7 +16,9 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // SESSION FOCUS ACROSS THE MIRROR SEAM: a window's Claude session id (the wire
@@ -29,6 +31,11 @@ const focusSID = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
 type memFocus struct {
 	mu   sync.Mutex
 	rows map[focus.Subject]focus.Focus
+	// titleHits is what SearchTitles answers; titleQueries what it was asked.
+	titleHits    []focus.HistoryHit
+	titleQueries []string
+	// history is what History answers per subject, newest first.
+	history map[focus.Subject][]focus.HistoryEntry
 }
 
 func (m *memFocus) Get(_ context.Context, s focus.Subject) (focus.Focus, bool, error) {
@@ -56,9 +63,59 @@ func (m *memFocus) Upsert(_ context.Context, s focus.Subject, w focus.Write) (fo
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	f := focus.Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
+	f := focus.Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now(),
+		Name: m.rows[s].Name}
+	// focus.PGStore.Upsert's name rule: the auto name freezes once.
+	if f.Name.Auto == "" && w.Nameable && focus.NameableTitle(t) {
+		f.Name.Auto, f.Name.AutoAt = t, f.UpdatedAt
+	}
 	m.rows[s] = f
 	return f, nil
+}
+func (m *memFocus) DismissDrift(_ context.Context, s focus.Subject, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if f, ok := m.rows[s]; ok {
+		f.Name.DriftDismissed = title
+		m.rows[s] = f
+	}
+	return nil
+}
+
+// SetTaskLink is a stand-in (the store's own semantics are pinned against
+// Postgres in internal/focus).
+func (m *memFocus) SetTaskLink(_ context.Context, s focus.Subject, l focus.TaskLink) (focus.TaskLink, error) {
+	if s.Kind != focus.KindMirror {
+		return focus.TaskLink{}, focus.ErrTaskLinkAgent
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f := m.rows[s]
+	l.SetAt = time.Now()
+	f.Subject, f.Tasks = s, l
+	m.rows[s] = f
+	return l, nil
+}
+
+func (m *memFocus) SetManualName(_ context.Context, s focus.Subject, name string) (focus.Name, error) {
+	if s.Kind != focus.KindMirror {
+		return focus.Name{}, focus.ErrAgentManualName
+	}
+	if name != "" {
+		var err error
+		if name, err = focus.CleanName(name); err != nil {
+			return focus.Name{}, err
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f := m.rows[s]
+	f.Subject, f.Name.Manual, f.Name.ManualAt = s, name, time.Now()
+	if name == "" {
+		f.Name.ManualAt = time.Time{}
+	}
+	m.rows[s] = f
+	return f.Name, nil
 }
 func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) error {
 	m.mu.Lock()
@@ -72,8 +129,14 @@ func (m *memFocus) Owners(context.Context) ([]int64, error)              { retur
 func (m *memFocus) Touch(context.Context, []focus.Subject) error         { return nil }
 func (m *memFocus) PruneAll(context.Context, time.Time) (int, error)     { return 0, nil }
 func (m *memFocus) PruneHistory(context.Context, time.Time) (int, error) { return 0, nil }
-func (m *memFocus) History(context.Context, focus.Subject, string, int) (focus.HistoryPage, error) {
-	return focus.HistoryPage{}, nil
+func (m *memFocus) History(_ context.Context, s focus.Subject, _ string, limit int) (focus.HistoryPage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h := m.history[s]
+	if limit > 0 && len(h) > limit {
+		h = h[:limit]
+	}
+	return focus.HistoryPage{Entries: append([]focus.HistoryEntry{}, h...)}, nil
 }
 func (m *memFocus) SearchHistory(context.Context, string, focus.Live, time.Time, int) ([]focus.HistoryHit, error) {
 	return nil, nil
@@ -81,18 +144,39 @@ func (m *memFocus) SearchHistory(context.Context, string, focus.Live, time.Time,
 func (m *memFocus) MatchHistory(context.Context, string, focus.Live, time.Time, int, int) ([]focus.Match, error) {
 	return nil, nil
 }
-func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time) (map[focus.Subject][]focus.TitleAt, error) {
+func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time, int) (map[focus.Subject][]focus.TitleAt, error) {
 	return nil, nil
+}
+func (m *memFocus) SearchTitles(_ context.Context, q string, _ focus.Live, _ time.Time, _ int) ([]focus.HistoryHit, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.titleQueries = append(m.titleQueries, q)
+	return m.titleHits, nil
+}
+func (m *memFocus) SearchMeta(context.Context, string, []focus.SessionMeta, int) ([]focus.Subject, error) {
+	return nil, nil
+}
+func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time, int) (focus.WindowReport, error) {
+	return focus.WindowReport{}, nil
 }
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{},
+	s.UseExtensions(Extensions{Notes: noLinkNotes{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{},
 		Mirror: fm, Focus: store, FocusSummarizer: summ})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, ts
+}
+
+// noLinkNotes is stubNotesStore answering the one task read fleet_list
+// makes (its linked_tasks): no session has a linked task. Any other call
+// still panics, as stubNotesStore's do.
+type noLinkNotes struct{ stubNotesStore }
+
+func (noLinkNotes) TasksForSessions(context.Context, []string, int, ...string) (map[string][]notes.TaskLink, error) {
+	return map[string][]notes.TaskLink{}, nil
 }
 
 func operatorCtx() context.Context {
@@ -108,21 +192,26 @@ func claudeWindows() []mirror.Window {
 	}
 }
 
-// TestAMirrorCardShowsTheFocusOfItsClaudeSession: the agents list draws the
-// focus keyed by the window's Claude session id on THAT window's card, and
-// none on the window whose host reported no id.
+// TestAMirrorCardShowsTheFocusOfItsClaudeSession: the focus keyed by the
+// window's Claude session id reaches THAT window's entry — its sidebar row's
+// title, what the palette finds it by (data-switcher-title; the retired list
+// card's focus chip, with its description, has no successor) — and none
+// reaches the window whose host reported no id.
 func TestAMirrorCardShowsTheFocusOfItsClaudeSession(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{
 		focus.MirrorSubject(focusSID): {Subject: focus.MirrorSubject(focusSID), Title: "Porting the importer", Description: "Dates next.", UpdatedAt: time.Now()},
 	}}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, nil)
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if n := strings.Count(body, "data-card-focus"); n != 1 {
-		t.Fatalf("%d focus chips, want exactly 1 (only @1 reports a session id)", n)
+	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	// @1's row carries it twice — what the palette finds it by
+	// (data-switcher-title) and its live line (data-nav-focus) — and @2's,
+	// whose host reports no session id, not at all.
+	if strings.Contains(cardFor(t, body, ref("main", "@2").ViewPath()), "Porting the importer") {
+		t.Fatalf("the focus is on @2's row too (only @1 reports a session id):\n%s", body)
 	}
-	if !strings.Contains(body, "Porting the importer") || !strings.Contains(body, "Dates next.") {
-		t.Fatal("the focus text is not on the card")
+	if row := cardFor(t, body, ref("main", "@1").ViewPath()); !strings.Contains(row, `data-switcher-title="Porting the importer"`) {
+		t.Fatalf("the focus is not @1's row's title:\n%s", row)
 	}
 	cards := s.mirrorCards(operatorCtx(), pins.Set{}, s.focusIndex(operatorCtx()))
 	for _, c := range cards {
@@ -137,7 +226,8 @@ type recordingSummarizer struct {
 	tails []string
 }
 
-func (r *recordingSummarizer) Summarize(_ context.Context, _ int64, tail string) (focus.Summary, error) {
+func (r *recordingSummarizer) Summarize(_ context.Context, _ int64, req focus.Request) (focus.Summary, error) {
+	tail := req.Tail
 	r.mu.Lock()
 	r.tails = append(r.tails, tail)
 	r.mu.Unlock()
@@ -147,7 +237,8 @@ func (r *recordingSummarizer) Summarize(_ context.Context, _ int64, tail string)
 // TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream: a refresh of
 // mirror:<sid> reads the window's backfill through WatchWindow (prompts,
 // replies and tool calls — not tool output), stops at the prompt index, and
-// stores the summary under the session id; the card then shows it.
+// stores the summary under the session id; the window's sidebar row then
+// carries it.
 func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	summ := &recordingSummarizer{}
@@ -180,9 +271,9 @@ func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) 
 	if fm.asked[len(fm.asked)-1] != "@1" {
 		t.Fatalf("watched window %q, want @1", fm.asked)
 	}
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "Fixing the mirror reconnect") {
-		t.Fatal("the refreshed focus is not on the card")
+	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	if row := cardFor(t, body, ref("main", "@1").ViewPath()); !strings.Contains(row, `data-switcher-title="Fixing the mirror reconnect"`) {
+		t.Fatalf("the refreshed focus is not on the window's row:\n%s", row)
 	}
 }
 
@@ -246,13 +337,17 @@ func (noAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil 
 
 type failingSummarizer struct{ err error }
 
-func (f failingSummarizer) Summarize(context.Context, int64, string) (focus.Summary, error) {
+func (f failingSummarizer) Summarize(context.Context, int64, focus.Request) (focus.Summary, error) {
 	return focus.Summary{}, f.err
 }
 
 // TestAFailedRefreshShowsItsReasonOnTheCard: the summarizer's failure reaches
-// the mirror card as its short reason — never the provider's text — first as
-// "no focus", then, after a success, as a stale one.
+// the window's focus view (ui.FocusView.Problem, the one composer mirrorCards
+// feeds every surface from) as its short reason — never the provider's text,
+// on any page — first as "no focus", then, after a success, as a stale one.
+// (The retired list card drew the reason as its focus chip; no page draws it
+// now, so the view is where it is pinned, and the sidebar is searched for the
+// provider's text.)
 func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
@@ -263,22 +358,36 @@ func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
 	if _, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID)); err == nil {
 		t.Fatal("the failing refresh succeeded")
 	}
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "No focus: summarizer error (HTTP 502)") || !strings.Contains(body, "data-focus-stale") {
-		t.Fatalf("the card does not say why there is no focus:\n%s", body)
+	view := func() ui.FocusView {
+		t.Helper()
+		for _, c := range s.mirrorCards(operatorCtx(), pins.Set{}, s.focusIndex(operatorCtx())) {
+			if c.Window == "@1" {
+				if c.Focus == nil {
+					t.Fatal("window @1 has no focus view")
+				}
+				return *c.Focus
+			}
+		}
+		t.Fatal("no window @1")
+		return ui.FocusView{}
 	}
-	if strings.Contains(body, "sk-or-v1") {
-		t.Fatal("the provider's error text reached the page")
+	if v := view(); v.Title != "" || v.Problem != "summarizer error (HTTP 502)" {
+		t.Fatalf("the focus view = %+v, want no title and the short reason", v)
 	}
-	// A focus, then a later failure: the card shows both.
+	if _, body := mirrorGet(t, s, ts, ui.NavAgentsPath); strings.Contains(body, "sk-or-v1") || !strings.Contains(body, `data-nav-agent="mirror"`) {
+		t.Fatalf("the provider's error text reached the sidebar, or it lists no window:\n%s", body)
+	}
+	// A focus, then a later failure: the view keeps both.
 	store.mu.Lock()
 	f := store.rows[focus.MirrorSubject(focusSID)]
 	f.Title, f.UpdatedAt = "Fixing the reconnect", f.ErrorAt.Add(-time.Minute)
 	store.rows[focus.MirrorSubject(focusSID)] = f
 	store.mu.Unlock()
-	_, body = mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "Fixing the reconnect") || !strings.Contains(body, "Last refresh failed: summarizer error (HTTP 502)") {
-		t.Fatalf("a stale focus does not say its refresh failed:\n%s", body)
+	if v := view(); v.Title != "Fixing the reconnect" || v.Problem != "summarizer error (HTTP 502)" {
+		t.Fatalf("a stale focus view = %+v, want its title and the refresh's failure", v)
+	}
+	if _, body := mirrorGet(t, s, ts, ui.NavAgentsPath); !strings.Contains(body, `data-switcher-title="Fixing the reconnect"`) || strings.Contains(body, "sk-or-v1") {
+		t.Fatalf("the stale focus is not the row's title (or the provider's text is there):\n%s", body)
 	}
 }
 

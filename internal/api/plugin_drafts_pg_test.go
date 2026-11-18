@@ -78,7 +78,7 @@ func newDraftSeam(t *testing.T) *draftSeam {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,11 @@ func (d *draftSeam) chief(uid int64, name string) agents.Agent {
 	d.t.Helper()
 	a, err := d.as.Create(d.asUser(uid), agents.Agent{Name: name + "-" + d.suffix, Namespace: "devpod-" + name + "-" + d.suffix,
 		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "drf-hooks-" + name + "-" + d.suffix})
+	if err == nil {
+		// Create returns no credentials (agents.Secrets); the runtime's
+		// expectation is built from the stored token.
+		a, err = agents.WithSecrets(d.asUser(uid), d.as, a)
+	}
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -210,7 +215,8 @@ func (d *draftSeam) replyDraft(a agents.Agent, messageID int64, body string) (in
 //     delivers it — the only retry there is.
 //  2. The chief drafts a reply (reply_draft). The owner gets the `plugin` push,
 //     in muster's words, deep-linked to the card.
-//  3. /plugins shows the card: the outside text escaped, the draft spelled out.
+//  3. The Asks page's Reply drafts tab shows the card: the outside text
+//     escaped, the draft spelled out.
 //  4. A STALE approval is refused (403, both as a script and as a form), the
 //     draft stays pending and a claim gets nothing. Another member cannot
 //     approve it at all.
@@ -255,15 +261,15 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	pl := d.pusher.to(ep("draft-a"))
 	const wantBody = "Reply draft: unverified sender (Example inbox)"
 	if len(pl) != 1 || pl[0].Title != DraftPushTitle || pl[0].Body != wantBody ||
-		pl[0].Data["url"] != "/plugins#draft-"+strconv.FormatInt(draftID, 10) || pl[0].Type != "plugin" {
+		pl[0].Data["url"] != "/attention?tab=drafts#draft-"+strconv.FormatInt(draftID, 10) || pl[0].Type != "plugin" {
 		t.Fatalf("the owner's push: %+v; want one `plugin` push naming who and where only, linked to the card", pl)
 	}
 	if got := d.pusher.to(ep("draft-b")); len(got) != 0 {
 		t.Fatalf("the other member got %d pushes", len(got))
 	}
 
-	// 3. The card.
-	page := d.do("GET", "/plugins", "", d.session(d.a, false, true)).Body.String()
+	// 3. The card, on the Asks page's Reply drafts tab.
+	page := d.do("GET", "/attention?tab=drafts", "", d.session(d.a, false, true)).Body.String()
 	card := cardOf(t, page, draftID)
 	for _, want := range []string{`data-draft-status="pending"`, "Are you free? &lt;script&gt;alert(1)&lt;/script&gt;",
 		"Yes, noon works.", "16 characters", "data-draft-approve", "data-draft-reject", "data-step-up-form"} {
@@ -277,8 +283,8 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	if !strings.Contains(page, `id="term-confirm"`) {
 		t.Fatal("the page has no confirm dialog to ask for a fresh sign-in")
 	}
-	if other := d.do("GET", "/plugins", "", d.session(d.b, false, true)).Body.String(); strings.Contains(other, "noon works") {
-		t.Fatal("another member's /plugins shows this draft")
+	if other := d.do("GET", "/attention?tab=drafts", "", d.session(d.b, false, true)).Body.String(); strings.Contains(other, "noon works") {
+		t.Fatal("another member's Asks page shows this draft")
 	}
 
 	// 4. Stale approvals are refused.
@@ -301,7 +307,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 
 	// 5. Fresh approval → one claim.
 	if rec := d.do("POST", approve, "", d.session(d.a, false, true)); rec.Code != http.StatusSeeOther ||
-		rec.Header().Get("Location") != "/plugins#draft-"+strconv.FormatInt(draftID, 10) {
+		rec.Header().Get("Location") != "/attention?tab=archived&draft="+strconv.FormatInt(draftID, 10)+"#draft-"+strconv.FormatInt(draftID, 10) {
 		t.Fatalf("a fresh approval: %d %s; want 303 to the card", rec.Code, rec.Header().Get("Location"))
 	}
 	rec := d.claim(aTok, 0)
@@ -314,7 +320,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if strings.Join(keys, ",") != "approved_at,body,draft_id,message_external_id" || c["body"] != "Yes, noon works." ||
+	if strings.Join(keys, ",") != "approved_at,body,draft_id,kind,message_external_id" || c["kind"] != "reply" || c["body"] != "Yes, noon works." ||
 		c["message_external_id"] != "ext-1-"+d.suffix || int64(c["draft_id"].(float64)) != draftID {
 		t.Fatalf("the claim body: %s", rec.Body.String())
 	}
@@ -345,7 +351,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	if rec := d.do("POST", result, `{"ok":false}`, bearerTok(aTok)); rec.Code != http.StatusConflict {
 		t.Fatalf("the conflicting result: %d; want 409", rec.Code)
 	}
-	page = d.do("GET", "/plugins", "", d.session(d.a, false, true)).Body.String()
+	page = d.do("GET", "/attention?tab=archived", "", d.session(d.a, false, true)).Body.String()
 	if card := cardOf(t, page, draftID); !strings.Contains(card, `data-draft-status="sent"`) || !strings.Contains(card, "up-1") ||
 		strings.Contains(card, "data-draft-approve") {
 		t.Fatalf("the sent card:\n%s", card)
@@ -371,7 +377,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	if got := d.draft(second); got.Status != plugins.DraftUnconfirmed {
 		t.Fatalf("the lapsed draft is %s; want unconfirmed", got.Status)
 	}
-	page = d.do("GET", "/plugins", "", d.session(d.a, false, true)).Body.String()
+	page = d.do("GET", "/attention?tab=archived", "", d.session(d.a, false, true)).Body.String()
 	if card := cardOf(t, page, second); strings.Contains(card, "data-step-up-form") || !strings.Contains(card, "It may have been") {
 		t.Fatalf("the unconfirmed card: want the may-have-been-sent warning and NO approval form:\n%s", card)
 	}
@@ -385,7 +391,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	if third == 0 {
 		t.Fatalf("third draft: %s", out)
 	}
-	page = d.do("GET", "/plugins", "", d.session(d.a, false, true)).Body.String()
+	page = d.do("GET", "/attention?tab=archived", "", d.session(d.a, false, true)).Body.String()
 	if card := cardOf(t, page, third); !strings.Contains(card, "data-draft-twice") {
 		t.Fatalf("the new draft's card does not warn that an earlier reply may have gone:\n%s", card)
 	}
@@ -404,7 +410,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	}
 }
 
-// cardOf is draft id's <li> on a /plugins page.
+// cardOf is draft id's <li> on an Asks page.
 func cardOf(t *testing.T, page string, id int64) string {
 	t.Helper()
 	start := strings.Index(page, `id="draft-`+strconv.FormatInt(id, 10)+`"`)

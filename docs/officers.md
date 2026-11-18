@@ -1,0 +1,3896 @@
+# Officers: the HQ backend and the runtime (reference)
+
+**New to officers? Start with [the Officers page](officers-builtin.md#the-officers-page).**
+This file is the reference for the HQ backend and for what every officer's
+instances get: pods, network, runner image, repositories, tools, tiers.
+
+An **officer** is a standing agent with a job description instead of a task: a
+release captain for one service, a triage officer for one repository. On the
+HQ backend its durable identity, work queue, charter and the lock on each item
+live in **HQ** (an external server that speaks the officers API below). muster
+runs the officer's **instances**: Claude Code pods it wakes when HQ has work,
+gives the officer's tools, and scales to zero when the queue is quiet.
+
+| | lives in |
+|---|---|
+| the officer (id, type, area, charter, max instances) | HQ |
+| the queue of items, and who holds each one | HQ (Postgres; one claim at a time, under a lease) |
+| the officer's HQ token | muster-server's environment — never an instance's pod |
+| instances (pods, volumes, Claude accounts) | muster, one agent per instance |
+
+Officers **watch, triage, record and dispatch**. They do not merge, deploy or
+release: those stay with humans. An instance holds no production credential.
+The one exception is a [shipping officer](#shipping-officers), which merges
+its own pull requests and tags releases in its one repository — still holding
+no credential, and only through two muster tools that check every gate.
+
+The code: `internal/officers` (configuration, HQ client, the wake loop's
+policy, the first message), bound to muster in
+`internal/api/officers.go` (instance agents, the MCP tools,
+delete protection).
+
+## Configuration
+
+```sh
+MUSTER_AGENT_KINDS=gateway,claude-code        # officers run on claude-code
+# REQUIRED with officers: the connect listener the instances reach their tools on
+MUSTER_CONNECTOR_ENCRYPTION_KEY=…              # (the connector store's key)
+MUSTER_CONNECT_PORT=8091
+MUSTER_AGENT_CONNECT_URL=http://muster.<namespace>.svc:8091
+MUSTER_OFFICERS='[
+  {"id": "release:example-web",
+   "hq_url": "https://hq.example.com/api/v1",
+   "max_instances": 1,
+   "idle_scale_to_zero_after": "30m",
+   "poll_interval": "1m",
+   "model": "opus",
+   "repo": "example-org/example-web"}
+]'
+MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB=…     # from a Secret; see below
+MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers only ever read GitHub
+```
+
+| field | default | |
+|---|---|---|
+| `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses, at boot, an id whose highest instance agent name (`officer-<type>-<slug>-<max>`) would not fit a namespace under the deployment's `MUSTER_AGENT_NAMESPACE_PREFIX` (63 minus the prefix: 50 under `muster-agent-`). |
+| `hq_url` | required | HQ's API base, including `/api/v1`. No credentials in the URL. |
+| `backend` | `hq` | Which officer backend serves the officer: `hq` (the officer API above, with the officer's token) or `builtin` (muster's own Postgres; needs `DATABASE_URL`, and is refused at boot, naming each field, with `hq_url`, a `MUSTER_OFFICER_TOKEN_<NAME>`, `ship`, `ci_logs` or `transcript` — [officers-builtin.md](officers-builtin.md)). A builtin officer's instances are offered only the tools that backend serves (plus muster's own, such as `officer_kube_read`) and told so in their first message; its switch, asks and escalations are muster's. Any other value is a boot refusal. |
+| `runtime` | `pod` | Where the instances run: `pod` (a pod per instance, through the provisioner) or `host` (a host-spawned Claude Code window per instance on the mirror host `host`, for a `builtin` officer only — [officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions), [design](design/officers-on-hosts.md)). A `host` officer's `repo` is optional (without one each instance starts in a scratch directory; with one, a pushable worktree with that machine user's credentials); it may declare `connectors` (not `github`), is offered `officer_post_draft`, and refuses `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos`, `llm` and `kube`, each named at boot. Each instance has an agent row nothing provisions (migration 0125). `auto` is for a [database-declared](officers-builtin.md#declared-in-the-database-no-restart) officer only. |
+| `host` | none | With `"runtime": "host"`: the mirror host (its token's name) the instances start on. Refused beside a pod officer. |
+| `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account (which the [account failover](#account-failover) may change) — or, on a host, one window in that host's `agents` session. |
+| `idle_scale_to_zero_after` | `30m` | How long the officer must be idle before its instances are stopped. |
+| `poll_interval` | `1m` | How often HQ's open items are read when nothing else wakes the loop. At least `10s`. |
+| `owner` | `1` | The muster user the instance agents belong to. |
+| `cc_account` | the pool's choice | Pin the Claude account instances run on. A pinned instance is not moved to another account when this one hits its limit, unless `cc_failover` is set. |
+| `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
+| `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
+| `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
+| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. Needs no `repo` with `read_grant: "standing"`. |
+| `read_grant` | none (per-instance approval) | `"standing"`: the `read_repos` are read with **no approval**, anonymously, reads only, each checked PUBLIC with GitHub — see [A standing public read](#a-standing-public-read-read_grant-standing). A **builtin** officer only: on an HQ officer, without `read_repos`, or any other value, a boot refusal naming the officer. |
+| `read_at` | none (default branch) | `"release"`: a standing read is pointed at muster's own release tag (`v<the server's version>`), named in the first message. Needs `read_grant: "standing"`; any other value is a boot refusal. |
+| `connectors` | none | Connector names, besides `github`, the instances may request. Examples: a [postgres connector](connectors.md#postgres-connectors), for read-only SQL through `postgres_query`, or an [internal_http connector](connectors.md#internal-http-connectors), for calls through `internal_http_request` to one service the admin configured. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
+| `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
+| `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
+| `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [The two pools](#the-two-pools). Absent: one pool, as above. |
+| `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; it requires the officer's own key, `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (never the shared one). The judgement pool's own block is `tiers.judgement.llm` ([below](#the-judgement-pool-on-the-proxy)). |
+
+Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
+upper-cased with every other character written as `_`. A declared officer with
+no token, an unknown field, two officers whose agent names would collide, or an
+officer on a server without the `claude-code` kind or an agent provisioner, is
+a boot refusal that names the problem — and so is **any officer without the
+connector door**: an instance reaches its tools only over muster's MCP server,
+which is the connect listener, so `MUSTER_AGENT_CONNECT_URL` (and with it
+`MUSTER_CONNECT_PORT` and the connector store's key) must be set; without it
+instances would boot with no officer tools, silently. The rows are in
+[configuration.md](configuration.md#muster-server-officers).
+
+### The release captain
+
+`release:example-web` above is the first officer: HQ produces a
+`release.evaluate` item when a release of the service is built and awaiting
+approval (with the PR list and each PR's review verdict in the payload) and a
+`release.post_report` item when it goes live. Its instance evaluates the
+release — risk level, summary, what to monitor — and posts the evaluation to
+HQ's captain route with `officer_release_evaluation` (muster attaches the
+officer token, which HQ's captain route accepts for a release officer), then
+completes the item. muster holds **no copy of the charter**: the instance loads it from HQ
+with `officer_brief`, so the versioned charter in HQ is the only one. Approval
+of the release itself stays a human's, in HQ.
+
+## Instances
+
+Instance *n* (1-based) of officer `<type>:<area>` is the muster agent named
+`officer-<type>-<area>-<n>` (`officer-release-example-web-1`), kind
+`claude-code`, with no task and no repository checkout (an officer's `repo`, when
+it has one, is read through the `github` connector — [below](#reading-a-repository-repo)).
+Instances are interchangeable:
+they share the officer's queue and identity, and any of them can take any item.
+
+Names starting `officer-` are reserved. muster's name generator cannot produce
+one (its adjective-noun pool has no such word), and the officer runtime is the
+only code that creates an agent under a fixed name of that shape. An instance
+keeps its namespace, volume and Claude account across stops and starts.
+
+### Account failover
+
+When a turn of an instance fails `rate_limited` or `auth_failed`, muster moves
+the instance to another of the owner's Claude accounts that is usable, exactly
+as for any `claude-code` agent ([jobs: account
+failover](jobs.md#account-failover)) — unless the officer pins `cc_account`
+without `cc_failover`, or `MUSTER_AGENT_CC_FAILOVER=off`. The move restarts the
+instance's pod (its session restarts; its volume, name and identity are kept),
+and, before the pod restarts:
+
+- the instance's **first turn is re-armed** (as when an existing instance is
+  started), so once the new pod is ready the kickoff deliverer sends it the
+  officer kickoff again and it loads its charter and works the queue;
+- every **live claim it held is released**, so the item it was working when
+  the limit hit is claimable at once, instead of after its lease lapses, and is
+  retried by the restarted instance (or another).
+
+There is no second instance needed and no automatic move back when the first
+account resets. With every other account cooling down, nothing moves: the
+instance stays on its account and the next turn after the reset works.
+
+### The instance's Claude Code session
+
+The instance runs in its pod's primary Claude Code session, and muster sets
+three things in that session's `settings.json` at provision time (the pod's
+`ccd seed` writes them from `CCD_PERMISSION_MODE`, `CCD_ALLOW_MCP_TOOLS` and
+`CCD_MODEL`, which muster puts on the pod; `internal/podagent/session.go`):
+
+- 🔴 **Every tool allowed: `permissions.defaultMode: "bypassPermissions"`.** An
+  officer instance never stops on a permission prompt — not for its own tools,
+  not for `Bash`, `WebFetch`, `Write` or any other. muster puts
+  `CCD_PERMISSION_MODE=bypassPermissions` on every officer instance's pod, and
+  `ccd seed` then sets `defaultMode` to `bypassPermissions`, drops the image's
+  `disableBypassPermissionsMode` and records the bypass disclaimer's consent
+  (`skipDangerousModePermissionPrompt`), so the CLI starts at its prompt with no
+  dialog. Every session the pod's CLI starts runs that way. Why: an officer
+  deployment may have no approval gate anyone answers, and an officer reads its
+  repository with `git` and `curl` through muster's proxy; a prompt would stall
+  it until its turn times out. What bounds an officer is therefore what it can
+  *reach*, not what it may run: its MCP toolset (officer tools and the three
+  connector tools only), the `github` connector only, every grant decided
+  explicitly by its owner and minted read-only (below), and the pod's network
+  policy. ⚠ Like a bypass job lane (`MUSTER_AGENT_CC_BYPASS_POOLS`), treat the
+  WHOLE POD as running without approvals: anything in it, including the agent's
+  own muster token (`MUSTER_HOOK_TOKEN`), is reachable by a command the session
+  runs. Any value of `CCD_PERMISSION_MODE` other than unset or exactly
+  `bypassPermissions` is refused and the pod does not start. **One other agent
+  gets it**: the `claude-code` chief, which runs bypassed too but keeps public
+  egress (an accepted risk, [chief.md](chief.md#the-chief-runs-without-permission-prompts));
+  task agents and the Compose chief keep the image's posture (default mode,
+  bypass disabled, prompts routed for approval). This needs a
+  `claude-code-agent` image built from this version: an older `ccd` ignores the
+  variable, and the officer would keep prompting.
+- **`permissions.allow`: exactly the officer's own tools, then the connector
+  tools** — `mcp__muster__officer_brief`, `…officer_items`, `…officer_claim`,
+  `…officer_heartbeat`, `…officer_complete`, `…officer_release`,
+  `…officer_ask_person`, and for a `release:*` officer
+  `…officer_release_evaluation`; then, when the connector
+  store is configured (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, so the instance is
+  offered them), `…connectors_list`, `…connector_request` and
+  `…connector_status` — and `…postgres_query` and `…internal_http_request`
+  when the officer declares `connectors`. Redundant under bypass and kept: it names the muster
+  tools the instance is for, and holds if bypass is ever lifted. The channel
+  only takes bare tool names and always writes them as `mcp__muster__<name>`
+  (a name holding `__` or anything but `[a-z0-9_]` is refused and the pod does
+  not start). The template's `permissions` replace the file's on every pod start
+  (`ccd seed`; an in-pod CLI restart by the supervisor does not re-seed), so an
+  allow list or mode a session writes for itself does not survive the next pod
+  start.
+- **`model`**, when the officer sets one. Removing it from the officer's config
+  takes effect at the instance's next pod start: seed removes the model it set
+  itself (the instance keeps its volume, so it would otherwise persist), back to
+  the account default. A model changed by hand inside the pod is left alone.
+  An instance of a pool on the [LLM proxy](#the-llm-proxy) (routine beside
+  `llm`, judgement beside `tiers.judgement.llm`) gets no model here: the
+  proxy pins it.
+
+**The LLM route (`CCD_LLM_ROUTE=muster`).** An instance of a pool on the
+proxy — a routine instance of an officer with an `llm` block, or a judgement
+instance of one with `tiers.judgement.llm` — and no other pod is put on the
+route: its pod is given
+`CCD_LLM_ROUTE=muster` and **no** `CLAUDE_CODE_OAUTH_TOKEN`. The image's
+entrypoint runs its credential check (`images/claude-code-agent/credentials.sh`,
+installed at `/usr/local/lib/cc/credentials.sh`) before it seeds or starts
+anything. Without the route, the check refuses `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and
+`ANTHROPIC_BASE_URL`, each naming the variable, as it always has. Under the
+route it sets `ANTHROPIC_BASE_URL` to exactly `$MUSTER_CONNECT_URL/llm` and
+`ANTHROPIC_AUTH_TOKEN` to the pod's own `MUSTER_HOOK_TOKEN`. It appends the
+muster host to `NO_PROXY` and `no_proxy`, so a proxy in the pod's environment
+never carries the token. And it refuses the pod when any of these holds:
+`CLAUDE_CODE_OAUTH_TOKEN` is set; `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN`
+is already set at all, even to the value the check would set (nothing produces
+one, so one present came from somewhere else); `ANTHROPIC_API_KEY`, Bedrock
+or Vertex is set;
+`MUSTER_CONNECT_URL` or `MUSTER_HOOK_TOKEN` is missing; or `CCD_LLM_ROUTE` has
+any other value. The pod holds no provider key. The proxy authenticates it by
+its muster token and attaches the officer's key upstream. Each condition has a
+positive and a negative case in the Go suite (`cmd/ccd`,
+`internal/agentspec`) and in the image smoke (`cc-smoke`). A routed pod
+still needs a `claude-code-agent` image built from this version: an older
+entrypoint refuses the route's variables, and its pod does not start.
+
+**Memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
+`CLAUDE_CODE_DISABLE_ORG_MEMORY=1`).** Every officer instance's pod — either
+pool, untiered too, whatever [`fresh_session_per_item`](#the-two-pools) says —
+is given the Claude Code CLI's own switches for its memory. With the first,
+the CLI neither reads nor writes its auto-memory directory on the instance's
+volume (`<CLAUDE_CONFIG_DIR>/projects/<workspace>/memory`). The second turns
+off org memory, which has its own gate: that gate checks its variable, a
+server-side feature flag and claude.ai authentication, and does not read the
+auto-memory variable, so an instance on a subscription token would otherwise
+keep it whenever the flag is on (whether it ever is for these accounts is not
+known). What an officer remembers of earlier items is HQ's to give (the
+claim-time history), never something a session stored for itself. With one
+conversation per item, such memory would be a channel between items outside
+HQ. The switches are the pod's environment rather than `settings.json` keys
+because a session can rewrite its own settings but not its CLI's environment.
+Files already in the memory directory are left where they are, and are no
+longer read. It takes effect at the instance's next pod start. Both variables
+were read from the CLI bundles, 2.1.289 and the image's 2.1.296 (in both, the
+auto-memory variable is checked before any setting). They were not run in an
+officer pod.
+
+No other agent gets any of them (the officer runtime is the provisioner's only
+source of them, and it answers for a declared officer's instances only).
+
+### The instance's network
+
+🔴 **An officer instance is egress-locked, always.** It is the one agent whose
+whole session runs with permissions bypassed while it reads untrusted text
+(public pull requests), and its pod holds `CLAUDE_CODE_OAUTH_TOKEN` and
+`MUSTER_HOOK_TOKEN`. A claude-code agent's usual policy allows TCP 443 to any
+public IPv4 address, so one injected `curl` could send either token anywhere.
+So the lock is derived from the bypass (`agentspec.ClaudeCodeSession.EgressLocked`):
+there is no setting that gives an officer the bypass without it, and no other
+agent gets it. The one agent that runs bypassed **without** the lock is the
+`claude-code` chief, by an explicit, enumerated exception
+(`agentspec.ClaudeCodeSession.ChiefBypass`, refused for every other agent;
+[chief.md](chief.md#the-chief-runs-without-permission-prompts)).
+
+On the Kubernetes driver, an officer instance's NetworkPolicy is the usual one
+**without the public rule and without the DNS rule**:
+
+- ingress: ccd's port (18789), from muster's own pods only (unchanged);
+- egress: muster's connect port (`MUSTER_CONNECT_PORT`) on muster's own pods.
+  GitHub reads (`git`, REST) and muster's MCP tools both go through that port.
+- nothing else — **no name resolution, and not even the Anthropic API**.
+
+The pod also gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does
+not try its auto-updater, telemetry, error reporting or feature-flag hosts.
+
+🔴 **The cluster must allow DNS and the Anthropic API itself, by name.** A
+NetworkPolicy cannot match a hostname, so muster writes neither rule. Ship a
+policy for the officer instance pods that allows:
+
+- DNS to the cluster's DNS pods (UDP/TCP 53) **with names filtered** — on
+  Cilium, `rules.dns` on that port, so Cilium's DNS proxy answers only for
+  `api.anthropic.com` and the cluster-local names the pod needs (muster's
+  connect URL is a cluster-local Service name, and with the usual `ndots:5`
+  search path `api.anthropic.com` is first tried with each cluster search
+  domain appended, so the rule must match every name under the cluster
+  domain at any depth — on Cilium a `**.` pattern; a single `*` matches one
+  label only);
+- `api.anthropic.com:443` — on Cilium, `toFQDNs`.
+
+On Cilium both fit in one `CiliumClusterwideNetworkPolicy`. Without it every
+turn of the officer fails (closed and loud). Network plugins union allows,
+which is why both rules had to leave muster's policy: an FQDN allow next to
+"any public address on 443" narrows nothing, and a name-filtered DNS rule next
+to a plain "port 53 to the DNS pods" allow is widened back to every name.
+
+What the CLI needs with `CLAUDE_CODE_OAUTH_TOKEN`: inference, its WebFetch
+domain check and token use all go to `api.anthropic.com`. The docs
+(<https://code.claude.com/docs/en/network-config>) also list
+`platform.claude.com` for OAuth refresh of claude.ai logins; an env-supplied
+`setup-token` is not refreshed, so it is not allowed here — if an officer's
+turns fail with an auth error, that host is the first to check. claude.ai MCP
+connectors (`mcp-proxy.anthropic.com`) are unreachable by design.
+
+⚠ **An instance keeps the policy it was started with.** The lock is written when
+the spec is applied (dispatch, Start). An officer instance created by an older
+build keeps its public-443 rule until it is stopped and started — scale its
+Deployment in its agent namespace to 0 and the wake loop starts it again on the
+current spec. Check with
+`kubectl -n <namespace-prefix>officer-<…>-1 get networkpolicy -o yaml`: the
+egress list has no `ipBlock` and no port 53.
+
+⚠ **What it still allows.**
+
+- 🔴 **`api.anthropic.com`, at full bandwidth, for anyone with an Anthropic
+  account.** The allow is by host name, not by credential: an injected session
+  can call the API with an attacker's own API key and put the pod's tokens in
+  the request body, where the attacker reads them back from their own account.
+  Closing that needs an egress proxy that only forwards requests carrying the
+  pod's own credential; muster does not ship one, so this channel is open.
+- Anything the session can send to muster's connect surface (its own tools and
+  the read-only `github` connector).
+- Bypass still means the session can read every secret in its pod.
+
+**DNS tunnelling is closed once the cluster policy above is live**: muster's
+policy allows no port 53, so the only resolver path is the cluster's
+name-filtered one, and a query for a name the attacker controls is refused. On
+a cluster with no such policy the pod resolves nothing at all.
+
+#### On a cluster without FQDN policies (`MUSTER_OFFICER_EGRESS_*`)
+
+A plugin that implements plain Kubernetes NetworkPolicy and nothing more —
+flannel with the k3s NetworkPolicy controller, for one — cannot match a host
+name or filter DNS, so the cluster policy above cannot be written. Two
+opt-in, deployment-wide settings let muster admit what an officer needs
+itself, **by address** ([configuration](configuration.md)):
+
+```sh
+# EXAMPLE values — take the current ranges from Anthropic's published list,
+# https://platform.claude.com/docs/en/api/ip-addresses (IPv4 only: muster
+# admits no IPv6, and IPv4 reaches the API).
+MUSTER_OFFICER_EGRESS_CIDRS=160.79.104.0/23:443,153.61.224.0/22:443
+MUSTER_OFFICER_EGRESS_DNS=unfiltered
+```
+
+With both set, an officer instance's egress is exactly:
+
+- UDP/TCP 53 to the cluster's DNS pods (`MUSTER_OFFICER_EGRESS_DNS=unfiltered`
+  — needed here because both `api.anthropic.com` and muster's connect URL are
+  names);
+- TCP to each listed block on its port — one `ipBlock` rule per entry;
+- muster's connect port on muster's own pods (unchanged).
+
+Nothing else: no other public address, no private range (a block overlapping
+one is refused at boot, as is one wider than a /16), no IPv6, and no operator
+device. Ingress is unchanged. Only officer instances get these rules — a
+locked pool worker, a task agent and the chief do not, whatever the settings.
+Check an instance with
+`kubectl -n <namespace-prefix>officer-<…>-1 get networkpolicy -o yaml`: the
+egress list is the DNS rule, one `ipBlock` rule per block (no `except`), and the
+connect-port rule. As with the lock itself, a running instance keeps the policy
+it was started with until it is stopped and started.
+
+⚠ **What this costs against the cluster-side policy above**, plainly:
+
+- 🔴 **DNS is unfiltered, which is a tunnel.** The session can encode what its
+  pod holds in queries for a domain an attacker controls, and the cluster's
+  resolver forwards them. The name-filtered rule above closes this; nothing
+  here can.
+- **A block is coarse.** The officer reaches every host in each block on that
+  port, not one name. Admit Anthropic's published ranges and nothing else.
+- Everything under *What it still allows* above still holds — notably the
+  Anthropic API accepts any account's credential.
+
+Prefer the cluster-side policy wherever the plugin can express it; these
+settings are for the cluster where it cannot.
+
+### A custom runner image (`image`)
+
+An officer may run its instances on its **own** image instead of the
+deployment's `MUSTER_AGENT_CC_IMAGE`: one built `FROM` muster's
+`claude-code-agent` image that adds the officer's tooling (a script, a skill
+pack, a pinned CLI). Untiered, it is the officer's `image`; tiered, each pool's
+`tiers.<pool>.image` (a top-level `image` beside `tiers` is refused, as `model`
+is). An officer that sets none runs the deployment's image, unchanged.
+
+```json
+{"id": "review:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "image": "ghcr.io/example-org/officer-runner:1.4.0@sha256:<64 hex digits>"}
+```
+
+**Boot refuses** an image that is not a full reference
+(`<registry host>/<path>[:<tag>]@sha256:<digest>`); one **not pinned by
+digest** — 🔴 a tag alone is refused, because anyone who can push to the
+repository can move a tag and the next pod would run that code with every tool
+allowed (a tag beside the digest is allowed, as a label); one whose first
+component is **not a registry host** — it must contain a `.` or a `:` or be
+exactly `localhost`, the rule container runtimes use (`registry/runner` is a
+Docker Hub path to a runtime, not a host called `registry`); and one whose
+repository is not allowed by `MUSTER_OFFICER_IMAGE_REGISTRIES`: a
+comma-separated list of `<registry host>[/<path>]` prefixes (`ghcr.io/example-org,
+registry.example.com:5000/team/runners`), each entry's first component a
+registry host by the same rule. An image is allowed when its
+repository (the reference without tag and digest) **is** an entry or lies
+under one — `ghcr.io/example-org/officer-runner` is under `ghcr.io/example-org`,
+`ghcr.io/example-orgx/…` is not. **With the variable unset, every `image` is
+refused**; a malformed entry (a scheme, a tag, a glob, a bare name such as
+`registry`) refuses to boot.
+Prefer entries that name your organisation's path, not a whole public registry.
+
+🔴 **The image is the pod's whole userland, and the session runs with every
+tool allowed**, so the allowlist is the deployment's statement of whose images
+an officer may run. muster cannot see what an image was built `FROM`: that it
+carries `ccd` and the CLI version muster speaks to is the image builder's
+promise — build it `FROM` the same `claude-code-agent` tag the deployment runs,
+and rebuild it when that tag moves. The pod's spec (network policy, secrets,
+volume, security context) is the same whatever the image.
+
+#### A private runner image (`MUSTER_OFFICER_IMAGE_PULL_SECRET`)
+
+When the officer image lives in a **private** registry package, name a
+registry credential for it: `MUSTER_OFFICER_IMAGE_PULL_SECRET=officer-image-pull`.
+It is the NAME of a Secret of type `kubernetes.io/dockerconfigjson` (key
+`.dockerconfigjson`) that the operator keeps **in muster's own namespace**
+(`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`), for example:
+
+```sh
+kubectl -n <muster's namespace> create secret docker-registry officer-image-pull \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<read-only token>
+```
+
+Every instance of a pool that runs its **own** `image` (and only those: never a
+pool on the deployment's image, task agents, the chief or pool jobs) then gets,
+on the Kubernetes driver, whenever its spec is applied (dispatch, Start,
+reapply):
+
+- a **copy** of that Secret in its namespace, holding only `.dockerconfigjson`
+  and the type, under muster's ownership labels plus `muster.dev/image-pull-copy:
+  "true"` (the copy machinery a key holder's Secret uses: a co-named Secret
+  muster did not make is refused, never overwritten; the copy goes with the
+  instance's namespace), written before anything that runs;
+- `imagePullSecrets: [{name: officer-image-pull}]` on its pod.
+
+A source that is missing, has no `.dockerconfigjson`, or is not of type
+`kubernetes.io/dockerconfigjson` fails the dispatch or Start naming the Secret
+and its namespace (never its content), and no pod is written. muster never
+changes or deletes the source.
+
+**One Secret, one use.** The pull Secret is never also a deploy-key pool's
+Secret (`MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`, which a key holder mounts): boot
+refuses that configuration, naming both, and a spec that names one Secret for
+both is refused (`ErrInvalidSpec`) before anything is written. Each copy holds
+exactly its own key.
+
+**Rotating the registry token.** 🔴 A rotated token reaches an instance **only
+at its next apply** (dispatch, or Stop → Start): muster copies the source when
+it applies a spec, and its officer loop never re-applies a running instance.
+So keep the **old** token valid until every officer instance on a private
+image has restarted, then revoke it. (A node that already pulled the image
+keeps starting it from its cache either way.)
+
+**Stale copies are swept.** On each apply of an instance in its own namespace,
+muster deletes the pull copy its Deployment named before when it is no longer
+wanted — the variable renamed (the new one is copied), unset, or the pool's
+`image` dropped (back on the deployment's image) — but only a Secret carrying
+muster's ownership labels **and** `muster.dev/image-pull-copy`, of type
+`kubernetes.io/dockerconfigjson`: never a Secret muster did not make, never a
+key holder's copy. In the shared-namespace layout one copy serves every
+worker, so nothing is swept there.
+
+**RBAC:** muster's service account needs `get` on that one Secret in its own
+namespace, as for a key holder's Secret: a Role with
+`resources: [secrets]`, `resourceNames: [officer-image-pull]`, `verbs: [get]`,
+bound to it there ([provisioner.md](provisioner.md)). A 403 on that read names
+exactly this Role, with the Secret's name, in its refusal. The sweep uses the
+`get` and `delete` on Secrets in instance namespaces muster already needs.
+
+**Boot refuses** a value that is not a Secret name (a DNS subdomain), the
+variable without `MUSTER_AGENT_PROVISIONER=kubernetes`, the `claude-code` kind
+and `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` (nothing would copy it), and the
+variable without `MUSTER_OFFICER_IMAGE_REGISTRIES` (no officer `image` could be
+allowed), with no declared officer pool setting an image (neither an untiered
+`image` nor any `tiers.<pool>.image`) — each would never be used — and the
+same Secret named as a deploy-key pool's (above). Unset, nothing changes.
+Rollback: unset it (the next apply of each instance drops `imagePullSecrets`
+and deletes its pull copy; an image already pulled on a node may still start
+from the node's cache).
+
+### Reading a repository (`repo`)
+
+The GitHub App connector mints a token only for the **calling agent's own
+repository**, and refuses an agent that has none
+([github-app.md](github-app.md)). An officer instance is dispatched with no task
+and no checkout, so without `repo` an approved `github` grant gives it nothing.
+
+With `"repo": "owner/name"`, that repository is the instance's own for its
+connectors. `Server.agentRepo` (`internal/api/officers.go`) is the one place
+this is decided: for a declared officer's instance it is the officer's
+configured `repo`, for every other agent its row's repository. Everything that
+asks "which repository is this agent's" for a connector reads it from there:
+
+- the proxy's caller (`connectors.Caller.Repo`), so the App mints a 1-hour token
+  for exactly that one repository; any other repository is reached anonymously
+  (except the officer's `read_repos`, below),
+- the approve card's and `connector_requests_list`'s description of what
+  approving grants (and `connector_request_decide`'s no-repository warning),
+- the repository a grant is recorded as approved FOR (below),
+- the App's problem line on the agent's card.
+
+**Further repositories, read only (`read_repos`).** An officer that needs to
+read more than its own repository — a shared library, a state repository such
+as `owner/flags-state` — lists them:
+
+```json
+{"id": "triage:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "repo": "example-org/example-web", "read_repos": ["example-org/flags-state", "example-org/docs"]}
+```
+
+`Server.agentReadRepos` (next to `agentRepo`) hands them to the proxy's caller
+(`connectors.Caller.ReadRepos`). The App decides a request's repository from
+its path exactly as it does for `repo` (`githubapp.App.targetRepo`: git's
+`github.com/<owner>/<name>[.git]/…`, the API's `/repos/<owner>/<name>/…`, fully
+decoded, without case), and a request that targets one of `read_repos` is
+served with a 1-hour token minted for **that one repository** with Contents,
+Pull requests, Checks and Commit statuses **read** (plus GitHub's implicit
+metadata read) — READ ONLY whatever `MUSTER_GITHUB_APP_ACCESS` says. A request
+to any repository outside `repo` ∪ `read_repos` is still anonymous, and a path
+that names no repository (`/graphql`) still carries `repo`'s token. Each
+repository's token is minted and cached on its own. The App must be installed
+on each one's owner with access to it, or that repository's requests fail with
+the App's error (never anonymously).
+
+- **It needs `repo`.** A path that names no repository is served for `repo`,
+  and the App refuses an agent with none, so `read_repos` without `repo` is a
+  boot refusal.
+- **One approval covers the set.** The instance asks for `github` once; the
+  approve card, `connector_requests_list` (`repo`, `read_repos`,
+  `approving_grants`) and `connector_request_decide` (`read_repos`, `grants`)
+  list `repo` and every read repository, each marked READ ONLY.
+- **On a shipping officer, only with the deployment App.** Its requests are
+  decided by its push gate, which serves a read of one of its `read_repos` with
+  the **deployment** App's READ-ONLY token, not its own App's. `read_repos` on a
+  shipping officer is accepted when `MUSTER_GITHUB_APP_ID` is set, and a boot
+  refusal naming the officer when it is not
+  ([below](#shipping-officers)).
+
+**`github`, and the connectors it declares, only.** An officer instance may
+request and use the `github` connector and the connectors its officer lists in
+`connectors` (`officers.MayRequestConnector`), and nothing else. A request for
+any other connector its owner holds is refused with an error naming the officer — by `connector_request` and
+`POST /agent/connectors/{name}/request` (400), and by the proxy (403, before it
+would file an implicit request) — and an officer's request for another
+connector filed before this rule cannot be approved (the tab and
+`connector_request_decide` refuse it).
+
+**Calling an in-cluster service.** An officer's pod reaches only muster's
+connect port, and the proxy refuses every private address. To let an officer
+call an internal service, the admin declares it as an
+[internal_http connector](connectors.md#internal-http-connectors) in
+`MUSTER_INTERNAL_HTTP_CONNECTORS`, with its token in
+`MUSTER_INTERNAL_HTTP_TOKEN_<NAME>`. The admin then lists its name in the
+officer's `connectors`:
+
+```json
+{"id": "ui-check:example-web", "hq_url": "…", "connectors": ["app-driver"]}
+```
+
+Each instance asks for the connector with `connector_request` and is approved
+by hand, and the approval is never shared. The instance then calls
+`internal_http_request{connector: "app-driver", method, path}`. It chooses only
+the method (GET, POST or DELETE) and a path under the connector's prefix.
+muster-server sends the call to the configured service, adds the token, caps
+the response and audits each call. The instance never sees the service's
+address or its token. muster-server must be able to reach the service, and the
+officer's own network policy does not change.
+
+**Always read-only** — except for a [shipping officer](#shipping-officers),
+whose requests go through its push gate and carry its OWN App's token instead
+(nothing below applies to it). An officer's App token is minted with Contents, Pull
+requests, Checks and Commit statuses **read** — whatever
+[`MUSTER_GITHUB_APP_ACCESS`](github-app.md#read-only-mode) says
+(`connectors.Caller.ReadOnly`, set for every officer instance). A deployment in
+the default `write` mode keeps minting write tokens for its task agents, and
+read tokens for its officers; the approve card and `connector_requests_list`
+describe an officer's request as READ ONLY in both modes. A push or a
+pull-request write through the proxy is refused by GitHub. ⚠ This limits the
+**App**: when `github` is a stored connector (no App, or an owner who is not an
+admin), the officer gets whatever that stored token may do — store a read-only
+token for an officers deployment.
+
+**No checkout.** The instance row carries no repository: a row repository is
+what makes the pod's `ccd` clone it before the CLI starts and start the session
+pre-trusted in it (running that repository's `.claude/settings.json`), and would
+hold the instance's first turn until the `github` grant is approved. The officer
+fetches what it needs through muster's proxy instead, as its first message says:
+
+- **git**: `ccd connect-git github` routes git's `https://github.com/` through
+  the proxy (ccd also does it by itself within 15 seconds of the approval), then
+  `git clone --depth 50 https://github.com/<owner>/<name>.git`;
+- **the REST API**: `curl -sS -H "Authorization: Bearer $MUSTER_HOOK_TOKEN"
+  "$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/<path>"`.
+
+**A grant is approved FOR a repository set** (migration 0061). Because the
+repositories are read from the configuration and never stored on the row, changing
+or removing `repo` or `read_repos` takes effect for existing instances at the next request
+(their first message is re-armed with the new text the next time the wake loop
+starts them) — and the grant does NOT follow it. The approval records the
+instance's repository at the time it was decided; when the officer's `repo` is
+then different — another repository, none → some (an officer approved while it
+had no `repo`, when the card said "approving grants NOTHING usable"), or some →
+none — the grant is put back to **pending** at its next use (the proxy, or the
+agent's `connector_status` / `connector_request`), audited as "re-opened: the
+agent's repository changed (approved for …, now …)", and the owner is prompted
+again, as for a changed credential source (0033). Nothing is minted for the new
+repository until the owner approves it. With `read_repos` the recorded value is
+the whole set in one canonical form (`connectors.RepoScope`:
+`owner/repo (+ read: a/x, b/y)`, the read repositories lowercased and sorted),
+so adding, removing or changing a read repository re-opens the grant the same
+way, while declaring the same set in another order or case does not. An
+officer without `read_repos` records exactly `repo`, as before. A `kube-read`
+grant is the exception: `repo` and `read_repos` do not change what
+`officer_kube_read` may read, so changing them leaves that grant approved.
+
+**Approving the grant.** Nothing is pre-granted: there is no automatic grant
+for officers, and none for any other configured agent. The instance asks once
+(`connector_request{name: "github"}`), and the officer's `owner` (default user
+1, the operator) decides it **explicitly, for that instance**:
+
+- the **Connectors** tab (`/connectors` on the officers muster, signed in as
+  the owner): the request card names the instance agent
+  (`officer-<type>-<area>-<n>`), its reason, and what approving grants — the
+  officer's `repo` and every one of its `read_repos`, each READ ONLY; the
+  `github` connector's entry states the token's scope. Press **Approve**. A pending request also sends a
+  `connector` push notification when push is configured; or
+- `connector_requests_list` then `connector_request_decide {id, decision:
+  "approve"}` from one of the owner's own mirrored Claude Code sessions
+  ([connectors.md](connectors.md#deciding-a-request-from-your-own-session)).
+
+🔴 **Shared approvals never reach an officer**, in either direction
+(`excludedFromSharing`, `internal/api/connector_standing.go`): no standing grant
+— not one keyed on a stored connector's name alone, not one on the officer's
+repository — approves an officer instance's request, and an officer's approval
+is never shared. Each instance's `github` request waits for its own decision.
+The App is an admin's: an `owner` who is not an admin is offered the stored
+`github` connector instead, and the App mints nothing for them. (A
+[standing public read](#a-standing-public-read-read_grant-standing) is not a
+shared approval: it is no grant at all, and carries no credential.)
+
+#### A standing public read (`read_grant: "standing"`)
+
+A **builtin** officer whose `read_repos` are PUBLIC repositories — for example
+muster's own source, so a marketing officer can answer a product question from
+the docs and code — may read them with no approval at all:
+
+```json
+{"id": "marketing:example", "backend": "builtin",
+ "read_repos": ["example-org/product"], "read_grant": "standing", "read_at": "release"}
+```
+
+No `github` request is filed, its owner is never prompted, and every instance
+reads from its first turn, whatever scales up. It is narrow by construction
+(`internal/connectors/public_read.go`, decided in the proxy BEFORE any grant is
+read or filed):
+
+- 🔴 **No credential.** A standing read is forwarded **anonymously** — no App
+  token, no stored secret, and the agent's own muster token is dropped as on
+  every proxied request — so GitHub serves only what it serves to anyone.
+- 🔴 **Public only, checked.** Before the first read of a repository, and again
+  after 10 minutes, muster asks GitHub's API anonymously
+  (`GET /repos/<owner>/<name>`, redirects not followed) and serves the read only
+  when GitHub answers 200 with that exact `full_name`, `private: false` and
+  `visibility: "public"`. A 404 (private, or absent), another name, a redirect
+  (a rename: declare the current name) or another visibility is a **403**
+  naming the repository and why (cached for a minute); a check GitHub could not
+  answer (rate limit, network) is asked again next time: while a repository's
+  last verdict was public it keeps being served (GitHub still refuses a
+  private one, since no credential is sent); with no verdict yet, or a
+  not-public one, it is a 502. A
+  private repository needs the per-instance grant: declare it without
+  `read_grant` (and with `repo`).
+- 🔴 **Reads only.** `GET` and `HEAD`, git's `info/refs` for the
+  `git-upload-pack` service, and its fetch `POST …/git-upload-pack`. A push
+  (`git-receive-pack`, as a POST or as the `info/refs` service) or any API
+  write to a declared repository is a **403** from muster, never forwarded and
+  never handed to the ordinary path.
+- 🔴 **The declared repositories only.** The repository is decided from the
+  path by the App's own rule (`connectors.GitHubTargetRepo`). A request for any
+  other repository, or a path that names none (`/graphql`), is not a standing
+  read: it takes the ordinary path — the instance's `github` grant, as above.
+- **Not stopped by revoking or denying the `github` grant.** A standing read
+  needs no grant, so the owner's decision on one does not reach it; to stop
+  it, remove `read_grant` (or the repository) from `MUSTER_OFFICERS` and
+  restart muster.
+- 🔴 **Builtin officers only.** `read_grant: "standing"` on an HQ officer is a
+  boot refusal, and `officers.Officer.StandingReadRepos` — the one rule the
+  connect door reads — gives an HQ or shipping officer nothing whatever its
+  value says. An HQ officer's `read_repos` are approved per instance, as before.
+- **No `repo` needed**, since no App token is minted. With a `repo` too, that
+  repository (and only it) still goes through the per-instance grant.
+
+The hosts are the GitHub App's (`github.com` / `api.github.com` without one).
+Each read is audited on the connector audit log as `standing public read of
+<owner>/<name>`, and the boot log names the officer's standing read and its ref:
+
+```
+officers: marketing:example: standing public read of example-org/product at muster's release tag v0.221.0 (no approval; anonymous, reads only, each checked public with GitHub)
+```
+
+**`read_at: "release"`** points the instance at the tag of the muster release
+the server runs (`v` + its build version, `officers.ReleaseTagOf`), so a
+question about muster is answered from what is deployed, not from unreleased
+work on the default branch. A build that is not a release (`dev`) has no tag:
+the first message then says to read the default branch and to say so.
+
+**What the instance is told.** Its first message names the repositories, says
+no approval is needed (and not to `connector_request` them), names the tag, and
+gives both recipes with the proxy written out — git's `https://github.com/` is
+routed through the proxy only for an approved grant, so the clone names it:
+
+```sh
+git -c "http.$MUSTER_CONNECT_URL/.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN" \
+  -c "http.$MUSTER_CONNECT_URL/.followRedirects=false" clone --depth 1 --branch v0.221.0 \
+  "$MUSTER_CONNECT_URL/connect/github/github.com/<owner>/<name>.git"
+curl -sS -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" \
+  "$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/contents/<path>?ref=v0.221.0"
+```
+
+The officer pod needs no GitHub egress: muster-server makes both calls. GitHub
+allows few anonymous REST reads an hour per address (shared by every standing
+read from the deployment), so the clone is the recipe to prefer.
+
+### Reading pull requests with `gh`
+
+The real `gh` is not in the image: it only speaks HTTPS to a fixed host and
+cannot reach the in-cluster proxy. `ccd` carries a **read-only** subset of it
+(`cmd/ccd/ghshim.go`), and 🔴 **it is opt-in**: the `claude-code-agent` image
+puts **no `gh` on PATH**, so every other pod — and any script that probes
+`command -v gh` and falls back to `curl` — behaves as before. An officer that
+wants it runs its own [runner image](#a-custom-runner-image-image) that links
+it:
+
+```dockerfile
+FROM ghcr.io/example-org/claude-code-agent:<the deployment's tag>
+RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh
+```
+
+(`ccd` run under the name `gh` is the shim; `ccd gh …` reaches it in any
+image.) It is a subset whose every request is a `GET`
+to `$MUSTER_CONNECT_URL/connect/github/api.github.com/…` carrying the pod's own
+token (`X-Muster-Token`) — so it is decided by the proxy exactly as the
+instance's `curl` would be: its grant, its push gate, its read-only or ship
+token. It is enough for a script that reads a pull request and its comments:
+
+| command | answered from |
+|---|---|
+| `gh pr view <n\|url> [--repo\|-R owner/name] --json <fields>` | `pulls/{n}`, plus `issues/{n}/comments` (`comments`), `pulls/{n}/commits` (`commits`) and `pulls/{n}/files` (`files`), every page |
+| `gh pr diff <n\|url> [--repo owner/name] [--name-only] [--patch]` | `pulls/{n}` as a diff or patch, or its files |
+| `gh api <path> [--paginate] [-X GET] [-H 'Accept: …']` | the path; `--paginate` follows `Link: rel="next"` and merges JSON arrays, as `gh` does; `{owner}`/`{repo}` are filled from the repository below |
+| `gh --version`, `gh auth status` | the shim itself |
+
+`--json` fields: `additions`, `author`, `baseRefName`, `baseRefOid`, `body`,
+`changedFiles`, `closedAt`, `comments`, `commits`, `createdAt`, `deletions`,
+`files`, `headRefName`, `headRefOid`, `headRepository`, `headRepositoryOwner`,
+`id`, `isCrossRepository`, `isDraft`, `labels`, `mergeable`, `mergedAt`,
+`number`, `state`, `title`, `updatedAt`, `url`, in `gh`'s shapes. Another field
+is an error listing these. A comment's `viewerDidAuthor` is always `false`:
+the shim has no viewer. `--jq`, `--template` and `--web` are not supported.
+A pull request URL names its repository; a `--repo` naming a different one is
+refused (exit 1, nothing sent). With no `--repo` and no pull request URL, the
+repository is `GH_REPO`, else the checkout's `origin`. The shim follows no
+redirect: a redirect from the proxy is reported as the non-2xx answer it is.
+
+🔴 **It writes nothing.** Every other command (`gh pr comment`, `merge`,
+`close`, `edit`, `ready`, `create`, `review`, `checkout`, `gh issue …`,
+`gh repo …`, `gh auth login`) and every `gh api` with a method other than
+`GET`, a body flag (`-f`, `-F`, `--field`, `--raw-field`, `--input`) or the
+GraphQL endpoint exits 1 before any request is sent. An officer's writes go
+only through muster's push gate and gated tools.
+
+## Waking and scaling
+
+One loop runs every officer. Each pass, for one officer:
+
+1. read HQ: its `open` items and its `claimed` items;
+2. read muster: which of its instance agents exist and are up;
+3. decide;
+4. release live claims held by an instance that is down;
+5. start or stop instances.
+
+The decision (`officers.Decide`, a pure function):
+
+- **Claimable** is the open items plus claimed items whose lease has expired
+  (the contract makes those claimable by anyone), less any item HQ marks
+  `blocked: true` (its task waits on unfinished tasks, so HQ refuses the
+  claim): a queue of only blocked items wakes nothing and keeps nothing up. An
+  HQ that does not send the field counts every item. **Held** is claimed items
+  with a live lease held by one of this officer's instances.
+- **Busy** (anything claimable or held): want *held-by-up-instances +
+  claimable* instances up, at most `max_instances`, and start the
+  lowest-numbered down instances to get there. Nothing is stopped while busy.
+- **Idle** (nothing claimable, nothing held): once idle has lasted
+  `idle_scale_to_zero_after`, every up instance is stopped. A new item resets
+  the window.
+- **Re-prompt.** An up instance that has finished — not in error, holding no
+  live claim, its first turn delivered — is sent a new turn ("new work: call
+  `officer_items` …") when there is claimable work that no instance being
+  started or recently prompted already covers. Without it an instance whose turn
+  ended would never look at the queue again while it stays up, and the officer
+  would neither work the new item nor go idle. Rate limit: one prompt per
+  instance per 5 minutes (`officers.RepromptAfter`) — except an instance of a
+  [`fresh_session_per_item`](#the-two-pools) pool whose conversation has had
+  its one item and that holds no live claim, which is prompted on the next
+  pass.
+
+  **How it is sent.** As a turn of its own under the instance's **session
+  claim** (`ClaimKickoff`), the claim a first turn and a cairn memo hold for a
+  whole turn — the memo relay's pattern. If the claim is held, a turn is
+  running (an instance works the queue inside one turn, which can last ~37
+  minutes, and holds no HQ claim between items): the re-prompt is **not sent**
+  and the loop tries again on its next pass, so it lands when that turn ends.
+  It never writes the instance's kickoff state (`kicked_off`, `pending_note`,
+  `updated_at`). An earlier version re-armed the first turn instead, and when
+  the running turn outlasted the kickoff deliverer's 15-minute dwell bound the
+  deliverer marked the instance `error` — permanently holding its slot. A turn
+  started some other way without the claim (an operator's chat) is refused by
+  ccd with `409 busy` before anything is typed, so the re-prompt fails cleanly
+  rather than interrupting it. muster re-prompts rather than stopping an
+  instance when its turn ends because it has no turn-ended signal for a
+  dispatched session, and stop/start would cost a pod cold start per item.
+
+**Up** means the instance's live status is running, provisioning or pending —
+or `error`: a crash-looping instance keeps its slot rather than being started
+again every poll (which would re-send its first message each time). A create or
+start still in flight (the row says provisioning, the backend shows nothing yet)
+also counts as up, so it is not started twice. An instance **entering or
+leaving error is logged once per change** ("instance N is in error — it holds
+its slot and is NOT restarted …"), and `muster_officer_error_slots` counts the
+slots so held across all officers: the officer runs below target until the
+instance recovers or an operator acts.
+
+**Starting** an instance that does not exist creates it, with its first message
+(below) as the kickoff. Starting one that exists **re-arms** its first message
+(`agents.PGStore.RearmKickoff`: the pending note is replaced and the kickoff
+markers reset, so the ordinary kickoff deliverer sends it once the pod is
+ready) and starts it. **Stopping** scales it to zero; its agent and volume stay.
+
+**Wake signal.** Polling HQ every `poll_interval` is the only one: muster has
+no webhook receiver (a one-minute poll is fast enough for release work, and it
+keeps a public route and an HQ→muster network path out of the design).
+
+**HQ down.** A pass whose HQ read fails with a transport error or a 5xx
+changes nothing — no start, no stop, no release — and the officer's next pass
+waits `poll_interval` doubled per consecutive failure, capped at 10 minutes.
+
+**HQ refuses the officer.** A 401 or 403 (the token is revoked, wrong or not
+this officer's) or a 404 (HQ without the officer API, or no such officer), seen
+on **2 consecutive passes** (`officers.FaultStrikes`; one alone is an HQ deploy
+or a token cache mid-rollout, and changes nothing), is a **configuration fault,
+not an outage**. An outage (5xx, network error) in between breaks the run — 404,
+502, 404 confirms nothing — and does not clear a fault already confirmed; only a
+successful answer does. It is logged loudly once per change
+("HQ refuses this officer …: a CONFIGURATION fault"), counted on
+`muster_officer_hq_faults`, and the officer's up instances are **scaled to
+zero** (logged as `scaled instance N to zero (HQ configuration fault: 404)`)
+rather than holding pods and Claude accounts for ever; the loop keeps
+retrying with the same backoff and logs "HQ answers again" when it does. A pass that cannot see muster's own
+instances (the provisioner is unreachable) is treated the same way: "I cannot
+see" is never read as "nothing is running".
+
+**Restarts.** Every start decision is a function of HQ's queue and muster's
+instances, so a restarted muster makes the same decisions. The one thing kept
+in memory is when the officer was first seen idle; a restart forgets it and
+waits a full idle window again. That can delay a scale-down, never cause one.
+
+**Shutdown.** A re-prompt being sent when muster shuts down is cancelled
+with the other in-flight deliveries, releases the instance's session claim,
+and is waited for before the process exits.
+
+**More than one muster pod.** The loop is not leader-gated (no background loop
+in muster is; see `cmd/muster-server`'s `startBackgroundLoops`). Two pods
+starting the same instance is one agent create winning on the unique name and
+one logged failure; two stopping one is idempotent.
+
+Tiered officers run one wake decision per pool: [The two pools](#the-two-pools).
+
+### A claim held by a stopped instance
+
+When an instance is stopped — by the operator, or because it crashed out —
+while it holds a live claim, the next pass sees a held item whose holder is not
+up and **releases** it (`POST …/release` with that instance's id), so another
+instance can take it at once instead of waiting out the lease. The idle
+scale-down cannot stop an instance holding a claim (a held claim is not idle).
+An instance in `error` counts as up, so its claim is not released early; it
+lapses with its lease. If the release itself fails (HQ down), the lease lapse
+is the fallback.
+
+### Re-running blocked items
+
+An instance whose connector grant is still pending works its item blind: the
+connector refuses it, and it completes the item `escalated` ("operator:
+approve grant N") or `done`. Approving the grant used to change nothing for
+that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
+`internal/officers/connector_blocks.go`):
+
+- **At the refusal.** Every access check that answers "pending" (the proxy,
+  `postgres_query`, `internal_http_request`, `officer_kube_read`), and an
+  explicit `connector_request` that leaves the grant pending, records each
+  item the instance holds a LIVE claim on in HQ, keyed by the grant's id
+  (`officer_connector_blocks`, migration 0148; in memory without a
+  database). The HQ read runs in the background, never on the refused
+  request, and at most once per (agent, grant) per minute: a refused
+  instance retries in seconds. A repeat refusal writes nothing. The link is
+  the grant id and HQ's claimed list, never an item's summary or a
+  refusal's text.
+- **At the approval.** The operator's decision (`decideConnectorGrant`, the
+  one every door takes; an officer's grant is never approved from a standing
+  grant) reads how each recorded item of THAT grant stands in HQ and re-runs
+  **only the ones that finished `escalated`** (operator 2026-11-17), newest
+  first, through `POST /officers/{id}/items/{item}/rerun` with the officer's
+  token, key `connector-grant:<id>`. An item that finished `done` /
+  `no_action`, or is still open, claimed or waiting, is skipped. HQ enqueues
+  a new item of the same subject, or answers the live / newer item that
+  already carries the work.
+- **Bounded.** Only items recorded within the last **7 days**
+  (`officers.RerunWindow`): an operator approves within a working week, and
+  older blocked work has a newer event of its own. At most **10** re-runs
+  per approval (`officers.RerunMaxPerApproval`), the rest logged and left
+  for a later approval. Every item HQ re-ran, and every one skipped, is
+  settled and never looked at again: a second approval of the same grant
+  re-runs nothing.
+- **Degrades.** An HQ without the route (older than civ-hq #891) answers
+  404: muster logs it and goes on to the next item, and the block stays
+  UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
+  An item HQ does not list in any status stays unsettled too. A builtin
+  officer's backend re-runs nothing (no `rerun` capability); muster logs it.
+
+A different connector's grant, or another agent's, re-runs nothing: the
+record is keyed by the grant id.
+
+## Chat sessions
+
+A team member can chat with an officer through the HQ server: HQ stores each
+chat and its messages, and every member turn enqueues (or re-opens) **one**
+item of kind `chat` for the officer — subject `chat:<chat_id>`, payload
+`{chat_id, seq}`, priority `high`. muster picks those items up on the wake
+loop's poll, as it picks up every item; HQ never calls muster. v1 is for HQ
+officers only: the built-in backend serves no chat routes, and on it an item
+of kind `chat` is queue work as before.
+
+**A chat item is not queue work.** It is never delivered to an instance's
+primary CLI:
+
+- the wake loop leaves it out of every queue count (`officers.Decide`): it is
+  not claimable, held, capped or budgeted for the queue, and no instance is
+  re-prompted for it. It still keeps its pool **busy** — a pending chat, or
+  one being answered, stops the idle scale-down — and the instance it needs is
+  started when it is down (an instance started for a chat gets its usual first
+  message too: its primary finds no queue work and ends its turn; the chat
+  runs on the next pass, once the instance is up);
+- `officer_claim` refuses one. HQ's claim-next may hand the primary a chat
+  item (it is high priority); muster releases it at once and answers
+  `{claimed: false, chat: true, note}`, which tells the instance to claim
+  another item by id. A claim of one by id is released and refused the same
+  way;
+- the transcript forwarder and the LLM proxy's claim sync are never told of a
+  chat claim.
+
+**Each chat runs in a Claude Code session of its own** on one instance — a
+`ccd` lane, exactly as a chief's side chat or a job's session runs: a
+`chat_sessions` row on the instance's agent, on the `claude-code` runtime,
+keyed `officer-chat:<chat_id>`, whose turns carry `X-Muster-CC-Session`. So
+the chat and the instance's queue work run at the same time; a chat never
+waits on the primary's turn (no `409 busy`), and the primary never waits on a
+chat. The lane is the officer's own CLI in the officer's own pod: it has the
+officer's tools, its connectors and grants, and its permissions — **full
+powers**, by operator decision — and loads its charter with `officer_brief` on
+its first turn.
+
+**muster keeps its own copy of every chat.** Each chat shows as an ordinary
+session on its instance's agent page (titled `Chat <chat_id>`), holding every
+turn muster sent the lane and every reply the lane gave. The HQ server holds
+the chat itself; this copy is so an operator can read what the officer was
+told and said from muster too, with no UI of its own.
+
+**A chat lane's own tool calls are the chat's.** Every CLI in the pod calls
+muster's MCP server with the agent's one token, so muster asks `ccd` (with
+`X-Muster-CC-MCP-Session: 1` on the lane's turns) to start a chat lane's CLI
+with an MCP config of its own: the servers `ccd seed` registered, muster's
+carrying `X-Muster-CC-Session: officer-chat:<chat_id>` on every request
+(`--mcp-config <file> --strict-mcp-config`), and its **lane secret**,
+`X-Muster-CC-Lane-Secret`.
+
+**The lane secret.** The first time a chat's lane runs, muster mints a secret
+for it (32 random bytes, hex) and keeps it with the lane's session row
+(migration 0149, `officer_chat_secret`). It sends it to `ccd` on the lane's
+turns, `ccd` writes it into the lane's MCP config (written `0600` before the
+CLI starts — a lane whose config cannot be written is refused, never run
+without its MCP servers — and removed when the lane stops), and the lane's MCP
+calls carry it back. A call naming an officer chat's session is that lane's
+only when its secret is the one muster keeps on the caller's own session of
+that key; any other — no secret, another lane's, another chat's key — is
+**refused outright**, never run as the lane nor as the primary. What it proves,
+and what it does not: the call carries a value muster gave that lane's `ccd`,
+so nothing in the pod can name a chat session it was not given by guessing or
+copying a key. It does not separate processes inside one pod: they run as one
+user, and one that reads the lane's config file can present its secret. The
+pod is one trust domain (it shares one muster token too); the chat claim the
+lane acts on is still checked per item (below).
+
+**Chats run only on a `ccd` that names them.** Before a chat's item is
+claimed, muster reads the instance's `/healthz` for `mcp_session_lanes: true`
+(a `ccd` from this version, which runs lanes). An older `ccd` would start the
+lane on the pod's plain MCP config, where its calls read as the primary's: no
+chat runs there — the item stays unclaimed, a log line says why (once per chat
+and instance), and the chat backs off and keeps nothing up until the instance
+runs a newer image.
+
+A verified call carrying an officer chat's key is that lane's:
+
+- it acts as the chat's holder, `<instance>/chat`: a counted read
+  (`officer_kube_read`, `officer_obs_raw`, a judgement instance's
+  `officer_obs_query`) is charged to the chat's item and sent to HQ for it —
+  never refused for want of a queue claim, never charged to an item the
+  primary holds;
+- it takes no queue work: `officer_claim` (claim-next and by id),
+  `officer_heartbeat`, `officer_complete`, `officer_release`, and the tools
+  that end their holder's lease (`officer_ask_person`, `officer_task_ask`,
+  `officer_flood_block_propose`, `officer_rollout_promote_propose`) are
+  refused, naming the chat. muster holds and ends the chat's item;
+- it does not ship: `officer_merge_pr`, `officer_tag_release`,
+  `officer_mark_ready`, `officer_shepherd_mark_ready`,
+  `officer_shepherd_merge_ask` and `officer_public_branch` are bound to the
+  item the primary holds, or write to GitHub on the officer's behalf, and are
+  refused (`officer_rollout_status` and `officer_ci_logs` are reads, and stay);
+- a connector refusal (a pending grant) records the lane's own chat item for
+  [re-running blocked items](#re-running-blocked-items), never the primary's
+  (chat items finish `done`, so an approval re-runs nothing for them), and the
+  lane's refusal never debounces the primary's on the same grant.
+
+A call without the header is the primary's, as before. A connector refusal on
+a path that names no session (the connector proxy: a CLI's `git` or `curl`)
+while one of the instance's chat lanes holds a claim is **ambiguous** — the
+primary or a lane may have made it — and records nothing (logged), rather than
+charging the primary's item for a call it may not have made.
+
+**The LLM proxy meters per instance, not per lane.** On a pool whose model is
+reached through the [LLM proxy](#the-llm-proxy), a chat lane's model requests
+carry the pod's one token and no session, so the proxy counts them as the
+instance's: toward the officer's daily budget (correct: it is the officer's
+spend), and toward the per-item token cap of whatever queue item the instance
+holds at the time. That is accepted for v1: the daily budget, which is what
+bounds the officer's spend, counts every request; what is imprecise is only
+which item's cap a lane's tokens count against. Attributing them to the chat
+would need a per-lane credential in the CLI's own environment.
+
+**One turn**, run by muster-server (`officers.ChatRunner`):
+
+1. **claim** the chat's item, as `<instance agent name>/chat` — never as the
+   instance's own name, so the primary's heartbeats, releases and completes
+   can never touch the chat's claim, and the wake loop never reads it as the
+   primary's;
+2. **read** the chat's messages after the last seq the lane has seen
+   (`GET /officers/{id}/chats/{chat}/messages?after=<seq>`), following
+   `more: true` page after page (at most 50 pages a turn);
+3. **send** them to the lane as one user turn: the line "A team member is
+   chatting with you in session <name>; reply in plain text; this is not a
+   queue item.", then each message under who typed it (`Display Name
+   (@login) wrote:`). The claim is heartbeated every minute while the turn
+   runs (a 5-minute lease);
+4. **reply** with the lane's final assistant text
+   (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`; cut to
+   HQ's 64 KiB cap and without NULs, both of which HQ refuses — see below; a
+   turn that ended with no text
+   replies "(The officer's turn ended without a text reply.)"). HQ completes
+   the item.
+
+**Never re-sent, never skipped.** The lane's row keeps two marks (migration
+0149): the highest chat seq the lane has seen, and the last one HQ took a
+reply for. A message is marked seen *before* it is sent, and the mark is put
+back when `ccd` refuses the turn before typing anything. So a muster that
+restarts mid-turn, or a reply HQ never took, leaves seen past answered: the
+next claim sends the lane no message again and asks it to reply to the last one
+again. A lane `ccd` evicted is resumed from its transcript on its next turn, as
+every lane is. The reply is idempotent on `in_reply_to` (HQ answers the reply
+it already holds, `replayed: true`), so a post retried after an outage, or an
+item HQ re-offers for a turn already answered, posts once. **A refusal that is
+final for the turn drops it**: `409 chat_closed` (the member closed the chat)
+and `409 stale_turn` (a newer member turn is the one to answer) mark the turn
+answered — it is never re-asked — and leave the item to HQ (released, so a
+newer turn it carries runs next). `409 not_claimed` (the lease lapsed) is not
+final: the next claim asks the lane to answer again.
+
+**Capacity.** Each instance runs at most `chat_sessions` chats at once
+(MUSTER_OFFICERS, 1–5, default 3; [configuration.md](configuration.md)), one
+lane each. Declared, it is set as the pod's `CCD_MAX_SESSIONS`; left out, the
+pod's spec is unchanged and `ccd`'s own default (3) applies. A chat is placed
+on the instance its lane already lives on (its conversation is on that
+instance's volume); a new chat goes to the up instance running the fewest
+chats. When that instance has no free lane, the item is **left unclaimed** for
+a later pass; when `ccd` refuses the turn anyway (`503 capacity`, `503
+not_ready`, `409 busy` — nothing typed), the item is released and retried on a
+later pass. Neither ever fails or drops a chat. The least recently used idle
+lane is stopped when another needs its slot, and resumed from its transcript
+on its next turn. With `tiers`, chats run in the **judgement** pool only.
+
+**`fresh_session_per_item` applies to the primary only.** A chat lane is one
+conversation for the chat's whole life: its turns never carry
+`X-Muster-CC-New-Conversation`.
+
+**A chat that cannot be served neither loops nor keeps its pool up.** A
+pending chat is left out of the pool's busy count (it starts nothing and stops
+no scale-down) when it cannot run now:
+
+- the officer's instances run on a **host** (`"runtime": "host"`): a host
+  instance has no `ccd`, so no lane. The HQ server can still create such a
+  chat; muster leaves it unclaimed and says why once in its log;
+- its home instance is beyond `max_instances` (lowered since), or which
+  instance it lives on cannot be read;
+- it is **backing off**: a lane that refused the turn for a reason that does
+  not pass by itself (the runtime unresolved, muster's credential refused, the
+  request rejected, the runtime never reached), a turn, read or reply that
+  failed, or an instance whose `ccd` does not name chat sessions. Each failure
+  doubles the wait from 30 seconds, up to 10 minutes; an answer clears it. A
+  refusal that passes by itself (`409 busy`, `503 not_ready`, `503 capacity`)
+  is no failure: the item is released and the next pass tries again. Every
+  refusal's reason is logged.
+
+**A reply HQ will not take is never retried for ever.** muster cuts a reply
+to HQ's 64 KiB cap (on a character boundary, ending `[reply cut by muster at
+64 KiB]`) and removes NULs before it posts. A reply HQ still refuses for its
+content (`400`, `413`) is final: the turn is marked answered, and muster posts
+a short fallback in its place — "(The officer's reply could not be delivered:
+the HQ server answered 400 invalid.)" — so the member is not left waiting.
+
+**A charter change reaches the lane.** Each turn reads the HQ server's brief
+for the charter version; when it moved since the lane's last turn (kept with
+the lane's marks, `officer_chat_charter`), the turn adds "Your charter changed
+since your last turn here: call officer_brief again and follow the new charter
+before you answer." A brief that cannot be read asks nothing.
+
+**A re-homed chat does not replay its history.** A lane with no marks (a new
+session: the chat's first turn, or a chat whose old instance's session is
+gone) is sent only what came after the officer's last reply. A history too
+large for muster to read in one answer (over its 1 MiB cap) falls back to the
+turn the item names, read on its own.
+
+**What it does not do (v1).** No streaming, attachments, edits or deletes;
+no muster UI of its own; no built-in backend. A muster running more than one
+replica counts each instance's busy lanes per process: HQ's claim decides
+which replica runs a chat, and `ccd`'s own cap (a `503 capacity`, above) is
+the backstop.
+
+## The tools
+
+An officer's instances are offered these MCP tools on muster's MCP server, and no
+other agent is (a third axis beside the chief-only one, enforced in the tool
+listing and again at dispatch):
+
+| tool | HQ call |
+|---|---|
+| `officer_brief` | `GET /officers/{id}/brief` — the charter, open items, recent outcomes, memory scopes. For a builtin officer, muster also records the `charter_version` it answered, and refuses the instance's claims and completes (`409 charter_changed`) once its type's charter is newer — see [Charter changes reach running instances](officers-builtin.md#charter-changes-reach-running-instances) |
+| `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
+| `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
+| `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
+| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?, authors?, attributed_prs?, attribution?, tickets?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `authors`, `attributed_prs`, `attribution` and `tickets` are forwarded as sent, and never sent when absent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
+| `officer_release` `{item_id}` | `POST …/items/{item}/release` |
+| `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
+| `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
+| `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
+| `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
+| `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **both pools of a tiered officer** (never an untiered one): `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates, and today's HQ takes it for a judgement item only. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
+| `officer_task_ask` `{item_id, note?}` | **`task-reconciler:*` officers (both pools) only**: `POST …/items/{item}/task-asks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
+| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **the judgement pool of `web-performance:*` officers only**: `POST …/items/{item}/flood-blocks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
+| `officer_rollout_promote_propose` `{item_id, repo, preview_tag, evidence}` | **the routine pool of `rollout:*` officers (and an untiered one) only**: `POST …/items/{item}/rollout-promotions` — a proposal to promote one soaked preview tag; HQ re-reads the canary, asks the officer's approvers and, on an approval, promotes with its own credentials. `evidence` is forwarded as given. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
+| `officer_gap_task` `{item_id, store, kind, namespace?, tier?, affected?}` | **`datastore:*` officers (both pools) only**: `POST …/items/{item}/gap-tasks` — HQ keeps ONE open task per (officer, store, gap kind), from its own template, assigned to the officer's owner, filed in shadow too (civ-hq docs/OFFICERS.md §5o). A repeat while that task is open answers `filed: false` with it; once a person closes it, the next filing files a new task. Arguments are decoded strictly (no title, text or assignee: HQ writes them). **Does not end the lease** |
+| `officer_pr_context` `{item_id, pr}` | **the judgement pool of `web-performance:*` officers only**: `GET /officers/{id}/prs/{pr}/context?item={item}` — what HQ holds about one PR of a compare range the item names (its release row, the release captain's notes, its review rounds and its why entries), as **attribution evidence only**, never a review verdict. HQ refuses a type without `pr_context_read` (403 `pr_context_read_off`) and a PR in no range of the officer's live items (404 `pr_not_visible`); a 404 with any other code is `pr_context_route_unavailable` (an HQ older than the route), never "not in range". Read-only; not a read of the item's read budget |
+| `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
+| `officer_post_draft` `{plugin, venue, target, body, media?, item_id?}` | **builtin officers whose type grants `outbound_drafts` only** (never an HQ officer): no HQ call. Files an outbound draft for its owner to approve — see [Outbound drafts](#outbound-drafts-officer_post_draft) |
+| `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
+
+**Claiming the next item.** `officer_claim` with no `item_id` asks HQ for the
+next item (HQ's claim-next: the highest priority first, then the earliest due,
+then the oldest; never a blocked item) and answers HQ's `{item,
+lease_expires_at}`. When nothing is claimable it answers `{item: null,
+claimed: false, note}` — not an error: the instance stops and waits. It sends
+the instance's pool `tier` exactly as claim-by-id does (none for an untiered
+officer), so HQ picks only an item of that tier: a routine instance claims
+routine items and a judgement instance judgement items. **An HQ without claim-next** answers 404, and the
+instance gets the tool error "this HQ has no claim-next; call officer_items
+and officer_claim{item_id}" — muster does not pick an item itself. With an
+`item_id` the claim is exactly as before.
+
+`lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
+300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
+conflict: HQ refuses a claim on any live lease, the caller's own included, and
+since an instance's id is its agent name a restarted instance re-claiming its
+item would hit that. When HQ's 409 names the calling instance as `held_by`,
+`officer_claim` heartbeats with the requested lease instead and answers with
+the item, `already_yours: true` and the note "already yours — lease renewed"
+(if the lease ran out between the two calls, the claim is retried once). A 409
+naming another instance is returned as a refusal. **Claiming a blocked item**
+(HQ's 409 `code: "blocked"`, `blocked_by`) is not a refusal either: nothing
+was claimed, and the instance gets a plain result — `claimed: false`,
+`blocked: true`, `blocked_by` (HQ **task** ids, as strings — not items to
+claim) and the note "not claimed: item N waits on tasks A, B (not done yet);
+claim another open item". On the built-in backend a blocked item is a
+`draft.refused` item **held** past its bound: the result adds `held: true`
+and the note says it is delivered once one of the officer's open ones is
+finished. At most 10 `links`. `outcome` is `done`,
+`escalated` or `no_action` (and `needs_judgement` for a routine instance:
+[Completing an item](#completing-an-item-outcomes-and-investigation)); `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
+returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
+409 on a claim names the holder), and an outage as "try again in a minute".
+
+The `instance` muster sends HQ is the agent's name (`officer-…-<n>`), so the
+same instance keeps its claims across a pod restart. For anything that needs a
+human, an instance follows its charter: by default it finishes the item with
+`officer_complete{outcome: "escalated", summary}` saying who must act and why,
+and HQ notifies the officer's owner. It uses `attention_ask` only when its
+charter says to — an officers muster usually runs headless, so an attention
+ask there reaches nobody. Its MCP instructions and system prompt say the same,
+in place of the generic attention paragraph every other agent gets
+([attention.md](attention.md#what-agents-are-told)).
+
+### Outbound drafts (`officer_post_draft`)
+
+A [builtin](officers-builtin.md) officer whose type's policy lists
+`outbound_drafts` in `capabilities` can ask to post something outside — a new
+post, or a reply on an upstream thread — through a [plugin bound to
+it](plugins.md#a-plugin-bound-to-an-officer). It never posts anything itself:
+it files a draft, its owner approves the exact text and media on the Reply
+drafts tab, and the plugin, on the owner's own machine, claims and posts it.
+
+```json
+{"plugin": "example-relay", "venue": "example.forum",
+ "target": {"kind": "reply", "ref": "t1_abc"},
+ "body": "…", "media": ["launch/hero-1", "launch/demo-2"], "item_id": "42"}
+```
+
+| argument | rule |
+|---|---|
+| `plugin` | the name of one of the owner's live plugins whose `deliver_to` is THIS officer, with `draft_checks` |
+| `venue` | 1 to 64 lower-case letters, digits, `.`, `_` and `-` |
+| `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
+| `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
+| `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
+| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it — at most 3 are claimable at once, and past that the new one is held (`blocked`) and delivered when one of them is finished, never dropped; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
+
+It answers `{"draft_id", "status": "pending", "check": "awaiting"}` (and,
+with `item_id`, an `item` note saying the item now waits on the draft). Nothing
+is sent: the plugin checks the draft and uploads its media, then the owner
+decides. At most 20 of an officer's drafts may await a decision. The tool is
+offered to an instance only while its type grants the capability (read at
+call time), and an HQ officer is never offered it. The draft is filed as the
+officer's owner; its author on the card is the instance.
+
+### Completing an item: outcomes and investigation
+
+`officers.CompleteOutcomes` and `officers.CompleteTakesInvestigation` are the
+one rule for what `officer_complete` offers each pool; its schema and its
+dispatch both ask them.
+
+| instance | outcomes | `investigation` |
+|---|---|---|
+| judgement pool | `done`, `escalated`, `no_action` | offered |
+| untiered officer | `done`, `escalated`, `no_action` | offered |
+| routine pool | the three, and `needs_judgement` | **not offered** |
+
+- **`investigation`.** HQ requires an investigation block to escalate an
+  item of an officer type whose policy sets `investigation: true`, and keeps
+  one only on `escalated` (HQ's officer guide, "Investigation", states its
+  fields and bounds). muster forwards the block **as sent** — never decoded
+  into a struct of its own, which would reshape it — and checks none of its
+  fields: HQ's decoder is the one schema, as for `officer_obs_query`. The
+  tool's schema describes it as an open object. HQ's `400` reaches the
+  instance with HQ's status and body, so it can fix the block and complete
+  again. JSON `null` is no block.
+- **`needs_judgement`.** HQ takes it for a **routine** item only: it promotes
+  the item to judgement in place (open again, no holder, the summary kept for
+  the judgement claimer) and closes nothing; it refuses links on it and
+  refuses the outcome on a judgement item. So it is offered to the routine
+  pool only, and muster refuses it from any other instance before HQ. The
+  routine kickoff explains the hand-off. As on any complete, the instance's
+  hold ends: the transcript forwarder and the LLM proxy's item meter stop.
+- **Why a routine instance gets no `investigation`.** A routine instance that
+  finds an item needs investigating hands it on with `needs_judgement`; the
+  investigation is the judgement pool's. An `investigation` it sends anyway
+  is **refused** by muster, naming `needs_judgement`, and nothing reaches HQ.
+  It is never silently dropped.
+- **`handoff`** (every instance; HQ decides which items take it). HQ's review
+  loop advances on a hand-off: the shepherd completing its opened item, every
+  auditor round, and an author completing its fix item each send
+  `handoff: {"head_sha": "<the pull request's head, 40 hex>"}`, and HQ
+  refuses those completes without it (`400 handoff_required`). A
+  **shepherd** may add `"to": "author"` — the one value — to hand a clean
+  round's fixes to the pull request's authoring officer (HQ enqueues its
+  `*.pr_fix` item; [the draft stage](#the-draft-stage)). muster refuses,
+  before HQ, a hand-off with another key, a `head_sha` that is not 40
+  **lower-case** hex, `to` with another value or on any officer but a
+  shepherd, or one on any outcome but `done` (HQ refuses that too), and sends
+  `"handoff"` only when one is given — an HQ that predates the field never
+  sees it. Whether the head a hand-off names was pushed and is live is
+  **HQ's** check (`409 nothing_pushed`, `head_not_live`): muster keeps no
+  memory of pushes to decide it, and passes HQ's refusal back. HQ's refusals (`400 handoff_required`, `409
+  round_cap`, `no_handoff_target`, `handoff_ambiguous`, `handoff_exists`,
+  and on a hand-off to the author `audit_not_stopped`, `officer_shadow`,
+  `no_author`, `nothing_pushed`, `head_not_live`)
+  come back with HQ's status and body; HQ rolls the complete back, so the
+  item stays held.
+- **`authors`, `attributed_prs`, `attribution`, `tickets`** (every instance of
+  an HQ officer; HQ decides which items and outcomes take each). `authors` is
+  `{"<login>": "<text>"}`: HQ mails each of the item's `payload.authors` its
+  own text, on `done` or `escalated` (HQ's officer guide, §5i "Author mail").
+  `attributed_prs` (PR numbers) with `attribution`
+  (`likely`, the default, or `confirmed`) name the PRs an `escalated`
+  finding is attributed to, and HQ sends each kept PR's author the escalation
+  card (§5b "Attributed PRs"). `tickets` is a release-ticket item's links,
+  `[{ticket_id, pr, attribution, gist}]`. muster forwards each **as sent**,
+  like `investigation`, and checks none of them: HQ's decoder is the one
+  schema, and its `400` comes back with the item still held. The tool's
+  schema describes each field's shape and copies none of HQ's bounds, which
+  would drift from HQ's. A field the
+  instance does not send is **no key** in the body — never `null` or `[]`,
+  which an HQ that predates the field refuses; a value the instance did send,
+  `null` or `[]` included, is forwarded unchanged. An HQ that predates a
+  field refuses it with a generic `400` (`body must be one JSON object {…}`,
+  naming no field) and writes nothing, so until HQ accepts `tickets` a
+  complete carrying it is refused, the item stays held, and the same complete
+  without it succeeds. A **builtin** officer is not offered the four (its
+  backend has no author mail, attribution or tickets), and muster refuses one
+  it sends anyway, naming the field, before the backend. (Before this, muster
+  dropped all four silently, so no officer-attributed author was ever told.)
+
+### Observability queries
+
+`officer_obs_queries` and `officer_obs_query` read metrics and logs through
+HQ's officer obs route, with the officer's own HQ token: no new credential,
+and no network path from the pod to a metrics or log store. Every officer's
+instances are offered both; whether the route is on is HQ's switch.
+
+🔴 **There is no raw query, and muster keeps no copy of HQ's request schema.**
+HQ keeps a registry of NAMED queries, each a reviewed template with typed
+arguments. `officer_obs_queries` lists them: an id, what its answer may be
+used to claim (`claims`), the `args` the query takes, and HQ's caps (window
+length, series, lines, queries per minute). `officer_obs_query` sends its
+arguments object to HQ **unchanged** — `{query_id, start, end}` plus the
+arguments that query takes. HQ's decoder is the one place the request schema
+lives: it refuses an unknown field (a `promql`, `expr` or `instance` key
+included) or a field of the wrong type (`400 invalid`), an id it does not have
+(`400 unknown_query`), a missing or malformed window and an argument the query
+does not take or needs (`400 invalid`), and the officer gets HQ's refusal with
+its code. muster never decodes the arguments into a struct of its own, which
+would silently drop an unknown key. What muster checks itself is what it owns:
+the officer (naming another is refused), its token, that the arguments are
+one JSON object, and their size (at most 256 KiB, HQ's cap on an officer
+route's body).
+
+HQ's answer is returned as is. An `empty: true` answer is **not a zero**: its
+`hint` names the positive control to run first. Log lines come back redacted
+by HQ, as a sample, never a count. HQ's refusals reach the instance with HQ's
+status and body, including two 5xx answers that are final decisions, not
+outages: `503 obs_unconfigured` (the route is switched off on that HQ) and
+`502 wrong_shape` (HQ's own defect). `502 upstream` (the backend read failed)
+is **retryable**, as HQ's guide says: the answer is an error with
+`retryable: {status, code, hq}` in place of `refused`, and says to retry in a
+minute. Any other 5xx is "HQ
+is unavailable, try again". A `429 rate_limited` means wait a minute.
+
+On a **judgement** instance each `officer_obs_query` call is also one read of
+the item it holds, against [the read budget](#the-read-budget): muster looks
+up its live claim, and `item_id` (muster's own key, removed before HQ sees
+the arguments) picks one when it holds several. While it holds no item the
+call is not counted. A routine instance's calls are never counted.
+
+### Raw metrics and logs (`officer_obs_raw`)
+
+The one exception to "no raw query": an **investigating** officer's
+instance, of either pool, may send its own PromQL or LogQL for the item it
+holds, through HQ's `POST /officers/{id}/obs/raw`. HQ owns every check on it — the
+officer's type must set `investigation: true` and the item must be the
+officer's item claimed by that instance, and **today's HQ admits a judgement
+item only** (else `403 not_investigating`); the window, the step, the caps and the rate limit; the
+refusal of the apiserver audit stream — and its refusal names the limit.
+HQ's officer guide states the limits; muster states none and re-checks none
+of them. HQ also redacts every log line and writes an audit row carrying the
+query text. The tool's schema is open, as `officer_obs_query`'s is: its
+properties are guidance, and HQ's decoder is the one schema.
+
+One call, each step refusing before the next:
+
+1. **Binding.** Both pools of a tiered officer are offered the tool (the
+   routine pool by the operator's decision). An untiered
+   officer's instance, or any other agent, is refused at dispatch. A routine
+   instance's call reaches HQ like a judgement one's; until HQ admits a
+   routine item, HQ answers it `403 not_investigating` (returned as is, and
+   not counted: HQ read nothing — see [the read budget](#the-read-budget)).
+2. **Item.** The instance must hold a live claim in HQ — the same gate as
+   [`officer_kube_read`](#reading-a-cluster-officer_kube_read) — and
+   `item_id` picks one when it holds several.
+3. **Body.** The arguments object is passed through, each value as sent,
+   with `item_id` (HQ's integer) and `instance` (the caller's own name) added.
+   An argument spelling either key, in any case, is refused: muster names
+   them, never the model.
+4. **Budget.** One read of that item ([the read budget](#the-read-budget)),
+   reserved before the call and given back if HQ's answer does not count.
+5. **HQ.** With the officer's own HQ token, the one every officer tool
+   already uses: there is no other credential. HQ's answer comes back as HQ
+   sent it, and its refusals with HQ's status and body, as for
+   `officer_obs_query`.
+
+### The read budget
+
+**200 reads per item, ONE count** shared by `officer_kube_read`,
+`officer_obs_raw` (every call, a routine instance's too) and a judgement
+instance's `officer_obs_query` (a routine instance's is never counted)
+(`officers.ReadBudget`, kept by the server for every tool;
+`officers.CountsRead` is the one rule for which calls spend it). 100 named
+queries, 99 raw queries and 1 cluster read are an item's 200; the 201st is
+refused whichever tool makes it, and names the budget. Another item has its
+own 200. A call muster refuses before the read (an argument, the item, the
+rate cap) spends nothing. Otherwise the unit is taken after the item is
+resolved and before the read is sent — a reservation, so concurrent calls
+cannot pass the cap — and for the two HQ tools (`officers.ReadCounted`) it is
+given back when HQ answers `429`, a 5xx or a `403` whose code is
+`not_investigating` (HQ refused to read for that item at all), or no answer
+arrives (a timeout, a transport failure): no read was made. HQ's 2xx and its
+other refusals (a `403` with any other code, `400 invalid`, …) still count,
+and so does every `officer_kube_read` that reached the cluster. The count is
+in memory: a restart can only allow more reads, never refuse one early.
+
+**The count is the item's, not the instance's.** It is kept per officer and
+item, and `needs_judgement` promotes a routine item in place (the same id),
+so the reads a routine instance made of an item it hands on **count toward
+the same 200** once it is a judgement item: a routine instance that spent 7
+leaves the judgement instance that takes the item 193. That is the design —
+one budget per item, whichever pool reads it.
+
+### Asking an HQ member (`officer_ask_person`)
+
+When an instance needs one named HQ member's decision to finish an item (a
+design review with screenshots, a judgement call its charter leaves to a
+person), it asks them with `officer_ask_person`. HQ notifies them, and:
+
+- 🔴 **asking ENDS the instance's lease.** HQ sets the item to `waiting` with no
+  holder. The instance must stop working it, and must not heartbeat, complete or
+  release it. The tool's result says so in a `note` beside HQ's answer
+  (`ask`, with its `delivery`, and `item`), and transcript forwarding stops for
+  the item;
+- HQ **re-opens** the item (`open`, claimable) once every open ask on it is
+  answered or withdrawn, with the answers on it (`asks[]` in the items list,
+  the claim response and the brief's `open_items`). muster's wake loop then
+  wakes an instance for it like any other open item;
+- if the deadline passes unanswered, HQ escalates the item to its owner;
+- a second ask on a waiting item is allowed (the same `item_id`).
+
+The arguments go to HQ **as given**. muster checks none of HQ's limits (the
+login, the question's and options' lengths, the image count, the deadline's
+range); HQ does, and its refusal comes back to the instance:
+
+| argument | |
+|---|---|
+| `to` | the member's GitHub login |
+| `question` | the question |
+| `options` | optional short labels to pick from |
+| `image_ids` | optional: ids of images the instance uploaded with `ccd ask-image <path>` (below), cited in order as the ask's `images` |
+| `context_url` | optional http(s) URL |
+| `deadline_seconds` | optional, passed through as is (HQ's default is a day) |
+
+**Images come from the instance's workspace** (a screenshot it took, say),
+uploaded from its own pod, because muster-server runs outside the pod and
+cannot read its files. The instance runs `ccd ask-image <path>` in its shell,
+then passes the `id` that command prints in `image_ids`. **An image on the
+web** is downloaded into the workspace first (`curl -o shot.png …` in the pod),
+then uploaded the same way: muster never fetches a URL for an ask.
+
+- **ccd confines the path to the workspace.** The root is `CCD_WORKSPACE`, or
+  the current directory when that is unset, and a relative path is taken from
+  the current directory. Every symlink is resolved, the root's own included
+  (`filepath.EvalSymlinks`), and the result must lie inside the resolved root.
+  So `..`, an absolute path elsewhere and a symlink that points out are all
+  refused before the file is opened. It must be a regular file.
+- **ccd checks the bytes.** The type is sniffed from the file's first bytes
+  and must be PNG, JPEG or WebP (never the extension). The size is at most
+  5 MiB, checked against the file's size and again while it streams, so a file
+  that grows mid-upload cannot send more.
+- **ccd streams it** to muster's `POST /agent/officer/ask-images?filename=<base
+  name>`, on the connect surface, with the agent's own token
+  (`X-Muster-Token`). The body is the raw bytes, not JSON, so the MCP call's
+  64 KiB cap does not apply.
+- 🔴 **muster decides the officer from the token**, never from a request field.
+  An agent that is no officer's instance is refused 403, and so is a query
+  naming another officer.
+- **muster checks the bytes again**, whatever sent them, because anything in
+  the pod holds the token. It reads at most 5 MiB + 1 byte (more is a 413) and
+  sniffs the type (anything but PNG, JPEG or WebP is a 415) before anything
+  reaches HQ.
+- **muster forwards the image** to HQ's `POST /officers/{id}/ask-images` with
+  the officer credential, and answers HQ's `{id, filename, content_type, size,
+  sha256}` with 201. HQ's own refusal is passed on with its status and code,
+  except a 401 or 403: that is HQ refusing muster's officer credential, not
+  the agent's token, so the pod gets 502 `officer_credential_rejected` naming
+  the officer.
+
+**Refusals** come back with HQ's status and `code`, in the error text and in
+`refused.code`: for example 409 `lease_lost` (no live lease and not already
+waiting), `officer_disabled` or `too_many_open`; 410 on a finished item; 400
+`invalid` for an input over one of HQ's limits (a `deadline_seconds` outside
+300-259200, more than 4 images or 6 options, an option or question too long),
+checked before the item; 422 `unknown_recipient`, `recipient_muted` or
+`recipient_unreachable`; 429 `rate_limited`; 404 on an unknown item, with HQ's
+own message.
+
+### HQ-derived asks (`officer_task_ask`, `officer_flood_block_propose`, `officer_rollout_promote_propose`)
+
+Three tools where the officer **proposes** and HQ asks a person, who
+**decides**. HQ applies the decision itself, with its own credentials. Each is
+one HQ call, made by muster with the officer's token; the instance never holds
+that token. Code: `internal/officers/item_asks.go`, `internal/api/officer_item_asks.go`.
+
+The route contract — what HQ derives from the item, its limits and its
+refusal codes — is HQ's: see HQ's officer docs (`docs/OFFICERS.md`, "Task asks",
+"Flood remediation" and "Rollout promotions"). muster sends `POST
+…/items/{item}/task-asks` `{instance, note?}`, `POST …/items/{item}/flood-blocks`
+`{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}` and `POST
+…/items/{item}/rollout-promotions` `{instance, repo, preview_tag, evidence}`.
+
+- **Offered by officer type name** (`officers.ToolOffered`), and refused at
+  dispatch for any other agent. `officer_task_ask` is offered to both pools of
+  a task reconciler (and an untiered one). `officer_flood_block_propose` is
+  offered to a web-performance officer's **judgement pool only**, never its
+  routine pool or an untiered web-performance officer (operator decision).
+  `officer_rollout_promote_propose` is offered to a rollout officer's
+  **routine pool** (and an untiered one), never its judgement pool: HQ's
+  rollout policy tiers the sweep, the item that proposes, routine, and the
+  charter's judgement work only escalates a failed result. HQ enforces the type **policy** (`task_asks`,
+  `flood_actuator`, `rollout_actuator`, with its repository allowlist);
+  neither stands in for the other.
+- **The lease is HQ's to check** (409 `lease_lost`), as for
+  `officer_ask_person`. muster does not check it locally: a flood proposal is
+  also allowed on an item already `waiting` on an ask.
+- 🔴 **A success ENDS the instance's lease** (an ordinary HQ ask: the item is
+  `waiting` with no holder). Transcript forwarding and the item meter stop for
+  the item, and the result's `note` says that **nothing has been applied
+  yet**: the instance must not claim the task changed, traffic was
+  challenged or a tag was promoted.
+- **muster builds the body, so it decodes strictly.** An argument it does not
+  know (`action`, a task id, a workflow, a token, another officer) or a wrongly
+  typed one is refused before HQ is called. `action` is always
+  `managed_challenge`, muster's. The rollout proposal's `evidence` must be a
+  JSON object and is forwarded **whole, as given**, so nothing in it is
+  dropped; HQ's decoder refuses an unknown field inside it (400 `invalid`).
+  The tool's schema for it mirrors HQ's §5r evidence shape (`{summary,
+  checks: [{name, query, result}]}`, closed) and must change with it. It checks **none of HQ's limits**.
+- **Every HQ refusal reaches the model verbatim**: HQ's status and `code` in
+  the error text and `refused.code`, and HQ's body under `refused.hq`. This
+  includes the flood route's 503 `flood_actuator_not_configured` and the
+  rollout route's 503 `rollout_actuator_not_configured`, which are final
+  refusals, not "retry in a minute". The rollout route's 502
+  `github_unavailable` (HQ could not read GitHub and wrote nothing) comes back
+  as `retryable` with HQ's code. An outage stays "HQ is unavailable".
+
+### The first message
+
+```
+You are officer <id>, instance <n> of <max> (<agent name>). …
+1. Call officer_brief. It returns your charter …
+   (builtin officers also: when officer_claim or officer_complete answers
+   charter_changed, call officer_brief again, follow the charter it returns,
+   and retry; an item you hold stays yours)
+2. Work the queue one item at a time: officer_claim{} with no item_id to take
+   the next item (officer_claim{item_id} only when the charter says so),
+   officer_heartbeat{item_id} …, officer_complete{item_id, outcome, summary} …
+3. Anything that needs a human: follow your charter. By default, finish the
+   item with officer_complete{item_id, outcome: "escalated", summary} … — HQ
+   notifies the officer's owner — rather than attention_ask … Use attention_ask
+   only if your charter explicitly says to.
+   If what you need is one named HQ member's decision on the item …, you may
+   instead ask them with officer_ask_person{…}. Asking ENDS your lease on the
+   item … HQ re-opens it with the answer, and muster wakes an instance to take
+   it up again.
+4. When officer_claim{} answers item null and you hold no claim, stop and wait …
+```
+
+An officer with a `repo` is also told that it may read that repository through
+muster's `github` connector, the only connector it may use: request it once
+with `connector_request`, wait with `connector_status` (the owner decides it by
+hand), then read through the proxy either with git (`ccd connect-git github`,
+then `git clone https://github.com/<owner>/<name>.git`) or with `curl` on
+`$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/…`
+carrying `Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster holds a read-only
+token, there is no checkout, and it never pushes or merges. An officer with
+`read_repos` is also told their names and that it reads each the same way, with
+a READ-ONLY token limited to that one repository. Without a `repo` the text is
+unchanged.
+
+An officer that declares `connectors` is also told their names, that each is
+requested once and decided by hand, and how to query a postgres one:
+`postgres_query{connector, sql, params?}`, one statement per call in a
+read-only transaction with a timeout and capped rows, reading `pg_catalog` to
+check tables and columns (the github sentence then says "the only connector
+you may use for it").
+
+The kickoff does not describe the
+[internal_http](connectors.md#internal-http-connectors) tool. An approved
+instance learns it from `connector_status`, whose `usage` names
+`internal_http_request{connector, method, path, query?, body?}`, and from the
+tool's own description. Neither of those names the service's address.
+
+An instance of a pool with [`fresh_session_per_item`](#the-two-pools) is
+also told, last, that this conversation is for ONE item: once it has
+completed, released or handed the item on, or asked a person about it, it ends
+its turn without claiming another (`officer_claim` refuses one), and muster
+starts a new conversation, with the same first message, for the next item.
+The wake loop's prompt of such an instance is this whole first message, not
+the "as before" re-prompt.
+
+(`officers.KickoffText` has the whole text.) It carries no charter and no
+credential.
+
+## Shipping officers
+
+An officer with a `ship` block may **write code to its `repo`**: push branches,
+open pull requests, merge its own pull requests and tag releases. It holds no
+GitHub credential for any of it. muster holds the officer's **own** GitHub App
+key, filters every write the instance sends through the connector proxy, and
+makes merges and tags itself, in two tools that check every gate at call
+time (a third, `officer_mark_ready`, converts its own draft pull request to
+ready for review). Nothing the officer can merge changes those gates: they are muster's
+code and muster-server's environment, and the officer's App is installed on
+its one repository only.
+
+**`read_repos` beside `ship`.** A shipping officer's every request is decided
+by its push gate. A request to one of its ship repositories carries its own
+App's token for that repository; a request to one of its `read_repos` is
+admitted only as a read (the gate forwards no write outside the ship
+repositories) and carries the **deployment** App's READ-ONLY token for that one
+repository; anything else goes anonymously. The officer App never mints for a
+read repository. An entry that is also a ship repository is a boot refusal.
+🔴 **It needs the deployment's own GitHub App** (`MUSTER_GITHUB_APP_ID`, with
+its key and accounts): without one there is no read-only token to mint and the
+gate would forward those reads anonymously, so a shipping officer with
+`read_repos` on such a deployment refuses to boot, naming the officer,
+`read_repos` and `MUSTER_GITHUB_APP_ID`.
+
+**`tiers` and `llm` beside `ship`.** Only the **judgement** pool ships: the
+routine pool (`Officer.Pool(routine)`) carries no ship policy, so a routine
+instance gets no ship tool, no push gate and no officer App token, and reads
+like any other officer instance. `llm` serves the routine pool only.
+`tiers`, `llm` and `read_repos` are accepted beside **every** stage — shadow,
+merge and release included, not only `draft` (`read_repos` only with the deployment App, above) — where they were boot refusals
+on any shipping officer before. Those stages' gates are unchanged.
+
+🔴 **Use it only where the repository enforces nothing else, and know that
+muster is then the branch protection.** On a private repository without
+branch protection or rulesets, any `contents: write` token can push to the
+base branch, push any tag and merge with red checks. The design rests on that
+token never reaching the instance (below).
+
+The code: `internal/officers/ship.go` (configuration), `internal/officership`
+(the push gate, the merge and release gates, the migration lint, the rollout
+watch), bound to muster in `internal/api/officer_ship.go`.
+
+### Configuration
+
+A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
+`repo`:
+
+```json
+{"id": "engineering:example-web", "hq_url": "https://hq.example.com/api/v1", "repo": "example-org/example-web",
+ "ship": {
+   "stage": "merge",
+   "github_app": {"id": 123456, "account": "example-org:7654321"},
+   "required_checks": ["ci / build", "ci / e2e", "ci / lint"],
+   "review_check": "pr-review",
+   "review_app": "example-review-app",
+   "migrations": "internal/db/migrations/",
+   "sensitive_paths": ["internal/auth/", "*token*", "internal/store/officer*", "Dockerfile*"],
+   "notice": {"channel": "ch/example-alerts"},
+   "releases_per_day": 6,
+   "min_release_gap": "30m",
+   "quiet_hours": {"tz": "America/New_York", "start": "22:00", "end": "08:00", "weekends": true},
+   "rollout": {"health_url": "https://svc.example.com/healthz", "version_field": "version",
+               "ok_field": "db", "ok_value": "ok", "rollback": "pr"}
+ }}
+```
+
+| field | default | |
+|---|---|---|
+| `stage` | **required** | `draft` (open DRAFT pull requests only, in one to three repositories — [The draft stage](#the-draft-stage)), `shepherd` (act on OTHER officers' pull requests only: fast-forward pushes, comments, update-branch, mark ready — [The shepherd stage](#the-shepherd-stage)), `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
+| `repos` | none | `draft` and `shepherd` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?, forbidden_paths_file?, public?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
+| `forbidden_paths` | none | `draft` and `shepherd` only (refused on another stage, which would ignore it; on `shepherd` it is added to each author's own list — [The shepherd stage](#the-shepherd-stage)): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
+| `forbidden_paths_file` | none | `draft` and `shepherd` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
+| `docs_only` | none | `draft` only: `{allowed_paths, max_diff_lines?, max_files?, max_prs_per_day?}`, an allowlist every changed path must match, the fenced-code rule and the size caps — [Docs-only drafts](#docs-only-drafts). |
+| `public` | `false` | `draft` and `shepherd` only, per repository (on each `repos` entry, or at the top in the single-repository form): the repository is public, so its pull requests, its officer branches (their names included) and their commits are scanned with `internal_patterns_file` — [Docs-only drafts](#docs-only-drafts). A shepherd's pushes are scanned only where ITS OWN block marks the repository public. |
+| `internal_patterns_file` | none | `draft` and `shepherd` only; **required** with any `public` repository and refused without one: an absolute path on muster-server's disk to the internal-details pattern file. |
+| `base` | `main` | The branch merges land on and releases are cut from. |
+| `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. On the `draft` stage it is **pinned**: any value but `officer/` is refused at boot, because the target repositories' own checks select officer pull requests by that prefix. |
+| `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
+| `required_checks` | **required** (not on `draft`; optional on `shepherd`, where `officer_shepherd_mark_ready` requires the ones listed) | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
+| `review_check` | **required** (not on `draft`; refused on `shepherd`) | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
+| `review_app` | none | When set, only that App's check run of that name counts. |
+| `migrations` | none | The directory whose files are linted for destructive DDL, and whose added files make a release need HQ's backup preflight. |
+| `sensitive_paths` | none | Patterns whose change makes `officer_merge_pr` post a notice to HQ first (never a block by itself). `dir/` is a prefix, a pattern with `/` matches the whole path, one without matches any path segment. Needs `notice`. |
+| `notice` | none | `channel` (the mail channel or address HQ posts the notice to) and `path` (default `/officers/{id}/notices`, under `hq_url`). |
+| `releases_per_day`, `min_release_gap` | `6`, `30m` | Officer tags per rolling 24 h, and the least time between two. |
+| `quiet_hours` | none | No officer tag in these local hours (`start` > `end` wraps midnight), or on weekends when `weekends` is true. Merges are not affected. |
+| `rollout` | none; **required** for `release` | `health_url` (fetched by muster-server), `version_field` (default `version`), optional `ok_field`/`ok_value`, `live_reads` (10), `live_within` (20m), `healthy_for` (15m), `interval` (30s), `rollback` (**required**: `off`, `pr` or `auto`), `rollback_within` (60m). |
+
+Secrets, from muster-server's environment only (never an instance's pod):
+
+- `MUSTER_OFFICER_GITHUB_APP_KEY_<NAME>`: the officer App's PEM private key.
+- `MUSTER_OFFICER_ESCALATE_WEBHOOK_<NAME>`: an https webhook **outside HQ**
+  (a Discord-style `{"content": …}` endpoint), required with `rollout`. A
+  failed rollout escalates there, because the failing service may be HQ.
+
+`<NAME>` is the officer id as for its HQ token (`engineering:example-web` →
+`ENGINEERING_EXAMPLE_WEB`).
+
+**The officer's App needs** these repository permissions and no others:
+Contents **read and write** (push its branches, create tags, merge), Pull
+requests **read and write** (open and edit its pull requests, comment, merge),
+Checks **read** and Commit statuses **read** (the gates), and Metadata read
+(implicit). No Workflows, Administration, Actions or Issues. muster mints
+every token with exactly Contents and Pull requests write, Checks and Commit
+statuses read, for the one repository.
+
+### The push gate
+
+Every GitHub request a shipping officer's instance sends through muster's
+proxy is decided by its push gate (`officership.PushGate`, a
+`connectors.Gate`) **before any credential exists**; an admitted request then
+carries the officer App's token, never the deployment App's or a stored
+connector's. It is an allowlist:
+
+| forwarded | refused |
+|---|---|
+| every read (`GET`, `HEAD`) | everything not on the left, including: |
+| `git fetch` (`git-upload-pack`) | a push updating **any** ref outside `refs/heads/<prefix>…`, so the base branch and **every tag** (one bad ref refuses the whole push) |
+| `git push` (`git-receive-pack`) to the officer's repo whose every command updates `refs/heads/<prefix>…` (create, update, force or delete) | `PUT …/pulls/{n}/merge`, `…/git/refs`, `…/git/tags`, `…/releases`, the contents API, the merges API, GraphQL, every `DELETE` |
+| `POST /repos/{repo}/pulls` with head `<prefix>…` and base `base` (`draft: true` allowed) | a signed push, an unreadable push body, a body naming a key twice |
+| `PATCH /repos/{repo}/pulls/{n}` of its **own** pull request (`title`, `body`, `state`) | a method-override header, a query string on a write, a path with an empty, `.`, `..` or doubly encoded segment; a `PATCH …/pulls/{n}` body naming `draft` (either value, alone or with other fields, on any pull request — the refusal names [`officer_mark_ready`](#officer_mark_ready-pr)) |
+| `POST /repos/{repo}/issues/{n}/comments` on its **own** pull request | any write to another repository |
+
+A refusal is a 403 naming the rule, and the upstream sees nothing.
+
+🔴 **Why the instance cannot go around it.** The instance's pod holds no
+GitHub credential, and its network policy reaches only muster's connect port
+([The instance's network](#the-instances-network)). On that port the one route
+that attaches a GitHub credential is the connector proxy, which resolves the
+caller from the agent's own token (an agent cannot rename itself into another
+officer) and, for a shipping officer's instance, runs the gate first
+(`connectors.Proxy.Serve`). The token is minted in muster-server and injected
+on the way out; the instance never sees it. The gate, the gates and the App
+key live in muster's code and muster-server's environment, and the officer's
+App is not installed on the repository that holds them.
+
+### The draft stage
+
+A `draft` officer proposes fixes as **draft** pull requests and a human takes
+each one from there. It is offered none of `officer_mark_ready`,
+`officer_merge_pr`, `officer_tag_release` and `officer_rollout_status` (and
+`officer_mark_ready`'s gate refuses its stage too); `required_checks`,
+`review_check` and `rollout` are not needed, `rollout` is refused, and a
+`notice` block is required. On top of the push gate's allowlist:
+
+| rule | answer |
+|---|---|
+| A branch is `<prefix><officer slug>/<item>-<slug>` (`officer/cluster-watch-example/134-fix-limit`); in a repository marked `public`, the branch muster named for the item with `officer_public_branch` instead ([Public branches](#public-branches-no-officer-id-no-item-number)). A push of any other branch, or a branch **deletion**, is refused. | 403 |
+| `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
+| The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item (in a repository marked `public`: exactly `Authored from untrusted inputs by an automated agent; review as such`, and no title, body or comment may name the officer's id or slug), and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
+| At create, HQ (read with the officer's own token) must show the **requesting instance** holding the branch's item under a live lease. Another holder, an expired lease, no such claimed item, or HQ unreadable is a refusal. | 403 |
+| At most 4 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's pulls list, every page, keeping those whose author is its bot, the login compared case-insensitively; the issues list is never read, since the App has no Issues permission). The list is read newest created first and stops after the first page that reaches back past the App's creation (`GET /app`'s `created_at`: its bot cannot have opened anything older), so what it costs is the repository's pull requests (anyone's) opened since the App was created, not the repository's whole history. More than 3,000 of those to read is a refusal, never a truncated count, and so is a list that is not newest-first, a listed pull request without a creation time, or an App whose creation cannot be read. Each is counted by the item its body's first line names, or else by its branch. An author filter that does not match the App's login keeps nothing, which is not an error, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
+| One create per officer at a time: a second create waits for the first to be forwarded and re-checked, and is refused after 2 minutes. | 403 |
+| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read, and refused when it has: a changed, added, removed or renamed-from path matching the repository's forbidden paths; a `.gitattributes` file in any directory (an attribute can mark files `-diff` or `binary` and so hide their diff); a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; a removed `name:` line in a diff that shows one of those kinds (a rename deletes the old resource); an **added** kustomize `$patch: delete`; an entry dropped from a `kustomization.yaml`'s `resources:`/`bases:`/`components:` whose file at the base declares one of those kinds, or that is not a single YAML file muster can read (a directory, a remote base); an **added** line with a credential-shaped value (below), or an env entry whose credential-like `name:` gets a literal `value:` (the unchanged `name:` line counts as context); an added `kind: Secret` with a literal `data:`/`stringData:` value; or a file GitHub shows **no diff** for (an empty patch: a binary file, which GitHub reports with `changes: 0`, a very large file, a pure rename or copy, a mode change — except a removed file with `changes: 0`, a binary or empty file, which is read at the comparison's merge base instead and refused when it declares one of those kinds, holds a credential-shaped value, or cannot be read). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
+| After a push to a branch with an **open** pull request, after a create, and on every sweep, the same comparison check runs (below). | the pull request is **closed**, its branch deleted (on a content hit), and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
+
+**Credential shapes** (`redact.HasSecretValue`, and `HasSecretValueIn` for a
+file) refuse on either of two rules:
+
+- **The value.** A shape known by its value (a token prefix, a private key
+  block, a JWT, a cloud key) always counts.
+- **The key.** A credential-like key — one whose name ends in `password`,
+  `passwd`, `passphrase`, `pwd`, `secret`, `token`, `api_key`/`apikey`,
+  `private_key`, `secret_key`, `secret_access_key`, `credential` or
+  `credentials` (not `access_key_id`, an identifier), in YAML, JSON,
+  `NAME=…` or a `--password`/`--token`-style flag — holding a **literal**
+  string refuses, however short or plain: `password: hunter2` and `password:
+  correct-horse-battery-staple` are refused. Not a literal: an empty or null
+  value, a boolean, a number (with a duration or size unit too), a reference
+  (`${…}`, `$(…)`, `$VAR`, `{{…}}`, `valueFrom`, a flow mapping, a YAML alias,
+  a `<placeholder>`), a SOPS `ENC[…]` value, a path or a URL. A key that itself
+  names a reference passes whatever it holds: `existingSecret…`,
+  `passwordSecret`, `tokenSecret`, `…SecretName`, `…SecretRef`,
+  `…secretKeyRef`. So `automountServiceAccountToken: false`, `existingSecret:
+  x`, `passwordSecret: x` and `password: ${DB_PASSWORD}` pass. In a source file
+  (`.go`, `.ts`, `.py`, …) an unquoted value is an expression, so only a quoted
+  string literal is judged there (`Password: cfg.Password` passes, `Password:
+  "hunter2"` does not).
+- **The env pair.** One YAML mapping whose `name:` is credential-like (the
+  same endings: `name: DB_PASSWORD`) and whose sibling `value:` holds a literal
+  refuses, in either order. A mapping is a block list item (`- name: X` with
+  `value: y` below it), a block mapping nested under a key (a kustomize
+  JSON6902 patch's `value:` holding `name:` and `value:`), or a one-line flow
+  mapping anywhere on a line (`- {name: X, value: y}`, `value: {name: X,
+  value: y}`, `env: [{name: X, value: y}]`). A pair is never made across two
+  mappings: in a diff, each hunk is judged with its context lines, so an added
+  `valueFrom` entry next to a changed harmless `value:` is not a pair, and an
+  unchanged `- name: DB_PASSWORD` above a changed `value:` is. A quoted name
+  or value may carry a comment after it. The literal rules are the key rule's,
+  except that a quoted boolean or number (`"true"`, `"5432"`, an env value
+  being a string) is not a literal either; `valueFrom`, `$(VAR)`, `{{…}}` and
+  `ENC[…]` pass. Not seen: multi-line JSON, a dash alone on its line, a flow
+  mapping that nests another, an alias whose anchor sits on another key.
+
+A SOPS-encrypted Secret (its values `ENC[…]`, a `sops:` block) passes the
+`kind: Secret` rule. A comparison muster cannot read at create or `PATCH` is a
+502: the policy could not decide. ⚠ The manifest rules read the **diff**: a
+hunk shows three lines of context, so a rule that needs the document's kind
+(the rename rule, the `kind: Secret` rule on a modified file) sees it only when
+the hunk does. They check an officer's ordinary proposals; they are not a
+renderer.
+
+🔴 **The deletion rules are a best-effort EARLY refusal, not the wall.** They
+catch the shapes named above and miss others that delete or rename the same
+resources: a dropped Flux `Kustomization` or `HelmRelease` that prunes them, a
+kustomize `namespace:`/`namePrefix:`/`nameSuffix:` transformer, a JSON6902
+patch of `metadata.name`, a flow-style `resources:` list. The **authoritative**
+wall against deleting or renaming a stateful resource is the **target
+repository's own CI**: a render diff gating every `officer/*` pull request,
+comparing what the base and the head render to. A repository that a draft
+officer ships to needs that gate; muster's rules do not replace it.
+
+**After the change lands.** Three re-checks run the comparison check again
+once GitHub has a change, on a context detached from the officer's connection.
+A hit, or a comparison that cannot be read (fail closed), **closes** the pull
+request and posts an HQ notice naming the paths, the pull request and the
+commit; on a content hit muster also **deletes the branch** with the officer
+App's token, server-side (the officer itself still cannot delete one), and the
+notice says whether it did. A close or a delete GitHub refuses is posted as
+"could NOT close" / "could NOT delete".
+
+- **A push.** A pack cannot be diffed before GitHub has it (a thin pack whose
+  objects are deltas against objects only GitHub holds), so a push is admitted
+  and checked after it is forwarded — whatever the client does: muster runs the
+  check even when the officer drops its connection mid-push. GitHub's
+  report-status is the authority on what applied: an `ng` ref is skipped, an
+  `ok` one is checked at the pushed commit, and a ref the answer does not name
+  (no answer, or none requested) is checked anyway — at the pushed commit, or,
+  when GitHub cannot compare it (the push never landed), at the head the pull
+  request shows. Each open pull request from the pushed branch is found by the
+  branch (GitHub's `head=` filter), however old it is. Another HTTP status
+  means GitHub refused the push.
+- **A create.** The new pull request is checked again at the head GitHub
+  created it on, so a push that lands between the create's check and GitHub's
+  create is caught. When that re-check is **clean**, muster tells HQ the pull
+  request was opened (`pr-opened`, [below](#the-review-loop-through-hq)), so
+  HQ can start its review loop for it.
+- **The sweep**, every 5 minutes: every open pull request of the officer, at its
+  current head. A head already checked clean is not read again (muster keeps
+  the last clean head per pull request, in memory: a restart re-reads each
+  once). A comparison that cannot be read is retried, and closes the pull
+  request after 3 sweeps in a row.
+
+Until a re-check finishes (or, at worst, the next sweep), the pull request
+shows the change.
+
+**Fixing its own pull request (`*.pr_fix` items).** Fixes go to the
+**authoring** officer (operator decision, 2026-11-12): after a clean audit
+round's 🟡 findings, or a human approver's feedback, HQ hands the officer
+whose App opened the pull request an item of kind `<its type>.pr_fix`
+(muster keys on the `.pr_fix` suffix only), subject `<repo>#<pr>` (repository
+lower-cased), payload `{pr_loop: {repo, pr, head_sha, …}, findings |
+feedback, from}` — `findings` the clean round's auditor report as one
+**string**, verbatim, or `feedback` the owner's `{text, by, at}`. muster parses
+neither: they are the instance's to read.
+
+- **A pull request in its review loop is the loop's** (operator decision,
+  2026-11-12). Once HQ's 200 to muster's `pr-opened` named a loop item for
+  it ([below](#the-review-loop-through-hq): muster's durable record, never the
+  instance's word), the authoring officer's writes to it — a push to its
+  branch, a comment, a title or body edit, a close — need the `*.pr_fix`
+  item for `<repo>#<pr>` **held** under a live lease (read from HQ with the
+  officer's token); with none (never claimed, released, or the lease
+  lapsed), each is refused 403 ("#<n> is in its review loop …"). muster
+  asks HQ for the instance's held fix items on every such write. HQ
+  unreachable refuses only a write to a pull request in its loop (or whose
+  loop record cannot be read); a write to one out of the loop is admitted
+  with HQ down, as before. An officer with no pull request in a loop and no
+  fix item held (or HQ unreachable) pushes without the branch's pull requests
+  even being looked up, so a GitHub blip blocks nothing it did not block
+  before. A pull request in its loop that muster sees closed or merged — on a
+  write's read of it, or by the draft sweep — leaves the loop (`closed`).
+- **Under a held fix item** for a pull request — **whatever muster's loop
+  record says** (a lost or missing record lifts none of these checks; the
+  pushed branch is the head of that pull request, named for the ORIGINAL
+  item, not the fix item): the pull request must be open and authored by
+  this officer's own App, and every write is refused in **shadow**
+  ([below](#shadow)) before anything reaches GitHub, with `shadow: would
+  have <pushed <old12>..<new12> to <branch> | commented on <repo>#<n> (<N>
+  chars) | edited the title and body of <repo>#<n> | closed <repo>#<n>>`. A
+  fix item for another pull request opens nothing here. The content rules
+  and the re-checks apply unchanged.
+- A fix item **never opens a pull request**: a `POST pulls` whose branch's
+  item HQ shows to be a `*.pr_fix` item is refused 403 ("a fix item pushes to
+  the pull request's existing branch …").
+- The next audit round starts when the author completes the fix item `done`
+  with `handoff: {head_sha: <the new head>}` ([Completing an
+  item](#completing-an-item-outcomes-and-investigation)); HQ refuses it at an
+  unchanged head.
+
+**The orphan report.** Once a UTC day (first an hour after boot) muster lists
+each draft officer's branches, older than 7 days by their head commit, that no
+pull request (in any state, found by the branch) was opened from — a refused
+proposal leaves one — logs them and posts them to HQ's notices route. The
+report deletes nothing.
+
+### Docs-only drafts
+
+A `draft` officer whose job is documentation gets a narrower wall: a
+`docs_only` block, and `public: true` on each repository anyone can read.
+Both only **add** refusals to the draft stage's above; neither lifts one, and
+both are boot refusals on every other stage. They run inside the same
+comparison check, so they hold at create, at every `PATCH`, after every push
+and on every sweep, and a hit is answered the same way (409 and an HQ notice
+at create or `PATCH`; the pull request closed, and its branch deleted on a
+content hit, after a push or on a sweep).
+
+```json
+"ship": {"stage": "draft", "notice": {"channel": "ch/example-docs"},
+  "docs_only": {"allowed_paths": ["**/*.md", ".claude/skills/**/*.md", "claudedocs/**"],
+                "max_diff_lines": 200, "max_files": 5, "max_prs_per_day": 2},
+  "internal_patterns_file": "/etc/muster/internal-patterns.txt",
+  "repos": [
+    {"repo": "example-org/example-infra", "github_app": {"id": 123456, "account": "example-org:7654321"},
+     "forbidden_paths": ["docs/officers/**", "OFFICERS.md", "CLAUDE.md", ".claude/**"]},
+    {"repo": "example-org/example-docs", "public": true, "github_app": {"id": 123456, "account": "example-org:7654321"}}]}
+```
+
+| `docs_only` field | default | |
+|---|---|---|
+| `allowed_paths` | **required** (1–64) | Globs in `forbidden_paths` syntax with one difference: a pattern with no `/` matches the file's **own name** only, never a directory, so `*.md` allows `docs/a.md` and not `notes.md/run.go`. An entry that would allow an obvious code path (`main.go`, `Makefile`, `scripts/run.sh`, a workflow file — so `*` and `**`) is a boot refusal. |
+| `max_diff_lines` | `300` (1–5000) | The comparison's added plus removed lines. |
+| `max_files` | `10` (1–100) | The comparison's changed files. |
+| `max_prs_per_day` | the stage's 3 | Pull requests opened per UTC day across the officer's repositories; it can only lower the stage's limit. |
+
+**The allowlist.** Every changed, added or removed path, **and** every path a
+rename or copy came from, must be clean and match an allowed glob. One path
+outside refuses the **whole** pull request: a `.go` file beside a `.md` file
+is refused, never half-admitted. A path with an empty, `.` or `..` segment, a
+backslash, a leading `/` or a control character is refused whatever it
+matches: git stores none, so it is a trick, not a path. The forbidden paths
+still apply on top: a `.md` file under one (an officer charter, say) is
+refused. A rename from code to `.md` is refused by its old path.
+
+**No command edits**, and no switch lifts the rule (an unknown key such as
+`allow_command_edits` is a boot refusal). A changed file that is
+not Markdown (`.md`, `.markdown`; not `.mdx`, which holds code) is refused
+whole: an allowed `claudedocs/notes.sh` is a command file. In a Markdown
+file, a changed line — added or removed — that sits inside a fenced code
+block, or is a fence line itself, is refused. The fences are read from the
+**whole** file, at the comparison's merge base for removed lines and at the
+head for added ones, so a hunk that starts inside a block is judged right.
+Four readings are unioned, and a line any of them puts in a block is in one:
+each of strict (at most three spaces of indentation) and loose (any
+indentation), read both container-aware and container-blind. Container-aware
+strips `>` blockquote markers and list markers such as `- `, `* `, `1. ` or
+`1) ` (so `- ```sh` opens a block) and closes a block only on a fence line at
+the blockquote depth that opened it and carrying no list marker (a `> ````
+line inside an unquoted block is content, and `- ```` starts a new item and a
+new block). Container-blind strips only the `>` markers and closes at any
+depth; it is what catches a block that CommonMark opens after an unindented
+line ends a list item, or an unquoted line ends a quote, and the fence with
+it. No single reading errs toward "in a block" everywhere; the union is never
+narrower than any one of them, and over-marking is the error it accepts
+(a false refusal is the safe one): prose after a list item's fence, for one,
+is refused. A leading YAML front matter block (line
+1 `---` through the next `---`, or the end of the file) counts as a block too:
+an agent's `tools:` or a skill's `allowed-tools:` is configuration. A file that
+cannot be read, or a changed line the file does not have, refuses (fail
+closed). ⚠ Indented (four-space) code blocks and HTML `<pre>`
+are not read as code.
+
+**Public repositories.** For a repository marked `public`, muster scans the
+**branch name** of every push before forwarding it (a name is public the
+moment GitHub has it, and the pull request page keeps showing it after the
+branch is deleted, so a matching name is refused, never pushed), the diff's
+**added** lines, its new paths, every commit's message and author and
+committer identity, and the pull request's title, body and comments, with the
+patterns of `internal_patterns_file`: one RE2 expression per line, matched
+case-insensitively, blank lines and `#` comments skipped. A line that does not
+compile, one that matches the empty string, or a file with no pattern is a
+boot refusal; the file is read again at every check (so it can be updated in
+place) and a check that cannot read it refuses. A refusal names the pattern's
+**line number**, never the pattern or the text it matched. Removing a line
+that matches is admitted: that is a cleanup. **The patterns stay out of every
+repository muster ships to**: keep the file in a private repository and mount
+it into muster-server.
+
+🔴 **A public branch is public before any pull request.** After a push to a
+public repository's officer branch with **no** open pull request, muster
+checks the branch at once (for a private repository, a branch with no pull
+request waits for its create). A content hit deletes the branch and posts a
+notice saying the content was public until then — GitHub can still serve the
+commit by its sha — so treat it as a leak: rotate what leaked, never rewrite
+history. 🔴 **Fail closed**: nothing else reads such a branch again (the sweep
+walks open pull requests only), so a check that cannot run — a comparison
+GitHub will not give or truncates (300 files, 250 commits), an unreadable
+`forbidden_paths_file` or pattern file — deletes the branch as well, with a
+notice calling it a possible leak; the officer keeps its commits and pushes
+again. An unreadable `forbidden_paths_file` never stops the internal-details
+scan: a leak next to it is still found and named.
+
+A **shepherd** pushing into a pull request of a public repository is scanned
+the same way before its push lands (and again when it marks the pull request
+ready), and its comments are scanned before they are forwarded, but only when
+the shepherd's own `ship` block marks that repository `public` with an
+`internal_patterns_file`: muster does not read another officer's `public`
+flag. Mark every public repository a shepherd ships. 🔴 **A refused shepherd
+push was still public**: GitHub stored it at its scratch ref
+(`refs/muster/shepherd/<nonce>`) before muster checked it, and deleting the
+ref does not stop GitHub serving its commits by sha. In a public repository
+the refusal notice says so: treat it as a leak, rotate what leaked, never
+rewrite history.
+
+##### Public branches: no officer id, no item number
+
+In a repository marked `public`, a draft officer's branch and pull request
+name neither the officer nor its HQ item: anyone can read them.
+
+- **The branch** is `<prefix>fix/<slug>-<token>` (`officer/fix/raise-limit-qhzkbwmtrepa`):
+  the slug is the instance's, lower-case words joined by `-` with **no
+  digit**; the token is 12 random lower-case letters minted by muster, derived
+  from nothing, so nothing about the item can be computed from it. The
+  instance asks for it with `officer_public_branch{repo, item_id, slug}`
+  (offered to a draft officer with a public repository only): muster checks
+  that HQ shows the instance holding the item (a `*.pr_fix` item is refused:
+  it pushes to its pull request's branch), scans the name with the
+  internal-details patterns, refuses a name holding the officer's id or slug,
+  records it and answers it. A second call for the same item and repository
+  answers the same branch. A push to any branch of a public repository whose
+  name holds the officer's id or slug is refused (403) before ownership is
+  even asked.
+- **muster keeps the mapping**: `officer_public_branches` (migration 0138),
+  one row per (owner, officer, repository, item) naming the branch, under the
+  officer's owner's row-level security. 🔴 **The row is the only proof the
+  branch is the officer's**: the push gate admits a push to a public branch
+  only when the officer has a row for it (no row, or a record muster cannot
+  read, is a refusal); the body contract, the per-item, open and per-day
+  limits, the author-filter cross-check, the orphan report, and the branch
+  deletion after a content hit all read the item and the ownership there,
+  never from the name. A record that cannot be read when a content hit would
+  delete the branch is not "not the officer's": the branch is kept and HQ's
+  notice says ownership could not be confirmed and a human must delete it
+  (still a leak notice). Without a database the record is in memory, and a
+  restart forgets it (the officer is then named a new branch).
+- **The body's first line** is exactly
+  `Authored from untrusted inputs by an automated agent; review as such`,
+  followed by the same four sections; a title, body or comment that names the
+  officer's id or slug is refused (409, and HQ is told) — besides the
+  internal-details scan, which still runs on the branch name, the added lines,
+  the commit messages and identities, and the title, body and comments.
+- A repository NOT marked `public` keeps the form above unchanged.
+- 🔴 **The pull request's author is the officer's GitHub App bot login**,
+  which GitHub shows on every public pull request. "Names no officer" holds
+  only if that App is not itself named after the officer: name the App of a
+  draft officer that ships a public repository neutrally (a deployment
+  choice; muster does not check it).
+
+### The shepherd stage
+
+A `shepherd` officer **shepherds other officers' pull requests**: it opens none
+of its own, and acts — with its **own** GitHub App, never the author's — only
+on a pull request another officer opened, to fix what an audit or CI found and
+take it to "ready for review". It never merges, closes or force-pushes: a
+human merges. It is offered `officer_shepherd_mark_ready` and
+`officer_shepherd_merge_ask`, and none of
+`officer_mark_ready`, `officer_merge_pr`, `officer_tag_release`,
+`officer_rollout_status` and `officer_ci_logs` (a `ci_logs` block is refused).
+**Off by default**: nothing is a shepherd unless a `ship` block says
+`"stage": "shepherd"`.
+
+```json
+{"id": "shepherd:example-infra", "hq_url": "https://hq.example.com/api/v1", "repo": "example-org/example-infra",
+ "ship": {
+   "stage": "shepherd",
+   "repos": [{"repo": "example-org/example-infra", "base": "trunk",
+              "github_app": {"id": 222222, "account": "example-org:7654321"},
+              "forbidden_paths": [".github/**"]}],
+   "shepherd": {"authors": [{"login": "example-investigator[bot]", "officer": "investigate:example-infra"}]},
+   "required_checks": ["ci / gate"],
+   "notice": {"channel": "ch/example-alerts"}
+ }}
+```
+
+**`ship.shepherd.authors`** (required, 1–16): whose pull requests it may act
+on. Each entry is `{"login", "officer"}`: the login (an App's bot is
+`<slug>[bot]`) and — **required** — the id of the officer declared on the
+same muster whose App it is. A bare login is refused at boot: a shepherd acts
+on officers' pull requests only, and the author's own wall always applies.
+
+**`ship.shepherd.auditors` is removed** (🔴 a breaking change): the audit
+verdict mark ready reads now comes from HQ (below), not from pull request
+comments by listed logins, and muster **refuses to boot** with the key set —
+even empty — rather than ignore it. Migrating: delete the key; the auditor
+becomes an HQ officer whose report HQ writes onto the shepherd's findings item.
+
+**The pull request rule** (`officership.Shepherd.Admit`, one rule every write
+below asks, read fresh at every call). A pull request is the shepherd's to act
+on only when it is:
+
+| gate | rule |
+|---|---|
+| `pull_request` | open (not merged) |
+| `base` | into the `base` of one of the shepherd's `repos` (the repository's default branch, as configured), in that repository |
+| `head_branch` | from a branch under that entry's `branch_prefix` (default `officer/`), in that repository — not a fork |
+| `author` | by a login in `authors`; typed `Bot` when the login is a `[bot]`; **not** the shepherd's own App's bot; and that entry's `officer`'s App's bot as muster reads it at call time |
+| `item` | the subject of an HQ item the **requesting instance** holds under a live lease: the item's `subject_key` is `<owner>/<name>#<number>` (the repository compared without case). No item, another holder, an expired lease or HQ unreadable is a refusal |
+
+**What it may do** on such a pull request, and nothing else:
+
+| write | rule | answer |
+|---|---|---|
+| `git push` to its branch | **one** ref per push, an **update** — a branch create or delete is refused — from the pull request's **current** head (`old` must be the head; anything else is refused before forwarding), while no other push to that branch is being verified | 403, or 409 (busy: push again) |
+| (before the branch moves) | the push is stored at a scratch ref first (below); then the pull request is admitted again and still at `old`, GitHub's `compare/{old}...{new}` is a fast-forward (`ahead`, 0 behind) of at most 50 commits and 100 files, and `compare/{base}...{new}` passes the wall below and the draft stage's content rules (forbidden paths, removed volume/database/canary manifests, secret shapes) | only then does the branch move; otherwise `git push` reports the ref **rejected** with the reason, nothing lands, and HQ is told |
+| `POST /repos/{repo}/issues/{n}/comments` | no credential-shaped value, and no line whose first non-space character (after any `>` quote marks) is `/` or `@` — such a line reads as a slash command or a bot comment command (`@<bot> merge`), which automation in the repository could act on | 403, or 409 and a notice |
+| `PUT /repos/{repo}/pulls/{n}/update-branch` | the body is exactly `{"expected_head_sha": <the head>}` and it is the current head (GitHub merges the base into the head; never a rebase) | 403 |
+| `officer_shepherd_mark_ready {repo, pr}` | an open **draft**; the rule above; `checks`: `required_checks` is not empty and every entry is `success` on the head (none listed: refused — CI green cannot be confirmed); `wall`: `compare/{base}...{head}` passes the wall and the content rules; `audit`: the auditor's report on the held item clears the head (below); `shadow` (below); the head read **again** right before the mutation (moved: refused, nothing converted); then GraphQL `markPullRequestReadyForReview`; then the head read **again** — moved (a push raced the mutation), and muster converts it back to draft (GraphQL `convertPullRequestToDraft`) and says so | a refusal naming the gate |
+| `officer_shepherd_merge_ask {item_id, repo, pr, head_sha, base_ref, base_sha, summary, purpose, how, evidence, to?}` | `repo` is one of the shepherd's; HQ's exact body and bounds, checked by muster before any call (below); the instance holds `item_id` under a live lease and its subject is `<repo>#<pr>`; `shadow`; then HQ's merge-ask route with the shepherd's token | a refusal naming the gate, or HQ's answer verbatim |
+
+Every write in this table — the push, the comment, update-branch, mark ready
+and the merge ask — is also refused in **shadow** ([below](#shadow)).
+
+Refused **always**: `POST pulls` (it opens nothing), every `PATCH pulls/{n}`
+(so no title or body edit, no close, no reopen), the merge endpoint, the refs,
+tags, contents and merges APIs, GraphQL, every `DELETE`, a branch create or
+delete, and a non-fast-forward push (never lands).
+
+**The audit gate** reads the item the instance holds for the pull request
+(the one the `item` gate found), never the pull request's comments. HQ writes
+the auditor's report onto that item, verbatim, as `payload.from.summary`; the
+shepherd can neither write nor edit it. Mark ready passes the gate only when:
+
+- the report's first line is exactly
+  `VERDICT: <verdict> · round <n> · head <12 hex>` and the verdict is `no-red`;
+- its round is the item's `payload.pr_loop.round`, which is at least 1;
+- its head is the pull request's live head's first 12 hex, and the item's
+  `payload.pr_loop.head_sha` is the live head (all 40);
+- no line of the report (trimmed) starts with 🔴;
+- the report is another officer's: `payload.from` names an `officer_id` and
+  a `kind`, and neither is of the shepherd's own **type** (an officer id is
+  `<type>:<area>`, an item kind `<type>.<what>`) — so neither the shepherd
+  itself nor any officer of its type can clear its pull request.
+
+Each failure is a refusal naming its reason: no auditor's report, no round on
+record, premise round 0, the item audited another head, the verdict line is
+unreadable, the verdict names another round or head, the verdict is not
+`no-red`, N 🔴 findings, or a report of no source / the shepherd's own type. An audit comment on the pull request — by any
+login — counts for nothing. This is the predicate HQ's merge-ask gate
+(`audit_not_stopped`) applies over its own records of the auditor's items; HQ
+checks again at the merge ask, so muster's check is the early refusal.
+
+**The wall** (`officers.ShepherdRules`, the one place it is decided): for each
+(repository, author), the union of
+
+- the shepherd's own `forbidden_paths` / `forbidden_paths_file` for that
+  `repos` entry, and
+- for an author that names an `officer`: **that officer's own** `forbidden_paths`
+  and `forbidden_paths_file` for the same repository, looked up from its `ship`
+  block — never copied — so a fix the author may not make, the shepherd may
+  not make either. A `forbidden_paths_file` is read from the pull request's
+  target branch at every check, as on the draft stage.
+
+An author officer that does not ship to a repository has no rule there: the
+shepherd acts on none of its pull requests in it.
+
+🔴 **A bad push never lands, and muster never forces a ref.** A pack cannot be
+checked before GitHub has it, so muster **rewrites the push**: its one command
+`old new refs/heads/<branch>` is forwarded as the create of a fresh scratch
+ref, `refs/muster/shepherd/<random>` — outside `refs/heads`, so it is no
+branch, heads no pull request (no `pull_request` CI runs it) and matches no
+`on: push` branch filter. When GitHub answers — and before the client hears
+anything — muster verifies the stored commit (the table above) and only then
+moves the pull request's branch with ONE compare-and-swap that is also
+fast-forward-only: GraphQL `updateRefs` with `beforeOid` = the verified `old`
+and `force: false`. The client is answered for its own ref: `ok` when the
+branch moved, `ng <reason>` (and, on a side band, the reason as progress
+text) when it did not. The scratch ref is deleted when the request ends,
+whatever happened. Pushes to one branch are serialised: a second while one is
+being verified is a 409.
+
+Measured on GitHub (a user token with contents write; a GitHub
+App installation token was not measured and is assumed to behave the same
+with Contents write): a push to `refs/<custom>/…` is accepted as a new
+reference; REST `PATCH git/refs` with `force: false` refuses a
+non-fast-forward of a **branch** ("Update is not a fast forward") but
+accepted one on a ref outside `refs/heads`, and it pins no before-sha, so it
+is not used; GraphQL `updateRefs` with a wrong `beforeOid` is refused and the
+branch is unchanged, with `force: false` a non-fast-forward is refused
+("rejecting non-fast forward update"), and with both right the branch
+moves. A scratch ref left behind by a muster crash mid-push is harmless (no
+branch, no pull request) and can be deleted by hand.
+
+**Boot refusals.** muster refuses to start, naming the officer, when a
+shepherd has: no `shepherd` block, or one on another stage; no `authors`, a
+login twice, or a login that is not one; an author `officer` that is the
+shepherd itself, is not declared, has no `ship` block, is itself a shepherd,
+ships to none of the shepherd's repositories, or uses the shepherd's own App
+(`github_app.id`); a (repository, author) whose wall forbids nothing (set
+`forbidden_paths` on the entry or name the author's officer); a key only a
+merging or releasing stage reads (`review_check`, `review_app`, `migrations`,
+`sensitive_paths`, `rollout`, `quiet_hours`, `releases_per_day`,
+`min_release_gap`); no `notice` block (a refused push is announced); an
+authors entry with no `officer`; a `shepherd.auditors` key (removed, above); a `ci_logs`
+block; or the same author in the same repository shepherded by two officers.
+
+#### The review loop through HQ
+
+A review loop is a `draft` officer's pull request worked to a merge decision
+by HQ's officers: the draft officer opens it, a `shepherd` settles and fixes
+it, a read-only auditor officer audits each round, and HQ asks a human to
+merge. A round's 🟡 findings and an approver's feedback go back to the
+**authoring** draft officer as a `*.pr_fix` item ([the draft
+stage](#the-draft-stage)), never to the shepherd. Every step that advances
+the loop completes its item `done` with a `handoff` ([Completing an
+item](#completing-an-item-outcomes-and-investigation)). muster's side of HQ's
+officers API:
+
+- **`pr-opened`** — `POST {hq_url}/officers/{id}/pr-opened` with the
+  **authoring** officer's own token, body exactly
+  `{"repo", "pr", "head_sha", "head_ref", "base", "author"}` (`author` is the
+  pull request's author as GitHub reports it at the create, the officer App's
+  `<slug>[bot]`). 🔴 muster calls it itself, server-side, only on the clean
+  branch of a draft create's re-check (above); it is **no instance's tool**.
+  HQ answers which loop items it created and which officers it skipped. It
+  runs on its own context, detached from the create, and never fails it. A
+  **transient** failure — HQ unreachable, a 5xx, 429, or 401 — is retried with
+  backoff, three attempts in all; any other 4xx is HQ's decision and is not
+  retried. A 409 `officer_shadow` (the authoring officer is in shadow) is
+  expected and logged as a note; any other failure is logged and posted as an
+  HQ notice.
+  - 🔴 **muster records every announcement** (`officer_pr_loops`, migration
+    0119, in muster's database; in memory without one), and **claims it
+    before sending it**: `sending` while one process announces it; then
+    `in_loop` (HQ's 200 named a loop item: the rule above applies) or
+    `no_taker`; `closed` (`officer_shadow`, or the pull request seen closed or
+    merged); `failed` (a permanent 4xx — logged once — or still pending a day
+    after it was first announced); or back to `pending` after a transient
+    failure that lasted. The draft sweep (every 5 minutes) re-announces
+    **only** a `pending` one, within 24 hours of its first announcement, and
+    claims it first (`pending` → `sending` in one conditional `UPDATE … WHERE
+    state = 'pending' … RETURNING`), so two replicas sweeping at once never
+    both send it. Writing the outcome is retried with backoff (four writes
+    over about six seconds); one that still fails leaves the record
+    `sending`, which nothing re-sends — not this process, not after a
+    restart, not another replica. That is the chosen cost: an outcome lost
+    that way (or a crash mid-send) means that pull request is not announced
+    again, logged; it never means a loop restarted. HQ's `pr-opened` is
+    idempotent only while the pull request's loop item is live — a repeat
+    after that item finished enqueues a new one and restarts the loop, and the
+    author's token cannot read the shepherd's items to tell — so a pull
+    request HQ answered is never sent again.
+- **Loop items** carry `payload.pr_loop` =
+  `{repo, pr, head_sha, round?, head_ref?, base?, author?}`; a shepherd's
+  findings item also carries `payload.from` =
+  `{officer_id, item_id, kind, summary}`, `summary` being the auditor's
+  report. muster does not depend on item kind names.
+- **The merge ask** — `POST {hq_url}/officers/{id}/items/{item}/merge-asks`
+  with the shepherd's token, body exactly `{"instance", "to"?, "repo", "pr",
+  "head_sha", "base_ref", "base_sha", "summary", "purpose", "how",
+  "evidence"}`, `evidence` being exactly `{"officer_item": {"officer",
+  "item"}, "open_yellows": [{"where", "text"}], "protected_identity":
+  {"result", "detail"?}, "settled_at", "rollback"}` — no `ladder` and no
+  `checks`: HQ reads the audit ladder and CI from its own records and refuses
+  both (muster refuses them first, as unknown fields). `pr` and
+  `evidence.officer_item.item` are integers (HQ decodes them as such,
+  strictly; a string item id is refused by muster). muster sets `instance` to
+  the calling agent (an `instance` argument is refused) and checks only what
+  it needs to build the request (no unknown field, an item id for HQ's
+  path): every bound — texts, lists, shas — is HQ's, and its 400 comes back
+  verbatim. HQ's answer, or its
+  refusal (status, code, message — e.g. 422 `audit_not_stopped`, 409
+  `officer_shadow`, 502 `github_unavailable`), is passed back verbatim.
+
+- **`payload.claims`** — in shadow the shepherd fences its claims blocks in
+  its item summary (not on GitHub), and HQ copies them into the next audit
+  round item's payload as `payload.claims`, a string. A read-only auditor
+  officer whose item carries it writes it to a file and passes that to its
+  audit tool. muster hands it on as data: `officer_items`, `officer_claim`
+  and `officer_brief` return HQ's body **byte for byte** (fences, emoji and
+  CRLF line ends included), whatever its size: HQ bounds `payload.claims`
+  (16 KiB), and muster applies no second cap.
+
+**No merge tool for a shepherd or an auditor.** muster's gates are the only
+wall against an officer App merging (assume no branch ruleset). A `shepherd`
+officer and an officer with no `ship` block are offered none of
+`officer_merge_pr`, `officer_tag_release`, `officer_mark_ready` and
+`officer_rollout_status`, in any pool; a direct call is refused by the tool
+layer, and the stage gate under it refuses the shepherd's merge, tag and own
+mark-ready by itself. The shepherd's push gate refuses the merge endpoint,
+the refs, merges and contents APIs and GraphQL (above).
+
+#### Shadow
+
+HQ can run a shepherd's item — or the whole officer — in **shadow**: its writes
+are refused and recorded, never made. The item's `shadow` decides when HQ
+sends one; when it is absent (the officer's type has no shadow policy for
+items) the officer row's `shadow` decides; 🔴 a row that cannot be read is
+shadow (fail closed). In shadow every shepherd write — the push, the comment
+(deliberately: every write), update-branch, mark ready and the merge ask — is
+refused before anything reaches GitHub or HQ (a push creates no scratch ref)
+with `shadow: would have <pushed <old12>..<new12> to <branch> | commented on
+<repo>#<n> (<N> chars) | updated <branch> from its base | marked <repo>#<n>
+ready | asked HQ for a merge ask of <repo>#<n> at <head12>>`. muster keeps each
+line per (officer, item), in memory, and when an instance completes that item
+with `officer_complete` it appends a `Shadow (muster refused these writes):`
+block of them to the summary HQ receives — cut to HQ's summary bound, never
+the instance's own text. The lines end with their hold: a completion or a
+release forgets them at once, and every 5 minutes muster drops those of any
+item HQ no longer shows held under a live lease (a lapsed lease, an item
+finished or gone) — only lines recorded before that pass read HQ, so a line
+recorded while the read was in flight survives to the next. A restart
+forgets them. The same rule, and the same
+ledger, cover a draft officer's writes under a held `*.pr_fix` item
+([the draft stage](#the-draft-stage)).
+
+**Its App needs** Contents **read and write** (push to the branches it
+shepherds — the scratch ref and the compare-and-swap update included —
+update-branch), Pull requests **read and write** (comment, mark
+ready, update-branch), Checks and Commit statuses **read**, Metadata read. 🔴
+"Never merges" cannot be an App permission — merging needs only Contents
+write — so it rests on the push gate above; a ruleset on the base branch that
+no officer App may bypass is the repository-side wall.
+
+### `officer_merge_pr {pr}`
+
+Squash-merges the officer's own pull request, with GitHub's match-head guard
+(`sha` = the head every gate read), only when ALL of these hold, read fresh:
+
+1. `stage` is `merge` or `release`;
+2. HQ answers `GET /officers/{id}` with `enabled: true` (HQ unreachable
+   refuses: fail closed);
+3. the pull request is open and not a draft, into `base` of `repo`, from a
+   `<prefix>` branch of `repo`, authored by the officer App's bot
+   (`<app slug>[bot]`, read from GitHub);
+4. GitHub says it is mergeable, and it is not behind `base` (`behind_by` 0);
+5. every `required_checks` entry is success on the head;
+6. the newest `review_check` run on the head is completed/success;
+7. no human (any author who is not a bot) wrote `/hold` on it — in a
+   comment, a review or a review comment. Lift it by editing or deleting the
+   comment;
+8. no added or changed file under `migrations` holds destructive DDL, and none
+   is removed or renamed (the lint, below);
+9. if a changed path matches `sensitive_paths`, HQ accepted the notice
+   `POST <notice.path>` `{pr, head_sha, paths, summary, channel}` with the
+   officer's token. **If that call fails, the merge is refused.**
+
+A refusal names its gate and the gates that passed; nothing is merged. Every
+call is logged with its inputs and verdict.
+
+After the merge muster re-reads the merge commit: if its parent is not the
+base sha the gates checked (the base moved in between), the result carries
+`untested_tree: true` and a warning, and `officer_tag_release` refuses
+(`untested_merge`) while the base's head is that merge — its tree is one no CI
+run saw. The next up-to-date merge clears it.
+
+**The migration lint** classifies each `DROP` by what it is attached to:
+under `ALTER [COLUMN] c` only `DEFAULT`, `NOT NULL`, `IDENTITY` and `EXPRESSION`
+pass; as an `ALTER TABLE` action only a constraint the same file re-adds by
+name (the CHECK-widening idiom) passes — anything else, whatever its name
+(`DROP "x"`, `DROP index`), is a column drop, since `COLUMN` is optional; as a
+statement only `DROP INDEX` passes. It also refuses any `DROP … CASCADE`; `RENAME`; `ALTER … TYPE`; `SET NOT NULL`;
+`TRUNCATE`; `DELETE` or `UPDATE` with no `WHERE`. Comments are stripped by a
+scanner that knows quoting; string literals and dollar-quoted bodies are
+scanned, so dynamic SQL in a `DO` block is seen. A destructive migration is
+a human's to write and ship.
+
+### `officer_mark_ready {pr}`
+
+Converts the officer's **own draft** pull request to ready for review — the
+one draft transition an officer may make. A shipping officer opens test-first
+pull requests as drafts (the red-before commit should not look reviewable);
+a draft is not reviewed, so `review_check` never runs on it and
+`officer_merge_pr` cannot pass. Once CI is green on the draft's head, the
+officer calls this tool. Read fresh, ALL of these must hold:
+
+1. the pull request is open, not merged, and **a draft** (an already-ready one
+   is refused: there is no ready → draft, and no no-op write);
+2. it is into `base` of `repo`, from a `<prefix>` branch of `repo`, authored
+   by the officer App's bot — the same own-pull-request gates as
+   `officer_merge_pr` and the push gate's own-pull-request writes (one
+   rule, `owner.ownPR` in `internal/officership/gates.go`).
+
+Then muster runs GitHub's GraphQL `markPullRequestReadyForReview` mutation on
+the node id it read in 1, with the officer App's token, and fails unless
+GitHub answers that pull request with `isDraft: false`. A refusal by the
+`ready` gate means GitHub did not *confirm* the conversion — a lost reply, or
+a 200 carrying both data and errors, can follow one that happened — so the
+officer re-reads the pull request's `draft` before calling again; a refusal
+by any earlier gate changed nothing. No stage gate (a
+`shadow` officer's pull requests are reviewed too) and no HQ gate — it is an
+edit of the officer's own pull request, as the push gate's `PATCH` is.
+
+**Why a tool and not a push-gate rule:** GitHub's REST `PATCH …/pulls/{n}`
+takes no `draft` field (only `POST …/pulls` does), so forwarding
+`{"draft": false}` would not convert anything; GraphQL is the documented way,
+and the push gate refuses all of GraphQL. The App's existing Pull requests
+write permission covers the mutation.
+
+### `officer_tag_release {item_id?}`
+
+Creates the next release — the highest `vX.Y.Z` tag with its minor bumped and
+patch 0 — as an **annotated** tag by the officer's bot on `base`'s head, only
+when ALL of these hold:
+
+1. `stage` is `release`, and HQ says the officer is enabled;
+2. the highest tag is an ancestor of `base`'s head, and the head is ahead of
+   it;
+3. no release is in flight: the rollout watch owns none, and `health_url`
+   reports the highest tag's version (the previous release is live);
+4. fewer than `releases_per_day` officer tags in the last 24 h (counted from
+   the annotated tags its bot made, walking annotated tags newest first until
+   the first one — anyone's — older than 24 h) and none within
+   `min_release_gap`; the base's head is not an untested officer merge
+   (above);
+5. not inside `quiet_hours`;
+6. the required checks passed for the head's **exact tree**: either they are
+   success on the head itself, or the head is a pull request's squash merge
+   whose head commit has them all success and the same tree (true of every
+   squash merge of an up-to-date head). The pull request is the one whose
+   `merge_commit_sha` is the head: from `commits/{sha}/pulls`, or, while that
+   still answers nothing (GitHub's association lags a merge by minutes), from
+   the 30 most recently updated pull requests closed into `base`. A head
+   merged from a stale branch is refused until the next up-to-date merge;
+7. no destructive DDL in the release's migrations, and when it adds one, HQ's
+   preflight (`POST /officers/{id}/preflight`) reports a WAL archive under 5
+   minutes old, no archive failure in the last hour and a base backup under
+   26 hours old.
+
+Then it creates the tag object and `refs/tags/<next>`. Its message ends with
+the trailer `Muster-Release: release` (or `rollback`), which is how the
+rollout watch, resumed after a restart, knows never to roll back a rollback
+release. A tag someone else
+pushed first makes the ref create fail; the tool says so and nothing is
+created. Untagged merges by humans on `base` ship in the officer's release.
+
+### The rollout watch and rollback
+
+After a tag, muster-server watches the release, using only `health_url` and
+GitHub (never HQ, which may be the service). It is **live** once `live_reads`
+consecutive answers report the tag (within `live_within` of tagging), and
+**healthy** once it has answered 200 (and `ok_field` = `ok_value`) for
+`healthy_for`; three bad answers in a row is **unhealthy**. A higher version
+answering means a newer release superseded it. `officer_rollout_status`
+returns the phase, verdict and events; the instance puts the verdict in its
+item's completion. A watch in progress at a restart resumes at boot.
+
+On `not_live` or `unhealthy`, per `rollback`:
+
+- `off`: escalate to the webhook; touch nothing.
+- `pr`: open a revert pull request from `<prefix>revert-<tag>` (`-2`, `-3`, … if
+  that branch exists) that reverts the
+  officer's own squash merges in the release, newest first (each a 3-way merge
+  GitHub computes, so later commits are kept); escalate with its number. A
+  merge is found the way gate 6 finds one (its `merge_commit_sha`, from the
+  association, then the recently closed list), so a merge the association
+  does not name yet is still reverted.
+- `auto`: as `pr`, then merge it through `officer_merge_pr`'s gates (CI and
+  review must pass on the revert) and tag it through the release gates minus
+  the in-flight, rate, quiet-hours and HQ-enabled gates (the release being
+  rolled back is the one in flight, and HQ may be what is down); then watch
+  that release. Anything that fails, including a revert that would need a
+  human's merge, a conflict or a removed migration file, escalates. The
+  revert's MERGE keeps the HQ-enabled and notice gates, so when HQ itself is
+  the failing service the automatic merge is refused and the watch escalates
+  with the revert pull request open.
+
+The rollback is always a revert plus a **new** tag, never a higher tag on an
+old commit (which would leave `base` ahead of production for the next tag to
+re-ship). Schema is never reverted. A rollback release is never itself rolled
+back (a failure escalates), and a release holding an automatic revert is
+never reverted automatically.
+
+### `officer_ci_logs {pr}`
+
+Why CI failed on the officer's own pull request, for a CI that runs as
+**Tekton PipelineRuns in a Kubernetes namespace** and posts commit statuses
+with no link (the instance has no cluster access and no toolchain, so
+otherwise it sees only "red" and escalates). Read-only; muster-server answers
+it, with a short-lived token of a dedicated ServiceAccount, minted per call. Declared per officer, beside `ship`
+(which it needs):
+
+```json
+{"id": "engineering:example-web", "repo": "example-org/example-web", "ship": {…},
+ "ci_logs": {"namespace": "example-ci", "pipeline": "example-pr-check",
+             "service_account": "muster-ci-logs"}}
+```
+
+| field | default | |
+|---|---|---|
+| `namespace` | **required** | The one namespace the PipelineRuns live in. |
+| `pipeline` | **required** | The PipelineRuns' `tekton.dev/pipeline` label. |
+| `service_account` | **required** | The dedicated read-only ServiceAccount, in muster-server's OWN namespace, that the reads run as. For each call muster mints it a token with a TokenRequest (`expirationSeconds` 600, the API server's default audience) and builds the reading client from that token alone. 🔴 There is no default, and muster's own token is never used for the reads (its grant is far wider): it only mints. |
+| `commit_label` | `pipeline.jquad.rocks/pr.branch.commit` | The PipelineRun label whose value is the pull request's head sha (the pipeline-trigger-operator sets it). |
+| `pr_param` | `PR_NUMBER` | The PipelineRun param whose value is the pull request number. |
+| `max_bytes` | `16384` | The excerpt text one call returns, at most (2048–65536). |
+
+A `ci_logs` source that cannot be built at boot (not in a cluster) does not
+stop the server: the tool answers that it is unavailable,
+and muster-server logs why.
+
+What it does, read fresh on every call:
+
+1. **Ownership** — the same rule as `officer_merge_pr`: the head is a
+   `<prefix>…` branch of `repo` itself and the author is the officer App's
+   bot. Anything else is refused (`head_branch` / `author`) before any
+   cluster read.
+2. **The run** — it lists PipelineRuns in `namespace` with the selector
+   `tekton.dev/pipeline=<pipeline>,<commit_label>=<head sha>` (the head GitHub
+   reports NOW, so a push moves the answer to the new run) and keeps those
+   whose labels say so and whose `pr_param` is this pull request; the newest
+   wins and older retries are counted (`other_runs_for_this_head`).
+3. **The failures**: every TaskRun of that run whose `tekton.dev/pipelineRun`
+   label names it and whose `Succeeded` condition is `False`. For each, it reads
+   the logs of the failed steps' `step-<name>` containers only. When no step is
+   marked failed, as on a timeout, it reads every step. It never reads a sidecar.
+   Each log is read from its END: the API is asked for the last 20,000 lines,
+   and the last 8 MiB of those are kept, starting at a line boundary.
+4. **The excerpt**:
+   - the failing-test lines (`--- FAIL`, `FAIL …`, `✘`, `N failed`) and the
+     error lines (`ERROR`, `SQLSTATE`, `panic:`, `Error:`, `x_test.go:N:` and
+     `file.go:N:M:` messages, `timed out`, …), deduplicated with repeats
+     counted;
+   - then the step's last 15 lines.
+
+   ANSI colour is removed, each line is clipped at 400 bytes, and all excerpts
+   together stay within `max_bytes`, split evenly between the failed tasks. A
+   task's `truncated` is true when anything was cut: the log read dropped the
+   log's start (over 8 MiB, or 20,000 lines), the byte cap dropped lines, or an
+   emitted line was clipped.
+
+**Secret safety.** The log is split into lines at `\n` and at a lone `\r` (a
+progress line overwritten in place). These lines are withheld whole:
+
+- a token shape: GitHub (`ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`,
+  `github_pat_…`), AWS (`AKIA…`), Slack (`xox…-`), `sk-…`, a JWT (`eyJ….….`);
+- framing that carries a credential:
+  - an `Authorization:` header, or `Bearer` followed by 12+ token characters;
+  - a `Cookie:` or `Set-Cookie:` header;
+  - a URL query `sig=`, `signature=`, `x-amz-signature=`, `x-goog-signature=`,
+    `token=` or `access_token=`;
+  - a `--password`, `--token`, `--secret`, `--api-key`, `--access-token` or
+    `--client-secret` flag with a value;
+  - `-p VALUE` / `-pVALUE` on a `docker`, `podman`, `helm`, `oras`, `skopeo`
+    or `buildah` `login`, or on `mysql`, `mysqladmin`, `mysqldump` or
+    `mariadb`;
+  - `basic auth: <base64>`;
+- every `set -x` trace line (`+ …`, `++ …`). A trace is never the failure's
+  message, and it is where the shell prints expanded secrets;
+- a credential-named key given a value of 6+ characters that is not a path.
+  The credential word has to END the key.
+  - The long words are `password`, `passwd`, `secret`, `token`, `api_key`,
+    `access_key` and `private_key`. They may follow any prefix:
+    `AWS_SECRET_ACCESS_KEY=`, `API_TOKEN=`, `OAUTH_CLIENT_SECRET:`,
+    `npm_config__authToken=`.
+  - The short words are `pat`, `pass`, `pw`, `auth` and `credential(s)`. They
+    must be a whole segment of the key: `GITHUB_PAT=`, `DB_PASS:`,
+    `{"auth":"…"}`, `credentials:`.
+  - The separator is `=` or `:`, with optional quotes (`"KEY":"value"`).
+  - So `file_path:`, `output_path:`, `tokenizer:` and `compat=` are not
+    credential keys. Neither is a value that is a path: `Secret:
+    default/my-secret` names a Kubernetes Secret, it doesn't hold one;
+- an environment assignment at the start of a line: an UPPER-case
+  `NAME=value`, or any name after `export`. A lowercase `key=value` on its own
+  is a logfmt/slog field and passes (`level=error msg=…`, `exit_code=1`). A
+  credential key inside such a line is still withheld, as in `level=error
+  password=…`;
+- a line that is nothing but 40+ characters of base64;
+- every line of a PEM block, from `-----BEGIN …-----` through
+  `-----END …-----` (headers included), and to the end of the log when the
+  END never came.
+
+A URL's `user:password@`, with or without a user, is masked to `***@`.
+
+This is a pattern filter, not a proof. A secret in a shape not listed here,
+such as a bare value on a line of its own that isn't base64, passes. Keeping
+secrets out of the CI output is the CI's job, and the byte cap bounds what
+any miss can carry.
+
+It never answers empty: `state` is `no_run` (no run for this head yet, or
+pruned), `running`, `succeeded` (with "no failure found") or `failed`, and
+`note` says what was found. The officer's first message tells it to call this
+before escalating a red check.
+
+**RBAC.** The ServiceAccount needs, in `namespace` only, exactly what the
+tool calls: `list` on `pipelineruns` and `taskruns` (`tekton.dev`) and `get`
+on `pods/log` — nothing else (no `watch`, no Secrets, no `exec`). muster's
+own ServiceAccount needs `create` on `serviceaccounts/token` with
+`resourceNames: [<service_account>]` in its own namespace, and nothing more
+for this. A mint that fails (that grant missing) is a `ci_runs` refusal. No
+long-lived token Secret is involved.
+
+### Kill switches
+
+In order of reach. The first two do not depend on HQ.
+
+1. **Suspend the officer's GitHub App.** Stops every push, merge and tag at
+   once and touches nothing else (the App is the officer's alone). In the
+   UI: the organization's *Settings → GitHub Apps → <the App> → Configure →
+   Suspend*. By API, as the App (`$APP_JWT` is a JWT signed with its key):
+
+   ```sh
+   curl -X PUT -H "Authorization: Bearer $APP_JWT" -H "Accept: application/vnd.github+json" \
+     https://api.github.com/app/installations/<installation-id>/suspended
+   # undo: the same with -X DELETE
+   ```
+
+2. **Stop it in muster.** Set the officer's `stage` to `shadow` (both gated
+   tools refuse at once) or remove its `ship` block, and roll muster-server.
+   To stop the instances as well, scale them to zero in a way your deployment
+   tool does not immediately revert, e.g. with Flux:
+
+   ```sh
+   flux suspend kustomization <muster kustomization>
+   kubectl -n <namespace-prefix>officer-<type>-<area>-1 scale deploy --all --replicas=0
+   ```
+
+   then remove the officer from `MUSTER_OFFICERS` in git and `flux resume`.
+
+3. **Disable it in HQ.** muster reads `enabled` on every `officer_merge_pr` and
+   `officer_tag_release` call, so the next one is refused (the automatic
+   rollback's tag is the one exception: it does not ask HQ). HQ's `PUT
+   /officers/{id}` replaces the fields it is not given, so repeat every one:
+
+   ```sh
+   hq officer put <id> --area '<the area JSON>' --mail-handle <handle> --owner <login> \
+     --max-instances <n> --disabled
+   ```
+
+None of these undoes a tag already pushed. If a bad release is live, a human
+releases the fix.
+
+## Transcript to HQ
+
+An officer declared with `"transcript": {"enabled": true}` has its instances'
+live session transcripts forwarded to HQ — the FULL transcript, for HQ's
+officer pages — while an instance holds a claimed item. It is off unless an
+officer enables it.
+
+```json
+{"id": "release:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "transcript": {"enabled": true}}
+```
+
+**The source** is the instance's own Claude Code transcript (the JSONL the CLI
+writes), never the screen. The instance pod's `ccd` serves it incrementally on
+`GET /v1/transcript?after=<offset>&session=<id>` (`after=-1&backfill=<bytes>`
+for the tail), decoded by `internal/cctranscript` exactly as the rendered view
+decodes a mirrored session: complete lines only, a line still being written is
+left for the next read. It is the PRIMARY CLI's transcript — the one an
+officer's turns run in. muster-server reads it through the agent gateway with
+the instance's own turn bearer (`agentgateway.Gateway.Transcript`).
+
+**The sink** is `POST {hq_url}/officers/{id}/items/{item_id}/transcript` with
+the officer's token:
+
+```json
+{"instance": "officer-release-example-web-1",
+ "events": [{"seq": 2192, "at": "2026-11-01T12:01:00Z", "kind": "tool_use", "text": "Bash: go test ./..."}]}
+```
+
+HQ answers `{"stored": n, "last_seq": s}`; it skips a `seq` at or below its
+highest stored (idempotent). At most 100 events a call and 8 KiB a text.
+Before the first events for an item, muster sends one post with
+`"events": []` to learn HQ's `last_seq` for it (the PROBE); an HQ that answers
+that with 400 is handled (muster then sends without it), but loses the
+resume and re-claim handling below.
+
+| transcript entry | `kind` | `text` |
+|---|---|---|
+| the prompt an instance is given | `user` | the prompt |
+| assistant text | `assistant` | the text (thinking is never sent) |
+| a tool call | `tool_use` | `ToolName: <target>` — the file, the command, the pattern; a compact argument summary when there is none |
+| a tool result | `tool_result` | its output (as `ccd` caps it, 4 KiB), `[error] ` first when the tool failed |
+| an API error, a harness notice | `system` | the message |
+
+**When.** `officer_claim` succeeding starts forwarding for that item, from the
+claim on (the first read takes the tail and keeps the lines written since the
+claim, less a 5 s clock slack; a line with no timestamp there is not sent).
+`officer_complete`, `officer_release` or `officer_ask_person` succeeding stops it. Every wake-loop
+pass also reconciles: an item one of the officer's instances holds under a
+live lease that muster is not forwarding is RESUMED, and forwarding stops for
+an item no instance holds any more. A resume after a muster restart re-reads a
+256 KiB backfill window and sends only what is above HQ's `last_seq` (the
+probe); when HQ holds NOTHING for the item, that window is the instance's
+earlier work, not this item's, and the resume starts live instead. A resume
+of an instance this muster has already forwarded for (it held another item,
+completed one) always starts live: what its transcript holds since is another
+item's. HQ answering a
+decision — 409 `not_claimed` (the item is not this instance's), 409
+`officer_disabled`, 404, 401/403 — stops forwarding for that item; a pass does
+not restart it until a new claim (or until the item leaves the held list). An
+instance that claims another item while forwarding one switches to it.
+
+**Redaction.** Every text goes through, in order: the officer's own token
+replaced (`officers.Client.Scrub` — a shape filter cannot know an opaque
+token); the CI-log secret filter (`officership.RedactText`, the same
+`RedactLines` `officer_ci_logs` uses: a line that looks like it carries a
+credential is withheld whole, a PEM block is withheld from BEGIN to END, a URL's
+userinfo is masked; it knows GitHub, GitLab `glpat-`, AWS `AKIA`/`ASIA` and
+`aws_secret_access_key`, Slack `xox?-`, Stripe `sk_`/`rk_` live/test, Google
+`AIza…`, Hugging Face `hf_`, npm `npm_`, PyPI `pypi-`, `sk-`/`sk-proj-`/`sk-ant-`
+and JWT shapes, and a kubeconfig's `client-key-data`/`client-certificate-data`);
+then a line in which a word cut by a cap (`…` right after it — `ccd` caps long
+fields before they reach muster) starts like one of those shapes is withheld
+(`officership.RedactCutTail`), and a cut word ending in the officer token's
+first bytes has that part replaced (`Client.Scrub`, which runs first); only then the 8 KiB cut, marked `… [truncated N bytes]`. No
+cut of muster's own happens before the filters. Transcript text is never
+logged.
+
+**`seq`** is the event's position in the transcript FILE: the end offset of
+its line × 32768 + its index within the line (15 bits: ccd never serves a
+line over 1 MiB, so no line carries that many events, and none is dropped). It strictly increases along the
+file, so a restarted muster derives the same `seq` for the same event, and its
+resume — which re-reads the backfill window — is deduplicated by HQ's rule
+rather than by memory. It stays below 2^53 (a JSON-safe integer) for any file
+under 256 GiB (2^53 / 2^15 = 2^38 bytes). A new conversation mid-item (a new file, offsets from zero: an
+operator's `/clear` — never muster's own new conversation per item, which ccd
+starts before the item is claimed; `ccd` resumes the primary's own conversation by id on a
+restart) is shifted above the seqs before it; a muster that restarts INTO such
+a conversation has lost that shift, sees HQ answer `stored: 0` with a
+`last_seq` above a batch it read live, and re-sequences that batch and the ones
+after it above `last_seq` — on a batch's FIRST send only: a re-send answered
+`stored: 0` is a lost acknowledgement (HQ committed, then failed to answer)
+and is NOT re-sequenced, so it is stored once. What that double edge can lose
+is the part of the resume's window HQ skipped as old. A batch whose seqs are
+not above HQ's `last_seq` from the probe — a RE-CLAIM of the item by another
+instance, whose transcript is its own file with its own offsets — is shifted
+above it rather than skipped (HQ's `last_seq` is per item).
+
+**Cadence and back-pressure.** Each forwarding instance is read and posted
+every 2 s, in batches of at most 100. An HQ outage (5xx, 429, no answer) backs
+off — 2 s doubling to 1 min — and a batch is dropped after 5 failed re-sends.
+A 400 drops the batch. A 413 drops that batch and halves the batch size for
+the rest of the item. The forwarder never blocks the officer: the officer
+tools and the wake loop only record state; reads and posts run on the
+forwarder's own loop. Each instance's buffer holds at most 1000 events
+waiting for HQ; past that the OLDEST are dropped. Every drop is logged and
+counted on `muster_officer_transcript_events_total{result}`: `posted` (what HQ
+answered as STORED), `skipped_by_hq` (sent, HQ already held it — a re-send
+after a lost answer), `skipped_resume` (a resume's re-read HQ already held, or
+earlier work), `dropped_buffer`, `dropped_retries`, `dropped_refused` (400),
+`dropped_too_large` (413), `dropped_superseded`, `dropped_unsequenced`.
+
+**Deploy order.** HQ's transcript route must be LIVE before `transcript` is
+enabled: an HQ without it answers 404, which muster reads as a decision and
+stops forwarding for that item (until its next claim) — every item, quietly.
+`MUSTER_OFFICERS` refuses an unknown field, so the
+`transcript` key must reach a deployment only with (or after) a muster image
+that knows it — the other way round, muster-server refuses to boot. The
+instance pods need a `ccd` that serves `GET /v1/transcript`: an older pod
+answers 404, the forwarder logs that the transcript cannot be read and retries
+every tick, and nothing is sent until the pod runs the new image. An officer
+that enables `transcript` on a server whose agent gateway cannot read
+transcripts is a boot refusal.
+
+**Rollback order** is the reverse: remove the `transcript` key from
+`MUSTER_OFFICERS` (and let muster-server restart on that config) BEFORE rolling
+muster-server back to an image that predates it — an older image refuses the
+unknown field and does not boot.
+
+## Claude usage to HQ
+
+Every declared officer's instances have their Claude usage — API calls,
+tokens and turns, per session and UTC hour — pushed to the officer's HQ. It
+needs no configuration (it is off only when the agent gateway cannot read an
+instance's usage, which the boot log says).
+
+**What is measured** is the instance's own Claude Code transcripts, counted by
+the instance pod's `ccd` on `GET /v1/usage?since=<unix seconds>`
+(bearer-authenticated like `/v1/transcript`; the answer carries counts only,
+never transcript text). `ccd` reads every `*.jsonl` under
+`<CLAUDE_CONFIG_DIR>/projects/`, at any depth, last modified at or after
+`since`. A file's session is the first path element under its project
+directory, so `<project>/<session>.jsonl` and a subagent's
+`<project>/<session>/subagents/<x>.jsonl` both count on `<session>`. Only
+complete lines are read (a line still being written is left for the next
+read); a line that does not decode is skipped.
+
+| field | what it counts |
+|---|---|
+| `api_calls` | assistant records — subagent (sidechain) records included, as they are this instance's spend — one per API call, at the hour of the call's FIRST record |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` | those calls' `message.usage`, each call's largest value of each field |
+| `turns` | distinct `promptId`s of main-conversation `user` records, at the hour first seen; a subagent's prompt (`isSidechain`) and injected context (`isMeta`, `isCompactSummary`) are not turns |
+| `model` (optional) | the model (`message.model`, which every record of a call repeats) with the most output tokens over the bucket's calls; a tie goes to the smaller model id, so file and record order never decide it. Left out of the bucket when no call names a model, so an older reader sees the bytes it always did |
+
+**The dedup rule.** The CLI writes one assistant record per content block
+(thinking, text, tool use), each repeating the same API call's usage. A call
+is counted once, keyed by `message.id` + `input_tokens` +
+`cache_read_input_tokens` + `cache_creation_input_tokens` — the id alone
+would fold two calls a transcript gave the same id; output is not in the key
+because a block written mid-stream can carry a smaller output count than the
+last. Each field keeps the call's largest value. An API-error record
+(`isApiErrorMessage`) and a `<synthetic>` record are not calls. It is the same
+rule a turn's own usage is counted by (`cmd/ccd/callusage.go`).
+
+🔴 **One ledger for the whole scan, not one per file.** The same call and the
+same prompt are written into more than one file: a forked subagent's
+transcript, and a branched or resumed session, copy the records they continue
+from. So each call and each prompt is counted once across every file read,
+and is OWNED — its session and its hour — by its first record in scan order,
+each field still its largest value over every copy. The files are read in
+sorted relative-path order (plain byte order: `-w/s.jsonl` before
+`-w/s/subagents/…`, and `-w-x/…` before `-w/…`), so the owner is the same on
+every scan. That matters because HQ replaces a bucket on every push: an owner
+that moved between scans would move counts between sessions.
+
+**The hour truncation.** `ccd` truncates `since` DOWN to the UTC hour (and
+clamps it to at most 48 hours ago, on an hour boundary), and answers
+`{"since": "<the window's start>", "buckets": [...]}`. HQ REPLACES a bucket
+on every push, so the oldest hour must be whole: a partial one would
+overwrite a complete one. A call or prompt first seen before the window stays
+in the hour it began.
+
+**The push** is `PUT {hq_url}/officers/{id}/usage` with the officer's token:
+
+```json
+{"instance": "officer-review-example-web-r1", "pool": "routine", "account": "",
+ "generated_at": "2026-11-10T14:05:00Z",
+ "buckets": [{"session": "…", "hour": "2026-11-10T13:00:00Z", "turns": 2, "api_calls": 31,
+   "input_tokens": 410, "output_tokens": 9822, "cache_read_tokens": 1803321, "cache_creation_tokens": 60117,
+   "model": "claude-model-a"}]}
+```
+
+`model` is ccd's, passed through (absent when ccd names none; an older ccd
+never names one). HQ refuses the WHOLE push over a model that does not match
+`^[A-Za-z0-9._:/-]{1,128}$`, so such a model is dropped and its bucket sent
+without one.
+
+`pool` is `routine`, `judgement`, or `""` for an untiered officer. HQ upserts
+each bucket by (officer, instance, session, hour), replacing its counts, and
+answers 204 (400 invalid, 403 another officer's token, 404 an unknown officer
+or an HQ without the route, 413 over 256 KiB or 1000 buckets). More than 1000
+buckets: the newest 1000 are sent, and the cut is logged.
+
+⚠ **`account` is the account the instance is on AT PUSH TIME** — its agent
+row's, `""` for a pool on the LLM proxy. An account failover moves the
+instance, and every hour in the window is then reported on the new account,
+including hours it ran on the old one.
+
+**When.** Every 10 minutes, for every instance the wake loop's own view says
+exists and is up, with `since` = now − 25 hours (so a muster restart or an HQ
+outage of up to a day loses nothing). And once more just before the wake loop
+scales an instance to zero, while its `ccd` can still answer — best-effort,
+at most 10 s, and its failure never fails the stop. The pod volume is kept,
+so the transcripts survive a scale-down, but ⚠ **hours older than 25 hours
+when an instance comes back up are never pushed**: an instance that was
+stopped mid-hour with a failed final push, and stays down past a day, leaves
+that hour as HQ last saw it.
+
+**Failures.** Nothing is retried within a tick; the next tick's push covers
+it. A `ccd` without the route (an older image: 404) is skipped and logged
+once per instance. HQ answering 404 is logged once per officer, and pushes
+continue. Every attempt is counted on
+`muster_officer_usage_push_total{result}`: `pushed`, `ccd_unsupported`,
+`ccd_failed`, `hq_not_found`, `hq_refused` (another 4xx), `hq_unavailable`
+(5xx, a timeout, no answer), `skipped` (a pre-stop push that could not start
+within its 10 s). An HQ refusal is logged by its status, never its body.
+
+### A builtin officer's usage: officer_llm_usage
+
+A [builtin](officers-builtin.md) officer has no HQ to push to, so the same
+collector pushes its instances' usage to the built-in backend, which books it
+into `officer_llm_usage` (the table the [LLM proxy](#the-llm-proxy) books
+into): one row per officer, pool, instance and UTC day, with `requests`
+(`api_calls`), the four token counts, `cost_usd` and `estimated_requests`.
+Before this, the built-in backend did not serve `usage`, the collector
+skipped builtin officers, and their model spend was recorded nowhere.
+
+- 🔴 **`cost_usd` is an ESTIMATE.** A Claude Code transcript carries tokens
+  and a model, never dollars, and an instance on a pooled account runs on a
+  subscription, so nothing is billed per token. The USD is what the tokens
+  would cost at Anthropic's API list price, from the one price list in
+  `internal/officers/pricing.go` (its source and date are in the file; the
+  admin read answers the date as `prices_as_of`). Cache writes are priced at
+  the 1-hour rate (2× input): Claude Code writes 1-hour cache entries
+  (measured: every cache-creation token of a live officer instance's transcript).
+  A model whose price is tiered by prompt length (`claude-haiku-5-5`, which
+  `CCD_MODEL=haiku` resolves to) is priced at its higher (>100k-token) tier,
+  so a short prompt is over-estimated, never under.
+  A model the list does not know is priced at the list's highest rate in
+  every column, never as free. Every request booked this way counts in
+  `estimated_requests` — on these rows it equals `requests`. A pool on the
+  LLM proxy keeps the provider's reported cost and is NOT booked again from
+  its transcript (the proxy already books those calls).
+- **Each push is the whole 25-hour window, so the merge is `GREATEST`, not a
+  sum.** Each column keeps the larger of what is booked and what the push
+  totals for the day. A day only grows while its transcripts are appended to,
+  and the window covers all of today, and all of yesterday for the first hour
+  after midnight UTC, so the day's last full push books its final total and
+  the later pushes that see only its tail leave it. Hours that fell out of the
+  window while the instance was down are not recovered (as for HQ).
+- `pool` is `routine` for a routine instance and `judgement` for a judgement
+  instance and for an untiered officer's instances (named as judgement
+  instances are).
+- **Reading it:** `muster officer usage <officer> [--days N]`
+  (`GET /api/officers/defs/{officer}/usage`, the hook tier like the rest of
+  the [admin API](officers-builtin.md)): the rows newest first over the last N
+  UTC days (default 30, at most 90), `total_cost_usd` over them and
+  `prices_as_of`.
+- ⚠ **Per-item cost is still not recorded for a Claude Code instance**
+  (`item cost omitted … reason=no_source`): the usage is per session and hour,
+  and an untiered instance works many items in one session, often several
+  in one turn, so no figure muster reads is ONE item's. See
+  [Item cost](#item-cost).
+
+**Deploy.** The instance pods need a `ccd` that serves `GET /v1/usage`, i.e.
+a restart onto a `claude-code-agent` image from this version or later; until
+then each instance is skipped (one log line each). HQ's route may land before
+or after muster's: until it does, HQ answers 404 and the pushes are dropped.
+
+**Checking one hour by hand.** Run in the pod, over EVERY transcript under
+`projects/` (the dedup and the ownership are scan-wide, so one session's files
+alone over-count a call another file also holds), for one session and one UTC
+hour given as a timestamp prefix. It applies the same rules as `ccd`: complete
+lines only, the same call key across all files, each call and prompt owned by
+its first record in sorted path order, the field maxima, and the same records
+excluded from turns. The CLI writes timestamps in UTC (`…Z`), which the prefix
+match relies on. It reads every transcript, so it is for spot checks, not a
+loop.
+
+```sh
+cat > /tmp/hour.jq <<'EOF'
+# Input: [{s: <session>, r: <record>}] for EVERY transcript under projects/,
+# in sorted path order. $session, $h: the session and UTC hour to check.
+[ to_entries[] | {i: .key, s: .value.s, r: .value.r} | select((.r.timestamp // "") != "") ] as $recs
+| ([ $recs[] | select(.r.type == "assistant" and .r.message.usage != null
+                      and (.r.isApiErrorMessage != true) and .r.message.model != "<synthetic>") ]
+   | group_by([.r.message.id, (.r.message.usage.input_tokens // 0),
+               (.r.message.usage.cache_read_input_tokens // 0), (.r.message.usage.cache_creation_input_tokens // 0)])
+   | map(min_by(.i) as $o
+         | {s: $o.s, t: $o.r.timestamp,
+            input: (map(.r.message.usage.input_tokens // 0) | max),
+            output: (map(.r.message.usage.output_tokens // 0) | max),
+            cache_read: (map(.r.message.usage.cache_read_input_tokens // 0) | max),
+            cache_creation: (map(.r.message.usage.cache_creation_input_tokens // 0) | max),
+            model: (sort_by(.i) | map(.r.message.model // "") | map(select(. != "")) | .[0] // "")})
+   | map(select(.s == $session and (.t | startswith($h))))) as $c
+| ([ $recs[] | select(.r.type == "user" and (.r.isSidechain != true) and (.r.isMeta != true)
+                      and (.r.isCompactSummary != true) and (.r.promptId // "") != "") ]
+   | group_by(.r.promptId) | map(min_by(.i))
+   | map(select(.s == $session and (.r.timestamp | startswith($h)))) | length) as $turns
+| {session: $session, hour: $h, turns: $turns, api_calls: ($c | length),
+   input_tokens: ($c | map(.input) | add // 0), output_tokens: ($c | map(.output) | add // 0),
+   cache_read_tokens: ($c | map(.cache_read) | add // 0),
+   cache_creation_tokens: ($c | map(.cache_creation) | add // 0),
+   model: ($c | map(select(.model != "")) | group_by(.model)
+           | map({m: .[0].model, o: (map(.output) | add)}) | sort_by(-.o, .m) | .[0].m)}
+EOF
+cd "$CLAUDE_CONFIG_DIR/projects"
+find . -name '*.jsonl' -type f | LC_ALL=C sort | while IFS= read -r f; do
+  s=${f#./*/}; s=${s%%/*}; s=${s%.jsonl}      # the session: the first element under the project
+  jq -cRs --arg s "$s" 'split("\n") | .[:-1][] | fromjson? // empty | select(type == "object") | {s: $s, r: .}' "$f"
+done | jq -s --arg session <session> --arg h 2026-11-10T13 -f /tmp/hour.jq
+```
+
+`split("\n") | .[:-1]` drops a line still being written, as `ccd` does. It
+prints that session's bucket for the hour, to compare with HQ's (`model` is
+`null` where `ccd` leaves it out). The one rule
+it does not apply is `ccd`'s file filter (a file last modified before the
+window is not read). Such a file holds no record inside the window, so the
+two agree for an hour in the window unless a newer file holds a copy of one of
+its calls or prompts stamped inside the window.
+
+## Pools to HQ
+
+Every declared officer's pools — as muster runs them, not as HQ guesses — are
+pushed to the officer's HQ with the officer's own token:
+
+```
+PUT {hq_url}/officers/{id}/pools
+
+{"pools": [{"pool": "judgement", "model": "opus", "max_instances": 2, "max_sessions_per_day": 30,
+            "sessions_today": 4, "sessions_day_resets_at": "2026-11-11T00:00:00Z"},
+           {"pool": "routine", "model": "haiku", "max_instances": 3, "max_sessions_per_day": null,
+            "sessions_today": 0, "sessions_day_resets_at": "2026-11-11T00:00:00Z"}],
+ "reported_at": "2026-11-10T17:25:00Z"}
+```
+
+- `pool` is `judgement` and `routine` for a tiered officer (in that order),
+  `""` for an untiered one (its only pool).
+- `model` is the pool's configured model (`""` when none is configured: the
+  CLI's default; also `""`, logged once per officer, for a model HQ refuses,
+  such as one with a context suffix like `opus[1m]` — HQ's pattern is
+  `^[A-Za-z0-9._:/-]{1,128}$` and it refuses the whole body over another); `max_instances` its `max_instances`.
+- `max_sessions_per_day` is `tiers.judgement.max_sessions_per_day`, `null` for
+  a pool without a cap.
+- `sessions_today` is the count the cap is enforced by — the same ledger
+  `officer_claim` reserves in and the wake loop's `judgement cap reached
+  (N/M until 00:00 UTC)` line prints — for the current UTC day; `0` for a pool
+  without a cap, which keeps no count. `sessions_day_resets_at` is the next UTC
+  midnight. `reported_at` is now minus 2 s, on the second, so a small clock
+  skew cannot make HQ refuse it as in the future. When the ledger cannot be read nothing is sent (a wrong count is
+  worse than a late one), logged.
+- HQ refuses pool `""` sent with any other pool, and requires
+  `max_instances` (0-100) on every pool; muster's bodies always meet both
+  (an untiered officer sends exactly its `""` pool, a tiered one only
+  `judgement` and `routine`). HQ serves the stored set back on `GET
+  /officers/{id}/pools`.
+- The body is the officer's WHOLE set: HQ deletes a pool it does not name, so
+  an officer reconfigured without its tiers reports its one `""` pool and HQ
+  drops the other two.
+
+**When.** At boot — `MUSTER_OFFICERS` is read only at boot, so a configuration
+change is a restart and this push carries it — and then every 10 minutes, so
+`sessions_today` stays fresh. Re-pushing is idempotent.
+
+**Failures.** A 4xx is not retried and is logged once per officer until HQ's
+answer changes; a 5xx or no answer is retried after 2 s and 5 s, then left to
+the next tick, logged once until a push is taken again. Counted on
+`muster_officer_pools_push_total{result}`: `pushed`, `hq_refused`,
+`hq_unavailable`, `ledger_failed`.
+
+## Consumer usage to HQ
+
+A muster that is **not** the officers' muster — one running pull-request
+review workers, say — can push its own instances' Claude usage to HQ too, so
+HQ can split each pooled account's spend into officers, each named consumer,
+and everything else. It is off unless `MUSTER_CC_CONSUMER_USAGE` names the
+consumer:
+
+```sh
+MUSTER_CC_USAGE_POLL=1
+MUSTER_CC_USAGE_PUSH_URL=https://hq.example.com/api/v1/claude-pool/usage
+MUSTER_CC_USAGE_PUSH_TOKEN=<the pool-usage token>
+MUSTER_CC_USAGE_PUSH_INSTANCE=review-muster
+MUSTER_CC_CONSUMER_USAGE=pr-review
+```
+
+It rides the [pool push](jobs.md#pushing-the-readings): the same HQ, the same
+bearer token, the same instance label. The route is derived from the pool
+push's URL, its path's `/claude-pool/usage` replaced by
+`/claude-pool/consumer-usage`. Boot is refused for a consumer other than
+`pr-review`, without `MUSTER_CC_USAGE_PUSH_URL` (which itself needs the poller
+and the token), and when that URL's path does not end in `/claude-pool/usage`.
+Unset, nothing changes: the officers' muster leaves it unset.
+
+**Whose usage.** Every instance that is the admin's (the pool's owner), of
+the `claude-code` kind, on a pool account, up — and **not an officer's
+instance**: an officer instance's usage goes to its officer's HQ ([Claude
+usage to HQ](#claude-usage-to-hq)), and pushing it here as well would count
+it twice. A member's agents run on the member's own accounts and are not
+read. What is measured is exactly what the officer push measures: each
+instance pod's `ccd` on `GET /v1/usage` (same buckets, same dedup rule, same
+hour truncation).
+
+**The push** is one `PUT` per instance:
+
+```
+PUT <base>/api/v1/claude-pool/consumer-usage
+Authorization: Bearer <MUSTER_CC_USAGE_PUSH_TOKEN>
+
+{"instance": "review-muster", "consumer": "pr-review",
+ "hours": [{"hour": "2026-11-10T13:00:00Z", "account": "acct-a", "session": "…",
+            "turns": 2, "api_calls": 31, "input_tokens": 410, "output_tokens": 9822,
+            "cache_read_tokens": 1803321, "cache_creation_tokens": 60117}]}
+```
+
+🔴 There is no `model` on a consumer row: HQ's route has no such field and
+decodes strictly, so ccd's bucket model is never sent here (only the officer
+usage push carries it). HQ upserts each row on (instance, consumer, session, hour), replacing its
+counts and account, and refuses unknown fields. Every push is the instance's
+whole 25-hour window, so re-pushing is idempotent. A session id must match
+`^[A-Za-z0-9_-]{1,64}$` (ccd's are UUIDs); a row that does not, or whose hour
+is not on the hour, or whose account is not known, is left out (never sent
+with an empty account) and logged once per instance. HQ takes at most 1000
+rows and 256 KiB per request (413 past either), so a larger window is sent in
+several pushes, in order; one that fails leaves the rest to the next tick,
+which re-sends the whole window. HQ refuses an hour older than 8 days or in
+the future; the 25-hour window never reaches either. An instance with no row
+in its window sends nothing.
+
+**The account of each hour** is the pool account the instance was on at the
+END of that hour: the `from` of the instance's earliest account failover at or
+after the hour's end, else the account it is on now. An agent's account
+changes only by a failover, and every failover is recorded (the agent page's
+history, `cc_account_failovers`), so this is the account each session ran on,
+to the hour. Two sessions of one instance on either side of a failover are on
+different accounts; a failover INSIDE an hour puts that whole hour on the
+account it moved to (as a job is counted on the account its last turn ran on).
+With no failover it is the officer push's rule: the instance's account now.
+
+**When.** Every 10 minutes for every listed instance, read since now − 25
+hours; and once more before each Stop or Delete of an eligible instance,
+whoever asks for it (the lifecycle adapter's pre-stop hook), while its `ccd`
+can still answer — best-effort, at most 10 s, never failing the stop; an
+instance whose row is already stopped (a Destroy of a stopped agent, the
+reaper's) has no `ccd` to read and is skipped.
+
+**Failures.** An HQ 4xx is not retried: the next tick pushes again, and it is
+logged once until HQ's answer changes (one line for HQ, not one per
+instance). A 5xx or no answer is retried twice, after 2 s and 5 s; still not
+taken, the rest of that tick is skipped (the next tick covers it) and it is
+logged once until HQ takes a push again. A `ccd` without the route is skipped
+and logged once per instance. Every attempt is counted on
+`muster_cc_consumer_usage_push_total{result}`: `pushed`, `empty`,
+`ccd_unsupported`, `ccd_failed`, `hq_refused`, `hq_unavailable`, `skipped`.
+No log line carries the token, the URL or HQ's answer body.
+
+**Checking one hour by hand.** In the instance's pod, run the recipe in
+[Claude usage to HQ](#claude-usage-to-hq) for the session and hour: it prints
+the counts `ccd` reports, which must equal the row HQ holds for
+(`MUSTER_CC_USAGE_PUSH_INSTANCE`, `pr-review`, session, hour); the recipe
+takes the hour as a timestamp prefix (`--arg h 2026-11-10T13`). The session ids of a
+worker are its transcripts' file names under `projects/`, and a job's is its
+lane's (`ccd11a9e-…`).
+
+The account HQ holds for the row is the instance's account at the end of the
+hour: compare it with the agent page's account and failover history.
+
+## Tiers and the LLM proxy
+
+### The two pools
+
+An officer may split its instances into two **pools**, one per HQ item tier
+(HQ's item `tier`, `routine` or `judgement`):
+
+```json
+{"id": "gpu-health:fleet", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "haiku", "max_instances": 3},
+           "judgement": {"model": "opus",  "max_instances": 1}}}
+```
+
+- **Names.** The judgement pool's instances are `officer-<slug>-<n>`, the names
+  an untiered officer's have always had. The routine pool's are
+  `officer-<slug>-r<n>` (shown as `#r<n>`). Both pools are the officer's
+  instances for every rule the name decides: the officer tools, delete
+  protection, the session's model, and the transcript forwarder. A name past
+  its pool's `max_instances` is an ordinary agent, as for an untiered officer.
+- **Waking.** One pass reads HQ once and runs `Decide` per pool. A pool counts
+  only the claimable items of its own tier as HQ reads them. An item with no
+  `tier`, or one muster does not know, counts as **judgement**, so it fails
+  toward the stronger model, as HQ's default does. A routine item HQ promoted
+  after two lapsed leases reads `judgement`, so the judgement pool wakes for it.
+  A live claim belongs to the pool of the instance holding it, whatever the
+  item's tier. Each pool has its **own idle clock**: the routine pool scales to
+  zero while the judgement pool keeps working, and the other way round.
+- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. With an
+  `item_id`, HQ refuses another tier's item with `409 wrong_tier`, and the
+  instance gets that refusal as it is; without one (claim-next), HQ picks only
+  from the instance's own tier. `officer_items` lists only the instance's own tier
+  (`?tier=`). The first message says which tier the instance works.
+- **No `tiers`: exactly as before.** There is one pool and the same names. The
+  claim sends no `tier` key and the items list has no tier filter.
+- **The judgement session cap: `tiers.judgement.max_sessions_per_day`**
+  (1–100; leave it out for no cap). A judgement **session** is one distinct
+  item the judgement pool claims in a UTC day. Re-claiming an item already
+  counted that day is not a new one: a restarted instance re-claiming its own
+  item, or an item given back and taken again. Once the day's cap is spent:
+  - `officer_claim` from a judgement instance refuses any new item **before
+    HQ**, naming the cap. The item stays queued in HQ. With no `item_id`
+    (claim-next, HQ picks the item) the claim is refused before HQ too.
+    Below the cap a claim-next holds one session until HQ answers, and gives
+    it back when HQ claimed nothing.
+  - The wake loop does not wake or re-prompt the judgement pool for new work.
+    It still does so for items the pool holds or already counted today.
+  - It is **visible**. The first pass of a UTC day that sees the cap with
+    claimable judgement items waiting logs one line naming the officer,
+    used/cap, the waiting count and when the cap resets (`judgement cap
+    reached (30/30 until 00:00 UTC): 7 claimable judgement item(s) wait in
+    HQ …`). Later polls that day log nothing more, and a restarted process
+    logs it once again. `muster_officer_judgement_cap_reached` counts the
+    officers in that state at their last pass; a pass that fails (HQ or the
+    fleet unreadable) clears it. HQ is not told: muster has no officer-level
+    status call to HQ that could carry the reason.
+  - Nothing else changes. The routine pool is not capped by it (its bound is
+    the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
+
+  The count is **persisted** (`officer_judgement_sessions`, migration
+  0082): one row per officer and UTC day holding the admitted entries,
+  shared by every muster-server replica, so a restart or a rollout overlap
+  neither resets nor splits it. A session is admitted in one transaction
+  holding the day's row lock, deciding on the row's latest version: two claims
+  racing for the last session — from one server or two — cannot both pass,
+  and two claims of the SAME item take one session (the second is a free
+  re-claim, never the cap's refusal). Only the claim that inserted an item may
+  give it back, and only when HQ **refused** the claim: when HQ's answer is
+  lost (a timeout, a 5xx), HQ may have claimed it, so the session is kept. A
+  claim-next holds a `pending:` entry until HQ answers; one older than two HQ
+  request timeouts (`officers.PendingTTL`, a server that died mid-claim) stops
+  counting, and a claim-next whose answer was lost keeps its session as an
+  `unknown:` entry for the day. A release or resolve that fails is logged. A
+  declared cap needs the database: without it the server refuses to start. If
+  the ledger cannot be read or written, the claim is refused (nothing is
+  claimed without the count), and the wake loop treats that judgement pool as
+  capped for the pass (logged); the routine pool is unaffected.
+
+- **The judgement wall-time cap: `tiers.judgement.max_item_minutes`**
+  (1–1440; leave it out for no cap). Once a judgement instance has held one
+  item this long, the wake loop stops the instance and completes the item
+  **`escalated`** as its holder, with a summary naming the cap: the work did
+  not finish, and a human picks it up (HQ DMs the owner). The first message
+  tells a judgement instance its cap, so it can wrap up first.
+  - Why not release: the item would reopen and the same pool would claim it
+    again, and a re-claim of an item already counted today is free under
+    `max_sessions_per_day`. A release is a loop, not a stop.
+  - Why not `needs_judgement`: HQ refuses it on a judgement item.
+  - The clock is HQ's own `claimed_at` on the item: set on every claim
+    (so a new claim, by any holder, starts again), kept by a heartbeat, and
+    returned by the items list. A restarted muster reads the same clock. An
+    item HQ returns without `claimed_at` has no clock and is **not** capped
+    (logged once).
+  - A claim past the cap whose holder is down is escalated too, not released.
+  - An instance number that holds a capped claim is **never started** while
+    HQ shows it holding one (see the kept-held refusal below): a new session
+    under that name would claim other work and then be stopped for the old
+    item's cap. Other judgement work starts the next free instance number, or
+    waits when there is none.
+  - A capped judgement instance holds **one live claim at a time**:
+    `officer_claim` (by id or claim-next) refuses a second claim while it
+    holds a live one on another item, before HQ, spending no session. The
+    cap stops the whole instance, so a second item would lose its work.
+    Re-claiming its own item is allowed (it becomes a heartbeat). If HQ's
+    claimed list cannot be read, the claim is refused.
+  - The escalation carries an `investigation` block, which HQ requires to
+    escalate an item of a type whose policy sets `investigation: true` and
+    takes on `escalated` for any type: confidence `low` (so operator steps
+    only), a root cause saying the cap of N minutes was reached with no
+    conclusion, and one step: re-investigate. An HQ from before the block
+    refuses it as an unknown field (400), so a 400 is retried once without
+    it.
+  - A failed stop does not hold back the escalation; the holder's next
+    heartbeat is then refused (`lease_lost`). A 409 on the complete (the
+    holder finished first, or the lease lapsed) is logged.
+  - Any other refusal of the escalation (a 400 with and without the block, a
+    5xx) **keeps the item held**: muster heartbeats it as the stopped holder,
+    so its lease does not lapse and no instance claims it for another full
+    session. Every pass tries the escalation again; HQ's error is logged once
+    per change. The item then reads claimed, past its cap, in HQ until the
+    refusal is fixed. The hold lease is three `poll_interval`s (at least 600
+    s, at most 3600 s), so a muster that stays down longer than that lets
+    the lease lapse.
+  - While such a refusal holds, the holder's instance number is **withheld**
+    from the pool. At the default `max_instances` of 1 that is the whole
+    judgement pool, and every other judgement item waits. This is loud: the
+    officer's owner gets **one** notification per episode (the "needs you"
+    channel, muted with the attention toggle on /account) naming the
+    officer, the item, HQ's refusal and that the pool is waiting, and it is
+    cleared when the escalation lands. The gauge
+    `muster_officer_cap_refusal_withheld` counts the withheld instances,
+    and the log says when one is withheld and when it is not any more. A
+    restarted muster starts a new episode for a refusal still in force.
+
+- **One conversation per item: `tiers.<pool>.fresh_session_per_item`**
+  (`true` on either pool, or both; **off by default** — leave it out for one
+  conversation the instance keeps). 🔴 Turn it on for a LIVE officer only once
+  HQ serves the claim-time `history` block on the items it claims: with it on,
+  an instance remembers nothing from one item to the next, and that block is
+  where an officer's memory of earlier items is meant to come from. Until
+  then, enable it only on officers used for replay, where carrying nothing
+  over is the point. Without it an instance keeps ONE Claude
+  Code conversation on its volume: `ccd` resumes it on every start (a pod
+  restart, a stop at the idle window or the wall-time cap), and the wake
+  loop's prompt for the next item says "work the queue as before". So every
+  item is worked with every earlier item's context, which biases the next
+  investigation ("same conclusion as the last item") and makes a replay of
+  one item impossible. With it, every item an instance of the pool works
+  starts in a **new conversation**:
+  - **Every turn muster sends the instance asks ccd for a new
+    conversation**: the kickoff deliverer's first turn (a start: the pool woke,
+    a stopped instance restarted for its next item, an instance restarted
+    after the wall-time cap) and the wake loop's prompt of an idle instance
+    (its next item, a `needs_judgement` item promoted from the routine pool).
+    The turn carries `X-Muster-CC-New-Conversation: 1`
+    (`api.Server.OfficerTurnContext`, the one rule both share). ccd then types
+    the CLI's own `/clear` before the turn, waits for a `SessionStart` with
+    source `clear`, fired by the primary CLI's own process (not a `claude`
+    nested in its pane), naming a **new** session id, and only then types the
+    turn. The new session is recorded as the one every later start resumes,
+    so a restart mid-item keeps the item's own conversation. The old
+    conversation's transcript is **kept** on the volume, for audit. A CLI
+    with no transcript yet (a fresh volume) already has a new conversation,
+    and nothing is typed. If that `SessionStart` does not arrive in time, the
+    turn fails `new_conversation_unconfirmed` (a 502, which muster does not
+    re-send at once, unlike `not_ready`) and is **not** typed into the old
+    conversation. `/clear` may still be in the CLI's input line (an Enter that
+    landed while it was still taking the paste), so the next new-conversation
+    turn in that same session presses Enter instead of typing `/clear` again
+    beside it. That submits a `/clear` still waiting there, and does nothing on
+    an empty line.
+  - **ccd confirms the new conversation.** Its answer to such a turn names the
+    new session (`X-Muster-CC-New-Conversation-Session`, on the `103` it sends
+    once the CLI has taken the turn's text, and on the final answer), and its
+    `/healthz` says `"new_conversation": true`. muster frees the instance to
+    claim again only on that confirmation. A ccd that takes the turn without
+    naming a new conversation predates the header, and the turn runs in the
+    conversation the CLI already had. muster logs it (`did not confirm a new
+    conversation`), keeps the instance's claims refused, and sends it no
+    further turn until the instance is started again.
+  - **The turn is the kickoff**, never "as before": the instance calls
+    `officer_brief` and loads the current charter for every item. The kickoff
+    of such a pool ends with a one-item paragraph (see [The first
+    message](#the-first-message)).
+  - **One item per conversation, enforced before HQ**: the conversation is
+    marked by its first **successful** claim, and `officer_claim` (by id or
+    claim-next) then refuses it any other item, naming
+    `fresh_session_per_item` — while it holds the item, and however the hold
+    ends: complete, release, `needs_judgement`, `officer_ask_person`, a lease
+    HQ let lapse, or a complete HQ refused (`lease_lost`). Re-claiming its own
+    item is allowed. The mark is cleared only when ccd confirms a new
+    conversation took a turn muster sent (above), never before the send. The
+    refusal tells the instance to end its turn. The wake loop prompts it again
+    on its next pass, in a new conversation, without waiting out the
+    5-minute re-prompt limit (an instance whose last turn is still ending is
+    refused `409 busy` with nothing typed, and the pass after tries again).
+    ⚠ The mark is muster-server's memory: a muster restarted while an
+    instance's turn is still running forgets that the turn's conversation
+    had its item, and that one turn may claim one more item once it holds
+    none (a live claim is still refused, from HQ's claimed list).
+  - **Transcripts to HQ** (`transcript`) follow it: ccd's `GET
+    /v1/transcript` serves the CLI's current session, which `/clear` moves to
+    the new one, so each item's upload is that item's own conversation.
+  - **Cost.** Each item pays one kickoff it did not before: 5.3 KB (about
+    870 words) for a judgement instance without a repository, 7.7 KB (about
+    1,200 words) with `repo`, `read_repos` and `connectors` (measured from
+    `officers.KickoffText` at this version; a `kube` block adds about 1.5
+    KB). That is roughly 1,300–2,000 input tokens of text, plus one
+    `officer_brief` answer (the charter, open items and recent outcomes; its
+    size is HQ's). The CLI's system prompt and tool definitions are sent on
+    every request either way. In exchange, no request carries earlier items'
+    history.
+  - Not to a [chat session](#chat-sessions): a chat runs in a `ccd` lane of
+    its own, one conversation for the chat's life, and its turns never ask
+    for a new one.
+  - Not offered to an untiered officer: an officer without `tiers` is
+    exactly what it was.
+  - It needs a `claude-code-agent` image from this version: an older ccd
+    ignores the header, and the turn then runs in the conversation the CLI
+    already has. muster detects that from the missing confirmation (above),
+    and the claim rule still holds.
+  - **Read, not run, on the image's CLI.** `/clear` was measured on the CLI
+    2.1.289 (a workstation). The image's 2.1.296 was read, not run: its bundle
+    still has `/clear` as the local command "Start a new session with empty
+    context; previous session stays on disk", with `SessionStart` source
+    `clear` and `SessionEnd` reason `clear` in its hook schema.
+
+Refused at boot, each naming the problem:
+- a tier key other than `routine` and `judgement`;
+- a missing pool;
+- a pool without a `model`, or with a model that is not a model name;
+- an unknown key inside a pool;
+- a pool `max_instances` outside 1–8 (the default is 1);
+- `max_sessions_per_day` on the routine pool, or outside 1–100 on the
+  judgement pool;
+- `max_item_minutes` on the routine pool, or outside 1–1440 on the
+  judgement pool;
+- a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
+  values are `tiers.judgement`'s, and two sources for one value are refused
+  rather than ranked);
+- a routine name (`-r<max>`, one character longer) over the namespace bound;
+- a provider model id (`vendor/model`) in either pool, except the routine
+  pool of an officer with an [`llm` block](#the-llm-proxy) and the judgement
+  pool with its own `tiers.judgement.llm` — and, the other way round, an `llm`
+  block whose routine model is a Claude model, or a `tiers.judgement.llm`
+  beside a Claude judgement model;
+- `tiers.routine.llm` (the routine pool's block is the top-level `llm`);
+- a `tiers.judgement.llm` that the top-level `llm` would refuse (an unknown
+  key, a missing or out-of-range budget or cap, no
+  `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`), each named
+  `tiers.judgement.llm…`.
+
+**The models.** Each pool's `model` is a Claude Code model (checked by the
+same rule as `model`, and run on the Claude accounts like any instance) —
+unless that pool is on the [LLM proxy](#the-llm-proxy): the routine pool when
+the officer declares `llm`, the judgement pool when it declares
+`tiers.judgement.llm`. Then it MUST be a provider model id such as
+`deepseek/deepseek-v4.1-flash-1017`, and it is THE model the proxy pins every
+request of that pool to. There is no second place a pool's model is set.
+
+### The LLM proxy
+
+An officer with an `llm` block has its **routine pool** reach its model —
+DeepSeek through OpenRouter, for the cheap tier — **through muster-server**,
+on the connect listener the instances already use. The pod holds no provider
+key and gains no egress: its Claude Code is to run with
+`ANTHROPIC_BASE_URL=$MUSTER_CONNECT_URL/llm` and its own muster token as the
+bearer, and muster attaches the officer's key on the way to the provider.
+
+```json
+{"id": "triage:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "deepseek/deepseek-v4.1-flash-1017", "max_instances": 2},
+           "judgement": {"model": "opus", "max_instances": 1}},
+ "llm":   {"daily_budget_usd": 5, "max_tokens_per_item": 400000}}
+```
+
+One source for each value:
+
+| what | where |
+|---|---|
+| the model every routine request is pinned to | `tiers.routine.model` ([The two pools](#the-two-pools)). The model the client asked for is ignored (logged and audited as `requested_model`). Pinning the id pins the weights, not the serving stack: OpenRouter routes one id to several providers, and the one that served each request is logged and audited as `provider`. |
+| who may use the proxy | the instances of a pool on the proxy (`officers.ProxyAgent`, the registry's own naming rule): the routine pool's `officer-<slug>-r<n>` (`n` within `tiers.routine.max_instances`) beside `llm`, and the judgement pool's `officer-<slug>-<n>` beside `tiers.judgement.llm`. An instance of a pool without a block, a name past its pool's max, an untiered officer's instance and any other agent are refused (403). |
+| what it may spend | the pool's own block: `llm` for the routine pool, `tiers.judgement.llm` for the judgement pool, below. Each pool has its own daily budget, and the two never mix. |
+
+| `llm` field | default | |
+|---|---|---|
+| `daily_budget_usd` | required | The officer's spend cap per UTC day, over all its routine instances, (0, 1000]. Metered from the cost **the provider reports in the stream** (`usage.cost`), never from a price list: billed prices have run well above list. A request is refused once the day's booked spend reaches the cap; requests in flight together can take the day slightly over it (the key's OpenRouter credit limit is the backstop). |
+| `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds: uncached input, cache writes and output together. **Cache reads are not counted** (Claude Code resends its whole context on every request, mostly as cache reads); they are still metered and charged against `daily_budget_usd`. Past the cap, its next request is refused. It does not apply while the instance holds no item (`daily_budget_usd` bounds that). |
+
+The key is the officer's own `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`
+(`<NAME>` as for the HQ token), and it is **required**: unset or blank is a
+boot refusal naming the officer and the variable. The deployment's shared
+`MUSTER_AGENT_OPENROUTER_KEY` is never used for it. Give each officer's key an
+**OpenRouter-side credit limit**: it is the second budget wall, the one that
+does not depend on muster.
+
+Refused at boot, each naming the problem: `llm` without `tiers` (the proxy
+serves only a tiered officer's pools); `llm` beside a Claude routine model; a routine
+provider model id without `llm`;
+an unknown key in `llm` (`model` and an agent list included: they live in
+`tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); `llm` on a
+server with no database (the budget is persisted) or no connector store (the
+proxy's door and audit trail).
+
+**The pod side** is the [LLM route](#the-instances-claude-code-session):
+each instance of a pool on the proxy is given `CCD_LLM_ROUTE=muster` and no
+subscription token. Its entrypoint then points Claude Code at exactly
+`$MUSTER_CONNECT_URL/llm`, with the pod's own muster token as the bearer. The
+session takes no model of its own, because the proxy pins it. A pool not on
+the proxy is not routed: its instances run on their Claude accounts as
+before. The route changes no network rule: every officer instance, routed or
+not, has the same [egress-locked policy](#the-instances-network) (muster's
+connect port only), which the route needs and nothing more.
+
+#### The judgement pool on the proxy
+
+`tiers.judgement.llm` puts the **judgement** pool on the proxy too, with its
+own budget. Its fields, defaults and bounds are the top-level `llm`'s
+(`daily_budget_usd` required, `max_tokens_per_item` default 400000), it uses
+the same officer key (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`), and
+`tiers.judgement.model` must then be a provider model id, the pin. It is
+independent of the routine pool's: the routine pool may stay on Claude
+(`haiku`), or be on the proxy with the top-level `llm`, each pool spending
+its own budget. `max_sessions_per_day`, `max_item_minutes` and every other
+judgement rule are unchanged.
+
+```json
+{"id": "triage:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "haiku", "max_instances": 2},
+           "judgement": {"model": "deepseek/deepseek-v4-pro", "max_instances": 1,
+                         "max_sessions_per_day": 30, "max_item_minutes": 45,
+                         "llm": {"daily_budget_usd": 20, "max_tokens_per_item": 2000000}}}}
+```
+
+A judgement instance on the proxy is everything a judgement instance is (the
+ship and kube tools when declared, the session and wall-time caps), on a
+provider model: what it does is bounded by that model as much as by its
+tools.
+
+**The chief** is the proxy's one other caller, when muster runs the chief on
+OpenRouter (the `docker compose` install's chief; see
+[chief.md](chief.md#the-chief-on-openrouter)). It is admitted when the calling
+agent is the **admin's** chief and that chief is on; another user's chief is
+refused (403), and any other agent as above. It runs on the admin's key,
+`MUSTER_AGENT_OPENROUTER_KEY`, and is pinned to the chief's model, and muster
+keeps **no budget** for it: no daily budget, no per-item cap, no
+`officer_llm_usage` row. Its requests are still in the metrics, the log
+line and the audit trail, as officer `chief`. Steps 3 and 4 below do not apply
+to it.
+
+#### What one request does
+
+`POST /llm/v1/messages` is the **only** path served (Claude Code calls nothing
+else against its base URL: always `POST /v1/messages?beta=true`, always
+`stream: true`). Any other method or path under `/llm/` is refused 404 before
+any credential is read. For an admitted request, in order:
+
+1. The calling agent is resolved from its own token (`Authorization: Bearer`
+   or `X-Muster-Token`; the shared hook and service tokens are refused, as on
+   every connector route) and must be a routine instance of an officer that
+   declares `llm`.
+2. The body must be a JSON object (at most 32 MiB). It is rebuilt from an
+   **allowlist** of Anthropic Messages fields (`messages`, `system`,
+   `max_tokens`, `metadata`, `stop_sequences`, `stream`, `temperature`,
+   `top_k`, `top_p`, `tools`, `tool_choice`, `thinking`,
+   `context_management`), with `model` set to `tiers.routine.model`. Every
+   other key is dropped (its name is logged, never its value), OpenRouter's
+   routing fields above all: `fallbacks`, `models`, `provider`, `route`,
+   `plugins` and `transforms` could serve the request from a model other than
+   the pin.
+   Inside `messages`, a mid-conversation `system` entry (which Claude Code
+   sends, and which the provider refuses with a 400 for non-Anthropic models)
+   is folded into the adjacent user turn: its content blocks are appended to
+   that turn unchanged, or become a user turn of their own between two
+   assistant turns, and a `tool_result` stays first in its turn. Every other
+   message is sent as the client wrote it.
+3. **The budget.** The officer POOL's booked spend for the UTC day is read
+   from the database (`officer_llm_usage`, migrations 0075 and 0110, by
+   officer, pool and day). At or over that pool's `daily_budget_usd`, the
+   request is refused with **400**, naming the pool, and nothing is
+   sent. ⚠ The check is not a reservation: requests in flight together (several
+   routine instances, or one instance's parallel calls) all pass while the
+   spend is under the budget, so the day can end slightly over it, by at most
+   the cost of the requests in flight. The OpenRouter-side credit limit on the
+   officer's key is the backstop. If the spend cannot be read, the request is refused (503) and
+   nothing is sent: the proxy never spends blind.
+4. **The per-item cap**, against the instance's tokens on its held item (below).
+5. The request goes to `https://openrouter.ai/api/v1/messages`
+   (`?beta=true` kept, no other query) with the officer's key and only the
+   client's `Content-Type`, `Accept`, `Anthropic-Version`, `Anthropic-Beta`,
+   `User-Agent` and `X-App` headers. The client's own credential and session
+   headers are not forwarded. Redirects are not followed.
+6. **The response is streamed through:** each server-sent event is relayed as
+   the provider sent it and flushed as it arrives. The proxy reads
+   `message_start` (message id, model, provider, input usage) and
+   `message_delta` (output usage, `usage.cost`, stop reason) on the way past.
+7. **The usage is booked before the response ends** — the database row, the
+   per-item count and the metrics — so the instance's next request is checked
+   against it. A response that reported no cost (a stream that broke off, a
+   client that went away) is booked from an estimate at deliberately
+   pessimistic rates and counted as estimated. So is a request that was
+   written to the provider and then got no response. A connection that fails
+   **before** the request is written (DNS, refused, TLS) reached no provider,
+   which billed nothing: it is booked as nothing, and the instance gets a 502.
+   A non-2xx answer from the provider is not booked.
+8. One audit row (the [connector audit trail](connectors.md#the-llm-proxy),
+   kind `llm`) and one log line: agent, officer, instance, item, model,
+   requested model, provider, status, result, tokens by direction, USD,
+   whether it was estimated, stop reason and duration; and, when the provider
+   answered with an error, `upstream_error="<type>: <message>"`: the
+   provider's error message only, with the officer's key and anything
+   key-shaped redacted, truncated to 200 bytes so that the line fits the audit
+   row. Never a request or response body, a header or the key.
+
+**Refusals end the turn.** The budget and the item cap answer **400**
+(`invalid_request_error`), not 429: Claude Code retries 429 and 5xx with
+backoff, which on an instance would read as a stall. The message tells the
+model to stop; the item stays queued in HQ.
+
+**The per-item cap and the lease.** The proxy learns which item an instance
+holds from its own `officer_claim` (with or without `item_id`) /
+`officer_complete` / `officer_release` calls, and from every wake-loop read of
+HQ's claims: when HQ shows an instance holding exactly one item and the proxy
+holds a different one or none, the proxy adopts HQ's (so an instance that
+outlives a muster restart still holding its item is capped again within one
+wake-loop interval); when HQ shows it holding none or several, it holds none.
+A new or adopted item starts the count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
+then hands the item on: a precondition on HQ that muster does not check); the next wake-loop read shows the instance holding
+nothing, which resets its count, so it is not stuck. The cap applies only
+while the instance holds an item: a turn holding none (a kickoff, a
+re-prompt, the turn between items) is never refused by it, and its tokens are
+not counted toward any item. The daily budget, not the item cap, is the
+wall for a turn holding no item. The counts
+are in memory; a restart forgets them (the budget is persisted).
+
+**A refused key is not a stall.** When OpenRouter refuses the key (401/403),
+the instance gets a **400** with muster's own `authentication_error` naming
+the fault — never the provider's status or body. Claude Code retries a 401
+about ten times with backoff, so passing it through would make the instance
+look stalled; a 400 ends the turn. muster counts every refusal, under the
+provider's own status, on
+`muster_officer_llm_upstream_auth_failures_total{officer,status}`, holds
+`muster_officer_llm_upstream_auth_failing{officer}` at 1 until a request
+succeeds again, and logs one loud line each time the state changes (failing,
+then recovered) rather than one per request. The audit row keeps the
+provider's status.
+
+**The key never reaches the instance.** It is attached in the proxy alone;
+every byte relayed downstream is scrubbed of it, and a provider error body is
+relayed scrubbed (a 401/403 body is replaced outright).
+
+#### Usage counters
+
+Per officer and proxied instance (`instance` is `r<n>` for a routine
+instance and `<n>` for a judgement one, never the agent name;
+both labels are bounded by `MUSTER_OFFICERS`). The chief is counted with
+`officer` and `instance` both `chief`, and has
+no `spent_today`, `budget` or `book_failures` series (it is never booked):
+
+| metric | |
+|---|---|
+| `muster_officer_llm_requests_total{officer,instance,result}` | `ok`, `upstream_auth`, `upstream_status`, `upstream_error`, `refused_budget`, `refused_item_cap`, `refused_bad_request`, `refused_store` |
+| `muster_officer_llm_tokens_total{officer,instance,dir}` | `in` (uncached input), `cache_read`, `cache_write`, `out` |
+| `muster_officer_llm_cost_usd_total{officer,instance}` | USD booked against the budget |
+| `muster_officer_llm_cost_estimated_total{officer}` | requests booked from an estimate (no cost reported) |
+| `muster_officer_llm_spent_today_usd{officer,pool}`, `muster_officer_llm_budget_usd{officer,pool}` | per pool (`routine`, `judgement`): the day's booked spend as last read or booked, and the budget. `pool` was added with the judgement pool's budget; a query on `officer` alone now sums both pools |
+| `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured`, `agents_read` (with the chief LLM on, the agents list could not be read to tell whether the caller is the chief; a 503, nothing sent) (`officer` is `none` for a non-officer caller); for the chief (`officer` `chief`): `not_admin`, `chief_off`, `no_key` |
+| `muster_officer_llm_upstream_auth_failures_total{officer,status}`, `muster_officer_llm_upstream_auth_failing{officer}` | the provider refusing the key |
+| `muster_officer_llm_book_failures_total{officer}` | usage that could not be written to the database; alert on any |
+
+The durable copy is `officer_llm_usage`: one row per officer, pool, instance
+number and UTC day with requests, tokens by direction, USD and estimated requests.
+It has no item column: an item's cost is the per-item meter's (below).
+
+#### Item cost
+
+A proxied instance's `officer_complete` (routine or judgement; outcome
+`done`, `escalated` or `no_action`) sends HQ the item's cost in the same call: `cost_usd` = the USD
+its hold on the item booked through the proxy (each request's provider-reported
+cost, as the budget books it; rounded to the micro-dollar), `cost_from` =
+`muster:llm-proxy` (HQ's officer guide, "Item cost"). It rides the complete,
+with no later `PATCH`: the complete is the hold's last act, and a request
+still unbooked when it is read makes the cost unknown (below) rather than
+short.
+
+🔴 **An unknown cost is omitted, never sent as 0.** The cost is known only when
+the hold is the item's whole proxy spend: HQ's first claim of the item
+(`attempts` 1 in HQ's claim answer), claimed through muster (not adopted from
+HQ's claimed list after a restart, and not muster's already-yours answer for a
+hold it did not meter), at least one request booked, and none booked from the
+proxy's pessimistic estimate (a response that reported no cost), and no
+request admitted under the hold still in flight when the complete reads it. A
+request leaves flight as soon as its cost is charged to the meter (before the
+usage row is written and the stream's tail is relayed), so a complete Claude
+Code sends while a handler is still finishing still reads the cost. A second or later
+claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
+send none. The meter is in memory (`internal/llmproxy/items.go`).
+
+An instance of a pool NOT on the proxy (a Claude judgement or routine pool,
+an untiered officer) has **no cost source muster reads**, so its complete
+sends none. Each instance's meter is its own: judgement `#1` and routine
+`r1` share a number, not a hold.
+
+Every complete sent without a cost writes one log line, which is how the
+known-vs-unknown ratio is measured:
+
+```
+officers: item cost omitted officer=<id> instance=<agent> item=<item id> outcome=<outcome> reason=<reason>
+```
+
+`reason` is one of `not_held`, `adopted`, `not_first_claim`,
+`attempts_unknown`, `no_requests`, `estimated`, `inflight`, `over_bound`,
+`handed_on` (needs_judgement) or `no_source` (not an instance of a pool on
+the proxy).
+
+⚠ **HQ keeps a cost a later complete does not replace** (its complete
+coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed
+complete and that is worked again keeps the FIRST hold's cost: the later hold
+is not HQ's first claim, so it sends none, and the item's cost understates
+what working it cost overall.
+
+The cost never fails a complete: when HQ refuses the complete that carries it
+with a 400 (an HQ from before item cost refuses the unknown fields), muster
+sends it again without the cost, and logs `completed item … without its cost`.
+
+**Rolling out the per-pool budget (migration 0110):** while the new pod has
+applied 0110 and an old pod is still serving, the old pod's LLM usage cannot
+be booked. Its requests are served, but each booking fails, is logged and is
+counted on `muster_officer_llm_book_failures_total{officer}`, and the day's
+budget under-reads by it. Watch the rollout complete before relying on the
+day's spend, and check that counter afterwards; the officer key's
+OpenRouter-side credit limit is the wall meanwhile.
+
+**Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
+rolling muster-server back to an image that predates it (an older image
+refuses the unknown field and does not boot). To an image from before the
+judgement pool's block, remove every `tiers.judgement.llm` first, then run
+migration 0110's rollback (in its header: an older image cannot book usage
+while 0110's key is in place), then roll back. Migration 0075's own rollback is
+in its header.
+
+## Reading a cluster: officer_kube_read
+
+A tiered officer with a `kube` block offers its **judgement** instances
+`officer_kube_read`: one typed, read-only request against a Kubernetes cluster
+the block names. muster-server runs it itself (`internal/kuberead`), as
+`postgres_query` runs SQL, so the instance pod never holds a cluster
+credential and never names an address.
+
+```json
+"kube": {"clusters": [{"name": "prod-a", "service_account": "officers/officer-anomaly-prod-a"}]}
+```
+
+Each cluster's connection is the server's **sealed environment**, and its read
+allowlist the **deployment's configuration**, never the declaration
+(`<CLUSTER>` is the name as a token suffix spells an id: `prod-a` → `PROD_A`):
+
+| variable | holds |
+|---|---|
+| `MUSTER_KUBE_READ_ENDPOINT_<CLUSTER>` | the API server's `host:port` (no scheme, no path) |
+| `MUSTER_KUBE_READ_CA_<CLUSTER>` | the PEM bundle its certificate chains to |
+| `MUSTER_KUBE_READ_MINTER_TOKEN_<CLUSTER>` | a token whose ONLY right is `create` on `serviceaccounts/token` for the officer's ServiceAccount |
+| `MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>` | the resources officer_kube_read may read on that cluster (below). Unset or empty **disables** the cluster |
+
+**One call:**
+
+1. **Binding.** Only a judgement instance of an officer with `kube` is offered
+   the tool. A routine instance, or any other agent, is refused at dispatch.
+2. **Arguments, typed only.** Either
+   `{cluster, verb: get|list, group, version, resource, namespace?, name?, label_selector?, field_selector?, limit?}`
+   or `{cluster, log: {namespace, pod, container?, previous?, since_seconds ≤ 86400, tail_lines ≤ 2000}}`,
+   plus an optional `item_id`. An unknown key (a `url`, a `path`, `watch`) is
+   refused. muster builds the GET path; there is never a URL from the model.
+3. **Grant.** The instance's own approved grant for the `kube-read`
+   connector, filed with `connector_request` and approved by hand, never from
+   a shared approval. `kube-read` is a virtual connector with no stored secret
+   and no HTTP face: the proxy refuses `/connect/kube-read/…`. It exists for
+   admins only, so the officer's owner must be one.
+4. **Item.** The instance must hold a live claim in HQ. The read is counted
+   against it (`item_id` picks one when it holds several).
+5. **Caps.** 30 calls a minute per officer; then one read of the item from
+   [the read budget](#the-read-budget) — 200 reads per item, one count
+   shared with `officer_obs_raw` and `officer_obs_query`. Both are in memory:
+   a restart can only allow more.
+6. **Read.** muster mints a **600 s TokenRequest** for the officer's
+   ServiceAccount with the minter token, then GETs the path with that token
+   alone. TLS trusts the cluster's CA bundle only and verifies the name
+   `kubernetes.default.svc`; muster dials the declared endpoint and nothing
+   else, and follows no redirect.
+
+**What can be read.** The deployment supplies the allowlist, per cluster, in
+`MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>`; muster compiles in no resource list.
+It is a JSON list of rules, `get` and `list` implied (there is no verbs field):
+
+```json
+[
+  {"apiGroup": "", "resources": ["pods", "pods/log", "events", "configmaps"], "scope": "namespaced"},
+  {"apiGroup": "", "resources": ["nodes", "namespaces"], "scope": "cluster"},
+  {"apiGroup": "widgets.example.com", "resources": ["widgets"], "scope": "namespaced"}
+]
+```
+
+- `apiGroup` is the group (`""` for core). `resources` are plural resource
+  names. `scope` is `namespaced` or `cluster`: a cluster-scoped resource takes
+  no namespace, and an all-namespace list of a namespaced one needs a selector.
+- **Validated strictly at boot**, and a malformed list refuses the boot naming
+  the variable: an unknown field, a `"*"` resource or group, any subresource
+  other than core `pods/log` (`deployments/status`, `*/status` …), a
+  never-granted resource, an RBAC group, a missing or unknown scope, and a
+  duplicate are each refused.
+- **Unset, blank, `null` or `[]` DISABLES that cluster's kube-read** (fail
+  closed): the officer still loads, the cluster is not offered to its
+  instances (with no other cluster, neither is the tool nor the `kube-read`
+  connector), and the server logs `kube-read DISABLED for cluster …` at
+  startup. It never means "allow all".
+- Secrets, `pods/exec`, `attach`, `portforward`, every proxy, ServiceAccounts
+  and their tokens, CSRs and RBAC are refused in any group as a belt, whatever
+  the list says. No subresource is offered except a pod's log, through the log
+  form: status is read on the object. `watch` is never offered.
+
+The cluster's RBAC (the officer's ClusterRole, `get` and `list` only) is the
+authoritative wall: a resource on the allowlist that the role does not grant
+is a 403, not a leak. Keep the two equal from the infrastructure side: each
+infrastructure repository should pin its officer-read ClusterRole's rules
+against the allowlist it ships in this variable, in its own tests. That pin
+lives in the infrastructure repositories, not in muster.
+
+**What comes back.**
+- An object, or `{kind, count, items, more, resource_version}` for a list.
+  `managedFields` and the `last-applied-configuration` annotation are
+  stripped. Everything else is returned as the API server returned it:
+  **ConfigMaps in full** (operator decision), pod `env` values and inline Helm
+  values included. The kickoff tells the instance never to quote a
+  credential-shaped value.
+- A pod log as `{lines, line_count, redactions}`, each line capped at 1000
+  characters. A line that is one JSON object keeps only a closed set of fields
+  (`msg`, `message`, `error`, `code`, `path` and a few more); the other
+  fields are dropped by name. What is left goes through a heuristic scrub:
+  - first `internal/redact`'s `Secrets`, the repo's one secret redactor (the
+    shapes it knows are listed in its header: credential headers,
+    `NAME_PASSWORD=` / `PGPASSWORD=`-style assignments, URL credentials,
+    prefixed tokens such as `AKIA…`, JWTs, "the password is …" and more);
+  - then the rules only pod logs need: a URL's whole query string, e-mail
+    and IP addresses, any run of 32 or more token characters, a `cookie` /
+    `session` / `sig` field, and a credential name followed by `:` in the
+    middle of a line.
+
+  A secret in a shape neither set knows passes.
+- **Refused, not cut:** an answer over 1 MiB, or a list of more than 500
+  objects. A list the caller limited (`limit`) says `more` when there are more.
+
+**Audit.** Every call that reaches the caps writes one connector-audit row of
+kind `query`, as `postgres_query` does; its connector, `kube-read`, is what
+identifies it. The row holds the instance, the cluster, the verb, the path,
+the status, and in `detail` the officer, item, group/version/resource,
+namespace, name, selectors, the minted token's jti, the object count, bytes,
+duration and any refusal. **Never the answer.** The API servers do not log
+reads, so this row is the read audit. The tool's result carries the row's id
+(`audit_id`, a positive integer: `connector_audit.id`) and the jti; the
+instance cites a read by its `audit_id`.
+
+## Security model
+
+- **The token never leaves muster-server.** It is read from the server's
+  environment into `officers.Officer`, whose token field neither JSON nor `fmt`
+  prints, and is spent only by `officers.Client`, in the `Authorization` header
+  of requests to that officer's own `hq_url`. HQ errors carry HQ's response,
+  never the request. Redirects are not followed, so a redirect cannot carry the
+  token elsewhere. An instance's pod spec, env, files and first message carry
+  no trace of it (`TestAnOfficerInstancesPodSpecCarriesNoOfficerToken`,
+  `TestTheKickoffNamesTheOfficerAndCarriesNoToken`).
+- **Per-officer binding.** An officer tool acts for the officer whose instance
+  the CALLING agent is — `officers.Registry.ForAgentName` on the agent muster
+  resolved from the caller's own per-agent token — and for no other. The tools
+  take no officer argument; one naming another officer is refused before HQ is
+  reached. An agent cannot rename itself (the slug is immutable), and no muster
+  path mints an `officer-` name except this runtime. HQ enforces the same
+  boundary again: an officer token may only touch its own officer's items.
+- **Delete protection.** A declared officer's instance cannot be deleted by any
+  of muster's destroy paths (the card's Delete, a task dismissal, the
+  `agent_destroy` tool, the stopped-agent reaper): they ask one predicate,
+  `deleteProtection`, which is the chief predicate *or* "an instance of a
+  declared officer". The chief predicate itself is unchanged, so an officer is
+  never offered the chief's tools. Remove an officer from `MUSTER_OFFICERS` and
+  its instances become ordinary, deletable agents.
+- **No production access from the pod.** Instances are ordinary `claude-code`
+  pods: no service-account token, and egress **narrower** than every other
+  claude-code agent: muster's connect port only, with name-filtered DNS and the
+  Anthropic API allowed by the cluster, by name
+  ([The instance's network](#the-instances-network)). An officer that declares
+  a [postgres connector](connectors.md#postgres-connectors) reads that one
+  database through muster-server, which holds the password and runs each
+  statement read-only; the pod's network is unchanged.
+- **No model credential in a routine pod.** A routine instance of an officer
+  with `llm` reaches its model through muster's
+  [LLM proxy](#the-llm-proxy) on the connect port, with its own muster token;
+  muster-server holds the provider key, pins the model and enforces the
+  budget. An injected session can at worst spend the officer's daily budget.
+
+## cairn
+
+**Deferred.** The contract gives officers read access to their cairn scopes and
+append-only writes. muster does not provide either yet: a `claude-code` pod has
+no cairn client and its network policy cannot reach a store, by design
+([chief.md](chief.md)). The planned shape keeps that property — a
+per-officer, narrowed cairn credential held by muster-server (like the HQ
+token) and an `officer_cairn_recall` tool proxied by muster — rather than
+opening pod egress to the store. Until then, `officer_brief`'s `cairn.scopes`
+is informational.
+
+## The HQ API muster consumes
+
+From the officers contract, v1 (base `/api/v1`, bearer token of scope
+`officer`): `GET /officers/{id}/brief`, `GET /officers/{id}/items`, `POST
+/officers/{id}/items/{item}/{claim,heartbeat,complete,release}`, and `POST
+/releases/captain` (release officers), with the bodies in the table above. A
+shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
+/officers/{id}/notices` (or its configured `notice.path`) and `POST
+/officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
+"failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
+uses `POST /officers/{id}/items/{item}/transcript`
+([Transcript to HQ](#transcript-to-hq)). Every officer uses `PUT
+/officers/{id}/usage` ([Claude usage to HQ](#claude-usage-to-hq)) and `PUT
+/officers/{id}/pools` ([Pools to HQ](#pools-to-hq)). `ccd ask-image` uses `POST
+/officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
+`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. An approved
+connector grant uses `POST /officers/{id}/items/{item}/rerun` `{key, reason}`
+([Re-running blocked items](#re-running-blocked-items)). Every
+officer may use `GET /officers/{id}/obs/queries` and `POST
+/officers/{id}/obs/query` ([Observability queries](#observability-queries)). An HQ
+officer's [chat sessions](#chat-sessions) use `GET
+/officers/{id}/chats/{chat}/messages?after=<seq>` (answered `{messages:
+[{seq, role, author_login, author_name, text}], chat: {name}}`) and
+`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}` (answered
+`{seq}`). Where the contract leaves a shape open, muster accepts:
+
+- the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
+  loop follows `next` for up to 5 pages of 100;
+- item ids as JSON strings or numbers (HQ's are integers).
+
+`internal/officers/hqtest` is the in-process fake the tests run against; it
+implements the claim/lease rules as HQ does (409 to ANY claim while the lease
+is live — the holder's own included, which `officer_claim` turns into a
+heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
+across officers), the captain route's body rules, the transcript route's
+(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), the
+usage route's (a strict decoder, the pool values, hours on the hour, 413 past
+256 KiB or 1000 buckets, the upsert; `UsageAbsent` plays an HQ without it), the
+pools route's (a strict decoder, the pool values each once, a reset on a UTC
+midnight, the officer's set replaced by each body; `FailPools` answers a
+sequence of statuses), the consumer-usage route's on a pool token
+([Consumer usage to HQ](#consumer-usage-to-hq); `FailConsumer` likewise), the
+asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
+input limits — deadline, image and option counts, option and question length —
+before the item is looked up, 409 `lease_lost`, 410, 422 `unknown_recipient`,
+and the item left `waiting`), and the obs routes' (a two-entry registry; HQ's
+refusals in HQ's order — the decoder's unknown fields and wrong types, unknown
+ids, the window, undeclared or missing arguments; `503 obs_unconfigured` when
+switched off; `502 upstream` / `wrong_shape` on demand).
+
+## Deploying
+
+What a deployment needs beyond muster's usual claude-code setup:
+
+1. HQ: the officer and its type declared (`PUT /officer-types/release`, `PUT
+   /officers/release:example-web` with `max_instances`), and an officer token
+   issued for it.
+2. A Secret holding that token, exposed to the muster-server Deployment as
+   `MUSTER_OFFICER_TOKEN_<NAME>` (not to any agent).
+3. `MUSTER_OFFICERS` on muster-server, and `MUSTER_AGENT_KINDS` including
+   `claude-code` with an account in the pool.
+4. The connector door: `MUSTER_CONNECTOR_ENCRYPTION_KEY`, `MUSTER_CONNECT_PORT`
+   and `MUSTER_AGENT_CONNECT_URL` (the server refuses to boot officers without
+   it). No approval gate is needed: an officer instance runs with every tool
+   allowed (above). Its `github` requests still need the owner's explicit
+   decision.
+5. A `claude-code-agent` image built from this version or later (its `ccd`
+   applies `CCD_PERMISSION_MODE`; an older one ignores it and the officer
+   prompts).
+6. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
+7. A cluster-side policy for the officer instance pods allowing name-filtered
+   DNS and `api.anthropic.com:443` by FQDN
+   ([The instance's network](#the-instances-network)). Without it an
+   instance's turns all fail.
+
+Checking it: the boot log has one `officers: <id> on: …` line per officer;
+after HQ creates an item, `officer-<type>-<area>-1` appears among the agents
+within one poll; its transcript opens with the first message above.

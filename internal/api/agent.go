@@ -11,11 +11,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // agentCtxKey carries the authenticated agent through the request context.
@@ -106,7 +113,8 @@ func (s *Server) handleAgentTaskComment(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "comment body required"})
 		return
 	}
-	c, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{NoteID: id, Author: a.Name, Body: body.Body})
+	c, queued, err := s.addTaskComment(withRefOrigin(r.Context(), refOrigin{Agent: a.Name}), commentByActor,
+		notes.Comment{NoteID: id, Author: a.Name, Body: body.Body})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
@@ -114,6 +122,11 @@ func (s *Server) handleAgentTaskComment(w http.ResponseWriter, r *http.Request) 
 		}
 		s.logger.Printf("agent: comment task %d: %v", id, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not add comment"})
+		return
+	}
+	if queued != nil {
+		// A reference: the comment went to the upstream's queue (task_ref_queue.go).
+		s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "write": queued, "message": refQueuedText})
 		return
 	}
 	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
@@ -164,7 +177,14 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
 		return
 	}
-	note, err := s.setNoteStatus(notes.ForAgent(r.Context()), writerAgentRoute, id, body.Status)
+	note, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(r.Context(), refOrigin{Author: a.Name, Agent: a.Name})), writerAgentRoute, id, body.Status)
+	if errors.Is(err, errQueuedUpstream) {
+		s.writeJSON(w, http.StatusAccepted, struct {
+			notes.Note
+			Queued bool `json:"queued"`
+		}{note, true})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, notes.ErrCompleteLocked) {
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal(notes.StatusComplete, body.Status)})
@@ -179,8 +199,6 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
-	// Background push when the agent marks its task ready_for_review (deduped).
-	s.notifyTaskDone(note)
 	s.writeJSON(w, http.StatusOK, note)
 }
 
@@ -256,10 +274,9 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // BROWSER-FLOW TOOLS HAVE IT (the flow tools only FILE a request the owner
 // must approve; flow_tools.go), AND SO DO task_create_gated (it only files a
 // task gated on the owner's approval; gated_task_tool.go), reply_draft (it
-// only files a draft the owner must approve; reply_draft_tool.go) AND THE THREE
+// only files a draft the owner must approve; reply_draft_tool.go) AND THE TWO
 // FOCUS TOOLS (focus_tools.go: they read the owner's own focus rows and spend
-// no credential the pod was not granted — a refresh runs the summarizer
-// server-side, on the owner's model credential).
+// no credential the pod was not granted).
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
@@ -276,7 +293,7 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // and work their OWN tasks — the dispatched one and the ones they created
 // (tasks_list, task_get, task_comment, task_set_status; never into or out of
 // `complete`) — and the chief alone lists the queue (read-only: only the
-// operator answers) and reads any session's transcript, and works the whole
+// operator answers) and works the whole
 // board. That deliberately widens what a claude-code pod reaches on the connect
 // listener from its connectors to its own task and its questions; the bound
 // task's agent_* tools above stay gateway-only as they were.
@@ -289,6 +306,13 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // refuses it for anyone else, because a gateway runtime can name a tool it was
 // never offered and the dispatch closure is the trust boundary.
 // TestTheChiefOnlyToolsAreLedgered pins the set.
+//
+// notChief is the same axis turned round: a tool offered to every agent BUT the
+// chief, enforced the same two ways. The chief's tool list is what its model
+// carries on every turn, so a tool it has no use for is left off it:
+// connector_request / connector_status (the chief's connectors are the owner's
+// standing grants; connectors_list still shows them) and the browser-flow
+// pair. TestTheChiefsToolListIsPinned pins the chief's whole list.
 type agentTool struct {
 	def agents.ToolDef
 	// mcp: also served over POST /mcp to claude-code agents. See above before
@@ -296,6 +320,23 @@ type agentTool struct {
 	mcp bool
 	// chiefOnly: offered to, and callable by, the chief agent alone. See above.
 	chiefOnly bool
+	// notChief: offered to, and callable by, every agent but the chief. See
+	// above.
+	notChief bool
+	// inProcess, when set, is the definition a GATEWAY-runtime agent is given
+	// in place of def (AgentToolDefsFor): its calls run in muster's process, so
+	// a form only an MCP caller can use is left out (route_to_session's text).
+	inProcess *agents.ToolDef
+	// mcpOnly: served over MCP alone, never offered to a GATEWAY-runtime agent
+	// (AgentToolDefsFor): a tool whose every in-process call is refused
+	// (route_many: owner_asked, chiefReleaseNotOverMCP).
+	mcpOnly bool
+	// officerOnly: offered to, and callable by, a declared officer's instance
+	// agents alone (officers.go's officerOf — the binding rule). A THIRD axis,
+	// orthogonal to the chief's: enforced in the listing (toolsFor) and again in
+	// dispatchAgentTool, and the tool itself acts only for the caller's own
+	// officer.
+	officerOnly bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -317,64 +358,138 @@ func (s *Server) agentTools() []agentTool {
 			"state": map[string]any{"type": "string", "description": "which PRs to list", "enum": []string{"open", "closed", "all"}},
 		})),
 	}
-	if s.ext.Connectors != nil {
+	// agent_report_done (agent_report_done.go): a started agent's EXPLICIT
+	// "I finished" — the one completion signal besides moving its task. Every
+	// agent but the chief, and on MCP so a claude-code agent has it too; only
+	// with the outcome store that records it.
+	if s.outcomesOn() {
+		tools = append(tools, agentTool{def: agentReportDoneToolDef(), mcp: true, notChief: true})
+	}
+	// ask_owner (owner_ask.go): the chief's question card in its own chat.
+	// Chief-only, and on MCP so a claude-code chief has it too. OFFERED WITH NO
+	// GATE: it needs no store (the card is drawn from the stored call), every
+	// chief has a chat, and both chiefs' standing instructions name it
+	// unconditionally. ⚠ The cost: with a chief-only tool always in the
+	// registry, toolsFor reads the agent list on every turn of every agent.
+	tools = append(tools, agentTool{def: askOwnerToolDef(), mcp: true, chiefOnly: true})
+	// 🔴 EACH GATE BELOW ALSO READS THE FEATURE REGISTRY (featureOff): a
+	// feature it calls off has no tool offered, and a call to one explains
+	// instead (features.go's toolFeatures, mcpDisabledTool). The two agree by
+	// construction: same features, same predicate, same definitions.
+	if s.ext.Connectors != nil && !s.featureOff(features.Connectors) {
 		for _, d := range connectorToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true})
+			tools = append(tools, agentTool{def: d, mcp: true, notChief: d.Name != "connectors_list"})
 		}
 	}
 	// Browser flows (flow_tools.go): MCP too — any agent may ASK; only its
 	// owner's approval on /flows makes anything run.
-	if s.ext.Flows != nil {
+	if s.ext.Flows != nil && !s.featureOff(features.BrowserFlows) {
 		for _, d := range flowToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true})
+			tools = append(tools, agentTool{def: d, mcp: true, notChief: true})
 		}
 	}
 	// The plugin interface (gated_task_tool.go): the chief may FILE a task its
 	// owner must approve. MCP too, so a claude-code chief reaches it; chief-only,
 	// because the chief is the one agent plugin messages are delivered to.
-	if s.ext.Plugins != nil {
+	if s.ext.Plugins != nil && !s.featureOff(features.Plugins) {
 		tools = append(tools, agentTool{def: gatedTaskToolDef(), mcp: true, chiefOnly: true})
 		// reply_draft (reply_draft_tool.go): the chief may DRAFT a reply its
 		// owner must approve before the plugin sends it. MCP and chief-only for
 		// task_create_gated's reasons.
 		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
+		// plugin_message_settle (unrouted.go): the chief records that a message
+		// needs nothing more, so muster raises no ask for it. MCP and chief-only
+		// for reply_draft's reasons.
+		tools = append(tools, agentTool{def: pluginMessageSettleToolDef(), mcp: true, chiefOnly: true})
+		// routing_rule_propose (routing_rules.go): the chief proposes a rule
+		// that places later messages like one it was delivered without a turn;
+		// only the owner's tap on its card makes it run. MCP and chief-only for
+		// reply_draft's reasons; needs the attention store (the card).
+		if s.rulesOffered() {
+			tools = append(tools, agentTool{def: routingRuleProposeToolDef(), mcp: true, chiefOnly: true})
+		}
 	}
-	// Session focus (focus_tools.go): the chief lists, searches and refreshes
-	// its owner's sessions' focus. MCP too, so a claude-code chief reaches them.
-	// All three are chief-only: they reach the owner's whole fleet.
+	// officer_spawn_share (officer_spawn_share.go, team sharing phase 3): the
+	// chief lists its owner's host officer spawns and lends one to a team the
+	// owner operates, or takes it back. MCP, so a claude-code chief reaches
+	// it; chief-only: it acts on the owner's own rows. A chief turn a token
+	// started may lend (operator-approved exception, officer_spawn_share.go).
+	if s.spawnLender != nil && !s.featureOff(features.Officers) {
+		tools = append(tools, agentTool{def: officerSpawnShareToolDef(), mcp: true, chiefOnly: true})
+	}
+	// Session focus (focus_tools.go): the chief lists and searches its owner's
+	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
+	// chief-only: they reach the owner's whole fleet.
+	//
+	// ⚠ GATED ON THE STORE ONLY, NOT ON THE FOCUS FEATURE (#441 round 1): every
+	// tool here READS what is stored — focus already written, live transcripts,
+	// session history — and calls no model. "Focus off" (no OpenRouter key,
+	// MUSTER_FOCUS_INTERVAL=0) means nothing NEW is summarized; the stored
+	// history and the overview still work, so they stay offered.
 	if s.ext.Focus != nil {
-		for _, d := range focusToolDefs() {
+		for _, d := range focusToolDefs(s.ext.FleetDigest) {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
 		// sessions_overview (sessions_overview.go): what every live session is
 		// doing now, transcripts included. Chief-only and on MCP for the focus
 		// tools' reasons; it reads the owner's whole fleet.
 		tools = append(tools, agentTool{def: sessionsOverviewToolDef(), mcp: true, chiefOnly: true})
+		// session_context (session_context.go): one mirrored session in detail,
+		// with a tail long enough to hold a kickoff — the session the owner asked
+		// about from its view (view_chief.go). Chief-only and on MCP for the
+		// overview's reasons; read-only.
+		tools = append(tools, agentTool{def: sessionContextToolDef(), mcp: true, chiefOnly: true})
+		// fleet_report (fleet_report.go): every session with focus activity in
+		// a window, ended ones included. Chief-only and on MCP for the same
+		// reasons; it reads the owner's whole fleet.
+		tools = append(tools, agentTool{def: fleetReportToolDef(), mcp: true, chiefOnly: true})
 	}
-	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on:
-	// the chief hands a plugin message to a mirrored session (chief-only, like
-	// reply_draft). The session answers through POST /api/routes/{id}/reply.
-	if routingOn(s.ext) {
-		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
+	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on,
+	// with or without plugins: the chief hands a mirrored session the owner's
+	// own request, a task or (with plugins) a plugin message (chief-only, like
+	// reply_draft). The session answers with route_reply.
+	if routesOn(s.ext) && !s.featureOff(features.SessionRouting) {
+		gw := routeToolDefInProcess()
+		tools = append(tools, agentTool{def: routeToolDef(), inProcess: &gw, mcp: true, chiefOnly: true})
+		// route_many (route_many.go): one owner request to several sessions,
+		// answered in one digest. MCP only: it is always owner_asked.
+		tools = append(tools, agentTool{def: routeManyToolDef(), mcp: true, mcpOnly: true, chiefOnly: true})
 	}
 	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
 	// chief decides what happens to a task a plugin handed it — the attention
 	// queue, a forward, or (MUSTER_CHIEF_DISPATCH_OWNERS) a new agent. Chief-only and
 	// on MCP, like route_to_session.
-	if taskRoutingOn(s.ext) {
+	if taskRoutingOn(s.ext) && !s.featureOff(features.TaskRouting) {
 		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+		}
+		// repos_list (repos_list.go): the owner's connected repositories, the
+		// only ones agent_dispatch starts in. Read-only; offered with
+		// agent_dispatch, chief-only and on MCP like it.
+		if chiefDispatchOn(s.ext) {
+			tools = append(tools, agentTool{def: reposListToolDef(), mcp: true, chiefOnly: true})
+		}
+		// succession_propose (succession.go): the chief proposes a session that
+		// continues the one its owner asked about from its view; only the owner's
+		// tap on the card starts it. Chief-only and on MCP, with agent_dispatch.
+		if successionOffered(s.ext) {
+			tools = append(tools, agentTool{def: successionProposeToolDef(), mcp: true, chiefOnly: true})
+		}
+		// end_session_propose (end_session.go): the chief proposes ending one
+		// of its owner's sessions; only the owner's tap ends it.
+		if endSessionOffered(s.ext) {
+			tools = append(tools, agentTool{def: endSessionToolDef(), mcp: true, chiefOnly: true})
 		}
 	}
 	// The attention queue (attention_tools.go), present with its store: every
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
-	// the queue (read-only) and reads a session's transcript. All on MCP too.
+	// the queue (read-only). All on MCP too.
 	// attention_answer is NOT here: it is the mirrored sessions' alone
 	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent. Nor are
 	// connector_requests_list / connector_request_decide, for the same reason
 	// (connector_decide_tools.go), nor agent_destroy (agent_destroy_tool.go).
 	if s.attentionToolsOn() {
-		for _, d := range attentionToolDefs() {
+		for _, d := range s.attentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 		for _, d := range taskToolDefs() {
@@ -383,28 +498,84 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range chiefAttentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
+		// A mirrored session's question to the chief (chief_ask_tool.go): the
+		// chief answers it. Chief-only, on MCP.
+		tools = append(tools, agentTool{def: answerSessionQuestionToolDef(), mcp: true, chiefOnly: true})
+	}
+	// Shareable pages (page_tools.go), with the store and the feature on:
+	// every agent may publish pages for its owner and ASK for a link (only the
+	// owner's own door approves one). On MCP too, so a claude-code agent has
+	// them.
+	if s.pagesOn() {
+		for _, d := range pageToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
+		}
+	}
+	// The officer runtime (officers.go), present when officers are declared:
+	// an officer's instances reach their HQ queue through muster, which holds
+	// the officer's token. On MCP (officer instances are claude-code agents);
+	// officer-only.
+	if s.officerRT != nil && !s.featureOff(features.Officers) {
+		for _, d := range officerToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true, officerOnly: true})
+		}
 	}
 	return tools
 }
 
 // toolsFor is the registry as agent a may see it: every tool, minus the
-// chief-only ones unless a is its owner's chief. It reads the agent list only
-// when the registry HAS a chief-only tool, so a deployment without one pays
-// nothing per turn.
+// chief-only ones unless a is its owner's chief, and minus the not-chief ones if
+// it is. It reads the agent list only when the registry HAS a tool on either
+// axis. ⚠ Since ask_owner (offered with no gate) that is every registry, so the
+// read is paid on every turn.
 //
-// 🔴 IT FAILS CLOSED: an agent list that cannot be read offers no chief-only
-// tool, the same direction agentIsChief's other callers take for the reverse
-// question.
+// 🔴 THE CHIEF-ONLY AXIS FAILS CLOSED: an agent list that cannot be read offers
+// no chief-only tool, the same direction agentIsChief's other callers take for
+// the reverse question. ⚠ The notChief axis therefore errs the OTHER way: the
+// same unreadable list counts the chief as "not the chief", so it is offered the
+// notChief tools. That is harmless — every worker has them, and they only file
+// requests the owner must approve — and it only lengthens a list.
 func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	all := s.agentTools()
-	chief, decided := false, false
+	chief, acting, decided := false, false, false
+	decide := func() {
+		if !decided {
+			// acting: the chief AND on. A chief its owner turned off keeps
+			// no chief-only tool (chief_toggle.go), and is still the chief
+			// for the notChief axis.
+			chief, decided = s.isChiefAgent(ctx, a), true
+			acting = chief && s.ownersChiefOn(ctx, a)
+		}
+	}
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
-		if t.chiefOnly {
-			if !decided {
-				chief, decided = s.isChiefAgent(ctx, a), true
+		// The Compose chief is offered exactly its pre-allowed tools
+		// (composeChiefRefuses' rule, with the chief decided once per listing).
+		if s.ext.ComposeChief != nil && !agentspec.ComposeChiefAllowed(t.def.Name) {
+			if decide(); chief {
+				continue
 			}
-			if !chief {
+		}
+		if t.officerOnly {
+			o, _, officer := s.officerOf(a)
+			if !officer || !s.officerToolServed(o, t.def.Name) {
+				continue
+			}
+			// officer_post_draft: also its type's outbound_drafts grant, read now
+			if t.def.Name == officers.ToolPostDraft && !s.officerOutboundGranted(ctx, o) {
+				continue
+			}
+			// the contact tools: also its type's contacts grant, read now
+			if isContactTool(t.def.Name) && !s.officerContactsGranted(ctx, o) {
+				continue
+			}
+			// the definition as o's pool is offered it (officer_complete's
+			// outcomes and investigation differ per pool)
+			t.def = officerToolDefFor(o, t.def)
+		}
+		if t.chiefOnly || t.notChief {
+			decide()
+			if (t.chiefOnly && !acting) || (t.notChief && chief) {
 				continue
 			}
 		}
@@ -413,16 +584,73 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	return out
 }
 
-// chiefOnlyTool reports whether the registry declares name chief-only. It reads
-// the registry rather than a second list, so the flag is the one place the
-// decision is written.
-func (s *Server) chiefOnlyTool(name string) bool {
+// composeChiefRefuses reports whether name is refused to agent a because a is
+// the chief on the Docker Compose install (Extensions.ComposeChief) and name is
+// not one of its pre-allowed tools (agentspec.ComposeChiefAllowedMCPTools).
+//
+// 🔴 ONE LIST, THREE CONSUMERS. In the Compose container every permission
+// prompt is denied, so a tool outside that list is one the chief can never
+// run. The spec pre-allows the list (agentspec.Build), the listing offers
+// nothing outside it (toolsFor), and this re-check refuses a call by name, so
+// the chief is never offered a tool it cannot use. What it is TOLD derives from
+// the same list: its CLAUDE.md (agentspec.ChiefInstructionsCompose), the MCP
+// instructions (mcpInstructionsFor) and every turn muster sends it
+// (ChiefTurnTools; TestNoComposeChiefTurnTextNamesAToolItIsNotOffered).
+func (s *Server) composeChiefRefuses(ctx context.Context, a agents.Agent, name string) bool {
+	return !agentspec.ComposeChiefAllowed(name) && s.isComposeChief(ctx, a)
+}
+
+// isComposeChief reports whether a is the chief on the Docker Compose install
+// (Extensions.ComposeChief).
+func (s *Server) isComposeChief(ctx context.Context, a agents.Agent) bool {
+	return s.ext.ComposeChief != nil && s.isChiefAgent(ctx, a)
+}
+
+// ChiefTurnTools is the muster tools chief is offered when that set is
+// restricted — the Compose chief's: exactly what toolsFor lists it, read from
+// that one listing — or nil (unrestricted) for every other chief. Every turn
+// text muster sends the chief that names a tool is rendered against it
+// (plugins.ChiefTools): the plugin turn (DelivererConfig.Tools), a route's
+// hand-back (handBackChoices), and a session's question (toolChiefAsk, which
+// does not put one to a chief without answer_session_question).
+func (s *Server) ChiefTurnTools(ctx context.Context, chief agents.Agent) plugins.ChiefTools {
+	if s.ext.ComposeChief == nil {
+		return nil
+	}
+	set := plugins.ChiefTools{}
+	for _, d := range s.MCPToolDefsFor(ctx, chief) {
+		set[d.Name] = true
+	}
+	return set
+}
+
+// composeChiefFallbackTools is the Compose chief's pre-allowed set as
+// plugins.ChiefTools: what a turn is rendered for when the chief's own listing
+// cannot be read, so it still names no tool outside that set.
+func composeChiefFallbackTools() plugins.ChiefTools {
+	set := plugins.ChiefTools{}
+	for _, n := range agentspec.ComposeChiefAllowedMCPTools {
+		set[n] = true
+	}
+	return set
+}
+
+// composeChiefRefusal is the Compose chief's answer for a tool outside its
+// pre-allowed set.
+func composeChiefRefusal(name string) string {
+	return name + " is not available to the chief on this install (Docker Compose). " + agentspec.ComposeChiefUnavailable
+}
+
+// toolAxis is name's two who-axis flags in the registry (both false for a name
+// it does not declare). It reads the registry rather than a second list, so the
+// flags are the one place the decision is written.
+func (s *Server) toolAxis(name string) (chiefOnly, notChief bool) {
 	for _, t := range s.agentTools() {
 		if t.def.Name == name {
-			return t.chiefOnly
+			return t.chiefOnly, t.notChief
 		}
 	}
-	return false
+	return false, false
 }
 
 // isChiefAgent answers chiefPredicate for a's CURRENT row (a caller's copy of the
@@ -445,6 +673,13 @@ func (s *Server) AgentToolDefsFor(ctx context.Context, a agents.Agent) []agents.
 	tools := s.toolsFor(ctx, a)
 	defs := make([]agents.ToolDef, 0, len(tools))
 	for _, t := range tools {
+		if t.mcpOnly {
+			continue
+		}
+		if t.inProcess != nil {
+			defs = append(defs, *t.inProcess)
+			continue
+		}
 		defs = append(defs, t.def)
 	}
 	return defs
@@ -487,7 +722,10 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 		// was false for every agent this binary provisions. Pushing goes through the
 		// connector store's proxy when it is offered, and is otherwise reported as
 		// impossible rather than retried against a token that is not there.
-		if a.NoteID != nil {
+		if a.NoteID != nil && s.githubAppReadOnly() {
+			b += "\n\nCLOSE THE LOOP when the task's change is complete and verified — do NOT just stop after editing/testing:" +
+				readOnlyCloseOut
+		} else if a.NoteID != nil {
 			b += "\n\nCLOSE THE LOOP when the task's change is complete and verified — do NOT just stop after editing/testing:" +
 				s.pushSteps(a.Repo) +
 				"\n3. Call agent_comment_task with the PR URL, then agent_set_task_status{status:\"ready_for_review\"}." +
@@ -503,12 +741,27 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 			"), call browser_flow_request; your owner approves each run in muster, then poll browser_flow_status."
 	}
 	if s.attentionToolsOn() {
-		b += "\n\n" + attentionInstruction
+		b += "\n\n" + s.attentionInstructionFor(a)
 	}
 	b += "\n\nWhen asked what you can do, describe ONLY these real capabilities: your task tools (above), reading/writing files + git + shell in your workspace" +
 		". Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
 	return b
 }
+
+// githubAppReadOnly reports whether this deployment's GitHub App mints
+// read-only agent tokens (MUSTER_GITHUB_APP_ACCESS=read).
+func (s *Server) githubAppReadOnly() bool {
+	return s.ext.GitHubApp != nil && s.ext.GitHubApp.Access() == githubapp.AccessRead
+}
+
+// readOnlyCloseOut is the close-out protocol when the GitHub App mints
+// read-only tokens. 🔴 IT NEVER TELLS THE AGENT TO PUSH OR OPEN A PULL REQUEST:
+// GitHub refuses both with such a token, and an instruction to do it anyway is
+// a claim of write access the deployment does not grant.
+const readOnlyCloseOut = "\n1. Commit your work on a branch in your workspace. This deployment's GitHub access is READ ONLY " +
+	"(MUSTER_GITHUB_APP_ACCESS=read): you cannot push or open a pull request — do NOT try, and do NOT ask for a token." +
+	"\n2. Call agent_comment_task naming the branch and summarising the change (what, why, how you verified it), then agent_set_task_status{status:\"ready_for_review\"}." +
+	"\nOnly finish once that comment is posted and the task is marked ready_for_review."
 
 // pushSteps is steps 1-2 of the close-out protocol: how to push and open a PR.
 // With the connector store configured the agent goes through the `github`
@@ -539,10 +792,134 @@ func GitPushRecipe(connector, path string) string {
 		`.followRedirects=false" push ` + proxy + path
 }
 
+// turnTools is what one in-process turn of agent a carries — its system prompt
+// (AgentInstructions), the native function tools it may see (AgentToolDefsFor)
+// and the dispatch that runs them (AgentToolDispatch) — and the context the turn
+// runs under: ask_owner ends the turn it is called in (owner_ask.go), and the
+// tool loop reads that mark after each round of calls.
+//
+// 🔴 ONE ASSEMBLY FOR EVERY TOOL-ENABLED TURN: a chat turn (chatTurn) and a
+// gateway agent's first turn (KickoffTurnTools). The first turn once had none of
+// it, so a dispatched gateway agent — which does its whole job in that turn —
+// was told to call agent_report_done and never offered it.
+func (s *Server) turnTools(ctx context.Context, a agents.Agent) (context.Context, agentkickoff.TurnTools) {
+	ctx = agents.WithTurnEnd(ctx)
+	return ctx, agentkickoff.TurnTools{Instructions: s.AgentInstructions(a), Tools: s.AgentToolDefsFor(ctx, a),
+		Dispatch: s.AgentToolDispatch(ctx, a)}
+}
+
+// KickoffTurnTools is agentkickoff.Config.TurnTools: a GATEWAY-kind agent's first
+// turn carries its muster tools (gatewayTurnTools), as each of its chat turns does.
+func (s *Server) KickoffTurnTools(ctx context.Context, a agents.Agent) (context.Context, agentkickoff.TurnTools, bool) {
+	return s.gatewayTurnTools(ctx, a, authz.ViaKickoff)
+}
+
+// gatewayTurnTools is what a turn of agent a that muster starts OUTSIDE a
+// session of the owner's carries: for a GATEWAY-kind agent, its muster tools
+// (turnTools) under a context acting as its owner through via; for any other
+// agent, or a row with no owner, ok false and the turn goes out toolless.
+//
+// 🔴 ONE DECISION FOR EVERY SUCH DOOR: the kickoff deliverer's first turn
+// (KickoffTurnTools, authz.ViaKickoff) and the machine message door
+// (handleAPIAgentSendMessage via gatewayTurn, authz.ViaAgentMessage). Each once
+// open-coded a toolless turn of its own, so a gateway agent reached through it
+// was told to call agent_report_done or attention_ask and never offered either.
+// gateway_turn_ledger_test.go pins every call site that starts a turn.
+//
+// 🔴 THE TURN'S TOOLS RUN AS THE AGENT'S OWNER (turnPrincipal), NEVER AS THE
+// CALLER'S PRINCIPAL — the deliverer's authz.System, or the machine door's
+// operator. Under System row-level security sees every owner's rows, so an
+// agent's tools would reach across owners; and an insert that takes its owner
+// from the principal (attention_ask, connector_request) fails outright —
+// measured: both answered an error under System and succeeded as the owner.
+//
+// ⚠ NOT FOR A CLAUDE-CODE AGENT (ok false): its CLI reaches muster's tools over
+// MCP from inside its pod (MCPToolDefsFor), and ccd accepts and ignores a
+// request's instructions and tools (cmd/ccd/server.go responsesRequest), so its
+// turn stays the toolless one it always was.
+func (s *Server) gatewayTurnTools(ctx context.Context, a agents.Agent, via authz.Via) (context.Context, agentkickoff.TurnTools, bool) {
+	if agents.ResolveKind(a.Kind) != agents.KindGateway {
+		return ctx, agentkickoff.TurnTools{}, false
+	}
+	pctx, ok := s.turnPrincipal(ctx, a, via)
+	if !ok {
+		s.logger.Printf("agents: %s names no owner, or a team (no team gateway agents yet); its %s turn goes out WITHOUT tools (they act as the owner)", a.Name, via)
+		return ctx, agentkickoff.TurnTools{}, false
+	}
+	ctx, tt := s.turnTools(pctx, a)
+	return ctx, tt, true
+}
+
+// turnVias is the closed set of principals turnPrincipal mints: one per door
+// gatewayTurnTools serves.
+var turnVias = map[authz.Via]bool{authz.ViaKickoff: true, authz.ViaAgentMessage: true}
+
+// turnPrincipal is ctx acting as agent a's owner, through via (a turnVias
+// member): how a gateway agent's turn started outside an owner's session runs
+// its tools, so row-level security confines them to that owner's rows.
+//
+// 🔴 FALSE FOR A ROW THAT NAMES NO OWNER (agentPrincipal's refusal), NEVER A
+// PANIC: authz.WithPrincipal panics on a principal with no user, and the kickoff
+// deliverer has no recover, so one such row would crash muster. The caller sends
+// that agent's turn toolless instead. False, too, for a via outside turnVias:
+// this is not a general "act as the owner" door.
+func (s *Server) turnPrincipal(ctx context.Context, a agents.Agent, via authz.Via) (context.Context, bool) {
+	if !turnVias[via] {
+		return ctx, false
+	}
+	p, ok := s.agentPrincipal(ctx, a, via)
+	if !ok {
+		return ctx, false
+	}
+	// 🔴 A TEAM-OWNED GATEWAY AGENT TURNS TOOLLESS, NEVER A PANIC: gateway
+	// agents are not team agents in team sharing phase 4 (a team chief is
+	// claude-code, whose kickoff needs no principal), so no team acts through
+	// this door yet. False here keeps the kickoff deliverer, which has no
+	// recover, alive if such a row ever exists.
+	if p.Team {
+		return ctx, false
+	}
+	return authz.WithPrincipal(ctx, p), true
+}
+
+// gatewayTurn runs one turn of agent a that muster starts outside a session of
+// the owner's (the machine message door): with its muster tools when
+// gatewayTurnTools answers ok for it (runTurnWithTools, which owns the toolless
+// fallback for an image without /v1/responses), else the toolless Chat.
+func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, text string, via authz.Via) (reply string, err error) {
+	// 🔴 THE CHIEF'S TOKEN TELEMETRY on this door too (chief_usage.go): a
+	// chief turn started here — the machine message door, the kickoff — is
+	// recorded as chatTurn records every other, tagged with its door.
+	trigger := chiefusage.TriggerMachine
+	if via == authz.ViaKickoff {
+		trigger = chiefusage.TriggerKickoff
+	}
+	ctx = chiefusage.WithTrigger(ctx, chiefusage.Trigger{Kind: trigger})
+	// "working…" on an open chat of this conversation while the turn runs —
+	// `muster chief ask`'s turn too (countSessionTurn). Deferred before the
+	// telemetry, so it ends after the turn's usage row is written (chatTurn).
+	defer s.countSessionTurn(a, sessionKey)()
+	var emit agents.StreamEmit
+	if ctx2, usage := s.beginChiefTurnUsage(ctx, a, sessionKey); usage != nil {
+		ctx, emit = ctx2, usage.observe(nil)
+		defer func() { usage.finish(ctx, err) }()
+	}
+	ctx, endRecord := s.beginTurnRecord(ctx, a.ID)
+	defer endRecord()
+	tctx, tt, ok := s.gatewayTurnTools(withTurnSession(ctx, sessionKey), a, via)
+	if !ok {
+		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, nil)
+	}
+	return s.runTurnWithTools(tctx, a, sessionKey, text, tt, emit)
+}
+
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls
 // in-process, scoped to that agent (its bound task). Used by both the kickoff
 // (via the provisioner hook) and the interactive chat.
 func (s *Server) AgentToolDispatch(ctx context.Context, a agents.Agent) agents.ToolDispatch {
+	// In-process: a gateway-runtime session's turn, never a CLI over MCP —
+	// which agent_dispatch's owner_asked tells apart (chief_owner_release.go).
+	ctx = withInProcessToolCall(ctx)
 	return func(name, arguments string) string {
 		return s.dispatchAgentTool(ctx, a, name, arguments)
 	}
@@ -550,17 +927,28 @@ func (s *Server) AgentToolDispatch(ctx context.Context, a agents.Agent) agents.T
 
 func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, arguments string) string {
 	arg := func(v any) error { return json.Unmarshal([]byte(orEmptyJSON(arguments)), v) }
-	// A retired name runs as the tool it became — BEFORE the chief-only check, so
-	// the alias cannot step around it (tool_names.go).
-	name = canonicalToolName(name)
 	// 🔴 THE CHIEF-ONLY RE-CHECK. The listing already leaves a chief-only tool out
 	// for any other agent, but a gateway runtime can call a name it was not
 	// offered, and this closure runs whatever it is handed — so the decision is
 	// made again here, against the agent's current row.
-	if s.chiefOnlyTool(name) && !s.isChiefAgent(ctx, a) {
+	switch chiefOnly, notChief := s.toolAxis(name); {
+	case s.composeChiefRefuses(ctx, a, name):
+		return toolErr("%s", composeChiefRefusal(name))
+	case chiefOnly && !s.isChiefAgent(ctx, a):
 		return toolErr("%s is available to your owner's chief agent only", name)
+	case chiefOnly && !s.chiefActing(ctx, a):
+		return toolErr("%s: your owner turned the chief off", name)
+	case notChief && s.isChiefAgent(ctx, a):
+		return toolErr("%s is not one of your owner's chief agent's tools", name)
+	}
+	// The officer tools: refused inside to any agent that is not a declared
+	// officer's instance, and bound to the caller's own officer (officers.go).
+	if text, ok := s.dispatchOfficerTool(ctx, a, name, arguments); ok {
+		return text
 	}
 	switch name {
+	case agentReportDoneTool:
+		return s.toolAgentReportDone(ctx, a, arguments)
 	case "agent_get_task":
 		if a.NoteID == nil {
 			return toolErr("no task assigned to you")
@@ -579,9 +967,13 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if strings.TrimSpace(in.Body) == "" {
 			return toolErr("body required")
 		}
-		c, err := s.ext.Notes.AddComment(ctx, notes.Comment{NoteID: *a.NoteID, Author: a.Name, Body: in.Body})
+		c, queued, err := s.addTaskComment(withRefOrigin(ctx, refOrigin{Agent: a.Name}), commentByActor,
+			notes.Comment{NoteID: *a.NoteID, Author: a.Name, Body: in.Body})
 		if err != nil {
 			return toolErr("could not comment: %v", err)
+		}
+		if queued != nil {
+			return toolJSON(map[string]any{"queued": true, "write_id": queued.ID, "message": refQueuedText})
 		}
 		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
 		return toolJSON(c)
@@ -598,7 +990,10 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
 			return toolErr("%s", why)
 		}
-		n, err := s.setNoteStatus(notes.ForAgent(ctx), writerAgentTool, *a.NoteID, in.Status)
+		n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, refOrigin{Author: a.Name, Agent: a.Name})), writerAgentTool, *a.NoteID, in.Status)
+		if errors.Is(err, errQueuedUpstream) {
+			return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})
+		}
 		if errors.Is(err, notes.ErrCompleteLocked) {
 			return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
 		}
@@ -606,11 +1001,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 			return toolErr("could not set status: %v", err)
 		}
 		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
-		// Background push when the agent's own tool marks the task ready_for_review.
-		s.notifyTaskDone(n)
 		return toolJSON(n)
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
+	case askOwnerTool:
+		return s.toolAskOwner(ctx, a, arguments)
 	case "connectors_list":
 		return s.toolConnectorsList(ctx, a)
 	case "connector_request":
@@ -625,16 +1020,59 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolTaskCreateGated(ctx, a, arguments)
 	case replyDraftToolName:
 		return s.toolReplyDraft(ctx, a, arguments)
+	case pluginMessageSettleToolName:
+		return s.toolPluginMessageSettle(ctx, a, arguments)
+	case officerSpawnShareTool:
+		if s.spawnLender == nil || s.featureOff(features.Officers) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolOfficerSpawnShare(ctx, arguments)
+	case routingRuleProposeTo:
+		if !s.rulesOffered() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolRoutingRulePropose(ctx, a, arguments)
 	case fleetListToolName:
-		return s.toolFleetList(ctx)
+		return s.toolFleetList(ctx, arguments)
 	case focusSearchToolName:
 		return s.toolFocusSearch(ctx, arguments)
-	case focusRefreshToolName:
-		return s.toolFocusRefresh(ctx, a, arguments)
 	case sessionsOverviewToolName:
 		return s.toolSessionsOverview(ctx, a, arguments)
+	case sessionContextToolName:
+		return s.toolSessionContext(ctx, arguments)
+	case reposListTool:
+		// Re-checked at the call: a gateway runtime can name a tool it was
+		// never offered.
+		if !chiefDispatchOn(s.ext) || !taskRoutingOn(s.ext) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolReposList(ctx, arguments)
+	case successionProposeTool:
+		if !successionOffered(s.ext) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolSuccessionPropose(ctx, a, arguments)
+	case endSessionProposeTool:
+		if !endSessionOffered(s.ext) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolEndSessionPropose(ctx, a, arguments)
+	case fleetReportToolName:
+		return s.toolFleetReport(ctx, a, arguments)
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
+	case routeManyToolName:
+		return s.toolRouteMany(ctx, a, arguments)
+	case answerSessionQuestionTool:
+		// Registered only with the attention store (agentTools).
+		if !s.attentionToolsOn() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolAnswerSessionQuestion(ctx, a, arguments)
+	case postgresQueryToolName:
+		return s.toolPostgresQuery(ctx, a, arguments)
+	case internalHTTPToolName:
+		return s.toolInternalHTTP(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`
@@ -673,19 +1111,12 @@ func (s *Server) listAgentPullRequests(ctx context.Context, a agents.Agent, argu
 	}
 	var prs []github.PullRequest
 	var err error
-	if app := s.githubApp(ctx); app != nil {
-		// The App's token for THIS agent's repository (githubapp.App.ListPullRequests).
-		prs, err = app.ListPullRequests(ctx, a.ID, a.Repo, state)
-	} else {
-		token, terr := s.githubOAuthToken(ctx)
-		if errors.Is(terr, errNoGitHub) {
-			return toolErr("no GitHub connection")
-		}
-		if terr != nil {
-			return toolErr("could not load GitHub connection: %v", terr)
-		}
-		prs, err = s.listPullRequests(ctx, token, a.Repo, state)
+	app := s.githubApp(ctx)
+	if app == nil {
+		return toolErr("no GitHub connection")
 	}
+	// The App's token for THIS agent's repository (githubapp.App.ListPullRequests).
+	prs, err = app.ListPullRequests(ctx, a.ID, a.Repo, state)
 	if err != nil {
 		return toolErr("could not list pull requests: %v", err)
 	}

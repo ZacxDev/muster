@@ -74,13 +74,16 @@ func viewFrameScript() g.Node {
   function inertAll(on, f) {
     Array.prototype.forEach.call(document.body.children, function (el) {
       if (el === f) return;
-      if (on && !el.inert) { el.inert = true; el.setAttribute('data-view-inert', ''); }
+      // An open "Confirm it's you" (stepup_confirm.go) is marked but left
+      // usable; its close makes the marked element inert.
+      if (on && !el.inert) { el.setAttribute('data-view-inert', ''); el.inert = !(el.matches('#term-confirm[open]') || el.querySelector('#term-confirm[open]')); }
       if (!on && el.hasAttribute('data-view-inert')) { el.inert = false; el.removeAttribute('data-view-inert'); }
     });
   }
   // tell says to a view's own window that it went off screen or came back
-  // ('muster:view-hidden' / 'muster:view-shown'): the terminal drops live keys
-  // while off screen.
+  // ('muster:view-hidden' / 'muster:view-shown'): dictation stops a recording
+  // in the view it hides (dictate.go). The terminal keeps its attach as it is
+  // (terminal.go: an inert frame takes no keys).
   function tell(w, what) { try { w.dispatchEvent(new Event('muster:view-' + what)); } catch (e) {} }
   // reveal puts the frame on screen, over the page.
   function reveal(f) {
@@ -96,6 +99,14 @@ func viewFrameScript() g.Node {
     try { f.contentWindow.focus(); } catch (e) {}
     tell(window, 'hidden');
     tell(f.contentWindow, 'shown');
+  }
+  // followTitle: the top window's tab reads the frame's title while the frame
+  // is on screen — after the frame's load (above), and after a rename it made
+  // in place (titled, below) — and, while the page's own view is, the own
+  // view's kept title is the tab's (so home() restores the renamed one).
+  function followTitle(f) {
+    if (!f.style.visibility) { try { document.title = f.contentDocument.title; } catch (e) {} }
+    else f.setAttribute('data-own-title', document.title);
   }
   // home shows the page's own view again: the frame stays, hidden and live.
   function home(f) {
@@ -166,7 +177,7 @@ func viewFrameScript() g.Node {
       // address and title follow it.
       if (!f.style.visibility) {
         history.replaceState(history.state, '', where);
-        try { document.title = f.contentDocument.title; } catch (e) {}
+        followTitle(f);
       }
     });
     f.src = href;
@@ -176,6 +187,9 @@ func viewFrameScript() g.Node {
   // The top window's API, which a framed view calls.
   window.musterViews = {
     show: show,
+    // titled: a view's title changed in place (a rename, session_name.go's
+    // renameScript, from this window or its frame): the tab follows it.
+    titled: function () { var f = frame(); if (f) followTitle(f); },
     // showOwn: whether href is the page's own view — a link there from the frame
     // shows it instead of loading it again.
     // The own view's address may carry more than a link to it does (an agent
@@ -213,6 +227,14 @@ func viewFrameScript() g.Node {
     if (!a || !plain(e, a)) return;
     e.preventDefault();
     e.stopPropagation();
+    // A link inside a menu (a claude-code agent's ⋯ menu holds its Terminal
+    // link, agent_header_folded.go) closes that menu: it is in the top layer,
+    // over the view this opens. Done HERE because this capture listener stops
+    // the click before any handler on the link itself could run — an
+    // hx-on:click there never fired, and the open menu then took the next ⋯
+    // tap as "close" (e2e view-swap's round trips).
+    var pop = a.closest('[popover]');
+    if (pop) { try { pop.hidePopover(); } catch (err) {} }
     var top = framed ? window.parent.musterViews : window.musterViews;
     top.show(a.getAttribute('data-view-swap'), a.href);
   }, true);

@@ -51,6 +51,9 @@ func TestEveryKindsRefusalIsReachedOnItsOwn(t *testing.T) {
 		want string
 	}{
 		{"unknown kind", func(c *config) { c.AgentKinds = []string{"gateway", "teleport"} }, `entry "teleport"`},
+		// The removed hermes kind is an unknown kind like any other: a deployment
+		// still listing it is refused at boot, naming the entry.
+		{"removed hermes kind", func(c *config) { c.AgentKinds = []string{"gateway", "claude-code", "hermes"} }, `entry "hermes"`},
 		{"kind twice", func(c *config) { c.AgentKinds = []string{"gateway", "claude-code", "gateway"} }, "listed twice"},
 		{"gateway missing", func(c *config) { c.AgentKinds = []string{"claude-code"} }, "must include gateway"},
 		{"cc image without the kind", func(c *config) { c.AgentKinds = nil; c.AgentCCAccountNames = nil }, "armed switch"},
@@ -197,6 +200,9 @@ func (memMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error) { 
 func (memMarks) LiveCounts(context.Context, int64) (map[string]int, error)    { return nil, nil }
 func (memMarks) MarkRateLimited(context.Context, int64, string, string, time.Time) error {
 	return nil
+}
+func (memMarks) ClearRateLimited(context.Context, int64, string, time.Time) (bool, error) {
+	return false, nil
 }
 func (memMarks) MarkAuthFailed(context.Context, int64, string, string, string, time.Time) error {
 	return nil
@@ -426,6 +432,7 @@ func TestTheNetworkBannerLineSaysWhetherAgentsAreConfined(t *testing.T) {
 		envAgentNetpolFromNS, envAgentNetpolFromLabels, "TCP 443",
 		"an agent created before this build has NO policy", "until that agent is stopped and started",
 		"Enforcement is the cluster network plugin's",
+		"An OFFICER instance", "WITHOUT the public rule and WITHOUT the DNS rule", "name-filtered DNS", "cluster-side FQDN policy",
 		"needs get/create/update/delete on networkpolicies.networking.k8s.io", "to DESTROY ANY agent",
 	} {
 		if !strings.Contains(on, want) {

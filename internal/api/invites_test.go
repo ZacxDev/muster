@@ -952,7 +952,7 @@ func TestAResetLinkForADisabledUserSetsNothing(t *testing.T) {
 }
 
 // TestALinkPageWithNoFragmentAsksForThePastedLink: a sign-in redirect drops
-// the fragment (measured live behind Authelia), so every link page renders a
+// the fragment (a forward-auth proxy's return URL carries none), so every link page renders a
 // VISIBLE paste field named token — never an empty hidden one — and a pasted
 // WHOLE link redeems, the server keeping only what follows '#'.
 func TestALinkPageWithNoFragmentAsksForThePastedLink(t *testing.T) {

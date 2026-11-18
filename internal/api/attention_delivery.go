@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -170,14 +171,28 @@ func mcpAnswerFrom(src attention.AnswerSource) string {
 	return "a mirrored Claude Code session"
 }
 
-// answerSession is the session an answer to agent a goes to: its default
-// session (agents.SessionRuntimeStore), else — a store without 0030's half —
-// its latest.
-func (s *Server) answerSession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
-	if st, ok := s.ext.Agents.(agents.SessionRuntimeStore); ok {
-		return st.DefaultSession(ctx, a.ID, a.Name)
+// answerSession is the session an answer to agent a goes to: the session an
+// owner card was asked in (asked, attention.Ask.AskedSession) while it is still
+// one of a's; else its default session (agents.SessionRuntimeStore), else — a
+// store without 0030's half — its latest.
+func (s *Server) answerSession(ctx context.Context, a agents.Agent, asked string) (agents.ChatSession, error) {
+	if asked != "" {
+		if list, err := s.ext.Agents.ListSessions(ctx, a.ID); err == nil {
+			for _, sess := range list {
+				// An ARCHIVED asking chat (an old primary after a fresh one, a side
+				// chat put away) is not answered into: the primary takes it (F2).
+				if sess.SessionKey == asked && sess.ArchivedAt == nil {
+					return sess, nil
+				}
+			}
+		}
 	}
-	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	// 🔴 THE ASKING CHAT FIRST, ON PURPOSE, AND THE PRIMARY OTHERWISE. An answer
+	// to a question the chief asked in a SIDE chat is that chat's own thread
+	// going on — the owner answering it — not a delivery muster makes, so it
+	// goes back where it was asked; with no asking chat it is a delivery, and
+	// goes to the primary (primarySession) like every other.
+	return s.primarySession(ctx, a)
 }
 
 // startAnswerDelivery delivers ask id's answer in the background after the
@@ -292,12 +307,12 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	case s.answerTurn == nil:
 		return leave("this muster has no agent gateway")
 	}
-	sess, err := s.answerSession(ctx, ag)
+	sess, err := s.answerSession(ctx, ag, a.AskedSession)
 	if err != nil {
 		return leave("the agent's session could not be opened")
 	}
 	budget := agentTurnBudget(ag.Kind)
-	won, err := s.ext.Agents.ClaimKickoff(ctx, ag.ID, by, budget+time.Minute)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, ag.ID, by, budget+time.Minute)
 	if err != nil || !won {
 		return leave("the agent is busy with another delivery")
 	}
@@ -318,6 +333,8 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 
 	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+	// The owner's answer, delivered (chief_usage.go): the turn's trigger.
+	tctx = chiefusage.WithTrigger(tctx, chiefusage.Trigger{Kind: chiefusage.TriggerAnswer, AskID: a.ID})
 	parts, err := s.answerTurn(tctx, ag, sess, renderAttentionAnswer(a), nil)
 	if reason := agentgateway.Unsent(err); reason != "" {
 		// Provably nothing reached the runtime: queued again, for the sweep.
@@ -326,7 +343,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	bctx, bcancel := bookkeeping()
 	defer bcancel()
 	if err != nil {
-		s.persistTurn(bctx, ag, sess, []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}})
+		s.persistTurn(bctx, ag, sess, turnFailedParts(err))
 		return settle(false, sess.ID, "the agent's turn failed: "+err.Error())
 	}
 	s.persistTurn(bctx, ag, sess, parts)
@@ -343,9 +360,14 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 func (s *Server) runDeliveredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
 	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
 	pc := &agents.PartCollector{}
+	// The trigger is the caller's (an owner's answer, a session's question).
 	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, pc.Observe)
 	s.markAgentIdle(a.Name)
 	if agentgateway.Unsent(err) != "" {
+		// Nothing is stored for a turn the runtime took nothing of, so nothing
+		// else tells a page opened during it that it is over: its "working…"
+		// (session_turns.go) would stay up. This refetch draws it from the count.
+		s.broadcastTo(a.OwnerID, EventChatReply, a.Name)
 		return nil, err
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)

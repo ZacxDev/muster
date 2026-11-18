@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/prroute"
 	"github.com/ZacxDev/muster/internal/redact"
 )
 
@@ -83,8 +86,8 @@ var overviewBudget = 12 * time.Second
 
 func sessionsOverviewToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionsOverviewToolName,
-		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code windows active in the " +
-			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus, the distinct focus titles of " +
+		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code and opencode windows active in the " +
+			"last 24 h — is doing now, newest-active first: id, kind, name, host, a mirrored session's repo (its checkout folder) and github_repo (the GitHub owner/name its origin names: what to dispatch with), status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day), the distinct focus titles of " +
 			"the last 6 h with their times, anything it has waiting on your owner, and its last few user and assistant messages " +
 			"(secrets redacted, tool output left out). Use it before filing a task or drafting a reply about ongoing work, to find " +
 			"the session already on it. Size-capped." + focusUntrustedTail +
@@ -100,6 +103,15 @@ func sessionsOverviewToolDef() agents.ToolDef {
 type liveSession struct {
 	sub              focus.Subject
 	kind, name, host string
+	// where is a mirrored session's window (mirror.Where), "" for an agent.
+	where string
+	// runtime is a mirrored session's non-Claude runtime ("opencode"), "" for
+	// Claude Code and for an agent.
+	runtime string
+	// repo and githubRepo are a mirrored window's folder name and the GitHub
+	// owner/name its checkout's origin names (mirror.SessionView), "" for an
+	// agent or when its host did not say.
+	repo, githubRepo string
 	status           string
 	activeAt         time.Time
 }
@@ -112,12 +124,18 @@ type liveSession struct {
 // not an idle session.
 func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession {
 	cutoff := s.now().Add(-overviewActiveWithin)
+	// The stored names, read once: every session is named by its stable
+	// name (internal/sessionname), as the owner's own views name it.
+	fi := s.focusIndex(ctx)
 	var out []liveSession
 	if s.ext.Agents != nil {
 		list, err := s.ext.Agents.List(ctx)
 		if err != nil {
 			s.logger.Printf("sessions: list agents: %v", err)
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		idx := s.instanceIndex(ctx)
 		last := s.lastMessageByAgents(ctx, list)
 		for _, a := range list {
@@ -127,15 +145,20 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 				continue
 			}
 			out = append(out, liveSession{sub: focus.AgentSubject(a.ID), kind: agents.ResolveKind(a.Kind),
-				name: firstNonBlank(a.DisplayName, a.Name), status: status, activeAt: at})
+				name: fi.agentName(a).Text, status: status, activeAt: at})
 		}
 	}
+	// 🔴 EVERY MIRRORED CONVERSATION FOCUS CAN NAME, opencode's included
+	// (mirrorFocusEntries, keyed by SessionView.SessionKey). Listing a session is
+	// a read: whether muster can SEND to it is decided where it sends
+	// (mirrorClaudeEntries: routing, the queue), not here.
 	seen := map[string]bool{}
-	for _, e := range s.mirrorClaudeEntries(ctx) {
-		if seen[e.ClaudeSession] {
+	for _, e := range s.mirrorFocusEntries(ctx) {
+		key := e.SessionKey()
+		if seen[key] {
 			continue
 		}
-		seen[e.ClaudeSession] = true
+		seen[key] = true
 		at := e.ActiveAt()
 		if !at.IsZero() && at.Before(cutoff) {
 			continue
@@ -144,10 +167,31 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 		if status == "" {
 			status = "unknown"
 		}
-		out = append(out, liveSession{sub: focus.MirrorSubject(e.ClaudeSession), kind: "mirror", name: e.DisplayTitle(),
-			host: e.Host, status: status, activeAt: at})
+		ls := liveSession{sub: focus.MirrorSubject(key), kind: "mirror", name: codeName(fi.mirrorName(e), e),
+			host: e.Host, where: e.Where(), repo: e.Repo, githubRepo: e.GitHubRepo, status: status, activeAt: at}
+		if rt, ok := e.Spec(); ok {
+			ls.runtime = rt.Name
+		}
+		out = append(out, ls)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].activeAt.After(out[j].activeAt) })
+	return out
+}
+
+// hintableSessions is sessions minus the mirrored windows of a runtime other
+// than Claude Code (opencode). 🔴 A HINT IS AN OFFER TO ROUTE: the plugin
+// session hint names sessions the chief may hand a message to with
+// route_to_session, which takes Claude Code windows only (mirrorClaudeEntries).
+// sessions_overview still LISTS them (a read); the hint does not suggest them
+// (PR #537 round 1).
+func hintableSessions(sessions []liveSession) []liveSession {
+	out := sessions[:0:0]
+	for _, ls := range sessions {
+		if ls.sub.Kind == focus.KindMirror && ls.runtime != "" {
+			continue
+		}
+		out = append(out, ls)
+	}
 	return out
 }
 
@@ -165,46 +209,268 @@ func liveOf(sessions []liveSession) focus.Live {
 	return l
 }
 
-// pluginSessionHints is plugins.HintFunc: the live sessions (not the chief)
-// whose focus history over the last focus.HistoryWindow shares at least
-// hintMinTerms words with message m's subject and body, best first. Any
+// pluginSessionHints is plugins.HintFunc: the online mirrored windows that
+// muster recorded creating or pushing a pull request or branch message m's
+// subject and body name (prHints, no activity cutoff), then the live sessions
+// (not the chief) whose focus history over the last focus.HistoryWindow shares
+// at least hintMinTerms words with it, best first, then the online mirrored
+// windows whose repo name does (repoHints, no activity cutoff), up to
+// plugins.MaxHintSessions in all (mergeHints) — and, for a pull-request review
+// muster could not route, the session that authored it (prAuthorHint). Any
 // failure is no hint — logged, never a failed delivery.
+//
+// A TASK EVENT is matched on the TASK's words instead (taskEventHintText: its
+// title and body as stored, and the event's change line), never on the event's
+// JSON, whose keys would match every session that ever touched a task; and the
+// agents already bound to the task are left out — the event names them
+// already, and a hint is for who ELSE may be on it.
 func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m plugins.Message) plugins.Hints {
 	h := plugins.Hints{Window: focus.HistoryWindow}
+	text, bound := m.Subject+"\n"+m.Body, map[int64]bool(nil)
+	if plugins.IsTaskEvent(m) {
+		text, bound = s.taskEventHintText(ctx, m)
+	} else {
+		h.Author = s.prAuthorHint(ctx, m)
+	}
+	byPR := s.prHints(ctx, text)
 	if s.ext.Focus == nil {
+		h.Sessions = mergeHints(plugins.MaxHintSessions, byPR)
 		return h
 	}
-	live := s.liveSessions(ctx, chief.ID)
-	if len(live) == 0 {
-		return h
-	}
-	matches, err := s.ext.Focus.MatchHistory(ctx, m.Subject+"\n"+m.Body, liveOf(live), s.now().Add(-focus.HistoryWindow),
-		hintMinTerms, plugins.MaxHintSessions)
-	if err != nil {
-		s.logger.Printf("plugins: message %d: session hint: %v", m.ID, err)
-		return h
-	}
-	by := map[focus.Subject]liveSession{}
-	for _, ls := range live {
-		by[ls.sub] = ls
-	}
-	for _, mt := range matches {
-		ls, ok := by[mt.Subject]
-		if !ok {
-			continue // the store filtered on liveness already; belt and braces
+	live := hintableSessions(s.liveSessions(ctx, chief.ID))
+	if len(bound) > 0 {
+		kept := live[:0:0]
+		for _, ls := range live {
+			if ls.sub.Kind == focus.KindAgent && bound[ls.sub.AgentID()] {
+				continue
+			}
+			kept = append(kept, ls)
 		}
-		sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host}
-		for _, t := range mt.Titles {
-			sh.Titles = append(sh.Titles, plugins.HintTitle{Title: t.Title, At: t.At})
-		}
-		h.Sessions = append(h.Sessions, sh)
+		live = kept
 	}
+	var byFocus []plugins.SessionHint
+	if len(live) > 0 {
+		matches, err := s.ext.Focus.MatchHistory(ctx, text, liveOf(live), s.now().Add(-focus.HistoryWindow),
+			hintMinTerms, plugins.MaxHintSessions)
+		if err != nil {
+			s.logger.Printf("plugins: message %d: session hint: %v", m.ID, err)
+		}
+		by := map[focus.Subject]liveSession{}
+		for _, ls := range live {
+			by[ls.sub] = ls
+		}
+		for _, mt := range matches {
+			ls, ok := by[mt.Subject]
+			if !ok {
+				continue // the store filtered on liveness already; belt and braces
+			}
+			sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host, Where: ls.where}
+			for _, t := range mt.Titles {
+				sh.Titles = append(sh.Titles, plugins.HintTitle{Title: t.Title, At: t.At})
+			}
+			byFocus = append(byFocus, sh)
+		}
+	}
+	h.Sessions = mergeHints(plugins.MaxHintSessions, byPR, byFocus, s.repoHints(ctx, text))
 	return h
 }
 
-// pluginHints is the deliverer's HintFunc for ext: nil without a focus store.
+// mergeHints is the lists' sessions in order — each list in its own order, a
+// session an earlier list already has kept at that first place — at most
+// limit in all. The hint passes its pull-request matches, then its focus
+// matches, then its repo matches: focus_search's order (focusSearchAnswer). A
+// session in several is listed once, with every line it was listed by: its
+// focus titles, its pull requests, its repo.
+//
+// 🔴 PULL-REQUEST MATCHES FIRST. One is exact — the message spells the very
+// pull request or branch muster recorded that session creating or pushing —
+// where a focus match needs only two shared terms. With focus first, three
+// loose focus matches would fill MaxHintSessions and push out the one session
+// the message names.
+func mergeHints(limit int, lists ...[]plugins.SessionHint) []plugins.SessionHint {
+	var out []plugins.SessionHint
+	at := map[string]int{}
+	for _, list := range lists {
+		for _, x := range list {
+			i, ok := at[x.ID]
+			if !ok {
+				at[x.ID] = len(out)
+				out = append(out, x)
+				continue
+			}
+			y := &out[i]
+			if len(y.Titles) == 0 {
+				y.Titles = x.Titles
+			}
+			if len(y.PRs) == 0 && len(x.PRs) > 0 {
+				y.PRs, y.LastActive = x.PRs, x.LastActive
+			}
+			if !y.ByRepo && x.ByRepo {
+				y.ByRepo, y.Repo, y.LastActive = true, x.Repo, x.LastActive
+			}
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// prHints is the hint's pull-request matches for text: the online mirrored
+// Claude Code windows of ctx's principal — every one, idle or not, as
+// repoHints — that muster recorded creating or pushing (session_prs,
+// PRSessionStore.SessionRefs) a pull request text names ("<repo>#N",
+// "<owner>/<repo>#N" or its github.com URL, prroute.Mentions; never a bare
+// "#N") or a distinctive branch text spells (prroute.NamesBranch), at most
+// plugins.MaxHintSessions (matchPRHints). nil without pull-request routing's
+// store.
+//
+// 🔴 ONLY THE OWNER'S OWN ONLINE SESSIONS. The windows are the principal's
+// (mirrorClaudeEntries, owner-scoped by mirror.Service) and online now, and
+// the rows are read as the principal (session_prs is under FORCE row-level
+// security), so another owner's record of the same pull request names
+// nothing, and a session no online window shows is never listed.
+//
+// ⚠ A MERGED OR CLOSED PULL REQUEST STILL COUNTS. Its state is knowable only
+// through the GitHub App (ClosedPRs), which is optional and rate-limited, and
+// a message naming a merged pull request — a follow-up on what it shipped — is
+// as much that session's as one naming an open one. Rows unseen for
+// PRSessionRetention are never read.
+func (s *Server) prHints(ctx context.Context, text string) []plugins.SessionHint {
+	if s.ext.PRSessions == nil {
+		return nil
+	}
+	mentions, branches := prroute.Mentions(text), prroute.BranchCandidates(text)
+	if len(mentions) == 0 && len(branches) == 0 {
+		return nil // nothing the text could name: no query
+	}
+	entries := map[string]mirror.SessionView{}
+	var keys []string
+	for _, e := range s.mirrorClaudeEntries(ctx) {
+		if _, seen := entries[e.ClaudeSession]; seen {
+			continue
+		}
+		entries[e.ClaudeSession] = e
+		keys = append(keys, e.ClaudeSession)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	// The store narrows to the rows these can name BEFORE its bound
+	// (SessionRefs), so busy sessions' newer rows cannot push an idle
+	// author's out.
+	rows, err := s.ext.PRSessions.SessionRefs(ctx, keys, mentions, branches)
+	if err != nil {
+		s.logger.Printf("plugins: session hint by pull request: %v", err)
+		return nil
+	}
+	return matchPRHints(mentions, branches, rows, entries, plugins.MaxHintSessions)
+}
+
+// matchPRHints is prHints' matching over rows (most recently seen first) for
+// the sessions entries holds: each session with a row that one of mentions
+// names (a create, by its number) or whose branch is one of branches (a push
+// or a create naming its head), in the order of its first such row, with what
+// it was listed by (at most plugins.MaxHintPRs), at most limit sessions.
+func matchPRHints(mentions []prroute.Mention, branches []string, rows []plugins.PRSession, entries map[string]mirror.SessionView, limit int) []plugins.SessionHint {
+	var out []plugins.SessionHint
+	at := map[string]int{}
+	for _, r := range rows {
+		e, ok := entries[r.ClaudeSession]
+		if !ok {
+			continue // no window of the principal's shows it online now
+		}
+		var named string
+		switch {
+		case r.PR > 0 && prroute.NamesAny(mentions, r.Repo, r.PR):
+			named = r.Repo + "#" + strconv.FormatInt(r.PR, 10)
+		case r.HeadRef != "" && slices.Contains(branches, r.HeadRef):
+			named = r.Repo + " branch " + r.HeadRef
+		default:
+			continue
+		}
+		i, listed := at[r.ClaudeSession]
+		if !listed {
+			if len(out) == limit {
+				continue
+			}
+			i = len(out)
+			at[r.ClaudeSession] = i
+			out = append(out, plugins.SessionHint{ID: focus.MirrorSubject(r.ClaudeSession).String(), Name: e.CodeTitle(),
+				Host: e.Host, Where: e.Where(), LastActive: e.ActiveAt()})
+		}
+		if !slices.Contains(out[i].PRs, named) && len(out[i].PRs) < plugins.MaxHintPRs {
+			out[i].PRs = append(out[i].PRs, named)
+		}
+	}
+	return out
+}
+
+// repoHints is the hint's repo matches for text: the online mirrored Claude
+// Code windows of ctx's principal — every one, idle or not, the windows
+// route_to_session takes (mirrorClaudeEntries, the most recently active window
+// per conversation) — whose repo name the text covers in hintMinTerms parts
+// (focus.MatchRepos), best first. The window LABEL is not matched: it is a
+// host codename, not a task title (session_meta.go).
+//
+// 🔴 NO ACTIVITY CUTOFF, UNLIKE liveSessions. The session this exists for had
+// been open on its job for ten days without a turn: liveSessions' 24 h cutoff
+// left it out before any matching ran. Its line says when it was last active.
+func (s *Server) repoHints(ctx context.Context, text string) []plugins.SessionHint {
+	var metas []focus.SessionMeta
+	entries := map[focus.Subject]mirror.SessionView{}
+	for _, e := range s.mirrorClaudeEntries(ctx) {
+		sub := focus.MirrorSubject(e.ClaudeSession)
+		if _, seen := entries[sub]; seen {
+			continue
+		}
+		entries[sub] = e
+		if e.Repo != "" {
+			metas = append(metas, focus.SessionMeta{Subject: sub, Repo: e.Repo, ActiveAt: e.ActiveAt()})
+		}
+	}
+	var out []plugins.SessionHint
+	for _, mt := range focus.MatchRepos(text, metas, hintMinTerms, plugins.MaxHintSessions) {
+		e := entries[mt.Subject]
+		out = append(out, plugins.SessionHint{ID: mt.Subject.String(), Name: codeName(s.mirrorName(ctx, e), e), Host: e.Host,
+			Where: e.Where(), Repo: e.Repo, ByRepo: true, LastActive: e.ActiveAt()})
+	}
+	return out
+}
+
+// taskEventHintText is what task event m's session hint is matched on — the
+// task's title and body as muster stores them (read as the owner) and the
+// event's change line, or, when the task cannot be read, the event's own title
+// and change — and the agents bound to the task, which the hint leaves out:
+// those the event recorded (muster's rows when it was stored) and those bound
+// now.
+func (s *Server) taskEventHintText(ctx context.Context, m plugins.Message) (string, map[int64]bool) {
+	bound := map[int64]bool{}
+	var ev plugins.TaskEvent
+	_ = json.Unmarshal([]byte(m.Body), &ev) // a body that cannot be read leaves the zero event
+	for _, a := range ev.Agents {
+		bound[a.ID] = true
+	}
+	text := ev.Title + "\n" + ev.Change
+	if s.ext.Notes != nil {
+		if n, err := s.ext.Notes.Get(ctx, *m.TaskID); err == nil {
+			text = n.Title + "\n" + n.Body + "\n" + ev.Change
+			if s.ext.Agents != nil {
+				if on, err := s.liveOnTask(ctx, n.OwnerID, n.ID); err == nil {
+					for _, a := range on {
+						bound[a.ID] = true
+					}
+				}
+			}
+		}
+	}
+	return text, bound
+}
+
+// pluginHints is the deliverer's HintFunc for ext: nil without a focus store
+// and without pull-request routing's store.
 func (s *Server) pluginHints(ext Extensions) plugins.HintFunc {
-	if ext.Focus == nil {
+	if ext.Focus == nil && ext.PRSessions == nil {
 		return nil
 	}
 	return s.pluginSessionHints
@@ -229,13 +495,24 @@ type overviewLine struct {
 }
 
 type overviewSession struct {
-	ID          string             `json:"id"`
-	Kind        string             `json:"kind"`
-	Name        string             `json:"name"`
-	Host        string             `json:"host,omitempty"`
-	Status      string             `json:"status"`
-	ActiveAt    string             `json:"active_at,omitempty"`
-	Focus       string             `json:"focus,omitempty"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// Runtime is a mirrored session's runtime when it is not Claude Code
+	// ("opencode"); absent for Claude Code and for an agent.
+	Runtime string `json:"runtime,omitempty"`
+	Name    string `json:"name"`
+	Host    string `json:"host,omitempty"`
+	Where   string `json:"where,omitempty"` // fleetListRow.Where
+	// Repo is a mirrored session's checkout folder name; GitHubRepo the
+	// GitHub owner/name its origin names — they can differ, and GitHubRepo is
+	// what to dispatch with.
+	Repo       string `json:"repo,omitempty"`
+	GitHubRepo string `json:"github_repo,omitempty"`
+	Status     string `json:"status"`
+	ActiveAt   string `json:"active_at,omitempty"`
+	Focus      string `json:"focus,omitempty"`
+	// focusAgeFields: how old Focus is (fleetListRow's).
+	focusAgeFields
 	RecentFocus []overviewTitle    `json:"recent_focus,omitempty"`
 	Attention   *overviewAttention `json:"attention,omitempty"`
 	// Transcript is the tail ([]overviewLine), or "unavailable (<reason>)".
@@ -262,8 +539,8 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	if len(live) > in.Limit {
 		omitted, live = len(live)-in.Limit, live[:in.Limit]
 	}
-	fi := s.focusIndex(ctx)
-	recent, err := s.ext.Focus.RecentTitles(ctx, liveOf(live), s.now().Add(-focus.HistoryWindow))
+	fi, now := s.focusIndex(ctx), s.now()
+	recent, err := s.ext.Focus.RecentTitles(ctx, liveOf(live), s.now().Add(-focus.HistoryWindow), 0)
 	if err != nil {
 		s.logger.Printf("sessions_overview: recent titles: %v", err)
 	}
@@ -274,8 +551,9 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	size := len(toolJSON(res)) + len(`,"sessions":[]`)
 	out := []overviewSession{}
 	for i, ls := range live {
-		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Name: ls.name, Host: ls.host, Status: ls.status,
-			Focus: fi[ls.sub].Title, Attention: pending[ls.sub], Transcript: tails[i]}
+		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Runtime: ls.runtime, Name: ls.name, Host: ls.host, Where: ls.where,
+			Repo: ls.repo, GitHubRepo: ls.githubRepo, Status: ls.status,
+			Focus: fi[ls.sub].Title, focusAgeFields: fi.ageFields(ls.sub, now), Attention: pending[ls.sub], Transcript: tails[i]}
 		if !ls.activeAt.IsZero() {
 			row.ActiveAt = ls.activeAt.UTC().Format(time.RFC3339)
 		}

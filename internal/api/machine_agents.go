@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // agentJSON is the machine-API projection of a provisioned agent. It is the ONE
@@ -88,8 +89,15 @@ type agentJSON struct {
 	// the at-most-once delivery's accepted cost: such a turn is never retried
 	// automatically. Re-sending it through the agent's chat is safe only when the
 	// recorded cause proves nothing was sent (agents.KickoffResendSafe); otherwise the
-	// runtime may still be running the turn, and the card's remedy says to check first.
+	// runtime may still be running the turn, and the agent page's remedy says to check first.
 	KickoffFailed bool `json:"kickoffFailed"`
+	// Outcome is how the work the agent was started on ended, or "" when nobody
+	// started it with a first turn: running|done|failed|stuck (agent_outcome.go,
+	// AgentOutcome), and OutcomeReason why (a failure's error, the watchdog's
+	// "no reply since kickoff" / "silent for 30 min"). NOT omitempty: "" is an answer.
+	Outcome       string     `json:"outcome"`
+	OutcomeReason string     `json:"outcomeReason"`
+	OutcomeAt     *time.Time `json:"outcomeAt"`
 	// ErrorMessage is the stored provisioning/reconcile failure reason, or "" when
 	// none was recorded. NOT omitempty, for the same reason: a red agent with an
 	// empty reason is a different (and worse) fact than a red agent with one.
@@ -120,7 +128,7 @@ type agentJSON struct {
 	LastMessageAt *time.Time `json:"lastMessageAt"`
 	// LastActivityAt is the LIVENESS field: the newest durable event muster holds
 	// for this agent — max(LastMessageAt, UpdatedAt), computed by
-	// agents.LastActivity, which is also what the Agents list orders its cards by.
+	// agents.LastActivity, which is also what the sidebar orders its agents by.
 	// Never null, so a consumer can always threshold on it.
 	//
 	// 🔴 WHY A STATUS FIELD IS NOT ENOUGH, and what this can and cannot detect.
@@ -181,12 +189,14 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		KickedOff:       a.KickedOff,
 		KickoffOwed:     agents.KickoffOwed(a),
 		KickoffFailed:   agents.KickoffFailed(a),
+		Outcome:         a.Outcome,
+		OutcomeReason:   agents.ScrubNote(a.OutcomeReason, a.PendingNote),
 		ErrorMessage:    agents.ScrubNote(a.ErrorMessage, a.PendingNote),
 		KickoffError:    agents.ScrubNote(a.KickoffError, a.PendingNote),
 		KickoffAttempts: a.KickoffAttempts,
 		CreatedAt:       a.CreatedAt,
 		UpdatedAt:       a.UpdatedAt,
-		// agents.LastActivity is the one definition; the Agents list sorts by it.
+		// agents.LastActivity is the one definition; the sidebar sorts by it.
 		LastActivityAt: agents.LastActivity(a, lastMsg),
 	}
 	if a.NoteID != nil {
@@ -196,6 +206,10 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 	if !lastMsg.IsZero() {
 		at := lastMsg
 		v.LastMessageAt = &at
+	}
+	if a.OutcomeAt != nil {
+		at := *a.OutcomeAt
+		v.OutcomeAt = &at
 	}
 	return v
 }
@@ -234,7 +248,7 @@ func (s *Server) lastMessageByAgents(ctx context.Context, list []agents.Agent) m
 // ROUTE NO LONGER EXISTS AT ALL (task #653 phase two deleted the operator tier),
 // so this is now the only JSON agent read, full stop. Unlike the operator route
 // it makes NO live k8s call — it is a pure DB read of the
-// stored status, matching how the agents list and the task-card join already
+// stored status, matching how the sidebar's agent list and the task-card join already
 // avoid per-agent pod lookups, so it is cheap enough to poll.
 func (s *Server) handleAPIAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -355,9 +369,8 @@ type chatSessionJSON struct {
 // reason, because the set of routes on this wrapper is the thing that must never
 // grow quietly.
 //
-// ⚠ WHAT THAT TIER COSTS, STATED THE WAY transcripts.go STATES IT: the wrapper is
-// ENFORCE-WHEN-SET. On a server with no MUSTER_HOOK_TOKEN it serves this to anyone
-// who can reach the LAN NodePort. The deployed server sets one.
+// ⚠ WHAT THAT TIER COSTS: the shared secret, held by every hook script. With no
+// MUSTER_HOOK_TOKEN the wrapper admits nobody (and the server does not boot).
 //
 // 🔴 THERE IS NO AGENT HALF, AND THE SENTENCE THAT USED TO SIT HERE CLAIMING ONE
 // WAS UNARMED IS THE REASON. It read "the agent half is unarmed in production (no
@@ -574,8 +587,7 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // TestTheMachineAgentMessageWriteSteersIntoTheSessionTheReadReturns posts here and
 // reads it back over the GET.
 //
-// 🔴 requireArmedHookToken — THE SHARED SECRET, NOT THE AGENT TIER, AND FAIL-CLOSED
-// RATHER THAN ENFORCE-WHEN-SET. The credential choice is the reason the READ is on
+// 🔴 requireArmedHookToken — THE SHARED SECRET, NOT THE AGENT TIER, AND FAIL-CLOSED. The credential choice is the reason the READ is on
 // it: the handler keys on an arbitrary {name} with NO self-scoping, so on the wider
 // tier one admitted pod could steer EVERY other agent. A write is strictly worse
 // than the read that argument was made about. The caller this exists for is
@@ -583,20 +595,32 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // already.
 //
 // ⚠ THE ARMING HALF IS A SEPARATE CLAIM AND IT IS THE ONE THE ROUND-1 AUDIT FORCED.
-// Every other requireHookToken route serves OPEN when MUSTER_HOOK_TOKEN is unset;
-// this one answers 503. The route it re-homed off (requireOperatorToken) demanded a
-// bearer unconditionally, so inheriting the open default would have turned a
-// fail-CLOSED agent-steering write into a fail-OPEN one as a side effect of moving
-// it. It also concedes what the tier comparison above does not: the credential to
+// When this route moved, the rest of the hook tier still served an unconfigured
+// server open; this one was made to refuse, because the route it re-homed off
+// (requireOperatorToken) demanded a bearer unconditionally. The whole tier is
+// fail-closed now (requireHookToken). It also concedes what the tier comparison above does not: the credential to
 // steer an agent went from the reserved operator's in-cluster uuid — held by one pod
 // — to a shared secret that names no caller and travels in cleartext to the LAN
 // NodePort many times a day. Full argument at the registration site
 // (registerAgentRoutes) and on the wrapper (requireArmedHookToken).
 //
-// ⚠ IT RUNS A TOOL-LESS TURN (askTurn), NOT chatTurn: the operator route it
-// replaces ran a plain turn, and this change re-homes a path rather than widening
-// what the agent can do while answering on it. A turn for the gateway runtime
-// beside a claude-code chief's ccd carries the chief's instructions (askTurn).
+// 🔴 A GATEWAY AGENT'S TURN HERE CARRIES ITS MUSTER TOOLS (gatewayTurn), acting
+// as the agent's OWNER (authz.ViaAgentMessage), never as this request's
+// principal — the shared hook token's is the operator's, whoever owns the agent.
+// It once ran a toolless turn (the plain turn of the operator route it
+// re-homed), so a gateway agent asked something here could not call
+// agent_report_done, attention_ask or its task tools in its answer. A
+// claude-code agent's turn stays toolless: its CLI reaches muster's tools over
+// MCP, and ccd ignores a request's tools.
+//
+// ⚠ WHAT THE TURN CARRIES IS EXACTLY WHAT THE AGENT'S OWN CHAT DOOR (chatTurn)
+// GIVES IT, deliberately — one assembly, turnTools: the system prompt
+// (AgentInstructions, which on a task names its close-out protocol; this door
+// sent none before) and AgentToolDefsFor. So a GATEWAY-KIND CHIEF (`muster chief
+// replace --kind gateway`) asked here gets its chief tool set — session routing,
+// reply drafts, answer_session_question, the gated task tool, the fleet report —
+// as in its own chat, and no worker-only tool (agent_report_done is notChief).
+// TestAMachineMessageToAGatewayChiefOffersItsChatDoorsTools pins that equality.
 //
 // 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
 // PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
@@ -642,12 +666,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	// one plugin deliveries go to — and every other agent's to its latest, as
 	// before. Whether or not MUSTER_CHIEF_SESSION_RUNTIMES is set: that flag
 	// draws the runtime picker, it does not gate this routing.
-	var sess agents.ChatSession
-	if s.isChiefAgent(ctx, a) {
-		sess, err = s.defaultSession(ctx, a)
-	} else {
-		sess, err = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
-	}
+	sess, err := s.deliverySession(ctx, a)
 	if err != nil {
 		s.logger.Printf("agents: api message session for %q: %v", name, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not open a chat session for that agent"})
@@ -656,15 +675,43 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	reply, err := s.askTurn(withSessionRoute(ctx, a, sess), a, sess.SessionKey, body.Message)
+	// 🔴 THE TURN IS DETACHED FROM THE REQUEST'S CANCELLATION (keeping its
+	// principal), bounded by agentTurnBudget as POST /agents/{name}/send's is
+	// (startAgentTurn). A tool turn is several requests and its tools have side
+	// effects — connector_status alone waits up to 50 s, past `chief ask`'s
+	// default 30 s timeout — so a caller that gives up must not cut the loop
+	// midway: that left the tools' effects done, no reply stored and the
+	// outcome `running`. The turn finishes, its reply is stored and its outcome
+	// recorded whether or not anyone is still waiting for the answer.
+	dctx := context.WithoutCancel(ctx)
+	turnCtx, cancel := context.WithTimeout(dctx, agentTurnBudget(a.Kind))
+	defer cancel()
+	// The one turn, in the outcome bracket (outcomeTurn): closed on every path,
+	// a panic included.
+	reply, err := func() (reply string, err error) {
+		tctx, turn := s.outcomeTurn(turnCtx, a)
+		defer turn.close(&reply, &err)
+		return s.gatewayTurn(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, authz.ViaAgentMessage)
+	}()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return
 	}
 	if reply != "" {
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+		if _, err := s.ext.Agents.AddChatMessage(dctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply,
-		})
+		}); err == nil {
+			// 🔴 chat.reply AFTER THE REPLY IS STORED, as every other door's
+			// persisted turn says: the turn's own end (chat.turn) is broadcast
+			// when the turn closes, BEFORE this store, so an open chat that
+			// refetched on it drew "working…" gone and no reply — and nothing
+			// told it to look again. It was masked while the chief page's context
+			// chip sat inside the chat pane and re-dispatched every chat event,
+			// which refetched the transcript a second time a few ms later.
+			// To the AGENT's owner, as the turn count's event goes
+			// (session_turns.go): this door's principal is a machine token's.
+			s.broadcastTo(a.OwnerID, EventChatReply, a.Name)
+		}
 	}
 	// `agent`, `agentId` and `sessionId` are emitted alongside the reply — which
 	// the operator route did NOT carry. They are what lets a caller prove which

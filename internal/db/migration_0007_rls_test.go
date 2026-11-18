@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message int64
+	var note, agent, session, plugin, message, device, page, link, contact int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -77,34 +77,79 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO note_attachments (note_id, filename, size_bytes, data) VALUES ($1, 'a.txt', 1, '\x61')`, func() []any { return []any{note} }, nil},
 		{`INSERT INTO task_sessions (note_id, session_id, role) VALUES ($1, $2, 'created')`, func() []any { return []any{note, "sess-" + tag} }, nil},
 		{`INSERT INTO agents (name, namespace, note_id) VALUES ($1, $2, $3) RETURNING id`, func() []any { return []any{"agent-" + tag, "ns-" + tag, note} }, &agent},
+		{`INSERT INTO agent_secrets (agent_id, hooks_token) VALUES ($1, $2)`, func() []any { return []any{agent, "hooks-" + tag} }, nil},
 		{`INSERT INTO chat_sessions (agent_id, session_key) VALUES ($1, $2) RETURNING id`, func() []any { return []any{agent, "key-" + tag} }, &session},
 		{`INSERT INTO chat_messages (agent_id, session_id, role, content) VALUES ($1, $2, 'user', 'hello')`, func() []any { return []any{agent, session} }, nil},
 		{`INSERT INTO connectors (name, hosts, auth_scheme, secret_ciphertext) VALUES ($1, ARRAY['api.example.test'], 'bearer', '\x00')`, func() []any { return []any{"conn-" + tag} }, nil},
 		{`INSERT INTO connector_grants (agent_id, connector_name) VALUES ($1, $2)`, func() []any { return []any{agent, "conn-" + tag} }, nil},
+		{`INSERT INTO connector_standing_grants (connector_name, source) VALUES ($1, 'stored')`, func() []any { return []any{"conn-" + strings.ToLower(tag)} }, nil},
 		{`INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status) VALUES ('proxy', $1, 'a', 'c', 'GET', 'h', '/', 200)`, func() []any { return []any{agent} }, nil},
-		{`INSERT INTO github_connection (login, scopes, token_ciphertext) VALUES ($1, 'repo', '\xde')`, func() []any { return []any{"octo-" + tag} }, nil},
 		{`INSERT INTO mirror_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "hash-" + tag} }, nil},
 		{`INSERT INTO flow_runner_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "flowhash-" + tag} }, nil},
 		{`INSERT INTO flow_requests (agent_id, agent_name, flow, host, instance, expires_at) VALUES ($1, 'a', 'muse.poll', 'laptop', 'personal', now() + interval '1 hour')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO flow_jobs (flow, class, host, instance, requested_via, expires_at) VALUES ('muse.poll', 'read', $1, 'personal', 'session', now() + interval '1 hour')`, func() []any { return []any{"host-" + tag} }, nil},
 		{`INSERT INTO user_credentials (kind, name, secret_ciphertext, fingerprint) VALUES ('claude', $1, '\x00', 'fp')`, func() []any { return []any{"acct-" + tag} }, nil},
 		{`INSERT INTO cc_account_marks (account, rate_limited_detail) VALUES ($1, 'x')`, func() []any { return []any{"acct-" + tag} }, nil},
+		{`INSERT INTO cc_account_usage (account) VALUES ($1)`, func() []any { return []any{"acct-" + strings.ToLower(tag)} }, nil},
 		{`INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ($1, 'k', 'a')`, func() []any { return []any{"https://fcm.googleapis.com/fcm/send/" + tag} }, nil},
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
-		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now())`, func() []any { return []any{"phone-" + tag} }, nil},
+		{`INSERT INTO suggest_preferences (disabled) VALUES (true)`, func() []any { return nil }, nil},
+		{`INSERT INTO chief_preferences (enabled) VALUES (true)`, func() []any { return nil }, nil},
+		{`INSERT INTO notify_preferences (tmux_address) VALUES (true)`, func() []any { return nil }, nil},
+		{`INSERT INTO chief_nudges (session_kind, session_key, streak_key, decision, mode, outcome) VALUES ('mirror', $1, 'since:1', 'leave', 'shadow', 'left')`, func() []any { return []any{"sess-" + tag} }, nil},
+		{`INSERT INTO suggest_usage (shown) VALUES (1)`, func() []any { return nil }, nil},
+		{`INSERT INTO officer_llm_usage (officer, instance, day, requests, cost_usd) VALUES ('triage:example-' || lower($1), 1, '2000-01-01', 1, 0.01)`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_judgement_sessions (officer, day, items) VALUES ('triage:example-' || lower($1), '2000-01-01', '{a}')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_pr_loops (officer, repo, pr, state) VALUES ('draft:example-' || lower($1), 'example-org/example-web', 1, 'pending')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_public_branches (officer, repo, item, branch) VALUES ('draft:example-' || lower($1), 'example-org/example-web', 1, 'officer/fix/raise-limit-abcdefghijkl')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_connector_blocks (officer, grant_id, item) VALUES ('draft:example-' || lower($1), 1, '1')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_host_spawns (officer, instance, host) VALUES ('marketing:example-' || lower($1), 'officer-marketing-example-1', 'host-a')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO plugin_pair_requests (public_id, name, label, data_scope, capabilities, code_hash, poll_secret_hash, expires_at)
+			VALUES (left(md5($1) || md5($1), 22), 'example-pair', 'Pair', 'example', '{messages}', repeat('a', 64), repeat('b', 64), now() + interval '10 minutes')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
+		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},
+		{`INSERT INTO session_prs (kind, repo, pr, claude_session, host) VALUES ('gh-pr-create', $1, 7, 'sess', 'host')`, func() []any { return []any{"acme-labs/repo-" + strings.ToLower(tag)} }, nil},
+		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now()) RETURNING id`, func() []any { return []any{"phone-" + tag} }, &device},
+		{`INSERT INTO device_challenges (device_id, nonce_sha256, action, target, expires_at) VALUES ($1, sha256(convert_to($2, 'UTF8')), 'ask_dismiss', '1', now() + interval '2 minutes')`, func() []any { return []any{device, "nonce-" + tag} }, nil},
 		{`INSERT INTO device_pairing_codes (code_sha256, signin_at, expires_at) VALUES (sha256(convert_to($1, 'UTF8')), now(), now() + interval '1 minute')`, func() []any { return []any{"code-" + tag} }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},
+		{`INSERT INTO plugin_handoffs (plugin_id, code_hash, target, purpose, stepped_up, minted_at, expires_at) VALUES ($1, md5($2) || md5($2), '{"mirror":{}}', 'view', false, now(), now() + interval '1 minute')`, func() []any { return []any{plugin, "handoff-" + tag} }, nil},
+		{`INSERT INTO plugin_chief_instructions (plugin_id, text, sha) VALUES ($1, $2, encode(sha256(convert_to($2, 'UTF8')), 'hex'))`, func() []any { return []any{plugin, "guide-" + tag} }, nil},
 		{`INSERT INTO plugin_messages (plugin_id, external_id, body, status, agent_id) VALUES ($1, $2, 'hello', 'delivering', $3) RETURNING id`, func() []any { return []any{plugin, "ext-" + tag, agent} }, &message},
+		{`INSERT INTO routing_rules (plugin_id, plugin_name, match_sender, action, settle_reason, chief_agent, source_message) VALUES ($1, 'example', 'news@example.test', 'settle', 'a newsletter', 1, $2)`, func() []any { return []any{plugin, message} }, nil},
+		{`INSERT INTO chief_turn_usage (chief_agent, trigger, outcome, input_tokens) VALUES ($1, 'plugin', 'settled', 12)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO chief_session_llm_usage (session_id, day, model, requests, cost_usd) VALUES ($1, '2000-01-01', 'openrouter/example/model', 1, 0.01)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO chief_session_llm_reservations (session_id, amount_usd, expires_at) VALUES ($1, 0.01, now() + interval '1 minute')`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO fleet_owner_marks (looked_at) VALUES (now())`, func() []any { return nil }, nil},
+		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO recents (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO session_tags (kind, agent_id, tag) VALUES ('agent', $1, 'tagged')`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO asks (kind, runtime, question) VALUES ('attention_ask', 'agent', 'ok?')`, func() []any { return nil }, nil},
+		{`INSERT INTO ask_attempts (runtime, door, action, method, outcome, reason) VALUES ('claude-code', 'card', 'submit', 'typed', 'ok', 'typed')`, func() []any { return nil }, nil},
+		{`INSERT INTO host_dispatches (host, runtime, repo, reservation_id) VALUES ('ws', 'claude', 'acme/widgets', 1)`, func() []any { return nil }, nil},
+		{`INSERT INTO chief_proposals (kind, chief_agent, owner_message, subject_key, subject_runtime, subject_host, subject_tmux_session, subject_tmux_window, target, repo, kickoff, kickoff_sha256, kickoff_ref) VALUES ('succession', 1, 1, 'opencode:ses_0x', 'opencode', 'ws', 's', '@1', 'host/ws/opencode', 'acme/widgets', 'go', repeat('a', 64), 'm:000000000000')`, func() []any { return nil }, nil},
 		{`INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at) VALUES ($1, 's', '', 'hello', now())`, func() []any { return []any{"host-" + tag} }, nil},
 		{`INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title) VALUES ('agent', $1::bigint::text, $1, 'focus')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO agent_focus_history (subject_kind, subject_key, agent_id, title) VALUES ('agent', $1::bigint::text, $1, 'focus')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO uploads (public_id, object_key, filename, content_type, size_bytes, expires_at) VALUES (substr(md5($1), 1, 22), 'uploads/' || substr(md5($1), 1, 22), 'f.png', 'image/png', 1, now() + interval '1 day')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO attention_asks (agent_id, question, expires_at) VALUES ($1, 'which way?', now() + interval '1 hour')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO jobs (agent_id, agent_name, prompt, timeout_s) VALUES ($1, 'a', 'review it', 60)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO session_episodes (session_kind, session_key, seq, state) VALUES ('mirror', $1, 1, 'stalled')`, func() []any { return []any{"sess-" + tag} }, nil},
+		{`INSERT INTO cc_account_failovers (agent_id, agent_name, from_account, to_account, reason) VALUES ($1, 'a', 'north', 'south', 'rate_limited')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO session_routes (route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at) VALUES ('rt_' || substr(md5($1), 1, 24), $2, $3, 'mirror', 'sess', now() + interval '1 hour')`, func() []any { return []any{tag, message, agent} }, nil},
+		{`INSERT INTO task_ref_writes (note_id, plugin_id, kind, status) VALUES ($1, $2, 'status', 'in_progress')`, func() []any { return []any{note, plugin} }, nil},
+		{`INSERT INTO pages (title, agent_id) VALUES ($1, $2) RETURNING id`, func() []any { return []any{"page-" + tag, agent} }, &page},
+		{`INSERT INTO page_versions (page_id, version, title, blocks, size_bytes) VALUES ($1, 1, 'v1', '[]', 2)`, func() []any { return []any{page} }, nil},
+		{`INSERT INTO page_links (page_id, token_sha256, state, decided_at) VALUES ($1, md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
+		{`INSERT INTO page_responses (page_id, link_id, version, component, kind, data) VALUES ($1, $2, 1, 'q1', 'submit', '{"answer":"yes"}')`, func() []any { return []any{page, link} }, nil},
+		{`INSERT INTO officer_types (key, charter) VALUES ('conf-' || lower($1), 'c')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_defs (officer, type_key) VALUES ('conf-' || lower($1) || ':a', 'conf-' || lower($1))`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_items (officer, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'k', 's')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_schedules (officer, name, cron, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'nightly', '0 6 * * *', 'k', 's')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_contacts (officer, venue, handle) VALUES ('conf-' || lower($1) || ':a', 'example', 'someone') RETURNING id`, func() []any { return []any{tag} }, &contact},
+		{`INSERT INTO officer_contact_events (contact_id, kind, ref, at) VALUES ($1, 'reply', 'r1', now())`, func() []any { return []any{contact} }, nil},
 	}
 	for _, s := range steps {
 		var err error
@@ -133,12 +178,21 @@ func count(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, where s
 // security: keyed by a USER column (users.id, api_tokens.user_id,
 // audit_log.user_id) or admin-only (invites), not by owner_id. Their policies
 // are pinned whole by TestTheUserKeyedTablesCarryExactlyTheirPolicies.
-var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "users"}
+var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "team_members", "users"}
+
+// instanceTables are tables that belong to the SERVER, not to a user: no
+// owner_id, under forced row-level security with a scope_all policy only (the
+// system scope reads and writes them; a user's principal sees nothing). Their
+// policy is pinned by TestMigration0105InstanceBranding.
+//
+//   - instance_branding (0105, the instance's logo and name).
+var instanceTables = []string{"instance_branding"}
 
 // TestRLSCoversExactlyTheOwnedTables is the LEDGER: the set of public tables
 // with an owner_id column and the set carrying the owner_isolation policy must
 // be the same eleven, and the sets with RLS ENABLED and FORCED must be those
-// eleven plus the user-keyed account tables (0009) — and each owner_isolation
+// eleven plus the user-keyed account tables (0009) and the instance tables
+// (instanceTables) — and each owner_isolation
 // policy must have BOTH arms (the user and the scope-all) in USING and in WITH
 // CHECK, and each owner_id must default to the principal. It fails when a new
 // owned table arrives without RLS, and when RLS appears on a table that is in
@@ -160,7 +214,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 	}
 	want := rlsTables()
 	sort.Strings(want)
-	all := append(rlsTables(), userKeyedTables...)
+	all := append(append(rlsTables(), userKeyedTables...), instanceTables...)
 	sort.Strings(all)
 	for name, c := range map[string]struct {
 		got, want []string
@@ -172,7 +226,11 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"RLS forced": {set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 			WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity`), all},
 		"tables with an owner_isolation policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='owner_isolation'`), want},
+			WHERE schemaname='public' AND policyname='owner_isolation'`), isolatedTables()},
+		"tables with a team lend policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
+			WHERE schemaname='public' AND policyname='team_lent_read'`), lentTables()},
+		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
+			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
 		if !slices.Equal(c.got, c.want) {
@@ -189,6 +247,28 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		var tbl, name, cmd, permissive, qual, check string
 		if err := rows.Scan(&tbl, &name, &cmd, &permissive, &qual, &check); err != nil {
 			t.Fatal(err)
+		}
+		if c, shared := shareClasses[tbl]; shared {
+			// The team policies (0127): one per command, each with the user
+			// arm, the scope-all arm and the team arm at its role.
+			checkTeamPolicy(t, tbl, name, cmd, permissive, qual, check, c)
+			continue
+		}
+		if r, lent := lentOwned[tbl]; lent && name == "team_lent_read" {
+			// A lent table's read arm (0130), pinned whole by the share
+			// ledger; here only that it reads and admits nothing else.
+			if cmd != "SELECT" || permissive != "PERMISSIVE" || qual != lentArm(r) || check != "" {
+				t.Errorf("%s: team_lent_read %s %s USING %q CHECK %q; want SELECT, PERMISSIVE, %q", tbl, cmd, permissive, qual, check, lentArm(r))
+			}
+			continue
+		}
+		if r, own := teamOwnerRead[tbl]; own && name == "team_owner_read" {
+			// A team's own rows' read arm (0133), pinned whole by the share
+			// ledger; here only that it reads and admits nothing else.
+			if cmd != "SELECT" || permissive != "PERMISSIVE" || qual != ownerReadArm(r) || check != "" {
+				t.Errorf("%s: team_owner_read %s %s USING %q CHECK %q; want SELECT, PERMISSIVE, %q", tbl, cmd, permissive, qual, check, ownerReadArm(r))
+			}
+			continue
 		}
 		if name != "owner_isolation" || cmd != "ALL" || permissive != "PERMISSIVE" {
 			t.Errorf("%s: policy %q cmd=%s %s; want owner_isolation, ALL, PERMISSIVE", tbl, name, cmd, permissive)
@@ -433,7 +513,7 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"muster_agent_name_taken", "muster_retire_agent_name"}; !slices.Equal(got, want) {
+	if want := []string{"muster_agent_name_taken", "muster_owner_is_team", "muster_retire_agent_name"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
 	}
 }
@@ -533,7 +613,7 @@ func TestRLSOffAndOnRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRLSState(t, f, false)
-	for _, tbl := range ownedTables {
+	for _, tbl := range ownedTablesNow() {
 		if got, all := count(t, f.base, f.pool, tbl, ""), count(t, f.mig, f.pool, tbl, ""); got != all {
 			t.Errorf("RLS off: no principal sees %d of %d rows in %s", got, all, tbl)
 		}

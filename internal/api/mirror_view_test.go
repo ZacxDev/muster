@@ -58,6 +58,9 @@ type fakeMirrorV2 struct {
 	pasteErr error
 	watches  []watchCall
 	pastes   []pasteCall
+	// keys is each paste's mirror.MessageKey, in order (a gated send's
+	// message id is derived from it).
+	keys []string
 }
 
 func (f *fakeMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
@@ -118,9 +121,18 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 		*o.Window = resolved
 	}
 	var sup error
-	if o.Expect != nil && f.agentState != nil && (f.agentState.Since != o.Expect.Since || f.agentState.Pasted != o.Expect.Pasted) {
+	// The hub's own rule, the same function (Window.ShownSessionRefusal): a
+	// rendered-view send goes only while the window holds the session it was
+	// written for — a gated window's, or a Claude Code window's.
+	for _, w := range f.windows {
+		if w.Session == session && w.ID == resolved && target != mirror.PasteActivePane {
+			sup = w.ShownSessionRefusal(o.Shown)
+		}
+	}
+	if sup == nil && o.Expect != nil && f.agentState != nil && (f.agentState.Since != o.Expect.Since || f.agentState.Pasted != o.Expect.Pasted) {
 		sup = &mirror.SupersededError{Pasted: f.agentState.Pasted}
 	}
+	f.shown = append(f.shown, o.Shown)
 	f.mu.Unlock()
 	if sup != nil {
 		return sup
@@ -128,6 +140,7 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 	f.v2.mu.Lock()
 	defer f.v2.mu.Unlock()
 	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text, target, o.Expect})
+	f.v2.keys = append(f.v2.keys, o.Key)
 	if f.user(ctx) != 1 {
 		return mirror.ErrHostOffline
 	}
@@ -170,19 +183,22 @@ func TestAClaudePanesCardOpensTheRenderedViewAndOthersTheTerminal(t *testing.T) 
 			fm.v2 = &fakeMirrorV2{}
 		}
 		s, ts := viewServer(t, fm)
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
+		// The sidebar's rows (where the retired list's cards went).
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
 		wantMain := ui.MirrorTerminalPath("ws", "main")
 		if v2 {
 			wantMain = ui.MirrorViewPath("ws", "main")
 		}
 		if !strings.Contains(list, `href="`+amp(wantMain)+`"`) {
-			t.Errorf("v2=%v: main's card does not open %s:\n%s", v2, wantMain, list)
+			t.Errorf("v2=%v: main's row does not open %s:\n%s", v2, wantMain, list)
 		}
 		if !strings.Contains(list, `href="`+amp(ui.MirrorTerminalPath("ws", "chief"))+`"`) {
-			t.Errorf("v2=%v: a non-Claude session's card does not open its terminal", v2)
+			t.Errorf("v2=%v: a non-Claude session's row does not open its terminal", v2)
 		}
-		if got := strings.Count(list, "data-mirror-claude"); got != map[bool]int{true: 1, false: 0}[v2] {
-			t.Errorf("v2=%v: %d Claude Code badges", v2, got)
+		// A Claude pane is found as one (its row's palette words; the card's
+		// "Claude Code" badge has no successor on the row).
+		if got := strings.Count(list, `data-switcher-words="claude code `); got != map[bool]int{true: 1, false: 0}[v2] {
+			t.Errorf("v2=%v: %d rows found as Claude Code", v2, got)
 		}
 	}
 }
@@ -332,6 +348,31 @@ func TestTheViewSocketRendersBatchesWithTheChatsComponents(t *testing.T) {
 	}
 }
 
+// TestTheViewSocketLinksMentions is the wiring: the rendered view's socket
+// draws its assistant text with a mentions index over the viewer's own hosts,
+// so naming a window (its session "main", as @main) links to its view.
+func TestTheViewSocketLinksMentions(t *testing.T) {
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
+		{Type: mirror.TypeEvents, Reset: true, Gen: "g1", Offset: 10, Events: []cctranscript.Event{
+			{Kind: cctranscript.KindText, Text: "ask @main next"},
+		}},
+	}}}
+	s, ts := viewServer(t, fm)
+	c, _, err := dialTerm(t, s, ts, ui.MirrorViewWSPath("ws", "main")+"&gen=g0&offset=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	ops := readBatch(t, c)["ops"].([]any)
+	if len(ops) != 1 {
+		t.Fatalf("%d ops", len(ops))
+	}
+	h := ops[0].(map[string]any)["html"].(string)
+	if want := `<a href="` + amp(ui.MirrorRef{Host: "ws", Session: "main"}.ViewPath()) + `" data-mention="session"`; !strings.Contains(h, want) {
+		t.Errorf("the reply does not link @main (%s):\n%s", want, h)
+	}
+}
+
 // The host's prompt index reaches the browser as the batch's index, each prompt
 // named by its bubble's element id and bounded again here (a ref naming no
 // prompt dropped), the host's "more" passed through; a batch from a host that
@@ -376,8 +417,10 @@ func TestTheViewSocketPassesTheRefusalThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.CloseNow()
-	if m := readBatch(t, c); m["type"] != "error" || m["message"] != refusal.Error() {
-		t.Fatalf("got %v, want the plugin's own refusal", m)
+	// Plain words on the banner's line; the plugin's own refusal, exactly, is
+	// its ⓘ's detail.
+	if m := readBatch(t, c); m["type"] != "error" || m["message"] != "There is no Claude Code conversation in this window." || m["detail"] != refusal.Error() {
+		t.Fatalf("got %v, want plain words with the plugin's own refusal as the detail", m)
 	}
 }
 
@@ -487,6 +530,17 @@ func (m *isoMirror) WatchWindow(ctx context.Context, host, _, _, _ string, _ int
 
 // HostRanks: no ranks are known (every host draws its hash fallback).
 func (m *isoMirror) HostRanks(context.Context) map[string]int { return nil }
+
+// LiveTokenHosts: no tokens are known.
+func (m *isoMirror) LiveTokenHosts(context.Context) ([]string, error) { return nil, nil }
+
+// HostToken: no connection is tracked.
+func (m *isoMirror) HostToken(context.Context, string) (int64, bool) { return 0, false }
+
+// VisibleHosts: the isolation walk's team host (isoMirror.team), to its
+// members on a door that carries teams; nothing else (each route reads its
+// own entries through Hosts).
+func (m *isoMirror) VisibleHosts(ctx context.Context) []mirror.HostView { return m.teamVisible(ctx) }
 
 // ScrollWindow: A's host advertises no scrolling (Hosts sets no PaneScroll), so
 // the route answers 409 for A before asking; as B it must 404 before that.

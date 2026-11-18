@@ -1,0 +1,2093 @@
+package mirrorhost
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/opencodehost"
+)
+
+// THE CHIEF STARTS AN AGENT ON THIS HOST (agent-spawn): the host half of
+// docs/design/chief-dispatch.md section 3. The wire and the server half are
+// internal/mirror's agentspawn.go.
+//
+// 🔴 THIS HOST'S OWN RULES HOLD WHATEVER muster SENDS (5.5, a compromised
+// server). The request names a runtime, a repository, a base branch, a prompt
+// and a display name. Everything else is decided here:
+//
+//   - OFF unless this host opted in: -interactive, -agent-spawn, the DEFAULT
+//     tmux server, and a prompt directory (agentSpawnUnavailable);
+//   - the AUDIT LOG's first line is written before anything else, and a spawn
+//     whose line cannot be written is refused (fail closed);
+//   - the repository must be on this host's OWN allow-list (-agent-spawn-repos,
+//     empty by default: nothing spawns until the owner lists one), and must
+//     resolve to exactly one clone under this host's roots;
+//   - the RATE LIMIT is counted from the audit log, so a restart does not reset it;
+//   - the prompt must begin with one of muster's fixed prefaces
+//     (mirror.HasSpawnPreface: the chief's, or an officer instance's):
+//     Claude Code reads a first word equal to a subcommand name as that
+//     subcommand even after `--` (measured);
+//   - every argv word is a constant or a value built here and checked against
+//     hostWordRE; the prompt never reaches tmux or a shell's parser: it travels
+//     in a 0600 file a CONSTANT wrapper reads into a quoted variable;
+//   - the worktree is fresh, cut from origin/<base> after a fetch, under this
+//     host's own agents directory; the owner's checkout is never touched;
+//   - Claude Code's folder-trust entry is written for that worktree and
+//     nothing else (trustSpawnedWorktree);
+//   - opencode (agentspawn_opencode.go) only beside -opencode-send and a token,
+//     with the TUI's version the service's, and a model the host's own opencode
+//     lists under OpenRouter — all checked before any git call; its prompt is
+//     POSTED through opencode's API once the window is bound, never an argv
+//     word.
+
+// DefaultAgentSpawnRate is -agent-spawn-rate's default: 3 per 10 minutes and
+// 10 per 24 hours (its daily part equals the server's daily cap). It counts
+// the CHIEF's spawns; officer spawns have their own ceiling.
+const DefaultAgentSpawnRate = "3/10m,10/24h"
+
+// DefaultAgentSpawnOfficerRate is -agent-spawn-officer-rate's default: the
+// host's ceiling on every officer spawn together. muster's own per-officer
+// limits (sized from each officer's poll and schedule, internal/officers
+// SpawnBudgetFor) sit under it; this is what holds whatever muster sends.
+const DefaultAgentSpawnOfficerRate = "20/10m,400/24h"
+
+// AgentSpawnDeadline is the host's spawn deadline, from RECEIPT of the request
+// (queue wait included): below the server's 150 s wait by a 30 s margin.
+const AgentSpawnDeadline = 120 * time.Second
+
+// agentSpawnReserve is what the submodule step leaves for the steps after it.
+const agentSpawnReserve = 15 * time.Second
+
+// AgentSpawnConfig is -agent-spawn and its sibling flags (docs/design/
+// chief-dispatch.md 3.2).
+type AgentSpawnConfig struct {
+	// Enabled is -agent-spawn. OFF by default.
+	Enabled bool
+	// Roots are the directories whose DIRECT children are the clones a
+	// worktree may be cut from.
+	Roots []string
+	// Dir is where worktrees go (<Dir>/<owner>__<repo>/<dispatch>).
+	Dir string
+	// Repos is the allow-list, <owner>/<repo>, EMPTY BY DEFAULT: an empty list
+	// spawns nothing.
+	Repos []string
+	// Rate is -agent-spawn-rate ("" = DefaultAgentSpawnRate): the limit on
+	// the CHIEF's spawns.
+	Rate string
+	// OfficerRate is -agent-spawn-officer-rate ("" =
+	// DefaultAgentSpawnOfficerRate): the host's own ceiling on every OFFICER
+	// spawn together (a prompt beginning with mirror.OfficerSpawnPreface).
+	// muster sizes each officer's own limit from its poll and schedule; this
+	// is what holds whatever muster sends.
+	OfficerRate string
+	// Log is the append-only audit log (JSON lines, 0600).
+	Log string
+	// Server is the muster URL this mirror connects to, recorded on each
+	// request's first line.
+	Server string
+	// RuntimeDir is $XDG_RUNTIME_DIR: prompt files go under it ("" refuses).
+	RuntimeDir string
+	// TenantServer is -agent-spawn-tenant-server: the ONE non-default tmux
+	// server this mirror may spawn on, named as -tmux-socket names a server
+	// (a socket name) or as -tmux-socket-path does (an absolute socket path).
+	// It must resolve to the very server this mirror mirrors; empty (the
+	// default) keeps spawning on the default tmux server only (design 3.8).
+	TenantServer string
+	// SkipPermissionPrompts is -agent-spawn-skip-permissions: start each
+	// spawned agent WITHOUT permission prompts (the permission words below) —
+	// claude in bypassPermissions mode, opencode with --auto. 🔴 OPT-IN: the
+	// zero value, the default, starts each in its CLI's normal permission
+	// mode, so a tool call the owner did not expect (naming another pane,
+	// clearing its window's dispatch tag, reading the mirror's token) is a
+	// permission prompt the owner sees (docs/mirroring.md, "Permission
+	// prompts").
+	SkipPermissionPrompts bool
+	// Geteuid is the mirror's effective uid (nil = os.Geteuid). 🔴 AS ROOT,
+	// CLAUDE KEEPS ITS PROMPTS: Claude Code exits 1 on bypassPermissions when
+	// it runs as root outside a sandbox of its own, so a root mirror starts
+	// claude in normal permission mode whatever the setting says, and its hello
+	// says so (ClaudeSkipsPermissions). opencode's --auto is unaffected. No
+	// flag sets it; a test sets it to say "root" without being root.
+	Geteuid func() int
+
+	// ClaudeBin is -claude-path: the claude binary (absolute) a spawn runs
+	// and the readiness checks; "" resolves `claude` on the tmux server's
+	// global PATH. (Set it when the install put claude where that PATH does
+	// not reach, e.g. ~/.local/bin.)
+	ClaudeBin string
+	// --- test seams (no flag sets these) ---
+
+	// OpenCodeBin, when set, is the opencode binary (absolute) whose version
+	// is compared with the service's; otherwise `opencode` on the tmux
+	// server's global PATH.
+	OpenCodeBin string
+	// MirrorBin, when set, is the launcher binary an opencode window runs
+	// (`<MirrorBin> opencode -s <id>`); otherwise this process's own
+	// executable, so the launcher and the daemon are one build.
+	MirrorBin string
+	// BindWait replaces openCodeBindWait (tests).
+	BindWait time.Duration
+	// ClaudeState, when set, is Claude Code's state file; otherwise
+	// $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
+	ClaudeState string
+	// Git is the git binary, absolute: New resolves "git" on PATH into it
+	// when it is unset ("" after that: no git, nothing is offered).
+	Git string
+	// Now is the clock (nil = time.Now).
+	Now func() time.Time
+	// Deadline replaces AgentSpawnDeadline (tests).
+	Deadline time.Duration
+	// TrustLockWait replaces claudeLockWait (tests).
+	TrustLockWait time.Duration
+	// beforeTrustRead, when set (tests), runs between the trust entry's rename
+	// and its read-back: where a concurrent Claude Code write would land.
+	beforeTrustRead func(path string)
+	// beforeNewWindow, when set (tests), runs just before the deadline check
+	// that precedes `new-window`.
+	beforeNewWindow func()
+}
+
+// ClaudeSkipsPermissions reports whether a spawned claude starts without
+// permission prompts: the setting is on AND the mirror is not root (Geteuid).
+// THE one place that decides it — the argv (spawnSkips) and the hello both
+// read it, so what muster is told is what the host runs.
+func (c AgentSpawnConfig) ClaudeSkipsPermissions() bool {
+	return c.SkipPermissionPrompts && !c.Root()
+}
+
+// Root reports whether the mirror runs as root (effective uid 0, Geteuid).
+func (c AgentSpawnConfig) Root() bool {
+	euid := os.Geteuid
+	if c.Geteuid != nil {
+		euid = c.Geteuid
+	}
+	return euid() == 0
+}
+
+// spawnSkips is whether a spawn of the runtime gets the permission words:
+// opencode's --auto follows the setting alone; claude's also needs a mirror
+// that is not root (ClaudeSkipsPermissions).
+func (c AgentSpawnConfig) spawnSkips(opencode bool) bool {
+	if opencode {
+		return c.SkipPermissionPrompts
+	}
+	return c.ClaudeSkipsPermissions()
+}
+
+func (c AgentSpawnConfig) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+// git is the git binary: Git, which New resolves to an absolute path at
+// startup ("" when there is none: agentSpawnUnavailable says "git not found").
+func (c AgentSpawnConfig) git() string { return c.Git }
+
+func (c AgentSpawnConfig) deadline() time.Duration {
+	if c.Deadline > 0 {
+		return c.Deadline
+	}
+	return AgentSpawnDeadline
+}
+
+// hostWordRE is the characters a HOST-BUILT word of the spawn's tmux command may
+// have: paths, names and ids. None of them can form a trailing ';', which tmux
+// would read as its command separator.
+var hostWordRE = regexp.MustCompile(`^[A-Za-z0-9/._=@:-]+$`)
+
+// claudeWrapper is the ONLY shell text the spawned window's login shell
+// interprets for claude: read the prompt file named by $1 (the `printf x`
+// sentinel keeps trailing newlines), delete it, and exec the rest of the
+// arguments with the prompt as ONE final argument. The prompt is only ever the
+// value of a double-quoted variable, so the shell never parses it. A failed
+// read exits 97.
+const claudeWrapper = `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f -- "$1"; shift; exec "$@" "$p"`
+
+// spawnConstantWords is every CONSTANT word the spawn hands tmux (the
+// argv's constants and tmux's own options). TestNoSpawnConstantWordEndsInASemicolon
+// asserts none ends in ';'.
+var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "--opencode-bin", "-s",
+	claudeSkipPermissions[0], claudeSkipPermissions[1], claudeBypassAccepted[0], claudeBypassAccepted[1], openCodeSkipPermissions,
+	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
+	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption, spawnNoConfig[0], spawnNoConfig[1]}
+
+// THE PERMISSION WORDS of a spawn (-agent-spawn-skip-permissions, OFF by
+// default): constants, each that CLI's own documented way to start without
+// permission prompts.
+//   - claude: `--permission-mode bypassPermissions` (Claude Code `--help`:
+//     "Permission mode to use for the session", one of its listed choices; the
+//     same spelling ccd's bypass job lanes use, cmd/ccd/lanes.go). Equivalent to
+//     `--dangerously-skip-permissions`; one spelling across the repository.
+//   - opencode: `--auto` (opencode v2.0.32 `--help`: "Auto-approve permissions
+//     that are not explicitly denied"), which the launcher passes on to the TUI
+//     (cmd/muster-mirror/opencode_launch.go). The owner's deny rules still hold.
+var (
+	claudeSkipPermissions   = [2]string{"--permission-mode", "bypassPermissions"}
+	openCodeSkipPermissions = "--auto"
+)
+
+// claudeBypassAccepted: THE SPAWN NEVER STALLS AT CLAUDE CODE'S BYPASS
+// ACCEPTANCE SCREEN, and the owner's configuration is not written for it.
+// Claude Code started in bypassPermissions mode shows a one-time screen
+// ("WARNING: Claude Code running in Bypass Permissions mode … ❯ No, exit / Yes,
+// I accept") and waits there — no turn starts, no transcript is written —
+// until someone answers it, unless its own setting
+// skipDangerousModePermissionPrompt is true in the user, local, FLAG or policy
+// settings (Claude Code 2.1.289's bundle: the screen is skipped when
+// `mz()` — that key in userSettings, localSettings, flagSettings or
+// policySettings — holds; project settings are deliberately not read for it;
+// "Yes, I accept" writes it to userSettings, ~/.claude/settings.json). The
+// FLAG source is `--settings <file-or-json>`, which loads settings for this
+// one process only and is always enabled, whatever --setting-sources says:
+// so the spawn passes the key inline, as a constant word, and NOTHING on disk
+// changes — the owner's own settings are never touched, and an agent the
+// owner starts by hand still gets the screen. Measured against the real
+// binary (an isolated CLAUDE_CONFIG_DIR, no settings file): without it, the
+// screen; with it, the prompt box and "bypass permissions on", and no
+// settings file written. Only alongside claudeSkipPermissions: a spawn in
+// normal permission mode passes neither (the screen never shows there).
+//
+// It is a CONSTANT word, not a host-built one (its braces and quotes are not
+// host-word characters): tmux receives it as one argv word, and the claude
+// wrapper passes "$@" on verbatim (TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree).
+var claudeBypassAccepted = [2]string{"--settings", `{"skipDangerousModePermissionPrompt":true}`}
+
+// spawnArgv is the argv a spawn's window runs: THE one place it is built.
+// claude: the constant wrapper reads promptFile and appends the prompt after
+// `--`; opencode: the launcher (launcher, the absolute muster-mirror) on
+// openCodeBin and session sid. skip adds the permission words above; without
+// it the argv is byte-identical to the one before the setting existed.
+func spawnArgv(shell, promptFile, bin, sid string, opencode bool, openCodeBin string, skip bool) []string {
+	if opencode {
+		argv := []string{shell, "-l", "-c", loginScript, shell, bin, "opencode", "--opencode-bin", openCodeBin, "-s", sid}
+		if skip {
+			argv = append(argv, openCodeSkipPermissions)
+		}
+		return argv
+	}
+	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, bin, "--session-id", sid}
+	if skip {
+		argv = append(argv, claudeSkipPermissions[0], claudeSkipPermissions[1], claudeBypassAccepted[0], claudeBypassAccepted[1])
+	}
+	return append(argv, "--")
+}
+
+// scratchDirName is the directory under the agents directory where a
+// scratch spawn's private directory goes (<dir>/scratch/<dispatch>). It holds
+// no "__", so the worktree sweep never reads it as a repository's.
+const scratchDirName = "scratch"
+
+// spawnNoConfig is the tmux option the spawn's new-session carries: a server it
+// would start loads no configuration (newAgentWindow).
+var spawnNoConfig = [2]string{"-f", "/dev/null"}
+
+// errSpawn is a refusal with its code (mirror.Spawn*) and fixed detail.
+type errSpawn struct{ code, detail string }
+
+func (e *errSpawn) Error() string { return e.code + ": " + e.detail }
+
+func refuseSpawn(code, format string, a ...any) *errSpawn {
+	return &errSpawn{code: code, detail: fmt.Sprintf(format, a...)}
+}
+
+// agentSpawner is this host's spawn state: it outlives each connection.
+type agentSpawner struct {
+	// mu serialises spawns: one at a time per host.
+	mu sync.Mutex
+	// fwd is the forward limit's record (12 per window per hour).
+	fwdMu sync.Mutex
+	fwd   map[string][]time.Time
+}
+
+// spawnRate is one window of the rate limit: at most n in d.
+type spawnRate struct {
+	n int
+	d time.Duration
+}
+
+// ParseAgentSpawnRate reads -agent-spawn-rate: comma-separated <n>/<duration>,
+// a duration with units m or h ("3/10m,10/24h").
+func ParseAgentSpawnRate(s string) ([]spawnRate, error) {
+	return parseSpawnRate(s, DefaultAgentSpawnRate, "-agent-spawn-rate")
+}
+
+// ParseAgentSpawnOfficerRate reads -agent-spawn-officer-rate, as
+// ParseAgentSpawnRate.
+func ParseAgentSpawnOfficerRate(s string) ([]spawnRate, error) {
+	return parseSpawnRate(s, DefaultAgentSpawnOfficerRate, "-agent-spawn-officer-rate")
+}
+
+// parseSpawnRate is the one rate parser: s, or def when s is blank; flag
+// names the flag in an error.
+func parseSpawnRate(s, def, flag string) ([]spawnRate, error) {
+	if strings.TrimSpace(s) == "" {
+		s = def
+	}
+	var out []spawnRate
+	for _, part := range strings.Split(s, ",") {
+		n, d, ok := strings.Cut(strings.TrimSpace(part), "/")
+		k, err := strconv.Atoi(n)
+		if !ok || err != nil || k <= 0 {
+			return nil, fmt.Errorf("%s %q: each part is <count>/<duration>, e.g. 3/10m", flag, s)
+		}
+		dur, err := time.ParseDuration(d)
+		if err != nil || dur <= 0 {
+			return nil, fmt.Errorf("%s %q: %q is not a duration", flag, s, d)
+		}
+		out = append(out, spawnRate{n: k, d: dur})
+	}
+	return out, nil
+}
+
+// repoNameRE is the SHAPE of an <owner>/<repo> GitHub name. A repository
+// name may start with '.' (".github", ".dotfiles"); validRepoName is the
+// whole rule, refusing "." and ".." and any "..".
+var repoNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+// validRepoName reports whether s is an <owner>/<repo> name this host takes:
+// repoNameRE's shape, no ".." anywhere, and a repository part that is not ".".
+// THE one rule, for the allow-list, a request and an origin URL.
+func validRepoName(s string) bool {
+	_, repo, _ := strings.Cut(s, "/")
+	return repoNameRE.MatchString(s) && !strings.Contains(s, "..") && repo != "."
+}
+
+// repoOwnerRE is an <owner> GitHub name, for an "<owner>/*" entry.
+var repoOwnerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// ParseAgentSpawnRepos reads -agent-spawn-repos: comma-separated <owner>/<repo>
+// or <owner>/* (every repository of that owner: the repository part is exactly
+// the literal "*"), lower-cased.
+func ParseAgentSpawnRepos(s string) ([]string, error) {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if owner, ok := strings.CutSuffix(part, "/*"); ok && repoOwnerRE.MatchString(owner) {
+			out = append(out, strings.ToLower(owner)+"/*")
+			continue
+		}
+		if !validRepoName(part) {
+			return nil, fmt.Errorf("-agent-spawn-repos: %q is not <owner>/<repo> or <owner>/*", part)
+		}
+		out = append(out, strings.ToLower(part))
+	}
+	return out, nil
+}
+
+// repoAllowed reports whether repo (already a valid <owner>/<repo>) is on the
+// allow-list: its exact lower-cased name, or the entry "<its owner>/*" — built
+// from repo's own owner and compared for EQUALITY, never as a prefix, so
+// "acme-evil/x" does not match "acme/*".
+func repoAllowed(list []string, repo string) bool { return mirror.SpawnRepoAllowed(list, repo) }
+
+// --- the startup and per-spawn preconditions ---------------------------------
+
+// agentSpawnUnavailable is why this host cannot spawn at all now, "" when it
+// can: the flags, the default tmux server, the directories. Run at startup (the
+// mirror logs it) and again at each spawn.
+func agentSpawnUnavailable(cfg Config) string {
+	sc := cfg.AgentSpawn
+	switch {
+	case !cfg.Interactive:
+		return "not interactive"
+	case !sc.Enabled:
+		return "agent spawn is off"
+	}
+	if why := spawnTmuxServerRefusal(cfg.Backend, sc.TenantServer); why != "" {
+		return why
+	}
+	if sc.RuntimeDir == "" {
+		return "no XDG_RUNTIME_DIR for prompt files"
+	}
+	if sc.Git == "" || !filepath.IsAbs(sc.Git) {
+		return "git not found"
+	}
+	if sc.Dir == "" || !filepath.IsAbs(sc.Dir) || sc.Log == "" {
+		return "the agents directory and the audit log must be absolute paths"
+	}
+	if !hostWordRE.MatchString(sc.Dir) || !hostWordRE.MatchString(promptDir(sc.RuntimeDir)) {
+		return "a spawn path has characters tmux would parse"
+	}
+	dir := realOrClean(sc.Dir)
+	for _, r := range sc.Roots {
+		root := realOrClean(r)
+		if pathWithin(dir, root) || pathWithin(root, dir) {
+			return "the agents directory and a root must not contain each other"
+		}
+	}
+	if _, err := ParseAgentSpawnRate(sc.Rate); err != nil {
+		return "the spawn rate does not parse"
+	}
+	if _, err := ParseAgentSpawnOfficerRate(sc.OfficerRate); err != nil {
+		return "the officer spawn rate does not parse"
+	}
+	return ""
+}
+
+// notDefaultTmuxServer is "not the default tmux server" unless backend b is a
+// Tmux on the DEFAULT server: no -L/-S, or one that resolves to
+// realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>/default (design 3.8: a non-default
+// server is a tenant's by multi-tenant.md's own classification).
+func notDefaultTmuxServer(b Backend) string {
+	t, ok := tmuxOf(b)
+	if !ok {
+		return "not the default tmux server"
+	}
+	if t.Socket == "" && t.SocketPath == "" {
+		return ""
+	}
+	if resolvedTmuxSocket(t) == resolvedTmuxSocket(Tmux{}) {
+		return ""
+	}
+	return "not the default tmux server"
+}
+
+// resolvedTmuxSocket is the socket path of the server t names, resolved the way
+// tmux resolves it: -S <path> with its DIRECTORY's real path (the socket may
+// not exist yet), else -L <name> (or "default") under
+// realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>.
+func resolvedTmuxSocket(t Tmux) string {
+	if t.SocketPath != "" {
+		return filepath.Join(realOrClean(filepath.Dir(t.SocketPath)), filepath.Base(t.SocketPath))
+	}
+	name := t.Socket
+	if name == "" {
+		name = "default"
+	}
+	tmpdir := os.Getenv("TMUX_TMPDIR")
+	if tmpdir == "" {
+		tmpdir = "/tmp"
+	}
+	return filepath.Join(realOrClean(tmpdir), "tmux-"+strconv.Itoa(os.Getuid()), name)
+}
+
+// tenantServerNameRE is a -agent-spawn-tenant-server value naming a server as
+// -tmux-socket (-L) does: a socket NAME, no '/'.
+var tenantServerNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// ParseAgentSpawnTenantServer reads -agent-spawn-tenant-server: "" (off), a
+// socket name (-L form) or an absolute socket path (-S form). It answers the
+// server as a Tmux whose resolvedTmuxSocket can be compared with the mirror's.
+func ParseAgentSpawnTenantServer(s string) (Tmux, error) {
+	switch {
+	case s == "":
+		return Tmux{}, nil
+	case strings.Contains(s, "/"):
+		if !filepath.IsAbs(s) || filepath.Clean(s) != s || !hostWordRE.MatchString(s) {
+			return Tmux{}, fmt.Errorf("-agent-spawn-tenant-server %q: a socket path must be absolute and clean", s)
+		}
+		return Tmux{SocketPath: s}, nil
+	case s == "." || s == ".." || !tenantServerNameRE.MatchString(s):
+		return Tmux{}, fmt.Errorf("-agent-spawn-tenant-server %q: not a tmux socket name (letters, digits, '.', '_', '-') or an absolute socket path", s)
+	}
+	return Tmux{Socket: s}, nil
+}
+
+// spawnTmuxServerRefusal is why backend b's tmux server may not take a spawn,
+// "" when it may (design 3.8, revised):
+//
+//   - with NO opt-in, only the default tmux server (notDefaultTmuxServer, its
+//     detail unchanged) — so a tenant unit that sets -agent-spawn by mistake
+//     still refuses;
+//   - with -agent-spawn-tenant-server set, exactly the server it names, which
+//     must be the one this mirror mirrors: a value naming any other server
+//     (another tenant's, or the default one from a tenant unit) refuses with a
+//     detail of its own.
+func spawnTmuxServerRefusal(b Backend, optIn string) string {
+	if optIn == "" {
+		return notDefaultTmuxServer(b)
+	}
+	t, ok := tmuxOf(b)
+	if !ok {
+		return "not the default tmux server"
+	}
+	want, err := ParseAgentSpawnTenantServer(optIn)
+	if err != nil {
+		return "-agent-spawn-tenant-server is not a tmux socket name or an absolute socket path"
+	}
+	if resolvedTmuxSocket(want) != resolvedTmuxSocket(t) {
+		return "-agent-spawn-tenant-server names another tmux server than the one this mirror mirrors"
+	}
+	return ""
+}
+
+// spawnNamespace is "" for a mirror of the default tmux server, and
+// "tenant-<name>" for one of a tenant's server (<name> its -L name, or a short
+// hash of its -S path). A tenant's spawns put it in their worktree directory
+// (<agent-spawn-dir>/<namespace>/…), branch and prompt file, because two
+// muster servers number their dispatches independently: dispatch 12 of the
+// default server and dispatch 12 of a tenant's must never share a worktree, a
+// branch or a prompt file, and one mirror's sweep must never see the other's
+// worktrees (the default mirror's sweep reads only <owner>__<repo> entries,
+// which a namespace directory is not).
+func (c *Client) spawnNamespace() string {
+	t, ok := tmuxOf(c.cfg.Backend)
+	if !ok || notDefaultTmuxServer(t) == "" {
+		return ""
+	}
+	if t.SocketPath == "" && tenantServerNameRE.MatchString(t.Socket) {
+		return "tenant-" + t.Socket
+	}
+	sum := sha256.Sum256([]byte(resolvedTmuxSocket(t)))
+	return "tenant-" + hex.EncodeToString(sum[:6])
+}
+
+// spawnDir is where this mirror's spawned worktrees go: the agents directory,
+// or its namespace directory under it on a tenant's server.
+func (c *Client) spawnDir() string {
+	d := realOrClean(c.cfg.AgentSpawn.Dir)
+	if ns := c.spawnNamespace(); ns != "" {
+		return filepath.Join(d, ns)
+	}
+	return d
+}
+
+// tmuxOf is b's Tmux, looking through wrappers.
+func tmuxOf(b Backend) (Tmux, bool) {
+	for b != nil {
+		switch t := b.(type) {
+		case Tmux:
+			return t, true
+		case *Tmux:
+			return *t, true
+		}
+		u, ok := b.(interface{ Unwrap() Backend })
+		if !ok {
+			return Tmux{}, false
+		}
+		b = u.Unwrap()
+	}
+	return Tmux{}, false
+}
+
+func realOrClean(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// within reports whether p is root or below it.
+func pathWithin(p, root string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// promptDir is where prompt files go.
+func promptDir(runtimeDir string) string { return filepath.Join(runtimeDir, "muster-mirror", "prompts") }
+
+// agentSpawnRuntimes is what this host advertises in its hello (Msg.AgentSpawn):
+// claude, when spawning is available and its binary resolves; opencode, when
+// this host also SENDS to opencode (Msg.OpenCodeSend: -opencode-send and a
+// token — the spawn posts the first prompt through that API) and both opencode
+// and the launcher resolve. Whether the service is up, its version and its
+// models are checked at each spawn, never advertised (design 3.1).
+func (h *hostSide) agentSpawnRuntimes() []string {
+	if h.version >= 2 && h.c.cfg.FakeSpawn != nil && h.c.cfg.Interactive {
+		return h.c.cfg.FakeSpawnRuntimes // the browser suite's fixture (Config.FakeSpawn)
+	}
+	if h.version < 2 || agentSpawnUnavailable(h.c.cfg) != "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+	defer cancel()
+	var out []string
+	if _, err := h.c.claudeBinary(ctx); err != nil {
+		h.c.log.Printf("muster-mirror: -agent-spawn: claude is not offered: %v%s", err, claudePathHint)
+	} else {
+		out = append(out, mirror.SpawnRuntimeClaude)
+	}
+	if why := h.c.openCodeSpawnOff(ctx, h.openCodeSend()); why != "" {
+		h.c.log.Printf("muster-mirror: -agent-spawn: opencode is not offered: %s", why)
+	} else {
+		out = append(out, mirror.SpawnRuntimeOpenCode)
+	}
+	return out
+}
+
+// claudeBinary is the absolute claude binary a spawn runs: the test seam, or
+// `claude` on the tmux server's global PATH (the window's own PATH), so a
+// profile that changes PATH cannot swap it.
+func (c *Client) claudeBinary(ctx context.Context) (string, error) {
+	return c.serverPathBinary(ctx, "claude", c.cfg.AgentSpawn.ClaudeBin)
+}
+
+// serverPathBinary is the absolute binary name a spawn runs (or checks): seam
+// when set, else name on the tmux server's global PATH (the window's own PATH),
+// so a profile that changes PATH cannot swap it.
+func (c *Client) serverPathBinary(ctx context.Context, name, seam string) (string, error) {
+	if b := seam; b != "" {
+		if !filepath.IsAbs(b) || !hostWordRE.MatchString(b) {
+			return "", fmt.Errorf("the %s binary is not an absolute path tmux would leave alone", name)
+		}
+		// 🔴 A SET PATH IS CHECKED, NOT TRUSTED (O-B round 0): a -claude-path
+		// naming nothing used to read "found" in the readiness and fail only
+		// inside the spawned window. The same test the PATH search applies.
+		fi, err := os.Stat(b)
+		if err != nil {
+			return "", fmt.Errorf("the %s binary %s is not found", name, b)
+		}
+		if !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("the %s binary %s is not an executable file", name, b)
+		}
+		return b, nil
+	}
+	t, ok := tmuxOf(c.cfg.Backend)
+	if !ok {
+		return "", errors.New("no tmux backend")
+	}
+	out, err := t.run(ctx, "show-environment", "-g", "PATH")
+	if err != nil {
+		return "", fmt.Errorf("the tmux server's PATH cannot be read: %v", err)
+	}
+	path := strings.TrimPrefix(strings.TrimSpace(out), "PATH=")
+	for _, d := range filepath.SplitList(path) {
+		if !filepath.IsAbs(d) {
+			continue
+		}
+		p := filepath.Join(d, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 && hostWordRE.MatchString(p) {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("%s is not on the tmux server's PATH", name)
+}
+
+// --- the audit log -----------------------------------------------------------
+
+// spawnAuditRequest is a request's FIRST line, written before any other work.
+type spawnAuditRequest struct {
+	At           time.Time `json:"at"`
+	Kind         string    `json:"kind"` // "request"
+	Dispatch     int64     `json:"dispatch"`
+	Server       string    `json:"server"`
+	Runtime      string    `json:"runtime"`
+	Repo         string    `json:"repo"`
+	Base         string    `json:"base"`
+	Model        string    `json:"model"`
+	Name         string    `json:"name"`
+	PromptSHA256 string    `json:"prompt_sha256"`
+	PromptBytes  int       `json:"prompt_bytes"`
+	Prompt       string    `json:"prompt"`
+	// Clone is muster's clone hint (AgentSpawnReq.Clone), "" for none.
+	Clone string `json:"clone,omitempty"`
+}
+
+// spawnAuditAdmit is the line the rate limit counts: written UNDER the
+// spawner's lock the moment a request passes the rate check, before the next
+// request can count (a result line is written after the lock is released).
+type spawnAuditAdmit struct {
+	At       time.Time `json:"at"`
+	Kind     string    `json:"kind"` // "admit"
+	Dispatch int64     `json:"dispatch"`
+	// Officer marks an officer spawn's admission: -agent-spawn-officer-rate
+	// counts those, -agent-spawn-rate the chief's. 🔴 ALWAYS WRITTEN, false
+	// included (O-B round 0): a line with NO officer field is from a build
+	// before the officer ceiling, when an officer's spawn was not told apart,
+	// and counts against NEITHER limit (admittedSince) — counted as the
+	// chief's, a host's officer spawns of the last day could hold the chief
+	// at its limit for up to 24 hours after the upgrade.
+	Officer bool `json:"officer"`
+}
+
+// The audit log's bounds. Every string field is cut to auditFieldMax bytes
+// (the prompt to mirror.MaxSpawnPrompt) before the line is marshalled, so no
+// line is longer than auditLineMax; a line read back longer than that (written
+// by hand, or by an older build) is skipped, never an error. A log past
+// auditLogMax refuses every spawn until it is rotated.
+const (
+	auditFieldMax = 512
+	auditLineMax  = 64 << 10
+	auditLogMax   = 64 << 20
+)
+
+// capField is s cut to max bytes on a rune boundary, marked when cut.
+func capField(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max - len("…[cut]")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…[cut]"
+}
+
+// spawnAuditResult is a request's SECOND line, its outcome. Admitted marks a
+// request that passed the rate check: what the rate limit counts.
+type spawnAuditResult struct {
+	At       time.Time `json:"at"`
+	Kind     string    `json:"kind"` // "result"
+	Dispatch int64     `json:"dispatch"`
+	Result   string    `json:"result"`
+	Detail   string    `json:"detail,omitempty"`
+	Admitted bool      `json:"admitted"`
+	Window   string    `json:"window,omitempty"`
+	Session  string    `json:"session,omitempty"`
+	Worktree string    `json:"worktree,omitempty"`
+	Branch   string    `json:"branch,omitempty"`
+}
+
+// appendAudit appends one JSON line to the audit log, creating it 0600 and
+// O_APPEND, and fsyncs it. The line's error is the spawn's refusal when it is
+// the first line.
+func appendAudit(path string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// admittedSince counts the audit log's admissions ("admit" lines) at or after
+// since whose Officer flag is officer; a line with no flag (an older build's,
+// spawnAuditAdmit.Officer) counts for neither. A log that cannot be read is an error
+// (the caller refuses: the limit is never skipped because its record failed);
+// a line that is corrupt or longer than auditLineMax is skipped, so one bad
+// line cannot disable every later check.
+func admittedSince(path string, since time.Time, officer bool) (int, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	n := 0
+	r := bufio.NewReaderSize(f, auditLineMax)
+	for {
+		line, err := r.ReadSlice('\n')
+		long := errors.Is(err, bufio.ErrBufferFull)
+		for errors.Is(err, bufio.ErrBufferFull) { // skip the rest of an oversize line
+			_, err = r.ReadSlice('\n')
+		}
+		if !long && len(line) > 0 {
+			var a struct {
+				At      time.Time `json:"at"`
+				Kind    string    `json:"kind"`
+				Officer *bool     `json:"officer"`
+			}
+			if json.Unmarshal(line, &a) == nil && a.Kind == "admit" && a.Officer != nil && *a.Officer == officer && !a.At.Before(since) {
+				n++
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+		if err != nil {
+			return n, err
+		}
+	}
+}
+
+// rateRefusal is the rate limit's refusal, "" when spawn admitted now passes
+// every window of rates. officer picks which admissions count: the officer
+// spawns' (-agent-spawn-officer-rate) or the chief's (-agent-spawn-rate).
+func rateRefusal(path string, rates []spawnRate, now time.Time, officer bool) (string, error) {
+	for _, r := range rates {
+		n, err := admittedSince(path, now.Add(-r.d), officer)
+		if err != nil {
+			return "", err
+		}
+		if n >= r.n && officer {
+			return fmt.Sprintf("rate limited: %d officer spawns in the last %s (this host's -agent-spawn-officer-rate)", n, shortDuration(r.d)), nil
+		}
+		if n >= r.n {
+			return fmt.Sprintf("rate limited: %d spawns in the last %s", n, shortDuration(r.d)), nil
+		}
+	}
+	return "", nil
+}
+
+func shortDuration(d time.Duration) string {
+	switch {
+	case d%time.Hour == 0 && d >= time.Hour:
+		return strconv.Itoa(int(d/time.Hour)) + " hours"
+	case d%time.Minute == 0:
+		return strconv.Itoa(int(d/time.Minute)) + " minutes"
+	}
+	return d.String()
+}
+
+// AgentSpawnLogTail prints the last n lines of the audit log (muster-mirror
+// agent-spawn-log).
+func AgentSpawnLogTail(w io.Writer, path string, n int) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if n > 0 && len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	for _, l := range lines {
+		if _, err := fmt.Fprintln(w, l); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- the request's own checks --------------------------------------------------
+
+// baseRE is the characters a base branch may have before git judges it.
+var baseRE = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+
+// checkBase validates base BEFORE it reaches git: no leading '-', no "..", the
+// character set, then `git check-ref-format --branch`.
+func checkBase(ctx context.Context, git, base string) error {
+	if base == "" {
+		return nil
+	}
+	if strings.HasPrefix(base, "-") || strings.Contains(base, "..") || !baseRE.MatchString(base) {
+		return refuseSpawn(mirror.SpawnBadBase, "branch %q is not a branch name this host accepts", base)
+	}
+	if err := exec.CommandContext(ctx, git, "check-ref-format", "--branch", base).Run(); err != nil {
+		return refuseSpawn(mirror.SpawnBadBase, "branch %q is not a valid branch name", base)
+	}
+	return nil
+}
+
+// githubRepoOf is the <owner>/<repo> a GitHub remote URL names (lowercased),
+// "" for any other URL.
+func githubRepoOf(raw string) string {
+	raw = strings.TrimSpace(raw)
+	var path string
+	switch {
+	case strings.HasPrefix(raw, "git@github.com:"):
+		path = strings.TrimPrefix(raw, "git@github.com:")
+	default:
+		u, err := url.Parse(raw)
+		if err != nil || !strings.EqualFold(u.Hostname(), "github.com") || (u.Scheme != "https" && u.Scheme != "ssh" && u.Scheme != "git") {
+			return ""
+		}
+		path = strings.TrimPrefix(u.Path, "/")
+	}
+	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
+	if !validRepoName(path) {
+		return ""
+	}
+	return strings.ToLower(path)
+}
+
+// resolveClone is the repository of repo directly under a root that the
+// spawn's worktree is cut from (clonesOf): with no hint, the ONLY one — none,
+// or two genuinely separate clones, is no_repo, naming the repository, as it
+// always was. With a hint (muster's AgentSpawnReq.Clone, a path this host
+// listed in an agent-clones-list), the clone whose main working tree IS that
+// path exactly as listed — and a hint that is none of them, even with a
+// single clone, is bad_clone: the host never cuts from a directory it did not
+// itself find, and never falls back to a guess.
+func resolveClone(ctx context.Context, git string, roots []string, repo, hint string) (string, error) {
+	found := clonesOf(ctx, git, roots, repo)
+	if hint != "" {
+		// Compared exactly as the host lists it (clonesOf: realpaths), never
+		// resolved on this filesystem: a path from the server touches nothing.
+		for _, f := range found {
+			if f == hint {
+				return f, nil
+			}
+		}
+		return "", refuseSpawn(mirror.SpawnBadClone, "the clone muster named is not one of this host's %d clone(s) of repo %s under its roots", len(found), repo)
+	}
+	switch len(found) {
+	case 0:
+		return "", refuseSpawn(mirror.SpawnNoRepo, "repo %s has no clone under this host's roots", repo)
+	case 1:
+		return found[0], nil
+	}
+	return "", refuseSpawn(mirror.SpawnNoRepo, "repo %s has %d clones under this host's roots", repo, len(found))
+}
+
+// clonesOf is EVERY repository of repo directly under a root, as main working
+// trees (realpath), in roots-then-directory order: its origin URL names repo.
+// Entries are counted by the repository they belong to — realpath of `git
+// rev-parse --git-common-dir` — so a worktree of a clone is that clone, not a
+// second one; an entry whose rev-parse fails (a prunable worktree) is skipped.
+// The repository's MAIN working tree (the common dir's parent) must itself be
+// under a root. THE ONE enumeration a spawn resolves against and an
+// agent-clones-list answers with (clones.go).
+func clonesOf(ctx context.Context, git string, roots []string, repo string) []string {
+	want := strings.ToLower(repo)
+	underARoot := func(p string) bool {
+		for _, r := range roots {
+			if pathWithin(p, realOrClean(r)) {
+				return true
+			}
+		}
+		return false
+	}
+	var found []string // main working trees, one per common dir
+	for _, r := range roots {
+		root := realOrClean(r)
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			dir := filepath.Join(root, e.Name())
+			if fi, err := os.Stat(filepath.Join(dir, ".git")); err != nil || (!fi.IsDir() && !fi.Mode().IsRegular()) {
+				continue
+			}
+			// The CONFIGURED url (`config`, not `remote get-url`, which applies
+			// insteadOf rewrites): the repository the owner cloned.
+			out, err := exec.CommandContext(ctx, git, "-C", dir, "config", "--get", "remote.origin.url").Output()
+			if err != nil || githubRepoOf(string(out)) != want {
+				continue
+			}
+			common, err := exec.CommandContext(ctx, git, "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+			if err != nil {
+				continue // a prunable worktree: its repository is gone
+			}
+			cd, err := filepath.EvalSymlinks(strings.TrimSpace(string(common)))
+			if err != nil || filepath.Base(cd) != ".git" {
+				continue // a bare repository has no working tree to cut from
+			}
+			main := filepath.Dir(cd)
+			if underARoot(main) && !slices.Contains(found, main) {
+				found = append(found, main)
+			}
+		}
+	}
+	return found
+}
+
+// newSessionID is a fresh UUIDv4, minted here: claude's --session-id.
+func newSessionID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	h := hex.EncodeToString(b[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// --- the spawn -------------------------------------------------------------------
+
+// spawnPlan is what a spawn created, for its cleanup.
+type spawnPlan struct {
+	clone, dir, branch, baseSHA, prompt string
+	worktreeAdded                       bool
+	// scratchMade: this spawn made the scratch directory dir (a scratch
+	// spawn's), which undo removes.
+	scratchMade bool
+	// oc and session: the opencode session this spawn created ("" = none).
+	oc      *openCodeSpawn
+	session string
+}
+
+// undo removes what a spawn that ran no agent created: the prompt file, the
+// opencode session (nothing was posted to it), the worktree (never forced),
+// and the branch only while it still points at the commit it was cut from
+// (update-ref with the old value: never -D).
+func (p *spawnPlan) undo(git string) {
+	if p.prompt != "" {
+		_ = os.Remove(p.prompt)
+	}
+	if p.session != "" && p.oc != nil {
+		p.oc.removeSession(p.session)
+	}
+	if p.scratchMade {
+		_ = os.RemoveAll(p.dir)
+		return
+	}
+	if !p.worktreeAdded {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, git, "-C", p.clone, "worktree", "remove", p.dir).Run()
+	if p.baseSHA != "" {
+		_ = exec.CommandContext(ctx, git, "-C", p.clone, "update-ref", "-d", "refs/heads/"+p.branch, p.baseSHA).Run()
+	}
+}
+
+// agentSpawn serves an agent-spawn and answers agent-spawned.
+func (h *hostSide) agentSpawn(m mirror.Msg) {
+	var w mirror.AgentSpawned
+	var err error
+	if fake := h.c.cfg.FakeSpawn; fake != nil && m.Spawn != nil {
+		w, err = fake(h.ctx, m.Dispatch, *m.Spawn) // the browser suite's fixture (Config.FakeSpawn)
+	} else {
+		w, err = h.c.spawnAgent(h.ctx, h, m, h.c.cfg.AgentSpawn.now())
+	}
+	ans := mirror.Msg{Type: mirror.TypeAgentSpawned, ID: m.ID, Dispatch: m.Dispatch}
+	var e *errSpawn
+	switch {
+	case err == nil:
+		ans.Spawned = &w
+	case errors.As(err, &e):
+		ans.Refusal, ans.Error = e.code, e.detail
+	default:
+		ans.Refusal, ans.Error = mirror.SpawnFailed, err.Error()
+	}
+	_ = h.send(ans)
+	if err == nil {
+		h.nudge()
+	}
+}
+
+// spawnAgent runs one request — its checks and its spawn, in the order the
+// design states — and writes its audit log's SECOND line (the result) for
+// every request whose first line was written.
+func (c *Client) spawnAgent(ctx context.Context, h *hostSide, m mirror.Msg, received time.Time) (mirror.AgentSpawned, error) {
+	w, admitted, logged, err := c.spawnAgentSteps(ctx, h, m, received)
+	result := spawnAuditResult{Kind: "result", Dispatch: m.Dispatch, Admitted: admitted}
+	var e *errSpawn
+	switch {
+	case err == nil:
+		result.Result, result.Window, result.Session, result.Worktree, result.Branch = "spawned", w.Window, w.Session, w.Worktree, w.Branch
+		c.log.Printf("muster-mirror: SPAWNED %s for dispatch %d in %s:%s (worktree %s), as muster asked", spawnRuntimeOf(m), m.Dispatch, w.Session, w.Window, w.Worktree)
+	case errors.As(err, &e):
+		result.Result, result.Detail = e.code, e.detail
+		if e.code == mirror.SpawnNotListed || w.Window != "" {
+			result.Window, result.Session, result.Worktree, result.Branch = w.Window, w.Session, w.Worktree, w.Branch
+		}
+		c.log.Printf("muster-mirror: spawn for dispatch %d refused (%s): %s", m.Dispatch, e.code, e.detail)
+	default:
+		result.Result, result.Detail = mirror.SpawnFailed, err.Error()
+		c.log.Printf("muster-mirror: spawn for dispatch %d failed: %v", m.Dispatch, err)
+	}
+	if logged {
+		result.At = c.cfg.AgentSpawn.now()
+		result.Detail = capField(result.Detail, auditFieldMax)
+		result.Window, result.Session = capField(result.Window, auditFieldMax), capField(result.Session, auditFieldMax)
+		result.Worktree, result.Branch = capField(result.Worktree, auditFieldMax), capField(result.Branch, auditFieldMax)
+		if aerr := appendAudit(c.cfg.AgentSpawn.Log, result); aerr != nil {
+			c.log.Printf("muster-mirror: spawn audit log: the result line for dispatch %d could not be written: %v", m.Dispatch, aerr)
+		}
+	}
+	return w, err
+}
+
+// spawnAgentSteps is the request's checks and spawn. admitted says it passed
+// the rate check (what the limit counts); logged that its first audit line was
+// written.
+func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg, received time.Time) (w mirror.AgentSpawned, admitted, logged bool, err error) {
+	sc := c.cfg.AgentSpawn
+	// 0. Off is off: no file is touched for a host that never opted in.
+	if why := agentSpawnUnavailable(c.cfg); why == "agent spawn is off" || why == "not interactive" {
+		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "%s", why)
+	}
+	req := mirror.AgentSpawnReq{}
+	if m.Spawn != nil {
+		req = *m.Spawn
+	}
+	// 1. THE AUDIT LOG'S FIRST LINE, before the rate check and any git or tmux
+	// call. Fail closed.
+	sum := sha256.Sum256([]byte(req.Prompt))
+	f := func(v string) string { return capField(v, auditFieldMax) }
+	line := spawnAuditRequest{At: received, Kind: "request", Dispatch: m.Dispatch, Server: f(sc.Server), Runtime: f(req.Runtime),
+		Repo: f(req.Repo), Base: f(req.Base), Model: f(req.Model), Name: f(req.Name), PromptSHA256: hex.EncodeToString(sum[:]),
+		PromptBytes: len(req.Prompt), Prompt: capField(req.Prompt, mirror.MaxSpawnPrompt), Clone: f(req.Clone)}
+	if sc.Log == "" {
+		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
+	}
+	if fi, err := os.Stat(sc.Log); err == nil && fi.Size() > auditLogMax {
+		c.log.Printf("muster-mirror: spawn for dispatch %d refused: the audit log %s is over %d MB; rotate it", m.Dispatch, sc.Log, auditLogMax>>20)
+		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log full (over %d MB): rotate it on the host", auditLogMax>>20)
+	}
+	if appendAudit(sc.Log, line) != nil {
+		c.log.Printf("muster-mirror: spawn for dispatch %d refused: the audit log cannot be written", m.Dispatch)
+		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
+	}
+	logged = true
+	c.log.Printf("muster-mirror: spawn request: dispatch %d, %s in %s (base %q), prompt %d bytes sha256 %s, from %s",
+		m.Dispatch, req.Runtime, req.Repo, req.Base, len(req.Prompt), line.PromptSHA256[:12], sc.Server)
+	// 2. This host's own preconditions.
+	if why := agentSpawnUnavailable(c.cfg); why != "" {
+		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "%s", why)
+	}
+	// 3. The request, field by field.
+	switch req.Runtime {
+	case mirror.SpawnRuntimeClaude:
+		if req.Model != "" {
+			return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent a model for claude (a muster bug)")
+		}
+	case mirror.SpawnRuntimeOpenCode:
+		// The model's SHAPE, before anything else about opencode: an
+		// OpenRouter id, which this host then finds in its own opencode's
+		// list (openCodeSpawnCheck).
+		if _, _, ok := mirror.ParseSpawnModel(req.Model); !ok {
+			return w, false, true, refuseSpawn(mirror.SpawnBadModel, "%q is not an OpenRouter model (openrouter/<vendor>/<model>)", capField(req.Model, 140))
+		}
+		if why := c.openCodeSendOff(); why != "" {
+			return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "%s", why)
+		}
+	default:
+		return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent an unknown runtime (a muster bug)")
+	}
+	if m.Dispatch <= 0 {
+		return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent no dispatch id (a muster bug)")
+	}
+	if len(req.Prompt) == 0 || len(req.Prompt) > mirror.MaxSpawnPrompt {
+		return w, false, true, refuseSpawn(mirror.SpawnFailed, "the prompt is outside the limits (a muster bug)")
+	}
+	// 🔴 THE PREFACE: a prompt that does not begin with it could be a claude
+	// subcommand name, which `--` does not stop (measured).
+	if !mirror.HasSpawnPreface(req.Prompt) {
+		return w, false, true, refuseSpawn(mirror.SpawnFailed, "the prompt does not begin with muster's preface")
+	}
+	officer := strings.HasPrefix(req.Prompt, mirror.OfficerSpawnPreface)
+	switch {
+	case req.Scratch:
+		// 🔴 A SCRATCH SPAWN IS AN OFFICER'S, WITH NO REPOSITORY: nothing of
+		// the owner's is named, so nothing is cloned, fetched or cut. ON with
+		// -agent-spawn itself (O-B round 0, the operator's Q1): an officer with
+		// no repository starts in <agent-spawn-dir>/scratch/<dispatch>, under
+		// every path guard below and trustSpawnedWorktree's.
+		if !officer {
+			return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "only an officer instance starts with no repository")
+		}
+		if req.Repo != "" || req.Base != "" || req.Clone != "" || req.Runtime != mirror.SpawnRuntimeClaude {
+			return w, false, true, refuseSpawn(mirror.SpawnFailed, "a scratch spawn names no repository, base or clone, and runs claude (a muster bug)")
+		}
+	case !validRepoName(req.Repo):
+		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "%q is not <owner>/<repo>", req.Repo)
+	// 4. THE ALLOW-LIST, before any git call.
+	case !repoAllowed(sc.Repos, req.Repo):
+		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "repo %s is not on this host's allow-list", req.Repo)
+	}
+	if err := checkBase(ctx, sc.git(), req.Base); err != nil {
+		return w, false, true, err
+	}
+	deadline := received.Add(sc.deadline())
+	dctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	// 5. One spawn at a time. The deadline started at RECEIPT, so a spawn that
+	// waited here behind a slow one has less time, not a fresh 120 s.
+	c.spawner.mu.Lock()
+	defer c.spawner.mu.Unlock()
+	if !sc.now().Before(deadline) {
+		return w, false, true, refuseSpawn(mirror.SpawnFailed, "deadline passed")
+	}
+	// 6. THE RATE LIMIT, counted from the audit log: an officer's spawn
+	// against the officer ceiling, any other against the chief's.
+	rates, _ := ParseAgentSpawnRate(sc.Rate)
+	if officer {
+		rates, _ = ParseAgentSpawnOfficerRate(sc.OfficerRate)
+	}
+	why, rerr := rateRefusal(sc.Log, rates, sc.now(), officer)
+	if rerr != nil {
+		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
+	}
+	if why != "" {
+		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "%s", why)
+	}
+	// 🔴 THE ADMISSION IS RECORDED HERE, UNDER spawner.mu: the next request
+	// waiting on the lock counts it. (The result line is written after the
+	// lock is released, so counting it let concurrent requests past the limit.)
+	if err := appendAudit(sc.Log, spawnAuditAdmit{At: sc.now(), Kind: "admit", Dispatch: m.Dispatch, Officer: officer}); err != nil {
+		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
+	}
+	admitted = true
+	w, err = c.spawnRuntime(dctx, h, m.Dispatch, req, deadline)
+	return w, admitted, true, err
+}
+
+// spawnRuntimeOf is the runtime m asks for, for a log line.
+func spawnRuntimeOf(m mirror.Msg) string {
+	if m.Spawn == nil {
+		return "?"
+	}
+	return m.Spawn.Runtime
+}
+
+// spawnRuntime is steps 7 onwards, ONE spawner for both runtimes with a branch
+// where they differ: the clone, the worktree, then claude's trust entry and
+// prompt file or opencode's session, the window, and for opencode the bind and
+// the first prompt through its API.
+func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, req mirror.AgentSpawnReq, deadline time.Time) (mirror.AgentSpawned, error) {
+	sc := c.cfg.AgentSpawn
+	git := sc.git()
+	t, ok := tmuxOf(c.cfg.Backend)
+	if !ok {
+		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "no tmux backend")
+	}
+	// The tmux server must already run, and no global or `agents` session
+	// @muster-dispatch may be set (it would tag every window, by inheritance).
+	//
+	// 🔴 A SERVER THAT IS NOT RUNNING IS NEVER STARTED HERE. A tenant's server
+	// started by this process would load the user's DEFAULT tmux config, whose
+	// plugins (a session saver/restorer) would overwrite the default server's
+	// saved state and restore personal sessions into the tenant's server —
+	// which this mirror then shows to the tenant. So: refused, and `display-
+	// message` (which never starts a server) is the only command sent.
+	pidBefore, err := t.serverPID(ctx)
+	if err != nil {
+		if notDefaultTmuxServer(t) != "" {
+			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "the tenant tmux server is not running (this host never starts it)")
+		}
+		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "no tmux server")
+	}
+	if v, _ := t.run(ctx, "show-options", "-gqv", mirror.DispatchOption); strings.TrimSpace(v) != "" {
+		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "a global %s is set on the tmux server", mirror.DispatchOption)
+	}
+	if _, herr := t.run(ctx, "has-session", "-t", "="+mirror.AgentSpawnSession); herr == nil {
+		if v, _ := t.run(ctx, "show-options", "-qv", "-t", "="+mirror.AgentSpawnSession, mirror.DispatchOption); strings.TrimSpace(v) != "" {
+			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "the %s session has a %s of its own", mirror.AgentSpawnSession, mirror.DispatchOption)
+		}
+	}
+	opencode := req.Runtime == mirror.SpawnRuntimeOpenCode
+	var bin string
+	var oc *openCodeSpawn
+	if opencode {
+		// opencode's own preconditions and the model, against the host's
+		// opencode service — BEFORE any git call: a refusal here leaves
+		// nothing to undo.
+		if oc, err = c.openCodeSpawnCheck(ctx, req.Model); err != nil {
+			return mirror.AgentSpawned{}, err
+		}
+		bin = oc.mirrorBin
+	} else if bin, err = c.claudeBinary(ctx); err != nil {
+		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "claude not found")
+	}
+	// A SCRATCH spawn (an officer with no repository, checked in
+	// spawnAgentSteps) has no clone, base or branch: its directory is a fresh,
+	// private one under <agents dir>/scratch, removed once its window is gone
+	// (SweepAgentWorktrees). Everything from the trust entry on is shared.
+	scratch := req.Scratch
+	var clone, base, dir string
+	if scratch {
+		dir = filepath.Join(c.spawnDir(), scratchDirName, strconv.FormatInt(dispatch, 10))
+	} else {
+		if clone, err = resolveClone(ctx, git, sc.Roots, req.Repo, req.Clone); err != nil {
+			return mirror.AgentSpawned{}, err
+		}
+		base = req.Base
+		if base == "" {
+			out, err := exec.CommandContext(ctx, git, "-C", clone, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+			if err != nil {
+				return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnBadBase, "repo %s's remote has no default branch here", req.Repo)
+			}
+			base = strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+			if err := checkBase(ctx, git, base); err != nil || base == "" {
+				return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnBadBase, "repo %s's default branch is not usable", req.Repo)
+			}
+		}
+		owner, name, _ := strings.Cut(strings.ToLower(req.Repo), "/")
+		dir = filepath.Join(c.spawnDir(), owner+"__"+name, strconv.FormatInt(dispatch, 10))
+	}
+	slug := mirror.SpawnSlug(req.Name, 40)
+	// On a tenant's server, its namespace leads the branch and the prompt
+	// file (spawnNamespace): the other muster server's dispatch of the same
+	// number never collides.
+	ns := c.spawnNamespace()
+	nsPrefix := ""
+	if ns != "" {
+		nsPrefix = ns + "-"
+	}
+	branch := "muster/" + nsPrefix + strconv.FormatInt(dispatch, 10)
+	if slug != "" {
+		branch += "-" + slug
+	}
+	winSlug := mirror.SpawnSlug(req.Name, 24)
+	winName := "cc-" + strconv.FormatInt(dispatch, 10)
+	sid := newSessionID()
+	if opencode {
+		winName = "oc-" + strconv.FormatInt(dispatch, 10)
+		sid = opencodehost.NewSessionID(sc.now())
+	}
+	if winSlug != "" {
+		winName += "-" + winSlug
+	}
+	promptFile := filepath.Join(promptDir(sc.RuntimeDir), nsPrefix+strconv.FormatInt(dispatch, 10))
+	words := []string{dir, branch, winName, sid, promptFile, bin}
+	if opencode {
+		words = append(words, oc.openCodeBin)
+	}
+	for _, word := range words {
+		if !hostWordRE.MatchString(word) {
+			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnFailed, "a spawn word has characters tmux would parse")
+		}
+	}
+	plan := &spawnPlan{clone: clone, dir: dir, branch: branch, oc: oc}
+	fail := func(e error) (mirror.AgentSpawned, error) {
+		plan.undo(git)
+		return mirror.AgentSpawned{}, e
+	}
+	warning := ""
+	if scratch {
+		// 7'. THE SCRATCH DIRECTORY, fresh and private: made here 0700, never
+		// one that was there before (a leftover is refused, as a leftover
+		// worktree is), and removed by undo on a failure from here on.
+		if _, err := os.Lstat(dir); err == nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "a leftover scratch directory exists"))
+		}
+		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the agents directory cannot be made"))
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the scratch directory could not be made"))
+		}
+		plan.scratchMade = true
+		branch = ""
+	} else {
+		// 7. Fetch, then the worktree, from origin/<base>.
+		if out, err := exec.CommandContext(ctx, git, "-C", clone, "fetch", "--no-tags", "origin", base).CombinedOutput(); err != nil {
+			if ctx.Err() != nil {
+				return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
+			}
+			if strings.Contains(string(out), "couldn't find remote ref") {
+				return fail(refuseSpawn(mirror.SpawnBadBase, "branch %q does not exist on %s's remote", base, req.Repo))
+			}
+			return fail(refuseSpawn(mirror.SpawnFailed, "the fetch failed"))
+		}
+		shaOut, err := exec.CommandContext(ctx, git, "-C", clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+base+"^{commit}").Output()
+		if err != nil {
+			return fail(refuseSpawn(mirror.SpawnBadBase, "branch %q does not exist on %s's remote", base, req.Repo))
+		}
+		baseSHA := strings.TrimSpace(string(shaOut))
+		if exec.CommandContext(ctx, git, "-C", clone, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "a leftover branch %s exists", branch))
+		}
+		if _, err := os.Lstat(dir); err == nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "a leftover worktree directory exists"))
+		}
+		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the agents directory cannot be made"))
+		}
+		if err := exec.CommandContext(ctx, git, "-C", clone, "worktree", "add", "--no-track", "-b", branch, dir, "refs/remotes/origin/"+base).Run(); err != nil {
+			if ctx.Err() != nil {
+				return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
+			}
+			return fail(refuseSpawn(mirror.SpawnFailed, "the worktree could not be made"))
+		}
+		plan.worktreeAdded, plan.baseSHA = true, baseSHA
+		// 8. Submodules, under their own budget: a warning, never a refusal.
+		if _, err := os.Stat(filepath.Join(dir, ".gitmodules")); err == nil {
+			budget := time.Until(deadline) - agentSpawnReserve
+			if budget <= 0 {
+				warning = "submodules incomplete"
+			} else {
+				sctx, scancel := context.WithTimeout(ctx, budget)
+				if exec.CommandContext(sctx, git, "-C", dir, "submodule", "update", "--init", "--recursive").Run() != nil {
+					warning = "submodules incomplete"
+				}
+				scancel()
+			}
+		}
+	}
+	// 9. claude: the trust entry, then the prompt file. opencode: its session,
+	// in the worktree, on the model — which runs NOTHING until the prompt is
+	// posted after the bind (step 12), so a spawn that fails before then has
+	// started no agent and deletes the session (spawnPlan.undo).
+	if opencode {
+		if err := oc.createSession(ctx, sid, dir); err != nil {
+			return fail(err)
+		}
+		plan.session = sid
+	} else {
+		if err := c.trustSpawnedWorktree(ctx, clone, dir, dispatch, true); err != nil {
+			return fail(err)
+		}
+		if err := writePromptFile(sc.RuntimeDir, promptFile, req.Prompt); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the prompt file could not be written"))
+		}
+		plan.prompt = promptFile
+	}
+	// 10. THE DEADLINE CHECK, immediately before new-window: the point of no
+	// return.
+	if sc.beforeNewWindow != nil {
+		sc.beforeNewWindow()
+	}
+	if !sc.now().Before(deadline) {
+		return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
+	}
+	shell, err := t.loginShell(ctx)
+	if err != nil || !hostWordRE.MatchString(shell) {
+		return fail(refuseSpawn(mirror.SpawnUnavailable, "no login shell"))
+	}
+	// 🔴 NO PROMPT IN EITHER ARGV: claude's is read from its 0600 file by the
+	// constant wrapper; opencode's is posted through its API (step 12).
+	ocBin := ""
+	if opencode {
+		ocBin = oc.openCodeBin
+	}
+	argv := spawnArgv(shell, promptFile, bin, sid, opencode, ocBin, sc.spawnSkips(opencode))
+	winID, pane, err := t.newAgentWindow(ctx, winName, dir, argv)
+	if err != nil {
+		return fail(refuseSpawn(mirror.SpawnFailed, "the window could not be started"))
+	}
+	// From here a window exists: a failure kills it, then undoes the rest.
+	killFail := func(e error) (mirror.AgentSpawned, error) {
+		kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _ = t.run(kctx, "kill-window", "-t", winID)
+		kcancel()
+		return fail(e)
+	}
+	if pidAfter, err := t.serverPID(ctx); err != nil || pidAfter != pidBefore {
+		return killFail(refuseSpawn(mirror.SpawnFailed, "the tmux server changed during the spawn"))
+	}
+	if _, err := t.run(ctx, "set-option", "-w", "-t", winID, "automatic-rename", "off"); err != nil {
+		return killFail(refuseSpawn(mirror.SpawnFailed, "tag not set"))
+	}
+	if _, err := t.run(ctx, "set-option", "-w", "-t", winID, mirror.DispatchOption, strconv.FormatInt(dispatch, 10)); err != nil {
+		return killFail(refuseSpawn(mirror.SpawnFailed, "tag not set"))
+	}
+	if tag, err := t.dispatchTagOf(ctx, winID); err != nil || tag != dispatch {
+		return killFail(refuseSpawn(mirror.SpawnFailed, "tag not set"))
+	}
+	// The landing check: tmux returns 0 for a missing -c path and opens in the
+	// home directory instead.
+	if cwd, err := t.run(ctx, "display-message", "-p", "-t", pane, "#{pane_current_path}"); err != nil || realOrClean(strings.TrimSpace(cwd)) != dir {
+		return killFail(refuseSpawn(mirror.SpawnFailed, "landed outside the worktree"))
+	}
+	w := mirror.AgentSpawned{Session: mirror.AgentSpawnSession, Window: winID, Pane: pane, Worktree: dir, Branch: branch, AgentSession: sid, Warning: warning}
+	if opencode {
+		// 11. THE BIND: the launcher bound the pane to the session this host
+		// created (the listing reads it: SourceLauncher, Send, that session).
+		// Not bound in time: nothing has run — the window is killed and the
+		// session and worktree removed.
+		if !c.waitOpenCodeBind(ctx, winID, sid) {
+			return killFail(refuseSpawn(mirror.SpawnFailed, "the window did not bind to its opencode session"))
+		}
+		// 12. THE FIRST PROMPT, AFTER THE BIND, NEVER BEFORE: posted through
+		// opencode's API under an id derived from this dispatch and session.
+		// 🔴 From here the window is KEPT whatever happens: the owner may be
+		// typing in it. A prompt not accepted is `failed`, and the server's
+		// orphan notice tells the owner about the window.
+		if err := oc.postFirstPrompt(dispatch, sid, req.Prompt); err != nil {
+			c.log.Printf("muster-mirror: spawn for dispatch %d: the first prompt was not accepted: %v", dispatch, err)
+			// The wire has no "unconfirmed" spawn result: a post whose answer
+			// never came is still `failed`, but its detail says it may have
+			// landed, so nobody resends it as if it had not.
+			if promptMayHaveLanded(err) {
+				return w, refuseSpawn(mirror.SpawnFailed, "prompt not confirmed: opencode did not answer, so it may have been delivered")
+			}
+			return w, refuseSpawn(mirror.SpawnFailed, "prompt not accepted")
+		}
+	}
+	// 13. LISTING BEFORE REPLY: agent-spawned only once this connection has
+	// SENT a listing with the window; otherwise not_listed (the row stays
+	// pending, and the next listing settles it).
+	if h != nil && !h.listWindow(ctx, mirror.AgentSpawnSession, winID) {
+		return w, refuseSpawn(mirror.SpawnNotListed, "the window is not in a listing yet")
+	}
+	return w, nil
+}
+
+// writePromptFile writes prompt to path under runtimeDir's prompt directory:
+// the directory 0700, the file O_CREAT|O_EXCL 0600.
+func writePromptFile(runtimeDir, path, prompt string) error {
+	d := promptDir(runtimeDir)
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(d, 0o700); err != nil {
+		return err
+	}
+	if filepath.Dir(path) != d {
+		return errors.New("the prompt file is outside the prompt directory")
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(prompt); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return f.Close()
+}
+
+// listWindow has this connection read and SEND a listing, until it has sent one
+// holding (session, window) — at most a few tries.
+func (h *hostSide) listWindow(ctx context.Context, session, window string) bool {
+	for i := 0; i < 5; i++ {
+		h.mu.Lock()
+		ok := h.listedWindows[windowKey{session, window}]
+		h.mu.Unlock()
+		if ok {
+			return true
+		}
+		done := make(chan struct{})
+		select {
+		case h.kick <- done:
+		case <-ctx.Done():
+			return false
+		case <-h.ctx.Done():
+			return false
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		case <-h.ctx.Done():
+			return false
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.listedWindows[windowKey{session, window}]
+}
+
+// serverPID is the tmux server's pid; an error when no server runs.
+func (t Tmux) serverPID(ctx context.Context) (int, error) {
+	out, err := t.run(ctx, "display-message", "-p", "#{pid}")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(out))
+}
+
+// dispatchTagOf is window's OWN @muster-dispatch: `show-options -w` with no -A,
+// so a session or global value is never inherited. 0 for none.
+func (t Tmux) dispatchTagOf(ctx context.Context, window string) (int64, error) {
+	if mirror.ValidWindowID(window) != nil {
+		return 0, fmt.Errorf("%q is not a window id", window)
+	}
+	out, err := t.run(ctx, "show-options", "-w", "-t", window, "-qv", mirror.DispatchOption)
+	if err != nil {
+		return 0, err
+	}
+	v := strings.TrimSpace(out)
+	if v == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(v, 10, 64)
+}
+
+// newAgentWindow opens a DETACHED window named name in the `agents` session
+// (created when absent) with working directory dir, running argv as tmux's own
+// command arguments, with resumeEnv (no PATH: the window takes the server's).
+// It answers the window and pane ids. Every word is already checked.
+func (t Tmux) newAgentWindow(ctx context.Context, name, dir string, argv []string) (string, string, error) {
+	session := mirror.AgentSpawnSession
+	opts := []string{"-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", name, "-c", dir}
+	var out string
+	var err error
+	if _, herr := t.run(ctx, "has-session", "-t", "="+session); herr == nil {
+		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
+	} else {
+		// 🔴 `-f /dev/null`: new-session is the one tmux command here that
+		// STARTS a server when none runs (the spawn checked one runs, but it
+		// may have exited since). A server started here must never load the
+		// user's tmux config (spawnRuntime: its plugins would save over and
+		// restore into the wrong server). On a running server tmux ignores -f.
+		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{spawnNoConfig[0], spawnNoConfig[1], "new-session", "-s", session}, opts...), argv...)...)
+		if err != nil && strings.Contains(err.Error(), "duplicate session") {
+			out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
+		}
+	}
+	if err != nil {
+		return "", "", err
+	}
+	win, pane, _ := strings.Cut(strings.TrimSpace(out), " ")
+	if mirror.ValidWindowID(win) != nil || !strings.HasPrefix(pane, "%") {
+		return "", "", fmt.Errorf("tmux answered %q for the new window", out)
+	}
+	return win, pane, nil
+}
+
+// --- Claude Code's folder-trust entry (design 3.6.1) -----------------------------
+
+// claudeStateFile is Claude Code's user state file: the seam, else
+// $CLAUDE_CONFIG_DIR/.claude.json when the mirror's CLAUDE_CONFIG_DIR is set
+// (measured: that file, nothing under $HOME), else ~/.claude.json.
+func (c *Client) claudeStateFile() string {
+	if p := c.cfg.AgentSpawn.ClaudeState; p != "" {
+		return p
+	}
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return filepath.Join(d, ".claude.json")
+	}
+	h, _ := os.UserHomeDir()
+	return filepath.Join(h, ".claude.json")
+}
+
+// trustSpawnedWorktree writes projects[dir].hasTrustDialogAccepted = true into
+// Claude Code's state file: THE ONLY FUNCTION IN muster THAT WRITES CLAUDE
+// CODE'S CONFIGURATION. Every check is made at the moment of the write:
+//
+//  1. dir is absolute, clean and its own real path (measured: the key must be
+//     the real path, no trailing slash);
+//  2. dir is EXACTLY <agent-spawn-dir>/<owner>__<repo>/<dispatch>, the dispatch
+//     being this spawn's;
+//  3. the agents directory and the roots do not contain each other (startup);
+//  4. this spawn CREATED dir (created) and the clone's `worktree list` lists it
+//     — or, for a SCRATCH spawn (clone ""), dir is exactly
+//     <agent-spawn-dir>/scratch/<dispatch>, the directory this spawn made;
+//  5. the runtime is claude (the caller's: only spawnClaude calls this).
+//
+// The write changes ONE value: decoded as raw JSON at two levels, re-encoded
+// with HTML escaping off, written to a temporary file and renamed; then read
+// back and compared semantically. A mismatch is REFUSED and NEVER RESTORED
+// (restoring could revert a write Claude Code made in between). A missing or
+// unparseable file is refused, never created or repaired.
+func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, dispatch int64, created bool) error {
+	sc := c.cfg.AgentSpawn
+	bad := func(why string) error { return refuseSpawn(mirror.SpawnFailed, "trust entry not written: %s", why) }
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
+		return bad("not an absolute, clean path")
+	}
+	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
+		return bad("not its own real path")
+	}
+	spawnDir := c.spawnDir()
+	repoDir := filepath.Dir(dir)
+	switch {
+	case clone == "":
+		// A SCRATCH spawn's directory (clone ""): EXACTLY
+		// <agent-spawn-dir>/scratch/<dispatch>, which this spawn made.
+		if repoDir != filepath.Join(spawnDir, scratchDirName) || filepath.Base(dir) != strconv.FormatInt(dispatch, 10) {
+			return bad("not a scratch directory of this spawn under the agents directory")
+		}
+	case filepath.Dir(repoDir) != spawnDir || filepath.Base(dir) != strconv.FormatInt(dispatch, 10) || !strings.Contains(filepath.Base(repoDir), "__"):
+		return bad("not a worktree of this spawn under the agents directory")
+	}
+	for _, r := range sc.Roots {
+		root := realOrClean(r)
+		if pathWithin(dir, root) || pathWithin(spawnDir, root) || pathWithin(root, spawnDir) {
+			return bad("under a root")
+		}
+	}
+	if !created {
+		return bad("this spawn did not create it")
+	}
+	if clone != "" {
+		out, err := exec.CommandContext(ctx, sc.git(), "-C", clone, "worktree", "list", "--porcelain").Output()
+		if err != nil || !slices.Contains(strings.Split(string(out), "\n"), "worktree "+dir) {
+			return bad("the clone does not list it as a worktree")
+		}
+	}
+	why := c.editClaudeProjects(func(projects map[string]json.RawMessage) (bool, string) {
+		if _, ok := projects[dir]; ok {
+			return false, "an entry for this new directory already exists"
+		}
+		projects[dir] = json.RawMessage(`{"hasTrustDialogAccepted":true}`)
+		return true, ""
+	})
+	if why != "" {
+		return bad(why)
+	}
+	return nil
+}
+
+// editClaudeProjects is THE read-modify-rename of Claude Code's state file's
+// `projects` (the trust entry's write, trustSpawnedWorktree, and its removal,
+// untrustScratchDir): never through a symlink, under Claude Code's own lock,
+// decoded as raw JSON at two levels so nothing but what edit changes moves,
+// re-encoded with HTML escaping off, written to a temporary file in the file's
+// own mode and renamed, then read back and compared semantically. edit reports
+// whether it changed anything (false: nothing is written) or why it refuses.
+// It answers why the file was not edited, "" when it was (or edit changed
+// nothing). 🔴 A read-back mismatch is NEVER RESTORED (restoring could
+// revert a write Claude Code made in between). A missing or unparseable file
+// is refused, never created or repaired.
+func (c *Client) editClaudeProjects(edit func(projects map[string]json.RawMessage) (changed bool, refusal string)) string {
+	sc := c.cfg.AgentSpawn
+	path := c.claudeStateFile()
+	// 🔴 NEVER THROUGH A SYMLINK. That is muster's own choice and fails closed;
+	// Claude Code 2.1.289 itself does write through one (allowSymlink: true).
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return "Claude Code's state file cannot be read"
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return "Claude Code's state file is a symlink or not a regular file"
+	}
+	// 🔴 CLAUDE CODE'S OWN LOCK around the read-modify-rename (lockClaudeState):
+	// without it a write of Claude Code's landing between this read and the
+	// rename is lost. Not had within the bound: no edit (fail closed; for the
+	// trust entry the window simply shows the trust dialog).
+	unlock, err := lockClaudeState(path, sc.trustLockWait())
+	if err != nil {
+		return "Claude Code's state file is locked by another writer"
+	}
+	defer unlock()
+	orig, err := os.ReadFile(path)
+	if err != nil {
+		return "Claude Code's state file cannot be read"
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(orig, &top) != nil || top == nil {
+		return "Claude Code's state file does not parse"
+	}
+	projects := map[string]json.RawMessage{}
+	if raw, ok := top["projects"]; ok {
+		if json.Unmarshal(raw, &projects) != nil || projects == nil {
+			return "Claude Code's projects do not parse"
+		}
+	}
+	changed, refusal := edit(projects)
+	if refusal != "" {
+		return refusal
+	}
+	if !changed {
+		return ""
+	}
+	pj, err := encodeJSON(projects)
+	if err != nil {
+		return "encode"
+	}
+	top["projects"] = json.RawMessage(pj)
+	want, err := encodeJSON(top)
+	if err != nil {
+		return "encode"
+	}
+	tmp := path + ".tmp." + strconv.Itoa(os.Getpid()) + "." + hex.EncodeToString(sumShort(want))
+	// The file's own mode, kept, as Claude Code keeps it (Claude Code creates
+	// the file 0600, but an existing file keeps whatever mode it has).
+	if err := os.WriteFile(tmp, want, fi.Mode().Perm()); err != nil {
+		return "the temporary file cannot be written"
+	}
+	if err := os.Chmod(tmp, fi.Mode().Perm()); err != nil {
+		_ = os.Remove(tmp)
+		return "the temporary file cannot be written"
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "the rename failed"
+	}
+	if sc.beforeTrustRead != nil {
+		sc.beforeTrustRead(path)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !sameJSON(got, want) {
+		// 🔴 NEVER RESTORE: a mismatch most likely means Claude Code wrote the
+		// file in between, and restoring would revert that write.
+		return "the file read back differs (another writer?)"
+	}
+	return ""
+}
+
+// untrustScratchDir removes the trust entry trustSpawnedWorktree wrote for
+// scratch directory dir, once the sweep has removed the directory (O-B round
+// 0: entries no longer accumulated one per scratch spawn). 🔴 THE EXACT KEY
+// ONLY: projects[dir], never a prefix, a parent or a sibling, and only a dir
+// that is EXACTLY <agent-spawn-dir>/scratch/<n> (the sweep's own); under
+// Claude Code's lock, through editClaudeProjects. No entry: nothing written.
+func (c *Client) untrustScratchDir(dir string) string {
+	if filepath.Dir(dir) != filepath.Join(c.spawnDir(), scratchDirName) {
+		return "not a scratch directory under the agents directory"
+	}
+	if id, err := strconv.ParseInt(filepath.Base(dir), 10, 64); err != nil || id <= 0 {
+		return "not a scratch directory under the agents directory"
+	}
+	return c.editClaudeProjects(func(projects map[string]json.RawMessage) (bool, string) {
+		if _, ok := projects[dir]; !ok {
+			return false, ""
+		}
+		delete(projects, dir)
+		return true, ""
+	})
+}
+
+// Claude Code's state-file lock (proper-lockfile, as Claude Code 2.1.289 uses
+// it): a DIRECTORY at <realpath of the file>.lock, made with mkdir (atomic),
+// removed to release; one whose mtime is older than claudeLockStale is stale
+// and taken over, as proper-lockfile does.
+const (
+	claudeLockStale = 10 * time.Second
+	claudeLockWait  = 5 * time.Second
+)
+
+var errClaudeStateLocked = errors.New("Claude Code's state file is locked")
+
+// lockClaudeState takes path's lock, waiting at most wait.
+func lockClaudeState(path string, wait time.Duration) (func(), error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	dir := real + ".lock"
+	deadline := time.Now().Add(wait)
+	for {
+		err := os.Mkdir(dir, 0o755)
+		if err == nil {
+			return func() { _ = os.Remove(dir) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		// The deadline is checked on EVERY pass, a stale lock's included.
+		if !time.Now().Before(deadline) {
+			return nil, errClaudeStateLocked
+		}
+		if fi, serr := os.Stat(dir); serr == nil && time.Since(fi.ModTime()) > claudeLockStale {
+			// A stale lock that cannot be removed (not empty, a read-only
+			// file system, denied) is not taken: fail closed, no entry.
+			if rerr := os.Remove(dir); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				return nil, errClaudeStateLocked
+			}
+			continue
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func (c AgentSpawnConfig) trustLockWait() time.Duration {
+	if c.TrustLockWait > 0 {
+		return c.TrustLockWait
+	}
+	return claudeLockWait
+}
+
+// encodeJSON is v as Claude Code-style JSON: two-space indent, NO HTML
+// escaping (a '<', '>' or '&' in any string stays as it is).
+func encodeJSON(v any) ([]byte, error) {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return []byte(b.String()), nil
+}
+
+// sameJSON reports whether a and b decode to the same value.
+func sameJSON(a, b []byte) bool {
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	xa, _ := json.Marshal(x)
+	ya, _ := json.Marshal(y)
+	return string(xa) == string(ya)
+}
+
+func sumShort(b []byte) []byte {
+	s := sha256.Sum256(b)
+	return s[:4]
+}
+
+// --- forwarding into a spawned window (design 3.10) -------------------------------
+
+// forwardsPerHour bounds the forwards one window takes in an hour (a guard
+// against paste loops).
+const forwardsPerHour = 12
+
+// errNotMusterWindow refuses a paste naming a dispatch into a window whose own
+// tag differs or is absent.
+var errNotMusterWindow = errors.New("that window is not the one muster started for this dispatch")
+
+// errForwardLimited refuses the 13th forward into one window in an hour.
+var errForwardLimited = fmt.Errorf("this window already took %d forwards in the last hour", forwardsPerHour)
+
+// checkDispatchPaste is THE host's bound on forwarding: a paste naming a
+// dispatch lands only in a window whose OWN @muster-dispatch equals it, and at
+// most forwardsPerHour times an hour per window.
+func (h *hostSide) checkDispatchPaste(ctx context.Context, m mirror.Msg) error {
+	t, ok := tmuxOf(h.c.cfg.Backend)
+	if !ok || m.Window == "" {
+		return errNotMusterWindow
+	}
+	tag, err := t.dispatchTagOf(ctx, m.Window)
+	if err != nil || tag != m.Dispatch {
+		return errNotMusterWindow
+	}
+	sp := &h.c.spawner
+	sp.fwdMu.Lock()
+	defer sp.fwdMu.Unlock()
+	if sp.fwd == nil {
+		sp.fwd = map[string][]time.Time{}
+	}
+	now := time.Now()
+	key := m.Window
+	kept := sp.fwd[key][:0]
+	for _, at := range sp.fwd[key] {
+		if now.Sub(at) < time.Hour {
+			kept = append(kept, at)
+		}
+	}
+	if len(kept) >= forwardsPerHour {
+		sp.fwd[key] = kept
+		return errForwardLimited
+	}
+	sp.fwd[key] = append(kept, now)
+	return nil
+}
+
+// --- the cleanup sweep (design 3.3) -----------------------------------------------
+
+// SweepAgentWorktrees removes every spawned worktree under the agents directory
+// whose dispatch names no live tagged window, when it holds nothing: a clean
+// working tree and no commit the remote lacks. Anything else is KEPT and logged
+// with the reason. Never forced: `worktree remove` without --force, and the
+// branch deleted only by `update-ref -d` against the tip it was verified at.
+// It also deletes prompt files more than an hour old.
+func (c *Client) SweepAgentWorktrees(ctx context.Context, live map[int64]bool) {
+	sc := c.cfg.AgentSpawn
+	if sc.Dir == "" {
+		return
+	}
+	git := sc.git()
+	spawnDir := c.spawnDir()
+	repos, _ := os.ReadDir(spawnDir)
+	for _, r := range repos {
+		if !r.IsDir() || !strings.Contains(r.Name(), "__") {
+			continue
+		}
+		rd := filepath.Join(spawnDir, r.Name())
+		ds, _ := os.ReadDir(rd)
+		for _, d := range ds {
+			id, err := strconv.ParseInt(d.Name(), 10, 64)
+			if !d.IsDir() || err != nil || id <= 0 || live[id] {
+				continue
+			}
+			if keep := c.removeWorktree(ctx, git, filepath.Join(rd, d.Name())); keep != "" {
+				c.log.Printf("muster-mirror: spawned worktree %s kept: %s", filepath.Join(rd, d.Name()), keep)
+			}
+		}
+	}
+	// The scratch directories (a scratch spawn's): private to the instance,
+	// holding nothing of the owner's, so one whose dispatch has no live
+	// window is removed whole.
+	sd := filepath.Join(spawnDir, scratchDirName)
+	scratches, _ := os.ReadDir(sd)
+	for _, d := range scratches {
+		id, err := strconv.ParseInt(d.Name(), 10, 64)
+		if !d.IsDir() || err != nil || id <= 0 || live[id] {
+			continue
+		}
+		dir := filepath.Join(sd, d.Name())
+		if err := os.RemoveAll(dir); err != nil {
+			c.log.Printf("muster-mirror: scratch directory %s kept: %v", dir, err)
+			continue
+		}
+		// Its trust entry goes with it (only once the directory is gone).
+		if why := c.untrustScratchDir(dir); why != "" {
+			c.log.Printf("muster-mirror: scratch directory %s removed; its Claude Code trust entry kept: %s", dir, why)
+		}
+	}
+	if sc.RuntimeDir != "" {
+		ps, _ := os.ReadDir(promptDir(sc.RuntimeDir))
+		for _, p := range ps {
+			if fi, err := p.Info(); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > time.Hour {
+				_ = os.Remove(filepath.Join(promptDir(sc.RuntimeDir), p.Name()))
+			}
+		}
+	}
+}
+
+// removeWorktree removes one spawned worktree, or answers why it is kept.
+func (c *Client) removeWorktree(ctx context.Context, git, dir string) string {
+	run := func(args ...string) (string, error) {
+		out, err := exec.CommandContext(ctx, git, append([]string{"-C", dir}, args...)...).Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	status, err := run("status", "--porcelain")
+	if err != nil {
+		return "its status cannot be read"
+	}
+	if status != "" {
+		return "it has uncommitted changes"
+	}
+	unpushed, err := run("rev-list", "--count", "HEAD", "--not", "--remotes")
+	if err != nil {
+		return "its commits cannot be read"
+	}
+	if unpushed != "0" {
+		return "its branch has commits the remote lacks"
+	}
+	branch, _ := run("symbolic-ref", "--short", "HEAD")
+	tip, err := run("rev-parse", "HEAD")
+	if err != nil {
+		return "its HEAD cannot be read"
+	}
+	common, err := run("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "its clone cannot be found"
+	}
+	clone := filepath.Dir(common)
+	if err := exec.CommandContext(ctx, git, "-C", clone, "worktree", "remove", dir).Run(); err != nil {
+		return "git refused to remove it"
+	}
+	if strings.HasPrefix(branch, "muster/") {
+		_ = exec.CommandContext(ctx, git, "-C", clone, "update-ref", "-d", "refs/heads/"+branch, tip).Run()
+	}
+	return ""
+}
+
+// sweepLoop runs the worktree sweep at start and every hour after that, for a
+// host with -agent-spawn: a crash leaves no worktree unaccounted for.
+func (c *Client) sweepLoop(ctx context.Context) {
+	for {
+		c.sweepOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Hour):
+		}
+	}
+}
+
+// sweepOnce reads which dispatches have a live tagged window, then sweeps. A
+// listing that cannot be read sweeps NOTHING: an unknown live set is not an
+// empty one.
+func (c *Client) sweepOnce(ctx context.Context) {
+	// 🔴 A TENANT'S MIRROR SWEEPS ONLY ITS OWN NAMESPACE (SweepAgentWorktrees
+	// reads spawnDir). It lists only its OWN server's windows, where no
+	// default-server agent's window is; sweeping the shared agents directory it
+	// would read every default-server worktree as dead and remove it — which a
+	// tenant unit with -agent-spawn set by mistake did before namespaces.
+	wl, ok := WindowListerOf(c.cfg.Backend)
+	if !ok {
+		return
+	}
+	// Never beside a spawn: a spawn between its worktree and its window has a
+	// directory no window names yet.
+	c.spawner.mu.Lock()
+	defer c.spawner.mu.Unlock()
+	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ws, err := wl.Windows(lctx)
+	if err != nil {
+		c.log.Printf("muster-mirror: worktree sweep skipped: the windows cannot be read: %v", err)
+		return
+	}
+	live := map[int64]bool{}
+	for _, w := range ws {
+		if w.Dispatch > 0 {
+			live[w.Dispatch] = true
+		}
+	}
+	c.SweepAgentWorktrees(lctx, live)
+}
+
+// AgentSpawnUnavailable is why this host cannot spawn agents now ("" when it
+// can): what the daemon logs at startup.
+func (c *Client) AgentSpawnUnavailable() string { return agentSpawnUnavailable(c.cfg) }

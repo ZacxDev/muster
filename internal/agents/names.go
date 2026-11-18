@@ -164,8 +164,8 @@ const firstDiscriminator = 2
 // THERE IS NONE ON THIS PATH. An earlier revision of this paragraph said "the
 // caller already owns a deadline (see agentprovision's opCtx)". That is false:
 // opCtx is never in this call path. BuildUniqueAgentName has exactly one caller,
-// internal/api's createAndDispatchAgent, reached from handleAgentCreate and
-// handleChiefProvision — both hand it `r.Context()`.
+// internal/api's createAndDispatchAgent, reached from handleAPIAgentCreate,
+// handleChiefProvision and agent_dispatch — each hands it its request's context.
 // cmd/muster-server sets only ReadHeaderTimeout on its http.Server: no
 // WriteTimeout, no http.TimeoutHandler, and no context.WithTimeout anywhere
 // between the handler and here. So `ctx` is done when the CLIENT DISCONNECTS,

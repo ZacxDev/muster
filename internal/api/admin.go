@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -44,6 +45,17 @@ type AccountStore interface {
 	Audit(ctx context.Context, by users.Actor, action, object string, detail map[string]any) error
 	Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error
 	RecentAudit(ctx context.Context, limit int) ([]users.AuditEntry, error)
+	// Teams (admin_teams.go; docs/design/team-sharing.md phase 1).
+	CreateTeam(ctx context.Context, by users.Actor, name string, firstManager int64) (users.Team, error)
+	SetTeamMember(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
+	RemoveTeamMember(ctx context.Context, by users.Actor, team, user int64) error
+	ListTeams(ctx context.Context) ([]users.Team, error)
+	// A team's own manager (teams_pages.go; phase 2a).
+	ReroleTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
+	AddTeamMemberByEmailAsManager(ctx context.Context, by users.Actor, team int64, email string, role authz.TeamRole) error
+	RemoveTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64) error
+	TeamMembers(ctx context.Context, team int64) ([]users.TeamMember, error)
+	TeamAudit(ctx context.Context, team int64, limit int) ([]users.AuditEntry, error)
 }
 
 // InviteTTL is an invite link's default lifetime; inviteTTLChoices are the
@@ -71,6 +83,7 @@ func (s *Server) registerAdminRoutes(mux Mux) {
 	mux.HandleFunc("GET /admin/invites", s.requireAdmin(s.handleAdminInvites))
 	mux.HandleFunc("POST /admin/invites", s.requireAdmin(s.handleAdminInviteCreate))
 	mux.HandleFunc("POST /admin/invites/{id}/revoke", s.requireAdmin(s.handleAdminInviteRevoke))
+	s.registerAdminTeamRoutes(mux)
 }
 
 // adminPagesServed reports whether this server has what the admin pages need.
@@ -83,25 +96,53 @@ const AdminOnlyRefusal = "this page is for admins"
 // admin store is wired, and a write comes from muster's own pages.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireSession(func(w http.ResponseWriter, r *http.Request) {
-		if p, ok := authz.From(r.Context()); !ok || p.Role != authz.RoleAdmin {
-			if isDocumentNavigation(r) {
-				s.renderNotice(w, http.StatusForbidden, "Admins only", "Your account cannot open this page.")
-				return
-			}
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": AdminOnlyRefusal})
+		if s.refuseNonAdmin(w, r) {
 			return
 		}
 		if !s.adminPagesServed() {
-			s.renderNotice(w, http.StatusServiceUnavailable, "Account management is not configured",
+			s.renderNotice(w, r, http.StatusServiceUnavailable, "Account management is not configured",
 				"This server has no GoTrue configured (MUSTER_GOTRUE_URL), so it cannot manage accounts.")
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+			s.refuseCrossOrigin(w, r)
 			return
 		}
 		next(w, r)
 	})
+}
+
+// requireAdminRole is requireAdmin WITHOUT the account store: the
+// principal's role is admin, and a write comes from muster's own pages. It is
+// for the admin's settings that are not account management — the instance
+// branding (branding.go) — which a password-mode server, whose operator is
+// user 1 and an admin but which has no GoTrue, must reach too.
+func (s *Server) requireAdminRole(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireSession(func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseNonAdmin(w, r) {
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
+			s.refuseCrossOrigin(w, r)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// refuseNonAdmin answers a principal whose role is not admin — the notice for
+// a page, AdminOnlyRefusal for anything else — and reports whether it did.
+// The ONE role check requireAdmin and requireAdminRole share.
+func (s *Server) refuseNonAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if p, ok := authz.From(r.Context()); ok && p.Role == authz.RoleAdmin {
+		return false
+	}
+	if isDocumentNavigation(r) {
+		s.renderNotice(w, r, http.StatusForbidden, "Admins only", "Your account cannot open this page.")
+		return true
+	}
+	s.writeJSON(w, http.StatusForbidden, map[string]any{"error": AdminOnlyRefusal})
+	return true
 }
 
 func actorOf(r *http.Request) users.Actor {
@@ -123,8 +164,9 @@ const (
 	adminQuiet  = `press min-h-[44px] rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge`
 )
 
-// writeAdminDocument is writeAuthDocument with the admin header.
-func writeAdminDocument(w http.ResponseWriter, code int, title, active, inner string) {
+// writeAdminDocument is writeNavDocument with the admin sub-tabs, which stay
+// inside the page content (the side nav marks Admin; these pick the page).
+func (s *Server) writeAdminDocument(w http.ResponseWriter, r *http.Request, code int, title, active, inner string) {
 	tab := func(href, label string) string {
 		cls := "inline-flex min-h-[44px] items-center rounded-md px-3 text-sm font-medium text-fg2 hover:bg-s2"
 		cur := ""
@@ -134,9 +176,9 @@ func writeAdminDocument(w http.ResponseWriter, code int, title, active, inner st
 		}
 		return `<a href="` + href + `"` + cur + ` class="` + cls + `">` + label + `</a>`
 	}
-	writeAuthDocument(w, code, title, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
+	s.writeNavDocument(w, r, code, title, ui.NavAdmin, true, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
 <a href="/" class="inline-flex min-h-[44px] items-center px-2 text-sm text-accent underline">← muster</a>
-`+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/account", "Account")+`
+`+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/admin/teams", "Teams")+tab("/account", "Account")+`
 </nav>
 <div class="flex flex-col gap-4">`+inner+`</div>`)
 }
@@ -163,7 +205,7 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 	list, err := s.gt.Accounts.ListUsers(ctx)
 	if err != nil {
 		s.logger.Printf("admin: list users: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Could not load users", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load users", "Try again in a moment.")
 		return
 	}
 	me := authz.MustFrom(ctx).UserID
@@ -225,7 +267,7 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 		}
 		b.WriteString(`</ul></section>`)
 	}
-	writeAdminDocument(w, code, "Users", "/admin/users", b.String())
+	s.writeAdminDocument(w, r, code, "Users", "/admin/users", b.String())
 }
 
 // adminUserTarget reads {id} and refuses acting on an unknown user.
@@ -242,7 +284,7 @@ func (s *Server) adminUserTarget(w http.ResponseWriter, r *http.Request) (users.
 	}
 	if err != nil {
 		s.logger.Printf("admin: read user %d: %v", id, err)
-		s.renderNotice(w, http.StatusInternalServerError, "Could not load that user", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load that user", "Try again in a moment.")
 		return users.User{}, false
 	}
 	return u, true
@@ -369,7 +411,7 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 	list, err := s.gt.Accounts.ListInvites(ctx)
 	if err != nil {
 		s.logger.Printf("admin: list invites: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Could not load invites", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load invites", "Try again in a moment.")
 		return
 	}
 	var b strings.Builder
@@ -415,7 +457,7 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 		b.WriteString(`</li>`)
 	}
 	b.WriteString(`</ul></section>`)
-	writeAdminDocument(w, code, "Invites", "/admin/invites", b.String())
+	s.writeAdminDocument(w, r, code, "Invites", "/admin/invites", b.String())
 }
 
 // handleAdminInviteCreate mints an invite: 32 random bytes, only their sha256

@@ -10,8 +10,11 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -60,40 +63,151 @@ func (s *Server) registerMirrorViewRoutes(mux Mux) {
 // it cannot.
 func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	h, e, _, redirect, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	// The open's document, phase by phase (open_trace.go).
+	op := s.openPhases(r, openViewMirror, openPartDocument, "host", q.Get("host"), "session", q.Get("session"), "window", q.Get("window"))
+	outcome := telemetry.ReasonOK
+	defer func() { op.finish(outcome) }()
+	h, e, _, redirect, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), q.Get("host"), q.Get("session"), q.Get("window"))
 	if !ok {
+		outcome = "not_found"
 		http.NotFound(w, r)
 		return
 	}
 	if !e.HasRenderedView() {
+		outcome = "redirect"
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
 	if redirect {
+		outcome = "redirect"
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).ViewPath()), http.StatusSeeOther)
 		return
 	}
-	// The viewer opened this window (best-effort).
-	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
-	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
-		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
-		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(r.Context())}
-	// 🔴 A HERMES WINDOW SENDS ONLY WHEN ITS HOST ADVERTISED hermesSend
-	// (Phase 3): otherwise its composer is drawn disabled, with no queue, and
-	// every send is refused again at the hub (the hermesSend switch) and on
-	// the host (its own switch, and the paste guard).
-	if e.HermesView() {
-		v.Hermes, v.HermesSend = true, h.HermesSend && h.Interactive
+	// The viewer opened this window (best-effort): its "recently viewed"
+	// entry, and its open stop ends (session_viewed.go). Neither on a TEAM
+	// host's (team sharing 2b.3; the terminal page says why).
+	team := onTeamHost(r)
+	vctx := op.begin("visit")
+	if !team {
+		s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
+		s.episodeViewedMirror(vctx, r, h, e)
 	}
-	if !v.Hermes || v.HermesSend {
-		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
+	ctx := op.begin("view")
+	v := ui.MirrorViewView{Owner: e.Owner, Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
+		SessionName: s.mirrorNameUnlessTeam(r.WithContext(ctx), e), StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
+		DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
+		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx),
+		LiveCopy: e.LiveCopyWarning(),
+		// The header's ⓘ: the window's exact tmux target, its owner's (none
+		// on a team host's session, as no name is).
+		PlaceAddress: placeAddressUnlessTeam(team, e),
+		// What the retired list's card said: "offline", and the host's note.
+		Offline: !h.Online, Note: e.AgentNote}
+	// 🔴 A WINDOW OF A RUNTIME MUSTER ONLY VIEWS (Caps.Send off) has its
+	// composer drawn disabled, with no queue; every send is refused again at
+	// the hub (lookupAgent) and on the host (the paste guard).
+	if rt, ok := e.Spec(); ok && e.AgentView() {
+		switch why := mirror.SendBlocked(h, e); {
+		case !rt.Caps.Send:
+			v.ViewOnly = rt.Kind
+		case why != "":
+			// 🔴 A GATED SEND THAT CANNOT GO (opencode: the host did not opt in,
+			// or the pane is not launcher-bound) is drawn disabled, saying why,
+			// with no queue; the hub and the host refuse it again.
+			v.ViewOnly, v.ViewOnlyWhy, v.ViewOnlySetting = rt.Kind, why, mirror.SendOffSetting(h, e)
+		default:
+			v.Agent = rt.Kind
+		}
+		// The session the view shows rides every message written on it
+		// (ui.AgentSessionField): a gated send goes only while the window
+		// still shows it.
+		if rt.GatedSend {
+			v.AgentSession = e.AgentSession
+		}
+	}
+	// 🔴 A TEAM HOST'S SESSION (team sharing 2b.3) IS WATCHED, AND EVERY
+	// EXTRA THAT IS THE VIEWER'S OWN IS LEFT OUT: its composer is drawn
+	// disabled to a viewer, and to an operator or a manager it types into
+	// the team's window with the team's queue (2b.4); no rename offer or focus
+	// history (G4: no focus titles); no chief mode, succession or suggested
+	// replies (each would send the transcript to the viewer's own model or
+	// chief — G4, D-1113 #10; their routes answer 403 there,
+	// mirrorTeamRoutes); no tags or asks block (the viewer's own, keyed by
+	// host name). Its preview runs on the TEAM's plugins (2b.3b). Its
+	// Attention asks are on the Attention page.
+	if team {
+		v.FocusHistory = ""
+		if teamOperatorOn(r) {
+			// An OPERATOR (or a manager) types here (team sharing 2b.4): the
+			// composer and the TEAM window's queue, every form naming the
+			// team (owner=). No paperclip: an upload is the uploader's own
+			// file, and a link to it in a team's session is not the team's.
+			if v.ViewOnly == "" {
+				v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
+			}
+			v.Upload, v.UploadOff = "", false
+			v.Notice, v.NoticeOK = composerNotice(r)
+		} else {
+			v.TeamNote = MirrorTeamComposerNote
+		}
+		v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e)})
+		v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
+		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
+		// The TEAM's viewer plugins (team sharing 2b.3b), never the viewer's.
+		vp, _ := s.teamViewerPlugins(op.begin("plugins"), e.Owner, e.Window)
+		v.Plugins = pluginChips(vp, e)
+		allowSameOriginFrame(w, viewerFrameSrc(vp))
+		viewDocument(w)
+		op.serverTiming(w)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		op.begin("render")
+		if err := ui.MirrorViewPage(v).Render(w); err != nil {
+			outcome = telemetry.ReasonError
+			s.logger.Printf("mirror: render team view page: %v", err)
+		}
+		return
+	}
+	// The rename offer, when the conversation has moved on from its name.
+	v.Drift = s.mirrorDrift(r, e, v.SessionName)
+	// The composer's chief mode (view_chief.go): a window whose conversation
+	// muster can name, for an owner whose chief is on.
+	v.Chief = e.SessionKey() != "" && s.viewChiefOffered(op.begin("chief"))
+	// Its succession, and the one it continues (succession.go).
+	sctx := op.begin("succession")
+	v.Succession, v.End = s.proposalsForView(sctx, e)
+	if p, ok := s.predecessorForView(sctx, e); ok {
+		v.Predecessor = &p
+	}
+
+	if v.ViewOnly == "" {
+		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
-	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
-	allowSameOriginFrame(w)
-	formDocument(w)
+	// The suggested replies' row (suggest.go): a Claude Code window on an
+	// interactive host, while the server has suggestions wired at all.
+	ctx = op.begin("suggest")
+	v.Suggest = s.suggestPath(ctx, h, e)
+	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(ctx, h, e)
+	v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
+	// The window's sessions' open attention asks, answerable here
+	// (attention_asker.go).
+	v.Asks, v.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
+	// The session switcher below the composer (ui/switcher.go).
+	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	// The viewer's tags on the tmux session, in the header (ui/session_tags.go).
+	v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
+	// The window's Preview button and panel, and the frame-src the panel
+	// needs (plugin_chip.go); none and "" while the seam is off.
+	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
+	v.Plugins = pluginChips(vp, e)
+	allowSameOriginFrame(w, viewerFrameSrc(vp))
+	viewDocument(w)
+	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	op.begin("render")
 	if err := ui.MirrorViewPage(v).Render(w); err != nil {
+		outcome = telemetry.ReasonError
 		s.logger.Printf("mirror: render view page: %v", err)
 	}
 }
@@ -114,7 +228,17 @@ type mirrorViewBatch struct {
 	Context *ui.ContextView `json:"context,omitempty"`
 }
 
+// viewCloseRead is the view socket's close detection: c.CloseRead, whose
+// context ends when the page goes. A test replaces it to hold the window in
+// which the page has gone and the context has not ended yet (streamEndReason).
+var viewCloseRead = func(c *websocket.Conn, ctx context.Context) context.Context { return c.CloseRead(ctx) }
+
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
+//
+// Its open is measured phase by phase up to the first batch written to the
+// browser (open_trace.go), and its end is counted by reason
+// (metrics.ViewDisconnects) and told to the page as a closed `reason` beside
+// the human `message`, so the page can report why it disconnected.
 func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Mirror == nil {
 		http.NotFound(w, r)
@@ -122,37 +246,73 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	host, session, window := q.Get("host"), q.Get("session"), q.Get("window")
-	if _, _, _, _, ok := s.mirrorEntry(r, host, session, window); !ok {
+	gen := q.Get("gen")
+	offset, _ := strconv.ParseInt(q.Get("offset"), 10, 64)
+	op := s.openPhases(r, openViewMirror, openPartStream, "host", host, "session", session, "window", window,
+		"resume", strconv.FormatBool(gen != "" && offset > 0))
+	since := time.Now()
+	if _, _, _, _, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), host, session, window); !ok {
+		op.finish("not_found")
+		viewEnded(r, openViewMirror, "not_found", since)
 		http.NotFound(w, r)
 		return
 	}
-	gen := q.Get("gen")
-	offset, _ := strconv.ParseInt(q.Get("offset"), 10, 64)
 
+	op.begin("accept")
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})
 	if err != nil {
+		op.finish("refused")
+		viewEnded(r, openViewMirror, "refused", since)
 		s.logger.Printf("mirror: view ws accept: %v", err)
 		return
 	}
 	defer c.CloseNow()
-	ctx, done, ok := s.terminals.add(r.Context())
+	defer forgetPage(c)
+	// The browser sends nothing; CloseRead ends its context when it goes away.
+	// 🔴 IT WRAPS THE REQUEST'S CONTEXT, AND THE SHUTDOWN'S IS A CHILD OF IT:
+	// CloseRead's reader closes the socket when ITS context ends, so a
+	// shutdown that ended that context would close the socket before the page
+	// could be told why (shutdownFrame).
+	ctx, done, ok := s.terminals.add(viewCloseRead(c, r.Context()))
 	if !ok {
-		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+		op.finish(telemetry.ReasonShutdown)
+		viewEnded(r, openViewMirror, telemetry.ReasonShutdown, since)
+		shutdownFrame(c)
 		return
 	}
 	defer done()
-	// The browser sends nothing; CloseRead ends ctx when it goes away.
-	ctx = c.CloseRead(ctx)
+	// 🔴 EVERYTHING AFTER THE OPEN RUNS DETACHED from the open's trace: the
+	// asks relay, the suggested replies' turn work (database reads, a model
+	// call) and every later batch's write. Only the watch itself runs under
+	// the open's span, and its spans end at the first batch.
+	live := telemetry.Detached(ctx)
+	// The page judges the socket alive by hearing from it (ui/live.go): a
+	// conversation with nothing new says nothing for minutes, so it beats.
+	defer socketHeartbeat(live, s.logger, c)()
 
 	var drawn ui.MirrorTranscript
+	// The mentions an assistant's text names are linked (ui/mentions.go),
+	// against the sessions and agents that exist as the socket opens.
+	drawn.Mentions = s.mentionIndex(live)
 	// A reconnect that resumes (gen + offset) draws onto a page that already
 	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
 	drawn.Resumed = gen != "" && offset > 0
+	// The tool-context ledger resumes from the checkpoint the socket before
+	// this one left at this very place (mirror_ledger.go), so a call still
+	// running across the reconnect is attributed when its next turn arrives.
+	lkey := ledgerKey{windowOwner(r.Context()), host, session, window}
+	if drawn.Resumed {
+		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
+			drawn.RestoreLedger(l)
+		}
+	}
+	curGen := gen
 	// The window's questions changed (mirror_ask.go): tell the page at once,
 	// so a question shows here the moment its hook registers it. The page's
 	// own poll is the fallback.
-	if h, e, _, _, ok := s.mirrorEntry(r, host, session, window); ok && e.ClaudeSession != "" {
-		changed, stop := s.askSubscribe(askWatchKey{requestOwner(r.Context()), h.Host, e.ClaudeSession})
+	sctx := op.begin("subscribe")
+	if h, e, _, _, ok := s.mirrorEntry(r.WithContext(sctx), host, session, window); ok && e.ClaudeSession != "" {
+		changed, stop := s.askSubscribe(askWatchKey{windowOwner(r.Context()), h.Host, e.ClaudeSession})
 		defer stop()
 		safeGo(s.logger, "mirror: tell a rendered view its questions changed", func() {
 			for {
@@ -160,14 +320,38 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 				case <-ctx.Done():
 					return
 				case <-changed:
-					_ = terminalWriteJSON(ctx, c, map[string]string{"type": "asks"})
+					_ = terminalWriteJSON(live, c, map[string]string{"type": "asks"})
 				}
 			}
 		})
 	}
-	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
+	// Suggested replies (suggest.go): this socket's tracker — nil when the
+	// window cannot have any — fed every batch, and the page told what its
+	// turn ends make of them.
+	// None on a team host's session (G4: suggested replies run on the viewer's
+	// own key; mirrorTeamRoutes refuses their routes there).
+	var sg *suggestSocket
+	if !onTeamHost(r) {
+		sg = s.suggestSocket(live, r.WithContext(telemetry.Detached(r.Context())), c, host, session, window, drawn.Resumed)
+	}
+	// What the hub measures of the open (the round trip to the host, the
+	// host's own phases) lands here before the first batch is handed on.
+	var stats mirror.OpenStats
+	// "watch" is the open's phase from here to the first batch: the hub's
+	// own spans (mirror.watch and its first_batch child) say where inside it
+	// the time went.
+	op.begin("watch")
+	wctx := mirror.WithOpenStats(ctx, &stats)
+	first := true
+	err = s.ext.Mirror.WatchWindow(wctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()
+		}
+		// After the batch is written: the page has drawn the reply its
+		// suggestions answer before it hears of them.
+		defer sg.observe(m)
+		if first {
+			op.begin("render")
 		}
 		// A host that reports subagents says so before it draws an Agent call
 		// (the Reset batch, a resume's marker): those calls are then cards.
@@ -178,28 +362,88 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.SubagentList && len(m.Subagents) > 0 {
 			b.Ops = append(b.Ops, drawn.SubagentOps(m.Subagents)...)
 		}
-		// After Ops: Ops is what records the usage TakeContext reports.
+		// What Claude Code has queued itself (ui/cc_queued.go): the whole list,
+		// redrawn when it changed.
+		if m.QueuedList {
+			b.Ops = append(b.Ops, drawn.QueuedOps(m.Queued)...)
+		}
+		// After Ops: Ops is what records the usage TakeContext reports — and
+		// a runtime's own report (opencode's, beside its events) after it.
+		drawn.SetAgentContext(m.Context)
 		b.Context = drawn.TakeContext()
+		if m.Gen != "" {
+			curGen = m.Gen
+		}
+		s.ledgers.put(lkey, curGen, m.Offset, drawn.Ledger())
 		if m.PromptIndex {
 			refs, dropped := mirror.BoundPrompts(m.Prompts)
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)
 		}
-		return terminalWriteJSON(ctx, c, b)
+		if !first {
+			return writeToPage(live, c, b)
+		}
+		first = false
+		op.begin("write")
+		werr := writeToPage(live, c, b)
+		outcome := map[bool]string{true: telemetry.ReasonOK, false: telemetry.ReasonClientLeft}[werr == nil]
+		op.finish(outcome, append(hubFields(&stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
+		// The open is over: its span ends here, whatever the socket does next.
+		telemetry.OpenDone(r, outcome)
+		return werr
 	})
+	reason := streamEndReason(ctx, c, err)
+	viewEnded(r, openViewMirror, reason, since)
+	op.finish(reason, hubFields(&stats)...)
+	switch reason {
+	case telemetry.ReasonShutdown:
+		shutdownFrame(c)
+		return
+	case telemetry.ReasonTimeout:
+		// A page alive and not reading: the connection is closed already
+		// (the timed-out write closed it), so it is told nothing — but the
+		// log says so, whatever the context says by now.
+		s.logger.Printf("mirror: view %s/%s: the page stopped reading (a write to it timed out): %v", host, session, err)
+		return
+	case telemetry.ReasonClientLeft:
+		// The page left (its own close, or a write that found it gone): no
+		// frame to a page that is not there, and no error line for a browser
+		// leaving.
+		return
+	}
 	if ctx.Err() != nil {
 		return
 	}
-	msg := "the rendered view ended"
-	switch {
-	case err != nil && mirror.IsAttachRefusal(err):
-		msg = err.Error()
-	case err != nil:
-		msg = "the rendered view ended with an error: " + err.Error()
+	if err != nil && !mirror.IsAttachRefusal(err) {
 		s.logger.Printf("mirror: view %s/%s: %v", host, session, err)
 	}
-	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg})
+	// The exact error is an admin's (setup); anyone else's frame carries none.
+	msg, detail := viewErrorWords(err, host, authz.IsAdmin(r.Context()))
+	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg, "detail": detail, "reason": reason})
 	_ = c.Close(websocket.StatusNormalClosure, "view ended")
 }
+
+// viewErrorWords is a Rendered view's error frame's two texts: the plain line
+// the page shows (mirror.PlainWords, host the window's computer) and the exact
+// error behind its ⓘ — only when setup (the viewer is an admin:
+// ui.Features.Setup), "" otherwise. The page never shows err's own text.
+func viewErrorWords(err error, host string, setup bool) (msg, detail string) {
+	switch {
+	case err == nil:
+		return "The view ended.", ""
+	case mirror.IsAttachRefusal(err):
+		msg = mirror.PlainWords(err, host)
+	default:
+		msg = MirrorViewEndedPlain
+	}
+	if setup {
+		detail = err.Error()
+	}
+	return msg, detail
+}
+
+// MirrorViewEndedPlain is what a Rendered view that ended on an error it has
+// no words for says; the error itself is its ⓘ.
+const MirrorViewEndedPlain = "The view stopped unexpectedly. Reconnect to carry on."
 
 // refuseStale answers a send whose sign-in is not fresh: 403, the gate's own
 // text, and a header the page reads to ask "Confirm it's you" and retry.
@@ -209,8 +453,6 @@ func refuseStale(w http.ResponseWriter) {
 }
 
 // mirrorSendTimeout bounds one send end to end (the host confirms the paste).
-// It is above the hub's wait for a Hermes window's gated send (three Escapes
-// at 1.5 s, the paste and its checks, up to 8 s for the confirming row).
 const mirrorSendTimeout = 50 * time.Second
 
 // handleMirrorViewSend is POST /mirror/view/send (host, session, window,
@@ -236,8 +478,7 @@ const SendAgainHeader = ui.SendAgainHeader
 // to the host and never confirmed: it may be in the conversation already.
 const MirrorSendUnconfirmedRepeat = "Not sent again: the first try may already have been submitted, and muster never repeats it on its own. Check the conversation; to send it anyway, use Send again."
 
-// MirrorSendUnconfirmed answers a send the host never confirmed (a Claude Code
-// window's; a Hermes window's says it in the host's own words).
+// MirrorSendUnconfirmed answers a send the host never confirmed.
 const MirrorSendUnconfirmed = "May have been sent: muster handed it to the host, which did not confirm it. Check the conversation before sending again; to send it anyway, use Send again."
 
 // errUnconfirmedRepeat: the same message, by its nonce, after a delivery the
@@ -281,6 +522,14 @@ type mirrorPending struct {
 	target mirror.PasteTarget
 	// nav: the BROWSER submitted the form (see composer.go).
 	nav bool
+	// again: the person's explicit "Send again" (form field again=1) of a
+	// message that may have landed (sendNonces.hold).
+	again bool
+	// agentSession is the agent session the page's view showed when the
+	// message was written (form field agent_session, ui.AgentSessionField):
+	// a gated send goes only while the window still shows it
+	// (mirror.ShownSession). "" for none (an older page, a Claude window).
+	agentSession string
 }
 
 // refuse answers a send that is not delivered: to the composer's script the
@@ -296,18 +545,49 @@ func (s *Server) mirrorRefuse(w http.ResponseWriter, r *http.Request, p mirrorPe
 
 // mirrorStepUpPage answers a browser-submitted send whose sign-in is stale: the
 // plain confirm page, carrying the send in hidden fields.
-func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, problem string) {
-	fields := []ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}, {Name: "host", Value: p.e.Host}, {Name: "session", Value: p.e.Session}}
+func (s *Server) mirrorStepUpPage(ctx context.Context, w http.ResponseWriter, p mirrorPending, problem string) {
+	fields := append([]ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}}, mirrorSendFields(p, p.nonce)...)
+	if p.again {
+		fields = append(fields, ui.ComposerField{Name: ui.SendAgainField, Value: "1"})
+	}
+	formDocument(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The team (owner=) rides the action's query: only the query aims a
+	// request at a team window (mirrorTeamGate).
+	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: ownerQuery(mirrorConfirmSendPath, p.e.Owner), Fields: fields,
+		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem, Brand: s.uiBrand(ctx)}).Render(w); err != nil {
+		s.logger.Printf("mirror: render confirm page: %v", err)
+	}
+}
+
+// mirrorSendFields is a send's address, text and nonce, as a form carries them.
+func mirrorSendFields(p mirrorPending, nonce string) []ui.ComposerField {
+	fields := []ui.ComposerField{{Name: "host", Value: p.e.Host}, {Name: "session", Value: p.e.Session}}
 	if p.window != "" {
 		fields = append(fields, ui.ComposerField{Name: "window", Value: p.window})
 	}
-	fields = append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: p.nonce})
-	formDocument(w)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
-		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
-		s.logger.Printf("mirror: render confirm page: %v", err)
+	fields = append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: nonce})
+	if p.agentSession != "" {
+		fields = append(fields, ui.ComposerField{Name: ui.AgentSessionField, Value: p.agentSession})
 	}
+	return fields
+}
+
+// shownSessionField is the request's agent_session field (ui.AgentSessionField)
+// when it is a session id the wire carries, else "".
+func shownSessionField(r *http.Request) string {
+	if v := r.PostFormValue(ui.AgentSessionField); mirror.ValidAgentSession(v) {
+		return v
+	}
+	return ""
+}
+
+// mirrorSendPath is the send route of a target's composer.
+func mirrorSendPath(target mirror.PasteTarget) string {
+	if target == mirror.PasteActivePane {
+		return ui.MirrorTerminalSendPath
+	}
+	return ui.MirrorSendPath
 }
 
 // mirrorSendForm reads a send's form: its address, resolved against the
@@ -331,7 +611,8 @@ func (s *Server) mirrorSendForm(w http.ResponseWriter, r *http.Request, target m
 		return h, p, false
 	}
 	return h, mirrorPending{e: e, window: window, text: r.PostFormValue("text"), nonce: r.PostFormValue("nonce"),
-		target: target, nav: isDocumentNavigation(r)}, true
+		target: target, nav: isDocumentNavigation(r), again: r.PostFormValue(ui.SendAgainField) == "1",
+		agentSession: shownSessionField(r)}, true
 }
 
 // mirrorSend is BOTH send routes: paste the text into a pane of the window and
@@ -352,12 +633,12 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 		return
 	}
 	if !h.Interactive {
-		s.mirrorRefuse(w, r, p, http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		s.mirrorRefuse(w, r, p, http.StatusConflict, noticeText(noticeReadOnly, h.Host), noticeReadOnly)
 		return
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if p.nav {
-			s.mirrorStepUpPage(w, p, "")
+			s.mirrorStepUpPage(r.Context(), w, p, "")
 			return
 		}
 		refuseStale(w)
@@ -407,13 +688,13 @@ func (s *Server) handleMirrorConfirmSend(w http.ResponseWriter, r *http.Request)
 	// The page is only ever the browser's: its result is a page or a redirect.
 	p.nav = true
 	if !h.Interactive {
-		s.mirrorRefuse(w, r, p, http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		s.mirrorRefuse(w, r, p, http.StatusConflict, noticeText(noticeReadOnly, h.Host), noticeReadOnly)
 		return
 	}
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.mirrorStepUpPage(w, p, o.Error)
+		s.mirrorStepUpPage(r.Context(), w, p, o.Error)
 		return
 	}
 	s.mirrorDeliver(stepup.WithAuthTime(r.Context(), o.At), w, r, p)
@@ -459,7 +740,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
-	repeat, err := s.mirrorPaste(ctx, host, session, p.window, p.text, p.nonce, p.target)
+	repeat, err := s.mirrorSendHeld(ctx, p)
 	if repeat {
 		s.logger.Printf("mirror: a repeat of a message to %s/%s%s was not sent again", host, session, p.window)
 		sent()
@@ -470,14 +751,20 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
 			if p.nav {
-				s.mirrorStepUpPage(w, p, "")
+				s.mirrorStepUpPage(r.Context(), w, p, "")
 				return
 			}
 			refuseStale(w)
 			return
 		}
-		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
-		var notIdle *mirror.HermesNotIdleError
+		if errors.Is(err, errUnconfirmedRepeat) && p.nav {
+			s.heldRefusal(r.Context(), w, true, ownerQuery(mirrorSendPath(p.target), p.e.Owner), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
+			return
+		}
+		// msg is what the composer's script shows inline: a case's own words,
+		// else its notice's (plain: the operator rule; the exact error is in
+		// the log line below, never on the page).
+		status, notice, msg := http.StatusBadGateway, noticeFailed, ""
 		var pr *mirror.PasteRefusedError
 		// 🔴 A send that MAY have landed offers "Send again" (a new nonce): the
 		// same nonce is never delivered again (claim's nonceUnconfirmed).
@@ -487,23 +774,30 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		switch {
 		case errors.Is(err, errUnconfirmedRepeat):
 			status, notice, msg = http.StatusConflict, noticeUnconfirmedRepeat, MirrorSendUnconfirmedRepeat
-		case errors.As(err, &notIdle):
-			// The hub's idle gate for a Hermes window: nothing was sent.
-			status, notice, msg = http.StatusConflict, hermesNotIdleNotices[notIdle.Status], notIdle.Error()
-		case errors.As(err, &pr) && hermesSendNotices[pr.Refusal] != "":
-			// The host's gated send: its own words, and a notice that says the
-			// same when the browser posted the form. Pasted-not-submitted and
-			// may-have-been-submitted are said as such, never as "not sent".
-			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrPasteUnconfirmed):
 			status, notice, msg = http.StatusBadGateway, noticeUnconfirmed, MirrorSendUnconfirmed
+		case errors.As(err, &pr) && claudeGuardNotices[pr.Refusal] != "":
+			// The Claude prompt guard (the hub's or the host's): its own words.
+			// Waiting is "nothing was typed"; pasted-not-submitted is said as
+			// such, never as "not sent".
+			status, notice, msg = http.StatusConflict, claudeGuardNotices[pr.Refusal], pr.Why
 		case mirror.PasteGuardRefusal(err) != "":
-			// The host's Hermes paste guard: its own words, without this
+			// The host's paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice
 			// code that says the same when the browser posted the form.
 			var pr *mirror.PasteRefusedError
 			errors.As(err, &pr)
 			status, notice, msg = http.StatusConflict, pasteGuardNotices[pr.Refusal], pr.Why
+		case errors.Is(err, mirror.ErrOpenCodeNotIdle):
+			// The hub's idle gate for opencode: its own words.
+			// Its own words (busy, or waiting on the person) when it is the
+			// hub's *OpenCodeNotIdleError — plain text, never the wrapped
+			// error's; else the notice's.
+			status, notice = http.StatusConflict, noticeOpenCodeNotIdle
+			var ni *mirror.OpenCodeNotIdleError
+			if errors.As(err, &ni) {
+				msg = ni.Error()
+			}
 		case errors.Is(err, mirror.ErrBadPaste):
 			status, notice = http.StatusBadRequest, noticeBadText
 		case errors.Is(err, mirror.ErrInteractiveRefused):
@@ -519,6 +813,15 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		case errors.Is(err, mirror.ErrHostOffline):
 			status, notice = http.StatusServiceUnavailable, noticeOffline
 		}
+		if msg == "" && notice == noticeFailed && errors.As(err, &pr) && pr.Why != "" {
+			// A host's refusal muster has no code for: the host's own words
+			// for the person, without this side's "mirror: the host refused
+			// the message:" in front.
+			msg = pr.Why
+		}
+		if msg == "" {
+			msg = noticeText(notice, host)
+		}
 		s.logger.Printf("mirror: send to %s/%s%s refused: %v", host, session, p.window, err)
 		s.mirrorRefuse(w, r, p, status, msg, notice)
 		return
@@ -527,6 +830,104 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 	// The operator wrote to the session: its open asks are answered here.
 	s.mirrorAddressed(ctx, host, p.e, p.target, p.text, 0)
 	sent()
+}
+
+// heldDestKey names where a message goes, for sendNonces.hold: the host, the
+// session, the window (as resolved: a queued message's Target.Window, a
+// Send's entry) and the pane it is pasted into.
+func heldDestKey(host, session, window string, target mirror.PasteTarget) string {
+	return strconv.Quote(host) + "|" + strconv.Quote(session) + "|" + strconv.Quote(window) + "|" + strconv.Itoa(int(target))
+}
+
+// isHeldFor reports whether text to that destination, by ctx's owner, may
+// already have landed and is not this request's explicit "Send again" (again).
+// 🔴 EVERY WAY A PERSON SENDS ASKS THIS: Send (mirrorSendHeld), Queue
+// (sendQueueAdd) and a queued row's Send now (sendQueueSendNow). Any one of
+// them left out is a second delivery from a copy of the page that never saw
+// the offer (audit #275 round 1, Y1: Queue and Send now).
+func (s *Server) isHeldFor(ctx context.Context, host, session, window string, target mirror.PasteTarget, text string, again bool) bool {
+	return !again && s.sends.isHeld(windowOwner(ctx), heldDestKey(host, session, window, target), text)
+}
+
+// settleHeld records how a delivery of text ended for the hold: one that may
+// have landed is held, a confirmed one releases it. Every delivery passes
+// here — a Send's, a Send now's and the dispatcher's (sendQueueDeliver) — so a
+// may-have-landed queued message is held like a Send's.
+func (s *Server) settleHeld(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, key string, err error) {
+	owner, dest := windowOwner(ctx), heldDestKey(host, session, window, target)
+	switch {
+	case err == nil:
+		s.sends.release(owner, dest, text)
+	case errors.Is(err, mirror.ErrPasteUnconfirmed):
+		s.sends.hold(owner, dest, text, key)
+	case mirror.PasteGuardRefusal(err) == mirror.PasteRefusalOpenCodeConflict:
+		// opencode holds the key's message id in ANOTHER session (the pane was
+		// started on another session since): that first try did not land
+		// here, and a Send again under the same key would be refused the same
+		// way until the hold expired. Released: the next send is a new message.
+		s.sends.release(owner, dest, text)
+	}
+}
+
+// messageKey is the key a Send of text to that destination is sent under
+// (mirror.MessageKey: a gated send's message id is derived from it). 🔴 ONLY
+// THE PERSON'S EXPLICIT "Send again" (again) of a message that MAY have
+// landed (held) reuses its first try's key — so it posts the same opencode
+// message id and lands at most once. Any other send, a queued message's above
+// all, is its own message under its own nonce: reusing the held key there
+// would make opencode answer it with the earlier message's record, and a
+// distinct message would be reported Sent and never delivered.
+func (s *Server) messageKey(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, nonce string, again bool) string {
+	if !again {
+		return nonce
+	}
+	if k := s.sends.heldKey(windowOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
+		return k
+	}
+	return nonce
+}
+
+// sendAgainPage answers a browser-submitted send (no script ran) that was
+// refused because the same message may already have been delivered: 409 and
+// a page whose one form is the "Send again" the composer's script would have
+// drawn (ui.SendAgainPage). no-store: it carries the message.
+func (s *Server) sendAgainPage(ctx context.Context, w http.ResponseWriter, v ui.SendAgainView) {
+	v.Brand = s.uiBrand(ctx)
+	formDocument(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusConflict)
+	if err := ui.SendAgainPage(v).Render(w); err != nil {
+		s.logger.Printf("send again: render page: %v", err)
+	}
+}
+
+// heldRefusal answers a send refused by the hold (isHeldFor): to the script
+// 409, the reason and SendAgainHeader (it offers Send again); to a form the
+// browser submitted, sendAgainPage posting the same to action with fields.
+func (s *Server) heldRefusal(ctx context.Context, w http.ResponseWriter, nav bool, action string, fields []ui.ComposerField, text, button, back string) {
+	if nav {
+		s.sendAgainPage(ctx, w, ui.SendAgainView{Action: action, Fields: fields, Why: MirrorSendUnconfirmedRepeat, Text: text, Button: button, BackHref: back})
+		return
+	}
+	w.Header().Set(SendAgainHeader, "1")
+	http.Error(w, MirrorSendUnconfirmedRepeat, http.StatusConflict)
+}
+
+// mirrorSendHeld is a person's send (mirrorDeliver) through mirrorPaste, with
+// the hold on a message that may have landed (sendNonces.hold): a plain send
+// of the SAME text to the same place is refused like a repeat of its nonce
+// (errUnconfirmedRepeat, which offers "Send again"), under any nonce, until
+// the person sends it again explicitly or a send of it is confirmed.
+func (s *Server) mirrorSendHeld(ctx context.Context, p mirrorPending) (repeat bool, err error) {
+	if s.isHeldFor(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.again) {
+		return false, errUnconfirmedRepeat
+	}
+	key := s.messageKey(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.nonce, p.again)
+	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key), mirror.ShownSession(p.agentSession))
+	if !repeat {
+		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, key, err)
+	}
+	return repeat, err
 }
 
 // mirrorPaste is the DELIVERY itself — what a person's Send (mirrorDeliver) and
@@ -553,14 +954,14 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 	resolved := window
 	opts = append(opts, mirror.ReportWindow(&resolved))
 	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target, opts...)
-	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
+	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed) || mirror.ClaudePastedRefusal(err)) {
 		s.sendQueueNotePaste(ctx, host, session, resolved)
 	}
 	return repeat, err
 }
 
 func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
-	st, finish := s.sends.claim(requestOwner(ctx), nonce, text)
+	st, finish := s.sends.claim(windowOwner(ctx), nonce, text)
 	switch st {
 	case nonceRepeat:
 		return true, nil
@@ -582,4 +983,14 @@ func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, tex
 		finish(nonceFailed)
 	}
 	return false, err
+}
+
+// placeAddressUnlessTeam is the tmux target (mirror.WhereTarget: "tmux
+// fern:1 @ atlas") the Rendered view header's ⓘ holds, "" on a team host's
+// session.
+func placeAddressUnlessTeam(team bool, e mirror.SessionView) string {
+	if team {
+		return ""
+	}
+	return e.WhereTarget()
 }

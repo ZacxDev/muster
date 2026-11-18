@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,7 +67,7 @@ func (w draftWorld) file(t *testing.T, m Message, body string) Draft {
 
 func (w draftWorld) approve(t *testing.T, d Draft) Draft {
 	t.Helper()
-	got, err := w.s.DecideDraft(session(2), d.ID, true)
+	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true})
 	if err != nil || got.Status != DraftApproved || got.ApprovedAt == nil {
 		t.Fatalf("approve %d: %+v %v", d.ID, got, err)
 	}
@@ -254,22 +255,22 @@ func TestTheScreenRefusesWhatTheOwnerCouldNotSeeOrShouldNotSend(t *testing.T) {
 func TestOnlyAPendingDraftIsDecided(t *testing.T) {
 	w := newDraftWorld(t)
 	d := w.file(t, w.m, "yes")
-	if _, err := w.s.DecideDraft(session(3), d.ID, true); !errors.Is(err, ErrNotFound) {
+	if _, err := w.s.DecideDraftFrom(session(3), d.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner approving: %v; want ErrNotFound", err)
 	}
 	w.approve(t, d)
-	if _, err := w.s.DecideDraft(session(2), d.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving an approved draft: %v; want ErrDraftState", err)
 	}
-	if _, err := w.s.DecideDraft(session(3), d.ID, false); !errors.Is(err, ErrNotFound) {
+	if _, err := w.s.DecideDraftFrom(session(3), d.ID, DraftDecision{Approve: false}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner withdrawing: %v; want ErrNotFound", err)
 	}
 	r := w.file(t, w.delivered(t, "m-2", false), "no")
-	got, err := w.s.DecideDraft(session(2), r.ID, false)
+	got, err := w.s.DecideDraftFrom(session(2), r.ID, DraftDecision{Approve: false})
 	if err != nil || got.Status != DraftRejected || got.ApprovedAt != nil {
 		t.Fatalf("reject: %+v %v", got, err)
 	}
-	if _, err := w.s.DecideDraft(session(2), r.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), r.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving a rejected draft: %v; want ErrDraftState", err)
 	}
 }
@@ -350,26 +351,26 @@ func TestAResultSettlesOnlyItsOwnPluginsClaimedDraft(t *testing.T) {
 		t.Fatalf("second claim got %d, want %d", c.DraftID, d.ID)
 	}
 	_, other := mustCreate(t, w.s, 2, "second-inbox")
-	if _, err := w.s.FinishDraft(plugin(2), other.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
+	if _, _, err := w.s.FinishDraft(plugin(2), other.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another plugin of the same owner settling it: %v; want ErrNotFound", err)
 	}
 	_, theirs := mustCreate(t, w.s, 3, "example-inbox")
-	if _, err := w.s.FinishDraft(plugin(3), theirs.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
+	if _, _, err := w.s.FinishDraft(plugin(3), theirs.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner's plugin settling it: %v; want ErrNotFound", err)
 	}
-	got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up-123", Detail: "ok"})
-	if err != nil || got.Status != DraftSent || got.FinishedAt == nil || got.ExternalRef != "up-123" {
+	got, first, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up-123", Detail: "ok"})
+	if err != nil || !first || got.Status != DraftSent || got.FinishedAt == nil || got.ExternalRef != "up-123" {
 		t.Fatalf("the result: %+v %v", got, err)
 	}
-	again, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "different"})
-	if err != nil || again.Status != DraftSent || again.ExternalRef != "up-123" {
+	again, repeat, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "different"})
+	if err != nil || repeat || again.Status != DraftSent || again.ExternalRef != "up-123" {
 		t.Fatalf("the same result again: %+v %v; want the stored draft unchanged", again, err)
 	}
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false}); !errors.Is(err, ErrResultConflict) {
+	if _, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false}); !errors.Is(err, ErrResultConflict) {
 		t.Fatalf("the other result: %v; want ErrResultConflict", err)
 	}
 	fresh := w.approve(t, w.file(t, w.delivered(t, "m-fresh", false), "f"))
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, fresh.ID, DraftResult{OK: true}); !errors.Is(err, ErrDraftState) {
+	if _, _, err := w.s.FinishDraft(plugin(2), w.p.ID, fresh.ID, DraftResult{OK: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("a result for an unclaimed draft: %v; want ErrDraftState", err)
 	}
 	var n int
@@ -422,14 +423,14 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 	}
 	// Approve (the pending decision) does not apply to it: an unconfirmed draft
 	// is never offered again, whatever its owner does.
-	if _, err := w.s.DecideDraft(session(2), d.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving an unconfirmed draft: %v; want ErrDraftState", err)
 	}
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
 		t.Fatal("an unconfirmed draft was handed out after an approve attempt")
 	}
 	// A LATE result is still recorded on it.
-	if late, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false, Detail: "timed out"}); err != nil || late.Status != DraftFailed {
+	if late, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false, Detail: "timed out"}); err != nil || late.Status != DraftFailed {
 		t.Fatalf("the late result: %+v %v; want failed", late, err)
 	}
 }
@@ -440,7 +441,7 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 	w := newDraftWorld(t)
 	d := w.approve(t, w.file(t, w.m, "oops"))
-	got, err := w.s.DecideDraft(session(2), d.ID, false)
+	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: false})
 	if err != nil || got.Status != DraftRejected || got.ApprovedAt != nil {
 		t.Fatalf("withdraw: %+v %v", got, err)
 	}
@@ -456,7 +457,7 @@ func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
 		t.Fatal("claim the corrected draft")
 	}
-	if _, err := w.s.DecideDraft(session(2), d2.ID, false); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), d2.ID, DraftDecision{Approve: false}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("withdrawing a claimed draft: %v; want ErrDraftState", err)
 	}
 	// The card flag: a pending draft whose message has an unconfirmed sibling.
@@ -486,17 +487,17 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	}
 	// Another message's draft is unaffected.
 	other := w.file(t, w.delivered(t, "m-other", false), "other")
-	if _, err := w.s.DecideDraft(session(2), other.ID, true); err != nil {
+	if _, err := w.s.DecideDraftFrom(session(2), other.ID, DraftDecision{Approve: true}); err != nil {
 		t.Fatalf("approving a draft for ANOTHER message: %v", err)
 	}
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
 		t.Fatal("claim d1")
 	}
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
+	if _, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
 		t.Fatal(err)
 	}
 	d2 := w.file(t, w.m, "a follow-up after the first was sent")
-	if _, err := w.s.DecideDraft(session(2), d2.ID, true); err != nil {
+	if _, err := w.s.DecideDraftFrom(session(2), d2.ID, DraftDecision{Approve: true}); err != nil {
 		t.Fatalf("approving a follow-up after the first settled: %v", err)
 	}
 	// Approving while another reply is in flight: d3 is pending for m-race when
@@ -507,10 +508,10 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	dbtest.OwnerExec(t, w.dsn, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at,
 		status, decided_at, approved_at) VALUES (2, $1, $2, 'x', 'already approved', now() + interval '1 day', 'approved', now(), now())`,
 		race.ID, w.chief.ID)
-	if _, err := w.s.DecideDraft(session(2), d3.ID, true); !errors.Is(err, ErrReplyInFlight) {
+	if _, err := w.s.DecideDraftFrom(session(2), d3.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("approving while another reply is in flight: %v; want ErrReplyInFlight", err)
 	}
-	if got, err := w.s.DecideDraft(session(2), d3.ID, false); err != nil || got.Status != DraftRejected {
+	if got, err := w.s.DecideDraftFrom(session(2), d3.ID, DraftDecision{Approve: false}); err != nil || got.Status != DraftRejected {
 		t.Fatalf("rejecting while another reply is in flight: %+v %v; want rejected", got, err)
 	}
 }
@@ -537,7 +538,7 @@ func TestDraftsExpireAfterSevenDays(t *testing.T) {
 	if got, _ := w.s.Draft(session(2), oldApproved.ID); got.ApprovedAt == nil {
 		t.Error("an approved draft that expired lost its approval time")
 	}
-	if _, err := w.s.DecideDraft(session(2), oldPending.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), oldPending.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving an expired draft: %v; want ErrDraftState", err)
 	}
 }
@@ -602,7 +603,7 @@ func TestAResultTakesTheMessageLockFirst(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true})
+		_, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true})
 		done <- err
 	}()
 	select {
@@ -668,11 +669,11 @@ func TestALateSentCancelsEveryOtherReplyToTheMessage(t *testing.T) {
 	}
 
 	for _, d := range []Draft{d1, d3, d7} {
-		if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up"}); err != nil || got.Status != DraftSent {
+		if got, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up"}); err != nil || got.Status != DraftSent {
 			t.Fatalf("draft %d's late sent: %+v %v; want sent", d.ID, got, err)
 		}
 	}
-	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d5.ID, DraftResult{OK: false, Detail: "upstream said no"}); err != nil || got.Status != DraftFailed {
+	if got, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d5.ID, DraftResult{OK: false, Detail: "upstream said no"}); err != nil || got.Status != DraftFailed {
 		t.Fatalf("draft 5's late failed: %+v %v; want failed", got, err)
 	}
 	for _, c := range []struct {
@@ -756,5 +757,120 @@ func TestTheDraftTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 	if err := w.s.pool.QueryRow(sys, `SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
 		WHERE relname = 'plugin_reply_drafts'`).Scan(&forced); err != nil || !forced {
 		t.Fatalf("plugin_reply_drafts FORCED row-level security: %v (%v); want true", forced, err)
+	}
+}
+
+// TestDecideDraftFromRefusesAMalformedSource: DecideDraftFrom refuses, before
+// it touches the row, a malformed source and an MCP decision that does not
+// name the body it decides; the draft stays pending. CONTROL: a well-formed MCP
+// decision with the right hash (spelled out here, not derived from
+// DraftBodySHA256) approves it, and its audit row names where it came from.
+func TestDecideDraftFromRefusesAMalformedSource(t *testing.T) {
+	w := newDraftWorld(t)
+	d := w.file(t, w.m, "Noon works.")
+	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
+	const noonSHA = "9db1686c34182790eea56d774540580dfdb78c8316b50d277378578a977e0d64"
+	if got := DraftBodySHA256("Noon works."); got != noonSHA {
+		t.Fatalf("DraftBodySHA256 = %s, want %s", got, noonSHA)
+	}
+	for what, dec := range map[string]DraftDecision{
+		"mcp without a body hash":  {Approve: true, Via: DraftDecisionSource{Via: DraftViaMCP, Host: "ws", Session: sid}},
+		"mcp without a session":    {Approve: true, Via: DraftDecisionSource{Via: DraftViaMCP, Host: "ws"}, BodySHA256: noonSHA},
+		"browser naming a session": {Approve: true, Via: DraftDecisionSource{Via: DraftViaBrowser, Session: sid}},
+		"an unknown source":        {Approve: true, Via: DraftDecisionSource{Via: "standing"}},
+		"no source naming a host":  {Approve: true, Via: DraftDecisionSource{Host: "ws"}},
+	} {
+		if _, err := w.s.DecideDraftFrom(session(2), d.ID, dec); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", what, err)
+		}
+	}
+	if got, _ := w.s.Draft(session(2), d.ID); got.Status != DraftPending {
+		t.Fatalf("after refused decisions: %+v", got)
+	}
+	via := DraftDecisionSource{Via: DraftViaMCP, Host: "ws", Session: sid}
+	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true, Via: via, BodySHA256: noonSHA})
+	if err != nil || got.Status != DraftApproved {
+		t.Fatalf("control: %+v %v", got, err)
+	}
+	var detail string
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT detail->>'decided_via' FROM audit_log
+		WHERE object = $1 AND action = 'plugin.draft.approved'`, DraftObject(d.ID)).Scan(&detail); err != nil || detail != "mcp from ws/"+sid {
+		t.Fatalf("the approval's audit row: decided_via %q (%v)", detail, err)
+	}
+}
+
+// TestAMessageAResumeHoldsIsLeftToTheResume: while a mail resume is unfinished
+// (claimed, then spawned) and younger than MailResumeHold, its message — still
+// queued — is neither listed for the claim route's retry (QueuedForOwner) nor
+// taken by a delivery (BeginDelivery). A finished resume, and one older than
+// the hold (a server that never finished it), hold nothing.
+func TestAMessageAResumeHoldsIsLeftToTheResume(t *testing.T) {
+	w := newDraftWorld(t)
+	held, _, _ := w.s.Submit(plugin(2), w.p.ID, msg("held-1"))
+	free, _, _ := w.s.Submit(plugin(2), w.p.ID, msg("free-1"))
+	// A session of its own (the per-session limit counts every row in the
+	// database this package shares across runs).
+	sid := fmt.Sprintf("5e55a1d0-0000-4000-8000-%012x", time.Now().UnixNano()&0xffffffffffff)
+	id, err := w.s.ClaimMailResume(session(2), MailResumeClaim{MessageID: held.ID, ClaudeSession: sid,
+		Sender: "peer-desk/builder", Via: RouteViaThread}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.s.pool.Exec(authz.System(context.Background()), `DELETE FROM mail_resumes WHERE id = $1`, id)
+	})
+	listed := func() []int64 {
+		t.Helper()
+		got, err := w.s.QueuedForOwner(authz.System(context.Background()), 2, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids(got)
+	}
+	sys := authz.System(context.Background())
+	for _, step := range []struct {
+		name string
+		set  func()
+		held bool
+	}{
+		{"claimed", func() {}, true},
+		{"spawned", func() {
+			if err := w.s.ReserveMailResumeHost(session(2), id, "tower", 6); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"spawned, but older than the hold", func() {
+			if _, err := w.s.pool.Exec(sys, `UPDATE mail_resumes SET created_at = now() - make_interval(secs => $2) WHERE id = $1`,
+				id, (MailResumeHold + time.Minute).Seconds()); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"finished (timed out)", func() {
+			if _, err := w.s.pool.Exec(sys, `UPDATE mail_resumes SET created_at = now() WHERE id = $1`, id); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.s.FinishMailResume(session(2), id, ResumeTimedOut, "@9", "no window"); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+	} {
+		step.set()
+		want := []int64{held.ID, free.ID}
+		if step.held {
+			want = []int64{free.ID}
+		}
+		if got := listed(); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s: QueuedForOwner = %v, want %v", step.name, got, want)
+		}
+		if !step.held {
+			continue
+		}
+		if ok, err := w.s.BeginDelivery(plugin(2), held.ID, w.chief.ID); err != nil || ok {
+			t.Fatalf("%s: BeginDelivery of the held message = %v %v, want false", step.name, ok, err)
+		}
+	}
+	// Released, the ordinary delivery takes it.
+	if ok, err := w.s.BeginDelivery(plugin(2), held.ID, w.chief.ID); err != nil || !ok {
+		t.Fatalf("BeginDelivery once the resume finished = %v %v, want true", ok, err)
 	}
 }

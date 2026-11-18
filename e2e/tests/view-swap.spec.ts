@@ -1,13 +1,18 @@
 import fs from 'node:fs';
 import { request as pwRequest, Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, viewSwapPort } from '../lib/env';
-import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { createAgent } from '../lib/seed';
+import { landedHome, openMore } from '../lib/nav';
+import { toTerminal } from '../lib/agent-menu';
 
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
 // (internal/ui/view_swap.go) — a mirrored window's and a claude-code agent's —
 // against a REAL muster-server (the e2eterm build: its noop driver plays an
-// agent pod's terminal, `FAKE-TUI mode=ro|rw`) and a REAL muster-mirror built
+// agent pod's terminal, `FAKE-TUI mode=ro|rw`; live keys are always on, so
+// every attach here is rw) and a REAL muster-mirror built
 // with `-tags e2emirror`: a per-window host whose two windows, work:1 (@1) and
 // work:2 (@2), each run Claude Code over a transcript this spec writes.
 //
@@ -58,11 +63,11 @@ const serverCount = (re: RegExp) => lines(rig.server!.log(), re);
 const watchedFromStart = (win: string) => hostCount(new RegExp(`watching "work" window ${win} \\(from the start,`));
 const watchedResuming = (win: string) => hostCount(new RegExp(`watching "work" window ${win} \\(resuming at \\d+,`));
 const unwatched = (win: string) => hostCount(new RegExp(`unwatched "work" window ${win} \\(`));
-const attached = (win: string, mode = 'read-only') => hostCount(new RegExp(`attached "work" window ${win} \\(${mode},`));
+const attached = (win: string, mode = 'interactive') => hostCount(new RegExp(`attached "work" window ${win} \\(${mode},`));
 const detached = (win: string) => hostCount(new RegExp(`detached "work" window ${win} \\(`));
 const chatOpened = (a: string) => serverCount(new RegExp(`agents: chat ${a} connected$`));
 const chatClosed = (a: string) => serverCount(new RegExp(`agents: chat ${a} disconnected$`));
-const termAttached = (a: string, mode = 'ro') => serverCount(new RegExp(`agents: terminal ${a} attached \\(${mode}\\)`));
+const termAttached = (a: string, mode = 'rw') => serverCount(new RegExp(`agents: terminal ${a} attached \\(${mode}\\)`));
 const termDetached = (a: string) => serverCount(new RegExp(`agents: terminal ${a} detached`));
 
 // settled waits until both logs have stopped growing: every open or close the
@@ -111,7 +116,9 @@ test.describe('a mirrored window', () => {
     // can still show the previous process's windows, offline, for a moment.
     await expect.poll(() => rig.log.includes('connected to '), { message: `the host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
     await expect
-      .poll(async () => ((await (await page.request.get(origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, {
+      // The sidebar's rows (GET /ui/nav/agents): this host's windows, online,
+      // each a row that opens its Rendered view.
+      .poll(async () => mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => e.state === 'online' && e.markup.includes(`host=${encodeURIComponent(rig.host)}&`) && entryMatches(e.markup, 'data-mirror-claude')).length, {
         message: `both windows listed as Claude Code (muster-mirror log:\n${rig.log})`,
         timeout: 20_000,
       })
@@ -120,7 +127,8 @@ test.describe('a mirrored window', () => {
 
   async function openRendered(page: Page, win = '@1'): Promise<void> {
     await ready(page);
-    await page.goto(origin + '/agents');
+    // A page before it, for Back: the board.
+    await page.goto(origin + '/tasks');
     await page.goto(origin + viewOf(win));
     await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText(win === '@1' ? 'window ONE' : 'window TWO');
     await expect(page.locator('#mv-status')).toHaveText('Live');
@@ -128,6 +136,9 @@ test.describe('a mirrored window', () => {
 
   test('rendered → terminal → rendered → terminal: ONE transcript stream and ONE tmux attach, the content intact, the address and title following the view', async ({ page }) => {
     await openRendered(page);
+    // The box shown (collapsed on a touch screen: lib/composer.ts), so the
+    // "takes no focus" check below is about the frame, not a hidden box.
+    await revealBox(page);
     await settled();
     expect(watchedFromStart('@1'), `one transcript stream (log:\n${rig.log})`).toBe(1);
     expect(attached('@1'), 'no attach yet').toBe(0);
@@ -136,7 +147,7 @@ test.describe('a mirrored window', () => {
     // title follow it; the host attaches once.
     await page.locator('#view-terminal').click();
     await expect(frameEl(page)).toBeVisible();
-    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
     expect(pathOf(page)).toBe('/mirror/terminal');
     expect(new URL(page.url()).searchParams.get('window')).toBe('@1');
@@ -165,7 +176,7 @@ test.describe('a mirrored window', () => {
     await page.locator('#view-terminal').click();
     await expect(frameEl(page)).toBeVisible();
     expect(pathOf(page)).toBe('/mirror/terminal');
-    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await framed(page).locator('#view-rendered').click();
     await expect(frameEl(page)).toBeHidden();
     await page.locator('#view-terminal').click();
@@ -182,7 +193,7 @@ test.describe('a mirrored window', () => {
     // itself — and it is a real load: a NEW attach, the positive control that
     // the counter sees one. The old document's two streams both end.
     await page.reload();
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await expect(frameEl(page), 'the reloaded page is the terminal itself').toHaveCount(0);
     await settled();
     expect(attached('@1'), `a reload attaches again (log:\n${rig.log})`).toBe(2);
@@ -194,22 +205,25 @@ test.describe('a mirrored window', () => {
     await page.locator('#view-rendered').click();
     await expect(framed(page).locator('#mv-log [data-tool-row]')).toHaveCount(1);
     await page.goBack();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
-    // The Agents tab draws its list in the document (#225): Back onto it has
-    // the cards, and no view frame came back with the page.
-    await expect(page.locator(`#agents-list > article[data-f-host="${rig.host}"]`).first()).toBeVisible();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
+    // Back onto the board draws the board, and no view frame came back with
+    // the page.
+    await expect(page.locator('#panel-tasks')).toBeVisible();
     await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(unwatched('@1'), `leaving closed the transcript stream (log:\n${rig.log})`).toBe(2);
     expect(detached('@1'), 'and the attach').toBe(2);
-    expect(watchedFromStart('@1') - unwatched('@1'), 'no stream left open').toBe(0);
+    // Every stream opened, from the start or RESUMED (the framed rendered view
+    // after the reload resumes from the snapshot the first one stored —
+    // web/static/mirror-snap.js), was closed.
+    expect(watchedFromStart('@1') + watchedResuming('@1') - unwatched('@1'), 'no stream left open').toBe(0);
     expect(attached('@1') - detached('@1'), 'no attach left open').toBe(0);
   });
 
   test('starting on the terminal: the rendered view opens in the frame, and both streams are kept across round trips', async ({ page }) => {
     await ready(page);
     await page.goto(origin + termOf('@1'));
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     for (let i = 0; i < 3; i++) {
       await page.locator('#view-rendered').click();
       await expect(frameEl(page)).toBeVisible();
@@ -229,7 +243,7 @@ test.describe('a mirrored window', () => {
   test('switching to a different window closes the old window’s streams', async ({ page }) => {
     await openRendered(page, '@1');
     await page.locator('#view-terminal').click();
-    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await settled();
     expect(watchedFromStart('@1')).toBe(1);
     expect(attached('@1')).toBe(1);
@@ -248,60 +262,53 @@ test.describe('a mirrored window', () => {
     await openRendered(page);
     await page.locator('#view-terminal').click();
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
-    await framed(page).locator('#term-back').click();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
+    // A link out of the window in the framed terminal: its nav's Tasks (the
+    // header's back goes home, "/", which may well be this same window).
+    await framed(page).locator('#sidebar-open').click();
+    await openMore(framed(page));
+    await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
     await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(unwatched('@1'), `the page's stream ended (log:\n${rig.log})`).toBe(1);
     expect(detached('@1'), "the frame's attach ended").toBe(1);
   });
 
-  test('live keys re-attach (a mode change needs one); off screen they drop to read-only and come back on screen; a read-only terminal is kept', async ({ page }) => {
+  test('live keys are on from the start, and hiding or showing the terminal behind the other view re-attaches nothing', async ({ page }) => {
     await openRendered(page);
     await page.locator('#view-terminal').click();
     const t = framed(page);
-    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
-    await settled();
-    expect(attached('@1', 'read-only')).toBe(1);
-
-    // Signed in just now, so the sign-in is fresh: live keys attach at once.
-    await t.locator('#term-mode').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
+    // Signed in just now, so the sign-in is fresh: the attach has live keys.
     await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
+    await expect(t.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     await settled();
-    expect(attached('@1', 'interactive'), `live keys re-attached (log:\n${rig.log})`).toBe(1);
-    expect(detached('@1'), 'the read-only attach ended').toBe(1);
+    expect(attached('@1', 'interactive'), `one interactive attach (log:\n${rig.log})`).toBe(1);
+    expect(attached('@1', 'read-only'), 'never a read-only one').toBe(0);
 
-    // 🟢 Off screen it drops live keys (one read-only re-attach), and takes
-    // them back when it is shown again — the sign-in is still fresh.
-    await t.locator('#view-rendered').click();
-    await expect(frameEl(page)).toBeHidden();
-    await expect.poll(() => attached('@1', 'read-only'), { message: `hidden: back to read-only (log:\n${rig.log})` }).toBe(2);
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-    await page.locator('#view-terminal').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    // Off screen and back, twice: the attach is kept exactly as it is — still
+    // interactive, nothing ended, nothing new.
+    for (let i = 0; i < 2; i++) {
+      await t.locator('#view-rendered').click();
+      await expect(frameEl(page)).toBeHidden();
+      await page.locator('#view-terminal').click();
+      await expect(frameEl(page)).toBeVisible();
+    }
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     await settled();
-    expect(attached('@1', 'interactive'), `live keys again on screen (log:\n${rig.log})`).toBe(2);
-    expect(attached('@1', 'read-only')).toBe(2);
-    expect(detached('@1'), 'each mode change ended the attach before it').toBe(3);
-    // A switch while read-only is still no attach at all.
-    await t.locator('#term-mode').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-    await settled();
-    const ro = attached('@1', 'read-only');
-    await t.locator('#view-rendered').click();
-    await expect(frameEl(page)).toBeHidden();
-    await page.locator('#view-terminal').click();
-    await expect(frameEl(page)).toBeVisible();
-    await settled();
-    expect(attached('@1', 'read-only'), 'a read-only terminal is kept as it is').toBe(ro);
-    expect(attached('@1', 'interactive')).toBe(2);
+    expect(attached('@1', 'interactive'), `still ONE interactive attach (log:\n${rig.log})`).toBe(1);
+    expect(attached('@1', 'read-only'), 'no read-only re-attach while hidden').toBe(0);
+    expect(detached('@1'), 'none ended').toBe(0);
+    // And the kept attach still takes keys.
+    await t.locator('#term-keys [data-key="up"]').click();
+    await expect(t.locator('#term .xterm-rows')).toContainText('in=1B5B41');
   });
 
-  // The framed view is a document of its own: its composer, its step-up dialog
-  // and its focus are its own, and the page's are the page's.
-  test('each view sends from its own composer, and a stale send in the framed view asks in the frame’s own dialog', async ({ page }) => {
+  // The framed view is a document of its own: its composer and its focus are
+  // its own, and the page's are the page's. Its "Confirm it's you" is NOT: it
+  // is asked in the TOP window's dialog (stepup_confirm.go says why), and the
+  // frame's send then goes on.
+  test('each view sends from its own composer, and a stale send in the framed view asks in the TOP window’s dialog', async ({ page }) => {
     await ready(page);
     const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
     await page.goto(origin + termOf('@1'));
@@ -321,12 +328,15 @@ test.describe('a mirrored window', () => {
       }
       await route.continue();
     });
+    await revealBox(v);
     await v.locator('#mv-input').fill('from the rendered view');
     await v.locator('#mv-send').click();
-    await expect(v.locator('#term-confirm'), 'asked in the frame on screen').toBeVisible();
-    await v.locator('#term-confirm-password').fill(password);
-    await v.locator('#term-confirm-submit').click();
-    await expect(v.locator('#term-confirm')).toBeHidden();
+    await expect(page.locator('#term-confirm'), 'asked in the top window’s dialog').toBeVisible();
+    await expect(v.locator('#term-confirm'), 'not in the frame’s own').toBeHidden();
+    await expect(page.locator('#term-confirm-password'), 'the password field takes focus').toBeFocused();
+    await page.locator('#term-confirm-password').fill(password);
+    await page.locator('#term-confirm-submit').click();
+    await expect(page.locator('#term-confirm')).toBeHidden();
     await expect.poll(pasted).toContain('from the rendered view\n');
     await expect(v.locator('#mv-input')).toHaveValue('');
     expect(refused, 'the send was retried once after the confirm').toBe(2);
@@ -339,6 +349,85 @@ test.describe('a mirrored window', () => {
     await expect(page.locator('#mv-input')).toHaveValue('');
     await expect.poll(pasted).toContain('a terminal draft\n');
     expect(pasted().split('\n').filter(Boolean).map((l) => l.replace(/^\S+ /, '')), 'each sent once, in order').toEqual(['from the rendered view', 'a terminal draft']);
+  });
+
+  // 🔴 A TOP PAGE THAT CANNOT TAKE A FRAMED ASK (one loaded before the framed
+  // view handed its asks to the top: its musterStepUp has no framedAsk) would
+  // open its dialog inside the swap's inert page — unusable, over a blocked
+  // frame. The frame asks in its own dialog instead, as it always did.
+  test('a top page whose dialog cannot take a framed ask leaves the framed view its own dialog', async ({ page }) => {
+    await ready(page);
+    const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
+    await page.goto(origin + termOf('@1'));
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+    await page.locator('#view-rendered').click();
+    const v = framed(page);
+    await revealBox(v);
+    // The top page as an older one is: ask, and no framedAsk.
+    const [had, ask] = await page.evaluate(() => { const su = (window as { musterStepUp?: Record<string, unknown> }).musterStepUp!; const was = su.framedAsk; delete su.framedAsk; return [was, typeof su.ask]; });
+    expect(ask, 'the top page can still be asked').toBe('function');
+    let refused = 0;
+    await page.route('**/mirror/view/send?*', async (route) => {
+      if (refused++ === 0) {
+        await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+        return;
+      }
+      await route.continue();
+    });
+    await v.locator('#mv-input').fill('asked in the frame');
+    await v.locator('#mv-send').click();
+    await expect(v.locator('#term-confirm'), 'asked in the frame’s own dialog').toBeVisible();
+    await expect(page.locator('#term-confirm'), 'not in the top page’s').toBeHidden();
+    await v.locator('#term-confirm-password').fill(password);
+    await v.locator('#term-confirm-submit').click();
+    await expect(v.locator('#term-confirm')).toBeHidden();
+    await expect.poll(pasted).toContain('asked in the frame\n');
+    expect(refused).toBe(2);
+    expect(had, 'CONTROL: the flag this test took away was there').toBe(true);
+    await page.unroute('**/mirror/view/send?*');
+  });
+
+  // 🟡 THE FRAME REVEALED WHILE THE TOP PAGE'S DIALOG IS OPEN (the frame was
+  // still loading when the page's own send asked): the reveal makes the page
+  // under the frame inert, but not the open dialog — it stays usable, and is
+  // made inert with the rest once it closes.
+  test('the frame finishing its load while the top page’s dialog is open leaves the dialog usable', async ({ page }) => {
+    await ready(page);
+    const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
+    await page.goto(origin + termOf('@1'));
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+    // The rendered view's document is held until the dialog is open.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    await page.route('**/mirror/view?*', async (route) => {
+      if (route.request().resourceType() === 'document') await held;
+      await route.continue();
+    });
+    let refused = 0;
+    await page.route('**/mirror/terminal/send*', async (route) => {
+      if (refused++ === 0) {
+        await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+        return;
+      }
+      await route.continue();
+    });
+    await page.locator('#view-rendered').click();
+    await expect(frameEl(page)).toHaveCount(1);
+    await page.locator('#mv-input').fill('sent while the frame loaded');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#term-confirm')).toBeVisible();
+    expect(await page.locator('html').getAttribute('data-view'), 'the frame is not on screen yet').not.toBe('rendered');
+    release();
+    await expect(page.locator('html')).toHaveAttribute('data-view', 'rendered');
+    expect(await page.locator('#term-confirm').evaluate((el) => !!el.closest('[inert]')), 'the open dialog is not made inert by the reveal').toBe(false);
+    await page.locator('#term-confirm-password').fill(password);
+    await page.locator('#term-confirm-submit').click();
+    await expect(page.locator('#term-confirm')).toBeHidden();
+    await expect.poll(pasted).toContain('sent while the frame loaded\n');
+    expect(refused, 'refused once, then sent after the confirm').toBe(2);
+    expect(await page.locator('#term-confirm').evaluate((el) => !!el.closest('[inert]')), 'closed, it is inert with the page under the frame').toBe(true);
+    await page.unroute('**/mirror/terminal/send*');
+    await page.unroute('**/mirror/view?*');
   });
 
   // 🟡 A FORM THE BROWSER POSTS FROM THE FRAMED VIEW (the composer's own way
@@ -362,6 +451,7 @@ test.describe('a mirrored window', () => {
       }
       await route.continue();
     });
+    await revealBox(v);
     await v.locator('#mv-input').fill('by the browser, from the frame');
     await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('notice') === 'sent'), v.locator('#mv-send').click()]);
     expect(aborted, 'the script tried its own way first').toBe(1);
@@ -458,24 +548,22 @@ test.describe('a claude-code agent', () => {
     await rig.login(page);
     if (agent) return;
     const before = await agentNames();
-    await page.goto(origin + '/agents');
-    await page.click('#fab-agents');
-    const sheet = page.locator('#agent-modal form');
-    await sheet.locator('[data-kind-option="claude-code"]').click();
-    await sheet.locator('textarea[name="note_text"]').fill('e2e view swap');
-    const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-    await sheet.locator('button[value="save"]').click();
-    expect((await resp).status()).toBe(200);
+    // Created stopped through POST /api/agents (lib/seed.ts), which replaced
+    // the deleted dispatch sheet's "Save for later".
+    const made = await createAgent(origin, { kind: 'claude-code', prompt: 'e2e view swap' });
     const created = [...(await agentNames())].filter((n) => !before.has(n));
-    expect(created.length, 'exactly one agent created').toBe(1);
+    expect(created, 'exactly one agent created').toEqual([made.name]);
     agent = created[0];
   }
 
   async function openChat(page: Page): Promise<void> {
     await signedIn(page);
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     await page.goto(origin + '/agents/' + agent);
-    await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+    // The chat page: no Rendered | Terminal switch on it, its Terminal the ⋯
+    // menu's item (PR #527: a claude-code agent's page has one header row).
+    await expect(page.locator('#view-rendered')).toHaveCount(0);
+    await expect(page.locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
     await expect.poll(() => chatOpened(agent) - chatClosed(agent), { message: `the chat socket opened (server log:\n${rig.server!.log()})` }).toBe(1);
   }
 
@@ -485,9 +573,9 @@ test.describe('a claude-code agent', () => {
     const chat0 = chatOpened(agent);
     const term0 = termAttached(agent);
     for (let i = 0; i < 3; i++) {
-      await page.locator('#view-terminal').click();
+      await toTerminal(page);
       await expect(frameEl(page)).toBeVisible();
-      await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+      await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       expect(pathOf(page)).toBe(`/agents/${agent}/terminal`);
       await framed(page).locator('#view-rendered').click();
       await expect(frameEl(page)).toBeHidden();
@@ -502,10 +590,10 @@ test.describe('a claude-code agent', () => {
 
     // A reload on the terminal opens it as the page — the positive control:
     // a NEW attach; and the old page's chat socket and attach both end.
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     await expect(frameEl(page)).toBeVisible();
     await page.reload();
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
     await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(termAttached(agent) - term0, `a reload attaches again (server log:\n${rig.server!.log()})`).toBe(2);
@@ -516,18 +604,21 @@ test.describe('a claude-code agent', () => {
   test('starting on the terminal: the chat opens in the frame and is kept; a boosted link in it navigates the TOP window, ending both connections', async ({ page }) => {
     await signedIn(page);
     await page.goto(origin + `/agents/${agent}/terminal`);
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
     await settled();
     const term0 = termAttached(agent);
     const chat0 = chatOpened(agent);
 
     await page.locator('#view-rendered').click();
     await expect(frameEl(page)).toBeVisible();
-    await expect(framed(page).locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+    // The framed page is the chat: its Terminal the ⋯ menu's item, no switch.
+    await expect(framed(page).locator('#chat-form')).toBeVisible();
+    await expect(framed(page).locator('#view-rendered')).toHaveCount(0);
+    await expect(framed(page).locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
     await expect.poll(() => chatOpened(agent) - chat0, { message: `the framed chat connected (server log:\n${rig.server!.log()})` }).toBe(1);
     expect(pathOf(page)).toBe(`/agents/${agent}`);
     for (let i = 0; i < 2; i++) {
-      await framed(page).locator('#view-terminal').click();
+      await toTerminal(framed(page));
       await expect(frameEl(page)).toBeHidden();
       await page.locator('#view-rendered').click();
       await expect(frameEl(page)).toBeVisible();
@@ -536,13 +627,14 @@ test.describe('a claude-code agent', () => {
     expect(chatOpened(agent) - chat0, 'ONE chat socket').toBe(1);
     expect(termAttached(agent) - term0, 'no new terminal attach').toBe(0);
 
-    // A boosted link in the framed chat page (its header's way back to the
-    // list) navigates the TOP window, and both connections end.
+    // A boosted link in the framed chat page (its nav's Tasks) navigates the
+    // TOP window, and both connections end.
     await framed(page).locator('#sidebar-open').click();
-    await framed(page).locator('#sidebar a[data-tab="agents"]').click();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
+    await openMore(framed(page));
+    await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
     await expect(frameEl(page)).toHaveCount(0);
-    await expect(page.locator('#agents-list > article').first(), 'the list is drawn on arrival (#225)').toBeVisible();
+    await expect(page.locator('#panel-tasks'), 'the board is drawn on arrival').toBeVisible();
     await settled();
     expect(chatOpened(agent) - chatClosed(agent), `the chat socket ended (server log:\n${rig.server!.log()})`).toBe(0);
     expect(termAttached(agent) - termDetached(agent), 'and the attach').toBe(0);
@@ -552,7 +644,7 @@ test.describe('a claude-code agent', () => {
     await openChat(page);
     await settled();
     const chat0 = chatOpened(agent);
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
     await framed(page).locator('#term-back').click();
     await expect(frameEl(page)).toBeHidden();
@@ -561,28 +653,29 @@ test.describe('a claude-code agent', () => {
     expect(chatOpened(agent) - chat0, `no new chat socket (server log:\n${rig.server!.log()})`).toBe(0);
   });
 
-  test('live keys re-attach the agent terminal; off screen it drops to read-only, and takes them back on screen', async ({ page }) => {
+  test('the agent terminal has live keys from the start, and hiding or showing it behind the chat re-attaches nothing', async ({ page }) => {
     await openChat(page);
     await settled();
     const rw0 = termAttached(agent, 'rw');
     const ro0 = termAttached(agent, 'ro');
-    await page.locator('#view-terminal').click();
+    const d0 = termDetached(agent);
+    await toTerminal(page);
     const t = framed(page);
-    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
-    await t.locator('#term-mode').click();
     await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
+    await expect(t.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
     await settled();
-    expect(termAttached(agent, 'rw') - rw0, 'live keys re-attached').toBe(1);
-    // 🟢 Off screen it drops live keys; on screen again it takes them back.
-    await t.locator('#view-rendered').click();
-    await expect(frameEl(page)).toBeHidden();
-    await expect.poll(() => termAttached(agent, 'ro') - ro0, { message: 'hidden: back to read-only' }).toBe(2);
-    await page.locator('#view-terminal').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
+    expect(termAttached(agent, 'rw') - rw0, 'one attach, with live keys').toBe(1);
+    for (let i = 0; i < 2; i++) {
+      await t.locator('#view-rendered').click();
+      await expect(frameEl(page)).toBeHidden();
+      await toTerminal(page);
+      await expect(frameEl(page)).toBeVisible();
+    }
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     await settled();
-    expect(termAttached(agent, 'rw') - rw0, 'live keys again on screen').toBe(2);
-    expect(termAttached(agent, 'ro') - ro0).toBe(2);
+    expect(termAttached(agent, 'rw') - rw0, 'still ONE attach after hiding and showing').toBe(1);
+    expect(termAttached(agent, 'ro') - ro0, 'no read-only re-attach while hidden').toBe(0);
+    expect(termDetached(agent) - d0, 'none ended').toBe(0);
   });
 
   // 🟡 THE FRAMED VIEW NAVIGATING ITSELF. Every load of the frame is the top
@@ -609,14 +702,22 @@ test.describe('a claude-code agent', () => {
     await expect(frameEl(page), 'no frame left behind').toHaveCount(0);
   };
 
-  test('Mark complete in the framed chat takes the TOP window to the Agents list — no white frame', async ({ page }) => {
+  // Mark complete sends its page home ("/", ui.HomePath), which redirects on
+  // (the chief, else the session opened last, else the sidebar's first row):
+  // so it is the TOP window's request for "/" that is asserted, and that it
+  // landed home with no frame.
+  test('Mark complete in the framed chat takes the TOP window home — no white frame', async ({ page }) => {
     const name = taskAgent('done');
     try {
       await chatInFrame(page, name);
+      const topHome: string[] = [];
+      page.on('request', (r) => {
+        if (r.isNavigationRequest() && r.frame() === page.mainFrame() && new URL(r.url()).pathname === '/') topHome.push(r.url());
+      });
       await framed(page).getByRole('button', { name: 'Mark complete' }).click();
-      await expect.poll(() => pathOf(page), { message: 'the top window went to the list' }).toBe('/agents');
+      await expect.poll(() => topHome.length, { message: 'the top window went home' }).toBe(1);
+      await page.waitForURL(landedHome(origin));
       await noWhiteFrame(page);
-      await expect(page.locator('#agents-list')).toBeVisible();
     } finally {
       mkchat(name, null);
     }
@@ -630,9 +731,9 @@ test.describe('a claude-code agent', () => {
       // answered 401: the auth gate reloads — the TOP window must be what goes
       // to sign-in.
       await page.context().clearCookies();
-      await page.route('**/ui/agents?e2e=401', (route) => route.fulfill({ status: 401, body: 'unauthorized' }));
+      await page.route('**/ui/nav/agents?e2e=401', (route) => route.fulfill({ status: 401, body: 'unauthorized' }));
       const f = page.frames().find((x) => x !== page.mainFrame() && x.url().includes(`/agents/${name}`))!;
-      await f.evaluate(() => (window as unknown as { htmx: { ajax: (m: string, u: string, o: object) => void } }).htmx.ajax('GET', '/ui/agents?e2e=401', { target: '#task-modal', swap: 'none' }));
+      await f.evaluate(() => (window as unknown as { htmx: { ajax: (m: string, u: string, o: object) => void } }).htmx.ajax('GET', '/ui/nav/agents?e2e=401', { target: '#task-modal', swap: 'none' }));
       await expect.poll(() => pathOf(page), { message: 'the top window went to sign-in' }).toBe('/login');
       await noWhiteFrame(page);
       await expect(page.locator('#muster-password')).toBeVisible();
@@ -665,13 +766,14 @@ test.describe('a claude-code agent', () => {
     await openChat(page);
     await settled();
     const a0 = termAttached(agent), d0 = termDetached(agent);
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
     await framed(page).locator('#view-rendered').click();
     await expect(frameEl(page)).toBeHidden();
     await page.locator('#sidebar-open').click();
-    await page.locator('#sidebar a[data-tab="agents"]').click();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
+    await openMore(page);
+    await page.locator('#sidebar a[data-tab="tasks"]').click();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
     await settled();
     const attaches = termAttached(agent);
     expect(attaches - a0, 'one attach while on the page').toBe(1);
@@ -685,8 +787,8 @@ test.describe('a claude-code agent', () => {
     expect(termAttached(agent), `no attach on Back (server log:\n${rig.server!.log()})`).toBe(attaches);
     // And the switch works on the restored page. (Clicked by script: the
     // snapshot was taken with the sidebar open, and its backdrop is restored
-    // over the header.)
-    await page.locator('#view-terminal').evaluate((a) => (a as HTMLElement).click());
+    // over the header — and the link is the ⋯ menu's Terminal item, PR #527.)
+    await page.locator('#agent-actions #view-terminal').evaluate((a) => (a as HTMLElement).click());
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
   });
 });

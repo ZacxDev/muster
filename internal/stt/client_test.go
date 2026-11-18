@@ -17,6 +17,8 @@ const fixtureToken = "stt-fixture-token-0123456789"
 // seen is what the fake service received.
 type seen struct {
 	method, path, auth, filename, language, punctuation, ctype string
+	model                                                      string
+	hasModel                                                   bool
 	audio                                                      []byte
 }
 
@@ -28,6 +30,8 @@ func fakeService(t *testing.T, status int, body string, got *seen) *httptest.Ser
 		got.method, got.path, got.auth, got.ctype = r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type")
 		if err := r.ParseMultipartForm(32 << 20); err == nil {
 			got.language, got.punctuation = r.FormValue("language"), r.FormValue("punctuation")
+			_, got.hasModel = r.MultipartForm.Value["model"]
+			got.model = r.FormValue("model")
 			if f, h, err := r.FormFile("file"); err == nil {
 				got.filename = h.Filename
 				got.audio, _ = io.ReadAll(f)
@@ -69,6 +73,38 @@ func TestTranscribeSendsWhatTheServiceDeclares(t *testing.T) {
 	}
 	if got.language != "en" || got.punctuation != "true" {
 		t.Errorf("language=%q punctuation=%q; want en/true sent explicitly", got.language, got.punctuation)
+	}
+	// No model configured: no `model` field at all (not an empty one), so the
+	// cohere server's request is unchanged.
+	if got.hasModel {
+		t.Errorf("a `model` field was sent (%q) with none configured", got.model)
+	}
+}
+
+// TestWithModelSendsTheModelField: OpenAI's API and speaches refuse a request
+// without `model`; WithModel is how a deployment names one. The value is one
+// no default could produce, so a hardcoded literal fails.
+func TestWithModelSendsTheModelField(t *testing.T) {
+	var got seen
+	srv := fakeService(t, http.StatusOK, `{"text":"ok"}`, &got)
+	base, err := New(srv.URL, fixtureToken, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := base.WithModel("  fixture-org/fixture-model-7  ")
+	if _, err := c.Transcribe(context.Background(), strings.NewReader("A"), "a.webm"); err != nil {
+		t.Fatal(err)
+	}
+	if !got.hasModel || got.model != "fixture-org/fixture-model-7" {
+		t.Fatalf("model field = %q (present %v); want the trimmed configured model", got.model, got.hasModel)
+	}
+	// WithModel copies: the original client still sends none.
+	got = seen{}
+	if _, err := base.Transcribe(context.Background(), strings.NewReader("A"), "a.webm"); err != nil {
+		t.Fatal(err)
+	}
+	if got.hasModel {
+		t.Fatalf("WithModel mutated the client it was called on: model %q sent", got.model)
 	}
 }
 

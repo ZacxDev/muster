@@ -58,24 +58,57 @@ fi
 # task/agent surface below. If a thirteenth is genuinely wanted, add it here,
 # add it to tree_test.go's `wiring` with the route it reaches, move
 # `wantVerbCount`, and say so in the commit.
-LEDGER="agent ls
+LEDGER="agent create
+agent ls
 agent messages
 agent resolve
+agent rm
 agent task comment
 agent task get
 agent task status
+asks log
+asks summary
 chief ask
 chief replace
+doctor
+flow cancel
 flow enqueue
 flow ls
 flow status
+nudge next
+officer create
+officer def delete
+officer def ls
+officer def put
+officer delete
+officer item enqueue
+officer item ls
+officer item resolve
+officer ls
+officer pause
+officer resume
+officer schedule delete
+officer schedule ls
+officer schedule put
+officer type delete
+officer type get
+officer type ls
+officer type put
+officer usage
+plugins deliver-to
 plugins retry
+pr-session
 route reply
 task comment
 task create
 task get
 task ls
 task status
+tenant add
+tenant current
+tenant list
+tenant remove
+tenant use
 token ls
 token revoke
 whoami"
@@ -85,7 +118,22 @@ whoami"
 # still fails until someone moves this literal deliberately. (tree_test.go pins
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
-WANT_COUNT=21
+# 23 -> 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md).
+# 28 -> 29: `nudge next` (a host's oldest chief-nudge notice).
+# 29 -> 30: `agent create` (POST /api/agents, docs/design/chief-dispatch.md phase 2).
+# 30 -> 40: the ten `officer type|def|item` verbs (the built-in officer store's
+#           admin API, docs/officers-builtin.md; muster#503 slice 7).
+# 40 -> 43: `officer schedule ls|put|delete` (slice 8).
+# 43 -> 44: `plugins deliver-to` (bind a plugin to a builtin officer, phase 3).
+# 44 -> 45: `pr-session` (which of your sessions created a pull request).
+# 45 -> 46: `agent rm` (DELETE /api/agents/{name}; removes a host officer
+#   instance's left-over row with no provisioner, docs/design/officers-on-hosts.md).
+# 46 -> 47: `officer usage` (an officer's model spend per UTC day,
+#   officer_llm_usage; a builtin officer's Claude usage is booked there).
+# 47 -> 52: `officer ls|create|pause|resume|delete` (officers declared in the
+#   database, migration 0136; no restart).
+# 52 -> 54: `asks log` and `asks summary` (reading the ask log, docs/asks.md).
+WANT_COUNT=54
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

@@ -1,0 +1,1635 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	_ "embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/ZacxDev/muster/internal/attemptcode"
+	"github.com/ZacxDev/muster/internal/loopback"
+	"github.com/ZacxDev/muster/internal/mirrorpath"
+	"github.com/ZacxDev/muster/internal/tmuxver"
+)
+
+// `muster doctor`: is this muster set up end to end, from where I sit?
+//
+// 🔴 WHY IT LIVES IN THIS CLI AND NOT IN muster-server OR muster-mirror.
+//   - The server runs in a distroless container on ONE machine. It cannot see
+//     whether tmux is installed, or whether the mirror's user service is active,
+//     on the machine the person is sitting at, and those are half the checks.
+//   - muster-mirror is on every machine, but it deliberately holds ONE
+//     credential — its own host's mirror token — and nothing else
+//     (docs/mirroring.md). Teaching it to sign in with the operator password
+//     or present the hook token would end that.
+//   - This CLI is already the HTTP client that resolves a URL and a credential
+//     (~/.muster/muster.env), ships as its own release asset, and runs on any
+//     machine. Server-side facts come from the server itself (GET /api/doctor),
+//     local facts from this machine; neither is guessed by the other side.
+//
+// 🔴 OUTPUT DISCIPLINE IS KEPT: stdout carries ONE JSON document (the checks,
+// for an agent to parse), and the human report and the QR code go to stderr —
+// which is what a person sees in a terminal anyway.
+
+const (
+	doctorRoute    = "/api/doctor"
+	manifestRoute  = "/manifest.webmanifest"
+	loginRoute     = "/login"
+	transcribePath = "/transcribe"
+	pushKeyRoute   = "/api/push/vapid-public-key"
+
+	// sharedMachineDoc is the local quickstart's single-user assumption.
+	sharedMachineDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#this-machine-is-yours-alone"
+	// addPhoneDoc is where a local (loopback) install learns to add the phone.
+	addPhoneDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#add-your-phone"
+
+	// defaultMirrorUnit and defaultMirrorLabel are the service names INSTALL.md
+	// installs muster-mirror under.
+	defaultMirrorUnit  = "muster-mirror.service"
+	defaultMirrorLabel = "io.github.zacxdev.muster-mirror"
+	// defaultMirrorEnv is the settings file INSTALL.md writes for the
+	// mirror's user service; its MUSTER_MIRROR_TOKEN_FILE names the token.
+	defaultMirrorEnv = "~/.config/muster-mirror/env"
+	mirrorHostRoute  = "/mirror/host"
+	// showUIPassword prints the sign-in password muster generated (or the
+	// .env's, when it sets one): muster-server's show-secret.
+	showUIPassword = "docker compose exec muster /muster-server show-secret ui-password"
+)
+
+// doctorSample is a 1.7 s spoken phrase ("testing muster dictation"), 16 kHz
+// mono PCM WAV, synthesized with espeak-ng: what the dictation check sends
+// through POST /transcribe. It is a real recording of speech, not a tone, so
+// a service that answers only silence or noise with "" reads as broken.
+//
+//go:embed doctor_sample.wav
+var doctorSample []byte
+
+// doctorStatus is one check's verdict.
+type doctorStatus string
+
+const (
+	statusPass doctorStatus = "PASS"
+	statusFail doctorStatus = "FAIL"
+	// statusSkip: the check could not be made from here (no credential on
+	// this machine, an unsupported OS, or --skip). It never fails the run.
+	statusSkip doctorStatus = "SKIP"
+)
+
+// doctorCheck is one line of the report.
+type doctorCheck struct {
+	Name   string       `json:"name"`
+	Status doctorStatus `json:"status"`
+	Detail string       `json:"detail"`
+	// Fix is what to do about a FAIL (or how to enable a SKIP); "" on a PASS.
+	Fix string `json:"fix,omitempty"`
+}
+
+// doctorChecks is the checks, in the order they run and print. The names are
+// what --skip takes.
+var doctorChecks = []string{
+	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
+	"mirror-service", "tmux", "sign-in", "push", "dictation", "features", "officers",
+	"mcp-endpoint", "mcp-registration", "ask-hook",
+}
+
+// doctorSystem is everything doctor reads from THIS machine, injected so each
+// local check is testable without the machine having (or lacking) the thing.
+type doctorSystem struct {
+	goos string
+	uid  int
+	// user is this user's login name ("" unknown): the others-logged-in
+	// warning leaves it out of `who`.
+	user     string
+	lookPath func(string) (string, error)
+	// run runs a command and returns its stdout; err is non-nil for a non-zero
+	// exit (an *exec.ExitError) or a command that could not start.
+	run func(ctx context.Context, name string, args ...string) (string, error)
+	// getwd is the directory doctor runs in: Claude Code's project-scoped MCP
+	// servers are looked up for it. nil is os.Getwd.
+	getwd func() (string, error)
+}
+
+// newDoctorSystem is this machine, for run(). A variable so the package's
+// tests replace it for EVERY test (doctor_test.go's TestMain): no test of this
+// binary may read the real machine's services or tmux.
+var newDoctorSystem = func() doctorSystem {
+	name := ""
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+	}
+	return doctorSystem{goos: runtime.GOOS, uid: os.Getuid(), user: name, lookPath: exec.LookPath, run: realRun}
+}
+
+func realRun(ctx context.Context, name string, args ...string) (string, error) {
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = &out
+	err := cmd.Run()
+	return out.String(), err
+}
+
+// doctorRun is one run's state.
+type doctorRun struct {
+	a        *app
+	sys      doctorSystem
+	base     string
+	token    string
+	password string
+	// passwordURL is the only base the password may be sent to: the deploy
+	// file's MUSTER_PUBLIC_URL.
+	passwordURL string
+	mirrorEnv   string
+	unit        string
+	label       string
+	skip        map[string]bool
+	http        *http.Client
+
+	// filled as the run goes
+	reachable bool
+	report    *serverReport
+	signedIn  bool
+	checks    []doctorCheck
+}
+
+// serverReport is the part of GET /api/doctor's body (internal/api.DoctorReport)
+// this client reads.
+type serverReport struct {
+	AuthMode string `json:"auth_mode"`
+	// BrowserPort is the browser listener's port in gotrue mode (absent from
+	// a server that predates it, and in password mode).
+	BrowserPort    int  `json:"browser_port"`
+	HookTokenArmed bool `json:"hook_token_armed"`
+	Push           bool `json:"push"`
+	Dictation      bool `json:"dictation"`
+	Mirror         struct {
+		Enabled bool `json:"enabled"`
+		Hosts   []struct {
+			Host        string `json:"host"`
+			Token       bool   `json:"token"`
+			Online      bool   `json:"online"`
+			Interactive bool   `json:"interactive"`
+		} `json:"hosts"`
+		HostsError string `json:"hosts_error"`
+	} `json:"mirror"`
+	// Features is the server's feature registry (internal/api.FeatureView):
+	// absent from a server that predates it.
+	Features []serverFeature `json:"features"`
+	// Officers is each of the caller's officers and what is in its way
+	// (internal/api.DoctorOfficer): nil from a server that predates it.
+	Officers *[]serverOfficer `json:"officers"`
+}
+
+// serverOfficer is the part of one officer's doctor entry this client prints.
+type serverOfficer struct {
+	ID       string `json:"id"`
+	Runtime  string `json:"runtime"`
+	RunsOn   string `json:"runs_on"`
+	Host     string `json:"host"`
+	Problems []struct {
+		Problem string `json:"problem"`
+		Fix     string `json:"fix"`
+	} `json:"problems"`
+	Notes []string `json:"notes"`
+}
+
+// serverFeature is the part of one registry entry this client prints.
+type serverFeature struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Core       bool   `json:"core"`
+	State      string `json:"state"`
+	Reason     string `json:"reason"`
+	EnableHint string `json:"enable_hint"`
+}
+
+func newDoctorCmd(a *app) *cobra.Command {
+	var deployEnv, unit, label, mirrorEnv string
+	var skip []string
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check this muster end to end — server, sign-in, mirror, tmux, push, dictation — and print the phone's QR code",
+		Long: `Check that muster works end to end from this machine, and say how to fix what does not.
+
+Each check prints PASS, FAIL or SKIP with a fix line. It exits 0 when nothing
+FAILs and 1 when anything does; a SKIP (a check that cannot be made from here)
+never fails the run. The human report and the QR code go to stderr; stdout is
+one JSON document of the checks (send it to /dev/null to read only the report).
+
+Checks: ` + strings.Join(doctorChecks, ", ") + `.
+
+On the machine running the server, pass --deploy-env with the compose .env
+file: its MUSTER_PUBLIC_URL and MUSTER_HOOK_TOKEN are then the URL and token
+(over the env file and the environment; only --api-url / --token beat them),
+and its operator password is used for the sign-in, push and dictation checks.
+The password is sent ONLY to that file's MUSTER_PUBLIC_URL; pointed anywhere
+else, those checks SKIP. Elsewhere, the server-side checks need ` + envToken + `
+in the env file; without it they SKIP.
+
+On any machine whose muster-mirror has a token, ` + "`this-host`" + ` asks the
+server, with that token, whether it holds a connection from this machine.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.runDoctor(cmd.Context(), deployEnv, unit, label, mirrorEnv, skip)
+		},
+	}
+	cmd.Flags().StringVar(&deployEnv, "deploy-env", "", "the server's compose .env file (the machine running the server only)")
+	cmd.Flags().StringVar(&unit, "mirror-unit", defaultMirrorUnit, "the systemd user unit muster-mirror runs as (Linux)")
+	cmd.Flags().StringVar(&label, "mirror-label", defaultMirrorLabel, "the launchd label muster-mirror runs as (macOS)")
+	cmd.Flags().StringVar(&mirrorEnv, "mirror-env", defaultMirrorEnv, "muster-mirror's settings file (INSTALL.md writes it): where its token file is")
+	cmd.Flags().StringSliceVar(&skip, "skip", nil, "checks to skip, comma-separated (one of: "+strings.Join(doctorChecks, ", ")+")")
+	return cmd
+}
+
+func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv string, skip []string) error {
+	d := &doctorRun{a: a, sys: a.doctorSys, unit: unit, label: label, mirrorEnv: mirrorEnv, skip: map[string]bool{}}
+	for _, s := range skip {
+		s = strings.TrimSpace(s)
+		if !isDoctorCheck(s) {
+			return failf(exitUsage, "--skip %q: not a check (one of: %s)", s, strings.Join(doctorChecks, ", "))
+		}
+		d.skip[s] = true
+	}
+	if err := d.resolve(deployEnv); err != nil {
+		return err
+	}
+	// The version-skew note every verb prints (client.warnSkew), on the URL
+	// doctor resolved.
+	skew := newClient(config{apiURL: d.base, token: d.token}, a.newHTTP(a.flagTimeout), a.stderr)
+	skew.progName = a.progName
+	skew.warnSkew(ctx)
+	jar, _ := cookiejar.New(nil)
+	d.http = a.newHTTP(a.flagTimeout)
+	d.http.Jar = jar
+	// Never follow a redirect: a sign-in's 303 IS the answer, and a 30x to an
+	// auth portal must not read as a 200.
+	d.http.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	d.checkServer(ctx)
+	d.checkManifest(ctx)
+	d.checkHookToken(ctx)
+	d.checkMirrorHosts()
+	d.checkThisHost(ctx)
+	d.checkMirrorService(ctx)
+	d.checkTmux(ctx)
+	d.checkSignIn(ctx)
+	d.checkPush(ctx)
+	d.checkDictation(ctx)
+	d.checkFeatures()
+	d.checkOfficers()
+	d.checkMCPEndpoint()
+	d.checkMCPRegistration()
+	d.checkAskHook()
+
+	failed := d.print()
+	d.printFeatures()
+	d.printQR(ctx)
+	doc, _ := json.Marshal(map[string]any{"url": d.base, "ok": failed == 0, "checks": d.checks})
+	if err := a.emit(doc); err != nil {
+		return err
+	}
+	if failed > 0 {
+		return failf(exitServerError, "%d check(s) failed", failed)
+	}
+	return nil
+}
+
+func isDoctorCheck(name string) bool {
+	for _, c := range doctorChecks {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
+// resolve is the CLI's own config resolution, with the deploy env file ABOVE
+// the env file and the environment: during an install the hub being checked is
+// the one --deploy-env names, whatever an older ~/.muster/muster.env or an
+// exported MUSTER_API_URL points at. Only --api-url / --token beat it.
+//
+// 🔴 THE OPERATOR PASSWORD GOES ONLY TO THE DEPLOY FILE'S OWN URL. It was the
+// lowest layer once, and a machine whose CLI already pointed at another muster
+// sent the new hub's password there (round-1 audit, Y8). passwordURL is the
+// one base checkSignIn may post it to.
+func (d *doctorRun) resolve(deployEnv string) error {
+	a := d.a
+	merged := map[string]string{}
+	var deploy map[string]string
+	if deployEnv != "" {
+		path := expandHome(deployEnv, a.homeDir)
+		vals, err := parseEnvFile(path)
+		if err != nil {
+			return wrapf(exitUsage, err, "reading %s", path)
+		}
+		if len(vals) == 0 {
+			return failf(exitUsage, "--deploy-env %s: no such file, or it sets nothing", path)
+		}
+		deploy = vals
+		d.password = vals["MUSTER_UI_PASSWORD"]
+		d.passwordURL = strings.TrimSuffix(strings.TrimSpace(vals["MUSTER_PUBLIC_URL"]), "/")
+	}
+	// The selected tenant's file (tenant.go); on the zero-touch path that is
+	// the --env-file file, exactly as before tenants.
+	sel, vals, err := a.loadSelected()
+	if err != nil {
+		return err
+	}
+	for k, v := range vals {
+		if v != "" {
+			merged[k] = v
+		}
+	}
+	getenv := a.getenv
+	if deploy != nil {
+		// The deploy file's URL and token replace the env file's and the
+		// environment's (both spellings of the token).
+		// The URL and its token are promoted as a PAIR: a deploy file with no
+		// MUSTER_PUBLIC_URL must not send its hook token to whatever URL the
+		// CLI config names (round-2 audit, G1).
+		if u := deploy["MUSTER_PUBLIC_URL"]; u != "" {
+			// 🔴 OFF THE ZERO-TOUCH PATH THE DEPLOY URL NEEDS THE DEPLOY TOKEN.
+			// Without one, the URL lands in the file values and pairs with the
+			// selected tenant's own token, sending it to a server that tenant
+			// file never named (round-1 audit, Y1). The zero-touch path keeps
+			// today's behaviour.
+			if !sel.zeroTouch && deploy["MUSTER_HOOK_TOKEN"] == "" {
+				return failf(exitUsage,
+					"--deploy-env %s sets MUSTER_PUBLIC_URL but no MUSTER_HOOK_TOKEN: with more than one tenant "+
+						"configured its URL would be paired with %s's token, and no request was sent. "+
+						"Add MUSTER_HOOK_TOKEN to it, or drop --deploy-env.",
+					deployEnv, sel.where())
+			}
+			merged[envAPIURL] = u
+			if t := deploy["MUSTER_HOOK_TOKEN"]; t != "" {
+				delete(merged, envToken)
+				merged[envTokenAlias] = t
+			}
+			getenv = func(k string) string {
+				switch {
+				case k == envAPIURL,
+					(k == envToken || k == envTokenAlias) && deploy["MUSTER_HOOK_TOKEN"] != "":
+					return ""
+				}
+				return a.getenv(k)
+			}
+		}
+	}
+	cfg, err := resolveSelected(sel, merged, getenv, a.flagAPIURL, a.flagToken)
+	if err != nil {
+		return err
+	}
+	d.base, d.token = cfg.apiURL, cfg.token
+	return nil
+}
+
+func (d *doctorRun) add(name string, st doctorStatus, detail, fix string) {
+	d.checks = append(d.checks, doctorCheck{Name: name, Status: st, Detail: detail, Fix: fix})
+}
+
+// skipped records a --skip and reports whether the check should not run.
+func (d *doctorRun) skipped(name string) bool {
+	if d.skip[name] {
+		d.add(name, statusSkip, "skipped (--skip)", "")
+		return true
+	}
+	return false
+}
+
+// needsServer records a SKIP for a server-side check when the server did not
+// answer: its FAIL is already on the `server` line.
+func (d *doctorRun) needsServer(name string) bool {
+	if !d.reachable {
+		d.add(name, statusSkip, "the server did not answer (see the server check)", "")
+		return true
+	}
+	return false
+}
+
+func (d *doctorRun) get(ctx context.Context, path string, auth bool) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.base+path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if auth && d.token != "" {
+		req.Header.Set("Authorization", "Bearer "+d.token)
+	}
+	return d.do(req)
+}
+
+func (d *doctorRun) do(req *http.Request) (*http.Response, []byte, error) { return doWith(d.http, req) }
+
+func doWith(c *http.Client, req *http.Request) (*http.Response, []byte, error) {
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp, body, err
+}
+
+// --- the checks --------------------------------------------------------------
+
+func (d *doctorRun) checkServer(ctx context.Context) {
+	const name = "server"
+	if d.skipped(name) {
+		d.reachable = true // the operator says it is there; let the rest try
+		return
+	}
+	resp, body, err := d.get(ctx, "/health", false)
+	if err != nil {
+		d.add(name, statusFail, fmt.Sprintf("%s did not answer: %v", d.base, err),
+			"on the server machine: `docker compose ps` and `docker compose logs muster`; then `tailscale serve status`. "+
+				"Check this machine is on the tailnet (`tailscale status`).")
+		return
+	}
+	var h struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil || h.Status != "ok" {
+		d.add(name, statusFail, fmt.Sprintf("%s/health answered %d, not muster's health document", d.base, resp.StatusCode),
+			"the URL reaches something that is not muster: check "+envAPIURL+" and `tailscale serve status`")
+		return
+	}
+	d.reachable = true
+	// Plain http to THIS machine (internal/loopback) is the local quickstart:
+	// it works in this machine's browser, which treats a loopback origin as
+	// secure. Only the phone needs https, so that is a note, not a failure.
+	if loopback.HTTPURL(d.base) {
+		detail := fmt.Sprintf("%s answers on this machine (muster %s). Your phone needs HTTPS to reach it: "+
+			"add it with Tailscale (%s)", d.base, h.Version, addPhoneDoc)
+		if others := d.otherUsers(ctx); len(others) > 0 {
+			detail += fmt.Sprintf(". WARNING: other users are logged in to this machine (%s). Plain http to localhost "+
+				"is private from other machines, not from them: one could listen on this port while muster is down and "+
+				"receive this machine's mirror token. On a shared machine use HTTPS (%s)",
+				strings.Join(others, ", "), sharedMachineDoc)
+		}
+		d.add(name, statusPass, detail, "")
+		return
+	}
+	if u, _ := url.Parse(d.base); u == nil || u.Scheme != "https" {
+		d.add(name, statusFail, fmt.Sprintf("%s answers (muster %s) but over plain http", d.base, h.Version),
+			"phones allow the microphone, the install and notifications on https only: run `tailscale serve --bg 8105` "+
+				"on the server machine and use its https://… URL as "+envAPIURL)
+		return
+	}
+	d.add(name, statusPass, fmt.Sprintf("%s answers over https (muster %s)", d.base, h.Version), "")
+}
+
+// otherUsers is the login names `who` lists that are not this user's: the
+// people (other than you) logged in to this machine, terminal or ssh. Best
+// effort, for a warning only: no `who`, a failure, or no user name of our own
+// gives none (a guess would warn everyone).
+func (d *doctorRun) otherUsers(ctx context.Context) []string {
+	if d.sys.user == "" {
+		return nil
+	}
+	out, err := d.sys.run(ctx, "who")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var others []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] == d.sys.user || seen[f[0]] {
+			continue
+		}
+		seen[f[0]] = true
+		others = append(others, f[0])
+	}
+	slices.Sort(others)
+	return others
+}
+
+func (d *doctorRun) checkManifest(ctx context.Context) {
+	const name = "manifest"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	resp, body, err := d.get(ctx, manifestRoute, false)
+	if err != nil {
+		d.add(name, statusFail, "GET "+manifestRoute+": "+err.Error(), "retry; if it persists, check the server's logs")
+		return
+	}
+	var m struct {
+		Name     string            `json:"name"`
+		StartURL string            `json:"start_url"`
+		Display  string            `json:"display"`
+		Icons    []json.RawMessage `json:"icons"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &m) != nil {
+		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d, not a manifest", manifestRoute, resp.StatusCode),
+			"something in front of muster is answering this path: "+manifestRoute+" must reach muster unauthenticated")
+		return
+	}
+	if m.Display != "standalone" || m.StartURL == "" || len(m.Icons) == 0 {
+		d.add(name, statusFail, fmt.Sprintf("the manifest is incomplete (display %q, start_url %q, %d icons)", m.Display, m.StartURL, len(m.Icons)),
+			"this server build serves a broken manifest: upgrade muster")
+		return
+	}
+	d.add(name, statusPass, fmt.Sprintf("served: %q, %s, %d icons — the phone can install it", m.Name, m.Display, len(m.Icons)), "")
+}
+
+func (d *doctorRun) checkHookToken(ctx context.Context) {
+	const name = "hook-token"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	if d.token == "" {
+		d.add(name, statusSkip, "no token on this machine, so the server-side checks cannot be made from here",
+			"run doctor on the server machine with --deploy-env <dir>/.env, or put "+envToken+"=<token> in "+defaultEnvFile)
+		return
+	}
+	resp, body, err := d.get(ctx, doctorRoute, true)
+	if err != nil {
+		d.add(name, statusFail, "GET "+doctorRoute+": "+err.Error(), "retry; if it persists, check the server's logs")
+		return
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var rep serverReport
+		if err := json.Unmarshal(body, &rep); err != nil {
+			d.add(name, statusFail, "GET "+doctorRoute+" answered 200 with something that is not its report", "upgrade muster on the server")
+			return
+		}
+		d.report = &rep
+		if !rep.HookTokenArmed {
+			// Only a personal token gets a 200 from an unarmed server.
+			d.add(name, statusFail, "this token was accepted, but the server has no MUSTER_HOOK_TOKEN, so its shared machine API is open",
+				"set MUSTER_HOOK_TOKEN in the server's .env (`openssl rand -hex 32`) and `docker compose up -d --wait`")
+			return
+		}
+		d.add(name, statusPass, "the server enforces a hook token and accepts this one", "")
+	case http.StatusServiceUnavailable:
+		if unarmedBody(body) {
+			d.add(name, statusFail, "the server has no MUSTER_HOOK_TOKEN, so its machine API is open to anyone who reaches it",
+				"set MUSTER_HOOK_TOKEN in the server's .env (`openssl rand -hex 32`) and `docker compose up -d --wait`")
+			return
+		}
+		d.add(name, statusFail, "GET "+doctorRoute+" answered 503", "check the server's logs: `docker compose logs muster`")
+	case http.StatusUnauthorized, http.StatusForbidden:
+		d.add(name, statusFail, fmt.Sprintf("the server refused this machine's token (%d)", resp.StatusCode),
+			"use the server's MUSTER_HOOK_TOKEN (its .env) or a personal token from /account/tokens as "+envToken)
+	case http.StatusNotFound:
+		d.add(name, statusFail, "the server has no "+doctorRoute+": it is older than this CLI", "upgrade the server to this CLI's release")
+	default:
+		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", doctorRoute, resp.StatusCode), "check the server's logs: `docker compose logs muster`")
+	}
+}
+
+// unarmedBody reports whether a 503 carries the unarmed discriminator
+// (api.HookUnarmedField) — the field, never the prose.
+func unarmedBody(body []byte) bool {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return false
+	}
+	v, _ := m["unarmed"].(bool)
+	return v
+}
+
+// needsReport records a SKIP for a check that reads GET /api/doctor when it
+// was not read: the reason is on the hook-token line.
+func (d *doctorRun) needsReport(name string) bool {
+	if d.report == nil {
+		d.add(name, statusSkip, "needs the server's report (see the hook-token check)", "")
+		return true
+	}
+	return false
+}
+
+func (d *doctorRun) checkMirrorHosts() {
+	const name = "mirror-hosts"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	m := d.report.Mirror
+	if !m.Enabled {
+		d.add(name, statusFail, "mirrored sessions are off on the server", "set MUSTER_MIRROR=1 in the server's .env and `docker compose up -d --wait`")
+		return
+	}
+	if m.HostsError != "" {
+		d.add(name, statusFail, "the server could not list its mirror tokens: "+m.HostsError, "check Postgres: `docker compose logs postgres`")
+		return
+	}
+	var online, offline, untokened []string
+	for _, h := range m.Hosts {
+		switch {
+		case !h.Token:
+			untokened = append(untokened, h.Host)
+		case h.Online:
+			mode := "read-only"
+			if h.Interactive {
+				mode = "interactive"
+			}
+			online = append(online, h.Host+" ("+mode+")")
+		default:
+			offline = append(offline, h.Host)
+		}
+	}
+	if len(online) == 0 && len(offline) == 0 {
+		d.add(name, statusFail, "no machine has a mirror token yet",
+			"mint one per machine: `docker compose exec muster /muster-server mirror token create <host>` (INSTALL.md, \"Another machine\")")
+		return
+	}
+	if len(offline) > 0 {
+		d.add(name, statusFail, fmt.Sprintf("connected: %s; NOT connected: %s", listOrNone(online), strings.Join(offline, ", ")),
+			"right after the server restarts, hosts take a few seconds to reconnect: run doctor again; "+
+				"otherwise, on each machine not connected: `"+mirrorStatusHint(d.sys.goos)+"`; a machine you retired: revoke its token "+
+				"(`docker compose exec muster /muster-server mirror token ls`, then `… mirror token revoke <id>`)")
+		return
+	}
+	detail := "connected: " + strings.Join(online, ", ")
+	if len(untokened) > 0 {
+		detail += "; still connected with a revoked token: " + strings.Join(untokened, ", ") + " (it is cut off within 30 s)"
+	}
+	d.add(name, statusPass, detail, "")
+}
+
+func listOrNone(xs []string) string {
+	if len(xs) == 0 {
+		return "none"
+	}
+	return strings.Join(xs, ", ")
+}
+
+func mirrorStatusHint(goos string) string {
+	if goos == "darwin" {
+		return "launchctl print gui/$(id -u)/" + defaultMirrorLabel
+	}
+	return "systemctl --user status " + defaultMirrorUnit + "; journalctl --user -u " + defaultMirrorUnit + " -n 50"
+}
+
+// mirrorSettings is where this machine's mirror token is (the settings
+// file's MUSTER_MIRROR_TOKEN_FILE, else the token beside it) and the server
+// that token belongs to (its MUSTER_MIRROR_URL). path is "" when there is no
+// settings file, i.e. INSTALL.md never connected this machine.
+func (d *doctorRun) mirrorSettings() (path, server string) {
+	env := expandHome(d.mirrorEnv, d.a.homeDir)
+	vals, err := parseEnvFile(env)
+	if err != nil || len(vals) == 0 {
+		return "", ""
+	}
+	server = strings.TrimSuffix(strings.TrimSpace(vals["MUSTER_MIRROR_URL"]), "/")
+	if f := vals["MUSTER_MIRROR_TOKEN_FILE"]; f != "" {
+		return expandHome(f, d.a.homeDir), server
+	}
+	return filepath.Join(filepath.Dir(env), "token"), server
+}
+
+// checkThisHost asks the SERVER, with this machine's own mirror token,
+// whether it holds a connection from this machine (GET /mirror/host).
+//
+// 🔴 IT IS THE ONLY CHECK A JOINING MACHINE HAS THAT SEES THE CONNECTION.
+// muster-mirror does not exit on a refused token — it retries — so its user
+// service reads `active` with a wrong token or a token minted for another
+// name. A refused token is a FAIL here, not a SKIP.
+func (d *doctorRun) checkThisHost(ctx context.Context) {
+	const name = "this-host"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	path, server := d.mirrorSettings()
+	if path == "" {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected",
+			"connect it: INSTALL.md, \"Install muster on this machine\"")
+		return
+	}
+	// 🔴 THE TOKEN GOES ONLY TO THE SERVER IT BELONGS TO: the mirror's own
+	// MUSTER_MIRROR_URL. A CLI configured for another muster must not be handed
+	// a credential that connects as this host (round-2 audit, Y1).
+	if server == "" {
+		d.add(name, statusSkip, d.mirrorEnv+" names no MUSTER_MIRROR_URL, so it is not known which server this machine's token belongs to",
+			"re-run INSTALL.md's \"Install muster on this machine\" here")
+		return
+	}
+	if server != d.base {
+		d.add(name, statusSkip, fmt.Sprintf("this machine's mirror connects to %s, and doctor is checking %s; its token is only sent to %s", server, d.base, server),
+			"muster doctor --api-url "+server)
+		return
+	}
+	raw, err := os.ReadFile(path)
+	tok := strings.TrimSpace(string(raw))
+	if err != nil || tok == "" {
+		d.add(name, statusFail, "muster-mirror's token file "+path+" is missing or empty",
+			"mint this machine's token on the server and write it there (INSTALL.md, \"Another machine\")")
+		return
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server+mirrorHostRoute, nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	// This machine's attempt code, when its muster-mirror left one: the server
+	// tells a held team host machine by it, whatever the addresses (team
+	// sharing 2b.2). Sent only to the token's own server (above).
+	code, codePath := d.attemptCode()
+	if code != "" {
+		req.Header.Set(attemptcode.Header, code)
+	}
+	resp, body, err := d.do(req)
+	if err != nil {
+		d.add(name, statusFail, "GET "+mirrorHostRoute+": "+err.Error(), "retry")
+		return
+	}
+	var h struct {
+		Host        string `json:"host"`
+		Online      bool   `json:"online"`
+		Interactive bool   `json:"interactive"`
+		OtherToken  bool   `json:"other_token"`
+		Held        bool   `json:"held"`
+		HeldUnknown bool   `json:"held_unknown"`
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		d.add(name, statusFail, "the server refused this machine's mirror token: it does not know it, or it was revoked",
+			"on the server, `docker compose exec -T muster /muster-server mirror token ls` shows this host's tokens; "+
+				"only if none is live, mint one (`… mirror token create <host>`), write it to "+path+" and restart the service")
+	case resp.StatusCode == http.StatusNotFound:
+		d.add(name, statusFail, "the server has no "+mirrorHostRoute+": mirroring is off there, or it is older than this CLI",
+			"turn on MUSTER_MIRROR=1 on the server, or upgrade it")
+	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
+		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
+	case h.Held:
+		// The server says held only for the code this request presented.
+		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; give this code to a team manager: %s", h.Host, code),
+			"a manager of the team types this code on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
+	case h.HeldUnknown:
+		d.add(name, statusFail, fmt.Sprintf("team host %q is connected and other machines are held for it, but this machine's attempt code (%s) is missing, unreadable or not the live connection's: this may be a held machine", h.Host, codePath),
+			"run doctor as the user muster-mirror runs as, with its settings ("+envMirrorAttemptCodeFile+" in "+d.mirrorEnv+" if it is set); restart muster-mirror so it writes a fresh code; then run doctor again")
+	case h.OtherToken:
+		d.add(name, statusFail, fmt.Sprintf("the server holds a connection for host %q, but from ANOTHER token: another machine is connected under this name", h.Host),
+			"give each machine its own name: set MUSTER_MIRROR_HOST in "+d.mirrorEnv+" and mint a token for that name")
+	case !h.Online:
+		d.add(name, statusFail, fmt.Sprintf("the token is valid for host %q, but the server holds no connection from it", h.Host),
+			"`"+mirrorStatusHint(d.sys.goos)+"`; MUSTER_MIRROR_HOST in "+d.mirrorEnv+" must be "+h.Host+
+				" (right after a server restart, wait a few seconds and run doctor again)")
+	default:
+		mode := "read-only"
+		if h.Interactive {
+			mode = "interactive"
+		}
+		d.add(name, statusPass, fmt.Sprintf("the server sees this machine connected as %s (%s)", h.Host, mode), "")
+	}
+}
+
+func (d *doctorRun) checkMirrorService(ctx context.Context) {
+	const name = "mirror-service"
+	if d.skipped(name) {
+		return
+	}
+	switch d.sys.goos {
+	case "linux":
+		out, err := d.sys.run(ctx, "systemctl", "--user", "is-active", d.unit)
+		state := strings.TrimSpace(out)
+		if err == nil && state == "active" {
+			d.add(name, statusPass, d.unit+" is active (systemd user service)", "")
+			return
+		}
+		if state == "" && err != nil {
+			state = err.Error()
+		}
+		d.add(name, statusFail, fmt.Sprintf("%s is %s", d.unit, state),
+			"`systemctl --user enable --now "+d.unit+"`, then `journalctl --user -u "+d.unit+" -n 50` (INSTALL.md, \"Install muster on this machine\")")
+	case "darwin":
+		target := "gui/" + strconv.Itoa(d.sys.uid) + "/" + d.label
+		out, err := d.sys.run(ctx, "launchctl", "print", target)
+		if err == nil && launchdRunning(out) {
+			d.add(name, statusPass, d.label+" is running (launchd agent)", "")
+			return
+		}
+		why := "not loaded"
+		if err == nil {
+			why = "loaded but not running"
+		}
+		d.add(name, statusFail, d.label+" is "+why,
+			"`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/"+d.label+".plist`, then read ~/Library/Logs/muster-mirror.log (INSTALL.md, \"Install muster on this machine\")")
+	default:
+		d.add(name, statusSkip, "no service manager doctor knows on "+d.sys.goos, "")
+	}
+}
+
+// launchdRunning reads `launchctl print`'s "state = running" line.
+func launchdRunning(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && strings.TrimSpace(k) == "state" && strings.TrimSpace(v) == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *doctorRun) checkTmux(ctx context.Context) {
+	const name = "tmux"
+	if d.skipped(name) {
+		return
+	}
+	path, err := d.sys.lookPath("tmux")
+	if err != nil {
+		d.add(name, statusFail, "tmux is not installed on this machine, so muster-mirror has no sessions to show",
+			"install tmux (`sudo apt install tmux`, `brew install tmux`, …) and start your agents inside it (INSTALL.md, \"Run your agents in tmux\")")
+		return
+	}
+	out, err := d.sys.run(ctx, path, "-V")
+	if err != nil {
+		d.add(name, statusFail, path+" -V failed: "+err.Error(), "reinstall tmux")
+		return
+	}
+	d.add(name, statusPass, strings.TrimSpace(out)+" at "+path+"; "+tmuxPickerNote(out), "")
+}
+
+// tmuxPickerNote says how muster-mirror types answers into Claude Code's
+// pickers with the tmux whose `tmux -V` is v (internal/mirrorhost's
+// Tmux.KeyPaste, which asks the RUNNING server again before every answer).
+// No version is refused: tmux 3.7 added `paste-buffer -S` together with the
+// sanitizing it turns off, so an older tmux pastes raw without it.
+func tmuxPickerNote(v string) string {
+	switch ok, known := tmuxver.AtLeast(v, tmuxver.MinRawPaste); {
+	case !known:
+		return "version not recognised; muster-mirror checks the running tmux server before it types a picker answer"
+	case ok:
+		return "picker answers are typed with `paste-buffer -S`"
+	}
+	return "picker answers are typed with plain `paste-buffer` (tmux before " + tmuxver.MinRawPaste + " pastes raw; -S arrived in " + tmuxver.MinRawPaste + ")"
+}
+
+func (d *doctorRun) checkSignIn(ctx context.Context) {
+	const name = "sign-in"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	if d.report != nil && d.report.AuthMode == "gotrue" {
+		d.add(name, statusSkip, "per-user accounts (gotrue mode): sign in in the browser", "")
+		return
+	}
+	if d.password == "" {
+		d.add(name, statusSkip, "no operator password here, so sign-in, push and dictation cannot be checked from this machine",
+			"on the server machine: muster doctor --deploy-env <a file with MUSTER_PUBLIC_URL, MUSTER_HOOK_TOKEN and MUSTER_UI_PASSWORD> "+
+				"(a generated password: `"+showUIPassword+"`; INSTALL.md, \"Check it\")")
+		return
+	}
+	if d.passwordURL == "" || d.passwordURL != d.base {
+		// Never hand the deploy file's password to a server it does not name.
+		d.add(name, statusSkip, fmt.Sprintf("the password in --deploy-env belongs to %q, not to %s, so it is not sent", d.passwordURL, d.base),
+			"set MUSTER_PUBLIC_URL in that .env to this server's URL, or drop --api-url")
+		return
+	}
+	form := url.Values{"password": {d.password}}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, d.base+loginRoute, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// The sign-in page's own Origin, as a browser sends it: the server sets the
+	// cookie for that page (on a loopback http page, without Secure).
+	req.Header.Set("Origin", d.base)
+	resp, _, err := d.do(req)
+	if err != nil {
+		d.add(name, statusFail, "POST /login: "+err.Error(), "retry")
+		return
+	}
+	// Whether the session cookie came back Secure on a plain-http URL: such a
+	// cookie is never sent back, so the session cannot open a page (below).
+	secureOverHTTP := false
+	if u, _ := url.Parse(d.base); u != nil && u.Scheme == "http" {
+		for _, c := range resp.Cookies() {
+			secureOverHTTP = secureOverHTTP || c.Secure
+		}
+	}
+	switch {
+	case resp.StatusCode == http.StatusSeeOther && len(resp.Cookies()) > 0:
+	case resp.StatusCode == http.StatusUnauthorized:
+		d.add(name, statusFail, "the server refused the password in --deploy-env",
+			"that file's MUSTER_UI_PASSWORD is not the one the server runs with. If the .env sets it, the server has not been "+
+				"restarted since: `docker compose up -d --wait`. If muster generated it (no MUSTER_UI_PASSWORD in .env), the file "+
+				"must hold the generated one: `"+showUIPassword+"`")
+		return
+	case resp.StatusCode == http.StatusServiceUnavailable:
+		d.add(name, statusFail, "the server has no usable MUSTER_UI_PASSWORD (unset, or under 12 characters)",
+			"set MUSTER_UI_PASSWORD in the server's .env (`openssl rand -base64 24`) and `docker compose up -d --wait`")
+		return
+	case resp.StatusCode == http.StatusTooManyRequests:
+		d.add(name, statusFail, "the server is rate-limiting sign-ins", "wait a minute and run doctor again")
+		return
+	default:
+		d.add(name, statusFail, fmt.Sprintf("POST /login answered %d", resp.StatusCode), "check the server's logs: `docker compose logs muster`")
+		return
+	}
+	// The session must open a page, not just exist: a Secure cookie dropped
+	// over http, or a proxy that strips it, signs nobody in.
+	resp, _, err = d.get(ctx, "/tasks", false)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		code := 0
+		if resp != nil {
+			code = resp.StatusCode
+		}
+		if secureOverHTTP {
+			d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d): the server set a Secure "+
+				"session cookie on a plain-http URL, and a Secure cookie is never sent back over http", code),
+				"serve muster over https (`tailscale serve --bg 8105`, then use its https://… URL), or open it on this machine "+
+					"as http://localhost:8105; on a plain-http LAN port set MUSTER_SECURE_COOKIES=0 in the server's .env")
+			return
+		}
+		// Not a Secure cookie over http (above). A redirect AWAY from this
+		// server is something in front of it answering (an auth portal); one
+		// to muster's own sign-in page is muster not seeing the session.
+		if resp != nil {
+			if loc := resp.Header.Get("Location"); loc != "" && !strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, d.base) {
+				d.add(name, statusFail, fmt.Sprintf("signed in, but the board answered %d, a redirect to %s: something in front of muster answered", code, loc),
+					"reach muster with nothing in between (an auth portal or proxy): through `tailscale serve`, or on this machine")
+				return
+			}
+		}
+		d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d): the session cookie did not come back "+
+			"with the next request, or muster did not accept it", code),
+			"`docker compose logs muster` says whether muster refused the session; if a proxy sits between this machine and "+
+				"muster, it is dropping the cookie: use `tailscale serve`, or this machine, with nothing in between")
+		return
+	}
+	d.signedIn = true
+	d.add(name, statusPass, "the operator password signs in and the session opens the board", "")
+}
+
+func (d *doctorRun) checkPush(ctx context.Context) {
+	const name = "push"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	const fix = "the Compose stack generates the keys on its first start; to set your own, docs/features.md#push, " +
+		"then `docker compose up -d --wait`. Or pass `--skip push` to check the rest without notifications"
+	if d.signedIn {
+		// What the phone's Enable button fetches.
+		resp, body, err := d.get(ctx, pushKeyRoute, false)
+		if err != nil {
+			d.add(name, statusFail, "GET "+pushKeyRoute+": "+err.Error(), "retry")
+			return
+		}
+		var k struct {
+			Key string `json:"key"`
+		}
+		_ = json.Unmarshal(body, &k)
+		if resp.StatusCode == http.StatusOK && k.Key != "" {
+			d.add(name, statusPass, "VAPID keys are set; the phone can enable notifications", "")
+			return
+		}
+		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d: no push keys", pushKeyRoute, resp.StatusCode), fix)
+		return
+	}
+	if d.report == nil {
+		d.add(name, statusSkip, "needs a sign-in or the server's report", "")
+		return
+	}
+	if !d.report.Push {
+		d.add(name, statusFail, "push notifications are off: MUSTER_VAPID_* is unset", fix)
+		return
+	}
+	d.add(name, statusPass, "VAPID keys are set (from the server's report)", "")
+}
+
+func (d *doctorRun) checkDictation(ctx context.Context) {
+	const name = "dictation"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	// Dictation is an optional feature (docs/features.md#dictation): off on
+	// the server is a SKIP, never a failure, so an install without it passes.
+	// Asked for but unusable (the registry says misconfigured: a URL and no
+	// token) is a FAIL with the server's reason (#728 round 0).
+	if f, ok := d.reportFeature("dictation"); ok && f.State == "misconfigured" {
+		d.add(name, statusFail, "dictation is misconfigured on this server: "+f.Reason, f.EnableHint)
+		return
+	}
+	if d.report != nil && !d.report.Dictation {
+		d.add(name, statusSkip, "dictation is off on this server (an optional feature): no message box has a microphone",
+			"to turn it on: docs/features.md#dictation")
+		return
+	}
+	if !d.signedIn {
+		d.add(name, statusSkip, "needs a sign-in to send the sample (see the sign-in check)", "")
+		return
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, d.base+transcribePath, bytes.NewReader(doctorSample))
+	req.Header.Set("Content-Type", "audio/wav")
+	// The route is same-origin only (it is a browser write).
+	req.Header.Set("Origin", d.base)
+	// A model that is still loading answers slowly; the server waits up to a
+	// minute itself.
+	ctx2, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx2)
+	start := time.Now()
+	slow := *d.http
+	slow.Timeout = 90 * time.Second
+	resp, body, err := doWith(&slow, req)
+	if err != nil {
+		d.add(name, statusFail, "POST "+transcribePath+": "+err.Error(), "retry: a local model's first request loads it and can be slow")
+		return
+	}
+	text := strings.TrimSpace(string(body))
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		d.add(name, statusFail, "dictation is off on the server (POST /transcribe is 404)",
+			"set MUSTER_STT_URL and MUSTER_STT_TOKEN in the server's .env (docs/features.md#dictation)")
+	case resp.StatusCode == http.StatusOK && text != "":
+		d.add(name, statusPass, fmt.Sprintf("the sample transcribed in %.1fs as %q", time.Since(start).Seconds(), text), "")
+	case resp.StatusCode == http.StatusOK:
+		d.add(name, statusFail, "the service answered, but heard nothing in a spoken sample",
+			"the speech-to-text service is not transcribing: check its logs (`docker compose logs` for the stt service) or the API key's model")
+	default:
+		d.add(name, statusFail, fmt.Sprintf("POST /transcribe answered %d: %s", resp.StatusCode, oneLine(text, 200)),
+			"check the speech-to-text service is up (`docker compose ps`) and that MUSTER_STT_URL and MUSTER_STT_TOKEN match it")
+	}
+}
+
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
+}
+
+// --- output ------------------------------------------------------------------
+
+// print writes the human report to stderr and returns the number of FAILs.
+func (d *doctorRun) print() int {
+	w := d.a.stderr
+	failed, passed, skipped := 0, 0, 0
+	for _, c := range d.checks {
+		fmt.Fprintf(w, "%-4s  %-14s %s\n", c.Status, c.Name, c.Detail)
+		if c.Fix != "" && c.Status != statusPass {
+			fmt.Fprintf(w, "      %-14s fix: %s\n", "", c.Fix)
+		}
+		switch c.Status {
+		case statusFail:
+			failed++
+		case statusPass:
+			passed++
+		default:
+			skipped++
+		}
+	}
+	fmt.Fprintf(w, "\n%d passed, %d failed, %d skipped\n", passed, failed, skipped)
+	return failed
+}
+
+// urlWithPort is raw with its port replaced by port, "" when raw does not
+// parse or port is not one.
+func urlWithPort(raw string, port int) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || port < 1 || port > 65535 {
+		return ""
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
+	return strings.TrimRight(u.String(), "/")
+}
+
+// printQR draws the URL as a QR code on stderr for the phone to scan, with
+// qrencode when this machine has it; the URL itself is printed either way.
+func (d *doctorRun) printQR(ctx context.Context) {
+	w := d.a.stderr
+	// A loopback URL is this machine only: a phone that scanned it would open
+	// its OWN localhost. No code; say how a phone gets in instead.
+	if loopback.HTTPURL(d.base) {
+		// Accounts mode: the address checked here is the machine-token port,
+		// which refuses a browser (onboarding round 3: doctor sent a person
+		// to it). A browser signs in on the browser listener.
+		if d.report != nil && d.report.AuthMode == "gotrue" {
+			if open := urlWithPort(d.base, d.report.BrowserPort); open != "" {
+				fmt.Fprintf(w, "\nmuster is at %s on this machine only (open it in this machine's browser): in accounts mode "+
+					"a browser signs in only on the browser listener (MUSTER_BROWSER_PORT=%d, published on the same host port); "+
+					"%s serves machine tokens and refuses a browser.\n", open, d.report.BrowserPort, d.base)
+			} else {
+				fmt.Fprintf(w, "\nIn accounts mode a browser signs in only on the browser listener (MUSTER_BROWSER_PORT, at the host "+
+					"port that publishes it): %s serves machine tokens and refuses a browser.\n", d.base)
+			}
+			fmt.Fprintf(w, "To use it from your phone, add HTTPS with Tailscale: %s\n", addPhoneDoc)
+			return
+		}
+		fmt.Fprintf(w, "\nmuster is at %s on this machine only (open it in this machine's browser).\n"+
+			"To use it from your phone, add HTTPS with Tailscale: %s\n", d.base, addPhoneDoc)
+		return
+	}
+	fmt.Fprintf(w, "\nOpen muster on your phone (it must be on the same tailnet): %s\n", d.base)
+	path, err := d.sys.lookPath("qrencode")
+	if err != nil {
+		fmt.Fprintln(w, "(install qrencode to draw a QR code here: `sudo apt install qrencode` or `brew install qrencode`)")
+		return
+	}
+	out, err := d.sys.run(ctx, path, "-t", "ANSIUTF8", "-m", "2", d.base)
+	if err != nil || out == "" {
+		fmt.Fprintln(w, "(qrencode could not draw the code; type the URL instead)")
+		return
+	}
+	fmt.Fprint(w, out)
+}
+
+// --- the feature registry ----------------------------------------------------
+
+// checkFeatures reports the server's feature registry: how many features are
+// on, off and misconfigured. It FAILs on a misconfigured one — a feature that
+// was asked for and is missing a dependency (#441 round 0, Q1): an optional
+// feature that is simply off is not a failure, and a default install has none
+// misconfigured (suggested replies and focus without an OpenRouter key are
+// OFF, "needs MUSTER_AGENT_OPENROUTER_KEY"). printFeatures lists every
+// feature below the checks with the line that turns it on.
+func (d *doctorRun) checkFeatures() {
+	const name = "features"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	fs := d.report.Features
+	if len(fs) == 0 {
+		d.add(name, statusSkip, "this server does not report its features (it predates the feature registry)", "")
+		return
+	}
+	n := map[string]int{}
+	var bad, fixes []string
+	for _, f := range fs {
+		n[f.State]++
+		if f.State == "misconfigured" {
+			bad = append(bad, f.ID+" ("+f.Reason+")")
+			fixes = append(fixes, f.ID+": "+f.EnableHint)
+		}
+	}
+	detail := fmt.Sprintf("%d on, %d off, %d misconfigured", n["on"], n["off"], n["misconfigured"])
+	if len(bad) > 0 {
+		d.add(name, statusFail, detail+": "+strings.Join(bad, "; "), strings.Join(fixes, "; "))
+		return
+	}
+	d.add(name, statusPass, detail+"; listed below", "")
+}
+
+// checkOfficers is the server's officer report (GET /api/doctor's officers):
+// for each officer the caller owns, whether its runtime can start an instance
+// now — its pods' agent plane, or its host online, starting and closing
+// windows, claude found and logged in, its repository allowed — and the fix
+// for each thing in the way.
+func (d *doctorRun) checkOfficers() {
+	const name = "officers"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	if d.report.Officers == nil {
+		d.add(name, statusSkip, "this server does not report its officers (it predates the officer check)", "")
+		return
+	}
+	list := *d.report.Officers
+	if len(list) == 0 {
+		d.add(name, statusSkip, "no officer is declared for you (MUSTER_OFFICERS, or `muster officer` in the database)", "")
+		return
+	}
+	var ok, bad, fixes, notes []string
+	for _, o := range list {
+		where := o.RunsOn
+		if o.Host != "" {
+			where += " on " + o.Host
+		}
+		if where == "" {
+			where = o.Runtime
+		}
+		for _, n := range o.Notes {
+			notes = append(notes, o.ID+": "+n)
+		}
+		if len(o.Problems) == 0 {
+			ok = append(ok, o.ID+" ("+where+")")
+			continue
+		}
+		for _, p := range o.Problems {
+			bad = append(bad, o.ID+": "+p.Problem)
+			if p.Fix != "" {
+				fixes = append(fixes, o.ID+": "+p.Fix)
+			}
+		}
+	}
+	detail := "ready: " + listOrNone(ok)
+	if len(notes) > 0 {
+		detail += "; note: " + strings.Join(notes, "; ")
+	}
+	if len(bad) > 0 {
+		d.add(name, statusFail, strings.Join(bad, "; ")+"; "+detail, strings.Join(fixes, "; "))
+		return
+	}
+	d.add(name, statusPass, detail, "")
+}
+
+// --- this host's session tools ----------------------------------------------
+//
+// What gives a mirrored Claude Code session muster's tools (attention_ask, the
+// task tools) and AskUserQuestion cards is set up on each machine, where the
+// server cannot see it (docs/features.md#agent-ask-tool, #ask-cards). These
+// three checks read THIS machine's files — muster-mirror's settings, Claude
+// Code's user config and settings — and nothing else. Read-only; they print
+// no secret (the MCP secret's presence is checked, never its content).
+
+// envMirrorAttemptCodeFile is where muster-mirror leaves its attempt code
+// (its -attempt-code-file; else internal/mirrorpath's default).
+const envMirrorAttemptCodeFile = "MUSTER_MIRROR_ATTEMPT_CODE_FILE"
+
+// attemptCode is this machine's running muster-mirror's attempt code, as it
+// wrote it (XXXX-XXXX-XXXX), and the file it was read from; code is "" when
+// it left none (an old muster-mirror, or none running) or the file holds no
+// well-formed code.
+func (d *doctorRun) attemptCode() (code, path string) {
+	_, vals := d.mirrorEnvValues()
+	path = expandHome(strings.TrimSpace(vals[envMirrorAttemptCodeFile]), d.a.homeDir)
+	if path == "" {
+		path = mirrorpath.DefaultAttemptCodeFile()
+	}
+	if path == "" {
+		return "", ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", path
+	}
+	code = strings.TrimSpace(string(raw))
+	if _, ok := attemptcode.Normalize(code); !ok {
+		return "", path
+	}
+	return code, path
+}
+
+// The agent ask tool's defaults (docs/features.md#agent-ask-tool).
+const (
+	envMirrorMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
+	envMirrorMCPSecretFile = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	defaultMCPListen       = "127.0.0.1:47823"
+)
+
+// mirrorEnvValues is this machine's muster-mirror settings file, parsed, or nil
+// when there is none (the machine is not connected).
+func (d *doctorRun) mirrorEnvValues() (string, map[string]string) {
+	env := expandHome(d.mirrorEnv, d.a.homeDir)
+	vals, err := parseEnvFile(env)
+	if err != nil || len(vals) == 0 {
+		return env, nil
+	}
+	return env, vals
+}
+
+// mcpListen is this machine's muster-mirror MCP address ("" = off).
+func (d *doctorRun) mcpListen() string {
+	_, vals := d.mirrorEnvValues()
+	return strings.TrimSpace(vals[envMirrorMCPListen])
+}
+
+// mcpSecretFile is where this machine's muster-mirror keeps its MCP secret, by
+// muster-mirror's own rule: its settings' MUSTER_MIRROR_MCP_SECRET_FILE, else
+// the default it computes itself (internal/mirrorpath, the code muster-mirror
+// calls) — never a guess beside the settings file. The one place both MCP
+// checks read it: the path the endpoint check looks at is the path the
+// registration fix tells the shell to read.
+func (d *doctorRun) mcpSecretFile() string {
+	_, vals := d.mirrorEnvValues()
+	if p := expandHome(strings.TrimSpace(vals[envMirrorMCPSecretFile]), d.a.homeDir); p != "" {
+		return p
+	}
+	return mirrorpath.DefaultMCPSecretFile()
+}
+
+// claudeConfigDir is where Claude Code keeps its user settings: $CLAUDE_CONFIG_DIR,
+// else ~/.claude. Its user-scope MCP servers are in claudeUserConfig.
+func (d *doctorRun) claudeConfigDir() string {
+	if v := strings.TrimSpace(d.a.getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return expandHome(v, d.a.homeDir)
+	}
+	return filepath.Join(d.a.homeDir, ".claude")
+}
+
+// claudeUserConfig is the file `claude mcp add --scope user` writes:
+// $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
+func (d *doctorRun) claudeUserConfig() string {
+	if v := strings.TrimSpace(d.a.getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return filepath.Join(expandHome(v, d.a.homeDir), ".claude.json")
+	}
+	return filepath.Join(d.a.homeDir, ".claude.json")
+}
+
+func mcpAddCommand(listen string) string {
+	return `claude mcp add-json --scope user muster '{"type":"http","url":"http://` + listen + `/mcp","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}","X-Muster-Pane":"${TMUX_PANE:-}","X-Muster-Tmux":"${TMUX:-}"}}'`
+}
+
+// checkMCPEndpoint: muster-mirror serves its local MCP endpoint here
+// (MUSTER_MIRROR_MCP_LISTEN in its settings) and has written its secret.
+func (d *doctorRun) checkMCPEndpoint() {
+	const name = "mcp-endpoint"
+	if d.skipped(name) {
+		return
+	}
+	_, vals := d.mirrorEnvValues()
+	if vals == nil {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "connect it: INSTALL.md, \"Install muster on this machine\"")
+		return
+	}
+	listen := strings.TrimSpace(vals[envMirrorMCPListen])
+	if listen == "" {
+		d.add(name, statusSkip, "the agent ask tool is off on this machine: "+envMirrorMCPListen+" is not set in "+d.mirrorEnv,
+			"add "+envMirrorMCPListen+"="+defaultMCPListen+" to "+d.mirrorEnv+" and restart muster-mirror with "+mirrorRestartHint(d.sys.goos, vals["MUSTER_MIRROR_URL"])+"; "+
+				"see docs/features.md#agent-ask-tool")
+		return
+	}
+	secret := d.mcpSecretFile()
+	if fi, err := os.Stat(secret); err != nil || fi.Size() == 0 {
+		d.add(name, statusFail, envMirrorMCPListen+"="+listen+" is set, but the endpoint's secret "+secret+" is missing or empty: "+
+			"muster-mirror has not started with it yet", "restart muster-mirror (it writes the secret as it starts) with "+mirrorRestartHint(d.sys.goos, vals["MUSTER_MIRROR_URL"]))
+		return
+	}
+	d.add(name, statusPass, "muster-mirror serves its MCP endpoint at http://"+listen+"/mcp (its secret is in "+secret+")", "")
+}
+
+// mcpURLMatches reports whether a configured MCP server url reaches the
+// endpoint muster-mirror serves on listen: http, a loopback host (localhost,
+// 127.0.0.1, ::1 — whichever listen names, they are the one machine), the
+// same port and the /mcp path.
+func mcpURLMatches(raw, listen string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "http" || strings.TrimSuffix(u.Path, "/") != "/mcp" {
+		return false
+	}
+	_, wantPort, err := net.SplitHostPort(listen)
+	if err != nil || u.Port() != wantPort {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// claudeMCPScopes is every place Claude Code reads MCP servers from for a
+// session started in dir, with the servers each names: the user scope
+// (~/.claude.json's mcpServers), the local scope (~/.claude.json's
+// projects[dir].mcpServers) and the project scope (dir/.mcp.json).
+type mcpScope struct {
+	name, where string
+	servers     map[string]string // name -> url
+	err         error
+}
+
+func (d *doctorRun) claudeMCPScopes(dir string) []mcpScope {
+	type servers = map[string]struct {
+		URL string `json:"url"`
+	}
+	urls := func(s servers) map[string]string {
+		out := map[string]string{}
+		for n, v := range s {
+			out[n] = v.URL
+		}
+		return out
+	}
+	readJSON := func(path string, v any) error {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(raw, v)
+	}
+	user := d.claudeUserConfig()
+	var cfg struct {
+		MCPServers servers `json:"mcpServers"`
+		Projects   map[string]struct {
+			MCPServers servers `json:"mcpServers"`
+		} `json:"projects"`
+	}
+	uerr := readJSON(user, &cfg)
+	if errors.Is(uerr, os.ErrNotExist) {
+		uerr = nil
+	}
+	out := []mcpScope{{name: "user", where: user, servers: urls(cfg.MCPServers), err: uerr}}
+	if dir != "" {
+		out = append(out, mcpScope{name: "local", where: user + " (projects[" + dir + "])", servers: urls(cfg.Projects[dir].MCPServers), err: uerr})
+		var proj struct {
+			MCPServers servers `json:"mcpServers"`
+		}
+		path := filepath.Join(dir, ".mcp.json")
+		perr := readJSON(path, &proj)
+		if errors.Is(perr, os.ErrNotExist) {
+			perr = nil
+		}
+		out = append(out, mcpScope{name: "project", where: path, servers: urls(proj.MCPServers), err: perr})
+	}
+	return out
+}
+
+// checkMCPRegistration: Claude Code is configured to use that endpoint, in
+// any of its scopes for this directory (user, local, project), at any
+// loopback spelling of the address.
+func (d *doctorRun) checkMCPRegistration() {
+	const name = "mcp-registration"
+	if d.skipped(name) {
+		return
+	}
+	listen := d.mcpListen()
+	if listen == "" {
+		d.add(name, statusSkip, "this machine's muster-mirror serves no MCP endpoint (see mcp-endpoint)", "")
+		return
+	}
+	getwd := d.sys.getwd
+	if getwd == nil {
+		getwd = os.Getwd
+	}
+	dir, _ := getwd()
+	want := "http://" + listen + "/mcp"
+	var found, unreadable []string
+	for _, sc := range d.claudeMCPScopes(dir) {
+		if sc.err != nil {
+			unreadable = append(unreadable, sc.where)
+			continue
+		}
+		for n, u := range sc.servers {
+			if mcpURLMatches(u, listen) {
+				found = append(found, sc.name+" ("+strconv.Quote(n)+" in "+sc.where+")")
+				break
+			}
+		}
+	}
+	unreadable = slices.Compact(unreadable)
+	// Quoted (macOS's default is under "Application Support"), and with no
+	// 2>/dev/null: a secret the shell cannot read must say so, not export "".
+	fix := mcpAddCommand(listen) + "; then export MUSTER_MIRROR_MCP_SECRET=\"$(cat " + shSingleQuote(d.mcpSecretFile()) +
+		")\" in the shell tmux starts (docs/features.md#where-the-mcp-secret-is)"
+	switch {
+	case len(found) == 0 && len(unreadable) > 0:
+		d.add(name, statusFail, "Claude Code's config could not be read as JSON: "+strings.Join(unreadable, ", "), "check the file; then "+fix)
+	case len(found) == 0 && !d.claudeInstalled():
+		// Not installed is not "not registered": the registration command
+		// alone would fail with `claude: command not found` (round 3).
+		d.add(name, statusFail, "muster-mirror serves "+want+", but Claude Code is not installed on this machine (no `claude` on PATH, "+
+			"in ~/.local/bin or in ~/.claude/local), so no session here can use it",
+			"install Claude Code first ("+claudeInstallHint+"); then "+fix)
+	case len(found) == 0:
+		d.add(name, statusFail, "muster-mirror serves "+want+", but no Claude Code scope for "+dir+" (user, local or project) registers an MCP server at it, "+
+			"so sessions here have no muster tools", fix)
+	case !strings.HasPrefix(found[0], "user "):
+		d.add(name, statusPass, "registered for this directory only: "+strings.Join(found, "; ")+
+			". Sessions started in other directories have no muster tools; the user scope covers them all (`"+mcpAddCommand(listen)+"`)", "")
+	default:
+		d.add(name, statusPass, "registered: "+strings.Join(found, "; ")+
+			" (that a session's shell exports MUSTER_MIRROR_MCP_SECRET is not checked here)", "")
+	}
+}
+
+// claudeInstallHint is how to install Claude Code, as a fix line says it.
+const claudeInstallHint = "`curl -fsSL https://claude.ai/install.sh | bash`, which needs no Node.js; or " +
+	"`npm install -g @anthropic-ai/claude-code`, which needs Node.js and npm"
+
+// claudeInstalled: a `claude` is on PATH, or where Claude Code's own
+// installers put it (~/.local/bin, ~/.claude/local), which the shell the
+// doctor runs in may not have on its PATH.
+func (d *doctorRun) claudeInstalled() bool {
+	if d.sys.lookPath != nil {
+		if _, err := d.sys.lookPath("claude"); err == nil {
+			return true
+		}
+	}
+	for _, p := range []string{filepath.Join(d.a.homeDir, ".local", "bin", "claude"), filepath.Join(d.a.homeDir, ".claude", "local", "claude")} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// askHookSettingsFile is a whole ~/.claude/settings.json that turns ask cards
+// on. docs/features.md#ask-cards shows the same document
+// (tests/features_config_test.py pins the two equal as JSON), and
+// TestTheAskHookSettingsFilePassesTheDoctor that this check reads it as set up.
+const askHookSettingsFile = `{"hooks": {"PreToolUse": [{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}]}}`
+
+// checkAskHook: Claude Code runs `muster-mirror ask` before AskUserQuestion
+// (a PreToolUse hook in its user settings), which draws ask cards.
+func (d *doctorRun) checkAskHook() {
+	const name = "ask-hook"
+	if d.skipped(name) {
+		return
+	}
+	if _, vals := d.mirrorEnvValues(); vals == nil {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "")
+		return
+	}
+	path := filepath.Join(d.claudeConfigDir(), "settings.json")
+	raw, err := os.ReadFile(path)
+	var st struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &st)
+	}
+	const snippet = `{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}`
+	fix := "add " + snippet + " to the hooks.PreToolUse list in " + path + " (docs/features.md#ask-cards)"
+	if errors.Is(err, os.ErrNotExist) {
+		// No file yet: the whole file, not a fragment to wrap (round 3).
+		fix = "create " + path + " holding " + askHookSettingsFile + " (docs/features.md#ask-cards)"
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.add(name, statusFail, "Claude Code's settings "+path+" could not be read as JSON", fix)
+		return
+	}
+	for _, h := range st.Hooks.PreToolUse {
+		if !hookMatcherMatches(h.Matcher, "AskUserQuestion") {
+			continue
+		}
+		for _, c := range h.Hooks {
+			if f := strings.Fields(c.Command); len(f) >= 2 && filepath.Base(f[0]) == "muster-mirror" && f[1] == "ask" {
+				d.add(name, statusPass, "Claude Code runs `muster-mirror ask` before AskUserQuestion ("+path+")", "")
+				return
+			}
+		}
+	}
+	d.add(name, statusSkip, "ask cards are off on this machine: no PreToolUse hook runs `muster-mirror ask` ("+path+")", fix)
+}
+
+// mirrorRestartHint is the command, in backticks, that restarts this
+// machine's muster-mirror service so that it reads its settings file again,
+// followed by what the command also does (outside the backticks, so the part
+// in them pastes as it is). mirrorURL is the settings' MUSTER_MIRROR_URL.
+//
+// On macOS that is the installer, not a launchd kickstart: the service holds
+// a copy of the settings made when the installer last ran (install.sh writes
+// them into the plist), so a kickstart would start the old ones. A machine
+// whose MUSTER_MIRROR_URL is not this machine joined a hub, and its command
+// carries MUSTER_JOIN_URL=<that url>: without it the installer starts a muster
+// server here and repoints the mirror at it (docs/features.md#agent-ask-tool).
+func mirrorRestartHint(goos, mirrorURL string) string {
+	if goos != "darwin" {
+		return "`systemctl --user restart " + defaultMirrorUnit + "`"
+	}
+	const installer = "curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | "
+	hub := strings.TrimSuffix(strings.TrimSpace(mirrorURL), "/")
+	if u, err := url.Parse(hub); hub != "" && err == nil && u.Host != "" && !loopback.Host(u.Host) {
+		return "`" + installer + "MUSTER_JOIN_URL=" + shSingleQuote(hub) + " sh`, which re-runs the installer for the hub this Mac joined"
+	}
+	return "`" + installer + "sh`, which re-runs the installer; it also upgrades the muster server this Mac runs to the latest release"
+}
+
+// reportFeature is the server's registry entry ID, when it reported one.
+func (d *doctorRun) reportFeature(id string) (serverFeature, bool) {
+	if d.report != nil {
+		for _, f := range d.report.Features {
+			if f.ID == id {
+				return f, true
+			}
+		}
+	}
+	return serverFeature{}, false
+}
+
+// printFeatures lists the server's features below the checks: each one's
+// state and, when it is not on, the line that turns it on. Nothing when the
+// server reported none.
+func (d *doctorRun) printFeatures() {
+	if d.report == nil || len(d.report.Features) == 0 {
+		return
+	}
+	w := d.a.stderr
+	fmt.Fprintln(w, "\nfeatures on this server:")
+	for _, f := range d.report.Features {
+		fmt.Fprintf(w, "  %-13s %s", strings.ToUpper(f.State), f.ID)
+		if f.Reason != "" {
+			fmt.Fprintf(w, " — %s", f.Reason)
+		}
+		fmt.Fprintln(w)
+		if f.State != "on" && f.EnableHint != "" {
+			fmt.Fprintf(w, "  %-13s enable: %s\n", "", f.EnableHint)
+		}
+	}
+}
+
+// hookMatcherMatches is Claude Code's PreToolUse matcher rule: "" and "*"
+// match every tool; anything else is a regular expression tested against the
+// tool name ("AskUserQuestion|Bash" matches AskUserQuestion).
+func hookMatcherMatches(matcher, tool string) bool {
+	if matcher == "" || matcher == "*" {
+		return true
+	}
+	re, err := regexp.Compile(matcher)
+	return err == nil && re.MatchString(tool)
+}
+
+// shSingleQuote is s as one single-quoted POSIX shell word.
+func shSingleQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

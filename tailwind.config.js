@@ -104,6 +104,10 @@ module.exports = {
     // needs a css-check control.
     './internal/api/api_tokens.go',
     './internal/api/flows.go',
+    // The ask page a notification opens (/attention/asks/{id}): its own
+    // classes (the full-width option buttons, the answer box), with a
+    // css-check control of its own, `gap-x-4`, written only there.
+    './internal/api/attention_ask_page.go',
     //
     // ✅ SEAM CLOSED BY THE API CARVE — kept, rather than deleted, because it
     // states WHY the entry above is a file and not a glob. Re-read it before

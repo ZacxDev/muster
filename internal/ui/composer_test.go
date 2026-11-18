@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 )
@@ -113,6 +114,30 @@ func TestTheComposerDrawsANoticeTheServerGaveIt(t *testing.T) {
 // agent's Terminal. All three carry the same composer script byte for byte,
 // exactly once, and the same form element; they differ in the route, the
 // address fields and the placeholder.
+// collapsibleBits are the Rendered view's collapsible box's own markup
+// (composer_reveal.go), which the seam guards below take out of its form.
+var collapsibleBits = regexp.MustCompile(` data-mv-collapsible=""| data-mv-field=""|<button id="mv-text"[^>]*>.*?</button>`)
+
+// layoutFree is a composer form's markup reduced to its controls: its
+// element start tags in document order, the layout's <div>/<span> wrappers
+// and every class attribute dropped, the box's tag moved to the end.
+func layoutFree(form string) string {
+	var tags []string
+	box := ""
+	for _, m := range regexp.MustCompile(`<([a-z]+)\b([^>]*)>`).FindAllStringSubmatch(form, -1) {
+		if m[1] == "div" || m[1] == "span" {
+			continue
+		}
+		tag := "<" + m[1] + regexp.MustCompile(` class="[^"]*"`).ReplaceAllString(m[2], "") + ">"
+		if m[1] == "textarea" {
+			box = tag
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	return strings.Join(tags, "") + "\n" + box
+}
+
 func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 	const marker = "HTMLFormElement.prototype.submit.call(form);"
 	pages := map[string]string{
@@ -140,12 +165,31 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 		}
 		// The form with everything that legitimately differs taken out.
 		form := formOf(page, "mv-form")
+		// 🔴 THE RENDERED VIEW'S BOX COLLAPSES ON A TOUCH SCREEN, and only its
+		// (composer_reveal.go): the form's state, the field's mark and "Type a
+		// message" are its alone — asserted here, both ways, then taken out so
+		// the rest of the shape is still one composer. (The button row's spacer
+		// is every composer's.)
+		collapsible := name == "a mirrored session's rendered view"
+		for _, bit := range []string{` data-mv-collapsible=""`, ` data-mv-field=""`, `<button id="mv-text"`} {
+			if strings.Contains(form, bit) != collapsible {
+				t.Errorf("%s: %q present = %v, want %v", name, bit, !collapsible, collapsible)
+			}
+		}
+		form = collapsibleBits.ReplaceAllString(form, "")
 		form = regexp.MustCompile(` action="[^"]*"`).ReplaceAllString(form, "")
 		form = regexp.MustCompile(`<input( id="[^"]*")? type="hidden"[^>]*>`).ReplaceAllString(form, "")
 		form = regexp.MustCompile(` (placeholder|aria-label)="[^"]*"`).ReplaceAllString(form, "")
 		// The draft's key is the address too (composer_draft.go); that the box
 		// HAS one is part of the shape.
 		form = regexp.MustCompile(` data-draft-key="[^"]+"`).ReplaceAllString(form, ` data-draft-key="…"`)
+		// 🔴 THE LAYOUT DIFFERS ON PURPOSE (composer_rows_test.go): the
+		// Rendered view's box has its own row above the buttons, a Terminal
+		// view's composer is one row. So the shape compared is the form's
+		// CONTROLS — every element but the layout's divs and spans, without
+		// classes — with the box taken out of the sequence (its place is the
+		// layout's) and compared on its own.
+		form = layoutFree(form)
 		if shape == "" {
 			shape = form
 		} else if form != shape {
@@ -160,7 +204,7 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 }
 
 // TestAnAgentsRenderedViewIsItsDefaultAndBothViewsHaveTheSwitch: an agent's
-// card opens its chat page (the rendered view of its work), and a claude-code
+// sidebar row opens its chat page (the rendered view of its work), and a claude-code
 // agent — the kind with a terminal — carries the SAME Rendered | Terminal
 // switch a mirrored Claude Code window has, on both pages. A kind with no
 // terminal has one view and no switch.
@@ -169,19 +213,24 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 // "Terminal" link (#open-terminal) and the terminal page had nothing leading
 // back but the back arrow.
 func TestAnAgentsRenderedViewIsItsDefaultAndBothViewsHaveTheSwitch(t *testing.T) {
-	card := renderNode(t, agentCard(AgentCardView{ID: 7, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha", Status: "running"}))
-	if !strings.Contains(card, `<a href="/agents/keen-wren"`) || strings.Contains(card, "/terminal") {
-		t.Errorf("an agent's card does not open its rendered view:\n%s", card)
+	row := renderNode(t, NavAgentsList([]AgentCardView{{ID: 7, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha", Status: "running"}}, nil, "", time.Now()))
+	if !strings.Contains(row, `href="/agents/keen-wren"`) || strings.Contains(row, "/terminal") {
+		t.Errorf("an agent's sidebar row does not open its rendered view:\n%s", row)
 	}
 
 	cc := sampleAgentDetailView()
 	cc.Name, cc.Kind, cc.CCAccount = "keen-wren", agents.KindClaudeCode, "alpha"
+	cc.Card = AgentCardView{ID: cc.ID, Name: "keen-wren", Kind: agents.KindClaudeCode, Status: "running"}
 	chat := renderString(t, AgentDetailPage(cc, featuresAllOn))
-	if !strings.Contains(chat, `<span id="view-rendered" aria-current="page"`) {
-		t.Error("the chat page does not mark Rendered as the current view")
+	// PR #527: the chat page's one header row draws no Rendered | Terminal
+	// switch (the chat IS the rendered view); its way to the terminal is the
+	// ⋯ menu's Terminal item, the same view-swap link.
+	if strings.Contains(chat, `id="view-rendered"`) {
+		t.Error("the chat page still draws the Rendered segment")
 	}
-	if !strings.Contains(chat, `<a id="view-terminal" href="/agents/keen-wren/terminal" hx-boost="false"`) {
-		t.Error("the chat page's switch does not lead to the terminal with a real load (hx-boost=false)")
+	menu := chat[strings.Index(chat, `id="`+AgentMenuID+`"`):]
+	if !strings.Contains(menu, `<a id="view-terminal" href="/agents/keen-wren/terminal" hx-boost="false"`) {
+		t.Error("the chat page's ⋯ menu does not lead to the terminal with a real load (hx-boost=false)")
 	}
 	if strings.Contains(chat, `id="open-terminal"`) {
 		t.Error("the old lone Terminal link is still drawn beside the switch")
@@ -231,8 +280,10 @@ func TestTheChatFormCanBeSentWithoutItsSocket(t *testing.T) {
 	// The script's half: a socket that is not open hands over to the browser,
 	// it does not return.
 	script := scriptWith(t, page, "function nativeSend()")
-	if !strings.Contains(script, "if (!ws || ws.readyState !== 1) { nativeSend(); return; }") {
-		t.Error("the chat script no longer hands a message to the browser when its socket is not open")
+	// A socket that has gone silent past its heartbeat bound (ui/live.go) is
+	// not trusted with a message either.
+	if !strings.Contains(script, "if (!ws || ws.readyState !== 1 || silent()) { nativeSend(); return; }") {
+		t.Error("the chat script no longer hands a message to the browser when its socket is not open (or silent)")
 	}
 	if strings.Contains(script, "if (!t || !ws || ws.readyState !== 1) return;") {
 		t.Error("the chat script still returns silently when its socket is not open")

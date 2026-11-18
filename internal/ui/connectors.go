@@ -12,8 +12,8 @@ import (
 
 // The Connectors tab: the secure connector store's operator surface — pending
 // agent requests (approve / deny, or ENTER the credential when the connector does
-// not exist yet), the connector list (rotate, delete, per-agent grants, revoke)
-// and the recent audit trail.
+// not exist yet), the connector list (rotate, delete, the shared approvals and
+// their revoke, per-agent grants and their revoke) and the recent audit trail.
 //
 // 🔴 NO VIEW HERE CAN RENDER A SECRET, BECAUSE NO VIEW TYPE HAS A FIELD FOR ONE.
 // The secret is write-only: it travels from the operator's form to the store and
@@ -38,6 +38,9 @@ type ConnectorView struct {
 	RotatedAt  *time.Time
 	LastUsedAt *time.Time
 	Grants     []ConnectorGrantView
+	// Shared is the owner's live standing grants on this connector (migration
+	// 0043): approvals that every agent's matching request gets automatically.
+	Shared []ConnectorSharedView
 	// Managed, when non-empty, says the connector is provided by the server's
 	// configuration (a virtual connector: the GitHub App) and why it has no
 	// Rotate or Delete — the card shows it in their place.
@@ -58,6 +61,20 @@ type ConnectorGrantView struct {
 	// migration 0035) rather than on this tab. The host is proven by its mirror
 	// token; the session is the one the caller named.
 	DecidedFrom string
+	// StandingID, when non-zero, is the standing grant (shared approval) that
+	// approved it automatically: no one decided this request by hand.
+	StandingID int64
+}
+
+// ConnectorSharedView is one shared approval (a standing grant).
+type ConnectorSharedView struct {
+	ID int64
+	// Repo is the one repository a GitHub App approval is shared for; "" for a
+	// stored credential, shared for the connector.
+	Repo      string
+	CreatedAt time.Time
+	// Agents is how many live grants it approved automatically.
+	Agents int
 }
 
 // ConnectorRequestView is one pending request.
@@ -75,6 +92,14 @@ type ConnectorRequestView struct {
 	// credentials refused): approving still records the decision, but the agent's
 	// requests will fail until it is fixed.
 	Problem string
+	// Shares, when non-empty, says what approving it shares with the owner's
+	// other agents (a standing grant, migration 0043).
+	Shares string
+	// Grants, when non-empty, is the sentence saying what approving it grants — for the GitHub
+	// App, every repository the token may be minted for (an officer's own
+	// `repo` and each of its `read_repos`, each marked READ ONLY): the same
+	// text connector_requests_list returns as approving_grants.
+	Grants string
 }
 
 // ConnectorAuditView is one audit line.
@@ -109,7 +134,24 @@ type ConnectorFormView struct {
 	Header    string
 	Username  string
 	Error     string
+	// The postgres preset's fields (PostgresPresetKey): the database host,
+	// port, name, sslmode, whether TLS is required, and the statement timeout.
+	// The user is Username.
+	PGHost       string
+	PGPort       string
+	PGDatabase   string
+	PGSSLMode    string
+	PGRequireTLS bool
+	PGTimeoutMS  string
 }
+
+// PostgresPresetKey is the postgres connector preset's key
+// (connectors.PostgresPreset): the form asks for the database settings
+// instead of naming fixed hosts.
+const PostgresPresetKey = "postgres"
+
+// pgSSLModes are the sslmode choices, in display order (connectors.PGSSLModes).
+var pgSSLModes = []string{"require", "verify-full", "verify-ca", "prefer", "disable"}
 
 // ConnectorsContent is the whole /ui/connectors partial.
 type ConnectorsContent struct {
@@ -235,7 +277,7 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 			Class("mt-3 flex flex-wrap items-center gap-2"),
 			hx("hx-post", "/ui/connector-requests/"+ids+"/approve"),
 			g.Group(panelTarget()),
-			Button(Type("submit"), Class(btnPrimary), g.Attr("data-approve", ids), g.Text("Approve")),
+			Button(Type("submit"), Class(btnPrimary), g.Attr("data-approve", ids), g.Text(approveLabel(r))),
 			Button(Type("button"), Class(btnDanger), g.Attr("data-deny", ids),
 				hx("hx-post", "/ui/connector-requests/"+ids+"/deny"), g.Group(panelTarget()), g.Text("Deny")),
 		)
@@ -263,10 +305,21 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 			cardTime(r.RequestedAt),
 		),
 		g.If(!r.Exists, P(Class("mt-2 text-xs text-muted"), g.Text("No connector by that name exists yet. Enter a credential to create it and approve this request in one step."))),
+		g.If(r.Grants != "", P(Class("mt-2 text-xs text-muted"), g.Attr("data-request-grants", ""), g.Text(r.Grants))),
 		g.If(r.Problem != "", connectorProblem(r.Problem)),
+		g.If(r.Shares != "", P(Class("mt-2 text-xs text-muted"), g.Attr("data-request-shares", ""), g.Text(r.Shares))),
 		g.If(r.Reason != "", P(Class("mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted"), g.Text(r.Reason))),
 		actions,
 	)
+}
+
+// approveLabel is the request card's Approve button: "Approve for all agents"
+// when the approval is shared (r.Shares), else "Approve".
+func approveLabel(r ConnectorRequestView) string {
+	if r.Shares != "" {
+		return "Approve for all agents"
+	}
+	return "Approve"
 }
 
 // ConnectorForm is the create / enter-credential form.
@@ -305,7 +358,7 @@ func ConnectorForm(f ConnectorFormView) g.Node {
 		ID("connector-form"),
 		Class("rounded-2xl border border-line bg-s1/70 p-4 ring-1 ring-line"),
 		H2(Class("mb-1 break-all text-sm font-semibold text-fg"), g.Text(title)),
-		g.If(f.AgentName != "", P(Class("mb-3 break-all text-xs text-muted"), g.Text("Requested by "+f.AgentName+". Submitting creates the connector and approves this agent."))),
+		g.If(f.AgentName != "", P(Class("mb-3 break-all text-xs text-muted"), g.Text("Requested by "+f.AgentName+". Submitting creates the connector and approves this request — and every request for it from any of your agents, until you revoke the shared approval."))),
 		g.If(f.Error != "", P(g.Attr("role", "alert"), Class("mb-3 rounded-lg bg-st-error-bg px-3 py-2 text-xs text-st-error-fg"), g.Text(f.Error))),
 		Form(
 			Class("flex flex-col gap-3"),
@@ -328,7 +381,8 @@ func ConnectorForm(f ConnectorFormView) g.Node {
 					g.If(f.RequestID != 0, g.Attr("readonly", "")),
 					g.Attr("pattern", "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"), g.Attr("spellcheck", "false"),
 					g.Attr("autocapitalize", "off"), Class(fieldCls))),
-			g.If(preset != nil, P(Class("break-all text-xs text-muted"), g.Text("Hosts: "+presetHosts))),
+			g.If(preset != nil && preset.Key != PostgresPresetKey, P(Class("break-all text-xs text-muted"), g.Text("Hosts: "+presetHosts))),
+			g.If(preset != nil && preset.Key == PostgresPresetKey, postgresFields(f)),
 			g.If(preset == nil, g.Group([]g.Node{
 				labelledFieldFor("connector-hosts", "Allowed hosts (one per line, e.g. api.example.com)",
 					Textarea(ID("connector-hosts"), Name("hosts"), Rows("2"), Required(), g.Attr("spellcheck", "false"),
@@ -358,6 +412,35 @@ func ConnectorForm(f ConnectorFormView) g.Node {
 			),
 		),
 	)
+}
+
+// postgresFields are the postgres preset's settings.
+func postgresFields(f ConnectorFormView) g.Node {
+	text := func(id, name, label, value, placeholder string) g.Node {
+		return labelledFieldFor(id, label,
+			Input(ID(id), Name(name), Type("text"), Value(value), g.Attr("placeholder", placeholder),
+				g.Attr("spellcheck", "false"), g.Attr("autocapitalize", "off"), Class(fieldCls)))
+	}
+	mode := f.PGSSLMode
+	if mode == "" {
+		mode = "require"
+	}
+	var opts []g.Node
+	for _, m := range pgSSLModes {
+		opts = append(opts, Option(Value(m), g.If(m == mode, Selected()), g.Text(m)))
+	}
+	return g.Group([]g.Node{
+		text("connector-pg-host", "pg_host", "Database host (a hostname or IP muster-server can reach)", f.PGHost, "db.example.svc"),
+		text("connector-pg-port", "pg_port", "Port", f.PGPort, "5432"),
+		text("connector-pg-database", "pg_database", "Database name", f.PGDatabase, "app"),
+		text("connector-username", "username", "Database user (a read-only login role)", f.Username, "muster_ro"),
+		labelledFieldFor("connector-pg-sslmode", "sslmode", Select(ID("connector-pg-sslmode"), Name("pg_sslmode"), Class(fieldCls), g.Group(opts))),
+		Label(Class("flex items-center gap-2 text-xs text-muted"),
+			Input(Type("checkbox"), ID("connector-pg-require-tls"), Name("pg_require_tls"), Value("on"),
+				g.If(f.PGRequireTLS || f.PGHost == "", Checked())),
+			g.Text("Require TLS (refuse a plaintext connection)")),
+		text("connector-pg-timeout", "pg_statement_timeout_ms", "Statement timeout in ms (default 5000, at most 30000)", f.PGTimeoutMS, "5000"),
+	})
 }
 
 // ConnectorRotateForm replaces a connector's secret.
@@ -433,6 +516,7 @@ func connectorCard(c ConnectorView) g.Node {
 			Span(g.Attr("data-last-used", ""), g.Text("last used "), optTime(c.LastUsedAt, "never")),
 			Span(g.Attr("data-rotated", ""), g.Text("rotated "), optTime(c.RotatedAt, "never")),
 		),
+		g.If(len(c.Shared) > 0, Div(Class("mt-2 flex flex-col gap-1"), g.Map(c.Shared, func(sv ConnectorSharedView) g.Node { return connectorSharedRow(c.Name, sv) }))),
 		g.If(len(c.Grants) > 0, Div(Class("mt-2 flex flex-col gap-1"), g.Map(c.Grants, connectorGrantRow))),
 		g.If(len(c.Grants) == 0, P(Class("mt-2 text-xs text-muted"), g.Text("No agent holds a grant."))),
 		g.If(c.Problem != "", connectorProblem(c.Problem)),
@@ -468,6 +552,29 @@ func connectorProblem(msg string) g.Node {
 		g.Text(msg))
 }
 
+// connectorSharedRow is one shared approval, with its Revoke: revoking it stops
+// the automatic approvals AND revokes every grant it gave.
+func connectorSharedRow(connector string, sv ConnectorSharedView) g.Node {
+	ids := strconv.FormatInt(sv.ID, 10)
+	scope := "all your agents"
+	if sv.Repo != "" {
+		scope = "all your agents on " + sv.Repo
+	}
+	return Div(
+		Class("flex flex-wrap items-center gap-2 rounded-lg bg-st-review-bg/40 px-2 py-1 ring-1 ring-inset ring-line"),
+		g.Attr("data-shared", ids),
+		Span(Class("min-w-0 break-all text-xs font-semibold text-fg"), g.Text("Shared with "+scope)),
+		Span(Class("text-xs text-muted"), g.Attr("data-shared-agents", strconv.Itoa(sv.Agents)),
+			g.Text(strconv.Itoa(sv.Agents)+" approved automatically · since "), cardTime(sv.CreatedAt)),
+		Span(Class("flex-1")),
+		Button(Type("button"), Class("press min-h-[44px] rounded-lg px-2 text-xs font-medium text-fg2 transition hover:text-st-error-fg"),
+			g.Attr("data-revoke-shared", ids),
+			hx("hx-delete", "/connector-standing-grants/"+ids), g.Group(panelTarget()),
+			hx("hx-confirm", "Stop sharing "+connector+" with "+scope+"? Every agent's access granted through it is revoked, and the next request asks you again."),
+			g.Text("Revoke shared")),
+	)
+}
+
 func connectorGrantRow(gv ConnectorGrantView) g.Node {
 	ids := strconv.FormatInt(gv.ID, 10)
 	return Div(
@@ -478,6 +585,9 @@ func connectorGrantRow(gv ConnectorGrantView) g.Node {
 		g.If(gv.DecidedFrom != "", Span(Class("min-w-0 break-all text-xs text-muted"), g.Attr("data-grant-via", gv.DecidedFrom),
 			g.Attr("title", "Approved from one of your mirrored Claude Code sessions over MCP: the host is proven by its mirror token, the session is the one it named"),
 			g.Text("via MCP from "+gv.DecidedFrom))),
+		g.If(gv.StandingID != 0, Span(Class("text-xs text-muted"), g.Attr("data-grant-standing", strconv.FormatInt(gv.StandingID, 10)),
+			g.Attr("title", "Approved automatically by a shared approval: you approved this connector for an earlier agent"),
+			g.Text("shared approval"))),
 		Span(Class("flex-1")),
 		Button(Type("button"), Class("press min-h-[44px] rounded-lg px-2 text-xs font-medium text-fg2 transition hover:text-st-error-fg"),
 			g.Attr("data-revoke", gv.AgentName),

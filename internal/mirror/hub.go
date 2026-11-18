@@ -11,11 +11,15 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // The attach refusals. Each carries its own remedy, so internal/api passes the
@@ -74,6 +78,11 @@ type hostKey struct {
 // PER-SESSION host (an older muster-mirror) has no Windows, and those four are
 // what it sent.
 type HostView struct {
+	// Owner is the user (a person, or a team) whose host this is: the owner
+	// half of the hub's (owner, host) key. Two entries named alike are two
+	// owners' hosts (Service.VisibleHosts), and a caller acts on one by its
+	// Owner, never its name alone.
+	Owner    int64
 	Host     string
 	Sessions []string
 	// Windows is every window the host lists (NormalizeWindows' order); nil for
@@ -100,14 +109,18 @@ type HostView struct {
 	Online bool
 	// Interactive: the host advertised -interactive.
 	Interactive bool
-	// HermesSend: the host advertised Msg.HermesSend (it runs with
-	// -hermes-send and is -interactive, v2): a Hermes window's rendered view
-	// offers Send and Queue, through the host's gated send (Hermes Phase 3).
-	HermesSend bool
-	// HermesAnswer: the host advertised Msg.HermesAnswer (it runs with
-	// -hermes-answer and is -interactive, v2): a Hermes approval muster shows
-	// for one of its windows can be answered here (Hermes Phase 4).
-	HermesAnswer bool
+	// OpenCodeAnswer: the host advertised Msg.OpenCodeAnswer (it is
+	// -interactive, v2, and holds an opencode token): an opencode ask muster shows
+	// for one of its windows can be answered here.
+	OpenCodeAnswer bool
+	// OpenCodeSend: the host advertised Msg.OpenCodeSend (-interactive, v2,
+	// -opencode-send, an opencode token): a message can be sent to its
+	// launcher-bound opencode windows (Window.AgentSend).
+	OpenCodeSend bool
+	// OpenCodeForms: the host advertised Msg.OpenCodeForms — it sends a
+	// pending opencode question's whole form and takes its answer
+	// (opencode_form.go).
+	OpenCodeForms bool
 	// PanePaste: the host advertised that a paste may target a session's active
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
@@ -128,16 +141,49 @@ type HostView struct {
 	// picker with one Escape (Msg.AskCancel) and is -interactive. False for an
 	// older or read-only muster-mirror and for an offline host.
 	AskCancel bool
+	// ResumeSpawn: the host advertised that it resumes an ended Claude Code
+	// session in a new window (Msg.ResumeSpawn) and is -interactive. False for
+	// an older or read-only muster-mirror, one without -resume-spawn, and an
+	// offline host.
+	ResumeSpawn bool
+	// AgentSpawn is the runtimes the host advertised it starts for the chief
+	// (Msg.AgentSpawn), for an -interactive host only; nil otherwise.
+	AgentSpawn []string
+	// AgentSpawnSkipPermissions: the host advertised that it starts its
+	// spawned Claude Code agents without permission prompts
+	// (Msg.AgentSpawnSkipPermissions);
+	// false whenever AgentSpawn is empty.
+	AgentSpawnSkipPermissions bool
+	// AgentSpawnClones: the host answers agent-clones and honours a spawn's
+	// clone hint (Msg.AgentSpawnClones, clones.go); false whenever AgentSpawn
+	// is empty.
+	AgentSpawnClones bool
+	// AgentClose: the host ends an agent window on muster's request
+	// (Msg.AgentClose, agentclose.go), for an -interactive host only.
+	AgentClose bool
+	// SpawnReady is the host's spawn readiness (Msg.SpawnReady,
+	// spawnready.go): nil from an older or read-only muster-mirror (unknown),
+	// and for an offline host.
+	SpawnReady *SpawnReadiness
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
 	// search only: Entries copies each window's onto its SessionView.Repo.
 	Repos map[string]string
+	// GitHubRepos is the GitHub <owner>/<name> per WINDOW ID the host last sent
+	// on the same message (Msg.GitHubRepos), nil when it sent none: Entries
+	// copies each window's onto its SessionView.GitHubRepo. A host's word.
+	GitHubRepos map[string]string
 	// Work is the live work counts per WINDOW ID the host last sent (TypeWork,
 	// work.go), restricted to its windows when it arrived; nil when it sent none
 	// (an older muster-mirror). 🔴 NEVER KEPT FOR AN OFFLINE HOST: a count is a
 	// claim about NOW, and a host that is gone cannot vouch for it.
 	Work map[string]WindowWork
+	// Previews is the live preview counts per WINDOW ID the host last sent
+	// (TypePreviews, previews.go), restricted to its windows when it arrived;
+	// nil when it sent none (an older muster-mirror, one without -preview).
+	// 🔴 NEVER KEPT FOR AN OFFLINE HOST, like Work: a count is a claim about NOW.
+	Previews map[string]WindowPreviews
 	// Colors is the tmux identity colour per WINDOW ID the host last sent
 	// (TypeColors, work.go), restricted to its windows when it arrived; nil when
 	// it sent none. Kept offline, like Repos: it is the window's identity, not
@@ -166,6 +212,9 @@ type Hub struct {
 	// written: not in hosts yet (nothing may be sent them before the welcome,
 	// see ServeConn), but holding their place under maxHosts.
 	joining map[hostKey]int
+	// held is the TEAM hosts' held second connections (teamhold.go): a
+	// connection for a live (team, host) waits for a manager.
+	held map[hostKey]*held
 	// arrivals numbers every join in the order its hello was accepted
 	// (hostConn.arrival); under mu.
 	arrivals uint64
@@ -176,7 +225,17 @@ type Hub struct {
 	// waitingNotify is called with a host's owner whenever the set of its
 	// windows whose Claude Code waits on the person changes (SetWaitingNotify).
 	waitingNotify func(owner int64)
-	now           func() time.Time
+	// spawnReplyNotify and listingNotify are the host-dispatch reconciler's
+	// inputs (agentspawn.go).
+	spawnReplyNotify func(owner int64, host string, m Msg)
+	listingNotify    func(owner int64, host string, windows []Window)
+	// outcomesNotify is the host-dispatch outcome reconciler's input
+	// (outcomes.go).
+	outcomesNotify func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)
+	// statusNotify is called with a host's owner whenever any of its agent
+	// windows' status changes (SetStatusNotify): the ask log's turn-end hook.
+	statusNotify func(owner int64)
+	now          func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.
 	maxHosts int
 	// debounce coalesces change nudges (notifyDebounce; a test shortens it), and
@@ -207,18 +266,18 @@ type activityThrottle struct {
 }
 
 // notifyDebounce is the window change nudges are coalesced in: however fast
-// hosts connect, drop or change their lists, open Agents views are told at most
+// hosts connect, drop or change their lists, open sidebars are told at most
 // once per window.
 const notifyDebounce = time.Second
 
 // activityNudgeEvery is the most often one OWNER's ACTIVITY-ONLY changes (a
-// card's "active … ago" moved; nothing else did) nudge its open views: once per
+// sidebar row's recency moved; nothing else did) nudge its open views: once per
 // ActivityBucket, the granularity the time is carried at, however many of its
 // hosts are busy. A host re-sends whenever a session enters a newer bucket —
 // once per bucket for the sessions that stay busy, plus once for each that
 // wakes mid-bucket — so without it an owner whose sessions wake at different
 // moments re-renders every open page several times a minute. It is per OWNER,
-// not per host, because the cost is the owner's open pages: one Agents view
+// not per host, because the cost is the owner's open pages: one sidebar
 // lists every host of its owner, so a per-host throttle would let 64 busy hosts
 // re-render it 64 times a minute.
 const activityNudgeEvery = ActivityBucket * time.Second
@@ -238,6 +297,7 @@ type offlineHost struct {
 	labels      map[string]string
 	activity    map[string]int64
 	repos       map[string]string
+	githubRepos map[string]string
 	colors      map[string]string
 	interactive bool
 	since       time.Time
@@ -254,7 +314,7 @@ func NewHub(logger *log.Logger) *Hub {
 
 // SetNotify installs the change nudge (a host connected, disconnected or
 // changed its list), called with the OWNER of the host that changed — the one
-// user whose Agents view shows it (accounts PR 3b: an SSE event reaches only
+// user whose sidebar lists it (accounts PR 3b: an SSE event reaches only
 // its owner's streams). It is called on its own goroutine.
 func (h *Hub) SetNotify(fn func(owner int64)) {
 	h.mu.Lock()
@@ -272,6 +332,31 @@ func (h *Hub) SetWaitingNotify(fn func(owner int64)) {
 	h.mu.Unlock()
 }
 
+// SetStatusNotify installs the hook called (on its own goroutine) with a
+// host's owner whenever the status of any of that host's agent windows changes
+// — busy, idle or waiting, or a window arriving or leaving with a status. The
+// waiting-set hook (SetWaitingNotify) does not fire for a window going from
+// busy to idle, which is exactly where a turn ends: the ask log
+// (internal/api's askLogMirrorChanged) reads a plain-text question there.
+func (h *Hub) SetStatusNotify(fn func(owner int64)) {
+	h.mu.Lock()
+	h.statusNotify = fn
+	h.mu.Unlock()
+}
+
+// statusWindows is the sorted (address, status) pairs of ws's agent windows
+// that report a status.
+func statusWindows(ws []Window) []string {
+	var out []string
+	for _, w := range ws {
+		if w.AgentRuntime() != "" && w.Status != "" {
+			out = append(out, w.Session+"\x00"+w.ID+"\x00"+w.Status)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // waitingWindows is the sorted addresses of ws's windows whose agent session
 // (any runtime, Window.AgentRuntime) reports StatusWaiting.
 func waitingWindows(ws []Window) []string {
@@ -283,6 +368,9 @@ func waitingWindows(ws []Window) []string {
 			// arrives (or changes) after the status does still updates the queue.
 			if p := w.Pending; p != nil {
 				k += "\x00" + p.Summary + "\x00" + p.Tool + "\x00" + p.Last
+				// And which ask it is: a new opencode question or permission in the
+				// same window, or one that became answerable, moves the queue.
+				k += "\x00" + p.Kind + "\x00" + p.PromptID + "\x00" + p.Options
 			}
 			out = append(out, k)
 		}
@@ -321,6 +409,12 @@ func (h *Hub) changed(owner int64) {
 
 type hostConn struct {
 	key hostKey
+	// rtt is the last keepalive ping's round trip, in nanoseconds (0 until
+	// the first pong): the LINK an open's batches cross, on its span beside
+	// the batch's size, so a slow open reads as latency or as bandwidth.
+	// ⚠ It INCLUDES THE SERVER READ LOOP'S DELAY: Ping returns when that loop
+	// reads the pong, so a busy loop reads as a slower link.
+	rtt atomic.Int64
 	// arrival orders this connection's join among its host's (Hub.arrivals):
 	// a later arrival is a NEWER connection, whichever welcome finishes first.
 	arrival     uint64
@@ -339,6 +433,9 @@ type hostConn struct {
 	// statusReport: the host advertised Msg.StatusReport, speaks v2 and
 	// registers per window — the only shape whose Window.Status is believed.
 	statusReport bool
+	// hostLimit is the usage limit the host last reported for all its Claude
+	// windows (Msg.HostLimit); nil for none. Read only with statusReport.
+	hostLimit *HostLimit
 	// catalogReport: the host advertised Msg.CatalogReport and speaks v2.
 	catalogReport bool
 	// subagentReport: the host advertised Msg.SubagentReport and speaks v2.
@@ -349,12 +446,23 @@ type hostConn struct {
 	// askCancel: the host advertised Msg.AskCancel, speaks v2 and is
 	// -interactive.
 	askCancel bool
-	// hermesSend: the host advertised Msg.HermesSend, speaks v2 and is
-	// -interactive — the server half of the hermesSend switch (PasteWindow).
-	hermesSend bool
-	// hermesAnswer: the host advertised Msg.HermesAnswer, speaks v2 and is
-	// -interactive (AnswerHermesApproval).
-	hermesAnswer bool
+	// resumeSpawn: the host advertised Msg.ResumeSpawn, speaks v2 and is
+	// -interactive.
+	resumeSpawn bool
+	// agentSpawn: the runtimes the host advertised it spawns (Msg.AgentSpawn),
+	// for a v2 -interactive host only (agentspawn.go).
+	agentSpawn []string
+	// agentSpawnSkip: the host advertised Msg.AgentSpawnSkipPermissions beside
+	// a runtime it spawns.
+	agentSpawnSkip bool
+	// runtimeAnswers: per runtime that answers its own asks (RuntimeSpec.Answers),
+	// whether the host advertised that it does (Msg.OpenCodeAnswer), speaks
+	// v2 and is -interactive.
+	runtimeAnswers map[string]bool
+	// gatedSends: per runtime with a gated send (RuntimeSpec.Sends), whether
+	// the host advertised it (Msg.OpenCodeSend), speaks v2 and is
+	// -interactive.
+	gatedSends map[string]bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -364,15 +472,24 @@ type hostConn struct {
 	claude   []string
 	labels   map[string]string
 	activity map[string]int64
-	// repos is the host's last TypeRepos map (NormalizeRepos over windows).
-	repos map[string]string
+	// repos is the host's last TypeRepos map (NormalizeRepos over windows);
+	// githubRepos the same message's GitHub repositories
+	// (NormalizeGitHubRepos).
+	repos       map[string]string
+	githubRepos map[string]string
 	// work and colors are the host's last TypeWork and TypeColors maps
 	// (NormalizeWork / NormalizeColors over windows).
-	work    map[string]WindowWork
-	colors  map[string]string
-	streams map[uint32]*stream
-	watches map[uint32]*watch
-	pastes  map[uint32]chan error
+	work   map[string]WindowWork
+	colors map[string]string
+	// previews is the host's last TypePreviews map (NormalizePreviews over
+	// windows).
+	previews map[string]WindowPreviews
+	// outcomes is the host's last TypeOutcomes map (NormalizeOutcomes over
+	// windows, re-restricted at every listing: outcomesApplied).
+	outcomes map[string]WindowOutcome
+	streams  map[uint32]*stream
+	watches  map[uint32]*watch
+	pastes   map[uint32]chan error
 	// scrolls are the scroll requests waiting for the host's scrolled, by id
 	// (the same id space as streams and pastes).
 	scrolls map[uint32]chan error
@@ -382,10 +499,35 @@ type hostConn struct {
 	// tails are the subagent tail requests waiting for the host's
 	// subagent-tailed, by id (the same id space).
 	tails map[uint32]chan tailAnswer
+	// forms are the opencode form requests waiting for the host's
+	// opencode-formed, by id (the same id space; opencode_form.go).
+	forms map[uint32]chan formAnswer
+	// openCodeForms: the host advertised Msg.OpenCodeForms (opencode_form.go).
+	openCodeForms bool
 	// answers are the AskUserQuestion answers waiting for the host's
 	// answered, by id (the same id space).
 	answers map[uint32]chan error
-	next    uint32
+	// resumes are the spawn-resume requests waiting for the host's
+	// resume-spawned, by id (the same id space; resume.go).
+	resumes map[uint32]chan resumeAnswer
+	// spawns are the agent-spawn requests waiting for the host's
+	// agent-spawned, by id (the same id space; agentspawn.go).
+	spawns map[uint32]chan spawnAnswer
+	// closes are the agent-close requests waiting for the host's
+	// agent-closed, by id (the same id space; agentclose.go).
+	closes map[uint32]chan closeAnswer
+	// agentClose: the host advertised agent-close (an -interactive host).
+	agentClose bool
+	// cloneLists are the agent-clones requests waiting for the host's
+	// agent-clones-list, by id (the same id space; clones.go).
+	cloneLists map[uint32]chan clonesAnswer
+	// agentSpawnClones: the host advertised Msg.AgentSpawnClones beside a
+	// runtime it spawns (clones.go).
+	agentSpawnClones bool
+	// spawnReady is the host's spawn readiness (spawnready.go), cleaned; nil
+	// from a host that sent none (an older or read-only muster-mirror).
+	spawnReady *SpawnReadiness
+	next       uint32
 }
 
 type stream struct {
@@ -412,9 +554,12 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		hc.mu.Lock()
-		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, HermesSend: hc.hermesSend, HermesAnswer: hc.hermesAnswer})
+		out = append(out, HostView{Owner: owner, Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), GitHubRepos: maps.Clone(hc.githubRepos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentSpawnClones: hc.agentSpawnClones, AgentClose: hc.agentClose,
+			SpawnReady:     hc.spawnReady.clone(),
+			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
+			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -424,8 +569,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		if k.owner == owner {
-			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
-				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), Colors: maps.Clone(o.colors), Interactive: o.interactive,
+			out = append(out, HostView{Owner: owner, Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), GitHubRepos: maps.Clone(o.githubRepos), Colors: maps.Clone(o.colors), Interactive: o.interactive,
 				OfflineSince: o.since})
 		}
 	}
@@ -481,8 +626,8 @@ func (hc *hostConn) target(session, window string) (id string, claude bool, err 
 }
 
 // targetRuntime is target with the agent runtime of the window it resolved to
-// (Window.AgentRuntime): RuntimeClaude, RuntimeHermes or "" for none. A
-// per-session host reports Claude Code only (Msg.Claude), never Hermes.
+// (Window.AgentRuntime): RuntimeClaude, RuntimeOpenCode or "" for none. A
+// per-session host reports Claude Code only (Msg.Claude).
 func (hc *hostConn) targetRuntime(session, window string) (id, runtime string, err error) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
@@ -542,10 +687,10 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 }
 
 // sameWindows reports whether a and b are the same windows in everything but
-// Activity (and LastMessage, its Claude-window stand-in: Window.CardActivity). Activity is compared on its own, as the card prints it (listed):
-// it moves all the time, and a change in it is shown — in the card's "active …
-// ago" — but is throttled (activityMoved) rather than nudged at once.
-// Status and StatusSince are ignored too: no card draws them and they move
+// Activity (and LastMessage, its Claude-window stand-in: Window.CardActivity). Activity is compared on its own, as the sidebar reads it (listed):
+// it moves all the time, and a change in it is shown — in the sidebar row's
+// recency dot — but is throttled (activityMoved) rather than nudged at once.
+// Status and StatusSince are ignored too: no entry draws them and they move
 // with every turn (the send queue reads them, through AgentState).
 func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
@@ -636,11 +781,29 @@ func normalizeSessions(in []string) []string {
 // hello as host B is refused here, before anything is registered.
 //
 // A newer connection for the same (owner, host) replaces the older one (a
-// restarted muster-mirror whose previous TCP connection has not timed out yet).
-// A NEW host beyond MaxHosts is refused.
+// restarted muster-mirror whose previous TCP connection has not timed out yet)
+// — for a PERSONAL host. A TEAM host's second connection is held before it
+// gets here (Service.ServeConnect, teamhold.go). A NEW host beyond MaxHosts is
+// refused.
 //
 // Registration is in memory only: nothing on this path waits on a database.
 func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *websocket.Conn) error {
+	return h.ServeConnMarking(ctx, owner, host, ws, nil)
+}
+
+// ErrSpawnMarkFailed refuses a host whose hello advertises -agent-spawn when
+// muster could not record that on its token (ServeConnMarking): the host
+// retries its connection, and nothing it lists is admitted meanwhile.
+var ErrSpawnMarkFailed = errors.New("mirror: muster could not record that this host starts agents (its token's mark); it will be retried on the next connection")
+
+// ServeConnMarking is ServeConn with markSpawned: when the hello advertises
+// that the host starts agents for the chief (a non-empty AgentSpawn), it is
+// called — with THIS connection's own context, BEFORE the welcome, so before
+// any other message of the host is read — to persist that on the token the
+// connection authenticated with (Service.markSpawned). 🔴 IT FAILS CLOSED: an
+// error refuses the connection, so a host is never admitted spawning with an
+// unmarked token. nil marks nothing (a hub with no token store).
+func (h *Hub) ServeConnMarking(ctx context.Context, owner int64, host string, ws *websocket.Conn, markSpawned func(context.Context) error) error {
 	ws.SetReadLimit(MaxFrame)
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -657,8 +820,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
-		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}}
+		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}, forms: map[uint32]chan formAnswer{},
+		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}, closes: map[uint32]chan closeAnswer{}, cloneLists: map[uint32]chan clonesAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
+	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
 		// A read-only host cannot be pasted into whatever it claims.
@@ -674,16 +839,49 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Like the catalog: a read of the host's own transcripts, shown to its
 		// owner.
 		hc.subagentReport = hello.SubagentReport
+		// Reading a pending question's form is a read; answering it is gated
+		// on the runtime's answer switch below.
+		hc.openCodeForms = hello.OpenCodeForms
 		// Typing an answer is a write into the pane: -interactive hosts only.
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
 		// So is the Escape that dismisses a picker.
 		hc.askCancel = hello.AskCancel && hello.Interactive
-		// The hermesSend switch: a paste into a Hermes window is a write into
-		// the pane like any other, so -interactive hosts only.
-		hc.hermesSend = hello.HermesSend && hello.Interactive
-		// Answering a Hermes approval is a write into the session (it can let
-		// a command run): -interactive hosts only, like the rest.
-		hc.hermesAnswer = hello.HermesAnswer && hello.Interactive
+		// Starting a process on the host is more than a write into a pane:
+		// -interactive hosts only, and only those that opted in (resume.go).
+		hc.resumeSpawn = hello.ResumeSpawn && hello.Interactive
+		// Starting an agent likewise, and only the runtimes this muster knows.
+		hc.agentSpawn = spawnRuntimesOf(hello)
+		hc.agentSpawnSkip = hello.AgentSpawnSkipPermissions && len(hc.agentSpawn) > 0
+		hc.agentSpawnClones = hello.AgentSpawnClones && len(hc.agentSpawn) > 0
+		// Ending an agent (agentclose.go): -interactive hosts only.
+		hc.agentClose = hello.AgentClose && hello.Interactive
+		// The spawn readiness (spawnready.go): a hint about starting an
+		// agent, so -interactive hosts only, like the spawn itself.
+		if hello.Interactive {
+			hc.spawnReady = CleanSpawnReady(hello.SpawnReady)
+		}
+		// Each runtime's answer switch: answering its ask is a write into
+		// the session (it can let a command run): -interactive hosts only,
+		// like the rest.
+		hc.runtimeAnswers = map[string]bool{}
+		// And each runtime's gated send: a message into the session, the same
+		// gate as a paste.
+		hc.gatedSends = map[string]bool{}
+		for _, r := range runtimes {
+			if r.Answers != nil {
+				hc.runtimeAnswers[r.Name] = r.Answers(hello) && hello.Interactive
+			}
+			if r.Sends != nil {
+				hc.gatedSends[r.Name] = r.Sends(hello) && hello.Interactive
+			}
+		}
+	}
+	if len(hc.agentSpawn) > 0 && markSpawned != nil {
+		if err := markSpawned(ctx); err != nil {
+			h.logger.Printf("mirror: host %s (owner %d) advertises -agent-spawn and its token could not be marked: %v; refused", host, owner, err)
+			refuse(ctx, ws, ErrSpawnMarkFailed)
+			return ErrSpawnMarkFailed
+		}
 	}
 	// 🔴 THE WELCOME IS THE FIRST FRAME THE HOST READS, SO hc IS NOT IN h.hosts
 	// UNTIL IT HAS BEEN WRITTEN. Everything that sends a host a request (an
@@ -752,27 +950,62 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s) (per session: its muster-mirror predates per-window registration)", host, owner, mode, hc.version, len(hc.sessions))
 	}
 	h.changed(owner)
+	// The hello's listing is the reconciler's first input from this host.
+	h.listingApplied(hc)
+	h.outcomesApplied(hc)
 
+	// firstHandled closes once the read loop has handled the host's first
+	// message after the welcome (its repos, work or a sessions update): the
+	// burst a host sends on joining is then behind it, and the first RTT
+	// sample is not one taken while that burst queued ahead of the pong.
+	firstHandled := make(chan struct{})
 	go func() {
 		t := time.NewTicker(pingInterval)
 		defer t.Stop()
+		// The keepalive is also the link's round trip (hostConn.rtt): Ping
+		// returns when the host's pong is READ BY THIS CONNECTION'S READ LOOP,
+		// so a sample includes that loop's delay in reaching it, not only the
+		// network's. The first is sent once the host's first message after
+		// the welcome is handled (or at the first tick), so an open soon after
+		// a connect already knows the link.
+		ping := func() bool {
+			pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
+			start := time.Now()
+			err := ws.Ping(pctx)
+			pcancel()
+			if err != nil {
+				cancel(fmt.Errorf("mirror: keepalive: %w", err))
+				return false
+			}
+			hc.rtt.Store(int64(time.Since(start)))
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-firstHandled:
+		case <-t.C:
+		}
+		if !ping() {
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
-				err := ws.Ping(pctx)
-				pcancel()
-				if err != nil {
-					cancel(fmt.Errorf("mirror: keepalive: %w", err))
+				if !ping() {
 					return
 				}
 			}
 		}
 	}()
 
+	reads := 0
 	for {
+		if reads == 1 {
+			close(firstHandled) // the first message has been handled (above)
+		}
 		typ, data, err := ws.Read(ctx)
 		if err != nil {
 			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
@@ -781,6 +1014,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			_ = ws.Close(websocket.StatusGoingAway, truncate(err.Error()))
 			return err
 		}
+		reads++
 		switch typ {
 		case websocket.MessageBinary:
 			id, p, err := DecodeData(data)
@@ -803,7 +1037,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				hc.mu.Lock()
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				waitingMoved := !slices.Equal(waitingWindows(hc.windows), waitingWindows(windows))
+				statusMoved := !slices.Equal(statusWindows(hc.windows), statusWindows(windows))
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
+				hc.hostLimit = CleanHostLimit(m.HostLimit)
 				hc.mu.Unlock()
 				// 🔴 A STATUS-ONLY CHANGE NUDGES NO CARD (sameWindows ignores
 				// Status), so it gets its own hook: the attention queue must hear
@@ -816,11 +1052,21 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 						go fn(hc.key.owner)
 					}
 				}
+				if statusMoved {
+					h.mu.Lock()
+					fn := h.statusNotify
+					h.mu.Unlock()
+					if fn != nil {
+						go fn(hc.key.owner)
+					}
+				}
 				h.observe(hc.key.owner, hc.key.host, windows, h.now())
+				h.listingApplied(hc)
+				h.outcomesApplied(hc)
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
 				// activity-only one is THROTTLED. A changed list or order nudges
 				// at once. A time that moved with nothing else (a busy window that
-				// stays where it is) still changes that card's "active … ago" — a
+				// stays where it is) still changes that row's recency dot — a
 				// view never told would show it going stale while the window works
 				// — so it nudges too, but at most once per activityEvery per owner
 				// (activityNudgeEvery says why). Both are read off the list the
@@ -839,8 +1085,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.mu.Lock()
 					repos := NormalizeRepos(m.Repos, hc.windows)
-					same := maps.Equal(hc.repos, repos)
-					hc.repos = repos
+					githubRepos := NormalizeGitHubRepos(m.GitHubRepos, hc.windows)
+					same := maps.Equal(hc.repos, repos) && maps.Equal(hc.githubRepos, githubRepos)
+					hc.repos, hc.githubRepos = repos, githubRepos
 					hc.mu.Unlock()
 					if !same {
 						h.changed(hc.key.owner)
@@ -860,6 +1107,20 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 						h.changed(hc.key.owner)
 					}
 				}
+			case TypePreviews:
+				// The windows' live preview counts (previews.go), as TypeWork: a
+				// change is one the views draw (the Preview button, the sidebar's
+				// mark), so it nudges them.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					previews := NormalizePreviews(m.Previews, hc.windows)
+					same := maps.Equal(hc.previews, previews)
+					hc.previews = previews
+					hc.mu.Unlock()
+					if !same {
+						h.changed(hc.key.owner)
+					}
+				}
 			case TypeColors:
 				// The windows' identity colours (work.go), as TypeWork.
 				if hc.version >= 2 {
@@ -872,9 +1133,19 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 						h.changed(hc.key.owner)
 					}
 				}
+			case TypeOutcomes:
+				// The idle opencode dispatch windows' final replies (outcomes.go),
+				// restricted to the windows it lists now. Nothing a card draws
+				// from the hub: the reconciler records them on the dispatch rows.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					hc.outcomes = NormalizeOutcomes(m.Outcomes, hc.windows)
+					hc.mu.Unlock()
+					h.outcomesApplied(hc)
+				}
 			case TypeEvents:
 				if hc.version >= 2 {
-					hc.deliverEvents(m)
+					hc.deliverEvents(m, len(data))
 				}
 			case TypePasted:
 				if hc.version >= 2 {
@@ -892,18 +1163,54 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.subagentTailed(m)
 				}
+			case TypeOpenCodeFormed:
+				if hc.version >= 2 {
+					hc.openCodeFormed(m)
+				}
 			case TypeAnswered:
 				if hc.version >= 2 {
-					hc.answered(m.ID, m.Error, m.Refusal, m.Keys)
+					hc.answered(m.ID, m.Error, m.Refusal, m.Keys, m.Screen)
 				}
 			case TypeAskCancelled:
 				if hc.version >= 2 {
 					hc.cancelled(m.ID, m.Error, m.Refusal, m.Text)
 				}
+			case TypeResumeSpawned:
+				if hc.version >= 2 {
+					hc.resumeSpawned(m)
+				}
+			case TypeAgentSpawned:
+				if hc.version >= 2 {
+					h.agentSpawned(hc, m)
+				}
+			case TypeAgentClosed:
+				if hc.version >= 2 {
+					h.agentClosed(hc, m)
+				}
+			case TypeAgentClonesList:
+				if hc.version >= 2 {
+					h.agentClonesListed(hc, m)
+				}
+			case TypeSpawnReady:
+				// A changed readiness, from a host that sent one in its hello
+				// (an -interactive host): kept like the hello's.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					next := hc.spawnReady
+					if hc.interactive && m.SpawnReady != nil {
+						next = CleanSpawnReady(m.SpawnReady)
+					}
+					same := next.Same(hc.spawnReady)
+					hc.spawnReady = next
+					hc.mu.Unlock()
+					if !same {
+						h.changed(hc.key.owner)
+					}
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
-					why = fmt.Errorf("mirror: the host ended the terminal: %s", m.Error)
+					why = fmt.Errorf("%w: %s", ErrHostEnded, m.Error)
 				}
 				hc.finish(m.ID, why)
 			}
@@ -944,7 +1251,7 @@ func (h *Hub) drop(hc *hostConn) {
 	if current {
 		delete(h.hosts, hc.key)
 		// The disconnect nudges the owner's views below, which re-fetches every
-		// card's time: a pending trailing activity nudge has nothing left to do,
+		// entry's time: a pending trailing activity nudge has nothing left to do,
 		// so it is stopped, and the owner's throttle starts afresh (at most one
 		// extra activity nudge per disconnect, which already costs one).
 		if t := h.activity[hc.key.owner]; t != nil {
@@ -964,7 +1271,7 @@ func (h *Hub) drop(hc *hostConn) {
 			labels := maps.Clone(hc.labels)
 			activity := maps.Clone(hc.activity)
 			windows := slices.Clone(hc.windows)
-			repos := maps.Clone(hc.repos)
+			repos, githubRepos := maps.Clone(hc.repos), maps.Clone(hc.githubRepos)
 			colors := maps.Clone(hc.colors)
 			if !hc.statusReport {
 				// A status is believed only from a host that reports it: what an
@@ -974,7 +1281,7 @@ func (h *Hub) drop(hc *hostConn) {
 				}
 			}
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, colors: colors, interactive: hc.interactive, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, githubRepos: githubRepos, colors: colors, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()
@@ -1006,6 +1313,30 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.tails {
 		ch <- tailAnswer{err: ErrHostDisconnected}
 		delete(hc.tails, id)
+	}
+	for id, ch := range hc.forms {
+		ch <- formAnswer{err: ErrHostDisconnected}
+		delete(hc.forms, id)
+	}
+	for id, ch := range hc.resumes {
+		ch <- resumeAnswer{err: ErrHostDisconnected}
+		delete(hc.resumes, id)
+	}
+	// A spawn written before the disconnect may have started: unconfirmed,
+	// never failed (the reconciler's listings settle it).
+	for id, ch := range hc.spawns {
+		ch <- spawnAnswer{err: ErrSpawnUnconfirmed}
+		delete(hc.spawns, id)
+	}
+	// A close written before the disconnect may be under way: unconfirmed.
+	for id, ch := range hc.closes {
+		ch <- closeAnswer{err: ErrCloseUnconfirmed}
+		delete(hc.closes, id)
+	}
+	// A clone list asked for before the disconnect: none.
+	for id, ch := range hc.cloneLists {
+		ch <- clonesAnswer{err: ErrHostDisconnected}
+		delete(hc.cloneLists, id)
 	}
 	hc.mu.Unlock()
 	if current {
@@ -1084,14 +1415,55 @@ func truncate(s string) string {
 	return s
 }
 
+// writeJSON writes m to a host's connection. See writeFrame.
 func writeJSON(ctx context.Context, ws *websocket.Conn, m Msg) error {
+	// The trace context of the span the request is sent under (trace.go): the
+	// host's spans for it are its children. "" while tracing is off.
+	if m.Traceparent == "" && requestCarriesTrace(m.Type) {
+		m.Traceparent = telemetry.Traceparent(ctx)
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	return writeFrame(ctx, ws, websocket.MessageText, b)
+}
+
+// writeFrame writes one message to a host's connection on ctx's behalf: not at
+// all when ctx has already ended, else bounded by writeTimeout.
+//
+// 🔴 THE CALLER'S CANCEL NEVER REACHES THE SOCKET. coder/websocket CLOSES THE
+// CONNECTION when the context of a Write ends while that Write holds it — and
+// that includes the moment after the frame is on the wire and before Write has
+// returned. Every request on a host (an attach, a paste, a watch…) shares ONE
+// socket, so a browser leaving at that moment hung up the whole host: every
+// other terminal, watch and paste on it ended, and the host was offline until
+// it reconnected. TestAPerSessionHostIsListedAndAddressedExactlyAsBefore timed
+// out "waiting for: the paste" in CI that way: it cancels its attach the
+// instant the host has read the open, and if the open's Write has not returned
+// yet the hub drops the host and the paste finds it offline.
+// TestACallerLeavingMidWriteDoesNotHangUpTheHost and
+// TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost hold a write in progress
+// and end its caller. So the write runs on context.WithoutCancel(ctx): what
+// ctx carries is kept, its cancellation is not. writeTimeout still bounds it,
+// and a write that hits it still closes the connection, as before — that is a
+// host that stopped reading.
+//
+// ⚠ THE PRICE: A CALLER THAT LEAVES DOES NOT TAKE BACK ITS FRAME. Only a caller
+// already gone when writeFrame is entered sends nothing. One that leaves while
+// its write is queued behind another (the socket is one writer at a time) or
+// in progress still has its frame written once the socket frees — up to
+// writeTimeout (10s) after it left. Its callers already say so rather than
+// "not sent": a paste whose caller left after this point is unconfirmed
+// (ErrPasteUnconfirmed — it may have landed), so a retry of it can land twice,
+// as for any paste whose answer never came.
+func writeFrame(ctx context.Context, ws *websocket.Conn, typ websocket.MessageType, p []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
-	return ws.Write(wctx, websocket.MessageText, b)
+	return ws.Write(wctx, typ, p)
 }
 
 // Attach opens a terminal on owner's host's session and runs it until ctx ends,
@@ -1125,7 +1497,17 @@ func (h *Hub) Attach(ctx context.Context, owner int64, host, session string, rea
 // that window through a viewer session of its own (internal/mirrorhost) and
 // never through the operator's session, so neither viewing nor typing into a
 // window moves what the operator is looking at.
-func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
+func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) (err error) {
+	// The terminal's OPEN, and why it failed if it did: the span ends at the
+	// first output (firstOutput), so a terminal open for hours grows no
+	// trace. How it ENDED is the socket's own close span (internal/api).
+	ctx, life := telemetry.Start(ctx, "mirror.attach", attribute.Bool("mirror.read_only", readOnly))
+	lifeEnded := false
+	defer func() {
+		if !lifeEnded {
+			telemetry.End(life, streamReason(ctx, err))
+		}
+	}()
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()
@@ -1162,7 +1544,26 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 		open.Cols, open.Rows = sz.Cols, sz.Rows
 	default:
 	}
-	if err := writeJSON(ctx, hc.ws, open); err != nil {
+	// The open's round trip: the frame written to the first output read. The
+	// host's spans for the attach are this span's children (writeJSON).
+	fctx, first := telemetry.Start(ctx, "mirror.attach.first_output")
+	sent, gotFirst := time.Now(), false
+	firstOutput := func() {
+		if !gotFirst {
+			gotFirst = true
+			firstAnswer(first, "attach", openStatsOf(ctx), sent)
+			telemetry.End(life, telemetry.ReasonOK)
+			lifeEnded = true
+		}
+	}
+	defer func() {
+		if !gotFirst {
+			reason := streamReason(ctx, err)
+			metrics.MirrorHubRoundTrip.WithLabelValues("attach", reason).Observe(time.Since(sent).Seconds())
+			telemetry.End(first, reason)
+		}
+	}()
+	if err := writeJSON(fctx, hc.ws, open); err != nil {
 		return fmt.Errorf("mirror: ask the host to open the terminal: %w", err)
 	}
 	// Tell the host to end the stream whatever ends it here. On the host's own
@@ -1176,10 +1577,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 && !readOnly {
-				wctx, wcancel := context.WithTimeout(actx, writeTimeout)
-				werr := hc.ws.Write(wctx, websocket.MessageBinary, EncodeData(id, buf[:n]))
-				wcancel()
-				if werr != nil {
+				if werr := writeFrame(actx, hc.ws, websocket.MessageBinary, EncodeData(id, buf[:n])); werr != nil {
 					cancel()
 					return
 				}
@@ -1199,6 +1597,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 			for {
 				select {
 				case p := <-st.out:
+					firstOutput()
 					if _, err := stdout.Write(p); err != nil {
 						return err
 					}
@@ -1207,6 +1606,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 				}
 			}
 		case p := <-st.out:
+			firstOutput()
 			if _, err := stdout.Write(p); err != nil {
 				return err
 			}

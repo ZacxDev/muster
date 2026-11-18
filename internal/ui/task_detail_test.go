@@ -15,7 +15,7 @@ func renderTaskDetail(t *testing.T, v TaskCardView) string {
 	if err := RenderTaskDetail(&b, v, featuresAllOn); err != nil {
 		t.Fatalf("render task detail: %v", err)
 	}
-	return b.String()
+	return expandStaticScripts(t, b.String())
 }
 
 func detailFixture() TaskCardView {
@@ -43,7 +43,6 @@ func TestTaskDetailPageRendersTheWholeTask(t *testing.T) {
 		"data-task-session",                   // the session thread rows
 		`hx-patch="/tasks/613/status"`,        // the status control still works here
 		`id="task-modal-body"`,                // Edit's swap target must EXIST on this page
-		`id="agent-modal-body"`,               // …and Dispatch's
 		"/static/vendor/idiomorph-ext.min.js", // morph:outerHTML swaps need it loaded
 	} {
 		if !strings.Contains(out, want) {
@@ -155,8 +154,8 @@ func TestTaskDetailPageHeadingFallsBackToTheTaskNumber(t *testing.T) {
 	}
 	// And the title falls back through TaskTitle to the directory when there is
 	// one — the label every other surface uses, so the page agrees with them.
-	out2 := renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 615, Directory: "civitai · TICKET-9", Status: notes.StatusOpen}})
-	if !strings.Contains(out2, "civitai · TICKET-9") {
+	out2 := renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 615, Directory: "acme · TICKET-9", Status: notes.StatusOpen}})
+	if !strings.Contains(out2, "acme · TICKET-9") {
 		t.Errorf("the heading must fall back to TaskTitle's directory label\n---\n%s", out2)
 	}
 }

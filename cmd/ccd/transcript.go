@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // The session transcript is the ONE place ccd reads a reply from.
@@ -62,6 +63,36 @@ type turnResult struct {
 	Err *apiError
 	// Complete reports that the turn's turn_duration record was seen.
 	Complete bool
+	// Usage is the turn's tokens: each main-conversation API call's usage
+	// counted ONCE (the CLI repeats it on every block record of the call; the
+	// largest output count is kept, as a block written mid-stream can carry a
+	// partial one — callLedger is the rule). nil when no record of the turn
+	// carried usage. Subagent (sidechain) records are not counted: they are not this
+	// conversation's turn.
+	Usage *podagent.Usage
+	// calls are the per-call usages Usage is summed from.
+	calls callLedger
+}
+
+// addUsage records rec's usage under its API call's key (callLedger).
+func (r *turnResult) addUsage(rec cctranscript.Record) {
+	var u *podagent.Usage
+	if m := rec.Message.Usage; m != nil {
+		u = &podagent.Usage{InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
+			CacheReadInputTokens: m.CacheReadInputTokens, CacheCreationInputTokens: m.CacheCreationInputTokens}
+	}
+	if _, _, counted := r.calls.add(rec.Message.ID, rec.Message.Model, rec.IsAPIError, u); !counted {
+		return
+	}
+	sum := r.calls.sum()
+	// The LAST call's context fill (podagent.Usage.ContextTokens): what the
+	// chief chat's context chip shows, rather than the turn total.
+	if keys := r.calls.keys(); len(keys) > 0 {
+		last := r.calls.call(keys[len(keys)-1])
+		fill := last.InputTokens + last.CacheReadInputTokens + last.CacheCreationInputTokens
+		sum.ContextTokens = &fill
+	}
+	r.Usage = &sum
 }
 
 // turnItem is one Items entry: a text segment (Tool nil) or a tool call.
@@ -153,6 +184,7 @@ func extractTurn(r io.Reader, promptID string) (turnResult, error) {
 				}
 			}
 		case "assistant":
+			res.addUsage(rec)
 			for _, b := range rec.Blocks() {
 				switch b.Type {
 				case "text":

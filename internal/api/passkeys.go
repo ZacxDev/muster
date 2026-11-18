@@ -93,7 +93,7 @@ func (g *gotrueState) passkeysOn(ctx context.Context) bool {
 		return on
 	}
 	g.pk.mu.Unlock()
-	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, gotrue.SettingsTimeout)
 	defer cancel()
 	st, err := g.Client.Settings(cctx, "muster-server")
 	if err != nil {
@@ -139,7 +139,7 @@ func (s *Server) passkeySignInRefusal(w http.ResponseWriter, r *http.Request) bo
 	case !viaBrowserListener(r):
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": OffBrowserListenerRefusal})
 	case !s.isSameOrigin(r):
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 	case !s.passkeysServed(r.Context()):
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": PasskeysOffRefusal})
 	default:
@@ -163,6 +163,40 @@ func (s *Server) writeGoTrueRefusal(w http.ResponseWriter, what string, err erro
 	}
 }
 
+// passkeyChallengeCap / passkeyChallengeWindow bound the sign-in challenges
+// muster remembers having issued (Server.passkeyChallenges).
+//
+// 🔴 NO PER-ADDRESS REFUSAL OF OPTIONS, AND WHY. The sign-in page fetches a
+// challenge on every load: autofill (conditional mediation) needs one at once,
+// and the button must reach WebAuthn with no network between the tap and the
+// prompt or iOS drops the gesture (passkeySignInJS). A per-address cap on
+// options was therefore spent by page views, so an office or carrier NAT —
+// or anyone sharing its address — could block every passkey sign-in there.
+// Instead:
+//   - options are never refused by muster. What one client can make GoTrue
+//     mint is bounded by GoTrue's own per-address limit, which is per real
+//     client because gotrue mode requires a declared client topology
+//     (cmd/muster-server validateClientTopology);
+//   - muster records each challenge it issued in ONE global table, capped at
+//     passkeyChallengeCap, the oldest evicted — memory is bounded and no
+//     address can be refused;
+//   - a verify must name a challenge in that table, used once: one muster
+//     never issued, already used, or evicted is refused WITHOUT asking GoTrue
+//     (PasskeyChallengeGone), so a flood of junk verifies costs no GoTrue call.
+//
+// The cost, stated: a flood minting more than passkeyChallengeCap challenges
+// within one person's ceremony evicts theirs, and their verify asks them to
+// try again (a fresh challenge). That needs the flood spread over many
+// addresses, past GoTrue's per-address limit.
+const (
+	passkeyChallengeCap    = 8192
+	passkeyChallengeWindow = 15 * time.Minute
+)
+
+// PasskeyChallengeGone answers a verify naming a challenge muster does not
+// hold (never issued, used, or evicted).
+const PasskeyChallengeGone = "That passkey prompt has expired. Try again."
+
 func (s *Server) handlePasskeySignInOptions(w http.ResponseWriter, r *http.Request) {
 	if s.passkeySignInRefusal(w, r) {
 		return
@@ -177,6 +211,8 @@ func (s *Server) handlePasskeySignInOptions(w http.ResponseWriter, r *http.Reque
 		s.writeGoTrueRefusal(w, "sign-in options", err, PasskeysOffRefusal)
 		return
 	}
+	s.gt.noteRPID(opts)
+	s.passkeyChallenges.add(o.ChallengeID, s.gt.now(), passkeyChallengeWindow)
 	s.writeJSON(w, http.StatusOK, map[string]any{"challenge_id": o.ChallengeID, "options": json.RawMessage(opts)})
 }
 
@@ -193,6 +229,13 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
 		return
 	}
+	// The challenge must be one this muster issued and still holds; it is used
+	// once (passkeyChallengeCap's comment).
+	if s.passkeyChallenges.count(body.ChallengeID, s.gt.now(), passkeyChallengeWindow) == 0 {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyChallengeGone})
+		return
+	}
+	s.passkeyChallenges.forget(body.ChallengeID)
 	ip := clientIP(r)
 	// The ADDRESS side of the sign-in limiter: a passkey assertion names no
 	// account muster can key on before GoTrue answers (the user is in the
@@ -215,13 +258,34 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 	if !flags.UserPresent || !flags.UserVerified {
 		outcome = outcomeFailed
 		s.logger.Printf("passkeys: refused a sign-in assertion without user verification from %s", ip)
+		if ticket.addrOver {
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
+			return
+		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyNoUVRefusal})
 		return
 	}
+	credID, handle, _ := gotrue.AssertionIdentity(canonical)
 	sess, err := s.gt.Client.PasskeySignInVerify(r.Context(), ip, body.ChallengeID, canonical)
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
+			if ticket.addrOver { // judged and wrong, from an address past its failure limit
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
+				return
+			}
+		}
+		// A refusal of a credential muster can show is not this account's says
+		// so, and lets the page tell the password manager to stop offering it
+		// (signalUnknownCredential; passkey_signal.go). Only GoTrue's
+		// verification failure is asked about: a 429, a ban or an outage is not
+		// about the credential.
+		var ae *gotrue.APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusBadRequest && ae.Code == "webauthn_verification_failed" &&
+			s.credentialUnknown(r.Context(), ip, credID, handle) {
+			s.logger.Printf("passkeys: refused a sign-in with a credential that is not registered (from %s)", ip)
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyUnknownRefusal, "credential_unknown": true})
+			return
 		}
 		s.writeGoTrueRefusal(w, "a passkey sign-in", err, PasskeyRejectedRefusal)
 		return
@@ -240,7 +304,9 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	outcome = outcomeSucceeded
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
+	s.backfillCredentialID(r.Context(), ip, u.GotrueSub, credID)
 	s.logger.Printf("login: user %d signed in with a passkey", u.ID)
 	s.writeJSON(w, http.StatusOK, map[string]any{"redirect": safeReturnTo(body.Next)})
 }
@@ -257,13 +323,13 @@ func isStatus(err error, code int) bool {
 // on the request, or a cross-origin write.
 func (s *Server) passkeyAccountCreds(w http.ResponseWriter, r *http.Request) (gotrueCreds, bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return gotrueCreds{}, false
 	}
 	creds, ok := gotrueCredsFrom(r.Context())
 	if !ok || !s.passkeysServed(r.Context()) {
 		if isDocumentNavigation(r) {
-			s.renderNotice(w, http.StatusNotFound, "Passkeys are not available", PasskeysOffRefusal)
+			s.renderNotice(w, r, http.StatusNotFound, "Passkeys are not available", PasskeysOffRefusal)
 		} else {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": PasskeysOffRefusal})
 		}
@@ -328,7 +394,7 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 	list, err := s.gt.Client.Passkeys(ctx, clientIP(r), creds.access)
 	if err != nil {
 		s.logger.Printf("passkeys: list: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Passkeys could not be loaded", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusBadGateway, "Passkeys could not be loaded", "Try again in a moment.")
 		return
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
@@ -371,7 +437,7 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 	if r.URL.Query().Get("welcome") == "1" {
 		skip = `<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" id="passkey-skip">Skip for now</a>`
 	}
-	writeAuthDocument(w, code, "Passkeys", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	s.writeNavDocument(w, r, code, "Passkeys", ui.NavAccount, true, `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Passkeys</h1>
 `+b.String()+`
 <p class="text-sm text-fg2" id="passkey-status" role="status" aria-live="polite"></p>
@@ -385,7 +451,19 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 `+skip+`
 <a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a>
 </section>
-<script>`+ui.PasskeyJS+passkeyAddJS+`</script>`)
+<script>`+ui.PasskeyJS+passkeyAddJS+`</script>`+s.passkeySignalNode(ctx, creds, list, flags))
+}
+
+// passkeySignalNode is the Signal API hand-off for the person in creds, whose
+// passkeys GoTrue listed as list (flags: their records), or "" when there is
+// nothing to send. Drawn on every /account/passkeys — so a removal, which
+// redirects there, is signalled on the page it lands on.
+func (s *Server) passkeySignalNode(ctx context.Context, creds gotrueCreds, list []gotrue.Passkey, flags map[string]map[string]any) string {
+	sig, ok := s.signalFor(ctx, creds.claims.Subject, creds.claims.Email, list, flags)
+	if !ok {
+		return ""
+	}
+	return signalNode(sig)
 }
 
 // refuseStaleCredentialChange answers 401 reauth_required unless the request's
@@ -416,6 +494,7 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 		s.writeGoTrueRefusal(w, "registration options", err, "A passkey cannot be added right now.")
 		return
 	}
+	s.gt.noteRPID(opts)
 	s.writeJSON(w, http.StatusOK, map[string]any{"challenge_id": o.ChallengeID, "options": json.RawMessage(opts)})
 }
 
@@ -446,7 +525,13 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeGoTrueRefusal(w, "a passkey registration", err, "That passkey could not be added.")
 		return
 	}
-	s.setPasskeyFlag(r.Context(), creds.claims.Subject, p.ID, map[string]any{"synced": flags.BackedUp, "can_sync": flags.BackupEligible})
+	rec := map[string]any{"synced": flags.BackedUp, "can_sync": flags.BackupEligible}
+	// The credential id too: GoTrue does not return it, and the Signal API
+	// needs it (passkey_signal.go).
+	if id, err := gotrue.AttestationCredentialID(canonical); err == nil {
+		rec[passkeyCredIDKey] = id
+	}
+	s.setPasskeyFlag(r.Context(), creds.claims.Subject, p.ID, rec)
 	uid := authz.MustFrom(r.Context()).UserID
 	if s.gt.Accounts != nil {
 		_ = s.gt.Accounts.Audit(r.Context(), users.Actor{UserID: uid, Via: authz.ViaSession}, "user.passkey_added",

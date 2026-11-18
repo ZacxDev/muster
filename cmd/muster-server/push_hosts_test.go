@@ -17,6 +17,8 @@ func TestPushExtraHostsAreParsedAtBoot(t *testing.T) {
 	load := func(v string) (config, error) {
 		c, err := loadConfig(func(k string) string {
 			switch k {
+			case envHookToken:
+				return fixtureHookToken
 			case envDatabase:
 				return "postgres://x/y"
 			case envStandalone:

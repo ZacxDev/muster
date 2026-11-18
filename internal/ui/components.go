@@ -12,12 +12,12 @@ import (
 	_ "embed"
 	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -42,11 +42,17 @@ func hx(name, value string) g.Node { return g.Attr(name, value) }
 // With a single function there is no half to rename, and
 // TestTheWordmarkSpellsMuster can assert the WHOLE reassembled string against
 // this one node instead of hunting for a substring in a document.
+//
+// 🔴 ONE ELEMENT, NOT A GROUP. Both sites put it in an `inline-flex … gap-2`
+// box (the gap is for a logo beside the name, brandMark), and a bare group's
+// span and text node are then two FLEX ITEMS with the gap between them: every
+// instance without branding read "mu ster" (#570 to this fix, visible in the
+// regenerated docs/img shots). TestTheWordmarkIsOneFlexItem pins the markup.
 func wordmark() g.Node {
-	return g.Group{
+	return Span(
 		Span(Class("text-accent"), g.Text("mu")),
 		g.Text("ster"),
-	}
+	)
 }
 
 // Page renders muster's full document shell. dark is the default theme: <html>
@@ -92,20 +98,28 @@ type tab struct {
 // give muster a navigation bar that is mostly dead links, which is precisely the
 // "notional separate service" outcome the extraction exists to avoid.
 //
+// ⚠ `agents` WAS A TAB HERE TOO, the Agents list page. It is retired (operator
+// decision): the sidebar lists the agents and the session switcher's bar moves
+// between them, so each agent's own actions moved onto its page and the
+// dispatch "+" into the sidebar. GET /agents is now home's redirect
+// (internal/api handleAgentsHome), registered on its own.
+//
 // ⚠ `runbooks` AND `privileges` USED TO BE TABS HERE. Both subsystems were
 // removed (privileges superseded by connectors, runbooks unused); deleting their
 // entries from this slice removed the links, the panels, the headings and the
-// shell routes together, because they are all derived from it.
+// shell routes together, because they are all derived from it. So did `repos`,
+// when the deprecated GitHub OAuth connection it showed was removed: the GitHub
+// App (the `github` connector) is muster's GitHub identity now.
 var musterTabs = []tab{
 	{Key: "tasks", Label: "Tasks", Icon: "📋", Heading: "Tasks"},
-	{Key: "agents", Label: "Agents", Icon: "🧩", Heading: "Agents"},
-	{Key: "repos", Label: "Repos", Icon: "📦", Heading: "Repos"},
 	{Key: "connectors", Label: "Connectors", Icon: "🔌", Heading: "Connectors"},
 }
 
-// defaultTab is what an unknown or empty tab string clamps to, and what `/`
-// serves. Upstream's default is its permission-request queue, which muster does
-// not have.
+// defaultTab is what an unknown or empty tab string clamps to, and the tab the
+// shell draws at a bare `/` — which is now only the service worker's offline
+// copy, `/?shell=1`: `/` itself opens the chief's chat (internal/api
+// redirectHome). Upstream's default is its permission-request queue, which
+// muster does not have.
 const defaultTab = "tasks"
 
 // tabKeys is the ordered set of tab keys, derived from musterTabs.
@@ -213,26 +227,14 @@ func PageWith(activeTab string, feat Features, data ShellData) g.Node {
 // ShellData is state a shell draws on its FIRST PAINT, rather than after the
 // panel's own load, because drawing it later would move what is below it.
 //
-// 🔴 IT EXISTS FOR LAYOUT SHIFT, AND ITS ONE FIELD IS THE MEASURED CASE. The
-// Agents tab's "Recently viewed" strip is drawn empty and hidden by the shell
-// and filled out of band by the list's first load — and when it appeared it
-// pushed the filter bar and every card down: 0.011 at 1280×800 on its own,
-// measured by e2e/tests/cls.spec.ts. Drawn here, the strip is already where it
-// will be when the list lands, and the out-of-band copy replaces it in place.
-// The zero value draws what the shell always drew (an empty, hidden strip).
-//
-// The Agents tab's own document also draws the LIST (WithList): its cards are
-// the first paint, not a request's answer (agents_list_ssr.go).
+// Only the Tasks tab draws anything here now (WithTasks). The retired Agents
+// tab's document drew its LIST here (WithList, agents_list_ssr.go), and before
+// that a "Recently viewed" strip, for the same reason — the strip measured 0.011
+// of layout shift when it arrived late.
 type ShellData struct {
-	recent []recentItem
-	list   *shellList
-}
-
-// WithRecent resolves the strip's entries the way RenderAgentsList does —
-// against the same cards, so "exists" and "pinned" agree with the list.
-func (d ShellData) WithRecent(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) ShellData {
-	d.recent = recentItems(list, mirrors, refs)
-	return d
+	// tasks is the Tasks tab's board, drawn into #tasks-list (WithTasks,
+	// tasks_list_ssr.go); nil draws the skeleton its own load replaces.
+	tasks *shellTasks
 }
 
 // shell is the <html> element of every shell document, with one extra
@@ -249,17 +251,12 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				// The Agents list's stored filter, applied before the first paint
-				// (agents_filter_head.go) — the list is in the document now.
-				agentsFilterHead(),
 				Meta(Name("mobile-web-app-capable"), Content("yes")),
 				Meta(Name("apple-mobile-web-app-capable"), Content("yes")),
 				Meta(Name("apple-mobile-web-app-status-bar-style"), Content("black-translucent")),
 				Meta(Name("apple-mobile-web-app-title"), Content("muster")),
 				TitleEl(g.Text("muster")),
-				manifestLink(),
-				Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href(web.Asset("/static/icons/icon-192.png"))),
-				Link(Rel("apple-touch-icon"), Href(web.Asset("/static/icons/icon-192.png"))),
+				docHead(feat.Brand),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				// idiomorph: morph-style swaps so live list updates patch the DOM
@@ -302,7 +299,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					// desktop (lg+); full width on mobile (slide-out sidebar).
 					Div(
 						Class("lg:pl-72"),
-						header(feat.Push),
+						header(feat.Push, feat.Brand),
 						pushStatusMessage(),
 						Main(
 							// Width comes from contentWidth() — the SAME helper the header
@@ -328,26 +325,14 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// NotesPanel takes no pending count here: upstream passed one so
 							// the Tasks panel could render the permission-request segment
 							// badge, and muster has no requests to count.
-							//
-							// 🔴 THE REPOS PANEL IS CONDITIONAL, AND ITS ABSENCE IS THE
-							// POINT RATHER THAN A TIDY-UP. This panel carries
-							// hx-trigger="load" and the shell renders on every tab, so on
-							// a deployment with no GitHub store every navigation in the
-							// app fetched a route that could only refuse — one failure
-							// toast per page view, on pages that have nothing to do with
-							// repositories. Mounting it only when there is a store behind
-							// it is what makes the tab's absence honest instead of making
-							// its presence noisy.
-							NotesPanel(activeTab == "tasks"),
-							agentsPanel(activeTab == "agents", data.recent, data.list),
-							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
+							NotesPanel(activeTab == "tasks", data.tasks),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
 					),
 					// Keep relative timestamps ('10s', '30m') live + format new cards.
 					relTimeScript(),
-					// Task modal: dirty-guarded dismiss, save highlight, focus return.
-					taskModalScript(),
+					// The task modal's script (dirty-guarded dismiss, save highlight,
+					// focus return) is the sidebar's (sidebarIn).
 					// #tasks-list load-failure escape hatch (the skeleton must not
 					// become a permanent fake-loading state).
 					tasksListScript(),
@@ -372,18 +357,14 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					// that both are bind-once and order-independent — it reads the
 					// `selecting` class merge mode sets, not any of its functions.
 					cardMetaNavScript(),
-					// Places the agent cards' ⋯ popover menus (floating_menu.go).
-					floatingMenuScript(),
-					// The Agents list's search box (agents_filter.go).
-					agentsFilterScript(),
-					// …and the "Recently viewed" strip's sideways offset across
-					// hydration (agents_scroll.go).
-					agentsScrollScript(),
 					// Refetch the list on focus / visibility / SSE reconnect so a
 					// closed-and-reopened app is never stale.
 					resyncScript(),
 					// Sidebar open/close + SPA tab routing (pushState) + FAB toggle.
 					appScript(feat),
+					// The mirrored views' snapshot store: it warms the windows the
+					// sidebar's rows link (mirror_snap.go).
+					SnapScript(feat),
 					// PWA: the service worker, install, update toast and app badge
 					// (pwa.go) — then the push-subscribe flow behind the "Enable"
 					// control, which uses the registration pwaScript made.
@@ -403,18 +384,10 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// containing-block surprises) and they're not touched by panel
 				// swaps. Only the active tab's FAB is shown; the router toggles them.
 				shellFAB("fab-tasks", "tasks", "New task", "/ui/tasks/new", "task-modal", "bottom-[calc(1.5rem+env(safe-area-inset-bottom))]", activeTab == "tasks"),
-				// Agents tab: dispatch is the only FAB. (Upstream briefly stacked a
-				// second one above it linking to a page that was later deleted; a FAB
-				// whose whole job is to open a 404 is worse than no FAB, so dispatch
-				// takes the primary position rather than floating above a gap.)
-				shellFAB("fab-agents", "agents", "Dispatch agent", "/ui/agents/new", "agent-modal", "bottom-[calc(1.5rem+env(safe-area-inset-bottom))]", activeTab == "agents"),
 				noteModalShell(),
-				agentModalShell(),
-				// Transient error toasts for failed background (optimistic) actions.
-				actionToasts(),
+				// The error toasts' host (actionToasts) is the sidebar's (sidebarIn).
 				// Persistent notification FAB (bottom-LEFT) — the launcher for recent
-				// agent replies. Always visible (not per-tab); only the count badge
-				// hides at zero. Its panel lazy-loads /ui/notifications.
+				// agent replies. On every tab; only the count badge hides at zero. Its panel lazy-loads /ui/notifications.
 				notifFAB(),
 				// The chief slide-out. Body level for the same reason as badgePopover
 				// and the FABs — and for one stronger one: it holds a LIVE WebSocket
@@ -429,7 +402,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// anyone who reached the grid by clicking rather than by URL. Its body
 				// is lazy, so the cost of always rendering it is the shut aside and
 				// nothing else.
-				ChiefPanel(),
+				ChiefPanel(feat.FleetDigest),
 				extra,
 			),
 		),
@@ -472,7 +445,8 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 // on a timer discards nodes inside its panel every ten seconds with nobody
 // touching the page.
 //
-// Read off muster's rendered subtrees, ALL THREE PANELS ANSWER `true`:
+// Read off muster's rendered subtrees, ALL THREE PANELS ANSWERED `true` when
+// this was written (#panel-agents and #panel-repos are retired since):
 //
 //	#panel-tasks       morph at the panel level, BUT the delete confirm is
 //	                   `outerHTML swap:200ms` onto `#task-<id>`, inside it
@@ -529,10 +503,10 @@ func panelClass(active, destructiveSwap bool) string {
 // opened is gone, so the control could only ever navigate to a 404.
 
 // notifFAB renders the persistent notification launcher: a round bottom-LEFT FAB
-// (so it never collides with the right-side dispatch/operator/task FABs) carrying
-// an overlaid unread-count badge, plus a slide/scale+fade panel anchored above it
-// listing recent agent replies. The FAB is ALWAYS visible (it's the launcher for
-// recent chats); only the badge hides at zero. The list lazy-loads
+// (so it never collides with the right-side task FAB) carrying an overlaid
+// unread-count badge, plus a slide/scale+fade panel anchored above it listing
+// recent agent replies. The FAB is visible on every tab; only the badge hides
+// at zero. The list lazy-loads
 // /ui/notifications on load and refreshes on the chat.reply SSE event + a 30s
 // poll. The badge (#notif-badge) is updated by the backend via an hx-swap-oob
 // span in the /ui/notifications response, so it stays live without extra wiring.
@@ -620,14 +594,6 @@ func shellFAB(id, tab, ariaLabel, hxGet, modalID, bottomCls string, active bool)
 	)
 }
 
-// firstLine returns s up to the first newline.
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
 // truncate shortens s to at most n runes, appending an ellipsis when cut.
 func truncate(s string, n int) string {
 	r := []rune(s)
@@ -675,7 +641,14 @@ func truncate(s string, n int) string {
 // ./internal/ui/**/*.go (tailwind.config.js `content`). If this string is ever
 // built somewhere Tailwind does not scan, the classes silently will not exist.
 func contentWidth() string {
-	return "mx-auto w-full max-w-xl px-4 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[110rem] min-[2560px]:max-w-[150rem]"
+	return contentMaxW() + " px-4"
+}
+
+// contentMaxW is contentWidth's ladder without its gutter: the column's box,
+// for a box that pads itself (the retired Agents list's switcher dock was one;
+// contentWidth is its only caller now).
+func contentMaxW() string {
+	return "mx-auto w-full max-w-xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[110rem] min-[2560px]:max-w-[150rem]"
 }
 
 // proseWidth caps a block of SENTENCES at a readable measure, independently of
@@ -707,7 +680,7 @@ func proseWidth() string {
 // push affordances follow the same rule: with no VAPID keys (push false) the
 // Enable button is not drawn, because tapping it would ask for the OS
 // permission and then fail on a 503.
-func header(push bool) g.Node {
+func header(push bool, brand Brand) g.Node {
 	return Header(
 		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60"),
 		Div(
@@ -720,11 +693,12 @@ func header(push bool) g.Node {
 			// appScript's initPage binds the same #sidebar-open on every page.
 			sidebarOpenButton(),
 			// Brand wordmark links home. Boosted (Task 3) so tapping it does an
-			// AJAX body-swap to / rather than a full reload.
+			// AJAX body-swap to / rather than a full reload. An instance with
+			// branding draws its logo and name instead (brandMark).
 			A(Href("/"),
 				g.Attr("aria-label", "muster home"),
-				Class("inline-flex min-h-[44px] items-center text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
-				wordmark(),
+				Class("inline-flex min-h-[44px] min-w-0 items-center gap-2 text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
+				brandMark(brand),
 			),
 			Span(Class("flex-1")),
 			// "Enable notifications" affordance. Hidden by default; the PWA client
@@ -743,19 +717,36 @@ func header(push bool) g.Node {
 // shared by the home shell header() and the agent-detail / operator headers so
 // every page carries the same #sidebar-open that appScript's initPage binds.
 // Hidden on desktop (lg) where the sidebar is always visible.
-func sidebarOpenButton() g.Node {
+func sidebarOpenButton() g.Node { return navOpenButton(false, nil, false) }
+
+// overlayOpenButton is the hamburger of a page whose sidebar is an overlay at
+// every width (sidebarIn's overlay): the same #sidebar-open, never hidden. s is
+// the page's session switcher, whose Waiting view gives the badge its first
+// count; poll: nothing else on the page refreshes the badge (navWaitingSlot).
+func overlayOpenButton(s *Switcher, poll bool) g.Node { return navOpenButton(true, s, poll) }
+
+func navOpenButton(overlay bool, s *Switcher, poll bool) g.Node {
+	display := " lg:hidden"
+	if overlay {
+		display = ""
+	}
 	return Button(
 		ID("sidebar-open"),
 		Type("button"),
 		g.Attr("aria-label", "Open menu"),
 		g.Attr("aria-controls", "sidebar"),
 		g.Attr("aria-expanded", "false"),
+		// The waiting badge's words are the button's description (nav_agents.go).
+		g.Attr("aria-describedby", NavWaitingBadgeID),
 		// ≥44x44 tap target (measured at 36x36 by an automated accessibility
 		// audit). Only
 		// the hit area grows — the icon stays h-5 w-5 — so the compact top bar's
-		// layout is unchanged apart from the button box.
-		Class("press -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg lg:hidden"),
+		// layout is unchanged apart from the button box. relative: the waiting
+		// badge sits on its top-right corner, out of flow, so it moves nothing.
+		Class("press relative -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg"+display),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>`),
+		// What waits on the operator in the sidebar (nav_agents.go).
+		navWaitingSlot(s, poll),
 	)
 }
 
@@ -819,11 +810,16 @@ func cardTime(t time.Time) g.Node {
 	}
 	return g.El("time",
 		g.Attr("data-ts", strconv.FormatInt(t.UnixMilli(), 10)),
-		g.Attr("title", t.Format(time.RFC3339)),
+		// A date a person reads ("17 Nov 2026, 5:05 pm"), never ISO 8601
+		// (the operator rule); the exact instant is data-ts.
+		g.Attr("title", CardTimeTitle(t)),
 		Class("shrink-0 self-center text-xs tabular-nums text-muted"),
 		g.Text(relTimeString(t)),
 	)
 }
+
+// CardTimeTitle is a card time's tooltip: the date and time in words.
+func CardTimeTitle(t time.Time) string { return t.Format("2 Jan 2006, 3:04 pm") }
 
 // relTimeString is the compact relative-age string mirrored by relTimeScript.
 func relTimeString(t time.Time) string {
@@ -897,9 +893,28 @@ func jsonString(s string) string {
 // Pinned by TestSidebarMarksExactlyOneCurrentPage and
 // TestOffShellPagesClaimNoCurrentPage.
 func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node {
+	return sidebarIn(activeTab, currentTab, hasPanels, feat, false)
+}
+
+// sidebarIn is sidebar with its desktop behaviour chosen.
+//
+// overlay=false is the ordinary page: at lg+ the panel is a persistent rail
+// beside a content column offset by lg:pl-72 (input.css). overlay=true keeps it
+// a slide-out at EVERY width (data-overlay, which input.css's lg rule excludes)
+// with a hamburger that is never hidden (overlayOpenButton). It is for the
+// full-height views — the mirrored Rendered view and the terminal — whose
+// layout is sized to the window: a rail there would take 18rem from a terminal
+// whose width is the far side's geometry, and from a composer pinned to the
+// visible viewport's edges. As an overlay nothing on those pages moves.
+//
+// activeTab / currentTab may also name a non-tab entry (NavAttention,
+// NavAccount, NavAdmin): the tab links then match nothing and that entry is
+// the one marked.
+func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, overlay bool) g.Node {
 	return Div(
 		ID("sidebar-root"),
 		g.Attr("data-open", "false"),
+		g.If(overlay, g.Attr("data-overlay", "")),
 		// Backdrop: fades in when open, click closes.
 		Div(
 			ID("sidebar-backdrop"),
@@ -912,11 +927,17 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 			g.Attr("role", "navigation"),
 			g.Attr("aria-label", "Main menu"),
 			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out"),
-			// Sidebar header: brand + close.
+			// Sidebar header: brand + close. min-h keeps the row the height the
+			// 44px close button gave it (py-3 + 44px = 68px) where the button is
+			// hidden — the desktop rail — so its border still lines up with the
+			// content header's beside it.
 			Div(
-				Class("flex items-center gap-3 border-b border-line px-4 py-3"),
-				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
+				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
+				Span(Class("inline-flex min-w-0 items-center gap-2 text-lg font-semibold tracking-tight"), brandMark(feat.Brand)),
 				Span(Class("flex-1")),
+				// The command palette's other way in (palette.go): the same box
+				// the session switcher's magnifier opens.
+				sidebarSearchButton(),
 				Button(
 					ID("sidebar-close"),
 					Type("button"),
@@ -924,12 +945,24 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 					// ≥44x44 tap target (measured at 32x32 by an automated
 					// accessibility audit). The icon stays h-5 w-5 — only the hit area grows,
 					// so the compact header layout is unchanged.
-					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
+					//
+					// Hidden from lg up on a rail page: the rail is always shown
+					// there, so a close control would do nothing. An overlay page
+					// keeps it — its sidebar is a slide-out at every width, and this
+					// is what shuts it.
+					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"+classIf(!overlay, " lg:hidden")),
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
-			// Section links: five plain <a href> links, deliberately carrying NO
-			// ARIA role at all.
+			// The server in view, and the other muster servers this browser
+			// knows (server_switcher.go; docs/design/web-server-switcher.md).
+			serverSwitcher(feat.Brand),
+			// The agents, like a chat app's channels (nav_agents.go): the chief,
+			// then whoever waits on the operator, then the rest by recency — a
+			// lazy partial in the panel's flex-1 middle.
+			navAgentsSlot(overlay, feat),
+			// Section links (inside More, nav_agents.go's navMore): plain <a href>
+			// links, deliberately carrying NO ARIA role at all.
 			//
 			// An earlier revision closed axe's aria-required-parent (CRITICAL, 22
 			// nodes across all 11 crawled URLs, per an automated audit) by adding
@@ -969,25 +1002,54 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 			// Page DREW. A link whose panel this document did not render shows a
 			// blank page when clicked; deriving both from one function is what makes
 			// the two unable to disagree.
-			Div(
-				Class("flex flex-col gap-1 p-2"),
+			//
+			// 🔴 THE PAGES ARE IN ONE COLLAPSED "More" AT THE BOTTOM (operator
+			// decision), the install button and the account links with them; the
+			// Asks count is on More's header, so it shows while More is shut.
+			navMore(feat,
 				g.Map(visibleTabs(feat), func(t tab) g.Node {
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
+				// The Connectors tab, when its feature is off: not dropped
+				// silently, but a muted entry saying so, linking to its row on
+				// the Features page — for an ADMIN, who can turn it on. Anyone
+				// else is never sent to a page of server settings (the operator
+				// rule: how-to-enable details are an admin's), so theirs is
+				// simply not drawn.
+				g.If(!feat.Connectors && feat.Setup, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
 				// The attention queue (attention.go): a standalone page, not a tab.
-				attentionLink(feat),
-			),
-			// Device preferences, pinned to the bottom of the panel and clear of
-			// the home indicator. They are per-device (localStorage), so they live
-			// with the navigation rather than in any server-side settings.
-			Div(
-				ID("sidebar-prefs"),
-				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
-				installButton(),
-				themeToggle(),
-				accountLinks(feat),
+				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
+				// The shareable pages (page_card.go): a standalone screen too.
+				pagesLink(feat, activeTab == NavPages, currentTab == NavPages),
+				// The officers (internal/api officers_pages.go): a standalone page.
+				officersLink(feat, activeTab == NavOfficers, currentTab == NavOfficers),
+				// The install button (shown only where the browser offers one) and
+				// the account links. The theme toggle that once sat here is gone —
+				// the UI is dark only (theme.go).
+				Div(
+					ID("sidebar-prefs"),
+					Class("flex flex-col gap-1 border-t border-line pt-1"),
+					installButton(),
+					accountLinks(feat, activeTab, currentTab),
+				),
 			),
 		),
+		// The command palette (palette.go): one per document, in the root and
+		// not in the panel above, which a transform slides.
+		paletteBox(),
+		// The switcher dock (switcher_dock.go): one per document, beside the
+		// palette and for its reason; closed and empty where no bar opens it.
+		switcherDock(),
+		// The server switcher's dialogs and script (server_switcher.go): in the
+		// root, beside the palette, for the palette's reason.
+		serverSwitcherDialogs(),
+		// The task sheet's dismiss and dirty guard (taskModalScript), on every
+		// document with the sidebar — DEFERRED: the sidebar is early in <body>,
+		// and a parser-blocking script there would hold every page's paint
+		// mid-document (TestTheViewPagesPaintWholeBeforeAnyScript).
+		taskModalScript(),
+		// The error toasts' host, on every document with the sidebar.
+		actionToasts(),
 	)
 }
 
@@ -995,16 +1057,44 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 // everywhere) and, for an admin, to the admin pages (accounts PR 5). Both are
 // standalone documents outside the shell, so the links opt out of boost: a
 // full navigation, never a body swap of a document that has no panels.
-func accountLinks(feat Features) g.Node {
-	link := func(id, href, label, icon string) g.Node {
+//
+// activeTab / currentTab are sidebar's: the Admin link is the one marked on an
+// admin page (NavAdmin), Account on the account pages (NavAccount).
+func accountLinks(feat Features, activeTab, currentTab string) g.Node {
+	link := func(id, href, label, icon, entry string) g.Node {
 		return A(ID(id), Href(href), hx("hx-boost", "false"),
-			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
+			g.If(currentTab == entry, g.Attr("aria-current", "page")),
+			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(activeTab == entry)),
 			Span(Class("text-base"), g.Text(icon)), Span(g.Text(label)))
 	}
 	return g.Group([]g.Node{
-		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️")),
-		link("sidebar-account", "/account", "Account", "👤"),
+		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️", NavAdmin)),
+		link("sidebar-account", "/account", "Account", "👤", NavAccount),
+		link("sidebar-features", FeaturesPagePath, "Features", "🧰", NavFeatures),
 	})
+}
+
+// featureOffNavLink is a nav entry for a page whose feature is off: muted, and
+// labelled as off, linking to that feature's row on the Features page (where
+// the line that turns it on is) instead of to the page itself.
+func featureOffNavLink(id, feature, label, icon string) g.Node {
+	return A(ID(id), Href(FeatureHref(feature)), hx("hx-boost", "false"), g.Attr("data-feature-off", feature),
+		g.Attr("aria-label", label+" — off on this server; how to turn it on"),
+		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-muted opacity-60 transition hover:bg-s2 hover:opacity-100"),
+		Span(Class("text-base"), g.Attr("aria-hidden", "true"), g.Text(icon)), Span(g.Text(label)),
+		Span(Class("ml-auto text-xs"), g.Text("off")))
+}
+
+// navEntryTone is a nav link's colour: the accent highlight for the entry the
+// page belongs to, the quiet tone for every other. sidebarTab and the
+// non-tab entries (attentionLink, accountLinks) all take it from here, so the
+// one highlighted entry looks the same whichever kind it is — and appScript's
+// show() toggles exactly these classes on the tab links.
+func navEntryTone(active bool) string {
+	if active {
+		return "bg-accent/15 text-fg ring-1 ring-inset ring-accent/30"
+	}
+	return "text-fg2 hover:bg-s2 hover:text-fg"
 }
 
 // pathForTab maps a tab key to its SPA route, "/<tab>". ("/" also SERVES the
@@ -1018,8 +1108,8 @@ func pathForTab(key string) string { return "/" + normalizeTab(key) }
 // detail/operator pages: on the shell (where the target panel exists), appScript
 // intercepts the click and does the instant in-place panel toggle (pushState +
 // show); on a page WITHOUT panels (agent-detail/operator), the click falls
-// through and the boosted <a> navigates to the shell with that tab. The sidebar
-// <a> is NOT inside #agents-list, so boosting is safe (top-level body swap).
+// through and the boosted <a> navigates to the shell with that tab. Boosting
+// the sidebar <a> is safe (top-level body swap).
 // active marks the default-selected tab.
 //
 // 🔴 hasPanels (the home shell) renders hx-boost="false", and that is
@@ -1048,10 +1138,7 @@ func pathForTab(key string) string { return "/" + normalizeTab(key) }
 // Verified correct (one extra request, arguably fresher content).
 func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node {
 	base := "sidebar-tab press flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition"
-	tone := "text-fg2 hover:bg-s2 hover:text-fg"
-	if active {
-		tone = "bg-accent/15 text-fg ring-1 ring-inset ring-accent/30"
-	}
+	tone := navEntryTone(active)
 	return A(
 		Href(pathForTab(tab)),
 		g.Attr("data-tab", tab),
@@ -1081,8 +1168,11 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // routing (each tab is a real path via history.pushState; back/forward + deep
 // links work), the per-tab floating action buttons, and the header badge's
 // quick-manage popover. No framework — minimal vanilla JS.
-// navRegistryJS emits the JavaScript values the SPA router needs — the ordered
-// tab list, the tab→heading map and the default tab — from musterTabs.
+// navRegistryJS emits the values the SPA router needs — the ordered tab list,
+// the tab→heading map and the default tab — from musterTabs, as the JSON
+// appScript's tag carries in appNavAttr (its code is a static file, the same
+// for every document; appNavJS reads them back as TABS, HEADINGS and
+// DEFAULT_TAB).
 //
 // 🔴 THIS IS THE FOURTH CONSUMER OF THE REGISTRY, AND UPSTREAM'S HAND-WRITTEN
 // VERSION OF IT IS THE ONE THAT ROTS SILENTLY. A Go-side tab missing from the
@@ -1118,13 +1208,36 @@ func navRegistryJS(feat Features) string {
 		keys = append(keys, t.Key)
 		headingMap[t.Key] = t.Heading
 	}
-	keysJSON, _ := json.Marshal(keys)
-	headings, _ := json.Marshal(headingMap)
-	def, _ := json.Marshal(defaultVisibleTab(feat))
-	return "  var TABS = " + string(keysJSON) + ";\n" +
-		"  var HEADINGS = " + string(headings) + ";\n" +
-		"  var DEFAULT_TAB = " + string(def) + ";\n"
+	nav, _ := json.Marshal(struct {
+		Tabs     []string          `json:"tabs"`
+		Headings map[string]string `json:"headings"`
+		Default  string            `json:"default"`
+	}{keys, headingMap, defaultVisibleTab(feat)})
+	return string(nav)
 }
+
+// appNavAttr and appBuildAttr are the <script> attributes appScript's static
+// code reads its per-document inputs from (static_script.go): the visible tab
+// registry (navRegistryJS) and the build the page was rendered by (restoreJS).
+const (
+	appNavAttr   = "data-nav"
+	appBuildAttr = "data-build"
+)
+
+// appNavJS is the head of appScript's IIFE: the router's values, read from
+// the tag that loaded the script. document.currentScript is the tag while the
+// script's top level runs — on a full load and on a boosted swap's re-run
+// alike, so a re-run reads the NEW document's tabs, as the inline copy did.
+//
+// ⚠ NO try/catch AROUND THE PARSE. A tag without the attribute is a renderer
+// bug; throwing here kills the script as loudly as the syntax error a broken
+// inline literal used to, instead of booting a router that refuses every tab.
+const appNavJS = `  var APP_TAG = document.currentScript;
+  var NAV = JSON.parse(APP_TAG.getAttribute('` + appNavAttr + `'));
+  var TABS = NAV.tabs;
+  var HEADINGS = NAV.headings;
+  var DEFAULT_TAB = NAV.default;
+`
 
 // panelID is the DOM id of a tab's tabpanel. It is a FUNCTION rather than a
 // convention spelled at each call site because both halves of the app depend on
@@ -1135,9 +1248,17 @@ func navRegistryJS(feat Features) string {
 func panelID(key string) string { return "panel-" + key }
 
 func appScript(feat Features) g.Node {
-	return Script(g.Raw(`
+	return staticScript(appScriptSrc,
+		g.Attr(appNavAttr, navRegistryJS(feat)),
+		g.Attr(appBuildAttr, feat.SnapBuild),
+		g.Attr(LiveHeartbeatAttr, strconv.FormatInt(LiveHeartbeat().Milliseconds(), 10)))
+}
+
+// appScriptSrc is the path appScript's code is served at, /static/js/app.js
+// (static_script.go). Its per-document inputs are the tag's attributes.
+var appScriptSrc = staticJS("app", `
 (function () {
-` + navRegistryJS(feat) + `
+`+appNavJS+restoreJS+`
 
   // --- Navigation state persistence ----------------------------------------
   // Persist the active tab + its scroll offset so the PWA reopens where the
@@ -1354,7 +1475,7 @@ func appScript(feat Features) g.Node {
   // MEASURED on an idle no-DB shell: 6 htmx:load events, ALL of them within 9ms
   // of first paint, from one response's out-of-band badge subtrees. So the
   // re-entry is a burst on every page load rather than a slow drip; what a real
-  // shell with agent cards adds on top is asserted, not measured.
+  // shell (then with agent cards) adds on top is asserted, not measured.
   //
   // ⚠ THE SEVERITY WORDING BELOW OUTRUNS THAT NUMBER. "every few seconds" and
   // "dragged back and HELD" were written against an earlier reading of the
@@ -1393,26 +1514,26 @@ func appScript(feat Features) g.Node {
   // surface when Faro is off (local/e2e).
   if (typeof window.cgTrack !== 'function') { window.cgTrack = function () {}; }
 
-  // --- Authelia session expiry -------------------------------------------
+  // --- forward-auth session expiry ---------------------------------------
   //
-  // A deployment behind an SSO forward-auth proxy (e.g. Authelia) with session.inactivity
-  // at 5m, so this path is exercised constantly, not rarely.
+  // A deployment behind an SSO forward-auth proxy with a short inactivity
+  // timeout exercises this path constantly, not rarely.
   //
   // 🔴 htmx CANNOT FIX THIS FROM THE RESPONSE SIDE. htmx's docs are explicit
   // that response headers "are not provided to htmx for processing with 3xx
   // Redirect response codes" — the browser follows the 302 inside the XHR
   // before htmx ever sees it. Every request this app makes is an htmx request
   // (the whole shell is hx-boost + panel swaps), so an expired session swaps
-  // the Authelia LOGIN PAGE into hx-target and the app appears to have turned
+  // the proxy's LOGIN PAGE into hx-target and the app appears to have turned
   // into the portal.
   //
-  // Measured against the live edge (Authelia 4.39.20, 2026-09-02):
+  // A forward-auth proxy may answer:
   //     GET /ui/requests                              -> 302
   //     GET /ui/requests  X-Requested-With: XHR       -> 401
-  // So Authelia WILL answer with a clean 401, but only on a header htmx does
+  // So such a proxy answers with a clean 401, but only on a header htmx does
   // not send by default. Hence (a).
   //
-  // ⚠ THAT IS MEASURED, NOT DOCUMENTED — an Authelia upgrade could change it.
+  // ⚠ THAT IS PROXY BEHAVIOUR, NOT A CONTRACT — an upgrade could change it.
   // (b) is therefore kept REGARDLESS: it catches a 401 arriving by any route,
   // including one that has nothing to do with X-Requested-With. Do not delete
   // (b) on the grounds that (a) makes it redundant — it does not.
@@ -1421,7 +1542,7 @@ func appScript(feat Features) g.Node {
   // replaced) and is why this IIFE can re-run; the guard keeps it to one bind.
   if (!window.__cgAuthGate) {
     window.__cgAuthGate = true;
-    // (a) Ask Authelia for a 401 instead of a 302 on every htmx request.
+    // (a) Ask the proxy for a 401 instead of a 302 on every htmx request.
     document.body.addEventListener('htmx:configRequest', function (e) {
       e.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
     });
@@ -1435,6 +1556,18 @@ func appScript(feat Features) g.Node {
       if (!e.detail || !e.detail.xhr || e.detail.xhr.status !== 401) return;
       e.detail.shouldSwap = false;
       e.detail.isError = false;
+      // 🔴 IN THE VIEW SWAP'S FRAME, THE TOP WINDOW RELOADS. The frame is the
+      // other view laid over the page; reloading only the frame would put the
+      // sign-in (or a refusal) inside it, and the page under it — whose
+      // session expired too — would still be there. The top window's address
+      // is the view on screen (view_swap.go keeps it so), so its reload is
+      // that view, signed out: the sign-in, at the top, with ?next= back.
+      try {
+        if (window.top !== window && window.top.location.origin === window.location.origin) {
+          window.top.location.reload();
+          return;
+        }
+      } catch (x) {}
       window.location.reload();
     });
   }
@@ -1443,26 +1576,34 @@ func appScript(feat Features) g.Node {
   // "Copied" affordance. Boost-safe (looked up at call time). Falls back to a
   // hidden-textarea execCommand when the async Clipboard API is unavailable
   // (insecure context / older browser).
+  // cgCopyText is cgCopy's copy on its own: a Promise that resolves once text
+  // is on the clipboard (the page share button's copy, page_card.go, uses it).
+  window.cgCopyText = function (text) {
+    return new Promise(function (resolve, reject) {
+      function fallback() {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          var ok = document.execCommand('copy'); document.body.removeChild(ta);
+          if (ok) resolve(); else reject(new Error('copy refused'));
+        } catch (e) { reject(e); }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(resolve, fallback);
+      } else { fallback(); }
+    });
+  };
   window.cgCopy = function (btn) {
     if (!btn) return;
     var text = btn.getAttribute('data-copy-text') || '';
-    var done = function () {
+    window.cgCopyText(text).then(function () {
       var prev = btn.textContent;
       btn.textContent = 'Copied';
       setTimeout(function () { btn.textContent = prev; }, 1200);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(function () { fallback(); });
-    } else { fallback(); }
-    function fallback() {
-      try {
-        var ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        document.execCommand('copy'); document.body.removeChild(ta); done();
-      } catch (e) {}
-    }
+    }, function () {});
   };
+`+pageShareJS+`
 
   // setOpen looks elements up live (not via captured refs) so it stays correct
   // after an hx-boost body swap re-creates the shell.
@@ -1474,7 +1615,20 @@ func appScript(feat Features) g.Node {
     if (openBtn) openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     // Only lock scroll for the mobile overlay (desktop sidebar is persistent).
     document.body.style.overflow = (open && window.innerWidth < 1024) ? 'hidden' : '';
+    // An overlay page's agent list loads on this (nav_agents.go).
+    if (open) document.dispatchEvent(new CustomEvent('`+NavOpenEvent+`'));
   }
+
+  // musterNavShown: is the sidebar on screen — open as a drawer, or the
+  // desktop rail (a page with no data-overlay, at the lg breakpoint input.css
+  // uses)? The agent list's triggers are filtered by it (nav_agents.go
+  // navShownJS), so a closed phone drawer fetches nothing.
+  window.musterNavShown = function () {
+    var root = document.getElementById('sidebar-root');
+    if (!root) return false;
+    if (root.getAttribute('data-open') === 'true') return true;
+    return !('overlay' in root.dataset) && window.innerWidth >= 1024;
+  };
 
   // initPage (re)wires the per-page elements (sidebar buttons + tabs). It is
   // idempotent: each element is marked data-cg-bound once so firing on both
@@ -1542,9 +1696,22 @@ func appScript(feat Features) g.Node {
   // was painted aria-current on Agents by Go and then had it MOVED onto
   // "Claude Code requests" by this reconcile, naming a link that is neither the
   // page nor the highlight.
+  //
+  // 🔴 A DOCUMENT WITH NO PANELS ON A PATH NO TAB NAMES IS LEFT AS THE SERVER
+  // PAINTED IT. /attention, /account, /plugins, the mirrored views: each marks
+  // its own entry (or none) on first paint, and there is no panel here to
+  // reconcile — so the DEFAULT_TAB fallback above would only move the accent
+  // onto Tasks, beside the entry the page really belongs to.
   function showForPath() {
     var t = tabFromPath(location.pathname);
+    if (!t && !anyPanel()) return;
     show(t || DEFAULT_TAB, t !== '');
+  }
+  function anyPanel() {
+    for (var i = 0; i < TABS.length; i++) {
+      if (document.getElementById('panel-' + TABS[i])) return true;
+    }
+    return false;
   }
   // Every tab's path is /<key>, as Go's pathForTab. '/' also SHOWS the default
   // tab, but no tab's link points at it, so nothing here returns it.
@@ -1568,8 +1735,9 @@ func appScript(feat Features) g.Node {
     // isPage=true: the pushState above (or the early-return equality check) means
     // location.pathname IS pathForTab(sel), so this tab's link is the current page.
     show(sel, true);
-    // A panel that keeps state in the URL (the Agents filter's ?q=,
-    // agents_filter.go) re-writes it: the push above is a bare /<tab>.
+    // For a panel that keeps state in the URL to re-write it: the push
+    // above is a bare /<tab>. Nothing listens now (the retired Agents
+    // filter's ?q=, agents_filter.go, did).
     document.dispatchEvent(new CustomEvent('muster:tabshown', { detail: { tab: sel } }));
     setOpen(false);
     navSet(NAV_TAB_KEY, sel);
@@ -1762,12 +1930,11 @@ func appScript(feat Features) g.Node {
     // afterwards. From the outside it is indistinguishable from having no
     // handler at all, which is exactly how it was reported.
     setOpen(false); notifOpen(false);
-    // Both dialogs were omitted from this handler, so Escape did nothing for
-    // them. Both now route through the SAME dirty-guarded dismiss: an
-    // in-progress edit — or a typed dispatch prompt, the longest free text in
-    // the app — must not vanish on a stray keypress. cgModalDismiss is a no-op
-    // for a modal that is already hidden.
-    if (window.cgModalDismiss) { window.cgModalDismiss('task-modal'); window.cgModalDismiss('agent-modal'); }
+    // The task dialog was omitted from this handler, so Escape did nothing for
+    // it. It now routes through the dirty-guarded dismiss: an in-progress edit
+    // must not vanish on a stray keypress. cgModalDismiss is a no-op for a
+    // modal that is already hidden.
+    if (window.cgModalDismiss) { window.cgModalDismiss('task-modal'); }
   });
 
   // --- Error toasts ---
@@ -1797,7 +1964,7 @@ func appScript(feat Features) g.Node {
   // uses (statusGlyph), so the toast cannot draw a different shape. Static
   // markup with no request-derived content, so innerHTML is safe here; the
   // MESSAGE goes in through textContent.
-  var TOAST_GLYPH = ` + toastGlyphJS() + `;
+  var TOAST_GLYPH = `+toastGlyphJS()+`;
   // toastKey normalizes a message so volatile detail (status codes, ids, the
   // server's per-request error body) collapses to ONE coalesced toast. Without
   // this, htmx:responseError messages like "Request failed (500)" / "(502)" or
@@ -1812,14 +1979,23 @@ func appScript(feat Features) g.Node {
       .slice(0, 40)               // ignore long varying tails
       .toLowerCase();
   }
-  window.toast = function (msg) {
+  // opts.tone 'info' is a confirmation, not an error (the Asks feed's "Sent
+  // to <session>"): the neutral surface, no error glyph, role=status. Coalesced
+  // and capped like every other toast; an info toast never merges with an
+  // error one (the tone is part of the key).
+  window.toast = function (msg, opts) {
+    var info = !!(opts && opts.tone === 'info');
     var host = document.getElementById('action-toasts');
     if (!host) { try { alert(msg); } catch (e) {} return; }
     // Dedupe/coalesce: a network blip fails every in-flight request at once, each
     // firing an (often near-identical) error toast. Collapse same-FAMILY messages
     // (by normalized key) into ONE toast with a ×N counter so a burst can never
     // flood the screen.
-    var key = toastKey(msg);
+    // 🔴 AN INFO TOAST IS KEYED ON ITS EXACT WORDS: toastKey is digit-blind
+    // and cut at 40 characters (an error burst's family), and a merged toast
+    // keeps its FIRST message — so "Sent to … fern:1" then "… fern:2" read
+    // "Sent to … fern:1 (×2)" (audit of #787). Only the same words merge.
+    var key = info ? 'info:' + msg : toastKey(msg);
     var nodes = host.querySelectorAll('[data-toast-key]');
     for (var i = 0; i < nodes.length; i++) {
       if (nodes[i].getAttribute('data-toast-key') === key) {
@@ -1842,13 +2018,19 @@ func appScript(feat Features) g.Node {
     // danger / on-danger: the pair the palette tests at 4.5:1. The old
     // translucent rose over the page measured 4.02:1, under AA for 14px text.
     // The glyph is the error SHAPE, so the toast does not rely on colour alone.
-    t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
-    t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
-    t.setAttribute('role', 'alert');
+    if (info) {
+      t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-s2 px-3 py-2 text-sm font-medium text-fg shadow-lg shadow-black/30 ring-1 ring-line';
+      t.setAttribute('role', 'status');
+      t.setAttribute('data-toast-tone', 'info');
+    } else {
+      t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
+      t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
+      t.setAttribute('role', 'alert');
+      t.innerHTML = TOAST_GLYPH;
+    }
     t.setAttribute('data-toast-msg', msg);
     t.setAttribute('data-toast-key', key);
     t.setAttribute('data-toast-count', '1');
-    t.innerHTML = TOAST_GLYPH;
     var tx = document.createElement('span');
     tx.setAttribute('data-toast-text', '');
     tx.textContent = msg;
@@ -1870,7 +2052,7 @@ func appScript(feat Features) g.Node {
   function cbHidden(box) { return box.querySelector('[data-combobox-hidden]'); }
   function cbList(box) { return box.querySelector('[data-combobox-list]'); }
   function cbOptions(box) { return Array.prototype.slice.call(box.querySelectorAll('[data-combobox-option]')); }
-` + rankJS + `  function cbMatches(label, q) { return window.musterRank(label, q) >= 0; }
+`+rankJS+`  function cbMatches(label, q) { return window.musterRank(label, q) >= 0; }
   // cbModelLabel: trim the leading "openrouter/" provider prefix for DISPLAY only
   // (the full slug stays the option value). No-op for values without the prefix.
   function cbModelLabel(val) { return val.indexOf('openrouter/') === 0 ? val.slice('openrouter/'.length) : val; }
@@ -2219,14 +2401,34 @@ func appScript(feat Features) g.Node {
     document.body.addEventListener('htmx:load', init);
   }
 })();
-`))
-}
+`+paletteJS+dockJS)
 
 // resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can
 // miss events while hidden; so we also refetch on focus, on visibility regain,
-// and on SSE (re)connect. It fires a body-level "muster:resync" event, and is
-// fully feature-detected/guarded.
+// and on SSE (re)connect — except the first open of a document whose drawn
+// board is provably current (musterSSEOpen, below). It fires a body-level
+// "muster:resync" event, and is fully feature-detected/guarded.
+//
+// 🔴 THE FIRST OPEN OF A DOCUMENT THAT DREW ITS BOARD AT THE STREAM'S OWN MARK
+// DOES NOT RESYNC (musterSSEOpen; tasks_list_ssr.go). #tasks-list's
+// data-sse-mark is the event mark the server read before it built the drawn
+// board; the stream's first event, muster.hello, is the mark it read after
+// subscribing. Equal: no event for this user was published in between, so
+// nothing was missed and the resync would only re-fetch the board just drawn.
+// Not equal, no hello within 3s, or no source: resync, as every open did
+// before. The mark is CONSUMED on that first open, so every later open — a
+// reconnect, after which events may have been missed — always resyncs.
+//
+// ⚠ THE OPEN HANDLER IS BOUND ONCE PER WINDOW (__musterSSEOpenBound). htmx
+// re-runs this script on every boosted body swap while <body> and its listeners
+// survive, so an unguarded bind stacks one more handler per navigation; the
+// handler reads #tasks-list at the moment of the open, so one binding serves
+// every document. (The other listeners here still bind per run, as before.)
+//
+// This rationale is in Go rather than in the script because every byte inside
+// the script ships to every browser (a static file now, static_script.go, so
+// once per build rather than once per document — but still once per browser).
 //
 // 🔴 WHO LISTENS IS THE HALF THAT MATTERS, AND THIS DOC NAMED A PANEL THAT DOES
 // NOT EXIST HERE. It said "the requests panel listens for (see Page's
@@ -2235,8 +2437,10 @@ func appScript(feat Features) g.Node {
 // task detail document (task_detail.go); a document carrying this script and
 // neither of those receives an event nobody is waiting for, which is what the
 // shell did.
-func resyncScript() g.Node {
-	return Script(g.Raw(`
+func resyncScript() g.Node { return staticScript(resyncScriptSrc) }
+
+// resyncScriptSrc is the path resyncScript's code is served at, /static/js/resync.js (static_script.go).
+var resyncScriptSrc = staticJS("resync", `
 (function () {
   function resync() {
     try {
@@ -2270,7 +2474,33 @@ func resyncScript() g.Node {
   });
   window.addEventListener('focus', resync);
   // SSE (re)connect: the htmx sse extension dispatches htmx:sseOpen on (re)open.
-  document.body.addEventListener('htmx:sseOpen', resync);
+  // A drawn board's first open skips it when the hello matches (see the Go doc).
+  function musterSSEOpen(e) {
+    var list = document.getElementById('tasks-list');
+    var mark = list && list.getAttribute('data-sse-mark');
+    var src = e && e.detail && e.detail.source;
+    if (!mark || !src || !src.addEventListener) { resync(); return; }
+    list.removeAttribute('data-sse-mark');
+    var settled = false, timer = null;
+    function settle(fresh) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { src.removeEventListener('muster.hello', onHello); } catch (e2) {}
+      if (!fresh) resync();
+    }
+    function onHello(ev) {
+      var m = '';
+      try { m = JSON.parse(ev.data).mark || ''; } catch (e3) {}
+      settle(m === mark);
+    }
+    src.addEventListener('muster.hello', onHello);
+    timer = setTimeout(function () { settle(false); }, 3000);
+  }
+  if (!window.__musterSSEOpenBound) {
+    window.__musterSSEOpenBound = true;
+    document.body.addEventListener('htmx:sseOpen', musterSSEOpen);
+  }
 
   // Surface htmx failures. htmx does NOT swap non-2xx responses, so without this
   // every failed form/mutation (dispatch, note, status, comment)
@@ -2377,15 +2607,16 @@ func resyncScript() g.Node {
   }
   document.body.addEventListener('htmx:beforeSwap', musterRefuseStaleCardSwap);
 })();
-`))
-}
+`)
 
 // relTimeScript keeps the cards' relative timestamps fresh (the list only
 // refetches on SSE events, so a server-rendered string would otherwise freeze).
 // It reformats every <time data-ts> on load, every 15s, and after each htmx
 // swap (new/replaced cards). The format mirrors relTimeString.
-func relTimeScript() g.Node {
-	return Script(g.Raw(`
+func relTimeScript() g.Node { return staticScript(relTimeScriptSrc) }
+
+// relTimeScriptSrc is the path relTimeScript's code is served at, /static/js/rel-time.js (static_script.go).
+var relTimeScriptSrc = staticJS("rel-time", `
 (function () {
   function fmt(ms) {
     var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -2404,14 +2635,12 @@ func relTimeScript() g.Node {
   setInterval(tick, 15000);
   document.body.addEventListener('htmx:afterSettle', tick);
 })();
-`))
-}
+`)
 
-// taskModalScript owns BOTH bottom sheets' DISMISS semantics (cgModalDismiss /
+// taskModalScript owns the bottom sheet's DISMISS semantics (cgModalDismiss /
 // cgModalClose / cgModalDirty, keyed by modal id) and the task sheet's save
-// feedback. The dispatch sheet shares the same discard-confirm pattern rather
-// than getting a second one — its dirty check is narrower (free text only, see
-// agentDirty) because its config fields are pre-filled from localStorage.
+// feedback. (The dispatch sheet that shared them was deleted with the dispatch
+// form, docs/design/chief-dispatch.md phase 2.)
 // Three separate gaps it closes, all on the edit path:
 //
 //  1. A stray outside click (or Escape) silently discarded an in-progress edit —
@@ -2434,8 +2663,15 @@ func relTimeScript() g.Node {
 // NOT in the closure — a later re-execution gets a FRESH closure while the
 // once-bound listener still writes into the FIRST one, so a closure variable
 // would be written by one run and read by another.
-func taskModalScript() g.Node {
-	return Script(g.Raw(`
+//
+// DEFERRED: it is drawn in the sidebar's root (sidebarIn), early in <body>, and
+// a parser-blocking script there would hold every page's paint mid-document
+// (TestTheViewPagesPaintWholeBeforeAnyScript). It binds listeners and looks
+// its elements up when they fire, so it needs nothing parsed before it runs.
+func taskModalScript() g.Node { return staticScript(taskModalScriptSrc, Defer()) }
+
+// taskModalScriptSrc is the path taskModalScript's code is served at, /static/js/task-modal.js (static_script.go).
+var taskModalScriptSrc = staticJS("task-modal", `
 (function () {
   var firstRun = !window.__cgTaskModalInit;
   window.__cgTaskModalInit = true;
@@ -2506,42 +2742,25 @@ func taskModalScript() g.Node {
     return false;
   }
 
-  // The dispatch sheet's guard is deliberately narrower: only its FREE TEXT.
-  // Its config fields (model / repo / directory) are pre-filled from
-  // localStorage recents as PROPERTIES, so a value-vs-defaultValue sweep would
-  // read an untouched dispatch form as dirty the instant it opened — the exact
-  // trap that excludes the task CREATE form. The prompt textarea is the long,
-  // unrecoverable thing (measured: Escape hid the sheet, and reopening refetched
-  // /ui/agents/new so the prompt came back empty).
-  function agentDirty() {
-    var b = document.getElementById('agent-modal-body');
-    if (!b) return false;
-    var els = b.querySelectorAll('textarea');
-    for (var i = 0; i < els.length; i++) {
-      if (els[i].value !== els[i].defaultValue) return true;
-    }
-    return false;
-  }
-
-  // --- Generic dismiss, shared by BOTH bottom sheets --------------------------
-  // One pattern, not two: each sheet <id> pairs with an <id>-discard bar, and an
+  // --- Generic dismiss, keyed by sheet id -------------------------------------
+  // Each sheet <id> pairs with an <id>-discard bar, and an
   // AMBIGUOUS dismiss (backdrop tap / Escape) reveals that bar instead of
   // destroying unsaved text. DOM-only, never window.confirm() — native dialogs
   // are suppressed in the installed standalone PWA and would never resolve.
-  var DIRTY = { 'task-modal': taskDirty, 'agent-modal': agentDirty };
+  var DIRTY = { 'task-modal': taskDirty };
   function discardBar(id) { return document.getElementById(id + '-discard'); }
 
   window.cgModalDirty = function (id) {
     var f = DIRTY[id];
     return !!(f && f());
   };
-  // 🔴 OPEN = CLEAR, then reveal. Every open path (both FABs, the card Edit and
-  // the card Dispatch button) reveals the sheet from its own hx-on:click and
+  // 🔴 OPEN = CLEAR, then reveal. Every open path (the Tasks FAB and the card
+  // Edit; the dispatch "+" and card Dispatch were deleted) reveals the sheet from its own hx-on:click and
   // lets htmx fill <id>-body asynchronously. During that in-flight window the
   // body still held the PREVIOUS open's form, and the discard bar is a SIBLING
   // of the body so it survives the swap — so the dirty guard read stale text and
   // the user faced "Discard unsaved changes?" over a form that was not theirs.
-  // Measured with /ui/agents/new delayed 1200ms: bar=true, promptValue="the
+  // Measured with the (since deleted) dispatch sheet's body delayed 1200ms: bar=true, promptValue="the
   // previous prompt", then after the swap bar=true, promptValue="" — and Escape
   // would not close the sheet. That also made tasks-mobile's "Escape does not
   // destroy a typed dispatch prompt" flaky (red first attempt, green on retry).
@@ -2677,8 +2896,7 @@ func taskModalScript() g.Node {
   }
   if (firstRun) document.body.addEventListener('htmx:load', bindFocusObserver);
 })();
-`))
-}
+`)
 
 // tagNormalizeJS is the chip editor's tag normalizer, embedded from its own file
 // rather than written inline, because the SAME bytes are read by
@@ -2720,11 +2938,13 @@ var filterToggleJS string
 //
 // Telemetry is COUNTS + namespaces only — never tag values, which can carry
 // repo/project names (see metrics.RoutingTags for the same rule server-side).
-func tagScript() g.Node {
-	return Script(g.Raw(`
+func tagScript() g.Node { return staticScript(tagScriptSrc) }
+
+// tagScriptSrc is the path tagScript's code is served at, /static/js/tags.js (static_script.go).
+var tagScriptSrc = staticJS("tags", `
 (function () {
-  var KEY = 'muster.tasks.tagfilter';
-` + filterToggleJS + `
+  var KEY = '`+tasksTagFilterKey+`';
+`+filterToggleJS+`
 
   // 🔴 Bind the delegated document listeners EXACTLY ONCE. htmx re-executes
   // in-body <script> tags on every hx-boost body swap (a sidebar tab nav), and
@@ -2925,7 +3145,7 @@ func tagScript() g.Node {
     span.appendChild(rm);
     return span;
   }
-` + tagNormalizeJS + `
+`+tagNormalizeJS+`
   function addTag(editor, raw) {
     var tag = normalize(raw);
     if (!tag) return false;
@@ -2973,8 +3193,7 @@ func tagScript() g.Node {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
-`))
-}
+`)
 
 // taskHashScript UPGRADES a legacy `/tasks#task-<id>` fragment to the real page.
 //
@@ -3011,8 +3230,10 @@ func tagScript() g.Node {
 //   - THE LISTENER BINDS ONCE (__cgTaskHashInit) even though the body of the
 //     script re-runs: htmx re-executes in-body <script> tags on every hx-boost
 //     swap, and a stacked hashchange listener would fire N redirects.
-func taskHashScript() g.Node {
-	return Script(g.Raw(`
+func taskHashScript() g.Node { return staticScript(taskHashScriptSrc) }
+
+// taskHashScriptSrc is the path taskHashScript's code is served at, /static/js/task-hash.js (static_script.go).
+var taskHashScriptSrc = staticJS("task-hash", `
 (function () {
   var firstRun = !window.__cgTaskHashInit;
   window.__cgTaskHashInit = true;
@@ -3027,8 +3248,7 @@ func taskHashScript() g.Node {
 
   go();
 })();
-`))
-}
+`)
 
 // cardMetaNavScript gives the board card's metadata chips back the card's click.
 //
@@ -3095,8 +3315,10 @@ func taskHashScript() g.Node {
 // Delegated on the document and bound once (__cgCardMetaNavInit), like every
 // other script here: the cards are re-rendered by every list swap, and htmx
 // re-executes in-body <script> tags on each hx-boost swap.
-func cardMetaNavScript() g.Node {
-	return Script(g.Raw(`
+func cardMetaNavScript() g.Node { return staticScript(cardMetaNavScriptSrc) }
+
+// cardMetaNavScriptSrc is the path cardMetaNavScript's code is served at, /static/js/card-meta-nav.js (static_script.go).
+var cardMetaNavScriptSrc = staticJS("card-meta-nav", `
 (function () {
   if (window.__cgCardMetaNavInit) return;
   window.__cgCardMetaNavInit = true;
@@ -3147,8 +3369,7 @@ func cardMetaNavScript() g.Node {
     route(e);
   });
 })();
-`))
-}
+`)
 
 // pushScript drives the Web Push subscription flow. It is fully
 // feature-detected: on a browser without serviceWorker / PushManager /
@@ -3161,8 +3382,10 @@ func cardMetaNavScript() g.Node {
 // update and share all depend on the worker, and none of them should depend on
 // the script whose job is notifications. pwaScript must therefore render BEFORE
 // this one, which TestPWAScriptRegistersBeforeThePushScript pins.
-func pushScript() g.Node {
-	return Script(g.Raw(`
+func pushScript() g.Node { return staticScript(pushScriptSrc) }
+
+// pushScriptSrc is the path pushScript's code is served at, /static/js/push.js (static_script.go).
+var pushScriptSrc = staticJS("push", `
 (function () {
   var enableBtn = document.getElementById('enable-push');
   var onPill = document.getElementById('push-on');
@@ -3193,7 +3416,7 @@ func pushScript() g.Node {
   // Inside the Android app's WebView the app owns notifications (UnifiedPush,
   // its own settings); the page offers no Enable and says nothing about
   // browser support (docs/design/android.md, server change 24).
-  if (window.` + AppBridgeName + `) { status(''); applyState('off'); return; }
+  if (window.`+AppBridgeName+`) { status(''); applyState('off'); return; }
 
   var supported = ('serviceWorker' in navigator) &&
                   ('PushManager' in window) &&
@@ -3364,5 +3587,4 @@ func pushScript() g.Node {
     status('Service worker failed to register; notifications are unavailable.', 'error');
   });
 })();
-`))
-}
+`)

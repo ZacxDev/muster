@@ -48,8 +48,9 @@ func TestTheRoutedPrefacePointsAtRouteReplyAndKeepsTheCredentialRule(t *testing.
 		"can answer it, call the route_reply tool of muster's MCP server with route_id rt_0123456789abcdef01234567 " +
 		"and your answer as body. Only if that tool is not in your tool list, run: muster route reply " +
 		"rt_0123456789abcdef01234567 --body-file - (the answer on stdin). Your answer is sent to the sender as " +
-		"written, so write the reply itself, with no credentials or addresses. If you cannot, do nothing: it goes " +
-		"back to the chief at 2000-01-02T03:04:05Z."
+		"written, so write the reply itself, with no credentials or addresses. Write it as plain text: no Markdown — " +
+		"no bullet or numbered lists, headings, bold, tables or code blocks — since it goes out exactly as you write " +
+		"it. If you cannot, do nothing: it goes back to the chief at 2000-01-02T03:04:05Z."
 	if got != want {
 		t.Fatalf("the routed preface:\n%s\nwant:\n%s", got, want)
 	}

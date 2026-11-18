@@ -18,7 +18,7 @@ func connectorKey(b byte) string {
 // its own reason, and a coherent configuration loads.
 func TestConnectorConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 	load := func(env map[string]string) error {
-		full := map[string]string{envDatabase: "postgres://unused", envStandalone: "1"}
+		full := map[string]string{envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1"}
 		for k, v := range env {
 			full[k] = v
 		}
@@ -38,20 +38,32 @@ func TestConnectorConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		want string
 	}{
 		"short key":        {map[string]string{envConnectorEncKey: base64.StdEncoding.EncodeToString([]byte("short"))}, envConnectorEncKey},
-		"key shared":       {map[string]string{envConnectorEncKey: connectorKey(2), envGitHubEncKey: connectorKey(2)}, "same key"},
 		"port without key": {map[string]string{envConnectPort: "18191"}, envConnectPort},
 		"port is main port": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "8105",
 			envAgentConnectURL: "http://muster.example.test:8105"}, "same as the main port"},
-		// The store on with no URL for agents: every agent-facing recipe would
-		// name an empty $MUSTER_CONNECT_URL.
-		"key without url":          {map[string]string{envConnectorEncKey: connectorKey(1)}, envAgentConnectURL},
+		// (The key with no URL for agents LOADS: members' credentials only —
+		// TestTheConnectorKeyAloneBootsWithTheAgentHalfOff.) A connect port
+		// beside it would serve a surface no agent is told about.
 		"key and port without url": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191"}, envAgentConnectURL},
-		"bad port":                 {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "0"}, envConnectPort},
-		"url without port":         {map[string]string{envConnectorEncKey: connectorKey(1), envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
-		"url without key":          {map[string]string{envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
-		"url with path":            {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/x"}, envAgentConnectURL},
-		"url with userinfo":        {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://u:p@muster.example.test:18191"}, envAgentConnectURL},
-		"url not http":             {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "ftp://muster.example.test"}, envAgentConnectURL},
+		// Both reach agents only through the agent-facing store, so the key
+		// alone is not enough for either.
+		"internal_http with key, no url": {map[string]string{envConnectorEncKey: connectorKey(1),
+			envInternalHTTPConnectors:               `[{"name":"app-driver","base_url":"http://app-driver.example.test"}]`,
+			"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-token-123"}, envAgentConnectURL},
+		"github app with key, no url": {map[string]string{envConnectorEncKey: connectorKey(1), envGitHubAppID: "123456",
+			envGitHubAppKey: testAppKeyPEM(t), envGitHubAppAccounts: "example-org:4200"}, envAgentConnectURL},
+		"bad port":          {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "0"}, envConnectPort},
+		"url without port":  {map[string]string{envConnectorEncKey: connectorKey(1), envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
+		"url without key":   {map[string]string{envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
+		"url with path":     {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/x"}, envAgentConnectURL},
+		"url with userinfo": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://u:p@muster.example.test:18191"}, envAgentConnectURL},
+		"url not http":      {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "ftp://muster.example.test"}, envAgentConnectURL},
+		// An internal_http connector is granted through the store.
+		"internal_http without key": {map[string]string{envInternalHTTPConnectors: `[{"name":"app-driver","base_url":"http://app-driver.example.test"}]`,
+			"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-token-123"}, envConnectorEncKey},
+		"internal_http bad entry": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191",
+			envAgentConnectURL: "http://muster.example.test:18191/", envInternalHTTPConnectors: `[{"name":"app-driver","base_url":"http://app-driver.example.test/v1"}]`,
+			"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-token-123"}, envInternalHTTPConnectors},
 	} {
 		err := load(c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

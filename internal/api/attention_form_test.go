@@ -1,0 +1,83 @@
+package api
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/ui"
+)
+
+// TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged: an ask's card — the
+// Asks queue's and a session page's block, one form for both — draws the
+// compact form (THE COMPACT ANSWER FORM, internal/ui/attention.go): options as
+// wide as their words, a one-line box that grows (ui.AskFormFitClass), and
+// Answer in its own row (the Asks page's card: ending the box's row), Dismiss a
+// small icon button in the card's footer. And the
+// two posts are what they were: Answer
+// submits the answer form to /answer; Dismiss is a button IN that row that
+// belongs, by form=, to a SEPARATE form posting to /cancel (no formaction on
+// the answer form, so a dismissal never carries the typed answer), with the
+// same return field and the same boost attribute.
+func TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged(t *testing.T) {
+	items := []attentionItem{{Key: "ask-9", Kind: attentionKindAsk, AskID: 9, Text: "ship?", Options: []string{"yes", "no"}}}
+	for _, returnTo := range []string{"", "/agents/a"} {
+		out := attentionItemsHTMLTo(items, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), returnTo)
+		// The Asks page (no return) draws its options as full-width chips; a
+		// session page's block keeps them as wide as their words.
+		optionClass := ui.AskFormOptionClass
+		if returnTo == "" {
+			optionClass = ui.AsksOptionClass
+		}
+		answer := regexp.MustCompile(`(?s)<form method="POST" action="/attention/asks/9/answer"[^>]*>.*?</form>`).FindString(out)
+		if answer == "" {
+			t.Fatalf("return %q: no answer form:\n%s", returnTo, out)
+		}
+		// Answer carries its own id: the mic's ↑ clicks it, by id (ui/dictate.go).
+		// A session page's block: Answer in its own row with Dismiss, inside
+		// the answer form. The Asks page's card (the card feed): Answer ends
+		// the box's row, and Dismiss is in the card's footer, outside the form.
+		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" id="answer-9-submit" class="[^"]*">Answer</button>(<button [^>]*form="ask-9-dismiss"[^>]*>.*?</button>)?</div>`)
+		if returnTo == "" {
+			row = regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormBoxRowClass) + `" data-asks-answer-row><textarea id="answer-9"[\s\S]*?<button type="submit" id="answer-9-submit" class="[^"]*">Answer</button></div>`)
+		}
+		if !row.MatchString(answer) {
+			t.Errorf("return %q: Answer is not in its row inside the answer form:\n%s", returnTo, answer)
+		}
+		// Dismiss is a small icon button joined by form= to the separate
+		// /cancel form: in the answer form's last row on a block, in the card's
+		// footer on the Asks page.
+		if returnTo != "" && !strings.Contains(answer, `form="ask-9-dismiss"`) {
+			t.Errorf("return %q: Dismiss is not in the answer form's footer:\n%s", returnTo, answer)
+		}
+		if returnTo == "" && (strings.Contains(answer, `form="ask-9-dismiss"`) || !strings.Contains(out, `data-asks-footer>`)) {
+			t.Errorf("return %q: Dismiss is not in the card's footer:\n%s", returnTo, out)
+		}
+		if !regexp.MustCompile(`<button type="submit" form="ask-9-dismiss" aria-label="Dismiss without answering" title="Dismiss without answering"[^>]*>` +
+			regexp.QuoteMeta(ui.AsksDismissIcon) + `</button>`).MatchString(out) {
+			t.Errorf("return %q: no icon Dismiss named \"Dismiss without answering\" for the dismiss form:\n%s", returnTo, out)
+		}
+		if strings.Contains(answer, "formaction") {
+			t.Errorf("return %q: the answer form carries a formaction", returnTo)
+		}
+		dismiss := regexp.MustCompile(`<form id="ask-9-dismiss" method="POST" action="/attention/asks/9/cancel" hidden([^>]*)>([^<]*(?:<input[^>]*>)?)</form>`).FindStringSubmatch(out)
+		if dismiss == nil {
+			t.Fatalf("return %q: no dismiss form of that id posting to /cancel:\n%s", returnTo, out)
+		}
+		if returnTo != "" && (!strings.Contains(dismiss[1], `hx-boost="false"`) || !strings.Contains(dismiss[2], `name="return" value="/agents/a"`)) {
+			t.Errorf("return %q: the dismiss form lost its boost or its return: %q", returnTo, dismiss[0])
+		}
+		for _, want := range []string{
+			`rows="1"`, `class="` + ui.AskFormInputClass + `"`, `placeholder="Your answer…"`, `<label for="answer-9" class="sr-only">Your answer</label>`,
+			`class="` + optionClass + `" data-attention-option>yes</button>`,
+		} {
+			if !strings.Contains(answer, want) {
+				t.Errorf("return %q: the answer form lacks %q", returnTo, want)
+			}
+		}
+		if !strings.HasPrefix(ui.AskFormInputClass, ui.AskFormFitClass+" ") || strings.Contains(ui.AskFormOptionClass, "w-full") {
+			t.Errorf("the box does not grow, or an option is full width: %q / %q", ui.AskFormInputClass, ui.AskFormOptionClass)
+		}
+	}
+}

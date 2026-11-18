@@ -1,12 +1,37 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { request as pwRequest } from '@playwright/test';
+import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, expectShellShows, navTabKey } from '../lib/fixtures';
 import {
   dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
 import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { landedHome } from '../lib/nav';
+
+// expectAgentPageHome: a sign-in landed on `/`, which — with no chief, and the
+// Agents list page retired — opens an agent's own page (the session the user
+// opened last, else the sidebar's first row; internal/api/nav_agents.go
+// homeTarget). Asserted on the page the redirect produced, before any
+// navigation: the page must DRAW that agent's conversation, not a blank main
+// area.
+async function expectAgentPageHome(page: Page, why: string) {
+  await expect(page, why).toHaveURL(/\/agents\/[^/?]+(\?session=\d+(&from=list)?)?$/);
+  await expect(page.locator('#chat-log'), `${why}: the agent's conversation is drawn`).toBeVisible();
+}
+
+// expectOnboardingHome: `/` for a user with nothing to open (no chief, no
+// agent, no mirrored window) draws the onboarding page at /agents — the
+// retired Agents list's empty state, now home's (ui.agentsEmptyState): it says
+// how to start an agent (the tmux one-liner) and how to connect a machine.
+async function expectOnboardingHome(page: Page, why: string) {
+  expect(new URL(page.url()).pathname, why).toBe('/agents');
+  const empty = page.locator('#agents-empty');
+  await expect(empty.getByText('No agents yet'), `${why}: the empty state is VISIBLE`).toBeVisible();
+  await expect(empty.getByText('tmux new -A -s work claude'), `${why}: the tmux one-liner`).toBeVisible();
+  await expect(page.locator('#onboarding-prompt'), `${why}: the onboarding prompt`).toBeVisible();
+}
+
 
 // Accounts PR 5, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
 // the deployment's pin): the admin claims the account, creates an invite link
@@ -48,6 +73,7 @@ test.beforeAll(async () => {
   server = await startServer(versionTerm, invitesMainPort, {
     ...gotrueSkewEnv,
     MUSTER_AUTH_MODE: 'gotrue',
+    MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     MUSTER_BROWSER_PORT: String(invitesBrowserPort),
@@ -84,8 +110,8 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
 
   // 1. The admin claims the account and reaches the admin pages from the sidebar.
   // The claim page opened WITHOUT its fragment — what a sign-in redirect in
-  // front of muster does (measured live behind Authelia: rd= carries no
-  // fragment). The page asks for the link; the WHOLE link is pasted, and the
+  // front of muster does (behind a forward-auth proxy, its rd= return URL
+  // carries no fragment). The page asks for the link; the WHOLE link is pasted, and the
   // page's script keeps only the token before posting.
   const claim = claimLink();
   await page.goto(browserURL + '/auth/claim');
@@ -94,13 +120,13 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
-  // The claim lands on `/`, and `/` IS the board: asserted HERE, on the page
-  // the redirect produced, before any navigation. Every sign-in in this suite
-  // used to be followed immediately by goto('/tasks'), so nothing ever looked
-  // at `/` — and `/` rendered every panel and every FAB hidden.
-  await expectShellShows(page, 'tasks', 'Tasks', 'the admin, landing on / after the claim');
-  await expect(page.locator(`#task-${adminTask}`), 'the admin sees its own task on /').toBeVisible();
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  // The claim lands on `/`, which opens the chief's chat — with no chief
+  // (here), the admin's last-opened (else first) agent's page: asserted HERE,
+  // on the page the redirect produced, before any navigation. Every sign-in in
+  // this suite used to be followed immediately by goto('/tasks'), so nothing
+  // ever looked at `/` — and `/` once rendered every panel and every FAB hidden.
+  await expectAgentPageHome(page, 'the admin, landing on / after the claim (no chief: an agent page)');
   await page.goto(browserURL + '/tasks');
   await expect(page.locator(`#task-${adminTask}`), 'CONTROL: the admin sees its own task').toBeVisible();
   await expect(page.locator('#sidebar-admin')).toHaveAttribute('href', '/admin/users');
@@ -131,14 +157,20 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#invite-name', 'E2E Member');
   await mp.fill('#invite-password', memberPW);
   await mp.fill('#invite-password2', memberPW);
-  await Promise.all([mp.waitForURL(browserURL + '/'), mp.getByRole('button', { name: 'Create account' }).click()]);
-  // The member's FIRST page is `/`, in a browser with no saved tab. It is the
-  // (empty) board with its New-task button — not a blank main area.
-  await expectShellShows(mp, 'tasks', 'Tasks', 'the member, landing on / after redeeming the invite');
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.getByRole('button', { name: 'Create account' }).click()]);
+  // The member's FIRST page is `/`, in a browser with no saved tab. A new
+  // member has no chief and nothing to open, so `/` draws the onboarding page —
+  // not a blank main area, and not the admin's agents (internal/api/nav_agents.go
+  // redirectHome).
+  await expectOnboardingHome(mp, 'the member, landing on / after redeeming the invite');
+  // The shell drawn at a bare `/` (the service worker's offline copy, which
+  // it fetches as /?shell=1) shows the (empty) board with its New-task button,
+  // and a tab saved by a build (or a product) whose default was another tab
+  // must not blank it: the saved value names no tab this shell has.
+  await mp.goto(browserURL + '/?shell=1');
+  await expectShellShows(mp, 'tasks', 'Tasks', 'the member on the shell at /');
   await expect(mp.getByText('No tasks yet'), "the member's empty board is VISIBLE on /").toBeVisible();
   await expect(mp.locator('#fab-tasks'), 'the New-task button is visible on /').toBeVisible();
-  // A tab saved by a build (or a product) whose default was another tab must
-  // not blank the page either: the saved value names no tab this shell has.
   await mp.evaluate((k) => localStorage.setItem(k, 'requests'), navTabKey);
   await mp.reload();
   await expectShellShows(mp, 'tasks', 'Tasks', 'the member on / with a stale saved tab');
@@ -165,7 +197,7 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await pp.fill('#invite-email', `paster-${stamp}@example.com`);
   await pp.fill('#invite-password', memberPW);
   await pp.fill('#invite-password2', memberPW);
-  await Promise.all([pp.waitForURL(browserURL + '/'), pp.getByRole('button', { name: 'Create account' }).click()]);
+  await Promise.all([pp.waitForURL(landedHome(browserURL)), pp.getByRole('button', { name: 'Create account' }).click()]);
   const token2 = link2.slice(link2.indexOf('#') + 1);
   // The token travelled only in POST bodies, as the bare token — never in a URL.
   expect(posted.some((p) => p.includes('token=' + token2)), `posts: ${posted.join(' | ')}`).toBe(true);
@@ -210,8 +242,12 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#reset-password', newPW);
   await mp.fill('#reset-password2', newPW);
   // A reset lands on /account, which says it revoked the API tokens (accounts PR 6).
-  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
-  await expect(mp.getByRole('status')).toContainText('Your API tokens were revoked');
+  // The member has no passkey yet, so the redirect says "none" and the note
+  // says nothing about passkeys (resetDonePath / resetPasskeysNote): telling
+  // someone their passkeys "were kept" would speak of passkeys they never had.
+  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1&passkeys=none'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await expect(mp.getByRole('status')).toHaveText(
+    'Your password was reset. Your API tokens were revoked; create new ones under API tokens below.');
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
   const again = await browser.newContext({ viewport });
@@ -296,9 +332,8 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.goto(browserURL + '/login');
   await mp.fill('#muster-email', memberEmail);
   await mp.fill('#muster-password', newPW);
-  await Promise.all([mp.waitForURL(browserURL + '/'), mp.click('button[type=submit]')]);
-  await expectShellShows(mp, 'tasks', 'Tasks', 'the member, landing on / after signing in');
-  await expect(mp.locator('#fab-tasks')).toBeVisible();
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.click('button[type=submit]')]);
+  await expectOnboardingHome(mp, 'the member, landing on / after signing in (nothing to open: the onboarding page)');
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
 

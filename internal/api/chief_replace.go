@@ -64,6 +64,9 @@ type chiefReplaceRequest struct {
 	Kind string `json:"kind"`
 	// CCAccount pins a claude-code chief's Claude account; "" lets the pool choose.
 	CCAccount string `json:"cc_account"`
+	// CCFailover opts a chief PINNED by CCAccount in to account failover; an
+	// unpinned claude-code chief fails over by default.
+	CCFailover bool `json:"cc_failover"`
 	// Model is a gateway chief's model; "" = the deployment default.
 	Model string `json:"model"`
 	// Confirm must equal the reserved slug being replaced, or nothing happens.
@@ -106,6 +109,10 @@ func (s *Server) handleChiefReplace(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "no user to replace a chief for"})
 		return
 	}
+	if s.ext.ComposeChief != nil {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": ComposeChiefReplaceRefusal})
+		return
+	}
 	var req chiefReplaceRequest
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
 	if err == nil && len(strings.TrimSpace(string(body))) > 0 {
@@ -134,14 +141,18 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	if err != nil {
 		return refuse(http.StatusConflict, "%v", err)
 	}
+	// The catalogue check (model_validate.go) is part of the pre-flight too:
+	// createAndDispatchAgent would refuse an unknown model AFTER the old chief
+	// is gone.
+	if req.Model != "" {
+		m, err := s.checkAgentModel(ctx, req.Model)
+		if err != nil {
+			return refuse(http.StatusBadRequest, "%v", err)
+		}
+		req.Model = m
+	}
 	if err := agents.ValidateModelCredential(req.Model); err != nil {
 		return refuse(http.StatusBadRequest, "%v", err)
-	}
-	// A hermes chief is not offered yet: every chief tool is an MCP tool, and
-	// Hermes's MCP client against muster's /mcp is unverified. Refused before
-	// the old chief is touched (agentprovision refuses it again at build).
-	if kind == agents.KindHermes {
-		return refuse(http.StatusConflict, "a %s agent cannot be the chief yet; nothing was changed", agents.KindHermes)
 	}
 	// 🔴 A PINNED ACCOUNT IS NOT CHECKED BY SELECTION (a pin is an override at
 	// dispatch, ccpool.Select), so a dead one is refused HERE, before the old
@@ -254,7 +265,7 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 		return deleted
 	}
 	if hasOld {
-		claimOwner := "chief-replace/" + randomHex(6)
+		claimOwner := chiefReplaceClaimPrefix + randomHex(6)
 		won, err := s.ext.Agents.ClaimKickoff(ctx, old.ID, claimOwner, chiefReplaceClaimTTL)
 		if err != nil {
 			return refuse(http.StatusInternalServerError, "could not take the chief's session claim; nothing was changed: %v", err)
@@ -279,8 +290,14 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 		// so the turn gate (turn_gate.go) is closed too — refused while a chat turn
 		// is running, and no new one starts until the swap is over. Reopened on
 		// every exit; after a destroy the id is gone and reopening is harmless.
-		if !s.turns.close(old.ID) {
+		if ok, why := s.turns.closeFor(old.ID); !ok {
 			release()
+			if why == gateClosed {
+				// Another operation holds the gate (closeFor: one owner): a
+				// chief_restart forced past a delivery's claim, which then ended.
+				return refuse(http.StatusConflict, "the chief is being restarted or replaced right now; nothing was "+
+					"changed — retry when it finishes")
+			}
 			return refuse(http.StatusConflict, "a chat turn to the chief is running right now; nothing was changed — "+
 				"retry when it finishes")
 		}
@@ -329,7 +346,8 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	}
 
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
-		Name: chiefName, DisplayName: ChiefDisplayName, Kind: kind, CCAccount: account, Model: req.Model,
+		Name: chiefName, DisplayName: ChiefDisplayName, DisplayNameSource: agents.NameSystem, Kind: kind, CCAccount: account, Model: req.Model,
+		CCAccountChosen: req.CCAccount == "", CCFailover: req.CCFailover,
 		NoteText: chiefIntro(kind), Kickoff: true,
 	})
 	if err != nil {

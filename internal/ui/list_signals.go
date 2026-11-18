@@ -1,22 +1,24 @@
 package ui
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
 
-// WHAT A CARD SAYS ABOUT ITS RECENCY, WHAT IT IS WAITING ON, AND HOW LONG ITS
-// TITLE MAY BE. Each is decided here, once, as a Go table or function; the
-// cards render from it and the list's scripts are handed it as JSON, so the
-// page, the script and the tests read one definition.
+// WHAT AN ENTRY SAYS ABOUT ITS RECENCY, WHAT IT IS WAITING ON, AND HOW LONG ITS
+// TITLE MAY BE. Each is decided here, once, as a Go table or function, and the
+// sidebar's rows, the switcher and the agent page header render from it. (The
+// retired Agents list's cards did too, and its scripts were handed the tables
+// as JSON.)
 
 // ---------------------------------------------------------------------------
-// RECENCY: a small dot beside "active … ago", tinted by how long ago that was.
+// RECENCY: a small dot on an entry's sidebar row, tinted by how long ago it was
+// last active.
 //
 // The palette and the thresholds are the operator's tmux idle-fade window
 // colours — the 8-step Gruvbox scale their tmux status bar tints each window
@@ -25,11 +27,13 @@ import (
 // grey). Mirroring it means a window reads the same colour in tmux and here.
 // The colours are Gruvbox's published palette; nothing in the table is private.
 //
-// 🔴 THE DOT IS NOT THE CARD'S BORDER. The border is reserved for a per-window
-// tmux identity colour (a separate design); recency must not claim it.
+// 🔴 THE DOT IS NOT THE ROW'S EDGE. The coloured edge is reserved for a
+// per-window tmux identity colour (a separate design); recency must not claim
+// it.
 //
-// The dot is decoration (aria-hidden): the words beside it ("active 3m ago")
-// carry the same fact, so colour is never the only signal.
+// The dot is decoration (aria-hidden), with its bucket's name as its tooltip.
+// (On the retired Agents list's card the words beside it, "active 3m ago",
+// carried the same fact; a sidebar row has no such words.)
 
 // recencyStep is one bucket: an entry idle for less than Under (0 = no upper
 // bound, the last bucket) is drawn with Class.
@@ -38,10 +42,10 @@ type recencyStep struct {
 	// Class is the dot's colour utility: a role token, bg-idle-<i>, whose
 	// value is tmux-idle-update.sh's colour for the bucket, defined once in
 	// web/css/input.css (--mu-idle-<i>, both themes) — this package names no
-	// hue (TestNoHardCodedColourInUI). TestRecencyTokensAreTheTmuxPalette holds
-	// those values to the script's.
+	// hue (TestNoHardCodedColourInUI).
 	Class string
-	// Name is the script's own word for the bucket: the dot's tooltip.
+	// Name is the dot's tooltip: how long ago, in words — not the script's
+	// own word for the bucket ("ancient"), which is jargon to a reader.
 	Name string
 }
 
@@ -50,14 +54,14 @@ type recencyStep struct {
 // 14400, 28800, 86400 — and its colours, in order: bright green, green, aqua,
 // yellow, orange, red, purple, grey.
 var recencySteps = []recencyStep{
-	{10 * time.Minute, "bg-idle-0", "fresh (under 10 min)"},
-	{30 * time.Minute, "bg-idle-1", "active (10–30 min)"},
-	{time.Hour, "bg-idle-2", "warm (30–60 min)"},
-	{2 * time.Hour, "bg-idle-3", "cooling (1–2 h)"},
-	{4 * time.Hour, "bg-idle-4", "idle (2–4 h)"},
-	{8 * time.Hour, "bg-idle-5", "stale (4–8 h)"},
-	{24 * time.Hour, "bg-idle-6", "dormant (8–24 h)"},
-	{0, "bg-idle-7", "ancient (over 24 h)"},
+	{10 * time.Minute, "bg-idle-0", "Last active under 10 minutes ago"},
+	{30 * time.Minute, "bg-idle-1", "Last active 10 to 30 minutes ago"},
+	{time.Hour, "bg-idle-2", "Last active 30 to 60 minutes ago"},
+	{2 * time.Hour, "bg-idle-3", "Last active 1 to 2 hours ago"},
+	{4 * time.Hour, "bg-idle-4", "Last active 2 to 4 hours ago"},
+	{8 * time.Hour, "bg-idle-5", "Last active 4 to 8 hours ago"},
+	{24 * time.Hour, "bg-idle-6", "Last active 8 to 24 hours ago"},
+	{0, "bg-idle-7", "Last active over a day ago"},
 }
 
 // recencyBucket is the index in recencySteps of an entry last active at t, as
@@ -83,8 +87,9 @@ func recencyDotClass(bucket int) string {
 }
 
 // recencyDot is the dot for an entry last active at t, or nothing for a zero
-// t (cardActivity prints no "active" then either). data-recency-ts lets the
-// list's script re-tint it as time passes without a re-render.
+// t. data-recency-ts is what the retired Agents list's script re-tinted it by
+// as time passed; nothing reads it now — the sidebar redraws its rows on a
+// minute's tick (navAgentsRailTrigger).
 func recencyDot(now, t time.Time) g.Node {
 	b := recencyBucket(now, t)
 	if b < 0 {
@@ -99,388 +104,174 @@ func recencyDot(now, t time.Time) g.Node {
 	)
 }
 
-// recencyScaleJSON is the scale as the script reads it: [{u: upper bound in
-// ms (0 = none), c: the dot's full class, n: its name}, …].
-func recencyScaleJSON() string {
-	type step struct {
-		U int64  `json:"u"`
-		C string `json:"c"`
-		N string `json:"n"`
-	}
-	out := make([]step, len(recencySteps))
-	for i, s := range recencySteps {
-		out[i] = step{s.Under.Milliseconds(), recencyDotClass(i), s.Name}
-	}
-	b, _ := json.Marshal(out)
-	return string(b)
-}
-
 // ---------------------------------------------------------------------------
-// IDLE: how long since the entry's last activity (listEntry.activeAt — the time
-// the list is ordered by and the card prints). A card carries one token per
-// threshold it is PAST, in `data-idle` ("15m 1h" for a card idle two hours),
-// so a filter chip is one attribute selector ([data-idle~="1h"]).
-
-// idleThreshold is one of the filter's idle cut-offs.
-type idleThreshold struct {
-	Token string
-	Over  time.Duration
-}
-
-// idleThresholds are the idle chips' cut-offs: idle MORE than Over.
-var idleThresholds = []idleThreshold{
-	{"15m", 15 * time.Minute},
-	{"1h", time.Hour},
-	{"1d", 24 * time.Hour},
-}
-
-// idleTokens is the `data-idle` value of an entry last active at t: every
-// threshold it is strictly past, space-separated, "" when none — and "" for a
-// zero t, so an entry whose activity is unknown never counts as idle.
-func idleTokens(now, t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	d := now.Sub(t)
-	var out []string
-	for _, th := range idleThresholds {
-		if d > th.Over {
-			out = append(out, th.Token)
-		}
-	}
-	return strings.Join(out, " ")
-}
-
-// idleThresholdsJSON is idleThresholds as the script reads it: [{t, ms}, …].
-func idleThresholdsJSON() string {
-	type th struct {
-		T  string `json:"t"`
-		Ms int64  `json:"ms"`
-	}
-	out := make([]th, len(idleThresholds))
-	for i, x := range idleThresholds {
-		out[i] = th{x.Token, x.Over.Milliseconds()}
-	}
-	b, _ := json.Marshal(out)
-	return string(b)
-}
-
-// cardActivityAttrs is a card's recency attributes: data-active-ts (ms; what
-// the script re-derives the idle tokens and the dot from) and data-idle.
-func cardActivityAttrs(now, t time.Time) g.Node {
-	if t.IsZero() {
-		return nil
-	}
-	return g.Group{
-		g.Attr("data-active-ts", strconv.FormatInt(t.UnixMilli(), 10)),
-		g.If(idleTokens(now, t) != "", g.Attr("data-idle", idleTokens(now, t))),
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WAITING: what the card is blocked on the operator for, from its attention
-// badge (CardAttention, composed in internal/api from the attention queue's
-// ONE read — never re-derived here). Two words, written into `data-wait`:
+// WAITING: whether an entry is blocked on the operator, from its attention
+// (CardAttention, composed in internal/api from the attention queue's
+// ONE read — never re-derived here). One word (waitingToken):
 //
-//	ask       muster's attention_ask (the queue's "Question" row): a dispatched
-//	          agent or a mirrored Claude session called attention_ask and is
-//	          waiting for your answer — OR a mirrored Claude Code session is
-//	          stopped at a prompt (status "waiting": a permission prompt, the
-//	          session ASKING to go on; the queue's "Session waiting").
-//	question  Claude Code's own AskUserQuestion picker, held open by a mirrored
-//	          session (the queue's "Session question"): it is asking YOU a
-//	          question with options, answered in the session.
+//	you   it is waiting on YOU, any of:
+//	      - muster's attention_ask (the queue's "Question" row): a dispatched
+//	        agent or a mirrored Claude session called attention_ask and is
+//	        waiting for your answer;
+//	      - a mirrored Claude Code session stopped at a prompt (status
+//	        "waiting": a permission prompt, the session ASKING to go on; the
+//	        queue's "Session waiting");
+//	      - Claude Code's own AskUserQuestion picker, held open by a mirrored
+//	        session (the queue's "Session question");
+//	      - a dispatched agent blocked at a permission prompt (the "awaiting
+//	        approval" badge, AgentCardView.AwaitingApproval) — not an attention
+//	        item, but the same kind of block as a mirrored session's prompt.
 //
-// A dispatched agent blocked at a permission prompt (the "awaiting approval"
-// badge, AgentCardView.AwaitingApproval) is an ask too — the same kind of
-// block as a mirrored session's prompt — though it is not an attention item.
-// A reply draft (kind "plugin") is neither: nothing is blocked on it.
+// Whichever way an entry asks, it is waiting on you. A reply draft (kind
+// "plugin") is not: nothing is blocked on it.
 
-// waitKinds maps each attention kind a card can count to the wait word it
+// waitKinds maps each attention kind an entry can count to the wait word it
 // files under ("" = none).
 var waitKinds = map[string]string{
-	"ask":      "ask",
-	"session":  "ask",
-	"question": "question",
+	"ask":      waitingToken,
+	"session":  waitingToken,
+	"question": waitingToken,
 	"plugin":   "",
 }
 
-// waitTokens is a card's `data-wait`: the wait words of its attention items'
-// kinds — and "ask" for an agent awaiting approval — in a fixed order ("ask
-// question"), "" for none.
+// waitTokens is an entry's wait word: waitingToken when any of its attention
+// items' kinds files under it, or the agent is awaiting approval; "" for none.
 func waitTokens(a *CardAttention, awaitingApproval bool) string {
-	has := map[string]bool{"ask": awaitingApproval}
+	if awaitingApproval {
+		return waitingToken
+	}
 	if a != nil && a.Count > 0 {
 		for _, k := range a.Kinds {
 			if w := waitKinds[k]; w != "" {
-				has[w] = true
+				return w
 			}
 		}
 	}
-	var out []string
-	for _, w := range []string{"ask", "question"} {
-		if has[w] {
-			out = append(out, w)
-		}
-	}
-	return strings.Join(out, " ")
+	return ""
 }
+
+// waitingToken is the one wait word (waitTokens' "you"): an entry carrying it
+// is waiting on the viewer (listEntry.waiting) — what the session switcher's
+// Waiting view holds, its waiting dot, the sidebar's order and its rows'
+// waiting mark all read. (It was the retired Agents list's "Waiting on you"
+// chip's token.)
+const waitingToken = "you"
 
 // ---------------------------------------------------------------------------
-// THE FILTER CHIPS: presets above the list.
-//
-// SEMANTICS, stated once: the chips are ORed — a card is shown when it
-// matches ANY chosen chip (the operator's own words: "waiting on an ask,
-// waiting on a user question, OR have been idle for a certain period"). The
-// idle chips are exclusive with each other (choosing one clears the others:
-// they are nested thresholds, so two ORed would just be the smaller). No chip
-// chosen: no filter. The chips as a whole AND with the search box and the host
-// tab, like any other term.
-//
-// chipSelector is the ONLY statement of that rule: the script looks each
-// selection's selector up (chipSelectorsJSON), and the tests evaluate the
-// selectors themselves.
+// LONG TITLES: what heads the agent page (agentTitle) is clamped to
+// cardTitleMax characters; past that it ends in a "…" BUTTON that opens the
+// whole title in a popover (titleMoreButton, fullTitlePopover). The budget is
+// the retired Agents list card's, whose title row (its NAME, or its FOCUS
+// title) was the first to clamp.
 
-// listChip is one chip.
-type listChip struct {
-	ID, Label, Help string
-	// Group is "wait" or "idle"; Token is the word the card's data-<group>
-	// carries for it.
-	Group, Token string
-}
-
-var listChips = []listChip{
-	{"ask", "Waiting on ask", "An agent or a session asked you something with attention_ask, or a Claude Code session or a dispatched agent is stopped at a permission prompt", "wait", "ask"},
-	{"question", "Waiting on question", "A Claude Code session is holding an AskUserQuestion picker open for you", "wait", "question"},
-	{"idle-15m", "Idle >15m", "No activity for more than 15 minutes", "idle", "15m"},
-	{"idle-1h", "Idle >1h", "No activity for more than an hour", "idle", "1h"},
-	{"idle-1d", "Idle >1d", "No activity for more than a day", "idle", "1d"},
-}
-
-// chipByID is the chip with that id.
-func chipByID(id string) (listChip, bool) {
-	for _, c := range listChips {
-		if c.ID == id {
-			return c, true
-		}
-	}
-	return listChip{}, false
-}
-
-// chipKey is the canonical key of a selection: its known ids in listChips'
-// order, comma-joined. The script looks a selection's selector up by it.
-func chipKey(ids []string) string {
-	on := map[string]bool{}
-	for _, id := range ids {
-		on[id] = true
-	}
-	var out []string
-	for _, c := range listChips {
-		if on[c.ID] {
-			out = append(out, c.ID)
-		}
-	}
-	return strings.Join(out, ",")
-}
-
-// chipSelector is the selector a SHOWN card matches under the chips ids ("" =
-// no chip, nothing to match): every chosen chip's attribute test, ORed in one
-// :is() — or the test alone when only one chip is chosen.
-func chipSelector(ids []string) string {
-	var parts []string
-	for _, id := range strings.Split(chipKey(ids), ",") {
-		if c, ok := chipByID(id); ok {
-			parts = append(parts, `[data-`+c.Group+`~="`+c.Token+`"]`)
-		}
-	}
-	switch len(parts) {
-	case 0:
-		return ""
-	case 1:
-		return parts[0]
-	}
-	return ":is(" + strings.Join(parts, ",") + ")"
-}
-
-// chipSelectorsJSON is every selection the chips can make — any set of wait
-// chips with at most one idle chip — as {key: selector}: the script's whole
-// filter logic is a lookup in it, so the rule lives here only.
-func chipSelectorsJSON() string {
-	var waits, idles []string
-	for _, c := range listChips {
-		if c.Group == "wait" {
-			waits = append(waits, c.ID)
-		} else {
-			idles = append(idles, c.ID)
-		}
-	}
-	out := map[string]string{}
-	for mask := 0; mask < 1<<len(waits); mask++ {
-		var ids []string
-		for i, w := range waits {
-			if mask&(1<<i) != 0 {
-				ids = append(ids, w)
-			}
-		}
-		for _, idle := range append([]string{""}, idles...) {
-			sel := ids
-			if idle != "" {
-				sel = append(append([]string{}, ids...), idle)
-			}
-			if k := chipKey(sel); k != "" {
-				out[k] = chipSelector(sel)
-			}
-		}
-	}
-	b, _ := json.Marshal(out)
-	return string(b)
-}
-
-// agentsChipsStorageKey is where this device remembers the chosen chips
-// (localStorage, tabs.go's prefix): a JSON array of chip ids.
-const agentsChipsStorageKey = "muster:agents:chips"
-
-// agentsFilterChips is the chip row: one toggle button per chip
-// (aria-pressed), drawn unpressed; the script presses the remembered ones.
-// It is ONE 44px row whatever is pressed — pressing changes colour, never
-// size — and scrolls sideways inside itself at a phone's width, so it neither
-// shifts the list nor scrolls the page.
-func agentsFilterChips() g.Node {
-	return Div(
-		ID("agents-chips"),
-		g.Attr("role", "group"),
-		g.Attr("aria-label", "Quick filters"),
-		Class("flex min-h-[44px] min-w-0 max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none]"),
-		g.Group(g.Map(listChips, func(c listChip) g.Node {
-			return Button(
-				Type("button"),
-				g.Attr("data-chip", c.ID),
-				g.Attr("data-chip-group", c.Group),
-				g.Attr("aria-pressed", "false"),
-				g.Attr("aria-controls", "agents-list"),
-				g.Attr("title", c.Help),
-				Class("press inline-flex min-h-[44px] shrink-0 items-center whitespace-nowrap rounded-full bg-s2 px-3 text-sm font-medium text-fg2 ring-1 ring-inset ring-line transition hover:text-fg aria-pressed:bg-accent aria-pressed:text-on-accent aria-pressed:ring-accent"),
-				g.Text(c.Label),
-			)
-		})),
-		// Clear: every chip off at once, shown only while one is on (the
-		// script toggles the `hidden` ATTRIBUTE — no display utility here, which
-		// would beat it). At the END of the row, so its appearing moves nothing.
-		Button(
-			ID("agents-chips-clear"),
-			Type("button"),
-			g.Attr("hidden", ""),
-			g.Attr("aria-label", "Clear the quick filters"),
-			Class("press min-h-[44px] shrink-0 whitespace-nowrap rounded-full px-3 text-sm font-medium text-muted underline transition hover:text-fg"),
-			g.Text("Clear"),
-		),
-	)
-}
-
-// ---------------------------------------------------------------------------
-// LONG TITLES: what heads a card — its NAME, or its FOCUS title when it has one
-// (focus.go) — is clamped to cardTitleMax characters; past that it ends in a
-// "…" BUTTON that opens the whole title in a popover. Both go through ONE
-// mechanism, cardTitleRow: the row, the clamp, the "…" control and the popover.
-//
-// The row sits OUTSIDE the card's nav anchor (a button inside an <a> is
-// invalid and its tap would open the card), so a card with a long name draws
-// its name in a title row of its own above the anchor — the place its focus
-// row already had. A short name is drawn inside the anchor as it always was.
-
-// cardTitleMax is the most characters (runes) of a title a card draws.
+// cardTitleMax is the most characters (runes) of a title the agent page header
+// draws (the retired Agents list card's budget).
 const cardTitleMax = 60
 
-// clampTitle is s as a card draws it: whole when it fits, else its first
-// cardTitleMax runes (trailing space trimmed) and true.
+// clampTitle is s as the agent page header draws it: whole when
+// it fits, else at most its first cardTitleMax runes (trailing space trimmed)
+// and true.
+//
+// The cut is moved BACK to a grapheme-cluster boundary (graphemeJoins), so a
+// clamp never ends on half of what a reader sees as one character: a family
+// emoji (ZWJ sequence), a flag (regional-indicator pair), a letter with a
+// combining accent, a skin-tone or variation-selector modifier.
 func clampTitle(s string) (string, bool) {
 	r := []rune(s)
 	if len(r) <= cardTitleMax {
 		return s, false
 	}
-	return strings.TrimRight(string(r[:cardTitleMax]), " \t"), true
+	n := cardTitleMax
+	for n > 0 && graphemeJoins(r, n) {
+		n--
+	}
+	if n == 0 { // one cluster longer than the budget: cut it rather than draw nothing
+		n = cardTitleMax
+	}
+	return strings.TrimRight(string(r[:n]), " \t"), true
 }
 
-// cardTitleRow is a card's title row: heading(short) — the title clamped by
-// clampTitle, drawn by the caller (a link to the card for a name, the popover
-// trigger for a focus title) — then, when the title was clamped, the "…"
-// button, then the popover both open.
+// graphemeJoins reports whether r[n-1] and r[n] belong to ONE extended
+// grapheme cluster, so a cut between them would split it. It covers the
+// clusters a title realistically carries — Extend/SpacingMark (combining
+// marks, variation selectors, emoji modifiers, tag characters), ZWJ
+// sequences and regional-indicator pairs — not the whole of UAX #29 (no
+// Hangul jamo or Prepend rules), which would need a dependency this module
+// does not have.
+func graphemeJoins(r []rune, n int) bool {
+	a, b := r[n-1], r[n]
+	if graphemeExtends(b) || a == '\u200d' {
+		return true
+	}
+	if isRegionalIndicator(a) && isRegionalIndicator(b) {
+		// Pairs are counted from the start of the run: the cut splits a flag
+		// when an ODD number of indicators precede it.
+		k := 0
+		for i := n - 1; i >= 0 && isRegionalIndicator(r[i]); i-- {
+			k++
+		}
+		return k%2 == 1
+	}
+	return false
+}
+
+// graphemeExtends is a rune that attaches to the one before it.
+func graphemeExtends(c rune) bool {
+	switch {
+	case c == '\u200d', // ZWJ
+		c >= 0xFE00 && c <= 0xFE0F, // variation selectors
+		c >= 0xE0100 && c <= 0xE01EF,
+		c >= 0x1F3FB && c <= 0x1F3FF, // emoji skin-tone modifiers
+		c >= 0xE0020 && c <= 0xE007F: // tag characters (subdivision flags)
+		return true
+	}
+	return unicode.In(c, unicode.Mn, unicode.Me, unicode.Mc)
+}
+
+func isRegionalIndicator(c rune) bool { return c >= 0x1F1E6 && c <= 0x1F1FF }
+
+// titleMoreButton is THE "…" control that opens a clamped title's popover —
+// the agent page header's (agentTitle). fit is only how it sits in its row;
+// the control, its name and its ARIA are the same wherever it is drawn.
 //
-// The "…" is the SAME control on every card: a real <button> (keyboard
-// operable), a 44px target, aria-haspopup/aria-controls/aria-expanded, opening
-// pop — a native popover="auto" (an outside tap or Escape closes it) placed by
-// floatingMenuScript, which also keeps every trigger's aria-expanded in step.
-// It never navigates: it is not inside any link.
-func cardTitleRow(slot, pop, full, pad, reserve string, heading func(short string) g.Node, popover g.Node) g.Node {
-	short, clamped := clampTitle(full)
-	return Div(
-		cardSlot(slot),
-		Class("flex items-start gap-0.5 px-4 "+pad+" "+reserve),
-		heading(short),
-		g.If(clamped, Button(
-			Type("button"),
-			g.Attr("data-title-more", ""),
-			g.Attr("popovertarget", pop),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", pop),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Show the full title"),
-			Class("press -my-1.5 inline-flex h-11 min-w-[44px] shrink-0 items-start justify-center rounded-lg pt-1.5 text-base font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-			g.Text("…"),
-		)),
-		popover,
+// extra is appended to the button (the agent header passes `hidden` while its
+// title is not clipped; see agentTitleFitScript).
+func titleMoreButton(pop, fit string, extra ...g.Node) g.Node {
+	return Button(
+		Type("button"),
+		g.Group(extra),
+		g.Attr("data-title-more", ""),
+		g.Attr("popovertarget", pop),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", pop),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-label", "Show the full title"),
+		Class("press inline-flex h-11 min-w-[44px] shrink-0 justify-center rounded-lg font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2 "+fit),
+		g.Text("…"),
 	)
 }
 
-// cardLongTitle is a long NAME's title row (cardTitleRow): the clamped name,
-// itself a link to the card's page (so tapping the words still opens the
-// card), title= the whole name (the desktop's hover tooltip), and a popover
-// holding the whole name.
-//
-// subtitle draws it as a subtitle (a card headed by its focus); extra is drawn
-// after the name inside the link (a mirrored window's qualifier and session).
-func cardLongTitle(cardID, href, full string, subtitle bool, reserve string, extra ...g.Node) g.Node {
-	pop := cardID + "-title"
-	class, pad := cardTitleClass, "pt-3"
-	if subtitle {
-		class, pad = cardSubtitleClass, "pt-1"
-	}
-	return cardTitleRow("title", pop, full, pad, reserve,
-		func(short string) g.Node {
-			return A(
-				Href(href),
-				hx("hx-boost", "false"),
-				g.Attr("data-card-title", ""),
-				g.Attr("title", full),
-				Class(strings.Replace(class, "mr-auto ", "min-w-0 py-1 ", 1)),
-				g.Text(short),
-				g.Group(extra),
-			)
-		},
-		Div(
-			ID(pop),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Full title"),
-			g.Attr("data-floating-menu", ""),
-			g.Attr("data-title-full", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-			Span(Class("break-words text-sm font-semibold"), g.Text(full)),
-		))
+// fullTitlePopover is THE popover holding a clamped title whole: a native
+// popover="auto" (top layer; an outside tap or Escape closes it) placed by
+// floatingMenuScript ([data-floating-menu]). The text wraps anywhere — a
+// 600-character token with no break opportunity included — and a title too
+// long for the viewport scrolls inside the panel instead of running off it
+// (floatingMenuScript's place() sets the height cap, from the viewport).
+func fullTitlePopover(pop, full string, extra ...g.Node) g.Node {
+	return Div(
+		ID(pop),
+		g.Group(extra),
+		g.Attr("popover", "auto"),
+		g.Attr("role", "dialog"),
+		g.Attr("aria-label", "Full title"),
+		g.Attr("data-floating-menu", ""),
+		g.Attr("data-title-full", ""),
+		Class(fullTitlePopoverClass),
+		Span(Class("[overflow-wrap:anywhere] text-sm font-semibold"), g.Text(full)),
+	)
 }
 
-// titledBodyClass is the nav anchor's box under a title row: like a focus
-// row, the row carries the top padding.
-func titledBodyClass(reserve string) string {
-	return "flex flex-col gap-3 px-4 pb-4 pt-1 " + reserve
-}
-
-// chipIDsJSON is the chips' ids in their canonical order, for the script.
-func chipIDsJSON() string {
-	ids := make([]string, len(listChips))
-	for i, c := range listChips {
-		ids[i] = c.ID
-	}
-	b, _ := json.Marshal(ids)
-	return string(b)
-}
+// fullTitlePopoverClass is the full-title popover's look, which the header's
+// tag list (session_tags.go's "+N") wears too: invisible until
+// floatingMenuScript has placed it, a flex column only while open.
+const fullTitlePopoverClass = "invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"

@@ -15,18 +15,33 @@
 // defence in depth, not a proof — the guarantee is that the secret is never in
 // the pod, and only an approved agent reaches only the connector's own hosts.
 //
-// 🔴 ACCESS IS PER AGENT, APPROVED ON FIRST USE. Any agent may ASK for any
-// connector by name; the first ask files a pending [Grant] and the operator is
-// prompted. Once approved, that agent keeps access until it is destroyed (the
-// grant row cascades with the agent), the grant is revoked, or the connector is
-// deleted (its grants go with it). There is no time-based expiry: those three
-// are the whole model. A denial is final for that request.
+// 🔴 ACCESS IS RECORDED PER AGENT, BUT AN APPROVAL IS SHARED BY THE OWNER'S
+// AGENTS. Any agent may ASK for any connector by name (an officer instance only
+// for `github` and the connectors its officer declares: internal/api
+// officerConnectorRefusal); the first ask files a
+// pending [Grant]. When the owner approves one, a [StandingGrant] is recorded
+// for the owner, keyed on the connector, its credential source and — for the
+// GitHub App's one-repository token — the agent's repository: a later request
+// from ANY of the owner's agents with the same key is approved at request time
+// (decided_via 'standing', naming the standing grant), and requests already
+// waiting with that key are approved in the same step (never for a worker-pool
+// member or an officer instance: internal/api excludedFromSharing). Only when
+// no standing grant matches is the owner prompted. An approved agent keeps
+// access until it is destroyed (the grant row cascades with the agent), the
+// grant or its standing grant is revoked, the connector is deleted (its grants
+// and standing grants go with it), or its grant is re-opened because the
+// connector's credential source (0033) or the agent's repository (0061)
+// changed (ReconcileGrant). There is no time-based expiry. A denial is final
+// for that request, and is never shared.
 //
-// ⚠ HTTP ONLY. HTTPS APIs and git's smart-HTTP protocol go through the proxy.
-// Non-HTTP platforms (a database, SSH) are out of scope: a future "handout"
-// scheme would hand the secret to the pod on approval and would need its own
-// opt-in, its own warning and its own audit shape — [Scheme] is the seam where
-// it would be added, and nothing here accepts it today.
+// ⚠ HTTP, PLUS ONE DATABASE KIND THAT NEVER LEAVES muster-server. HTTPS APIs
+// and git's smart-HTTP protocol go through the proxy. A [SchemePostgres]
+// connector is not proxied at all: muster-server itself connects to the
+// database and runs one read-only statement per call ([PostgresExecutor],
+// postgres.go), and the agent gets rows back — never the password, never a
+// socket. The HTTP proxy refuses a postgres connector. Other non-HTTP platforms
+// (SSH) remain out of scope: a "handout" scheme would hand the secret to the pod
+// and would need its own opt-in, warning and audit shape — nothing accepts one.
 package connectors
 
 import (
@@ -51,6 +66,10 @@ const (
 	SchemeHeader Scheme = "header"
 	// SchemeBasic sends `Authorization: Basic base64(<Username>:<secret>)`.
 	SchemeBasic Scheme = "basic"
+	// SchemePostgres is a database connector: the secret is the password of
+	// Username on the connector's one host, used by muster-server's own
+	// connection (postgres.go). It is never sent over HTTP.
+	SchemePostgres Scheme = "postgres"
 )
 
 // Grant statuses (mirrors the connector_grants.status CHECK constraint).
@@ -92,17 +111,21 @@ var ErrTooManyPending = fmt.Errorf("connectors: this agent already has %d reques
 // page or JSON projection can leak one: the secret exists in plaintext only on
 // the stack of the proxy call that injects it ([Store.Credential]).
 type Connector struct {
-	ID         int64      `json:"id"`
-	Name       string     `json:"name"`
-	Platform   string     `json:"platform"`
-	Hosts      []string   `json:"hosts"`
-	Scheme     Scheme     `json:"scheme"`
-	HeaderName string     `json:"headerName,omitempty"`
-	Username   string     `json:"username,omitempty"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
-	RotatedAt  *time.Time `json:"rotatedAt,omitempty"`
-	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	ID         int64    `json:"id"`
+	Name       string   `json:"name"`
+	Platform   string   `json:"platform"`
+	Hosts      []string `json:"hosts"`
+	Scheme     Scheme   `json:"scheme"`
+	HeaderName string   `json:"headerName,omitempty"`
+	Username   string   `json:"username,omitempty"`
+	// Postgres is a SchemePostgres connector's non-secret settings (database,
+	// sslmode, the TLS requirement and the per-query caps); nil for every other
+	// scheme. Hosts holds its one host:port and Username its database user.
+	Postgres   *PostgresSettings `json:"postgres,omitempty"`
+	CreatedAt  time.Time         `json:"createdAt"`
+	UpdatedAt  time.Time         `json:"updatedAt"`
+	RotatedAt  *time.Time        `json:"rotatedAt,omitempty"`
+	LastUsedAt *time.Time        `json:"lastUsedAt,omitempty"`
 }
 
 // AllowsHost reports whether host (as it appears in a proxy path) is one of the
@@ -137,7 +160,61 @@ type Grant struct {
 	// DecidedVia is where the operator decided it when that was NOT the
 	// Connectors tab (migration 0035): the zero value for the tab, for a grant
 	// not yet decided, a revoked one, and every decision recorded before 0035.
+	// DecidedViaStanding for an automatic approval (migration 0043).
 	DecidedVia DecisionSource `json:"-"`
+	// StandingGrantID is the standing grant that approved this grant
+	// automatically (migration 0043); 0 for every other grant.
+	StandingGrantID int64 `json:"standingGrantId,omitempty"`
+	// Repo is the repository the decision was made for (migration 0061): the
+	// agent's effective repository when the owner decided it, or — when none
+	// was recorded (a decision before 0061, an approval from a standing grant,
+	// a grant not yet decided) — the agent row's own repository. "" for none.
+	// For an internal_http connector it is instead the destination the
+	// approval was made for (InternalHTTP.Destination, written by GrantScope),
+	// a fingerprint never shown to an agent. See ReconcileGrant.
+	Repo string `json:"-"`
+}
+
+// DecidedViaStanding is decided_via for a grant approved automatically by a
+// [StandingGrant] (migration 0043): no human decided THIS request — the owner
+// approved an earlier one with the same key. decided_by is DecidedByStanding.
+const DecidedViaStanding = "standing"
+
+// DecidedByStanding is decided_by on a grant approved by a standing grant. It is
+// deliberately not "operator": the owner did not decide this request.
+const DecidedByStanding = "standing-grant"
+
+// StandingGrant is one owner-wide approval (migration 0043): while it is live
+// (RevokedAt nil), a request from any of the owner's agents for Connector whose
+// credential source is Source — and, for the GitHub App (SourceApp), whose
+// agent's repository is Repo — is approved automatically.
+type StandingGrant struct {
+	ID        int64  `json:"id"`
+	Connector string `json:"connector"`
+	Source    string `json:"source"`
+	Repo      string `json:"repo,omitempty"`
+	// OriginGrantID is the per-agent grant whose approval created it.
+	OriginGrantID int64      `json:"originGrantId,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+}
+
+// StandingRepo is the repository part of a standing grant's key for an agent
+// dispatched with repo, under credential source: the repository trimmed and
+// lowercased (GitHub names are case-insensitive, and the App compares them so:
+// githubapp.App.Credential) for SourceApp, and "" for a stored credential,
+// which is keyed on the connector alone. ok is false when there is no key: a
+// SourceApp approval for an agent with no repository grants nothing usable, so
+// it is never shared.
+func StandingRepo(source, repo string) (string, bool) {
+	if source != SourceApp {
+		return "", true
+	}
+	r := strings.ToLower(strings.TrimSpace(repo))
+	if r == "" || len(r) > 256 {
+		return "", false
+	}
+	return r, true
 }
 
 // DecidedViaMCP is decided_via for a decision made through
@@ -199,6 +276,8 @@ type NewConnector struct {
 	HeaderName string
 	Username   string
 	Secret     string
+	// Postgres is required for SchemePostgres and must be nil otherwise.
+	Postgres *PostgresSettings
 }
 
 // Store persists connectors, grants and the audit trail.
@@ -222,8 +301,10 @@ type Store interface {
 	// DecideGrant approves or denies a PENDING grant; ErrNotPending otherwise.
 	DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error)
 	// DecideGrantFrom is DecideGrant recording where the decision was made
-	// (via; the zero value is the Connectors tab, exactly DecideGrant).
-	DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source string, via DecisionSource) (Grant, error)
+	// (via; the zero value is the Connectors tab, exactly DecideGrant) and the
+	// repository it was made for (repo, Grant.Repo; "" records none, which
+	// reads back as the agent row's own repository).
+	DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source, repo string, via DecisionSource) (Grant, error)
 	// ReopenGrant puts an approved grant back to pending; reopened is false when
 	// it was no longer approved.
 	ReopenGrant(ctx context.Context, id int64) (g Grant, reopened bool, err error)
@@ -232,6 +313,28 @@ type Store interface {
 	// ListGrants returns every pending and approved grant (the live set).
 	ListGrants(ctx context.Context) ([]Grant, error)
 	TouchGrant(ctx context.Context, id int64) error
+
+	// CreateStandingGrant records the owner's standing grant for the key
+	// (connector, source, repo — see StandingRepo), from the approval of grant
+	// origin; when a live one already exists it is returned and created is false.
+	// It retires the connector's live standing grants under the OTHER source.
+	CreateStandingGrant(ctx context.Context, connector, source, repo string, origin int64) (sg StandingGrant, created bool, err error)
+	// MatchStandingGrant returns the owner's live standing grant for the key that
+	// may approve agentID's request, or ErrNotFound. A standing grant does not
+	// apply to an agent whose grant on the connector the owner revoked or denied
+	// after the standing grant was created: that agent's own decision stands.
+	MatchStandingGrant(ctx context.Context, agentID int64, connector, source, repo string) (StandingGrant, error)
+	// ApproveFromStanding approves PENDING grant id from live standing grant sg
+	// (recording the standing grant's credential source); ErrNotPending when the
+	// grant is no longer pending or the standing grant is no longer live.
+	ApproveFromStanding(ctx context.Context, id, sg int64) (Grant, error)
+	// RevokeStandingGrant revokes a live standing grant AND every approved grant
+	// it gave (the ones it approved automatically, and the approval it was
+	// created from), returning the grants it revoked. ErrNotPending when it was
+	// already revoked.
+	RevokeStandingGrant(ctx context.Context, id int64, by string) (StandingGrant, []Grant, error)
+	// ListStandingGrants returns the owner's live standing grants.
+	ListStandingGrants(ctx context.Context) ([]StandingGrant, error)
 
 	Audit(ctx context.Context, e AuditEntry) error
 	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)
@@ -312,6 +415,12 @@ func (nc NewConnector) Validate() (NewConnector, error) {
 	if nc.Platform == "" {
 		nc.Platform = "custom"
 	}
+	if nc.Scheme == SchemePostgres {
+		return nc.validatePostgres()
+	}
+	if nc.Postgres != nil {
+		return nc, fmt.Errorf("%w: postgres settings are only for a postgres connector", ErrInvalid)
+	}
 	seen := map[string]bool{}
 	var hosts []string
 	for _, h := range nc.Hosts {
@@ -348,7 +457,7 @@ func (nc NewConnector) Validate() (NewConnector, error) {
 			return nc, fmt.Errorf("%w: a basic-auth username may not contain ':' or a line break", ErrInvalid)
 		}
 	default:
-		return nc, fmt.Errorf("%w: auth scheme %q is not one of bearer, header, basic", ErrInvalid, nc.Scheme)
+		return nc, fmt.Errorf("%w: auth scheme %q is not one of bearer, header, basic, postgres", ErrInvalid, nc.Scheme)
 	}
 	if err := ValidateSecret(nc.Secret); err != nil {
 		return nc, err
@@ -408,8 +517,20 @@ var GitHubPreset = Preset{
 		"and for git over HTTPS.",
 }
 
+// PostgresPreset is the database connector (postgres.go). It has no fixed
+// hosts: the form asks for the host, port, database, user and TLS settings.
+var PostgresPreset = Preset{
+	Key:         "postgres",
+	Label:       "PostgreSQL (read-only SQL)",
+	Scheme:      SchemePostgres,
+	SecretLabel: "Database password",
+	Help: "muster-server connects to the database itself and runs each agent query as ONE statement inside " +
+		"BEGIN READ ONLY, with a statement timeout and row and byte caps; the agent gets rows, never the password. " +
+		"Use a dedicated login role with no table grants (docs/connectors.md has the recipe). Admins only.",
+}
+
 // Presets is every built-in preset, in display order.
-func Presets() []Preset { return []Preset{GitHubPreset} }
+func Presets() []Preset { return []Preset{GitHubPreset, PostgresPreset} }
 
 // PresetFor returns the preset with key, or false.
 func PresetFor(key string) (Preset, bool) {

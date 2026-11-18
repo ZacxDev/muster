@@ -59,13 +59,20 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"internal/officers/backendtest": "the officer-backend conformance suite (muster#503 slice 3). " +
+		"Imported only by _test.go files: it runs against HQ's client over hqtest and against the " +
+		"built-in backend over Postgres, and a test harness has no place in a binary.",
+
+	"internal/officers/hqtest": "the in-process fake of HQ's officers API the officer runtime's " +
+		"tests drive (internal/officers, internal/api). Imported only by _test.go files: a fake HQ " +
+		"linked into the server would answer claims for officers no real HQ knows.",
 	"internal/gotrue/gotruetest": "the in-memory GoTrue the Go tests drive the session tier " +
 		"against. Imported only by _test.go files: a fake identity provider linked into the " +
 		"server would be a way to mint sessions.",
-	"internal/hermeshost/hermestest": "fake Hermes homes (a scratch state.db from the pinned schema, " +
-		"breadcrumbs, decoy secret files) for the Hermes mirroring tests. Imported only by _test.go files and " +
-		"the browser suite's build-tagged fake host (cmd/muster-mirror's e2emirror build, never shipped): " +
-		"a writer of Hermes's state.db linked into muster-mirror would break its read-only promise.",
+	"internal/opencodehost/opencodetest": "a fake opencode v2 server (pair tokens signed as upstream signs " +
+		"them, synthetic sessions and messages) for the opencode mirroring tests. Imported only by _test.go files " +
+		"and the browser suite's build-tagged fake host (cmd/muster-mirror's e2emirror build, never shipped): a " +
+		"server that mints opencode tokens has no place in muster-mirror.",
 	"internal/agentprovision/worktreetest": "the repository a machine job's worktree is made from in " +
 		"the job tests: an origin, a clone, and a commit carrying hostile agent configuration (hooks and an " +
 		"MCP server that write marker files). Imported only by _test.go files, the real-CLI one among them.",
@@ -80,8 +87,25 @@ var notLinkedLedger = map[string]string{
 	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
 		"the board before seeding, so it must never be reachable from a shipped binary; it " +
 		"also refuses any database whose name does not end in _e2e.",
+	"e2e/emptydb": "the onboarding browser spec's fresh-database maker (`go run ./e2e/emptydb`). " +
+		"It DROPs and CREATEs a database as the login role, so it must never be reachable from a " +
+		"shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/mkmember": "the byo-credentials browser spec's member maker (`go run ./e2e/mkmember`). " +
 		"It writes a users row as the login role, bypassing row-level security, so it must " +
+		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
+	"e2e/mkteam": "the officer-flow browser spec's team maker (`go run ./e2e/mkteam`): it writes a team's " +
+		"users row and its manager's membership as the login role, bypassing row-level security, and " +
+		"removes them, so it must never be reachable from a shipped binary; it refuses any database not " +
+		"ending in _e2e.",
+	"e2e/askfix": "the ask-log browser spec's fixture (`go run ./e2e/askfix`): it writes and clears " +
+		"an owner's asks for any user id it is given, so it must never be reachable from a shipped " +
+		"binary; it refuses any database not ending in _e2e.",
+	"e2e/asksfeedfix": "the Asks card feed's browser fixture (`go run ./e2e/asksfeedfix`): it writes " +
+		"and clears an owner's asks, a task, a plugin, a draft and a nudge decision for any user id it " +
+		"is given, so it must never be reachable from a shipped binary; it refuses any database not " +
+		"ending in _e2e.",
+	"e2e/mktoken": "the browser suite's agent-create token minter (`go run ./e2e/mktoken`, " +
+		"e2e/lib/seed.ts): it mints a personal token for any user id it is given, so it must " +
 		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/mkchat": "the mirror-chat browser spec's agent-with-a-chat maker (`go run ./e2e/mkchat`), " +
 		"which also deletes that agent: fixture writes, so it must never be reachable from a " +
@@ -93,8 +117,18 @@ var notLinkedLedger = map[string]string{
 		"turn the kickoff deliverer holds for its github grant, written as the login role with row-level " +
 		"security's scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
 		"database not ending in _e2e.",
+	"e2e/ccfix": "the chief-mobile browser spec's fixture (`go run ./e2e/ccfix`): a running claude-code agent and an " +
+		"account failover row, written as the login role with row-level security's scope set to all, so it must never " +
+		"be reachable from a shipped binary; it refuses any database not ending in _e2e.",
+	"e2e/devicefix": "the push browser spec's fixture (`go run ./e2e/devicefix`): registers a paired phone's push " +
+		"endpoint through the push store, reading the device's owner as the login role with row-level security's " +
+		"scope set to all, so it must never be reachable from a shipped binary; it refuses any database not " +
+		"ending in _e2e.",
 	"e2e/sqfix": "the send-queue browser spec's fixture (`go run ./e2e/sqfix`): ages a queued message, or strands it " +
 		"mid-send, so the server's own dispatcher fails it; run by the spec, never linked into a binary.",
+	"e2e/previewfix": "the previews browser spec's fixture (built by e2e/tests/previews.spec.ts): a TLS edge " +
+		"with a self-signed certificate in front of the preview gateway, and a dev app on loopback. A test tool: " +
+		"no shipped binary serves a self-signed edge or a fake dev server.",
 	"e2e/pluginfix": "the plugins browser spec's fixture (`go run ./e2e/pluginfix`): a chief agent, a " +
 		"delivered message and a lapsed lease, written as the login role with row-level security's " +
 		"scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
@@ -133,9 +167,6 @@ var notLinkedLedger = map[string]string{
 
 	"internal/provision/provisiontest": "the driver contract suite, run by driver " +
 		"implementations from their own _test.go files. Same reason as internal/dbtest.",
-	"images/hermes-agent/smoke": "the hermes image's smoke test (`make hermes-smoke`, `go run`): it starts " +
-		"Docker containers, a stub model and a fake muster relay on loopback, so it is a harness run by hand " +
-		"against a built image and must never be reachable from a shipped binary.",
 }
 
 // TestTheHTTPLayerLinksIntoABinary is the gate that makes "muster serves" a
@@ -259,6 +290,12 @@ func countOwn(set map[string]bool) int {
 // not run.
 func depsOf(t *testing.T, root, pattern string) map[string]bool {
 	t.Helper()
+	// 🔴 NEVER REPLAYED FROM GO'S TEST CACHE: what the `go` subprocess below reads
+	// (every package of the module) is invisible to the cache, which keys a result
+	// only on the test binary and the files and variables the test process itself
+	// touched. ci.yml gives MUSTER_TEST_NOCACHE a per-run value, and reading it
+	// puts that value in the key (cmd/go: "env" lines of the test log).
+	_ = os.Getenv("MUSTER_TEST_NOCACHE")
 	cmd := exec.Command("go", "list", "-deps", pattern)
 	cmd.Dir = root
 	out, err := cmd.Output()

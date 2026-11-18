@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	g "maragu.dev/gomponents"
@@ -12,16 +13,22 @@ import (
 )
 
 // markdown.go — a small, dependency-free, escape-FIRST markdown renderer used to
-// format machine+user-authored task bodies (and comments) on the server.
+// format machine+user-authored task bodies, comments and chat messages on the
+// server.
 //
 // Safety: the source is HTML-escaped BEFORE any markup is applied, so no author
 // content can ever inject HTML/JS — the only tags in the output are the ones we
-// emit. This mirrors the client-side mdRender in agents_detail.go (escape →
-// inline → block) so the two renderers behave the same; we keep a Go copy rather
-// than pulling a markdown library (blackfriday is only an indirect dep) to keep
-// the surface tiny and the escaping guarantee auditable.
+// emit. We keep it in-tree rather than pulling a markdown library (blackfriday
+// is only an indirect dep) to keep the surface tiny and the escaping guarantee
+// auditable.
 //
-// Supported: bold (**x**), italic (*x* / _x_), inline code (`x`), fenced code
+// 🔴 IT IS THE ONLY MARKDOWN RENDERER. The /agents/{name} chat used to carry a
+// second, JS copy (mdRender in agentChatScript); every inline fix had to land
+// in both, and they drifted. The chat now draws its transcript, its streamed
+// reply and the echo of a sent message through ChatMessageHTML, which calls
+// this file (agents_detail.go chatMessageBody). Do not grow a client copy back.
+//
+// Supported: bold (**x**), italic (*x* / _x_, the `_` form never intra-word), inline code (`x`), fenced code
 // blocks (```lang … ```), blockquotes (> …), bullet lists (- / *), ordered
 // lists (1.), ATX headings (# … ######), thematic breaks (--- / *** / ___),
 // bare-URL autolinks, GFM pipe tables, and paragraphs.
@@ -53,7 +60,9 @@ var (
 	mdThematicBreak = regexp.MustCompile(`^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$`)
 	mdBold          = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 	mdItalicStar    = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
-	mdItalicUnder   = regexp.MustCompile(`(^|[^_])_([^_\n]+)_`)
+	// Underscore emphasis is NOT a regex: see mdItalicUnderscore. RE2 has no
+	// lookaround, and the rule it needs is about the characters on BOTH sides of
+	// each delimiter.
 	// Link: [text](url). Matched on the ALREADY-ESCAPED string, so the captured
 	// groups contain escaped text/url (e.g. & → &amp;); the URL scheme is then
 	// re-checked against http(s) and anything else (javascript:, data:, …) is left
@@ -66,13 +75,6 @@ var (
 	// emitted href as a raw control byte while the code text vanished. Excluding it
 	// makes such input stay literal markdown — which is exactly what it did before
 	// the vault existed.
-	//
-	// NOTE: the JS renderer in agents_detail.go had the same hole — its AUTOLINK
-	// excluded the sentinel but its markdown-link regex did not, so it leaked its
-	// own sentinel into an href for the same input. Fixed in 0.7.79; both regexes
-	// there now carry the exclusion. The two renderers use DIFFERENT sentinels
-	// (\x00 here, U+E000 in the JS), so keep the fixes parallel in intent but do
-	// not "sync" them by copying one into the other.
 	mdLink = regexp.MustCompile("\\[([^\\]\\x00]+)\\]\\(([^)\\s\\x00]+)\\)")
 	// mdHTTPScheme gates which link URLs become anchors: http:// or https:// only.
 	// Case-insensitive so HTTPS:// etc. still pass; the escaped URL's scheme is
@@ -80,9 +82,7 @@ var (
 	mdHTTPScheme = regexp.MustCompile(`(?i)^https?://`)
 	// mdBareURL matches a BARE http(s) URL — one an author wrote without
 	// [text](url) around it. Agents paste pull-request and issue links into task
-	// bodies and comments constantly, and every one of them rendered as inert text
-	// here while the JS renderer in agents_detail.go had autolinked them since it
-	// shipped: one document, two surfaces, two answers.
+	// bodies and comments constantly.
 	//
 	// The \x00 exclusion is the vault sentinel, for the same reason mdLink carries
 	// it — a URL directly abutting a placeholder must not swallow it into the href.
@@ -91,8 +91,7 @@ var (
 	// this pattern sees.
 	mdBareURL = regexp.MustCompile(`(?i)https?://[^\s<\x00]+`)
 	// mdURLTrail is the trailing punctuation that belongs to the SENTENCE, not to
-	// the URL — `see https://example.com/x.` must not link the full stop. Mirrors
-	// the JS renderer's set exactly.
+	// the URL — `see https://example.com/x.` must not link the full stop.
 	mdURLTrail = regexp.MustCompile(`[.,)\]!?:;"']+$`)
 	// mdVaultToken matches a vault placeholder for the single-pass restore.
 	mdVaultToken = regexp.MustCompile("\x00(\\d+)\x00")
@@ -104,8 +103,6 @@ var (
 	// and `--:` meaning; accepting them here only means the separator row is
 	// RECOGNISED when an author writes one (so the table renders at all instead of
 	// degrading to a paragraph full of pipes). Every cell is emitted `text-left`.
-	// The JS renderer in agents_detail.go made the same trade; matching it is
-	// deliberate, so the two surfaces do not disagree about one document.
 	mdTableSepCell = regexp.MustCompile(`^:?-+:?$`)
 )
 
@@ -115,8 +112,7 @@ var (
 // It also strips NUL, the vault delimiter (mdVaultSep). Doing it HERE rather than
 // in mdInline covers every path — including fenced code blocks, which do not go
 // through mdInline and so previously carried an author NUL straight into the
-// output. NUL is not renderable content, so dropping it loses nothing. This
-// mirrors the JS renderer, which strips its own  sentinel in mdEsc.
+// output. NUL is not renderable content, so dropping it loses nothing.
 func mdEscape(s string) string {
 	s = strings.ReplaceAll(s, mdVaultSep, "")
 	s = strings.ReplaceAll(s, "&", "&amp;")
@@ -160,8 +156,7 @@ func (v *mdVault) stash(html string) string {
 // well inside maxTaskBodyLen: 195 KB with 50k code spans took 33.5s that way
 // versus 0.7s before this change — and internal/ui/notes.go renders every task's
 // full body on the list page, so a single such row would have made the page cost
-// tens of seconds of CPU for every viewer, permanently. This mirrors what the JS
-// renderer in agents_detail.go already does.
+// tens of seconds of CPU for every viewer, permanently.
 //
 // An index that is not ours (or out of range) yields "" rather than leaking a raw
 // control byte into the output.
@@ -195,7 +190,13 @@ func (v *mdVault) restore(s string) string {
 // before emphasis so `*` in link text isn't eaten) — but correctness no longer
 // depends on later patterns failing to match earlier output, which is what made
 // two links in one paragraph corrupt each other.
-func mdInline(escaped string) string {
+func mdInline(escaped string) string { return mdInlineWith(escaped, nil) }
+
+// mdInlineWith is mdInline, linking the mentions mc resolves (mentions.go).
+// They are matched AFTER code spans, links and bare URLs are vaulted, so none
+// of those is looked inside, and BEFORE emphasis, which then sees each link
+// only as a placeholder. A nil mc links none.
+func mdInlineWith(escaped string, mc *mentionCtx) string {
 	// Defence in depth: mdEscape already strips NUL from all author text, but this
 	// function is package-visible and takes an "already-escaped" string on trust,
 	// so re-strip rather than rely on every future caller having gone through it.
@@ -217,6 +218,7 @@ func mdInline(escaped string) string {
 	})
 	s = mdLinkify(s, v)
 	s = mdAutolink(s, v)
+	s = mdMention(s, v, mc)
 	s = mdEmphasis(s)
 	return v.restore(s)
 }
@@ -259,8 +261,114 @@ func mdAutolink(escaped string, v *mdVault) string {
 func mdEmphasis(s string) string {
 	s = mdBold.ReplaceAllString(s, `<strong>$1</strong>`)
 	s = mdItalicStar.ReplaceAllString(s, `$1<em>$2</em>`)
-	s = mdItalicUnder.ReplaceAllString(s, `$1<em>$2</em>`)
+	s = mdItalicUnderscore(s)
 	return s
+}
+
+// mdIsWordRune is the "alphanumeric" side of CommonMark's intra-word `_` rule:
+// a letter (L), a combining mark (M), a number (N), or another `_` (so `__x__`,
+// which this renderer does not support as bold, stays literal exactly as it
+// did before).
+//
+// Marks count because a word can END in one: a decomposed é is e + U+0301, and
+// Devanagari vowel signs (सूची) are marks, so `café_x_` must not open there.
+// Numbers are N, not just decimal digits, so `x²_y_` stays literal.
+//
+// TestMarkdownUnicodeWordEdges pins the literal output for such inputs.
+func mdIsWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsNumber(r)
+}
+
+// mdIsUnderSpace is the whitespace side of the rule: Go's unicode.IsSpace plus
+// U+FEFF (a zero-width no-break space is no word character either).
+func mdIsUnderSpace(r rune) bool {
+	return unicode.IsSpace(r) || r == '\uFEFF'
+}
+
+// mdItalicUnderscore applies `_x_` italics under CommonMark's rule for `_`:
+// emphasis can neither OPEN nor CLOSE inside a word.
+//
+//   - an opener `_` is not preceded by a word rune and is followed by a
+//     non-space, non-`_` character;
+//   - a closer `_` is preceded by a non-space, non-`_` character and is not
+//     followed by a word rune.
+//
+// 🔴 THE PREVIOUS RULE, `(^|[^_])_([^_\n]+)_`, IGNORED BOTH SIDES. Any two
+// underscores on a line paired, so a snake_case identifier was emphasis:
+// `route_id rt_8f51…` rendered as route<em>id rt</em>8f51…, and every routed
+// block, tool name (route_to_session) and file_path an agent wrote was mangled
+// on the mirrored chat view. The closer may now sit past an intra-word `_`
+// (`_use file_path_` is one emphasis), which is also what CommonMark does.
+//
+// Emphasis never crosses a "\n" (same as before). The input is already escaped
+// and may hold vault placeholders; \x00 is not a word rune, and a placeholder's
+// digits are bounded by \x00 on both sides, so no `_` can pair into one.
+func mdItalicUnderscore(s string) string {
+	if !strings.Contains(s, "_") {
+		return s
+	}
+	// next[k] is the first closing `_` at or after k on k's line, or -1. Whether a
+	// `_` can close does not depend on the opener, so this is computed once, right
+	// to left. ⚡ Scanning forward from every opener instead is quadratic: a
+	// paragraph is ONE line here (markdownHTML joins it with <br>), and a body of
+	// unclosed `_x` openers inside maxTaskBodyLen would cost seconds per render —
+	// the hazard mdVault.restore's comment measured for the same page.
+	next := make([]int, len(s)+1)
+	next[len(s)] = -1
+	for k := len(s) - 1; k >= 0; k-- {
+		switch {
+		case s[k] == '\n':
+			next[k] = -1
+		case s[k] == '_' && mdUnderCloses(s, k):
+			next[k] = k
+		default:
+			next[k] = next[k+1]
+		}
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '_' && mdUnderOpens(s, i) {
+			if j := next[i+1]; j > 0 {
+				b.WriteString("<em>" + s[i+1:j] + "</em>")
+				i = j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// mdUnderOpens reports whether the `_` at s[i] can open emphasis.
+func mdUnderOpens(s string, i int) bool {
+	if i > 0 {
+		if r, _ := utf8.DecodeLastRuneInString(s[:i]); mdIsWordRune(r) {
+			return false
+		}
+	}
+	if i+1 >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[i+1:])
+	return r != '_' && !mdIsUnderSpace(r)
+}
+
+// mdUnderCloses reports whether the `_` at s[j] can close emphasis.
+func mdUnderCloses(s string, j int) bool {
+	if j == 0 {
+		return false
+	}
+	if r, _ := utf8.DecodeLastRuneInString(s[:j]); r == '_' || mdIsUnderSpace(r) {
+		return false
+	}
+	if j+1 < len(s) {
+		if r, _ := utf8.DecodeRuneInString(s[j+1:]); mdIsWordRune(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // mdLinkify turns `[text](url)` into an anchor — but ONLY for http(s) URLs. The
@@ -279,8 +387,7 @@ func mdEmphasis(s string) string {
 //
 // — crossing <em>/</a>, i.e. malformed HTML. Emphasizing the label here, in
 // isolation, both prevents that and preserves `[*x*](u)` italicizing as it always
-// has (the JS renderer vaults the whole anchor without this and does NOT support
-// emphasis in a label; matching it exactly would have been a silent regression).
+// has.
 func mdLinkify(escaped string, v *mdVault) string {
 	return mdLink.ReplaceAllStringFunc(escaped, func(m string) string {
 		g := mdLink.FindStringSubmatch(m)
@@ -297,10 +404,16 @@ func mdLinkify(escaped string, v *mdVault) string {
 }
 
 // renderMarkdown converts a markdown source string to a safe HTML fragment node
-// (g.Raw of escaped-then-marked-up output). It is the server-side counterpart of
-// the JS mdRender. The returned node is safe to embed directly.
+// (g.Raw of escaped-then-marked-up output). The returned node is safe to embed
+// directly.
 func renderMarkdown(src string) g.Node {
 	return g.Raw(markdownHTML(src))
+}
+
+// renderMarkdownWith is renderMarkdown, linking the mentions mx resolves
+// (mentions.go); a nil mx is renderMarkdown.
+func renderMarkdownWith(src string, mx *MentionIndex) g.Node {
+	return g.Raw(markdownHTMLWith(src, mx))
 }
 
 // plainOr is s through the title rule (internal/textplain), or fallback —
@@ -354,21 +467,9 @@ func snippetPlain(src string, n int) string {
 
 // --- GFM pipe tables ---------------------------------------------------------
 //
-// 🔴 PORTED FROM THE JS RENDERER'S LOGIC, NOT COPIED FROM ITS SOURCE. The
-// client-side mdRender in agents_detail.go has had pipe tables since before this
-// one did, and its behaviour is the specification followed here: a header row
-// containing `|` immediately followed by a separator row, cells split on `|`
-// with the optional outer pipes dropped, body rows gathered while they still
-// contain a `|`, alignment discarded. The two renderers use DIFFERENT sentinels
-// (\x00 here, U+E000 there) and different escape points (this one escapes per
-// line, that one escapes the whole source up front), so keeping them parallel
-// means keeping the INTENT parallel — see the note on mdLink above.
-//
-// ⚠ IT IS NOT A DUPLICATE OF A LIVE PATH. The JS renderer only ever walks
-// `[data-md]` elements, which only chatBubble on /agents/{name} emits; the
-// session and tmux chat views are rendered by THIS function and had no table
-// support at all. Two implementations of one grammar is a known, accepted cost
-// recorded here so the next reader does not mistake it for an oversight.
+// A header row containing `|` immediately followed by a separator row, cells
+// split on `|` with the optional outer pipes dropped, body rows gathered while
+// they still contain a `|`, alignment discarded.
 
 // mdTableCells splits one pipe-table row into trimmed cells, dropping the
 // optional leading and trailing pipe so both `| a | b |` and `a | b` work.
@@ -403,8 +504,7 @@ func mdIsTableSep(line string) bool {
 // markdownHTML's paragraph gather runs LAST and swallows every contiguous line
 // that no earlier branch claimed — so without teaching it this same predicate,
 // a table's HEADER row is absorbed into the preceding paragraph and the table
-// branch is never reached for it. The JS renderer carries the identical check in
-// both places for the identical reason. Spelled once here so the two cannot
+// branch is never reached for it. Spelled once here so the two cannot
 // drift into disagreeing about what a table is.
 func mdTableStartsAt(lines []string, i int) bool {
 	if i < 0 || i+1 >= len(lines) {
@@ -413,10 +513,26 @@ func mdTableStartsAt(lines []string, i int) bool {
 	return strings.Contains(lines[i], "|") && mdIsTableSep(lines[i+1])
 }
 
+// MarkdownHTML is the renderer for a DOCUMENT rather than a chat bubble: a
+// shareable page's markdown block (internal/pages draws it inside the page's
+// sandboxed document, which loads no app.css). The one difference from
+// markdownHTML is that an ATX heading is a real <h1>…<h6>, not a styled div.
+// Every author character is escaped; only the renderer's own tags are emitted.
+func MarkdownHTML(src string) string { return markdownRender(src, true, nil) }
+
 // markdownHTML is the pure string transform (testable without a DOM). The output
 // contains ONLY tags this function emits; all author text passed through
 // mdEscape first.
-func markdownHTML(src string) string {
+func markdownHTML(src string) string { return markdownRender(src, false, nil) }
+
+// markdownHTMLWith is markdownHTML, linking the mentions mx resolves.
+func markdownHTMLWith(src string, mx *MentionIndex) string {
+	return markdownRender(src, false, mentionFor(mx, src, false))
+}
+
+// markdownRender is markdownHTML, with headings drawn as <h1>…<h6> when
+// docHeadings is set (MarkdownHTML), and mentions linked when mc is set.
+func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 	// Normalize newlines so \r\n / \r split cleanly.
 	src = strings.ReplaceAll(src, "\r\n", "\n")
 	src = strings.ReplaceAll(src, "\r", "\n")
@@ -465,13 +581,19 @@ func markdownHTML(src string) string {
 		}
 
 		// Heading.
+		if m := mdHeadingRe.FindStringSubmatch(line); m != nil && docHeadings {
+			tag := "h" + strconv.Itoa(len(m[1]))
+			out.WriteString("<" + tag + ">" + mdInlineWith(mdEscape(m[2]), mc) + "</" + tag + ">")
+			i++
+			continue
+		}
 		if m := mdHeadingRe.FindStringSubmatch(line); m != nil {
 			size := "text-sm"
 			if len(m[1]) <= 2 {
 				size = "text-base"
 			}
 			out.WriteString(`<div class="mt-1 font-semibold text-fg ` + size + `">`)
-			out.WriteString(mdInline(mdEscape(m[2])))
+			out.WriteString(mdInlineWith(mdEscape(m[2]), mc))
 			out.WriteString(`</div>`)
 			i++
 			continue
@@ -481,7 +603,7 @@ func markdownHTML(src string) string {
 		if mdBlockquote.MatchString(line) {
 			var quote []string
 			for i < len(lines) && mdBlockquote.MatchString(lines[i]) {
-				quote = append(quote, mdInline(mdEscape(mdBlockquote.ReplaceAllString(lines[i], ""))))
+				quote = append(quote, mdInlineWith(mdEscape(mdBlockquote.ReplaceAllString(lines[i], "")), mc))
 				i++
 			}
 			out.WriteString(`<blockquote class="my-1 border-l-2 border-accent/60 bg-s2 py-1 pl-3 text-fg2">`)
@@ -495,7 +617,7 @@ func markdownHTML(src string) string {
 			out.WriteString(`<ul class="my-1 list-disc space-y-0.5 pl-5">`)
 			for i < len(lines) && mdBulletRe.MatchString(lines[i]) {
 				item := mdBulletRe.ReplaceAllString(lines[i], "")
-				out.WriteString(`<li>` + mdInline(mdEscape(item)) + `</li>`)
+				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mc) + `</li>`)
 				i++
 			}
 			out.WriteString(`</ul>`)
@@ -507,7 +629,7 @@ func markdownHTML(src string) string {
 			out.WriteString(`<ol class="my-1 list-decimal space-y-0.5 pl-5">`)
 			for i < len(lines) && mdOrderedRe.MatchString(lines[i]) {
 				item := mdOrderedRe.ReplaceAllString(lines[i], "")
-				out.WriteString(`<li>` + mdInline(mdEscape(item)) + `</li>`)
+				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mc) + `</li>`)
 				i++
 			}
 			out.WriteString(`</ol>`)
@@ -515,7 +637,7 @@ func markdownHTML(src string) string {
 		}
 
 		// GFM pipe table. Checked AFTER the list branches (a `- a | b` line is a
-		// bullet, exactly as in the JS renderer) and BEFORE the blank-line and
+		// bullet) and BEFORE the blank-line and
 		// paragraph branches, which would otherwise claim the header row.
 		//
 		// Cells run through mdInline(mdEscape(...)) like every other author text
@@ -528,13 +650,13 @@ func markdownHTML(src string) string {
 			i += 2 // consume the header row AND the separator row
 			out.WriteString(`<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs"><thead><tr>`)
 			for _, c := range head {
-				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInline(mdEscape(c)) + `</th>`)
+				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInlineWith(mdEscape(c), mc) + `</th>`)
 			}
 			out.WriteString(`</tr></thead><tbody>`)
 			for i < len(lines) && strings.Contains(lines[i], "|") && !mdBlankLineRe.MatchString(lines[i]) {
 				out.WriteString(`<tr>`)
 				for _, c := range mdTableCells(lines[i]) {
-					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInline(mdEscape(c)) + `</td>`)
+					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInlineWith(mdEscape(c), mc) + `</td>`)
 				}
 				out.WriteString(`</tr>`)
 				i++
@@ -568,7 +690,7 @@ func markdownHTML(src string) string {
 			para = append(para, mdEscape(lines[i]))
 			i++
 		}
-		out.WriteString(`<p class="my-1">` + mdInline(strings.Join(para, "<br>")) + `</p>`)
+		out.WriteString(`<p class="my-1">` + mdInlineWith(strings.Join(para, "<br>"), mc) + `</p>`)
 	}
 	return out.String()
 }

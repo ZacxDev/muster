@@ -65,8 +65,15 @@ var wantCommentSites = map[string]commentSite{
 	// Write: the INSERT, guarded on a LIVE PARENT (a comment on a dismissed task
 	// would otherwise be written into a thread nothing can see).
 	"AddComment": {liveOnly: true, commentCols: false},
-	// Write: the retraction itself — the only writer of note_comments.deleted_at.
+	// Write: the retraction itself — one of the two writers of
+	// note_comments.deleted_at.
 	"SoftDeleteComment": {liveOnly: true, commentCols: false},
+	// Write: the other — a plugin task reference's conversion retracting the
+	// converting plugin's own relay comments (UpsertReference). It stamps live
+	// comments only (liveOnly, so a retraction's first timestamp is kept) and
+	// returns no comment column. Behavioural case:
+	// TestUpsertReferenceConvertsACopyRowInPlace.
+	"retractCommentsByAuthorTx": {liveOnly: true, commentCols: false},
 	// Write + a NON-BODY probe: the idle-task reaper's single statement. It INSERTs
 	// the reap comment (hence liveOnly — a dismissed task must not gain one, same
 	// rule as AddComment) and it also SCANS note_comments in a `NOT EXISTS` to
@@ -112,6 +119,13 @@ var wantCommentSites = map[string]commentSite{
 	// a retraction must not silently sink a task down the board, for the same
 	// reason a retracted comment tombstones instead of vanishing.
 	"ListPage": {liveOnly: true, commentCols: false},
+	// Write: moving a task into a team (team sharing 4.3) rewrites its
+	// comments' owner_id with it, in one statement. It reads no comment column;
+	// liveOnly guards the task it locks (a dismissed task does not move).
+	"MoveToTeam": {liveOnly: true, commentCols: false},
+	// Not a query: the move's ledger of child keys, "note_comments.note_id"
+	// among them (TestEveryForeignKeyOntoNotesIsClassified reads it).
+	"MoveChildren": {liveOnly: false, commentCols: false},
 }
 
 // sqlSites maps each function in file that has a string literal mentioning

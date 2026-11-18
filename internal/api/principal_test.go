@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -51,10 +52,18 @@ const (
 	// A paired device's credential (devices.ShapeOK): mdv_ + 43 base64url;
 	// principalDevices resolves it to user 1.
 	pDeviceToken = "mdv_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// A page's share-link token (pages.TokenShapeOK): 43 base64url;
+	// principalPages resolves it to a link of user 1's.
+	pPageToken = "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
 var publicRoutes = []string{
+	// Plugin pairing (plugin_pairing.go): a plugin with no token asks for one,
+	// and collects it with its poll secret. A request only waits for its
+	// owner's approval, which must name the code the plugin printed.
+	"POST /plugin/v1/pair",
+	"GET /plugin/v1/pair/{request_id}",
 	// The admin claim (accounts PR 4): how an anonymous visitor holding a
 	// single-use link stops being anonymous, like /login.
 	"GET /auth/claim",
@@ -75,7 +84,18 @@ var publicRoutes = []string{
 	"GET /health",
 	"GET /login",
 	"GET /manifest.webmanifest",
-	"GET /metrics",
+	// The Android app's Digital Asset Links: fetched by Android's verifier
+	// with no session; configuration only, nothing per-user (assetlinks.go).
+	"GET /.well-known/assetlinks.json",
+	// The Android shell's sign-in origins: read before the first sign-in (so
+	// before pairing) with no credential; configuration only (device_web.go).
+	"GET /api/device/web",
+	// Instance branding (branding.go): the server's name and logo, read on the
+	// sign-in page and by the apps before they sign in; nothing per-user.
+	"GET /api/instance",
+	"GET /brand/logo.png",
+	"GET /brand/icon-192.png",
+	"GET /brand/icon-512.png",
 	// ⚠ NOT UNAUTHENTICATED: the mirror plugin's host connection. No muster door
 	// admits it and no request Principal is attached — internal/mirror
 	// authenticates its own per-host mirror token (mirror_tokens, looked up under
@@ -102,6 +122,10 @@ var publicRoutes = []string{
 	// single-use code, minted by a signed-in session, IS the authority
 	// (devices.PGStore.Redeem, under System). Throttled per client address.
 	"POST /api/device/pair",
+	// The officer LLM proxy's catch-all (officer_llm.go): every path under
+	// /llm/ but POST /llm/v1/messages is refused 404 before any credential is
+	// read, so it attaches no Principal and serves nothing.
+	"/llm/",
 }
 
 // routeVias is, for every non-public route, each door that admits it.
@@ -111,18 +135,60 @@ var routeVias = map[authz.Via][]string{
 		// Plugins (0015): the page and its forms (404 while plugins are off).
 		"GET /plugins",
 		"POST /plugins",
+		// A viewer hand-off's mint (plugin_handoffs.go).
+		"POST /plugin-handoffs",
 		"POST /plugins/{id}/revoke",
+		"POST /plugins/{id}/draft-checks",
+		"POST /plugins/{id}/deliver-to",
+		"POST /plugins/{id}/chief-extension",
+		"POST /plugins/{id}/approve-chief-instructions",
+		"POST /plugins/pair/{id}/approve",
+		"POST /plugins/pair/{id}/deny",
+		"GET /plugins/drafts/{id}/media/{n}",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
+		"POST /plugins/outreach-batches/{id}/decide",
 		"POST /plugins/messages/{id}/retry",
+		// Shareable pages (pages.go): the owner's Pages screen, preview and
+		// writes.
+		"GET /pages",
+		"GET /pages/{id}",
+		"GET /pages/{id}/preview",
+		"GET /pages/{id}/versions/{v}/content",
+		"POST /pages/{id}/links/{link}/revoke",
+		"POST /pages/{id}/share",
+		"POST /pages/{id}/share/rotate",
+		"POST /pages/{id}/share/revoke",
+		"GET /pages/{id}/card",
+		"POST /pages/{id}/rollback",
+		"POST /pages/{id}/delete",
+		// Routing rules (routing_rules.go) and the usage page (usage.go).
+		"GET /rules",
+		"POST /rules/{id}/disable",
+		"POST /rules/{id}/enable",
+		"POST /rules/{id}/delete",
+		"GET /usage",
+		// The answer-attempt log's page (answers_page.go).
+		"GET /answers",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
+		"GET /attention/drafts",
+		// The Asks page's Log tab (ask_log_read.go): the caller's own asks.
+		"GET /attention/log",
+		// A session page's asks block (attention_asker.go).
+		"GET /attention/asker",
+		// A notification's tap: its item's target, resolved when tapped.
+		"GET /attention/open/{key}",
+		// An ask's own page, where its tap lands (attention_ask_page.go).
+		"GET /attention/asks/{id}",
+		// An ask's attachment (ask_media.go), to who may read the ask.
+		"GET /attention/asks/{id}/attachments/{upload}",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
 		"POST /attention/asks/{id}/redeliver",
-		"POST /attention/hermes/approve",
+		"POST /attention/opencode/answer",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",
@@ -142,8 +208,12 @@ var routeVias = map[authz.Via][]string{
 		// session's own (a device credential cannot reach either).
 		"POST /account/devices/pair",
 		"POST /account/devices/{id}/remove",
+		// …and Account → Devices' live list, the session's own devices.
+		"GET /account/devices/live",
 		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
 		"GET /account/passkeys",
+		// The feature registry (features.go): the session's own view of it.
+		"GET /account/features",
 		"POST /account/passkeys/options",
 		"POST /account/passkeys/verify",
 		"POST /account/passkeys/{id}/delete",
@@ -159,10 +229,82 @@ var routeVias = map[authz.Via][]string{
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",
+		"GET /admin/teams",
 		"GET /admin/users",
+		"POST /admin/teams",
+		"POST /admin/teams/{id}/members",
+		"POST /admin/teams/{id}/members/{user}/remove",
+		// A team's manager pages (teams_pages.go): requireSession, and
+		// requireOperatorWrite for the writes; the manager check is AFTER the
+		// principal is attached.
+		"GET /teams/{id}",
+		"POST /teams/{id}/members",
+		"POST /teams/{id}/members/{user}/remove",
+		// Account -> Teams and a member's own notify switch (phase 2b.1):
+		// requireSession, and requireOperatorWrite for the write; the
+		// membership check is the store's, on the caller's own row.
+		"GET /account/teams",
+		"POST /account/teams/{id}/notify",
+		// A team's officers page and the host spawns' team lend (team sharing
+		// phase 3): requireSession, and requireOperatorWrite for the writes;
+		// the member/manager check and lendHostSpawn's gate are AFTER the
+		// principal is attached.
+		"GET /teams/{id}/officers",
+		"POST /teams/{id}/officers/types/{key}",
+		"POST /teams/{id}/officers/defs/{officer}",
+		// A team's chief (team sharing phase 4, team_admin.go) and an agent's
+		// credential rotation: requireSession (+ same-origin for the writes);
+		// the member/manager check and the team acting context
+		// (teamAdminContext, a fresh role read) are AFTER the principal.
+		"GET /teams/{id}/chief",
+		"POST /teams/{id}/chief/provision",
+		"POST /teams/{id}/chief/stop",
+		"POST /teams/{id}/chief/restart",
+		// A team's connector requests (slice 4.8, team_connectors.go): the
+		// same door, the manager check and teamAdminContext after it.
+		"GET /teams/{id}/connectors",
+		"POST /teams/{id}/connectors/{grant}/approve",
+		"POST /teams/{id}/connectors/{grant}/deny",
+		"POST /teams/{id}/connectors/standing/{standing}/revoke",
+		"POST /agents/{id}/credentials/rotate",
+		// A team's host tokens (team sharing 2b.2, team_hosts_page.go):
+		// requireSession (+ same-origin for the writes); the manager check and
+		// the team acting context (teamAdminContext) are AFTER the principal.
+		"GET /teams/{id}/hosts",
+		"POST /teams/{id}/hosts",
+		"POST /teams/{id}/hosts/{token}/revoke",
+		"POST /teams/{id}/hosts/replace",
+		// A team's viewer plugins (team sharing 2b.3b, team_plugins_page.go):
+		// the hosts page's gate.
+		"GET /teams/{id}/plugins",
+		"POST /teams/{id}/plugins",
+		"POST /teams/{id}/plugins/{plugin}/revoke",
+		"GET /officers/spawns",
+		"POST /officers/spawns/{id}/share",
+		"POST /officers/spawns/{id}/unshare",
+		// The Officers pages (officers O-C, officers_pages.go): the session
+		// tier, writes same-origin (requireOperatorWrite).
+		"GET /officers",
+		"GET /officers/new",
+		"POST /officers/new",
+		"GET /officers/{officer}",
+		"GET /officers/{officer}/edit",
+		"POST /officers/{officer}/edit",
+		"POST /officers/{officer}/pause",
+		"POST /officers/{officer}/resume",
+		"POST /officers/{officer}/mode",
+		"POST /officers/{officer}/run",
+		"POST /officers/{officer}/delete",
+		"POST /officers/{officer}/schedules",
+		"POST /officers/{officer}/schedules/{name}/delete",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",
+		// Instance branding's writes: requireAdminRole is requireSession plus
+		// the same role check (branding.go).
+		"PUT /api/instance/branding",
+		"DELETE /api/instance/branding/logo",
+		"DELETE /api/instance/branding/app-icon",
 		"POST /admin/users/{id}/enable",
 		"POST /admin/users/{id}/reset-link",
 		"POST /admin/users/{id}/role",
@@ -171,8 +313,23 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/terminal/ws",
 		"GET /mirror/view",
 		"GET /mirror/view/ws",
+		// A session view's Preview button (plugin_chip.go).
+		"GET /ui/mirror/preview-button",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
+		// Suggested replies (suggest.go): the composer's set and its counts,
+		// and the caller's own toggle — the session tier.
+		"GET /mirror/view/suggest",
+		"POST /mirror/view/suggest/event",
+		"POST /account/suggest",
+		// The chief's on/off switch (chief_toggle.go): the session tier.
+		"POST /account/chief",
+		// "Show tmux sessions" (notify_prefs.go): the session tier.
+		"POST /account/notifications/tmux",
+		// "Start notification titles with the tmux name" (notify_prefs.go):
+		// the session tier.
+		"POST /account/notifications/codename",
+		"POST /account/pages/agent-share",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",
@@ -180,10 +337,21 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/send",
 		"GET /mirror/terminal/send",
 		"POST /mirror/confirm-send",
+		// The view's chief mode (view_chief.go): the owner's line, a send that
+		// came back as a GET, and the chief strip — the session tier only.
+		"POST /mirror/view/chief",
+		"GET /mirror/view/chief",
+		"GET /mirror/view/chief/log",
+		// A succession (succession.go): the view's read and the card's tap —
+		// the session tier only (the tap is the owner's own door).
+		"GET /mirror/view/successor",
+		"POST /mirror/view/proposal",
+		"GET /mirror/view/proposal",
 		// AskUserQuestion: the live region and the answers (mirror_ask.go).
 		"GET /mirror/view/asks",
 		"POST /mirror/view/ask",
 		"POST /mirror/view/ask/cancel",
+		"POST /mirror/view/ask/message",
 		"GET /agents/{name}/send",
 		"POST /agents/{name}/send",
 		// Dictation: the session tier only (requireOperatorWrite), like a send.
@@ -194,10 +362,17 @@ var routeVias = map[authz.Via][]string{
 		"GET /uploads/{id}/file",
 		"POST /uploads/{id}/revoke",
 		"DELETE /connector-grants/{id}",
+		"DELETE /connector-standing-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",
 		"DELETE /tasks/{id}/comments/{cid}",
 		"DELETE /tasks/{id}/tags/{tag}",
+		// A failed reference write's Retry and Dismiss (task_ref_write_actions.go):
+		// requireOperatorWrite, the session tier only.
+		"POST /tasks/{id}/ref-writes/{wid}/retry",
+		"POST /tasks/{id}/ref-writes/{wid}/dismiss",
+		// Move a task into a team (team_tasks.go): requireOperatorWrite.
+		"POST /tasks/{id}/move",
 		"GET /agents",
 		"GET /agents/{name}",
 		"GET /agents/{name}/logs/stream",
@@ -206,33 +381,37 @@ var routeVias = map[authz.Via][]string{
 		"GET /agents/{name}/ws",
 		"GET /api/directories",
 		"GET /api/openrouter/models",
+		// The chief sessions' model search (chief_session_llm.go): requireSession.
+		"GET /api/chief/openrouter-models",
 		"GET /connectors",
 		"GET /events",
-		"GET /github/callback",
-		"GET /github/connect",
-		"GET /repos",
+		// The browser telemetry relay (faro_relay.go): a session, same-origin.
+		"POST /telemetry/faro",
 		"GET /share",
 		"GET /tasks",
 		"GET /tasks/{id}",
 		"GET /tasks/{id}/attachments/{aid}",
-		"GET /ui/agents",
-		"GET /ui/agents/new",
-		"GET /ui/agents/notes",
+		"GET /ui/nav/agents",
+		"GET /ui/nav/waiting",
 		"GET /ui/agents/repos",
-		"GET /ui/agents/{id}/card",
+		"GET /ui/agents/{id}/header",
 		"GET /ui/focus/history",
-		"GET /ui/agents/{id}/rename",
+		"GET /ui/palette/history",
 		"GET /ui/agents/{id}/status",
 		"GET /ui/agents/{name}/chat-log",
+		"GET /ui/agents/{name}/chat-context",
+		"GET /ui/dispatch-card",
 		"GET /ui/agents/{name}/task",
 		"GET /ui/chief/panel",
 		"GET /ui/chief/threads/search",
+		"GET /ui/chief/fleet",
+		"GET /ui/chief/fleet/session",
+		"POST /ui/chief/fleet/chat",
 		"GET /ui/connector-requests",
 		"GET /ui/connectors",
 		"GET /ui/connectors/new",
 		"GET /ui/connectors/{name}/rotate",
 		"GET /ui/notifications",
-		"GET /ui/repos",
 		"GET /ui/tags",
 		"GET /ui/tasks",
 		"GET /ui/tasks/new",
@@ -241,9 +420,13 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/tasks/{id}/edit",
 		"GET /{$}",
 		"PATCH /tasks/{id}/status",
-		"POST /agents",
 		"POST /agents/pins",
 		"POST /agents/pins/delete",
+		"GET /sessions/tags",
+		"POST /sessions/tags",
+		"POST /sessions/tags/delete",
+		"POST /sessions/name",
+		"POST /sessions/name/drift-dismiss",
 		"POST /send-queue",
 		"POST /send-queue/{id}/cancel",
 		"POST /send-queue/{id}/delete",
@@ -263,12 +446,16 @@ var routeVias = map[authz.Via][]string{
 		"POST /agents/{id}/name",
 		"POST /agents/{id}/sessions",
 		"POST /agents/{id}/sessions/{sid}/default",
+		"POST /agents/{id}/sessions/side",
+		"POST /agents/{id}/sessions/fresh-primary",
+		"POST /agents/{id}/sessions/{sid}/continue",
+		"POST /agents/{id}/sessions/{sid}/archive",
+		"POST /agents/{id}/sessions/{sid}/unarchive",
 		"POST /agents/{id}/start",
 		"POST /agents/{id}/stop",
 		"POST /chief/provision",
 		"POST /connectors",
 		"POST /connectors/{name}/rotate",
-		"POST /github/disconnect",
 		"POST /tasks",
 		"POST /tasks/merge",
 		"POST /tasks/{id}/comments",
@@ -290,6 +477,7 @@ var routeVias = map[authz.Via][]string{
 		"DELETE /api/tasks/{id}",
 		"DELETE /api/tasks/{id}/comments/{cid}",
 		"GET /api/agents",
+		"GET /api/agents/{name}/account-failovers",
 		"GET /api/agents/{name}/messages",
 		"GET /api/projects",
 		"GET /api/sessions/{id}/tasks",
@@ -299,16 +487,61 @@ var routeVias = map[authz.Via][]string{
 		"PATCH /api/tasks/{id}",
 		"PATCH /api/tasks/{id}/status",
 		"POST /api/agents/{name}/messages",
+		// Creating an agent (agent_create_api.go): requireArmedHookToken, so
+		// the hook secret is ADMITTED with a principal — and the handler then
+		// refuses it (TestTheSharedHookSecretCannotCreateAgents). A personal
+		// token reaches it only with scope agent-create, which this walk's full
+		// token is not, so it is absent from ViaToken below on purpose
+		// (TestAFullTokenCannotCreateAgents).
+		"POST /api/agents",
 		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
+		// `muster doctor`'s server half (doctor.go): requireArmedHookToken.
+		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
+		"POST /api/plugin-threads",
+		"POST /api/pr-sessions",
+		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		"PUT /api/plugins/{id}/deliver-to",
+		// `muster agent rm` (agent_rm.go): requireArmedHookToken.
+		"DELETE /api/agents/{name}",
+		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
+		"GET /api/officers/types",
+		"GET /api/officers/types/{key}",
+		"PUT /api/officers/types/{key}",
+		"DELETE /api/officers/types/{key}",
+		"GET /api/officers/defs",
+		"PUT /api/officers/defs/{officer}",
+		"DELETE /api/officers/defs/{officer}",
+		"GET /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items/{id}/resolve",
+		"GET /api/officers/defs/{officer}/schedules",
+		"GET /api/officers/defs/{officer}/usage",
+		"PUT /api/officers/defs/{officer}/schedules/{name}",
+		"DELETE /api/officers/defs/{officer}/schedules/{name}",
+		"GET /api/officers/defs/{officer}/contacts",
+		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
+		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
+		"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}",
+		// Officers declared in the database (officer_declared.go): requireArmedHookToken.
+		"GET /api/officers/declared",
+		"POST /api/officers/declared",
+		"GET /api/officers/declared/{officer}",
+		"PUT /api/officers/declared/{officer}",
+		"DELETE /api/officers/declared/{officer}",
+		"POST /api/officers/declared/{officer}/pause",
+		"POST /api/officers/declared/{officer}/resume",
+		"GET /api/officers/runtime-options",
 	},
 	authz.ViaService: {
 		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
 		"GET /api/jobs/{id}",
+		// Claude account usage (cc_usage.go): the service tier or a personal token.
+		"GET /api/cc-accounts/usage",
 		"GET /api/tasks",
 		"GET /api/whoami",
 		"PATCH /api/tasks/{id}/status",
@@ -322,6 +555,7 @@ var routeVias = map[authz.Via][]string{
 		"DELETE /api/tasks/{id}/comments/{cid}",
 		"DELETE /api/tokens/{id}",
 		"GET /api/agents",
+		"GET /api/agents/{name}/account-failovers",
 		"GET /api/agents/{name}/messages",
 		"GET /api/projects",
 		"GET /api/sessions/{id}/tasks",
@@ -336,13 +570,56 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
+		"POST /api/plugin-threads",
+		"POST /api/pr-sessions",
+		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		"PUT /api/plugins/{id}/deliver-to",
+		// `muster agent rm` (agent_rm.go): requireArmedHookToken.
+		"DELETE /api/agents/{name}",
+		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
+		"GET /api/officers/types",
+		"GET /api/officers/types/{key}",
+		"PUT /api/officers/types/{key}",
+		"DELETE /api/officers/types/{key}",
+		"GET /api/officers/defs",
+		"PUT /api/officers/defs/{officer}",
+		"DELETE /api/officers/defs/{officer}",
+		"GET /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items/{id}/resolve",
+		"GET /api/officers/defs/{officer}/schedules",
+		"GET /api/officers/defs/{officer}/usage",
+		"PUT /api/officers/defs/{officer}/schedules/{name}",
+		"DELETE /api/officers/defs/{officer}/schedules/{name}",
+		"GET /api/officers/defs/{officer}/contacts",
+		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
+		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
+		"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}",
+		// Officers declared in the database (officer_declared.go): requireArmedHookToken.
+		"GET /api/officers/declared",
+		"POST /api/officers/declared",
+		"GET /api/officers/declared/{officer}",
+		"PUT /api/officers/declared/{officer}",
+		"DELETE /api/officers/declared/{officer}",
+		"POST /api/officers/declared/{officer}/pause",
+		"POST /api/officers/declared/{officer}/resume",
+		"GET /api/officers/runtime-options",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",
 		"GET /api/flows/jobs/{id}",
 		"POST /api/flows/jobs",
+		"POST /api/flows/jobs/{id}/cancel",
+		// The attention summary (attention_summary.go): a personal token ONLY.
+		"GET /api/attention/summary",
+		// Reading the ask log (ask_log_read.go): a personal token ONLY.
+		"GET /api/asks/log",
+		"GET /api/asks/summary",
+		// Claude account usage (cc_usage.go): a full or account-usage token.
+		"GET /api/cc-accounts/usage",
 	},
 	// A browser-flow RUNNER token (0012) opens exactly the runner door.
 	authz.ViaRunner: {
@@ -353,6 +630,19 @@ var routeVias = map[authz.Via][]string{
 	// A MIRROR HOST token opens exactly the mirrored sessions' MCP door.
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
+		// A session's ask attachment, sent by its host (ask_media.go).
+		"POST /mirror/ask-attachments",
+		"DELETE /mirror/ask-attachments/{id}",
+		// `muster doctor`'s this-host check (doctor.go): the token's own host.
+		"GET /mirror/host",
+	},
+	// A page's SHARE LINK (0116) opens exactly the four share-link routes; the
+	// token is in the path (credential rewrites the path's placeholder).
+	authz.ViaPageLink: {
+		"GET /s/{token}",
+		"GET /s/{token}/content",
+		"POST /s/{token}/submit",
+		"POST /s/{token}/upload",
 	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {
@@ -360,13 +650,27 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/device/config",
 		"PUT /api/device/push",
 		"DELETE /api/device/push",
+		"POST /api/device/challenge",
+		"POST /api/device/actions/attention/asks/{id}/answer",
+		"POST /api/device/actions/attention/asks/{id}/cancel",
 	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
+		"GET /plugin/v1/self",
+		"POST /plugin/v1/handoffs/redeem",
 		"POST /plugin/v1/messages",
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
+		"POST /plugin/v1/drafts/{id}/renew",
+		"GET /plugin/v1/drafts/checks",
+		"POST /plugin/v1/drafts/{id}/check",
+		"POST /plugin/v1/drafts/{id}/media",
+		"PUT /plugin/v1/chief/instructions",
 		"POST /plugin/v1/tasks",
+		"GET /plugin/v1/tasks",
+		"POST /plugin/v1/task-writes/claim",
+		"POST /plugin/v1/task-writes/{id}/result",
+		"POST /plugin/v1/messages/{id}/owner-answered",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
@@ -380,12 +684,16 @@ var routeVias = map[authz.Via][]string{
 		"GET /agent/connectors/{name}",
 		"POST /agent/connectors/{name}/request",
 		"POST /mcp",
+		// The officer LLM proxy (officer_llm.go): the calling agent's own token.
+		"POST /llm/v1/messages",
 	},
 	authz.ViaRelay: {
 		"DELETE /agent/approvals/{id}",
 		"GET /agent/approvals/{id}",
 		"POST /agent/approvals",
 		"POST /agent/blocked",
+		"POST /agent/officer/ask-images",
+		"POST /agent/ask-attachments",
 		"POST /agent/work",
 	},
 }
@@ -419,7 +727,9 @@ type principalPlugins struct{ plugins.Store }
 
 func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plugin, error) {
 	if tok == pPluginToken {
-		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test"}, nil
+		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
+			// Every capability, so the probe reaches every plugin route's handler.
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -432,6 +742,17 @@ func (principalDevices) Authenticate(_ context.Context, tok string) (devices.Dev
 		return devices.Device{ID: 6, OwnerID: authz.OperatorUserID, Name: "principal-test"}, nil
 	}
 	return devices.Device{}, devices.ErrBadToken
+}
+
+// principalPages resolves the one test share-link token to a live link of
+// user 1's page.
+type principalPages struct{ pages.Store }
+
+func (principalPages) LinkByToken(_ context.Context, tok string) (pages.Link, error) {
+	if tok == pPageToken {
+		return pages.Link{ID: 8, OwnerID: authz.OperatorUserID, PageID: 5, Token: tok, State: pages.LinkLive}, nil
+	}
+	return pages.Link{}, pages.ErrLinkNotFound
 }
 
 // principalMirrorTokens resolves the one test mirror token to user 1's host.
@@ -449,7 +770,7 @@ type principalAPITokens struct{ apitokens.Store }
 
 func (principalAPITokens) Authenticate(_ context.Context, tok string) (apitokens.Token, error) {
 	if tok == pAPIToken {
-		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test"}, nil
+		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test", Scope: apitokens.ScopeFull}, nil
 	}
 	return apitokens.Token{}, apitokens.ErrBadToken
 }
@@ -483,7 +804,10 @@ func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Han
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
-		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}, Devices: principalDevices{}})
+		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}, Devices: principalDevices{},
+		Pages: principalPages{},
+		// The viewer routes are on, so their doors are probed too.
+		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())
@@ -543,6 +867,9 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("Authorization", "Bearer "+pMirrorToken)
 	case authz.ViaDevice:
 		req.Header.Set("Authorization", "Bearer "+pDeviceToken)
+	case authz.ViaPageLink:
+		// The credential IS the path: concretePath wrote its placeholder.
+		req.URL.Path = strings.Replace(req.URL.Path, pages.SharePrefix+"x1", pages.SharePrefix+pPageToken, 1)
 	}
 }
 
@@ -642,36 +969,65 @@ func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
 	}
 }
 
-// TestAnUnarmedHookTierStillActsAsTheMachineUser covers the branch the main
-// walk cannot reach: with NO MUSTER_HOOK_TOKEN, requireHookToken and
-// requireHookOrServiceToken admit an uncredentialed caller (back-compat; see
-// requireHookToken). Such a request must still carry the machine principal —
-// an admitted request with none is exactly what PR 3 turns into an empty
-// board. requireArmedHookToken refuses instead (503), so its routes are the
-// hook routes that must NOT reach a handler here.
-func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
+// TestAnUnarmedHookTierAdmitsNobody covers the branch the main walk cannot
+// reach: a server with NO MUSTER_HOOK_TOKEN, driven on every ViaHook route with
+// no credential, from a loopback caller, an IPv6 loopback caller, a remote one
+// and a forwarded one. No route may reach a handler or attach a principal, and
+// every answer is a 401 — what an armed server gives a missing token, so
+// nothing says the server is unarmed (no 503, no HookUnarmedField). The tier
+// used to admit such a caller as user 1, the admin.
+//
+// The control: the same server armed admits the token on every route, so the
+// refusals are the missing secret and not a route that refuses everything.
+func TestAnUnarmedHookTierAdmitsNobody(t *testing.T) {
 	_, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
-	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
-	// and session routing's answer (it decides what an outside party is sent).
-	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
-		"POST /api/plugins/messages/{id}/retry": true,
-		"POST /api/chief/replace":               true}
-	for _, pattern := range routeVias[authz.ViaHook] {
+	routes := routeVias[authz.ViaHook]
+	if len(routes) < 10 {
+		t.Fatalf("instrument check: only %d ViaHook routes", len(routes))
+	}
+	for _, pattern := range routes {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {
-			*seen = nil
-			aborted, code := serve(t, h, httptest.NewRequest(method, path, nil))
-			if armed[pattern] {
-				if aborted || code != http.StatusServiceUnavailable {
-					t.Fatalf("the armed route on an unarmed server: aborted=%v status %d; want a 503 refusal", aborted, code)
+			for _, caller := range []struct{ addr, forwardedFor string }{
+				{"127.0.0.1:1234", ""}, {"[::1]:1234", ""}, {"192.0.2.1:1234", ""}, {"127.0.0.1:1234", "198.51.100.7"},
+			} {
+				*seen = nil
+				req := httptest.NewRequest(method, path, nil)
+				req.RemoteAddr = caller.addr
+				if caller.forwardedFor != "" {
+					req.Header.Set("X-Forwarded-For", caller.forwardedFor)
 				}
-				return
-			}
-			want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaHook}
-			if !aborted || len(*seen) != 1 || (*seen)[0] != want {
-				t.Fatalf("unarmed hook tier: aborted=%v status %d saw %v; want %v", aborted, code, *seen, want)
+				rec := httptest.NewRecorder()
+				aborted := func() (aborted bool) {
+					defer func() {
+						if r := recover(); r != nil {
+							aborted = true
+						}
+					}()
+					h.ServeHTTP(rec, req)
+					return false
+				}()
+				if aborted || len(*seen) != 0 {
+					t.Fatalf("caller %v, unarmed: reached the handler as %v", caller, *seen)
+				}
+				if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), HookUnarmedField) ||
+					strings.Contains(rec.Body.String(), "MUSTER_") {
+					t.Fatalf("caller %v, unarmed: %d %s; want a 401 that says nothing about the configuration",
+						caller, rec.Code, rec.Body.String())
+				}
 			}
 		})
+	}
+	_, armed, seenArmed := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword, HookToken: pHookToken})
+	for _, pattern := range routes {
+		method, path := concretePath(pattern)
+		*seenArmed = nil
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+pHookToken)
+		want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaHook}
+		if aborted, code := serve(t, armed, req); !aborted || len(*seenArmed) != 1 || (*seenArmed)[0] != want {
+			t.Fatalf("CONTROL: %s armed, with the token: aborted=%v status %d saw %v; want %v", pattern, aborted, code, *seenArmed, want)
+		}
 	}
 }
 

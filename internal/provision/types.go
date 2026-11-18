@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/netip"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -308,12 +310,6 @@ type Security struct {
 	// NoServiceAccountToken keeps the backend's own API credential out of the
 	// instance (Kubernetes: automountServiceAccountToken false).
 	NoServiceAccountToken bool
-	// ReadOnlyRoot makes the instance's root filesystem read-only, with a
-	// writable, empty /tmp of its own (Kubernetes: readOnlyRootFilesystem and an
-	// emptyDir at /tmp); the workspace stays writable. The hermes kind declares
-	// it. ⚠ It enters the fingerprint on a line of its own, only when set, so no
-	// spec that does not declare it moves.
-	ReadOnlyRoot bool `json:",omitempty"`
 }
 
 // IsZero reports whether nothing is declared.
@@ -344,8 +340,9 @@ type Network struct {
 	//   - inbound: only the instance's declared [Spec.Ports], and only from
 	//     whatever the driver is configured to treat as its controller (muster
 	//     itself);
-	//   - outbound: name resolution, plus PublicEgressTCPPorts on public
-	//     addresses. Nothing else.
+	//   - outbound: name resolution (unless NoClusterDNS), plus
+	//     PublicEgressTCPPorts on public addresses, ControllerEgressTCPPorts
+	//     on the controller and EgressCIDRs to their blocks. Nothing else.
 	Isolate bool
 	// PublicEgressTCPPorts are the TCP ports the instance may reach on public
 	// addresses. Empty with Isolate set means "name resolution only".
@@ -362,11 +359,125 @@ type Network struct {
 	//
 	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
 	ControllerEgressTCPPorts []int
+	// NoClusterDNS drops the name-resolution allowance: the backend writes NO
+	// rule for the cluster's DNS, so the instance resolves nothing unless the
+	// cluster's own policy allows it.
+	//
+	// 🔴 IT EXISTS SO A NAME-FILTERED DNS POLICY CAN MEAN SOMETHING. Network
+	// plugins union allows: an L4 "port 53 to the DNS pods" rule written here,
+	// next to a cluster-side DNS rule that allows only some names (Cilium's DNS
+	// proxy with rules.dns), widens that rule back to "any name" — and any name
+	// is a DNS tunnel. An instance with this set depends on the operator's
+	// policy for DNS entirely; without one it cannot resolve a name (closed,
+	// loud).
+	//
+	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
+	//
+	// omitempty: every spec that keeps cluster DNS marshals byte-identically to
+	// before the field existed (the agentspec goldens pin that).
+	NoClusterDNS bool `json:",omitempty"`
+	// EgressCIDRs are named public IPv4 blocks the instance may open TCP
+	// connections to, each on one port — "this address range, this port", as
+	// opposed to PublicEgressTCPPorts' "any public address". It exists for an
+	// instance that has NO public rule (muster's officer instances) and must
+	// still reach one service, on a cluster whose network plugin cannot name
+	// a host (no FQDN policy): the operator admits that service's published
+	// address ranges instead.
+	//
+	// 🔴 EVERY ENTRY IS PUBLIC, BOUNDED AND CANONICAL ([CheckEgressCIDR]):
+	// IPv4 only, no wider than /[MinEgressCIDRPrefixBits], host bits zero, and
+	// overlapping no private, loopback, link-local, shared (CGNAT), multicast
+	// or reserved range. A block reaching inside the cluster or the
+	// operator's LAN would undo the confinement the rest of this type
+	// describes, so [Spec.Validate] refuses it rather than leave each driver
+	// to cut it out.
+	//
+	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
+	// A driver that claims NetworkIsolation must render it; there is no
+	// separate capability, because Validate ties it to Isolate and CheckSpec
+	// refuses Isolate on a driver without the capability (closed, not
+	// dropped).
+	//
+	// omitempty: every spec without it marshals byte-identically to before the
+	// field existed (the agentspec goldens pin that).
+	EgressCIDRs []CIDRPort `json:",omitempty"`
+}
+
+// CIDRPort is one entry of [Network.EgressCIDRs]: a public IPv4 block in
+// canonical CIDR form (e.g. "192.0.2.0/24" — never "192.0.2.7/24") and one
+// TCP port.
+type CIDRPort struct {
+	CIDR string
+	Port int
+}
+
+// String is the entry as an operator writes it: "<cidr>:<port>".
+func (c CIDRPort) String() string { return c.CIDR + ":" + strconv.Itoa(c.Port) }
+
+// MinEgressCIDRPrefixBits is the widest block [CheckEgressCIDR] accepts: a
+// /16 (65,536 addresses). A service's published ranges are far narrower
+// (Anthropic's API ranges are a /22 and a /23); a block wider than a /16
+// spans more than one organisation's allocation and stops being an
+// allow-list of one endpoint — it is "most of the internet on this port"
+// with extra steps, which is PublicEgressTCPPorts' job, not this field's.
+const MinEgressCIDRPrefixBits = 16
+
+// nonPublicEgressIPv4 is every IPv4 range an [Network.EgressCIDRs] entry may
+// not overlap. It is a SUPERSET of the kubernetes driver's public-rule
+// exceptions (which only have to carve the inside out of 0.0.0.0/0 on a
+// port): here an operator names the block, so every range that reaches the
+// cluster, the node or the operator's network — private, shared, loopback,
+// link-local — and the non-unicast ones are refused outright. ⚠ NOT every
+// special-purpose block: the RFC 5737 documentation nets, 198.18.0.0/15
+// (benchmarking, also used by some fake-IP proxies) and 192.0.0.0/24 are
+// accepted; the tests use the documentation nets as public fixtures.
+var nonPublicEgressIPv4 = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
+	netip.MustParsePrefix("10.0.0.0/8"),     // RFC 1918 — usual pod/service CIDRs
+	netip.MustParsePrefix("100.64.0.0/10"),  // RFC 6598 shared space — overlays, meshes
+	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
+	netip.MustParsePrefix("169.254.0.0/16"), // link-local — cloud metadata, node DNS caches
+	netip.MustParsePrefix("172.16.0.0/12"),  // RFC 1918
+	netip.MustParsePrefix("192.168.0.0/16"), // RFC 1918 — the usual LAN
+	netip.MustParsePrefix("224.0.0.0/4"),    // multicast
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and the broadcast address
+}
+
+// CheckEgressCIDR is the ONE rule for an [Network.EgressCIDRs] entry, used by
+// [Spec.Validate] and by muster-server's boot parse (so an operator hears the
+// refusal at boot, naming the variable, rather than at the first dispatch).
+func CheckEgressCIDR(c CIDRPort) error {
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("port %d out of range (want 1-65535)", c.Port)
+	}
+	p, err := netip.ParsePrefix(c.CIDR)
+	if err != nil {
+		return fmt.Errorf("%q is not a CIDR block (want e.g. 192.0.2.0/24)", c.CIDR)
+	}
+	if !p.Addr().Is4() {
+		return fmt.Errorf("%q is not an IPv4 block: an isolated instance gets no IPv6 egress at all, so an IPv6 "+
+			"entry would admit nothing", c.CIDR)
+	}
+	if p != p.Masked() {
+		return fmt.Errorf("%q has host bits set; write the block itself, %s", c.CIDR, p.Masked())
+	}
+	if p.Bits() < MinEgressCIDRPrefixBits {
+		return fmt.Errorf("%q is wider than a /%d; name the service's own published ranges, not a provider's "+
+			"whole allocation", c.CIDR, MinEgressCIDRPrefixBits)
+	}
+	for _, np := range nonPublicEgressIPv4 {
+		if p.Overlaps(np) {
+			return fmt.Errorf("%q overlaps the non-public range %s (private, loopback, link-local, shared, multicast "+
+				"or reserved addresses reach the cluster, the node or the operator's network)", c.CIDR, np)
+		}
+	}
+	return nil
 }
 
 // IsZero reports whether nothing is declared.
 func (n Network) IsZero() bool {
-	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0
+	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0 && !n.NoClusterDNS &&
+		len(n.EgressCIDRs) == 0
 }
 
 // Spec is the complete desired state of one instance.
@@ -460,22 +571,117 @@ type Spec struct {
 	// existed (agentspec's spec golden is a json.Marshal of a Spec).
 	Sidecar *Sidecar `json:",omitempty"`
 
-	// TerminationGraceSeconds is how long the instance is given to stop after
-	// it is asked to (on Kubernetes the pod's terminationGracePeriodSeconds,
-	// SIGTERM to SIGKILL). Zero is the driver's default (Kubernetes: 30 s).
+	// KeyHolder, when non-nil, is a container that ALONE holds confidential
+	// objects the OPERATOR made, under a uid that is not the instance's. See
+	// the type.
 	//
-	// It exists for the hermes kind: Hermes drains for 30 s on SIGTERM before it
-	// interrupts what is still running, so at the default the kubelet's SIGKILL
-	// lands mid-drain and turns every in-flight run into an `unknown` one
-	// (docs/design/hermes.md, "Restart and resume").
+	// ⚠ omitempty, for Sidecar's reason: a spec without one serialises exactly
+	// as before the field existed.
+	KeyHolder *KeyHolder `json:",omitempty"`
+
+	// ImagePullSecret, when set, names a registry credential the instance's
+	// image is pulled with: on Kubernetes, a `kubernetes.io/dockerconfigjson`
+	// Secret listed in the pod's imagePullSecrets. Like a [SecretMount] it is a
+	// REFERENCE to an object the operator made; muster never stores what it
+	// holds. A driver MAY copy it, its `.dockerconfigjson` key and type only,
+	// from a namespace the operator keeps it in (the kubernetes driver's
+	// Config.SecretSourceNamespace), and then refuses the apply when the source
+	// is missing, lacks that key, or is of another type. A DNS subdomain.
+	// Needs [Capabilities.ImagePullSecret].
 	//
-	// ⚠ omitempty, like Sidecar, so every spec that declares none serialises as
-	// before.
-	TerminationGraceSeconds int `json:",omitempty"`
+	// ⚠ omitempty, for Sidecar's reason: a spec without one serialises exactly
+	// as before the field existed.
+	ImagePullSecret string `json:",omitempty"`
 }
+
+// KeyHolder is a container beside the instance's that alone mounts
+// operator-made secrets (SecretMounts) and does the work that needs them,
+// handing the instance only the RESULT through a shared directory. On
+// Kubernetes: a second container in the pod, under its own runAsUser.
+//
+// 🔴 THE INSTANCE'S PROCESS CANNOT READ WHAT IT HOLDS — AND THAT IS THE WHOLE
+// POINT OF IT. The guarantee is structural, not a file mode:
+//   - the secret volumes are mounted into THIS container only, so the file does
+//     not exist in the instance's mount namespace at any mode;
+//   - it runs as RunAsUser, which Validate requires to differ from the
+//     instance's (non-zero) Security.RunAsUser, non-root, without privilege
+//     escalation;
+//   - the pod shares no process namespace (the driver never sets one), so the
+//     instance cannot reach its /proc/<pid>/root, environ or memory;
+//   - SharedDir is writable HERE and mounted READ-ONLY into the instance's
+//     container, so the instance cannot plant anything this container reads.
+//     It is NOT the workspace, which the instance writes; this container never
+//     mounts the workspace.
+//
+// It is reached by exec into the named container (ContainerExecer), so only
+// whoever can exec into the pod — muster — can ask it to do anything; the
+// instance has no channel to it.
+type KeyHolder struct {
+	// Name names the container: a DNS label, not the instance's own container's
+	// or a sidecar's.
+	Name string
+	// RunAsUser is the holder's uid (and gid): non-zero, and not the instance's.
+	RunAsUser int64
+	// Command is what the holder runs, with the instance's image. Required: a
+	// holder has no other entry point.
+	Command []string
+	// Env and Files are the holder's own (Files are placed in it alone; their
+	// paths must not repeat the instance's or a sidecar's).
+	Env   []EnvVar
+	Files []File
+	// SecretMounts place keys of the operator's objects into the holder,
+	// read-only. At least one: a holder that holds nothing has no reason to
+	// exist.
+	SecretMounts []SecretMount
+	// SharedDir is an absolute path, empty at the pod's start (an emptyDir),
+	// writable by the holder and mounted READ-ONLY at the same path into the
+	// instance's container.
+	SharedDir string
+	// Resources is the holder's own budget.
+	Resources Resources
+}
+
+// SecretMount places one key of an EXISTING confidential object at Path inside
+// a [KeyHolder], read-only: on Kubernetes, a key of a Secret in the instance's
+// namespace, mounted from a secret volume into the holder's container only.
+//
+// 🔴 IT IS A REFERENCE, AND MUSTER NEITHER STORES NOR LOGS WHAT IT NAMES. Unlike
+// a secret [File], whose bytes are in the spec, the content stays in the
+// operator's object, which a driver never changes or deletes. A driver MAY copy
+// it, data and type only, from a namespace the operator keeps it in into the
+// instance's (the kubernetes driver's Config.SecretSourceNamespace); that copy
+// passes through the driver's memory and is written nowhere else. A source that
+// does not exist then fails the apply, naming it; without a copy, a Secret that
+// does not exist leaves the pod unable to start (the kubelet's FailedMount).
+//
+// It is a field of [KeyHolder], never of the Spec itself: a type that cannot
+// place it into the instance's container is what keeps it out of there.
+type SecretMount struct {
+	// Secret names the object (a DNS subdomain).
+	Secret string
+	// Key is the key within it.
+	Key string
+	// Path is the absolute in-instance file path.
+	Path string
+}
+
+var (
+	// secretObjectName is a lower-case DNS subdomain, what a Secret's name is.
+	secretObjectName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+	// secretKeyName is what a Secret's data key may be.
+	secretKeyName = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+)
 
 // Sidecar is a second long-running process in the same instance: on Kubernetes
 // a second container in the same pod.
+//
+// ⚠ NO SPEC muster BUILDS CARRIES ONE NOW: its one user, the gateway runtime
+// beside a claude-code chief's ccd, was removed from agentspec. The support
+// stays because applying a spec WITHOUT a sidecar is what takes one away from
+// an instance built with it — the k8s driver drops the container and deletes
+// the stale `<name>-sidecar-env` Secret. CLOSING CONDITION: remove it once no
+// agent pod has a second container (every claude-code chief Stop → Started on
+// a muster without the sidecar).
 //
 // 🔴 IT SHARES THE INSTANCE'S NETWORK NAMESPACE AND NOTHING ELSE, ON PURPOSE.
 // Same network: the instance's own process reaches it on loopback, so a sidecar
@@ -523,9 +729,6 @@ var sidecarName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 func (s Spec) Validate() error {
 	if err := s.Ref.Validate(); err != nil {
 		return err
-	}
-	if s.TerminationGraceSeconds < 0 || s.TerminationGraceSeconds > 3600 {
-		return fmt.Errorf("%w: termination grace %ds is outside 0..3600", ErrInvalidSpec, s.TerminationGraceSeconds)
 	}
 	if s.Runtime.Image == "" && len(s.Runtime.Command) == 0 {
 		return fmt.Errorf("%w: runtime must set Image or Command (it is a union; neither is not a third option)", ErrInvalidSpec)
@@ -595,6 +798,24 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("%w: network names controller egress ports %v without Isolate; on an unconfined "+
 			"instance that list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.ControllerEgressTCPPorts)
 	}
+	if !s.Network.Isolate && s.Network.NoClusterDNS {
+		return fmt.Errorf("%w: network sets NoClusterDNS without Isolate; on an unconfined instance that "+
+			"restricts nothing and reads as if it did", ErrInvalidSpec)
+	}
+	if !s.Network.Isolate && len(s.Network.EgressCIDRs) > 0 {
+		return fmt.Errorf("%w: network names egress CIDRs %v without Isolate; on an unconfined instance that "+
+			"list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.EgressCIDRs)
+	}
+	cidrs := map[CIDRPort]bool{}
+	for _, c := range s.Network.EgressCIDRs {
+		if err := CheckEgressCIDR(c); err != nil {
+			return fmt.Errorf("%w: network egress CIDR %s: %v", ErrInvalidSpec, c, err)
+		}
+		if cidrs[c] {
+			return fmt.Errorf("%w: network egress CIDR %s appears twice", ErrInvalidSpec, c)
+		}
+		cidrs[c] = true
+	}
 	ctrl := map[int]bool{}
 	for _, p := range s.Network.ControllerEgressTCPPorts {
 		if p < 1 || p > 65535 {
@@ -622,6 +843,22 @@ func (s Spec) Validate() error {
 			seen[f.Path] = true
 		}
 	}
+	if err := s.validateKeyHolder(seen); err != nil {
+		return err
+	}
+	if p := s.ImagePullSecret; p != "" && (!secretObjectName.MatchString(p) || len(p) > 253) {
+		return fmt.Errorf("%w: image pull secret %q is not a DNS subdomain (a Secret's name)", ErrInvalidSpec, p)
+	}
+	// 🔴 ONE SECRET, ONE USE: a Secret the key holder mounts is never also the
+	// image pull Secret, so each copy a driver makes holds exactly its own keys.
+	if k := s.KeyHolder; k != nil && s.ImagePullSecret != "" {
+		for _, m := range k.SecretMounts {
+			if m.Secret == s.ImagePullSecret {
+				return fmt.Errorf("%w: Secret %q is both the image pull Secret and a key holder mount (%s, at %q); use two Secrets",
+					ErrInvalidSpec, m.Secret, k.Name, m.Path)
+			}
+		}
+	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)
 		if err != nil {
@@ -632,6 +869,70 @@ func (s Spec) Validate() error {
 		// driver redacts.
 		if u.User != nil {
 			return fmt.Errorf("%w: repo url must not carry credentials; supply the token via Secrets and let the instance's credential helper read it", ErrInvalidSpec)
+		}
+	}
+	return nil
+}
+
+// validateKeyHolder checks s.KeyHolder (nil is valid). seen holds the file
+// paths already placed (the instance's and its sidecar's).
+func (s Spec) validateKeyHolder(seen map[string]bool) error {
+	k := s.KeyHolder
+	if k == nil {
+		return nil
+	}
+	if !sidecarName.MatchString(k.Name) {
+		return fmt.Errorf("%w: key holder name %q is not a DNS label", ErrInvalidSpec, k.Name)
+	}
+	if s.Sidecar != nil && s.Sidecar.Name == k.Name {
+		return fmt.Errorf("%w: key holder name %q is the sidecar's", ErrInvalidSpec, k.Name)
+	}
+	// 🔴 THE HOLDER'S UID IS NOT THE INSTANCE'S, AND THE INSTANCE'S IS KNOWN. A
+	// holder under the instance's uid (or under an image default nobody
+	// declared) would hold the secret for the very process it exists to keep it
+	// from.
+	if s.Security.RunAsUser <= 0 {
+		return fmt.Errorf("%w: key holder %q needs the instance's own uid declared (Security.RunAsUser), to run under another", ErrInvalidSpec, k.Name)
+	}
+	if k.RunAsUser <= 0 || k.RunAsUser == s.Security.RunAsUser {
+		return fmt.Errorf("%w: key holder %q runs as uid %d; it must be non-zero and not the instance's %d",
+			ErrInvalidSpec, k.Name, k.RunAsUser, s.Security.RunAsUser)
+	}
+	if len(k.Command) == 0 {
+		return fmt.Errorf("%w: key holder %q has no command", ErrInvalidSpec, k.Name)
+	}
+	if len(k.SecretMounts) == 0 {
+		return fmt.Errorf("%w: key holder %q holds no secret", ErrInvalidSpec, k.Name)
+	}
+	if !strings.HasPrefix(k.SharedDir, "/") || path.Clean(k.SharedDir) != k.SharedDir || k.SharedDir == "/" {
+		return fmt.Errorf("%w: key holder %q's shared directory %q must be a clean absolute path", ErrInvalidSpec, k.Name, k.SharedDir)
+	}
+	if ws := path.Clean(s.Workspace.Path); s.Workspace.Path != "" && (ws == k.SharedDir ||
+		strings.HasPrefix(k.SharedDir, ws+"/") || strings.HasPrefix(ws, k.SharedDir+"/")) {
+		return fmt.Errorf("%w: key holder %q's shared directory %q overlaps the workspace %q", ErrInvalidSpec, k.Name, k.SharedDir, s.Workspace.Path)
+	}
+	for _, f := range k.Files {
+		if !strings.HasPrefix(f.Path, "/") {
+			return fmt.Errorf("%w: key holder file path %q must be absolute", ErrInvalidSpec, f.Path)
+		}
+		if seen[f.Path] {
+			return fmt.Errorf("%w: file path %q appears twice (the instance, a sidecar or the key holder)", ErrInvalidSpec, f.Path)
+		}
+		seen[f.Path] = true
+	}
+	for _, m := range k.SecretMounts {
+		if !strings.HasPrefix(m.Path, "/") {
+			return fmt.Errorf("%w: secret mount path %q must be absolute", ErrInvalidSpec, m.Path)
+		}
+		if seen[m.Path] {
+			return fmt.Errorf("%w: secret mount path %q appears twice (or is also a file's)", ErrInvalidSpec, m.Path)
+		}
+		seen[m.Path] = true
+		if !secretObjectName.MatchString(m.Secret) || len(m.Secret) > 253 {
+			return fmt.Errorf("%w: secret mount at %q names object %q, which is not a DNS subdomain", ErrInvalidSpec, m.Path, m.Secret)
+		}
+		if !secretKeyName.MatchString(m.Key) || len(m.Key) > 253 {
+			return fmt.Errorf("%w: secret mount at %q names key %q, which is not [-._a-zA-Z0-9]+", ErrInvalidSpec, m.Path, m.Key)
 		}
 	}
 	return nil
@@ -694,6 +995,14 @@ type Instance struct {
 	// it was given, which is the difference between a useful message and a
 	// mysteriously slow agent.
 	RestartReason string
+	// Image is the image reference the running instance's application
+	// container was started from, as the backend reports it (for Kubernetes,
+	// the newest pod's spec image of its one application container), or ""
+	// when the driver does not report one or no instance is running. It is
+	// what lets a caller report which image a restart brought the instance up
+	// on (chief_restart); comparing it with the configured image is the
+	// caller's business.
+	Image string
 }
 
 // Endpoint is where an instance can be reached.

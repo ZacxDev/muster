@@ -35,22 +35,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ZacxDev/muster/internal/askq"
 	"io/fs"
 	"log"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/askq"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -74,10 +80,17 @@ const (
 	EventAgentChanged = "agent.changed"
 	// EventChatReply announces a persisted assistant turn.
 	EventChatReply = "chat.reply"
+	// EventChatTurn announces that a conversation of the named agent started
+	// or stopped working: its first turn began, or its last one ended
+	// (countSessionTurn). Open chats of the agent re-fetch #chat-log on it and
+	// draw "working…" from the server's count.
+	EventChatTurn = "chat.turn"
 	// EventConnectorChanged announces a connector request, decision or change.
 	EventConnectorChanged = "connector.changed"
 	// EventAttentionChanged announces that something entered or left the
-	// owner's attention queue (attention.go). Spelled with "_queue" so it can
+	// owner's attention queue (attention.go) — and that a reply draft's
+	// delivery status moved: a plugin claimed it or reported its result
+	// (draftStatusMoved), so the Asks page's Archived view re-reads. Spelled with "_queue" so it can
 	// never be read as the router's own attention events on a mirrored bus.
 	EventAttentionChanged = "attention_queue.changed"
 )
@@ -92,8 +105,45 @@ type Server struct {
 	asks *askq.Store
 	// askWatch is the running question watches (mirror_ask.go).
 	askWatch askWatchers
-	auth     AuthConfig
-	router   RouterPort
+	// askAttemptPrune is when the answer-attempt log was last pruned
+	// (ask_attempts.go).
+	askAttemptPrune struct {
+		sync.Mutex
+		last time.Time
+	}
+	// askAttemptWrites is the answer-attempt rows being written after their
+	// door answered (ask_attempts.go).
+	askAttemptWrites askAttemptWriters
+	// askScan is the open-question scan's reads (mirror_ask_scan.go).
+	askScan askScans
+	// ocAnswered is the opencode asks lately answered from a card
+	// (mirror_opencode_ask.go: openCodeAnswers).
+	ocAnswered openCodeAnswers
+	// fleetPRs is the fleet reader's cache of GitHub's pull-request answers
+	// (fleet_read.go): its own, two minutes long, beside the closed-review
+	// settle's (pr_closed.go).
+	fleetPRs prStateCache
+	// fleetOwners is fleet_list's cache of each stopped session's owner facts
+	// (last_owner_message_at, chief_texts_since_owner), per episode and streak
+	// (fleet_read.go).
+	fleetOwners fleetOwnerCache
+	// ledgers is the rendered views' tool-context ledger checkpoints, which a
+	// resuming socket starts from (mirror_ledger.go).
+	ledgers ledgerCheckpoints
+	auth    AuthConfig
+	router  RouterPort
+
+	// hostDispatchCardSource reads a host dispatch's live card (chat_log_live.go
+	// hostDispatchCard); nil until host dispatches are recorded.
+	hostDispatchCardSource func(ctx context.Context, id int64) (ui.DispatchCard, error)
+
+	// chiefSwitch is each owner's chief-switch lock (chief_toggle.go
+	// chiefSwitchLock): owner id → *sync.Mutex.
+	chiefSwitch sync.Map
+
+	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
+	// fleetChat): owner id → *sync.Mutex.
+	fleetChatOpen sync.Map
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
@@ -101,6 +151,15 @@ type Server struct {
 	// inviteLimits throttles invite redemption and the password reset
 	// (accounts PR 5; login_invite.go).
 	inviteLimits inviteLimits
+	// loginRateAddr counts wrong operator passwords per client address;
+	// loginRefusedLog rate-limits the log of refused unknown devices
+	// (known_device.go, passwordGate).
+	loginRateAddr   boundedWindow
+	loginRefusedLog everyMinute
+	// passkeyChallenges is the sign-in challenges muster issued and has not
+	// seen used, one global table capped at passkeyChallengeCap, the oldest
+	// evicted (passkeys.go). Its cap is set in New.
+	passkeyChallenges boundedWindow
 
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
@@ -116,6 +175,31 @@ type Server struct {
 
 	startedAt time.Time
 	now       func() time.Time
+	// waitingGrace is how long a waiting window's push is held
+	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
+	// another, 0 for none.
+	waitingGrace time.Duration
+
+	// askLog is the ask log's capture state (ask_log.go), nil when
+	// Extensions.AskLog is unset; set by UseExtensions.
+	askLog *askLogger
+
+	// nudgeReadHook, when set (a test), replaces the chief nudge sweep's
+	// transcript read (chief_nudge.go nudgeTranscript).
+	nudgeReadHook func(ctx context.Context, c chiefnudge.Session) (nudgeRead, error)
+	// nudgeKick wakes the chief nudge sweep (kickNudges), made once.
+	nudgeKick     chan struct{}
+	nudgeKickOnce sync.Once
+	// nudgeRetry is the stall checks the chief refused, retried bounded
+	// (chief_nudge_retry.go).
+	nudgeRetry nudgeRetries
+	// ownerChecked is, per open episode, the streak its owner-acted read last
+	// succeeded on (session_state.go episodeOwnerActed).
+	ownerChecked episodeChecks
+	// hostsUnread is, per owner and host, since when THIS process has known
+	// the host unreadable (session_state.go hostUnreads): a held wait on it is
+	// pushed only once that has lasted the waiting grace.
+	hostsUnread hostUnreads
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's
@@ -124,8 +208,20 @@ type Server struct {
 	// pluginInFlight registers every plugin message delivery started by the
 	// message route (plugins.go), so shutdown waits for each to record its
 	// outcome; pluginDeliverer is built by UseExtensions (nil: none wired).
-	pluginInFlight  sync.WaitGroup
+	pluginInFlight sync.WaitGroup
+	// mailResumeState is the mail resume's in-flight sessions (mail_resume.go).
+	mailResumeState
+	// destroyInFlight registers every background agent teardown destroyAgent
+	// starts — the provisioner's Destroy AND its after-steps (the chief-start
+	// release, the broadcasts, a door's done hook such as the MCP door's task
+	// reopen). Add happens on the CALLER's goroutine, Done when the last
+	// after-step has returned. Tests wait on it (waitDestroys) instead of
+	// sleeping past the row's deletion.
+	destroyInFlight sync.WaitGroup
 	pluginDeliverer *plugins.Deliverer
+	// triageClaimed, when set (tests only), runs inside the task triage once it
+	// has claimed the event and before it acts (task_triage.go).
+	triageClaimed func()
 	// taskForwardTurn starts the turn a task_forward hands an agent
 	// (task_routing.go); built by UseExtensions only when a gateway is wired
 	// (nil: the forward is stored and no turn starts).
@@ -139,26 +235,53 @@ type Server struct {
 	// draftWake wakes waiting claims when this process approves a draft.
 	pluginRetrying sync.Map
 	draftWake      draftSignal
+	// pairLimit is POST /plugin/v1/pair's per-address allowance (plugin_pairing.go).
+	pairLimit pairLimiter
+	// refWriteWake wakes waiting task-write claims when this process queues a
+	// write on a plugin task reference (task_ref_queue.go).
+	refWriteWake draftSignal
 	// routeKick wakes the route sweep (RunRouteTimeouts) early: a route just
 	// ended owing its chief a hand-back.
 	routeKick     chan struct{}
 	routeKickOnce sync.Once
+	// routeGoneMu guards routeGone: for each routed paste whose target window
+	// the route sweep last found missing, when it first did (routedPastePass).
+	routeGoneMu sync.Mutex
+	routeGone   map[string]time.Time
 	// attention is the attention queue's process state (attention.go): the
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
+	// brand is the instance branding's cached row (branding.go).
+	brand brandCache
 	// jobLanes runs one machine job per agent at a time (jobs.go); ownJobs is
 	// the jobs this process accepted and has not finished; jobSecond
 	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
 	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
-	// outcome-write attempts (zero: jobFinishRetryPause).
+	// outcome-write attempts (zero: jobFinishRetryPause). jobDrains is each
+	// agent's queue runner in this process (jobs_queue.go).
 	jobLanes         jobLanes
 	ownJobs          ownJobs
+	jobDrains        jobDrains
+	// jobsStopping is set by StopJobs at the start of a graceful shutdown:
+	// this process takes no more jobs from the table (jobs_queue.go).
+	jobsStopping atomic.Bool
+	// poolFailovers serialises a pool submission's account failover per
+	// (owner, pool) (jobs.go createPoolJob).
+	poolFailovers keyedLocks
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
+	// unroutedNow is the unrouted-message sweep's clock (nil: time.Now;
+	// unrouted.go).
+	unroutedNow func() time.Time
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
 	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow
+	// hostDecisions are the owner-authority calls from a host officer's
+	// machine waiting for the owner's phone (host_stepup.go).
+	hostDecisions hostDecisions
+	// features is the evaluated feature registry (features.go; UseFeatures).
+	features features.Set
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
@@ -170,9 +293,14 @@ type Server struct {
 	transcribe transcribeLimits
 	// uploadLimits throttles the composer's attach button (uploads.go).
 	uploadLimits uploadLimits
+	// pageState is shareable pages' process state (pages.go): the share
+	// links' rate limits, the owner-push coalescing and page_responses' waits.
+	pageState pageState
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
+	// faro is the browser telemetry relay (faro_relay.go); nil = off.
+	faro *faroRelay
 	// scrollRate throttles the Terminal view's drag-to-scroll, per user
 	// (mirror_scroll.go).
 	scrollRate keyedRate
@@ -200,6 +328,36 @@ type Server struct {
 	// turns counts chat turns per agent and lets the chief replacement close
 	// one (turn_gate.go).
 	turns turnGate
+	// chatBusyWait / chatBusyPoll bound how long a typed message waits for the
+	// agent's turn in flight (chat_busy.go); zero = the defaults.
+	chatBusyWait time.Duration
+	chatBusyPoll time.Duration
+	// turnRoleChecked, test-only (nil in production): called when a member's
+	// turn on a team agent has passed turnActingContext's first role read, so
+	// a test can change the membership between that read and the send.
+	turnRoleChecked func(a agents.Agent)
+	// routeAnswersCap is how many owed route answers one combined turn carries
+	// (deliverRouteAnswers); zero = routeAnswersPerTurn. A test lowers it.
+	routeAnswersCap int
+	// sessionTurns counts the turns running per chat session, which is what
+	// draws a reloaded page's "working…" (session_turns.go).
+	sessionTurns sessionTurnCount
+	// freshPrimaries holds each chief (by id) a fresh primary is being made
+	// for, switch and handover (chief_chats.go handleChiefFreshPrimary).
+	freshPrimaries sync.Map
+	// continuing holds each SOURCE chat (by session id) being continued in a
+	// new session, handover included (chief_continue.go handleChiefContinue).
+	continuing sync.Map
+	// turnSessions is the chat session of each agent's running turn
+	// (turn_session.go): where an owner card it raises is answered.
+	turnSessions turnSessionRegistry
+	// turnInputs is the input row of each agent's running turn
+	// (turn_session.go): the owner's line a tool call answers.
+	turnInputs turnInputRegistry
+	// turnRecords is each agent's running turns as the doors started them
+	// (turn_session.go): a serial of the turn's own and its trigger.
+	turnRecords turnRecordRegistry
+	turnSerial  atomic.Int64
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.
@@ -212,8 +370,9 @@ type Server struct {
 	focusOnce      sync.Once
 	focusRefresher *focus.Refresher
 
-	// listPullRequests is the GitHub PR read, injectable for tests.
-	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)
+	// suggestIdleWaitFor overrides suggestIdleWait (a test's; 0 = the
+	// constant).
+	suggestIdleWaitFor time.Duration
 
 	// --- debounced task notifications, one buffer PER OWNER (push_task.go) ---
 	taskCreateAfter  afterFunc
@@ -223,6 +382,26 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
+	// personOwners remembers the owner ids known to be persons (never
+	// teams; users.kind never changes), so the push fan-out
+	// (teamPushRecipients) reads nothing for them after the first time.
+	personOwners sync.Map
+	// teamOwners remembers the owner ids known to be teams, so a failed
+	// recipient read is counted as a dropped TEAM push only for a team
+	// (teamPushRecipients).
+	teamOwners sync.Map
+	// capHolds is each owner's officer cap-hold notices shown and not yet
+	// ended (officerCapHoldNotice), by tag: the team sweep's
+	// "officer cap holds" kind reads them. In memory, as the episode is.
+	capHoldsMu sync.Mutex
+	capHolds   map[int64]map[string]bool
+	// teamLive is every open request a member holds on a team's surface — a
+	// team agent's terminal, a team host's view, an event stream subscribed
+	// to the team — by team and member, so a removal, a downgrade or the
+	// membership sweep ends it (team_live.go). teamLiveEvery overrides the
+	// sweep's interval (tests; 0 = DisableSweepInterval).
+	teamLive      teamLiveSet
+	teamLiveEvery time.Duration
 	// deviceLimits throttle the pairing route and the device tier
 	// (devices.go).
 	deviceLimits deviceLimits
@@ -230,11 +409,47 @@ type Server struct {
 	taskProvisionedMu       sync.Mutex
 	taskProvisionedNotified map[int64]bool
 
+	// agentOutcomes is the outcome tracker's in-process state (agent_outcome.go):
+	// activity-write throttling and the turns open in this process.
+	agentOutcomes outcomeTracker
+
+	// hostOutcomes serializes the host-dispatch outcome reconciler and drops a
+	// snapshot older than one it applied (host_dispatch_outcome.go).
+	hostOutcomes hostOutcomeSeq
+
 	taskDoneMu       sync.Mutex
 	taskDoneNotified map[int64]bool
 
 	// taskReapAfter is the idle window the stale-task reaper uses.
 	taskReapAfter time.Duration
+	// boardWithinOverride overrides the Tasks document's board-build bound
+	// (shellBoardWithin, the const) when positive — for tests.
+	boardWithinOverride time.Duration
+	// agentReapStoppedAfter is how long an agent may stay stopped before the
+	// stopped-agent reaper destroys it (agent_reap.go); <= 0 is off.
+	agentReapStoppedAfter time.Duration
+	// reapInstancesWithin bounds the stopped-agent reaper's read of the
+	// provisioner's instances (agent_reap.go).
+	reapInstancesWithin time.Duration
+
+	// officerRT is the officer runtime (officers.go); nil when no officer is
+	// declared (EnableOfficers).
+	officerRT *officerRuntime
+	// officerStore is the built-in officer backend's store (EnableOfficerStore);
+	// nil while it is off.
+	officerStore *builtin.Store
+	// spawnLender is the host spawns' team lending (EnableHostSpawnLending,
+	// officer_spawn_share.go); nil with no database.
+	spawnLender officers.HostSpawnLender
+	// chiefLLM is the admin's chief's place on the LLM proxy (chief_llm.go).
+	// nil unless EnableChiefLLM was called; while nil, every chief is refused
+	// by POST /llm/v1/messages as any non-routine agent is. Once set, only the
+	// admin's chief is served, and any other user's chief is refused 403.
+	chiefLLM *chiefLLMRuntime
+	// chiefSessions is the admin's chief's OpenRouter sessions' spend door
+	// (chief_session_llm.go). nil unless EnableChiefSessionsLLM was called;
+	// while nil, every request carrying X-Muster-Chief-Session is refused 400.
+	chiefSessions *chiefSessionsRuntime
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
@@ -242,6 +457,10 @@ type Server struct {
 	// connectProxy is the connector proxy, built by UseExtensions when a
 	// connector store is wired. See connectors.go.
 	connectProxy *connectors.Proxy
+	// pgExec runs postgres connectors' queries (connector_tools.go's
+	// postgres_query), built by UseExtensions with connectProxy. Its pools
+	// outlive a re-wiring only until the next UseExtensions closes them.
+	pgExec *connectors.PostgresExecutor
 
 	// principalProbe, when set, is called by admit (principal.go) with every
 	// request it hands to a handler. TEST-ONLY: nothing in production sets it,
@@ -323,22 +542,79 @@ type RouterNotification struct {
 	Body  string
 	Tag   string
 	Data  map[string]string
+	// Ask (an attention ask's chips) and Update (a re-push replacing the
+	// notification under the same tag) reach a paired phone's payload v2 only
+	// (push.Payload); the router and the browser never see them.
+	Ask    *push.V2Ask
+	Update bool
+	// AskActions: payload v2 offers Ask's signed actions (device_actions.go).
+	AskActions bool
+	// TitleKeep is a part of Title the title rule keeps verbatim
+	// (textplain.TitleKeeping): a mirrored window's tmux target. "" for none.
+	TitleKeep string
+	// CodenameTitle is the title to send INSTEAD of Title when the owner
+	// turned on "Start notification titles with the tmux name" (the one rule,
+	// names.go codenameTitle, made it: the window's codename first), with
+	// CodenameKeep its TitleKeep. "" for a push that names no mirrored window:
+	// it always sends Title. goNotify decides, once, per owner.
+	CodenameTitle, CodenameKeep string
+	// Silent: a quiet re-show of a notification already alerted for
+	// (push.Payload.Silent — browsers that honour it only). Muster-native push
+	// only; the router is never sent an attention notification.
+	Silent bool
+	// skip is a member of the owning TEAM this notification is not sent to:
+	// the person whose own action it reports (a team task comment's author,
+	// teamTaskCommented). 0 for none; it never touches a personal owner.
+	skip int64
+	// managersOnly sends a TEAM-owned notification to the team's managers
+	// alone (teamPushRecipients): a push only a manager can act on, a team
+	// agent's connector request (onConnectorRequested). It never touches a
+	// personal owner.
+	managersOnly bool
+	// wait, when set, is Done once this notification has been handed to every
+	// recipient's devices (or refused): the disable sweep waits on it before
+	// the disable deletes the person's phones (team_withdraw.go).
+	wait *sync.WaitGroup
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
 // window is three fields and no goroutine, and the property that matters — a
 // hard ceiling on attempts per minute — is the same.
 //
-// ⚠ IT IS GLOBAL, NOT PER-CALLER, AND THAT IS THE ORIGINAL BEHAVIOUR KEPT ON
-// PURPOSE. A per-IP bucket sounds better and is worse here: the ceiling exists
-// to bound guessing against ONE shared operator password, and an attacker with
-// more than one source address would get the whole budget per address. The cost
-// is that a guesser can lock a legitimate operator out for up to a window, on a
-// service with one operator.
+// Two uses: allow gates an attempt before it runs (the scroll limiter, keyed
+// per user); fail counts an attempt only after it was judged wrong, and over
+// reads the count without adding to it (the operator-password count,
+// Server.loginRate: passwordGate refuses only an unknown device with it).
 type rateLimiter struct {
 	mu          sync.Mutex
 	windowStart time.Time
 	count       int
+}
+
+// over reports whether the window at now already holds burst or more
+// attempts, without recording one.
+func (l *rateLimiter) over(now time.Time, burst int, window time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.windowStart) >= window {
+		l.windowStart = now
+		l.count = 0
+	}
+	return l.count >= burst
+}
+
+// fail records one FAILED attempt at now and reports whether the window is
+// now past burst (the caller answers that failure 429). It is never consulted
+// for an attempt that succeeded, so it cannot refuse a correct credential.
+func (l *rateLimiter) fail(now time.Time, burst int, window time.Duration) (over bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.windowStart) >= window {
+		l.windowStart = now
+		l.count = 0
+	}
+	l.count++
+	return l.count > burst
 }
 
 // allow reports whether one more attempt may proceed at now, and records it.
@@ -395,15 +671,18 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		auth:                    authCfg,
 		startedAt:               time.Now(),
 		now:                     time.Now,
+		waitingGrace:            EpisodeWaitingGrace,
 		agentCLIPath:            defaultAgentCLIPath,
 		activeAgents:            make(map[string]agentPhase),
 		activeAgentsNow:         time.Now,
-		listPullRequests:        github.ListPullRequests,
 		taskCreateAfter:         realAfterFunc,
 		taskCommentAfter:        realAfterFunc,
 		taskProvisionedNotified: make(map[int64]bool),
 		taskDoneNotified:        make(map[int64]bool),
 		taskReapAfter:           defaultTaskReapAfter,
+		agentReapStoppedAfter:   DefaultAgentReapStoppedAfter,
+		reapInstancesWithin:     defaultAgentReapInstancesWithin,
+		passkeyChallenges:       boundedWindow{cap: passkeyChallengeCap},
 	}
 }
 
@@ -461,23 +740,29 @@ func (s *Server) Handler() http.Handler {
 // check, and it is a RELATIONSHIP guard — it records twice, from two different
 // servers, and compares — not a count.
 func (s *Server) registerAll(mux Mux) {
-	// --- Open: no app auth. Health, metrics, assets, PWA. ---
+	// --- Open: no app auth. Health, assets, PWA. ---
+	//
+	// /metrics is NOT here: it is served only on its own listener
+	// (MetricsHandler, MUSTER_METRICS_PORT), never on a port the public edge
+	// routes to.
 	//
 	// ⚠ "Open" here means muster asks for no session — and do not assume an edge
 	// in front of it asks either. A deployment that relies on muster's own
 	// sign-in (per-user accounts, invites) has no forward-auth gate: its edge may
-	// refuse /metrics, /readyz, /mcp, /agent/ and /connect/ and rate-limit the
-	// sign-in routes, but /health, /static/, /manifest.webmanifest and /sw.js
-	// are then reachable by anyone. Keep every one of them free of anything
+	// refuse /metrics, /readyz, /mcp, /agent/, /connect/ and /llm/ and rate-limit the
+	// sign-in routes, but /health, /static/, /manifest.webmanifest, /sw.js and
+	// /.well-known/assetlinks.json are then reachable by anyone. Keep every one of them free of anything
 	// per-user (pwa.go).
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.Handle("GET /static/", staticHandler())
 	// PWA: served from root so the service worker's scope is "/" and the
 	// manifest resolves relative to the document root.
 	mux.HandleFunc("GET /sw.js", s.handleServiceWorker)
 	mux.HandleFunc("GET /manifest.webmanifest", s.handleManifest)
+	// Digital Asset Links for the Android app's passkeys (assetlinks.go):
+	// fetched by Android with no session; 404 when not configured.
+	mux.HandleFunc("GET "+AssetLinksPath, s.handleAssetLinks)
 	// Browser/PWA auto-fetches we do not serve an asset for: answer 204 (open,
 	// no auth) so they stop generating 404 noise.
 	mux.HandleFunc("GET /favicon.ico", handleNoContent)
@@ -491,10 +776,26 @@ func (s *Server) registerAll(mux Mux) {
 	// login), and the admin pages (requireAdmin).
 	s.registerInviteRoutes(mux)
 	s.registerAdminRoutes(mux)
+	s.registerTeamPages(mux)
+	s.registerAccountTeams(mux)
+	s.registerOfficerSpawnPages(mux)
+	s.registerTeamOfficerPages(mux)
+	s.registerOfficerPages(mux)
+	s.registerTeamChiefPages(mux)
+	s.registerTeamConnectorPages(mux)
+	// A team's host tokens (team sharing 2b.2, team_hosts_page.go).
+	s.registerTeamHostPages(mux)
+	s.registerTeamPluginPages(mux)
+	// Instance branding (branding.go): the public instance document and
+	// logo images, and the admin's writes (requireAdminRole).
+	s.registerBrandingRoutes(mux)
 	// Personal API tokens (accounts PR 6): /api/whoami, /api/tokens, /account/tokens.
 	s.registerAPITokenRoutes(mux)
 	// The machine job API (jobs.go): the service tier only.
 	s.registerJobRoutes(mux)
+	// Claude account utilization (cc_usage.go): the service tier or an
+	// account-usage token.
+	s.registerCCUsageRoutes(mux)
 	// Paired devices (the Android app, Phase 1): the pairing code, Account →
 	// Devices, and the /api/device/* tier (devices.go).
 	s.registerDeviceRoutes(mux)
@@ -514,7 +815,18 @@ func (s *Server) registerAll(mux Mux) {
 	for _, tab := range ui.TabKeys() {
 		mux.HandleFunc("GET /"+tab, s.requireSession(s.handleIndex))
 	}
+	// The retired Agents list page's URL: home's redirect, or the onboarding
+	// page when home has nowhere to go (nav_agents.go).
+	mux.HandleFunc("GET "+ui.HomeFallbackPath, s.requireSession(s.handleAgentsHome))
 	mux.HandleFunc("GET /events", s.requireSession(s.handleEvents))
+	// The sidebar's agent list (nav_agents.go): a partial every nav document loads.
+	mux.HandleFunc("GET "+ui.NavAgentsPath, s.requireSession(s.handleNavAgents))
+	mux.HandleFunc("GET "+ui.NavWaitingPath, s.requireSession(s.handleNavWaiting))
+	// A session view's Preview button (plugin_chip.go), which its slot polls.
+	mux.HandleFunc("GET "+ui.PreviewButtonPath, s.requireSession(s.handlePreviewButton))
+	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
+	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
+	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))
 	// The manifest's share_target. Session-gated like the shell it renders; a
 	// GET, so a share that meets the login page survives the round trip in
 	// ?next=. It writes nothing — see handleShare.
@@ -534,28 +846,53 @@ func (s *Server) registerAll(mux Mux) {
 	// destroys an agent must not be served open on an unarmed server; a personal
 	// token acts as its owner.
 	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
+	// The chief's per-user on/off switch on the Account page (chief_toggle.go).
+	mux.HandleFunc("POST "+accountChiefPath, s.requireOperatorWrite(s.handleAccountChief))
+	// "Show tmux sessions" on the Account page (notify_prefs.go).
+	mux.HandleFunc("POST "+accountNotifyTmuxPath, s.requireOperatorWrite(s.handleAccountNotifySwitch))
+	mux.HandleFunc("POST "+accountNotifyCodenamePath, s.requireOperatorWrite(s.handleAccountNotifySwitch))
 
 	s.registerNotesRoutes(mux)
-	s.registerGitHubRoutes(mux)
 	s.registerAgentRoutes(mux)
-	// Pins (internal/pins): the Agents list's pin toggles, 404 without a store.
+	// Pins (internal/pins): the session switcher's pin toggle, 404 without a store.
 	s.registerPinRoutes(mux)
+	// Session tags (internal/sessiontags): the ⋯ menu's tag editor, 404 without a store.
+	s.registerSessionTagRoutes(mux)
+	s.registerSessionNameRoutes(mux)
+	s.registerSessionDriftRoutes(mux)
 	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
 	s.registerSendQueueRoutes(mux)
 	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.
 	s.registerFocusHistoryRoutes(mux)
+	s.registerPaletteRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
+	s.registerLLMRoutes(mux)
 	s.registerCredentialRoutes(mux)
 	s.registerApprovalRoutes(mux)
 	s.registerAgentWorkRoutes(mux)
+	s.registerOfficerRoutes(mux)
+	// The built-in officer store's admin API (officer_admin.go): 404 while it is off.
+	s.registerOfficerAdminRoutes(mux)
+	s.registerDeclaredOfficerRoutes(mux) // officer_declared.go
 	s.registerMirrorRoutes(mux)
+	// Suggested replies (suggest.go): the composer's set, its counts and the
+	// per-user toggle.
+	s.registerSuggestRoutes(mux)
 	// Browser flows (internal/flows): /flows, /api/flows/jobs, /runner/flows/*.
 	s.registerFlowRoutes(mux)
 	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.
 	s.registerPluginRoutes(mux)
+	// Routing rules (routing_rules.go): /rules, 404 with plugins off; and the
+	// chief's usage page (usage.go): /usage, 404 without a database.
+	s.registerRoutingRuleRoutes(mux)
+	s.registerUsageRoutes(mux)
+	// The answer-attempt log's page (answers_page.go): /answers, 404 without a database.
+	s.registerAnswersRoutes(mux)
 	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
+	// Reading the ask log (ask_log_read.go): /api/asks/log, /api/asks/summary and the Asks page's Log tab.
+	s.registerAskLogReadRoutes(mux)
 	// The mirrored sessions' MCP door (mirror_mcp.go): a host's token, its own sessions; 404 without the mirror plugin.
 	s.registerMirrorMCPRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the
@@ -565,6 +902,14 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTranscribeRoutes(mux)
 	// File attachments (uploads.go): the attach button, and the signed link.
 	s.registerUploadRoutes(mux)
+	s.registerAskMediaRoutes(mux)
+	// Shareable pages (pages.go): the share links a viewer opens, and the
+	// owner's Pages screen.
+	s.registerPageRoutes(mux)
+	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
+	s.registerDoctorRoutes(mux)
+	// The feature registry (features.go): the Features page.
+	s.registerFeatureRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
@@ -583,16 +928,32 @@ func handleNoContent(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// staticHandler serves the embedded web/static directory under /static/.
+// staticHandler serves web.Files under /static/: the embedded web/static
+// directory and the generated files (the pages' scripts, web/generated.go).
 func staticHandler() http.Handler {
-	sub, err := fs.Sub(web.Static, "static")
+	sub, err := fs.Sub(web.Files, "static")
 	if err != nil {
-		// web.Static always contains "static"; an error here is a programming
+		// web.Files always contains "static"; an error here is a programming
 		// bug, not a runtime condition.
 		panic("api: embedded static fs missing 'static' dir: " + err.Error())
 	}
 	files := http.StripPrefix("/static/", http.FileServerFS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 🔴 A MISSING FILE IS no-store, ANSWERED HERE. Go's file server drops
+		// the handler's Cache-Control on its error path, so its 404 carried
+		// none — and an edge that kept a script's 404 for minutes would turn
+		// the seconds two builds overlap in a rollout into a page with no
+		// code. A directory (the bare /static/ listing) goes to the file
+		// server as before.
+		rel := strings.TrimPrefix(strings.TrimPrefix(path.Clean(r.URL.Path), "/static"), "/")
+		if rel == "" {
+			rel = "."
+		}
+		if _, err := fs.Stat(sub, rel); err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Cache-Control", staticCacheControl(r.URL.Path, r.URL.Query().Get("v")))
 		files.ServeHTTP(w, r)
 	})
@@ -602,13 +963,33 @@ func staticHandler() http.Handler {
 //
 // 🔴 ONLY A URL CARRYING THE FILE'S CURRENT HASH IS CACHED FOR LONG. Pages link
 // web.Asset's /static/<file>?v=<content hash>: that URL names these exact
-// bytes, so it is immutable. Anything else — the bare path, or a ?v= from an
-// older build — is "no-cache" (stored, but revalidated): with no header at
-// all, the edge applied its own max-age=14400 and served 0.43.0 the previous
-// release's app.css for hours.
+// bytes, so it is immutable. The bare path of a stylesheet, icon or vendored
+// script is "no-cache" (stored, but revalidated): with no header at all, the
+// edge applied its own max-age=14400 and served 0.43.0 the previous release's
+// app.css for hours.
+//
+// 🔴 ANOTHER BUILD'S ?v= IS no-store, AND SO IS A PAGE SCRIPT'S BARE PATH. In a
+// rollout a page rendered by one build can ask a pod of the other for its
+// files, and this pod answers with ITS bytes (200) — deliberately: refusing
+// would leave that page with no code at all, where the neighbouring build's
+// script leaves it working. But those bytes are not the ones the URL names,
+// so nothing may keep them under it, and no-cache did not ensure that: the
+// CDN in front rewrites an origin no-cache into max-age=14400 on what the
+// browser gets (measured), which left the wrong bytes in the HTTP cache for
+// four hours — read by every load without the service worker and by the
+// worker's own network fallback. no-store survives the CDN (measured). A
+// /static/js/ path with no ?v= is linked by no page, so it is no-store too;
+// the bare paths of the other files keep no-cache, which older cached
+// documents link. The service worker also refuses such bytes on its own: it
+// stores a script only when its body hashes to its ?v= (sw.js namesItsBytes;
+// e2e/sw-install.test.mjs).
 func staticCacheControl(path, v string) string {
-	if h := web.AssetHash(path); h != "" && v == h {
+	h := web.AssetHash(path)
+	switch {
+	case h != "" && v == h:
 		return "public, max-age=31536000, immutable"
+	case v != "", strings.HasPrefix(path, "/static/js/"):
+		return "no-store"
 	}
 	return "no-cache"
 }
@@ -620,25 +1001,39 @@ func staticCacheControl(path, v string) string {
 // render a document carrying the sidebar; deciding the tab set at each of them
 // would be four copies of one predicate, which is the shape that ends up wrong at
 // three of the four in the same direction. It reads the SAME field the handler
-// guards on (Extensions.GitHub), so the page and the route cannot disagree about
+// guards on (Extensions.Connectors), so the page and the route cannot disagree about
 // whether a subsystem exists.
 //
 // ⚠ IT IS NOT A READINESS OR PERMISSION CHECK. A tab hidden here is a surface the
 // build does not have, not one this caller may not see — every route stays
-// registered and answers for itself (see internal/api/routes.go and github.go).
+// registered and answers for itself (see internal/api/routes.go).
 //
 // Admin (accounts PR 5) draws the sidebar's Admin link: the request's
 // principal is an admin AND the admin pages have a store to serve. It is a
 // LINK only — requireAdmin is what refuses a member, whatever the nav drew.
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
-	return ui.Features{GitHub: s.ext.GitHub != nil || s.githubApp(ctx) != nil, Connectors: s.ext.Connectors != nil,
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil}
+	// ONE predicate for "an admin" (authz.IsAdmin): the Admin link adds the
+	// admin pages' store to it; setup details (Features.Setup) take it alone.
+	setup := authz.IsAdmin(ctx)
+	// Connectors and Push also read the feature registry: it can
+	// only take a control away (featureOff), never draw one over nothing.
+	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
+		Admin: setup && s.adminPagesServed(), Setup: setup, Push: s.pushServed() && !s.featureOff(features.Push),
+		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
+		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
 // request path so each tab deep-links.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// `/` opens the chief's chat (nav_agents.go, redirectHome) — except the
+	// service worker's offline copy, `/?shell=1`, which it fetches with
+	// redirect:'manual' and would refuse as a redirect (web/static/sw.js).
+	if r.URL.Path == "/" && r.URL.Query().Get(offlineShellParam) != "1" {
+		s.redirectHome(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// /tasks?new=1 is the manifest's "New task" shortcut: the board with the
 	// composer open. It is the same mechanism a share uses (ComposePage).
@@ -648,56 +1043,114 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// A shell document carries this user's board (and list) now: private keeps
+	// every shared cache (an edge, a proxy) out of it, no-cache makes every
+	// ordinary navigation ask again. NOT no-store, deliberately: that would also
+	// take the document out of the back/forward cache and the HTTP-cache Back
+	// that restoreJS catches up (viewDocumentCacheControl has the measurement);
+	// sign-out's Clear-Site-Data: "cache" drops both copies.
+	w.Header().Set("Cache-Control", shellDocumentCacheControl)
 	tab := tabFromPath(r.URL.Path)
-	if err := ui.RenderPageWith(w, tab, s.shellFeatures(r.Context()), s.shellData(r.Context(), tab)); err != nil {
+	feat := s.shellFeatures(r.Context())
+	data := ui.ShellData{}
+	if r.URL.Query().Get(offlineShellParam) != "1" {
+		data = s.shellData(r.Context(), tab, feat)
+	}
+	if err := ui.RenderPageWith(w, tab, feat, data); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
 }
 
+// shellDocumentCacheControl is what a shell document (handleIndex) says to
+// caches. The same statement as a view document's, for the same reasons.
+const shellDocumentCacheControl = viewDocumentCacheControl
+
+// offlineShellParam, set to "1", asks for the shell WITHOUT its first-paint
+// data: no board, no list — what the service worker stores as its offline "/"
+// (web/static/sw.js, SHELL_FETCH).
+//
+// 🔴 THE OFFLINE SHELL OUTLIVES THE SESSION THAT FETCHED IT. The worker caches
+// "/" at install, with the session cookie, and serves it to any offline
+// navigation — after a sign-out too: Clear-Site-Data: "cache" does not empty
+// Cache Storage, and activate carries the entry forward across deploys. A "/"
+// carrying the board would show one user's tasks to whoever opens the app
+// offline next. So the worker asks for this board-less copy by URL — a request
+// it makes explicitly, not a header a browser or a proxy might omit — and
+// stores it under "/". TestTheOfflineShellURLIsBoardless and
+// e2e/tests/board-first-paint.spec.ts pin both ends.
+const offlineShellParam = "shell"
+
 // shellData is what the shell draws on its first paint (ui.ShellData): on the
-// Agents tab, the LIST — its cards, server-rendered — and the "Recently viewed"
-// strip resolved against them, so nothing is filled in under the reader a moment
-// later. Any other tab draws its Agents panel hidden and empty, where a late
-// list moves nothing on screen, and fills it from the list's own load.
-//
-// 🔴 IT IS THE LIST'S BUILD — agentsListCards, THE ONE handleAgentsContent
-// SERVES — AND THE TAB'S FIRST PAINT NEEDS NO SECOND. The shell used to draw only
-// the strip (a lighter read) and leave the list to a `load` request, so the
-// document was a filter bar over nothing until that request landed. Now the
-// document reads the provisioner's instances ONCE and the list issues no load
-// of its own (ui.agentsListLiveTrigger). (Its first live refresh — the SSE
-// open's resync — still rebuilds and morphs it; see ui/agents_list_ssr.go for
-// why that is measured and kept.) TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
-//
-// 🔴 THE DOCUMENT'S FIRST BYTE WAITS ON THAT INSTANCE READ AT MOST
-// shellInstancesWithin. It is a Kubernetes list (two API reads) with no timeout
-// of its own, and a stalled apiserver made GET /agents — every reload, a pin's
-// redirect, a boosted click — a blank tab for as long as it stalled (measured by
-// review: 3.002s behind a 3s-delayed provisioner, against 1ms for the shell
-// before). Past the bound the cards are drawn with their STORED status — still
-// the cards, so the first paint is still the list — and the list's first live
-// refresh (the SSE open's resync, GET /ui/agents, which waits for its read as
-// it always did) brings the live one, morphed in place.
-//
-// ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
-// empty strip), not an error: that load reports its own failure.
-func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
-	if tab != "agents" || s.ext.Agents == nil {
-		return ui.ShellData{}
+// Tasks tab (/tasks) the task BOARD (tasksShellData); every other tab draws
+// its panel from its own load. (The Agents tab, which drew its list here, is
+// retired — GET /agents is home's redirect, handleAgentsHome.)
+func (s *Server) shellData(ctx context.Context, tab string, feat ui.Features) ui.ShellData {
+	if ui.ShellTab(tab, feat) == "tasks" {
+		return s.tasksShellData(ctx)
 	}
-	cards, mirrors, err := s.agentsListCardsWithin(ctx, shellInstancesWithin)
-	if err != nil {
-		s.logger.Printf("agents: shell list: %v", err)
-		return ui.ShellData{}
-	}
-	refs := s.recentRefs(ctx)
-	return ui.ShellData{}.WithList(cards, mirrors, refs, s.ext.AgentsIdleAfter)
+	return ui.ShellData{}
 }
 
-// shellInstancesWithin bounds the Agents document's instance read (shellData):
-// long enough for a healthy apiserver's two list calls, short enough that a
-// stalled one costs a reload a moment rather than the tab.
-const shellInstancesWithin = 1500 * time.Millisecond
+// tasksShellData is the Tasks tab's first paint: the board for the default
+// query (no filter, first page), built by tasksView — the one build GET
+// /ui/tasks serves — and the event mark it was built at (ui/tasks_list_ssr.go).
+//
+// 🔴 THE MARK IS READ BEFORE THE BOARD, AND THAT ORDER IS THE CONTRACT. An
+// event published after the mark read makes the stream's hello differ, so the
+// shell re-fetches; read after the board, an event landing between the two
+// reads would be missing from the board AND match the hello — a stale board
+// with nothing to correct it until the next event.
+//
+// ⚠ A FAILED BUILD DRAWS THE OLD WAY (the skeleton its own load fills), not an
+// error: that load reports its own failure (cgTasksListFailed).
+//
+// 🔴 THE DOCUMENT'S FIRST BYTE WAITS ON THE BOARD AT MOST shellBoardWithin. A
+// stalled database would otherwise hold the whole page — the shell, its
+// scripts, every other tab — for as long as it stalls. Past the bound the
+// build's context is cancelled and the document draws the skeleton, whose own
+// load (GET /ui/tasks) waits for the board as it always did. The wait is a
+// select, not only the context, so a store that does not honour cancellation
+// cannot hold the page either.
+func (s *Server) tasksShellData(ctx context.Context) ui.ShellData {
+	if s.ext.Notes == nil {
+		return ui.ShellData{}
+	}
+	mark := ""
+	if s.bus != nil {
+		mark = s.bus.Mark(streamOwners(ctx)...)
+	}
+	within := s.boardWithinOverride
+	if within <= 0 {
+		within = shellBoardWithin
+	}
+	bctx, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+	type built struct {
+		v   ui.TasksView
+		err error
+	}
+	done := make(chan built, 1)
+	// safeGo: a panic in the build is recovered and logged; the select below
+	// then falls back at the bound.
+	safeGo(s.logger, "shell board", func() {
+		v, err := s.tasksView(bctx, nil)
+		done <- built{v, err}
+	})
+	var b built
+	select {
+	case b = <-done:
+	case <-bctx.Done():
+		b.err = bctx.Err()
+	}
+	if b.err != nil {
+		s.logger.Printf("notes: shell board: %v (drawing the skeleton)", b.err)
+		return ui.ShellData{}
+	}
+	return ui.ShellData{}.WithTasks(b.v, mark)
+}
+
+// shellBoardWithin bounds the Tasks document's board build (tasksShellData).
+const shellBoardWithin = 1500 * time.Millisecond
 
 // tabFromPath maps a request path to a tab key.
 //
@@ -736,11 +1189,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // keeps the pod out of rotation rather than putting a wrong sentence in front
 // of an operator. See UseExtensions.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	// 🔴 THE BODY IS THE STATUS AND NOTHING ELSE: this route answers anyone,
+	// and the reason (which wiring is missing, that the database is down, the
+	// build) goes to the log, where the operator reads it.
 	if len(s.extDefects) > 0 {
+		s.logger.Printf("readyz: not ready: server wiring is incomplete: %v", s.extDefects)
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status": "not ready",
-			"error":  "server wiring is incomplete",
-			"detail": s.extDefects,
 		})
 		return
 	}
@@ -748,12 +1203,28 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := s.readyCheck(ctx); err != nil {
+			s.logger.Printf("readyz: not ready: database unreachable: %v", err)
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"status": "not ready", "error": "database unreachable"})
+				"status": "not ready"})
 			return
 		}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "version": BuildVersion})
+	s.writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+}
+
+// MetricsHandler is the metrics listener's whole handler: GET /metrics (the
+// Prometheus exposition of the default registry) and a 404 for every other
+// path.
+//
+// 🔴 IT IS A SEPARATE HANDLER, NOT A ROUTE ON registerAll's MUX, BECAUSE THE
+// METRICS NAME SPEND, BUDGETS AND VOLUMES. Every listener the main handler
+// backs is one a public edge may route to, and a plain proxy forwards every
+// path; /metrics on its own port is unreachable from there unless an operator
+// routes that port too (TestMetricsAreServedOnlyOnTheMetricsListener).
+func MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.Handler())
+	return mux
 }
 
 // --- PWA assets: see pwa.go (the manifest, sw.js, /share, the badge count) ---
@@ -782,24 +1253,47 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	// 🔴 THE STREAM IS THE SESSION USER'S, AND ONLY THEIRS (accounts PR 3b).
-	// requireSession attached the principal; the bus delivers this subscriber
-	// only the events its user owns. A principal-less or scope-all request
-	// cannot reach here (requireSession admits a user), and would subscribe as
-	// nobody (0) if it did.
-	id, ch := s.bus.Subscribe(requestOwner(r.Context()))
+	// 🔴 THE STREAM IS THE SESSION USER'S, AND ONLY THEIRS (accounts PR 3b) —
+	// AND, SINCE TEAM SHARING 2b.3, THEIR TEAMS' (streamOwners). requireSession
+	// attached the principal; the bus delivers this subscriber only the events
+	// its user owns, or a team the user is a member of owns. A principal-less
+	// or scope-all request cannot reach here (requireSession admits a user),
+	// and would subscribe as nobody (0) if it did.
+	//
+	// 🔴 THE TEAMS ARE THE REQUEST'S, AND THE STREAM ENDS WHEN ONE IS LEFT
+	// (teamEventsOpen): a removal from a team — here, on another replica or
+	// through the CLI — ends this stream within the membership sweep, and the
+	// page reconnects subscribed to the teams the person is in then.
+	tctx, _, untrack := s.teamEventsOpen(r.Context())
+	defer untrack()
+	r = r.WithContext(tctx)
+	owners := streamOwners(r.Context())
+	id, ch := s.bus.Subscribe(owners...)
 	defer s.bus.Unsubscribe(id)
 
 	// Initial comment so clients know the stream is open and proxies flush.
 	fmt.Fprint(w, ": connected\n\n")
+	// muster.hello: this stream's event mark, read AFTER Subscribe — every event
+	// published after it is on this stream. A shell that drew its board at the
+	// same mark skips its first-open resync (ui/tasks_list_ssr.go); see
+	// sse.Broadcaster.Mark for why the order of the two reads is the guarantee.
+	hello, _ := json.Marshal(map[string]string{"mark": s.bus.Mark(owners...)})
+	fmt.Fprintf(w, "event: muster.hello\ndata: %s\n\n", hello)
 	flusher.Flush()
 
 	ctx, cancel := s.streamContext(r.Context())
 	defer cancel()
+	// The page judges the stream alive by hearing from it (ui/live.go): a
+	// board where nothing changes sends nothing, so it beats.
+	beat := time.NewTicker(liveHeartbeatEvery())
+	defer beat.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-beat.C:
+			fmt.Fprintf(w, "event: %s\ndata: {}\n\n", ui.LivePingEvent)
+			flusher.Flush()
 		case ev, open := <-ch:
 			if !open {
 				return
@@ -867,7 +1361,8 @@ func (s *Server) taskRetentionPass(ctx context.Context) {
 	s.reapIdleTasks(ctx, now)
 }
 
-// RunTaskReap drives the idle-task reaper until ctx is cancelled.
+// RunTaskReap drives the idle-task reaper, and the stopped-agent reaper
+// (agent_reap.go), until ctx is cancelled.
 //
 // 🔴 It is a SEPARATE loop from RunTaskRetention, and that is a fixed bug rather
 // than a preference — see TaskReapInterval.
@@ -880,6 +1375,13 @@ func (s *Server) RunTaskReap(ctx context.Context, interval time.Duration) {
 	// indistinguishability is what let the ticker defect hide for the whole of the
 	// feature's production life upstream.
 	s.logger.Printf("task reaper: sweeping every %s for tasks idle for >%s", interval, s.taskReapAfter)
+	// The stopped-agent reaper rides this loop (agent_reap.go), announced here
+	// for the same reason.
+	if s.agentReapStoppedAfter > 0 {
+		s.logger.Printf("agent reaper: sweeping every %s for agents stopped for >%s", interval, s.agentReapStoppedAfter)
+	} else {
+		s.logger.Printf("agent reaper: off (MUSTER_AGENT_REAP_STOPPED_AFTER)")
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -891,6 +1393,7 @@ func (s *Server) RunTaskReap(ctx context.Context, interval time.Duration) {
 				continue
 			}
 			s.reapIdleTasks(ctx, s.now())
+			s.reapStoppedAgents(ctx)
 		}
 	}
 }
@@ -980,6 +1483,24 @@ func requestOwner(ctx context.Context) int64 {
 		return 0
 	}
 	return p.UserID
+}
+
+// streamOwners is the owners an event stream opened under ctx subscribes to,
+// in order: the principal's user, then each team it is a member of on this
+// door (Principal.TeamScope: the browser session; every other door none), by
+// team id. A principal-less or scope-all context subscribes as nobody (0).
+// ONE RULE for the stream and for the board document's mark (tasksShellData),
+// so a document drawn at the stream's mark has missed none of either's events.
+func streamOwners(ctx context.Context) []int64 {
+	owners := []int64{requestOwner(ctx)}
+	if p, ok := authz.From(ctx); ok && !p.All() {
+		for _, m := range p.TeamScope().List() {
+			if m.Role.AtLeast(authz.TeamViewer) && m.Team != p.UserID {
+				owners = append(owners, m.Team)
+			}
+		}
+	}
+	return owners
 }
 
 // broadcastTo publishes one SSE event carrying an id to owner's streams.
@@ -1076,35 +1597,78 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	// not titles and are sent as written. TestTheTitleSinkLedger
 	// (internal/textplain) pins both halves and that sendPush and router.Notify
 	// are reached from nowhere else.
-	n.Title = textplain.Title(n.Title)
+	//
+	// 🔴 AND THE ONE PLACE "Start notification titles with the tmux name" IS
+	// READ (notifyCodenameFirstOn): a push that declared a CodenameTitle
+	// (names.go codenameTitle) is sent under it instead when its owner turned
+	// the switch on — decided here, on the push's own goroutine (a read of the
+	// owner's preference must not block the caller), before the title rule.
+	// Off, unreadable, or no CodenameTitle: Title, byte for byte as before.
+	// Both kinds of device (the browser's payload and payload v2) and the
+	// router get the one title chosen here.
 	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
 	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the
 	// recover logs. A shutdown therefore cannot be left waiting on a fan-out that
 	// panicked, which is the one property this pairing has to keep.
+	//
+	// 🔴 AND THE ONE TEAM FAN-OUT (team sharing phase 2b, part C;
+	// team_notify.go). When owner is a TEAM, the recipients are read first
+	// (teamPushRecipients: its operators and managers with notify on) and the
+	// WHOLE per-owner decision below runs once for EACH of them, in this
+	// order: that member's codename switch; the team prefix ("platform · ")
+	// on the title it picked; the title rule, once, over the prefixed title;
+	// pushAllowed with that member's mutes and rate cap; sendPush, which stays
+	// "owner, and only owner"; and routerServes for that member. Expanding in
+	// sendPush instead would run all of these against the team, which has no
+	// mutes, one shared cap and no preferences. A person is their own one
+	// recipient, with no prefix: exactly as before.
 	s.pushInFlight.Add(1)
+	if n.wait != nil {
+		n.wait.Add(1)
+	}
 	safeGo(s.logger, "notify tag="+n.Tag, func() {
 		defer s.pushInFlight.Done()
+		if n.wait != nil {
+			defer n.wait.Done()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
-		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
-			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data})
-			if rep.Delivered > 0 && onDelivered != nil {
-				onDelivered(rep.Delivered)
+		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip, n.managersOnly)
+		for _, to := range recipients {
+			// Each recipient decides on its own copy (a declared
+			// RouterNotification, so the push-title ledgers see it).
+			var m RouterNotification = n
+			if m.CodenameTitle != "" && s.notifyCodenameFirstOn(s.attentionPrincipal(ctx, to), to) {
+				m.Title, m.TitleKeep = m.CodenameTitle, m.CodenameKeep
 			}
-		}
-		// The router knows nothing of "resolved" (it closes its own cards).
-		// Nor of the attention queue's items: it has no attention card, and its
-		// own notifications for a waiting session are its own (attention.go).
-		if s.router == nil || event == push.EventResolved || event == push.EventAttention || !s.routerServes(owner) {
-			return
-		}
-		if err := s.router.Notify(ctx, n); err != nil {
-			s.logger.Printf("router: notify tag=%s: %v", n.Tag, err)
-			return
-		}
-		if onDelivered != nil {
-			onDelivered(-1)
+			// The team's prefix goes on whichever title that member's switch
+			// picked (the same as prefixing both), and before the title rule.
+			// A withdrawal has no title, and gets none.
+			if m.Title != "" {
+				m.Title = prefix + m.Title
+			}
+			m.Title = textplain.TitleKeeping(m.Title, m.TitleKeep)
+			if s.pushServed() && s.pushAllowed(ctx, to, event) {
+				rep := s.sendPush(ctx, to, push.Payload{Type: m.Type, ID: m.ID, Title: m.Title, Body: m.Body, Tag: m.Tag, Data: m.Data,
+					Ask: m.Ask, Update: m.Update, AskActions: m.AskActions, Silent: m.Silent})
+				if rep.Delivered > 0 && onDelivered != nil {
+					onDelivered(rep.Delivered)
+				}
+			}
+			// The router knows nothing of "resolved" (it closes its own cards).
+			// Nor of the attention queue's items: it has no attention card, and its
+			// own notifications for a waiting session are its own (attention.go).
+			if s.router == nil || event == push.EventResolved || event == push.EventAttention || !s.routerServes(to) {
+				continue
+			}
+			if err := s.router.Notify(ctx, m); err != nil {
+				s.logger.Printf("router: notify tag=%s: %v", m.Tag, err)
+				continue
+			}
+			if onDelivered != nil {
+				onDelivered(-1)
+			}
 		}
 	})
 }
@@ -1136,7 +1700,7 @@ func (s *Server) mirrorToRouter(owner int64, name, data string) {
 }
 
 // BroadcastAgentChanged fires an SSE agent.changed nudge for the named agent so
-// an open Tasks tab and the Agents tab refresh live. Best-effort + nil-safe: it
+// an open Tasks tab, the sidebar and the agent's page refresh live. Best-effort + nil-safe: it
 // is wired into the reconciler's status-change hook, which runs on a background
 // goroutine, so it must never panic.
 //
@@ -1150,7 +1714,7 @@ func (s *Server) BroadcastAgentChanged(agentName string) {
 	s.agentChangedFor(s.agentOwner(agentName), agentName)
 }
 
-// BroadcastAgentsChangedFor nudges owner's open Agents views to re-fetch, with
+// BroadcastAgentsChangedFor nudges owner's open sidebars and pages to re-fetch, with
 // no agent named — the mirror plugin's host connected / dropped / re-listed
 // hook, which knows the host's owner and nothing else.
 func (s *Server) BroadcastAgentsChangedFor(owner int64) {

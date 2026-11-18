@@ -1,7 +1,11 @@
 import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
-import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { agentComposerPort, hookToken, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { agentPageRe } from '../lib/agent-link';
+import { createAgent } from '../lib/seed';
+import { agentMenu, openAgentMenu, toTerminal } from '../lib/agent-menu';
 
 // A DISPATCHED AGENT'S TWO VIEWS, in a real browser against a REAL muster-server
 // (the e2eterm build: the noop driver, whose terminal is played by
@@ -52,7 +56,7 @@ test.afterAll(async ({ browser }) => {
     if (made.length) {
       const ctx = await browser.newContext();
       const page = await ctx.newPage();
-      await login(page);
+      await signIn(page, origin);
       for (const a of made) {
         const r = await page.request.delete(`${origin}/agents/${a.id}`, { headers: { Origin: origin } });
         expect(r.status(), `deleting ${a.name}: ${await r.text()}`).toBeLessThan(300);
@@ -64,6 +68,8 @@ test.afterAll(async ({ browser }) => {
       );
       await ctx.close();
     }
+    // At least one (the count can see a sign-in at all), and no more than one.
+    expect(sessionsIssued(), 'browser sessions this file signed in (see login)').toBe(1);
   } finally {
     await server?.stop();
   }
@@ -86,28 +92,26 @@ async function agentRows(): Promise<AgentRow[]> {
 
 const storedStatus = async (name: string) => (await agentRows()).find((a) => a.name === name)?.status ?? '(missing)';
 
-async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
+// 🔴 THE FORM IS DRIVEN ONCE PER RUN OF THIS FILE (lib/signin.ts), and the
+// session it earns is handed to every later test and to afterAll: this file
+// signed in 11 times — ten tests and afterAll — and on main's CI (run
+// 40987376283) the last test's POST /login got a 429 (lib/server.ts
+// signInBudget says why). None of these tests is about signing in; afterAll
+// counts the sign-ins the server issued, and pins this file's to exactly one.
+const sessionsIssued = () => (server?.log().match(/login: a browser session was issued/g) ?? []).length;
 
-// saveAgent creates one agent of the kind with no note through the dispatch
-// sheet's "Save for later" and returns its row (diffed against what was there).
+// saveAgent creates one agent of the kind with no note — stopped, as "Save for
+// later" made it — through POST /api/agents (lib/seed.ts, which replaced the
+// deleted dispatch form), opens its page, and returns its row (diffed against
+// what was there).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator(`[data-kind-option="${kind}"]`).click();
-  await sheet.locator('textarea[name="note_text"]').fill('');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const agent = await createAgent(origin, { kind });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
+  expect(created[0].name).toBe(agent.name);
   made.push(created[0]);
+  await page.goto(origin + '/agents/' + created[0].name);
   return created[0];
 }
 
@@ -129,46 +133,70 @@ for (const vp of [
     // link, the terminal page had no way back but the arrow, and the terminal
     // had no message box at all.
     test('an agent opens on its rendered view; both views have the switch and a message box; a stopped agent’s says why it cannot be sent to', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
 
-      // The card opens the RENDERED view: the chat.
-      await page.goto(origin + '/agents');
-      const card = page.locator(`#agents-list article:has(a[href="/agents/${agent.name}"])`);
-      await expect(card).toBeVisible();
-      await card.locator(`a[href="/agents/${agent.name}"]`).click();
+      // Its sidebar row (where the retired Agents list's card went) opens the
+      // RENDERED view: the chat. The sidebar is a drawer on a phone, the rail
+      // on a desktop.
+      await page.goto(origin + '/tasks');
+      const row = page.locator(`#sidebar-agents-list a#nav-agent-${agent.id}`);
+      if (!(await page.locator('#sidebar-agents-list').isVisible())) await page.locator('#sidebar-open').click();
+      await expect(row).toBeVisible();
+      await row.click();
       await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
 
       // The switch: Rendered is where we are, Terminal one tap away, thumb-sized.
-      await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
-      const toTerm = page.locator('#view-terminal');
-      await expect(toTerm).toHaveText('Terminal');
+      // ⚠ A claude-code agent's page has ONE header row (PR #527,
+      // agent_header_folded.go): no Rendered | Terminal switch is drawn on it —
+      // the chat IS the rendered view — and Terminal is an item of the ⋯ menu,
+      // named "Terminal" at every width.
+      await expect(page.locator('#view-rendered'), 'no switch segment on the chat page').toHaveCount(0);
+      await expect(page.locator('#view-terminal'), 'Terminal waits in the ⋯ menu').toBeHidden();
+      await openAgentMenu(page);
+      const toTerm = page.locator('#agent-actions #view-terminal');
+      await expect(toTerm).toHaveAccessibleName('Terminal');
       const tb = (await toTerm.boundingBox())!;
       expect(tb.height, 'a 44px target').toBeGreaterThanOrEqual(44);
       expect(tb.x + tb.width, 'the switch fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
-      // The chat's own message box wears the composer's clothes: 16px, 44px.
+      await page.keyboard.press('Escape');
+      await expect(agentMenu(page)).toBeHidden();
+      // The chat's own message box wears the composer's clothes: 16px, a 44px box, a 40px Send.
       const chatInput = page.locator('#chat-input');
       await expect(chatInput).toBeVisible();
       expect(await chatInput.evaluate((e) => parseFloat(getComputedStyle(e).fontSize)), 'a 16px input').toBeGreaterThanOrEqual(16);
       expect((await chatInput.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-      expect((await page.locator('#chat-send').boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await page.locator('#chat-send').boundingBox())!.height).toBeGreaterThanOrEqual(40);
+      // ⚠ AN INVARIANT GUARD, not the symptom: pressing Send does not take
+      // focus from the box, so a phone's keyboard stays up and the first tap
+      // sends (sendKeepsFocusJS; the symptom itself — a press that moves the
+      // composer under the finger — is reproduced on the Rendered view's
+      // Send in composer-menu.spec.ts, where the session bar returns). The
+      // press is released OFF Send, so nothing is sent.
+      await chatInput.focus();
+      const cs = (await page.locator('#chat-send').boundingBox())!;
+      await page.mouse.move(cs.x + cs.width / 2, cs.y + cs.height / 2);
+      await page.mouse.down();
+      await expect(chatInput, 'pressing Send leaves the box focused').toBeFocused();
+      await page.mouse.move(cs.x + cs.width / 2, cs.y - 200);
+      await page.mouse.up();
       await noHorizontalScroll(page);
 
       // The Terminal: the same switch, the other way round — and a message box.
       // It opens in a frame over the chat (view_swap.go), the address
-      // following it.
-      await toTerm.click();
+      // following it. (Its link is the ⋯ menu's Terminal item.)
+      await toTerminal(page);
       await page.waitForURL(origin + '/agents/' + agent.name + '/terminal');
       const term = page.frameLocator('iframe[data-muster-view]');
-      await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+      await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       await expect(term.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
-      await expect(term.locator('#view-rendered')).toHaveAttribute('href', '/agents/' + agent.name);
+      await expect(term.locator('#view-rendered')).toHaveAttribute('href', agentPageRe(agent.name));
       const input = term.locator('#mv-input');
       const send = term.locator('#mv-send');
       await expect(input).toBeVisible();
       for (const el of [input, send]) {
         const b = (await el.boundingBox())!;
-        expect(b.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect(b.height, 'a 40px target').toBeGreaterThanOrEqual(40);
         expect(b.x + b.width, 'the composer fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
         expect(b.y + b.height, 'the composer is on screen').toBeLessThanOrEqual(vp.use.viewport.height);
       }
@@ -188,7 +216,7 @@ for (const vp of [
 
     test('a running agent is sent a message from its Terminal view, and the conversation shows it', async ({ page }) => {
       test.setTimeout(120_000);
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
       const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
       expect(started.status(), await started.text()).toBe(200);
@@ -196,7 +224,7 @@ for (const vp of [
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
 
       await page.goto(`${origin}/agents/${agent.name}/terminal`);
-      await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+      await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
       const input = page.locator('#mv-input');
       await expect(input).toBeEnabled();
       const sends: number[] = [];
@@ -267,7 +295,7 @@ for (const vp of [
     // agent's chat box is kept as it is typed, restored on coming back, and
     // never offered in ANOTHER agent's chat. On origin/main nothing is kept.
     test('the chat box keeps its draft across navigation, for that agent only', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       const a = await saveAgent(page, 'gateway');
       const b = await saveAgent(page, 'gateway');
       await page.goto(`${origin}/agents/${a.name}`);
@@ -290,6 +318,102 @@ for (const vp of [
       await noHorizontalScroll(page);
     });
 
+    // 🔴 A MESSAGE HELD FOR THE TURN IN FLIGHT (internal/api chat_busy.go). A
+    // chief just turned on runs its kickoff in its default session, and ccd
+    // refuses a second turn there with a 409 `busy`; the page showed that as
+    // "[error] responses HTTP 409 …". Now the server holds the message and says
+    // so ("queued"), then streams the reply once the turn ends — or, if it
+    // waited too long, says so in words ("unsent") and gives the text back.
+    // The socket is played here, so what is pinned is how the PAGE draws those
+    // messages; the server's side is internal/api/chat_busy_test.go.
+    test('a message held for the turn in flight says so, then answers; one never sent comes back to the box', async ({ page }) => {
+      await signIn(page, origin);
+      const agent = await saveAgent(page, 'gateway');
+      const held = `e2e: held for the turn in flight (${vp.name})`;
+      const gaveUp = `e2e: never sent, send it again (${vp.name})`;
+      // Each step of the fake runtime waits for the test to let it go, so the
+      // page can be read BETWEEN two socket messages.
+      const gates: Array<() => void> = [];
+      const step = () => new Promise<void>((r) => gates.push(r));
+      const go = async () => {
+        await expect.poll(() => gates.length, 'the fake is waiting for the test').toBeGreaterThan(0);
+        gates.shift()!();
+      };
+      const got: string[] = [];
+      await page.routeWebSocket(/\/agents\/[^/]+\/ws(\?|$)/, (ws) => {
+        ws.onMessage(async (raw) => {
+          const m = JSON.parse(String(raw));
+          if (m.type !== 'message') return;
+          got.push(m.text);
+          ws.send(JSON.stringify({ type: 'queued', content: held }));
+          if (got.length === 1) {
+            // Taken, as the first part of the reply shows (no "accepted").
+            await step();
+            ws.send(JSON.stringify({ type: 'delta', content: 'answer to: ' + m.text }));
+            await step();
+            ws.send(JSON.stringify({ type: 'done' }));
+          } else if (got.length === 2) {
+            // Taken, as the server's "accepted" says, before any reply.
+            await step();
+            ws.send(JSON.stringify({ type: 'accepted' }));
+            await step();
+            ws.send(JSON.stringify({ type: 'delta', content: 'answer to: ' + m.text }));
+            ws.send(JSON.stringify({ type: 'done' }));
+          } else {
+            ws.send(JSON.stringify({ type: 'error', content: gaveUp, unsent: true, text: m.text }));
+          }
+        });
+      });
+      await page.goto(`${origin}/agents/${agent.name}`);
+      const input = page.locator('#chat-input');
+      const working = page.locator('#chat-working');
+      const log = page.locator('#chat-log');
+
+      const first = `first, while it is busy (${vp.name})`;
+      await input.fill(first);
+      await page.locator('#chat-send').click();
+      await expect.poll(() => got, 'the page sent it over the socket').toEqual([first]);
+      // Held: the working row says why, in words, and nothing reads as an error.
+      await expect(working).toBeVisible();
+      await expect(working).toContainText(held);
+      await expect(working).toHaveAttribute('data-queued', '');
+      await expect(log).not.toContainText('[error]');
+      await expect(input).toHaveValue('');
+      await noHorizontalScroll(page);
+
+      // 🔴 TAKEN, BEFORE "done": the first part of the reply streams and the
+      // row drops its "queued" words while the turn still runs (round 1 of
+      // #494: they stayed up for the whole reply, inviting a second send).
+      await go();
+      await expect(log).toContainText('answer to: ' + first);
+      await expect(working, 'no longer queued once the reply streams').not.toHaveAttribute('data-queued', '');
+      await expect(working).not.toContainText(held);
+      await expect(working).toContainText('working');
+      await go(); // done
+      await expect(working).toBeHidden();
+
+      const accepted = `accepted before its reply (${vp.name})`;
+      await input.fill(accepted);
+      await page.locator('#chat-send').click();
+      await expect(working).toContainText(held);
+      await go(); // "accepted", nothing of the reply yet
+      await expect(working, 'no longer queued once accepted').not.toHaveAttribute('data-queued', '');
+      await expect(working).not.toContainText(held);
+      await expect(working).toContainText('working');
+      await expect(working, 'still working: the turn has not ended').toBeVisible();
+      await go(); // the reply and done
+      await expect(log).toContainText('answer to: ' + accepted);
+      await expect(working).toBeHidden();
+
+      const second = `second, the agent stays busy (${vp.name})`;
+      await input.fill(second);
+      await page.locator('#chat-send').click();
+      await expect(log).toContainText(gaveUp);
+      await expect(log, 'an unsent message is told in words, not as an error').not.toContainText('[error]');
+      await expect(input, 'the text is back in the box to send again').toHaveValue(second);
+      await expect(working).toBeHidden();
+    });
+
     // 🔴 A REPLY THAT LANDS BEFORE THE PAGE'S EVENT STREAM IS CONNECTED IS
     // STILL SHOWN. The conversation re-fetches on `chat.reply`, which the server
     // broadcasts once, when the turn is stored; a page whose /events was not
@@ -300,7 +424,7 @@ for (const vp of [
     // catch up when the stream opens.
     test('a reply stored before the event stream connects is still shown', async ({ page }) => {
       test.setTimeout(120_000);
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
       const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
       expect(started.status(), await started.text()).toBe(200);
@@ -343,7 +467,7 @@ for (const vp of [
     // so a page whose script had not run could not send at all.
     test('with no script at all, the chat form and the Terminal’s composer still send', async ({ page, browser }) => {
       test.setTimeout(120_000);
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
       expect((await page.request.post(`${origin}/agents/${agent.id}/start`)).status()).toBe(200);
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
@@ -377,7 +501,7 @@ for (const vp of [
 // A gateway agent has no terminal: one view, and no switch to a page that
 // would 404.
 test('an agent of a kind with no terminal has no view switch', async ({ page }) => {
-  await login(page);
+  await signIn(page, origin);
   const agent = await saveAgent(page, 'gateway');
   await page.goto(`${origin}/agents/${agent.name}`);
   await expect(page.locator('#chat-input')).toBeVisible();

@@ -351,6 +351,25 @@ type Config struct {
 	// claude-code agent's network policy allows egress to it (and only it) when
 	// ConnectURL is set. Required with ConnectURL for that kind.
 	ConnectPort int
+	// ComposeContainer says a claude-code instance runs in a container the
+	// docker compose file declares (the Compose chief, through the compose
+	// driver), not in a pod this binary renders. That driver can enforce
+	// neither resource limits nor network confinement and refuses a spec that
+	// asks for them, so such a spec carries NEITHER: it is built unconfined, and
+	// the documentation says "network not confined" (docs/chief.md). Never set
+	// it for a driver that can confine: the spec would stop asking.
+	ComposeContainer bool
+	// OfficerEgressCIDRs are named public IPv4 blocks, each on one TCP port,
+	// that an OFFICER instance's network admits on top of its lock
+	// (MUSTER_OFFICER_EGRESS_CIDRS): for a cluster whose network plugin cannot
+	// name a host, so the Anthropic API is admitted by its published address
+	// ranges instead of a cluster-side FQDN policy. Empty (the default) changes
+	// nothing. See claudeCodeNetworkFor for who gets them — officers only.
+	OfficerEgressCIDRs []provision.CIDRPort
+	// OfficerEgressDNS gives an OFFICER instance back the cluster-DNS rule its
+	// lock removes (MUSTER_OFFICER_EGRESS_DNS=unfiltered): port 53 to the DNS
+	// pods, any name. False (the default) changes nothing.
+	OfficerEgressDNS bool
 	// WorkspacePath defaults to [DefaultWorkspacePath].
 	WorkspacePath string
 	// WorkspaceSize is the workspace volume size, e.g. "10Gi". Empty leaves the
@@ -396,6 +415,15 @@ type Config struct {
 	// server sets it from the same predicate that wires the plugin store.
 	Plugins bool
 
+	// SessionRouting reports that session routing is on for this deployment
+	// (MUSTER_SESSION_ROUTING=1 with a database), with or without plugins. It
+	// decides whether a claude-code supervisor's prose carries the
+	// request-routing section ([ChiefInstructionsClaudeCode]): how to send the
+	// owner's own idea to the session already on it with route_to_session. The
+	// gateway supervisor never carries it (its tool calls cannot pass owner_asked). The server sets it from the
+	// same predicate that wires the routes store.
+	SessionRouting bool
+
 	// RuntimeConfig is the operator-supplied bundle that makes the agent
 	// runtime's own gateway START. Zero means nothing is installed and the
 	// image's entrypoint runs unchanged, which is what every deployment did
@@ -416,16 +444,6 @@ type Config struct {
 	// It is read ONLY by a claude-code row's build: the gateway kind's spec is
 	// identical whether or not this is set. See claudecode.go.
 	ClaudeCode *ClaudeCodeConfig
-
-	// Hermes enables the hermes agent kind and carries its image (hermes.go).
-	// Nil means the kind is not enabled. Read ONLY by a hermes row's build.
-	Hermes *HermesConfig
-
-	// ChiefGatewaySidecar: a claude-code CHIEF runs the gateway runtime beside
-	// ccd (chief_sidecar.go), for its chat sessions on that runtime
-	// (MUSTER_CHIEF_SESSION_RUNTIMES names gateway). Read by agentprovision,
-	// which asks for the sidecar through Options.GatewaySidecar.
-	ChiefGatewaySidecar bool
 }
 
 // Options is the per-call part that is neither deployment config nor a column on
@@ -476,18 +494,109 @@ type Options struct {
 	// configured a store unable to dispatch its supervisor at all.
 	CairnEligible bool
 
-	// GatewaySidecar, for a claude-code agent only, runs the gateway runtime
-	// beside ccd in its pod (chief_sidecar.go). A gateway-kind agent refuses it:
-	// its own process IS that runtime.
-	GatewaySidecar *GatewaySidecar
-
 	// JobBypassVeto, for a claude-code agent only, is why its JOB lanes must NOT
 	// run with permissions bypassed even though its worker pool is listed in
 	// ClaudeCodeConfig.BypassPools — e.g. it holds an approved grant on a
 	// connector that reaches GitHub (agentprovision). Non-empty vetoes the
 	// bypass; "" leaves the decision to [JobBypassListed].
 	JobBypassVeto string
+
+	// ClaudeCodeSession, for a claude-code agent only, is its primary CLI's
+	// per-agent settings: muster MCP tools to pre-allow, the model and the
+	// all-tools bypass. The zero
+	// value changes nothing (no variable is emitted).
+	ClaudeCodeSession ClaudeCodeSession
 }
+
+// ClaudeCodeSession is a claude-code pod's per-agent session settings
+// (internal/podagent/session.go): emitted as podagent.EnvAllowMCPTools,
+// podagent.EnvModel and podagent.EnvPermissionMode, which the pod's `ccd seed`
+// writes into settings.json.
+type ClaudeCodeSession struct {
+	// AllowMCPTools are bare muster MCP tool names ("officer_claim"); each
+	// becomes permissions.allow "mcp__muster__<name>". Nothing else can be
+	// allowed through this field.
+	AllowMCPTools []string
+	// Model is the session's model; "" leaves the account default.
+	Model string
+	// Image, when set, is the image the pod runs instead of
+	// ClaudeCodeConfig.Image: an officer instance's own runner image
+	// (internal/api OfficerClaudeCodeSession), already checked against the
+	// deployment's allowlist at boot (officers.ImageAllowed). "" runs the
+	// deployment's.
+	Image string
+	// ImagePullSecret names the registry credential Image is pulled with
+	// (provision.Spec.ImagePullSecret; for an officer,
+	// MUSTER_OFFICER_IMAGE_PULL_SECRET). It reaches the spec ONLY when Image
+	// is set: the deployment's own image is never pulled with it.
+	ImagePullSecret string
+	// BypassPermissions starts every session in the pod with every tool
+	// allowed (podagent.EnvPermissionMode=bypassPermissions): no permission
+	// prompt at all. Set for an officer instance only. It also egress-locks
+	// the pod (EgressLocked); the chief's unlocked bypass is ChiefBypass.
+	BypassPermissions bool
+	// ChiefBypass is the claude-code CHIEF's bypass: the same
+	// podagent.EnvPermissionMode=bypassPermissions as BypassPermissions (every
+	// session in the pod runs every tool with no permission prompt), but
+	// WITHOUT the egress lock — the pod keeps public 443 and cluster DNS. It is
+	// THE ONE EXCEPTION to "no bypass without the lock" (see EgressLocked):
+	// Build refuses it for any agent but the reserved chief slug, and in the
+	// Compose container. Set unconditionally for the claude-code chief by
+	// internal/agentprovision (operator decision, PR #626: an unanswered
+	// prompt falls back to a terminal nobody watches and hangs the chief; the
+	// token-exfiltration risk of untrusted text it reads is accepted).
+	ChiefBypass bool
+	// HQMCP offers the HQ MCP server and allows every one of its tools
+	// (podagent.EnvHQMCP, internal/podagent/hqmcp.go). Set for the chief only.
+	HQMCP bool
+	// LLMRoute puts the pod on the LLM route ([EnvLLMRoute] =
+	// [LLMRouteMuster]): its Claude Code reaches its model through muster's
+	// LLM proxy at Config.ConnectURL + "/llm", authenticated by the pod's own
+	// muster token, and the pod carries NO subscription token. The image's
+	// entrypoint (images/claude-code-agent/credentials.sh) sets the base URL
+	// and the token from the route; nothing here writes an ANTHROPIC_*
+	// variable. Set for a routine instance of an officer that declares `llm`
+	// only (internal/api OfficerClaudeCodeSession). Needs Config.ConnectURL,
+	// and refuses a Model: the proxy pins the model.
+	LLMRoute bool
+	// DisableAutoMemory turns the CLI's memory OFF in every session the pod
+	// runs: its auto-memory ([EnvClaudeDisableAutoMemory]=1 — the CLI then
+	// neither reads nor writes its memory directory, <config dir>/projects/
+	// <cwd>/memory) and its org memory ([EnvClaudeDisableOrgMemory]=1, a
+	// separate gate the first variable does not reach).
+	// Set for an officer instance only (internal/api OfficerClaudeCodeSession):
+	// what an officer remembers of earlier items is HQ's to give, and a memory
+	// file on the instance's volume would be a second, hidden channel outside
+	// it — one a fresh conversation per item would still read.
+	DisableAutoMemory bool
+	// MaxSessions, when above 0, is how many session CLIs the pod's ccd runs
+	// beside its primary ([EnvCCDMaxSessions]): an officer's declared
+	// `chat_sessions` (internal/api OfficerClaudeCodeSession), the lanes its
+	// chats run in. 0 sets nothing, so ccd keeps its own default and a pod
+	// that declares none keeps the spec — and the fingerprint — it had.
+	MaxSessions int
+}
+
+// EgressLocked reports whether the pod's network policy drops the public-443
+// rule and the cluster-DNS rule (claudeCodeNetworkFor) and the pod is told to skip the CLI's
+// non-essential traffic ([EnvClaudeDisableNonessentialTraffic]).
+//
+// 🔴 IT IS BypassPermissions, NOT A SECOND KNOB, AND THAT IS THE DECISION. A
+// session that runs every tool without a prompt reads untrusted text (an
+// officer reads public PRs) while its pod holds CLAUDE_CODE_OAUTH_TOKEN and
+// MUSTER_HOOK_TOKEN; "public internet on 443" lets one injected `curl` send them
+// anywhere. Deriving the lock from the bypass means no configuration can have
+// the bypass without the lock — WITH ONE ENUMERATED EXCEPTION: the claude-code
+// chief (ChiefBypass), which runs bypassed with public egress kept, an accepted
+// risk (operator decision, PR #626): a message it reads could try to make it
+// send CLAUDE_CODE_OAUTH_TOKEN or its muster token out. Build refuses
+// ChiefBypass for every other agent, and
+// TestBypassWithoutTheLockIsExactlyTheClaudeCodeChief (internal/agentprovision)
+// pins the set. Today only an officer instance sets BypassPermissions
+// (internal/api OfficerClaudeCodeSession), so only officers are locked; task
+// agents, the chief and bypass JOB lanes (MUSTER_AGENT_CC_BYPASS_POOLS, a
+// different mechanism) keep the public rule.
+func (s ClaudeCodeSession) EgressLocked() bool { return s.BypassPermissions }
 
 // Build assembles the spec for one agent.
 //
@@ -519,18 +628,12 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	// runtime-config bundle, model or provider key.
 	switch kind := agents.ResolveKind(a.Kind); kind {
 	case agents.KindGateway:
-		if opts.GatewaySidecar != nil {
-			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s, whose own process is the gateway "+
-				"runtime; only a %s agent runs one beside it", a.Name, kind, agents.KindClaudeCode)
-		}
 		if a.CCAccount != "" {
 			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s and names a Claude account; "+
 				"only a %s agent may", a.Name, kind, agents.KindClaudeCode)
 		}
 	case agents.KindClaudeCode:
 		return buildClaudeCode(a, cfg, opts)
-	case agents.KindHermes:
-		return buildHermes(a, cfg, opts)
 	default:
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has unknown kind %q", a.Name, a.Kind)
 	}

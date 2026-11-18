@@ -675,6 +675,74 @@ func TestPGTasksForSessionIsTheReverseLookup(t *testing.T) {
 	}
 }
 
+// TestPGTasksForSessionsIsTheBatchedReverseLookup: one read answers several
+// sessions, each in TasksForSession's order and cut to perSession; a session
+// with no link has no entry; 0 means no cap; the key is "" for an ordinary
+// task.
+func TestPGTasksForSessionsIsTheBatchedReverseLookup(t *testing.T) {
+	ctx, _, s := threadStore(t)
+	stamp := time.Now().Format("150405.000000000")
+	a, b, quiet := "batch-a-"+stamp, "batch-b-"+stamp, "batch-quiet-"+stamp
+
+	a1 := seedTask(t, ctx, s, Note{Title: "a first"})
+	a2 := seedTask(t, ctx, s, Note{Title: "a second"})
+	a3 := seedTask(t, ctx, s, Note{Title: "a third"})
+	b1 := seedTask(t, ctx, s, Note{Title: "b only"})
+	for _, l := range []struct {
+		id  int64
+		sid string
+	}{{a1.ID, a}, {a2.ID, a}, {b1.ID, b}, {a3.ID, a}} {
+		if _, _, err := s.LinkSession(ctx, l.id, SessionLink{SessionID: l.sid, Role: RoleWorked}, false); err != nil {
+			t.Fatalf("link %d to %s: %v", l.id, l.sid, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ids := func(ls []TaskLink) []int64 {
+		var out []int64
+		for _, l := range ls {
+			out = append(out, l.NoteID)
+		}
+		return out
+	}
+	got, err := s.TasksForSessions(ctx, []string{a, b, quiet}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := ids(got[a]); len(g) != 2 || g[0] != a3.ID || g[1] != a2.ID {
+		t.Fatalf("session a capped at 2 = %v; want [%d %d] (newest first)", g, a3.ID, a2.ID)
+	}
+	if g := ids(got[b]); len(g) != 1 || g[0] != b1.ID {
+		t.Fatalf("session b = %v; want [%d]", g, b1.ID)
+	}
+	if _, ok := got[quiet]; ok || len(got) != 2 {
+		t.Fatalf("a session with no link has an entry: %+v", got)
+	}
+	if got[b][0].Key != "" || got[b][0].Title != "b only" {
+		t.Fatalf("an ordinary task's row = %+v; want its title and no key", got[b][0])
+	}
+	all, err := s.TasksForSessions(ctx, []string{a}, 0)
+	if err != nil || len(all[a]) != 3 {
+		t.Fatalf("perSession 0 = %d rows, err %v; want all 3", len(all[a]), err)
+	}
+	// A role filter applies BEFORE the cut: b's newer read link neither shows
+	// nor takes b's one slot; with no filter it does.
+	bRead := seedTask(t, ctx, s, Note{Title: "b read"})
+	if _, _, err := s.LinkSession(ctx, bRead.ID, SessionLink{SessionID: b, Role: RoleRead}, false); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.TasksForSessions(ctx, []string{b}, 1, RoleWorked, RoleCreated)
+	if g := ids(work[b]); err != nil || len(g) != 1 || g[0] != b1.ID {
+		t.Fatalf("session b, worked/created, cap 1 = %v, %v; want [%d] (the read %d left out before the cut)", g, err, b1.ID, bRead.ID)
+	}
+	if g := ids(func() []TaskLink { m, _ := s.TasksForSessions(ctx, []string{b}, 1); return m[b] }()); len(g) != 1 || g[0] != bRead.ID {
+		t.Fatalf("session b, every role, cap 1 = %v; want the newer read [%d]", g, bRead.ID)
+	}
+	if none, err := s.TasksForSessions(ctx, nil, 2); err != nil || len(none) != 0 {
+		t.Fatalf("no sessions = %+v, %v; want an empty map", none, err)
+	}
+}
+
 // TestPGLinkSessionRejectsBadInput: the store is a boundary, so an invalid role or
 // an empty session id is refused BEFORE the statement runs — the CHECK constraint
 // would catch the role but as an opaque driver error, and an empty session id
@@ -731,8 +799,11 @@ func TestSessionColsAndScanTargetsAgree(t *testing.T) {
 	}
 	// The last column is the one that can be transposed without any error at all, so
 	// name it explicitly rather than trusting the count.
-	if got := strings.TrimSpace(cols[len(cols)-1]); got != "ts.detail_seen" {
-		t.Fatalf("the last projected column is %q, want ts.detail_seen — scanSessionLinkInto ends with &l.DetailSeen", got)
+	if got := strings.TrimSpace(cols[len(cols)-1]); got != "ts.claim_host" {
+		t.Fatalf("the last projected column is %q, want ts.claim_host — scanSessionLinkInto ends with &l.ClaimHost", got)
+	}
+	if got := strings.TrimSpace(cols[len(cols)-5]); got != "ts.detail_seen" {
+		t.Fatalf("the fifth-last projected column is %q, want ts.detail_seen — scanSessionLinkInto has &l.DetailSeen there", got)
 	}
 	// 🔴 AND EVERY COLUMN MUST COME OFF task_sessions ALONE. This projection used to
 	// end with `(cs.session_id IS NOT NULL)` off a LEFT JOIN onto the session table,

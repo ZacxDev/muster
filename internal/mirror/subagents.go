@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/ccsubagents"
@@ -232,7 +233,9 @@ type tailAnswer struct {
 // host), so another owner's host answers ErrHostOffline exactly as one that
 // does not exist. The host resolves the window's Claude pane NOW and reads only
 // that session's own subagents directory.
-func (h *Hub) SubagentTail(ctx context.Context, owner int64, host, session, window, agent string) (SubagentTail, error) {
+func (h *Hub) SubagentTail(ctx context.Context, owner int64, host, session, window, agent string) (_ SubagentTail, err error) {
+	ctx, done := hubOp(ctx, "subagent_tail")
+	defer func() { done(err) }()
 	if !ValidSubagentID(agent) {
 		return SubagentTail{}, ErrBadSubagent
 	}
@@ -293,7 +296,7 @@ func (hc *hostConn) subagentTailed(m Msg) {
 // SubagentTail is Hub.SubagentTail for the viewing principal (ctx's). No
 // step-up: it reads, and types nothing.
 func (s *Service) SubagentTail(ctx context.Context, host, session, window, agent string) (SubagentTail, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamViewer)
 	if err != nil {
 		return SubagentTail{}, err
 	}

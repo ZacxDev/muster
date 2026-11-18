@@ -1,18 +1,26 @@
 package api
 
 import (
+	"github.com/ZacxDev/muster/internal/focus"
+
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessionname"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -22,7 +30,7 @@ import (
 // 🔴 OFF IS THE DEFAULT, AND OFF MEANS INVISIBLE. With Extensions.Mirror nil
 // (MUSTER_MIRROR unset) every route below answers 404 — they are still
 // REGISTERED, because registration in this package is unconditional (routes.go)
-// — and the Agents view draws no mirrored card.
+// — and the sidebar and the session switcher list no mirrored entry.
 //
 // 🔴 A MIRRORED SESSION IS NOT AN AGENT. It lives in the hub's memory, keyed by
 // its host's token OWNER, and is addressed by (host, session) — never by an
@@ -30,7 +38,7 @@ import (
 // ever see one.
 //
 // 🔴 EVERY WINDOW IS AN ENTRY, ADDRESSED BY (host, session, window id). A host
-// that registers per window (mirror.Msg.Windows) has one card per tmux WINDOW,
+// that registers per window (mirror.Msg.Windows) has one entry per tmux WINDOW,
 // and its pages, sockets and sends carry `window=@<n>` — tmux's own id for the
 // window, never its index, which tmux renumbers. A URL with no `window` (every
 // link from before windows were addressable, and every link to a per-session
@@ -73,6 +81,9 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	mux.HandleFunc("POST /auth/confirm/passkey/options", s.requireSession(s.handleStepUpPasskeyOptions))
 	mux.HandleFunc("POST /auth/confirm/passkey/verify", s.requireSession(s.handleStepUpPasskeyVerify))
 	s.registerMirrorViewRoutes(mux)
+	// The view's chief mode (view_chief.go).
+	s.registerViewChiefRoutes(mux)
+	s.registerSuccessionRoutes(mux)
 	// AskUserQuestion answered from the rendered view (mirror_ask.go): the
 	// hook's routes, on its mirror token, and the question card's.
 	s.registerMirrorAskRoutes(mux)
@@ -88,8 +99,8 @@ func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
 	s.ext.Mirror.ServeConnect(w, r)
 }
 
-// mirrorCards is the viewing principal's mirrored sessions, for the Agents
-// view — one list across its hosts, most recently active first (mirror.Ordered
+// mirrorCards is the viewing principal's mirrored sessions, for the sidebar
+// and the session switcher — one list across its hosts, most recently active first (mirror.Ordered
 // is the order's one definition); nil with the plugin off.
 //
 // pinned is the viewer's pins: an entry whose address is pinned is marked. A
@@ -106,17 +117,88 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	}
 	// Each host's icon, by its registration rank (ui.HostIconFor), read once.
 	ranks := s.ext.Mirror.HostRanks(ctx)
+	// "Show tmux sessions" (notify_prefs.go), the viewer's: read once, and
+	// only when an entry has a human name to add it to.
+	tmux, read := false, false
 	for _, m := range mirror.Ordered(hosts) {
+		name := focused.mirrorName(m)
+		// The pill's codename line and the dock row's: the one rule
+		// (tmuxPlace), so a list says exactly what a notification adds.
+		var at, code string
+		if name.Human() {
+			if !read {
+				tmux, read = s.notifyTmuxOn(ctx, requestOwner(ctx)), true
+			}
+			at = tmuxPlace(name.Text, m.Place(), tmux)
+		}
+		if at != "" {
+			code = m.Title()
+		}
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
-			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, HermesView: m.HermesView(),
-			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), Repo: m.Repo, Work: m.Work, Color: m.Color,
+			TmuxAt: at, TmuxCode: code,
+			SessionName: name, ManualName: focused[focus.MirrorSubject(m.SessionKey())].Name.Manual, Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
+			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), FocusKey: m.SessionKey(), Repo: m.Repo, Work: m.Work, Previews: m.Previews, Color: m.Color,
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
-			HostIcon: ui.HostIconFor(ranks, m.Host)})
+			HostIcon: ui.HostIconFor(ranks, m.Host), ChiefDispatch: m.Dispatch})
 	}
 	return out
 }
 
-// mirrorHostIcon is one host's icon key — the one its cards draw (mirrorCards).
+// teamMirrorCards is the viewer's TEAMS' mirrored sessions (team sharing
+// 2b.3): every team host the principal sees at viewer and up
+// (mirror.Service.VisibleHosts, on a door that carries teams), each card
+// carrying its Owner — so its links name `owner=` (ui.MirrorRef) — and its
+// team's name, the sidebar group it is drawn in. One list per team, in that
+// team's own order (mirror.Ordered over its hosts alone, so a qualifier is
+// the team's). nil with the plugin off or no team host.
+//
+// 🔴 NOTHING HERE IS THE VIEWER'S OWN: no pin, no focus name or history, no
+// tags, no attention count — each of those is keyed by host NAME or by the
+// viewer's conversation, and would put the viewer's own build-01 on the
+// team's. They are built after the decorators that add those (agentsListEntries).
+func (s *Server) teamMirrorCards(ctx context.Context) []ui.MirrorCardView {
+	if s.ext.Mirror == nil {
+		return nil
+	}
+	own := requestOwner(ctx)
+	byTeam := map[int64][]mirror.HostView{}
+	var teams []int64
+	for _, h := range s.ext.Mirror.VisibleHosts(ctx) {
+		if h.Owner <= 0 || h.Owner == own {
+			continue
+		}
+		if _, seen := byTeam[h.Owner]; !seen {
+			teams = append(teams, h.Owner)
+		}
+		byTeam[h.Owner] = append(byTeam[h.Owner], h)
+	}
+	if len(teams) == 0 {
+		return nil
+	}
+	names := s.teamNames(ctx, teams)
+	var out []ui.MirrorCardView
+	for _, team := range teams {
+		for _, m := range mirror.Ordered(byTeam[team]) {
+			out = append(out, ui.MirrorCardView{Owner: team, Team: names[team], Host: m.Host, Session: m.Session, Window: m.Window,
+				Title: mirrorTitle(m), Label: m.Label, Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(),
+				Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(), ActiveAt: m.ActiveAt(),
+				Repo: m.Repo, Work: m.Work, Color: m.Color, HostIcon: ui.HostIconFor(nil, m.Host)})
+		}
+	}
+	return out
+}
+
+// mirrorHostIcon is one host's icon key — the one its sidebar rows draw (mirrorCards).
+// mirrorNameUnlessTeam is s.mirrorName(r, e), and nothing for a team host's
+// entry: G4 keeps focus titles off team sessions, and a name the viewer gave
+// a window is theirs, keyed by its conversation.
+func (s *Server) mirrorNameUnlessTeam(r *http.Request, e mirror.SessionView) sessionname.Name {
+	if onTeamHost(r) {
+		return sessionname.Name{}
+	}
+	return s.mirrorName(r.Context(), e)
+}
+
 func (s *Server) mirrorHostIcon(ctx context.Context, host string) string {
 	if s.ext.Mirror == nil {
 		return ui.HostIconFor(nil, host)
@@ -147,14 +229,37 @@ func mirrorTitle(e mirror.SessionView) string {
 //     and e is the session's active window: the pages send the browser to the
 //     explicit address rather than serve a page whose window could change
 //     between its socket connects.
-//   - e carries the Qualifier the Agents list gives the same entry
-//     (mirror.Qualified, over the same hosts), so a page is titled exactly as
-//     the card that opened it.
+//   - e carries the Qualifier the sidebar and the switcher give the same
+//     entry (mirror.Qualified, over the same hosts), so a page is titled
+//     exactly as the row that opened it.
+//
+// 🔴 A TEAM HOST'S ENTRY ONLY WHEN THE ROUTE'S GATE AIMED THE REQUEST THERE
+// (team sharing 2b.3): a request mirrorTeamGate let through to a team's
+// entries (mirror.TargetOwner) resolves against that team's hosts among the
+// principal's VisibleHosts; every other request against the principal's OWN
+// hosts (Hosts, own-only). A request that names another owner= the gate did
+// not aim it at — a route outside mirrorTeamRoutes — is not ok: it never
+// falls back to the principal's own host of the same name.
 func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h mirror.HostView, e mirror.SessionView, listed, redirect, ok bool) {
 	if s.ext.Mirror == nil {
 		return h, e, false, false, false
 	}
-	hosts := s.ext.Mirror.Hosts(r.Context())
+	target := windowOwner(r.Context())
+	if raw := mirrorOwnerParam(r); raw != "" && raw != strconv.FormatInt(target, 10) {
+		return h, e, false, false, false
+	}
+	var hosts []mirror.HostView
+	if target == requestOwner(r.Context()) {
+		// The principal's own: Hosts leaves Owner 0 (mirrorRef's "own", whose
+		// URLs carry no owner=), so a team entry is the only one that names one.
+		hosts = s.ext.Mirror.Hosts(r.Context())
+	} else {
+		for _, x := range s.ext.Mirror.VisibleHosts(r.Context()) {
+			if x.Owner == target {
+				hosts = append(hosts, x)
+			}
+		}
+	}
 	found := false
 	for _, x := range hosts {
 		if x.Host == host {
@@ -167,32 +272,56 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	}
 	e, listed = h.Find(session, window)
 	if !listed {
-		e = mirror.SessionView{Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
+		e = mirror.SessionView{Owner: h.Owner, Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
 			Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	}
 	return h, mirror.Qualified(hosts, e), listed, listed && window == "" && e.Window != "", true
 }
 
-// mirrorRef is e's address for the ui package's URLs.
+// mirrorRef is e's address for the ui package's URLs: a TEAM host's entry
+// (mirrorEntry leaves Owner 0 on the principal's own) carries its owner, so
+// every link, socket and form of its page names it.
 func mirrorRef(e mirror.SessionView) ui.MirrorRef {
-	return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
+	return ui.MirrorRef{Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window}
 }
+
+// MirrorTeamComposerNote is what a team host's session's composer says to a
+// VIEWER of the team, drawn disabled (team sharing 2b.3; an operator or a
+// manager types into it, 2b.4).
+const MirrorTeamComposerNote = "This is a team session and you are a viewer of its team: you can watch it here; an operator or a manager types into it."
 
 // handleMirrorTerminalPage is GET /mirror/terminal?host=…&session=…: the shared
 // terminal page, pointed at the mirror socket.
 func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	h, e, _, redirect, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	// The open's document, phase by phase (open_trace.go).
+	op := s.openPhases(r, openViewTerminal, openPartDocument, "host", q.Get("host"), "session", q.Get("session"), "window", q.Get("window"))
+	outcome := telemetry.ReasonOK
+	defer func() { op.finish(outcome) }()
+	h, e, _, redirect, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), q.Get("host"), q.Get("session"), q.Get("window"))
 	if !ok {
+		outcome = "not_found"
 		http.NotFound(w, r)
 		return
 	}
 	if redirect {
+		outcome = "redirect"
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
-	// The viewer opened this window (best-effort).
-	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
+	// The viewer opened this window (best-effort): its "recently viewed"
+	// entry, and its open stop ends (session_viewed.go). 🔴 NOT ON A TEAM
+	// HOST'S (team sharing 2b.3): recents are the viewer's own, keyed by host
+	// NAME (a team's build-01 would read as their own), and a member opening
+	// a team session does not settle the team's stop — it settles when the
+	// window moves on.
+	team := onTeamHost(r)
+	vctx := op.begin("visit")
+	if !team {
+		s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
+		s.episodeViewedMirror(vctx, r, h, e)
+	}
+	op.begin("view")
 	session := e.Session
 	rawName := ""
 	if e.Label != "" && e.Label != session {
@@ -200,33 +329,42 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	v := ui.AgentTerminalView{
 		Name: session,
+		// The conversation's name (internal/sessionname), when it has a human
+		// one: the header and <title> are called by it instead of the label.
+		// None on a team host's (G4: no focus titles on team sessions).
+		SessionName: s.mirrorNameUnlessTeam(r, e),
 		// The host's display label ("mango:1") — or, for a window with none,
 		// "<session>:<index>" — titles the page; the session NAME and the
 		// window ID stay the address (WSPath).
-		DisplayName: e.Title(),
+		DisplayName: e.PlainTitle(),
 		// What tells this entry apart from another host's (or window's) of the
-		// same name — the card's own qualifier (mirror.Qualified).
+		// same name — the sidebar row's own qualifier (mirror.Qualified).
 		TitleQualifier: e.Qualifier,
 		RawName:        rawName,
-		BackHref:       "/agents",
-		Badge:          "Mirrored · " + h.Host,
+		BackHref:       ui.HomeLeavingMirrorPath(mirrorRef(e)),
+		Badge:          ui.MirrorBadgeText(h.Host),
 		BadgeHost:      h.Host,
 		BadgeHostIcon:  s.mirrorHostIcon(r.Context(), h.Host),
 		WSPath:         mirrorRef(e).TerminalWSPath(),
-		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
-		// The hub refuses a rw attach to a host that did not, regardless.
-		ReadOnlyOnly: !h.Interactive,
+		// 🔴 LIVE KEYS ONLY WHEN THE HOST ADVERTISED -interactive: elsewhere the
+		// page's keys are off. The hub refuses a rw attach to a host that did
+		// not, regardless.
+		// A team host's: an operator's or a manager's (team sharing 2b.4).
+		ReadOnlyOnly: !h.Interactive || (team && !teamOperatorOn(r)),
+		// 🔴 STEP-UP: live keys (always on, ui.AgentTerminalPage), and every
+		// send from the composer, need a sign-in from the last stepup.Window.
+		// The page asks to confirm (passkey or password) at the first key once
+		// this has passed; the socket and the send route below refuse a stale
+		// write whatever the page does.
+		StepUp: s.stepUpView(r),
+	}
+	if h.Interactive {
 		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
 		// a user can switch to ANY session there, or open a new window — a
 		// shell on the host. The "only listed sessions" rule guards opening an
-		// attach, not what an interactive client does once attached.
-		InteractiveNote: "Live keys type into a tmux client on " + h.Host +
-			": from it you can switch to any tmux session there or open a shell on the host.",
-		// 🔴 STEP-UP: Interactive, and every send from the composer, needs a
-		// sign-in from the last stepup.Window. The page asks to confirm (passkey
-		// or password) when this has passed; the socket and the send route below
-		// refuse a stale write whatever the page does.
-		StepUp: s.stepUpView(r, "mirror:"+h.Host),
+		// attach, not what an interactive client does once attached. Said only
+		// where keys reach the host: a view-only one's are off.
+		v.InteractiveNote = "Typing here goes straight to " + h.Host + ": from here you can reach anything on that computer."
 	}
 	// 🔴 THE COMPOSER TAKES TEXT ONLY ON A HOST THAT ADVERTISED -interactive,
 	// and it does not need the switch above: it is one gated paste per Send into
@@ -237,32 +375,77 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	// older one, and no Claude Code here).
 	if h.Online {
 		c := ui.ComposerView{SendPath: ui.MirrorTerminalSendPath, Host: h.Host, Session: session, Window: e.Window,
-			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Update muster-mirror to send",
+			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Cannot send here yet",
 			Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
+			DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
 			DraftKey: ui.MirrorDraftKey(draftUser(r.Context()), "terminal", h.Host, session, e.Window)}
 		// The outcome of a send the browser submitted, which was answered with a
 		// redirect back here (composer.go).
 		c.Notice, c.NoticeOK = composerNotice(r)
+		if team {
+			// A team host's (team sharing 2b.4): the form names the team, and
+			// keeps no draft (drafts are keyed by host NAME: the viewer's own
+			// build-01 would share it) and takes no upload (the uploader's own
+			// file).
+			c.Owner, c.DraftKey, c.Upload, c.UploadOff = e.Owner, "", "", false
+		}
 		switch {
+		case team && !teamOperatorOn(r):
+			c.Disabled, c.DisabledPlaceholder = MirrorTeamComposerNote, "Watching a team session"
 		case !h.Interactive:
-			c.Disabled, c.DisabledPlaceholder = ui.MirrorReadOnlyNote, "Read-only host"
+			c.Disabled, c.DisabledPlaceholder, c.DisabledSetting = ui.MirrorReadOnlyNote(h.Host), ui.MirrorReadOnlyPlaceholder, mirror.ViewOnlySetting
 		case !e.CanPaste():
-			c.Disabled = strings.TrimPrefix(mirror.ErrPanePasteUnsupported.Error(), "mirror: ")
+			// Plain words; the host's exact refusal (an upgrade) is the ⓘ's.
+			c.Disabled, c.DisabledDetail = mirror.PlainWords(mirror.ErrPanePasteUnsupported, h.Host), mirror.ErrPanePasteUnsupported.Error()
 		}
 		v.Composer = &c
 	}
 	if e.HasRenderedView() {
 		v.RenderedHref = mirrorRef(e).ViewPath()
 	}
+	v.TerminalOnly = e.TerminalOnlyReason()
+	v.LiveCopy = e.LiveCopyWarning()
+	// What the retired list's card said: "offline", and the host's note —
+	// unless TerminalOnly already is that note.
+	v.Offline = !h.Online
+	// The session switcher at the page's foot (ui/switcher.go), as the
+	// Rendered view draws it for the same window — its pin, the window's only
+	// one where it has no rendered view, posting back to THIS view.
+	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e),
+		Back: mirrorRef(e).TerminalPath()})
+	// The viewer's tags on the tmux session, in the header (ui/session_tags.go):
+	// their own, keyed by host name, so none on a team host's.
+	if !team {
+		v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
+		v.TagTarget = ui.SessionTagTarget{Host: h.Host, Session: e.Session}
+	}
+	if e.AgentNote != v.TerminalOnly {
+		v.Note = e.AgentNote
+	}
 	// Drag-to-scroll only where the host can do it: an older muster-mirror (or
 	// a read-only host) gets a page with no gesture at all, not one that fails.
 	if e.CanScroll() {
 		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
-	allowSameOriginFrame(w)
-	formDocument(w)
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
+	// The window's Preview button and panel, and the frame-src the panel
+	// needs (plugin_chip.go); none and "" while the seam is off.
+	// On a team host's: the TEAM's viewer plugins (team sharing 2b.3b),
+	// never the viewer's own; none when the team has none.
+	var vp []plugins.Plugin
+	if team {
+		vp, _ = s.teamViewerPlugins(op.begin("plugins"), e.Owner, e.Window)
+	} else {
+		vp = s.viewerPlugins(op.begin("plugins"), e.Window)
+	}
+	v.Plugins = pluginChips(vp, e)
+	allowSameOriginFrame(w, viewerFrameSrc(vp))
+	viewDocument(w)
+	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	op.begin("render")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
+		outcome = telemetry.ReasonError
 		s.logger.Printf("mirror: render terminal page: %v", err)
 	}
 }
@@ -272,13 +455,33 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 // (the dialog asks whether THIS account has one when it opens — never here,
 // which would cost a GoTrue call per page view), how long the request's sign-in
 // stays fresh, and the window in words.
-func (s *Server) stepUpView(r *http.Request, rememberKey string) *ui.StepUpView {
+func (s *Server) stepUpView(r *http.Request) *ui.StepUpView {
 	v := &ui.StepUpView{ConfirmPath: stepUpConfirmPath, FreshFor: freshForMillis(r.Context(), s.stepUpNow()),
-		RememberKey: rememberKey, Window: stepup.WindowText()}
+		Window: stepup.WindowText()}
 	if s.auth.goTrueMode() && s.gt != nil {
 		v.PasskeyPath = stepUpPasskeyPath
 	}
 	return v
+}
+
+// stepUpFormsHTML is "Confirm it's you" for a page whose gated writes are
+// plain forms marked data-step-up-form: the dialog (window.musterStepUp, with
+// why — the page's own sentence about its gate, naming the window — in place
+// of the typing one) and ui.StepUpFormScript, as HTML. On a stale sign-in such
+// a form asks BEFORE it submits, and submits once confirmed — what was typed
+// into it kept. THE ONE WAY a form page offers the dialog: a form marked
+// data-step-up-form on a page without it submits straight into the server's
+// 403, with no way to confirm. Which gates confirm this way is
+// stepUpChannels' (stepup_ledger_test.go).
+func (s *Server) stepUpFormsHTML(r *http.Request, why string) string {
+	v := s.stepUpView(r)
+	v.Why = why
+	var b strings.Builder
+	if err := ui.StepUpDialog(v).Render(&b); err != nil {
+		s.logger.Printf("render the confirm dialog: %v", err)
+		return ""
+	}
+	return b.String() + ui.StepUpFormScript
 }
 
 // freshForMillis is how long the request's sign-in stays fresh enough for a
@@ -299,45 +502,98 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	}
 	q := r.URL.Query()
 	host, session, window := q.Get("host"), q.Get("session"), q.Get("window")
-	if _, _, _, _, ok := s.mirrorEntry(r, host, session, window); !ok {
+	readOnly := q.Get("mode") != terminalModeInteractive
+	// The open's stream, phase by phase up to the first output (open_trace.go).
+	op := s.openPhases(r, openViewTerminal, openPartStream, "host", host, "session", session, "window", window,
+		"read_only", strconv.FormatBool(readOnly))
+	since := time.Now()
+	if _, _, _, _, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), host, session, window); !ok {
+		op.finish("not_found")
+		viewEnded(r, openViewTerminal, "not_found", since)
 		http.NotFound(w, r)
 		return
 	}
-	readOnly := q.Get("mode") != terminalModeInteractive
+	// A TEAM HOST'S LIVE KEYS (team sharing 2b.4) are an operator's: the
+	// route gate (mirrorTeamViewOrKeys) refused a viewer's interactive mode
+	// and registered this socket at operator for the sweep; the step-up below
+	// is the member's own sign-in, and the plugin's access checks both again.
 	// 🔴 STEP-UP, BEFORE THE UPGRADE: an interactive attach needs a sign-in
 	// from the last stepup.Window, whatever the page decided. 403 rather than an
 	// in-socket error, so nothing is attached and the refusal has a status a
 	// test (or a proxy log) can read. internal/mirror's Attach checks the same
 	// context again, independently.
 	if !readOnly && !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		op.finish("step_up")
+		viewEnded(r, openViewTerminal, "step_up", since)
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": stepup.ErrStale.Error()})
 		return
 	}
 	initial, hasInitial := terminalSize(q.Get("cols"), q.Get("rows"))
 
+	op.begin("accept")
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})
 	if err != nil {
+		op.finish("refused")
+		viewEnded(r, openViewTerminal, "refused", since)
 		s.logger.Printf("mirror: terminal ws accept: %v", err)
 		return
 	}
 	defer c.CloseNow()
+	defer forgetPage(c)
 	ctx, done, ok := s.terminals.add(r.Context())
 	if !ok {
-		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+		op.finish(telemetry.ReasonShutdown)
+		viewEnded(r, openViewTerminal, telemetry.ReasonShutdown, since)
+		shutdownFrame(c)
 		return
 	}
 	defer done()
+	// The page judges the socket alive by hearing from it (ui/live.go); a
+	// protocol ping is answered by the browser itself and never reaches the
+	// page's script, and an idle TUI prints nothing, so it beats too. Deferred
+	// HERE, not in bridgeTerminal: its stop forgets the stalled note, which
+	// this handler reads to classify the end.
+	defer socketHeartbeat(ctx, s.logger, c)()
+	// "attach" is the phase from here to the first output; the hub's spans
+	// (mirror.attach, its first_output child, the host's) say where in it.
+	op.begin("attach")
+	var stats mirror.OpenStats
+	ctx = mirror.WithOpenStats(ctx, &stats)
+	// browserLeft is the reason the bridge's own context ended, when that is
+	// what ended the attach: client_left or shutdown.
+	browserLeft := ""
 
 	mode := terminalModeInteractive
 	if readOnly {
 		mode = terminalModeReadOnly
 	}
 	s.logger.Printf("mirror: terminal %s/%s%s attached (%s)", host, session, window, mode)
-	err = bridgeTerminal(ctx, s.logger, c, readOnly, initial, hasInitial,
+	err = bridgeTerminal(ctx, s.logger, c, host, authz.IsAdmin(r.Context()), readOnly, initial, hasInitial,
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).
-			return s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin, stdout, resize)
+			aerr := s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin,
+				&firstWriter{w: pageWriter{w: stdout, c: c}, first: func() {
+					op.finish(telemetry.ReasonOK, hubFields(&stats)...)
+					// The open is over: its span ends at the first output.
+					telemetry.OpenDone(r, telemetry.ReasonOK)
+				}}, resize)
+			// The bridge's context ends when the BROWSER goes — or muster
+			// shuts down (its cause says which): an attach that returns
+			// cleanly then was left or cut, not ended by the host.
+			if aerr == nil && ctx.Err() != nil {
+				browserLeft = telemetry.EndedBy(ctx)
+			}
+			return aerr
 		})
+	reason := streamEndReason(ctx, c, err)
+	// The bridge's context ending is the browser leaving — unless a write or
+	// a ping to the page timed out first, which ended it: a page there and
+	// not answering is a timeout (streamEndReason), and stays one.
+	if browserLeft != "" && reason != telemetry.ReasonTimeout && reason != telemetry.ReasonShutdown {
+		reason = browserLeft
+	}
+	viewEnded(r, openViewTerminal, reason, since)
+	op.finish(reason, hubFields(&stats)...)
 	s.logger.Printf("mirror: terminal %s/%s%s detached: %v", host, session, window, errOrNone(err))
 }

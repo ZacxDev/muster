@@ -153,8 +153,14 @@ func TestCoverage(t *testing.T) {
 		rules []lifecycle.Rule
 		want  LifecycleCoverage
 	}{
-		"none":                {nil, LifecycleCoverage{}},
-		"whole bucket":        {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp}}, LifecycleCoverage{Expire: 1}},
+		"none":         {nil, LifecycleCoverage{}},
+		"whole bucket": {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp}}, LifecycleCoverage{Expire: 1, PagesExpire: 1}},
+		// A rule that would expire a shareable page's files: the pages/ prefix,
+		// one under it, or one pages/ keys start with.
+		"pages prefix":        {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "pages/"}}}, LifecycleCoverage{PagesExpire: 1}},
+		"one page's prefix":   {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "pages/42/"}}}, LifecycleCoverage{PagesExpire: 1}},
+		"a prefix of pages/":  {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, Prefix: "pa"}}, LifecycleCoverage{PagesExpire: 1}},
+		"pages, abort only":   {[]lifecycle.Rule{{ID: "a", Status: "Enabled", AbortIncompleteMultipartUpload: abort, RuleFilter: lifecycle.Filter{Prefix: "pages/"}}}, LifecycleCoverage{}},
 		"uploads prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "uploads/"}}}, LifecycleCoverage{Expire: 1}},
 		"both in one rule":    {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, AbortIncompleteMultipartUpload: abort, RuleFilter: lifecycle.Filter{Prefix: "uploads/"}}}, LifecycleCoverage{Expire: 1, AbortIncomplete: 1}},
 		"abort only":          {[]lifecycle.Rule{{ID: "a", Status: "Enabled", AbortIncompleteMultipartUpload: abort}}, LifecycleCoverage{AbortIncomplete: 1}},

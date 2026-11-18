@@ -7,23 +7,39 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/askattempt"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/branding"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/chiefpref"
+	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
 
@@ -50,9 +66,15 @@ import (
 // a `Suggest` field reappear here should read that as the extraction being
 // undone, not as a convenience.
 type Extensions struct {
+	// LegacyProvenanceHeaderPrefix is MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX:
+	// when set, the task-provenance headers are also read as
+	// `<prefix>-Source`, `<prefix>-Session-Id` and `<prefix>-Host`, for
+	// installed clients that predate the X-Muster-* spelling
+	// (provenance_headers.go). Empty: only X-Muster-* is read.
+	LegacyProvenanceHeaderPrefix string
+
 	Notes  notes.Store
 	Agents agents.Store
-	GitHub github.Store
 	// Users answers a user's role for the request Principal (principal.go's
 	// roleOf). Nil: user 1 is admin and everyone else a member.
 	Users users.Store
@@ -66,6 +88,14 @@ type Extensions struct {
 	// biometric may pair with a biometric-or-PIN step-up key. False (the
 	// default): such a phone pairs read-only.
 	AllowPINKeys bool
+	// AssetLinks is the body of /.well-known/assetlinks.json (BuildAssetLinks,
+	// from MUSTER_ANDROID_PACKAGE and MUSTER_ANDROID_CERT_SHA256): the
+	// Android app's claim on this site's passkeys. Nil: the route answers 404.
+	AssetLinks []byte
+	// SSOOrigins is MUSTER_ANDROID_SSO_ORIGINS as ParseSSOOrigins returned it:
+	// the sign-in origins the Android app may load in its WebView, served open
+	// at GET /api/device/web (device_web.go). Nil or empty: `[]`.
+	SSOOrigins []string
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same
@@ -115,6 +145,13 @@ type Extensions struct {
 	// through requireLifecycleProvisioner.
 	Provisioner Provisioner
 
+	// ComposeChief is set when the provisioner runs the chief, and only the
+	// chief, in the docker compose install's `chief` container
+	// (MUSTER_CHIEF_RUNTIME=compose; compose_chief.go). Lifecycle stays wired
+	// for the chief; every surface that DISPATCHES an agent reads it as off
+	// (dispatchServed).
+	ComposeChief *ComposeChief
+
 	// Gateway drives agent CHAT. Nil disables the two chat routes even if
 	// Provisioner is set, through requireGatewayProvisioner.
 	//
@@ -129,18 +166,51 @@ type Extensions struct {
 	// shows no picker.
 	Kinds AgentKinds
 
-	// GitHubOAuth configures the OAuth web flow for connecting an account.
-	//
-	// ⚠ DEPRECATED AS muster's GITHUB IDENTITY when GitHubApp is set: the App
-	// takes precedence everywhere a repository list is read (github_source.go),
-	// and the OAuth connection is only the fallback for a deployment without one.
-	GitHubOAuth GitHubOAuthConfig
-	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp): the
-	// Repos tab and every connected-repository check list the App's installation
-	// repositories instead of the OAuth connection's. The same App backs the
-	// `github` connector (wired into Connectors by connectors.WithVirtual, so the
-	// two cannot disagree about whether it is configured). nil: OAuth, as before.
+	// ModelCatalog is the model catalogue every door that sets an agent's model
+	// checks it against (model_validate.go): OpenRouterCatalog() in a deployment.
+	// nil reads as an UNREACHABLE catalogue — an id-shaped model passes unchecked
+	// and anything else is refused — never as "everything goes".
+	ModelCatalog ModelCatalog
+
+	// Outcomes writes a started agent's outcome (internal/agentoutcome,
+	// migration 0088): agent_outcome.go and the watchdog. nil (no database):
+	// nothing is tracked, a failed turn changes no status, and the watchdog
+	// does nothing.
+	Outcomes agentoutcome.Store
+
+	// AgentWatchdog is the outcome watchdog's thresholds
+	// (MUSTER_AGENT_STUCK_NO_REPLY, MUSTER_AGENT_STUCK_SILENT); the zero value is
+	// agentoutcome.DefaultThresholds.
+	AgentWatchdog agentoutcome.Thresholds
+
+	// PublicURL is MUSTER_PUBLIC_URL, the externally reachable origin. Its host
+	// is one of the origins requireSameOrigin and the WebSockets accept
+	// (wsAllowedOrigins), for proxy setups that rewrite Host. "" accepts only
+	// the request's own Host.
+	PublicURL string
+	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed: the origins a viewer
+	// plugin may be given (docs/design/previews.md). A request whose Host is
+	// under one is refused 421 before anything else runs
+	// (refusePluginOriginHosts). nil (unset): no host is refused.
+	PluginOrigins []plugins.OriginPattern
+	// ClientAddr is MUSTER_TRUSTED_PROXIES with MUSTER_CLIENT_IP_HEADER,
+	// parsed: whose forwarding header, if anyone's, names a request's client
+	// (internal/clientaddr). Handler resolves it once per request, on every
+	// listener; nil is the strict default (the TCP peer, every header ignored).
+	ClientAddr *clientaddr.Policy
+	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp):
+	// every connected-repository check lists the App's installation
+	// repositories (github_source.go). The same App backs the `github`
+	// connector (wired into Connectors by connectors.WithVirtual, so the two
+	// cannot disagree about whether it is configured). nil: muster has no
+	// GitHub identity, and every repository check answers errNoGitHub.
 	GitHubApp GitHubApp
+	// GitHubAppTeams is MUSTER_TEAMS_ON_GITHUB_APP (team sharing phase 4,
+	// slice 4.8): the teams whose agents may use GitHubApp, as an admin's do —
+	// githubapp.Admits, the rule Connectors' virtual `github` was built with
+	// from the same set. Every id was checked at boot to be a team. nil: the
+	// App is the admins' alone.
+	GitHubAppTeams map[int64]bool
 
 	// Push is muster's own Web Push (internal/push; push_routes.go). nil: no
 	// VAPID keys are configured — no Enable button is drawn, the key route
@@ -160,11 +230,29 @@ type Extensions struct {
 	// included, answers 404.
 	Uploads *uploads.Service
 
+	// Pages is shareable pages (internal/pages, migration 0116; MUSTER_PAGES=1;
+	// pages.go, page_tools.go, page_share.go). nil (the default, or no
+	// database): no page tool is offered, the Pages screen answers the typed
+	// feature_disabled 404, and every share link answers 404.
+	Pages pages.Store
+	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES: the bytes one page's
+	// files may hold in all; 0 is pages.DefaultUploadBytesPerPage.
+	PagesUploadBytes int64
+
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the
 	// page says so, and every member then has no credential (never the
 	// admin's). See credentials.go.
 	Credentials CredentialStore
+
+	// CCUsage is each Claude account's latest utilization and the attribution
+	// reads (internal/ccusage), behind GET /api/cc-accounts/usage and the
+	// usage section of Account → Credentials (cc_usage.go). nil: no database —
+	// the route answers 503 and the section is not drawn.
+	CCUsage CCUsageStore
+	// CCUsageInterval is the usage poller's interval; 0 when the poller is off
+	// (MUSTER_CC_USAGE_POLL unset): the readings then stay as they are.
+	CCUsageInterval time.Duration
 
 	// Connectors is the secure connector store. nil means the feature is off
 	// (no MUSTER_CONNECTOR_ENCRYPTION_KEY): every connector route answers 503 and
@@ -173,11 +261,15 @@ type Extensions struct {
 	// ConnectorPolicy is the proxy's upstream network policy. The zero value is
 	// production's strict one; see connectors.Policy.
 	ConnectorPolicy connectors.Policy
+	// DialGuard, when set (MUSTER_DIAL_DENY_PRIVATE=1), is how the postgres
+	// connector dials its database: a host that is, or resolves to, a
+	// non-public address is refused at connect time. nil dials any host.
+	DialGuard *safedial.Guard
 
 	// Mirror is the optional MIRRORED-sessions plugin (internal/mirror). nil
 	// means the plugin is off (MUSTER_MIRROR unset), which is the default: GET
-	// /mirror/connect and the mirror terminal routes answer 404 and the Agents
-	// view draws no mirrored card. See mirror.go.
+	// /mirror/connect and the mirror terminal routes answer 404 and the sidebar
+	// lists no mirrored entry. See mirror.go.
 	Mirror Mirror
 
 	// Flows is the browser-flow queue and its runner tokens (internal/flows,
@@ -195,14 +287,20 @@ type Extensions struct {
 	// Plugins set: messages are stored and stay queued — nothing is delivered.
 	PluginGateway plugins.Gateway
 
-	// Pins is the Agents list's per-user pins (internal/pins, migration 0017).
-	// nil (no database): nothing is pinned, no card is drawn pinned, and the pin
-	// routes answer 404.
+	// Pins is the per-user pins the session switcher sets and shows (internal/pins,
+	// migration 0017). nil (no database): nothing is pinned, the switcher's Pins
+	// view is empty, and the pin routes answer 404.
 	Pins pins.Store
 
-	// Recents is the Agents list's per-user "recently viewed" entries
-	// (internal/recents, migration 0018). nil (no database): no visit is
-	// recorded and the strip is never drawn.
+	// SessionTags is the per-user session tags (internal/sessiontags): the
+	// session switcher's ⋯ → Tags…, the session headers' chips, and words the
+	// palette and the dock's filter match. nil (no database): no session has
+	// tags, and the tag routes answer 404.
+	SessionTags sessiontags.Store
+
+	// Recents is the per-user "recently viewed" entries (internal/recents,
+	// migration 0018): the session switcher's Recent view, and where home goes
+	// with no chief. nil (no database): no visit is recorded and Recent is empty.
 	Recents recents.Store
 
 	// SendQueue is the server-side send queue (internal/sendqueue, migration
@@ -214,24 +312,81 @@ type Extensions struct {
 	// sendqueue.DefaultIdleFor.
 	SendQueueIdle time.Duration
 
-	// AgentsIdleAfter is the Agents list's Idle section threshold
-	// (MUSTER_AGENTS_IDLE_AFTER, ui.DefaultIdleSectionAfter when unset): an
-	// entry with no activity for longer is drawn under the collapsed "Idle (N)"
-	// header (internal/ui/idle_section.go). 0 — the zero value, so every test
+	// AgentsIdleAfter is the Idle section's threshold (MUSTER_AGENTS_IDLE_AFTER,
+	// ui.DefaultIdleSectionAfter when unset): an entry with no activity for longer
+	// is drawn in the sidebar's collapsed "Idle (N)" group
+	// (internal/ui/idle_section.go). 0 — the zero value, so every test
 	// fixture that does not set it — draws no section.
 	AgentsIdleAfter time.Duration
 
 	// Focus is session focus (internal/focus, migration 0020): what each of a
-	// user's sessions is working on. nil (no database): no card shows a focus
+	// user's sessions is working on. nil (no database): no entry has a focus
 	// and the focus tools are not offered.
 	Focus focus.Store
 	// FocusSummarizer computes a focus from a transcript tail (the ScaleDown
 	// summarizer through OpenRouter) — focus's only writer. nil: no focus is
-	// ever written; RunFocusRefresh does nothing and focus_refresh says why.
+	// ever written, and RunFocusRefresh does nothing.
 	FocusSummarizer focus.Summarizer
 	// FocusRetention is how long a mirrored session's focus outlives the last
 	// time a pass saw it (MUSTER_FOCUS_RETENTION); 0 keeps it forever.
 	FocusRetention time.Duration
+
+	// Suggest is SUGGESTED REPLIES (internal/suggest, suggest.go): the engine
+	// a rendered view's turn end asks for a set, and the composer's routes
+	// read. nil: no set is ever generated and the routes answer 404. Its Off
+	// (MUSTER_SUGGEST=off) keeps the routes and generates nothing.
+	Suggest *suggest.Engine
+
+	// ChiefPrefs is each user's chief on/off toggle (internal/chiefpref,
+	// migration 0060; chief_toggle.go). nil (no database): no user has a
+	// stored choice, so the chief is on exactly when the user has a chief
+	// agent (chiefOn), and the Account page cannot change it.
+	ChiefPrefs chiefpref.Store
+
+	// NotifyPrefs is each user's notification preferences (internal/notifypref,
+	// migration 0094; notify_prefs.go): today "Show tmux session in
+	// notifications". nil (no database): off for everyone, and the Account
+	// page draws no switch.
+	NotifyPrefs notifypref.Store
+
+	// Branding is the instance's logo and display name (internal/branding,
+	// migration 0105; branding.go, docs/branding.md). nil (no database): no
+	// branding — every page draws the built-in mark, GET /api/instance
+	// answers nothing set, /brand/* 404 and the writes answer 503.
+	Branding branding.Store
+
+	// ChiefNudge is the chief's STALL NUDGES' configuration (MUSTER_CHIEF_NUDGES,
+	// chief_nudge.go; docs/chief-nudges.md) and ChiefNudges its decisions
+	// (internal/chiefnudge, migration 0064). Either nil: the feature is off —
+	// no sweep, no tab, and any queued nudge is refused at its paste.
+	ChiefNudge  *ChiefNudges
+	ChiefNudges chiefnudge.Store
+
+	// Episodes is session state's store (internal/sessionstate, migration
+	// 0073; session_state.go): one row per stop of one of an owner's
+	// sessions. nil (no database): no state pass runs. It does NOT depend on
+	// ChiefNudge — the state, and the episodes, are code-only.
+	Episodes sessionstate.Store
+
+	// FleetDigest turns on the fleet digest (MUSTER_FLEET_DIGEST=1;
+	// fleet_digest.go): the chief panel's digest card, its routes, and
+	// fleet_list's fleet fields (state, episode, prs and the owner facts).
+	// False, the default, is exactly the build before it: no card slot, the
+	// routes answer 404, fleet_list's rows are as they were.
+	FleetDigest bool
+	// Fleet is the digest's marks (internal/fleet, migration 0147). nil (no
+	// database): the digest keeps no "since you last looked" baseline and no
+	// Fleet chat.
+	Fleet fleet.Store
+	// FleetPRStates is the GitHub App's pull-request read the fleet reader
+	// asks for each session's pull requests' state (fleet_read.go), behind its
+	// own two-minute cache — only for an owner the App admits
+	// (githubAppForOwner). nil — no GitHub App — reads every state as unknown.
+	// 🔴 THE PULL REQUESTS THEMSELVES ARE PRSessions' (session_prs), wired only
+	// with session routing and PR mail (MUSTER_SESSION_ROUTING,
+	// MUSTER_PR_MAIL_SENDERS): without that a session has no pull requests, and
+	// the digest's Waiting on CI and Done groups stay empty whatever the App.
+	FleetPRStates PRStateReader
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
@@ -244,15 +399,60 @@ type Extensions struct {
 	// TaskRouting is task routing's configuration (task_routing.go,
 	// MUSTER_TASK_ROUTING). nil is OFF, the default: POST /plugin/v1/tasks
 	// ignores route_to_chief and the chief's task_route_attention / task_forward
-	// / task_dispatch tools are not offered. ChiefDispatch is the ledger
-	// task_dispatch counts its caps from (the plugin store).
+	// / agent_dispatch tools are not offered. ChiefDispatch is the ledger
+	// agent_dispatch counts its caps from (the plugin store).
 	TaskRouting   *TaskRouting
 	ChiefDispatch plugins.DispatchStore
+
+	// PRMail is pull-request → session routing's configuration
+	// (MUSTER_PR_MAIL_SENDERS, pr_routes.go) and PRSessions its store
+	// (migration 0055), which the host's hook fills through POST
+	// /api/pr-sessions. PRMail nil — the variable unset — is OFF: that route
+	// answers 404 and every message is handed on as before.
+	PRMail     *PRMail
+	PRSessions plugins.PRSessionStore
+	// ClosedPRs settles a review of a pull request already merged or closed
+	// instead of routing it, handing it back or asking about it (pr_closed.go).
+	// nil — no GitHub App, or PR routing off — is OFF: every review is
+	// handled as before.
+	ClosedPRs *ClosedPRs
+
+	// ChiefUsage is the chief's token telemetry (internal/chiefusage, migration
+	// 0107; usage.go): one row per chief turn with its tokens, and who handled
+	// each plugin message. nil (no database) records nothing and the usage
+	// page answers 404. The routing rules (routing_rules.go) are the plugin
+	// store's (ruleStore), present with plugins and session routing.
+	ChiefUsage chiefusage.Store
+
+	// AskAttempts is the answer-attempt log (internal/askattempt, migration
+	// 0113; ask_attempts.go): one row per Submit or Dismiss of a question
+	// card, and the Answers page (answers_page.go). nil (no database) records
+	// nothing and the page answers 404.
+	AskAttempts askattempt.Store
+
+	// FleetReport is the fleet-report request's configuration
+	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;
+	// fleet_report.go). nil — the senders unset — is OFF: such a mail is handed
+	// on as any other. The chief's fleet_report tool needs only Focus, and
+	// lists pull requests only with PRSessions.
+	FleetReport *FleetReport
+
+	// MailResume is the mail resume's configuration (MUSTER_MAIL_RESUME_ALLOW,
+	// MUSTER_MAIL_RESUME_OFF; mail_resume.go) and MailResumes its durable
+	// record (migration 0056). nil — the allowlist unset — is OFF: mail for a
+	// session no window shows goes to the chief, as before.
+	MailResume  *MailResume
+	MailResumes plugins.MailResumeStore
 
 	// Attention is the attention queue's explicit asks (internal/attention,
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.
 	Attention attention.Store
+	// AskLog is the ask log (internal/asklog, migration 0089; MUSTER_ASK_LOG):
+	// every question an agent puts to its owner, with its answer, recorded
+	// (ask_log.go). nil (the default, or no database): nothing is recorded,
+	// and every capture point is a no-op.
+	AskLog *AskLog
 	// MirrorTokens authenticates a mirror host's token for the mirrored
 	// sessions' MCP door (mirror_mcp.go) — *mirror.PGStore, the same table
 	// /mirror/connect reads. nil: POST /mirror/mcp answers 404.
@@ -264,7 +464,7 @@ type Extensions struct {
 	// refuses a runtime.
 	//
 	// ⚠ IT GATES THE PICKER, NOT THE ROUTING. Plugin deliveries and `chief ask`
-	// go to the chief's DEFAULT session (defaultSession) whether or not this is
+	// go to the chief's DEFAULT session (primarySession) whether or not this is
 	// set, on any store with the 0030 half — so on such a deployment a plugin no
 	// longer gets a session of its own even with this empty. That is the
 	// operator's "one pinned default session" decision, not a leak of the flag.
@@ -278,6 +478,26 @@ type Extensions struct {
 	// and delete. nil (no provisioner): a job naming sha or result_path is
 	// refused 501 when it is submitted, never accepted and then failed.
 	JobWorkspace JobWorkspace
+	// AccountFailover is the claude-code account failover
+	// (internal/ccfailover.Service). nil (no claude-code kind, or no
+	// provisioner): a job whose account hit its limit fails as before, and the
+	// agent page shows no failovers.
+	AccountFailover AccountFailover
+}
+
+// AccountFailover is the part of internal/ccfailover.Service this package uses:
+// the job runner's re-queue (AccountFailed + AwaitRebound), the pool
+// submission's failover of a worker (AccountFailedForPool), a job's wait for
+// its worker's replacement pod (Rebinding + AwaitRebound), the agent page's
+// history (Events) and the officer runtime's hooks (UseHooks).
+type AccountFailover interface {
+	AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
+	AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
+	AwaitRebound(ctx context.Context, r ccfailover.Result) error
+	Rebinding(agentID int64) (ccfailover.Result, bool)
+	Events(ctx context.Context, agentID int64, limit int) ([]ccfailover.Event, error)
+	UseHooks(policy ccfailover.Policy, prepare ccfailover.Prepare)
+	Allowed(a agents.Agent) (bool, string)
 }
 
 // JobWorkspace is the part of the agent lifecycle adapter the job runner uses
@@ -286,10 +506,26 @@ type Extensions struct {
 type JobWorkspace interface {
 	// PrepareJobWorktree creates job jobID's own git worktree of the agent's
 	// repository at sha — which must be pull request pr's head of repo, or an
-	// ancestor of it, fetched anonymously — outside the agent's checkout, with
-	// the agent configuration overlaid from the default branch, and returns its
-	// path. The agent's checkout is not moved.
-	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha string) (string, error)
+	// ancestor of it, fetched anonymously, or through the pod's deploy-key
+	// holder when the agent's worker pool has a key — outside the agent's
+	// checkout, with the agent configuration overlaid from the default branch
+	// (from commit configRef of it when non-empty, refused unless the default
+	// branch reaches it), or with none of it when StripsRepoConfig, and — with
+	// baseSHA — that commit fetched the same way into
+	// refs/muster-jobs/<jobID>-base, and returns its path. The agent's
+	// checkout is not moved.
+	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef, baseSHA string) (string, error)
+	// StripsRepoConfig reports whether a job on agent a gets NONE of the
+	// repository's agent configuration, whatever it asks — decided by a's
+	// worker pool (one with a deploy key), not by the job. For a pool job
+	// before its worker is chosen, a carries only the pool's name.
+	StripsRepoConfig(a agents.Agent) bool
+	// PoolRepoRefusal is why agent a — of which only its WorkerPool, Repo and
+	// Name are read — would be refused at spec build for working on a
+	// repository other than its pool's deploy key's (agentspec.PoolRepoRefusal,
+	// the very rule the build applies), or nil. A held dispatch asks it before
+	// it is filed and before it is spent.
+	PoolRepoRefusal(a agents.Agent) error
 	// RemoveJobWorktree removes that worktree; one that is not there is not an
 	// error.
 	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error
@@ -312,7 +548,7 @@ type MirrorTokenAuth interface {
 
 // SendQueue is the send queue's store as this package consumes it:
 // *sendqueue.PGStore. The first eleven run under the request's principal;
-// CancelOwner and the embedded DispatchStore are the system scope's.
+// CancelUser and the embedded DispatchStore are the system scope's.
 type SendQueue interface {
 	Enqueue(ctx context.Context, it sendqueue.Item) (sendqueue.Item, error)
 	List(ctx context.Context, t sendqueue.Target) ([]sendqueue.Item, error)
@@ -327,9 +563,10 @@ type SendQueue interface {
 	Hold(ctx context.Context, id int64) (sendqueue.Item, error)
 	SaveEdit(ctx context.Context, id int64, token, body string, stepUpAt time.Time) (sendqueue.Item, error)
 	ReleaseEdit(ctx context.Context, id int64, token string) (sendqueue.Item, bool, error)
-	// CancelOwner is the system scope's: a disable or a sign-out everywhere
-	// cancels the user's queued messages.
-	CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error)
+	// CancelUser is the system scope's: a disable or a sign-out everywhere
+	// cancels everything the user still has queued — their own and what they
+	// queued into their teams' windows (sendqueue.PGStore.CancelUser).
+	CancelUser(ctx context.Context, user int64, now time.Time, detail string) (int, error)
 	sendqueue.DispatchStore
 }
 
@@ -339,9 +576,6 @@ type Routing struct {
 	// WITHOUT the owner's approval (MUSTER_ROUTE_RELAY_ALLOW); everyone else's
 	// fall back to a pending draft.
 	Allow plugins.RelayAllowlist
-	// Timeout is how long a routed message waits for its session's answer
-	// before it is handed back to the chief (0: DefaultRouteTimeout).
-	Timeout time.Duration
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
@@ -350,8 +584,14 @@ type Routing struct {
 type Mirror interface {
 	// ServeConnect is GET /mirror/connect: a host's muster-mirror dialling in.
 	ServeConnect(w http.ResponseWriter, r *http.Request)
-	// Hosts is the viewing principal's hosts and their sessions.
+	// Hosts is the viewing principal's OWN hosts and their sessions: never a
+	// team's (team sharing 2b.3 keeps it own-only for its ~50 callers that
+	// pick an entry by host name alone).
 	Hosts(ctx context.Context) []mirror.HostView
+	// VisibleHosts is Hosts plus the principal's teams' hosts (viewer and
+	// up, on a door that carries teams), each carrying its Owner. Its callers
+	// are a ledger (visibleHostsCallers).
+	VisibleHosts(ctx context.Context) []mirror.HostView
 	// 🔴 EACH OF THE THREE BELOW TAKES A WINDOW: the tmux window id of the entry
 	// (mirror.Window.ID), or "" for the session's ACTIVE window — the only
 	// address a per-session host has, and what a URL with no `window` means.
@@ -384,36 +624,27 @@ type Mirror interface {
 	// (mirror.RanksByRegistration): what picks each host's icon
 	// (ui.HostIconFor).
 	HostRanks(ctx context.Context) map[string]int
+	// LiveTokenHosts is the viewing principal's hosts holding an unrevoked
+	// mirror token, sorted: the hosts expected to connect (GET /api/doctor).
+	LiveTokenHosts(ctx context.Context) ([]string, error)
+	// HostToken is the id of the token the viewing principal's host is
+	// connected with now (GET /mirror/host tells a machine whether THE
+	// connection under its name is its own).
+	HostToken(ctx context.Context, host string) (int64, bool)
 }
 
 // GitHubApp is what the API reads from a configured GitHub App
 // (*githubapp.App). An interface so a test can stand one in without a key.
 type GitHubApp interface {
 	Repos(ctx context.Context) ([]github.Repo, error)
-	Accounts(ctx context.Context) ([]string, error)
 	DefaultBranch(ctx context.Context, repo string) (string, error)
 	ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error)
 	// Problem is the operator-facing reason the App cannot serve agentID now ("" if none).
 	Problem(agentID int64) string
-}
-
-// GitHubOAuthConfig holds the OAuth App credentials + the public base URL used
-// to build the redirect URI.
-type GitHubOAuthConfig struct {
-	ClientID     string
-	ClientSecret string
-	// BaseURL is the externally reachable origin used to construct the callback
-	// URL. If empty the callback is derived from the inbound request host.
-	BaseURL string
-	// StateKey MACs the OAuth `state` (github.OAuthStateKey, derived from the
-	// store's encryption key). Empty: no state is minted and every callback is
-	// refused — the flow never runs on an unkeyed MAC.
-	StateKey []byte
-}
-
-// Configured reports whether the OAuth App credentials are present.
-func (c GitHubOAuthConfig) Configured() bool {
-	return c.ClientID != "" && c.ClientSecret != ""
+	// Access is the permission mode every agent token is minted with
+	// (MUSTER_GITHUB_APP_ACCESS); each description of the connector's scope
+	// reads it (githubAppScope), never a constant.
+	Access() githubapp.Access
 }
 
 // UseExtensions attaches the dependencies. Call before Handler.
@@ -433,7 +664,19 @@ func (c GitHubOAuthConfig) Configured() bool {
 func (s *Server) UseExtensions(ext Extensions) {
 	s.extDefects = ext.defects()
 	ext.Notes = withSessionLiveness(ext.Notes, ext.SessionLiveness)
+	// The ask log (ask_log.go): its capture of attention asks is the store,
+	// wrapped, so every path that creates or settles one is seen.
+	s.askLog = nil
+	if ext.AskLog != nil && ext.AskLog.Store != nil {
+		s.askLog = newAskLogger(*ext.AskLog, s)
+		if ext.Attention != nil {
+			ext.Attention = askLoggingAttention{Store: ext.Attention, s: s}
+		}
+	}
 	s.ext = ext
+	if ext.AccountFailover != nil {
+		ext.AccountFailover.UseHooks(s.failoverPolicy, s.failoverPrepare)
+	}
 	if ext.Mirror != nil {
 		s.wireAsks(ext.Mirror)
 	}
@@ -442,10 +685,15 @@ func (s *Server) UseExtensions(ext Extensions) {
 		// 🔴 Turn IS chatTurn: the delivered message runs as an ordinary chat turn
 		// WITH the chief's tools, never as a toolless send (plugins.TurnFunc).
 		d, err := plugins.NewDeliverer(plugins.DelivererConfig{Store: ext.Plugins, Agents: ext.Agents,
-			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: routingOn(ext),
+			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: messageRoutingOn(ext),
 			// The session hint (sessions_overview.go): which live sessions may
 			// already be on the message, computed here and appended to the turn.
-			Hints: s.pluginHints(ext)})
+			Hints: s.pluginHints(ext),
+			// The chief's restricted tool set (the Compose chief's): the turn
+			// names only tools it holds.
+			Tools: s.ChiefTurnTools,
+			// The chief's PRIMARY chat: the one place a delivery's session is picked.
+			Primary: s.primarySession})
 		if err != nil {
 			s.logger.Printf("plugins: no deliverer: %v", err)
 		}
@@ -459,7 +707,11 @@ func (s *Server) UseExtensions(ext Extensions) {
 	// (TestATaskForwardWithoutAGatewayStoresTheMessageAndStartsNoTurn).
 	s.taskForwardTurn = nil
 	if ext.Gateway != nil && ext.Agents != nil {
-		s.taskForwardTurn = s.startAgentTurn
+		// notTyped: a forward is the chief's note or an upstream notice, never
+		// a line the owner typed (chief_owner_release.go trusts that column).
+		s.taskForwardTurn = func(ctx context.Context, a agents.Agent, session agents.ChatSession, text string) {
+			s.startAgentTurn(ctx, a, session, text, notTyped, nil)
+		}
 	}
 	// The answer delivery's turn (attention_delivery.go), set here for the same
 	// reason: on a gateway-less deployment it is nil, and an answer stays
@@ -469,15 +721,30 @@ func (s *Server) UseExtensions(ext Extensions) {
 		s.answerTurn = s.runDeliveredTurn
 	}
 	s.connectProxy = nil
+	if s.pgExec != nil {
+		s.pgExec.Close()
+	}
+	s.pgExec = nil
 	if ext.Connectors != nil {
+		// Postgres connectors (connectors/postgres.go): the same store; their
+		// queries run in this process, never through the HTTP proxy.
+		s.pgExec = &connectors.PostgresExecutor{Store: ext.Connectors, Logger: s.logger, Dial: ext.DialGuard}
 		s.connectProxy = &connectors.Proxy{
 			Store:            ext.Connectors,
 			Policy:           ext.ConnectorPolicy,
 			Logger:           s.logger,
 			OnGrantRequested: s.onConnectorRequested,
+			AutoApprove:      s.approveFromStanding,
+			OnPendingRefusal: s.onPendingRefusal,
 			// The SAME signal EndStreams cancels: a relayed event stream ends with
 			// this package's own streams, on whichever listener it arrived.
 			StreamsEnd: s.streams.context(),
+		}
+		// The standing public read is served on the GitHub App's own hosts when
+		// one is configured (the same platform its tokens are minted for), and
+		// on github.com / api.github.com otherwise (connectors' defaults).
+		if h, ok := ext.GitHubApp.(interface{ Hosts() (git, api string) }); ok && ext.GitHubApp != nil {
+			s.connectProxy.GitHubGitHost, s.connectProxy.GitHubAPIHost = h.Hosts()
 		}
 	}
 }
@@ -486,9 +753,9 @@ func (s *Server) UseExtensions(ext Extensions) {
 // dependencies that are merely absent.
 //
 // 🔴 THE DISTINCTION IS "DEGRADES VISIBLY" VERSUS "LIES SILENTLY", AND IT IS
-// THE ONLY test applied here. A nil GitHub store is not a defect: the Repos
-// tab is simply not drawn, which is TRUE — this server has no GitHub
-// connection. A notes store with no liveness probe IS a defect: every transcript
+// THE ONLY test applied here. A nil connector store is not a defect: the
+// Connectors tab is simply not drawn, which is TRUE — this server has no
+// connector store. A notes store with no liveness probe IS a defect: every transcript
 // row renders "no transcript recorded" over transcripts that may be perfectly
 // alive, and there is no request that fails, nothing logged, and nothing for an
 // operator to notice. The first is a configuration; the second is a page that
@@ -604,7 +871,7 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // surface stating a falsehood with nothing logged where a user is looking.
 //
 // 🔴 IT IS THE SAME OBSERVABLE doc_seams.go ENTRY 1 ARGUES AGAINST. That entry
-// refuses to wire a FAKE provisioner because a fake "would make the Agents tab
+// refuses to wire a FAKE provisioner because a fake "would make the agent pages
 // LOOK operational: dispatch would report success, no pod would exist, and the
 // agent would sit in `provisioning` for ever." Wiring nil produced exactly that,
 // byte for byte. The nil was never the honest option on its own — this wrapper
@@ -640,12 +907,51 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // One condition, one refusal shape.
 func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.ext.Provisioner == nil {
+		if !s.lifecycleServed() {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": "this build has no agent provisioner wired, so it cannot " +
 					"provision, start, stop, destroy or stream logs from an agent. " +
 					"This is a declared seam, not an outage and not your credential: " +
 					"see cmd/muster-server/doc_seams.go entry 1.",
+				ProvisionerUnwiredField: true,
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// lifecycleServed reports whether this server holds an agent provisioner: the
+// predicate behind requireLifecycleProvisioner's 503 (start, stop, delete,
+// logs, terminal, the chief's provision and replace).
+func (s *Server) lifecycleServed() bool { return s.ext.Provisioner != nil }
+
+// dispatchServed reports whether this server can DISPATCH an agent: a
+// provisioner, and not one that runs the chief alone (Extensions.ComposeChief).
+// It is the ONE predicate behind requireDispatchServed's 503 (POST
+// /api/agents) AND every surface that offers a dispatch: agent_dispatch's
+// targets and the task actions' dispatch offer. (It also drew the web UI's
+// dispatch "+", sheet and task-card button until docs/design/chief-dispatch.md
+// phase 2 deleted them.) A surface that decided "can this server dispatch?"
+// from anything else could offer a dispatch over the very 503 this answers —
+// which is what a docker compose install (MUSTER_AGENT_PROVISIONER unset, so
+// `none`) shipped with, and what the Compose chief's provisioner would bring back.
+//
+// ⚠ IT IS NOT "A DISPATCH WILL SUCCEED". A wired provisioner whose kickoff is
+// undeliverable still answers a dispatch with a 409 naming why
+// (Provisioner.KickoffUndeliverableReason) while a stopped create works.
+func (s *Server) dispatchServed() bool { return s.lifecycleServed() && s.ext.ComposeChief == nil }
+
+// requireDispatchServed is POST /api/agents' second door, inside
+// requireLifecycleProvisioner: a provisioner that runs the chief alone (the
+// Compose chief) refuses a dispatch with requireLifecycleProvisioner's 503
+// shape (ProvisionerUnwiredField, which the dispatch sheet reads) and a
+// sentence saying why.
+func (s *Server) requireDispatchServed(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.dispatchServed() {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error":                 ComposeDispatchRefusal,
 				ProvisionerUnwiredField: true,
 			})
 			return
@@ -711,9 +1017,12 @@ type Provisioner interface {
 	//     promising a delivery is how a future implementer comes to call
 	//     SetKickedOff, which is the one thing that package must never do.
 	//   - kickoff=false creates NOTHING rather than provisioning-then-storing-
-	//     stopped. The caller's OTHER action is the UI's "Save for later", whose
-	//     gate check (agents.go, the `gate:<reason>` refusal) allows a save on the
-	//     stated grounds that it "provisions nothing".
+	//     stopped. The caller's OTHER action is a stopped create (POST /api/agents
+	//     start: false, which replaced the UI's "Save for later"), whose gate check
+	//     (agent_create_api.go, the `gate:<reason>` refusal) allows it on the
+	//     stated grounds that it "provisions nothing". createAndDispatchAgent no
+	//     longer calls Dispatch for that create at all (it inserts the row
+	//     `stopped`); kickoff=false is still part of this contract.
 	//
 	// An implementer that provisions on kickoff=false, or that reports a delivery
 	// it did not make, is wrong against this interface — not merely different.
@@ -737,7 +1046,7 @@ type Provisioner interface {
 	// KickoffUndeliverableReason below rather than through this method. This
 	// paragraph read "THE CALLER OF THIS METHOD IN THIS PACKAGE CANNOT SURFACE THAT
 	// REFUSAL … A refusal an operator can see needs a synchronous check in the
-	// create handler, before the row", and that check exists: handleAgentCreate
+	// create handler, before the row", and that check exists: handleAPIAgentCreate
 	// answers 409 with the reason before Agents.Create. The asynchronous half is
 	// unchanged and still true of THIS method — createAndDispatchAgent calls it
 	// inside safeGo, after the row exists — which is why the pre-flight is a

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/net/html"
+
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 )
@@ -29,7 +31,11 @@ func TestAnAskCallIsACardNotAToolRow(t *testing.T) {
 		t.Fatalf("ops %+v", ops)
 	}
 	card := ops[1].HTML
-	for _, want := range []string{`data-ask=""`, `data-ask-state="waiting"`, "Which color do you prefer?", "Choose any number", "warm", "Waiting for the answer in the terminal."} {
+	for _, want := range []string{`data-ask=""`, `data-ask-state="waiting"`, "Which color do you prefer?", "Choose any number", "warm",
+		// The fallback's whole note, pinned literally: it says why muster cannot
+		// answer and where to (the page shows it only with no live card).
+		`<p data-ask-nocard="" class="text-xs text-muted">` + html.EscapeString("Muster isn't tracking this question, so it can't answer it from here — answer it in the terminal. "+
+			"(It may no longer be on the terminal's screen, or its host may not report that the session is waiting.)") + `</p>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the call card lacks %q:\n%s", want, card)
 		}
@@ -135,7 +141,7 @@ func TestTheLiveCardSaysHowItWent(t *testing.T) {
 		form, linked bool
 	}{
 		{MirrorAskLiveView{State: AskStatePending}, []string{"whichever is answered first counts"}, true, false},
-		{MirrorAskLiveView{State: AskStatePending, Unanswerable: MirrorReadOnlyNote}, []string{"read-only", "The terminal shows this question too."}, false, true},
+		{MirrorAskLiveView{State: AskStatePending, Unanswerable: MirrorReadOnlyNote("atlas")}, []string{"view-only", "The terminal shows this question too."}, false, true},
 		{MirrorAskLiveView{State: AskStateTyping, Answers: red}, []string{"Typing your answer into the terminal", "Answer: </span>Red"}, false, false},
 		{MirrorAskLiveView{State: AskStateFailed, Note: "Someone has started answering it in the terminal — finish it there."}, []string{"Someone has started answering"}, false, true},
 		{MirrorAskLiveView{State: AskStateAnswered, Answers: red}, []string{"Answered here", "Answer: </span>Red"}, false, false},
@@ -171,5 +177,90 @@ func TestTheRenderedViewHasTheLiveRegion(t *testing.T) {
 	}
 	if !strings.Contains(html, "form[data-ask-form]") {
 		t.Fatalf("no ask script")
+	}
+}
+
+// TestTheLiveRegionIsTheConversationsLastChild: the question cards' region is
+// the LAST child of the conversation (main#mv-log, the one scroll region) and
+// in its flow — not a box of its own between the conversation and the
+// composer, which took up to 70% of the screen and left the conversation a
+// strip (the operator's "an overlay ... impossible to see the conversation
+// preceding the question"), and not positioned over it. The script keeps it
+// last (mirrorViewScript's tail): rows are inserted before it, and a reset
+// keeps it. That behaviour is guarded in a browser, not by the script's text
+// here: e2e/tests/mirror-ask.spec.ts "opened on a tall question" asserts the
+// region is the log's last child, once, after the reset batch and after rows
+// stream in. This pins the server-rendered structure it starts from.
+func TestTheLiveRegionIsTheConversationsLastChild(t *testing.T) {
+	page := render(MirrorViewPage(MirrorViewView{Host: "lap", Session: "work", Window: "@3", Interactive: true, StepUp: &StepUpView{ConfirmPath: "/auth/confirm"}}))
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	region := byID(doc, "mv-asks")
+	if region == nil {
+		t.Fatal("no #mv-asks")
+	}
+	if p := region.Parent; p == nil || attrOf(p, "id") != "mv-log" || p.Data != "main" {
+		t.Fatalf("#mv-asks is not in the conversation (main#mv-log): parent %v", region.Parent)
+	}
+	for n := region.NextSibling; n != nil; n = n.NextSibling {
+		if n.Type == html.ElementNode {
+			t.Fatalf("#mv-asks is not the conversation's last child: <%s id=%q> follows it", n.Data, attrOf(n, "id"))
+		}
+	}
+	cls := " " + attrOf(region, "class") + " "
+	for _, bad := range []string{" fixed ", " absolute ", " sticky ", " overflow-y-auto ", " max-h-"} {
+		if strings.Contains(cls, bad) {
+			t.Errorf("#mv-asks has %q: a box over or beside the conversation, not a card in its flow (class %q)", strings.TrimSpace(bad), cls)
+		}
+	}
+	if st := attrOf(region, "style"); st != "" {
+		t.Errorf("#mv-asks has an inline style %q: its place is the conversation's flow, set by its classes", st)
+	}
+}
+
+// TestTheLiveCardNamesTheConversationsResultRow pins the seam the page's
+// dedupe stands on (askScript's drawn): a live card's data-ask-row is the id
+// of the element the conversation draws for THE SAME tool_use id's result, and
+// that element carries data-ask-state="history" — whichever way the result
+// reaches the page (after its call, alone, on a resumed socket). Another call's
+// row is never named. An invariant guard: origin/main already met it; the
+// page did not read it.
+func TestTheLiveCardNamesTheConversationsResultRow(t *testing.T) {
+	rowOf := func(html string) string {
+		m := regexp.MustCompile(`data-ask-row="([^"]+)"`).FindStringSubmatch(html)
+		if m == nil {
+			t.Fatalf("a live card without data-ask-row:\n%s", html)
+		}
+		return m[1]
+	}
+	answers := map[string]string{"Which color do you prefer?": "Red"}
+	result := func(id string) cctranscript.Event {
+		return cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: id, OK: true, Ask: &cctranscript.Ask{Questions: askQs[:1], Answers: answers}}
+	}
+	ref := MirrorRef{Host: "lap", Session: "work", Window: "@3"}
+	for _, id := range []string{"toolu_A", "toolu_B"} {
+		for _, state := range []string{AskStatePending, AskStateAnswered, AskStateAnsweredTerminal, AskStateDeclined, AskStateExpired} {
+			row := rowOf(render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: id, State: state, Questions: askQs[:1], Answers: answers})))
+			var after MirrorTranscript
+			after.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolCall, ToolID: id, Tool: askq.ToolName, Ask: &cctranscript.Ask{Questions: askQs[:1]}}})
+			var alone MirrorTranscript
+			resumed := MirrorTranscript{Resumed: true}
+			for name, ops := range map[string][]MirrorOp{
+				"after its call": after.Ops([]cctranscript.Event{result(id)}),
+				"alone":          alone.Ops([]cctranscript.Event{result(id)}),
+				"resumed":        resumed.Ops([]cctranscript.Event{result(id)}),
+			} {
+				if len(ops) != 1 || ops[0].ID != row || !strings.Contains(ops[0].HTML, `id="`+row+`"`) || !strings.Contains(ops[0].HTML, `data-ask-state="`+AskStateHistory+`"`) {
+					t.Errorf("%s %s, result %s: the live card names row %q; the conversation drew %+v", id, state, name, row, ops)
+				}
+			}
+		}
+	}
+	a := rowOf(render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: "toolu_A", State: AskStateAnswered, Questions: askQs[:1]})))
+	b := rowOf(render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: "toolu_B", State: AskStateAnswered, Questions: askQs[:1]})))
+	if a == b {
+		t.Fatalf("two calls' cards name one row %q", a)
 	}
 }

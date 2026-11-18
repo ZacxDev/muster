@@ -5,14 +5,12 @@ import (
 	"net/http"
 )
 
-// A TURN'S ROUTE INSIDE THE POD: which runtime, and which model, one turn goes
-// to when an agent's pod runs more than one (the chief: ccd and the gateway
-// runtime beside it — session_runtime.go).
+// A TURN'S ROUTE INSIDE THE POD: which CLI, and which model, one turn goes to
+// when an agent's ccd runs more than one (session_runtime.go).
 //
 // 🔴 THE ADDRESS DOES NOT CHANGE, ONLY THESE HEADERS DO. Every turn still goes to
 // the agent's one endpoint, ccd's port: ccd is the only thing the pod's network
-// policy lets muster reach, and it hands a gateway-runtime turn to the runtime
-// beside it on loopback. So a session's route is a property of the REQUEST, set
+// policy lets muster reach. So a session's route is a property of the REQUEST, set
 // by the one place that knows the session (internal/api's sessionRoute) and
 // read by the two request builders here, rather than a parameter threaded
 // through every turn function between them.
@@ -21,9 +19,6 @@ import (
 // cmd/ccd's tests pin the two (TestTheLaneHeadersAreMustersHeaders,
 // TestTheWorkdirHeaderIsMusters).
 const (
-	// HeaderRuntime names the runtime a turn is for; absent is ccd's own.
-	// "gateway" is the only other value.
-	HeaderRuntime = "X-Muster-Runtime"
 	// HeaderCCSession is the session key of an EXPLICIT Claude Code session:
 	// ccd runs it in a CLI of its own. Absent: ccd's original CLI, the one
 	// every legacy session has always shared.
@@ -43,15 +38,73 @@ const (
 	// when it is missing or different — a ccd from before job worktrees ignores
 	// HeaderCCWorkdir and would run the job in the agent's own checkout.
 	HeaderCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
-	// HeaderGatewayModel is the gateway runtime's per-request model override.
-	//
-	// ⚠ ITS SPELLING IS THE RUNTIME'S, LIKE sessionKeyHeader's: a third party's
-	// wire protocol, not this project's identity.
-	HeaderGatewayModel = "X-Openclaw-Model"
+	// HeaderCCEphemeral, "1", marks an explicit session (HeaderCCSession) as a
+	// THROWAWAY check: ccd stops that session's CLI as soon as its turn is over,
+	// and at its cap (CCD_MAX_SESSIONS) refuses it (FailureCapacity) rather
+	// than stop another session's CLI to make room. Set only on a chief's stall
+	// check (internal/api nudgeRoute). A ccd that predates it ignores it and
+	// keeps the CLI like any other session's.
+	HeaderCCEphemeral = "X-Muster-CC-Ephemeral"
+	// HeaderCCToolless, "1", marks an explicit session (HeaderCCSession) as
+	// TOOL-LESS: ccd starts that session's CLI with no built-in tool and no MCP
+	// server (`--tools= --strict-mcp-config`), so its only possible effect is
+	// its text reply. Set only on a chief's stall check, alongside
+	// HeaderCCEphemeral (internal/api withRoute): the check's prompt quotes other
+	// sessions' transcripts, and a CLI with tools could be steered by them. Fixed
+	// for the session's life. A ccd that predates it IGNORES it and starts the
+	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
+	HeaderCCToolless = "X-Muster-CC-Toolless"
+	// HeaderCCMCPSession, "1", asks ccd to start an explicit session's CLI
+	// with an MCP config of its own, in which muster's server carries
+	// HeaderCCSession (the session's key) on every request: so muster knows
+	// which session an MCP call comes from. Set on an officer's CHAT lane only
+	// (internal/api officerChatTurnContext); fixed for the session's life. A
+	// ccd that predates it ignores it, and the lane's calls then read as the
+	// primary's (no session).
+	HeaderCCMCPSession = "X-Muster-CC-MCP-Session"
+	// HeaderCCLaneSecret is a chat lane's secret, minted by muster and kept
+	// with its session row: muster sends it to ccd on the lane's turns
+	// (beside HeaderCCMCPSession), ccd puts it in the lane's MCP config, and
+	// the lane's MCP calls carry it back — so a call naming a chat session
+	// (HeaderCCSession) is that lane's only with it. Fixed for the lane's
+	// life.
+	HeaderCCLaneSecret = "X-Muster-CC-Lane-Secret"
+	// HeaderCCPinned, "1", marks an explicit session (HeaderCCSession) as the
+	// chief's PRIMARY chat (internal/api withRoute, chief_chats.go): ccd never
+	// stops its CLI to make room for another session, and does not count it
+	// against CCD_MAX_SESSIONS, so a delivery to the primary always gets its
+	// CLI. One lane is pinned at a time: the latest turn that says so pins its
+	// lane and unpins any other (a fresh primary's old one). A ccd that predates
+	// it ignores it and treats the lane like any other.
+	HeaderCCPinned = "X-Muster-CC-Pinned"
+	// HeaderCCNewConversation, "1", on a turn of the agent's ORIGINAL CLI (no
+	// HeaderCCSession): ccd starts a NEW conversation in that CLI before it
+	// pastes the turn — the CLI's /clear, whose new session ccd records as the
+	// one every later start resumes — when the current conversation has a
+	// transcript; the old transcript is kept. Set only by the officer runtime,
+	// on every turn of an instance of a fresh_session_per_item pool (internal/
+	// api OfficerTurnContext). ccd ignores it on an explicit session's turn,
+	// and a ccd that predates it ignores it everywhere: the turn then runs in
+	// the conversation the CLI already has, and its answer carries no
+	// HeaderCCNewConversationSession, which is how muster notices
+	// (docs/officers.md, "One conversation per item").
+	HeaderCCNewConversation = "X-Muster-CC-New-Conversation"
+	// HeaderCCNewConversationSession is ccd's ANSWER to a turn carrying
+	// HeaderCCNewConversation: the session id of the new conversation the turn
+	// was typed into, on the 103 that says the CLI accepted it (turnaccepted.go
+	// TurnAcceptance.NewConversation) and on the final answer. A ccd that
+	// predates HeaderCCNewConversation never sends it, which is how muster
+	// tells a stale image from a current one (internal/api
+	// OfficerTurnContext).
+	HeaderCCNewConversationSession = "X-Muster-CC-New-Conversation-Session"
 )
 
-// RuntimeGateway is HeaderRuntime's value for the gateway runtime.
-const RuntimeGateway = "gateway"
+// FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
+// an explicit session (HeaderCCSession) whose CLI is not running while every
+// CLI ccd may run at once (CCD_MAX_SESSIONS) is held by a turn. ccd answers it
+// from lane selection, BEFORE it starts a CLI or pastes anything. cmd/ccd spells
+// it itself (failCapacity); TestTheCapacityFailureIsMusters pins the two.
+const FailureCapacity = "capacity"
 
 // TurnRoute is what a turn carries about where in the pod it goes.
 type TurnRoute struct {
@@ -92,7 +145,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderRuntime, HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderGatewayModel} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCPinned, HeaderCCNewConversation} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

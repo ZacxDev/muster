@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ZacxDev/muster/security/advisories/new
+    about: Report it privately with GitHub's private vulnerability reporting, never in a public issue. See SECURITY.md.
+  - name: Ask a question
+    url: https://github.com/ZacxDev/muster/discussions
+    about: Questions about setting up or using muster.

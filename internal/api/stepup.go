@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -82,6 +81,20 @@ const (
 	stepUpUnavailable   = "Sign-in is unavailable right now. Try again shortly."
 )
 
+// stepUpRefuseUnspent answers a passkey confirm muster refused BEFORE asking
+// GoTrue to verify it — an unreadable body, the sign-in limiter, an assertion
+// without user verification — with challenge_unspent: true. GoTrue spends a
+// challenge only in its own verify, so the one this request carried is still
+// good and the dialog reuses it for the next tap instead of fetching another.
+//
+// 🔴 THE STATUS CANNOT SAY THIS ON ITS OWN: 429 and 401 are ALSO what
+// writeGoTrueRefusal answers for GoTrue's own refusals, after GoTrue has seen
+// (and may have spent) the challenge. Only this field tells the two apart, and
+// only the refusals below set it (TestARefusalBeforeGoTrueKeepsTheChallenge).
+func (s *Server) stepUpRefuseUnspent(w http.ResponseWriter, status int, msg string) {
+	s.writeJSON(w, status, map[string]any{"error": msg, "challenge_unspent": true})
+}
+
 // stepUpNow is the clock step-up freshness is judged on: GoTrue's (the one its
 // tokens' times are compared with) in gotrue mode, the wall clock otherwise.
 func (s *Server) stepUpNow() time.Time {
@@ -100,7 +113,7 @@ type stepUpResult struct {
 
 func (s *Server) handleStepUpConfirm(w http.ResponseWriter, r *http.Request) {
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -145,7 +158,7 @@ func (s *Server) stepUpWithPassword(w http.ResponseWriter, r *http.Request, pass
 	if s.auth.goTrueMode() {
 		return s.confirmGoTrue(w, r, password)
 	}
-	return s.confirmOperatorPassword(w, password)
+	return s.confirmOperatorPassword(w, r, password)
 }
 
 // confirmGoTrue re-checks the session user's password with a GoTrue password
@@ -181,6 +194,9 @@ func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password 
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("stepup: user %d failed to confirm (from %s)", me.ID, ip)
+			if ticket.addrOver {
+				return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
+			}
 			return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 		default:
 			s.logger.Printf("stepup: GoTrue is unavailable: %v", err)
@@ -234,7 +250,7 @@ func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password 
 // session itself was required by the route's wrapper.
 func (s *Server) stepUpPasskeyRefusal(w http.ResponseWriter, r *http.Request) (gotrueCreds, bool) {
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return gotrueCreds{}, true
 	}
 	creds, ok := gotrueCredsFrom(r.Context())
@@ -319,7 +335,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 		Credential  json.RawMessage `json:"credential"`
 	}
 	if !readPasskeyBody(w, r, &body) || body.ChallengeID == "" {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
+		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
 		return
 	}
 	ctx := r.Context()
@@ -327,7 +343,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{known: true, uid: me}, ip, s.gt.now())
 	if !ok {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
+		s.stepUpRefuseUnspent(w, http.StatusTooManyRequests, stepUpThrottled)
 		return
 	}
 	outcome := outcomeUnjudged
@@ -335,7 +351,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	flags, canonical, err := gotrue.CanonicalAssertion(body.Credential)
 	if err != nil {
 		outcome = outcomeFailed
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
+		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
 		return
 	}
 	// 🔴 THE UV GUARD. A passkey that only proved PRESENCE is "whoever is
@@ -343,13 +359,19 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	if !flags.UserPresent || !flags.UserVerified {
 		outcome = outcomeFailed
 		s.logger.Printf("stepup: refused a passkey confirm without user verification for user %d (from %s)", me, ip)
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyNoUVRefusal})
+		s.stepUpRefuseUnspent(w, http.StatusUnauthorized, PasskeyNoUVRefusal)
 		return
 	}
 	sess, err := s.gt.Client.PasskeySignInVerify(ctx, ip, body.ChallengeID, canonical)
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
+			if ticket.addrOver { // judged and wrong, from an address past its failure limit
+				// Not stepUpRefuseUnspent: GoTrue has seen, and may have spent,
+				// this challenge.
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
+				return
+			}
 		}
 		s.writeGoTrueRefusal(w, "a passkey confirm", err, PasskeyRejectedRefusal)
 		return
@@ -405,16 +427,20 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 
 // confirmOperatorPassword is the password-mode confirm: the operator password
 // again, a new session cookie issued now.
-func (s *Server) confirmOperatorPassword(w http.ResponseWriter, password string) stepUpOutcome {
+func (s *Server) confirmOperatorPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	now := time.Now()
-	if !s.loginRate.allow(now, loginRateBurst, loginRateWindow) {
+	// The same gate as the sign-in, except that the session this confirm carries
+	// is NOT a known device: only the signed device cookie is (passwordGate).
+	ok, refused, throttled := s.passwordGate(r, password, now, false)
+	if refused || throttled {
 		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
 	}
-	if password == "" || !auth.ConstantTimeEqual(password, s.auth.UIPassword) {
+	if !ok {
 		s.logger.Printf("stepup: rejected an operator-password confirm")
 		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
-	s.setPasswordSessionCookie(w)
+	s.setPasswordSessionCookie(w, r)
+	s.setKnownDeviceCookie(w, r)
 	// SignSession stamps whole seconds; report what the cookie will read as.
 	issued := time.Unix(now.Unix(), 0)
 	return stepUpOutcome{Status: http.StatusOK, At: issued, FreshFor: issued.Add(stepup.Window()).Sub(now).Milliseconds()}

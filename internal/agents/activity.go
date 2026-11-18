@@ -11,11 +11,12 @@ import (
 //
 // It is the ONE rule both tiers use. GET /api/agents publishes it as
 // `lastActivityAt` (internal/api's newAgentJSON, whose field comment is the
-// full contract: what moves each half, and what neither can see), and the Agents
-// list orders its cards by it ([SortByLastActivity]) and prints it in each card's
-// footer. Before this function the API computed it inline while the list was
-// ordered by CREATION time and labelled UpdatedAt "active" — three answers to one
-// question, which is how the list read as unsorted.
+// full contract: what moves each half, and what neither can see), and the sidebar
+// orders its agents by it ([SortByLastActivity]) and tints each row's recency
+// dot by it. Before this function the API computed it inline while the
+// (since retired) Agents list was ordered by CREATION time and labelled
+// UpdatedAt "active" — three answers to one question, which is how the list read
+// as unsorted.
 //
 // Why these two and not created_at: UpdatedAt already starts AT created_at (the
 // row is inserted with both set to now()) and only moves forward, so created_at

@@ -50,19 +50,6 @@ func TestDeclaringSecurityMovesTheFingerprint(t *testing.T) {
 	}
 }
 
-// A read-only root added to an ALREADY-confined spec moves the fingerprint on
-// its own (the confined line is there either way, so only ReadOnlyRoot's own
-// line can tell the two apart): the pod template changed, so the pod rolls.
-func TestDeclaringAReadOnlyRootMovesAConfinedFingerprint(t *testing.T) {
-	confined := fingerprintFixture()
-	confined.Security = Security{RunAsUser: 1000, RunAsNonRoot: true, Restricted: true, NoServiceAccountToken: true}
-	ro := confined
-	ro.Security.ReadOnlyRoot = true
-	if Fingerprint(ro) == Fingerprint(confined) {
-		t.Fatal("declaring ReadOnlyRoot on a confined spec did not move the fingerprint; the pod template changed and nothing would roll")
-	}
-}
-
 // TestDeclaringNetworkIsolationMovesTheFingerprint: a spec that GAINS a network
 // declaration must stop comparing equal to the one without it — that inequality
 // is the only thing that makes an instance created before its kind was confined
@@ -79,8 +66,9 @@ func TestDeclaringNetworkIsolationMovesTheFingerprint(t *testing.T) {
 	one := with(Network{Isolate: true, PublicEgressTCPPorts: []int{443}})
 	other := with(Network{Isolate: true, PublicEgressTCPPorts: []int{8443}})
 	two := with(Network{Isolate: true, PublicEgressTCPPorts: []int{443, 8443}})
+	noDNS := with(Network{Isolate: true, NoClusterDNS: true})
 	seen := map[string]string{}
-	for name, fp := range map[string]string{"none": base, "isolate": isolate, "443": one, "8443": other, "443+8443": two} {
+	for name, fp := range map[string]string{"none": base, "isolate": isolate, "443": one, "8443": other, "443+8443": two, "isolate, no cluster DNS": noDNS} {
 		if prev, dup := seen[fp]; dup {
 			t.Errorf("%q and %q have the same fingerprint; two different confinements would compare equal", name, prev)
 		}
@@ -124,10 +112,11 @@ func TestValidateRefusesANetworkDeclarationThatConfinesNothing(t *testing.T) {
 		net  Network
 		want string
 	}{
-		"ports without isolate": {Network{PublicEgressTCPPorts: []int{443}}, "without Isolate"},
-		"port zero":             {Network{Isolate: true, PublicEgressTCPPorts: []int{0}}, "port 0 out of range"},
-		"port too large":        {Network{Isolate: true, PublicEgressTCPPorts: []int{65536}}, "port 65536 out of range"},
-		"port twice":            {Network{Isolate: true, PublicEgressTCPPorts: []int{443, 8443, 443}}, "port 443 appears twice"},
+		"ports without isolate":          {Network{PublicEgressTCPPorts: []int{443}}, "without Isolate"},
+		"port zero":                      {Network{Isolate: true, PublicEgressTCPPorts: []int{0}}, "port 0 out of range"},
+		"port too large":                 {Network{Isolate: true, PublicEgressTCPPorts: []int{65536}}, "port 65536 out of range"},
+		"port twice":                     {Network{Isolate: true, PublicEgressTCPPorts: []int{443, 8443, 443}}, "port 443 appears twice"},
+		"no cluster DNS without isolate": {Network{NoClusterDNS: true}, "NoClusterDNS without Isolate"},
 	} {
 		s := fingerprintFixture()
 		s.Network = c.net

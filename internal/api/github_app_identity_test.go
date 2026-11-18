@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,16 +14,17 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/pins"
 )
 
 // listingApp is a GitHub App stand-in for the API's identity readers: it lists
 // fixed installation repositories and records which agent asked for PRs.
 type listingApp struct {
-	accounts []string
-	repos    []string
-	problem  string
-	prAgent  int64
+	repos   []string
+	problem string
+	prAgent int64
+	access  githubapp.Access // "" = AccessWrite
 }
 
 func (l *listingApp) Repos(context.Context) ([]github.Repo, error) {
@@ -32,7 +34,6 @@ func (l *listingApp) Repos(context.Context) ([]github.Repo, error) {
 	}
 	return out, nil
 }
-func (l *listingApp) Accounts(context.Context) ([]string, error) { return l.accounts, nil }
 func (l *listingApp) DefaultBranch(context.Context, string) (string, error) {
 	return "trunk", nil
 }
@@ -41,73 +42,29 @@ func (l *listingApp) ListPullRequests(_ context.Context, agentID int64, _, _ str
 	return []github.PullRequest{{Number: 3, Title: "from the app"}}, nil
 }
 func (l *listingApp) Problem(int64) string { return l.problem }
-
-// TestTheReposTabListsTheAppsInstallationRepositories: with the App set, the
-// tab is the installation's list (labelled by account, no Disconnect) — even
-// when an OAuth connection also exists, which is listed nowhere.
-func TestTheReposTabListsTheAppsInstallationRepositories(t *testing.T) {
-	s, h, _ := kindsServer(t, stubKinds{pick: "work"})
-	connectRepos(t, s, "oauth-account/only-via-oauth")
-	s.ext.GitHubApp = &listingApp{accounts: []string{"example-org"}, repos: []string{"example-org/widget", "example-org/gadget"}}
-	req := httptest.NewRequest(http.MethodGet, "/ui/repos", nil)
-	admit(s, req)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	body := rec.Body.String()
-	for _, want := range []string{"data-github-app", "example-org", "example-org/widget", "example-org/gadget"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the Repos tab does not show %q:\n%s", want, body)
-		}
+func (l *listingApp) Access() githubapp.Access {
+	if l.access == "" {
+		return githubapp.AccessWrite
 	}
-	for _, not := range []string{"only-via-oauth", "/github/disconnect"} {
-		if strings.Contains(body, not) {
-			t.Errorf("the Repos tab shows %q although the App is the identity:\n%s", not, body)
-		}
-	}
-	// The App's problem is on the tab.
-	s.ext.GitHubApp = &listingApp{accounts: []string{"example-org"}, problem: "GitHub refused the GitHub App's credentials (401)"}
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/ui/repos", nil)
-	admit(s, req)
-	h.ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), "data-github-app-problem") || !strings.Contains(rec.Body.String(), "(401)") {
-		t.Fatalf("the App's problem is not on the Repos tab:\n%s", rec.Body)
-	}
+	return l.access
 }
 
-// TestAClaudeCodeDispatchChecksTheAppsRepositoriesFirst: the App takes
-// precedence over the OAuth connection at the dispatch door — an App repository
-// is accepted, and an OAuth-only one is refused while the App is configured.
-func TestAClaudeCodeDispatchChecksTheAppsRepositoriesFirst(t *testing.T) {
+// TestAClaudeCodeDispatchChecksTheAppsRepositories: at the dispatch door an App
+// repository is accepted (on the App's default branch), and one outside the
+// installation is refused.
+func TestAClaudeCodeDispatchChecksTheAppsRepositories(t *testing.T) {
 	s, h, store := kindsServer(t, stubKinds{pick: "work"})
-	connectRepos(t, s, "oauth-account/only-via-oauth")
 	s.ext.GitHubApp = &listingApp{repos: []string{"example-org/widget"}}
-	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"oauth-account/only-via-oauth"}})
+	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"other-account/not-installed"}})
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchRepo) || len(store.rows()) != 0 {
-		t.Fatalf("an OAuth-only repository under the App: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
+		t.Fatalf("a repository outside the installation: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
 	}
 	rec = postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"Example-Org/Widget"}})
-	if rec.Code != http.StatusOK || len(store.rows()) != 1 {
+	if !dispatched(rec, store) || len(store.rows()) != 1 {
 		t.Fatalf("an installation repository: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
 	}
 	if b := store.rows()[0].RepoBranch; b != "trunk" {
 		t.Fatalf("the default branch came from %q, want the App's (trunk)", b)
-	}
-}
-
-// TestTheOAuthConnectionStillDecidesWithoutAnApp: the fallback — no App, the
-// OAuth connection's repositories are the connected ones, as before.
-func TestTheOAuthConnectionStillDecidesWithoutAnApp(t *testing.T) {
-	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
-	if why := s.connectedRepo(context.Background(), "oauth-account/repo"); why != chiefDispatchNoGitHub {
-		t.Fatalf("no App, no OAuth: %q", why)
-	}
-	connectRepos(t, s, "oauth-account/repo")
-	if why := s.connectedRepo(context.Background(), "oauth-account/repo"); why != "" {
-		t.Fatalf("no App, OAuth-connected repo refused: %q", why)
-	}
-	if why := s.connectedRepo(context.Background(), "example-org/widget"); !strings.Contains(why, chiefDispatchRepo) {
-		t.Fatalf("no App, an unconnected repo: %q", why)
 	}
 }
 
@@ -122,8 +79,8 @@ func TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp(t *testing.T) {
 	callAs := func(role authz.Role, args map[string]any) string {
 		p, _ := authz.From(f.asOwner)
 		p.Role = role
-		raw, _ := json.Marshal(args)
-		return f.srv.dispatchAgentTool(authz.WithPrincipal(f.asOwner, p), f.chief, taskDispatchTool, string(raw))
+		raw, _ := json.Marshal(f.withTarget(agentDispatchTool, args))
+		return f.srv.dispatchAgentTool(authz.WithPrincipal(f.asOwner, p), f.chief, agentDispatchTool, string(raw))
 	}
 	f.mustRefuse(t, callAs(authz.RoleMember, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchNoGitHub, n.ID)
 	f.mustRefuse(t, callAs(authz.RoleAdmin, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
@@ -134,11 +91,11 @@ func TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp(t *testing.T) {
 }
 
 // TestAMemberGetsNoAppRepositories (R2): for a member principal the App's
-// repositories are not listed, not connected, and the Repos tab is the
-// member's own (here: none) — while an admin principal gets the App's.
+// repositories are not listed, not connected, and the dispatch dialog's
+// repository picker offers none — while an admin principal gets the App's.
 func TestAMemberGetsNoAppRepositories(t *testing.T) {
-	s, h, _ := kindsServer(t, stubKinds{pick: "work"})
-	s.ext.GitHubApp = &listingApp{accounts: []string{"example-org"}, repos: []string{"example-org/widget"}}
+	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
+	s.ext.GitHubApp = &listingApp{repos: []string{"example-org/widget"}}
 	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
 	admin := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
 	if why := s.connectedRepo(member, "example-org/widget"); why == "" {
@@ -154,31 +111,52 @@ func TestAMemberGetsNoAppRepositories(t *testing.T) {
 		ctx  context.Context
 		want bool
 	}{{member, false}, {admin, true}} {
-		req := httptest.NewRequest(http.MethodGet, "/ui/repos", nil).WithContext(c.ctx)
+		req := httptest.NewRequest(http.MethodGet, "/ui/agents/repos", nil).WithContext(c.ctx)
 		rec := httptest.NewRecorder()
-		s.handleReposContent(rec, req)
+		s.handleAgentRepoOptions(rec, req)
 		if got := strings.Contains(rec.Body.String(), "example-org/widget"); got != c.want {
-			t.Errorf("Repos tab shows the App repository = %v, want %v:\n%s", got, c.want, rec.Body)
+			t.Errorf("the repository picker offers the App repository = %v, want %v:\n%s", got, c.want, rec.Body)
 		}
 	}
-	_ = h
+}
+
+// TestWithoutAnAppNoRepositoryIsConnected: the GitHub App is muster's only
+// GitHub identity (the OAuth fallback is gone), so with none configured every
+// reader answers "no GitHub" — for an admin too — and the picker offers none.
+func TestWithoutAnAppNoRepositoryIsConnected(t *testing.T) {
+	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
+	admin := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	if why := s.connectedRepo(admin, "example-org/widget"); why != chiefDispatchNoGitHub {
+		t.Fatalf("no App: connectedRepo = %q, want %q", why, chiefDispatchNoGitHub)
+	}
+	if _, err := s.githubRepos(admin); !errors.Is(err, errNoGitHub) {
+		t.Fatalf("no App: githubRepos err = %v, want errNoGitHub", err)
+	}
+	if _, err := s.githubDefaultBranch(admin, "example-org/widget"); !errors.Is(err, errNoGitHub) {
+		t.Fatalf("no App: githubDefaultBranch err = %v, want errNoGitHub", err)
+	}
+	// Control: the same admin with an App configured is connected.
+	s.ext.GitHubApp = &listingApp{repos: []string{"example-org/widget"}}
+	if why := s.connectedRepo(admin, "example-org/widget"); why != "" {
+		t.Fatalf("control: with the App the admin's repository is refused: %q", why)
+	}
 }
 
 // TestTheAgentCardShowsTheAppsProblemForARepoAgent.
 func TestTheAgentCardShowsTheAppsProblemForARepoAgent(t *testing.T) {
 	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
 	s.ext.GitHubApp = &listingApp{problem: "GitHub refused the GitHub App's credentials (401) while minting"}
-	withRepo := s.cardViewIndexed(agents.Agent{ID: 1, Name: "a", Repo: "example-org/widget", OwnerID: 1}, nil, time.Time{},
+	withRepo := s.cardViewIndexed(agents.Agent{ID: 1, Name: "a", Repo: "example-org/widget", OwnerID: 1}, nil, time.Time{}, 0,
 		func(agents.Agent) bool { return false }, pins.Set{}, nil)
 	if !strings.Contains(withRepo.GitHubProblem, "(401)") {
 		t.Fatalf("a repository agent's card carries no App problem: %+v", withRepo.GitHubProblem)
 	}
-	noRepo := s.cardViewIndexed(agents.Agent{ID: 2, Name: "b"}, nil, time.Time{},
+	noRepo := s.cardViewIndexed(agents.Agent{ID: 2, Name: "b"}, nil, time.Time{}, 0,
 		func(agents.Agent) bool { return false }, pins.Set{}, nil)
 	if noRepo.GitHubProblem != "" {
 		t.Fatalf("an agent without a repository shows the App's problem: %q", noRepo.GitHubProblem)
 	}
-	memberOwned := s.cardViewIndexed(agents.Agent{ID: 3, Name: "c", Repo: "example-org/widget", OwnerID: 2}, nil, time.Time{},
+	memberOwned := s.cardViewIndexed(agents.Agent{ID: 3, Name: "c", Repo: "example-org/widget", OwnerID: 2}, nil, time.Time{}, 0,
 		func(agents.Agent) bool { return false }, pins.Set{}, nil)
 	if memberOwned.GitHubProblem != "" {
 		t.Fatalf("a member's agent shows the (admin-only) App's problem: %q", memberOwned.GitHubProblem)

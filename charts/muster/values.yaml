@@ -1,0 +1,430 @@
+# muster Helm chart values.
+#
+# Every value that sets an environment variable names it, and links the doc
+# that says what it does. This file does not repeat those facts: the env var's
+# row in docs/configuration.md is the authority, and a chart test
+# (internal/modulegate/chart_env_test.go) fails if the chart sets a variable
+# that table does not list.
+#
+# DOCS = https://github.com/ZacxDev/muster/blob/main/docs
+#
+# Only the core is on by default: the server, its bundled Postgres, password
+# sign-in and mirrored sessions. Every other feature is off until you turn it on.
+#
+# SECRETS. Every secret the chart can make itself (the UI password, the hook
+# token, the Postgres password, VAPID keys, the connector key, the upload
+# signing key, the GoTrue JWT secret and database password, the STT token, the
+# bundled store's key) is generated ONCE, on first install, into the Secret
+# <release>-muster-generated, and read back with `lookup` on every upgrade, so
+# an upgrade keeps it. That Secret carries `helm.sh/resource-policy: keep`, so
+# `helm uninstall` leaves it (and the Postgres volume) behind. Each feature also
+# takes an `existingSecret` instead; then the chart generates nothing for it.
+# ⚠ `lookup` needs a live cluster: `helm template`, `--dry-run` and tools that
+# render without one (Argo CD) get a NEW value on every render. With those, set
+# secrets.generate=false and give every feature its `existingSecret`. See
+# docs/kubernetes.md#secrets.
+secrets:
+  # false: the chart makes no Secret at all, and refuses to render while a
+  # feature that is on has no `existingSecret` (the error names the value).
+  # For tools that render without a cluster (Argo CD; docs/kubernetes.md#secrets).
+  generate: true
+
+# -- The muster image (ghcr.io/zacxdev/muster, linux/amd64 + linux/arm64).
+image:
+  repository: ghcr.io/zacxdev/muster
+  # Defaults to the chart's appVersion, which a released chart sets to the
+  # release. Installing from the repository directory (appVersion 0.0.0) needs
+  # a tag: --set image.tag=X.Y.Z. A digest goes in `digest`.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+# Names of image pull Secrets in the release namespace, for every pod the chart runs.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# MUSTER_PUBLIC_URL: the external base URL, as browsers reach it
+# (https://muster.example.com). Needed for invites, passkeys, push, attachments
+# and previews. DOCS/configuration.md#muster-server-core
+publicUrl: ""
+
+# MUSTER_STANDALONE: no permission router. Set false only with router.url.
+# DOCS/configuration.md#muster-server-core
+standalone: true
+
+# MUSTER_MIRROR: mirrored tmux sessions. DOCS/mirroring.md
+mirror: true
+
+# MUSTER_SECURE_COOKIES: mark the password-mode session cookie Secure. Keep it
+# on behind TLS (the ingress). DOCS/auth.md
+secureCookies: true
+
+# MUSTER_TRUSTED_PROXIES / MUSTER_CLIENT_IP_HEADER: whose forwarding header
+# names a client. Empty (the default) trusts nothing: every client address is
+# the TCP peer, so behind the ingress every client shares the ingress pods'
+# address in the per-address limits. To tell clients apart, list the ingress
+# controller's OWN addresses and the header it WRITES (Traefik and
+# ingress-nginx: X-Forwarded-For). Never the whole pod range: agent pods
+# connect from it and could then choose their own address. Both or neither.
+# DOCS/configuration.md#client-addresses-behind-a-proxy
+# In auth.mode=gotrue one of trustedProxies (with header) or directClients is
+# REQUIRED (the chart refuses to render otherwise; the server refuses to boot):
+# GoTrue keys its per-address limits on the client address muster forwards.
+clientAddress:
+  trustedProxies: []   # e.g. [<the controller's addresses>]
+  # MUSTER_DIRECT_CLIENTS: true only when clients reach muster with NO proxy in
+  # front (no ingress, no load balancer that rewrites the source).
+  directClients: false
+  header: ""           # CF-Connecting-IP | X-Forwarded-For | X-Real-IP
+
+# Sign-in. DOCS/auth.md
+auth:
+  # MUSTER_AUTH_MODE: `password` (one shared operator password) or `gotrue`
+  # (per-user accounts; needs `gotrue` below).
+  mode: password
+  # A Secret holding MUSTER_UI_PASSWORD (password mode, at least 12
+  # characters) and MUSTER_HOOK_TOKEN (the shared machine secret, at least 12
+  # characters). Empty: both are generated. Read them back with the commands
+  # NOTES.txt prints.
+  existingSecret: ""
+
+# muster-server's own pod.
+server:
+  # 🔴 ONE replica, Recreate. muster runs its sweeps on every pod with no
+  # leader gate, and the Compose chief / connect listeners are per process
+  # (DOCS/limits.md#deployment). The schema refuses another value.
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 768Mi }
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Extra env for the server container, [{name, value | valueFrom}]. Use it for
+  # any variable in docs/configuration.md this chart has no value for. A name
+  # the chart already sets is refused at render time, so two sources can never
+  # disagree about one variable.
+  extraEnv: []
+  # Extra envFrom sources ([{secretRef: {name}}]): how the per-name variables
+  # (MUSTER_AGENT_CC_TOKEN_<NAME>, MUSTER_OFFICER_TOKEN_<NAME>, …) are passed.
+  extraEnvFrom: []
+
+service:
+  type: ClusterIP
+  # MUSTER_PORT
+  port: 8105
+  # The connect listener (MUSTER_CONNECT_PORT), opened with the connector
+  # store (connectors.enabled). Only agents reach it.
+  connectPort: 8106
+  # MUSTER_BROWSER_PORT, opened in gotrue mode: the only listener that serves
+  # browser sessions there.
+  browserPort: 8107
+  # MUSTER_METRICS_PORT, opened with metrics.enabled: the only listener that
+  # serves /metrics. Neither the ingress nor the HTTPRoute routes it.
+  metricsPort: 8108
+  annotations: {}
+
+# Prometheus metrics. Off: /metrics is served on no port. On: served only on
+# service.metricsPort (named `metrics` on the Service and the pod), for an
+# in-cluster scraper; it is never on the public route. DOCS/configuration.md
+metrics:
+  enabled: false
+
+serviceAccount:
+  # The agent plane's RBAC binds this ServiceAccount.
+  create: true
+  name: ""
+  annotations: {}
+
+# ----------------------------------------------------------------------------
+# Postgres. Migrations run at boot. Exactly one of `postgres.enabled` and
+# `externalDatabase` is used.
+postgres:
+  # A bundled single-instance Postgres StatefulSet with a PVC. It is not a
+  # backup: see docs/kubernetes.md#postgres.
+  enabled: true
+  # 🔴 A MAJOR-VERSION change (16 -> 17) cannot open the old data directory:
+  # it needs a dump and restore (docs/kubernetes.md#postgres). The tag moves
+  # only within 16.
+  image:
+    repository: postgres
+    tag: 16-alpine
+  storage:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+  # A Secret with POSTGRES_PASSWORD and the DATABASE_URL built from it
+  # (postgres://muster:<password>@<release>-muster-postgres:5432/muster?sslmode=disable).
+  # Empty: both are generated.
+  existingSecret: ""
+
+externalDatabase:
+  # DATABASE_URL, from a Secret you made: {name, key}. Used when
+  # postgres.enabled is false. The role must own its database (migrations
+  # create tables).
+  existingSecret: ""
+  key: DATABASE_URL
+
+# ----------------------------------------------------------------------------
+# Reaching muster: an Ingress or a Gateway API HTTPRoute. Both carry
+# WebSockets (mirrored terminals, agent chat) and server-sent events (live
+# updates); see docs/kubernetes.md#ingress for the timeouts and buffering your
+# controller needs. In gotrue mode both route to the browser listener.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: muster.example.com
+  tls:
+    # A TLS Secret for `host` (cert-manager: set its annotation above and name
+    # the Secret it should write).
+    secretName: ""
+
+httpRoute:
+  enabled: false
+  # parentRefs of your Gateway, e.g. [{name: public, namespace: gateway-system, sectionName: https}].
+  parentRefs: []
+  hostnames:
+    - muster.example.com
+  # The rule's `timeouts` (Gateway API). Mirrored terminals, agent chat and the
+  # live event stream hold one request open for as long as a page is: give
+  # them no request timeout, in whatever form your implementation accepts
+  # (several take {request: "0s"}; docs/kubernetes.md#ingress).
+  timeouts: {}
+  annotations: {}
+
+# ----------------------------------------------------------------------------
+# THE AGENT PLANE: muster creates one namespace per agent and runs it there.
+# DOCS/provisioner.md
+agents:
+  enabled: false
+  # MUSTER_AGENT_PROVISIONER: `kubernetes`, or `noop` (records specs, creates
+  # nothing; for development).
+  provisioner: kubernetes
+  # MUSTER_AGENT_KINDS. `gateway` is always included; add `claude-code` with
+  # agents.claudeCode below.
+  kinds: [gateway]
+  # MUSTER_AGENT_NAMESPACE_PREFIX: each agent's namespace is this + its name.
+  # The admission policy below is keyed on it.
+  namespacePrefix: muster-agent-
+  # MUSTER_AGENT_IMAGE_REPO / MUSTER_AGENT_IMAGE_TAG: the `gateway`-kind
+  # agent image (yours: it serves the chat gateway). Required with the plane on.
+  gatewayImage:
+    repository: ""
+    tag: latest
+  # MUSTER_AGENT_API_URL: the URL agents call muster back on. Default: this
+  # release's in-cluster Service.
+  apiUrl: ""
+  # MUSTER_AGENT_CONNECT_URL (with connectors.enabled): the connect listener
+  # as agents reach it. Default: this release's in-cluster Service on
+  # service.connectPort.
+  connectUrl: ""
+  # MUSTER_AGENT_MODEL: the default model for agents ("" = the runtime decides).
+  model: ""
+  # MUSTER_AGENT_WORKSPACE_PERSIST and MUSTER_AGENT_WORKSPACE_STORAGE_CLASS.
+  workspace:
+    persist: false
+    storageClass: ""
+  # The chat wire, MUSTER_AGENT_GATEWAY=hooks-sha256 with
+  # MUSTER_AGENT_GATEWAY_MODEL, MUSTER_AGENT_RUNTIME_CONFIG and
+  # MUSTER_AGENT_RUNTIME_INSTALL (DOCS/provisioner.md#the-two-switches).
+  # Without it agents cannot be chatted with or kicked off.
+  gateway:
+    enabled: false
+    model: ""
+    # The runtime's config file contents, and the script that installs it,
+    # rendered into a ConfigMap.
+    runtimeConfig: ""
+    runtimeInstall: ""
+  # The `claude-code` kind (DOCS/provisioner.md#agent-kinds).
+  claudeCode:
+    enabled: false
+    # MUSTER_AGENT_CC_IMAGE, pinned to a tag or digest:
+    # ghcr.io/zacxdev/claude-code-agent:<tag>.
+    image: ""
+    # MUSTER_AGENT_CC_ACCOUNTS: the Claude account names.
+    accounts: []
+    # A Secret holding one MUSTER_AGENT_CC_TOKEN_<NAME> per account (a
+    # `claude setup-token`), passed whole with envFrom.
+    tokensSecret: ""
+    # MUSTER_AGENT_CC_STORAGE_SIZE ("" = the server's default).
+    storageSize: ""
+  # Kubernetes RBAC for muster's ServiceAccount (DOCS/provisioner.md#kubernetes-rbac).
+  rbac:
+    create: true
+    # `least-privilege` (the default): sets MUSTER_AGENT_NAMESPACE_CLUSTERROLE;
+    # the cluster-wide grant is namespaces, RoleBinding get/create and `bind`
+    # on one ClusterRole; muster binds itself inside each agent namespace, and
+    # a Role grants `get` on Secrets in the release namespace (deploy-key and
+    # image-pull sources).
+    # `cluster-wide` (opt-in): the agent-namespace ClusterRole bound
+    # cluster-wide (ClusterRoleBinding), plus namespaces: muster can then read
+    # Secrets and create Deployments in EVERY namespace.
+    layout: least-privilege
+    # least-privilege only: the Secret names that Role may read
+    # (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS' and MUSTER_OFFICER_IMAGE_PULL_SECRET's
+    # sources). [] = every Secret in the release namespace.
+    sourceSecretNames: []
+    # A ValidatingAdmissionPolicy (Kubernetes >= 1.30) that refuses, for
+    # muster's ServiceAccount only: creating or deleting a namespace whose name
+    # does not start with namespacePrefix, and writing or deleting a
+    # RoleBinding outside such a namespace. What it does NOT restrict:
+    # docs/kubernetes.md#the-agent-plane.
+    admissionPolicy:
+      enabled: true
+
+# ----------------------------------------------------------------------------
+# THE CHIEF, your fleet agent (DOCS/chief.md). Each user turns it on under
+# Account → Chief; on Kubernetes it runs as an agent, so it needs `agents`.
+chief:
+  # MUSTER_CHIEF_DISPATCH_OWNERS: user ids whose chief may start agents (also
+  # needs taskRouting). [] = the chief cannot dispatch.
+  dispatchOwners: []
+  # MUSTER_TASK_ROUTING (needs plugins). DOCS/plugins.md#routing-a-task-to-the-chief
+  taskRouting: false
+  # MUSTER_CHIEF_LLM=openrouter and MUSTER_CHIEF_LLM_MODEL: the admin's
+  # claude-code chief on the OpenRouter key (DOCS/chief.md#the-chief-on-openrouter).
+  openrouter:
+    enabled: false
+    model: ""
+  # MUSTER_CHIEF_SESSIONS_OPENROUTER=1: the admin's chief's OpenRouter side
+  # chats, on a key of their own, under a muster budget
+  # (DOCS/chief.md#openrouter-sessions-budget).
+  openrouterSessions:
+    enabled: false
+    # A Secret with MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY (NOT the agents'
+    # MUSTER_AGENT_OPENROUTER_KEY). Required when enabled.
+    existingSecret: ""
+    # MUSTER_CHIEF_SESSIONS_DAILY_USD, a string ("" = the server's default, 20).
+    dailyUSD: ""
+    # MUSTER_CHIEF_SESSIONS_SESSION_USD, a string ("" = no per-session cap).
+    sessionUSD: ""
+
+# MUSTER_PLUGINS. DOCS/plugins.md
+plugins: false
+
+# ----------------------------------------------------------------------------
+# OFFICERS (DOCS/officers.md). Pod officers need agents.claudeCode and the
+# connector store.
+officers:
+  enabled: false
+  # MUSTER_OFFICERS, as YAML (rendered to the JSON the server reads).
+  config: []
+  # A Secret holding MUSTER_OFFICER_TOKEN_<NAME> (and any other per-officer
+  # MUSTER_OFFICER_*_<NAME>), passed whole with envFrom.
+  tokensSecret: ""
+  # MUSTER_OFFICER_EGRESS_CIDRS, for a CNI with no FQDN policies
+  # (DOCS/officers.md#on-a-cluster-without-fqdn-policies-muster_officer_egress_).
+  egressCidrs: []
+  # MUSTER_OFFICER_EGRESS_DNS: "" or `unfiltered`.
+  egressDns: ""
+
+# ----------------------------------------------------------------------------
+# THE CONNECTOR STORE: MUSTER_CONNECTOR_ENCRYPTION_KEY, plus the connect
+# listener (MUSTER_CONNECT_PORT, MUSTER_AGENT_CONNECT_URL). DOCS/connectors.md
+connectors:
+  enabled: false
+  # A Secret with MUSTER_CONNECTOR_ENCRYPTION_KEY (32 random bytes, base64).
+  # Empty: generated. 🔴 Losing it loses every stored credential.
+  existingSecret: ""
+
+# THE GITHUB APP (DOCS/github-app.md). Needs connectors.
+githubApp:
+  enabled: false
+  # MUSTER_GITHUB_APP_ID
+  appId: ""
+  # MUSTER_GITHUB_APP_ACCOUNTS: [{login, id}].
+  accounts: []
+  # MUSTER_GITHUB_APP_ACCESS: `write` or `read` ("" = the server's default).
+  access: ""
+  # A Secret with MUSTER_GITHUB_APP_PRIVATE_KEY (the PEM). Required.
+  existingSecret: ""
+
+# OPENROUTER: MUSTER_AGENT_OPENROUTER_KEY, the admin's key for agents, focus
+# and suggestions (DOCS/configuration.md#muster-server-agent-provisioning).
+openrouter:
+  enabled: false
+  # A Secret with MUSTER_AGENT_OPENROUTER_KEY. Required.
+  existingSecret: ""
+
+# WEB PUSH: MUSTER_VAPID_PUBLIC_KEY / _PRIVATE_KEY / _SUBJECT (DOCS/push.md).
+push:
+  enabled: false
+  # MUSTER_VAPID_SUBJECT: mailto:<address> or an https URL. Required.
+  subject: ""
+  # A Secret with MUSTER_VAPID_PUBLIC_KEY and MUSTER_VAPID_PRIVATE_KEY (from
+  # `muster-server vapid generate`). Empty: a P-256 pair is generated.
+  existingSecret: ""
+
+# FILE ATTACHMENTS: MUSTER_S3_* and MUSTER_UPLOAD_SIGNING_KEY (DOCS/uploads.md).
+# Needs publicUrl. Either your own store (`endpoint`) or, with no endpoint, the
+# bundled one (`s3` below).
+attachments:
+  enabled: false
+  # Your own store: MUSTER_S3_ENDPOINT, MUSTER_S3_BUCKET, MUSTER_S3_REGION, and
+  # a Secret with MUSTER_S3_ACCESS_KEY and MUSTER_S3_SECRET_KEY.
+  endpoint: ""
+  bucket: muster-uploads
+  region: ""
+  existingSecret: ""
+  # A Secret with MUSTER_UPLOAD_SIGNING_KEY. Empty: generated.
+  signingKeySecret: ""
+  # MUSTER_UPLOAD_MAX_BYTES ("" = the server's default).
+  maxBytes: ""
+
+# The bundled S3-compatible store for attachments (a single-node MinIO-API
+# server, the same image the Compose file's `s3` profile runs). It runs when
+# attachments.enabled is on and attachments.endpoint is empty.
+s3:
+  image:
+    repository: pgsty/silo
+    tag: RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
+  storage:
+    size: 10Gi
+    storageClass: ""
+
+# DICTATION: MUSTER_STT_URL, MUSTER_STT_TOKEN, MUSTER_STT_MODEL (DOCS/dictation.md).
+dictation:
+  enabled: false
+  # Your own OpenAI-compatible service. Empty: the bundled `stt` below.
+  url: ""
+  model: ""
+  # A Secret with MUSTER_STT_TOKEN. Empty: generated (bundled service only).
+  existingSecret: ""
+
+# The bundled CPU speech-to-text service (the Compose file's `stt` profile). It
+# runs when dictation.enabled is on and dictation.url is empty.
+stt:
+  image:
+    repository: ghcr.io/speaches-ai/speaches
+    tag: 0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+  model: Systran/faster-whisper-small
+  storage:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 4Gi }
+
+# ----------------------------------------------------------------------------
+# GOTRUE (per-user sign-in, auth.mode=gotrue). DOCS/auth.md#gotrue
+gotrue:
+  # Run a bundled GoTrue on its own database in the bundled Postgres. Off with
+  # auth.mode=gotrue: `url` and `existingSecret` are then both required (the
+  # render fails without them).
+  enabled: false
+  # MUSTER_GOTRUE_URL for your own GoTrue.
+  url: ""
+  # A Secret with MUSTER_GOTRUE_JWT_SECRET (at least 32 characters). Empty:
+  # generated (bundled GoTrue only). With secrets.generate=false and the
+  # bundled GoTrue, it must also hold GOTRUE_DB_PASSWORD and
+  # GOTRUE_DB_DATABASE_URL (docs/kubernetes.md#secrets).
+  existingSecret: ""
+  image:
+    repository: supabase/gotrue
+    tag: v2.197.0

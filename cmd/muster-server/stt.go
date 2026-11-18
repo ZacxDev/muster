@@ -46,18 +46,22 @@ func buildTranscriber(cfg config) (api.Transcriber, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	return c.WithModel(cfg.STTModel), nil
 }
 
 // logSTTBanner states dictation's posture in both directions. It names the
 // service's URL and never the token.
 func (a *app) logSTTBanner(ext api.Extensions) {
 	if ext.Transcriber == nil {
-		a.logger.Printf("dictation: OFF — %s is unset (%s: %s), so no message box draws a microphone and "+
-			"POST /transcribe answers 404", envSTTToken, envSTTURL, presence(a.cfg.STTURL))
+		a.logger.Printf("dictation: OFF — %s is unset (%s: %s, %s: %s), so no message box draws a microphone and "+
+			"POST /transcribe answers 404", envSTTToken, envSTTURL, presence(a.cfg.STTURL), envSTTModel, presence(a.cfg.STTModel))
 		return
 	}
+	model := "none sent"
+	if a.cfg.STTModel != "" {
+		model = a.cfg.STTModel
+	}
 	a.logger.Printf("dictation: ON — %s is set; every message box draws a microphone, and recordings are "+
-		"transcribed by %s=%s (the token stays in this process; the browser never sees it)",
-		envSTTToken, envSTTURL, a.cfg.STTURL)
+		"transcribed by %s=%s, %s: %s (the token stays in this process; the browser never sees it)",
+		envSTTToken, envSTTURL, a.cfg.STTURL, envSTTModel, model)
 }

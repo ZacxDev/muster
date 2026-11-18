@@ -17,7 +17,7 @@ COMPOSE ?= docker compose
 COMPOSE_FILE := docker-compose.test.yml
 
 # The published port of the throwaway Postgres. 55432 by default, which is what
-# README.md, CONTRIBUTING.md and internal/dbtest's doc all spell literally.
+# docs/development.md, CONTRIBUTING.md and internal/dbtest's doc all spell literally.
 #
 # 🔴 IT IS A VARIABLE SO TWO CHECKOUTS CAN EACH HAVE THEIR OWN DATABASE, AND IT IS
 # `export`ED SO `docker compose` INTERPOLATES THE SAME VALUE THIS FILE USES. Make
@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image hermes-image hermes-smoke test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: release-dry-run release-logic-test compose-check compose-up-test features-config-test install-guide-test build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots docshots-check
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -86,16 +86,15 @@ TAILWIND ?= npx --yes tailwindcss@3
 # the one document this app emits from outside internal/ui — so it is the
 # positive control for that entry. Without it, deleting `./internal/api/login.go`
 # from tailwind.config.js would ship a login page with an unwrapped heading
-# and every check here would stay green.
-CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance
+# and every check here would stay green. `gap-x-4` is the same for the ask
+# page's entry, internal/api/attention_ask_page.go, the only file writing it.
+CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance gap-x-4
 
 help:
 	@echo "muster:"
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
-	@echo "  make run          the server, against \$$DATABASE_URL (see README)"
+	@echo "  make run          the server, against \$$DATABASE_URL (see docs/development.md)"
 	@echo "  make image        the container image, css-check included"
-	@echo "  make hermes-image the hermes agent image (Nix; loads it into Docker)"
-	@echo "  make hermes-smoke the hermes image smoke test: a stub model, a full turn, approvals, crash and restart"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
 	@echo "                    (MUSTER_TEST_PG_PORT=55433 make test-db for a second checkout)"
@@ -106,10 +105,16 @@ help:
 	@echo "  make css-check    prove the committed stylesheet matches the views"
 	@echo "  make check        vet + test + leakscan + css-check"
 	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
-	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
+	@echo "  make screenshots  regenerate docs/img/ (PNGs + phone-flow.gif) from fixture data (same database, plus Docker, ffmpeg)"
+	@echo "  make docshots-check  run the screenshot spec as a check, images to a temp dir (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
+	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
+	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
+	@echo "  make compose-check    deploy/docker-compose.yml is valid, every profile, every healthcheck"
+	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it,"
+	@echo "                        then the s3 and stt profiles (COMPOSE_UP_PROFILES; stt needs espeak-ng)"
+	@echo "  make features-config-test  docs/features.md, .env.example and the compose file agree"
 	@echo "  make test-liveclaude  answer a REAL Claude Code's AskUserQuestion pickers (run on every Claude Code upgrade)"
-	@echo "  make test-livehermes  drive the PINNED Hermes CLI: screen check, Escape, timings, gated send (every pin bump; before -hermes-send)"
 
 build:
 	go build ./...
@@ -119,8 +124,12 @@ vet:
 
 # Run the server. Every MUSTER_* name is spelled once, in
 # cmd/muster-server/config.go; DATABASE_URL is required and the binary says so.
+# The server does not start without MUSTER_HOOK_TOKEN; unless the environment
+# sets one, scripts/dev-hook-token.sh makes one once into .dev.env (gitignored,
+# mode 600) and reuses it, refusing an empty or short value. Give the same
+# value to a dev muster-mirror or hook: `. ./.dev.env`.
 run:
-	go run ./cmd/muster-server
+	@tok=$$(scripts/dev-hook-token.sh .dev.env) && MUSTER_HOOK_TOKEN=$$tok exec go run ./cmd/muster-server
 
 # 🔴 THE IMAGE BUILD RUNS css-check IN ITS FIRST STAGE, so this target is also
 # the cheapest end-to-end proof that the stylesheet the container would serve is
@@ -165,20 +174,6 @@ test:
 # logged-in `claude` on PATH; spends a few model turns. Never in CI.
 test-liveclaude:
 	tests/liveclaude.sh
-
-# Drive the PINNED Hermes CLI for real (docs/design/hermes.md, Phase 3): every
-# screen state the send's screen check must refuse, what Escape does in each,
-# the gated send end to end, (opt-in) the hook/Enter/queue timings, and the
-# overlay and vi-label ledgers against the pinned source. 🔴 RUN IT ON EVERY
-# HERMES PIN BUMP AND BEFORE ENABLING -hermes-send ON A HOST: it ends with
-# "HERMES HARNESS VERDICT: GREEN" or "RED". Isolated: a scratch HERMES_HOME, a
-# private tmux server, a local stub model, no credential. Needs `hermes` on
-# PATH at the pin and tmux >= 3.7. Never in CI. MUSTER_LIVEHERMES_RECORD=1
-# re-records the fixtures (internal/hermeshost/testdata/screens/);
-# MUSTER_LIVEHERMES_TIMINGS=1 adds the load timings (hook slack, Enter margin,
-# queue gap) — run that on every pin bump.
-test-livehermes:
-	tests/livehermes.sh
 
 # Start the throwaway Postgres, wait for it, and migrate the TEMPLATE once.
 #
@@ -238,7 +233,7 @@ test-db-down:
 # non-zero count, and NOT refuse legitimate content — and only then is the scan
 # below a measurement rather than a claim.
 leakscan:
-	python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
+	python3 tests/leakscan_test.py && python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
 
 # Render the PWA icons from their SVG sources in web/icon-src/ (the Brass Roll
 # concept). The PNGs are committed — they are go:embed inputs — so this runs
@@ -260,7 +255,6 @@ icons:
 	$(RSVG) -w 72 -h 72 $(ICON_SRC)/badge.svg -o $(ICON_OUT)/badge-72.png
 	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-new.svg -o $(ICON_OUT)/shortcut-new-96.png
 	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-tasks.svg -o $(ICON_OUT)/shortcut-tasks-96.png
-	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-agents.svg -o $(ICON_OUT)/shortcut-agents-96.png
 
 # Rebuild the stylesheet from the Go views.
 css:
@@ -337,44 +331,87 @@ e2e:
 	node verdict.mjs $${MUSTER_E2E_LEG:+--leg $$MUSTER_E2E_LEG} test-results/results.json && exit $$rc
 
 # Regenerate the documentation's screenshots (docs/img/) from the e2e harness:
-# the seeded fixture board and a fake mirrored host, at a phone's size. A
-# GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make e2e`
-# needs, plus Docker for the GoTrue container the passkey shot signs in against.
-# pngquant (nix-shell -p pngquant) is used when present; every image must end up
-# at or under 200 KB either way.
+# the seeded fixture board and two fake mirrored hosts, phone shots at 390×844
+# and 2× (one desktop shot at 1280×800, also 2×), plus the README's two animations,
+# phone-flow.gif and ask-flow.gif, assembled here from the frames the spec writes
+# to e2e/.state/phone-flow/ and e2e/.state/ask-flow/. A
+# GENERATOR — CI never rewrites docs/img; what CI runs is `docshots-check`
+# below, the same spec with its images sent to a temp dir. Needs what `make
+# e2e` needs, plus Docker for the GoTrue container the passkey shot signs in
+# against, and ffmpeg for the animation. pngquant is used when present. On
+# NixOS:
+#   nix-shell -p ffmpeg pngquant --run 'make screenshots'
+# Every PNG must end up at or under 200 KB and each GIF under 2 MB either way.
+# Set MUSTER_E2E_PORT to move every port the harness binds (env.ts) off the
+# defaults when another checkout's suite may be running on this machine.
+# Each animation is <name>: frames in e2e/.state/<name>/frames.txt, the GIF at
+# docs/img/<name>.gif.
+FLOWS := phone-flow ask-flow
+# README images shot outside this repository (docs/testing.md): never
+# re-quantized here, so a screenshots run leaves them byte for byte.
+NOT_SHOT_HERE := docs/img/queue-next.png docs/img/officer-ask.png
 screenshots:
+	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; it assembles the docs/img/*.gif animations (nix-shell -p ffmpeg)"; exit 1; }
 	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
-	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
+	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 $(filter-out $(NOT_SHOT_HERE),$(wildcard docs/img/*.png)); \
 	  else echo "screenshots: pngquant not found; images left as captured"; fi
+	@for n in $(FLOWS); do \
+	  ffmpeg -loglevel error -y -f concat -safe 0 -i e2e/.state/$$n/frames.txt \
+	    -vf 'split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
+	    -loop 0 docs/img/$$n.gif || exit 1; done
 	@for f in docs/img/*.png; do s=$$(wc -c < "$$f"); echo "$$f: $$s bytes"; \
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
+	@for n in $(FLOWS); do f=docs/img/$$n.gif; s=$$(wc -c < $$f); echo "$$f: $$s bytes"; \
+	  test "$$s" -le 2097152 || { echo "screenshots: $$f is over 2 MB"; exit 1; }; done
 
-check: vet test leakscan css-check verb-ledger
+# The screenshot spec as a CHECK: every shot taken, written to a temp dir, and
+# the JSON report judged by `verdict.mjs --docshots` (no failure, no skip, every
+# test from docshots/docs.spec.ts). 🔴 IT EXISTS BECAUSE THE GENERATOR ROTTED
+# UNSEEN: #479 collapsed the touch composer, the suite moved to revealBox() and
+# this spec did not, so `make screenshots` failed at its step-up (passkey) shot
+# — "locator.fill: … waiting for locator('#mv-input') … element is not visible"
+# — and the README's ask-flow GIF kept showing the pre-#620 Asks page. CI's
+# `docshots` job runs this target.
+docshots-check:
+	@out=$$(mktemp -d) && cd e2e && MUSTER_E2E_DOCSHOTS=1 MUSTER_E2E_DOCSHOTS_OUT=$$out npx playwright test; rc=$$?; \
+	rm -rf "$$out"; node verdict.mjs --docshots test-results/results.json && exit $$rc
 
-# The `hermes` agent kind's image (images/hermes-agent/flake.nix): upstream
-# Hermes at its pinned sha, ffmpeg overridden out, behind hermesd. The flake's
-# output is a stream script, so the image is assembled as Docker loads it.
-#
-# 🔴 THE hermesd IN THE IMAGE MUST BE THE ONE muster's OWN FLAKE BUILDS. The
-# image flake takes muster through a relative `path:` input; the target refuses
-# to build when the two derivations differ (a stale or diverged input), rather
-# than ship an image whose hermesd is not this tree's.
-#
-# The tag names Hermes's pin AND hermesd's revision (the flake's `imageTag`).
-HERMES_IMAGE_TAG = $(shell nix eval --raw ./images/hermes-agent\#imageTag 2>/dev/null)
-hermes-image:
-	@root=$$(nix eval --raw .#packages.x86_64-linux.hermesd.drvPath) && \
-	img=$$(nix eval --raw ./images/hermes-agent#packages.x86_64-linux.hermesd.drvPath) && \
-	if [ "$$root" != "$$img" ]; then \
-		echo "hermes-image: the image's hermesd ($$img) is not muster's ($$root): refresh the image flake's muster input (nix flake update --flake ./images/hermes-agent muster)" >&2; exit 1; \
-	else echo "hermes-image: hermesd $$root"; fi
-	nix build -o .hermes-image ./images/hermes-agent#image
-	./.hermes-image | docker load
-	rm -f .hermes-image
+# INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
+# temp HOME (tests/install_guide_test.py): nothing on this machine is touched.
+install-guide-test:
+	python3 tests/install_guide_test.py
 
-# The image smoke test: the real image under Docker with pod-like restrictions,
-# a stub OpenAI-compatible model and a fake muster relay, driven by muster's own
-# client (images/hermes-agent/smoke). It builds and loads the image first, so it
-# never tests a stale one. No real model, no Kubernetes.
-hermes-smoke: hermes-image
-	go run ./images/hermes-agent/smoke -image hermes-agent:$(HERMES_IMAGE_TAG)
+# docs/features.md's anchors, and deploy/.env.example, the compose file and the
+# server's variables agreeing (tests/features_config_test.py); the guides, their
+# index and docs/features.md agreeing (tests/docs_guides_test.py); the README,
+# the docs index and the community files (tests/repo_front_door_test.py). Static.
+features-config-test:
+	python3 tests/features_config_test.py
+	python3 tests/docs_guides_test.py
+	python3 tests/repo_front_door_test.py
+
+check: vet test leakscan css-check verb-ledger install-guide-test features-config-test
+
+# The release pipeline, without a tag: the exact asset set the `release` job in
+# .github/workflows/ci.yml publishes, built and self-verified into dist/
+# (scripts/release-build.sh). CI's `release-dry-run` job runs it on every PR
+# ready for review (not on a draft) and on every push to main.
+RELEASE_VERSION ?= 0.0.0
+release-dry-run:
+	scripts/release-build.sh $(RELEASE_VERSION)
+
+# The tag-only jobs' decision logic, with no tag and no GitHub writes.
+release-logic-test:
+	tests/release-publish-test.sh
+	tests/stt-cohere-source-test.sh
+
+# deploy/docker-compose.yml: `docker compose config` for every profile, plus the
+# shape the install guide relies on. Pulls nothing, starts nothing.
+compose-check:
+	tests/compose-check.sh
+
+# The compose stack brought up for real from a LOCAL image, probed, torn down:
+#   make image IMAGE=muster-local VERSION=1.2.3 && make compose-up-test IMAGE=muster-local VERSION=1.2.3
+compose-up-test:
+	tests/compose-up.sh $(IMAGE) $(VERSION)
+

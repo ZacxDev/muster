@@ -27,6 +27,10 @@ const (
 type Entry struct {
 	Role string
 	Text string
+	// Cwd is the working directory the transcript recorded with this entry
+	// (a mirrored prompt's), "" for none. Never rendered into the tail: it is
+	// what LatestCwd reads.
+	Cwd string
 }
 
 // RenderTail is the tail of entries as the summarizer reads it — the newest

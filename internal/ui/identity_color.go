@@ -11,13 +11,14 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// THE TMUX IDENTITY COLOUR on a mirrored card (docs/design/agent-cards.md
+// THE TMUX IDENTITY COLOUR on a mirrored entry (docs/design/agent-cards.md
 // (b)): the colour the host's tmux config gives the window (`@muster-color`),
-// on the card's BORDER and its TITLE, so the card and the terminal look like
-// the same thing.
+// on its sidebar row's left EDGE (navAgentRow), so the row and the terminal
+// look like the same thing. (The retired Agents list's card wore it on its
+// BORDER and its TITLE, which is what the title variants below were for.)
 //
 // 🔴 READABLE IN BOTH THEMES, BY MOVING ONLY LIGHTNESS. A terminal colour is
-// chosen for a terminal's background, not for this card's. Each variant keeps
+// chosen for a terminal's background, not for this page's. Each variant keeps
 // the colour's OKLCH hue and chroma and moves its lightness, toward the side
 // that gains contrast, just far enough to meet:
 //

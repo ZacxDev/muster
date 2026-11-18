@@ -2,9 +2,11 @@ package agentspec
 
 import (
 	"fmt"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -39,6 +41,11 @@ const (
 	// spec. TestTheClaudeTokenNameAppearsOnlyInTheClaudeCodeKindsSecret is the seam
 	// ledger that holds it there.
 	EnvClaudeOAuthToken = "CLAUDE_CODE_OAUTH_TOKEN"
+
+	// EnvLLMRoute and LLMRouteMuster put a pod on the LLM route
+	// ([ClaudeCodeSession.LLMRoute]); the entrypoint refuses any other value.
+	EnvLLMRoute    = "CCD_LLM_ROUTE"
+	LLMRouteMuster = "muster"
 
 	// ClaudeCodeDataPath is where the agent's persistent volume is mounted.
 	ClaudeCodeDataPath = "/data"
@@ -83,7 +90,10 @@ var ClaudeCodeSecurity = provision.Security{
 //
 // ⚠ WHAT IT DOES NOT BUY: this is "public internet on 443", not "Anthropic and
 // GitHub". Nothing here names a host. A prompt-injected agent can still send
-// what it holds to any public HTTPS endpoint.
+// what it holds to any public HTTPS endpoint. An egress-locked agent (an officer
+// instance: [ClaudeCodeSession.EgressLocked], or a worker of an egress-locked
+// pool: [PoolEgressLocked]) does NOT get the public rule, or the DNS rule, at
+// all; see claudeCodeNetworkFor.
 //
 // ⚠ MUSTER ITSELF IS NOT REACHABLE FROM THE POD through this policy, although
 // the spec still hands it MUSTER_API_URL: that address is in-cluster, so it is on
@@ -97,13 +107,147 @@ func ClaudeCodeNetwork() provision.Network {
 // claudeCodeNetworkFor is ClaudeCodeNetwork plus, when the deployment offers the
 // connector store ([Config.ConnectURL]), egress to muster's connector port — the
 // one allowance that lets the pod reach muster, and only that surface of it.
-func claudeCodeNetworkFor(cfg Config) provision.Network {
+//
+// 🔴 FOR AN officer ([ClaudeCodeSession.EgressLocked]) THE PUBLIC RULE AND
+// THE DNS RULE ARE BOTH GONE: the pod may reach muster's connect port, and
+// NOTHING else — no name resolution, not even the Anthropic API. That is
+// deliberate, and it is what makes the lock mean anything: a NetworkPolicy
+// cannot name a host, and network plugins union allows, so a cluster-side FQDN
+// allow (e.g. a Cilium toFQDNs policy for api.anthropic.com:443) narrows nothing
+// while this policy still allows "any public address on 443" — and a
+// cluster-side name-filtered DNS rule (Cilium rules.dns) narrows nothing while
+// this policy still allows port 53 to the DNS pods. The operator ships both;
+// without them a locked pod cannot resolve or reach the API at all (closed,
+// loud: every turn fails) — unless the deployment admits them by address
+// (the officer egress settings, below). See docs/officers.md "The instance's
+// network".
+//
+// An egress-locked pool's worker ([PoolEgressLocked]) is locked the same way:
+// muster writes no DNS and no public rule, and the operator's cluster policy,
+// which selects the pod by [LabelEgress]=[EgressLocked], is the only allow
+// (docs/jobs.md "A pool's egress lock").
+//
+// 🔴 THE OFFICER EGRESS SETTINGS ([Config.OfficerEgressCIDRs],
+// [Config.OfficerEgressDNS]) REACH AN OFFICER AND NOTHING ELSE. They exist
+// for a cluster without FQDN policies, where the lock above would leave an
+// officer unable to reach the Anthropic API at all; they give an officer back
+// exactly the named blocks and, when asked, DNS. A locked POOL worker does NOT
+// get them, even when it is also an officer session: a deploy-key pool is
+// locked to keep a private repository's mirror from leaving, and a
+// deployment-wide officer setting must not widen that lock behind the
+// operator's back — a pool's allow stays the operator's own cluster policy.
+// Every other agent (task agents, the chief, unlocked workers) keeps the
+// public rule and DNS and is unchanged.
+func claudeCodeNetworkFor(cfg Config, officer, poolLocked bool) provision.Network {
+	// The Compose container: not confined (Config.ComposeContainer).
+	if cfg.ComposeContainer {
+		return provision.Network{}
+	}
 	n := ClaudeCodeNetwork()
+	if officer || poolLocked {
+		n.PublicEgressTCPPorts = nil
+		n.NoClusterDNS = true
+	}
+	if officer && !poolLocked {
+		if len(cfg.OfficerEgressCIDRs) > 0 {
+			n.EgressCIDRs = slices.Clone(cfg.OfficerEgressCIDRs)
+		}
+		if cfg.OfficerEgressDNS {
+			n.NoClusterDNS = false
+		}
+	}
 	if cfg.ClaudeCodeMCPOffered() {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
 	}
 	return n
 }
+
+// ComposeChiefAllowedMCPTools are the muster MCP tools the Compose chief runs
+// without a prompt (operator decision): reading the fleet and the board, and
+// routing work to a session — and asking its owner a question in its own chat
+// (ask_owner: it only draws a card, operator decision). Every other prompt is
+// denied in its container. Pinned by TestTheComposeChiefsAllowedToolsArePinned.
+var ComposeChiefAllowedMCPTools = []string{
+	"sessions_overview", "fleet_list", "focus_search", "fleet_report",
+	"tasks_list", "task_get", "attention_list", composeChiefRouteTool, "ask_owner",
+}
+
+// composeChiefRouteTool is the one ComposeChiefAllowedMCPTools entry muster
+// serves only with session routing on (MUSTER_SESSION_ROUTING).
+const composeChiefRouteTool = "route_to_session"
+
+// ComposeChiefTools is what the Compose chief is told it can run
+// ([ChiefInstructionsCompose]): ComposeChiefAllowedMCPTools, less
+// route_to_session when session routing is off (muster does not serve it
+// then). It is derived from the allow list, never a second list: the spec
+// pre-allows ComposeChiefAllowedMCPTools, muster's MCP server offers the chief
+// no tool outside it (internal/api toolsFor), and the prose names these.
+func ComposeChiefTools(routing bool) []string {
+	out := make([]string, 0, len(ComposeChiefAllowedMCPTools))
+	for _, t := range ComposeChiefAllowedMCPTools {
+		if t == composeChiefRouteTool && !routing {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// ComposeChiefAllowed reports whether name is one of the Compose chief's
+// pre-allowed muster tools (ComposeChiefAllowedMCPTools).
+func ComposeChiefAllowed(name string) bool {
+	return slices.Contains(ComposeChiefAllowedMCPTools, name)
+}
+
+// claudeCodeResourcesFor is ClaudeCodeResources, or none for the Compose
+// container (Config.ComposeContainer: its driver cannot enforce limits).
+func claudeCodeResourcesFor(cfg Config) provision.Resources {
+	if cfg.ComposeContainer {
+		return provision.Resources{}
+	}
+	return ClaudeCodeResources
+}
+
+// EnvClaudeDisableNonessentialTraffic is the Claude Code CLI's switch for its
+// non-inference traffic (auto-updater, telemetry, error reporting, feedback,
+// release notes, feature flags — https://code.claude.com/docs/en/network-config
+// and /en/data-usage). An egress-locked pod sets it to "1": those hosts are
+// unreachable there by design, and the CLI is told not to try rather than having
+// each attempt time out against the policy.
+//
+// ⚠ IT DOES NOT COVER EVERYTHING. Per the docs, the WebFetch domain-safety
+// preflight (to api.anthropic.com, which a locked pod still reaches through the
+// cluster's FQDN allow) and the claude.ai MCP connectors (mcp-proxy.anthropic.com,
+// which it does not) are separate switches. Neither is needed for the pod to
+// work: the first succeeds, the second fails closed.
+const EnvClaudeDisableNonessentialTraffic = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+
+// EnvCCDMaxSessions is ccd's lane cap (cmd/ccd main.go, CCD_MAX_SESSIONS):
+// how many session CLIs it runs beside the primary. Set from
+// ClaudeCodeSession.MaxSessions only.
+const EnvCCDMaxSessions = "CCD_MAX_SESSIONS"
+
+// EnvClaudeDisableAutoMemory is the Claude Code CLI's switch for its
+// auto-memory (ClaudeCodeSession.DisableAutoMemory). Read from the CLI's own
+// bundle — 2.1.289, and statically the image's 2.1.296, where the function
+// has the same shape: a truthy value turns auto-memory "off" BEFORE any
+// setting is consulted, and the setting's own description is "When false,
+// Claude will not read from or write to the auto-memory directory" (settings
+// key autoMemoryEnabled). The variable is used rather than the setting
+// because it is the pod's, set at provision time: a session can write its
+// own settings.json, but not its CLI's environment. It reaches the CLI as
+// every pod variable does (ccd's environment is the tmux server's, which the
+// pane inherits). Read, not run: no officer pod has been measured with it.
+const EnvClaudeDisableAutoMemory = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+
+// EnvClaudeDisableOrgMemory is the Claude Code CLI's separate switch for its
+// org memory, set beside EnvClaudeDisableAutoMemory
+// (ClaudeCodeSession.DisableAutoMemory). Its gate (2.1.289 and 2.1.296, read
+// statically) checks this variable, a server-side feature flag and claude.ai
+// authentication — and NOT the auto-memory variable — so an instance on a
+// subscription token would otherwise keep that channel between items whenever
+// the flag is on. Whether the flag is ever on for these accounts is not known.
+const EnvClaudeDisableOrgMemory = "CLAUDE_CODE_DISABLE_ORG_MEMORY"
 
 // ClaudeCodeMCPOffered reports whether a claude-code agent built from this
 // Config can reach muster's MCP server — its ONLY route to muster's tools (the
@@ -158,7 +302,148 @@ type ClaudeCodeConfig struct {
 	// permissions bypassed (MUSTER_AGENT_CC_BYPASS_POOLS): see [JobBypassListed].
 	// Empty is none, the default.
 	BypassPools []string
+	// PoolDeployKeys maps a worker pool's name to the read-only deploy key its
+	// workers clone and fetch their PRIVATE repository with
+	// (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): see [PoolDeployKeyFor]. A pool with no
+	// entry — every pool, by default — clones and fetches anonymously.
+	PoolDeployKeys map[string]PoolDeployKey
+	// EgressLockedPools names the worker pools whose workers are egress-locked
+	// (MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS), on top of every deploy-key pool:
+	// see [PoolEgressLocked]. A pool in neither keeps "any public address on
+	// 443".
+	EgressLockedPools []string
 }
+
+// The labels an egress-locked pool's worker carries, for the operator's
+// cluster policy to select (agentspec only adds them to LOCKED workers, so
+// every other agent's labels are unchanged):
+const (
+	// LabelPool names the worker's pool.
+	LabelPool = "muster.agent/pool"
+	// LabelEgress, with value EgressLocked, marks a worker whose
+	// NetworkPolicy allows no DNS and no public egress: a cluster policy
+	// selecting it is its only allow.
+	LabelEgress = "muster.agent/egress"
+	// EgressLocked is LabelEgress's one value.
+	EgressLocked = "locked"
+)
+
+// PoolEgressLocked reports whether agent a's pool is egress-locked: ONLY a
+// pooled agent (never a chief) whose pool has a deploy key ([PoolDeployKeyFor])
+// or is listed in EgressLockedPools.
+//
+// 🔴 A DEPLOY-KEY POOL IS LOCKED WHETHER OR NOT IT IS LISTED: its workers hold
+// a private repository's mirror, and the lock is what keeps a session from
+// sending it to any public host. muster only REMOVES egress (no DNS, no public
+// rule) and labels the pod; what the worker may reach is the operator's
+// cluster policy. Without that policy a locked worker reaches nothing public
+// (closed, loud). Written when the spec is applied (dispatch, Start, reapply).
+func PoolEgressLocked(a agents.Agent, cfg Config) bool {
+	cc := cfg.ClaudeCode
+	if cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+		return false
+	}
+	_, keyed := cc.PoolDeployKeys[a.WorkerPool]
+	return keyed || slices.Contains(cc.EgressLockedPools, a.WorkerPool)
+}
+
+// PoolDeployKey is one worker pool's private-repository access: the ONE
+// repository its key may be used for, and the Secret holding the key.
+type PoolDeployKey struct {
+	// Repo is owner/name. A worker of the pool must work on it, and a job on
+	// such a worker must name it; anything else is refused.
+	Repo string
+	// Secret names a Secret the operator makes in muster's own namespace (the
+	// kubernetes driver copies it into each worker's namespace; muster never
+	// changes the source), whose key
+	// [DeployKeySecretKey] holds the PRIVATE half of a deploy key added to Repo
+	// WITHOUT write access.
+	Secret string
+}
+
+// The deploy key's place in the pod: in its KEY HOLDER alone
+// (provision.KeyHolder) — a container named DeployKeyHolderName, under uid
+// DeployKeyHolderUID — which mounts the Secret's one key at DeployKeyPath,
+// GitHub's pinned host keys (podagent.GitHubKnownHosts) at KnownHostsPath, and
+// keeps the repository's mirror at MirrorPath in MirrorDir, which the agent's
+// container mounts READ-ONLY. ccd is told only the mirror's path
+// (EnvCCDRepoMirror): no path to the key, and the key, are in no variable of
+// the agent's container.
+const (
+	// DeployKeySecretKey is the key of the operator's Secret that holds the
+	// private key: the key a `kubernetes.io/ssh-auth` Secret uses.
+	DeployKeySecretKey = "ssh-privatekey"
+	// DeployKeyPath is where that key is mounted, in the holder only.
+	DeployKeyPath = "/etc/muster/deploy-key/ssh-privatekey"
+	// KnownHostsPath is where GitHub's pinned host keys are placed, in the
+	// holder only.
+	KnownHostsPath = "/etc/muster/deploy-key/known_hosts"
+	// DeployKeyHolderName is the holder's container.
+	DeployKeyHolderName = "deploy-key"
+	// DeployKeyHolderUID is the holder's uid and gid: not ClaudeCodeUID, which
+	// the agent's session runs as.
+	DeployKeyHolderUID = 1001
+	// MirrorDir is the directory the holder shares (an emptyDir: written by the
+	// holder, read-only in the agent's container), outside the workspace.
+	MirrorDir = "/var/lib/muster-mirror"
+	// MirrorPath is the bare mirror of the repository in it.
+	MirrorPath = MirrorDir + "/repo.git"
+	// EnvCCDRepoMirror hands ccd the mirror's path (cmd/ccd/checkout.go): it
+	// clones from it.
+	EnvCCDRepoMirror = "CCD_REPO_MIRROR"
+)
+
+// DeployKeyHolderResources is the holder's budget: it idles, and clones and
+// fetches one repository.
+var DeployKeyHolderResources = provision.Resources{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "1Gi"}
+
+// PoolDeployKeyFor is the deploy key agent a's pool is configured with: ONLY a
+// pooled agent (a.WorkerPool set), never a chief, and only for a pool
+// PoolDeployKeys names. ok=false is the anonymous default.
+//
+// ⚠ Like [JobBypassListed], it is read when the spec is built and when a job's
+// worktree is made: a pool added to the configuration reaches a running worker's
+// clone only at its next Stop -> Start (a worker that already has its checkout
+// is not re-cloned), while its jobs' fetches follow the configuration at once.
+func PoolDeployKeyFor(a agents.Agent, cfg Config) (PoolDeployKey, bool) {
+	cc := cfg.ClaudeCode
+	if cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+		return PoolDeployKey{}, false
+	}
+	k, ok := cc.PoolDeployKeys[a.WorkerPool]
+	return k, ok
+}
+
+// PoolRepoRefusal is THE rule that a deploy-key pool's worker works on that
+// key's one repository: nil when agent a is in no pool with a deploy key
+// ([PoolDeployKeyFor]) or works on its repository ([SameRepo]), else why not,
+// as a clause that follows the agent's name ("is in worker pool …"). Build
+// refuses the spec by it; the API asks it before it spends a held start on an
+// agent Build would refuse. a needs only its WorkerPool, Repo and Name.
+func PoolRepoRefusal(a agents.Agent, cfg Config) error {
+	k, ok := PoolDeployKeyFor(a, cfg)
+	if !ok || SameRepo(a.Repo, k.Repo) {
+		return nil
+	}
+	return fmt.Errorf("is in worker pool %q, whose deploy key is for repository %q, but it works on %q; a pool with a "+
+		"deploy key serves that one repository", a.WorkerPool, k.Repo, a.Repo)
+}
+
+// StripsRepoConfig reports whether a job on agent a gets NONE of its
+// repository's agent configuration — every `.claude/`, the root CLAUDE.md,
+// CLAUDE.local.md, AGENTS.md and .mcp.json removed from its worktree and none
+// restored — whatever the job asks: an agent of a pool with a deploy key (a
+// private repository's reviewers, whose configuration muster does not vouch
+// for). It is THE predicate; the job API refuses a config_ref by it and the
+// worktree script strips by it.
+func StripsRepoConfig(a agents.Agent, cfg Config) bool {
+	_, ok := PoolDeployKeyFor(a, cfg)
+	return ok
+}
+
+// SameRepo reports whether two owner/name spellings name one GitHub repository
+// (GitHub's names are case-insensitive).
+func SameRepo(a, b string) bool { return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b)) }
 
 // JobBypassListed reports whether agent a's worker pool is configured for
 // job-lane permission bypass: ONLY a pooled agent (a.WorkerPool set) whose pool
@@ -179,6 +464,25 @@ func JobBypassListed(a agents.Agent, cfg Config) bool {
 	return slices.Contains(cc.BypassPools, a.WorkerPool)
 }
 
+// ccImage is the image a claude-code pod runs: the session's own (an officer's
+// runner image) when set, else the deployment's.
+func ccImage(cc *ClaudeCodeConfig, sess ClaudeCodeSession) string {
+	if img := strings.TrimSpace(sess.Image); img != "" {
+		return img
+	}
+	return cc.Image
+}
+
+// ccImagePullSecret is the registry credential a claude-code pod's image is
+// pulled with: the session's, and only when the session's own image is the one
+// ccImage picked. The deployment's image never gets it.
+func ccImagePullSecret(sess ClaudeCodeSession) string {
+	if strings.TrimSpace(sess.Image) == "" {
+		return ""
+	}
+	return strings.TrimSpace(sess.ImagePullSecret)
+}
+
 // buildClaudeCode is Build for a claude-code row. Pure, like Build.
 //
 // 🔴 EVERY MISSING INPUT IS A REFUSAL, NAMING IT. A claude-code pod with no
@@ -190,8 +494,7 @@ func JobBypassListed(a agents.Agent, cfg Config) bool {
 // REFUSED: SeedFiles, ExtraEnv and CairnEligible — a caller that asked for them
 // would otherwise get an agent silently without them. Instructions IS honoured:
 // it is placed at [ClaudeCodeInstructionsPath], the CLI's managed-policy
-// CLAUDE.md (see that constant for why there and not in the workspace). So is
-// GatewaySidecar (chief_sidecar.go).
+// CLAUDE.md (see that constant for why there and not in the workspace).
 func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	cc := cfg.ClaudeCode
 	if cc == nil {
@@ -211,8 +514,12 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if a.CCAccount == "" {
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s but names no Claude account", a.Name, agents.KindClaudeCode)
 	}
+	// 🔴 A SESSION ON THE LLM ROUTE NEEDS NO TOKEN: it places none
+	// (claudeCodeSecrets), and the Compose chief without a subscription token
+	// has its account but no token at all. Every other session still refuses a
+	// missing one.
 	token, ok := cc.Accounts[a.CCAccount]
-	if !ok || token == "" {
+	if !opts.ClaudeCodeSession.LLMRoute && (!ok || token == "") {
 		// The account NAME only — never a token, and not the configured set's
 		// values either.
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs on Claude account %q, which is not "+
@@ -236,6 +543,15 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 			"(agents.Agent.GatewaySecret, minted by the provisioner); ccd refuses a bearer its session "+
 			"could derive from %s", a.Name, EnvToken)
 	}
+	route := opts.ClaudeCodeSession.LLMRoute
+	if route && cfg.ConnectURL == "" {
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is on the LLM route, which reaches muster's proxy at "+
+			"Config.ConnectURL + \"/llm\", but Config.ConnectURL is not set", a.Name)
+	}
+	if route && opts.ClaudeCodeSession.Model != "" {
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is on the LLM route and names model %q; the proxy pins "+
+			"the model, so a routed session takes none", a.Name, opts.ClaudeCodeSession.Model)
+	}
 	if cfg.ConnectURL != "" && (cfg.ConnectPort < 1 || cfg.ConnectPort > 65535) {
 		return provision.Spec{}, fmt.Errorf("agentspec: Config.ConnectURL is set but Config.ConnectPort (%d) is not a "+
 			"port; a claude-code agent's network policy could not allow it to reach the connector surface", cfg.ConnectPort)
@@ -251,13 +567,12 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	labels := buildLabels(a, cfg)
 	labels[LabelKind] = agents.KindClaudeCode
-
-	var sidecar *provision.Sidecar
-	if opts.GatewaySidecar != nil {
-		if sidecar, err = buildGatewaySidecar(a, cfg); err != nil {
-			return provision.Spec{}, err
-		}
+	poolLocked := PoolEgressLocked(a, cfg)
+	if poolLocked {
+		labels[LabelPool] = a.WorkerPool
+		labels[LabelEgress] = EgressLocked
 	}
+
 	spec := provision.Spec{
 		Ref: ref,
 		// 🔴 NO WorkingDir, and the image has none under /data either: a container
@@ -267,50 +582,130 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// `ccd seed` creates the workspace as uid 1000, the entrypoint then cd's
 		// into CCD_WORKSPACE, and ccd starts the CLI there
 		// (images/claude-code-agent/entrypoint.sh).
-		Runtime: provision.Runtime{Image: cc.Image},
-		Env:     claudeCodeEnv(cfg, sidecar != nil, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
-		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
+		Runtime: provision.Runtime{Image: ccImage(cc, opts.ClaudeCodeSession)},
+		Env:     claudeCodeEnv(cfg, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
+		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN (claudeCodeSecrets).
 		//
 		// 🔴 NO EnvGatewayToken (HOOKS_TOKEN): ccd takes its bearer from
 		// EnvGatewayBearer, the agent's own secret, and nothing in the pod derives
 		// one from the hooks token any more. EnvToken stays: it is the session's
-		// muster identity. ccd unsets EnvGatewayBearer (and the sidecar's
-		// credential) before it starts the CLI (cmd/ccd/turncred.go).
-		Secrets: []provision.EnvVar{
-			{Name: EnvToken, Value: a.HooksToken},
-			{Name: EnvGatewayBearer, Value: a.GatewaySecret},
-			{Name: EnvClaudeOAuthToken, Value: token},
-		},
-		Resources: ClaudeCodeResources,
+		// muster identity. ccd unsets EnvGatewayBearer before it starts the CLI
+		// (cmd/ccd/turncred.go).
+		//
+		// 🔴 A POD ON THE LLM ROUTE CARRIES NO SUBSCRIPTION TOKEN: its model is
+		// reached through muster's proxy with its own muster token, and the
+		// entrypoint refuses a routed pod that also holds one.
+		Secrets:   claudeCodeSecrets(a, token, route),
+		Resources: claudeCodeResourcesFor(cfg),
 		Workspace: provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,
-		Network:   claudeCodeNetworkFor(cfg),
+		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked(), poolLocked),
 		Labels:    labels,
-		Sidecar:   sidecar,
 		Repo:      repo,
+
+		ImagePullSecret: ccImagePullSecret(opts.ClaudeCodeSession),
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
 	}
-	if sidecar != nil {
-		// ccd presents the sidecar's OWN credential when it hands a gateway turn
-		// on, never the one muster sent it (chief_sidecar.go).
-		var own string
-		for _, e := range sidecar.Secrets {
-			if e.Name == EnvGatewayBearer {
-				own = e.Value
-			}
+	// 🔴 A PRIVATE-REPOSITORY POOL'S DEPLOY KEY, MOUNTED ONLY FOR ITS ONE
+	// REPOSITORY. A worker of the pool that works on any other repository is
+	// refused: the key would otherwise be in a pod whose clone and jobs name a
+	// repository it was never meant for (and GitHub would refuse it there anyway,
+	// a deploy key being one repository's).
+	if k, ok := PoolDeployKeyFor(a, cfg); ok {
+		if err := PoolRepoRefusal(a, cfg); err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q %w", a.Name, err)
 		}
-		if own == "" {
-			return provision.Spec{}, fmt.Errorf("agentspec: the gateway runtime beside agent %q has no credential "+
-				"of its own (%s)", a.Name, EnvGatewayBearer)
+		cmd, err := podagent.MirrorHolderCommand(k.Repo, MirrorPath, DeployKeyPath, KnownHostsPath)
+		if err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q: %w", a.Name, err)
 		}
-		spec.Secrets = append(spec.Secrets, provision.EnvVar{Name: EnvCCDGatewayUpstreamBearer, Value: own})
-		if err := checkSidecarIsolation(spec, a.GatewaySecret); err != nil {
-			return provision.Spec{}, err
+		// 🔴 THE KEY IS THE HOLDER'S ALONE: mounted into its container only,
+		// under DeployKeyHolderUID; the agent's container gets the mirror's
+		// directory read-only and the mirror's path, nothing more.
+		spec.KeyHolder = &provision.KeyHolder{
+			Name:         DeployKeyHolderName,
+			RunAsUser:    DeployKeyHolderUID,
+			Command:      cmd,
+			Env:          []provision.EnvVar{{Name: "HOME", Value: "/tmp"}},
+			Files:        []provision.File{{Path: KnownHostsPath, Content: []byte(podagent.GitHubKnownHosts)}},
+			SecretMounts: []provision.SecretMount{{Secret: k.Secret, Key: DeployKeySecretKey, Path: DeployKeyPath}},
+			SharedDir:    MirrorDir,
+			Resources:    DeployKeyHolderResources,
 		}
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvCCDRepoMirror, Value: MirrorPath})
+	}
+	// 🔴 BYPASS WITHOUT THE LOCK IS THE CLAUDE-CODE CHIEF'S ALONE
+	// (ClaudeCodeSession.ChiefBypass, EgressLocked): refused for any other
+	// agent, whoever asks, and in the Compose container (whose posture is its
+	// nine pre-allowed tools and deny-if-unanswered).
+	if opts.ClaudeCodeSession.ChiefBypass {
+		if !agents.IsChiefName(a.Name) {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q asks for the chief's bypass (every tool, no prompt, "+
+				"public egress kept), which only the claude-code chief may have; any other agent's bypass is "+
+				"egress-locked (BypassPermissions)", a.Name)
+		}
+		if cfg.ComposeContainer {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, whose pre-allowed "+
+				"tools are ComposeChiefAllowedMCPTools alone: the chief's bypass is not offered there", a.Name)
+		}
+	}
+	// The agent's own session settings (podagent/session.go), only when set:
+	// an agent without them keeps the spec — and so the fingerprint — it had.
+	// The Compose chief: exactly its read and route tools pre-allowed
+	// (operator decision), and no other source of an allow list. Every other
+	// prompt is denied in its container by the supervisor (ccd compose sets
+	// CCD_APPROVE_UNANSWERED=deny for its child), because nobody can answer one.
+	if cfg.ComposeContainer {
+		if len(opts.ClaudeCodeSession.AllowMCPTools) > 0 {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, whose allowed tools are "+
+				"ComposeChiefAllowedMCPTools alone; the session asks for %v", a.Name, opts.ClaudeCodeSession.AllowMCPTools)
+		}
+		if opts.ClaudeCodeSession.HQMCP {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, which is offered no HQ "+
+				"server: its pre-allowed tools are ComposeChiefAllowedMCPTools alone", a.Name)
+		}
+		opts.ClaudeCodeSession.AllowMCPTools = slices.Clone(ComposeChiefAllowedMCPTools)
+	}
+	if names := opts.ClaudeCodeSession.AllowMCPTools; len(names) > 0 {
+		v, err := podagent.FormatAllowMCPTools(names)
+		if err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q: %w", a.Name, err)
+		}
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvAllowMCPTools, Value: v})
+	}
+	if m := opts.ClaudeCodeSession.Model; m != "" {
+		if err := podagent.ValidModel(m); err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q: %w", a.Name, err)
+		}
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvModel, Value: m})
+	}
+	// The officer's bypass (locked) or the chief's (not): the same pod
+	// variable either way; only EgressLocked differs.
+	if opts.ClaudeCodeSession.BypassPermissions || opts.ClaudeCodeSession.ChiefBypass {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvPermissionMode, Value: podagent.PermissionModeBypass})
+	}
+	if opts.ClaudeCodeSession.HQMCP {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvHQMCP, Value: "1"})
+	}
+	if route {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvLLMRoute, Value: LLMRouteMuster})
+	}
+	if opts.ClaudeCodeSession.DisableAutoMemory {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableAutoMemory, Value: "1"},
+			provision.EnvVar{Name: EnvClaudeDisableOrgMemory, Value: "1"})
+	}
+	if n := opts.ClaudeCodeSession.MaxSessions; n > 0 {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvCCDMaxSessions, Value: strconv.Itoa(n)})
+	}
+	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
+		// An egress-locked pool's worker too: the CLI's optional hosts
+		// (telemetry, error reporting, auto-update, release notes) are not
+		// in the cluster policy's allowlist, so it is told not to try them.
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableNonessentialTraffic, Value: "1"})
 	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
@@ -318,9 +713,43 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	return spec, nil
 }
 
-// claudeCodeEnv is the claude-code kind's plain environment. With the gateway
-// sidecar, ccd is told where it is (EnvCCDGatewayUpstream): the one thing that
-// turns a gateway session's turn from not_ready into a hand-off.
+// claudeCodeSecrets is a claude-code pod's secrets: its muster identity, its
+// turn credential and — unless it is on the LLM route — its account's
+// subscription token.
+func claudeCodeSecrets(a agents.Agent, token string, llmRoute bool) []provision.EnvVar {
+	s := []provision.EnvVar{
+		{Name: EnvToken, Value: a.HooksToken},
+		{Name: EnvGatewayBearer, Value: a.GatewaySecret},
+	}
+	if !llmRoute {
+		s = append(s, provision.EnvVar{Name: EnvClaudeOAuthToken, Value: token})
+	}
+	return s
+}
+
+// EnvCCDGatewayUpstreamBearer is the credential an OLDER muster gave ccd for
+// the gateway runtime it ran beside a claude-code chief (a sidecar, removed).
+// Nothing writes it now. It stays in [TurnCredentialEnv] because a pod built by
+// that older muster keeps the variable until it is next started, and muster's
+// execs into such a pod must still strip it.
+//
+// CLOSING CONDITION: delete it, and its entry in TurnCredentialEnv and in ccd's
+// list, once no agent pod's spec carries it (every claude-code chief has been
+// Stop → Started on a muster without the sidecar: its pod has one container).
+const EnvCCDGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
+
+// TurnCredentialEnv names every variable a claude-code container may carry that
+// drives a TURN API: ccd's (EnvGatewayBearer, or EnvGatewayToken it can be
+// derived from), and the retired [EnvCCDGatewayUpstreamBearer].
+//
+// 🔴 NO PROCESS AN AGENT'S SESSION CAN REACH MAY HOLD ONE. ccd unsets them before
+// it starts the CLI (cmd/ccd/turncred.go, whose list a test holds equal to this
+// one); every exec muster runs into the container strips them
+// (internal/agentprovision/scrubexec, the adapter's only driver), because an exec inherits the
+// container's environment, not ccd's.
+var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, EnvGatewayToken}
+
+// claudeCodeEnv is the claude-code kind's plain environment.
 //
 // With a repository (repo.URL set), ccd is also told which one to check out and
 // where, and the CLI's working directory becomes that checkout (EnvCCDWorkspace
@@ -331,16 +760,13 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 // With bypassJobs ([JobBypassListed] and no Options.JobBypassVeto), ccd is told to start the pod's JOB lanes with
 // permissions bypassed ([EnvCCDJobPermissionMode]). Without it the variable is
 // absent, never set to some "off" value: ccd refuses every value but the one.
-func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo, bypassJobs bool) []provision.EnvVar {
+func claudeCodeEnv(cfg Config, repo provision.Repo, bypassJobs bool) []provision.EnvVar {
 	env := []provision.EnvVar{
 		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
 		{Name: EnvGitTerminalPrompt, Value: "0"},
 	}
 	if cfg.ClaudeCodeMCPOffered() {
 		env = append(env, provision.EnvVar{Name: EnvConnectURL, Value: cfg.ConnectURL})
-	}
-	if gatewaySidecar {
-		env = append(env, provision.EnvVar{Name: EnvCCDGatewayUpstream, Value: gatewaySidecarUpstream()})
 	}
 	if repo.URL != "" {
 		env = append(env, provision.EnvVar{Name: EnvCCDRepo, Value: repo.URL})
@@ -390,8 +816,8 @@ const (
 // no traversal.
 var ccRepoDirName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 
-// podRepo declares a claude-code or hermes agent's repository: the row's
-// owner/name and branch, checked out by the pod's supervisor (ccd, hermesd) at
+// podRepo declares a claude-code agent's repository: the row's
+// owner/name and branch, checked out by the pod's supervisor (ccd) at
 // ClaudeCodeWorkspacePath/<name>. No repository: the zero Repo.
 //
 // 🔴 THE CHECKOUT IS INSIDE THE WORKSPACE, ON THE AGENT'S VOLUME, so a pod

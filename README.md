@@ -1,142 +1,234 @@
+<div align="center">
+
+<!-- LOGO PLACEHOLDER: the muster logo lockup goes here once the brand pack lands.
+     Until then this comment is the only thing in this slot; do not put an image here. -->
+
 # muster
 
-To muster is to assemble a force for duty; a muster roll is the register of who
-is present and what they are assigned.
+### Every coding agent on every machine, in one list on your phone.
 
-muster is a self-hosted command post for coding agents. It has three parts:
+[![CI](https://github.com/ZacxDev/muster/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ZacxDev/muster/actions/workflows/ci.yml?query=branch%3Amain)
+[![Latest release](https://img.shields.io/github/v/release/ZacxDev/muster?label=release&color=e5b84b)](https://github.com/ZacxDev/muster/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/ZacxDev/muster?color=7c5cff)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/ZacxDev/muster)](go.mod)
 
-- A **task board**, which people and agents read and write.
-- **Dispatch**, which starts an agent on a task.
-- **Mirroring**, which shows your own tmux and Claude Code sessions live. You can
-  read them and send them a message from your phone.
+<img src="docs/img/hero.gif" width="300" alt="On a phone: the sidebar lists every session on two machines, called by their work. Searching 'opencode' finds the opencode session and 'codex' finds the two Codex windows; one Codex window opens as a live terminal. The Claude Code session 'Rate-limit the public API' then asks whether to limit per API key or per client IP, and its question shows on the Asks page with a count; one tap opens its chat, Per API key and Submit answer it, the session runs its tests and says it is done, and the list ends with nothing waiting">
 
-The server is one Go binary backed by Postgres. The UI is htmx, built
-mobile-first, and installs as a PWA. A small host agent, `muster-mirror`, dials
-out from each of your machines, so muster never needs an inbound route to them.
+</div>
 
-<p align="center">
-  <img src="docs/img/agents-filter.png" width="240" alt="The Agents list: mirrored tmux windows and a dispatched agent, narrowed by the filter">
-  <img src="docs/img/mirror-rendered.png" width="240" alt="A mirrored Claude Code window, rendered as a chat, with the message box and microphone">
-  <img src="docs/img/stepup-passkey.png" width="240" alt="The confirm-it's-you dialog offering a passkey before a message is sent">
-</p>
+## What it is
 
-## Features
+muster is a self-hosted server that puts every coding agent session on every
+one of your machines into one list on your phone: **Claude Code, Codex,
+opencode** (any model, OpenRouter included) **and anything else you run in
+tmux.** When a Claude Code session needs you, you get a push, answer from your
+phone, and it carries on.
 
-- **Task board.** Tasks have statuses, comments, attachments and tags, and a
-  review queue. They are written by people in the browser and by agents through
-  the API and CLI. → [docs/tasks.md](docs/tasks.md)
-- **Mirrored sessions.** Every tmux window on your machines appears as a card,
-  most recently active first. A window running Claude Code renders as a chat.
-  Viewing never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
-- **Message box.** You can send text into any mirrored pane or dispatched agent.
-  It works without JavaScript and does not deliver a message twice. Typing into
-  a mirrored session requires a recent sign-in, confirmed by passkey or password.
-  → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
-- **Dictation.** A microphone on every message box, transcribed by a
-  speech-to-text service you choose. → [docs/dictation.md](docs/dictation.md)
-- **File attachments.** Attach a file in the message box; the agent gets a
-  short-lived link signed by muster, and the transcript shows a thumbnail, not
-  the link. Needs an S3-compatible store. → [docs/uploads.md](docs/uploads.md)
-- **Agent dispatch.** muster can provision agents on Kubernetes. It is opt-in
-  and off by default. One of these agents can be a "chief" that reports on the
-  rest of the fleet. → [docs/provisioner.md](docs/provisioner.md)
-- **Accounts.** One shared password, or per-user accounts through GoTrue with
-  passkeys, invites, roles and personal API tokens. Row-level security keeps each
-  user's data separate. → [docs/auth.md](docs/auth.md)
-- **Web push and PWA.** Notifications for review-ready tasks, connector requests
-  and more. The app installs to your home screen, with share target, shortcuts
-  and a badge. → [docs/push.md](docs/push.md)
-- **Browser flows.** A queue of scripted browser jobs, run by a runner you host.
-  Every job an agent asks for needs its owner's approval.
-  → [docs/browser-flows.md](docs/browser-flows.md)
-- **Connectors.** Agents use stored HTTP credentials through muster's proxy and
-  never see the secret. → [docs/connectors.md](docs/connectors.md)
-- **Memo relay.** Delivers [cairn](https://github.com/ZacxDev/cairn) scope memos
-  to dispatched agents. → [docs/memo-relay.md](docs/memo-relay.md)
-- **CLI.** `muster`, a machine client for agents and scripts.
-  → [docs/cli.md](docs/cli.md)
+It is for people who run several coding agents at once, on one machine or
+many, and want to see and steer them away from the keyboard. Everything stays
+on your machines and your own Tailscale network: muster starts on this machine
+at a `http://localhost` address, and your phone and other machines join over
+your tailnet.
 
-## Quickstart
-
-You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux.
-The [Nix flake](flake.nix) provides the toolchain (`nix develop`).
-
-```sh
-git clone https://github.com/ZacxDev/muster && cd muster
-make test-db                       # a throwaway Postgres on 127.0.0.1:55432
-docker compose -f docker-compose.test.yml exec postgres createdb -U muster muster_dev
-
-export DATABASE_URL='postgres://muster:muster@127.0.0.1:55432/muster_dev?sslmode=disable'
-export MUSTER_UI_PASSWORD='pick-a-password-of-12+-chars'
-export MUSTER_STANDALONE=1         # no external permission router
-export MUSTER_MIRROR=1             # turn mirrored sessions on
-go run ./cmd/muster-server         # migrates, then listens on :8105 (all interfaces)
-```
-
-Open <http://127.0.0.1:8105> and sign in with the password. Then mirror your
-tmux sessions. Run this in a second shell with the same `DATABASE_URL`:
-
-```sh
-go run ./cmd/muster-server mirror token create mybox > ~/.muster-mirror-token
-go run ./cmd/muster-mirror -url http://127.0.0.1:8105 -allow-http \
-  -host mybox -token-file ~/.muster-mirror-token -interactive
-```
-
-Your tmux windows now appear under **Agents**. Drop `-interactive` to make them
-read-only. `-allow-http` is for local development only; a real deployment uses
-https. When you are done, `make test-db-down` removes the database.
-
-⚠ This quickstart listens on every interface and sets no `MUSTER_HOOK_TOKEN`, so
-the machine API is open to anyone who can reach the port. Keep it on a trusted
-machine, or set the token ([docs/auth.md](docs/auth.md#machine-credentials)).
-
-The server prints one line per feature at boot, saying what is on, what is off,
-and which variable changes it. Every variable is listed in
-[docs/configuration.md](docs/configuration.md).
-
-## Architecture
+## How it works
 
 ```mermaid
 flowchart LR
-  browser["Browser / installed PWA"] -->|HTTPS| server["muster-server"]
-  cli["muster CLI · agents · scripts"] -->|JSON API + tokens| server
-  server --> pg[("Postgres<br/>(row-level security)")]
-  server -.->|"sign-in, passkeys (optional)"| gotrue["GoTrue"]
-  host["muster-mirror<br/>on each of your machines<br/>(tmux, Claude Code)"] -->|"outbound WebSocket tunnel"| server
-  server -.->|"provision (optional)"| k8s["Kubernetes<br/>agent pods"]
-  server -.->|optional| stt["speech-to-text"]
-  server -.->|optional| push["Web Push services"]
-  server -.->|optional| cairn["cairn memo listener"]
+  phone["Your phone<br/>(installable web app)"]
+  subgraph server_machine["One of your machines"]
+    server["muster server<br/>(Go + Postgres, Docker Compose)"]
+  end
+  subgraph machines["Each of your machines"]
+    tmux["tmux windows<br/>Claude Code, Codex, opencode, shells"]
+    mirror["muster-mirror"]
+    tmux <--> mirror
+  end
+  phone -- "your tailnet (tailscale serve)" --> server
+  mirror -- "dials out" --> server
 ```
 
-The details are in [docs/architecture.md](docs/architecture.md): the binaries,
-the listeners, and what each component trusts.
+1. A server (one Go binary and Postgres, in Docker Compose) runs on one of your
+   machines, reached over your tailnet through `tailscale serve`.
+2. On each machine, `muster-mirror` dials out to it and mirrors every tmux
+   window as a **mirrored session**; a message from your phone is typed into
+   that same session, so it is all there when you are back at the keyboard.
+3. Your phone opens the server as an installable web app (a PWA).
 
-## Documentation
+muster sees only sessions inside tmux, and the one-prompt install sets up
+mirrored sessions only. How to bring a session you already have into tmux, and
+how mirrored sessions differ from the opt-in **dispatched agents** that muster
+starts in Kubernetes pods:
+[docs/mirroring.md](docs/mirroring.md#mirrored-sessions-and-dispatched-agents).
+The components and what each trusts: [docs/architecture.md](docs/architecture.md).
 
-- [docs/README.md](docs/README.md) is the index.
-- Reference: [configuration](docs/configuration.md), [CLI](docs/cli.md),
-  [schema](docs/schema.md).
-- Contributing: [testing](docs/testing.md), [CONTRIBUTING.md](CONTRIBUTING.md).
-- Background: [limits](docs/limits.md), [design decisions and their history](docs/decisions.md).
+## Quick start
 
-## Status and limits
+**1. Install muster on this machine.** Paste this one prompt into the coding
+agent (Claude Code, Codex, opencode, Gemini CLI, …) on the machine that should
+run muster:
 
-- **Run one replica.** Some background loops and the mirror tunnel keep state
-  in memory, and nothing coordinates them across replicas.
-- **Agent provisioning is opt-in and lightly proven.** The Kubernetes driver's
-  tests use a fake clientset. No end-to-end turn against an agent this tree
-  provisioned has been verified in-repo. This repository ships no Kubernetes
-  manifests or RBAC.
-- **Agent network isolation is address-based.** The `claude-code` agent's
-  NetworkPolicy does not restrict egress by DNS name. An agent can still reach
-  any public HTTPS host.
-- **An interactive mirror is a shell on that host.** `-interactive` lets
-  anyone who can use muster's Live keys switch for that host run commands as
-  the user that `muster-mirror` runs as.
+```text
+Set up muster for me. Download its install guide with `curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, read that whole file and follow it step by step. If that download fails, stop and tell me what it printed; never work from another copy of the guide, such as the one on the main branch, or from memory. Ask me everything you need in one go up front, then do the rest yourself. Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at https://github.com/ZacxDev/muster over memory.
+```
 
-The full list is in [docs/limits.md](docs/limits.md).
+The agent downloads [INSTALL.md](INSTALL.md), a guide written for agents to
+execute, from the newest release, asks its questions once, up front, installs
+muster and finishes with `muster doctor`
+([docs/onboarding.md](docs/onboarding.md)). Or do it by hand, with Docker
+(Compose v2) and tmux: this one line starts muster with every secret generated.
 
-## Licence
+```sh
+curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh
+```
+
+**2. Start an agent in tmux:** `tmux new -A -s work claude`. It shows up in
+muster at its `http://localhost` address. On each further machine, paste the
+same prompt and tell the agent muster already runs.
+
+**3. Add your phone** over Tailscale (on iOS, then add the app to the Home
+Screen for push): [docs/quickstart-local.md](docs/quickstart-local.md#add-your-phone).
+
+## Features
+
+<table>
+<tr>
+<td align="center" valign="top" width="33%">
+<img src="docs/img/sidebar.png" width="220" alt="The sidebar on a phone: every session on two machines and the dispatched agents, like channels in a chat app. Claude Code sessions are called by their work ('Speed up the task-list endpoint', with its current focus under it); a Codex window, an opencode window and shells by their machines' labels ('web-lint:1', 'csv-import:1', 'api-logs:1'); the open session is marked"><br>
+<a href="docs/mirroring.md"><b>Every session, one list</b></a><br>
+<sub>Every tmux window on every machine, Claude Code, Codex, opencode and shells alike, with the ones waiting on you first.</sub>
+</td>
+<td align="center" valign="top" width="33%">
+<img src="docs/img/ask-card.png" width="220" alt="A Claude Code session, 'Write the 2.4 release notes', on a phone: its question, whether to tag and publish v2.4.0 now, drawn as a form with Publish now, Hold for review and Other, and a Submit answers button"><br>
+<a href="docs/attention.md"><b>Agents ask instead of stopping</b></a><br>
+<sub>A Claude Code question becomes a form on your phone, pushed with its text; answer it and the session carries on. One-time setup per machine.</sub>
+</td>
+<td align="center" valign="top" width="33%">
+<img src="docs/img/tool-context.png" width="220" alt="A Claude Code session, 'Speed up the task-list endpoint', rendered as a chat on a phone"><br>
+<a href="docs/sending-and-step-up.md"><b>A chat, not a terminal</b></a><br>
+<sub>A Claude Code session reads as a chat, with the message box under your thumb.</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<img src="docs/img/dictation.png" width="220" alt="A Claude Code session's message box on a phone, the microphone recording"><br>
+<a href="docs/dictation.md"><b>Talk instead of typing</b></a><br>
+<sub>Optional dictation: tap the mic and speak, and read the transcript in the box before you press Send.</sub>
+</td>
+<td align="center" valign="top">
+<img src="docs/img/queue-next.png" width="220" alt="A busy Claude Code session, 'Migrate billing to Stripe webhooks', on a phone, with two messages queued above its box: the queue sends one at a time, each when Claude Code has been idle a while"><br>
+<a href="docs/sending-and-step-up.md#queue-send-when-claude-code-is-idle"><b>Queue the next message</b></a><br>
+<sub>Queue messages while the agent works: the server sends each one once Claude Code has been idle for 30 s, even with your phone closed.</sub>
+</td>
+<td align="center" valign="top">
+<img src="docs/img/officer-ask.png" width="220" alt="The Asks page on a phone: an officer asks whether to write up a proposal, with three options to tap"><br>
+<a href="docs/officers-builtin.md"><b>Officers and a chief</b></a><br>
+<sub>Optional: standing agents with a job, which can ask you on the Asks page, and a chief you can ask what every session is on.</sub>
+</td>
+</tr>
+</table>
+
+
+
+Every feature, what it needs and the `.env` lines that turn it on:
+[docs/features.md](docs/features.md). The long version of this page (what you
+get, notifications, the core and the optional features, the comparison with
+Remote Control, the limits): [docs/overview.md](docs/overview.md).
+
+## Ecosystem
+
+muster grows with what you plug into it.
+
+- **Plugins** bring your other inboxes to muster: email, a chat, a forum, a
+  support desk. Your agents read what arrives and draft the answers, and
+  nothing is sent until you approve the exact words, unless you choose to
+  let muster answer someone you trust automatically.
+- **Officers** are agents with one standing job, such as answering support,
+  writing release notes or testing each change. Each works on its own and
+  asks you before anything leaves.
+- **Together**, a plugin and an officer make an assistant for one channel:
+  it handles the routine messages, brings you the ones that need you, and
+  sends only the replies you approve.
+
+Anyone can build one and share it. See what exists and how to list yours in
+[Building on muster](docs/ecosystem.md), build your first plugin with
+[Build a plugin in 15 minutes](docs/plugins-quickstart.md), and give it an
+officer with
+[Recipe: a specialised officer with its own plugin](docs/officer-plugin-recipe.md).
+
+<!-- MEDIA SLOT (ecosystem): the film goes here, then 2-3 stills in a row
+     (a message arriving, the draft on the Asks page, the reply sent).
+     Add them once shot; no placeholder images. -->
+
+## Install options
+
+Every release publishes these assets on its
+[release page](https://github.com/ZacxDev/muster/releases/latest), with a
+`checksums.txt` of their sha256.
+
+| option | what you download | for | guide |
+|---|---|---|---|
+| **Docker Compose** (recommended) | `install.sh`, or `docker-compose.yml` with `env.example` saved as `.env` | the server on one machine; the images come from GHCR | [docs/quickstart-local.md](docs/quickstart-local.md) |
+| **Helm chart** | `muster-<X.Y.Z>.tgz` | the server on Kubernetes, and dispatched agents | [docs/kubernetes.md](docs/kubernetes.md) |
+| **Mirror daemon** | `muster-mirror_<os>_<arch>.tar.gz` | each machine whose tmux sessions muster shows | [docs/mirroring.md](docs/mirroring.md) |
+| **CLI** | `muster_<os>_<arch>.tar.gz` | `muster doctor`, tasks and the rest from a terminal | [docs/cli.md](docs/cli.md) |
+| **From source** | a clone of this repository | working on muster | [docs/development.md](docs/development.md) |
+
+The binaries are built for `<os>` = `linux` or `darwin` and `<arch>` = `amd64`
+or `arm64`. There is no server binary: the server ships as the container image
+the Compose file and the chart run.
+
+<details>
+<summary><b>Install from inside Claude Code, or as a skill</b></summary>
+
+The one prompt above is the main path. In Claude Code you can instead add this
+repository as a plugin marketplace and install the `muster` plugin:
+
+```text
+/plugin marketplace add ZacxDev/muster
+/plugin install muster@muster
+```
+
+Then ask Claude Code to "set up muster". The plugin holds one skill,
+`muster-setup`, which downloads the same [INSTALL.md](INSTALL.md) from the
+newest release and follows it, so it never carries a copy of the steps.
+
+Other coding agents can install the same skill with the
+[skills](https://skills.sh) CLI:
+
+```text
+npx skills add ZacxDev/muster --skill muster-setup
+```
+
+This is muster by ZacxDev. Other repositories publish unrelated
+skills named `muster`, so install it by this repository's name, not by
+searching for the word.
+
+</details>
+
+## Requirements
+
+- **Docker with Compose v2** on the machine that runs the server, or a
+  Kubernetes cluster for the Helm chart.
+- **tmux on every machine** whose sessions you want to see: muster sees only
+  sessions inside tmux. What each machine needs is checked by
+  [INSTALL.md, "Preflight (every machine)"](INSTALL.md#step-0-preflight-every-machine).
+- **Linux.** macOS machines are experimental; there is no Windows support.
+- **Tailscale** for your phone and your other machines. On iOS, install the app
+  to the Home Screen before it can receive push.
+
+What it does not do, or has not proven: [docs/limits.md](docs/limits.md).
+
+## Learn more
+
+- [Documentation index](docs/README.md) and the [glossary](docs/glossary.md)
+- [Every feature and what it needs](docs/features.md), and a
+  [guide per optional feature](docs/README.md#set-it-up-the-core-first-then-one-feature-at-a-time)
+- [muster compared with other ways to reach coding agents from a phone](docs/comparison.md)
+- [Contributing](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md)
+  and the [security policy](SECURITY.md)
+- [Releases](https://github.com/ZacxDev/muster/releases) and
+  [Discussions](https://github.com/ZacxDev/muster/discussions)
+
+## License
 
 MIT. See [LICENSE](LICENSE).

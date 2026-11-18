@@ -15,8 +15,10 @@ import (
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -44,6 +46,12 @@ type routeMirror struct {
 	// host running that conversation: one of the owner's sessions that is NOT
 	// a route's target.
 	otherSession string
+	// state, when set, is the window's Claude Code status (AgentState);
+	// otherwise idle since an unknown time.
+	state *mirror.AgentState
+	// dispatch is the host dispatch window @4 lists (a window muster started
+	// for the chief); 0 for none.
+	dispatch int64
 }
 
 func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
@@ -54,7 +62,7 @@ func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
 		sid = routeSID
 	}
 	raw := []mirror.Window{{Session: "work", ID: "@4", Index: 1, Active: true, Claude: true,
-		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1}}
+		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1, Dispatch: m.dispatch}}
 	if m.otherSession != "" {
 		raw = append(raw, mirror.Window{Session: "work", ID: "@5", Index: 2, Claude: true,
 			ClaudeSession: m.otherSession, Status: mirror.StatusIdle, StatusSince: 1})
@@ -66,10 +74,18 @@ func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
 	return []mirror.HostView{h}
 }
 func (m *routeMirror) AgentState(context.Context, string, string, string) mirror.AgentState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != nil {
+		return *m.state
+	}
 	return mirror.AgentState{Status: mirror.StatusIdle}
 }
-func (m *routeMirror) ServeConnect(http.ResponseWriter, *http.Request) {}
-func (m *routeMirror) HostRanks(context.Context) map[string]int        { return nil }
+func (m *routeMirror) ServeConnect(http.ResponseWriter, *http.Request)  {}
+func (m *routeMirror) HostRanks(context.Context) map[string]int         { return nil }
+func (m *routeMirror) LiveTokenHosts(context.Context) ([]string, error) { return nil, nil }
+func (m *routeMirror) HostToken(context.Context, string) (int64, bool)  { return 0, false }
+func (m *routeMirror) VisibleHosts(context.Context) []mirror.HostView   { return nil }
 func (m *routeMirror) AttachWindow(context.Context, string, string, string, bool, io.Reader, io.Writer, <-chan provision.TermSize) error {
 	return nil
 }
@@ -106,7 +122,11 @@ type routeFixture struct {
 	token   string // the owner's personal API token
 }
 
-func newRouteFixture(t *testing.T) *routeFixture {
+func newRouteFixture(t *testing.T) *routeFixture { return newRouteFixtureWith(t) }
+
+// newRouteFixtureWith is newRouteFixture with extra wiring applied after the
+// fixture's own (session_routes_request_pg_test.go turns plugins off with it).
+func newRouteFixtureWith(t *testing.T, extra ...func(ext *Extensions)) *routeFixture {
 	t.Helper()
 	f := &routeFixture{gatedFixture: &gatedFixture{}, mirror: &routeMirror{interactive: true, statusReport: true}, routing: &Routing{}}
 	g := f.gatedFixture
@@ -116,6 +136,14 @@ func newRouteFixture(t *testing.T) *routeFixture {
 		ext.Plugins, ext.Routes, ext.Routing = g.plugins, g.plugins, f.routing
 		ext.Mirror, ext.SendQueue = f.mirror, f.queue
 		ext.APITokens = apitokens.NewPG(pool)
+		g.notes = notes.NewPG(pool)
+		ext.Notes = g.notes
+		// The chief's telemetry (chief_usage.go): who handled each message
+		// (handledBy reads it back).
+		ext.ChiefUsage = chiefusage.NewPG(pool)
+		for _, e := range extra {
+			e(ext)
+		}
 	})
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)
@@ -123,7 +151,7 @@ func newRouteFixture(t *testing.T) *routeFixture {
 	g.chiefTok, g.workerTok = "route-chief-token-"+suffix, "route-worker-token-"+suffix
 	g.chief = g.newAgent(t, g.owner, "rtchief-"+suffix, "chief", g.chiefTok)
 	g.worker = g.newAgent(t, g.owner, "rtworker-"+suffix, "", g.workerTok)
-	tok, _, err := apitokens.NewPG(g.pool).Create(g.asOwner, "route-reply", time.Now().Unix())
+	tok, _, err := apitokens.NewPG(g.pool).Create(g.asOwner, "route-reply", time.Now().Unix(), apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,9 +173,33 @@ func routeArgs(m plugins.Message, sub string) string {
 // queued is the owner's send-queue rows for the routed window.
 func (f *routeFixture) queued(t *testing.T) []sendqueue.Item {
 	t.Helper()
-	items, err := f.queue.List(f.asOwner, sendqueue.Target{Host: "tower", Session: "work", Window: "@4"})
+	// Every row the owner has for the window, oldest first, read as the owner
+	// (row-level security applies) — NOT List, which leaves out what is done
+	// (sent, cancelled, retried), which is what these tests assert on.
+	rows, err := f.pool.Query(f.asOwner, `SELECT id FROM send_queue
+		WHERE mirror_host = 'tower' AND mirror_session = 'work' AND mirror_window = '@4' ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	var items []sendqueue.Item
+	for _, id := range ids {
+		it, err := f.queue.Get(f.asOwner, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, it)
 	}
 	return items
 }
@@ -271,7 +323,11 @@ func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 		{"a dispatched agent", routeArgs(m, "agent:"+strconv.FormatInt(f.worker.ID, 10)), RefusedUnsupported, nil},
 		{"a message not delivered to this chief", routeArgs(notMine, "mirror:"+routeSID), RefusedMessageNotFound, nil},
 		{"a bad subject", routeArgs(m, "pod:1"), RefusedBadArguments, nil},
-		{"a read-only host", routeArgs(m, "mirror:"+routeSID), RefusedHostNotInteractve, func() { f.mirror.interactive = false }},
+		// A window muster started for the chief (its listing carries a
+		// dispatch): task_forward's, never a route's. The same window untagged
+		// takes the route at the end of this test (the control).
+		{"a window the chief's dispatch runs", routeArgs(m, "mirror:"+routeSID), RefusedDispatchedWindow, func() { tagRouteWindow(f, 5) }},
+		{"a read-only host", routeArgs(m, "mirror:"+routeSID), RefusedHostNotInteractve, func() { tagRouteWindow(f, 0); f.mirror.interactive = false }},
 		{"a host that does not report status", routeArgs(m, "mirror:"+routeSID), RefusedQueueUnavailable, func() {
 			f.mirror.interactive, f.mirror.statusReport = true, false
 		}},
@@ -376,7 +432,7 @@ func TestTheAnswerIsRelayedPerTheAllowlist(t *testing.T) {
 
 	// Another user's credential: the route is not theirs, so it is not found.
 	stranger := f.newMember(t)
-	tok, _, err := apitokens.NewPG(f.pool).Create(f.as(stranger), "stranger", time.Now().Unix())
+	tok, _, err := apitokens.NewPG(f.pool).Create(f.as(stranger), "stranger", time.Now().Unix(), apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,23 +486,17 @@ func TestATimedOutRouteCancelsItsInjectionAndGoesBackToTheChief(t *testing.T) {
 	}
 }
 
-// TestARouteTakesItsDeadlineFromRoutingTimeout: the deadline a route is created
-// with is Routing.Timeout (MUSTER_ROUTE_TIMEOUT) when set — two values distinct
-// from each other and from the 30m default — and the default when it is 0.
-func TestARouteTakesItsDeadlineFromRoutingTimeout(t *testing.T) {
+// TestARouteTakesItsDeadlineFromRouteTimeout: a route is created with a
+// deadline RouteTimeout after it.
+func TestARouteTakesItsDeadlineFromRouteTimeout(t *testing.T) {
 	f := newRouteFixture(t)
-	for i, c := range []struct {
-		set, want time.Duration
-	}{{7 * time.Minute, 7 * time.Minute}, {3 * time.Hour, 3 * time.Hour}, {0, DefaultRouteTimeout}} {
-		f.routing.Timeout = c.set
-		id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-deadline-"+strconv.Itoa(i)))
-		r, err := f.plugins.Route(f.asOwner, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := r.TimeoutAt.Sub(r.CreatedAt); got < c.want-5*time.Second || got > c.want+5*time.Second {
-			t.Errorf("Routing.Timeout %v: the route's deadline is %v after it was made, want %v", c.set, got, c.want)
-		}
+	id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-deadline"))
+	r, err := f.plugins.Route(f.asOwner, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.TimeoutAt.Sub(r.CreatedAt); got < RouteTimeout-5*time.Second || got > RouteTimeout+5*time.Second {
+		t.Errorf("the route's deadline is %v after it was made, want %v", got, RouteTimeout)
 	}
 }
 
@@ -464,3 +514,7 @@ func TestRoutingOffOffersNothing(t *testing.T) {
 		t.Fatalf("the reply door with routing off: %d", code)
 	}
 }
+
+// tagRouteWindow sets the dispatch the route window lists (under f.mirror.mu,
+// which the caller holds).
+func tagRouteWindow(f *routeFixture, dispatch int64) { f.mirror.dispatch = dispatch }

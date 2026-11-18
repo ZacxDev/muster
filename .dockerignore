@@ -40,6 +40,7 @@ node_modules
 # binary in would produce an image whose contents do not match its VERSION.
 /muster
 /muster-migrate
+/dist
 result
 result-*
 

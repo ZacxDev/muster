@@ -85,9 +85,12 @@ The design, in one line each:
   web route it mirrors, and most are stricter.
 - muster's web UI stays the one UI. A UI change ships from the server, and only
   native modules need an APK.
-- Lock-screen privacy holds: **a notification says WHO and WHERE, never WHAT**
-  ([attention.md](../attention.md)). WHAT enters a notification only while the
-  phone is unlocked ([lock screen](#notifications)).
+- An attention notification is actionable as it stands: **it carries the
+  question, its options and the suggested replies, on the lock screen too**
+  (operator decision "Full text always", which replaced "WHO and WHERE, never
+  WHAT"; [attention.md](../attention.md#what-is-in-it),
+  [lock screen](#notifications)). Every other notification still says WHO and
+  WHERE only.
 - The server additions follow muster's existing rules: data per user under
   row-level security, nothing cached positively, every credential revocable on
   the next request.
@@ -186,15 +189,69 @@ The reasons for the shell:
   `addJavascriptInterface`, and a bridge only through
   `WebViewCompat.addWebMessageListener` with `allowedOriginRules` naming the
   exact origin, never `*`.
-- **The bridge carries four messages:** the pairing code (below), "open the
-  app's notification settings", "request POST_NOTIFICATIONS", and the theme. It
-  never carries a credential from the app to the page. The listener's JavaScript
-  object is named `musterApp` (`ui.AppBridgeName` in muster), and each message
+- **The bridge carries four design messages, plus the app's own
+  `touch-start`:** the pairing code (below), "open the app's notification
+  settings", "request POST_NOTIFICATIONS", and the theme; then `touch-start`,
+  which the app's pull-to-refresh script sends (next item). It never carries
+  a credential from the app to the page. The listener's JavaScript object is
+  named `musterApp` (`ui.AppBridgeName` in muster), and each message
   is a JSON string. The server's pages send two today, from Account → Devices:
   `{"type":"pair","code":…,"expires_at":…}` and
   `{"type":"open-notification-settings"}`. The object's presence is also how a
   page knows it is in the shell, to hide **Enable notifications** and
   **Install**.
+- **`touch-start`: pull to refresh (muster-android #9).** This fifth message
+  arrives on the same bridge, but muster's pages do not send it. The app's own
+  document-start script (`PullProbeScript`) sends it. The app installs that
+  script with `WebViewCompat.addDocumentStartJavaScript`, with
+  `allowedOriginRules` set to the paired origin exactly, and it runs in the main
+  frame only. At every one-finger `touchstart` it posts:
+
+  ```json
+  {"type":"touch-start","doc":"k3x9q2","seq":3,"doc_top":0,"inner_top":null,"owner":"page","editing":false}
+  ```
+
+  - `doc` is a random id for this document, `[0-9a-z]{1,16}`.
+  - `seq` counts the gestures that started in this document, from 1. A
+    gesture starts at a `touchstart` with no finger already down.
+  - `doc_top` is the document's scroll offset plus `visualViewport.offsetTop`,
+    in whole CSS px, rounded up.
+  - `inner_top` is the largest `scrollTop` among the vertical scrollers between
+    the touch target and the document. A vertical scroller here is an element
+    whose `overflow-y` scrolls and whose content is taller than it is. The
+    value is `null` when there are none.
+  - `owner` is `overlay` when the finger is inside a fixed-position element or
+    a dialog (`dialog[open]`, `[role=dialog]`, `[role=alertdialog]`,
+    `[aria-modal=true]`), or when a modal `<dialog>` is open. It is `gestures`
+    when an element on the way up takes its own vertical drags: a
+    `touch-action` other than `auto` or `manipulation` that lacks `pan-y`, or
+    an `.xterm`. Otherwise it is `page`.
+  - `editing` is true when the focused element is a non-empty text field. The
+    script reads the field's text to take its length, but only the boolean is
+    sent: the text never leaves the page.
+
+  The message carries geometry, a count and one boolean. It carries no text,
+  no URL and nothing typed, and the app sends nothing back. `BridgeMessage`
+  re-checks the origin and the main frame, and refuses a message whose fields
+  do not have exactly these types. How the app uses it (matching a message to
+  its gesture, when a pull reloads the page, the spinner) is documented in
+  muster-android: the "Pull to refresh" entry in its README, and `PullGate` /
+  `ShellRefreshLayout` in `feature/shell`.
+
+  **What this couples to in muster:**
+  - the route paths where a pull never refreshes, which the app matches on the
+    URL: `/agents/{name}/terminal`, `/mirror/terminal` and `/mirror/view`;
+  - the `xterm` class on the terminal;
+  - inner scrollers (such as `#chat-log`, `overflow-auto`) that scroll with
+    `overflow-y`;
+  - overlays (sheets, menus, the open sidebar) that are fixed-position, and
+    dialogs that use `<dialog>` or one of the dialog roles above;
+  - `touch-action: manipulation` on `.press` (`web/css/input.css`), which the
+    script treats as the page's own scrolling.
+
+  If a route, the terminal's markup, or an overlay's positioning or role is
+  changed, pull to refresh can fire on a page or an overlay that owns its
+  drags. No muster test pins this coupling.
 - **No Web Push in the WebView.** WebView has no PushManager, so the page must
   not offer **Enable notifications** inside the shell. The page feature-detects
   PushManager, and in the shell it points to the app's own settings instead.
@@ -351,34 +408,57 @@ The change:
 
 ### Payload v2
 
-Native devices get a payload that carries **ids, not content**:
+Native devices get the browser notification's own lines, plus ids and, for
+an ask, its chips:
 
 ```json
-{"v": 2, "type": "attention", "id": "…", "tag": "…",
- "conv": "agent:<name>",
- "title": "<WHO>", "body": "<WHERE>",
- "actions": ["ask_answer", "ask_dismiss"],
- "state": {"attention": 3, "review": 1}}
+{"v": 2, "type": "attention", "id": "ask-41", "tag": "attention-ask-41",
+ "title": "worker-7 is asking",
+ "body": "Deploy the importer now?\nOptions: deploy now · wait until Monday",
+ "url": "/attention/open/ask-41",
+ "ask": {"id": 41, "options": ["deploy now", "wait until Monday"],
+         "suggestions": ["Wait until Monday, after the backup"]},
+ "update": true}
 ```
 
-- `title` and `body` obey WHO and WHERE, never WHAT, exactly as today. As
-  built in Phase 1 they are cut to 100 and 200 characters, on a character
-  boundary.
+- `title` and `body` are the browser's own lines, cut to 100 and 200
+  characters on a character boundary — the app's own `MAX_TITLE`/`MAX_BODY`,
+  so it cuts nothing more. **For an ask and a held question they carry the
+  WHAT** — the question and its options — on the lock screen too (operator
+  decision "Full text always", which replaced "Summary only — WHO and WHERE,
+  never WHAT" for them; [attention.md](../attention.md#what-is-in-it)). A waiting
+  session and every other event still say WHO and WHERE only. The app draws
+  the body whole with `BigTextStyle` (muster-android #16, `7af3250b7`, first
+  in v0.1.5; still so at v0.4.0), so the options line shows once the
+  notification is expanded.
+- `ask` (an attention ask only): the ask's id, the asker's options and the
+  suggested replies, at most three of each, each whole (a longer one than 140
+  characters is left out, never cut; one a secret scan would redact is left
+  out too). When the suggestions arrive after the first push, the same tag is
+  pushed again with `"update": true`: the app should replace the notification
+  without alerting again (`setOnlyAlertOnce(true)` for it). The app does both
+  (muster-android #16, `7af3250b7`, first in v0.1.5; still so at v0.4.0): it
+  draws the options as buttons plus Dismiss, at most three in all, never a
+  suggestion (`AndroidNotifier.kt:104-110`, `AskPush.buttons()`,
+  `MAX_BUTTONS = 3`), each pointed at the step-up activity (`MusterApp.kt:120`),
+  and posts with `onlyAlertOnce(p) = p.update`, so the re-push does not alert
+  again.
 - `actions` names action ids, from the app's fixed table
   ([action ids](#action-ids)). The app maps each id to a fixed button and a
   fixed `/api/device/actions/*` route, so the server cannot make the app POST
   to an arbitrary path.
-- `state` is a small delta for widgets and live status.
-- Anything longer (a question's text, a draft, the last messages of a
-  conversation) is fetched after delivery with the device credential, and is
-  shown only on an unlocked phone ([notifications](#notifications)).
+- `state` is a small delta for widgets and live status (Phase 4; not sent
+  yet), and `conv` the conversation key (Phase 3; not sent yet).
+- Anything longer (a draft, the last messages of a conversation) is fetched
+  after delivery with the device credential ([notifications](#notifications)).
 - **Size: a fixed 4096-byte cap on the encrypted body.** ntfy truncates a
   body over its `message-size-limit` silently, with 200; that limit is 4096
   bytes by default and configurable, and the deployed value was not measured
-  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2 carries ids, a
-  short title and the `state` delta, which fits well under it; every detail is
-  fetched. muster refuses a larger Android push rather than send one ntfy
-  would truncate (server change 30).
+  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2's title and body fit
+  under it even at their bounds with every character escaped; an ask's chips
+  are dropped, suggestions first, then options, before a push would not fit.
+  muster refuses a larger Android push rather than send one ntfy would
+  truncate (server change 30).
 
 New event types, sent to `android` devices only:
 
@@ -423,9 +503,19 @@ A notification action has no browser session, so none of this applies as is.
   **for `/api/device/*` only** (server change 29); the shared tokens stay
   refused there. In password mode there is one listener and nothing changes.
 - **Minted from a signed-in session.** A page in the WebView calls
-  `POST /account/devices/pair` with its session cookie. That route needs a
-  sign-in from the last five minutes, the rule for adding a passkey, because
-  the key it enrols outlives the session. It returns a one-time pairing code
+  `POST /account/devices/pair` with its session cookie. Any valid signed-in
+  session may call it, however long ago it signed in. **Operator decision:**
+  there is no recent-sign-in window for pairing. Pairing used to ask for a
+  sign-in from the last five minutes, the rule for adding a passkey; the
+  operator removed it as an arbitrary requirement. What still gates the route
+  is a real browser session; a machine token, the hook token or a device
+  credential never reaches it. In gotrue mode expired, signed-out and cut-off
+  sessions are refused, and the session's sign-in time is stored as the
+  phone's `paired_signin_at`, so Sign out everywhere and the session cutoff
+  still cut the phone off. In password mode the session is a stateless 30-day
+  cookie with no Sign out everywhere: Sign out clears only that browser's
+  cookie, so a copied cookie can still pair a phone until it expires, and such
+  a phone is cut off only by Remove on Account → Devices. It returns a one-time pairing code
   (single use, 60 s, stored as a hash). The page hands the code to the app over
   the bridge, and the app redeems it at `POST /api/device/pair` for the
   credential.
@@ -645,14 +735,128 @@ cannot clash. The app refuses the bare verbs (`cancel`, `answer`, `approve`)
 | `draft_reject` | `/api/device/actions/plugins/drafts/{id}/reject` |
 | `agent_send` | `/api/device/actions/agents/{name}/send` |
 
+### The signed ask actions, as built
+
+The first signed actions muster serves are an ask's: `ask_answer` and
+`ask_dismiss` (Phase 2, asks only; the other ids in the table above are not
+routed yet; `GET /api/device/config`'s `features.actions` is true where these
+two are, and a push offers only ids that are). This is the whole contract the
+app builds against.
+
+**1. The notification (payload v2 for an `attention` ask).**
+
+```json
+{"v": 2, "type": "attention", "id": "ask-41", "tag": "attention-ask-41",
+ "title": "chief is asking",
+ "body": "Ship the migration tonight?\nOptions: ship it · wait for Monday",
+ "url": "/attention/open/ask-41",
+ "ask": {"id": 41, "options": ["ship it", "wait for Monday"],
+         "suggestions": ["Wait for Monday, until the backup is verified"]},
+ "actions": [
+   {"id": "ask_answer", "target": "41", "option": 0},
+   {"id": "ask_answer", "target": "41", "option": 1},
+   {"id": "ask_answer", "target": "41", "suggestion": 0},
+   {"id": "ask_answer", "label": "Answer", "target": "41", "input": true},
+   {"id": "ask_dismiss", "label": "Dismiss", "target": "41"}],
+ "update": true}
+```
+
+- `actions` lists every option, then every suggestion, as an `ask_answer`
+  that names its chip **by index** — `option: i` is `ask.options[i]`,
+  `suggestion: i` is `ask.suggestions[i]` — whose text is both the button's
+  label and the exact answer to send (each chip's text is in the push once, so
+  the buttons cost the chips no room); then the inline-reply `ask_answer`
+  (`input: true`: the user types the text, through the [held reply](#inline-reply));
+  then `ask_dismiss`. Only the last two carry a `label`. The app picks which to show as buttons (Android shows at
+  most three) and may show the rest as chips in an expanded view. `target` is
+  the ask's id, the route's `{id}`.
+- `update: true` arrives on the second push of the same tag, when the
+  suggestions are ready: replace the notification without alerting again.
+- A payload that would not fit in 4096 bytes drops the suggestions (and their
+  actions), then the options (and theirs); `Answer` and `Dismiss` always stay.
+- A `resolved` push with the same tag withdraws it.
+
+**2. The challenge.** On a tap, after the keyguard is dismissed:
+
+```
+POST /api/device/challenge          (Authorization: Bearer mdv_…)
+{"action": "ask_answer", "target": "41", "text_sha256": "<64 lowercase hex>"}
+→ 200 {"nonce": "mdc_…", "expires_at": "…Z", "expires_in": 120,
+       "message": "muster-device-action-v1\nmdc_…\nask_answer\n41\n<hex>"}
+```
+
+- `text_sha256` is the lowercase hex SHA-256 of the answer's UTF-8 bytes,
+  exactly as it will be sent (no trimming on the phone). Required for
+  `ask_answer`; absent for `ask_dismiss`.
+- `target` is the ask id in decimal, no leading zeros.
+- The nonce is single use and lives 2 minutes.
+
+**3. The signature.** Show a `BiometricPrompt` whose description repeats the
+exact answer text, with a `CryptoObject` wrapping `Signature.getInstance(
+"SHA256withECDSA")` initialised with the step-up key; sign the UTF-8 bytes of
+`message` **exactly as returned** (lines joined by `\n`, no trailing newline:
+`muster-device-action-v1`, the nonce, the action, the target, the text's hex
+SHA-256 or an empty line for none). Send the DER signature, base64 (standard or
+URL alphabet, padding optional). muster rebuilds the message from the stored
+challenge, never from the request.
+
+**4. The action.**
+
+```
+POST /api/device/actions/attention/asks/41/answer
+{"nonce": "mdc_…", "signature": "<base64>", "answer": "ship it"}
+→ 200 {"ok": true, "id": 41, "status": "answered"}
+
+POST /api/device/actions/attention/asks/41/cancel
+{"nonce": "mdc_…", "signature": "<base64>"}
+→ 200 {"ok": true, "id": 41, "status": "cancelled"}
+```
+
+The answer is the Attention page's own answer, under the device owner's
+principal: the notification is withdrawn on every device, the asker's wait
+returns it, and an agent's answer is delivered into its session. Once the
+action has run, an audit row `device.action` records the device, the action,
+the ask, the text's hash and the **outcome**: the ask's new status
+(`answered`, `cancelled`) or the refusal's code (`not_open`, `not_found`,
+`invalid_answer`, `failed`). A challenge refused before the action
+(`bad_signature`, `challenge_*`, `key_not_allowed`) runs nothing and writes no
+row. The body may be up to 8000 characters of the answer at any UTF-8 width
+(the body bound is the answer's own, so an over-long answer is
+`invalid_answer`, not `bad_request`).
+
+**5. Refusals.** Every refusal is JSON `{"error": "<sentence>", "code": "<code>"}`
+(a bad or revoked device credential answers the device tier's own 401, with no
+`code`). The challenge is spent before it is judged, so after any refusal of the
+action route ask for a new challenge.
+
+| code | status | meaning | the app |
+|---|---|---|---|
+| `bad_request` | 400 | malformed body, unknown action, bad target or `text_sha256` | a bug: report it |
+| `no_stepup_key` | 403 | the phone paired read-only | offer "Re-confirm this phone" |
+| `key_not_allowed` | 403 | a biometric-or-PIN key while the server refuses them | offer re-pairing |
+| `challenge_invalid` | 401 | no such challenge for this phone, or one bound to another action, ask or text | new challenge |
+| `challenge_used` | 401 | already spent (a replay, or a retry) | new challenge |
+| `challenge_expired` | 401 | older than 2 minutes | new challenge |
+| `bad_signature` | 401 | the signature does not verify against the stored key | if the key was invalidated, "Re-confirm this phone" |
+| `not_found` | 404 | no such ask among the owner's | drop the notification |
+| `not_open` | 409 | answered, dismissed or expired already | drop the notification, say so |
+| `invalid_answer` | 400 | blank, or over 8000 characters | say so |
+| `failed` | 500 | muster could not record it | keep the notification; retry later |
+
+The step-up time is not handed on: answering and dismissing an ask need no fresh
+sign-in on the web either, so no decisions.md "freshness source" entry is owed
+yet; it is when the first gated web route (Send now, Approve) gets its device
+twin.
+
 ### Native passkeys are not on the path
 
 Neither the step-up nor sign-in depends on passkeys:
 
 - **Step-up** uses the Keystore device key above. A passkey assertion made by
   a native app presents an `android:apk-key-hash:<hash of the signing
-  certificate>` origin, not `https://…`, and whether GoTrue accepts that origin
-  is UNVERIFIED.
+  certificate>` origin, not `https://…`. GoTrue v2.197.0 accepts it when that
+  exact string is in `GOTRUE_WEBAUTHN_RP_ORIGINS` (read from its source, S1;
+  see [auth.md](../auth.md#passkeys-in-the-android-app)).
 - **Sign-in in the shell** uses muster's sign-in page with the password, which
   stays mandatory in muster anyway.
 
@@ -670,9 +874,10 @@ free ones when each phase lands.
 
 1. `MUSTER_PUSH_EXTRA_HOSTS`: operator push hosts (exact names, `https`,
    default port).
-2. *Later, optional (Phase 7):* `MUSTER_ANDROID_APP`: the package name and the
-   SHA-256 fingerprints of the signing certificates, for asset links. Unset
-   means no asset-links file. Pairing does not depend on it.
+2. *Phase 7:* `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256`: the
+   package name and the SHA-256 fingerprints of the signing certificates, for
+   asset links. Unset means no asset-links file (404). Pairing does not depend
+   on them.
 3. `MUSTER_ANDROID_UPDATE_URL` (optional): the update channel's manifest URL,
    which paired devices read from `/api/device/config`.
 4. Rows for each variable in [configuration.md](../configuration.md), which a
@@ -696,8 +901,9 @@ free ones when each phase lands.
 
 **Routes, session tier (browser listener, same origin)**
 
-9. `POST /account/devices/pair`: a sign-in from the last five minutes; returns
-   a pairing code.
+9. `POST /account/devices/pair`: any valid signed-in session, however old its
+   sign-in (an operator decision: no recent-sign-in window); returns a pairing
+   code.
 10. `POST /account/devices/{id}/remove`, and the Account → Devices section on
     `/account`.
 
@@ -737,9 +943,16 @@ free ones when each phase lands.
 **Public routes (later, optional: Phase 7)**
 
 20. `GET /.well-known/assetlinks.json`: `delegate_permission/common.get_login_creds`
-    and `delegate_permission/common.handle_all_urls` for the configured
+    only (the app handles no links, so no `handle_all_urls`) for the configured
     package and fingerprints; HTTP 200, `application/json`, no redirect. The
     deployment's edge must serve it without a redirect too.
+
+Added after this list was written, for a deployment behind a single sign-on
+proxy: `GET /api/device/web`, open (it is read before the first sign-in, so
+before pairing), answers `{"sso_origins": [...]}` from
+`MUSTER_ANDROID_SSO_ORIGINS` with `Cache-Control: no-store`. The shell lets
+those origins load in the server's WebView, and nothing more. See
+[auth.md](../auth.md#sign-in-origins-for-a-single-sign-on-proxy).
 
 **Push and UI**
 
@@ -830,29 +1043,28 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   `setShortcutId`. Conversations get the conversation space, priority marking
   and bubbles. Each conversation has a unique PendingIntent request code, or a
   reply can land in the wrong one.
-- **Lock screen: WHAT only while unlocked.** `VISIBILITY_PRIVATE` with a
-  public version hides the private text on the lock screen **only if the
-  user's own setting hides sensitive content**. With "show all notification
-  content" the lock screen shows the full private notification (measured on
-  API 35 and 36, [Phase 0, S11][p0-s11]). The app does not control that
-  setting, so it does not rely on it:
-  - every notification is still `VISIBILITY_PRIVATE`, with a public version
-    holding only WHO and WHERE;
-  - the notification itself carries **only WHO and WHERE whenever the phone
-    is locked**. WHAT (the question, draft or messages, fetched with the
-    device credential) is added only when `KeyguardManager.isKeyguardLocked`
-    is false at post time, and on `ACTION_USER_PRESENT`;
-  - on `ACTION_SCREEN_OFF` the app re-posts every notification that carries
-    WHAT without it, back to WHO and WHERE;
-  - this applies to held replies too ([inline reply](#inline-reply));
-  - showing WHAT at all is a per-device opt-in, and it means "WHAT while this
-    phone is unlocked", never "WHAT on the lock screen"
-    ([open question](#open-questions) 4, decided).
+- **Lock screen: a question's full text, always** (operator decision "Full
+  text always", which REPLACED "WHAT only while unlocked" for asks and held
+  questions). An ask's or held question's `title` and `body` carry the question
+  and its options, and the app shows them as sent, locked or not:
+  `VISIBILITY_PUBLIC` for them, no stripped public version, no re-post on
+  `ACTION_SCREEN_OFF`. ([Phase 0, S11][p0-s11] measured that
+  `VISIBILITY_PRIVATE` cannot keep text off the lock screen when the user shows
+  all content anyway; the earlier design worked around that, and the operator
+  chose to show it instead.) The app does so (muster-android #16,
+  `7af3250b7`, first in v0.1.5; still so at v0.4.0): an ask (`ask` in the
+  payload) is posted `VISIBILITY_PUBLIC` (`AndroidNotifier.kt:104-110`); a held
+  question carries no `ask`, so it is posted `VISIBILITY_PRIVATE` with a public
+  version built from the same title and body, and the lock screen shows the
+  same lines. A waiting session, a reply draft
+  and the other events still say WHO and WHERE only, so they have nothing to
+  hide. Acting from the lock screen
+  still needs the unlock and the step-up key ([a gated action](#a-gated-action-step-by-step)).
 - **Actions per event:**
 
   | event | actions |
   |---|---|
-  | `attention` (agent question) | up to two of the asker's options, and **Answer** (inline reply) |
+  | `attention` (agent question) | the asker's options and the suggested replies (as `actions`; the app shows up to three as buttons), **Answer** (inline reply) and **Dismiss** — built ([the signed ask actions](#the-signed-ask-actions-as-built)) |
   | `attention` (mirrored Claude Code question) | Open only. A session's `AskUserQuestion` has no `/attention/asks/{id}/answer` route; it is answered in the session's rendered view |
   | `attention` (session waiting) | Open |
   | `plugin` | **Approve and send**, **Reject** |
@@ -1039,8 +1251,8 @@ the app's settings.
   `apksigner` (zipalign first; v2 and v3 schemes) and publishes it
   ([release pipeline](#release-pipeline)).
 - Record the certificate's SHA-256 fingerprint. It goes into the developer
-  verification registration, and into `MUSTER_ANDROID_APP` if the optional
-  asset links are built (Phase 7).
+  verification registration, and into `MUSTER_ANDROID_CERT_SHA256` for the
+  asset links (Phase 7).
 - Key rotation, if ever needed, uses `apksigner rotate` and a signing lineage.
 
 ### 🔴 Android developer verification
@@ -1162,7 +1374,7 @@ and did not run; the numbers are kept so references stay stable.
 | S8 | Obtainium's unattended installs; F-Droid index v2 | Source. Obtainium is silent only as installer of record (Android 12+, targetSdk ≥ device SDK − 3). fdroidserver still writes the v1 index. ([S8][p0-s8]) | [channel](#channel) |
 | S9 | ntfy and VAPID; ntfy's FGS type; embedded-FCM and Firebase | ntfy does **not** enforce VAPID on `up*`; it truncates an `up*` body over its size limit (default 4096 bytes, configurable; the deployed value not measured) with 200; ntfy uses `specialUse`; embedded FCM needs no Firebase project but needs Play services. ([S9][p0-s9]) | [decrypted-only](#-only-decrypted-pushes-are-trusted) is load-bearing; server change 30 |
 | S10 | Does muster reach ntfy by the exact name in the phone's endpoint? | Yes, by its public name on `https`/443; no split horizon. The endpoint's host is the ntfy app's default server, else ntfy's public server. A real phone's registration was not observed. ([S10][p0-s10]) | `MUSTER_PUSH_EXTRA_HOSTS`; the pairing push-host check |
-| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [WHAT only while unlocked](#notifications); open question 4, decided |
+| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [the lock screen](#notifications); open question 4, decided, then reversed (full text always) |
 | S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | **No** on WebView 124 and 133: 0 px on every side. ([S12][p0-s12]) | [the shell pads](#the-shell) |
 
 ### Phase 6: always-on overlay (later, opt-in)
@@ -1181,7 +1393,7 @@ app is wanted.
 
 | id | question | decides |
 |---|---|---|
-| S1 | Does GoTrue accept an `android:apk-key-hash:` entry among its allowed WebAuthn origins? | whether native passkeys are ever an option |
+| S1 | Does GoTrue accept an `android:apk-key-hash:` entry among its allowed WebAuthn origins? | whether native passkeys are ever an option. Answered from source: yes, as an exact string in `GOTRUE_WEBAUTHN_RP_ORIGINS` (GoTrue v2.197.0 passes the list to go-webauthn v0.16.5, whose `IsOriginInHaystack` compares a non-`http(s)` origin by string equality). Not yet observed end to end. |
 | S2 | Which origin does a WebView in `WEB_AUTHENTICATION_SUPPORT_FOR_APP` mode put in clientDataJSON, and from which WebView version does it work? | whether passkey sign-in works in the shell with no GoTrue change |
 
 Also not verified, and not blocking: the Android 17 release date; whether
@@ -1274,12 +1486,14 @@ guidance; the Play fee.
    fingerprint enrolment. The key type is recorded at pairing and shown on
    Account → Devices, and software-only keys are refused
    ([the step-up key](#the-step-up-key)).
-4. ~~Showing WHAT on an unlocked phone~~ **Decided: WHAT only while
-   unlocked.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
-   the lock screen when the user shows all content, so WHAT is put into a
-   notification only while the phone is unlocked and stripped when the screen
-   turns off, held replies included. The per-device opt-in stays and means
-   "WHAT while unlocked" ([notifications](#notifications)).
+4. ~~Showing WHAT on an unlocked phone~~ **Decided, then reversed: full
+   text always.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
+   the lock screen when the user shows all content, and the first decision was
+   "WHAT only while unlocked". The operator then chose the opposite: an
+   attention notification carries the question, its options and the
+   suggested replies on the lock screen too, because a notification that
+   cannot be acted on without opening it is the problem
+   ([notifications](#notifications)).
 5. **Connector approvals** from a notification: add them in a later phase, or
    keep them on the web page?
 

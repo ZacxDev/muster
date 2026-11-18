@@ -1,5 +1,7 @@
 import { Page } from '@playwright/test';
-import { test, expect, useSuiteSession } from '../lib/fixtures';
+import { revealBox } from '../lib/composer';
+import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import { composerFitPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
@@ -134,7 +136,7 @@ for (const vp of [
 
       test('the agent chat box grows, caps at 40%, scrolls, and shrinks after a send', async ({ page, baseURL }) => {
         // Signed in on the shared server, where the agent is.
-        await useSuiteSession(page);
+        await signIn(page);
         // A socket that accepts the message and finishes the turn: the send path
         // that empties the box is the WebSocket one.
         const sent: string[] = [];
@@ -160,10 +162,18 @@ for (const vp of [
           [rig.terminalPath('scratch'), 'Terminal'],
         ]) {
           await page.goto(rig.origin + path);
+          // The Rendered view's box is collapsed on a touch screen (lib/composer.ts).
+          await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
+          await revealBox(page);
           const empty = await grow(page, '#mv-input', mode);
           await page.locator('#mv-input').fill(`a ${label} send\nover two lines`);
+          // The box empties at the press, before the answer; a page left
+          // before the answer keeps the message as the box's draft
+          // (composer_pending.go). Wait for it, so the next page starts empty.
+          const answered = page.waitForResponse((r) => r.request().method() === 'POST' && /\/mirror\/(view|terminal)\/send$/.test(new URL(r.url()).pathname));
           await page.locator('#mv-input').press('Enter');
           await shrunk(page, '#mv-input', empty);
+          await answered;
         }
       });
 
@@ -177,6 +187,8 @@ for (const vp of [
         await rig.login(page);
         await rig.waitListed(page, 'data-mirror-claude');
         await page.goto(rig.origin + rig.viewPath('main'));
+        await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
+        await revealBox(page);
         await page.locator('#mv-input').fill(lines(60));
         const before = await box(page, '#mv-input');
         expect(Math.abs(before.h - Math.round(before.vvh * 0.4)), 'capped at 40% before').toBeLessThanOrEqual(1);
@@ -194,6 +206,8 @@ for (const vp of [
         await rig.login(page);
         await rig.waitListed(page, 'data-mirror-claude');
         await page.goto(rig.origin + rig.viewPath('main'));
+        await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
+        await revealBox(page);
         await page.locator('#mv-input').fill(lines(60));
         const tall = await box(page, '#mv-input');
         // A shorter viewport — what an on-screen keyboard does to visualViewport.

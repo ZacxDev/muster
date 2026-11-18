@@ -350,10 +350,13 @@ func TestTheFirstConcurrentRequestsShareOneTransport(t *testing.T) {
 type approvedStub struct {
 	connectors.Store
 	c connectors.Connector
+	// repo is the repository the grant was approved for (Grant.Repo): it must
+	// be the caller's, or ReconcileGrant re-opens it (0061).
+	repo string
 }
 
 func (s approvedStub) LatestGrant(context.Context, int64, string) (connectors.Grant, error) {
-	return connectors.Grant{ID: 1, Status: connectors.StatusApproved}, nil
+	return connectors.Grant{ID: 1, Status: connectors.StatusApproved, Repo: s.repo}, nil
 }
 func (s approvedStub) Credential(context.Context, string) (connectors.Connector, string, error) {
 	return s.c, fakeSecret, nil

@@ -3,6 +3,7 @@ package ui
 import (
 	"io"
 	"net/url"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -13,41 +14,120 @@ import (
 // install button, app badge, and the composer a share or shortcut opens.
 // ---------------------------------------------------------------------------
 
-// manifestLink is the <link rel=manifest> every document carries.
+// docHead is the head furniture every document carries: the manifest link,
+// and the favicon and touch icon (brandIconLinks — the logo's when one is set,
+// muster's own otherwise).
+//
+// 🔴 ONE HELPER, SO A DOCUMENT CANNOT HAVE ONE WITHOUT THE OTHER. In 0.187.0
+// every document head spelled manifestLink() and only two of them also spelled
+// brandIconLinks, so the landing page (the chief's agent page) had no favicon
+// at all. Every document head calls this, and nothing else calls the two
+// (TestDocumentHeadsHaveOneSpelling, TestEveryDocumentLinksTheBrandIcon).
+func docHead(b Brand) g.Node {
+	return g.Group{manifestLink(), brandIconLinks(b)}
+}
+
+// DocHeadHTML is docHead as a raw string, for internal/api's hand-written
+// documents (writeAuthDocument: sign-in, claim, invite, reset, notice), the way
+// ThemeHeadHTML carries ThemeHead there. It renders docHead itself, so the
+// link markup has one spelling.
+//
+// The manifest link is included on those signed-out pages on purpose: the
+// manifest is the same for every caller and needs no session
+// (internal/api's TestPWAMetadataIsSessionIndependent), so linking it from a
+// signed-out page exposes nothing. A link does not change what a forward-auth
+// proxy lets through (docs/auth.md keeps /manifest.webmanifest behind its
+// sign-in): the browser's fetch of it is answered by the proxy like any other.
+func DocHeadHTML(b Brand) string {
+	var sb strings.Builder
+	_ = docHead(b).Render(&sb)
+	return sb.String()
+}
+
+// manifestLink is the <link rel=manifest>; documents get it through docHead.
 //
 // 🔴 crossorigin="use-credentials" IS LOAD-BEARING, AND THE REASON IS BLINK, NOT
 // THE EDGE. Chromium fetches the manifest in CORS mode with credentials OMITTED
 // unless this attribute says otherwise — even same-origin. Without it the
-// manifest request carries no session cookie at all. (This comment used to
-// blame a Traefik basic-auth edge that answered 401; the public edge is
-// Authelia forward-auth now, and it is configured to let GET/HEAD on exactly
-// /manifest.webmanifest, /static/icons/*.png and /sw.js through without a
-// session — the WebAPK icon hasher never sends cookies, so an icon behind the
-// edge degrades the install to a plain shortcut. muster's side of that bargain
-// is that those three responses never depend on a session and never carry
-// per-user data; internal/api's TestPWAMetadataIsSessionIndependent pins it.)
+// manifest request carries no session cookie at all. (A deployment behind a
+// forward-auth proxy should let muster's PWA metadata through without a
+// session — GET/HEAD on exactly /manifest.webmanifest, /static/icons/*.png and
+// /sw.js: the WebAPK icon hasher never
+// sends cookies, so an icon behind the proxy degrades the install to a plain
+// shortcut. muster's side of that bargain is that those responses never depend
+// on a session and never carry per-user data;
+// internal/api's TestPWAMetadataIsSessionIndependent pins it.)
 func manifestLink() g.Node {
 	return Link(Rel("manifest"), Href("/manifest.webmanifest"), g.Attr("crossorigin", "use-credentials"))
 }
 
 // pwaChrome is the per-document PWA furniture: the update toast and the
 // script that owns the worker. Every document renders it, so an update is
-// offered and the badge stays true wherever the operator happens to be.
+// offered and the badge stays true wherever the operator happens to be. It
+// also carries swapInlineScript, so every boosted document runs a swap's
+// scripts inside the swap (swap_inline.go).
 func pwaChrome() g.Node {
-	return g.Group{updateToast(), pwaScript()}
+	return g.Group{updateToast(), pwaScript(), swapInlineScript()}
 }
+
+// buildVersion is the running server build (api.BuildVersion), installed once
+// by main through SetBuildVersion. The update pill shows it as the version the
+// page is ON. Empty (a binary that never set it) renders no versions at all:
+// the pill then reads "Update available".
+var buildVersion string
+
+// SetBuildVersion installs the running build the update pill names. Called
+// once from main at startup, before any page is rendered.
+func SetBuildVersion(v string) { buildVersion = v }
+
+// releaseVersionPattern is what a RELEASE build version looks like: the
+// X.Y.Z the release flow stamps from a vX.Y.Z tag (ci.yml image-muster). A
+// main push is stamped with a short sha, a local build with "dev": those have
+// no release page, so they get no link. pwaScript is handed this text as a
+// regex literal and tests the waiting worker's version with it: only the
+// version being MOVED TO links to its notes; the current one is plain text.
+const releaseVersionPattern = `^[0-9]+\.[0-9]+\.[0-9]+$`
+
+// releaseNotesURL is where a release's notes live; the release flow pushes the
+// public tag v<version> and a GitHub Release for it.
+const releaseNotesURL = "https://github.com/ZacxDev/muster/releases/tag/v"
+
+// releaseLinkClass styles the new version's release-notes link, drawn by
+// pwaScript (spliced in, so Tailwind sees the classes in this file). 44px
+// tall: it is a tap target.
+const releaseLinkClass = "inline-flex min-h-[44px] items-center font-semibold text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid"
+
+
+// reloadIcon is the circular arrow the Reload button draws.
+const reloadIcon = `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>`
 
 // updateToast is the "new version" prompt. Hidden until pwaScript sees a
 // waiting worker; its Reload button hands control to that worker.
 //
+// It reads "Update <current> → <new>" (operator's choice, #640). The current
+// version is rendered here (data-sw-current, and the from-version); the new
+// one is asked of the WAITING worker by pwaScript (sw.js answers GET_VERSION
+// with the build the server stamped into it) and drawn into [data-sw-to]. Until
+// then — or when the worker does not answer — the pill says "Update available"
+// ([data-sw-label]), and Reload works either way.
+//
+// 🔴 RELOAD IS AN ICON BUTTON (a circular arrow, aria-label "Reload to update",
+// 44×44) and still carries data-sw-reload: pwaScript's click handler is what
+// it triggers.
+//
+// The pill can be dragged by its body (pwaScript: pointer events with a
+// movement threshold, so a tap on a button or the link is still a tap); the
+// spot is remembered per device and overrides the corner below.
+//
 // 🔴 THE NEW WORKER WAITS FOR THIS BUTTON. sw.js no longer calls skipWaiting()
 // at install, so an open page is never silently switched to a worker whose
-// inline scripts it does not have. Reload is the operator's decision.
+// scripts it does not have. Reload is the operator's decision.
 //
 // 🔴 IT IS A COMPACT PILL IN THE TOP-RIGHT CORNER — NOT A BAR AT THE BOTTOM. It used to float 5.5rem above the bottom edge, which
 // on a phone is exactly where the composer, Send, the FAB and the chat button
 // live: the operator reported it "blocking the UI", and chose this shape
-// ("Updated · Reload ×", top-right). The classes below put it in the corner
+// ("Updated · Reload ×", top-right; since #640 "Update a → b ⟳ ×", and
+// draggable — a remembered spot wins over the corner). The classes below put it in the corner
 // under the safe-area insets; pwaScript's placeToast slides it DOWN past any
 // control it would sit on (a header icon, a filter chip) before it is shown. It is `fixed` and sized to its content, so it takes no layout space,
 // showing it shifts nothing, and it blocks taps only inside its own box.
@@ -55,18 +135,38 @@ func pwaChrome() g.Node {
 // ⚠ z-[35] IS BETWEEN THE FAB/BACKDROP (z-30) AND THE SIDEBAR PANEL (z-40): an
 // open sidebar slides OVER the pill, so the pill never covers its links.
 func updateToast() g.Node {
+	return updateToastFor(buildVersion)
+}
+
+// updateToastFor is updateToast for a given running build (tests pass one).
+func updateToastFor(current string) g.Node {
+	var versions g.Node
+	if current != "" {
+		versions = Span(
+			g.Attr("data-sw-versions", ""),
+			g.Attr("hidden", ""),
+			Class("whitespace-nowrap"),
+			g.Text("Update "), Span(g.Attr("data-sw-from", ""), Class("font-semibold"), g.Text(current)), g.Text(" → "), Span(g.Attr("data-sw-to", "")),
+		)
+	}
 	return Div(
 		ID("sw-update-toast"),
 		g.Attr("role", "status"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("hidden", ""),
-		Class("fixed right-[calc(env(safe-area-inset-right)+0.75rem)] top-[calc(env(safe-area-inset-top)+0.5rem)] z-[35] flex items-center rounded-full bg-s3 pl-3 text-xs text-fg shadow-lg shadow-black/40 ring-1 ring-inset ring-edge"),
-		Span(Class("whitespace-nowrap"), g.Text("Updated ·")),
+		g.Attr("data-sw-current", current),
+		// touch-none: a touch drag on the pill moves the pill, not the page.
+		// select-none: a mouse drag does not select its text.
+		Class("fixed right-[calc(env(safe-area-inset-right)+0.75rem)] top-[calc(env(safe-area-inset-top)+0.5rem)] z-[35] flex cursor-grab touch-none select-none items-center rounded-full bg-s3 pl-3 text-xs text-fg shadow-lg shadow-black/40 ring-1 ring-inset ring-edge data-[sw-dragging]:cursor-grabbing"),
+		Span(g.Attr("data-sw-label", ""), Class("whitespace-nowrap"), g.Text("Update available")),
+		versions,
 		Button(
 			Type("button"),
 			g.Attr("data-sw-reload", ""),
-			Class("press inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-accent transition hover:underline"),
-			g.Text("Reload"),
+			g.Attr("aria-label", "Reload to update"),
+			g.Attr("title", "Reload to update"),
+			Class("press ml-1 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-accent transition hover:bg-s2"),
+			g.Raw(reloadIcon),
 		),
 		Button(
 			Type("button"),
@@ -112,8 +212,10 @@ const AppBridgeName = "musterApp"
 //
 // ⚠ ORDER: it publishes window.musterSWReady, which pushScript consumes, so it
 // renders before pushScript on the shell.
-func pwaScript() g.Node {
-	return Script(g.Raw(`
+func pwaScript() g.Node { return staticScript(pwaScriptSrc) }
+
+// pwaScriptSrc is the path pwaScript's code is served at, /static/js/pwa.js (static_script.go).
+var pwaScriptSrc = staticJS("pwa", `
 (function () {
   if (window.__musterPWA) return;
   window.__musterPWA = true;
@@ -140,8 +242,16 @@ func pwaScript() g.Node {
   // With no free spot anywhere, the spot covering the least is used. It runs
   // while the pill is laid out but invisible (visibility:hidden), BEFORE it is
   // shown, so the pill appears in its final place and nothing moves.
-  var CONTROLS = 'a[href], button, input, select, textarea, [role=button], [tabindex]';
-  // controlBoxes: the boxes of visible controls in the pill's column.
+  //
+  // 🔴 A PROPOSAL CARD IS AVOIDED WHOLE ([data-proposal], ui.ProposalCard), not
+  // only its buttons: its kickoff and its "what happens" lines ARE what the
+  // owner is deciding on, and the pill once sat on a succession card's
+  // kickoff and an end card's subtitle at phone width. The card arrives after
+  // the page settled (the view's own fetch, no htmx swap), so the view's
+  // script says so ('muster:layout') and a pill on it moves off.
+  var CONTROLS = 'a[href], button, input, select, textarea, [role=button], [tabindex], [data-proposal]';
+  // controlBoxes: the boxes of visible controls (and proposal cards) in the
+  // pill's column.
   function controlBoxes(t, pill) {
     var boxes = [];
     var all = document.querySelectorAll(CONTROLS);
@@ -167,12 +277,55 @@ func pwaScript() g.Node {
     }
     return sum;
   }
+  // 🔴 A SPOT THE OPERATOR DRAGGED THE PILL TO WINS (savedPos): it is used,
+  // clamped to the viewport, instead of the corner and the slide-down below.
+  // With none saved, the corner and the slide-down apply as before.
+  //
+  // 🔴 BUT A SAVED SPOT STILL COVERS NO CONTROL. Clamped into a viewport the
+  // phone keyboard shrank (the pages declare interactive-widget=
+  // resizes-content: innerHeight drops and resize fires), a spot low on the
+  // screen landed ON the pinned composer and Send — z-[35] over z-20, so the
+  // pill took the taps. So the clamped spot is checked like the corner is,
+  // and if it covers a control the pill goes to the NEAREST free spot up or
+  // down its column (nearestFreeTop). The saved spot is not rewritten: when
+  // the keyboard closes, the pill goes back to it.
+  function nearestFreeTop(t, pill, left) {
+    var boxes = controlBoxes(t, pill);
+    var start = pill.top;
+    if (overlap(boxes, pill, start, pill.height) === 0) return start;
+    var lo = clampPos(t, { left: left, top: -1e9 }).top;
+    var hi = clampPos(t, { left: left, top: 1e9 }).top;
+    var best = start, bestCost = Infinity;
+    for (var d = 4; start - d >= lo || start + d <= hi; d += 4) {
+      var tops = [start - d, start + d];
+      for (var k = 0; k < 2; k++) {
+        var top = tops[k];
+        if (top < lo || top > hi) continue;
+        var cost = overlap(boxes, pill, top, pill.height);
+        if (cost === 0) return top;
+        if (cost < bestCost) { best = top; bestCost = cost; }
+      }
+    }
+    return best;
+  }
   function placeToast(t) {
     var vis = t.style.visibility;
     var wasHidden = t.hidden;
     t.style.top = '';
+    t.style.left = '';
+    t.style.right = '';
     t.style.visibility = 'hidden';
     t.hidden = false;
+    var saved = savedPos();
+    if (saved) {
+      var at = clampPos(t, saved);
+      applyPos(t, at);
+      at.top = nearestFreeTop(t, t.getBoundingClientRect(), at.left);
+      applyPos(t, at);
+      t.hidden = wasHidden;
+      t.style.visibility = vis;
+      return;
+    }
     var pill = t.getBoundingClientRect();
     var boxes = controlBoxes(t, pill);
     var best = pill.top, bestCost = Infinity, limit = window.innerHeight - pill.height - 8;
@@ -198,28 +351,258 @@ func pwaScript() g.Node {
       fn();
     })();
   }
+  // --- the versions ----------------------------------------------------------
+  // The NEW version is asked of the waiting worker itself: sw.js answers
+  // {type:'GET_VERSION'} on the port it is handed with {build}, the build the
+  // server stamped into those bytes. No network request. A worker that does
+  // not answer within VERSION_ASK_MS (an older sw.js, a worker that went
+  // redundant) leaves the pill's "Update available" label — the pill is shown
+  // either way, and Reload never waits on this. A real ANSWER is kept per
+  // worker, so a re-offer after a swap draws at once; a timeout is not kept
+  // (the worker was asked, not answered), and an answer that arrives after it
+  // redraws the pill in place if the pill is still showing that worker.
+  var VERSION_ASK_MS = 1000;
+  var RELEASE_RE = /` + releaseVersionPattern + `/;
+  var asked = { w: null, v: null };
+  var shownFor = null; // the waiting worker the visible pill describes
+  function workerVersion(w, done) {
+    if (!w || typeof w.postMessage !== 'function') return done(null);
+    if (asked.w === w) return done(asked.v);
+    var over = false;
+    var timer = setTimeout(function () {
+      if (over) return;
+      over = true;
+      done(null);
+    }, VERSION_ASK_MS);
+    try {
+      var ch = new MessageChannel();
+      ch.port1.onmessage = function (e) {
+        clearTimeout(timer);
+        var b = e.data && e.data.build;
+        var v = typeof b === 'string' && b ? b : null;
+        asked = { w: w, v: v };
+        if (!over) { over = true; done(v); return; }
+        var t = document.getElementById('sw-update-toast');
+        if (t && !t.hidden && shownFor === w) drawVersions(t, v);
+      };
+      w.postMessage({ type: 'GET_VERSION' }, [ch.port2]);
+    } catch (err) {
+      clearTimeout(timer);
+      if (!over) { over = true; done(null); }
+    }
+  }
+  // drawVersions: "Update <current> → <new>" when both are known and differ,
+  // the plain label otherwise. Only the new version can link: to its release
+  // notes, when it is a release (RELEASE_RE). The current one is plain text.
+  function drawVersions(t, v) {
+    var label = t.querySelector('[data-sw-label]');
+    var vs = t.querySelector('[data-sw-versions]');
+    var to = t.querySelector('[data-sw-to]');
+    var cur = t.getAttribute('data-sw-current') || '';
+    var on = !!(v && vs && to && cur && v !== cur);
+    if (on) {
+      var n;
+      if (RELEASE_RE.test(v)) {
+        n = document.createElement('a');
+        n.href = '` + releaseNotesURL + `' + v;
+        n.target = '_blank';
+        n.rel = 'noopener noreferrer';
+        n.className = '` + releaseLinkClass + `';
+        n.setAttribute('data-sw-release', v);
+        n.setAttribute('aria-label', 'Release notes for ' + v);
+        // 🔴 NOT NATIVELY DRAGGABLE: a link is, by default, so a mouse press on
+        // it that moved started the browser's own link drag, which cancels the
+        // pointer stream (pointercancel) and the pill stopped a few px in.
+        n.draggable = false;
+      } else {
+        n = document.createElement('span');
+        n.className = 'font-semibold';
+      }
+      n.textContent = v;
+      to.textContent = '';
+      to.appendChild(n);
+    }
+    if (label) label.hidden = on;
+    if (vs) vs.hidden = !on;
+  }
+
+  // --- the dragged spot ---------------------------------------------------------
+  // The pill can be dragged by its body; where it is let go is remembered for
+  // this device (localStorage) and used for every later offer (placeToast).
+  // 🔴 EVERY STORAGE ACCESS IS IN A try: a private window or blocked site data
+  // throws on the accessor. Then the spot lives for this page only (memPos).
+  var POS_KEY = 'muster.updatePill.pos';
+  var memPos = null;
+  function savedPos() {
+    try {
+      var p = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+      if (p && typeof p.left === 'number' && typeof p.top === 'number' && isFinite(p.left) && isFinite(p.top)) return { left: p.left, top: p.top };
+    } catch (err) {}
+    return memPos;
+  }
+  function savePos(p) {
+    memPos = p;
+    try { localStorage.setItem(POS_KEY, JSON.stringify(p)); } catch (err) {}
+  }
+  // insets: the safe-area insets in px, read off a probe (env() has no JS API).
+  function insets() {
+    var p = document.createElement('div');
+    p.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;' +
+      'padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+    document.body.appendChild(p);
+    var s = getComputedStyle(p);
+    var r = { t: parseFloat(s.paddingTop) || 0, r: parseFloat(s.paddingRight) || 0, b: parseFloat(s.paddingBottom) || 0, l: parseFloat(s.paddingLeft) || 0 };
+    p.remove();
+    return r;
+  }
+  // clampPos: p moved the least distance that puts the whole pill inside the
+  // viewport, inside the safe-area insets. A pill wider (taller) than the room
+  // sits at the left (top) inset.
+  // ins: insets already read (a drag reads them once, at its start).
+  function clampPos(t, p, ins) {
+    var b = t.getBoundingClientRect(), i = ins || insets();
+    var vw = Math.min(document.documentElement.clientWidth || window.innerWidth, window.innerWidth);
+    var vh = window.innerHeight;
+    return {
+      left: Math.max(i.l, Math.min(p.left, vw - i.r - b.width)),
+      top: Math.max(i.t, Math.min(p.top, vh - i.b - b.height)),
+    };
+  }
+  function applyPos(t, p) {
+    t.style.left = p.left + 'px';
+    t.style.top = p.top + 'px';
+    t.style.right = 'auto';
+  }
+  // 🔴 A DRAG STARTS ONLY PAST DRAG_THRESHOLD px, AND NEVER ON A BUTTON. Below
+  // the threshold nothing moves and the tap is an ordinary click (the release
+  // link opens); a press on Reload or × is never a drag at all. Pointer events,
+  // so a mouse and a finger take the one path; the pill is touch-action:none
+  // (touch-none), so a finger drags the pill and not the page. Once a drag
+  // began, the click its release would fire is swallowed (swallowDragClick).
+  var DRAG_THRESHOLD = 6;
+  var drag = null;
+  function dragStart(e) {
+    var t = e.currentTarget;
+    if (t.hidden || !e.target || !t.contains(e.target)) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.target.closest('button')) return;
+    var b = t.getBoundingClientRect();
+    drag = { t: t, id: e.pointerId, x: e.clientX, y: e.clientY, left: b.left, top: b.top, moved: false, ins: insets() };
+  }
+  // 🔴 THE PILL ITSELF LISTENS FOR click, NOT ONLY THE DOCUMENT. Chromium's
+  // touch adjustment moves a touch that lands on a node that does not respond
+  // to a tap to the nearest node that does — and a pointerdown listener does
+  // not count, a click listener does. Without one, a finger on the pill's body
+  // was retargeted to the header's wordmark link beside it (measured at a
+  // 390-wide phone): the drag never began and the tap navigated. The click
+  // listener has a job of its own: it swallows the click that ends a drag, so
+  // letting go over the release link does not open it. The pill is swapped
+  // with the body on a boosted navigation, so each pill is bound when it is
+  // offered (bindDrag, once per element).
+  // 🔴 THE SWALLOW LASTS UNTIL THE NEXT PRESS, OR 350 ms. Not setTimeout(0):
+  // a touch browser may deliver the gesture's click a frame or more after
+  // pointerup (iOS's synthesized click historically ~300 ms later). The next
+  // pointerdown is a new gesture, so it ends the window deterministically; the
+  // 350 ms cap only bounds a click with no press before it (Enter on the link).
+  var justDragged = false, swallowTimer = null;
+  var SWALLOW_MS = 350;
+  function swallowDragClick(e) {
+    if (!justDragged) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function endSwallow() {
+    justDragged = false;
+    clearTimeout(swallowTimer);
+  }
+  document.addEventListener('pointerdown', endSwallow, true);
+  function bindDrag(t) {
+    if (t.__musterDrag) return;
+    t.__musterDrag = true;
+    t.addEventListener('pointerdown', dragStart);
+    t.addEventListener('click', swallowDragClick, true);
+  }
+  document.addEventListener('pointermove', function (e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved) {
+      if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
+      drag.moved = true;
+      try { drag.t.setPointerCapture(e.pointerId); } catch (err) {}
+      drag.t.setAttribute('data-sw-dragging', '');
+    }
+    e.preventDefault();
+    applyPos(drag.t, clampPos(drag.t, { left: drag.left + dx, top: drag.top + dy }, drag.ins));
+  });
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var d = drag;
+    drag = null;
+    if (!d.moved) return;
+    d.t.removeAttribute('data-sw-dragging');
+    // A pill swapped out mid-drag (a boosted navigation) has no box: saving
+    // its {0,0} would park every later pill in the corner. Save nothing.
+    if (!d.t.isConnected) return;
+    var b = d.t.getBoundingClientRect();
+    savePos({ left: b.left, top: b.top });
+    justDragged = true;
+    clearTimeout(swallowTimer);
+    swallowTimer = setTimeout(endSwallow, SWALLOW_MS);
+  }
+  document.addEventListener('pointerup', endDrag);
+  document.addEventListener('pointercancel', endDrag);
+
+  // 🔴 A VISIBLE PILL OFFERED A DIFFERENT WORKER IS REDRAWN IN PLACE. A newer
+  // build (c) replacing the waiting one (b) used to leave "→ b" and b's
+  // release link on screen while Reload installed c. Its label is redrawn
+  // for c where it stands; the pill is not moved.
   function offerUpdate(w) {
     if (w && w === dismissed) return;
     var t = document.getElementById('sw-update-toast');
-    if (!t || !t.hidden) return;
+    if (!t) return;
+    if (!t.hidden) {
+      if (!w || w === shownFor) return;
+      shownFor = w;
+      workerVersion(w, function (v) {
+        var t2 = document.getElementById('sw-update-toast');
+        if (t2 && !t2.hidden && shownFor === w) drawVersions(t2, v);
+      });
+      return;
+    }
     whenSettled(function () {
-      var t2 = document.getElementById('sw-update-toast');
-      if (!t2 || !t2.hidden || (w && w === dismissed)) return;
-      placeToast(t2);
-      t2.hidden = false;
+      workerVersion(w, function (v) {
+        var t2 = document.getElementById('sw-update-toast');
+        if (!t2 || !t2.hidden || (w && w === dismissed)) return;
+        // Drawn BEFORE placing: the label sets the pill's width, so the pill
+        // is placed at its final size and shown once, without moving.
+        drawVersions(t2, v);
+        bindDrag(t2);
+        placeToast(t2);
+        shownFor = w;
+        t2.hidden = false;
+      });
     });
   }
   // A swap that lands a control UNDER a visible pill (a list refresh) moves the
   // pill off it. Only then: an unprompted move is a layout shift, so a pill
-  // that covers nothing is never touched.
+  // that covers nothing is never touched. A pill at a dragged spot is placed
+  // from that spot again — re-clamped and kept off controls (placeToast) — so
+  // a resize (a rotation, the phone keyboard; a rotation fires resize too, so
+  // it needs no listener of its own) cannot leave it off screen or on Send.
+  // Not while it is being dragged: the drag owns its position.
   function replaceIfCovering() {
     var t = document.getElementById('sw-update-toast');
-    if (!t || t.hidden) return;
+    if (!t || t.hidden || drag) return;
+    if (savedPos()) { placeToast(t); return; }
     var pill = t.getBoundingClientRect();
     if (overlap(controlBoxes(t, pill), pill, pill.top, pill.height) > 0) placeToast(t);
   }
   document.addEventListener('htmx:afterSettle', replaceIfCovering);
   window.addEventListener('resize', replaceIfCovering);
+  // A region drawn by a page's own script (the view's proposal card), and a
+  // disclosure opened or closed (the card's kickoff), move what is under it.
+  document.addEventListener('muster:layout', replaceIfCovering);
+  document.addEventListener('toggle', replaceIfCovering, true);
   registered.then(function (reg) {
     if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
     // A boosted navigation swaps the body, and the toast with it: the new one
@@ -255,6 +638,22 @@ func pwaScript() g.Node {
     location.reload();
   }
   navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+
+  // --- a notification tap the worker cannot navigate --------------------------
+  // sw.js focusOrOpen cannot navigate() a tab it does not control (after a
+  // hard reload, say), so it asks the page to go: {type:'NAVIGATE', url} with
+  // a port the page answers on. Only a same-origin url is followed. The answer
+  // tells the worker not to open a window instead.
+  navigator.serviceWorker.addEventListener('message', function (e) {
+    var m = e.data || {};
+    if (m.type !== 'NAVIGATE' || typeof m.url !== 'string') return;
+    var u;
+    try { u = new URL(m.url, location.href); } catch (err) { return; }
+    if (u.origin !== location.origin) return;
+    if (e.ports && e.ports[0]) e.ports[0].postMessage({ ok: true });
+    location.assign(u.href);
+  });
+  navigator.serviceWorker.startMessages();
   // 🔴 RELOAD ASKS THE REGISTRATION WHAT IS WAITING *NOW*, AND ALWAYS RELOADS.
   // This used to post SKIP_WAITING to the worker captured when the toast was
   // shown, and then wait for a controllerchange. When ANOTHER client — a second
@@ -358,8 +757,7 @@ func pwaScript() g.Node {
     document.addEventListener('sse:task.changed', soon);
   }
 })();
-`))
-}
+`)
 
 // ---------------------------------------------------------------------------
 // THE COMPOSER, OPENED BY A URL.
@@ -416,7 +814,12 @@ func RenderComposePage(w io.Writer, feat Features, body string) error {
 func composeOnLoad(body string) g.Node {
 	return g.Group{
 		Div(ID("compose-on-load"), g.Attr("hidden", ""), g.Attr("data-compose-url", ComposeURL(body))),
-		Script(g.Raw(`
+		staticScript(composeOnLoadSrc),
+	}
+}
+
+// composeOnLoadSrc is the path composeOnLoad's code is served at, /static/js/compose-on-load.js.
+var composeOnLoadSrc = staticJS("compose-on-load", `
 (function () {
   var tries = 0;
   function go() {
@@ -439,6 +842,4 @@ func composeOnLoad(body string) g.Node {
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
 })();
-`)),
-	}
-}
+`)

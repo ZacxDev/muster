@@ -14,20 +14,18 @@ import (
 )
 
 // buildVersion is the muster SERVER version this CLI was built against. The
-// linker accepts an override here (-ldflags "-X main.buildVersion=1.2.3"), but
-// that spelling appears NOWHERE in this repository.
+// linker overrides it (-ldflags "-X main.buildVersion=1.2.3").
 //
-// 🔴 NOTHING IN THIS TREE STAMPS IT, AND THE SERVER'S HALF IS STAMPED, SO THE
-// ASYMMETRY IS AT RELEASE TIME RATHER THAN IN THE DEFAULTS. Dockerfile's build
-// stage links the server with
-// `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${VERSION}`, which is
-// what /health reports; flake.nix links this binary with buildRevision ONLY;
-// `make build`, `make verb-ledger` and every nix-built CLI therefore ship
-// buildVersion == "dev". warnSkew compares THIS literal against /health, so
-// against any released server — /health answering a real semver — the note
-// fires on EVERY command. That is not a drift to be fixed in the defaults:
-// closing it means stamping this variable at release, which is a separate
-// change nothing here makes.
+// 🔴 ONLY THE GITHUB RELEASE BUILD STAMPS IT. scripts/release-build.sh links the
+// published CLI archives with `-X main.buildVersion=<X.Y.Z>` (the release's
+// semver, the same value the release image's server reports on /health), so a
+// released CLI against a released server of the same version is silent.
+// Everything else ships the default "dev": Dockerfile's build stage stamps only
+// the SERVER (`-X …/internal/api.BuildVersion=${VERSION}`) and builds the
+// in-image agent CLI with no `-X`; flake.nix links buildRevision ONLY; `make
+// build` and `make verb-ledger` stamp nothing. warnSkew compares THIS literal
+// against /health, so any of those against a released server — /health
+// answering a real semver — prints the note on every command.
 //
 // ⚠ WHAT THE DEFAULT PIN STILL BUYS, since it cannot be the release story:
 // TestTheCLIBuildVersionDefaultMatchesTheServers holds this literal equal to
@@ -179,6 +177,11 @@ type client struct {
 	// progName is the name this process was invoked as, so the skew note names
 	// the command the reader actually typed. Empty falls back in warnSkew.
 	progName string
+	// tenantNote names the tenant ("tenant: work (host)") when this host has
+	// more than one; "" otherwise, and then every message is exactly as it was
+	// before tenants. envFile is the selected file the auth error points at.
+	tenantNote string
+	envFile    string
 
 	skewOnce sync.Once
 }
@@ -205,17 +208,12 @@ type request struct {
 
 // credential names one of muster's caller-side credentials.
 //
-// 🔴 IT IS AN ENUM WITH TWO VALUES TODAY, AND THE HONEST READING IS THAT THIS
-// COSTS NOTHING RATHER THAN THAT IT ALREADY EARNS ITS KEEP. Every verb in the
-// ledger presents the hook credential; only the /health skew probe presents
-// none. The upstream binary this was extracted from needed three values and the
-// enum was load-bearing there. It is kept in this shape because the server
-// already has a second caller tier — api.requireHookOrServiceToken admits
-// MUSTER_SERVICE_TOKEN plus an asserted actor — so a verb reaching it would add
-// a value rather than convert a bool, and the conversion is the step that gets
-// got wrong: spelled as booleans the states can both be set, both be unset, or
-// disagree, and a request that presented NEITHER credential reads as "the
-// surface is broken" rather than "I sent nothing".
+// 🔴 IT IS AN ENUM, NOT A BOOL, AND THE THIRD VALUE IS WHY. Most verbs present
+// the hook credential; the /health skew probe presents none; `agent create`
+// presents MUSTER_AGENT_CREATE_TOKEN and never the ordinary token. Spelled as
+// booleans the states could both be set, both be unset, or disagree, and a
+// request that presented the WRONG credential reads as "the surface is broken"
+// rather than "I sent the full token to a route that refuses it".
 type credential int
 
 const (
@@ -225,6 +223,10 @@ const (
 	// secret; inside a managed agent pod the same variable carries that pod's
 	// own row token, which is what the /agent/task* routes resolve.
 	credHook
+	// credAgentCreate sends MUSTER_AGENT_CREATE_TOKEN (agent_create.go) and
+	// NEVER the ordinary token: POST /api/agents admits only a token of scope
+	// agent-create, and this keeps the CLI's full token off that route.
+	credAgentCreate
 )
 
 // do performs the call and returns the raw JSON body. The body is returned
@@ -265,12 +267,15 @@ func (c *client) do(ctx context.Context, req request) ([]byte, error) {
 		httpReq.Header.Set(k, v)
 	}
 	// 🔴 THE CREDENTIAL IS CHOSEN HERE AND NOWHERE ELSE, so a verb cannot pick a
-	// secret by writing a header. A missing token is NOT an error: most of the
-	// hook tier is enforce-when-set, so an unconfigured pair still works, and the
-	// one fail-closed route answers 503 with its own marker (exit 9) rather than
-	// a credential complaint.
+	// secret by writing a header. A missing token is not an error HERE: the
+	// request goes out without one and the server's own 401 (exit 3, "fix your
+	// token") says so — or, on a route that also takes a personal token, it is
+	// that token's job.
 	if req.cred == credHook && c.cfg.token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.token)
+	}
+	if req.cred == credAgentCreate && c.cfg.createTok != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.createTok)
 	}
 
 	resp, err := c.http.Do(httpReq)
@@ -296,12 +301,25 @@ func (c *client) do(ctx context.Context, req request) ([]byte, error) {
 	if err != nil {
 		return nil, wrapf(exitNetwork, err, "reading response body from %s %s", req.method, req.path)
 	}
-	return classify(req, resp, body)
+	envFile := defaultEnvFile
+	if c.tenantNote != "" {
+		envFile = c.envFile
+	}
+	out, err := classify(req, resp, body, envFile)
+	var ce *cliError
+	if err != nil && c.tenantNote != "" && errors.As(err, &ce) && (ce.code == exitAuth || ce.code == exitRouteAbsent) {
+		// "401 from which server?" is the first question with several.
+		ce.msg += " [" + c.tenantNote + "]"
+	}
+	return out, err
 }
 
 // classify turns an HTTP response into either a JSON body or a cliError with
 // the right exit code.
-func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
+//
+// envFile is the file the auth error tells the operator to check: today's
+// default, or the selected tenant's file when the host has several.
+func classify(req request, resp *http.Response, body []byte, envFile string) ([]byte, error) {
 	ct := resp.Header.Get("Content-Type")
 	isJSON := strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json")
 
@@ -339,14 +357,25 @@ func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return nil, failf(exitAuth,
 			"%s %s: %d %s — the server rejected the credential this request presented. Check %s in %s (the value is never printed).",
-			req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), envToken, defaultEnvFile)
+			req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), envToken, envFile)
 
 	case resp.StatusCode == http.StatusNotFound:
 		// A handler's 404 is JSON ({"error":"task not found"}); the router's own
 		// 404 is text/plain "404 page not found". That difference is how a missing
 		// RESOURCE (exit 4) is told apart from a missing ROUTE (exit 7, this CLI
 		// being newer than the server).
+		//
+		// 🔴 AND A THIRD KIND: the route exists and its FEATURE is off on this
+		// server. The server says so with a typed body ({"error":
+		// "feature_disabled", "feature", "enable"}; internal/api
+		// writeFeatureDisabled), and that is reported as what it is — with the
+		// line that turns the feature on — not as version skew (exit 12). A
+		// server that predates the typed body answered text/plain here and still
+		// gets the route-absent message below.
 		if isJSON {
+			if fd, ok := featureDisabled(body); ok {
+				return nil, failf(exitFeatureDisabled, "%s %s: %s", req.method, req.path, fd)
+			}
 			return nil, failf(exitNotFound, "%s %s: not found — %s", req.method, req.path, serverError(body))
 		}
 		// 🔴 cliVersion(), NOT buildVersion. This is the surface the file's own
@@ -365,12 +394,13 @@ func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
 
 	case resp.StatusCode == http.StatusServiceUnavailable && unarmedHookSurface(body):
 		// 🔴 MOST 503s ON THE HOOK TIER ARE OUTAGES; THIS ONE IS NOT, AND THE
-		// DISCRIMINATOR IS THE MARKER, NOT THE STATUS. Nearly every hook-tier route
-		// is enforce-when-set, so an unconfigured server SERVES them and a 503 there
-		// really is a sick backend (exitServerError below is right for that).
-		// api.requireArmedHookToken is the exception — the agent-steering write
-		// refuses outright rather than inherit the open default — and its refusal is
-		// a CONFIGURATION fact with a different remedy: arm the server.
+		// DISCRIMINATOR IS THE MARKER, NOT THE STATUS. A hook-tier route never
+		// answers 503 for configuration (an unconfigured hook tier answers 401), so
+		// an unmarked 503 there really is a sick backend (exitServerError below).
+		// A fail-closed surface that marks its refusal with api.HookUnarmedField
+		// (the service tier, the approval relay, the connector store) is the
+		// exception: its refusal is a CONFIGURATION fact with a different remedy —
+		// arm the server.
 		return nil, failf(exitUnarmed,
 			"%s %s: the muster SERVER refuses to serve this write — %s.\n"+
 				"This route is fail-CLOSED on purpose while the rest of the hook tier serves when "+
@@ -385,7 +415,9 @@ func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
 		return nil, failf(exitServerError, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))
 
 	case resp.StatusCode >= 400:
-		return nil, failf(exitUsage, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))
+		e := failf(exitUsage, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))
+		e.status = resp.StatusCode
+		return nil, e
 	}
 
 	if !isJSON {
@@ -413,7 +445,7 @@ func crossHost(req *http.Request, loc string) bool {
 	return u.Host != req.URL.Host
 }
 
-// hookUnarmedField is the JSON key api.requireArmedHookToken sets on its 503.
+// hookUnarmedField is the JSON key a fail-closed server surface sets on its 503.
 // The server owns the spelling as api.HookUnarmedField; this binary does not
 // import internal/api, so the two are pinned together by a test rather than by
 // a shared constant — see TestTheUnarmedMarkerMatchesTheServer.
@@ -498,6 +530,46 @@ func (c *client) warnSkew(ctx context.Context) {
 		if name == "" {
 			name = defaultProgName
 		}
+		if c.tenantNote != "" {
+			fmt.Fprintf(c.stderr, "note: server %s, %s built for %s [%s]\n", h.Version, name, cliVersion(), c.tenantNote)
+			return
+		}
 		fmt.Fprintf(c.stderr, "note: server %s, %s built for %s\n", h.Version, name, cliVersion())
 	})
+}
+
+// featureDisabledError is the server's typed "this route's feature is off"
+// error (internal/api.FeatureDisabledError).
+const featureDisabledError = "feature_disabled"
+
+// featureDisabled reads a typed feature-off 404 body and returns the sentence
+// to print — "feature dictation is disabled on this server — enable with: set …"
+// — and whether body was one.
+func featureDisabled(body []byte) (string, bool) {
+	var b struct {
+		Error   string `json:"error"`
+		Feature string `json:"feature"`
+		Enable  string `json:"enable"`
+		Reason  string `json:"reason"`
+		State   string `json:"state"`
+		Docs    string `json:"docs"`
+	}
+	if json.Unmarshal(body, &b) != nil || b.Error != featureDisabledError || b.Feature == "" {
+		return "", false
+	}
+	word := "disabled"
+	if b.State == "misconfigured" {
+		word = "misconfigured"
+	}
+	msg := "feature " + b.Feature + " is " + word + " on this server"
+	if b.Reason != "" {
+		msg += " (" + b.Reason + ")"
+	}
+	switch {
+	case b.Enable != "":
+		msg += " — enable with: " + b.Enable
+	case b.Docs != "":
+		msg += " — see " + b.Docs
+	}
+	return msg, true
 }

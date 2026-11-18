@@ -19,14 +19,20 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // Backend is where sessions come from: the host's tmux (Tmux), or a test's fake.
@@ -50,6 +56,13 @@ type Config struct {
 	URL string
 	// Token is this host's mirror token (mirror.TokenPrefix…).
 	Token string
+	// AttemptCode is this PROCESS's attempt code (attemptcode.New),
+	// sent on every connect as attemptcode.Header: when a team host's
+	// connection is held for a manager, the manager confirms THIS machine by
+	// typing it (mirror/teamhold.go). Printed in the log when held. "" sends
+	// none (an older muster-mirror's behaviour): such a held connection
+	// cannot be confirmed (ErrHeldNoCode).
+	AttemptCode string
 	// Host is this host's name; it must be the host the token was minted for.
 	Host    string
 	Backend Backend
@@ -70,13 +83,21 @@ type Config struct {
 	// use muster's Interactive switch for this host can run commands here as the
 	// user muster-mirror runs as. Turn it on only where that is intended.
 	Interactive bool
+	// OpenCodeSend lets muster SEND a message to an opencode session on this
+	// host through the opencode server's API (muster-mirror's -opencode-send),
+	// with Interactive and an opencode token: only to a pane started by
+	// `muster-mirror opencode` (docs/design/opencode-first-class.md). Off by
+	// default. 🔴 It lets muster prompt an agent here: whatever that agent may
+	// run, a message from muster can ask it to.
+	OpenCodeSend bool
 	// Codenames is session name → codename (LoadCodenames). A listed session
 	// with one is shown in muster as "<codename>:<active window index>"
 	// (BuildLabels); nil labels nothing, and then no window index is read.
 	Codenames map[string]string
-	// AllowHTTP permits a plain http:// URL — FOR TESTS AND LOCAL DEVELOPMENT
-	// ONLY; the documented install is https. Without it only https is accepted:
-	// the token travels in the Authorization header of every connect.
+	// AllowHTTP permits a plain http:// URL to ANOTHER machine — FOR TESTS
+	// ONLY. Without it only https is accepted, and plain http to this
+	// machine's loopback interface (localhost, 127.0.0.0/8, [::1]), which never
+	// leaves it: the token travels in the Authorization header of every connect.
 	AllowHTTP bool
 	// NoPromptIndex makes this host behave as one that predates the prompt
 	// index (mirror.Msg.PromptIndex): a fresh view gets its backfill and no
@@ -89,34 +110,13 @@ type Config struct {
 	// DefaultScrollIdle). A test shortens it.
 	ScrollIdle time.Duration
 	// Catalog reads the composer menu's catalog (catalog.go); nil = the real
-	// locations, with SnippetsFile as the snippets file ("" = the default).
+	// locations.
 	Catalog *CatalogScanner
-	// SnippetsFile is the operator's snippets JSON (MUSTER_MIRROR_SNIPPETS_FILE;
-	// "" = DefaultSnippetsFile). Used only when Catalog is nil.
-	SnippetsFile string
 	// NoCatalog makes this host behave as one that predates the catalog
 	// (mirror.Msg.CatalogReport): it advertises none and answers no request.
 	// FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
 	// e2emirror build); no flag sets it.
 	NoCatalog bool
-	// HermesSend turns on the gated send into Hermes windows (muster-mirror's
-	// -hermes-send, MUSTER_MIRROR_HERMES_SEND; Hermes Phase 3,
-	// docs/design/hermes.md): the host advertises Msg.HermesSend, and a paste
-	// for a Hermes window goes through hermes_send.go. OFF by default.
-	//
-	// 🔴 NEVER ON A HOST WHOSE HERMES USES VI MODE (display.vim_mode): one
-	// Escape on an idle line enters vi navigation, where the paste's
-	// characters can be read as commands, and the vi label the screen check
-	// refuses on is not reliable. muster cannot read Hermes's config.yaml, so
-	// this is the operator's responsibility.
-	HermesSend bool
-	// HermesAnswer lets muster answer a Hermes APPROVAL through Hermes's
-	// gateway viewer (muster-mirror's -hermes-answer,
-	// MUSTER_MIRROR_HERMES_ANSWER; Hermes Phase 4, docs/design/hermes.md):
-	// with -interactive, the host attaches a viewer to each session waiting
-	// on an approval, lists its command, and advertises Msg.HermesAnswer. OFF
-	// by default: an answer of "once" lets the command run.
-	HermesAnswer bool
 	// NoSubagents makes this host behave as one that predates the subagent
 	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
@@ -127,6 +127,39 @@ type Config struct {
 	// message. FOR THE OLDER-HOST TESTS ONLY (cmd/muster-mirror's e2emirror
 	// build); no flag sets it.
 	NoWork bool
+	// Previews reports, per tmux window id, what the host's preview side
+	// offers and has open now (mirror/previews.go): cmd/muster-mirror's
+	// -preview hands in its previewhost.Host's summary. nil — no -preview, or
+	// previews not (yet) on — sends no previews message, so muster draws no
+	// Preview button. Called on every refresh; it must not block.
+	Previews func() map[string]mirror.WindowPreviews
+	// FakeSpawn, when set, REPLACES the agent spawn (agentspawn.go) with a
+	// fixture's: this host advertises FakeSpawnRuntimes and answers each
+	// agent-spawn with what FakeSpawn returns. FOR THE BROWSER SUITE ONLY
+	// (cmd/muster-mirror's e2emirror build); no flag sets it, and a shipped
+	// build leaves it nil (TestTheShippedBuildSpawnsForReal).
+	FakeSpawn         func(ctx context.Context, dispatch int64, req mirror.AgentSpawnReq) (mirror.AgentSpawned, error)
+	FakeSpawnRuntimes []string
+	// AgentCloseGrace replaces mirror.AgentCloseGrace (tests).
+	AgentCloseGrace time.Duration
+	// SpawnReadyEvery replaces spawnReadyEvery (tests).
+	SpawnReadyEvery time.Duration
+	// ResumeSpawn lets muster ask this host to RESUME an ended Claude Code
+	// session in a new tmux window (muster-mirror's -resume-spawn,
+	// MUSTER_MIRROR_RESUME_SPAWN; resume.go): with -interactive, the host
+	// advertises Msg.ResumeSpawn. OFF by default: it starts a process here.
+	ResumeSpawn bool
+	// ResumeSession is the tmux session resumed windows start in (""
+	// = DefaultResumeSession); ResumeClaude the Claude Code binary they run
+	// ("" = DefaultResumeClaude, found on the tmux server's PATH).
+	ResumeSession string
+	ResumeClaude  string
+	// ResumeLocator is where a resume finds transcripts (its Home) and live
+	// Claude Code processes (its Proc); the zero value is ~/.claude and /proc.
+	ResumeLocator ClaudeLocator
+	// AgentSpawn is -agent-spawn and its sibling flags (agentspawn.go): the
+	// chief starts agents on this host. OFF by default.
+	AgentSpawn AgentSpawnConfig
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -145,8 +178,11 @@ func ConnectURL(base string, allowHTTP bool) (string, error) {
 	case "https":
 		u.Scheme = "wss"
 	case "http":
-		if !allowHTTP {
-			return "", fmt.Errorf("muster-mirror: %q is plain http, which would send the mirror token in cleartext; use https (-allow-http exists for tests and local development only)", base)
+		// Plain http to this machine's loopback interface never leaves it, so
+		// the token is not in cleartext on any network (internal/loopback).
+		// Anything else stays refused without -allow-http.
+		if !allowHTTP && !loopback.Host(u.Host) {
+			return "", fmt.Errorf("muster-mirror: %q is plain http to another machine, which would send the mirror token in cleartext; use https (plain http is accepted to this machine only — localhost, 127.0.0.1, [::1] — and -allow-http exists for tests)", base)
 		}
 		u.Scheme = "ws"
 	default:
@@ -175,11 +211,32 @@ type Client struct {
 	work   *workCounter
 	workMu sync.Mutex
 
+	// tunnel and tunnelTr are the one HTTP client and transport every connect
+	// dials with (wire.go); wire is the current connect's byte counter.
+	tunnel   *http.Client
+	tunnelTr *http.Transport
+	wire     atomic.Pointer[wireCounter]
+
+	// resumes is this host's own record of the sessions it resumed
+	// (resume.go): it outlives each connection.
+	resumes resumeLimits
+	// spawner is this host's agent-spawn state (agentspawn.go): it outlives
+	// each connection.
+	spawner agentSpawner
+
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
 	curMu sync.Mutex
 	cur   *hostSide
+
+	// heldLogged: the attempt code was already printed (logHeld).
+	heldLogged atomic.Bool
 }
+
+// beforeRefreshHook, when set (tests), runs on a connection after its hello
+// and welcome and before its refresh goroutine starts: the window in which a
+// change signal finds no one receiving.
+var beforeRefreshHook func(*hostSide)
 
 // RefreshNow re-reads this host's windows and, if they changed, sends them to
 // muster NOW rather than at the next Refresh — returning once that is done
@@ -238,14 +295,42 @@ func New(cfg Config) (*Client, error) {
 	}
 	cat := cfg.Catalog
 	if cat == nil {
-		cat = &CatalogScanner{SnippetsFile: cfg.SnippetsFile}
+		cat = &CatalogScanner{}
 	}
-	return &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}, nil
+	// -agent-spawn's git, resolved ONCE to an absolute path: a spawn never
+	// looks it up again, and with none the host offers nothing ("git not
+	// found", agentSpawnUnavailable).
+	if cfg.AgentSpawn.Git == "" {
+		if g, err := exec.LookPath("git"); err == nil {
+			if abs, err := filepath.Abs(g); err == nil {
+				cfg.AgentSpawn.Git = abs
+			}
+		}
+	}
+	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
+	c.tunnelTr = tunnelTransport(&c.wire)
+	// 🔴 NO REDIRECTS: the token rides every connect's Authorization header,
+	// which net/http would re-send to a Location on this hostname or a
+	// subdomain (internal/noredirect).
+	c.tunnel = noredirect.Client(&http.Client{Transport: c.tunnelTr})
+	return c, nil
 }
 
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
 // until ctx ends. A connection that stayed up for a minute resets the backoff.
 func (c *Client) Run(ctx context.Context) error {
+	if c.cfg.AgentSpawn.Enabled {
+		// Run returns only once the sweep has stopped: a sweep still running
+		// (and logging) after Run returned outlived the daemon that started
+		// it — a git call mid-removal at shutdown, and a race on the logger's
+		// writer in a caller that reads it after Run (measured under -race).
+		swept := make(chan struct{})
+		go func() {
+			defer close(swept)
+			c.sweepLoop(ctx)
+		}()
+		defer func() { <-swept }()
+	}
 	backoff := time.Second
 	for {
 		start := time.Now()
@@ -287,6 +372,24 @@ func (c *Client) RunOnce(ctx context.Context) error {
 	return err
 }
 
+// logHeld says, when muster holds this connection for a team manager, what
+// the manager needs: the code this machine shows (Config.AttemptCode).
+//
+// 🔴 THE CODE IS PRINTED ONCE PER PROCESS (#688 round 1, Y2): it is the
+// bearer of a manager's confirm, and this log is read by whoever reads the
+// user's journal (or wherever it is shipped). Later holds say only that
+// `muster doctor` shows it (from its 0600 file).
+func (c *Client) logHeld() {
+	if c.cfg.AttemptCode == "" {
+		return
+	}
+	if c.heldLogged.Swap(true) {
+		c.log.Printf("muster-mirror: still held: team host %s is connected from another machine; `muster doctor` shows this machine's code", c.cfg.Host)
+		return
+	}
+	c.log.Printf("muster-mirror: held: team host %s is already connected from another machine; give this code to a team manager: %s", c.cfg.Host, c.cfg.AttemptCode)
+}
+
 // versionRefusal is a v1 muster refusing this host's newer tunnel version.
 type versionRefusal struct{ msg string }
 
@@ -295,10 +398,19 @@ func (v *versionRefusal) Error() string { return "muster refused the registratio
 func (c *Client) runOnce(ctx context.Context, version int) error {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.Token)
+	if c.cfg.AttemptCode != "" {
+		hdr.Set(attemptcode.Header, c.cfg.AttemptCode)
+	}
 	dctx, dcancel := context.WithTimeout(ctx, 20*time.Second)
-	ws, resp, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{HTTPHeader: hdr})
+	// This connect's wire counter: what the transport's next dial counts into.
+	wire := &wireCounter{}
+	c.wire.Store(wire)
+	ws, resp, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{HTTPHeader: hdr, HTTPClient: c.tunnel})
 	dcancel()
 	if err != nil {
+		// A refused upgrade (401, 404, …) can leave its connection idle in
+		// the pool, counting into this connect's counter: never reused.
+		c.tunnelTr.CloseIdleConnections()
 		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 			return fmt.Errorf("%w (HTTP %d)", ErrUnauthorized, resp.StatusCode)
 		}
@@ -312,15 +424,26 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
+	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, wire: wire, streams: map[uint32]*hostStream{},
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
-		kick: make(chan chan struct{})}
-	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
-	if src, ok := conn.hermesSource(); ok {
-		conn.hermes.terminal = src.State().PendingTerminalCommands
-		conn.hermes.clarify = src.State().PendingClarify
+		kick: make(chan chan struct{}), want: make(chan struct{}, 1)}
+	// An opencode ask raised or settled sends the listing at once, so muster
+	// notifies (and withdraws) without waiting for the next refresh — through
+	// nudge, which holds the signal until the refresh goroutine takes it.
+	if src, ok := conn.openCodeSource(); ok {
+		changes, stop := src.Changes()
+		defer stop()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-changes:
+					conn.nudge()
+				}
+			}
+		}()
 	}
-	defer conn.hermes.close()
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
 	}
@@ -340,8 +463,22 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
-	hello.HermesSend = conn.hermesSend()
-	hello.HermesAnswer = conn.hermesAnswer()
+	hello.OpenCodeAnswer = conn.openCodeAnswer()
+	// The same gate: the whole form is sent to a muster that can answer it.
+	hello.OpenCodeForms = conn.openCodeAnswer()
+	hello.OpenCodeSend = conn.openCodeSend()
+	hello.ResumeSpawn = conn.resumeSpawn()
+	hello.AgentSpawn = conn.agentSpawnRuntimes()
+	// Claude Code's mode only (ClaudeSkipsPermissions: off as root): the one
+	// runtime whose wording muster varies by it (Msg.AgentSpawnSkipPermissions).
+	hello.AgentSpawnSkipPermissions = len(hello.AgentSpawn) > 0 && c.cfg.AgentSpawn.ClaudeSkipsPermissions()
+	// The clone list and the clone hint (clones.go): every host that spawns.
+	hello.AgentSpawnClones = len(hello.AgentSpawn) > 0
+	hello.AgentClose = conn.agentCloseOn()
+	// The spawn readiness (spawnready.go): re-read every minute after this
+	// and sent again when it changes.
+	hello.SpawnReady = conn.spawnReadiness()
+	conn.logSpawnReady(hello.SpawnReady)
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -359,6 +496,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		if version > 1 && strings.HasPrefix(welcome.Error, mirror.V1RefusalPrefix) {
 			return &versionRefusal{msg: welcome.Error}
 		}
+		if welcome.Error == mirror.ErrHeldForManager.Error() {
+			c.logHeld()
+		}
 		return fmt.Errorf("muster refused the registration: %s", welcome.Error)
 	}
 	if first.windows != nil {
@@ -369,8 +509,8 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 
 	// The first listing's repo names, work counts and colours, after the hello
 	// that listed its windows.
-	if len(first.repos) > 0 {
-		if err := conn.sendRepos(first.repos); err != nil {
+	if len(first.repos) > 0 || len(first.githubRepos) > 0 {
+		if err := conn.sendRepos(first.repos, first.githubRepos); err != nil {
 			return err
 		}
 	}
@@ -384,8 +524,22 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			return err
 		}
 	}
+	if len(first.outcomes) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypeOutcomes, Outcomes: first.outcomes}); err != nil {
+			return err
+		}
+	}
+	if len(first.previews) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypePreviews, Previews: first.previews}); err != nil {
+			return err
+		}
+	}
+	if beforeRefreshHook != nil {
+		beforeRefreshHook(conn)
+	}
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
+	go conn.watchSpawnReady(hello.SpawnReady, conn.send)
 	c.curMu.Lock()
 	c.cur = conn
 	c.curMu.Unlock()
@@ -430,27 +584,47 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 				}
 			case mirror.TypePaste:
 				if conn.version >= 2 {
-					go conn.paste(m)
+					go traced(m, conn.paste)
 				}
 			case mirror.TypeScroll:
 				if conn.version >= 2 {
-					go conn.scroll(m)
+					go traced(m, conn.scroll)
 				}
 			case mirror.TypeAnswer:
 				if conn.version >= 2 {
-					go conn.answer(m)
+					go traced(m, conn.answer)
 				}
 			case mirror.TypeCancelAsk:
 				if conn.version >= 2 {
-					go conn.cancelAsk(m)
+					go traced(m, conn.cancelAsk)
 				}
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {
-					go conn.catalog(m)
+					go traced(m, conn.catalog)
+				}
+			case mirror.TypeOpenCodeForm:
+				if conn.version >= 2 {
+					go traced(m, conn.openCodeForm)
 				}
 			case mirror.TypeSubagentTail:
 				if conn.subagentReport() {
-					go conn.subagentTail(m)
+					go traced(m, conn.subagentTail)
+				}
+			case mirror.TypeSpawnResume:
+				if conn.version >= 2 {
+					go traced(m, conn.spawnResume)
+				}
+			case mirror.TypeAgentSpawn:
+				if conn.version >= 2 {
+					go traced(m, conn.agentSpawn)
+				}
+			case mirror.TypeAgentClose:
+				if conn.version >= 2 {
+					go traced(m, conn.agentClose)
+				}
+			case mirror.TypeAgentClones:
+				if conn.version >= 2 {
+					go traced(m, conn.agentClones)
 				}
 			}
 		}
@@ -481,6 +655,9 @@ type hostSide struct {
 	ctx context.Context
 	// version is the tunnel version this connection speaks.
 	version int
+	// wire counts what the connection wrote to its socket (wire.go): read
+	// only for a traced open's first batch.
+	wire *wireCounter
 
 	mu      sync.Mutex
 	streams map[uint32]*hostStream
@@ -508,13 +685,22 @@ type hostSide struct {
 	pending pendingReader
 	// lastMsg reads each Claude window's last message time (lastmsg.go).
 	lastMsg lastMessageReader
-	// hermes is what each waiting Hermes window waits on, and the gateway
-	// viewers that answer its approvals (hermes_asks.go); nil in a test that
-	// builds a hostSide without one.
-	hermes *hermesAsks
+	// turnEnd reads how each idle Claude window's latest turn ended (turnend.go).
+	turnEnd turnEndReader
 	// kick asks the refresh goroutine for a read-and-send now
 	// (Client.RefreshNow); it closes the channel it receives when done.
 	kick chan chan struct{}
+	// want is the ONE-SLOT "a listing is owed" flag nudge sets (hostSide.nudge):
+	// held until the refresh goroutine takes it, or the connection ends.
+	want chan struct{}
+	// nudged counts nudge calls (tests observe a signal was raised).
+	nudged atomic.Int64
+	// opens is each stream's open until its first reply (trace.go), by
+	// stream id: *openTrace.
+	opens sync.Map
+	// resolving is each watch's shared window read until its first reply
+	// (openresolve.go), by stream id: *openResolve.
+	resolving sync.Map
 }
 
 // windowKey addresses one window: its session and its tmux window id.
@@ -538,22 +724,46 @@ type listing struct {
 	// on a repos message of its own (sendRepos), the window list having no room
 	// for it (mirror/repos.go).
 	repos map[string]string
+	// githubRepos is each window's GitHub <owner>/<name> by window id
+	// (originGitHubRepo), on the SAME repos message as repos.
+	githubRepos map[string]string
 	// work and colors are each window's live work counts and identity colour
 	// by window id (work.go), on messages of their own exactly like repos
 	// (mirror/work.go).
 	work   map[string]mirror.WindowWork
 	colors map[string]string
+	// outcomes is each idle opencode dispatch window's final reply by window
+	// id (opencode_outcome.go), on a message of its own like work
+	// (mirror/outcomes.go).
+	outcomes map[string]mirror.WindowOutcome
+	// previews is each window's live preview counts by window id
+	// (Config.Previews), on a message of its own like work
+	// (mirror/previews.go).
+	previews map[string]mirror.WindowPreviews
+	// hostLimit is the usage limit across all the host's Claude windows
+	// (turnend.go's hostLimitOf); nil for none. It rides the hello and
+	// sessions messages beside the windows.
+	hostLimit *mirror.HostLimit
 }
 
 func (l listing) equal(o listing) bool {
 	return slices.Equal(l.sessions, o.sessions) && slices.Equal(l.claude, o.claude) &&
 		maps.Equal(l.labels, o.labels) && maps.Equal(l.activity, o.activity) &&
-		(l.windows == nil) == (o.windows == nil) && slices.EqualFunc(l.windows, o.windows, mirror.Window.Equal)
+		(l.windows == nil) == (o.windows == nil) && slices.EqualFunc(l.windows, o.windows, mirror.Window.Equal) &&
+		hostLimitEqual(l.hostLimit, o.hostLimit)
 }
 
 // msg is the listing as a hello or sessions message.
 func (l listing) msg(typ string) mirror.Msg {
-	return mirror.Msg{Type: typ, Sessions: l.sessions, Claude: l.claude, Labels: l.labels, Activity: l.activity, Windows: l.windows}
+	return mirror.Msg{Type: typ, Sessions: l.sessions, Claude: l.claude, Labels: l.labels, Activity: l.activity, Windows: l.windows,
+		HostLimit: l.hostLimit}
+}
+
+func hostLimitEqual(a, b *mirror.HostLimit) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // read is the host's listing now. ok is false when a per-window read failed:
@@ -581,17 +791,28 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	h.pending.attachPending(raw)
 	h.lastMsg.attach(raw)
-	if h.hermes != nil {
-		h.hermes.attachPending(raw)
+	h.turnEnd.attach(raw)
+	if src, ok := h.openCodeSource(); ok {
+		src.attachTurnErrors(raw) // opencode_turnerror.go
 	}
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
+	if h.version >= 2 {
+		l.hostLimit = hostLimitOf(raw)
+	}
 	if h.sendsRepos() {
 		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
+		l.githubRepos = mirror.NormalizeGitHubRepos(h.c.repoNamer().windowGitHubRepos(raw), windows)
 		if !h.c.cfg.NoWork {
 			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
 			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
 		}
+		if h.c.cfg.Previews != nil {
+			l.previews = mirror.NormalizePreviews(h.c.cfg.Previews(), windows)
+		}
+	}
+	if src, ok := h.openCodeSource(); ok {
+		l.outcomes = mirror.NormalizeOutcomes(src.dispatchOutcomes(raw), windows)
 	}
 	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)
 	// What a muster that predates Windows keeps is at most MaxSessions sessions,
@@ -700,13 +921,30 @@ type hostStream struct {
 }
 
 func (h *hostSide) send(m mirror.Msg) error {
+	_, _, err := h.sendSized(m)
+	return err
+}
+
+// sendSized is send, and what the message cost: its encoded size, and the
+// bytes the connection wrote to its socket while it was written (framed,
+// TLS records and all — and anything another goroutine wrote in that moment, so an
+// upper bound; 0 for a connection that does not count, a test's).
+func (h *hostSide) sendSized(m mirror.Msg) (encoded int, wire int64, err error) {
 	b, err := json.Marshal(m)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	wctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
 	defer cancel()
-	return h.ws.Write(wctx, websocket.MessageText, b)
+	var before int64
+	if h.wire != nil {
+		before = h.wire.written.Load()
+	}
+	err = h.ws.Write(wctx, websocket.MessageText, b)
+	if h.wire != nil {
+		wire = h.wire.written.Load() - before
+	}
+	return len(b), wire, err
 }
 
 func (h *hostSide) get(id uint32) *hostStream {
@@ -730,7 +968,10 @@ func (h *hostSide) input(id uint32, p []byte) {
 
 func (h *hostSide) open(m mirror.Msg) {
 	readOnly := m.ReadOnly
+	// The attach, traced from here to its first output (trace.go).
+	o := h.beginOpen(m, "host.attach")
 	fail := func(err error) {
+		h.endOpen(o, m.ID, err)
 		h.c.log.Printf("muster-mirror: open %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
@@ -774,6 +1015,7 @@ func (h *hostSide) open(m mirror.Msg) {
 		fail(err)
 		return
 	}
+	o.mark("tmux_attach")
 	st := &hostStream{term: term, readOnly: readOnly, session: m.Session, window: m.Window}
 	h.mu.Lock()
 	h.streams[m.ID] = st
@@ -785,6 +1027,8 @@ func (h *hostSide) open(m mirror.Msg) {
 	h.c.log.Printf("muster-mirror: attached %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), mode, m.ID)
 	go func() {
 		defer func() {
+			// An attach that never produced output ends its open here.
+			h.endOpen(o, m.ID, nil)
 			_ = term.Close()
 			h.mu.Lock()
 			delete(h.streams, m.ID)
@@ -795,6 +1039,9 @@ func (h *hostSide) open(m mirror.Msg) {
 		for {
 			n, err := term.Read(buf)
 			if n > 0 {
+				// The first output ends the open (its timing is not framed: a
+				// terminal's bytes travel raw).
+				h.reply(m.ID)
 				wctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
 				werr := h.ws.Write(wctx, websocket.MessageBinary, mirror.EncodeData(m.ID, buf[:n]))
 				cancel()
@@ -897,6 +1144,10 @@ func (h *hostSide) refresh(last listing) {
 			if !ok {
 				return
 			}
+		case <-h.want:
+			if !h.refreshOnce(&last) {
+				return
+			}
 		}
 	}
 }
@@ -920,8 +1171,8 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 		}
 	}
 	// AFTER the window list, so muster already lists every window it names.
-	if !maps.Equal(now.repos, last.repos) {
-		if err := h.sendRepos(now.repos); err != nil {
+	if !maps.Equal(now.repos, last.repos) || !maps.Equal(now.githubRepos, last.githubRepos) {
+		if err := h.sendRepos(now.repos, now.githubRepos); err != nil {
 			return false
 		}
 	}
@@ -932,6 +1183,16 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 	}
 	if !maps.Equal(now.colors, last.colors) {
 		if err := h.send(mirror.Msg{Type: mirror.TypeColors, Colors: now.colors}); err != nil {
+			return false
+		}
+	}
+	if !mirror.OutcomesEqual(now.outcomes, last.outcomes) {
+		if err := h.send(mirror.Msg{Type: mirror.TypeOutcomes, Outcomes: now.outcomes}); err != nil {
+			return false
+		}
+	}
+	if !maps.Equal(now.previews, last.previews) {
+		if err := h.send(mirror.Msg{Type: mirror.TypePreviews, Previews: now.previews}); err != nil {
 			return false
 		}
 	}
@@ -950,8 +1211,8 @@ func (h *hostSide) sendsRepos() bool {
 }
 
 // sendRepos sends the whole repo map (an empty one clears muster's).
-func (h *hostSide) sendRepos(repos map[string]string) error {
-	return h.send(mirror.Msg{Type: mirror.TypeRepos, Repos: repos})
+func (h *hostSide) sendRepos(repos, githubRepos map[string]string) error {
+	return h.send(mirror.Msg{Type: mirror.TypeRepos, Repos: repos, GitHubRepos: githubRepos})
 }
 
 // workCounter is the client's work ledgers (a zero Client — a test's — gets
@@ -989,5 +1250,25 @@ func (h *hostSide) keepalive(cancel context.CancelFunc) {
 				return
 			}
 		}
+	}
+}
+
+// nudge asks the refresh goroutine for a listing now, without waiting: an
+// opencode ask, a resumed window or an idle status reaches muster at once
+// rather than at the next Refresh. THE ONE "a listing is owed" signal every
+// such caller uses.
+//
+// 🔴 IT IS NEVER DROPPED. It sets a one-slot flag (want) that the refresh
+// goroutine takes; a nudge while one is already owed is the same listing.
+// It used to be a non-blocking send on kick, dropped whenever the refresh
+// goroutine was not receiving — which it is not until after the hello and
+// welcome — so a change raised in that gap (after the hello's listing was
+// read) reached muster only at the next Refresh: 5 s by default, never in a
+// test whose Refresh is an hour (main's macOS CI failure, run 41724022997).
+func (h *hostSide) nudge() {
+	h.nudged.Add(1)
+	select {
+	case h.want <- struct{}{}:
+	default: // already owed: the refresh that takes it reads everything since
 	}
 }

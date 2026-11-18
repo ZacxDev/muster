@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
+	g "maragu.dev/gomponents"
 )
 
 // ---------------------------------------------------------------------------
@@ -12,10 +13,12 @@ import (
 // NESTED INSIDE THE POLLING SPAN.
 // ---------------------------------------------------------------------------
 
-// cardFor renders one agent card with the given status and owed flag.
+// cardFor renders what an agent's page draws of its card — the header's
+// status strip and the notices (agentPageParts; the Agents list's cards are
+// retired) — with the given status and owed flag.
 func cardFor(t *testing.T, status string, owed bool) string {
 	t.Helper()
-	return renderString(t, agentCard(AgentCardView{
+	return agentPageParts(t, (AgentCardView{
 		ID: 7, Name: "agent-7", DisplayName: "agent-7", Status: status, KickoffOwed: owed,
 	}))
 }
@@ -176,7 +179,10 @@ func TestTheOwedBadgeIsNotInsideThePollingStatusSpan(t *testing.T) {
 	for i, badge := range badges {
 		for p := badge.Parent; p != nil; p = p.Parent {
 			for _, a := range p.Attr {
-				if a.Key == "hx-swap" && strings.Contains(a.Val, "innerHTML") {
+				// The STATUS POLL's swap target (its answer is the bare icon). The
+				// agent page's strip around it swaps its innerHTML too, but its
+				// answer redraws every badge (TestTheStripRefreshRedrawsWhatTheStripShows).
+				if a.Key == "hx-swap" && strings.Contains(a.Val, "innerHTML") && strings.Contains(attrOf(p, "hx-get"), "/status") {
 					t.Fatalf("owed-kickoff badge #%d is nested inside an element whose "+
 						"hx-swap is %q, so the first poll of /ui/agents/{id}/status "+
 						"REPLACES it with the bare status icon.\n"+
@@ -198,4 +204,13 @@ func renderToString(t *testing.T, n *html.Node) string {
 		t.Fatalf("render node: %v", err)
 	}
 	return b.String()
+}
+
+// agentPageParts renders what an agent's page draws from its card view: the
+// header's status strip (agentStrip), its ⋯ menu and the notices above the
+// transcript (agentNotices) — where the retired Agents list card's badges,
+// lines and actions went (agent_actions.go).
+func agentPageParts(t *testing.T, a AgentCardView) string {
+	t.Helper()
+	return renderString(t, g.Group{agentStrip(a), agentMenuSlot(a), agentNotices(a)})
 }

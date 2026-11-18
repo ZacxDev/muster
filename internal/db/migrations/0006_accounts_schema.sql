@@ -143,7 +143,7 @@ ALTER TABLE public.chat_messages     ADD COLUMN IF NOT EXISTS owner_id BIGINT NO
 ALTER TABLE public.connectors        ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
 ALTER TABLE public.connector_grants  ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
 ALTER TABLE public.connector_audit   ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
-ALTER TABLE public.github_connection ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
+ALTER TABLE IF EXISTS public.github_connection ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
 
 -- ---------------------------------------------------------------------------
 -- 3. Drop every child FK this file replaces — the single-column originals
@@ -169,6 +169,11 @@ ALTER TABLE public.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_session
 ALTER TABLE public.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_session_owner_fkey;
 ALTER TABLE public.connector_grants DROP CONSTRAINT IF EXISTS connector_grants_agent_id_fkey;
 ALTER TABLE public.connector_grants DROP CONSTRAINT IF EXISTS connector_grants_agent_owner_fkey;
+-- A LATER table's composite FK on agents (id, owner_id) — 0128's agent_secrets
+-- — depends on the key below too, so a re-run on a database past 0128 drops it
+-- here and re-adds it in section 5. Absent on a fresh database (0006 runs
+-- first), hence IF EXISTS. 🔴 Renumber these comments if 0128 moves.
+ALTER TABLE IF EXISTS public.agent_secrets DROP CONSTRAINT IF EXISTS agent_secrets_agent_owner_fkey;
 
 -- ---------------------------------------------------------------------------
 -- 4. Composite keys on the parents.
@@ -212,6 +217,15 @@ ALTER TABLE public.chat_messages ADD CONSTRAINT chat_messages_session_owner_fkey
 ALTER TABLE public.connector_grants ADD CONSTRAINT connector_grants_agent_owner_fkey
     FOREIGN KEY (agent_id, owner_id) REFERENCES public.agents (id, owner_id) ON DELETE CASCADE;
 
+-- 0128's agent_secrets, when this schema has it (see section 3).
+DO $$
+BEGIN
+    IF to_regclass('public.agent_secrets') IS NOT NULL THEN
+        ALTER TABLE public.agent_secrets ADD CONSTRAINT agent_secrets_agent_owner_fkey
+            FOREIGN KEY (agent_id, owner_id) REFERENCES public.agents (id, owner_id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- 6. connectors: a name is unique per owner, not globally.
 --    CreateConnector's 23505 -> "already exists" mapping is unchanged: the new
@@ -225,12 +239,14 @@ ALTER TABLE public.connectors ADD CONSTRAINT connectors_owner_name_key UNIQUE (o
 -- ---------------------------------------------------------------------------
 -- 7. github_connection: one connection per owner, replacing the id = 1
 --    singleton. The existing row (if any) is owner 1 from step 2.
+--    IF EXISTS on the table (here and in step 2): 0059 drops it, and this body
+--    must still re-run cleanly on a schema past 0059.
 -- ---------------------------------------------------------------------------
 
-ALTER TABLE public.github_connection DROP CONSTRAINT IF EXISTS github_connection_id_check;
-ALTER TABLE public.github_connection DROP CONSTRAINT IF EXISTS github_connection_pkey;
-ALTER TABLE public.github_connection DROP COLUMN IF EXISTS id;
-ALTER TABLE public.github_connection ADD CONSTRAINT github_connection_pkey PRIMARY KEY (owner_id);
+ALTER TABLE IF EXISTS public.github_connection DROP CONSTRAINT IF EXISTS github_connection_id_check;
+ALTER TABLE IF EXISTS public.github_connection DROP CONSTRAINT IF EXISTS github_connection_pkey;
+ALTER TABLE IF EXISTS public.github_connection DROP COLUMN IF EXISTS id;
+ALTER TABLE IF EXISTS public.github_connection ADD CONSTRAINT github_connection_pkey PRIMARY KEY (owner_id);
 
 -- ---------------------------------------------------------------------------
 -- 8. Owner-leading indexes, one per owned table, keyed on what that table's

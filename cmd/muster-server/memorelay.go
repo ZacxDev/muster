@@ -64,7 +64,11 @@ func memoRelayEnabled(cfg config, hasPool, hasGateway bool) bool {
 // *agentgateway.Gateway stored in an interface is a NON-nil interface, so a
 // builder that took the interface would see "a gateway" on a deployment with
 // none and start a relay whose every delivery panics.
-func buildMemoRelay(cfg config, pool *pgxpool.Pool, store agents.Store, tasks notes.Store, gw *agentgateway.Gateway, logger *log.Logger) (*memorelay.Relay, error) {
+//
+// hold is each memo turn's outcome hold (memorelay.Config.TurnHold): buildApp
+// passes api.Server.OutcomeHold.
+func buildMemoRelay(cfg config, pool *pgxpool.Pool, store agents.Store, tasks notes.Store, gw *agentgateway.Gateway,
+	hold func(agents.Agent) func(), logger *log.Logger) (*memorelay.Relay, error) {
 	if !memoRelayEnabled(cfg, pool != nil, gw != nil) {
 		return nil, nil
 	}
@@ -85,6 +89,7 @@ func buildMemoRelay(cfg config, pool *pgxpool.Pool, store agents.Store, tasks no
 		ScopeMap:        scopeMap,
 		NamespacePrefix: cfg.AgentNamespacePrefix,
 		Logger:          logger,
+		TurnHold:        hold,
 	})
 }
 

@@ -362,3 +362,33 @@ func TestAFocusTitleIsStoredAsWritten(t *testing.T) {
 		t.Fatalf("history = %+v (%v), want one row titled %q", page.Entries, err, title)
 	}
 }
+
+// TestOwnersNeverNamesATeam (#654 round 1): the focus refresher acts as each
+// owner Owners names, and no request or loop may act as a team. A team with an
+// agent (planted: nothing makes a team-owned agent yet) is not an owner; the
+// CONTROL is a person with an agent, who is.
+func TestOwnersNeverNamesATeam(t *testing.T) {
+	s, pool := pgStore(t)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO users (id, kind, role, display_name) OVERRIDING SYSTEM VALUE
+		VALUES (900655, 'team', 'member', 'focus-team-probe') ON CONFLICT (id) DO NOTHING`)
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM agents WHERE owner_id = 900655`)
+		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM users WHERE id = 900655`)
+	})
+	mustAgent(t, pool, 900655, "focus-team")
+	mustAgent(t, pool, 3, "focus-person")
+	owners, err := s.Owners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	person := false
+	for _, o := range owners {
+		if o == 900655 {
+			t.Fatalf("owners %v include the team", owners)
+		}
+		person = person || o == 3
+	}
+	if !person {
+		t.Fatalf("control: owners %v lack the person 3", owners)
+	}
+}

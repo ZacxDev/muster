@@ -155,6 +155,13 @@ func (g *kickoffGateway) Send(_ context.Context, _ agentgateway.Target, _, messa
 	return "on it", nil
 }
 
+// SendWithTools is never reached: this fake's deliverer is built with no
+// Config.TurnTools, so every first turn is the toolless Send. An error, so a
+// call reads as a failure rather than a delivered turn.
+func (g *kickoffGateway) SendWithTools(context.Context, agentgateway.Target, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	return "", errors.New("kickoffGateway: SendWithTools is not expected (no TurnTools configured)")
+}
+
 type oneInstance struct{ name string }
 
 func (o oneInstance) Instances(context.Context) ([]provision.Instance, error) {

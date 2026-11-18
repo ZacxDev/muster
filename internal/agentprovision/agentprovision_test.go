@@ -36,6 +36,9 @@ type recordingStore struct {
 	updateErr     error
 	deleteErr     error
 	kickoffErrErr error
+	// credsErr fails SetCredentials, changing nothing (the store's one
+	// transaction rolled back).
+	credsErr error
 }
 
 func (s *recordingStore) record(format string, args ...any) {
@@ -113,7 +116,11 @@ func (s *recordingStore) Get(ctx context.Context, id int64) (agents.Agent, error
 	if s.getErr != nil {
 		return agents.Agent{}, s.getErr
 	}
-	return s.agent, nil
+	// As the real store returns a row: with no credentials (agents.Secrets);
+	// the adapter reads them through Secrets.
+	a := s.agent
+	a.HooksToken, a.GatewaySecret = "", ""
+	return a, nil
 }
 
 func (s *recordingStore) UpdateStatus(ctx context.Context, id int64, status, lastOutput, errMsg string) error {
@@ -122,6 +129,16 @@ func (s *recordingStore) UpdateStatus(ctx context.Context, id int64, status, las
 	}
 	s.record("UpdateStatus(%d,%s,out=%q,err=%q)", id, status, lastOutput, errMsg)
 	return s.updateErr
+}
+
+// Secrets is the row's stored credentials. A read, so it is not recorded in
+// the transcript (which pins what the adapter WRITES and in what order); it
+// honours its context as every method here does.
+func (s *recordingStore) Secrets(ctx context.Context, id int64) (agents.Secrets, error) {
+	if err := s.refuse(ctx, fmt.Sprintf("Secrets(%d)", id)); err != nil {
+		return agents.Secrets{}, err
+	}
+	return agents.Secrets{HooksToken: s.agent.HooksToken, GatewaySecret: s.agent.GatewaySecret}, nil
 }
 
 func (s *recordingStore) SetHooksToken(ctx context.Context, id int64, token string) error {
@@ -143,6 +160,23 @@ func (s *recordingStore) SetGatewaySecret(ctx context.Context, id int64, secret 
 	// The value is a secret: only its length is recorded.
 	s.record("SetGatewaySecret(%d,len=%d)", id, len(secret))
 	s.agent.GatewaySecret = secret
+	return nil
+}
+
+// SetCredentials is agents.CredentialsWriter: both credentials, or (credsErr)
+// neither. Only lengths are recorded, as for the single writes.
+func (s *recordingStore) SetCredentials(ctx context.Context, id int64, token, secret string) error {
+	if err := s.refuse(ctx, fmt.Sprintf("SetCredentials(%d)", id)); err != nil {
+		return err
+	}
+	s.record("SetCredentials(%d,len=%d,len=%d)", id, len(token), len(secret))
+	if s.credsErr != nil {
+		return s.credsErr
+	}
+	s.agent.HooksToken = token
+	if secret != "" {
+		s.agent.GatewaySecret = secret
+	}
 	return nil
 }
 

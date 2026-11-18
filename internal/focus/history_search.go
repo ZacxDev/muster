@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SEARCHING FOCUS HISTORY IN A TIME WINDOW (migration 0022's rows): what a
@@ -45,6 +46,16 @@ const (
 	// MaxRecentTitles bounds RecentTitles per session, AFTER the window and the
 	// deduplication: a display bound, not a reach-back bound.
 	MaxRecentTitles = 12
+	// PaletteTitleRows is RecentTitles' row bound for the command palette:
+	// each session's newest 64 history rows, its cost per session per render.
+	PaletteTitleRows = 64
+	// MinTitleQueryRunes is the shortest query SearchTitles answers: the
+	// palette asks the server only once a query is this long.
+	MinTitleQueryRunes = 3
+	// MaxTitleQueryRunes is the longest query SearchTitles answers: a stored
+	// title is at most MaxTitleRunes (migration 0023's CHECK), so a longer
+	// query can match nothing — and it is answered without a read.
+	MaxTitleQueryRunes = MaxTitleRunes
 )
 
 // Live is the sessions a history read may return: mirrored sessions by Claude
@@ -319,22 +330,58 @@ func (s *PGStore) MatchHistory(ctx context.Context, text string, live Live, sinc
 
 // RecentTitles is each live session's distinct focus titles written at or
 // after since, newest first (a title written twice is listed once, at its
-// newest), at most MaxRecentTitles per session.
-func (s *PGStore) RecentTitles(ctx context.Context, live Live, since time.Time) (map[Subject][]TitleAt, error) {
+// newest), at most MaxRecentTitles per session. maxRows > 0 also bounds the
+// read to each session's newest maxRows rows in the window — a ROW bound, for
+// the command palette, which reads the whole retention on every page render
+// and must cost the same whatever a session's churn; <= 0 is no row bound (the
+// chief's sessions_overview, over HistoryWindow).
+//
+// 🔴 IT NAMES THE OWNER ITSELF (h.owner_id = the principal's muster.uid), not
+// only through row-level security. The policy's USING is "owner_id = uid OR
+// scope = 'all'", and that OR keeps the planner off
+// idx_agent_focus_history_subject, whose first column is owner_id. Measured
+// (one owner's 31 live sessions; 3 runs each):
+//
+//   - 245k rows (5 owners × 30 sessions × 1500 rows over 30 days, plus one
+//     20k-row session): the palette's read (30 days, 64 rows a session)
+//     2.8–3.3 ms with the predicate, 21–22 ms without; sessions_overview's
+//     (6 h, no row bound) 1.4–1.9 ms, against 1.3–1.4 ms for the flat
+//     GROUP BY this replaced (the 6 h window is served by the created_at
+//     index either way: no speed-up there, and no loss);
+//   - 200k rows over 200 sessions of 5 owners: the palette's read 36 ms
+//     with it, 2.3 s without — the planner walked the created_at index and
+//     filtered 162k rows a session.
+//
+// Under the system scope with no uid it reads nothing; every caller acts as a
+// user.
+func (s *PGStore) RecentTitles(ctx context.Context, live Live, since time.Time, maxRows int) (map[Subject][]TitleAt, error) {
 	if since.IsZero() {
 		return nil, errNoWindow
 	}
+	if maxRows < 0 {
+		maxRows = 0
+	}
 	m, a := live.nonNil()
-	rows, err := s.pool.Query(ctx, `SELECT h.subject_kind, h.subject_key, h.title, max(h.created_at) AS at
-		FROM agent_focus_history h
-		WHERE h.created_at >= $1 AND `+liveHistorySQL("$2", "$3")+`
-		GROUP BY h.subject_kind, h.subject_key, h.title
-		ORDER BY h.subject_kind, h.subject_key, at DESC`, since, m, a)
+	out := map[Subject][]TitleAt{}
+	if len(m) == 0 && len(a) == 0 {
+		return out, nil
+	}
+	// LIMIT NULL (maxRows 0) is no limit.
+	rows, err := s.pool.Query(ctx, `SELECT s.kind, s.key, t.title, t.at
+		FROM (SELECT 'mirror'::text AS kind, k AS key FROM unnest($2::text[]) k
+			UNION SELECT 'agent', id::text FROM unnest($3::bigint[]) id) s
+		CROSS JOIN LATERAL (
+			SELECT r.title, max(r.created_at) AS at FROM (
+				SELECT h.title, h.created_at FROM agent_focus_history h
+				WHERE h.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+					AND h.subject_kind = s.kind AND h.subject_key = s.key AND h.created_at >= $1
+				ORDER BY h.created_at DESC, h.id DESC LIMIT nullif($4::int, 0)) r
+			GROUP BY r.title) t
+		ORDER BY s.kind, s.key, t.at DESC, t.title`, since, m, a, maxRows)
 	if err != nil {
 		return nil, errf("recent titles: %w", err)
 	}
 	defer rows.Close()
-	out := map[Subject][]TitleAt{}
 	for rows.Next() {
 		var kind, key string
 		var t TitleAt
@@ -345,6 +392,65 @@ func (s *PGStore) RecentTitles(ctx context.Context, live Live, since time.Time) 
 		if len(out[sub]) < MaxRecentTitles {
 			out[sub] = append(out[sub], t)
 		}
+	}
+	return out, rows.Err()
+}
+
+// SearchTitles is the command palette's search of the WHOLE window: each live
+// session's newest focus title written at or after since that CONTAINS query
+// (case-folded: the query by Go's strings.ToLower, the title by Postgres's
+// lower(); on the title only), newest first, at most limit (bounded by
+// MaxSearchResults). A query (trimmed) of fewer than MinTitleQueryRunes or
+// more than MaxTitleQueryRunes runes matches nothing, and is not read.
+//
+// 🔴 A SUBSTRING OF THE TITLE, NOT SearchHistory's full-text search. The
+// palette matches what is typed as a fragment, in-page, as it is typed: "payout
+// zeph" must find "Reconciling the payout zephyr", and websearch_to_tsquery
+// matches whole (stemmed) words only. SearchHistory also matches the
+// description, and a hit is shown as "Previously: <title>" — a title that does
+// not contain what was typed would be an unexplained result. And it is
+// cheaper: measured on the 245k-row set (one owner's 65k rows in 30 days),
+// SearchHistory took 283 ms (203 ms with the owner predicate: computing the
+// tsvector of every row dominates), this 53 ms.
+//
+// Owner-scoped like RecentTitles: row-level security, and the owner named in
+// the query.
+func (s *PGStore) SearchTitles(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error) {
+	query = strings.TrimSpace(query)
+	if n := utf8.RuneCountInString(query); n < MinTitleQueryRunes || n > MaxTitleQueryRunes {
+		return []HistoryHit{}, nil
+	}
+	// Folded here, once, rather than by lower($1) in the statement.
+	query = strings.ToLower(query)
+	if since.IsZero() {
+		return nil, errNoWindow
+	}
+	if limit <= 0 || limit > MaxSearchResults {
+		limit = MaxSearchResults
+	}
+	m, a := live.nonNil()
+	rows, err := s.pool.Query(ctx, `SELECT kind, key, title, at FROM (
+			SELECT DISTINCT ON (h.subject_kind, h.subject_key) h.subject_kind AS kind, h.subject_key AS key,
+				h.title, h.created_at AS at
+			FROM agent_focus_history h
+			WHERE h.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+				AND h.created_at >= $2 AND `+liveHistorySQL("$3", "$4")+`
+				AND strpos(lower(h.title), $1) > 0
+			ORDER BY h.subject_kind, h.subject_key, h.created_at DESC, h.id DESC) best
+		ORDER BY at DESC, kind, key LIMIT $5`, query, since, m, a, limit)
+	if err != nil {
+		return nil, errf("search titles: %w", err)
+	}
+	defer rows.Close()
+	out := []HistoryHit{}
+	for rows.Next() {
+		var h HistoryHit
+		var kind string
+		if err := rows.Scan(&kind, &h.Subject.Key, &h.Title, &h.At); err != nil {
+			return nil, errf("search titles: %w", err)
+		}
+		h.Subject.Kind = Kind(kind)
+		out = append(out, h)
 	}
 	return out, rows.Err()
 }

@@ -5,8 +5,8 @@
 //
 // 🔴 ONE RULE, ONE PLACE, TWO READERS. muster-mirror reads it for a mirrored
 // window (internal/mirrorhost: the rendered view's subagent cards and the
-// card's live work chip) and ccd reads it inside a dispatched claude-code pod
-// (cmd/ccd/work.go), so the two kinds of card cannot count subagents
+// window's live work count) and ccd reads it inside a dispatched claude-code pod
+// (cmd/ccd/work.go), so the two kinds of entry cannot count subagents
 // differently.
 //
 // 🔴 A LEAF: it imports the standard library, internal/cctranscript and

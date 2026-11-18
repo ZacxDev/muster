@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/url"
+	"strconv"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -18,7 +19,7 @@ import (
 //     active pane whatever runs there — the shell or TUI on screen above it.
 //   - A dispatched agent's Terminal view: posts to AgentSendPath, which hands
 //     the text to the agent as a chat turn (the agent's own chat page keeps its
-//     streaming form, in the same clothes: composerInputClass / composerSendClass).
+//     streaming form, in the same clothes: composerInputClass / composerSendIconClass).
 //
 // 🔴 ONE FORM AND ONE SCRIPT (mirrorComposer, mirrorComposerScript). The views
 // differ in a route, the hidden fields that address what is sent to, and a
@@ -40,7 +41,8 @@ import (
 //
 // PHONE ERGONOMICS, which the browser suite measures at 390×844: the input is
 // 16px (text-base) — iOS zooms the page on focusing anything smaller and does
-// not zoom back; both controls are 44px touch targets; the form carries the
+// not zoom back; the box has its own full-width row above the buttons, which
+// are 40px touch targets (operator decision); the form carries the
 // safe-area inset. On the Terminal views it is the last thing in an h-dvh
 // column, so with interactive-widget=resizes-content it sits on top of the
 // on-screen keyboard rather than under it. On the Rendered view it is Pinned
@@ -69,6 +71,11 @@ type ComposerView struct {
 	Host    string
 	Session string
 	Window  string
+	// Owner is a TEAM host's entry's owner (team sharing 2b.4), 0 for the
+	// viewer's own: the form's action names it (owner=), which is how the
+	// server's route gate aims a send at the team's window. An own entry's
+	// action is what it always was.
+	Owner int64
 	// Extra are further hidden fields, in order: what else the route needs to
 	// know where the message goes and where to come back to.
 	Extra []ComposerField
@@ -81,6 +88,17 @@ type ComposerView struct {
 	Disabled string
 	// DisabledPlaceholder is the input's placeholder while Disabled.
 	DisabledPlaceholder string
+	// DisabledSetting is the host setting (a muster-mirror flag) that would
+	// let a Disabled composer send, and DisabledDetail the exact refusal a
+	// host or the hub gave: each draws an ⓘ beside the note (HostSettingSheet,
+	// HostDetailSheet), which itself never spells either (the operator rule).
+	// "" draws none. Admin: the viewer may see setup details; anyone else's
+	// ⓘ says to ask their admin. The page sets it from its navigation.
+	DisabledSetting, DisabledDetail string
+	// DisabledSettingReply: the setting turns on REPLYING to an opencode
+	// session, not typing (its ⓘ is named for that).
+	DisabledSettingReply bool
+	Admin                bool
 	// Notice, when set, is drawn in the status line when the page loads: the
 	// outcome of a send the BROWSER submitted (no script), which came back here
 	// as a redirect. NoticeOK says it is good news (it is styled as such).
@@ -106,6 +124,13 @@ type ComposerView struct {
 	// attachments — uploads are not configured. A disabled composer draws none
 	// either way. See attach.go.
 	Upload string
+	// DictateOff and UploadOff say the server has no dictation / no
+	// attachments (the feature is off, not merely this composer disabled): an
+	// enabled composer then draws a MUTED mic / paperclip in the same place,
+	// linking to that feature's row on the Features page (FeatureHref), so the
+	// control does not vanish without a word. False draws nothing — the zero
+	// value is the composer as it was.
+	DictateOff, UploadOff bool
 	// Pinned draws the composer position:fixed to the bottom of the VISIBLE
 	// viewport instead of as the last in-flow child of the page's column, and
 	// adds composerPinScript. The page must reserve the room it takes
@@ -121,6 +146,36 @@ type ComposerView struct {
 	// (composer_draft.go: MirrorDraftKey, AgentTerminalDraftKey); "" keeps no
 	// draft. A disabled composer keeps none either way.
 	DraftKey string
+	// Switcher, when set, draws the session switcher below the input row
+	// (switcher.go), spanning the screen as the composer's last row; nil draws
+	// none. The Rendered view sets it, and a Terminal view (AgentTerminalPage)
+	// on the composer it draws, where the composer is in flow, not Pinned.
+	Switcher *Switcher
+	// Suggest, when set, is the window's suggested-replies URL
+	// (SuggestPath with its address) and draws the chip row above the
+	// composer (suggest_row.go); "" draws none. Only a Claude Code window's
+	// Rendered view on an interactive host sets it — never a Terminal view,
+	// never another runtime's. A disabled composer draws none either way.
+	Suggest string
+	// SuggestPaused draws one line saying the viewer's suggested replies are
+	// paused (the auto-pause), with the way back on (Account). Drawn with the
+	// page, so it moves nothing.
+	SuggestPaused bool
+	// Collapsible draws the message box COLLAPSED on a touch screen (a coarse
+	// pointer): only a "Type a message" button beside the mic, which reveals
+	// it (composer_reveal.go). Only the Rendered view sets it. A disabled
+	// composer is never collapsed (there is nothing to type).
+	Collapsible bool
+	// MoreInRow draws the session switcher's ⋯ button in the button row, beside
+	// Send, instead of in the bar (switcherBarWith's moreElsewhere). Only the
+	// Rendered view sets it; it needs Switcher.
+	MoreInRow bool
+	// Chief, when set, draws the chief mode (view_chief.go): the "<agent> |
+	// Chief" switch, the chief's Send and the chief strip. Only a mirrored
+	// window's Rendered view sets it, and only for an owner whose chief is on;
+	// it is drawn whether or not the agent composer is Disabled — the chief is
+	// a write to the chief's chat, not to the pane.
+	Chief *ComposerChief
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -155,6 +210,9 @@ func (v ComposerView) action() string {
 	for _, f := range v.fields() {
 		q.Set(f.Name, f.Value)
 	}
+	if v.Owner != 0 {
+		q.Set("owner", strconv.FormatInt(v.Owner, 10))
+	}
 	if len(q) == 0 {
 		return v.SendPath
 	}
@@ -168,26 +226,116 @@ const (
 	mirrorComposeDown  = "Not sent: you are offline."
 )
 
-// composerInputClass and composerSendClass are the composer's look: a 16px
-// input (iOS zooms the page on focusing anything smaller) and 44px targets.
-// The agent chat's own form wears the same two, so every message box in the
-// app is one design — and grows the same way (composerFitClass, composer_fit.go).
+// The composer's two rows (mirrorComposer): the box's, then the buttons'.
+//
+// Only the Rendered view's (collapsible) composer has the two rows. A Terminal
+// view's composer is ONE row (operator decision: the terminal keeps its
+// height): #mv-button-row holding the paperclip, the box, the mic and Send.
 const (
-	composerInputClass = "composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
-	composerSendClass  = "press min-h-[44px] shrink-0 rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition disabled:opacity-40"
+	composerInputRowID  = "mv-input-row"
+	composerButtonRowID = "mv-button-row"
 )
 
-// mirrorComposer is the composer's markup: a status line, then the input row.
+// composerButtonGap is the button row's spacing: tight (operator ask: "lower
+// the padding on all of the buttons to save a little bit of space"), with
+// every composer button a 40×40 target (min-h/min-w, so a split control can
+// still be wider) rather than 44 — TestComposerButtonsAre40px holds each
+// rendered button to it.
+//
+// 🔴 UNDER 360px THE GAP IS 2px, so the FULLY LOADED row fits a 320px phone:
+// the chief switch, the paperclip, "Type a message", the mic, Send and its
+// caret and the ⋯ are 7×40 = 280px, plus 7 gaps (the spacer is an item too),
+// against the 296px the form's 12px gutters leave — 322px at 6px, 294px at
+// 2px (e2e/tests/chief-in-view.spec.ts's 320×568 case).
+const composerButtonGap = "gap-1.5 max-[359px]:gap-0.5"
+
+// composerMoreClass is the session switcher's ⋯ when it is in the composer's
+// button row (MoreInRow): the bar's icon button at the row's 40px. The bar's
+// own buttons keep their 44px (switcherIconButtonClass).
+const composerMoreClass = "press group inline-flex h-10 w-10 shrink-0 items-center justify-center"
+
+// composerInputClass and composerSendIconClass are the composer's look: a 16px
+// input (iOS zooms the page on focusing anything smaller) and a 40×40 Send.
+// Send is an icon button, a paper plane (sendIcon) named "Send" by aria-label
+// and title — every Send: the Rendered view's plain one, its split one beside
+// the Queue caret (composerSendSplitClass) and the agent chat's. The agent
+// chat's own form wears the same two, so every message box in the app is one
+// design — and grows the same way (composerFitClass, composer_fit.go).
+//
+// composerSendClass is the WORDED accent button in the same clothes, px-2.5
+// side padding: the ask card's Submit and Try again (mirror_ask.go) and the
+// script's "Send again". It is not Send's class: an icon button's padless
+// square would crush a word.
+const (
+	composerInputClass    = "composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
+	composerSendIconClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent transition disabled:opacity-40"
+	composerSendClass     = "press min-h-[44px] shrink-0 rounded-xl bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
+)
+
+// sendIcon is Send's face: a paper plane, inline, in currentColor (so it is
+// text-on-accent on bg-accent in either theme), hidden from assistive tech —
+// the button's aria-label names it.
+func sendIcon() g.Node {
+	return g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3.105 2.288a.75.75 0 0 0-.826.95l1.414 4.926A1.5 1.5 0 0 0 5.135 9.25h6.115a.75.75 0 0 1 0 1.5H5.135a1.5 1.5 0 0 0-1.442 1.086l-1.414 4.926a.75.75 0 0 0 .826.95 28.897 28.897 0 0 0 15.293-7.155.75.75 0 0 0 0-1.114A28.897 28.897 0 0 0 3.105 2.288Z"/></svg>`)
+}
+
+// sendKeepsFocusJS is a JS function expression that takes a Send button
+// (#mv-send, #chat-send) and keeps a press on it from taking focus from the
+// message box: the mousedown's default (moving focus) is prevented, as the
+// mic's and the `/` menu's are. 🔴 THE FIRST TAP ON SEND MUST SEND WITH THE
+// KEYBOARD UP. A press that blurs the box closes a phone's keyboard and, on
+// the Rendered view, brings the session switcher's bar back
+// (switcherKeyboardJS): the composer moves between the finger going down and
+// coming up, the release lands off Send, and nothing is sent — measured in
+// e2e/tests/composer-menu.spec.ts, where Send moved 44px under a held press.
+// The click itself is untouched (it still submits, and a disabled Send still
+// does nothing), and so is the box after a send: cleared, still focused, the
+// keyboard still up for the next message. The Queue caret is NOT given this:
+// its menu takes focus by design (sendMenuScript).
+const sendKeepsFocusJS = `function (b) {
+    if (b) b.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
+  }`
+
+// disabledNote is a disabled composer's note: why it cannot send, and — with
+// a DisabledSetting or DisabledDetail — the ⓘ beside it (a sibling of the
+// note, never inside a control).
+func disabledNote(v ComposerView) g.Node {
+	var info g.Node
+	switch {
+	case v.DisabledSetting != "":
+		info = HostSettingSheet("mv-readonly-info", v.DisabledSetting, v.DisabledSettingReply, v.Admin).Node()
+	case v.DisabledDetail != "":
+		info = HostDetailSheet("mv-readonly-info", "Why sending is off", v.DisabledDetail, v.Admin).Node()
+	default:
+		return P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))
+	}
+	return Div(Class("flex items-center gap-1 px-3 pb-2"),
+		P(ID("mv-readonly"), Class("min-w-0 text-[11px] text-muted"), g.Text(v.Disabled)),
+		info,
+	)
+}
+
+// mirrorComposer is the composer's markup: a status line, then the box's own
+// row above the button row (the Rendered view) or one row with both (a
+// Terminal view).
 func mirrorComposer(v ComposerView) g.Node {
 	off := v.Disabled != ""
 	dictate, upload := v.Dictate, v.Upload
 	if off {
 		dictate, upload = "", ""
 	}
+	dictateOff := !off && dictate == "" && v.DictateOff
+	uploadOff := !off && upload == "" && v.UploadOff
 	placeholder := v.Placeholder
 	if off {
 		placeholder = v.DisabledPlaceholder
 	}
+	// 🔴 A DISABLED composer's box is drawn ENABLED when the chief mode is
+	// offered (view_chief.go's header): a disabled box submits nothing, so
+	// the chief mode could not send without its script. It is marked instead
+	// (data-agent-off), its agent Send stays disabled, and the chief script
+	// disables it again in agent mode.
+	boxOff := off && v.Chief == nil
 	noteClass := "px-3 pt-2 text-xs break-words "
 	if v.NoticeOK {
 		noteClass += "text-fg2"
@@ -198,17 +346,82 @@ func mirrorComposer(v ComposerView) g.Node {
 	for _, f := range v.fields() {
 		hidden = append(hidden, Input(Type("hidden"), Name(f.Name), Value(f.Value)))
 	}
+	// collapse: the box starts collapsed on a touch screen (composerRevealCSS
+	// decides by the pointer; the attribute is only the state).
+	collapse := v.Collapsible && !off
+	// twoRows: the Rendered view's composer (Collapsible, read-only or not)
+	// puts the box on its own row above the buttons; every other is one row.
+	twoRows := v.Collapsible
+	box := Textarea(
+		ID("mv-input"),
+		Name("text"),
+		Rows("1"),
+		g.Attr("aria-label", v.Aria),
+		g.Attr("enterkeyhint", "send"),
+		g.If(boxOff, g.Attr("disabled", "")),
+		g.If(off && !boxOff, g.Attr("data-agent-off", "")),
+		g.If(off, g.Attr("title", v.Disabled)),
+		g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
+		Placeholder(placeholder),
+		Class(composerInputClass),
+	)
+	moreInRow := v.MoreInRow && v.Switcher != nil
 	menu := composerMenuSrc(v)
 	place := "flex-none"
 	if menu != "" {
 		place += " relative"
 	}
 	if v.Pinned {
-		place = "fixed inset-x-0 bottom-0 z-20"
+		// 🔴 INVISIBLE UNTIL IT IS WHOLE (composePending): composerPinScript, its
+		// last child, shows it.
+		place = "fixed inset-x-0 bottom-0 z-20 [&[data-compose-pending]]:invisible"
+	}
+	suggest := v.Suggest
+	if off {
+		suggest = ""
+	}
+	if suggest != "" && !v.Pinned {
+		// The row is placed against the composer's top (bottom-full).
+		place += " relative"
+	}
+	formPad := "pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+	if v.Switcher != nil {
+		formPad = "pb-2"
+		// The switcher's room, reserved before the bar is parsed (switcherRoom).
+		place += " " + switcherRoom(true)
+		// 🔴 THE BAR IS ABSOLUTE (switcherBar), so the composer must be its
+		// containing block. A Pinned one is (fixed); an in-flow one — a
+		// Terminal view's — is not unless it says so, and the bar would then
+		// be placed against the page instead of in the room reserved here.
+		if !v.Pinned && menu == "" && suggest == "" {
+			place += " relative"
+		}
 	}
 	return Div(
 		ID("mv-compose"),
 		Class(place+" border-t border-line bg-bg"),
+		// The bar's room, which steps aside with the bar (switcherRoomAttr).
+		g.If(v.Switcher != nil, switcherRoomMark(v.Pinned)),
+		// 🔴 A PINNED COMPOSER IS NOT SHOWN HALF-PARSED. It is fixed to the
+		// bottom, so whatever of it a frame paints mid-parse is moved UP by
+		// every row parsed after — and the parser yields anywhere under load,
+		// not only at a script: measured at 390×844, throttled, the composer
+		// moved 34–80px (layout shift 0.010–0.027, about 1 open in 20, on main
+		// too) and once its Send button widened 20→104px mid-row. Invisible
+		// (visibility, so its box is laid out) until its last child, the pin
+		// script, runs; a <noscript> rule shows it without script.
+		g.If(v.Pinned, g.Attr("data-compose-pending", "")),
+		g.If(v.Pinned, NoScript(StyleEl(g.Raw(`#mv-compose { visibility: visible !important; }`)))),
+		// The chief mode's stylesheet and its strip, above everything else
+		// of the composer (view_chief.go).
+		g.If(v.Chief != nil, StyleEl(g.Raw(viewChiefStyle))),
+		g.If(v.Chief != nil, viewChiefStrip(v.Chief)),
+		// The chief switch's own (empty) form, outside the composer's.
+		g.If(v.Chief != nil, viewChiefForm(v.Chief)),
+		// The suggested replies (suggest_row.go): above the composer, out of
+		// flow, drawn hidden — or, auto-paused, one line saying so.
+		suggestRow(suggest),
+		g.If(v.SuggestPaused && !off && suggest == "", suggestPausedNote()),
 		// The send's outcome, inline: why it was not sent, or that there was
 		// nothing to send. Empty and hidden otherwise — unless the page was
 		// reached by the redirect that answers a send the browser submitted,
@@ -235,41 +448,93 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.Attr("data-empty", MirrorComposeEmpty),
 			g.Attr("data-down", mirrorComposeDown),
 			g.Attr("novalidate", ""),
+			// The chief's route, which the composer's script reads to tell a
+			// line to the chief from one to the pane (composer_pending.go).
+			g.If(v.Chief != nil, g.Attr("data-chief-path", MirrorChiefPath)),
 			// The page may be hx-boost'ed (an agent's): a boosted form would be
 			// submitted by htmx as well as by the script.
 			hx("hx-boost", "false"),
-			Class("flex items-end gap-2 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"),
+			// The safe-area inset is the LAST row's: the switcher's when it is
+			// drawn below (switcherBar), this row's otherwise.
+			// 🔴 THE RENDERED VIEW: TWO ROWS, THE BOX ON ITS OWN ABOVE THE
+			// BUTTONS (operator ask: with a full row of buttons "there is not
+			// enough space for the actual text input", so the box "displays in a
+			// new horizontal space above"). The box's row (composerInputRowID) is
+			// the form's width; the button row (composerButtonRowID) is
+			// "[chief][📎][⌨][🎤] … [Send][⋯]". Collapsed (composer_reveal.go)
+			// the box's row is hidden whole and the button row is all there is.
+			// 🔴 A TERMINAL VIEW: ONE ROW (operator decision — the terminal
+			// keeps its height): "[📎][box][🎤][Send]", the paperclip still a
+			// button beside the box, never inside it.
+			g.If(twoRows, Class("flex flex-col gap-2 px-3 pt-2 "+formPad)),
+			g.If(!twoRows, Class("px-3 pt-2 "+formPad)),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
-			attachControl(upload),
-			Textarea(
-				ID("mv-input"),
-				Name("text"),
-				Rows("1"),
-				g.Attr("aria-label", v.Aria),
-				g.Attr("enterkeyhint", "send"),
-				g.If(off, g.Attr("disabled", "")),
-				g.If(off, g.Attr("title", v.Disabled)),
-				g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
-				Placeholder(placeholder),
-				Class(composerInputClass),
+			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
+			g.If(twoRows, Div(
+				ID(composerInputRowID),
+				composerFieldMark(collapse),
+				Class("flex"),
+				box,
+				// The recording's waveform takes the box's place (dictate.go).
+				dictateWave(dictate, "mv-dictate"),
+			)),
+			Div(
+				ID(composerButtonRowID),
+				Class("flex items-end "+composerButtonGap),
+				// The chief toggle, the row's FIRST control, left of the paperclip:
+				// where the box's text goes (view_chief.go).
+				g.If(v.Chief != nil, viewChiefToggle(v.Chief)),
+				// The paperclip: a button of the row, never inside the box
+				// (attach.go), shown collapsed and open alike.
+				attachControlOrOff(upload, uploadOff),
+				// One row: the box, between the paperclip and the mic — and,
+				// while recording, the waveform in its place (dictate.go).
+				g.If(!twoRows, box),
+				g.If(!twoRows, dictateWave(dictate, "mv-dictate")),
+				// "Type a message" — right before the mic (composer_reveal.go).
+				g.If(collapse, composerTextButton()),
+				dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
+				g.If(dictateOff, dictateOffControl("mv-dictate-off")),
+				// Two rows: the row's room, so Send and the ⋯ stay at its right
+				// (in one row the box takes it).
+				g.If(twoRows, composerSpacer()),
+				// Send's place while recording: the ↑ that transcribes and sends
+				// by clicking the Send on screen — the chief's in chief mode,
+				// else the agent's (dictate.go).
+				dictateSend(dictate, "mv-dictate", DictateSendIcon,
+					[]string{"mv-send-chief", "mv-send"}, []string{"mv-send-group", "mv-send", "mv-send-chief"}),
+				sendSplit(v.Queue, off),
+				// The chief's Send, shown only in chief mode (view_chief.go).
+				g.If(v.Chief != nil, viewChiefSend(v)),
+				// The session switcher's ⋯, in the row with Send (the Rendered
+				// view): AFTER Send, the row's last control.
+				g.If(moreInRow, switcherMoreButtonIn(v.Switcher, composerMoreClass)),
 			),
-			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
-			sendSplit(v.Queue, off),
 		),
-		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
+		g.If(off, disabledNote(v)),
 		// 🔴 EVERY SCRIPT OF THE COMPOSER IS AFTER ITS FORM. One inside it lets
 		// the browser paint the composer half-parsed, and the height it then
 		// grows by is a layout shift (measured: 0.006–0.014 at 390×844 with the
 		// queue's script before the form). The draft's is FIRST among them: it
-		// puts a restored text in the box before anything else measures it.
+		// puts a restored text in the box before anything else measures it —
+		// after only the reveal's, which defines what the draft calls to show
+		// the box it fills (composer_reveal.go).
+		g.If(collapse, composerRevealScript()),
 		composerFitScript(),
 		g.If(v.DraftKey != "" && !off, composerDraftScript()),
+		// The session switcher, below the input row (switcher.go): drawn with
+		// the page, at its fixed height, so nothing moves when it is filled. It
+		// comes AFTER the draft's script (its own script is the first after it),
+		// so a restored draft has sized the box before anything below is parsed.
+		switcherBarWith(v.Switcher, true, moreInRow),
 		g.If(v.Queue != nil && !off, sendQueueScript()),
 		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),
 		attachScript(upload),
 		composerMenuScript(menu),
+		g.If(suggest != "", suggestRowScript()),
+		g.If(v.Chief != nil, viewChiefScript()),
 		g.If(v.Pinned, composerPinScript()),
 	)
 }
@@ -278,9 +543,17 @@ func mirrorComposer(v ComposerView) g.Node {
 // fixed-height app shell (a flex column, only the transcript scrolls), but its
 // height is the VISIBLE viewport's as composerPinScript measures it (100dvh
 // until it runs, or without script), and its bottom padding is the pinned
-// composer's height (4.5rem — one input row — until measured), so the
-// column's last child ends exactly where the composer starts.
-const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,4.5rem)]"
+// composer's height (7rem — the box's row over the button row, as a page
+// without script draws it — until measured), so the column's last child ends
+// exactly where the composer starts.
+const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,7rem)]"
+
+// pinnedShellSwitcherClass is pinnedShellClass for a pinned composer with the
+// session switcher below it: the same shell, its unmeasured room the box's
+// row, the button row AND the switcher's 45px row (9.75rem), so a paint before
+// composerPinScript has measured still ends the column at about the
+// composer's top.
+const pinnedShellSwitcherClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,9.75rem)]"
 
 // composerPinScript keeps a Pinned composer at the bottom of what is on
 // screen, and the page's column sized to end above it.
@@ -297,7 +570,10 @@ const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden 
 //
 // What this script adds on top:
 //   - --mv-compose-h: the composer's measured height (a notice, the mic's
-//     line, a read-only note all change it), which the body reserves;
+//     line, a read-only note all change it) PLUS the suggested replies' row
+//     while it is shown (suggest_row.go: it is out of flow above the
+//     composer, so the box's own height does not count it), which the body
+//     reserves;
 //   - --mv-vh: the bottom of the VISUAL viewport in layout-viewport pixels,
 //     the body's height — so the transcript's end is never behind the
 //     composer or off screen;
@@ -314,27 +590,28 @@ func composerPinScript() g.Node {
 (function () {
   var box = document.getElementById('mv-compose');
   if (!box) return;
+  // The last child of the composer: it is whole now (mirrorComposer).
+  box.removeAttribute('data-compose-pending');
   var root = document.documentElement;
   // 🔴 IN THE SWITCH'S FRAME (view_swap.go) THE KEYBOARD IS THE TOP WINDOW'S.
   // The frame is laid over the whole viewport, so its height is the top
   // window's — but a keyboard that only overlays the page (iOS) shrinks the TOP
   // window's visual viewport, never the frame's. Measured against the top
-  // window, the composer still rides on top of it.
-  var vw = window;
-  try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
+  // window, the composer still rides on top of it (kbWin, keyboard_viewport.go).
+` + keyboardViewportJS + `
+  var vw = kbWin();
   var pending = false;
   function measure() {
     pending = false;
-    var vv = vw.visualViewport;
-    var bottom = vw.innerHeight;
-    if (vv) {
-      if (Math.abs(vv.scale - 1) > 0.001) return;
-      bottom = Math.min(vw.innerHeight, vv.height + vv.offsetTop);
-    }
-    var kb = Math.max(0, Math.round(vw.innerHeight - bottom));
+    // A pinch is not a resize: nothing is measured at a scale other than 1.
+    var m = kbMeasure(vw);
+    if (!m) return;
+    var bottom = m.bottom, kb = m.kb;
     box.style.bottom = kb ? kb + 'px' : '';
     root.style.setProperty('--mv-vh', Math.round(bottom) + 'px');
-    root.style.setProperty('--mv-compose-h', Math.ceil(box.getBoundingClientRect().height) + 'px');
+    var sg = document.getElementById('mv-suggest');
+    var extra = sg && !sg.hidden ? sg.getBoundingClientRect().height : 0;
+    root.style.setProperty('--mv-compose-h', Math.ceil(box.getBoundingClientRect().height + extra) + 'px');
   }
   function schedule() {
     if (pending) return;
@@ -342,6 +619,8 @@ func composerPinScript() g.Node {
     requestAnimationFrame(measure);
   }
   measure();
+  // The suggested replies' row says when it took or gave back its room.
+  window.musterPinMeasure = measure;
   if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(schedule).observe(box); }
   window.addEventListener('resize', schedule);
   window.addEventListener('pageshow', schedule);
@@ -360,13 +639,16 @@ func composerPinScript() g.Node {
 
 // mirrorComposerScript sends the composer's text without leaving the page.
 //
+// 🔴 IT DOES NOT WAIT FOR THE ANSWER (composer_pending.go, which holds the
+// script: mirrorComposerJS). The box empties and the message is drawn as
+// pending at the press; the answer then settles it — sent (replaced by its
+// transcript row), refused (failed, with the reason, Retry, and the text back
+// in the box), or a step-up.
+//
 // A 403 carrying X-Muster-Step-Up means the sign-in is not fresh: "Confirm it's
 // you" is asked (window.musterStepUp, stepup_confirm.go) and on success the
-// SAME text — still in the box, never cleared on a refusal — is sent again. The
-// page never decides freshness; the server does.
-//
-// What a person sees: sent → the box clears (and the view above shows the text
-// land); not sent → the reason, inline, with the text kept; nothing typed →
+// SAME request — the pending message's own text and nonce — is sent again.
+// The page never decides freshness; the server does. Nothing typed →
 // MirrorComposeEmpty rather than a Send that silently does nothing.
 //
 // 🔴 WHEN THIS SCRIPT'S WAY FAILS, THE BROWSER'S TAKES OVER (native()). Three
@@ -388,158 +670,5 @@ func composerPinScript() g.Node {
 const SendAgainHeader = "X-Muster-Send-Again"
 
 func mirrorComposerScript() g.Node {
-	return Script(g.Raw(`
-(function () {
-  var form = document.getElementById('mv-form');
-  if (!form) return;
-  var input = document.getElementById('mv-input');
-  var send = document.getElementById('mv-send');
-  var note = document.getElementById('mv-note');
-  var nonce = document.getElementById('mv-nonce');
-  function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
-  function sayOK(msg) { say(msg); note.setAttribute('data-ok', ''); }
-  // A message that was sent is done with its nonce: the next one is a new
-  // message, and must not be taken for a repeat of this one.
-  function renew() {
-    if (!nonce) return;
-    // With no way to mint one the field is EMPTIED: no nonce is no protection,
-    // and a reused one would have the next message taken for this one.
-    nonce.value = '';
-    if (!window.crypto || !crypto.getRandomValues) return;
-    var b = new Uint8Array(16), s = '';
-    crypto.getRandomValues(b);
-    for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
-    nonce.value = s;
-  }
-  // A notice in the address has been shown (the server drew it): take it out,
-  // so reloading the page does not repeat it.
-  try {
-    var here = new URL(location.href);
-    if (here.searchParams.has('notice')) {
-      here.searchParams.delete('notice');
-      history.replaceState(history.state, '', here.pathname + here.search + here.hash);
-    }
-  } catch (e) {}
-  // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED. When the
-  // host never confirmed a send (the answer carries X-Muster-Send-Again), the
-  // server keeps its nonce: the same message re-sent with it is refused,
-  // because it may be in the conversation already. This button is the
-  // person's explicit retry: it mints a NEW nonce, then sends.
-  var againBtn = null;
-  function offerAgain(sub) {
-    if (!againBtn) {
-      againBtn = document.createElement('button');
-      againBtn.type = 'button';
-      againBtn.id = 'mv-send-again';
-      againBtn.className = send.className;
-      againBtn.textContent = 'Send again';
-      note.parentNode.insertBefore(againBtn, note.nextSibling);
-    }
-    againBtn.hidden = false;
-    againBtn.onclick = function () { againBtn.hidden = true; renew(); say(''); post(sub); };
-  }
-  function dropAgain() { if (againBtn) againBtn.hidden = true; }
-  // The Queue button (send_queue.go), when the composer has one: a submit
-  // whose formaction is the queue route.
-  var queueBtn = document.getElementById('mv-queue-send');
-  // Drawn disabled (the server cannot tell when Claude Code is idle): it stays
-  // so, whatever a send re-enables.
-  var queueOff = !!(queueBtn && queueBtn.disabled);
-  // 🔴 WHICH BUTTON SUBMITTED, WHERE e.submitter IS MISSING (older Safari):
-  // the last one clicked. Guessing "Send" for a Queue tap would deliver the
-  // message NOW, which is the one thing the person asked not to happen.
-  var clicked = null;
-  if (queueBtn) queueBtn.addEventListener('click', function () { clicked = queueBtn; });
-  send.addEventListener('click', function () { clicked = null; });
-  // native hands the send to the browser: an ordinary form submission, which
-  // the server answers with a redirect back to this view. sub is the button
-  // that submitted (Queue, or none for Send): the browser's submit() ignores a
-  // submitter, so its route is put on the form here.
-  function native(sub) {
-    if (sub && sub.getAttribute('formaction')) form.setAttribute('action', sub.getAttribute('formaction'));
-    // The draft (composer_draft.go) is cleared by the page this comes back to,
-    // if it says the message went.
-    if (window.musterDraft) window.musterDraft.pending(input);
-    // Attachments (attach.go) ride in the text: the browser's own submit
-    // carries only the form's fields.
-    if (window.musterAttach) input.value = window.musterAttach.compose(input.value);
-    HTMLFormElement.prototype.submit.call(form);
-  }
-  function body() {
-    var b = new URLSearchParams();
-    for (var i = 0; i < form.elements.length; i++) {
-      var el = form.elements[i];
-      if (!el.name || el.disabled) continue;
-      // The message is the text plus one line per attachment (attach.go).
-      b.append(el.name, el === input && window.musterAttach ? window.musterAttach.compose(el.value) : el.value);
-    }
-    return b;
-  }
-  function post(sub) {
-    send.disabled = true;
-    if (queueBtn) queueBtn.disabled = true;
-    var queued = !!(sub && sub === queueBtn);
-    var to = queued ? sub.getAttribute('formaction') : form.getAttribute('action');
-    // What is being sent: the box is emptied afterwards only if it still holds
-    // this, so text typed while the request was out is not thrown away.
-    var sent = input.value;
-    var req;
-    try {
-      req = fetch(to, { method: 'POST', body: body(), credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
-    } catch (e) { native(sub); return; }
-    return req.then(function (r) {
-        if (r.ok) {
-          dropAgain();
-          if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
-          // Sent or queued: its draft goes (what was typed meanwhile is kept).
-          if (window.musterDraft) window.musterDraft.sent(input);
-          if (window.musterAttach) window.musterAttach.sent();
-          renew();
-          if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }
-          return;
-        }
-        if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
-          var stepUp = window.musterStepUp;
-          if (!stepUp) { native(sub); return; }
-          stepUp.stale();
-          stepUp.ask('', function () { return post(sub); });
-          return;
-        }
-        var again = !!r.headers.get('`+SendAgainHeader+`');
-        return r.text().then(function (t) {
-          say(t.trim() || ((queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')'));
-          if (again) offerAgain(sub); else dropAgain();
-        });
-      }, function () {
-        if (navigator.onLine === false) { say(form.getAttribute('data-down')); return; }
-        native(sub);
-      })
-      .then(function () { send.disabled = false; if (queueBtn) queueBtn.disabled = queueOff; }, function () { native(sub); });
-  }
-  form.addEventListener('submit', function (e) {
-    // From here on a failure of THIS handler leaves the event alone, and the
-    // browser submits the form itself.
-    if (input.disabled) { e.preventDefault(); return; }
-    var att = window.musterAttach;
-    if (att && att.pending()) { e.preventDefault(); say(att.pendingMessage); return; }
-    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); input.focus(); return; }
-    if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function') return;
-    e.preventDefault();
-    say('');
-    var sub = ('submitter' in e) ? e.submitter : clicked;
-    clicked = null;
-    try { post(sub); } catch (err) { native(sub); }
-  });
-  input.addEventListener('input', function () { if (input.value.trim()) say(''); });
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      // requestSubmit is missing from older Safari; a click on Send is the same
-      // submit, through the same handler.
-      if (form.requestSubmit) form.requestSubmit(); else send.click();
-    }
-  });
-})();
-`))
+	return Script(g.Raw(mirrorComposerJS))
 }

@@ -8,11 +8,13 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE SERVER-SIDE REFRESH (operator decision: muster computes focus, the chief
-// only reads it). A periodic pass (Run) and an on-demand trigger (Refresh, the
-// focus_refresh tool) both come here.
+// only reads it). A periodic pass (Run) comes here, and Refresh does one
+// subject.
 //
 // One refresh of one subject:
 //  1. an owner the summarizer cannot serve (no key) is refused before anything
@@ -24,9 +26,12 @@ import (
 //     the focus was computed, so neither would the focus. This is what keeps a
 //     periodic pass over an idle fleet free;
 //  4. the per-owner and global rate caps and the concurrency bound are taken;
-//  5. the summarizer is called; its answer is parsed and Cleaned
-//     (ParseSummary), and stored with the fingerprint — or, on any failure, the
-//     error is RECORDED beside the focus the subject already had, which stays.
+//  5. the summarizer is called with the tail and the session's current title
+//     (Request.PrevTitle, which it is told to keep unless the goal changed);
+//     its answer is parsed in the one accepted shape (ParseSummary), checked
+//     and cut to TitleCapRunes (Accept), and stored with the fingerprint — or,
+//     on any failure, including an off-format or verbatim answer, the error is
+//     RECORDED beside the focus the subject already had, which stays.
 
 // KeyChecker is a Summarizer that can say, without being called, that it
 // cannot serve owner (ScaleDown: the owner has no OpenRouter key).
@@ -39,6 +44,15 @@ type KeyChecker interface {
 type Candidate struct {
 	Subject  Subject
 	ActiveAt time.Time
+	// WaitingSince is when a mirrored Claude window began waiting on the
+	// person (its host's StatusWaiting, StatusSince), zero when it is not
+	// waiting or its host does not say. Its host reports a waiting window's
+	// activity as "now" (mirrorhost.WireWindows), so ActiveAt alone always
+	// reads as moved; but Claude Code writes no row a focus tail renders
+	// while it waits, so a window waiting since before a read that found its
+	// tail unchanged has nothing new (checkedSkip). A BUSY window has no such
+	// signal and is never skipped by it.
+	WaitingSince time.Time
 }
 
 // Sessions is where subjects and their transcripts come from (internal/api: the
@@ -98,6 +112,16 @@ type Refresher struct {
 	mu      sync.Mutex
 	calls   map[int64][]time.Time // per owner, the last hour's call times
 	global  []time.Time
+	// checked is, per owner, when each subject's tail was last READ to an
+	// unchanged, updated or empty end, and the fingerprint that read found
+	// (checkedSkip). In memory only: lost on restart, which costs one extra
+	// tail read per session on the first pass after it — no migration.
+	checked map[int64]map[Subject]check
+	// refused is, per owner, the tail fingerprint whose answer was REFUSED for
+	// its content (refusedForContent), by subject: that tail is not sent again
+	// until it changes (Refresh). In memory only — after a restart a refused
+	// tail costs one more call — and pruned to each pass's candidates.
+	refused map[int64]map[Subject]string
 	// Calls counts summarizer calls made (a test reads it).
 	Calls int
 }
@@ -173,6 +197,9 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 			return OutcomeFailed, err
 		}
 	}
+	// Taken BEFORE the tail read: activity after this instant may be missing
+	// from the tail, so it must keep the subject a candidate.
+	readAt := r.now()
 	entries, err := r.Sessions.Tail(ctx, sub)
 	if err != nil {
 		if !errors.Is(err, ErrNoSession) {
@@ -182,9 +209,21 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 	}
 	tail, fp := RenderTail(entries)
 	if tail == "" {
+		r.markChecked(owner, sub, readAt, "")
 		return OutcomeEmpty, nil
 	}
 	if has && cur.Has() && cur.Fingerprint == fp {
+		r.markChecked(owner, sub, readAt, fp)
+		return OutcomeUnchanged, nil
+	}
+	// 🔴 A TAIL WHOSE ANSWER WAS REFUSED IS NOT SENT AGAIN. A refusal for the
+	// answer's CONTENT (format, markdown, a copy) is the model's verdict on this
+	// tail and would very likely repeat; and a failure writes no fingerprint, so
+	// without this an idle session would cost a call on every pass, against the
+	// owner's PerOwnerPerHour budget every other session shares. A transport or
+	// HTTP failure is NOT recorded here: it says nothing about the tail, and is
+	// retried on the next pass.
+	if r.refusedFP(owner, sub) == fp {
 		return OutcomeUnchanged, nil
 	}
 	if !r.take(owner) {
@@ -194,18 +233,160 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 	if err := r.acquire(ctx); err != nil {
 		return OutcomeFailed, err
 	}
-	sum, err := r.Summarizer.Summarize(ctx, owner, tail)
+	var prev string
+	if has && cur.Has() {
+		prev = cur.Title
+	}
+	req := Request{Tail: tail}
+	if FeedableTitle(prev) {
+		req.PrevTitle = prev
+	}
+	sum, err := r.Summarizer.Summarize(ctx, owner, req)
 	r.release()
+	if err == nil {
+		sum, err = Accept(sum, tail, prev)
+	}
 	if err != nil {
+		if refusedForContent(err) {
+			r.setRefused(owner, sub, fp)
+		}
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}
-	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer,
-		Fingerprint: fp}); err != nil {
+	r.setRefused(owner, sub, "")
+	cwd, named := LatestCwd(entries)
+	// The session's NAME freezes from the first focus that passes the name
+	// bar (names.go: a real turn, a nameable title) — in the same write, and
+	// only while it has none (PGStore.Upsert).
+	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer, Cwd: cwd, CwdNamed: named,
+		Fingerprint: fp, Nameable: Nameable(sum.Title, entries)}); err != nil {
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}
+	r.markChecked(owner, sub, readAt, fp)
 	return OutcomeUpdated, nil
+}
+
+// check is one tail read that ended without a failure: when it began and the
+// fingerprint it found ("" for an empty tail).
+type check struct {
+	at time.Time
+	fp string
+}
+
+func (r *Refresher) markChecked(owner int64, sub Subject, at time.Time, fp string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.checked == nil {
+		r.checked = map[int64]map[Subject]check{}
+	}
+	if r.checked[owner] == nil {
+		r.checked[owner] = map[Subject]check{}
+	}
+	r.checked[owner][sub] = check{at: at, fp: fp}
+}
+
+// checkedSkip reports whether c needs no tail read because one already read
+// everything it can have said: a read began a whole ActivityBucket after c's
+// last activity (ActiveAt is floored to the bucket, so a message inside the
+// bucket may postdate a read that began within it) — or a whole bucket after
+// c began WAITING on the person (Candidate.WaitingSince) — and that read found
+// the fingerprint the stored focus still carries (storedFP; "" with no focus),
+// or found an empty tail (an empty read matches an empty read). A read that
+// FAILED records nothing, so a failure is retried on the next pass.
+//
+// 🔴 THIS IS WHAT STOPS AN UNCHANGED SESSION BEING A CANDIDATE FOREVER. The
+// unchanged outcome writes nothing to the store, so updated_at alone never
+// catches up with the session's activity; without this record every such
+// session was re-read on every pass, filled MaxPerPass, and pushed sessions
+// that had really moved past the cap.
+func (r *Refresher) checkedSkip(owner int64, c Candidate, storedFP string) bool {
+	r.mu.Lock()
+	ck, ok := r.checked[owner][c.Subject]
+	r.mu.Unlock()
+	// An empty read matches an empty read: an empty tail stores nothing, so
+	// the stored focus (from an earlier, non-empty tail) never carries "".
+	if !ok || (ck.fp != storedFP && ck.fp != "") {
+		return false
+	}
+	bucket := mirror.ActivityBucket * time.Second
+	quiet := !c.ActiveAt.IsZero() && !c.ActiveAt.Add(bucket).After(ck.at)
+	// Waiting since a whole bucket before the read began: StatusSince is the
+	// CLI's clock, the read's is the server's, and the bucket is the slack
+	// the activity rule already allows for.
+	waiting := !c.WaitingSince.IsZero() && !c.WaitingSince.Add(bucket).After(ck.at)
+	return quiet || waiting
+}
+
+// pruneChecked keeps owner's check records for the subjects in cands only, so
+// the map is bounded by the live candidates.
+func (r *Refresher) pruneChecked(owner int64, cands []Candidate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.checked[owner]
+	if len(m) == 0 {
+		return
+	}
+	live := make(map[Subject]bool, len(cands))
+	for _, c := range cands {
+		live[c.Subject] = true
+	}
+	for s := range m {
+		if !live[s] {
+			delete(m, s)
+		}
+	}
+}
+
+// refusedForContent reports whether err refused an answer for what it SAID —
+// its shape, markdown, or a copy of the transcript — rather than for how the
+// call went.
+func refusedForContent(err error) bool {
+	return errors.Is(err, ErrFormat) || errors.Is(err, ErrMarkdown) || errors.Is(err, ErrTranscriptText)
+}
+
+// refusedFP is the tail fingerprint owner's sub last had refused for content,
+// "" for none.
+func (r *Refresher) refusedFP(owner int64, sub Subject) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refused[owner][sub]
+}
+
+// setRefused records fp as sub's refused tail ("" clears it).
+func (r *Refresher) setRefused(owner int64, sub Subject, fp string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if fp == "" {
+		delete(r.refused[owner], sub)
+		return
+	}
+	if r.refused == nil {
+		r.refused = map[int64]map[Subject]string{}
+	}
+	if r.refused[owner] == nil {
+		r.refused[owner] = map[Subject]string{}
+	}
+	r.refused[owner][sub] = fp
+}
+
+// pruneRefused keeps owner's refused records for cands' subjects only.
+func (r *Refresher) pruneRefused(owner int64, cands []Candidate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.refused[owner]
+	if len(m) == 0 {
+		return
+	}
+	live := make(map[Subject]bool, len(cands))
+	for _, c := range cands {
+		live[c.Subject] = true
+	}
+	for s := range m {
+		if !live[s] {
+			delete(m, s)
+		}
+	}
 }
 
 // record stores cause's Reason — never its text, which can carry a provider's
@@ -217,46 +398,98 @@ func (r *Refresher) record(ctx context.Context, sub Subject, cause error) {
 	}
 }
 
+// PassCounts is what one pass did: counts only, never a title.
+type PassCounts struct {
+	// Candidates is every subject listed; Skipped those not read because
+	// nothing moved (their focus or their last check is newer than their
+	// activity); Deferred those that may have moved but were past MaxPerPass
+	// or the rate cap, left for the next pass.
+	Candidates, Skipped, Deferred int
+	Outcomes                      map[Outcome]int
+	// RateLimited is a pass an owner's rate cap ended early.
+	RateLimited bool
+}
+
+func (p *PassCounts) add(o PassCounts) {
+	p.Candidates += o.Candidates
+	p.Skipped += o.Skipped
+	p.Deferred += o.Deferred
+	p.RateLimited = p.RateLimited || o.RateLimited
+	if p.Outcomes == nil {
+		p.Outcomes = map[Outcome]int{}
+	}
+	for k, v := range o.Outcomes {
+		p.Outcomes[k] += v
+	}
+}
+
+// String is the pass's one log line's counts.
+func (p PassCounts) String() string {
+	return fmt.Sprintf("candidates=%d skipped=%d deferred=%d updated=%d unchanged=%d empty=%d failed=%d rate-limited=%t",
+		p.Candidates, p.Skipped, p.Deferred, p.Outcomes[OutcomeUpdated], p.Outcomes[OutcomeUnchanged], p.Outcomes[OutcomeEmpty],
+		p.Outcomes[OutcomeFailed], p.RateLimited)
+}
+
 // RefreshOwner refreshes owner's subjects that may have moved since their
-// focus was written — active after it, or with none — at most MaxPerPass of
-// them, most recently active first. ctx acts as owner.
+// focus was written or their tail last read — active after it, or with none —
+// at most MaxPerPass of them, most recently active first. A subject skipped
+// because nothing moved does NOT count toward MaxPerPass. ctx acts as owner.
 func (r *Refresher) RefreshOwner(ctx context.Context, owner int64) (map[Outcome]int, error) {
+	pc, err := r.refreshOwner(ctx, owner)
+	return pc.Outcomes, err
+}
+
+func (r *Refresher) refreshOwner(ctx context.Context, owner int64) (PassCounts, error) {
+	pc := PassCounts{Outcomes: map[Outcome]int{}}
 	cands, err := r.Sessions.Candidates(ctx)
 	if err != nil {
-		return nil, err
+		return pc, err
 	}
+	r.pruneRefused(owner, cands)
 	have, err := r.Store.List(ctx)
 	if err != nil {
-		return nil, err
+		return pc, err
 	}
+	r.pruneChecked(owner, cands)
 	updated := map[Subject]time.Time{}
+	stored := map[Subject]string{}
 	for _, f := range have {
 		if f.Has() {
 			updated[f.Subject] = f.UpdatedAt
+			stored[f.Subject] = f.Fingerprint
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].ActiveAt.After(cands[j].ActiveAt) })
-	out := map[Outcome]int{}
+	pc.Candidates = len(cands)
 	n := 0
 	for _, c := range cands {
-		if n >= MaxPerPass || ctx.Err() != nil {
-			break
-		}
 		if at, ok := updated[c.Subject]; ok && !c.ActiveAt.IsZero() && !c.ActiveAt.After(at) {
+			pc.Skipped++
+			continue
+		}
+		if r.checkedSkip(owner, c, stored[c.Subject]) {
+			pc.Skipped++
+			continue
+		}
+		if n >= MaxPerPass || ctx.Err() != nil || pc.RateLimited {
+			pc.Deferred++
 			continue
 		}
 		n++
 		o, err := r.Refresh(ctx, owner, c.Subject)
 		if errors.Is(err, ErrCapped) {
-			out[OutcomeFailed]++
-			break
+			pc.Outcomes[OutcomeFailed]++
+			pc.RateLimited = true
+			continue
 		}
-		out[o]++
+		pc.Outcomes[o]++
 	}
-	return out, nil
+	return pc, nil
 }
 
-// Pass refreshes every owner (Store.Owners), each as itself.
+// Pass refreshes every owner (Store.Owners), each as itself, and logs ONE line
+// of counts for the whole pass — every pass, a quiet one too, so "no line"
+// always means "the pass did not run". Never a title.
 func (r *Refresher) Pass(ctx context.Context) error {
 	if r.AsOwner == nil {
 		return errors.New("focus: the refresher has no AsOwner")
@@ -265,19 +498,19 @@ func (r *Refresher) Pass(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var total PassCounts
 	for _, o := range owners {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		res, err := r.RefreshOwner(r.AsOwner(ctx, o), o)
+		res, err := r.refreshOwner(r.AsOwner(ctx, o), o)
 		if err != nil {
 			r.logf("focus: owner %d: %v", o, err)
 			continue
 		}
-		if res[OutcomeUpdated]+res[OutcomeFailed] > 0 {
-			r.logf("focus: owner %d: %s", o, fmt.Sprint(res))
-		}
+		total.add(res)
 	}
+	r.logf("focus: pass: owners=%d %s", len(owners), total)
 	return nil
 }
 

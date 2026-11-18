@@ -62,7 +62,7 @@ func (e *testError) Error() string { return e.s }
 
 const (
 	// A configured hook token: the shared machine credential every hook script
-	// on both hosts holds.
+	// on every host holds.
 	testHookToken = "hook-token-for-the-shared-machine-tier-not-a-real-secret"
 	// A per-agent hooks token that the store below resolves.
 	testAgentToken = "agent-hooks-token-that-resolves-to-a-row-not-a-real-secret"

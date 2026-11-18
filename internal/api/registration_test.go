@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,21 +16,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/askattempt"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ccfailover"
+	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/safedial"
+	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,21 +74,38 @@ func fullyWiredServer(t *testing.T) *Server {
 	s.UseExtensions(Extensions{
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
-		GitHub:          stubGitHubStore{},
 		GitHubApp:       stubGitHubApp{},
+		GitHubAppTeams:  map[int64]bool{12: true},
 		Users:           stubUsers{},
 		APITokens:       stubAPITokens{},
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
+		// The Compose chief's settings: registration must not branch on them
+		// (its refusals live inside handlers, not in which routes exist).
+		ComposeChief: &ComposeChief{Credential: func(context.Context, int64) (ComposeChiefCred, error) { return ComposeChiefClaude, nil }},
+		// A SYNTHETIC legacy provenance prefix: registration must not branch on it.
+		LegacyProvenanceHeaderPrefix: "X-Example",
 		// 🔴 BOTH, because this fixture's whole claim is "every dependency wired".
 		// api.Provisioner and api.Gateway are separate now, so setting only the first
 		// would quietly make this an "almost everything" fixture — and a registration
 		// test that does not wire a dependency cannot notice a route gated on it.
 		Gateway: stubGateway{},
 		Kinds:   stubKinds{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test",
-			StateKey: []byte("registration-test-state-key-01234567")},
+		// The outcome tracker and the model catalogue: registration must not
+		// branch on them.
+		ModelCatalog:  stubModelCatalog{},
+		Outcomes:      agentoutcome.NewPG(nil),
+		AgentWatchdog: agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
+		PublicURL:     "http://example.test",
+		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}},
+		ClientAddr: func() *clientaddr.Policy {
+			p, err := clientaddr.New(clientaddr.Config{TrustedProxies: "192.0.2.0/24", Header: "X-Forwarded-For"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}(),
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this
 		// fixture would claim "fully wired" while exercising the default — which is
@@ -87,22 +117,51 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose, for AgentNamespacePrefix's reason: the zero policy
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
-		Mirror:          stubMirror{},
-		Flows:           stubFlows{},
-		Plugins:         stubPlugins{},
-		Pins:            stubPins{},
-		Recents:         stubRecents{},
-		Focus:           stubFocus{},
-		FocusSummarizer: stubSummarizer{},
-		FocusRetention:  time.Hour,
-		Routes:          stubRoutes{},
-		Attention:       stubAttention{},
-		MirrorTokens:    stubMirrorTokens{},
-		Routing:         &Routing{},
+		// NON-NIL on purpose: registration must not branch on the dial guard.
+		DialGuard: &safedial.Guard{AllowLoopback: true},
+		Mirror:    stubMirror{},
+		Flows:     stubFlows{},
+		// Shareable pages: registration must not branch on the store.
+		Pages: stubPages{},
+		// NON-ZERO, for AgentNamespacePrefix\'s reason.
+		PagesUploadBytes: 1 << 20,
+		Plugins:          stubPlugins{},
+		Pins:             stubPins{},
+		SessionTags:      stubSessionTags{},
+		Recents:          stubRecents{},
+		Focus:            stubFocus{},
+		FocusSummarizer:  stubSummarizer{},
+		FocusRetention:   time.Hour,
+		Suggest:          &suggest.Engine{},
+		ChiefPrefs:       &memChiefPrefs{},
+		NotifyPrefs:      &memNotifyPrefs{},
+		Branding:         &memBranding{},
+		ChiefNudge:       &ChiefNudges{},
+		ChiefNudges:      chiefnudge.NewPG(nil),
+		Episodes:         sessionstate.NewPG(nil),
+		AskLog:           &AskLog{Store: asklog.NewPG(nil)},
+		Routes:           stubRoutes{},
+		Attention:        stubAttention{},
+		MirrorTokens:     stubMirrorTokens{},
+		Routing:          &Routing{},
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
-		TaskRouting:     &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
-		ChiefDispatch:   stubChiefDispatch{},
-		SessionRuntimes: []string{"claude-code", "gateway"},
+		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
+		ChiefDispatch: stubChiefDispatch{},
+		// NON-ZERO on purpose: an empty sender list is the feature off.
+		PRMail:        &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		PRSessions:    stubPRSessions{},
+		ClosedPRs:     &ClosedPRs{},
+		Fleet:         struct{ fleet.Store }{},
+		FleetPRStates: stubFleetPRStates{},
+		FleetDigest:   true,
+		ChiefUsage:    struct{ chiefusage.Store }{},
+		AskAttempts:   &askattempt.Mem{},
+		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
+			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
+		// NON-ZERO on purpose: an empty allowlist is the feature off.
+		MailResume:      &MailResume{Allow: plugins.RelayAllowlist{1: nil}},
+		MailResumes:     stubMailResumes{},
+		SessionRuntimes: []string{"claude-code"},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
 		SendQueueIdle:   time.Second,
@@ -111,14 +170,25 @@ func fullyWiredServer(t *testing.T) *Server {
 		Push:            stubPush{},
 		Devices:         principalDevices{},
 		AllowPINKeys:    true,
+		AssetLinks:      []byte(`[]`),
+		SSOOrigins:      []string{"https://auth.example.test"},
 		Transcriber:     stubTranscriber{},
 		Jobs:            stubJobs{},
+		CCUsage:         &fakeCCUsage{},
+		CCUsageInterval: time.Minute,
 		JobWorkspace:    stubJobWorkspace{},
+		AccountFailover: stubAccountFailover{},
 		Uploads:         &uploads.Service{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
 }
+
+// stubAccountFailover satisfies AccountFailover for registration only; any
+// method but UseHooks (which UseExtensions calls) panics.
+type stubAccountFailover struct{ AccountFailover }
+
+func (stubAccountFailover) UseHooks(ccfailover.Policy, ccfailover.Prepare) {}
 
 // stubMirror satisfies Mirror for registration only; any method call panics.
 type stubMirror struct{ Mirror }
@@ -126,11 +196,17 @@ type stubMirror struct{ Mirror }
 // stubFlows satisfies flows.Store for registration only; any method call panics.
 type stubFlows struct{ flows.Store }
 
+// stubPages satisfies pages.Store for registration only; any method call panics.
+type stubPages struct{ pages.Store }
+
 // stubPlugins satisfies plugins.Store for registration only; any method call panics.
 type stubPlugins struct{ plugins.Store }
 
 // stubPins satisfies pins.Store for registration only; any method call panics.
 type stubPins struct{ pins.Store }
+
+// stubSessionTags satisfies sessiontags.Store for registration only; any method call panics.
+type stubSessionTags struct{ sessiontags.Store }
 
 // stubRecents satisfies recents.Store for registration only; any method call panics.
 type stubRecents struct{ recents.Store }
@@ -144,6 +220,12 @@ type stubSummarizer struct{ focus.Summarizer }
 // stubRoutes satisfies plugins.RouteStore for registration only; any method call panics.
 type stubRoutes struct{ plugins.RouteStore }
 type stubChiefDispatch struct{ plugins.DispatchStore }
+type stubPRSessions struct{ plugins.PRSessionStore }
+
+// stubFleetPRStates is a GitHub pull-request read that is never called.
+type stubFleetPRStates struct{ PRStateReader }
+type stubMusterReplier struct{ plugins.MusterReplier }
+type stubMailResumes struct{ plugins.MailResumeStore }
 type stubAttention struct{ attention.Store }
 type stubMirrorTokens struct{ MirrorTokenAuth }
 
@@ -378,7 +460,6 @@ type (
 	stubAgentsStore  struct{ agents.Store }
 	stubJobs         struct{ jobs.Store }
 	stubJobWorkspace struct{ JobWorkspace }
-	stubGitHubStore  struct{ github.Store }
 	stubGitHubApp    struct{ GitHubApp }
 )
 
@@ -387,7 +468,6 @@ type (
 var (
 	_ notes.Store  = stubNotesStore{}
 	_ agents.Store = stubAgentsStore{}
-	_ github.Store = stubGitHubStore{}
 	_ RouterPort   = stubRouter{}
 	_ GatePort     = stubGate{}
 )
@@ -438,4 +518,16 @@ func (stubUsers) Role(_ context.Context, id int64) (authz.Role, error) {
 		return authz.RoleAdmin, nil
 	}
 	return authz.RoleMember, nil
+}
+
+func (u stubUsers) Account(ctx context.Context, id int64) (users.Account, error) {
+	r, err := u.Role(ctx, id)
+	return users.Account{Role: r}, err
+}
+
+// HoldTeamRole: stubUsers seeds no team, so the send fence finds no
+// membership and REFUSES — a fake that cannot lock never lets a member turn
+// through unfenced.
+func (stubUsers) HoldTeamRole(context.Context, int64, int64) (authz.TeamRole, bool, func(), error) {
+	return "", false, func() {}, nil
 }

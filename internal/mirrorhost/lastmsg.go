@@ -10,7 +10,7 @@ import (
 )
 
 // WHEN A CLAUDE WINDOW LAST HAD A MESSAGE (mirror.Window.LastMessage): the
-// Agents list's "active … ago", its order and its Idle section for a Claude
+// sidebar's recency dot, its order and its Idle section for a Claude
 // window, in place of tmux's #{window_activity}, which a tmux restart resets
 // for every window (see the wire field).
 //

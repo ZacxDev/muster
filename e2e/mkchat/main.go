@@ -1,6 +1,6 @@
 // Command mkchat gives a browser spec an agent of its OWN with a persisted
 // chat, so the spec can drive real server-rendered bubbles (chatBubble's
-// data-md and data-msg-id) without adding rows to the seeded agents other
+// data-md-rendered and data-msg-id) without adding rows to the seeded agents other
 // specs count. With MUSTER_E2E_DELETE=1 it deletes that agent (and, by the
 // foreign keys, its sessions and messages) instead.
 //
@@ -35,6 +35,10 @@
 // ready_for_review, and makes it the agent's source task (agents.note_id), so
 // the agent's page draws the completion banner's Mark complete. Deleting with
 // MUSTER_E2E_TASK set deletes that task too.
+//
+// MUSTER_E2E_APPEND=1 instead APPENDS stdin's messages to the latest session of
+// the EXISTING agent MUSTER_E2E_AGENT (a message stored while a page is open).
+// An entry may carry "pluginMessageId": the stored plugin-relay link (0096).
 //
 // MUSTER_E2E_KIND=claude-code with MUSTER_E2E_CC_ACCOUNT=<name> makes the agent
 // that kind (its account is only a name: nothing is provisioned).
@@ -114,6 +118,33 @@ func run() error {
 		return nil
 	}
 
+	if os.Getenv("MUSTER_E2E_APPEND") == "1" {
+		// "pluginMessageId" on an entry is the stored relay link
+		// (agents.ChatMessage.PluginMessageID, migration 0096), which the
+		// message's own JSON does not carry: what a plugin relay row the
+		// Deliverer wrote looks like.
+		var in []struct {
+			agents.ChatMessage
+			PluginMessageID int64 `json:"pluginMessageId"`
+		}
+		if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
+			return fmt.Errorf("messages on stdin: %w", err)
+		}
+		msgs := make([]agents.ChatMessage, 0, len(in))
+		for _, m := range in {
+			m.ChatMessage.PluginMessageID = m.PluginMessageID
+			msgs = append(msgs, m.ChatMessage)
+		}
+		return appendMessages(ctx, pool, name, msgs)
+	}
+
+	// MUSTER_E2E_FOCUS_ONLY=1: write MUSTER_E2E_FOCUS for the existing agent
+	// (and the mirrored sessions it names) and nothing else — a spec's later
+	// refresh of a session it already set up.
+	if os.Getenv("MUSTER_E2E_FOCUS_ONLY") == "1" {
+		return writeFocus(ctx, pool, as, name)
+	}
+
 	display := os.Getenv("MUSTER_E2E_DISPLAY_NAME")
 	if os.Getenv("MUSTER_E2E_THREADS") == "1" {
 		var threads []thread
@@ -135,6 +166,30 @@ func run() error {
 	return writeFocus(ctx, pool, as, name)
 }
 
+// appendMessages adds msgs, in order and in ONE transaction, to the latest
+// session of the EXISTING agent name — a message stored while a page is open,
+// for a spec that needs one to arrive server-side.
+func appendMessages(ctx context.Context, pool *pgxpool.Pool, name string, msgs []agents.ChatMessage) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		as := agents.NewPGTx(tx)
+		a, err := as.GetByName(ctx, name)
+		if err != nil {
+			return fmt.Errorf("find agent %q: %w", name, err)
+		}
+		sess, err := as.LatestOrCreateSession(ctx, a.ID, a.Name)
+		if err != nil {
+			return fmt.Errorf("latest session: %w", err)
+		}
+		for i, m := range msgs {
+			m.AgentID, m.SessionID = a.ID, sess.ID
+			if _, err := as.AddChatMessage(ctx, m); err != nil {
+				return fmt.Errorf("append message %d: %w", i, err)
+			}
+		}
+		return nil
+	})
+}
+
 // focusSpec is one MUSTER_E2E_FOCUS entry.
 type focusSpec struct {
 	Subject     string `json:"subject"`
@@ -147,6 +202,24 @@ type focusSpec struct {
 	// focus 01" … oldest first), each a change, so the session's focus history
 	// (migration 0022) holds History+1 rows, the focus itself newest.
 	History int `json:"history"`
+	// HistoryTitles, when set, are written BEFORE the History ones, oldest
+	// first, each a change: earlier focuses with titles a spec can search by.
+	HistoryTitles []string `json:"historyTitles"`
+	// AgeHours, when > 0, backdates the focus that many hours (its
+	// agent_focus.updated_at; its history is left as written), so a spec can
+	// see a title's age ("· 2d") and a stale one.
+	AgeHours float64 `json:"ageHours"`
+	// Tail, when set, is the conversation the focus was computed from: the
+	// focus is written as the refresh writes it, its name bar judged by
+	// focus.Nameable over this tail (the same call internal/focus's Refresher
+	// makes), so the session's auto name freezes exactly when a refresh's
+	// would.
+	Tail []focus.Entry `json:"tail"`
+	// HistoryAgeMinutes, when > 0, backdates EVERY history row of the
+	// subject — and the moment its name took effect — that many minutes
+	// after this entry is written (a session whose focus has been elsewhere
+	// for a while: focus.DriftOffer's age).
+	HistoryAgeMinutes int `json:"historyAgeMinutes"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -185,14 +258,43 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 			}
 			continue
 		}
+		for _, ti := range sp.HistoryTitles {
+			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: ti, Description: "An earlier focus.", Source: focus.SourceSummarizer}); err != nil {
+				return fmt.Errorf("focus history %s: %w", sub, err)
+			}
+		}
 		for i := 1; i <= sp.History; i++ {
 			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: fmt.Sprintf("Earlier focus %02d", i),
 				Description: fmt.Sprintf("What the session was doing at step %d.", i), Source: focus.SourceSummarizer}); err != nil {
 				return fmt.Errorf("focus history %s: %w", sub, err)
 			}
 		}
-		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer}); err != nil {
+		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer,
+			Nameable: len(sp.Tail) > 0 && focus.Nameable(sp.Title, sp.Tail)}); err != nil {
 			return fmt.Errorf("focus %s: %w", sub, err)
+		}
+		if sp.HistoryAgeMinutes > 0 {
+			if _, err := pool.Exec(ctx, `UPDATE agent_focus_history SET created_at = created_at - make_interval(mins => $1)
+				WHERE subject_kind = $2 AND subject_key = $3`, sp.HistoryAgeMinutes, string(sub.Kind), sub.Key); err != nil {
+				return fmt.Errorf("backdate history %s: %w", sub, err)
+			}
+			// The session's name moves back with its history: it took effect
+			// before the changes it is measured against (focus.DriftOffer
+			// counts only changes after it).
+			if _, err := pool.Exec(ctx, `UPDATE agent_focus SET name_auto_at = name_auto_at - make_interval(mins => $1),
+				name_manual_at = name_manual_at - make_interval(mins => $1)
+				WHERE subject_kind = $2 AND subject_key = $3`, sp.HistoryAgeMinutes, string(sub.Kind), sub.Key); err != nil {
+				return fmt.Errorf("backdate name %s: %w", sub, err)
+			}
+		}
+		if sp.AgeHours > 0 {
+			// Exactly one row moves, or the spec would test a fresh focus and
+			// pass for the wrong reason.
+			tag, err := pool.Exec(ctx, `UPDATE agent_focus SET updated_at = now() - make_interval(secs => $1)
+				WHERE subject_kind = $2 AND subject_key = $3`, sp.AgeHours*3600, string(sub.Kind), sub.Key)
+			if err != nil || tag.RowsAffected() != 1 {
+				return fmt.Errorf("backdate focus %s: %d rows, %v", sub, tag.RowsAffected(), err)
+			}
 		}
 	}
 	return nil
@@ -248,8 +350,15 @@ func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string
 		}
 		// MUSTER_E2E_KIND / MUSTER_E2E_CC_ACCOUNT make it a claude-code agent (the
 		// chief-runtimes spec's chief); unset, the default kind as before.
-		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, Namespace: "agents", Status: "running", KickedOff: true,
-			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT"), NoteID: noteID})
+		// MUSTER_E2E_REPO gives it a repository ("owner/name"; unset, none).
+		// A display name given here is a person's (the chief's "chief"):
+		// manual, as migration 0090 classifies such a name.
+		src := agents.NameDefault
+		if display != "" && display != name {
+			src = agents.NameManual
+		}
+		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, DisplayNameSource: src, Namespace: "agents", Status: "running", KickedOff: true,
+			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT"), Repo: os.Getenv("MUSTER_E2E_REPO"), NoteID: noteID})
 		if err != nil {
 			return fmt.Errorf("create agent: %w", err)
 		}

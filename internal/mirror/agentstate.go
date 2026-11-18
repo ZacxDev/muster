@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 )
 
@@ -41,19 +42,14 @@ var (
 	// wrote it (an older muster-mirror, or a Claude Code whose sessions file has
 	// no statusUpdatedAt). Without it a turn cannot be told from no turn.
 	ErrNoStatusSince = errors.New("mirror: the host does not report since when this window's Claude Code session has been idle, so nothing queued for it is sent; upgrade muster-mirror (or Claude Code), or send by hand")
-	// ErrNoHermesStatus: the window runs Hermes and the host reports no status
-	// for it — every host before Hermes mirroring's status hook, and one
-	// whose hook wrote nothing. Unknown: nothing is sent to it.
-	ErrNoHermesStatus = errors.New("mirror: the host cannot read whether this window's Hermes session is busy, so nothing is sent to it")
 )
 
 // AgentState is what the hub knows of the agent session in one window.
 type AgentState struct {
 	// Runtime is the agent CLI in the window (Window.AgentRuntime):
-	// RuntimeClaude or RuntimeHermes — set whenever the hub knows it, ALSO when
-	// Status is unknown, because the rules differ by runtime (Send now refuses
-	// an unknown Hermes window, and pastes into an unknown Claude one). ""
-	// when the window runs no agent, or the hub cannot say.
+	// RuntimeClaude or RuntimeOpenCode — set whenever the hub knows it, ALSO
+	// when Status is unknown. "" when the window runs no agent, or the hub
+	// cannot say.
 	Runtime string
 	// Status is StatusBusy, StatusIdle or StatusWaiting; "" when unknown.
 	Status string
@@ -66,16 +62,32 @@ type AgentState struct {
 	// Pasted is the Since the window held at its latest paste through this
 	// hub (a Send or a queued message), on the host's clock; 0 for none.
 	Pasted int64
+	// TurnError is how the window's latest turn ended, when it ended in an
+	// error Claude Code wrote itself (Window.TurnError); nil otherwise, and
+	// whenever Status is not idle.
+	TurnError *TurnError
+	// HostLimit is a usage limit the window's HOST reports for all its Claude
+	// windows (Msg.HostLimit), set on a Claude window whenever the host
+	// reports one; nil otherwise.
+	HostLimit *HostLimit
+	// Session is the Claude Code session id of the conversation in the window
+	// (Window.ClaudeSession), "" when the host does not say.
+	Session string
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
+
+	// GuardHeld is, while the window is held by the Claude prompt guard's
+	// backoff (turns.go guardHold), why — the host's refusal, in words — and
+	// "" otherwise. The send queue sends nothing while it is set.
+	GuardHeld string
 }
 
-// AgentState is the state of the agent session (Claude Code or Hermes) in
+// AgentState is the state of the agent session (Claude Code or opencode) in
 // owner's host's (session, window) — window "" being the session's active
 // window — or why it is unknown. Another owner's host answers ErrHostOffline,
 // like a host that does not exist. A window that runs no agent answers
-// ErrNotClaude, as it always did; a Hermes window never does (its Runtime says
-// which it is, and its status is read like Claude Code's).
+// ErrNotClaude, as it always did; an opencode window never does (its Runtime
+// says which it is, and its status is read like Claude Code's).
 func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
@@ -83,15 +95,25 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	if hc == nil {
 		return AgentState{Unknown: fmt.Errorf("%w (host %q)", ErrHostOffline, host)}
 	}
+	// 🔴 A HOST THAT REPORTS STATUS BUT HAS SENT NO WINDOW LIST HAS NOT BEEN
+	// READ — not "every session gone". muster-mirror registers with an empty
+	// listing when its first windows read fails (internal/mirrorhost's
+	// connect), so judging the target against that empty list would call every
+	// window gone (ErrSessionGone), which the chief-nudge sweep reads as moved
+	// on. It is unknown until a list arrives. (An empty list that WAS read is
+	// sent as no list too — Msg.Windows is omitempty — so a host with no tmux
+	// windows at all is unknown here as well, never "gone".)
+	hc.mu.Lock()
+	unread := hc.statusReport && hc.windows == nil
+	hc.mu.Unlock()
+	if unread {
+		return AgentState{Unknown: fmt.Errorf("%w (host %q has sent no window list)", ErrNoStatusReport, host)}
+	}
 	id, runtime, err := hc.targetRuntime(session, window)
 	if err != nil {
 		return AgentState{Unknown: err}
 	}
-	// noStatus is the "host cannot read it" refusal of this runtime.
 	noStatus := ErrNoStatus
-	if runtime == RuntimeHermes {
-		noStatus = ErrNoHermesStatus
-	}
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	switch {
@@ -110,12 +132,16 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		case w.StatusSince <= 0:
 			return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
-		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince}
+		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince, TurnError: w.TurnError}
+		if runtime == RuntimeClaude {
+			st.HostLimit, st.Session = hc.hostLimit, w.ClaudeSession
+		}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {
 			st.Observed = t.observed
 		}
 		st.Pasted = t.pasted
+		st.GuardHeld = t.guardHeld(h.now())
 		return st
 	}
 	return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", noStatus, host, session)}
@@ -123,7 +149,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 
 // AgentState is Hub.AgentState for the viewing principal's host.
 func (s *Service) AgentState(ctx context.Context, host, session, window string) AgentState {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamViewer)
 	if err != nil {
 		return AgentState{Unknown: err}
 	}

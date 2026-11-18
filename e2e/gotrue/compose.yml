@@ -69,6 +69,13 @@ services:
       GOTRUE_JWT_ADMIN_ROLES: service_role
       GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
       GOTRUE_RATE_LIMIT_HEADER: X-Muster-Client-IP
+      # Passkey sign-in options per client address (default 30 per 5 minutes).
+      # The sign-in page asks for one per visit (autofill and the buttons
+      # share it; passkeySignInJS) plus one per verify, and a spec signs one
+      # browser address in and out dozens of times. No spec exercises GoTrue's own
+      # passkey 429 against this limit (mirror-stepup plays its 429s with
+      # page.route), so a real one here would only be a flake.
+      GOTRUE_RATE_LIMIT_PASSKEY: "1000"
       GOTRUE_LOG_LEVEL: info
       # Passkeys: OFF unless the spec asks (passkeys.spec.ts sets
       # MUSTER_E2E_GOTRUE_PASSKEYS=true), so every other spec runs the

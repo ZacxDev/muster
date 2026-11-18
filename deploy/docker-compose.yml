@@ -1,0 +1,654 @@
+# muster — a production stack in one file.
+#
+#   docker compose up -d --wait          # no .env needed
+#   docker compose exec muster /muster-server show-secret ui-password
+#   open http://localhost:8105 and sign in with that password
+#
+# NO .env IS NEEDED. Every secret the stack needs is generated on the first
+# start by the muster-init one-shot and kept on the `secrets` volume: the
+# sign-in password (printed once, in `docker compose logs muster-init`, and
+# shown again by the command above), the hook token, the Web Push keys and
+# Postgres's password. A .env (from .env.example; a release attaches it as
+# env.example, no leading dot) is only for what you want to set yourself:
+# a value it sets is used instead of the generated one — except Postgres's
+# password, which is used only on the stack's first start (the database keeps
+# it; a different one later is refused) — and an .env written before secrets
+# were generated keeps working exactly as it did.
+#
+# THE VERSION. The images are tagged MUSTER_VERSION, which defaults to the
+# value written in this file: a release's copy of it is stamped with that
+# release (scripts/release-build.sh), so a downloaded docker-compose.yml runs
+# the release it came from; the repository's copy says the LATEST release
+# (the release flow opens the bump pull request after each one;
+# scripts/check-compose-default.sh, which CI runs, warns for 3 days and then
+# fails while it names the PREVIOUS release). Never a moving tag, and never one
+# older than x-muster-min-version below: a default below the minimum fails at
+# once — the 3 days cover only "the default is the previous release". Set
+# MUSTER_VERSION in .env to pin another.
+#
+# Services:
+#   muster-init   the one-shot above: secrets, then the server's own boot
+#                 checks. A setting muster would refuse makes it exit 1, so
+#                 `up --wait` fails in seconds naming muster-init; the reason
+#                 is the last line of `docker compose logs muster-init`
+#   postgres      muster's database (a named volume holds the data)
+#   muster        the server; it migrates the schema itself on every boot
+#
+# That is the whole core: it needs no other variable and no other service.
+#
+# OPTIONAL FEATURES are turned on from .env, never by editing this file: every
+# optional setting muster reads is forwarded below, empty unless .env sets it.
+# Set the lines docs/features.md gives for a feature, then
+# `docker compose up -d` again. docs/features.md is the one page that says what
+# each feature needs.
+#
+# Bundled extras, by compose PROFILE (pass `--profile <name>`, or list them in
+# COMPOSE_PROFILES in .env, e.g. COMPOSE_PROFILES=stt,s3):
+#   stt           CPU speech-to-text for dictation: a faster-whisper server
+#                 (speaches). One .env line: MUSTER_STT_TOKEN. (`stt-whisper`
+#                 is the same profile under its older name.)
+#   stt-cohere    GPU speech-to-text (more accurate): about 6 GB of VRAM and a
+#                 Hugging Face token whose account accepted the model's license
+#   s3            an S3 store (Silo, the maintained MinIO fork) for file
+#                 attachments, with its bucket created on start. Two .env
+#                 lines: S3_STORE_SECRET_KEY and MUSTER_UPLOAD_SIGNING_KEY
+#                 (plus MUSTER_PUBLIC_URL, which the install sets anyway).
+#   chief         the chief, your fleet agent (docs/features.md#chief): a
+#                 claude-code-agent container muster configures through a
+#                 shared volume (no Docker socket). Two .env lines,
+#                 MUSTER_CHIEF_RUNTIME=compose and MUSTER_CONNECTOR_ENCRYPTION_KEY,
+#                 and a credential: MUSTER_CHIEF_CLAUDE_TOKEN or the OpenRouter key.
+# A third dictation option, your own OpenAI-compatible API key, needs no
+# container. See docs/features.md and docs/dictation.md.
+#
+# muster listens on 127.0.0.1 only, so out of the box it is this machine's
+# http://localhost:8105, which browsers treat as a secure origin. To reach it
+# from a phone or another machine, put HTTPS in front of it (for example
+# `tailscale serve --bg 8105`): passkeys, the microphone and secure cookies on
+# any other origin need https (docs/quickstart-local.md#add-your-phone).
+#
+# Every service has a healthcheck, so `docker compose up -d --wait` returns only
+# once the stack is actually serving (muster's /readyz answers 200).
+#
+# ⚠ Every optional variable is written `${NAME:-}`, so an unset one is an EMPTY
+# value, never a compose warning — and muster reads an empty value exactly as an
+# unset one (it reads its environment with os.Getenv). The one feature on by
+# default here is session state (MUSTER_SESSION_STATE, `${…-1}`), and for it an
+# EMPTY value is not the same as unset: empty is off. A few defaults are
+# CONDITIONAL, `${A:-${B:+value}}`: they apply only once the bundled service's
+# own secret is set, so the default stack stays exactly as it was without them.
+# tests/features_config_test.py pins that this file and .env.example name the
+# same variables, and that every variable the server reads is forwarded here
+# or listed there with the reason it is not.
+
+# 🔴 THE OLDEST MUSTER THIS FILE RUNS. It uses what that release added (the
+# muster-init one-shot `compose-init`, DATABASE_URL_FILE); an older image cannot
+# start it — measured on #707 round 2: 0.231.0 under this file stops with
+# "DATABASE_URL is not set". scripts/check-compose-default.sh fails CI when the
+# version written below (the MUSTER_VERSION default) is lower, except in the
+# one documented bootstrap state: this number is the NEXT release, not yet cut,
+# and the default is the newest release (see that script) — allowed for 3 days
+# from the commit that raised this line, then it fails too. A default below
+# this number fails at once in every other case; the 3-day grace period after a
+# release covers only "the default is the previous release". Raise it whenever
+# this file starts using something a release added.
+x-muster-min-version: "0.234.0"
+
+name: ${COMPOSE_PROJECT_NAME:-muster}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      muster-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_DB: muster
+      # Written once by muster-init (.env's POSTGRES_PASSWORD on the stack's
+      # first start, else generated) and never overwritten: Postgres reads it
+      # only when it creates the database.
+      POSTGRES_PASSWORD_FILE: /run/muster-secrets/postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - secrets:/run/muster-secrets:ro
+    healthcheck:
+      # 🔴 `-h 127.0.0.1`: TCP, which is how muster connects. Without it
+      # pg_isready asks the unix socket, which answers "ready" during initdb's
+      # temporary socket-only server on a fresh volume — measured: healthy while
+      # TCP still refused, and muster's first connect failed.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U muster -d muster"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  muster:
+    # MUSTER_IMAGE exists so a locally built image can be tested with this
+    # exact file; leave it unset to run the published release.
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.246.0}
+    restart: unless-stopped
+    depends_on:
+      muster-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      # With the s3 profile on, muster starts once the store is healthy (its
+      # healthcheck: the bucket exists), so its boot probe of the bucket finds
+      # it instead of answering NoSuchBucket. `required: false`: without the
+      # profile there is no s3 service, and muster starts without it.
+      s3:
+        condition: service_healthy
+        required: false
+    ports:
+      - "${MUSTER_BIND:-127.0.0.1}:${MUSTER_HTTP_PORT:-8105}:8105"
+    # 🔴 ANCHORED: muster-init (below) runs the server's boot checks on THIS
+    # environment, so what it checks is what muster gets.
+    environment: &muster-env
+      # muster-init writes it from Postgres's password.
+      DATABASE_URL_FILE: /run/muster-secrets/database_url
+      MUSTER_PORT: "8105"
+      # Shared-password sign-in for the web UI: .env's, else the generated one.
+      MUSTER_UI_PASSWORD: ${MUSTER_UI_PASSWORD:-}
+      MUSTER_UI_PASSWORD_FILE: /run/muster-secrets/ui_password
+      # The machine secret mirrors and hooks present (acts as the admin).
+      MUSTER_HOOK_TOKEN: ${MUSTER_HOOK_TOKEN:-}
+      MUSTER_HOOK_TOKEN_FILE: /run/muster-secrets/hook_token
+      MUSTER_MIRROR: "1"
+      # Without a permission router muster runs standalone. Pointing it at one
+      # (docs/features.md#approval-router) needs MUSTER_STANDALONE=0 in .env:
+      # the two refuse to boot together.
+      MUSTER_STANDALONE: ${MUSTER_STANDALONE:-1}
+      MUSTER_PUBLIC_URL: ${MUSTER_PUBLIC_URL:-}
+      # On: the session cookie is Secure, except on this machine's own
+      # http://localhost page, which gets it without (docs/configuration.md).
+      MUSTER_SECURE_COOKIES: ${MUSTER_SECURE_COOKIES:-1}
+      # Behind a reverse proxy: whose forwarding header names the client.
+      # Empty trusts nothing (the client is the TCP peer). Both or neither.
+      MUSTER_TRUSTED_PROXIES: ${MUSTER_TRUSTED_PROXIES:-}
+      MUSTER_CLIENT_IP_HEADER: ${MUSTER_CLIENT_IP_HEADER:-}
+      # Or, with no proxy in front: 1. In accounts (gotrue) mode one of the two
+      # is required.
+      MUSTER_DIRECT_CLIENTS: ${MUSTER_DIRECT_CLIENTS:-}
+
+      # ---- optional: every value below is empty unless .env sets it --------
+      # docs/features.md names what each feature needs; .env.example has every
+      # line, commented out, grouped the same way.
+
+      # Web Push (docs/features.md#push): ON out of the box, with a keypair
+      # muster-init generates (unless .env sets POSTGRES_PASSWORD, as every
+      # .env from before generated secrets does: that install keeps its own
+      # setting). Your own keypair in .env replaces it:
+      #   docker compose run --rm --no-deps muster vapid generate >> .env
+      # The subject defaults to MUSTER_PUBLIC_URL when it is https, else to a
+      # mailto: (never an http URL, which push services refuse).
+      MUSTER_VAPID_PUBLIC_KEY: ${MUSTER_VAPID_PUBLIC_KEY:-}
+      MUSTER_VAPID_PUBLIC_KEY_FILE: /run/muster-secrets/vapid_public_key
+      MUSTER_VAPID_PRIVATE_KEY: ${MUSTER_VAPID_PRIVATE_KEY:-}
+      MUSTER_VAPID_PRIVATE_KEY_FILE: /run/muster-secrets/vapid_private_key
+      MUSTER_VAPID_SUBJECT: ${MUSTER_VAPID_SUBJECT:-}
+      MUSTER_PUSH_EXTRA_HOSTS: ${MUSTER_PUSH_EXTRA_HOSTS:-}
+
+      # Dictation (docs/features.md#dictation). The token turns it on. With
+      # only the token set, URL and model point at the `stt` profile's service;
+      # set them for stt-cohere or your own API.
+      MUSTER_STT_URL: ${MUSTER_STT_URL:-${MUSTER_STT_TOKEN:+http://stt-whisper:8000}}
+      MUSTER_STT_TOKEN: ${MUSTER_STT_TOKEN:-}
+      MUSTER_STT_MODEL: ${MUSTER_STT_MODEL:-${MUSTER_STT_TOKEN:+Systran/faster-whisper-small}}
+
+      # File attachments (docs/features.md#attachments). The `s3` profile's
+      # store has its OWN secret, S3_STORE_SECRET_KEY: with it set, whatever of
+      # endpoint, bucket and key pair .env leaves unset points at that store.
+      # 🔴 KEYED ON THE STORE'S SECRET, NEVER ON MUSTER_S3_SECRET_KEY: your own
+      # store (MUSTER_S3_ENDPOINT + MUSTER_S3_SECRET_KEY) must never be handed
+      # the bundled store's bucket or access key in silence — a missing one
+      # there stays missing, and muster says MISCONFIGURED.
+      # 🔴 BOTH SET — your own MUSTER_S3_ENDPOINT, and S3_STORE_SECRET_KEY left
+      # in .env — would hand your store the bundled access key and password.
+      # Compose interpolation has no "unless", so the defaults cannot be
+      # withdrawn; instead the bucket gets a note appended that is not a
+      # bucket name. muster then turns attachments OFF (MISCONFIGURED), quoting
+      # the note, and sends nothing anywhere. With the bundled store, leave
+      # MUSTER_S3_ENDPOINT unset.
+      MUSTER_S3_ENDPOINT: ${MUSTER_S3_ENDPOINT:-${S3_STORE_SECRET_KEY:+http://s3:9000}}
+      MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-${S3_STORE_SECRET_KEY:+muster-uploads}}${MUSTER_S3_ENDPOINT:+${S3_STORE_SECRET_KEY:+ (refused - S3_STORE_SECRET_KEY is for the bundled store only, remove it when MUSTER_S3_ENDPOINT is set)}}
+      MUSTER_S3_ACCESS_KEY: ${MUSTER_S3_ACCESS_KEY:-${S3_STORE_SECRET_KEY:+muster}}
+      MUSTER_S3_SECRET_KEY: ${MUSTER_S3_SECRET_KEY:-${S3_STORE_SECRET_KEY:-}}
+      MUSTER_S3_REGION: ${MUSTER_S3_REGION:-}
+      MUSTER_UPLOAD_SIGNING_KEY: ${MUSTER_UPLOAD_SIGNING_KEY:-}
+      MUSTER_UPLOAD_MAX_BYTES: ${MUSTER_UPLOAD_MAX_BYTES:-}
+      MUSTER_UPLOAD_LINK_TTL: ${MUSTER_UPLOAD_LINK_TTL:-}
+
+      # The OpenRouter key behind suggested replies, session focus and the
+      # stall classifier (docs/features.md#suggested-replies, #focus).
+      MUSTER_AGENT_OPENROUTER_KEY: ${MUSTER_AGENT_OPENROUTER_KEY:-}
+      MUSTER_SUGGEST: ${MUSTER_SUGGEST:-}
+      MUSTER_SUGGEST_MODEL: ${MUSTER_SUGGEST_MODEL:-}
+      MUSTER_FOCUS_INTERVAL: ${MUSTER_FOCUS_INTERVAL:-}
+      MUSTER_FOCUS_RETENTION: ${MUSTER_FOCUS_RETENTION:-}
+      MUSTER_FOCUS_MODEL: ${MUSTER_FOCUS_MODEL:-}
+
+      # Per-user accounts through a GoTrue you run (docs/features.md#accounts).
+      MUSTER_AUTH_MODE: ${MUSTER_AUTH_MODE:-}
+      MUSTER_GOTRUE_URL: ${MUSTER_GOTRUE_URL:-}
+      MUSTER_GOTRUE_JWT_SECRET: ${MUSTER_GOTRUE_JWT_SECRET:-}
+      MUSTER_BROWSER_PORT: ${MUSTER_BROWSER_PORT:-}
+
+      # The connector store, and members' own credentials (docs/features.md#connectors).
+      MUSTER_CONNECTOR_ENCRYPTION_KEY: ${MUSTER_CONNECTOR_ENCRYPTION_KEY:-}
+      # 1: postgres connectors refuse loopback and private addresses
+      # (docs/connectors.md#refusing-private-addresses). Off by default.
+      MUSTER_DIAL_DENY_PRIVATE: ${MUSTER_DIAL_DENY_PRIVATE:-}
+
+      # The GitHub App (docs/features.md#github-app).
+      MUSTER_GITHUB_APP_ID: ${MUSTER_GITHUB_APP_ID:-}
+      MUSTER_GITHUB_APP_PRIVATE_KEY: ${MUSTER_GITHUB_APP_PRIVATE_KEY:-}
+      MUSTER_GITHUB_APP_ACCOUNTS: ${MUSTER_GITHUB_APP_ACCOUNTS:-}
+      MUSTER_GITHUB_APP_ACCESS: ${MUSTER_GITHUB_APP_ACCESS:-}
+
+      # Session state: ON BY DEFAULT here (operator decision 2026-11-04): one
+      # push per stop. It needs only the database. `-`, not `:-`, ON PURPOSE:
+      # an empty value in .env must stay empty, which muster reads as off
+      # (only 1/true/yes/on is on), as does 0 (docs/features.md#session-state).
+      MUSTER_SESSION_STATE: ${MUSTER_SESSION_STATE-1}
+
+      # The ask log: every question an agent asks you, with your answer
+      # (docs/features.md#ask-log). Off by default; needs only the database.
+      MUSTER_ASK_LOG: ${MUSTER_ASK_LOG:-}
+      MUSTER_ASK_LOG_TEXT_TTL: ${MUSTER_ASK_LOG_TEXT_TTL:-}
+      MUSTER_ASK_LOG_CLASSIFY: ${MUSTER_ASK_LOG_CLASSIFY:-}
+
+      # The fleet digest: the chief panel's card over all your sessions, and
+      # fleet_list's fleet fields (docs/chief.md#fleet-digest). Off by
+      # default; its states come from session state, above.
+      MUSTER_FLEET_DIGEST: ${MUSTER_FLEET_DIGEST:-}
+
+      # Shareable pages: agents publish pages and ask before a share link goes
+      # live (docs/features.md#pages). Off by default; needs only the database.
+      MUSTER_PAGES: ${MUSTER_PAGES:-}
+      MUSTER_PAGES_UPLOAD_BYTES: ${MUSTER_PAGES_UPLOAD_BYTES:-}
+
+      # Plugins and what routes through them (docs/features.md#plugins).
+      MUSTER_PLUGINS: ${MUSTER_PLUGINS:-}
+      MUSTER_PLUGIN_TASK_NAMESPACES: ${MUSTER_PLUGIN_TASK_NAMESPACES:-}
+      MUSTER_PLUGIN_ORIGINS: ${MUSTER_PLUGIN_ORIGINS:-}
+      MUSTER_SESSION_ROUTING: ${MUSTER_SESSION_ROUTING:-}
+      MUSTER_ROUTE_RELAY_ALLOW: ${MUSTER_ROUTE_RELAY_ALLOW:-}
+      MUSTER_TASK_ROUTING: ${MUSTER_TASK_ROUTING:-}
+      MUSTER_PR_MAIL_SENDERS: ${MUSTER_PR_MAIL_SENDERS:-}
+      MUSTER_FLEET_REPORT_SENDERS: ${MUSTER_FLEET_REPORT_SENDERS:-}
+      MUSTER_FLEET_REPORT_PATHS: ${MUSTER_FLEET_REPORT_PATHS:-}
+      MUSTER_MAIL_RESUME_ALLOW: ${MUSTER_MAIL_RESUME_ALLOW:-}
+      MUSTER_MAIL_RESUME_OFF: ${MUSTER_MAIL_RESUME_OFF:-}
+
+      # An external permission router and its approval gate
+      # (docs/features.md#approval-router).
+      MUSTER_ROUTER_URL: ${MUSTER_ROUTER_URL:-}
+      MUSTER_ROUTER_TOKEN: ${MUSTER_ROUTER_TOKEN:-}
+      MUSTER_ROUTER_ACTOR: ${MUSTER_ROUTER_ACTOR:-}
+      MUSTER_ROUTER_ACTOR_HEADER: ${MUSTER_ROUTER_ACTOR_HEADER:-}
+      MUSTER_ROUTER_TOKEN_HEADER: ${MUSTER_ROUTER_TOKEN_HEADER:-}
+      MUSTER_APPROVAL_GATE_URL: ${MUSTER_APPROVAL_GATE_URL:-}
+      MUSTER_APPROVAL_GATE_TOKEN: ${MUSTER_APPROVAL_GATE_TOKEN:-}
+      MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX: ${MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX:-}
+
+      # Browser flows (docs/features.md#browser-flows).
+      MUSTER_FLOW_AGENT_DENY_WORDS: ${MUSTER_FLOW_AGENT_DENY_WORDS:-}
+
+      # The Android app (docs/features.md#android).
+      MUSTER_ANDROID_PACKAGE: ${MUSTER_ANDROID_PACKAGE:-}
+      MUSTER_ANDROID_CERT_SHA256: ${MUSTER_ANDROID_CERT_SHA256:-}
+      MUSTER_ANDROID_ALLOW_PIN_KEYS: ${MUSTER_ANDROID_ALLOW_PIN_KEYS:-}
+      MUSTER_ANDROID_SSO_ORIGINS: ${MUSTER_ANDROID_SSO_ORIGINS:-}
+
+      # Telemetry: Grafana Faro and OpenTelemetry tracing (docs/features.md#telemetry).
+      MUSTER_FARO_URL: ${MUSTER_FARO_URL:-}
+      MUSTER_FARO_API_KEY: ${MUSTER_FARO_API_KEY:-}
+      MUSTER_FARO_TRACING: ${MUSTER_FARO_TRACING:-}
+      MUSTER_FARO_UPSTREAM: ${MUSTER_FARO_UPSTREAM:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      # Prometheus metrics: /metrics is served ONLY on this port, and only when
+      # it is set. Not published to the host: a scraper on this Compose network
+      # reaches muster:<port>; to scrape from the host, add a ports entry bound
+      # to 127.0.0.1 (docs/configuration.md).
+      MUSTER_METRICS_PORT: ${MUSTER_METRICS_PORT:-}
+      OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-}
+      OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: ${OTEL_EXPORTER_OTLP_TRACES_TIMEOUT:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+      MUSTER_TRACE_SAMPLE_RATIO: ${MUSTER_TRACE_SAMPLE_RATIO:-}
+
+      # Tuning and the rest (docs/features.md#other-settings).
+      MUSTER_SERVICE_TOKEN: ${MUSTER_SERVICE_TOKEN:-}
+      MUSTER_STEPUP_WINDOW: ${MUSTER_STEPUP_WINDOW:-}
+      MUSTER_LIVE_HEARTBEAT: ${MUSTER_LIVE_HEARTBEAT:-}
+      MUSTER_SEND_QUEUE_IDLE: ${MUSTER_SEND_QUEUE_IDLE:-}
+      MUSTER_TASK_REAP_AFTER: ${MUSTER_TASK_REAP_AFTER:-}
+      MUSTER_AGENTS_IDLE_AFTER: ${MUSTER_AGENTS_IDLE_AFTER:-}
+      MUSTER_AGENT_STUCK_NO_REPLY: ${MUSTER_AGENT_STUCK_NO_REPLY:-}
+      MUSTER_AGENT_STUCK_SILENT: ${MUSTER_AGENT_STUCK_SILENT:-}
+      MUSTER_AGENT_WATCHDOG_INTERVAL: ${MUSTER_AGENT_WATCHDOG_INTERVAL:-}
+      MUSTER_HOST_ICONS: ${MUSTER_HOST_ICONS:-}
+
+      # The chief (docs/features.md#chief), with the `chief` profile:
+      # MUSTER_CHIEF_RUNTIME=compose runs it in the `chief` container below,
+      # configured through the chief-spec volume at /run/muster-spec. It sets
+      # the agent plane itself, the connect door (port 8106, not published) and
+      # the URLs the chief uses (http://muster:…) included.
+      MUSTER_CHIEF_RUNTIME: ${MUSTER_CHIEF_RUNTIME:-}
+      MUSTER_CHIEF_CLAUDE_TOKEN: ${MUSTER_CHIEF_CLAUDE_TOKEN:-}
+      MUSTER_CHIEF_LLM_MODEL: ${MUSTER_CHIEF_LLM_MODEL:-}
+
+      # Officers (docs/features.md#officers): in this stack a builtin officer
+      # with "runtime": "host" runs each instance as a host-spawned Claude Code
+      # window on one of your machines (docs/officers-builtin.md#officers-in-the-compose-stack-host-sessions).
+      # A pod officer in the list refuses the boot here: there is no provisioner.
+      MUSTER_OFFICERS: ${MUSTER_OFFICERS:-}
+
+      # NOT FORWARDED, ON PURPOSE: agent dispatch and what needs it (the chief's
+      # stall nudges, pod officers, the memo relay: MUSTER_AGENT_PROVISIONER,
+      # MUSTER_CHIEF_NUDGES, …). Their provisioner uses Kubernetes in-cluster
+      # credentials only, so they cannot run in this stack
+      # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH.
+    # The chief's spec volume (read-write here; read-only in the chief
+    # container), and the network the chief reaches muster on. muster writes
+    # the chief's spec with group 1001 and its files with group 1000, the
+    # claude-code-agent image's own groups, so it holds both
+    # (internal/provision/compose: the agent's session cannot read its spec).
+    # chief-instructions is the chief's files/etc/claude-code, mounted where
+    # muster's driver writes it, so the chief can mount it at /etc/claude-code
+    # by itself (a volume `subpath` would refuse this whole file on Compose
+    # before 2.25, whether or not the chief is used).
+    volumes:
+      - secrets:/run/muster-secrets:ro
+      - chief-spec:/run/muster-spec
+      - chief-instructions:/run/muster-spec/chief/files/etc/claude-code
+    group_add: ["1000", "1001"]
+    networks: [default, chief]
+    # The image is distroless; the server binary probes its own /readyz.
+    healthcheck:
+      test: ["CMD", "/muster-server", "healthcheck"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 20s
+
+  # The one-shot that makes a .env unnecessary (muster-server compose-init,
+  # cmd/muster-server/secretfiles.go). Each start: every secret .env does not
+  # set is generated once into the secrets volume and kept; Postgres's password
+  # is kept there too (POSTGRES_PASSWORD only when there is none yet; a
+  # different one later is refused) with muster's DATABASE_URL built from it;
+  # and muster's configuration — muster's own environment, the anchor above —
+  # goes through the server's boot validation BEFORE anything is written, so a
+  # refusal exits 1 at once, changing nothing, instead of a restart loop. Root only to write the volume
+  # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
+  # postgres:16-alpine); no network.
+  muster-init:
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.246.0}
+    user: "0:0"
+    command:
+      - compose-init
+      - -dir
+      - /run/muster-secrets
+      - -database-url
+      - postgres://muster:{password}@postgres:5432/muster?sslmode=disable
+      - -owner
+      - "65532:65532"
+      - -postgres-owner
+      - "70:70"
+      # Read-only: an existing database (an install from before muster-init)
+      # never gets a generated password, only the POSTGRES_PASSWORD it was
+      # created with (docs/quickstart-local.md#the-database-password).
+      - -postgres-data
+      - /var/lib/postgresql/data
+    environment:
+      <<: *muster-env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - secrets:/run/muster-secrets
+      - pgdata:/var/lib/postgresql/data:ro
+    network_mode: none
+    restart: "no"
+
+  # --- dictation, GPU (profile stt-cohere) ----------------------------------
+  stt-cohere:
+    profiles: ["stt-cohere"]
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.246.0}
+    restart: unless-stopped
+    environment:
+      # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
+      # ⚠ `:-`, not `:?`: compose interpolates EVERY service, profiled or not,
+      # so a required-variable error here would stop the default stack too.
+      # An empty token instead keeps this service unhealthy (its /healthz says
+      # why), so `--wait` with the profile on still fails loudly.
+      STT_API_TOKEN: ${MUSTER_STT_TOKEN:-}
+      # A token from a Hugging Face account that accepted the model's license.
+      # Missing or unlicensed: the model download fails and the logs say so.
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      # /healthz answers 200 only once the model is loaded. The first start
+      # downloads several GB of weights, hence the long start period.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30m
+
+  # --- dictation, CPU (profile stt; `stt-whisper` is its older name) ---------
+  # speaches runs as an unprivileged user (uid 1000). Its model cache lives on
+  # a named volume at /models, which Docker creates root-owned, so this one-shot
+  # hands it to that user first.
+  stt-whisper-init:
+    profiles: ["stt", "stt-whisper"]
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+    user: "0:0"
+    entrypoint: ["chown", "1000:1000", "/models"]
+    volumes:
+      - whisper-cache:/models
+    restart: "no"
+
+  stt-whisper:
+    profiles: ["stt", "stt-whisper"]
+    # speaches 0.8.3 (CPU build), pinned by its multi-arch index digest.
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+    restart: unless-stopped
+    depends_on:
+      stt-whisper-init:
+        condition: service_completed_successfully
+    environment:
+      # `:-` for the reason given on stt-cohere; the healthcheck below refuses
+      # an empty key, so speaches never sits on the network unauthenticated
+      # while reporting healthy.
+      API_KEY: ${MUSTER_STT_TOKEN:-}
+      # 🔴 THE SAME DEFAULT AS muster's OWN MUSTER_STT_MODEL, ON PURPOSE. muster
+      # sends that as the request's `model`, speaches refuses a request without
+      # one (422) and transcribes only a model it installed. A default here that
+      # muster's side did not share would install a model muster never names,
+      # and dictation would fail at the first recording while every container
+      # reported healthy. tests/compose-check.sh pins that both sides resolve
+      # to the same model, with MUSTER_STT_MODEL set and unset.
+      STT_WHISPER_MODEL: ${MUSTER_STT_MODEL:-Systran/faster-whisper-small}
+      ENABLE_UI: "false"
+      HF_HUB_CACHE: /models
+    volumes:
+      - whisper-cache:/models
+    healthcheck:
+      # speaches transcribes only models already installed, so the probe also
+      # installs the configured one (POST /v1/models/<id>) on its first pass.
+      # Healthy means: the server answers AND the model is on disk.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, sys, urllib.request
+          if not os.environ.get("API_KEY"):
+              sys.exit("MUSTER_STT_TOKEN is not set")
+          m = os.environ.get("STT_WHISPER_MODEL", "")
+          if not m:
+              sys.exit("MUSTER_STT_MODEL is not set (e.g. Systran/faster-whisper-small)")
+          h = {"Authorization": "Bearer " + os.environ["API_KEY"]}
+          base = "http://127.0.0.1:8000/v1/models/" + m
+          def call(method):
+              try:
+                  return urllib.request.urlopen(urllib.request.Request(base, method=method, headers=h), timeout=600).status
+              except Exception:
+                  return 0
+          sys.exit(0 if call("GET") == 200 or call("POST") in (200, 201) else 1)
+      interval: 20s
+      timeout: 610s
+      retries: 5
+      start_period: 15m
+
+  # --- file attachments: an S3 store (profile s3) ---------------------------
+  # Silo: pgsty's maintained fork of MinIO (upstream MinIO is archived and no
+  # longer publishes images; the fork was published as pgsty/minio before its
+  # rename), pinned by its multi-arch index digest. The same S3 API, `mc` and
+  # MINIO_ROOT_* settings; the server binary is `silo`. Not published to the host:
+  # only muster reaches it, on this project's network. muster streams every
+  # file to its agents itself, so nothing outside needs the store.
+  #
+  # Its root credentials ARE muster's key pair (S3_STORE_SECRET_KEY is both,
+  # like the STT token): the store holds nothing but muster's uploads. On start it
+  # creates the bucket and a lifecycle rule that expires uploads/ objects after
+  # 8 days (longer than the longest link, MUSTER_UPLOAD_LINK_TTL's 168h), so
+  # the bucket does not only grow; docs/uploads.md has the why.
+  s3:
+    profiles: ["s3"]
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MUSTER_S3_ACCESS_KEY:-muster}
+      # `:-`, not `:?`, for the reason given on stt-cohere. Empty, the start
+      # script below refuses and says which variable, so `--wait` fails.
+      MINIO_ROOT_PASSWORD: ${S3_STORE_SECRET_KEY:-}
+      MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-muster-uploads}
+      MINIO_BROWSER: "off"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        if [ "$${#MINIO_ROOT_PASSWORD}" -lt 8 ]; then
+          echo "s3: S3_STORE_SECRET_KEY is not set, or is under 8 characters (it is this store's root password and muster's secret key)" >&2
+          exit 1
+        fi
+        if [ "$$MINIO_ROOT_PASSWORD" = CHANGE-ME ]; then
+          echo "s3: S3_STORE_SECRET_KEY is still the .env.example placeholder CHANGE-ME; set a random secret" >&2
+          exit 1
+        fi
+        silo server /data --quiet & pid=$$!
+        trap 'kill -TERM $$pid' TERM INT
+        until mc alias set muster http://127.0.0.1:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          kill -0 "$$pid" 2>/dev/null || exit 1
+          sleep 1
+        done
+        mc mb --ignore-existing "muster/$$MUSTER_S3_BUCKET" &&
+          echo '{"Rules":[{"ID":"muster-uploads","Status":"Enabled","Filter":{"Prefix":"uploads/"},"Expiration":{"Days":8}}]}' |
+          mc ilm import "muster/$$MUSTER_S3_BUCKET" || exit 1
+        wait "$$pid"
+    volumes:
+      - s3-data:/data
+    healthcheck:
+      # Healthy means: the server answers this key pair AND the bucket exists
+      # (the start script creates it once the server is up).
+      test: ["CMD-SHELL", "mc ls \"muster/$$MUSTER_S3_BUCKET\" >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # --- the chief (profile chief) ---------------------------------------------
+  # The chief runs in the claude-code-agent image. muster never starts it (that
+  # would need the Docker socket, which is root on the host): this file does,
+  # and muster tells its supervisor (`ccd compose`) what to run by writing the
+  # chief's spec into the chief-spec volume — the compose driver,
+  # internal/provision/compose. Turning the chief off under Account → Chief
+  # stops the Claude Code CLI inside; the container stays up and idle.
+  #
+  # One-shot: the volume's directories, with the owners and groups muster and
+  # the supervisor need (muster is uid 65532; 1001 is the supervisor's group,
+  # 1000 the agent's), the instructions volume's included: it is mounted on
+  # files/etc/claude-code.
+  chief-init:
+    profiles: ["chief"]
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.246.0}
+    user: "0:0"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        install -d -o 65532 -g 1001 -m 2750 /v /v/chief
+        install -d -o 65532 -g 1000 -m 2750 /v/chief/files /v/chief/files/etc /v/chief/files/etc/claude-code
+    volumes:
+      - chief-spec:/v
+      - chief-instructions:/v/chief/files/etc/claude-code
+    network_mode: none
+    restart: "no"
+
+  chief:
+    profiles: ["chief"]
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.246.0}
+    restart: unless-stopped
+    depends_on:
+      chief-init:
+        condition: service_completed_successfully
+    # 🔴 THE SUPERVISOR IS NOT THE AGENT. It runs as uid 0 with primary group
+    # 1001 and no capability but changing uid and signalling, so it can read
+    # the spec (group 1001) and nothing else of root's; it starts the agent as
+    # uid 1000, group 1000, which cannot read the spec — the spec holds the
+    # agent's turn bearer (internal/provision/compose, "Who can read what").
+    user: "0:1001"
+    init: true
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CCD_SPEC_DIR: /run/muster-spec/chief
+    volumes:
+      - chief-spec:/run/muster-spec:ro
+      # The managed instructions (CLAUDE.md), read-only to the agent: their own
+      # volume, which muster mounts at the spec's files/etc/claude-code.
+      - chief-instructions:/etc/claude-code:ro
+      - chief-data:/data
+    # Its own network, which muster is on and Postgres, S3 and STT are not.
+    # ⚠ NOT CONFINED: the chief container can reach the internet, on either
+    # credential (the subscription token's Claude API calls need it).
+    networks: [chief]
+    healthcheck:
+      # The supervisor's own status: 200 whether the chief is on, off or not
+      # yet configured, so `up --wait` does not wait for you to turn it on.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:18789/compose/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+networks:
+  default: {}
+  chief: {}
+
+volumes:
+  # muster-init's generated secrets. 🔴 `down -v` deletes it with the database;
+  # new ones are generated on the next start.
+  secrets:
+  pgdata:
+  hf-cache:
+  whisper-cache:
+  s3-data:
+  chief-spec:
+  chief-instructions:
+  chief-data:

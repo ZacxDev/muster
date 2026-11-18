@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -69,15 +71,78 @@ func kindsServer(t *testing.T, kinds AgentKinds) (*Server, http.Handler, *prefli
 	return s, s.Handler(), store
 }
 
+// postDispatch creates an agent STOPPED (start: false — the deleted form's
+// "Save for later") through POST /api/agents, the machine route that replaced
+// the dispatch form (docs/design/chief-dispatch.md phase 2), as the operator's
+// agent-create token. form carries the form's field names, translated to the
+// route's JSON: note_text is the prompt, cc_failover a boolean, note_id a number.
+//
+// ⚠ A REFUSAL'S BODY IS REWRITTEN TO ITS SENTENCE. The route answers
+// {"error": "…"}, and JSON escapes the quotes several refusals carry
+// (`worker_pool "x": …`), so the substring checks these tests make read the
+// decoded sentence rather than its escaped encoding.
 func postDispatch(t *testing.T, s *Server, h http.Handler, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
-	form.Set("action", "save")
-	req := httptest.NewRequest(http.MethodPost, "/agents", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	admit(s, req)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	body := map[string]any{"start": false}
+	for k, v := range form {
+		switch k {
+		case "note_text":
+			body["prompt"] = v[0]
+		case "cc_failover":
+			body[k] = v[0] == "on" || v[0] == "true" || v[0] == "1"
+		case "note_id":
+			id, err := strconv.ParseInt(v[0], 10, 64)
+			if err != nil {
+				t.Fatalf("note_id %q: %v", v[0], err)
+			}
+			body[k] = id
+		default:
+			body[k] = v[0]
+		}
+	}
+	rec := apiCreateAgent(t, s, h, body)
+	if rec.Code >= 400 {
+		var out struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(rec.Body.Bytes(), &out) == nil && out.Error != "" {
+			rec.Body.Reset()
+			rec.Body.WriteString(out.Error)
+		}
+	}
 	return rec
+}
+
+// dispatched is whether POST /api/agents answered as a successful create does:
+// 201 naming the row it just created (store's newest), with that agent's page.
+func dispatched(rec *httptest.ResponseRecorder, store *preflightStore) bool {
+	rows := store.rows()
+	if rec.Code != http.StatusCreated || len(rows) == 0 {
+		return false
+	}
+	var out struct {
+		Agent struct {
+			Name string `json:"name"`
+		} `json:"agent"`
+		Href string `json:"href"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+		return false
+	}
+	newest := rows[len(rows)-1].Name
+	return out.Agent.Name == newest && out.Href == "/agents/"+newest
+}
+
+// createdHref is the new agent's page from a POST /api/agents answer.
+func createdHref(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var out struct {
+		Href string `json:"href"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Href == "" {
+		t.Fatalf("no href in %d %s (%v)", rec.Code, rec.Body, err)
+	}
+	return out.Href
 }
 
 // TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount: the account is chosen
@@ -86,13 +151,13 @@ func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 	var pins []string
 	s, h, store := kindsServer(t, stubKinds{pick: "work", pins: &pins})
 
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}}); !dispatched(rec, store) {
 		t.Fatalf("auto: %d %s", rec.Code, rec.Body)
 	}
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "cc_account": {"personal"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "cc_account": {"personal"}}); !dispatched(rec, store) {
 		t.Fatalf("pin: %d %s", rec.Code, rec.Body)
 	}
-	if rec := postDispatch(t, s, h, url.Values{}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{}); !dispatched(rec, store) {
 		t.Fatalf("no kind: %d %s", rec.Code, rec.Body)
 	}
 	rows := store.rows()
@@ -114,7 +179,7 @@ func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 // refuses, it is a 409 before any row exists.
 func TestADispatchCanMakeAClaudeCodeAgentAPoolWorker(t *testing.T) {
 	s, h, store := kindsServer(t, stubKinds{pick: "work"})
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}}); !dispatched(rec, store) {
 		t.Fatalf("claude-code worker: %d %s", rec.Code, rec.Body)
 	}
 	if rows := store.rows(); len(rows) != 1 || rows[0].WorkerPool != "reviewers" || rows[0].Kind != agents.KindClaudeCode {
@@ -146,7 +211,7 @@ func TestAClaudeCodeDispatchKeepsItsRepository(t *testing.T) {
 	connectRepos(t, s, "example-org/tide")
 	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"},
 		"repo": {"example-org/tide"}, "repo_branch": {"release/3"}})
-	if rec.Code != http.StatusOK {
+	if !dispatched(rec, store) {
 		t.Fatalf("claude-code + repo: %d %s", rec.Code, rec.Body)
 	}
 	rows := store.rows()
@@ -156,8 +221,8 @@ func TestAClaudeCodeDispatchKeepsItsRepository(t *testing.T) {
 	}
 }
 
-// TestAClaudeCodeDispatchTakesOnlyAConnectedRepository: from the dispatch form
-// or the API, a claude-code agent's repository must be one of the caller's
+// TestAClaudeCodeDispatchTakesOnlyAConnectedRepository: from POST /api/agents
+// or agent_dispatch, a claude-code agent's repository must be one of the caller's
 // connected GitHub repositories — the predicate task_dispatch uses
 // (connectedRepo) — because its session starts pre-trusted in the checkout.
 // Refused 409 before the row; a gateway agent's repository is not (its runtime
@@ -174,7 +239,7 @@ func TestAClaudeCodeDispatchTakesOnlyAConnectedRepository(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchNoGitHub) || len(store2.rows()) != 0 {
 		t.Fatalf("no GitHub connection: %d %q rows=%d", rec.Code, rec.Body, len(store2.rows()))
 	}
-	if rec := postDispatch(t, s, h, url.Values{"note_text": {"t"}, "repo": {"stranger/x"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"note_text": {"t"}, "repo": {"stranger/x"}}); !dispatched(rec, store) {
 		t.Fatalf("gateway + unconnected repo (unchanged): %d %s", rec.Code, rec.Body)
 	}
 }
@@ -206,34 +271,6 @@ func TestADispatchTheDeploymentCannotSatisfyIsRefusedBeforeTheRow(t *testing.T) 
 				t.Fatalf("a refused dispatch created %d row(s)", n)
 			}
 		})
-	}
-}
-
-// TestTheDispatchFormOffersThePickerOnlyWithTwoKinds.
-func TestTheDispatchFormOffersThePickerOnlyWithTwoKinds(t *testing.T) {
-	for _, c := range []struct {
-		kinds AgentKinds
-		want  bool
-	}{
-		{nil, false},
-		{stubKinds{enabled: []string{agents.KindGateway}}, false},
-		{stubKinds{accounts: []string{"work", "personal"}}, true},
-	} {
-		s, h, _ := kindsServer(t, c.kinds)
-		req := httptest.NewRequest(http.MethodGet, "/ui/agents/new", nil)
-		admit(s, req)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		body := rec.Body.String()
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%d", rec.Code)
-		}
-		if got := strings.Contains(body, "data-kind-picker"); got != c.want {
-			t.Fatalf("kinds %v: picker present = %v, want %v", c.kinds, got, c.want)
-		}
-		if c.want && (!strings.Contains(body, `<option value="personal">personal</option>`) || strings.Contains(body, "sk-ant")) {
-			t.Fatalf("account options missing (or a token present):\n%s", body)
-		}
 	}
 }
 

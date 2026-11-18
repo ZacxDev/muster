@@ -1,6 +1,7 @@
 package mirrorhost
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -17,10 +18,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/mirrorpath"
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // THE LOCAL MCP ENDPOINT: how a Claude Code session in one of this host's tmux
@@ -54,25 +59,80 @@ const (
 	MCPPaneHeader    = "X-Muster-Pane"
 	MCPTmuxHeader    = "X-Muster-Tmux"
 	MCPSessionHeader = "X-Muster-Claude-Session"
+	// MCPAgentSessionHeader is what the proxy tells muster INSTEAD of
+	// MCPSessionHeader for an opencode caller: the KEY of the session the
+	// call was bound to (mirror.OpenCodeCallerKey, "opencode:<id>").
+	MCPAgentSessionHeader = "X-Muster-Agent-Session"
 	// MCPPath is muster's mirrored-sessions MCP door.
 	MCPPath = "/mirror/mcp"
-	// mcpMaxBody bounds one forwarded JSON-RPC message (muster's own bound).
-	mcpMaxBody = 64 << 10
+	// PreviewMCPPath is the endpoint's second MCP server: the preview tools,
+	// served here and never forwarded (SetPreview).
+	PreviewMCPPath = "/preview-mcp"
+	// mcpMaxBody bounds one forwarded JSON-RPC message: muster's own read
+	// bound, the one rule both hops share (mirror.MaxMCPRequestBytes, which
+	// says why it fits a page's blocks). muster holds each tool to its own
+	// bound past that; this proxy forwards and lets it.
+	mcpMaxBody = mirror.MaxMCPRequestBytes
+	// MCPClientHeader names the MCP client when its headers cannot name a
+	// pane; MCPClientOpenCode is opencode's value (OpenCodeCaller).
+	MCPClientHeader   = "X-Muster-Client"
+	MCPClientOpenCode = "opencode"
 )
+
+// AN OPENCODE CALLER (docs/attention.md, "Mirrored opencode sessions";
+// docs/design/previews.md, "opencode callers"). opencode resolves a remote MCP
+// server's headers ONCE, when its config loads, inside the one background
+// service every opencode TUI on the host is a client of — so X-Muster-Pane /
+// X-Muster-Tmux, if it sent them, would name the SERVICE's pane for every
+// session. What opencode does send per session is the calling session's id,
+// in every tools/call's params._meta["ai.opencode/sessionID"]. So its MCP
+// entries send the static header X-Muster-Client: opencode, and a request
+// carrying it — on /mcp and on /preview-mcp alike — is resolved by that
+// session id instead of by pane:
+//
+//   - the guard's tmux-server check is not applied to it (the service runs
+//     outside any pane); the secret, Origin and POST checks are, unchanged.
+//     Any other path is 404, marked or not;
+//   - initialize and tools/list carry no session id and need none: /preview-mcp
+//     answers them as for any caller, and /mcp forwards them marked as
+//     opencode's (MCPClientHeader), so muster answers with the tools and the
+//     instructions it offers an opencode session — never more than a Claude
+//     Code session's;
+//   - a tools/call is bound by ONE function both servers call
+//     (openCodeBinding) to the ONE window of this host whose active pane runs
+//     an opencode TUI bound — by its launcher record, or a verified title
+//     binding — to that session, or to the nearest ancestor of it (a
+//     subagent's child session calls with its own id). No session id, an id
+//     no such window shows, or two windows showing it: no window, and the
+//     call fails — /preview-mcp's no_window, /mcp's tool error, which is not
+//     forwarded. Never the service's pane, never a guess;
+//   - /mcp forwards a bound call with that window's session KEY
+//     (MCPAgentSessionHeader, "opencode:<id>") and NO Claude session, and
+//     muster checks the same binding again (mirror.Window.RunsMCPCaller);
+//   - pane headers on an opencode-marked request are IGNORED: they can only
+//     be the service's own, which is exactly the wrong answer.
+//
+// 🔴 A SELECTOR, NOT A CREDENTIAL. The session id is the caller's own claim.
+// It is believed only among THIS host's mirrored windows, behind the same
+// per-host secret, so a forged id can at most act as ANOTHER of the same
+// owner's sessions on this host — the reach a Claude Code caller already has
+// by naming another pane. An id no window shows binds nothing.
 
 // MCPProxy is the local endpoint's handler.
 type MCPProxy struct {
 	// URL is muster's base URL (as Config.URL); Token this host's mirror token.
 	URL   string
 	Token string
-	// AllowHTTP permits a plain http:// URL (tests and local development).
+	// AllowHTTP permits a plain http:// URL to another machine (tests only);
+	// plain http to this machine's loopback interface is accepted without it.
 	AllowHTTP bool
 	// Secret is what a local caller must present.
 	Secret string
 	// Windows lists this host's windows: how a pane is resolved to its Claude
 	// session. nil resolves none.
 	Windows WindowLister
-	// Socket is this host's tmux server: a caller's $TMUX must name it. nil
+	// Socket is this host's tmux server: a caller's $TMUX must name it to be
+	// forwarded (any other is answered as a server with no tools). nil
 	// (a backend that is not tmux) skips the check.
 	Socket ServerSocketer
 	// Refresh sends muster this host's listing NOW (Client.RefreshNow), so a
@@ -83,6 +143,185 @@ type MCPProxy struct {
 	// timeout (attention_wait long-polls for up to ten minutes).
 	Client *http.Client
 	Logger *log.Logger
+	// Version is what an `initialize` this endpoint answers itself names as
+	// the server's version (answerOutsider); "" reads "dev".
+	Version string
+	// OpenCodeAncestors is an opencode session's parent, its parent's, …
+	// nearest first (OpenCodeSource.Ancestors): how a subagent's child
+	// session finds the window showing its root. nil: only a session a
+	// window shows itself is found.
+	OpenCodeAncestors func(id string) []string
+	// Cwd is process pid's working directory: where a calling session's
+	// attention_ask attachments are resolved from (mcpproxy_attach.go). nil
+	// reads this host's own processes (/proc on Linux, lsof on macOS).
+	Cwd func(pid int) (string, bool)
+
+	// Primary is the primary instance's name (URL, Token): what a call naming
+	// no instance runs on; "" reads DefaultPrimaryName (mcpinstances.go).
+	Primary string
+	// Extras are the other muster instances whose admin tools this host's
+	// Claude Code sessions may call by name (LoadMCPTargets). 🔴 They receive
+	// tools/list and tools/call requests only, never this host's sessions.
+	Extras []MCPInstance
+	// ToolsRefresh is how often the instances' tool lists are re-read, and a
+	// change announced with notifications/tools/list_changed (WatchTools); 0
+	// turns the watch, the GET stream and the listChanged capability off.
+	ToolsRefresh time.Duration
+
+	// ExtrasIgnored is why a configured targets file was ignored at start
+	// ("" when none was configured, or it loaded): a call naming an instance
+	// other than the primary is then refused saying so, never run on the
+	// primary instead.
+	ExtrasIgnored string
+
+	// state caches the lists and holds the open GET streams.
+	state instanceState
+
+	// outsiderLogged: the first caller from another tmux server is logged,
+	// the rest are not (every Claude Code session on another tenant's server
+	// connects here).
+	outsiderLogged atomic.Bool
+
+	// preview is /preview-mcp's server (SetPreview); nil = not mounted.
+	preview atomic.Pointer[http.Handler]
+}
+
+// SetPreview mounts h at PreviewMCPPath, behind the same guard as /mcp
+// (guarded). muster-mirror calls it once previews are on: -preview and a
+// valid previews.json (cmd/muster-mirror's startPreview). Until then — and
+// for good when previews are off — that path is 404, like any other.
+//
+// 🔴 A SEPARATE SERVER, NOT AN APPEND TO MUSTER'S LIST: /mcp is forwarded
+// exactly as before, so a muster outage still fails the "muster" server
+// loudly (502) while the preview tools work or fail on their own.
+func (p *MCPProxy) SetPreview(h http.Handler) {
+	p.preview.Store(&h)
+}
+
+func (p *MCPProxy) previewHandler() http.Handler {
+	if h := p.preview.Load(); h != nil {
+		return *h
+	}
+	return nil
+}
+
+// OpenCodeCaller reports whether r is marked as opencode's
+// (X-Muster-Client: opencode).
+func OpenCodeCaller(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get(MCPClientHeader)), MCPClientOpenCode)
+}
+
+// CallerWindow is the tmux window ("@12") a preview tool's caller is in now,
+// from a FRESH listing. agentSession is the calling agent session the call
+// itself names (opencode's params._meta["ai.opencode/sessionID"]; "" none).
+//
+// An opencode-marked request (OpenCodeCaller) is resolved by agentSession
+// alone (openCodeBinding). Any other is resolved by its pane — its
+// X-Muster-Pane, ANY pane of the window — and agentSession is not read:
+// unlike session it needs no Claude Code session in the pane, as a preview
+// belongs to the window, whatever runs in it. The guard has already checked
+// such a caller's tmux server (checkServer: pane ids are per server).
+func (p *MCPProxy) CallerWindow(r *http.Request, agentSession string) (string, error) {
+	if OpenCodeCaller(r) {
+		win, _, err := p.openCodeBinding(r.Context(), agentSession)
+		return win, err
+	}
+	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
+	if pane == "" {
+		return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
+	}
+	if p.Windows == nil {
+		return "", errors.New("this host cannot resolve a tmux pane")
+	}
+	ws, err := p.Windows.Windows(r.Context())
+	if err != nil {
+		return "", fmt.Errorf("list windows: %w", err)
+	}
+	if id, ok := windowOfPane(ws, pane); ok {
+		return id, nil
+	}
+	return "", fmt.Errorf("pane %s is in no window this host mirrors", describePane(pane))
+}
+
+// windowOfPane is the id of the window one of whose panes — the active one
+// or another in a split — is pane.
+func windowOfPane(ws []WindowInfo, pane string) (string, bool) {
+	for _, w := range ws {
+		for _, id := range w.PaneIDs() {
+			if id == pane {
+				return w.ID, true
+			}
+		}
+	}
+	return "", false
+}
+
+// maxOpenCodeAncestors bounds how far up a child session's parents the
+// window is looked for.
+const maxOpenCodeAncestors = 8
+
+// openCodeBinding is THE ONE binding of an opencode caller, for both servers
+// (CallerWindow for the preview tools, serveMuster for muster's): the window
+// of this host showing opencode session sid — or, when none shows it, the
+// nearest of its ancestors that one shows (OpenCodeAncestors) — through a
+// binding muster sends on (boundOpenCode), and the session that window shows
+// (sid itself, or that ancestor).
+// 🔴 FAILS CLOSED: no id, an id no window shows, or a session two windows
+// show is an error, never a fallback.
+func (p *MCPProxy) openCodeBinding(ctx context.Context, sid string) (window, session string, err error) {
+	sid = strings.TrimSpace(sid)
+	if sid == "" {
+		return "", "", errors.New(`this opencode call names no session (params._meta["ai.opencode/sessionID"]), so its window is unknown`)
+	}
+	if p.Windows == nil {
+		return "", "", errors.New("this host cannot resolve an opencode session")
+	}
+	ws, err := p.Windows.Windows(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("list windows: %w", err)
+	}
+	ids := []string{sid}
+	if p.OpenCodeAncestors != nil {
+		for _, a := range p.OpenCodeAncestors(sid) {
+			if len(ids) > maxOpenCodeAncestors {
+				break
+			}
+			ids = append(ids, a)
+		}
+	}
+	unbound := ""
+	for _, id := range ids {
+		var found []string
+		for _, w := range ws {
+			a := w.Agent
+			if a == nil || a.Runtime != mirror.RuntimeOpenCode || a.Gen != id {
+				continue
+			}
+			if !boundOpenCode(a) {
+				unbound = w.ID
+				continue
+			}
+			found = append(found, w.ID)
+		}
+		switch len(found) {
+		case 0:
+		case 1:
+			return found[0], id, nil
+		default:
+			return "", "", fmt.Errorf("opencode session %s is shown in %d windows (%s), so which one called is unknown", strconv.Quote(id), len(found), strings.Join(found, ", "))
+		}
+	}
+	if unbound != "" {
+		return "", "", fmt.Errorf("window %s shows opencode session %s, but its binding is not verified (muster does not send to it either)", unbound, strconv.Quote(sid))
+	}
+	return "", "", fmt.Errorf("opencode session %s is in no window this host mirrors", strconv.Quote(sid))
+}
+
+// boundOpenCode reports whether an opencode pane's session is one muster
+// sends to: bound by its launcher record (Send), or by a verified title
+// binding. A title match that is only view-only binds no preview either.
+func boundOpenCode(a *AgentPane) bool {
+	return a.Send || a.Bind == mirror.AgentBindVerified
 }
 
 // MCPTarget is muster's /mirror/mcp URL for base.
@@ -93,7 +332,7 @@ func MCPTarget(base string, allowHTTP bool) (string, error) {
 	}
 	switch {
 	case u.Scheme == "https":
-	case u.Scheme == "http" && allowHTTP:
+	case u.Scheme == "http" && (allowHTTP || loopback.Host(u.Host)):
 	default:
 		return "", fmt.Errorf("muster-mirror: muster URL %q must be https:// (or http:// with -allow-http)", base)
 	}
@@ -122,18 +361,33 @@ func mcpRefuse(w http.ResponseWriter, code int, msg string) {
 // checking the caller's tmux server is the one this host mirrors (pane ids are
 // per server: %3 on another server is another pane).
 func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error) {
+	sid, _, err := p.callerSession(ctx, r)
+	return sid, err
+}
+
+// callerSession is session, and the window the caller's pane is in.
+func (p *MCPProxy) callerSession(ctx context.Context, r *http.Request) (string, WindowInfo, error) {
+	c, w, err := p.callerClaude(ctx, r)
+	return c.Gen, w, err
+}
+
+// callerClaude is the Claude Code pane the caller's pane header names (its
+// session in Gen, its process in PID), and its window: callerSession's ONE
+// resolution, which the attachment upload (mcpproxy_attach.go) reads the
+// session's working directory from.
+func (p *MCPProxy) callerClaude(ctx context.Context, r *http.Request) (ClaudePane, WindowInfo, error) {
 	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
 	if pane == "" {
-		return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
+		return ClaudePane{}, WindowInfo{}, fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
 	}
 	if p.Windows == nil {
-		return "", errors.New("this host cannot resolve a tmux pane")
+		return ClaudePane{}, WindowInfo{}, errors.New("this host cannot resolve a tmux pane")
 	}
 	// A FRESH read, not the last refresh's: a session that started since then
 	// is found now.
 	ws, err := p.Windows.Windows(ctx)
 	if err != nil {
-		return "", fmt.Errorf("list windows: %w", err)
+		return ClaudePane{}, WindowInfo{}, fmt.Errorf("list windows: %w", err)
 	}
 	// What muster will be told, bounds applied (WireWindows: at most
 	// MaxOtherClaudePerWindow other panes per window, MaxOtherClaude in all):
@@ -150,14 +404,14 @@ func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error)
 		for _, c := range append([]ClaudePane{derefClaude(w.Claude)}, w.Others...) {
 			if c.Pane == pane && c.Gen != "" {
 				if !listed[c.Gen] {
-					return "", fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
+					return ClaudePane{}, WindowInfo{}, fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
 						pane, mirror.MaxOtherClaudePerWindow, mirror.MaxOtherClaude)
 				}
-				return c.Gen, nil
+				return c, w, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
+	return ClaudePane{}, WindowInfo{}, fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
 }
 
 // describePane is a pane header's value as received — quoted, so an odd byte
@@ -174,9 +428,11 @@ func describePane(pane string) string {
 	return q
 }
 
-// checkServer refuses a caller whose $TMUX names another tmux server than the
-// one this host mirrors (pane ids are per server: %3 there is another pane).
-// It needs no session, so it applies to every request.
+// checkServer says whether a caller's $TMUX names another tmux server than
+// the one this host mirrors (pane ids are per server: %3 there is another
+// pane), or none, or this host's server cannot be read. It needs no session,
+// so it applies to every request; such a caller is never forwarded upstream,
+// and is answered locally as a server with no tools (answerOutsider).
 func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 	if p.Socket == nil {
 		return nil
@@ -191,6 +447,127 @@ func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 		return fmt.Errorf("the caller is not in the tmux server this host mirrors (send %s: ${TMUX:-})", MCPTmuxHeader)
 	}
 	return nil
+}
+
+// A CALLER FROM ANOTHER TMUX SERVER SEES A HEALTHY SERVER WITH NO TOOLS.
+//
+// On a host with one muster-mirror per muster server (one tmux server each),
+// Claude Code registers every tenant's endpoint, and a session reaches all of
+// them; only its own tmux server's should give it tools. Refusing the others
+// with an HTTP error is what this endpoint did first, and it is loud: measured
+// on Claude Code 2.1.289, a 400 on `initialize` (or straight after it) puts
+// the error text into the model's system prompt in EVERY session, telling it
+// to report the failure, and /mcp shows ✘. An empty tool list leaves nothing
+// in the model's context: `claude mcp list` shows "✔ Connected" and /mcp only
+// "⚠ no tools". So answerOutsider answers such a caller ITSELF, as muster's
+// own MCP server answers (internal/api's serveMCP), and FORWARDS NOTHING
+// upstream — no request of an outsider ever carries this host's mirror token.
+// /preview-mcp's outsiders get the same answer, named "muster-preview": pane
+// ids are per tmux server, so their pane would name another window here:
+//
+//   - `initialize`: a valid result (protocol negotiated as muster does, the
+//     tools capability, no instructions);
+//   - a notification (no id): 202 and no body;
+//   - `ping`: an empty result, as muster answers it (MCP requires an answer);
+//   - `tools/list`: an EMPTY list;
+//   - `tools/call`: refused (a JSON-RPC error: there is no such tool here);
+//   - anything else — `server/discover`, which Claude Code sends first,
+//     included — muster's "method not found", which is what muster itself
+//     answers to it, so Claude Code goes on to `initialize` exactly as it does
+//     against the right server;
+//   - what does not parse as one request: muster's "not a JSON-RPC request".
+//
+// A GET (Claude Code's fallback after a failure) is answered 405 before this,
+// for every caller: the transport's "no server-initiated stream", the same
+// healthy answer the right tmux server's callers get.
+//
+// 🔴 ROUTING, NOT ENFORCEMENT: X-Muster-Tmux is a header the caller supplies,
+// so anything running as this Unix user can name any tmux server (and read
+// any tenant's secret). This keeps honest sessions on their own tenant.
+func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, name string, why error) {
+	if p.outsiderLogged.CompareAndSwap(false, true) {
+		p.logf("muster-mirror: mcp: a caller outside this host's tmux server gets no tools (logged once): %v", why)
+	}
+	body, ok := readMCPBody(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.JSONRPC != "2.0" || req.Method == "" {
+		mcpRPC(w, nil, nil, -32600, "not a JSON-RPC 2.0 request (batches are not supported)")
+		return
+	}
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	switch req.Method {
+	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &params)
+		mcpRPC(w, req.ID, map[string]any{
+			"protocolVersion": mirror.NegotiateMCPVersion(params.ProtocolVersion),
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": name, "version": p.serverVersion()},
+		}, 0, "")
+	case "ping":
+		// MCP requires an answer; muster's own server answers {} (serveMCP).
+		mcpRPC(w, req.ID, map[string]any{}, 0, "")
+	case "tools/list":
+		mcpRPC(w, req.ID, map[string]any{"tools": []any{}}, 0, "")
+	case "tools/call":
+		mcpRPC(w, req.ID, nil, -32602, "this muster-mirror serves no tools to a session outside the tmux server it mirrors")
+	default:
+		mcpRPC(w, req.ID, nil, -32601, "method not found: "+req.Method)
+	}
+}
+
+func (p *MCPProxy) serverVersion() string {
+	if p.Version != "" {
+		return p.Version
+	}
+	return "dev"
+}
+
+// readMCPBody reads one MCP request under mcpMaxBody. Past it the caller is
+// refused 413 with words that name THIS side — muster-mirror, not muster — and
+// the bounds, so a mixed rollout says which hop stopped it; ok false then.
+func readMCPBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
+	if err == nil {
+		return body, true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		mcpRefuse(w, http.StatusRequestEntityTooLarge, mirror.MCPTooLarge("muster-mirror on this host"))
+		return nil, false
+	}
+	mcpRefuse(w, http.StatusBadRequest, "muster-mirror on this host could not read the request")
+	return nil, false
+}
+
+// mcpRPC writes one JSON-RPC response, HTTP 200: result, or (code != 0) an
+// error — the shape muster's own MCP server writes.
+func mcpRPC(w http.ResponseWriter, id json.RawMessage, result any, code int, msg string) {
+	body := map[string]any{"jsonrpc": "2.0", "id": id}
+	if len(id) == 0 {
+		body["id"] = nil
+	}
+	if code != 0 {
+		body["error"] = map[string]any{"code": code, "message": msg}
+	} else {
+		body["result"] = result
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // mcpRefreshWait bounds the listing push before a forwarded call.
@@ -216,11 +593,37 @@ func derefClaude(c *ClaudePane) ClaudePane {
 	return *c
 }
 
+// ServeHTTP serves the endpoint's two MCP servers, each behind the same
+// guard (guarded): /mcp, muster's tools, forwarded (serveMuster); and, once
+// SetPreview mounted it, PreviewMCPPath, the preview tools, answered on this
+// machine and never forwarded (docs/design/previews.md, "The MCP tools"). Any
+// other path — /preview-mcp too while it is not mounted — is 404.
 func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mcp" {
+	switch r.URL.Path {
+	case "/mcp":
+		p.guarded(w, r, "muster", p.serveMuster)
+	case PreviewMCPPath:
+		h := p.previewHandler()
+		if h == nil {
+			http.NotFound(w, r)
+			return
+		}
+		p.guarded(w, r, "muster-preview", h.ServeHTTP)
+	default:
 		http.NotFound(w, r)
-		return
 	}
+}
+
+// guarded is the ONE guard in front of both servers, in this order: a request
+// carrying an Origin is refused (403), one without this host's secret is
+// refused (401), anything but a POST gets the transport's 405, and a caller
+// from another tmux server is answered as a healthy server with no tools,
+// named name (answerOutsider). Only then is serve called.
+//
+// An opencode-marked request (OpenCodeCaller) skips the tmux-server check —
+// opencode's service runs outside any pane, and its calls are bound by session
+// id instead (openCodeBinding), which only finds this host's own windows.
+func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, serve http.HandlerFunc) {
 	if r.Header.Get("Origin") != "" {
 		mcpRefuse(w, http.StatusForbidden, "cross-origin requests are refused")
 		return
@@ -231,23 +634,36 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		// The transport's "no server-initiated stream" answer, as muster gives it.
+		// A Claude Code caller of this host's tmux server, with the tool watch
+		// on, may hold the transport's server-to-client stream open: it carries
+		// notifications/tools/list_changed (serveListen). Every other GET —
+		// an outsider's, opencode's, /preview-mcp's, or with the watch off —
+		// gets the transport's "no server-initiated stream", as muster gives it.
+		if r.Method == http.MethodGet && name == "muster" && p.listChangedOn() && wantsListen(r) && !OpenCodeCaller(r) && p.checkServer(r.Context(), r) == nil {
+			p.serveListen(w, r)
+			return
+		}
 		w.Header().Set("Allow", http.MethodPost)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if err := p.checkServer(r.Context(), r); err != nil {
-		mcpRefuse(w, http.StatusBadRequest, err.Error())
-		return
+	if !OpenCodeCaller(r) {
+		if err := p.checkServer(r.Context(), r); err != nil {
+			p.answerOutsider(w, r, name, err)
+			return
+		}
 	}
-	target, err := MCPTarget(p.URL, p.AllowHTTP)
-	if err != nil {
-		mcpRefuse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
-	if err != nil {
-		mcpRefuse(w, http.StatusRequestEntityTooLarge, "the request is too large")
+	serve(w, r)
+}
+
+// serveMuster is /mcp past the guard: the request forwarded to muster — the
+// primary, or (a tools/call naming another instance, with Extras) that
+// instance (serveRoutedCall). A Claude Code caller's initialize, tools/list
+// and tools/call are rebuilt as mcpinstances.go says; an opencode caller's are
+// forwarded exactly as before, to the primary.
+func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
+	body, ok := readMCPBody(w, r)
+	if !ok {
 		return
 	}
 	// 🔴 ONLY A tools/call IS BOUND TO A SESSION. initialize, tools/list, ping
@@ -256,17 +672,85 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// listing can show it — and never retries a connection that failed then.
 	// They are forwarded with no session; muster binds the call. Anything that
 	// does not parse as one request is forwarded unbound too: muster refuses
-	// it, and an unbound call is refused there.
+	// it, and an unbound call is refused there. The same holds for an opencode
+	// caller, whose call is bound by its session instead of its pane.
 	var head struct {
 		Method string          `json:"method"`
 		ID     json.RawMessage `json:"id"`
+		Params json.RawMessage `json:"params"`
 	}
 	_ = json.Unmarshal(body, &head)
-	sid := ""
-	if head.Method == "tools/call" {
-		if sid, err = p.session(r.Context(), r); err != nil {
-			mcpToolError(w, head.ID, err.Error())
-			return
+	openCode := OpenCodeCaller(r)
+	multi := len(p.Extras) > 0 && !openCode
+	switch {
+	case head.Method == "initialize" && !openCode && (p.listChangedOn() || multi):
+		p.serveInitialize(w, r, body)
+		return
+	case head.Method == "tools/list" && multi:
+		p.serveMergedList(w, r, head.ID, body)
+		return
+	case head.Method == "tools/call" && multi:
+		p.serveRoutedCall(w, r, head.ID, body)
+		return
+	case head.Method == "tools/call" && !openCode && p.ExtrasIgnored != "":
+		// A targets file was configured but ignored: an instance argument is
+		// still the caller's routing choice, so it is taken out, and any but
+		// the primary's name is refused — never run on the primary instead.
+		if call, ok := parseCall(body); ok {
+			inst, bad := call.takeInstance()
+			if bad || (inst != "" && inst != p.primaryName()) {
+				mcpToolError(w, head.ID, fmt.Sprintf("muster instance %q is not reachable: this host's MCP targets file was ignored when muster-mirror started (%s), "+
+					"so it reaches %s, its primary, only; fix the file and restart muster-mirror, or call without instance", inst, p.ExtrasIgnored, p.primaryName()))
+				return
+			}
+			body = call.body()
+		}
+	}
+	req, ok := p.primaryRequest(w, r, head.Method, head.ID, head.Params, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	relayStream(w, resp)
+}
+
+// primaryRequest is the request to the primary for body: on a tools/call, bound
+// to the caller's session (its pane's, or an opencode caller's), refreshed
+// first. A tools/call whose caller is already resolved (sid != "") is not
+// resolved again. ok false: the refusal has been written.
+func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method string, id, params json.RawMessage, body []byte, sid string) (*http.Request, bool) {
+	target, err := MCPTarget(p.URL, p.AllowHTTP)
+	if err != nil {
+		mcpRefuse(w, http.StatusInternalServerError, err.Error())
+		return nil, false
+	}
+	// An opencode caller (OpenCodeCaller) is named by the session its call
+	// carries, bound by openCodeBinding — its pane headers are never read —
+	// and is forwarded with that session's KEY instead of a Claude session.
+	openCode := OpenCodeCaller(r)
+	agentKey := ""
+	var made askUploads
+	if method == "tools/call" {
+		if openCode {
+			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(params))
+			if berr == nil {
+				if agentKey = mirror.OpenCodeCallerKey(bound); agentKey == "" {
+					berr = fmt.Errorf("opencode session %s is not a session id muster accepts", strconv.Quote(bound))
+				}
+			}
+			if berr != nil {
+				mcpToolError(w, id, berr.Error())
+				return nil, false
+			}
+		} else if sid == "" {
+			if sid, err = p.session(r.Context(), r); err != nil {
+				mcpToolError(w, id, err.Error())
+				return nil, false
+			}
 		}
 		if p.Refresh != nil {
 			rctx, cancel := context.WithTimeout(r.Context(), mcpRefreshWait)
@@ -275,35 +759,99 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			cancel()
 		}
+		// attention_ask's attachments: the files are on THIS host, so they are
+		// uploaded from here and the call carries their ids (mcpproxy_attach.go).
+		var refused string
+		if body, made, refused = p.uploadAskAttachments(r, body, sid, openCode); refused != "" {
+			mcpToolError(w, id, refused)
+			return nil, false
+		}
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+	rctx := r.Context()
+	if len(made.ids) > 0 {
+		// send reads muster's reply and revokes these when it did not file
+		// the ask (revokeIfRefused).
+		rctx = context.WithValue(rctx, askUploadsKey{}, made)
+	}
+	req, err := http.NewRequestWithContext(rctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		mcpRefuse(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, false
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Token)
-	if sid != "" {
+	if sid != "" && !openCode {
 		req.Header.Set(MCPSessionHeader, sid)
+	}
+	if openCode {
+		// Every request of an opencode caller is marked so upstream too: muster
+		// lists, instructs and binds it as an opencode session.
+		req.Header.Set(MCPClientHeader, MCPClientOpenCode)
+		if agentKey != "" {
+			req.Header.Set(MCPAgentSessionHeader, agentKey)
+		}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	client := p.Client
-	if client == nil {
-		client = &http.Client{}
-	}
-	resp, err := client.Do(req)
+	return req, true
+}
+
+// extraRequest is a tools/call to extra instance e, as a REMOTE caller: that
+// instance's own mirror token for this host, the remote marker and the calling
+// Claude session — nothing else of this host's (no listing, no pane, no
+// window).
+func (p *MCPProxy) extraRequest(ctx context.Context, e MCPInstance, sid string, body []byte) (*http.Request, error) {
+	target, err := MCPTarget(e.URL, true)
 	if err != nil {
-		p.logf("muster-mirror: mcp: forward: %v", err)
-		mcpRefuse(w, http.StatusBadGateway, "muster could not be reached")
-		return
+		return nil, err
 	}
-	defer resp.Body.Close()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+e.Token)
+	req.Header.Set(MCPClientHeader, MCPClientRemote)
+	req.Header.Set(MCPRemoteSessionHeader, sid)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	return req, nil
+}
+
+// send sends req; ok false: the 502 has been written.
+func (p *MCPProxy) send(w http.ResponseWriter, req *http.Request) (*http.Response, bool) {
+	resp, err := p.do(req)
+	if err != nil {
+		p.logf("muster-mirror: mcp: forward to %s: %v", req.URL.Host, err)
+		var refused *noredirect.Error
+		if errors.As(err, &refused) {
+			mcpRefuse(w, http.StatusBadGateway, "muster answered with a redirect to "+refused.Host+", which is not followed")
+			return nil, false
+		}
+		mcpRefuse(w, http.StatusBadGateway, "muster could not be reached")
+		// The call never reached muster: an ask's uploads have no ask.
+		if u, _ := req.Context().Value(askUploadsKey{}).(askUploads); len(u.ids) > 0 {
+			p.revokeAskUploads(u)
+		}
+		return nil, false
+	}
+	p.revokeIfRefused(req, resp)
+	return resp, true
+}
+
+// do is THE one way this proxy sends a request upstream — to the primary or an
+// extra instance, a call or a tool-list read. 🔴 NO REDIRECTS, whatever client
+// was configured: every such request carries a mirror token
+// (internal/noredirect).
+func (p *MCPProxy) do(req *http.Request) (*http.Response, error) {
+	return noredirect.Client(p.Client).Do(req)
+}
+
+// relayStream copies resp to w as it arrives: muster keeps a long call alive
+// with whitespace, and the caller's connection must see it to stay open too.
+func relayStream(w http.ResponseWriter, resp *http.Response) {
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	// Copy as it arrives: muster keeps a long call alive with whitespace, and
-	// the caller's connection must see it to stay open too.
 	rc := http.NewResponseController(w)
 	buf := make([]byte, 32<<10)
 	for {
@@ -320,8 +868,195 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ListenMCP listens on addr, which must be a literal loopback IP and port
-// ("127.0.0.1:47823", "[::1]:47823").
+// serveInitialize forwards initialize to the primary — so an outage still
+// fails the connection loudly — and, on a result, sets
+// capabilities.tools.listChanged when the watch is on (without it Claude Code
+// ignores list_changed) and, with extra instances, says in the instructions
+// how to reach them.
+func (p *MCPProxy) serveInitialize(w http.ResponseWriter, r *http.Request, body []byte) {
+	req, ok := p.primaryRequest(w, r, "initialize", nil, nil, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		rest = p.rewriteInitialize(rest)
+	}
+	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+}
+
+// rewriteInitialize is serveInitialize's edit of the result; body unchanged when it
+// is not an initialize result.
+func (p *MCPProxy) rewriteInitialize(body []byte) []byte {
+	var rep map[string]any
+	if json.Unmarshal(body, &rep) != nil {
+		return body
+	}
+	result, ok := rep["result"].(map[string]any)
+	if !ok {
+		return body
+	}
+	caps, _ := result["capabilities"].(map[string]any)
+	if caps == nil {
+		caps = map[string]any{}
+	}
+	tools, _ := caps["tools"].(map[string]any)
+	if tools == nil {
+		tools = map[string]any{}
+	}
+	if p.listChangedOn() {
+		tools["listChanged"] = true
+	}
+	caps["tools"] = tools
+	result["capabilities"] = caps
+	if len(p.Extras) > 0 {
+		ins, _ := result["instructions"].(string)
+		result["instructions"] = strings.TrimSpace(ins + " This host's mirror also reaches the muster instances " + strings.Join(p.extraNames(), ", ") +
+			": an admin tool that takes an instance argument runs there when you pass it; without it, it runs on " + p.primaryName() + ".")
+	}
+	out, err := json.Marshal(rep)
+	if err != nil {
+		return body
+	}
+	return append(out, '\n')
+}
+
+// serveMergedList is a Claude Code caller's tools/list with extra instances:
+// the primary's answer — forwarded as before, and relayed unchanged when it is
+// not a list — merged with every instance's remote list (buildPlan).
+func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte) {
+	seq, readAt := p.beginRead(), time.Now()
+	req, ok := p.primaryRequest(w, r, "tools/list", id, nil, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+		return
+	}
+	session, perr := parseToolsResult(rest)
+	if perr != nil {
+		writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+		return
+	}
+	session.at = readAt
+	remote, at := p.remotesFor(r.Context())
+	pl, _ := p.storePlan(seq, session, remote, at)
+	tools := pl.merged
+	if tools == nil {
+		tools = []map[string]any{}
+	}
+	out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": rawOrNull(id), "result": map[string]any{"tools": tools}})
+	writeBuffered(w, http.StatusOK, "application/json", started, append(out, '\n'))
+}
+
+func rawOrNull(id json.RawMessage) json.RawMessage {
+	if len(id) == 0 {
+		return json.RawMessage("null")
+	}
+	return id
+}
+
+// serveRoutedCall is a Claude Code caller's tools/call with extra instances:
+// its instance argument removed and routed (toolPlan.route), and the answer
+// named with the instance that gave it (annotateResult).
+func (p *MCPProxy) serveRoutedCall(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte) {
+	call, ok := parseCall(body)
+	if !ok {
+		// Not a call this proxy can take apart: the primary refuses it.
+		req, ok := p.primaryRequest(w, r, "tools/call", id, nil, body, "")
+		if !ok {
+			return
+		}
+		if resp, ok := p.send(w, req); ok {
+			defer resp.Body.Close()
+			relayStream(w, resp)
+		}
+		return
+	}
+	pl := p.planForCall(r.Context())
+	// A tool of the primary's whose OWN argument is named instance is sent
+	// there as it is: that argument is the tool's, not a routing choice.
+	if def, ok := pl.session.find(call.name); ok && def.props[instanceArg] != nil {
+		if req, ok := p.primaryRequest(w, r, "tools/call", id, call.params["arguments"], body, ""); ok {
+			if resp, ok := p.send(w, req); ok {
+				defer resp.Body.Close()
+				relayStream(w, resp)
+			}
+		}
+		return
+	}
+	inst, bad := call.takeInstance()
+	if bad {
+		mcpToolError(w, id, "instance must be a string: the name of a muster instance ("+p.describeInstances()+")")
+		return
+	}
+	// The caller first, as for any call: a pane that runs no session here is
+	// refused before anything is read or sent.
+	sid, win, err := p.callerSession(r.Context(), r)
+	if err != nil {
+		mcpToolError(w, id, err.Error())
+		return
+	}
+	target, refused := pl.route(call.name, inst, call.args)
+	if refused != "" {
+		mcpToolError(w, id, refused)
+		return
+	}
+	var req *http.Request
+	if target == p.primaryName() {
+		if req, ok = p.primaryRequest(w, r, "tools/call", id, call.params["arguments"], call.body(), sid); !ok {
+			return
+		}
+	} else {
+		// 🔴 A SESSION MUSTER STARTED FOR THE CHIEF IS REFUSED HERE: the
+		// instance has no listing of this host to find its window's dispatch
+		// tag in (internal/api's ownersOwnSession), so this host applies it.
+		if win.Dispatch > 0 {
+			mcpToolError(w, id, "this session was started by muster for the chief (host dispatch "+strconv.FormatInt(win.Dispatch, 10)+
+				"), and a tool on another muster instance acts with your owner's authority; ask your owner")
+			return
+		}
+		e, _ := p.extra(target)
+		if req, err = p.extraRequest(r.Context(), e, sid, call.body()); err != nil {
+			mcpToolError(w, id, err.Error())
+			return
+		}
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		rest = annotateResult(rest, target)
+	}
+	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+}
+
+// CloseStreams ends every open GET stream and refuses new ones: ServeMCP's
+// shutdown hook.
+func (p *MCPProxy) CloseStreams() { p.state.hub.closeAll() }
+
+// describeInstances names the configured instances, the primary first.
+func (p *MCPProxy) describeInstances() string {
+	return toolPlan{primary: p.primaryName(), order: append([]string{p.primaryName()}, p.extraNames()...)}.describeInstances()
+}
+
+// ListenMCP listens on addr, which must be a literal loopback IP and a numeric
+// port ("127.0.0.1:47823", "[::1]:47823"): MCPListenPort's.
 func ListenMCP(addr string) (net.Listener, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -331,12 +1066,42 @@ func ListenMCP(addr string) (net.Listener, error) {
 	if ip == nil || !ip.IsLoopback() {
 		return nil, fmt.Errorf("muster-mirror: -mcp-listen %q is not a loopback address; the MCP endpoint listens on 127.0.0.1 or ::1 only", addr)
 	}
-	return net.Listen("tcp", addr)
+	port, err := MCPListenPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	return net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+}
+
+// MCPListenPort is the port -mcp-listen names, and the ONE answer to "which
+// port is the MCP endpoint on": digits only, 1-65535. Port 0 (the kernel
+// picks) and a service name ("postgresql") are refused, because either would
+// bind a port the text does not show — and previews, which must never expose
+// this endpoint, read its port from the text (before, or without, the bind).
+// ListenMCP binds exactly this port, so the text and the bound port agree.
+func MCPListenPort(addr string) (int, error) {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, fmt.Errorf("muster-mirror: -mcp-listen %q: %w", addr, err)
+	}
+	n, err := strconv.Atoi(p)
+	if p == "" || strings.TrimLeft(p, "0123456789") != "" || err != nil || n < 1 || n > 65535 {
+		return 0, fmt.Errorf("muster-mirror: -mcp-listen %q: the port must be a number 1-65535 (not 0 or a service name), so the endpoint is where the address says", addr)
+	}
+	return n, nil
 }
 
 // ServeMCP serves h on l until ctx ends.
+//
+// A handler that never ends by itself — an open GET stream (serveListen) — is
+// ended when the shutdown begins (RegisterOnShutdown: MCPProxy.CloseStreams),
+// so it does not hold the shutdown for its whole timeout; a POST in flight is
+// NOT cancelled and drains within it.
 func ServeMCP(ctx context.Context, l net.Listener, h http.Handler) error {
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	if c, ok := h.(interface{ CloseStreams() }); ok {
+		srv.RegisterOnShutdown(c.CloseStreams)
+	}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -349,14 +1114,9 @@ func ServeMCP(ctx context.Context, l net.Listener, h http.Handler) error {
 	return nil
 }
 
-// DefaultMCPSecretFile is where the local MCP secret is kept by default.
-func DefaultMCPSecretFile() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "muster-mirror", "mcp-secret")
-}
+// DefaultMCPSecretFile is where the local MCP secret is kept by default: the
+// ONE rule in internal/mirrorpath, which `muster doctor` calls too.
+func DefaultMCPSecretFile() string { return mirrorpath.DefaultMCPSecretFile() }
 
 // EnsureMCPSecret reads the secret from path, creating it (32 random bytes,
 // hex; the file 0600, its directory 0700) when it does not exist. A file

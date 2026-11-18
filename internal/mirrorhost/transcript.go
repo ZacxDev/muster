@@ -9,8 +9,12 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // THE RENDERED VIEW's host half (tunnel v2): which sessions run Claude Code,
@@ -23,19 +27,6 @@ const reresolveEvery = 3
 
 // readChunk bounds one poll's read of new transcript bytes.
 const readChunk = 1 << 20
-
-// hermesSource is the backend's HermesSource, when it has one AND this
-// connection speaks v2 (a rendered view does not exist on v1).
-func (h *hostSide) hermesSource() (*HermesSource, bool) {
-	if h.version < 2 {
-		return nil, false
-	}
-	hs, ok := capabilityOf[HermesSourcer](h.c.cfg.Backend)
-	if !ok || hs.HermesSource() == nil {
-		return nil, false
-	}
-	return hs.HermesSource(), true
-}
 
 // claudeBackend is the backend's ClaudeBackend, when it has one AND this
 // connection speaks v2.
@@ -66,26 +57,6 @@ func (h *hostSide) resolveClaude(sessions []string) []string {
 func (h *hostSide) pane(ctx context.Context, cb ClaudeBackend, session string) (ClaudePane, bool) {
 	p, ok := cb.ClaudePanes(ctx, []string{session})[session]
 	return p, ok
-}
-
-// window re-reads ONE window now: where a request that names a window finds
-// its pane. A fresh read, at the moment of acting — never the list this host
-// last sent, in which the window's pane may since have changed (a pane split,
-// Claude Code exiting).
-func (h *hostSide) window(ctx context.Context, session, window string) (WindowInfo, error) {
-	wl, ok := WindowListerOf(h.c.cfg.Backend)
-	if !ok {
-		return WindowInfo{}, errors.New("this host does not list windows")
-	}
-	all, err := wl.Windows(ctx)
-	if err != nil {
-		return WindowInfo{}, err
-	}
-	w, ok := FindWindow(all, session, window)
-	if !ok {
-		return WindowInfo{}, fmt.Errorf("window %s of session %q is gone", window, session)
-	}
-	return w, nil
 }
 
 // claudePaneOf is how a watch or a paste finds the Claude Code pane of what m
@@ -122,7 +93,12 @@ func (h *hostSide) unwatch(id uint32) {
 // Code NOW — the same allowlist a terminal open passes. A watch is read-only:
 // it reads one file and writes nothing anywhere.
 func (h *hostSide) watch(m mirror.Msg) {
+	// The open, measured from here to its first batch (trace.go): what this
+	// host spent on it, reported on that batch and traced under the server's
+	// span when both sides trace.
+	o := h.beginOpen(m, "host.watch")
 	fail := func(err error) {
+		h.endOpen(o, m.ID, err)
 		h.c.log.Printf("muster-mirror: watch %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
@@ -130,9 +106,32 @@ func (h *hostSide) watch(m mirror.Msg) {
 		fail(err)
 		return
 	}
-	cb, claudeOK := h.claudeBackend()
-	src, hermesOK := h.hermesSource()
-	if !claudeOK && !hermesOK {
+	// Each runtime's view source on this connection (viewSource): the other
+	// runtimes', asked first, then Claude Code's transcript tail, which
+	// serves every window none of them claims.
+	type source struct {
+		claims func(context.Context, mirror.Msg) bool
+		serve  func(context.Context, mirror.Msg) error
+		gone   error
+	}
+	var claude *source
+	var others []source
+	for _, r := range knownRuntimes {
+		vs, ok := r.(viewSource)
+		if !ok {
+			continue
+		}
+		claims, serve, gone, ok := vs.viewer(h)
+		if !ok {
+			continue
+		}
+		if r.Name() == mirror.RuntimeClaude {
+			claude = &source{claims, serve, gone}
+			continue
+		}
+		others = append(others, source{claims, serve, gone})
+	}
+	if claude == nil && len(others) == 0 {
 		fail(errors.New("this host cannot read Claude Code transcripts"))
 		return
 	}
@@ -140,15 +139,17 @@ func (h *hostSide) watch(m mirror.Msg) {
 	// here: this runs on the connection's read loop, and reading the window
 	// (a whole listing) here held every later message behind it.
 	serve := func(ctx context.Context) error {
-		if hermesOK {
-			if _, isHermes := h.hermesWindow(ctx, m); isHermes {
-				return h.hermesTail(ctx, src, m)
+		var gone error
+		for _, o := range others {
+			if o.claims(ctx, m) {
+				return o.serve(ctx, m)
 			}
+			gone = o.gone
 		}
-		if !claudeOK {
-			return errNoHermesViewNow
+		if claude == nil {
+			return gone
 		}
-		return h.tail(ctx, h.claudePaneOf(cb, m), m)
+		return claude.serve(ctx, m)
 	}
 	ctx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -160,6 +161,9 @@ func (h *hostSide) watch(m mirror.Msg) {
 	}
 	h.watches[m.ID] = cancel
 	h.mu.Unlock()
+	// The open's runtimes share ONE read of its window (openresolve.go),
+	// spent by its first reply.
+	ctx, _ = h.beginResolve(ctx, m.ID)
 	// The watch's open and end, like a terminal's attached/detached: how many
 	// transcript streams a viewer really opened (the browser suite counts them),
 	// and what it asked for — the transcript from the start, or a resume from an
@@ -172,6 +176,8 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.c.log.Printf("muster-mirror: watching %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), from, m.ID)
 	go func() {
 		err := serve(ctx)
+		h.endResolve(m.ID)
+		h.endOpen(o, m.ID, err)
 		h.unwatch(m.ID)
 		h.c.log.Printf("muster-mirror: unwatched %q%s (stream %d)", m.Session, windowSuffix(m.Window), m.ID)
 		msg := ""
@@ -185,7 +191,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 }
 
 // THE RENDERED VIEW's LOOP, shared by both streams — Claude Code's
-// transcript file (tail) and Hermes's state.db (hermesTail): ONE send, ONE
+// transcript file (tail) and opencode's server API (openCodeTail): ONE send, ONE
 // ticker, ONE re-resolve cadence, ONE busy marker. Each stream supplies what
 // differs: how it (re)starts, how it re-resolves its pane, and how it polls.
 type renderedView struct {
@@ -240,7 +246,22 @@ func (h *hostSide) viewSend(m mirror.Msg, gen func() string) func([]mirror.Msg) 
 					b.Events[i].Line = 0 // an older host names no prompt's place
 				}
 			}
-			if err := h.send(b); err != nil {
+			// The open's first reply ends its span (trace.go), once it is
+			// written: its write is the open's last phase ("send"), and what
+			// it cost is on the span — sizes and counts, never its text.
+			o := h.openOf(m.ID)
+			encoded, wire, err := h.sendSized(b)
+			if o != nil {
+				attrs := []attribute.KeyValue{attribute.Int("mirror.first_batch_bytes", encoded),
+					attribute.Int("mirror.first_batch_events", len(b.Events))}
+				if h.wire != nil {
+					attrs = append(attrs, attribute.Int64("mirror.first_batch_wire_bytes", wire))
+				}
+				o.mark("send", attrs...)
+				o.annotate(attrs...)
+			}
+			h.reply(m.ID)
+			if err != nil {
 				return err
 			}
 		}
@@ -257,6 +278,23 @@ func sendBusy(busy *bool, nb bool, off int64, send func([]mirror.Msg) error) err
 	return send([]mirror.Msg{{Offset: off, Busy: nb}})
 }
 
+// sendStatus is sendBusy for a Claude Code view, which also carries the
+// status's time (Msg.StatusSince): a marker at off when the busy flag OR the
+// time moved — a turn that started and ended between two re-resolves moves
+// only the time. nudge, when set, is called first: the host's window list
+// (which muster checks the status against) is then re-sent now, not at the
+// next Refresh, so the list and the stream name the same status together.
+func sendStatus(busy *bool, since *int64, nb bool, ns int64, off int64, nudge func(), send func([]mirror.Msg) error) error {
+	if nb == *busy && ns == *since {
+		return nil
+	}
+	*busy, *since = nb, ns
+	if nudge != nil {
+		nudge()
+	}
+	return send([]mirror.Msg{{Offset: off, Busy: nb, StatusSince: ns}})
+}
+
 // errNotClaudeNow ends a view whose pane no longer runs Claude Code.
 var errNotClaudeNow = errors.New("Claude Code is not running in this session's active pane")
 
@@ -264,18 +302,28 @@ var errNotClaudeNow = errors.New("Claude Code is not running in this session's a
 // returns when ctx ends (nil after cancel), or with the reason the view cannot
 // continue.
 func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudePane, bool), m mirror.Msg) error {
+	// The open's phases (trace.go): nil once it has replied, and then every
+	// mark below is a no-op (a restart later on is not part of the open).
+	o := h.openOf(m.ID)
 	p, ok := pane(ctx)
 	if !ok {
 		return errNotClaudeNow
 	}
+	o.mark("resolve")
 	var (
 		f    *os.File
 		off  int64
 		busy = p.Busy
+		// since is the time of the status busy was read from (Msg.StatusSince).
+		since = p.StatusSince
 		// subs is the view's subagents (subagents.go); nil on a host that
 		// does not report them.
 		subs     *subagentTracker
 		withSubs = h.subagentReport()
+		// queue is Claude Code's own input queue (ccqueue.go), and queueSent
+		// whether its list has been sent since the view (re)started.
+		queue     cctranscript.Queue
+		queueSent bool
 	)
 	defer func() {
 		if f != nil {
@@ -294,12 +342,39 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		if !ok {
 			return nil
 		}
-		return send([]mirror.Msg{{Offset: off, Busy: busy, SubagentList: true, Subagents: list}})
+		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, SubagentList: true, Subagents: list}})
+	}
+	// observeQueue folds lines into the queue — BEFORE they are redacted:
+	// a queued message is matched by its text — and sendQueue sends the
+	// queue's list when it changed since the last one sent (or none was): a
+	// message of its own, at the offset the view already has, redacted.
+	//
+	// 🔴 WHAT AN EARLIER CLI PROCESS QUEUED IS DROPPED (Queue.DropBefore): the
+	// queue dies with its process, nothing in the file says so, and a
+	// `--continue` / `--resume` appends to this same file under the same Gen —
+	// so the pane's StartedAt is what tells a message still waiting from one
+	// that died with the CLI before it.
+	observeQueue := func(lines []cctranscript.Line) {
+		if queue.Observe(lines) {
+			queueSent = false
+		}
+	}
+	sendQueue := func() error {
+		if queueSent {
+			return nil
+		}
+		queueSent = true
+		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, QueuedList: true, Queued: redactQueued(queue.List())}})
 	}
 	// start (re)opens p's transcript and sends a Reset backfill — or, when the
 	// resume names this very transcript at an offset it still has, nothing but
 	// a marker that the resume was accepted.
+	// opening: this start is the view's open (the first), the only one whose
+	// prompt index is traced — a /clear or a restart hours later must not add
+	// a span to the open's long-finished trace.
+	opening := true
 	start := func(resumeGen string, resumeOff int64) error {
+		defer func() { opening = false }()
 		if f != nil {
 			_ = f.Close()
 		}
@@ -311,16 +386,19 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		if err != nil {
 			return err
 		}
+		o.mark("open", attribute.Int64("mirror.transcript_bytes", st.Size()))
 		resume := resumeGen != "" && resumeGen == p.Gen && resumeOff >= 0 && resumeOff <= st.Size()
 		var (
 			lines []cctranscript.Line
 			next  int64
 		)
-		if !resume || withSubs {
-			if lines, next, err = cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents); err != nil {
-				return err
-			}
+		// 🔴 THE WINDOW IS READ ON A RESUME TOO: the queue's list is sent on
+		// every start (ccqueue.go), so a page that drew one from an earlier
+		// socket is told the current one, and the queue is folded from here.
+		if lines, next, err = cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents); err != nil {
+			return err
 		}
+		o.mark("backfill", attribute.Int("mirror.lines", len(lines)), attribute.Int64("mirror.backfill_bytes", min(st.Size(), int64(mirror.BackfillWindow))))
 		if withSubs {
 			// The subagents' parent signals come from the same window the
 			// backfill draws — read on a resume too, which draws none of it,
@@ -328,17 +406,30 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			subs = newSubagentTracker(p.Transcript)
 			subs.observe(cctranscript.Flatten(lines))
 		}
-		if resume {
+		// The queue starts over with the view. A resume folds only the lines
+		// before its offset: the poll reads the rest, and folding a line
+		// twice would queue its message twice.
+		queue, queueSent = cctranscript.Queue{}, false
+		queue.DropBefore(p.StartedAt) // before folding: see observeQueue
+		if !resume {
+			observeQueue(lines)
+		} else {
+			observeQueue(linesBefore(lines, resumeOff))
 			off = resumeOff
-			if err := send([]mirror.Msg{{Offset: off, Busy: busy, SubagentList: withSubs}}); err != nil {
+			if err := send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, SubagentList: withSubs}}); err != nil {
 				return err
 			}
-			return sendSubs()
+			if err := sendSubs(); err != nil {
+				return err
+			}
+			return sendQueue()
 		}
 		off = next
 		// 🔴 Redacted before it is framed (redact_stream.go).
 		redactLines(lines)
+		o.mark("redact")
 		batches := mirror.BatchLines(lines, next)
+		o.mark("frame", attribute.Int("mirror.batches", len(batches)))
 		if len(batches) == 0 {
 			batches = []mirror.Msg{{Offset: off}}
 		}
@@ -350,10 +441,14 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// follows as its own message.
 		batches[0].SubagentList = withSubs
 		batches[len(batches)-1].Busy = busy
+		batches[len(batches)-1].StatusSince = since
 		if err := send(batches); err != nil {
 			return err
 		}
-		if err := sendSubs(); err != nil || h.c.cfg.NoPromptIndex {
+		if err := sendSubs(); err != nil {
+			return err
+		}
+		if err := sendQueue(); err != nil || h.c.cfg.NoPromptIndex {
 			return err
 		}
 		// Then the prompt index: every prompt in the file up to where the
@@ -362,14 +457,73 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		//
 		// ⚠ A FAILED SCAN COSTS THE INDEX, NOT THE VIEW: the view then lists
 		// the prompts it has, as it does for a host that predates the index.
+		var pspan trace.Span
+		if o != nil && opening {
+			_, pspan = telemetry.Start(o.ctx, "host.prompt_index")
+		}
 		refs, err := cctranscript.Prompts(f, next)
+		if pspan != nil {
+			pspan.SetAttributes(attribute.Int("mirror.prompts", len(refs)))
+			telemetry.End(pspan, hostReason(err))
+		}
 		if err != nil {
 			h.c.log.Printf("muster-mirror: watch %q: index the prompts: %v", m.Session, err)
 			return nil
 		}
 		redactPrompts(refs)
 		refs, more := mirror.BoundPrompts(refs)
-		return send([]mirror.Msg{{Offset: off, Busy: busy, PromptIndex: true, Prompts: refs, PromptsMore: more}})
+		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, PromptIndex: true, Prompts: refs, PromptsMore: more}})
+	}
+	// poll reads and sends what is new in the transcript.
+	poll := func() error {
+		st, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("stat the transcript: %w", err)
+		}
+		if st.Size() < off {
+			// Truncated or replaced in place: start over.
+			return start("", 0)
+		}
+		for off < st.Size() {
+			lines, next, err := cctranscript.ReadLines(f, off, st.Size(), readChunk)
+			if err != nil {
+				return fmt.Errorf("read the transcript: %w", err)
+			}
+			if next == off {
+				break // a partial line: the rest arrives on a later poll
+			}
+			if subs != nil {
+				subs.observe(cctranscript.Flatten(lines))
+			}
+			observeQueue(lines)
+			// 🔴 Redacted before it is framed (redact_stream.go).
+			redactLines(lines)
+			batches := mirror.BatchLines(lines, off)
+			off = next
+			if len(batches) == 0 {
+				// Lines with nothing to draw (attachments, hook records, a
+				// queue operation): the queue's list, if it moved, still goes.
+				if err := sendQueue(); err != nil {
+					return err
+				}
+				continue
+			}
+			// The last batch's resume point is past every consumed line,
+			// including trailing ones that drew nothing.
+			batches[len(batches)-1].Offset = off
+			for i := range batches {
+				batches[i].Busy, batches[i].StatusSince = busy, since
+			}
+			if err := send(batches); err != nil {
+				return err
+			}
+			// After the batch: a queued message Claude took is drawn as its
+			// prompt before it leaves the queued list.
+			if err := sendQueue(); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return h.runView(ctx, renderedView{
 		start: func() error { return start(m.Gen, m.Offset) },
@@ -380,56 +534,75 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			}
 			if np.Gen != p.Gen || np.Transcript != p.Transcript {
 				// /clear, a restart, a resumed session: a different transcript.
-				p, busy = np, np.Busy
+				p, busy, since = np, np.Busy, np.StatusSince
 				return true, start("", 0)
 			}
-			if err := sendBusy(&busy, np.Busy, off, send); err != nil {
+			if np.StartedAt != p.StartedAt {
+				// The same transcript, written by a NEW CLI process (`--continue`
+				// in the same pane): what the last one queued is gone.
+				p.StartedAt = np.StartedAt
+				if queue.DropBefore(p.StartedAt) {
+					queueSent = false
+				}
+				if err := sendQueue(); err != nil {
+					return false, err
+				}
+			}
+			if !np.Busy && (np.Busy != busy || np.StatusSince != since) {
+				// 🔴 THE LINES BEFORE THE STATUS: whatever the transcript holds now
+				// is sent before the marker, so a turn's last reply — in the file
+				// by the time its idle status is — never reaches muster after the
+				// turn end it belongs to (suggested replies read it there). Without
+				// this a re-resolve tick sent the marker first and the poll the
+				// reply after it (seen in the browser suite). Only on the way to a
+				// non-busy status: on the way to busy, lines read now belong to the
+				// new turn and must not go out labelled with the old idle.
+				if err := poll(); err != nil {
+					return false, err
+				}
+			}
+			// 🔴 THE LIST IS NUDGED ONLY TOWARD IDLE: a turn end needs muster's
+			// list to name the turn's own idle soon (suggested replies wait for
+			// it); a busy or WAITING status does not, and nudging those changed
+			// what the send queue sees — muster would hear of a permission prompt
+			// it otherwise learns of only from the host's refusal at the moment
+			// of typing (#255's prompt guard and its backoff,
+			// e2e/tests/send-queue.spec.ts "a prompt that opened after the host
+			// last reported").
+			var nudge func()
+			if np.Status == mirror.StatusIdle {
+				nudge = h.nudge
+			}
+			if err := sendStatus(&busy, &since, np.Busy, np.StatusSince, off, nudge, send); err != nil {
 				return false, err
 			}
 			// The subagents' own files move without the parent's: read them
 			// on the re-resolve cadence.
 			return false, sendSubs()
 		},
-		poll: func() error {
-			st, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("stat the transcript: %w", err)
-			}
-			if st.Size() < off {
-				// Truncated or replaced in place: start over.
-				return start("", 0)
-			}
-			for off < st.Size() {
-				lines, next, err := cctranscript.ReadLines(f, off, st.Size(), readChunk)
-				if err != nil {
-					return fmt.Errorf("read the transcript: %w", err)
-				}
-				if next == off {
-					break // a partial line: the rest arrives on a later poll
-				}
-				if subs != nil {
-					subs.observe(cctranscript.Flatten(lines))
-				}
-				// 🔴 Redacted before it is framed (redact_stream.go).
-				redactLines(lines)
-				batches := mirror.BatchLines(lines, off)
-				off = next
-				if len(batches) == 0 {
-					continue // lines with nothing to draw (attachments, hook records)
-				}
-				// The last batch's resume point is past every consumed line,
-				// including trailing ones that drew nothing.
-				batches[len(batches)-1].Offset = off
-				for i := range batches {
-					batches[i].Busy = busy
-				}
-				if err := send(batches); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
+		poll: poll,
 	})
+}
+
+// linesBefore is the lines that end at or before off.
+func linesBefore(lines []cctranscript.Line, off int64) []cctranscript.Line {
+	for i, l := range lines {
+		if l.End > off {
+			return lines[:i]
+		}
+	}
+	return lines
+}
+
+// redactQueued is Claude Code's queued messages as the wire carries them:
+// each redacted as a prompt's text is (redact_stream.go), then bounded
+// (mirror.NormalizeQueued).
+func redactQueued(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		out = append(out, redactText(s))
+	}
+	return mirror.NormalizeQueued(out)
 }
 
 // paneBackend is the backend's PaneBackend, when it has one AND this
@@ -461,15 +634,17 @@ func (h *hostSide) panePaste() bool {
 //     muster sends): only a pane that runs Claude Code NOW, re-resolved here —
 //     a prompt written for Claude is never typed into the shell it left behind;
 //   - with m.AnyPane (the Terminal view's composer): the session's active pane
-//     whatever runs in it — EXCEPT a pane whose process tree holds Hermes,
-//     which is refused. Otherwise that is no more than this host already
-//     granted by -interactive, which lets the same person type into the same
-//     pane.
+//     whatever runs in it — EXCEPT one the paste guard refuses. Otherwise
+//     that is no more than this host already granted by -interactive, which
+//     lets the same person type into the same pane.
 //
-// 🔴 EITHER WAY THE KEYS GO THROUGH typeInto (hermes.go), the one way this host
-// types into a pane: the Hermes paste guard refuses a pane whose process tree
-// holds Hermes, a multiplexer client or a process it cannot read — a Claude
-// Code pane too, when Hermes was started in it (`claude &`, then `hermes`).
+// m.Runtime is ignored on a paste (an older muster's, for a runtime since
+// removed): what runs in the pane is read here, never taken from muster.
+//
+// 🔴 EITHER WAY THE KEYS GO THROUGH typeInto (paneguard.go), the one way this
+// host types into a pane: the paste guard refuses a pane whose process tree
+// holds opencode on its terminal, a multiplexer client or a process it cannot
+// read — a Claude Code pane too, when opencode was started in it.
 func (h *hostSide) paste(m mirror.Msg) {
 	reply := func(err error) {
 		msg := ""
@@ -481,11 +656,27 @@ func (h *hostSide) paste(m mirror.Msg) {
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
 	}
-	if m.Runtime == mirror.RuntimeHermes {
-		// The gated send (hermes_send.go): its own checks, replies and
-		// refusal kinds, and the one deliberate exception to the guard.
-		h.hermesPaste(m)
-		return
+	// 🔴 A PASTE NAMING A DISPATCH (a chief's forward) lands only in the window
+	// whose OWN @muster-dispatch equals it: the real bound on forwarding,
+	// ahead of BOTH delivery paths (docs/design/chief-dispatch.md 3.10).
+	if m.Dispatch != 0 {
+		cctx, ccancel := context.WithTimeout(h.ctx, 5*time.Second)
+		err := h.checkDispatchPaste(cctx, m)
+		ccancel()
+		if err != nil {
+			h.c.log.Printf("muster-mirror: paste for dispatch %d into %q%s refused: %v", m.Dispatch, m.Session, windowSuffix(m.Window), err)
+			_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: err.Error(), Refusal: mirror.PasteRefusalNotMusterWindow})
+			return
+		}
+	}
+	if r, ok := runtimeNamed(m.Runtime); ok && !m.AnyPane {
+		if gs, ok := r.(gatedSender); ok {
+			// The runtime's gated send (opencode's, opencode_send.go): its own
+			// checks, replies and refusal kinds, through its API — the one
+			// deliberate exception to typeInto, which still refuses its panes.
+			gs.gatedSend(h, m)
+			return
+		}
 	}
 	if !h.c.cfg.Interactive {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
@@ -540,7 +731,33 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errNotClaudeNow)
 		return
 	}
-	reply(h.typeInto(ctx, p.Pane, func() error { return cb.Paste(ctx, p, text) }))
+	// 🔴 THE PASTE GUARD FIRST (guardPane, paneguard.go), then Claude's: a
+	// Claude pane with opencode in its foreground shows THAT
+	// program's screen, which the Claude prompt guard would misread (no input
+	// box) and hold as Claude's. It is the other program's refusal, in its
+	// words. typeInto runs the guard again at the moment of typing.
+	if err := h.guardPane(ctx, p.Pane); err != nil {
+		reply(err)
+		return
+	}
+	// 🔴 THE CLAUDE PROMPT GUARD (claude_guard.go): never into a pane waiting
+	// on the person. Checked once here, so a refusal touches nothing (not even
+	// this connection's copy-mode), and again immediately before the paste and
+	// before its Enter, inside the keys.
+	before := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane, true) }
+	beforeEnter := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane, false) }
+	if err := before(ctx); err != nil {
+		reply(err)
+		return
+	}
+	// 🔴 ONLY A CHECKED PASTE: a backend without one is refused — a plain
+	// Paste presses an Enter nothing checked.
+	cp, ok := capabilityOf[ClaudeCheckedPaster](h.c.cfg.Backend)
+	if !ok {
+		reply(ErrClaudeUncheckable)
+		return
+	}
+	reply(h.typeInto(ctx, p.Pane, func() error { return cp.PasteChecked(ctx, p, text, before, beforeEnter) }))
 }
 
 // leaveCopyModeFor cancels the copy-mode a drag-to-scroll on THIS connection

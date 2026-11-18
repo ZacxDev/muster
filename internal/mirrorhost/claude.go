@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/cctasks"
-	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/procstat"
 )
@@ -77,9 +76,8 @@ func capabilityOf[T any](b Backend) (T, bool) {
 // another agent CLI: it is also the runtime seam's AgentPane (runtime.go).
 type ClaudePane struct {
 	// Runtime is the agent CLI in the pane: "" for Claude Code (so every
-	// ClaudePane means what it did before the seam), mirror.RuntimeHermes for
-	// Hermes. Only a Claude Code pane is ever sent to: a Hermes pane has no
-	// send path before Hermes Phase 3.
+	// ClaudePane means what it did before the seam), mirror.RuntimeOpenCode
+	// for opencode. Only a Claude Code pane is ever sent to.
 	Runtime string
 	// Pane is the tmux pane id (%12): the only input target — never the session
 	// name, which resolves to whatever pane was focused last.
@@ -123,14 +121,42 @@ type ClaudePane struct {
 	// (lastmsg.go: read from its tail by the host's listing, not by the
 	// locator); 0 when unknown.
 	LastMessage int64
+	// TurnError is how the latest turn ended when it ended in an error the CLI
+	// wrote itself (turnend.go: read from the transcript's tail by the host's
+	// listing, for an idle window only); nil otherwise.
+	TurnError *mirror.TurnError
+	// ReplyAt is, for an idle window whose latest turn ended in a real answer,
+	// that answer's time (Unix ms, host clock; turnend.go); 0 otherwise. Not
+	// on the wire: the host's limit reads it (hostLimitOf).
+	ReplyAt int64
+	// LiveCopy is the session id of another transcript of this conversation,
+	// in the same project directory, that is still running elsewhere
+	// (livecopy.go: set by Tmux.Windows when its LiveCopies is set); "" for
+	// none.
+	LiveCopy string
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
-	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
-	// or SourceProcess.
+	// SourceGuessed (see ClaudeLocator).
 	Source string
-	// Hermes is how a Hermes pane resolved (its breadcrumb, lineage, status
-	// and, when it has no rendered view, why): what -list -hermes prints. nil
-	// for Claude Code, and for a host with no HermesSource.
-	Hermes *hermeshost.PaneSession
+	// OpenCode is how an opencode pane resolved (its title, the match, why it
+	// has no rendered view): what -list -opencode prints. nil for the other
+	// runtimes, and for a host with no OpenCodeSource.
+	OpenCode *OpenCodePane
+	// Note is the line the person reads about the pane (mirror.Window.
+	// AgentNote): for opencode, why it has no view, or what its token needs.
+	Note string
+	// Send: the host sends to this pane's session (Gen) through its runtime's
+	// API (mirror.Window.AgentSend): an opencode pane its launcher record
+	// binds (SourceLauncher). Never for Claude Code, whose send is a paste.
+	Send bool
+	// Bind is how a TITLE-matched opencode pane's binding came out
+	// (mirror.Window.AgentBind, opencode_bind.go): mirror.AgentBindVerified —
+	// the host sends to it, to a paste naming its session — or why it does
+	// not. "" for every other pane.
+	Bind string
+	// ConfigDir is the Claude Code config dir this pane's CLI writes under
+	// (ClaudeLocator.configDirOf); "" for another runtime's pane. Not on the
+	// wire: what the host reads the CLI's own files from (its shell snapshots).
+	ConfigDir string
 }
 
 // How a ClaudePane's transcript was resolved, most to least authoritative.
@@ -185,8 +211,9 @@ type pane struct {
 //     dropped (LocatePanes): two panes are never shown one conversation, and a
 //     pane it cannot tell apart has no rendered view rather than a wrong one.
 //
-// It reads only files the user muster-mirror runs as can read: its own
-// processes' /proc entries and its own ~/.claude.
+// It reads only what the user muster-mirror runs as can read: its own
+// processes (through procs(): /proc on Linux, ps/sysctl/lsof on macOS) and its
+// own ~/.claude.
 type ClaudeLocator struct {
 	// Proc is the proc filesystem root ("" = /proc). A test points it at a
 	// fixture tree.
@@ -199,6 +226,9 @@ type ClaudeLocator struct {
 	// transcript_path, claude_pid, claude_start} — the shape a Claude Code hook
 	// writes (the format is documented in docs/mirroring.md).
 	PaneMapDir string
+	// src, when set, is the process source read instead of Proc or this host's
+	// own (procs()): what a test hands a darwin-shaped table to.
+	src procSource
 }
 
 func (l ClaudeLocator) proc() string {
@@ -219,26 +249,92 @@ func (l ClaudeLocator) configDir() string {
 	return filepath.Join(h, ".claude")
 }
 
+// configDirOf is the config dir the Claude Code process pid writes its
+// sessions file and transcripts under, read from that process's OWN
+// environment (/proc/<pid>/environ on Linux, kern.procargs2 on macOS: as it
+// was exec'd):
+//
+//   - its CLAUDE_CONFIG_DIR, when that is an absolute path;
+//   - when it sets none (or an empty one): its own home's .claude — the CLI's
+//     default — NOT muster-mirror's $CLAUDE_CONFIG_DIR, which describes the
+//     service, not the CLI (the locator's Home override, a test's, still
+//     wins here);
+//   - a relative value, or an environ this user cannot read: configDir(),
+//     since this side cannot resolve what the CLI resolved.
+//
+// 🔴 WHY THE PROCESS'S AND NOT OURS: muster-mirror runs as a user service whose
+// environment is its unit's EnvironmentFile, not the person's shell profile. A
+// person who exports CLAUDE_CONFIG_DIR in their profile runs every `claude`
+// with it, while this process still looks in ~/.claude — and finds no sessions
+// file, so the window had no rendered view at all, or (worse) the fallback
+// guessed an OLD transcript left in ~/.claude/projects from before the person
+// moved their config. The mirror image holds too: a service given a
+// CLAUDE_CONFIG_DIR must not impose it on a CLI started without one. The
+// process says where it writes; believe it.
+func (l ClaudeLocator) configDirOf(pid int) string {
+	d, _ := l.configDirOfErr(pid)
+	return d
+}
+
+// configDirOfErr is configDirOf, and the error reading the process's
+// environment when it fell back for want of one (an environ this user cannot
+// read; on macOS also errEnvAbsent, a kernel that returned no environment):
+// what lets whyNoView say that step failed instead of a generic line.
+func (l ClaudeLocator) configDirOfErr(pid int) (string, error) {
+	env, err := l.procs().environ(pid)
+	if err != nil {
+		return l.configDir(), err
+	}
+	var home string
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok && v != "" {
+			if filepath.IsAbs(v) {
+				return filepath.Clean(v), nil
+			}
+			return l.configDir(), nil
+		}
+		if v, ok := strings.CutPrefix(kv, "HOME="); ok {
+			home = v
+		}
+	}
+	if l.Home != "" {
+		return l.Home, nil
+	}
+	if !filepath.IsAbs(home) {
+		home, _ = os.UserHomeDir()
+	}
+	return filepath.Join(home, ".claude"), nil
+}
+
 // procInfo is the little of a process the walk needs.
 type procInfo struct {
 	ppid int
 	comm string
 	argv []string
 	// start is /proc/<pid>/stat field 22 (start time, clock ticks since boot),
-	// as written: what tells a live process from a reused pid.
+	// as written: what tells a live process from a reused pid. On macOS it is
+	// `ps -o lstart` in the C locale and UTC (psEnv) — the token Claude Code
+	// itself writes as procStart there.
 	start string
+	// exe is the path the process was exec'd with, where the source reads it
+	// (macOS: kern.procargs2); "" from /proc, which the walk does not need it
+	// from.
+	exe string
 	// state is /proc/<pid>/stat field 3 ("S", "R", "Z" for a zombie, …).
 	state string
+	// tty is /proc/<pid>/stat field 7 (tty_nr), the controlling terminal's
+	// device number; 0 for none.
+	tty int
 	// argvUnread: /proc/<pid>/cmdline could not be read, so argv is empty for
 	// want of reading it, not because the process has none. The Claude
 	// locator does not look at it (a process it cannot read simply is not
-	// Claude Code); the Hermes guard refuses on it (hermes.go).
+	// Claude Code); the paste guard refuses on it (paneguard.go).
 	argvUnread bool
 }
 
 // table reads every process's parent, name and argv once.
 func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
-	procs, children, _ := readProcTable(l.proc())
+	procs, children, _ := l.procs().table()
 	return procs, children
 }
 
@@ -246,9 +342,10 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 // argv and start time, and each process's children (sorted). The error is the
 // proc root's own (unreadable, absent). A process whose stat cannot be read
 // (it vanished mid-read, or is hidden) is SKIPPED: absent from both maps. The
-// Claude locator relies on exactly that; the Hermes guard does not, and finds
+// Claude locator relies on exactly that; the paste guard does not, and finds
 // such a process inside a pane's tree by the kernel's own children lists
-// (HermesIdentity.InTree). Shared by ClaudeLocator and HermesIdentity.
+// (PaneProcs.InTree), then reads it alone (readProcEntry). Shared by
+// ClaudeLocator and PaneProcs.
 func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 	procs := map[int]procInfo{}
 	children := map[int][]int{}
@@ -261,26 +358,12 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		dir := filepath.Join(root, e.Name())
-		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+		info, err := readProcEntry(root, pid)
 		if err != nil {
 			continue
 		}
-		st, ok := procstat.Parse(stat)
-		if !ok {
-			continue
-		}
-		ppid := st.PPID
-		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start}
-		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
-			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
-				info.argv = append(info.argv, string(a))
-			}
-		} else {
-			info.argvUnread = true
-		}
 		procs[pid] = info
-		children[ppid] = append(children[ppid], pid)
+		children[info.ppid] = append(children[info.ppid], pid)
 	}
 	for _, c := range children {
 		sort.Ints(c)
@@ -288,13 +371,58 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 	return procs, children, nil
 }
 
+// readProcEntry reads one process under the proc root: its stat (whose error
+// is the entry's, os.ErrNotExist when the process is gone) and its cmdline
+// (argvUnread when that cannot be read).
+func readProcEntry(root string, pid int) (procInfo, error) {
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return procInfo{}, err
+	}
+	st, ok := procstat.Parse(stat)
+	if !ok {
+		return procInfo{}, fmt.Errorf("%s/stat: unparseable", dir)
+	}
+	info := procInfo{ppid: st.PPID, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
+	if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
+		for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
+			info.argv = append(info.argv, string(a))
+		}
+	} else {
+		info.argvUnread = true
+	}
+	return info, nil
+}
+
+// installerVersion is how the native installer names Claude Code's binary:
+// <data dir>/claude/versions/<major.minor.patch>.
+var installerVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// isInstallerBinary reports whether exe is the native installer's binary:
+// a version-named file directly under a claude/versions/ directory. The
+// whole path shape is required — a version number alone names nothing.
+func isInstallerBinary(exe string) bool {
+	dir := filepath.Dir(exe)
+	return installerVersion.MatchString(filepath.Base(exe)) &&
+		filepath.Base(dir) == "versions" && filepath.Base(filepath.Dir(dir)) == "claude"
+}
+
 // isClaude reports whether a process is the Claude Code CLI: its name (the CLI
 // sets its process title to "claude"; the NixOS wrapper execs ".claude-wrapped"),
-// its argv[0], or the npm package's entry script in its argv (a CLI started
-// as `node …/@anthropic-ai/claude-code/cli.js`).
+// its argv[0], the npm package's entry script in its argv (a CLI started
+// as `node …/@anthropic-ai/claude-code/cli.js`), or — where the source reads
+// it (macOS) — the path it was exec'd with: named claude, or the native
+// installer's version-named binary (…/claude/versions/2.1.289), which macOS
+// may report as the process's name.
 func isClaude(p procInfo) bool {
 	if p.comm == "claude" || p.comm == ".claude-wrapped" {
 		return true
+	}
+	if p.exe != "" {
+		if b := filepath.Base(p.exe); b == "claude" || b == ".claude-wrapped" || isInstallerBinary(p.exe) {
+			return true
+		}
 	}
 	if len(p.argv) > 0 {
 		if b := filepath.Base(p.argv[0]); b == "claude" || b == ".claude-wrapped" {
@@ -326,6 +454,101 @@ func findClaude(root int, procs map[int]procInfo, children map[int][]int) int {
 		queue = append(queue, children[pid]...)
 	}
 	return 0
+}
+
+// The lines the person reads when a window's pane runs Claude Code (or may)
+// but the window has NO rendered view: why (mirror.Window.AgentNote, shown on
+// its card and in its Terminal view). Whole sentences, each well inside
+// mirror.MaxAgentNote, and never a path: the reason, not the host's layout.
+const (
+	// NoViewNoProcs: the host cannot read its process table (an OS with
+	// neither /proc nor the macOS backend, or the read failed), so Claude Code
+	// cannot be found in any pane. Said only on a window whose command looks
+	// like Claude Code (looksLikeClaudeCommand).
+	NoViewNoProcs = "muster-mirror cannot read this host's process table, so it cannot find the Claude Code conversation in this window."
+	// NoViewNotYet: Claude Code runs and named its session, but has written no
+	// transcript for it yet — a CLI just started, before its first message.
+	NoViewNotYet = "Claude Code has not written this conversation yet. The Rendered view appears after its first message."
+	// NoViewNoTranscript: Claude Code runs, and neither its sessions file nor
+	// its working directory leads to a transcript in its config directory that
+	// is its alone — none at all, or only a guess another pane makes too
+	// (LocatePanes: two windows are never shown one conversation).
+	//
+	// ⚠ ONE LINE FOR BOTH ON PURPOSE. The ambiguous guess had its own line,
+	// "…neither names its conversation", which was FALSE when the other pane
+	// does name it (its sessions file) and only this one guesses; this wording
+	// is true in every case that reaches it.
+	NoViewNoTranscript = "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."
+	// NoViewNoEnv: Claude Code runs, nothing resolved, and its environment
+	// could not be read (configDirOfErr) — so which config directory it
+	// writes to is unknown, and the fallback's guess found nothing.
+	NoViewNoEnv = "Claude Code is running here, but muster-mirror cannot read its environment, so it cannot tell which Claude config directory it uses."
+)
+
+// noViewCode is the wire code of a NoView* line (mirror.Window.AgentNoteCode),
+// "" for no line. ONE TABLE: each line has exactly one code, so muster can
+// branch on the reason without reading the words.
+func noViewCode(line string) string {
+	switch line {
+	case NoViewNotYet:
+		return mirror.AgentNoteNotYet
+	case NoViewNoTranscript:
+		return mirror.AgentNoteNoTranscript
+	case NoViewNoEnv:
+		return mirror.AgentNoteNoEnv
+	case NoViewNoProcs:
+		return mirror.AgentNoteNoProcs
+	}
+	return ""
+}
+
+// whyNoView is why pane p, which no runtime claimed, has no rendered view —
+// one of the NoView* lines — or "" when nothing says Claude Code is in it.
+// command is the pane's #{pane_current_command}; procs/children the table
+// the listing read, and procErr that read's error.
+//
+// It re-asks what locatePanesIn asked, for this one pane, to say WHICH step
+// failed: it runs only for panes no runtime claimed, and only those with a
+// Claude Code process do more than one map lookup.
+func (l ClaudeLocator) whyNoView(p pane, command string, procs map[int]procInfo, children map[int][]int, procErr error) string {
+	if procErr != nil || len(procs) == 0 {
+		if looksLikeClaudeCommand(command) {
+			return NoViewNoProcs
+		}
+		return ""
+	}
+	pid := findClaude(p.PID, procs, children)
+	if pid == 0 {
+		return ""
+	}
+	cfg, envErr := l.configDirOfErr(pid)
+	_, _, _, guessed, ok := l.resolve(pid, cfg, func() liveSessions { return l.liveSessions(cfg, procs) })
+	switch {
+	case ok && guessed:
+		// A guess another pane makes too (it was dropped): not this pane's
+		// alone to show.
+		return NoViewNoTranscript
+	case ok:
+		// It resolves now: the transcript appeared since the listing looked.
+		// The next refresh gives the window its view; nothing to explain.
+		return ""
+	case fileExists(filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json")):
+		return NoViewNotYet
+	case envErr != nil:
+		return NoViewNoEnv
+	default:
+		return NoViewNoTranscript
+	}
+}
+
+// looksLikeClaudeCommand reports whether a pane's #{pane_current_command} is
+// one Claude Code runs under — what a host that cannot read processes has to
+// go on: the names isClaude knows. ⚠ An npm install runs as `node`, and the
+// native installer's binary may be named by its version; neither is claimed,
+// because neither tells Claude Code from anything else (and what tmux reports
+// on macOS is unmeasured).
+func looksLikeClaudeCommand(command string) bool {
+	return isClaude(procInfo{comm: command})
 }
 
 // slugPattern is what Claude Code replaces with '-' to name a cwd's project dir.
@@ -367,9 +590,9 @@ type liveSessions struct {
 	byJob map[string]sessionFile
 }
 
-func (l ClaudeLocator) liveSessions(procs map[int]procInfo) liveSessions {
+func (l ClaudeLocator) liveSessions(cfg string, procs map[int]procInfo) liveSessions {
 	out := liveSessions{byID: map[string]sessionFile{}, byJob: map[string]sessionFile{}}
-	m, _ := filepath.Glob(filepath.Join(l.configDir(), "sessions", "*.json"))
+	m, _ := filepath.Glob(filepath.Join(cfg, "sessions", "*.json"))
 	dup := map[string]bool{}
 	for _, p := range m {
 		b, err := os.ReadFile(p)
@@ -380,8 +603,7 @@ func (l ClaudeLocator) liveSessions(procs map[int]procInfo) liveSessions {
 		if json.Unmarshal(b, &sf) != nil || !sessionIDPattern.MatchString(sf.SessionID) {
 			continue
 		}
-		pi, alive := procs[sf.PID]
-		if !alive || (sf.ProcStart != "" && sf.ProcStart != pi.start) {
+		if !sessionAlive(sf, procs) {
 			continue
 		}
 		out.byID[sf.SessionID] = sf
@@ -398,14 +620,23 @@ func (l ClaudeLocator) liveSessions(procs map[int]procInfo) liveSessions {
 	return out
 }
 
+// sessionAlive reports whether sf's process is running: its pid is in procs
+// and, when the file records procStart, has that start time (a sessions file
+// can outlive its process, and the pid can be reused). The one alive rule for
+// sessions files (liveSessions, and livecopy.go's holders).
+func sessionAlive(sf sessionFile, procs map[int]procInfo) bool {
+	pi, ok := procs[sf.PID]
+	return ok && (sf.ProcStart == "" || sf.ProcStart == pi.start)
+}
+
 // sessionIDPattern bounds what a sessions file may name: it is joined into a path.
 var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,128}$`)
 
-// resolve is the transcript of Claude Code process pid, or ok=false. guessed
-// says the answer is the FALLBACK's (the newest transcript in the process's
-// cwd), not one the CLI named for itself.
-func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen string, st paneStatus, guessed, ok bool) {
-	cfg := l.configDir()
+// resolve is the transcript of Claude Code process pid, whose config dir is
+// cfg (configDirOf), or ok=false. guessed says the answer is the FALLBACK's
+// (the newest transcript in the process's cwd), not one the CLI named for
+// itself.
+func (l ClaudeLocator) resolve(pid int, cfg string, live func() liveSessions) (path, gen string, st paneStatus, guessed, ok bool) {
 	if b, err := os.ReadFile(filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json")); err == nil {
 		var sf sessionFile
 		if json.Unmarshal(b, &sf) == nil && sessionIDPattern.MatchString(sf.SessionID) {
@@ -434,8 +665,8 @@ func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen str
 			return "", "", paneStatus{}, false, false
 		}
 	}
-	cwd, err := os.Readlink(filepath.Join(l.proc(), strconv.Itoa(pid), "cwd"))
-	if err != nil {
+	cwd, ok := cwdOf(l.procs(), pid)
+	if !ok {
 		return "", "", paneStatus{}, false, false
 	}
 	m, _ := filepath.Glob(filepath.Join(cfg, "projects", ProjectSlug(cwd), "*.jsonl"))
@@ -498,7 +729,7 @@ var paneIDPattern = regexp.MustCompile(`^%[0-9]{1,9}$`)
 // fromPaneMap is pane p's transcript from the pane map, or ok=false — when the
 // map is off, has no entry for p, or its entry fails valid. claude is the
 // Claude Code process findClaude found in p.
-func (l ClaudeLocator) fromPaneMap(p pane, claude int, procs map[int]procInfo) (path, gen string, ok bool) {
+func (l ClaudeLocator) fromPaneMap(p pane, claude int, cfg string, procs map[int]procInfo) (path, gen string, ok bool) {
 	if l.PaneMapDir == "" || !paneIDPattern.MatchString(p.ID) {
 		return "", "", false
 	}
@@ -511,7 +742,7 @@ func (l ClaudeLocator) fromPaneMap(p pane, claude int, procs map[int]procInfo) (
 	if json.NewDecoder(io.LimitReader(f, 64<<10)).Decode(&e) != nil {
 		return "", "", false
 	}
-	if !e.valid(p, claude, procs, filepath.Join(l.configDir(), "projects")) {
+	if !e.valid(p, claude, procs, filepath.Join(cfg, "projects")) {
 		return "", "", false
 	}
 	return e.Transcript, e.SessionID, true
@@ -592,15 +823,18 @@ func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, child
 	if len(panes) == 0 {
 		return out
 	}
-	// Read every sessions file at most once per lookup, and only when a pane
-	// needs it (a parked job, or a pane-map session's busy flag).
-	var live *liveSessions
-	lives := func() liveSessions {
-		if live == nil {
-			ls := l.liveSessions(procs)
-			live = &ls
+	// Read every sessions file at most once per lookup — per config dir, since
+	// each CLI names its own (configDirOf) — and only when a pane needs it (a
+	// parked job, or a pane-map session's busy flag).
+	live := map[string]*liveSessions{}
+	livesIn := func(cfg string) func() liveSessions {
+		return func() liveSessions {
+			if live[cfg] == nil {
+				ls := l.liveSessions(cfg, procs)
+				live[cfg] = &ls
+			}
+			return *live[cfg]
 		}
-		return *live
 	}
 	claims := map[string]int{}
 	for _, p := range panes {
@@ -608,14 +842,15 @@ func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, child
 		if pid == 0 {
 			continue
 		}
-		if path, gen, ok := l.fromPaneMap(p, pid, procs); ok {
-			st := statusOf(lives().byID[gen])
+		cfg := l.configDirOf(pid)
+		if path, gen, ok := l.fromPaneMap(p, pid, cfg, procs); ok {
+			st := statusOf(livesIn(cfg)().byID[gen])
 			out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: st.status == mirror.StatusBusy,
-				Status: st.status, StatusSince: st.since, RawStatus: st.raw, StartedAt: st.started, Source: SourcePaneMap}
+				Status: st.status, StatusSince: st.since, RawStatus: st.raw, StartedAt: st.started, Source: SourcePaneMap, ConfigDir: cfg}
 			claims[path]++
 			continue
 		}
-		path, gen, st, guess, ok := l.resolve(pid, lives)
+		path, gen, st, guess, ok := l.resolve(pid, cfg, livesIn(cfg))
 		if !ok {
 			continue
 		}
@@ -624,7 +859,7 @@ func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, child
 			src = SourceGuessed
 		}
 		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: st.status == mirror.StatusBusy,
-			Status: st.status, StatusSince: st.since, RawStatus: st.raw, StartedAt: st.started, Source: src}
+			Status: st.status, StatusSince: st.since, RawStatus: st.raw, StartedAt: st.started, Source: src, ConfigDir: cfg}
 		claims[path]++
 	}
 	for id, cp := range out {
@@ -726,8 +961,7 @@ func (t Tmux) PastePane(ctx context.Context, paneID, text string) error {
 	return nil
 }
 
-// pasteBracketed is PastePane's first half, and the Hermes send's paste
-// (hermes_send.go): text into paneID as one bracketed paste, with no Enter.
+// pasteBracketed is PastePane's first half, and PasteChecked's: text into paneID as one bracketed paste, with no Enter.
 // `load-buffer` from STDIN into a uniquely named buffer (never argv),
 // `paste-buffer -p -d` into the PANE id (the buffer deleted after).
 func (t Tmux) pasteBracketed(ctx context.Context, paneID, text string) error {
@@ -745,7 +979,7 @@ func (t Tmux) pasteBracketed(ctx context.Context, paneID, text string) error {
 	return nil
 }
 
-// pasteEnter is PastePane's Enter, and the Hermes send's.
+// pasteEnter is PastePane's Enter, and PasteChecked's.
 //
 // 🔴 THE ENTER IS A PASTED NEWLINE, NOT `send-keys`. tmux refuses
 // `send-keys` with "client is read-only" when the client it resolves for

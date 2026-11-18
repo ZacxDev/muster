@@ -2,9 +2,13 @@ package api
 
 import (
 	"bytes"
+	"io"
+	"log"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -31,17 +35,15 @@ func TestADispatchedAgentNamedAfterALongMarkdownTitleRendersPlain(t *testing.T) 
 
 	a := ui.AgentCardView{ID: 41, Name: "agent-41", Status: "running", DisplayName: name}
 	var b bytes.Buffer
-	if err := ui.RenderAgentsList(&b, []ui.AgentCardView{a}, nil, []ui.RecentRef{{AgentID: 41}}, 0); err != nil {
+	if err := ui.RenderNavAgents(&b, []ui.AgentCardView{a}, nil, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	list := b.String()
-	if n := strings.Count(list, ">"+plain+"<"); n < 2 {
-		t.Errorf("the plain name is drawn %d time(s) on the agents list; want the card and the recents strip:\n%s", n, list)
+	if n := strings.Count(list, ">"+plain+"<"); n < 1 {
+		t.Errorf("the plain name is drawn %d time(s) in the sidebar; want its row:\n%s", n, list)
 	}
-	// (The filter's data attributes keep the raw name on purpose; what is
-	// DRAWN must not carry the markup.)
 	if strings.Contains(list, ">#41 · Fix the [login") {
-		t.Errorf("the agents list draws the link markup")
+		t.Errorf("the sidebar draws the link markup")
 	}
 	b.Reset()
 	if err := ui.AgentDetailPage(ui.AgentDetailView{Name: "agent-41", Status: "running", DisplayName: name}, ui.Features{}).Render(&b); err != nil {
@@ -55,17 +57,24 @@ func TestADispatchedAgentNamedAfterALongMarkdownTitleRendersPlain(t *testing.T) 
 	}
 }
 
-// TestAWaitingSessionPushBodyIsPlain: the attention push's body names the
-// waiting window by its title, which is often LLM-written markdown; it reads
-// as the plain title, as the attention page shows it. Red before: the source
-// went into the body raw ("Waiting: **Fix** [auth](…) @ host-b").
-func TestAWaitingSessionPushBodyIsPlain(t *testing.T) {
-	it := attentionItem{Kind: attentionKindSession, Source: "**Fix** [auth](https://example.com/a) for C# @ host-b"}
-	if got, want := attentionPushBody(it), "Waiting: Fix auth for C# @ host-b"; got != want {
-		t.Errorf("session body = %q, want %q", got, want)
+// TestAWaitingSessionPushTitleIsPlain: the attention push names the waiting
+// window in its BODY and the asker in its TITLE, each by a title that is often
+// LLM-written markdown; each reads as the plain title, as the attention page
+// shows it — the body through attentionPushBody's own application of the rule,
+// the title through the one title sink (goNotify).
+func TestAWaitingSessionPushTitleIsPlain(t *testing.T) {
+	store, pusher := &memPush{}, &payloadPusher{}
+	claim(t, store, 1, ep("plain-title"))
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Users: stubUsers{}, Push: push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))})
+	s.attentionNotify(1, attentionItem{Key: "session-0011223344556677", Kind: attentionKindSession, Source: "**Fix** [auth](https://example.com/a) for C# @ host-b"})
+	s.attentionNotify(1, attentionItem{Key: "ask-9", Kind: attentionKindAsk, AskID: 9, Source: "`agent_7` **chief**", Text: "q"})
+	s.WaitForPushes()
+	got := map[string]string{}
+	for _, p := range pusher.to(ep("plain-title")) {
+		got[p.ID] = p.Title + " | " + p.Body
 	}
-	ask := attentionItem{Kind: attentionKindAsk, Source: "`agent_7` **chief**"}
-	if got, want := attentionPushBody(ask), "agent_7 chief is asking"; got != want {
-		t.Errorf("ask body = %q, want %q", got, want)
+	if got["session-0011223344556677"] != "A session is waiting on you | Waiting: Fix auth for C# @ host-b" || got["ask-9"] != "agent_7 chief is asking | q" {
+		t.Errorf("pushes = %q", got)
 	}
 }

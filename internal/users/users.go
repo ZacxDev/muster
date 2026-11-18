@@ -39,6 +39,26 @@ type Store interface {
 	// Role returns the role of user id. ErrNotFound when there is no such
 	// user. An unknown role value is an error, never a guess.
 	Role(ctx context.Context, id int64) (authz.Role, error)
+	// Account returns everything a request principal is built from, in ONE
+	// read: the role, whether the row is a team (which no request may act
+	// as), and the person's team memberships. ErrNotFound when there is no
+	// such user.
+	Account(ctx context.Context, id int64) (Account, error)
+	// HoldTeamRole reads person's role in team and holds it — no membership
+	// change of the team commits — until release is called (PGStore's doc).
+	// THE SEND FENCE's lock (internal/api turnActingContext): every member
+	// turn on a team agent is fenced by it, so a store must implement it; a
+	// test fake that cannot lock says so in its own code.
+	HoldTeamRole(ctx context.Context, team, person int64) (role authz.TeamRole, in bool, release func(), err error)
+}
+
+// Account is what a request principal is built from (internal/api
+// principalFor): users.role, users.kind and team_members, read together so
+// one request has one consistent view of them.
+type Account struct {
+	Role  authz.Role
+	Team  bool
+	Teams authz.Memberships
 }
 
 // User is one muster account, as the session tier needs it. No Role: see the
@@ -108,6 +128,110 @@ func (s *PGStore) Role(ctx context.Context, id int64) (authz.Role, error) {
 	}
 }
 
+// FirstAdmin is the lowest-id ENABLED admin PERSON: the owner the server's
+// Claude pool keeps its shared account state under — its rate-limit and
+// auth-failure marks and the usage poller's readings
+// (credentials.Plane.EnvPoolOwner). An admin's own Claude accounts ARE that
+// pool, so nothing personal of theirs is ever kept under the same id. It is
+// derived rather than fixed at user 1, so a demoted user 1's own accounts are
+// not steered by the pool's marks. guardLastAdmin keeps at least one enabled
+// admin, so ErrNotFound is a database with none at all.
+func (s *PGStore) FirstAdmin(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(sys(ctx),
+		`SELECT id FROM users WHERE kind = 'person' AND role = 'admin' AND disabled_at IS NULL ORDER BY id LIMIT 1`).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return id, err
+}
+
+// Account reads users.role and users.kind and the person's team_members rows
+// in one statement. Like Role, the api package calls it under authz.System:
+// it is how a request LEARNS who it is. An unknown role or team role is an
+// error, never a guess.
+func (s *PGStore) Account(ctx context.Context, id int64) (Account, error) {
+	var role, kind string
+	var teams []int64
+	var roles []string
+	err := s.pool.QueryRow(ctx, `SELECT u.role, u.kind,
+			COALESCE(array_agg(m.team_id ORDER BY m.team_id) FILTER (WHERE m.team_id IS NOT NULL), '{}'),
+			COALESCE(array_agg(m.role ORDER BY m.team_id) FILTER (WHERE m.team_id IS NOT NULL), '{}')
+		FROM users u LEFT JOIN team_members m ON m.user_id = u.id
+		WHERE u.id = $1 GROUP BY u.id`, id).Scan(&role, &kind, &teams, &roles)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	r := authz.Role(role)
+	if r != authz.RoleAdmin && r != authz.RoleMember {
+		return Account{}, fmt.Errorf("users: user %d has unknown role %q", id, role)
+	}
+	var a Account
+	a.Role = r
+	switch kind {
+	case KindPerson:
+	case KindTeam:
+		a.Team = true
+	default:
+		return Account{}, fmt.Errorf("users: user %d has unknown kind %q", id, kind)
+	}
+	ms := make([]authz.Membership, len(teams))
+	for i := range teams {
+		ms[i] = authz.Membership{Team: teams[i], Role: authz.TeamRole(roles[i])}
+	}
+	if a.Teams, err = authz.NewMemberships(ms); err != nil {
+		return Account{}, fmt.Errorf("users: user %d: %w", id, err)
+	}
+	return a, nil
+}
+
+// PersonIDs is THE "owners who are people" predicate, as a subquery: every
+// users-table read outside this package that yields a user to act as, notify,
+// look up by name or authenticate a credential for filters through it
+// (`<col> IN (` + users.PersonIDs + `)`). A team (users.kind = 'team') owns
+// things and is never acted as: a per-owner background loop that met one
+// would build a principal for it, and authz.WithPrincipal refuses that.
+// TestEveryUsersReadIsLedgered pins every users-table read in the module to a
+// class, and requires the person-only class to use this.
+const PersonIDs = `SELECT id FROM public.users WHERE kind = 'person'`
+
+// EnabledPersonIDs is PersonIDs narrowed to people who are NOT DISABLED: THE
+// predicate for a credential that is honoured on every use without a sign-in
+// (a mirror host's token, a flow runner's token) and for a per-owner loop that
+// should not act for a disabled account. It is PersonIDs plus one clause, so
+// the person rule stays in one place.
+//
+// 🔴 A DISABLED OWNER IS CHECKED ON EVERY READ, NOT ONLY AT THE DISABLE. A
+// disable also revokes the user's mirror tokens (SetDisabledAs), but a
+// credential minted in the moment around a disable, or a table no disable
+// path revokes, is still refused here (#681). It names PERSONS: when a team
+// can own a credential (team sharing phase 2b), that door widens its own
+// owner set, and a team is never disabled through this column.
+const EnabledPersonIDs = PersonIDs + ` AND disabled_at IS NULL`
+
+// EnabledPersonOrTeamIDs is EnabledPersonIDs WIDENED BY TEAMS: the owner set
+// of a credential that a TEAM may own and that is honoured without a sign-in
+// — a team host's mirror token (team sharing phase 2b.2;
+// internal/mirror PGStore.Authenticate and TokenLive). It is EnabledPersonIDs
+// plus a team arm, so the person rule — and its disabled clause (#681) — stays
+// in one place: a disabled PERSON is still out. A team has no disabled_at
+// (users_team_no_login); a team token held by a person who was disabled or
+// left is the rotate mark's case (mirror_tokens.rotate_at), not this filter's.
+//
+// 🔴 NEVER WIDEN EnabledPersonIDs ITSELF. Its other readers (the focus
+// refresher, the flow runner token, plugin tokens and pairing) must not
+// yield a team.
+const EnabledPersonOrTeamIDs = EnabledPersonIDs + ` UNION ALL SELECT id FROM public.users WHERE kind = 'team'`
+
+// The two kinds of users row (migration 0126).
+const (
+	KindPerson = "person"
+	KindTeam   = "team"
+)
+
 // sys is the store's one authz.System call. See the package doc.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
@@ -131,12 +255,14 @@ func (s *PGStore) BySub(ctx context.Context, sub string) (User, error) {
 		// which must read as "no such user", not as a 500.
 		return User{}, ErrNotFound
 	}
-	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE gotrue_sub = $1::uuid`, sub))
+	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE gotrue_sub = $1::uuid AND kind = 'person'`, sub))
 }
 
-// ByID returns user id.
+// ByID returns user id, a PERSON: a team row (migration 0126) is ErrNotFound
+// here, as it is to BySub and IDByEmail, so no sign-in, session or admin
+// action can resolve to one. Teams are read through teams.go.
 func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
-	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE id = $1`, id))
+	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE id = $1 AND kind = 'person'`, id))
 }
 
 // SetDisabled sets (or clears) disabled_at and returns the updated row.
@@ -155,6 +281,10 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 // Without it, re-enabling the user brought every old token back to life —
 // including one that leaked, which is often WHY the user was disabled. An
 // enable revokes nothing and restores nothing: the user mints new tokens.
+// The user's MIRROR HOST tokens and FLOW RUNNER tokens are revoked the same
+// way, in the same transaction (revokeMirrorTokensTx, revokeRunnerTokensTx;
+// #681), and their hosts' open mirror connections end at the next token
+// recheck (mirror.TokenRecheck).
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
 	return s.SetDisabledAs(ctx, nil, id, disabled)
 }
@@ -292,6 +422,21 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
+		// #681: every live mirror host token, in THIS transaction.
+		if err := revokeMirrorTokensTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
+		// Team sharing 2b.2: the host tokens of every team this person
+		// operates or manages are MARKED ROTATE (never revoked: D-1113 #6),
+		// in THIS transaction. A disable does not touch memberships, so
+		// without this a disabled operator would leave no mark.
+		if err := markRotateForDisableTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
+		// And every live flow runner token, in THIS transaction.
+		if err := revokeRunnerTokensTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
 	}
 	if by != nil {
 		if err := auditInsert(ctx, tx, *by, action, UserObject(id), nil); err != nil {
@@ -313,6 +458,30 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 // this UPDATE ran but before the commit survived.
 func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	_, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id)
+	return err
+}
+
+// revokeMirrorTokensTx revokes every live mirror host token (internal/mirror,
+// migration 0008) user id owns inside tx: a disable's half of #681, so a
+// re-enable brings none of them back (the user mints new ones, as for API
+// tokens). The other half is mirror's own read, users.EnabledPersonIDs, which
+// refuses a disabled owner's token whether or not this ran — and which is
+// what ends a host's LIVE connection: its recheck (mirror.Service.watchToken)
+// reads TokenLive, which filters through it. Raw SQL for the
+// revokeAPITokensTx reason: internal/mirror imports this package.
+func revokeMirrorTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `UPDATE mirror_tokens SET revoked_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, id)
+	return err
+}
+
+// revokeRunnerTokensTx revokes every live flow runner token (internal/flows)
+// user id owns inside tx, so a re-enable brings none of them back (the rule
+// above SetDisabled). flows.AuthenticateRunner refuses a disabled owner's
+// token on its own (users.EnabledPersonIDs); this is what keeps the token dead
+// AFTER the enable. Raw SQL for the revokeAPITokensTx reason: internal/flows
+// imports this package.
+func revokeRunnerTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `UPDATE flow_runner_tokens SET revoked_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, id)
 	return err
 }
 
@@ -421,7 +590,7 @@ func LockCredentialsTx(ctx context.Context, tx pgx.Tx, id int64) error {
 // this id (internal/api/signin_limiter.go).
 func (s *PGStore) IDByEmail(ctx context.Context, email string) (int64, bool, error) {
 	var id int64
-	err := s.pool.QueryRow(sys(ctx), `SELECT id FROM users WHERE lower(email) = lower($1)`, strings.TrimSpace(email)).Scan(&id)
+	err := s.pool.QueryRow(sys(ctx), `SELECT id FROM users WHERE lower(email) = lower($1) AND kind = 'person'`, strings.TrimSpace(email)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -468,7 +637,7 @@ func (s *PGStore) CreateClaimInvite(ctx context.Context, tokenHash []byte, claim
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var unbound bool
-	if err := tx.QueryRow(ctx, `SELECT gotrue_sub IS NULL FROM users WHERE id = $1 FOR UPDATE`, claimUserID).Scan(&unbound); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT gotrue_sub IS NULL FROM users WHERE id = $1 AND kind = 'person' FOR UPDATE`, claimUserID).Scan(&unbound); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

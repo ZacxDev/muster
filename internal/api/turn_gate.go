@@ -14,6 +14,7 @@ import (
 // chat turn does not, and making it take one would change chat (a message typed
 // during a delivery would be refused). The replacement needs only "no chat turn
 // is running, and none starts until I am done", which this answers in-process.
+// chief_restart closes it the same way; a closure has ONE owner (closeFor).
 //
 // ⚠ IN-PROCESS ONLY. muster runs one replica by design (its deployment says why);
 // a second replica's chat turns would not be seen here.
@@ -21,11 +22,86 @@ type turnGate struct {
 	mu      sync.Mutex
 	running map[int64]int
 	closed  map[int64]bool
+	// waiters are the turns of id's waiting out the runtime's `busy` refusal
+	// (chat_busy.go), oldest first: only the head may ask the runtime, so the
+	// messages are sent in the order they were typed, whatever door each came by.
+	waiters map[int64][]*gateWaiter
+	// wake[id] is closed by a successful closeFor: every waiter asleep on it
+	// gives up at once instead of sleeping out its poll.
+	wake map[int64]chan struct{}
 }
 
-// ErrAgentBeingReplaced refuses a chat turn to an agent the chief replacement has
-// closed: it is about to be deleted.
-var ErrAgentBeingReplaced = errors.New("this agent is being replaced; send the message to the new chief once it is up")
+// gateWaiter is one turn in id's waiter queue. asleep: between two asks of the
+// runtime — a turn closeFor need not wait for (see closeFor).
+type gateWaiter struct{ asleep bool }
+
+// join puts a turn of id's (already entered) at the back of id's waiter queue.
+func (g *turnGate) join(id int64) *gateWaiter {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.waiters == nil {
+		g.waiters = map[int64][]*gateWaiter{}
+	}
+	w := &gateWaiter{}
+	g.waiters[id] = append(g.waiters[id], w)
+	return w
+}
+
+// quit takes w out of id's waiter queue.
+func (g *turnGate) quit(id int64, w *gateWaiter) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	q := g.waiters[id]
+	for i, x := range q {
+		if x == w {
+			q = append(q[:i:i], q[i+1:]...)
+			break
+		}
+	}
+	if len(q) == 0 {
+		delete(g.waiters, id)
+		return
+	}
+	g.waiters[id] = q
+}
+
+// first reports whether w is the oldest of id's waiters: the one that may ask.
+func (g *turnGate) first(id int64, w *gateWaiter) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	q := g.waiters[id]
+	return len(q) > 0 && q[0] == w
+}
+
+// sleep marks w asleep and returns the channel a closeFor of id closes.
+func (g *turnGate) sleep(id int64, w *gateWaiter) <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	w.asleep = true
+	if g.wake == nil {
+		g.wake = map[int64]chan struct{}{}
+	}
+	ch, ok := g.wake[id]
+	if !ok {
+		ch = make(chan struct{})
+		g.wake[id] = ch
+	}
+	return ch
+}
+
+// wakeUp marks w awake and reports whether id was closed meanwhile — in ONE
+// lock, so a closeFor either saw w asleep and closed (w must not ask again), or
+// sees it awake and refuses.
+func (g *turnGate) wakeUp(id int64, w *gateWaiter) (closed bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	w.asleep = false
+	return g.closed[id]
+}
+
+// ErrAgentBeingReplaced refuses a chat turn to an agent the chief replacement
+// (about to delete it) or chief_restart (about to stop and start it) has closed.
+var ErrAgentBeingReplaced = errors.New("this agent is being replaced or restarted; send the message again once it is up")
 
 // enter starts a turn for id; false (nothing counted) when id is closed.
 func (g *turnGate) enter(id int64) bool {
@@ -62,6 +138,14 @@ func (g *turnGate) enterIdle(id int64) (ok bool, why string) {
 	return true, ""
 }
 
+// busy reports whether a turn of id's is running here (a read; it counts
+// nothing). The chief nudge sweep reads it to leave a working agent alone.
+func (g *turnGate) busy(id int64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.running[id] > 0
+}
+
 // leave ends a turn enter counted.
 func (g *turnGate) leave(id int64) {
 	g.mu.Lock()
@@ -73,21 +157,70 @@ func (g *turnGate) leave(id int64) {
 	g.running[id]--
 }
 
-// close stops new turns for id, reporting false (and closing nothing) when a
-// turn is running. reopen undoes it.
-func (g *turnGate) close(id int64) bool {
+// Why a close was refused (closeFor's why).
+const (
+	// gateBusy: a turn of id's is running here.
+	gateBusy = "busy"
+	// gateClosed: id is ALREADY closed — another chief replacement or
+	// chief_restart holds it.
+	gateClosed = "closed"
+)
+
+// closeFor stops new turns for id and reports ok; ok false (and NOTHING
+// changed) with why gateBusy when a turn is running, or gateClosed when id is
+// already closed. reopen undoes a close that returned ok — and only the caller
+// that got ok may call it.
+//
+// 🔴 A SECOND CLOSE IS REFUSED, NOT ACCEPTED. It used to answer true for an id
+// that was already closed, so two operations (a chief replacement and a forced
+// chief_restart, or two restarts) could both "own" the closure, and the first
+// to finish reopened it while the other was still mid-swap — a chat turn could
+// then start on a pod being stopped or a row being deleted. Refusing makes the
+// closure single-owner: whoever got ok is the only one who reopens.
+func (g *turnGate) closeFor(id int64) (ok bool, why string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.running[id] > 0 {
-		return false
+	if g.closed[id] {
+		return false, gateClosed
+	}
+	// 🔴 A TURN ASLEEP IN THE WAITER QUEUE DOES NOT HOLD THE GATE. It is
+	// counted in running (its door entered), but between two asks it has sent
+	// nothing and is waiting on the runtime's `busy` — often a session stuck on
+	// a dialog, the very case a restart or replacement fixes. Counting it would
+	// refuse those for up to chatBusyWait. Closing wakes it, and it gives up
+	// with its "not sent" line stored (chat_busy.go).
+	if g.running[id]-g.asleepLocked(id) > 0 {
+		return false, gateBusy
 	}
 	if g.closed == nil {
 		g.closed = map[int64]bool{}
 	}
 	g.closed[id] = true
-	return true
+	if ch, ok := g.wake[id]; ok {
+		close(ch)
+		delete(g.wake, id)
+	}
+	return true, ""
 }
 
+// asleepLocked counts id's waiters asleep; g.mu is held.
+func (g *turnGate) asleepLocked(id int64) int {
+	n := 0
+	for _, w := range g.waiters[id] {
+		if w.asleep {
+			n++
+		}
+	}
+	return n
+}
+
+// close is closeFor without the why.
+func (g *turnGate) close(id int64) bool {
+	ok, _ := g.closeFor(id)
+	return ok
+}
+
+// reopen undoes the caller's own successful close (see closeFor).
 func (g *turnGate) reopen(id int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -1,8 +1,13 @@
 import { request as pwRequest, Page, WebSocket as PWWebSocket } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, termPort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, termPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { touchDrag } from '../lib/touch';
+import { clsInit, readCls, settle } from '../lib/cls';
+import { createAgent } from '../lib/seed';
+import { coarse, pickView } from '../lib/switcher';
+import { openAgentMenu } from '../lib/agent-menu';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
 // REAL muster-server built with `-tags e2eterm`: the page, the socket, the
@@ -10,7 +15,8 @@ import { touchDrag } from '../lib/touch';
 // only the pod is played, by a fake terminal that prints what reached it
 // (cmd/muster-server/e2eterm.go): `FAKE-TUI mode=ro|rw`, `size=CxR` per
 // resize and `in=<HEX>` per input chunk. The tokens below are obvious fakes and
-// nothing is provisioned ("Save for later").
+// nothing is provisioned (agents are created stopped through POST /api/agents,
+// lib/seed.ts, what "Save for later" made).
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 const origin = `http://localhost:${termPort}`;
@@ -46,27 +52,19 @@ async function agentNames(): Promise<Set<string>> {
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
-// saveAgent creates one agent of the kind through the dispatch sheet's "Save
-// for later" and returns its name (diffed, so an earlier run's rows cannot
-// answer).
+// saveAgent creates one agent of the kind, stopped (what "Save for later"
+// made), through POST /api/agents (lib/seed.ts, which replaced the deleted
+// dispatch sheet), opens its page, and returns its name (diffed, so an earlier
+// run's rows cannot answer).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code', note: string): Promise<string> {
   const before = await agentNames();
-  await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator(`[data-kind-option="${kind}"]`).click();
-  await sheet.locator('textarea[name="note_text"]').fill(note);
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const made = await createAgent(origin, { kind, prompt: note });
   const created = [...(await agentNames())].filter((n) => !before.has(n));
-  expect(created.length, 'exactly one agent created').toBe(1);
+  expect(created, 'exactly one agent created').toEqual([made.name]);
+  await page.goto(origin + '/agents/' + created[0]);
   return created[0];
 }
 
@@ -94,16 +92,19 @@ function recordSent(page: Page): string[] {
 
 const screen = (page: Page) => page.locator('#term .xterm-rows');
 
-test('a claude-code agent opens its live terminal read-only at phone width', async ({ page }) => {
+test('a claude-code agent opens its live terminal with live keys at phone width', async ({ page }) => {
   await login(page);
   const name = await saveAgent(page, 'claude-code', 'e2e terminal: open');
   const sent = recordSent(page);
 
   await page.goto(origin + '/agents/' + name);
-  // The chat is the agent's rendered view and its default; the Terminal is the
-  // other half of the Rendered | Terminal switch.
-  await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
-  const open = page.locator('#view-terminal');
+  // The chat is the agent's rendered view and its default; the Terminal is
+  // an item of its header's ⋯ menu (PR #527: a claude-code agent's page has
+  // one header row and draws no Rendered | Terminal switch).
+  await expect(page.locator('#view-rendered'), 'no switch segment on the chat page').toHaveCount(0);
+  await expect(page.locator('#view-terminal')).toBeHidden();
+  await openAgentMenu(page);
+  const open = page.locator('#agent-actions #view-terminal');
   await expect(open).toBeVisible();
   await expect(open).toHaveText(/Terminal/);
   const ob = (await open.boundingBox())!;
@@ -116,19 +117,20 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   // the checks below measure at phone width.
   await open.click();
   await page.waitForURL(origin + '/agents/' + name + '/terminal');
-  await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+  await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  // 🔴 LIVE KEYS ARE ALWAYS ON: the attach is interactive from the start and
+  // there is no switch (ui.AgentTerminalPage).
+  await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
   await expect(screen(page)).toContainText('agent=' + name);
   await expect(page.locator('#term-status')).toHaveText('Connected');
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
+  await expect(page.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
 
-  // The bar has every key a phone keyboard lacks, all disabled while read-only.
+  // The bar has every key a phone keyboard lacks, all enabled.
   const keys = page.locator('#term-keys [data-key]');
   await expect(keys).toHaveCount(12);
   for (const k of ['esc', 'tab', 'stab', 'ctrlc', 'enter', 'up', 'down', 'left', 'right', '1', '2', '3']) {
-    await expect(page.locator(`#term-keys [data-key="${k}"]`)).toBeDisabled();
+    await expect(page.locator(`#term-keys [data-key="${k}"]`)).toBeEnabled();
   }
 
   // Fits: the terminal, the header and the bar are inside 412px, nothing scrolls
@@ -140,15 +142,16 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
     expect(b.x, `${sel} left edge`).toBeGreaterThanOrEqual(0);
     expect(b.x + b.width, `${sel} right edge`).toBeLessThanOrEqual(412);
   }
-  for (const k of ['esc', 'up', '3']) {
-    const b = (await page.locator(`#term-keys [data-key="${k}"]`).boundingBox())!;
-    expect(b.height, `${k} key height`).toBeGreaterThanOrEqual(44);
+  for (const sel of ['[data-key="up"]', '[data-key="down"]', '[data-key="enter"]', '#term-keys-more']) {
+    const b = (await page.locator(`#term-keys ${sel}`).boundingBox())!;
+    expect(b.height, `${sel} key height`).toBeGreaterThanOrEqual(44);
   }
-  // The bar is two rows of six, and the terminal gets the rest of the screen —
-  // measured failing when the stylesheet lacked the grid: the bar stacked and
+  await expect(page.locator('#term-keys-more'), 'the ⋯ is enabled too').toBeEnabled();
+  // The bar is one row (↑ ↓ ⏎ ⋯), and the terminal gets the rest of the screen —
+  // measured failing when the stylesheet lacked the layout: the bar stacked and
   // squeezed the terminal to 18 rows.
   const bar = (await page.locator('#term-keys').boundingBox())!;
-  expect(bar.height, 'quick-key bar height (two rows)').toBeLessThanOrEqual(130);
+  expect(bar.height, 'quick-key bar height').toBeLessThanOrEqual(130);
   const termBox = (await page.locator('#term').boundingBox())!;
   expect(termBox.height, 'terminal height at 915px').toBeGreaterThanOrEqual(915 * 0.6);
   const size = await screen(page).innerText();
@@ -164,27 +167,20 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   });
   expect(cellWidth, 'the rendered grid fits its box').toBeLessThanOrEqual(termWidth);
 
-  // Typing into a read-only terminal sends nothing.
+  // Typing goes straight into the session, with nothing to switch on first.
   await page.locator('#term').click();
   await page.keyboard.type('zz');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(300);
-  expect(sent, 'binary frames sent while read-only').toEqual([]);
-  await expect(screen(page)).not.toContainText('in=');
+  await expect.poll(() => sent.join(''), { message: 'the typed bytes were sent' }).toContain('7A');
+  await expect(screen(page)).toContainText(/in=7A7A|in=7A/);
 });
 
-test('the switch makes it interactive and the quick-key bar types the right bytes', async ({ page }) => {
+test('the quick-key bar types the right bytes, straight away', async ({ page }) => {
   await login(page);
   const name = await saveAgent(page, 'claude-code', 'e2e terminal: keys');
   const sent = recordSent(page);
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#term-mode-label')).toHaveText('Live keys on');
   await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
 
   // Literal expected bytes, NOT read from the page's data attributes.
   const want: [string, string][] = [
@@ -201,24 +197,26 @@ test('the switch makes it interactive and the quick-key bar types the right byte
     ['2', '32'],
     ['3', '33'],
   ];
+  const menu = page.locator('#term-keys-menu');
   for (const [key, hex] of want) {
     const before = sent.length;
+    // ↑ ↓ ⏎ are on the bar; every other key is in the ⋯ menu.
+    const large = ['up', 'down', 'enter'].includes(key);
+    if (!large) {
+      await page.locator('#term-keys-more').click();
+      await expect(menu).toBeVisible();
+    }
     await page.locator(`#term-keys [data-key="${key}"]`).click();
+    if (!large) await expect(menu, `the menu closes after ${key}`).toBeHidden();
     // The page sent exactly these bytes, and the far side received them.
     await expect.poll(() => sent.slice(before), { message: `${key} frame` }).toEqual([hex]);
     await expect(screen(page)).toContainText('in=' + hex);
   }
 
-  // Typed text goes through too once interactive.
+  // Typed text goes through too.
   await page.locator('#term').click();
   await page.keyboard.type('ok');
   await expect(screen(page)).toContainText(/in=6F6B|in=6F/);
-
-  // And back: read-only again, keys disabled, a fresh read-only attach.
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-  await expect(page.locator('#term-keys [data-key="esc"]')).toBeDisabled();
   await noHorizontalScroll(page);
 });
 
@@ -226,7 +224,7 @@ test('the terminal follows the viewport: keyboard-height and rotation', async ({
   await login(page);
   const name = await saveAgent(page, 'claude-code', 'e2e terminal: resize');
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
   const sizes = async () =>
     [...(await screen(page).innerText()).matchAll(/size=(\d+)x(\d+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
   await expect.poll(async () => (await sizes()).length).toBeGreaterThan(0);
@@ -245,6 +243,68 @@ test('the terminal follows the viewport: keyboard-height and rotation', async ({
   await noHorizontalScroll(page);
 });
 
+// THE SESSION SWITCHER ON AN AGENT'S TERMINAL VIEW (operator ask: "Include the
+// bottom bar in the agent terminal view as well … so that I can easily switch
+// agents from the terminal view"), at 390×844: the bar is drawn at the page's
+// foot with the agent marked current, it moves nothing (CLS < 0.01), the far
+// side heard exactly one size (the fake prints `size=CxR` per resize) — the
+// bar's presence and a view switch in it send no resize — and a tap on
+// another agent's entry opens that agent.
+test.describe('the switcher at 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("an agent's Terminal view draws the session switcher; a tap switches agents", async ({ page }) => {
+    test.setTimeout(90_000);
+    await login(page);
+    const other = await saveAgent(page, 'claude-code', 'e2e terminal: switcher, the other agent');
+    const name = await saveAgent(page, 'claude-code', 'e2e terminal: switcher');
+    await page.addInitScript(clsInit);
+    await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    const bar = page.locator('#session-switcher');
+    await expect(bar).toBeVisible();
+    await settle(page);
+    await page.waitForTimeout(500);
+
+    const all = bar.locator('[data-switcher-list="all"]');
+    await expect(all).toBeVisible();
+    await expect(all.locator('[data-switcher-current]'), 'the page\'s own agent, current').toHaveAttribute('data-switcher-code', name);
+    await expect(bar.locator('[data-switcher-list="recent"] [data-switcher-code="' + name + '"]'), 'not in Recent').toHaveCount(0);
+    await expect(bar.locator('#switcher-more #switcher-pin'), 'the bar\'s pin, in its ⋯ menu').toHaveCount(1);
+
+    const cls = await readCls(page);
+    expect(cls.total, `layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
+    await noHorizontalScroll(page);
+    const b = (await bar.boundingBox())!, t = (await page.locator('#term-scroll').boundingBox())!, input = (await page.locator('#mv-input').boundingBox())!;
+    expect(Math.round(b.y + b.height), 'the bar is the bottom of the screen').toBe(844);
+    expect(input.y + input.height, 'the input is above the bar').toBeLessThanOrEqual(b.y + 0.5);
+    expect(t.y + t.height, 'the terminal is above the bar').toBeLessThanOrEqual(b.y + 0.5);
+
+    // One size reached the far side, and a view switch sends none.
+    // Rows read joined: a line wider than the terminal wraps.
+    const sizes = async () => [...(await screen(page).innerText()).replace(/\n/g, '').matchAll(/size=(\d+x\d+)/g)].map((m) => m[1]);
+    await expect.poll(async () => (await sizes()).length).toBeGreaterThan(0);
+    const heard = await sizes();
+    expect(new Set(heard).size, `one size, no churn: ${heard}`).toBe(1);
+    const [cols, rows] = heard[0].split('x').map(Number);
+    expect(cols, 'columns at 390px').toBeGreaterThanOrEqual(30);
+    expect(rows, 'rows at 844px, with the bar').toBeGreaterThanOrEqual(20);
+    // The file's context is a phone's (hasTouch): the touch layout, where the
+    // view is picked in the dock (lib/switcher.ts).
+    expect(await coarse(page), 'the touch layout').toBe(true);
+    await pickView(page, 'recent');
+    await expect(bar.locator('[data-switcher-list="recent"]')).toBeVisible();
+    await page.waitForTimeout(1000);
+    expect(await sizes(), 'a view switch sent no resize').toEqual(heard);
+
+    // A tap on the other agent's entry opens it.
+    await pickView(page, 'all');
+    const entry = all.locator('a[data-switcher-entry="agent"][data-switcher-code="' + other + '"]');
+    await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + other), entry.click()]);
+  });
+});
+
 // RECORDED EXCLUSION (the operator's decision): drag-to-scroll is for mirrored
 // windows only. An agent pod's Terminal page wires no scroll gesture — the
 // page's own instrument (data-scroll-on, set when the handlers are wired; see
@@ -258,7 +318,7 @@ test('an agent pod’s terminal wires no drag-to-scroll', async ({ page }) => {
     if (new URL(r.url()).pathname.endsWith('/scroll')) posts.push(r.url());
   });
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
   const term = page.locator('#term');
   await expect(term).not.toHaveAttribute('data-scroll', /.*/);
   await expect(term).not.toHaveAttribute('data-scroll-on', /.*/);
@@ -280,4 +340,175 @@ test('a standard agent has no terminal', async ({ page }) => {
   await expect(page.locator('#view-terminal')).toHaveCount(0);
   const r = await page.request.get(origin + '/agents/' + name + '/terminal');
   expect(r.status()).toBe(404);
+});
+
+// THE LARGE KEYS AND THE ⋯ MENU (operator ask: "In the agent raw view show the
+// up and down arrow keys and the return button. As large key buttons, and then
+// collapse the rest into a three dots button context menu"), at a phone's
+// width and a desktop's. Literal expected bytes, NOT read from the page.
+const largeWant: [string, string][] = [['up', '1B5B41'], ['down', '1B5B42'], ['enter', '0D']];
+const menuWant: [string, string, string][] = [
+  ['esc', 'Escape', '1B'],
+  ['tab', 'Tab', '09'],
+  ['stab', 'Shift Tab', '1B5B5A'],
+  ['ctrlc', 'Control C', '03'],
+  ['1', '1', '31'],
+  ['left', 'Left arrow', '1B5B44'],
+  ['right', 'Right arrow', '1B5B43'],
+  ['2', '2', '32'],
+  ['3', '3', '33'],
+];
+for (const vp of [
+  { name: 'phone 390×844 touch', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(vp.name, () => {
+    test.use(vp.use);
+    test('↑ ↓ ⏎ are large keys and every other key is in the ⋯ menu, each sending its bytes', async ({ page }) => {
+      await login(page);
+      const name = await saveAgent(page, 'claude-code', 'e2e terminal: large keys ' + vp.name);
+      const sent = recordSent(page);
+      await page.addInitScript(clsInit);
+      await page.goto(origin + '/agents/' + name + '/terminal');
+      await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+      await expect(page.locator('#term-status')).toHaveText('Connected');
+
+      // The bar: exactly ↑ ↓ ⏎ as its own keys, then the ⋯ — in that order.
+      const barKeys = await page.locator('#term-keys > [data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')));
+      expect(barKeys, 'the bar\'s own keys').toEqual(['up', 'down', 'enter']);
+      const menuBtn = page.locator('#term-keys-more');
+      const mb = (await menuBtn.boundingBox())!;
+      expect(Math.min(mb.width, mb.height), 'the ⋯ is a 44px target').toBeGreaterThanOrEqual(44);
+      for (const [key] of largeWant) {
+        const b = (await page.locator(`#term-keys [data-key="${key}"]`).boundingBox())!;
+        expect(Math.min(b.width, b.height), `${key} is at least 44px both ways`).toBeGreaterThanOrEqual(44);
+        expect(b.height, `${key} is a LARGE key (taller than the 44px minimum)`).toBeGreaterThanOrEqual(52);
+        expect(b.x + b.width, `${key} inside the viewport`).toBeLessThanOrEqual(vp.use.viewport.width);
+      }
+      expect(mb.x + mb.width, 'the ⋯ inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+      await noHorizontalScroll(page);
+
+      // Each large key sends exactly its bytes.
+      for (const [key, hex] of largeWant) {
+        const before = sent.length;
+        await page.locator(`#term-keys [data-key="${key}"]`).click();
+        await expect.poll(() => sent.slice(before), { message: `${key} frame` }).toEqual([hex]);
+        await expect(screen(page)).toContainText('in=' + hex);
+      }
+
+      // The ⋯ menu lists every other key, in order, by name, and fits the screen.
+      const menu = page.locator('#term-keys-menu');
+      await expect(menu).toBeHidden();
+      await menuBtn.click();
+      await expect(menu).toBeVisible();
+      await expect(menuBtn).toHaveAttribute('aria-expanded', 'true');
+      const items = menu.getByRole('menuitem');
+      await expect(items).toHaveCount(menuWant.length);
+      expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute('data-key'))), 'the menu\'s keys, in order').toEqual(menuWant.map((w) => w[0]));
+      const box = (await menu.boundingBox())!;
+      expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(vp.use.viewport.width);
+      expect(box.y, 'menu top edge').toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height, 'the menu does not cover its ⋯').toBeLessThanOrEqual(mb.y + 0.5);
+      for (const it of await items.all()) expect((await it.boundingBox())!.height, 'a menu key is a 44px target').toBeGreaterThanOrEqual(44);
+      await noHorizontalScroll(page);
+      await page.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+
+      // Each menu key, picked from a freshly opened menu, sends exactly its
+      // bytes and closes the menu.
+      for (const [key, label, hex] of menuWant) {
+        const before = sent.length;
+        await menuBtn.click();
+        await expect(menu).toBeVisible();
+        await menu.getByRole('menuitem', { name: label, exact: true }).click();
+        await expect.poll(() => sent.slice(before), { message: `${key} frame` }).toEqual([hex]);
+        await expect(screen(page)).toContainText('in=' + hex);
+        await expect(menu, `the menu closes after ${key}`).toBeHidden();
+      }
+      await noHorizontalScroll(page);
+
+      await settle(page);
+      const r = await readCls(page);
+      expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
+      expect(r.total, `shifts: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
+      // The positive control: a shift the page did not ask for IS counted.
+      await page.waitForTimeout(600);
+      await page.evaluate(() => {
+        const d = document.createElement('div');
+        d.style.cssText = 'height:150px;flex:none';
+        document.body.prepend(d);
+      });
+      await page.waitForTimeout(300);
+      expect((await readCls(page)).total, 'the instrument sees a shift').toBeGreaterThan(0.01);
+    });
+  });
+}
+
+// 🔴 NO POPOVER API (iOS Safari < 17): the ⋯ must still open its menu, or the
+// nine menu keys — ^C among them — are unreachable. The API is stubbed away
+// before the page's scripts run; the ⋯ then toggles the menu itself, placed by
+// the floating-menu rule, closed by a pick, a tap outside, or Escape. Red
+// before the fallback: the ⋯ was a bare popovertarget, which (once the page
+// stops relying on the native attribute) opens nothing.
+test.describe('without the Popover API (390×844 touch)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('the ⋯ still opens the menu and a menu key sends its bytes', async ({ page }) => {
+    await login(page);
+    const name = await saveAgent(page, 'claude-code', 'e2e terminal: no popover');
+    const sent = recordSent(page);
+    await page.addInitScript(() => {
+      const p = HTMLElement.prototype as any;
+      delete p.togglePopover;
+      delete p.showPopover;
+      delete p.hidePopover;
+    });
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    expect(await page.evaluate(() => typeof (HTMLElement.prototype as any).togglePopover), 'the API is stubbed away').toBe('undefined');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+
+    const more = page.locator('#term-keys-more');
+    const menu = page.locator('#term-keys-menu');
+    // The fallback is engaged: no native popover wiring left to do the work.
+    await expect(more).not.toHaveAttribute('popovertarget', /.*/);
+    await expect(menu).toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(menu.getByRole('menuitem')).toHaveCount(9);
+    const mb = (await more.boundingBox())!;
+    const box = (await menu.boundingBox())!;
+    expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(390);
+    expect(box.y + box.height, 'placed above its ⋯, not over it').toBeLessThanOrEqual(mb.y + 0.5);
+    await noHorizontalScroll(page);
+
+    // ^C, picked from the menu: exactly 0x03, and the menu closes.
+    let before = sent.length;
+    await menu.getByRole('menuitem', { name: 'Control C', exact: true }).click();
+    await expect.poll(() => sent.slice(before), { message: '^C frame' }).toEqual(['03']);
+    await expect(screen(page)).toContainText('in=03');
+    await expect(menu).toBeHidden();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+    // A tap outside closes it; so does Escape; so does the ⋯ again.
+    await more.click();
+    await expect(menu).toBeVisible();
+    await page.locator('#term-status').click();
+    await expect(menu, 'a tap outside closes it').toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu, 'Escape closes it').toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await more.click();
+    await expect(menu, 'the ⋯ again closes it').toBeHidden();
+
+    // A large key still sends its bytes in this mode.
+    before = sent.length;
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect.poll(() => sent.slice(before), { message: 'up frame' }).toEqual(['1B5B41']);
+  });
 });

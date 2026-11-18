@@ -9,8 +9,8 @@ package main
 // things that separate a work item from an object nobody can close.
 //
 // 🔴 THE DISTINCTION api.Extensions.defects DRAWS GOVERNS EVERY ENTRY HERE:
-// "degrades visibly" versus "lies silently". A nil GitHub store leaves the Repos
-// tab undrawn, which is TRUE — this server has no GitHub connection. A notes
+// "degrades visibly" versus "lies silently". A nil connector store leaves the
+// Connectors tab undrawn, which is TRUE — this server has no connectors. A notes
 // store with no session-liveness probe renders "no transcript recorded" over
 // transcripts that may be alive, with nothing logged and nothing 404ing. The
 // first is a configuration; the second is a page that states a falsehood, and
@@ -114,7 +114,9 @@ package main
 //	  creating the row, so the operator's POST has already answered 200 … CLOSING
 //	  CONDITION: a synchronous check in internal/api's create handler, before the row
 //	  exists, keyed on the same capability, answering 4xx with
-//	  agentprovision.KickoffRefusalReason's text." handleAgentCreate asks
+//	  agentprovision.KickoffRefusalReason's text." The create handler — the deleted
+//	  dispatch form's handleAgentCreate, now POST /api/agents' handleAPIAgentCreate
+//	  with start: true — asks
 //	  api.Provisioner.KickoffUndeliverableReason — the same field Dispatch branches on,
 //	  which is what stops the two answers disagreeing — and answers 409 carrying it
 //	  before Agents.Create. The async half of the sentence is still TRUE of Dispatch
@@ -124,16 +126,13 @@ package main
 //	  reaches Dispatch through createAndDispatchAgent inside safeGo, so its refusal
 //	  is recorded on the row (`error` + the reason) rather than returned. (Runbook
 //	  dispatch was the second such caller until runbooks were removed.) It has no
-//	  "Save for later" affordance for a 4xx to point at; the row they
+//	  "create stopped" affordance for a 4xx to point at; the row they
 //	  create can be brought up with Start, which is the same escape by another door.
-//	  ⚠ AND THE UI STILL *OFFERS* THE DISPATCH BUTTON ON A DEPLOYMENT THAT WILL REFUSE
-//	  IT. The refusal is legible once clicked — internal/ui's htmx:responseError
-//	  handler toasts the 409 body verbatim — but nothing dims the affordance, so the
-//	  operator learns by being refused. CLOSING CONDITION: a pull request in which the
-//	  dispatch modal's Dispatch control is disabled, with the reason beside it, when
-//	  the provisioner reports a kickoff undeliverable. WHO CHECKS IT: the reviewer of
-//	  that pull request, against a rendered modal on a deployment with
-//	  agentprovision.KickoffDeliveryWired false.
+//	  ✅ "THE UI STILL *OFFERS* THE DISPATCH BUTTON ON A DEPLOYMENT THAT WILL REFUSE
+//	  IT" IS CLOSED BY DELETION: the dispatch form, its Dispatch control and every
+//	  button that opened it were removed (docs/design/chief-dispatch.md phase 2), so
+//	  there is no affordance left to dim. The machine route answers the 409 to its
+//	  caller.
 //	🔴 AND "A HUMAN CAN NOW OPEN ITS CHAT AND TALK TO IT" WAS FALSE FOR AN AGENT
 //	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
 //	  TWO things block it, and both are OUTSIDE internal/agentgateway:
@@ -349,7 +348,7 @@ package main
 //	  over instances, with a noop driver and a Kubernetes driver. Adapting one to
 //	  the other is a chunk of work with its own design question — where
 //	  gateway chat and tool dispatch live, since provision.Driver has no notion
-//	  of either. Wiring a fake here would make the Agents tab LOOK operational:
+//	  of either. Wiring a fake here would make the agent pages LOOK operational:
 //	  dispatch would report success, no pod would exist, and the agent would sit
 //	  in `provisioning` for ever. That is the "lies silently" side of the line.
 //	WHAT IT COSTS MEANWHILE, PRECISELY: every agent-control route is REGISTERED
@@ -357,7 +356,7 @@ package main
 //	  makes the route golden a claim about production — and each one refuses at
 //	  request time with 503 + provisionerUnwired:true, through the
 //	  api.requireLifecycleProvisioner / api.requireGatewayProvisioner wrapper it is
-//	  registered behind. The Agents tab is
+//	  registered behind. The agent pages are
 //	  read-only: existing rows render, nothing can be provisioned, started,
 //	  stopped or destroyed, no logs stream and no chat turn runs. The boot banner
 //	  says so on every start, unconditionally.
@@ -546,11 +545,12 @@ package main
 // ---------------------------------------------------------------------------
 // 6. NOT A SEAM: WHAT IS NIL HERE ON PURPOSE AND CLOSES NOTHING.
 //
-//   - api.Extensions.GitHub is nil without MUSTER_GITHUB_ENCRYPTION_KEY. There
-//     is deliberately no generate-a-key-if-unset branch: an ephemeral key makes
-//     every stored token undecryptable after a restart, which presents as "the
-//     Repos tab forgot my account" with nothing in the log. Unset means the
-//     store is not built, which the Repos tab says on screen.
+//   - api.Extensions.Connectors is nil without MUSTER_CONNECTOR_ENCRYPTION_KEY
+//     (and without MUSTER_AGENT_CONNECT_URL, when only members' credentials are on).
+//     There is deliberately no generate-a-key-if-unset branch: an ephemeral key
+//     makes every stored secret undecryptable after a restart, with nothing in
+//     the log. Unset means the store is not built, which the missing Connectors
+//     tab says on screen.
 //   - api.RouterPort and api.GatePort are nil without a router. That IS a
 //     supported deployment — see RouterPort's own doc — and the four features
 //     that depend on it each degrade where a human can see it. The one bit that

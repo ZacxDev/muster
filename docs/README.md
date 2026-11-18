@@ -1,40 +1,131 @@
 # muster documentation
 
-Start with the [project README](../README.md) for the pitch and a quickstart.
+The [project README](../README.md) is the front door: what muster is, the quick
+start and the install options. This page is the index of everything else.
+
+- New here? [overview.md](overview.md) is the long version of the README: what
+  you get, notifications, the core and the optional features, muster beside
+  Remote Control, and the limits.
+- [comparison.md](comparison.md) sets muster beside other ways to reach coding
+  agents from a phone.
+- The words muster uses (hub, mirrored session, Rendered view, step-up, chief,
+  officer, …): [glossary.md](glossary.md).
+
+## Set it up: the core first, then one feature at a time
+
+**Core (no external dependencies).** Docker Compose on one machine (muster and
+its own Postgres, every secret generated) and, on each machine, tmux and
+`muster-mirror`. It runs at a `http://localhost` address with nothing to fill
+in. What each machine needs is checked by
+[INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine), the one
+place that lists it. Start with one prompt to your coding agent
+([onboarding.md](onboarding.md)) or one line by hand
+([quickstart-local.md](quickstart-local.md)).
+
+**Optional (one guide each).** Add them one at a time, in any order, once the
+core passes `muster doctor`. Each guide says what the feature adds, what it
+needs, the settings to make, how `muster doctor` confirms it, and how to turn
+it off. The full list of features, with every `.env` line, is
+[features.md](features.md).
+
+| dependency | what it adds | guide |
+|---|---|---|
+| Tailscale | your phone (the app, notifications, the microphone) and your other machines | [guides/tailscale.md](guides/tailscale.md) |
+| VAPID keys (generated) | push notifications | [guides/push.md](guides/push.md) |
+| a speech-to-text service | dictation on every message box | [guides/speech-to-text.md](guides/speech-to-text.md) |
+| an S3 store (bundled, or MinIO / S3) | file attachments | [guides/s3.md](guides/s3.md) |
+| an OpenRouter key | suggested replies, focus, the chief on OpenRouter | [guides/openrouter.md](guides/openrouter.md) |
+| an encryption key (and a connect URL) | members' own credentials; connectors for agents | [guides/connectors.md](guides/connectors.md) |
+| a GoTrue server | per-user sign-in, passkeys, invites, teams | [guides/gotrue.md](guides/gotrue.md) |
+| a GitHub App | one-repository GitHub tokens for agents | [guides/github-app.md](guides/github-app.md) |
+| the preview gateway | an agent's dev server, served to you | [guides/previews.md](guides/previews.md) |
+| Kubernetes | dispatched agents, the agent plane (the Helm chart) | [guides/kubernetes.md](guides/kubernetes.md) |
+
+## Every document
+
+**Start here**
+
+- [overview.md](overview.md) — the long version of the README: what you get, notifications, core vs optional, muster vs Remote Control, the limits, the name
 
 **Using it**
 
+- [onboarding.md](onboarding.md) — set muster up with one prompt to your coding agent ([INSTALL.md](../INSTALL.md) is the guide it follows)
+- [glossary.md](glossary.md) — the words these documents use, each linked to its page
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
-- [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask (`attention_answer`) or destroying an agent (`agent_destroy`) from your own mirrored session
+- [suggested-replies.md](suggested-replies.md) — AI-suggested replies for a mirrored session's composer: when they appear, what is sent, and how they stay grounded
+- [asks.md](asks.md) — the ask log: every question an agent puts to you, its answer and how long it took, recorded for review and read back on the Asks page's Log tab, the API and `muster asks` (phase 1 of ask auto-approval)
+- [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask (`attention_answer`) destroying an agent (`agent_destroy`) or listing your agents (`agents_list`), restarting your chief (`chief_restart`) or starting an agent (`dispatch_request` + `dispatch_approve`) from your own mirrored session
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
-- [push.md](push.md) — Web Push and the installable app
+- [pages.md](pages.md) — shareable pages: agents publish pages (showcases, questions, forms, uploads, their own script in a sandbox), you approve the share links, viewers' responses come back as data; the `page_*` tools, blocks, the SDK, the Pages screen
+- [push.md](push.md) — Web Push and the installable app, and the server switcher (several muster servers in one browser)
+- [branding.md](branding.md) — the server's own logo and name: set by an admin on the Account page, drawn in the header, on the sign-in page, as the app and notification icon, and published at `GET /api/instance` for the apps
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
+- [chief-cookbook.md](chief-cookbook.md) — what to ask the chief: fleet summaries, who is on what, what needs you, routing a request or a task to a session, with real example replies
+- [chief-nudges.md](chief-nudges.md) — the chief's stall nudges: finding stalled sessions (Claude Code and opencode), nudging them with your own words or pointing you at them with a notice, shadow mode first
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them, and deciding an agent's request from your own mirrored session (`connector_request_decide`)
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
+- [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
+- [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
+- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: what muster needs, and a pointer to the plugin's own repository (setup, pairing, troubleshooting)
+- [officers-builtin.md](officers-builtin.md) — **start here for officers**: standing Claude Code agents with a charter and a queue, made on the Officers page (New officer, templates, Shadow then Live) on muster's own built-in backend; how they work, and the `MUSTER_OFFICERS`, CLI and admin-API reference
+- [officers.md](officers.md) — the officer reference: the HQ backend, and what every officer's instances get (pods, network, runner image, repositories, tools, tiers, the LLM proxy)
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
 
 **Running it**
 
 - [architecture.md](architecture.md) — binaries, listeners, packages, trust
+- [quickstart-local.md](quickstart-local.md) — the one-line install on one machine, by hand, and adding your phone
+- [multi-tenant-hosts.md](multi-tenant-hosts.md) — one machine's sessions in a second muster server (tenants)
+- [kubernetes.md](kubernetes.md) — the Helm chart: installing muster on Kubernetes, the values per feature, RBAC, upgrades
+- [features.md](features.md) — every optional feature: what it needs, the `.env` lines that turn it on, and how to check it is on
 - [configuration.md](configuration.md) — every environment variable, checked by a test
+- [telemetry.md](telemetry.md) — tracing an open from the browser to the host: the hops, the spans, the metrics, the log line, and what to set
 - [auth.md](auth.md) — password or GoTrue sign-in, passkeys, invites, API tokens
 - [cli.md](cli.md) — the `muster` CLI and the other binaries
 - [schema.md](schema.md) — tables, migrations, row-level security, restore and rollback
 
+**Building on it**
+
+- [ecosystem.md](ecosystem.md) — what you can build on muster (plugins, officers, connectors, the MCP tools, the API), the list of published plugins, and how to add yours
+- [plugins-quickstart.md](plugins-quickstart.md) — build a working plugin in about 15 minutes: turn plugins on, mint or pair a token, post a message, approve the draft, claim it, report the result
+- [officer-plugin-recipe.md](officer-plugin-recipe.md) — a worked example: a support inbox officer extended by a plugin, from its charter to the replies it sends
+
 **Working on it**
 
+- [development.md](development.md) — run muster from source against a throwaway database
 - [testing.md](testing.md) — the Go suite, the gates, the browser suite, screenshots
 - [limits.md](limits.md) — what it does not do, or has not proven
 - [decisions.md](decisions.md) — why things are the way they are
 - [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
-- [design/hermes.md](design/hermes.md) — proposed: Hermes mirroring and the `hermes` agent kind
-- [design/agent-cards.md](design/agent-cards.md) — proposed: live subagent and shell counts, and tmux identity colours, on agent cards
-- [../CONTRIBUTING.md](../CONTRIBUTING.md)
+- [design/agent-cards.md](design/agent-cards.md) — live subagent and shell counts, and tmux identity colours, on the (since retired) Agents list's cards
+- [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically
+- [design/switcher-dock.md](design/switcher-dock.md) — proposed: a swipe-up dock that lists the session switcher's views vertically on a phone
+- [design/opencode-first-class.md](design/opencode-first-class.md) — proposed: opencode as a first-class runtime, starting with an API send from the Rendered view
+- [design/officers-first-class.md](design/officers-first-class.md) — slices 0–7 built: the officer-backend contract (`officers.Backend`, capabilities), HQ as one implementation, and a built-in backend in muster's own Postgres
+- [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
+- [design/web-server-switcher.md](design/web-server-switcher.md) — implemented: the web app's server switcher (a per-origin list, switching by navigation), and what it can and cannot match of the Android app's
+- [design/managed-network.md](design/managed-network.md) — proposed: a managed muster network as an alternative to Tailscale — a blind SNI relay, the server's own certificate, one name per server, Link device by a code the phone shows and the owner's screen's nonce, one free device and a paid tier
+- [design/managed-network-phase0.md](design/managed-network-phase0.md) — results: the managed network's phase-0 documentation spikes (DNS provider limits and credential scoping, the CT aggregator's terms, the GeoIP database's licence)
+- [design/boxlite-runtime.md](design/boxlite-runtime.md) — proposed: BoxLite microVMs as a runtime — agents started in the user's BoxLite account by a new provisioner driver, or a cloud computer that joins as one of the user's machines (recommended first)
+- [design/team-sharing.md](design/team-sharing.md) — proposed: teams on one server sharing sessions, officers, tasks and a chief, private by default under row-level security
+- [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
+- [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
+- [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
+- [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
+- [design/fleet-metrics.md](design/fleet-metrics.md) — saved queries: the baseline metrics for the chief's fleet work (owner wait on a stop, stops resolved without the owner, CI waits, done sessions left idle, the chief's tokens per day), each parameterised on owner and window
+
+**The project**
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — setting up, the tests and gates, the leak gate, pull requests
+- [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) — the Contributor Covenant, and how to report a problem privately
+- [SECURITY.md](../SECURITY.md) — supported versions, and reporting a vulnerability privately
+- [AGENTS.md](../AGENTS.md) — where a coding agent working on this repository finds each subject
+- [LICENSE](../LICENSE) — MIT

@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, provPort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, provPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { createAgent } from '../lib/seed';
 
 // "Provisioning agent…" must leave an OPEN agent page when the agent comes up
 // without sending a message — and "No messages yet" must take its place — with
@@ -20,6 +22,11 @@ import { startServer, Running } from '../lib/server';
 // provisions, and only THEN is the instance released — so the provisioning →
 // running move is made by the shipped status promoter (internal/agentstatus) and
 // announced by its real agent.changed broadcast, never by the test.
+//
+// The Start is the agent page's own (its ⋯ menu: internal/ui/agent_actions.go;
+// the Agents list's card had it until that page was retired), and the page's
+// status strip follows both moves live: provisioning on the Start, running on
+// the promotion, with the menu's action turning to Stop.
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 const origin = `http://localhost:${provPort}`;
@@ -64,27 +71,20 @@ async function storedStatus(name: string): Promise<string> {
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
-// saveAgent creates one agent of the kind with NO note through the dispatch
-// sheet's "Save for later" and returns its row (diffed, so an earlier run's rows
-// cannot answer).
+// saveAgent creates one agent of the kind with NO note, stopped (what "Save for
+// later" made), through POST /api/agents (lib/seed.ts, which replaced the
+// deleted dispatch sheet), opens its page, and returns its row (diffed, so an
+// earlier run's rows cannot answer).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator(`[data-kind-option="${kind}"]`).click();
-  await sheet.locator('textarea[name="note_text"]').fill('');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const made = await createAgent(origin, { kind });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
+  expect(created[0].name).toBe(made.name);
+  await page.goto(origin + '/agents/' + created[0].name);
   return created[0];
 }
 
@@ -95,10 +95,17 @@ for (const kind of ['gateway', 'claude-code'] as const) {
     await login(page);
     const agent = await saveAgent(page, kind);
 
-    const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
-    expect(started.status(), await started.text()).toBe(200);
+    // Started from the page's ⋯ menu.
+    const status = page.locator('#agent-status');
+    const menu = page.locator('#agent-actions');
+    await page.locator('#agent-actions-open').click();
+    const started = page.waitForResponse((r) => r.url().endsWith(`/agents/${agent.id}/start`) && r.request().method() === 'POST');
+    await menu.locator('[data-agent-action="Start"]').click();
+    expect((await started).status()).toBe(200);
     // Start runs in the background; it stores `provisioning` once the instance exists.
     await expect.poll(() => storedStatus(agent.name), { timeout: 15_000 }).toBe('provisioning');
+    // The strip follows (the Start's agents:changed and the stream's agent.changed).
+    await expect(status, 'the strip shows provisioning without a reload').toHaveAttribute('data-agent-status', 'provisioning', { timeout: 15_000 });
 
     await page.goto(`${origin}/agents/${agent.name}`);
     const indicator = page.locator('#chat-provisioning');
@@ -124,6 +131,12 @@ for (const kind of ['gateway', 'claude-code'] as const) {
     await expect(empty).toBeVisible();
     await expect(empty).toContainText('No messages yet');
     expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload)).toBe(1);
+    // The strip and the menu follow the promotion on this document too.
+    await expect(status, 'the strip shows running without a reload').toHaveAttribute('data-agent-status', 'running', { timeout: 15_000 });
+    await page.locator('#agent-actions-open').click();
+    await expect(menu.locator('[data-agent-action="Stop"]'), 'the menu offers Stop').toBeVisible();
+    await expect(menu.locator('[data-agent-action="Start"]'), 'Start is not offered while it runs').toBeHidden();
+    await page.keyboard.press('Escape');
 
     // Nothing scrolls sideways at 412px.
     const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);

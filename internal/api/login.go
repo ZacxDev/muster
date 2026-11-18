@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"html"
 	"net/http"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/auth"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/web"
 )
@@ -31,16 +33,17 @@ import (
 // refuseUnauthenticated and the tests cannot drift.
 const loginPath = "/login"
 
-// loginRateBurst / loginRateWindow bound password guesses.
+// loginRateBurst / loginRateWindow count wrong operator passwords, process-wide.
 //
-// 🔴 THE BUCKET IS PROCESS-WIDE, NOT PER-IP, AND THAT IS THE CONSERVATIVE
-// CHOICE HERE. A per-IP bucket is keyed on something the caller picks — on a LAN
-// an attacker has the whole subnet to rotate through, and behind the ingress
-// every request shares one source. A shared bucket means a determined guesser
-// can lock the operator out for the window, which is the trade taken on purpose:
-// this secret protects a remote shell, and a brief self-inflicted lockout is
-// cheaper than an unbounded guessing rate. The window is short enough that the
-// operator's own retry succeeds within a minute.
+// 🔴 THE COUNTS HOLD FAILURES ONLY, AND THEY REFUSE ONLY UNKNOWN DEVICES
+// (passwordGate, known_device.go). Past loginRateBurst in a window from one
+// client address (or loginRateGlobalBurst across all of them), a request with
+// no valid known-device cookie (and, at sign-in, no valid session) is refused before the
+// compare, correct password or not, so a guesser is held to loginRateBurst a
+// minute per address; a browser that signed in correctly before is never
+// refused with the correct password, so a junk flood cannot lock the operator
+// out of a browser they use (TestAJunkFloodDoesNotLockAKnownDeviceOut). A wrong
+// password from a known device still counts.
 const (
 	loginRateBurst  = 10
 	loginRateWindow = time.Minute
@@ -74,10 +77,23 @@ func safeReturnTo(v string) string {
 	u, err := url.Parse(v)
 	// The DECODED path must pass the same test: "/%2F%2Fevil.example" and
 	// "/%5Cevil" decode to a second slash or a backslash.
-	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil || !localPath(u.Path) {
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil || !localPath(u.Path) || dotSegment(u.Path) {
 		return "/"
 	}
 	return v
+}
+
+// dotSegment reports whether the DECODED path p has a "." or ".." segment
+// ("/agents/../tasks", and so "/agents/%2e%2e/tasks"): a browser resolves it
+// to another path than the one a prefix check read, so a return address that
+// names one is refused rather than normalised.
+func dotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // localPath reports whether p is a path on THIS origin: one leading "/", no
@@ -158,20 +174,24 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := r.FormValue("next")
-	if !s.loginRate.allow(time.Now(), loginRateBurst, loginRateWindow) {
-		// 429, not 401: the credential was never judged, and saying otherwise
-		// would teach a guesser that this password was wrong.
+	ok, refused, throttled := s.passwordGate(r, r.FormValue("password"), time.Now(), true)
+	if refused || throttled {
+		if !refused {
+			s.logger.Printf("login: rejected a password attempt")
+		}
 		s.renderLoginPage(w, http.StatusTooManyRequests, next,
 			"Too many attempts. Wait a minute and try again.")
 		return
 	}
-	if !auth.ConstantTimeEqual(r.FormValue("password"), s.auth.UIPassword) {
+	if !ok {
 		s.logger.Printf("login: rejected a password attempt")
 		s.renderLoginPage(w, http.StatusUnauthorized, next, "That password is not right.")
 		return
 	}
 
-	s.setPasswordSessionCookie(w)
+	clearSiteCaches(w)
+	s.setPasswordSessionCookie(w, r)
+	s.setKnownDeviceCookie(w, r)
 	s.logger.Printf("login: a browser session was issued")
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
 }
@@ -179,7 +199,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 // setPasswordSessionCookie mints a password-mode session issued NOW — the
 // sign-in and the step-up confirm (stepup.go) are its two callers, and the
 // issue time is what the step-up gate reads.
-func (s *Server) setPasswordSessionCookie(w http.ResponseWriter) {
+func (s *Server) setPasswordSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:  sessionCookieName,
 		Value: auth.SignSession(s.auth.uiSessionSecret(), time.Now(), sessionTTL),
@@ -192,9 +212,56 @@ func (s *Server) setPasswordSessionCookie(w http.ResponseWriter) {
 		// land on the login page despite a valid session. Lax still withholds it
 		// from cross-site POSTs, which is the CSRF case that matters here.
 		SameSite: http.SameSiteLaxMode,
-		Secure:   s.auth.SecureCookies,
+		Secure:   s.passwordCookieSecure(r),
 		MaxAge:   int(sessionTTL / time.Second),
 	})
+}
+
+// passwordCookieSecure is the Secure attribute of a password-mode cookie set on
+// the response to r: MUSTER_SECURE_COOKIES, EXCEPT on a page this machine
+// serves itself over plain http on its loopback interface (loopbackHTTPPage).
+//
+// 🔴 WHY THE EXCEPTION, AND WHY IT IS SAFE. Chromium keeps a Secure cookie set
+// over http://localhost (a loopback origin is a secure context); WebKit drops
+// it, so a Secure session cookie there signs nobody in. MEASURED, not assumed:
+// e2e/localhost's measure test logs it on every CI run (Playwright's Chromium
+// KEPT, its WebKit DROPPED; that is Playwright's WebKit build on Linux — Safari
+// on macOS itself is not measured there). The Compose stack sets
+// MUSTER_SECURE_COOKIES=1 by default and listens on 127.0.0.1, so the first
+// thing a new install does (open http://localhost:8105) would fail in a WebKit
+// browser, and its sign-in is checked in both engines. Dropping Secure there
+// costs nothing: Secure keeps a cookie off plain-http requests, and EVERY
+// request to that origin is plain http on the loopback interface, which never
+// leaves the machine. Anywhere else — https, a LAN address, a proxy in front
+// (a Host it did not keep, a forwarded https) — the flag is exactly as set.
+func (s *Server) passwordCookieSecure(r *http.Request) bool {
+	return s.auth.SecureCookies && !loopbackHTTPPage(r)
+}
+
+// loopbackHTTPPage reports whether r is a browser request from a page this
+// server serves over plain http on the loopback interface: the request itself
+// is plain http (no TLS, no forwarded https), and its Origin — or Referer, when
+// the browser sent no Origin — is http://<loopback host> naming exactly r's
+// own Host (so r's Host is loopback too: that comparison is the Host check).
+// All of it, so a request through any proxy (a Host it rewrote to localhost
+// keeps its https Origin; one that kept the Host is not loopback) and a request
+// with neither header (curl, a script) keep the configured flag.
+func loopbackHTTPPage(r *http.Request) bool {
+	if r == nil || r.TLS != nil {
+		return false
+	}
+	if p := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); p != "" && !strings.EqualFold(p, "http") {
+		return false
+	}
+	src := strings.TrimSpace(r.Header.Get("Origin"))
+	if src == "" {
+		src = strings.TrimSpace(r.Header.Get("Referer"))
+	}
+	if !loopback.HTTPURL(src) {
+		return false
+	}
+	u, err := url.Parse(src)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
 }
 
 // handleLogout clears the session cookie. It is a POST because a GET logout is
@@ -208,22 +275,51 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.hasValidSession(r) {
 		s.forgetPushDevice(w, r, s.sessionUserID(r))
 	}
+	clearSiteCaches(w)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   s.auth.SecureCookies,
+		Secure:   s.passwordCookieSecure(r),
 		MaxAge:   -1,
 	})
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
 }
 
+// clearSiteCaches asks the browser to drop everything it CACHED for this
+// origin — the HTTP cache and the back/forward cache — on the response that
+// ends a session or starts one. The agent page, the Rendered view and the
+// terminals are cacheable (viewDocument), so without it Back after a sign-out
+// could show one of them from a cache to whoever holds the device next, and
+// Back after the next person signs in could show them the last one's.
+//
+// 🔴 "cache" ONLY, NEVER "storage". "storage" also unregisters the service
+// worker (and with it this device's push subscription) and empties IndexedDB,
+// where the Rendered view's snapshots live — and those have their own purge
+// (ui.SnapPurgeHTML, on the sign-in page every sign-out lands on). Asked for
+// the caches only, the next person's device keeps its app.
+//
+// ⚠ IT IS A BEST EFFORT, AND NOT THE GUARD THAT MUST HOLD. Browsers honour
+// Clear-Site-Data only on a secure origin (HTTPS, or localhost), so on a
+// plain-HTTP deployment it does nothing at all. What holds everywhere is the
+// restore's own check (ui restoreJS): a restored view page re-requests itself
+// and reloads when that is refused, when the answer is another user's page
+// (the user marker every view page carries, ui.UserMarker), or when what it
+// showed is gone. Until that answer lands — one round trip — the restored
+// page's content IS on screen; this header is what keeps it from being
+// restored at all where it is honoured.
+//
+// Its callers are ledgered (TestEverySignInAndSignOutClearsTheCaches).
+func clearSiteCaches(w http.ResponseWriter) {
+	w.Header().Set("Clear-Site-Data", `"cache"`)
+}
+
 // renderLoginPage writes the whole document. Hand-written rather than composed,
 // for the independence reason at the top of this file.
 func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem string) {
-	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	inner := s.loginBrandHTML(context.Background()) + `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
 <p class="text-sm text-fg2">Enter the operator password to continue.</p>
 ` + problemNode(problem) + `
@@ -233,7 +329,7 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
 </form>`
-	writeAuthDocument(w, code, "Sign in", inner)
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 
 // problemNode renders a server-authored failure message, or nothing.
@@ -247,11 +343,21 @@ func problemNode(problem string) string {
 		html.EscapeString(problem) + `</p>`
 }
 
-// writeAuthDocument writes one of the standalone auth pages (sign-in, the
-// gotrue sign-in, the admin claim, the account page, notices): the same bare
-// document, so none of them depends on internal/ui's shell. title is escaped;
-// inner is trusted markup built by this package.
-func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
+// writeAuthDocument writes one of the BARE standalone pages — sign-in, the
+// gotrue sign-in, the admin claim, an invite, a password reset, a notice — the
+// same document with no navigation, so none of them depends on internal/ui's
+// shell. title is escaped; inner is trusted markup built by this package.
+//
+// 🔴 ONLY A PAGE A SIGNED-OUT CALLER CAN BE SHOWN BELONGS HERE. A page behind
+// requireSession goes through writeNavDocument, which draws the side nav.
+// TestEveryAPIDocumentIsNavOrNamedBare holds the two sets.
+//
+// Every such page deletes the mirrored views' snapshots in this browser
+// (ui.SnapPurgeHTML): a sign-out lands here, and so does any sign-in, so one
+// user's cached conversations never outlive their session on a shared device.
+// They also keep a server switcher hand-off (#muster-from) across the sign-in
+// (ui.ServerHandoffKeepHTML).
+func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
 <head>
@@ -259,9 +365,12 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 ` + ui.ThemeHeadHTML() + `
+` + ui.DocHeadHTML(brand) + `
 <meta name="robots" content="noindex">
 <title>` + html.EscapeString(title) + ` · muster</title>
 <link rel="stylesheet" href="` + html.EscapeString(web.Asset("/static/app.css")) + `">
+` + ui.SnapPurgeHTML() + `
+` + ui.ServerHandoffKeepHTML() + `
 </head>
 <body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">
 <main class="w-full max-w-sm">
@@ -269,6 +378,42 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 </main>
 </body>
 </html>`
+	writeDocumentHeaders(w, code)
+	_, _ = w.Write([]byte(doc))
+}
+
+// writeNavDocument writes a SIGNED-IN server-authored page — Attention,
+// Account, API tokens, Credentials, Passkeys, Plugins, Browser flows, the
+// admin pages — inside the app's navigation: ui.NavDocument, the same sidebar
+// every other signed-in document draws. entry is the nav entry the page
+// belongs to (ui.NavAttention, ui.NavAccount, ui.NavAdmin, or "" for none).
+//
+// The headers are writeAuthDocument's, because the forms on these pages need
+// the same two things: no-store (a token shown once must not be restored from
+// a cache), and same-origin referrers (the sign-out and every operator-write
+// form are refused without a same-origin Origin).
+//
+// secret says the page shows or takes a secret (a minted token, a reset or
+// invite link; an OAuth token or API key typed in; a passkey ceremony): it then
+// loads no telemetry script (ui.NavDocumentView.Secret). Each caller's value is
+// stated in TestEveryNavPageStatesItsTelemetry.
+//
+// app, when given, lays the page out as a phone app screen (ui.NavApp: the ask
+// page a notification opens).
+func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string, app ...*ui.NavApp) {
+	writeDocumentHeaders(w, code)
+	v := ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}
+	if len(app) > 0 {
+		v.App = app[0]
+	}
+	if err := ui.RenderNavDocument(w, v); err != nil {
+		s.logger.Printf("render %s: %v", title, err)
+	}
+}
+
+// writeDocumentHeaders is the header set both document writers send, then the
+// status.
+func writeDocumentHeaders(w http.ResponseWriter, code int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// A login page must never be cached: a shared or restored cache entry would
 	// show a stale form (or a stale error) to the next person at this origin.
@@ -282,5 +427,4 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 	// any other site, which is what no-referrer protects (a token in a URL).
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(code)
-	_, _ = w.Write([]byte(doc))
 }

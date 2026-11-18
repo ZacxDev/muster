@@ -9,40 +9,32 @@ import (
 
 // A CHAT SESSION'S RUNTIME AND MODEL (migration 0030).
 //
-// The chief's pod runs two runtimes side by side: ccd (Claude Code) and the
-// model-gateway runtime (agentspec's sidecar). A session is tagged with one of
-// them, and a model, when it is created, and both are fixed for its life (a
-// database trigger refuses a change). muster routes each turn by the tag
-// (internal/api's sessionRoute).
+// A claude-code chief's ccd runs more than one Claude Code CLI. A session is
+// tagged with its runtime, and a model, when it is created, and both are fixed
+// for its life (a database trigger refuses a change). muster routes each turn by
+// the tag (internal/api's sessionRoute).
 //
 //	SessionRuntimeLegacy     ""            the agent's own kind; for a claude-code
 //	                                       agent, the ONE CLI ccd has always run.
 //	                                       Every session that existed before 0030.
 //	SessionRuntimeClaudeCode "claude-code" a CLI of its own in ccd, started with
 //	                                       --model when Model is set.
-//	SessionRuntimeGateway    "gateway"     the model-gateway runtime, with Model as
-//	                                       the per-request model override.
+//
+// ⚠ THE COLUMN STILL ADMITS "gateway": a second runtime, run beside ccd in the
+// chief's pod, was offered here until it was removed with no session ever
+// started on it. A row carrying it routes as legacy.
 const (
 	SessionRuntimeLegacy     = ""
 	SessionRuntimeClaudeCode = KindClaudeCode
-	SessionRuntimeGateway    = KindGateway
 )
 
 // SessionRuntimes is every explicit runtime, in the order a picker shows them.
-var SessionRuntimes = []string{SessionRuntimeClaudeCode, SessionRuntimeGateway}
+var SessionRuntimes = []string{SessionRuntimeClaudeCode}
 
 // SessionRuntimeLabel is what the session list and the picker show.
-//
-// ⚠ THE GATEWAY RUNTIME IS LABELLED BY ITS MODEL PROVIDER, NOT BY ITS PRODUCT:
-// the runtime image's own name is a denied token in this public repository
-// (tests/leakscan.py), and what the operator chooses here is "an OpenRouter
-// model" anyway.
 func SessionRuntimeLabel(runtime string) string {
-	switch runtime {
-	case SessionRuntimeClaudeCode:
+	if runtime == SessionRuntimeClaudeCode {
 		return "Claude Code"
-	case SessionRuntimeGateway:
-		return "OpenRouter"
 	}
 	return "Default"
 }
@@ -54,15 +46,36 @@ func SessionRuntimeLabel(runtime string) string {
 // set again before it starts a CLI.
 var claudeModelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$`)
 
-// gatewayModelPattern is an OpenRouter model as GET /api/openrouter/models
-// returns it: "openrouter/<vendor>/<model>", the model part allowing the
-// catalogue's ":free"-style suffixes.
-var gatewayModelPattern = regexp.MustCompile(`^openrouter/[a-z0-9][a-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$`)
-
 // ClaudeCodeModels are the models the picker offers for a Claude Code session.
 // Aliases, so a model release does not need a muster release; any id matching
 // the pattern above is accepted from the API as well.
 var ClaudeCodeModels = []string{"opus", "sonnet", "haiku"}
+
+// ClaudeContextWindow is the context window, in tokens, of a Claude model as
+// muster names one — an alias (opus, sonnet, haiku) or a claude-* id — and 0
+// for any other (a claude-code chief on its CLI's unknown default included)
+// model: 1,000,000 with the CLI's "[1m]" suffix, else 200,000, the window
+// every current Claude model has by default.
+//
+// ⚠ IT IS A TABLE OF MUSTER'S, NOT A READING: Claude Code reports no window.
+// A model released with a different default window needs this changed.
+func ClaudeContextWindow(model string) int64 {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(m, "anthropic/") {
+		m = strings.TrimPrefix(m, "anthropic/")
+	}
+	long := strings.HasSuffix(m, "[1m]")
+	m = strings.TrimSuffix(m, "[1m]")
+	switch {
+	case m == "opus", m == "sonnet", m == "haiku", strings.HasPrefix(m, "claude-"):
+	default:
+		return 0
+	}
+	if long {
+		return 1_000_000
+	}
+	return 200_000
+}
 
 // ValidateSessionRuntime checks an explicit (runtime, model) pair a caller asks
 // a new session to carry, and returns the model as it will be stored.
@@ -73,14 +86,24 @@ func ValidateSessionRuntime(runtime, model string) (string, error) {
 		if model != "" && !claudeModelPattern.MatchString(model) {
 			return "", fmt.Errorf("%q is not a Claude model (an alias such as opus, sonnet or haiku, or a model id)", model)
 		}
-	case SessionRuntimeGateway:
-		if !gatewayModelPattern.MatchString(model) {
-			return "", fmt.Errorf("%q is not an OpenRouter model (openrouter/<vendor>/<model>, as the model search returns it)", model)
-		}
 	default:
 		return "", fmt.Errorf("runtime %q is not one a session can be started on (want %s)", runtime, strings.Join(SessionRuntimes, " or "))
 	}
 	return model, nil
+}
+
+// OpenRouterModelPrefix is the route prefix of a model muster reaches through
+// OpenRouter: "openrouter/<catalogue id>" (the form every model check stores).
+const OpenRouterModelPrefix = "openrouter/"
+
+// SessionOnOpenRouter reports whether a chat session whose stored model is
+// model runs on OpenRouter: THE predicate the LLM proxy's chief-session door
+// asks (internal/api chief_session_llm.go) before it spends the chief
+// sessions' OpenRouter key on a session. A Claude session's model (an alias
+// or a claude-* id, claudeModelPattern: no "/") and a session with no model
+// never pass.
+func SessionOnOpenRouter(model string) bool {
+	return strings.HasPrefix(model, OpenRouterModelPrefix) && len(model) > len(OpenRouterModelPrefix)
 }
 
 // SessionRuntimeStore is the part of the session store migration 0030 added.

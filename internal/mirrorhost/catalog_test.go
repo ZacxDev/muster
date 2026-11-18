@@ -15,8 +15,8 @@ import (
 )
 
 // THE CATALOG SCAN (catalog.go) against fixture trees: a Claude Code config
-// directory, a home directory, a repository with a project .claude, plugins and
-// a snippets file. Every name and description below is distinct from every
+// directory, a home directory, a repository with a project .claude, and
+// plugins. Every name and description below is distinct from every
 // other, so an entry read from the wrong place, or under the wrong name, shows.
 
 // write writes body to path, creating its directories.
@@ -52,7 +52,7 @@ func newFixture(t *testing.T) *fixture {
 	if err := os.MkdirAll(f.sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f.s = &CatalogScanner{Config: f.cfg, Home: home, SnippetsFile: filepath.Join(home, "snippets.json")}
+	f.s = &CatalogScanner{Config: f.cfg, Home: home}
 	return f
 }
 
@@ -189,34 +189,9 @@ func TestTheConfigDirectoryFollowsCLAUDE_CONFIG_DIR(t *testing.T) {
 	d := t.TempDir()
 	write(t, filepath.Join(d, "skills", "from-env", "SKILL.md"), skill("from-env", "found through the variable"))
 	t.Setenv("CLAUDE_CONFIG_DIR", d)
-	s := &CatalogScanner{Home: t.TempDir(), SnippetsFile: "-"}
+	s := &CatalogScanner{Home: t.TempDir()}
 	if m := byName(s.Scan("")); m["from-env"].Source != mirror.SourceUser {
 		t.Fatalf("CLAUDE_CONFIG_DIR not read: %q", names(s.Scan("")))
-	}
-}
-
-// TestSnippetsAreReadAndReloadedWhenTheFileChanges: the file's entries, none
-// for a missing or invalid file, and a change picked up on the next scan.
-func TestSnippetsAreReadAndReloadedWhenTheFileChanges(t *testing.T) {
-	f := newFixture(t)
-	if c := f.s.Scan(""); c.Snippets != nil {
-		t.Fatalf("no file: %+v", c.Snippets)
-	}
-	write(t, f.s.SnippetsFile, `[{"trigger":":eos","label":"End of session","body":"reflect, then write the handoff"},{"trigger":"nocolon","body":"dropped"}]`)
-	c := f.s.Scan("")
-	if len(c.Snippets) != 1 || c.Snippets[0] != (mirror.Snippet{Trigger: ":eos", Label: "End of session", Body: "reflect, then write the handoff"}) {
-		t.Fatalf("snippets = %+v", c.Snippets)
-	}
-	write(t, f.s.SnippetsFile, `[{"trigger":":kickoff","label":"Kickoff","body":"give the kickoff message"}]`)
-	future := time.Now().Add(2 * time.Second)
-	_ = os.Chtimes(f.s.SnippetsFile, future, future)
-	if c := f.s.Scan(""); len(c.Snippets) != 1 || c.Snippets[0].Trigger != ":kickoff" {
-		t.Fatalf("after a change: %+v", c.Snippets)
-	}
-	write(t, f.s.SnippetsFile, `{"not": "an array"}`)
-	_ = os.Chtimes(f.s.SnippetsFile, future.Add(time.Second), future.Add(time.Second))
-	if c := f.s.Scan(""); c.Snippets != nil {
-		t.Fatalf("an invalid file: %+v", c.Snippets)
 	}
 }
 
@@ -291,20 +266,6 @@ func TestTheScanIsBounded(t *testing.T) {
 	}
 }
 
-// TestDefaultSnippetsFileFollowsXDG: $XDG_CONFIG_HOME first, else
-// ~/.config.
-func TestDefaultSnippetsFileFollowsXDG(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/xdg/conf")
-	if got := DefaultSnippetsFile(); got != "/xdg/conf/muster-mirror/snippets.json" {
-		t.Fatalf("with XDG_CONFIG_HOME: %q", got)
-	}
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("HOME", "/fixture-users/fixture-user")
-	if got := DefaultSnippetsFile(); got != "/fixture-users/fixture-user/.config/muster-mirror/snippets.json" {
-		t.Fatalf("without: %q", got)
-	}
-}
-
 // TestParseHeadReadsTheFrontMatterSubset: what is returned (and cached) is the
 // CLEANED text — a tab or a block's newlines are a space, as the wire carries
 // them — for the scalar forms, a literal block,
@@ -330,22 +291,22 @@ func TestParseHeadReadsTheFrontMatterSubset(t *testing.T) {
 }
 
 // TestASwappedLinkIsReReadEvenAtTheSameSizeAndTime: home-manager links skills
-// and the snippets file into /nix/store, where every mtime is 1970. A switch
-// that changes a description (or a snippet) without changing its length swaps
-// the link to a new target of the same size and time — and must be re-read.
+// into /nix/store, where every mtime is 1970. A switch that changes a
+// description without changing its length swaps the link to a new target of
+// the same size and time — and must be re-read.
 func TestASwappedLinkIsReReadEvenAtTheSameSizeAndTime(t *testing.T) {
 	f := newFixture(t)
 	epoch := time.Unix(1, 0)
-	gen := func(name, skillDesc, snipBody string) string {
+	gen := func(name, desc, secondDesc string) string {
 		d := filepath.Join(f.cfg, ".generations", name)
-		write(t, filepath.Join(d, "skill", "SKILL.md"), skill("linked", skillDesc))
-		write(t, filepath.Join(d, "snippets.json"), `[{"trigger":":s","label":"L","body":"`+snipBody+`"}]`)
-		for _, p := range []string{filepath.Join(d, "skill", "SKILL.md"), filepath.Join(d, "snippets.json")} {
+		write(t, filepath.Join(d, "skill", "SKILL.md"), skill("linked", desc))
+		write(t, filepath.Join(d, "second", "SKILL.md"), skill("second", secondDesc))
+		for _, p := range []string{filepath.Join(d, "skill", "SKILL.md"), filepath.Join(d, "second", "SKILL.md")} {
 			_ = os.Chtimes(p, epoch, epoch)
 		}
 		return d
 	}
-	a, b := gen("a", "AAAA", "body-one"), gen("b", "BBBB", "body-two")
+	a, b := gen("a", "AAAA", "WWWW"), gen("b", "BBBB", "XXXX")
 	link := func(target, at string) {
 		_ = os.Remove(at)
 		if err := os.MkdirAll(filepath.Dir(at), 0o755); err != nil {
@@ -356,19 +317,22 @@ func TestASwappedLinkIsReReadEvenAtTheSameSizeAndTime(t *testing.T) {
 		}
 	}
 	link(filepath.Join(a, "skill"), filepath.Join(f.cfg, "skills", "linked"))
-	link(filepath.Join(a, "snippets.json"), f.s.SnippetsFile)
+	link(filepath.Join(a, "second"), filepath.Join(f.cfg, "skills", "second"))
 	c := f.s.Scan("")
-	if d := byName(c)["linked"].Description; d != "AAAA" || len(c.Snippets) != 1 || c.Snippets[0].Body != "body-one" {
-		t.Fatalf("first generation: %q %+v", d, c.Snippets)
+	if d := byName(c)["linked"].Description; d != "AAAA" {
+		t.Fatalf("first generation: %q", d)
+	}
+	if d := byName(c)["second"].Description; d != "WWWW" {
+		t.Fatalf("first generation, the second skill: %q", d)
 	}
 	link(filepath.Join(b, "skill"), filepath.Join(f.cfg, "skills", "linked"))
-	link(filepath.Join(b, "snippets.json"), f.s.SnippetsFile)
+	link(filepath.Join(b, "second"), filepath.Join(f.cfg, "skills", "second"))
 	c = f.s.Scan("")
 	if d := byName(c)["linked"].Description; d != "BBBB" {
 		t.Fatalf("after the switch the skill reads %q, want BBBB: the cache answered for a link that now points elsewhere", d)
 	}
-	if len(c.Snippets) != 1 || c.Snippets[0].Body != "body-two" {
-		t.Fatalf("after the switch the snippets are %+v, want body-two", c.Snippets)
+	if d := byName(c)["second"].Description; d != "XXXX" {
+		t.Fatalf("after the switch the second skill reads %q, want XXXX", d)
 	}
 }
 

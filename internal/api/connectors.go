@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -49,8 +51,13 @@ const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNE
 // (approvals.go): the pod's PermissionRequest hook reaches the operator's
 // approval queue THROUGH muster, so the pod holds no credential for that queue.
 // /agent/work is the same pod's live work counts (agent_work.go), on the same
-// per-agent token.
-var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked", "/agent/work"}
+// per-agent token. /agent/officer is an officer instance's pod uploading a
+// workspace image for an ask (`ccd ask-image`, officers.go), on the same token.
+//
+// /llm/ is the officer LLM proxy (officer_llm.go): a routine officer
+// instance's Claude Code reaches its model through it, on its own per-agent
+// token, so its pod gains no egress and holds no provider key.
+var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked", "/agent/work", "/agent/officer", "/agent/ask-attachments", "/llm/"}
 
 // OnlyConnectSurface wraps h so it serves only ConnectSurfacePrefixes (and
 // /health, for a probe), answering 404 for every other path.
@@ -97,6 +104,7 @@ func (s *Server) registerConnectorRoutes(mux Mux) {
 	mux.HandleFunc("POST /ui/connector-requests/{id}/approve", s.requireOperatorWrite(s.handleConnectorApprove))
 	mux.HandleFunc("POST /ui/connector-requests/{id}/deny", s.requireOperatorWrite(s.handleConnectorDeny))
 	mux.HandleFunc("DELETE /connector-grants/{id}", s.requireOperatorWrite(s.handleConnectorRevoke))
+	mux.HandleFunc("DELETE /connector-standing-grants/{id}", s.requireOperatorWrite(s.handleStandingGrantRevoke))
 }
 
 // requireOperatorWrite is requireSession plus requireSameOrigin.
@@ -201,8 +209,24 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 	return a, true
 }
 
-func callerOf(a agents.Agent) connectors.Caller {
-	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: a.Repo}
+// callerOf is agent a as the connector proxy's caller. Its Repo is agentRepo's
+// (an officer instance's configured repository, else the row's).
+//
+// 🔴 AN OFFICER INSTANCE IS ALWAYS ReadOnly (operator decision, PR #337 round
+// 1): the GitHub App mints it a read-only token even on a deployment whose
+// MUSTER_GITHUB_APP_ACCESS is write (the default). An officer never pushes or
+// merges, and it runs with every tool allowed (OfficerClaudeCodeSession), so
+// its token is what bounds it.
+//
+// A SHIPPING officer's instance (officers.Officer.Ship) also carries a Gate
+// (shipGate): every request it makes is decided by the officer's push gate
+// before any credential exists, and is served with the officer's OWN App
+// token — never the deployment App's — so ReadOnly then has nothing left to
+// limit, and stays set.
+func (s *Server) callerOf(a agents.Agent) connectors.Caller {
+	_, _, officer := s.officerOf(a)
+	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadRepos: s.agentReadRepos(a),
+		PublicReadRepos: s.agentPublicReadRepos(a), ReadOnly: officer, Gate: s.shipGate(a)}
 }
 
 // --- the proxy ------------------------------------------------------------------------
@@ -225,7 +249,19 @@ func (s *Server) handleConnectProxy(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed proxy path"})
 		return
 	}
-	s.connectProxy.Serve(w, r, callerOf(a), connector, host, parts[2])
+	// An officer reaches the `github` connector only: refused BEFORE the
+	// proxy, which would otherwise file a pending request on first use.
+	if err := s.officerConnectorRefusal(a, connector); err != nil {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+		return
+	}
+	// A chief-only connector (connector_chief_only.go): refused BEFORE the
+	// proxy, which would otherwise file a request a standing grant approves.
+	if why := s.chiefOnlyConnectorRefusal(r.Context(), a, connector); why != "" {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why, "connector": connector})
+		return
+	}
+	s.connectProxy.Serve(w, r, s.callerOf(a), connector, host, parts[2])
 }
 
 // --- the agent JSON API ------------------------------------------------------------------
@@ -270,6 +306,21 @@ func ProxyRecipe(connector, host string) string {
 		"`Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster replaces it with the credential."
 }
 
+// PostgresUsage is a postgres connector's usage line: the query tool, not the
+// proxy.
+func PostgresUsage(name string) string {
+	return "Query it with the " + postgresQueryToolName + " tool: " + postgresQueryToolName + "{connector: \"" + name +
+		"\", sql, params?}. One read-only statement per call; muster connects to the database, you never see the credential."
+}
+
+// InternalHTTPUsage is an internal_http connector's usage line: the call tool,
+// not the proxy. It names no URL: the agent is never told the destination.
+func InternalHTTPUsage(name string) string {
+	return "Call it with the " + internalHTTPToolName + " tool: " + internalHTTPToolName + "{connector: \"" + name +
+		"\", method, path, query?, body?}. The service and its credential are the server's; you choose only GET, POST or " +
+		"DELETE and a path under the connector's prefix."
+}
+
 func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name string) (AgentConnectorView, error) {
 	v := AgentConnectorView{Name: name, Grant: "none"}
 	c, err := s.ext.Connectors.GetConnector(ctx, name)
@@ -282,7 +333,7 @@ func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name st
 	g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name)
 	switch {
 	case err == nil:
-		g, err = s.reconcileGrant(ctx, g)
+		g, err = s.reconcileGrant(ctx, a, g)
 		if err != nil {
 			return v, err
 		}
@@ -292,6 +343,14 @@ func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name st
 	}
 	if v.Exists && v.Grant == connectors.StatusApproved {
 		v.Usage = ProxyUsage(name, v.Hosts)
+		switch c.Scheme {
+		case connectors.SchemePostgres:
+			// A database is never reached through the HTTP proxy (it refuses one).
+			v.Usage = PostgresUsage(name)
+		case connectors.SchemeInternalHTTP:
+			// Nor is an internal_http connector: its tool is its only door.
+			v.Usage = InternalHTTPUsage(name)
+		}
 	}
 	return v, nil
 }
@@ -403,9 +462,17 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 	if err := connectors.ValidateName(name); err != nil {
 		return AgentConnectorView{}, false, err
 	}
+	if err := s.officerConnectorRefusal(a, name); err != nil {
+		return AgentConnectorView{}, false, err
+	}
+	reopened := int64(0)
 	if g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name); err == nil {
-		if g, err = s.reconcileGrant(ctx, g); err != nil {
+		was := g.Status
+		if g, err = s.reconcileGrant(ctx, a, g); err != nil {
 			return AgentConnectorView{}, false, err
+		}
+		if was == connectors.StatusApproved && g.Status == connectors.StatusPending {
+			reopened = g.ID // re-opened by THIS request: it asks the owner (0033)
 		}
 		if g.Usable() {
 			v, err := s.agentConnectorView(ctx, a, name)
@@ -421,9 +488,19 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 			Connector: name, Detail: "requested"}); err != nil {
 			s.logger.Printf("connectors: audit request %d: %v", g.ID, err)
 		}
-		s.onConnectorRequested(ctx, g)
+		s.onGrantPending(ctx, g)
+	} else if g.Status == connectors.StatusPending && g.ID != reopened {
+		// A request still waiting from before a standing grant covered it:
+		// asking again applies the shared approval. Not one this very request
+		// re-opened because the credential source changed: that one asks.
+		s.approveFromStanding(ctx, g)
 	}
 	v, err := s.agentConnectorView(ctx, a, name)
+	if err == nil && v.Grant == connectors.StatusPending {
+		// Asked for while holding an item: that item is blocked on THIS
+		// grant until it is approved (officer_connector_rerun.go).
+		s.noteConnectorBlocked(ctx, a, v.GrantID, name)
+	}
 	return v, created, err
 }
 
@@ -462,15 +539,18 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 	s.writeJSON(w, code, v)
 }
 
-// reconcileGrant is connectors.ReconcileGrant for the agent routes (ctx is the
-// agent's owner): a grant re-opened because its credential source changed is
-// audited and prompts the owner like a new request.
-func (s *Server) reconcileGrant(ctx context.Context, g connectors.Grant) (connectors.Grant, error) {
-	g, reopened, err := connectors.ReconcileGrant(ctx, s.ext.Connectors, g)
-	if err != nil || !reopened {
+// reconcileGrant is connectors.ReconcileGrant for agent a's routes (ctx is the
+// agent's owner), against a's effective repository set (agentRepoScope): a grant
+// re-opened because its credential source or a's repository changed is audited
+// and prompts the owner like a new request. It is deliberately NOT offered to a
+// standing grant: such a change asks the owner again (0033, 0061), and their
+// approval is then shared like any other (an officer's never is).
+func (s *Server) reconcileGrant(ctx context.Context, a agents.Agent, g connectors.Grant) (connectors.Grant, error) {
+	g, reopened, err := connectors.ReconcileGrant(ctx, s.ext.Connectors, g, s.agentRepoScope(a))
+	if err != nil || reopened == "" {
 		return g, err
 	}
-	s.auditGrant(ctx, g, "re-opened: the connector's credential source changed")
+	s.auditGrant(ctx, g, reopened)
 	s.onConnectorRequested(ctx, g)
 	return g, nil
 }
@@ -483,6 +563,11 @@ func (s *Server) reconcileGrant(ctx context.Context, g connectors.Grant) (connec
 // who approves it — so the nudge reaches that owner's Connectors tab and the
 // push goes to that owner's own devices (and to the router's only when that
 // owner is an admin — goNotify / routerServes).
+//
+// 🔴 A TEAM's request (its agent's owner is the team: the team acting
+// principal) links the team's own page, /teams/{id}/connectors — a member's
+// /connectors lists only their own grants, so it would be empty — and goes to
+// the team's MANAGERS only (managersOnly): an operator cannot decide it.
 func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	s.logger.Printf("connector request created id=%d agent=%q connector=%q", g.ID, g.AgentName, g.Connector)
 	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(g.ID, 10))
@@ -493,13 +578,18 @@ func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	if g.Reason != "" {
 		body += " — " + g.Reason
 	}
+	link, team := "/connectors", false
+	if p, ok := authz.From(ctx); ok && p.Team && !p.All() && p.UserID > 0 {
+		link, team = "/teams/"+strconv.FormatInt(p.UserID, 10)+"/connectors", true
+	}
 	s.goNotify(requestOwner(ctx), push.EventConnector, RouterNotification{
-		Type:  "connector",
-		ID:    strconv.FormatInt(g.ID, 10),
-		Title: "Connector request: " + g.AgentName,
-		Body:  body,
-		Tag:   "connector-" + strconv.FormatInt(g.ID, 10),
-		Data:  map[string]string{"url": "/connectors"},
+		Type:         "connector",
+		ID:           strconv.FormatInt(g.ID, 10),
+		Title:        "Connector request: " + g.AgentName,
+		Body:         body,
+		Tag:          "connector-" + strconv.FormatInt(g.ID, 10),
+		Data:         map[string]string{"url": link},
+		managersOnly: team,
 	}, func(n int) {
 		s.logger.Printf("push: delivered connector request id=%d owner=%d to %d device(s)", g.ID, requestOwner(ctx), n)
 	})
@@ -548,15 +638,59 @@ func (s *Server) connectorRequestViews(ctx context.Context) ([]ui.ConnectorReque
 		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 			v.Problem = vc.Problem(g.AgentID)
 		}
+		v.Shares = s.requestShares(ctx, g)
+		v.Grants = s.requestCardGrants(ctx, g)
 		out = append(out, v)
 	}
 	return out, nil
 }
 
+// requestCardGrants is what approving the GitHub App request g grants, for its
+// request card: connector_requests_list's own description (grantsDescription,
+// shipGrantsDescription for a shipping officer), so the card and the listing
+// name the same repositories — an officer's `repo` and every one of its
+// `read_repos`, each READ ONLY. "" for a stored connector (its card is
+// unchanged) and when the agent cannot be read.
+func (s *Server) requestCardGrants(ctx context.Context, g connectors.Grant) string {
+	if _, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); !ok || s.ext.Agents == nil {
+		return ""
+	}
+	a, err := s.ext.Agents.Get(ctx, g.AgentID)
+	if err != nil {
+		return ""
+	}
+	k, err := s.ext.Connectors.GetConnector(ctx, g.Connector)
+	if err != nil {
+		return ""
+	}
+	o, _, officer := s.officerOf(a)
+	desc := ""
+	if officer && o.Ship != nil {
+		desc = shipGrantsDescription(o)
+	} else {
+		desc, _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer)
+	}
+	if strings.HasPrefix(desc, "approving grants ") {
+		return "A" + strings.TrimPrefix(desc, "a") + "."
+	}
+	return "Approving grants " + desc + "."
+}
+
 // githubAppScope is what the GitHub App's installation token may do in the
-// agent's own repository (the permissions internal/githubapp mints it with), as
-// the Connectors tab and connector_requests_list both say it.
-const githubAppScope = "Contents and Pull requests read and write, Checks and Commit statuses read"
+// agent's own repository, as the Connectors tab, the approve card and
+// connector_requests_list say it.
+//
+// 🔴 IT IS READ FROM THE CONNECTOR, NEVER A CONSTANT. The levels depend on
+// MUSTER_GITHUB_APP_ACCESS (githubapp.Access), and Access.Scope derives the
+// text from the very permissions the mint asks for — so a read-only deployment
+// can never be described as granting write, nor the reverse. A virtual
+// connector that does not report its mode is not described as either.
+func githubAppScope(vc connectors.Virtual) string {
+	if ar, ok := vc.(interface{ Access() githubapp.Access }); ok {
+		return ar.Access().Scope()
+	}
+	return "permissions as that connector's token carries them"
+}
 
 func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsContent) error {
 	reqs, err := s.connectorRequestViews(ctx)
@@ -573,18 +707,37 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 		return err
 	}
 	by := map[string][]ui.ConnectorGrantView{}
+	uses := map[int64]int{}
 	for _, g := range grants {
 		by[g.Connector] = append(by[g.Connector], ui.ConnectorGrantView{ID: g.ID, AgentName: g.AgentName,
-			Status: g.Status, LastUsedAt: g.LastUsedAt, RequestedAt: g.RequestedAt, DecidedFrom: g.DecidedVia.String()})
+			Status: g.Status, LastUsedAt: g.LastUsedAt, RequestedAt: g.RequestedAt, DecidedFrom: g.DecidedVia.String(),
+			StandingID: g.StandingGrantID})
+		if g.StandingGrantID != 0 && g.Usable() {
+			uses[g.StandingGrantID]++
+		}
+	}
+	standing, err := s.ext.Connectors.ListStandingGrants(ctx)
+	if err != nil {
+		return err
+	}
+	shared := map[string][]ui.ConnectorSharedView{}
+	for _, sg := range standing {
+		shared[sg.Connector] = append(shared[sg.Connector], ui.ConnectorSharedView{ID: sg.ID, Repo: sg.Repo,
+			CreatedAt: sg.CreatedAt, Agents: uses[sg.ID]})
 	}
 	c.Connectors = make([]ui.ConnectorView, 0, len(list))
 	for _, k := range list {
 		cv := ui.ConnectorView{Name: k.Name, Platform: k.Platform, Hosts: k.Hosts,
 			Scheme: string(k.Scheme), HeaderName: k.HeaderName, Username: k.Username,
-			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name]}
-		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok {
+			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name],
+			Shared: shared[k.Name]}
+		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok && connectors.IsKubeRead(vc) {
+			cv.Managed = kubeReadManagedNote
+		} else if ih, isIH := vc.(*connectors.InternalHTTP); ok && isIH {
+			cv.Managed = internalHTTPManagedNote(ih)
+		} else if ok {
 			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
-				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope + "); " +
+				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope(vc) + "); " +
 				"other repositories are reached anonymously, " +
 				"and an agent with no repository gets no access. There is no stored secret to rotate or delete."
 			cv.Problem = vc.Problem(0)
@@ -622,10 +775,23 @@ func (s *Server) handleConnectorRequests(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func presetViews() []ui.ConnectorPresetView {
+// githubPresetReadOnlyHelp replaces the GitHub preset's help on a deployment
+// whose GitHub App mints read-only tokens: the default help recommends a
+// read/write token, which would contradict the mode. 🔴 A STORED TOKEN IS NOT
+// LIMITED BY MUSTER_GITHUB_APP_ACCESS, and the text says so.
+const githubPresetReadOnlyHelp = "A fine-grained personal access token scoped to the repositories the agents should reach " +
+	"(Contents read, Pull requests read, Metadata read — this deployment's GitHub access is read only, " +
+	"MUSTER_GITHUB_APP_ACCESS=read). It is used for the REST API and for git over HTTPS. That setting does NOT " +
+	"limit a stored token: the agents can do whatever its own permissions allow."
+
+func (s *Server) presetViews() []ui.ConnectorPresetView {
 	var out []ui.ConnectorPresetView
 	for _, p := range connectors.Presets() {
-		out = append(out, ui.ConnectorPresetView{Key: p.Key, Label: p.Label, Help: p.Help, SecretLabel: p.SecretLabel, Hosts: p.Hosts})
+		help := p.Help
+		if p.Key == connectors.GitHubPreset.Key && s.githubAppReadOnly() {
+			help = githubPresetReadOnlyHelp
+		}
+		out = append(out, ui.ConnectorPresetView{Key: p.Key, Label: p.Label, Help: help, SecretLabel: p.SecretLabel, Hosts: p.Hosts})
 	}
 	return out
 }
@@ -634,13 +800,20 @@ func presetViews() []ui.ConnectorPresetView {
 // submitted or queried fields.
 func (s *Server) connectorForm(ctx context.Context, q url.Values) (ui.ConnectorFormView, error) {
 	f := ui.ConnectorFormView{
-		Presets:  presetViews(),
+		Presets:  s.presetViews(),
 		Name:     strings.TrimSpace(q.Get("name")),
 		Preset:   q.Get("preset"),
 		Hosts:    q.Get("hosts"),
 		Scheme:   q.Get("scheme"),
 		Header:   q.Get("header_name"),
 		Username: q.Get("username"),
+		// The postgres preset's (ui.PostgresPresetKey).
+		PGHost:       strings.TrimSpace(q.Get("pg_host")),
+		PGPort:       strings.TrimSpace(q.Get("pg_port")),
+		PGDatabase:   strings.TrimSpace(q.Get("pg_database")),
+		PGSSLMode:    strings.TrimSpace(q.Get("pg_sslmode")),
+		PGRequireTLS: q.Get("pg_require_tls") == "on",
+		PGTimeoutMS:  strings.TrimSpace(q.Get("pg_statement_timeout_ms")),
 	}
 	if id, err := strconv.ParseInt(q.Get("request"), 10, 64); err == nil && id > 0 {
 		f.RequestID = id
@@ -720,7 +893,15 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{EditorForm: &f})
 	}
 	nc := connectors.NewConnector{Name: f.Name, Secret: r.PostForm.Get("secret")}
-	if p, ok := connectors.PresetFor(f.Preset); ok {
+	if f.Preset == connectors.PostgresPreset.Key {
+		pg, msg := postgresConnectorFrom(f)
+		if msg != "" {
+			fail(msg)
+			return
+		}
+		pg.Name, pg.Secret = nc.Name, nc.Secret
+		nc = pg
+	} else if p, ok := connectors.PresetFor(f.Preset); ok {
 		nc.Platform, nc.Hosts, nc.Scheme, nc.HeaderName, nc.Username = p.Key, p.Hosts, p.Scheme, p.HeaderName, p.Username
 	} else {
 		nc.Platform = "custom"
@@ -742,7 +923,6 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	notice := "Connector " + c.Name + " saved."
 	refused := ""
 	if f.RequestID != 0 {
-		src := connectors.SourceStored
 		// 🔴 FAIL CLOSED: a request that cannot be read now is not approved —
 		// the pool-worker refusal needs its agent, and skipping the check on a
 		// read error would approve exactly what it exists to refuse.
@@ -750,27 +930,52 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr != nil {
 			rerr = fmt.Errorf("the request could not be read (%v), so it was not approved; approve it below", gerr)
 		} else {
-			rerr = s.refusePoolWorkerGitHubGrant(ctx, pg)
-			src = connectors.SourceFor(ctx, s.ext.Connectors, pg.Connector)
+			rerr = s.refuseGrantApproval(ctx, pg)
 		}
 		if rerr != nil {
 			s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, rerr)
 			refused = rerr.Error() + "."
 		} else {
-			g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator", src)
+			// THE one decision (decideConnectorGrant): the same grant, credential
+			// source, audit line and shared approval as the card's Approve.
+			g, shared, err := s.decideConnectorGrant(ctx, f.RequestID, true, connectors.DecisionSource{})
 			if err != nil {
 				s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
-				s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
-					Error: "The connector was saved but the request could not be approved; approve it below."})
+				msg := "The connector was saved but the request could not be approved; approve it below."
+				if errors.Is(err, errRoleUncertain) {
+					msg = "The connector was saved, but your role could not be read just now, so the request was " +
+						"not approved; approve it below."
+				}
+				s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice, Error: msg})
 				s.broadcast(r.Context(), EventConnectorChanged, c.Name)
 				return
 			}
-			s.auditGrant(ctx, g, "approved")
-			notice = "Connector " + c.Name + " saved and " + g.AgentName + " approved."
+			notice = "Connector " + c.Name + " saved and " + g.AgentName + " approved." + shareNotice(shared)
 		}
 	}
 	s.broadcast(r.Context(), EventConnectorChanged, c.Name)
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice, Error: refused})
+}
+
+// postgresConnectorFrom is the postgres preset's form as a NewConnector (name
+// and secret still to set), or the message a malformed field fails with.
+// Everything else is validated by the store (connectors.NewConnector.Validate)
+// — which also refuses a member: postgres connectors are admins'.
+func postgresConnectorFrom(f ui.ConnectorFormView) (connectors.NewConnector, string) {
+	host := f.PGHost
+	if f.PGPort != "" {
+		host = net.JoinHostPort(strings.Trim(f.PGHost, "[]"), f.PGPort)
+	}
+	ps := connectors.PostgresSettings{Database: f.PGDatabase, SSLMode: f.PGSSLMode, RequireTLS: f.PGRequireTLS}
+	if f.PGTimeoutMS != "" {
+		ms, err := strconv.Atoi(f.PGTimeoutMS)
+		if err != nil {
+			return connectors.NewConnector{}, "The statement timeout is a number of milliseconds."
+		}
+		ps.StatementTimeoutMS = ms
+	}
+	return connectors.NewConnector{Platform: "postgres", Hosts: []string{host}, Scheme: connectors.SchemePostgres,
+		Username: f.Username, Postgres: &ps}, ""
 }
 
 func (s *Server) auditGrant(ctx context.Context, g connectors.Grant, detail string) {
@@ -835,6 +1040,17 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 // missing one or another owner's — row-level security reads them the same).
 var errGrantUnreadable = errors.New("the request could not be read")
 
+// errRoleUncertain is decideConnectorGrant's refusal to APPROVE while the
+// deciding owner's role could not be read (authz.Principal.RoleUncertain).
+//
+// 🔴 A FALLBACK ROLE MUST NEVER CHANGE STATE (principalFor). An unreadable
+// admin acts as a member, for whom the GitHub App vanishes: the approval would
+// be recorded against the stored token, and sharing it would retire every App
+// standing grant for the connector and leave a stored-token one that revives
+// when the App is removed. Refused instead — retrying once the role reads
+// works; a denial changes no credential and is not refused.
+var errRoleUncertain = errors.New("your role could not be read just now, so the request was not approved; try again")
+
 // errConnectorMissing is decideConnectorGrant's refusal to approve a request
 // for a connector that does not exist: the operator's answer to that is a
 // credential, entered on the Connectors tab (handleConnectorCreate).
@@ -858,7 +1074,9 @@ func (e errConnectorMissing) Error() string {
 // OWNER: a user can read (and so decide) only grants on their own agents, so
 // another owner's request is connectors.ErrNotFound, exactly as a missing one.
 // For a member `github` is never the App here (connectors.WithVirtual's allow is
-// authz.IsAdmin): a member cannot approve their agent onto the App. Measured: an
+// githubapp.Admits: an admin, or a LISTED TEAM's acting principal): a member
+// cannot approve their agent onto the App. A team's requests are decided here
+// as the team, by a manager through teamAdminContext (team_connectors.go). Measured: an
 // operator session cannot even read a member's grant
 // (TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt).
 //
@@ -866,28 +1084,55 @@ func (e errConnectorMissing) Error() string {
 // it is configured (its hosts; for the App, a 1-hour token for the agent's own
 // repository), recorded with the source it was about. There is no scope to
 // narrow — the card offers none either.
-func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve bool, via connectors.DecisionSource) (connectors.Grant, error) {
-	src := ""
+//
+// 🔴 AN APPROVAL IS SHARED (shareApproval, connector_standing.go): it becomes
+// the owner's standing grant for its key, and the requests already waiting
+// that it covers are approved in the same step. A denial is never shared.
+func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve bool, via connectors.DecisionSource) (connectors.Grant, sharedApproval, error) {
+	src, repo := "", ""
 	if approve {
+		if p, ok := authz.From(ctx); ok && p.RoleUncertain {
+			return connectors.Grant{}, sharedApproval{}, errRoleUncertain
+		}
 		g, err := s.ext.Connectors.GetGrant(ctx, id)
 		if err != nil {
-			return connectors.Grant{}, fmt.Errorf("%w: %w", errGrantUnreadable, err)
+			return connectors.Grant{}, sharedApproval{}, fmt.Errorf("%w: %w", errGrantUnreadable, err)
 		}
 		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
-			return g, errConnectorMissing{name: g.Connector}
+			return g, sharedApproval{}, errConnectorMissing{name: g.Connector}
 		}
-		if err := s.refusePoolWorkerGitHubGrant(ctx, g); err != nil {
-			return g, err
+		if err := s.refuseGrantApproval(ctx, g); err != nil {
+			return g, sharedApproval{}, err
 		}
 		src = connectors.SourceFor(ctx, s.ext.Connectors, g.Connector)
+		a, err := s.ext.Agents.Get(ctx, g.AgentID)
+		if err != nil {
+			return g, sharedApproval{}, fmt.Errorf("%w: %w", errGrantUnreadable, err)
+		}
+		// The repository this approval is FOR (connectors.Grant.Repo): the
+		// agent's effective one now. A later change of an officer's `repo`
+		// re-opens the grant (connectors.ReconcileGrant), as does a change of its
+		// `read_repos` (the set, connectors.RepoScope; a reordering does not).
+		repo = s.agentRepoScope(a)
+		// For an internal_http connector it is the connector's destination
+		// instead (connectors.GrantScope): a restart that points the name at
+		// another service re-opens the approval.
+		repo = connectors.GrantScope(ctx, s.ext.Connectors, g.Connector, repo)
 	}
-	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, via)
+	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, repo, via)
 	if err != nil {
-		return g, err
+		return g, sharedApproval{}, err
 	}
 	s.auditGrant(ctx, g, decisionDetail(approve, via))
+	var shared sharedApproval
+	if approve {
+		shared = s.shareApproval(ctx, g, via)
+		// An officer's items the pending grant refused are re-run now
+		// (officer_connector_rerun.go): THE approval of an officer's grant.
+		s.goRerunBlocked(ctx, g)
+	}
 	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(id, 10))
-	return g, nil
+	return g, shared, nil
 }
 
 // decisionDetail is a decision's audit line: "approved" / "denied", and for a
@@ -914,15 +1159,22 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	g, err := s.decideConnectorGrant(r.Context(), id, approve, connectors.DecisionSource{})
+	g, shared, err := s.decideConnectorGrant(r.Context(), id, approve, connectors.DecisionSource{})
 	var missing errConnectorMissing
 	var poolWorker errPoolWorkerGitHubGrant
 	switch {
 	case errors.Is(err, errGrantUnreadable):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
 		return
+	case errors.Is(err, errRoleUncertain):
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Your role could not be read just now, so " +
+			"the request was not approved. Try again."})
+		return
 	case errors.As(err, &poolWorker):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: poolWorker.Error() + "."})
+		return
+	case errors.As(err, new(errOfficerConnector)):
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: err.Error() + "; the request was not approved."})
 		return
 	case errors.As(err, &missing):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + missing.name +
@@ -940,7 +1192,7 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 	if approve {
 		verb = "approved"
 	}
-	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: g.AgentName + " " + verb + " for " + g.Connector + "."})
+	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: g.AgentName + " " + verb + " for " + g.Connector + "." + shareNotice(shared)})
 }
 
 func (s *Server) handleConnectorApprove(w http.ResponseWriter, r *http.Request) {

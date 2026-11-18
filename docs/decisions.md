@@ -107,7 +107,7 @@ not include. A full green tick sat on top of that for the flake's whole life.
 
 muster was extracted from a private deployment, so `tests/leakscan.py` refuses
 credentials, private addresses, lab hostnames, private registries, operator
-identities, a denylist of names (stored as digests), and dated incident
+identities, a denylist of names (stored as keyed digests), and dated incident
 references.
 
 The gate's own negative controls must contain realistic sensitive strings, so
@@ -128,6 +128,65 @@ viewer to the operator's own session would move the window the operator is
 looking at. So each viewer gets its own linked session with `ignore-size`. This was measured with an operator's client attached
 throughout: its current window and size did not change while a viewer opened
 another window, typed into it, pasted into it, and left.
+
+## A host officer's window is the one window muster closes by itself
+
+muster never closes a host-spawned window: the chief's dispatches are closed by
+the owner (chief-dispatch decision 17 / D7), and by the 2026-11-09 rule nothing about
+one of the owner's sessions is ended without the owner's tap
+([chief-in-agent-view](design/chief-in-agent-view.md)). An officer on a host
+needs a stop for scale-to-zero, and leaving it to the instance obeying "exit
+when idle" is not a mechanism. So, by operator decision (2026-11-13, "Yes,
+opt-in is enough"), **declaring an officer `"runtime": "host"` is the owner's
+consent for muster to close that officer's instance windows** — only the
+window muster recorded from the spawn reply, running the conversation it
+recorded, through the existing `agent-close`, asked only while the host
+reports the window idle (`/exit` at the empty idle prompt, the window closed
+30 s later if it has not exited; a window not at an empty idle prompt when the
+close arrives is closed at once). No other window, and no
+chief-dispatched window, is closed this way. The ledger of `CloseAgent`'s
+callers names both: the owner's tap and the host officer fleet's `Stop`.
+[design/officers-on-hosts.md](design/officers-on-hosts.md#closing-a-window-the-exception-to-d7).
+
+## On a host officer's machine, an owner decision needs the phone
+
+A mirrored session's MCP door names its caller by a header the caller sets:
+the machine's loopback endpoint maps whatever pane a process names to a
+session. On a machine that also runs a host officer, that process may be the
+officer, so a decision reached through that door — approving its own draft,
+deciding its own connector request — proved nothing about who made it. By
+operator decision (2026-11-13), while any host officer is declared on a
+machine, every owner-authority tool reached through that machine's door
+files a confirmation card instead, and runs only when the owner confirms it
+on their paired phone: the phone's signed action, single use and bound to
+that card and that answer, so it can be neither replayed for another
+decision nor ridden as a time window. Deciding in muster's own web UI is
+unchanged. [design/officers-on-hosts.md](design/officers-on-hosts.md).
+
+## On a machine that starts agents, the same; and skipping their prompts is opt-in
+
+A host-spawned agent runs as the machine's user, so it can name another of the
+owner's panes, clear its own window's dispatch tag, or read the host's token
+and call the door directly — each of which reached the owner's authority on
+muster, not just the host. By operator decision ("opt-in skip + host gate"):
+`-agent-spawn-skip-permissions` is **off by default** (each of those steps is
+then a permission prompt the owner sees); the owner tools decide whether a
+caller is a spawned agent from the server's own host-dispatch record, not the
+window's tag; and a machine that starts agents for the chief (its host token is marked
+as a spawning host's, an agent muster started there has not ended, or it
+advertises `-agent-spawn` now) is gated
+exactly as a host officer's machine is, whichever session the call names.
+"Starts agents" is a mark on the host TOKEN, kept in the database and cleared
+only by rotating the token — a spawned agent can read the token, so a restart
+or the host no longer advertising `-agent-spawn` proves nothing; rotate the
+token when spawning is turned off, once the agents it started have ended. A
+`route_reply` to the very session and host a message was routed to is not
+carded while no agent muster started there is running; a `dispatch_approve`
+card shows the held start (its instructions in full or labelled as an
+excerpt, with their length and SHA-256); the owner-authority reads are refused to a spawned agent's session and
+not carded for the owner's. The cost: the owner's own sessions on such a
+machine get a card for each other owner-authority call.
+[mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated).
 
 ## Step-up: twelve hours, per browser session
 
@@ -168,6 +227,30 @@ affected. A disable and a password reset delete the phones too.
   an audit found a signed-out phone still receiving notifications through its
   push registration, still counting toward the 20-phone limit, and still listed
   as live on Account → Devices.
+
+## A phone answers an ask with a signed action, and a suggestion may be sent from it
+
+A notification on a paired phone can answer an ask: tap an option or a
+suggested reply, or type an inline answer, then confirm with the phone's
+step-up key (a fresh biometric, or the PIN where the operator allows PIN keys).
+The web service worker still offers no buttons.
+
+- **Why signed.** The operator's rule for the phone is one rule: every action
+  that changes server state is signed by the step-up key, refusals included
+  ([design/android.md](design/android.md#which-actions-are-gated)). A stolen
+  device credential alone can read nothing more and do nothing at all.
+- **Why a challenge.** It is single use, lives two minutes, is bound to the
+  action, the ask and the sha256 of the exact answer, and is spent before the
+  signature is judged — so a replay, a retry after a refusal, or a signature
+  carried to another answer or another ask is refused.
+- **A suggestion is sent from here, and only here.** On the web a suggested
+  reply only fills the composer ([suggested-replies.md](suggested-replies.md)).
+  On the phone, tapping one on an ask's notification sends it — after the
+  step-up confirmation, whose prompt shows the exact text (operator decision).
+  The confirmation is the send button.
+- **One core.** A signed answer is the Attention page's own answer
+  (`answerAskFrom`), under the device owner's principal; the only difference
+  is the `device.action` audit row, written after the action with its outcome.
 
 ## The message box must not fail silently, or deliver twice
 

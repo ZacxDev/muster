@@ -90,10 +90,24 @@ type Agent struct {
 	Name        string `json:"name"`      // short slug; also the provision.Ref.Name
 	Namespace   string `json:"namespace"` // the driver's scoping unit (provision.Instance.Group)
 	DisplayName string `json:"displayName"`
-	Repo        string `json:"repo"` // owner/name
-	RepoBranch  string `json:"repoBranch"`
-	NoteID      *int64 `json:"noteId,omitempty"`
-	NoteText    string `json:"noteText,omitempty"`
+	// DisplayNameSource is who set DisplayName (migration 0090): NameDefault
+	// (the slug, copied), NameDispatch (derived from the source task),
+	// NameSystem (a role muster pinned: the chief, an officer) or NameManual
+	// (the person renamed it). "" reads as NameDefault. NameManual, NameSystem
+	// and NameDispatch all outrank a session's auto name (internal/sessionname).
+	DisplayNameSource string `json:"displayNameSource,omitempty"`
+	// DisplayNameAt is when DisplayName was last set — the row's creation, or
+	// a rename (migration 0091): the moment a name the drift offer measures
+	// against took effect (internal/focus DriftOffer's since).
+	DisplayNameAt time.Time `json:"-"`
+	// RunsOnHost is the mirror host a HOST OFFICER INSTANCE's row stands for
+	// (migration 0125, docs/design/officers-on-hosts.md); "" for every other
+	// agent. Such a row is never provisioned: see Provisioned.
+	RunsOnHost string `json:"runsOnHost,omitempty"`
+	Repo       string `json:"repo"` // owner/name
+	RepoBranch string `json:"repoBranch"`
+	NoteID     *int64 `json:"noteId,omitempty"`
+	NoteText   string `json:"noteText,omitempty"`
 
 	// PendingNote is the first message an agent was created WITH: the text a
 	// dispatch asked to be delivered as its opening turn. It is written once, by
@@ -139,9 +153,17 @@ type Agent struct {
 	Kind string `json:"kind"`
 	// CCAccount is the Claude account (a name from MUSTER_AGENT_CC_ACCOUNTS) whose
 	// setup-token this claude-code agent runs on; "" for every other kind. It is a
-	// NAME, never the token. Chosen once at dispatch by internal/ccpool and kept
-	// for the agent's life (migration 0003 enforces both halves).
+	// NAME, never the token. Chosen at dispatch by internal/ccpool; it changes
+	// afterwards ONLY by an account failover (internal/ccfailover, migration
+	// 0066), which migration 0003's trigger refuses to every other UPDATE.
 	CCAccount string `json:"ccAccount,omitempty"`
+	// CCAccountPinned: the account was named explicitly at creation (a pin), so
+	// the agent is not failed over to another account unless CCFailover is also
+	// set (agents.cc_account_pinned / cc_failover, migration 0066).
+	CCAccountPinned bool `json:"ccAccountPinned,omitempty"`
+	// CCFailover is a pinned agent's opt-in to account failover. It means
+	// nothing on an unpinned agent, which fails over by default.
+	CCFailover bool `json:"ccFailover,omitempty"`
 	// WorkerPool is the named worker pool this claude-code agent serves machine
 	// jobs for (agents.worker_pool, migration 0042); "" for an agent in none.
 	// Set at creation (dispatch's worker_pool) and never written after; a job
@@ -153,8 +175,11 @@ type Agent struct {
 	// user (internal/api agentOwnerID). Not serialised: the JSON shape is
 	// unchanged, and an owner id is not something an agent or a page needs.
 	// Zero only for an Agent that never came from the database (a fake store).
-	OwnerID    int64  `json:"-"`
-	Status     string `json:"status"`
+	OwnerID int64  `json:"-"`
+	Status  string `json:"status"`
+	// HooksToken is the agent's muster identity. Like GatewaySecret it is ""
+	// on every row an ordinary read returns: only [WithSecrets] (the
+	// agent_secrets table, migration 0128) fills it. See [Secrets].
 	HooksToken string `json:"-"`
 	// GatewaySecret is the credential muster presents to a claude-code agent's
 	// turn API (ccd's /v1/responses), minted per agent at provision time
@@ -166,7 +191,8 @@ type Agent struct {
 	// hold (MUSTER_HOOK_TOKEN: the approval hook, the MCP entry, git routing), so
 	// every tool call the session makes can read it. A turn credential computable
 	// from it — muster's hooks-sha256 derivation — let any tool call drive the
-	// agent's own turn API. Never serialised, never logged.
+	// agent's own turn API. Never serialised, never logged, and "" on every row
+	// an ordinary read returns (see HooksToken).
 	GatewaySecret string    `json:"-"`
 	KickedOff     bool      `json:"kickedOff"`
 	LastOutput    string    `json:"lastOutput,omitempty"`
@@ -201,6 +227,32 @@ type Agent struct {
 	// container died mid-turn). Cleared at the start of each delivery. It exists
 	// because that failure used to be a log line and nothing else.
 	KickoffError string `json:"kickoffError,omitempty"`
+
+	// --- the agent's OUTCOME (migration 0088, internal/agentoutcome) ---
+	//
+	// Every agent started with a first turn ends in one of done / failed / stuck,
+	// visible on its row: see internal/agentoutcome's package doc for the states
+	// and who writes them. None of these is serialised with the row; the machine
+	// projection (api.agentJSON) and the outcome API (api.AgentOutcome) say them.
+
+	// Outcome is agents.outcome: "" (not tracked), or one of agentoutcome's
+	// Running / Done / Failed / Stuck.
+	Outcome string `json:"-"`
+	// OutcomeReason is why, in muster's words ("" while running or done).
+	OutcomeReason string `json:"-"`
+	// OutcomeAt is when Outcome last changed; nil when it never has.
+	OutcomeAt *time.Time `json:"-"`
+	// ActivityAt is the newest activity muster observed of the agent (a turn's
+	// start, end or stream event, a pod's work report); nil when none.
+	ActivityAt *time.Time `json:"-"`
+	// FirstReplyAt is when the agent's first reply arrived; nil before it.
+	FirstReplyAt *time.Time `json:"-"`
+	// OutcomeToldAt is when a waiting outcome was told (pushed and noted, or
+	// seen by the owner); nil while untold. Every transition clears it.
+	OutcomeToldAt *time.Time `json:"-"`
+	// DispatchedBy is the chief agent that started this one (agent_dispatch);
+	// nil for every other start.
+	DispatchedBy *int64 `json:"-"`
 }
 
 // ChatMessage is one persisted web-chat message in an agent's transcript.
@@ -220,6 +272,56 @@ type ChatMessage struct {
 	ToolID   string `json:"toolId,omitempty"`   // links a tool_call to its tool_result
 	ToolName string `json:"toolName,omitempty"` // function name (tool_call/tool_result)
 	ToolOK   bool   `json:"toolOk,omitempty"`   // tool_result: dispatch success
+
+	// TypedBy is the user who TYPED this turn into muster's chat (migration
+	// 0081, chat_messages.typed_by), 0 for everything else. 🔴 ONE WRITER SETS
+	// IT: runEnteredTurn, from the owner's signed-in chat doors only
+	// (ownerTypedBy: the chat page's socket and the composer's POST — web or
+	// phone). A relayed answer, a session question or `chief ask` over a token,
+	// a plugin message, a task event, an agent's or muster's own turn and every
+	// assistant row leave it 0, and rows from before 0081 read 0 (nothing is
+	// backfilled). It is what lets a Chief-chat turn be quoted as the owner's
+	// covering words (docs/design/session-state.md, step 3b-1);
+	// internal/api's TestEveryChatWriterIsClassified pins every writer. Not
+	// serialised: no API reader needs it.
+	TypedBy int64 `json:"-"`
+
+	// PluginMessageID is the plugin message this USER row relays to the chief
+	// (migration 0096, chat_messages.plugin_message_id), 0 for every other row
+	// and for every row written before 0096. Only internal/plugins' Deliverer
+	// sets it (Deliver, Handed); the agent page draws such a row as a collapsed
+	// system row (internal/api relayOf). Not serialised: no API reader needs it.
+	PluginMessageID int64 `json:"-"`
+
+	// WrittenBeforeRelayLink: this row was written before migration 0096 added
+	// plugin_message_id (its created_at precedes 0096's applied_at in
+	// schema_migrations; chatMessageCols computes it). Only such a row may be
+	// taken for a plugin relay by its TEXT (internal/api relayOf's fallback):
+	// a row written since carries the link when it is one. false for every
+	// row a store that does not compute it returns.
+	WrittenBeforeRelayLink bool `json:"-"`
+
+	// AboutKey is the KEY of the session the owner was VIEWING when they typed
+	// this USER row to the chief from its rendered view (migration 0098,
+	// chat_messages.about): a Claude Code session id or "opencode:<ses_…>";
+	// "" for every other row and for every row written before 0098. Only the
+	// key is stored (operator decision, PR #537 D1): the window's place and
+	// dispatch are read from the view when the line is sent, for the chief's
+	// header only. 🔴 ONE WRITER SETS IT: runEnteredTurn, from the view's chief
+	// door (POST /mirror/view/chief), which resolves it on the SERVER from the
+	// hub's owner-scoped state, never from the page. internal/api's
+	// TestOnlyTheViewDoorBindsASubject pins the writers. Not serialised: no API
+	// reader needs it.
+	AboutKey string `json:"-"`
+
+	// NoSessionTouch, on a write, leaves the row's session as it was: no
+	// updated_at bump and no title from it (AddChatMessage does both
+	// otherwise). Not stored. Its one writer is a route turn's row, stored
+	// BEFORE its turn and removed if the runtime refuses it (internal/api
+	// startRouteTurn): a refused attempt must not move the chat up the list or
+	// name it, and a delete could not undo either. A turn that ran bumps the
+	// session through its reply's rows.
+	NoSessionTouch bool `json:"-"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each
@@ -242,6 +344,10 @@ type ChatSession struct {
 	Runtime   string `json:"runtime"`
 	Model     string `json:"model"`
 	IsDefault bool   `json:"isDefault"`
+	// ArchivedAt is when the session was archived (migration 0115), nil while
+	// it is not: hidden from the chief's chat switcher, its history kept. The
+	// default (the chief's PRIMARY chat) is never archived.
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
 }
 
 // SessionMatch is one SearchSessions hit: the session plus one excerpt around the
@@ -278,12 +384,18 @@ type AgentUnread struct {
 	AgentID     int64  `json:"agentId"`
 	AgentName   string `json:"agentName"`
 	DisplayName string `json:"displayName"`
-	SessionID   int64  `json:"sessionId"` // the link target (most-recently-active session)
-	Count       int    `json:"count"`     // total unread assistant messages across the agent
+	// DisplayNameSource is the agent's Agent.DisplayNameSource: who set
+	// DisplayName, which the name rule (internal/sessionname) ranks by.
+	DisplayNameSource string `json:"displayNameSource,omitempty"`
+	SessionID         int64  `json:"sessionId"` // the link target (most-recently-active session)
+	Count             int    `json:"count"`     // total unread assistant messages across the agent
 }
 
 // Store is the agents persistence behaviour.
 type Store interface {
+	// SecretReader is the one read of an agent's credentials; no other method
+	// returns them (see [Secrets]).
+	SecretReader
 	Create(ctx context.Context, a Agent) (Agent, error)
 	Get(ctx context.Context, id int64) (Agent, error)
 	GetByName(ctx context.Context, name string) (Agent, error)
@@ -309,6 +421,12 @@ type Store interface {
 	// is written every time a turn completes, so it is the newest durable
 	// evidence this service holds that the agent was alive.
 	LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[int64]time.Time, error)
+	// LatestSessionIDs returns, per requested agent id, the id of the session
+	// LatestOrCreateSession would return, creating nothing: an agent with no
+	// session is absent. An empty ids slice returns an empty map. It is what an
+	// in-app link to an agent names (ui.AgentSessionHref), so the link goes
+	// straight to the page the bare URL would 303 to.
+	LatestSessionIDs(ctx context.Context, ids []int64) (map[int64]int64, error)
 	NameExists(ctx context.Context, name string) (bool, error)
 	UpdateStatus(ctx context.Context, id int64, status, lastOutput, errMsg string) error
 	// SetModel updates an agent's model (OpenRouter slug; "" = cluster default) and
@@ -319,8 +437,11 @@ type Store interface {
 	// the namespace key — is immutable) and returns the updated record. A blank
 	// name falls back to the slug Name so the card is never label-less.
 	SetDisplayName(ctx context.Context, id int64, name string) (Agent, error)
+	// SetHooksToken stores the agent's muster identity ([Agent.HooksToken]) in
+	// agent_secrets (and, until the old column is dropped, in agents too).
 	SetHooksToken(ctx context.Context, id int64, token string) error
-	// SetGatewaySecret stores the agent's turn credential ([Agent.GatewaySecret]).
+	// SetGatewaySecret stores the agent's turn credential ([Agent.GatewaySecret]),
+	// written as SetHooksToken is.
 	SetGatewaySecret(ctx context.Context, id int64, secret string) error
 	// SetKickedOff stamps (or un-stamps) the first turn. Stamping also clears a
 	// checkout-wait marker (WaitedForCheckout's kickoff_error) in the SAME write:
@@ -343,6 +464,16 @@ type Store interface {
 	// model-timeout case), so this is evidence, not a verdict. The reconciler is
 	// what escalates a dead recipient to `error`.
 	SetKickoffError(ctx context.Context, id int64, msg string) error
+	// ClearKickoffFailure erases a recorded first-turn failure ([KickoffFailed])
+	// because a LATER turn on the agent completed: `kickoff_error=''` only where the
+	// row is kicked_off and the error is set. It touches nothing else — not
+	// kicked_off, not kickoff_attempts, not updated_at — and a row that is not
+	// kicked off (an owed agent's awaiting-grant / awaiting-clone marker, a
+	// never-delivered record) is never matched. Nor is a RESEND-SAFE cause
+	// ([KickoffResendSafe]): it proves the task was never delivered, so its badge
+	// and re-send remedy stay until the operator acts. Called from the one place
+	// every turn completes: internal/agentgateway's Send / SendWithTools.
+	ClearKickoffFailure(ctx context.Context, id int64) error
 	// MarkKickoffStuck sets an owed row to `error` with errMsg (and clears
 	// last_output, as UpdateStatus does) ONLY if the row is still the one the
 	// caller judged stuck — updated_at exactly seenUpdatedAt, which every stamp,
@@ -403,6 +534,23 @@ type Store interface {
 	// make the kickoff proceed on an unverified claim and reopen the duplicate
 	// silently, on exactly the occasion the database is unhealthy.
 	ClaimKickoff(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error)
+	// ClaimKickoffForDelivery is ClaimKickoff for a turn NOBODY TYPED — a
+	// delivery muster starts on its own (a plugin message, a route's answer or
+	// hand-back, an owner's answer to an ask, a nudge, a memo, an officer's
+	// re-prompt). It also LOSES while an owner-typed turn is in flight on the
+	// agent (its owner_turn_* marker, migration 0069, live by Postgres's clock:
+	// the predicate OwnerTurnInFlight reads), in the same atomic UPDATE.
+	//
+	// 🔴 THE OWNER'S TURN IS NEVER VOIDED BY A DELIVERY THAT ARRIVED DURING IT.
+	// A held claim is one of the conditions owner_asked refuses on
+	// (internal/api ownerTurnFor), so a delivery that took the claim while the
+	// owner's turn ran — and then waited for the CLI to free — refused every
+	// owner_asked call left in that turn. A delivery loses here instead and waits
+	// for the owner's turn to end (each caller already treats a lost claim as
+	// "try again later"). The first turn (internal/agentkickoff) and a chief
+	// replacement keep ClaimKickoff: neither is a delivery into a running chat.
+	// Same error contract: on error, won == false.
+	ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error)
 	// RenewKickoffClaim extends the agent's claim to `ttl` from now, but ONLY if
 	// `owner` still owns it — an owner mismatch means another process legitimately
 	// took the claim after this one's TTL lapsed, and stamping over that would
@@ -419,6 +567,12 @@ type Store interface {
 	// the next kickoff can start immediately instead of waiting out the TTL. The
 	// TTL is the crash backstop, not the normal path.
 	ReleaseKickoffClaim(ctx context.Context, id int64, owner string) error
+	// KickoffClaimHolder reports the owner string of the agent's claim while it is
+	// held (unexpired), or "" when it is unheld or expired. A READ, for a caller
+	// that lost ClaimKickoff and must say who won (chief_restart tells a delivery,
+	// which force may cut off, from a chief restart or replacement, which it may
+	// not). It decides nothing by itself: the holder can release a moment later.
+	KickoffClaimHolder(ctx context.Context, id int64) (string, error)
 	// ClearKickoffClaimsByOwnerPrefix clears every claim whose owner starts with
 	// prefix, returning how many rows it cleared. It backs the STARTUP sweep
 	// (Provisioner.SweepOwnStaleKickoffClaims), whose prefix is this pod's own
@@ -478,6 +632,12 @@ type Store interface {
 	// session's updated_at, and — when the session is still untitled and the
 	// message is a user turn — names the session from the message's first line.
 	AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessage, error)
+	// DeleteChatMessage removes user row id of agent agentID — a delivery's row
+	// stored BEFORE its turn, whose runtime then provably took nothing
+	// (internal/api startRouteTurn): the delivery stays owed and is offered
+	// again, so the row must not stand as "on record". Only a user row of that
+	// agent is removed; anything else is a no-op.
+	DeleteChatMessage(ctx context.Context, agentID, id int64) error
 	ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error)
 	// ListRecentChatMessages returns the most recent limit messages for ONE
 	// session in chronological order — the capped reader the page render uses so a
@@ -549,4 +709,23 @@ func reverseChatChronological(msgs []ChatMessage) {
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
+}
+
+// Who set an agent's DisplayName (Agent.DisplayNameSource; migration 0090's
+// agents_display_name_source_check holds the same four).
+const (
+	NameDefault  = "default"
+	NameDispatch = "dispatch"
+	NameSystem   = "system"
+	NameManual   = "manual"
+)
+
+// ResolveDisplayNameSource is src as stored: one of the four, "" (or anything
+// else) as NameDefault.
+func ResolveDisplayNameSource(src string) string {
+	switch src {
+	case NameDispatch, NameSystem, NameManual:
+		return src
+	}
+	return NameDefault
 }

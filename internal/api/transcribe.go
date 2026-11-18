@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/stt"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -22,8 +23,10 @@ import (
 // The browser records (MediaRecorder) and posts the recording here as the raw
 // request body; muster forwards it to the speech-to-text service with ITS OWN
 // credential (internal/stt) and answers with the text, as text/plain. The page
-// inserts that text into the message box at the caret — it is never sent: the
-// operator reads it and presses Send, which is the gated step.
+// inserts that text into the message box at the caret. This route never sends
+// anything: the mic's ✓ leaves the text for the operator to send, and its ↑
+// sends it by clicking the box's own Send, which is the gated step either way
+// (internal/ui/dictate.go).
 //
 // 🔴 ONE ROUTE FOR EVERY MESSAGE BOX. A mirrored session's two views and an
 // agent's two views all post here; what the text is FOR is decided by the Send
@@ -145,12 +148,20 @@ func (s *Server) registerTranscribeRoutes(mux Mux) {
 // when this server has a transcriber, "" (no microphone drawn) when it has
 // none. It is the ONE predicate every view reads, so a page and the route can
 // never disagree about whether dictation exists.
+//
+// It reads the feature registry too (featureOff): a registry that calls
+// dictation off draws no microphone even with a client wired.
 func (s *Server) dictatePath() string {
-	if s.ext.Transcriber == nil {
+	if s.ext.Transcriber == nil || s.featureOff(features.Dictation) {
 		return ""
 	}
 	return ui.TranscribePath
 }
+
+// dictateOff reports that this server has no dictation at all, so a message
+// box draws the muted microphone that links to its Features row
+// (ui.DictateOffControlHTML) in place of the real one.
+func (s *Server) dictateOff() bool { return s.dictatePath() == "" }
 
 // readRecorder wraps the request body and keeps the first error a read met, so
 // the handler can tell the size cap (http.MaxBytesError) from a client that
@@ -173,9 +184,9 @@ func (rr *readRecorder) Read(p []byte) (int, error) {
 // handleTranscribe is POST /transcribe: the body is the recording.
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Transcriber == nil {
-		// Feature off: as though the route did not exist. Registration stays
+		// Feature off: 404, typed (writeFeatureDisabled). Registration stays
 		// unconditional (see the package doc in server.go).
-		http.NotFound(w, r)
+		s.writeFeatureDisabled(w, r, features.Dictation)
 		return
 	}
 	outcome, size, kind := 0, int64(0), ""

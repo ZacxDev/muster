@@ -24,7 +24,7 @@ import (
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
 // 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
 // 0011 added user_credentials; 0012 added flow_jobs and flow_runner_tokens;
-// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0039 added devices and device_pairing_codes.)
+// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0039 added devices and device_pairing_codes; 0043 added connector_standing_grants; 0048 added suggest_preferences; 0049 added suggest_usage; 0054 added plugin_threads; 0055 added session_prs; 0056 added mail_resumes; 0058 added device_challenges; 0059 dropped github_connection; 0060 added chief_preferences; 0064 added chief_nudges; 0066 added cc_account_failovers; 0072 added task_ref_writes; 0073 added session_episodes; 0075 added officer_llm_usage; 0082 added officer_judgement_sessions; 0086 added session_tags; 0089 added asks; 0093 added host_dispatches; 0094 added notify_preferences; 0100 added chief_proposals; 0104 added plugin_handoffs; 0105 added instance_branding; 0107 added routing_rules, chief_turn_usage and plugin_message_handling; 0108 added cc_account_usage; 0113 added ask_attempts; 0116 added pages, page_versions, page_links and page_responses; 0118 added officer_types, officer_defs, officer_items and officer_schedules; 0119 added officer_pr_loops; 0122 added plugin_pair_requests and plugin_pair_decoys; 0125 added officer_host_spawns; 0126 added team_members; 0128 added agent_secrets; 0132 added officer_contacts and officer_contact_events; 0138 added officer_public_branches; 0141 added plugin_chief_instructions; 0144 added chief_session_llm_usage and chief_session_llm_reservations; 0147 added fleet_owner_marks; 0148 added officer_connector_blocks.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -34,38 +34,85 @@ var tablesThisSchemaMustHave = []string{
 	"agent_focus",
 	"agent_focus_history",
 	"agent_retired_names",
+	"agent_secrets",
 	"agents",
 	"api_tokens",
+	"ask_attempts",
+	"asks",
 	"attention_asks",
 	"audit_log",
+	"cc_account_failovers",
 	"cc_account_marks",
+	"cc_account_usage",
 	"chat_messages",
 	"chat_sessions",
+	"chief_nudges",
+	"chief_preferences",
+	"chief_proposals",
+	"chief_session_llm_reservations",
+	"chief_session_llm_usage",
+	"chief_turn_usage",
 	"connector_audit",
 	"connector_grants",
+	"connector_standing_grants",
 	"connectors",
+	"device_challenges",
 	"device_pairing_codes",
 	"devices",
+	"fleet_owner_marks",
 	"flow_jobs",
 	"flow_requests",
 	"flow_runner_tokens",
-	"github_connection",
+	"host_dispatches",
+	"instance_branding",
 	"invites",
 	"jobs",
+	"mail_resumes",
 	"mirror_tokens",
 	"note_attachments",
 	"note_comments",
 	"notes",
+	"notify_preferences",
+	"officer_connector_blocks",
+	"officer_contact_events",
+	"officer_contacts",
+	"officer_defs",
+	"officer_host_spawns",
+	"officer_items",
+	"officer_judgement_sessions",
+	"officer_llm_usage",
+	"officer_pr_loops",
+	"officer_public_branches",
+	"officer_schedules",
+	"officer_types",
+	"page_links",
+	"page_responses",
+	"page_versions",
+	"pages",
 	"pins",
+	"plugin_chief_instructions",
+	"plugin_handoffs",
+	"plugin_message_handling",
 	"plugin_messages",
+	"plugin_pair_decoys",
+	"plugin_pair_requests",
 	"plugin_reply_drafts",
+	"plugin_threads",
 	"plugins",
 	"push_preferences",
 	"push_subscriptions",
 	"recents",
+	"routing_rules",
 	"send_queue",
+	"session_episodes",
+	"session_prs",
 	"session_routes",
+	"session_tags",
+	"suggest_preferences",
+	"suggest_usage",
+	"task_ref_writes",
 	"task_sessions",
+	"team_members",
 	"uploads",
 	"user_credentials",
 	"users",
@@ -75,9 +122,6 @@ var tablesThisSchemaMustHave = []string{
 // for its own stated reason:
 //
 //   - task_sessions is keyed by a composite.
-//   - github_connection is keyed by owner_id, one connection per user (0006;
-//     it was a singleton pinned to id = 1 before that, and had no identity then
-//     either).
 //   - agent_retired_names is keyed by the NAME itself; a surrogate id there would
 //     let one name be tombstoned twice.
 //
@@ -90,15 +134,54 @@ var tablesThisSchemaMustHave = []string{
 // failure message, which is the one thing the reader needs.
 var tablesWithNoIdentityColumn = []string{
 	"agent_retired_names",
+	// agent_secrets is keyed by agent_id: one credentials row per agent
+	// (0128), deleted with it, so the agent IS the key.
+	"agent_secrets",
 	// cc_account_marks is keyed by (owner_id, account) — the account NAME
 	// within its owner (0003, per owner since 0011), for the agent_retired_names
 	// reason: one account, one record.
 	"cc_account_marks",
-	"github_connection",
+	// cc_account_usage is keyed by (owner_id, account), for cc_account_marks'
+	// reason (0108): one latest reading per account.
+	"cc_account_usage",
+	// officer_host_spawns' id is DEFAULT nextval of host_dispatches' identity
+	// sequence (0125), not an identity of its own: the id travels on the wire
+	// as a host dispatch id, so it must come from the chief dispatches' own
+	// sequence or the two could collide on a host. An explicit id is not
+	// refused by the schema; the store's one INSERT (officers.
+	// PGHostSpawnStore.InsertHostSpawn, its one caller pinned by
+	// TestTheHostOfficerSeamsAreALedger) names no id column.
+	"officer_host_spawns",
+	// plugin_pair_decoys is keyed by its random public id (0122): a decoy is
+	// found by the id the plugin polls with, and has no other identity.
+	"plugin_pair_decoys",
 	// push_preferences is keyed by owner_id: one preference row per user
-	// (0013), for the github_connection reason.
+	// (0013): one row per owner, so the owner IS the key.
 	"push_preferences",
+	// suggest_preferences is keyed by owner_id: one toggle row per user
+	// (0048), for the push_preferences reason.
+	"suggest_preferences",
+	// chief_preferences is keyed by owner_id: one toggle row per user (0060),
+	// for the push_preferences reason.
+	"chief_preferences",
+	// fleet_owner_marks is keyed by owner_id: one marks row per user (0147),
+	// for the push_preferences reason.
+	"fleet_owner_marks",
+	// notify_preferences is keyed by owner_id: one preferences row per user
+	// (0094), for the push_preferences reason.
+	"notify_preferences",
+	// suggest_usage is keyed by owner_id: one counts row per user (0049).
+	"suggest_usage",
+	// instance_branding is keyed by `singleton` (always true): one row for the
+	// whole server (0105), so there is nothing for an identity to number.
+	"instance_branding",
+	// plugin_threads is keyed by (owner_id, thread): a thread is bound once
+	// (0054), for the agent_retired_names reason.
+	"plugin_threads",
 	"task_sessions",
+	// team_members is keyed by (team_id, user_id): one role per person per
+	// team (0126), for the agent_retired_names reason.
+	"team_members",
 }
 
 func migrated(t *testing.T) (context.Context, *pgxpool.Pool) {

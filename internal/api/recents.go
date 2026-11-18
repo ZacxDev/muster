@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -18,18 +19,29 @@ import (
 // 🔴 BEST-EFFORT, AND IT NEVER FAILS THE PAGE. A visit that cannot be stored is
 // logged with the ids only and the page renders anyway.
 
-// recordAgentVisit records that the viewer opened agent id.
-func (s *Server) recordAgentVisit(ctx context.Context, id int64) {
-	if s.ext.Recents == nil {
+// recordAgentVisit records that the viewer opened agent a.
+//
+// 🔴 NOT FOR A TEAM'S AGENT OPENED BY A MEMBER (memberOnTeamAgent). A recents
+// row is the viewer's own, and its owner must own the agent it names (0018's
+// trigger): a member's visit to the team chief was refused by Postgres on every
+// page load (SQLSTATE 23514) and logged as an error each time. The row is not
+// written under the team either: a team has no recents strip (it cannot sign
+// in, and recents is personal-only — owner_isolation, internal/db's share
+// ledger personalOwned — so no member's door reads a team's rows), and
+// recording one would only log which member looked
+// at what. The team agent stays in the member's
+// sidebar under its team; it is simply not in their "recently viewed".
+func (s *Server) recordAgentVisit(ctx context.Context, a agents.Agent) {
+	if s.ext.Recents == nil || memberOnTeamAgent(ctx, a) {
 		return
 	}
-	if err := s.ext.Recents.VisitAgent(ctx, id); err != nil {
-		s.logger.Printf("recents: visit agent %d: %v", id, err)
+	if err := s.ext.Recents.VisitAgent(ctx, a.ID); err != nil {
+		s.logger.Printf("recents: visit agent %d: %v", a.ID, err)
 	}
 }
 
 // recordMirrorVisit records that the viewer opened the mirrored entry at
-// (host, session, window) — the address its card links by.
+// (host, session, window) — the address its sidebar row links by.
 func (s *Server) recordMirrorVisit(ctx context.Context, host, session, window string) {
 	if s.ext.Recents == nil {
 		return
@@ -40,9 +52,9 @@ func (s *Server) recordMirrorVisit(ctx context.Context, host, session, window st
 }
 
 // recentRefs is the viewer's recently opened entries, newest first, for the
-// strip; ui.recentItems drops those that are gone or pinned and keeps
-// ui.RecentMax. Every stored entry is read so that dropping cannot leave the
-// strip short while older entries exist. No store, or a failed read (logged),
+// session switcher's Recent view; ui.NewSwitcher drops those that are gone and
+// keeps its cap. Every stored entry is read so that dropping cannot leave the
+// view short while older entries exist. No store, or a failed read (logged),
 // is "nothing recent".
 func (s *Server) recentRefs(ctx context.Context) []ui.RecentRef {
 	if s.ext.Recents == nil {
@@ -62,4 +74,29 @@ func (s *Server) recentRefs(ctx context.Context) []ui.RecentRef {
 		}
 	}
 	return out
+}
+
+// switcher is the viewer's session switcher for the page of cur (ui.Switcher):
+// the entries the sidebar lists, with no live instance read (the bar shows
+// names, not status) — and the viewer's recently viewed refs, resolved by
+// ui.NewSwitcher. nil — no bar — when
+// there is no agent store, or the list cannot be read (logged): the page
+// renders without it rather than failing.
+func (s *Server) switcher(ctx context.Context, cur ui.SwitcherCurrent) *ui.Switcher {
+	if s.ext.Agents == nil {
+		return nil
+	}
+	cards, mirrors, err := s.agentsListEntries(ctx)
+	if err != nil {
+		s.logger.Printf("switcher: list: %v", err)
+		return nil
+	}
+	cur.Now = s.now() // one clock for the focus ages (ui.FocusAgeOf)
+	sw := ui.NewSwitcher(cards, mirrors, s.recentRefs(ctx), cur)
+	// The ☰ badge's first count is THE ONE OPEN COUNT (asks_count.go) wherever
+	// the queue is served — what handleNavWaiting answers it with afterwards.
+	if n, ok := s.menuCount(ctx); ok {
+		sw.MenuCount = &n
+	}
+	return sw
 }

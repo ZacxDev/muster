@@ -215,6 +215,23 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 			},
 		},
 		{
+			// A co-named Secret in the worker's namespace that muster did not
+			// copy (one copied there by hand) is refused, never overwritten.
+			site: "apply/key holder secret copy",
+			kind: "secret",
+			seed: func(cs *fake.Clientset) {
+				cs.CoreV1().Secrets("ops-home").Create(ctx, &corev1.Secret{ //nolint:errcheck
+					ObjectMeta: metav1.ObjectMeta{Name: "kh-key", Namespace: "ops-home"},
+					Data:       map[string][]byte{"ssh-privatekey": []byte("k")}}, metav1.CreateOptions{})
+				cs.CoreV1().Secrets(internalNS).Create(ctx, //nolint:errcheck
+					&corev1.Secret{ObjectMeta: internalForeignMeta("kh-key")}, metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				d.cfg.SecretSourceNamespace = "ops-home"
+				return d.Create(ctx, copySpec("kh", "kh-key"))
+			},
+		},
+		{
 			// ⚠ THIS ROW REACHES UPDATE'S PRE-FLIGHT, NOT apply'S DEPLOYMENT
 			// UPSERT, and it used to be labelled "apply/deployment (via
 			// Update)" — a name for a site it never touches. Measured: mutating
@@ -467,12 +484,29 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			// itself — the classification network.go gives the same cause.
 			"ensureNamespace":     3,
 			"checkNamespaceOwned": 1,
-			"Scale":               1,
-			"Destroy":             1,
-			"List":                2,
-			"Get":                 1,
-			"podFor":              1,
-			"StreamLogs":          1,
+			// The read of the operator's SOURCE Secret, in muster's namespace:
+			// a read that cannot collide (secretcopy.go).
+			"copySecrets": 1,
+			"Scale":       1,
+			// The second is the verification's 403 in binding mode, when the
+			// namespace is NOT gone: a read, not a collision.
+			"Destroy":    2,
+			"List":       2,
+			"Get":        1,
+			"podFor":     1,
+			"StreamLogs": 1,
+			// The least-privilege RBAC layout (rolebinding.go). Every one is a
+			// read, a list, or a RoleBinding request whose ownership refusal is
+			// built with notManagedAction and %w BEFORE any of these is reached:
+			// ensureRoleBinding's is the re-read after a concurrent create,
+			// roleBindingFailed's the create/get/delete of the binding itself,
+			// waitForAccess's the probe (a non-403 error, the bound, the ctx).
+			"namespaceAccess":    1,
+			"ensureRoleBinding":  1,
+			"roleBindingFailed":  1,
+			"waitForAccess":      3,
+			"instanceNamespaces": 1,
+			"listPerNamespace":   2,
 		},
 		// Every write that CAN collide returns through applyFailed, which is
 		// what keeps a permanent refusal out of ErrBlind. Six object kinds in
@@ -484,9 +518,12 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// calls: the default arm, and the arm for a 403 from a namespace that is
 		// still terminating (a transient). Every OTHER 403 does not come through
 		// here — networkPolicyForbidden names the verb instead.
-		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2},
+		//
+		// The key holder's Secret copy (secretcopy.go) has one: its 403 that is
+		// not a terminating namespace is named instead, as above.
+		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2, "copySecrets": 1},
 		// The create-then-update-if-ours predicate.
-		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1},
+		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1, "copySecrets": 1},
 		// The create-only-if-ours predicate: a bound claim, immutable in the
 		// fields that matter.
 		"createOwned": {"apply": 1},
@@ -513,6 +550,16 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			// exception to "the predicate lives in a helper", and it is why
 			// this row exists rather than being folded into upsertOwned.
 			"upsertService": 1,
+			// The RBAC layout: the namespace muster may bind into, the binding
+			// it may correct, and the namespaces List may read.
+			"namespaceAccess":    1,
+			"ensureRoleBinding":  1,
+			"instanceNamespaces": 1,
+			// The stale image pull Secret sweep (secretcopy.go): a by-name
+			// delete that needs MORE than ownership — the pull-copy label and
+			// the type — so it open-codes the predicate rather than going
+			// through deleteIfOwned. It deletes nothing that fails owned().
+			"sweepPullCopies": 1,
 		},
 	}
 

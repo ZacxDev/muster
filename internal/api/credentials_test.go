@@ -151,19 +151,10 @@ func TestADispatchOfAKindTheCallerHasNoCredentialForIsRefusedWithWhatToAdd(t *te
 	if len(store.created) != 0 {
 		t.Fatalf("a refused dispatch created %d row(s)", len(store.created))
 	}
-	if rec := postDispatch(t, s, h, url.Values{"kind": {agents.KindClaudeCode}, "note_text": {"t"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {agents.KindClaudeCode}, "note_text": {"t"}}); !dispatched(rec, store) {
 		t.Fatalf("control: claude-code (available): %d %s", rec.Code, rec.Body)
 	}
 	if len(owners) != 1 || owners[0] != authz.OperatorUserID {
 		t.Fatalf("selection was asked for owners %v; want the caller [1]", owners)
-	}
-	// The form disables the unavailable kind and says what to add.
-	req := httptest.NewRequest("GET", "/ui/agents/new", nil)
-	admit(s, req)
-	form := httptest.NewRecorder()
-	h.ServeHTTP(form, req)
-	body := form.Body.String()
-	if !strings.Contains(body, `data-kind-unavailable-reason="gateway"`) || !strings.Contains(body, credentials.NeedOpenRouter) {
-		t.Fatalf("the form does not say what to add:\n%s", body)
 	}
 }

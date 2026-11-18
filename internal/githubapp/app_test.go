@@ -374,7 +374,7 @@ func TestAnInstallationOffTheAllowlistIsIgnored(t *testing.T) {
 			t.Fatalf("a token was minted on the stranger's installation: %s", m.body)
 		}
 	}
-	if _, err := app.Accounts(context.Background()); err != nil {
+	if _, err := app.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Count(logBuf.String(), `"stranger"`) != 1 || strings.Contains(logBuf.String(), "payload") {
@@ -573,5 +573,22 @@ func TestTheInstallationListIsReadFromGitHubsLiteralJSON(t *testing.T) {
 	}
 	if got := app.Renames(); len(got) != 0 {
 		t.Fatalf("a spurious rename was recorded: %q", got)
+	}
+}
+
+// TestCreatedAtReadsTheAppsCreationFromGitHubsLiteralJSON: GET /app, as the
+// App, answered in GitHub's own JSON shape; created_at comes back exactly,
+// and an answer without one is an error, never a zero time (a zero would
+// silently remove the officer listing's stop).
+func TestCreatedAtReadsTheAppsCreationFromGitHubsLiteralJSON(t *testing.T) {
+	app, f, _ := newTestApp(t)
+	f.rawApp = `{"id":12345,"slug":"fixture-app","name":"Fixture App","created_at":"2000-03-04T05:06:07Z","updated_at":"2000-03-05T00:00:00Z"}`
+	got, err := app.CreatedAt(context.Background())
+	if want := time.Date(2000, 3, 4, 5, 6, 7, 0, time.UTC); err != nil || !got.Equal(want) {
+		t.Fatalf("CreatedAt = %v, %v; want %v", got, err, want)
+	}
+	f.rawApp = `{"id":12345,"slug":"fixture-app"}`
+	if got, err := app.CreatedAt(context.Background()); err == nil || !strings.Contains(err.Error(), "created_at") {
+		t.Fatalf("no created_at: CreatedAt = %v, %v; want an error naming it", got, err)
 	}
 }

@@ -53,20 +53,39 @@ var titleNames = map[string]bool{
 	"Description": true,
 }
 
-// bareAccessors are the title accessors package ui calls unqualified.
-var bareAccessors = map[string]bool{"TaskTitle": true}
+// bareAccessors are the title accessors called unqualified: package ui's
+// TaskTitle, and package api's askSource / askSourceParts (an ask's source,
+// which names a mirrored window — see apiTitleNames).
+var bareAccessors = map[string]bool{"TaskTitle": true, "askSource": true, "askSourceParts": true}
 
 // apiTitleNames adds the attention item's fields, which are titles in api's
 // hand-written attention HTML.
-var apiTitleNames = map[string]bool{"Source": true, "Focus": true}
+//
+// 🔴 A MIRRORED WINDOW'S where (mirror.Where, its SessionView method) is a
+// title too: a label plus a tmux target. It is plained by
+// textplain.TitleKeeping, which keeps the target (mirror.WhereTarget)
+// VERBATIM — the ONE exemption from the stripper, recorded here: a tmux
+// session named "_scratch_" is typed "_scratch_", so plaining it would send
+// the operator to a session that does not exist. Every display of an
+// attention Source and of a where passes the target as keep.
+var apiTitleNames = map[string]bool{"Source": true, "Focus": true, "Where": true}
 
 // plainingHelpers are ui functions that apply Title to their name arguments at
 // emit. An argument read passed straight to one counts as covered; each is
 // checked below to call Title (or another helper in this set).
 var plainingHelpers = map[string]bool{
 	"mirrorEntryTitle":    true,
+	"mirrorDisplayName":   true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
+	// A session's name (session_name.go): its resolved name is already plain;
+	// the displayName it falls back to goes through plainOr.
+	"sessionTitle": true,
+	// A shareable page's title on its card and its Share controls
+	// (page_card.go): pageCardTitle plains it; the two controls call it.
+	"pageCardTitle":   true,
+	"PageShareButton": true,
+	"PageShareMenu":   true,
 }
 
 // helperNameArgs are, per plaining helper, the argument positions that carry a
@@ -74,9 +93,14 @@ var plainingHelpers = map[string]bool{
 // class) are drawn as written. checkPlainingHelpers holds each helper to it.
 var helperNameArgs = map[string][]int{
 	"mirrorEntryTitle":    {0, 1}, // label, title
+	"mirrorDisplayName":   {0, 1}, // label, title
 	"mirrorSessionTitle":  {0},    // label
 	"mirrorTerminalTitle": {0},    // title
+	"sessionTitle":        {1},    // displayName (the resolved name is plain already; name is the slug fallback)
 	"plainOr":             {0},    // s (the fallback is drawn as written)
+	"pageCardTitle":       {0},    // raw
+	"PageShareButton":     {1},    // title (id and the address are not names)
+	"PageShareMenu":       {1},    // title
 }
 
 type exemption struct {
@@ -85,66 +109,102 @@ type exemption struct {
 }
 
 const (
-	whyFilter    = "filter haystack / rank key: matched against what the user types, never drawn"
-	whyForm      = "edit form value: the raw stored title, edited as written"
-	whyStatic    = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
-	whyPredicate = "a predicate on the raw value (which subtitle to draw), not a display"
-	whyAccessor  = "the accessor itself; every display caller applies Title to its result"
-	whyOption    = "an answer option: submitted verbatim as the answer, so shown verbatim"
-	whyDispatch  = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
-	whyPerson    = "a person's (user account's) display name, not a title"
+	whyFilter   = "a filter field (data-f-*): an attribute the list's script reads, never drawn"
+	whyForm     = "edit form value: the raw stored title, edited as written"
+	whyStatic   = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
+	whyAccessor = "the accessor itself; every display caller applies Title to its result"
+	whyOption   = "an answer option: submitted verbatim as the answer, so shown verbatim"
+	whyPerson   = "a person's (user account's) display name, not a title"
 )
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
-	"focus.go focusHaystack f.Description":             {1, whyFilter},
-	"mirror_ask.go askForm o.Description":              {2, whyOption},
-	"mirror_ask.go askReadOnly o.Description":          {2, whyOption},
-	"subagent_cards.go subagentCallOf in.Description":  {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
-	"subagent_cards.go subagentSummary s.Description":  {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
-	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
-	"agents.go agentCard a.DisplayName":                {1, whyFilter},
-	"mirror.go mirrorCard m.Label":                     {4, whyFilter + "; and " + whyPredicate},
-	"mirror.go mirrorCard m.Title":                     {2, whyFilter},
-	"agents.go agentFields a.DisplayName":              {2, whyFilter},
-	"agents.go agentRenameForm a.DisplayName":          {1, whyForm},
-	"agents.go comboOption o.Label":                    {2, whyStatic},
-	"agents.go seededComboOption o.Label":              {2, whyStatic},
-	"agents.go modelFieldForDisplay m.Label":           {1, whyStatic},
-	"chief_sessions.go chiefNewSessionPicker rt.Label": {3, whyStatic},
-	"chief_sessions.go sessionModelCombobox m.Label":   {1, whyStatic},
-	"components.go sidebar t.Label":                    {1, whyStatic},
-	"connectors.go ConnectorForm p.Label":              {1, whyStatic},
-	"list_signals.go agentsFilterChips c.Label":        {1, whyStatic},
-	"recents.go recentEntry it.Title":                  {2, "recentItem.Title is built through Title by recentItems"},
-	"mirror.go mirrorFields m.Label":                   {2, whyFilter},
-	"mirror.go mirrorFields m.Title":                   {2, whyFilter},
-	"mirror_ask.go askForm o.Label":                    {2, whyOption},
-	"mirror_ask.go askReadOnly o.Label":                {1, whyOption},
-	"mirror_ask.go askRetryForm q.Options[p].Label":    {1, whyOption},
-	"notes.go noteDispatchButton TaskTitle":            {1, whyDispatch},
-	"notes.go NotesEditModalBody n.Title":              {1, whyForm},
-	"notes.go statusFilterRow taskstatus.Label":        {1, whyStatic},
-	"notes.go TaskTitle n.Title":                       {1, whyAccessor},
-	"tabs.go Tabs t.Label":                             {1, whyStatic},
-	"tags.go tasksFilteredEmpty taskstatus.Label":      {1, whyStatic},
-	"terminal.go quickKeyBar k.Label":                  {1, whyStatic},
-	"focus.go focusHaystack f.Title":                   {1, whyFilter},
+	"mirror_ask.go askForm o.Description": {2, whyOption},
+	// The chief's question card (owner_ask.go): an option is sent verbatim as the
+	// owner's answer, so it is shown verbatim; the decoder's reads only check it.
+	"owner_ask.go ownerAskForm o.Label":                  {4, whyOption},
+	"owner_ask.go ownerAskForm o.Description":            {4, whyOption},
+	"owner_ask.go ownerAskCardAs o.Label":                {2, whyOption},
+	"owner_ask.go ownerAskCardAs o.Description":          {2, whyOption},
+	"owner_ask.go DecodeOwnerAsk o.Label":                {6, "validating ask_owner's arguments (trim, length, uniqueness); never drawn here"},
+	"owner_ask.go DecodeOwnerAsk o.Description":          {2, "validating ask_owner's arguments (trim, length); never drawn here"},
+	"mirror_ask.go askReadOnly o.Description":            {2, whyOption},
+	"subagent_cards.go subagentCallOf in.Description":    {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
+	"subagent_cards.go subagentSummary s.Description":    {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
+	"terminal.go terminalNames v.DisplayName":            {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
+	"info_sheet.go InfoSheet.trigger s.Label":            {2, "the ⓘ's accessible name and tooltip (aria-label, title): SessionPlaceSheet builds it around a session name its callers already plained (attentionTitle in internal/api, mirrorViewName here), so a Title here would apply the rule twice (\"applied once\"); the other InfoSheets' labels are muster's own words"},
+	"switcher.go mirrorCodeName m.Label":                 {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
+	"agent_actions.go agentRenameFields a.DisplayName":   {1, whyForm},
+	"switcher_pin.go newSwitcherPin e.agent.DisplayName": {1, whyForm},
+	"agents.go comboOption o.Label":                      {2, whyStatic},
+	"agents.go seededComboOption o.Label":                {2, whyStatic},
+	"agents.go modelFieldForDisplay m.Label":             {1, whyStatic},
+	"chief_sessions.go runtimeModelForms rt.Label":       {2, whyStatic},
+	"components.go sidebarIn t.Label":                    {1, whyStatic},
+	"chief_chats.go chiefContextChip c.Title":            {2, "ContextView.Title is how the chip's number is derived — muster's own constant (ChiefContextTitle, set by ChiefContextView), never a session's or author's title"},
+	"nav_layout.go NavDocument v.Title":                  {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
+	"connectors.go ConnectorForm p.Label":                {1, whyStatic},
+	"switcher.go switcherEntry it.Label":                 {2, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
+	"switcher.go switcherLabel it.Label":                 {1, "the pill's name line, split out of switcherEntry for \"Show tmux sessions\": SwitcherItem.Label, built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
+	"nav_agents.go navAgentRow it.Label":                 {1, "SwitcherItem.Label, built through Title by switcherItems (the switcher's own labels); the row's name and title — plaining it again would apply Title twice"},
+	"nav_agents.go navAgentRow it.Title":                 {2, "SwitcherItem.Title, built through Title by switcherItems; the command palette's data-switcher-title — plaining it again would apply Title twice"},
+	"switcher.go switcherEntry it.Title":                 {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
+	"mirror_ask.go askForm o.Label":                      {2, whyOption},
+	"mirror_ask.go askReadOnly o.Label":                  {1, whyOption},
+	"mirror_ask.go askRetryForm q.Options[p].Label":      {1, whyOption},
+	"notes.go editTitleBodyFields n.Title":               {1, whyForm},
+	"notes.go statusFilterRow taskstatus.Label":          {1, whyStatic},
+	"notes.go TaskTitle n.Title":                         {1, whyAccessor},
+	"tabs.go TabsSelected t.Label":                       {1, whyStatic},
+	"tags.go tasksFilteredEmpty taskstatus.Label":        {1, whyStatic},
+	"terminal.go quickKeyButton k.Label":                 {1, whyStatic},
+	// The fleet digest (fleet_digest.go): a group's label is muster's own
+	// (internal/fleet GroupLabel), and a pull request's is "<owner/repo>#<n>"
+	// that muster built from session_prs — neither is author text.
+	"fleet_digest.go fleetChip gr.Label":         {1, whyStatic},
+	"fleet_digest.go fleetGroupDetails gr.Label": {1, whyStatic},
+	"fleet_digest.go fleetSheet gr.Label":        {2, whyStatic},
+	"fleet_digest.go fleetDrill p.Label":         {1, "a pull request named \"<owner/repo>#<n>\", built by internal/api from session_prs' repo and number: no author text"},
 }
 
 // apiExempt: the same, for api's hand-written HTML.
 var apiExempt = map[string]exemption{
+	// A person is named on the teams pages (personLabel: email, else display
+	// name) the same way renderAdminUsers names a user.
 	"admin.go Server.renderAdminUsers u.DisplayName":                 {3, whyPerson},
+	"admin_teams.go Server.renderAdminTeams m.DisplayName":           {1, whyPerson},
+	"admin_teams.go Server.renderAdminTeams u.DisplayName":           {1, whyPerson},
+	"teams_pages.go Server.renderTeamPage m.DisplayName":             {1, whyPerson},
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
-	"plugins.go Server.renderPluginsPage p.Label":                    {1, "a plugin's configured label (its name), not a title"},
-	"push_routes.go Server.pushPreferencesForm e.Label":              {1, whyStatic},
+	// The Officers pages (O-C): the schedule presets and capability labels are
+	// fixed UI text; an escalation choice names a person (personLabel) or the
+	// team, as the teams pages do.
+	"officers_pages.go Server.officerSchedules p.Label":    {1, whyStatic},
+	"officers_pages.go Server.renderOfficerForm c.Label":   {1, whyStatic},
+	"officers_pages.go Server.renderOfficerForm p.Label":   {1, whyStatic},
+	"officers_pages.go Server.renderOfficerForm who.Label": {1, whyPerson},
+	// A team dispatch's push names the member whose say-so it was (team
+	// sharing 4.7): cut to one line and sanitised by teamDispatchPushBody.
+	"team_dispatch.go Server.personName u.DisplayName":         {2, whyPerson},
+	"plugins.go Server.renderPluginsPage p.Label":              {1, "a plugin's configured label (its name), not a title"},
+	"plugin_pairing.go Server.pairSectionHTML p.Label":         {1, "a pairing request's label (the plugin's name to be), not a title"},
+	"pages.go Server.renderPagesList p.Creator.Label":          {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
+	"pages.go Server.renderPageDetail l.Label":                 {1, "a share link's label: its creation time and its token hash's first 8 hex digits, computed by pages.Link.Label; never author text"},
+	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
+	"pages.go Server.renderPagesList p.Title":                  {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
+	"pages.go Server.renderPageDetail p.Title":                 {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
+	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
+	"features.go featureRow f.Description":                     {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
+	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
+	"team_connectors.go Server.renderTeamConnectors sg.Source": {1, "a standing grant's credential source, compared with connectors.SourceApp to pick the App's rows; never drawn"},
+	"officer_ask_context.go officerContextHTML c.Source":       {1, "an officer ask's source MESSAGE (attention.ItemContext.Source, a struct), not a title: its fields are sanitised by attention.Clean and escaped where drawn"},
 }
 
 // pushEmitters are the only functions that may hand a notification to a push
 // service or the router, and why each is safe.
 var pushEmitters = map[string]string{
 	"push_routes.go Server.sendPush":        "the wrapper goNotify and handlePushTest call",
-	"server.go Server.goNotify":             "applies Title to the notification's title (bodies: see checkPushEmitters)",
+	"server.go Server.goNotify":             "applies Title (TitleKeeping, keeping TitleKeep: a window's tmux target) to the notification's title (bodies: see checkPushEmitters)",
 	"push_routes.go Server.handlePushTest":  "a fixed test title and body",
 	"devices.go Server.handleDevicePushPut": "a fixed probe payload (devicePushProbe)",
 }
@@ -186,6 +246,83 @@ func TestTheTitleSinkLedger(t *testing.T) {
 		}
 	})
 	t.Run("push emitters", checkPushEmitters)
+	t.Run("where kept verbatim", checkWhereKept)
+}
+
+// checkWhereKept: in package api, a value that can name a mirrored window
+// (an attention item's Source, a where, an ask's source) is plained ONLY by
+// textplain.TitleKeeping — a plain textplain.Title over it would strip the
+// tmux target's own characters ("_scratch_" → "scratch"). See apiTitleNames.
+func checkWhereKept(t *testing.T) {
+	fset, files := parseDir(t, "../api")
+	keptIn := map[string]int{}
+	for name, f := range files {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok || len(c.Args) == 0 {
+					return true
+				}
+				sel, ok := c.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "textplain" {
+					return true
+				}
+				if !namesAWindow(c.Args[0]) {
+					return true
+				}
+				switch sel.Sel.Name {
+				case "TitleKeeping":
+					keptIn[fn.Name.Name]++
+				case "Title":
+					var b strings.Builder
+					_ = printer.Fprint(&b, fset, c)
+					t.Errorf("%s: %s plains a value that can name a mirrored window with Title; use textplain.TitleKeeping with its target", name, b.String())
+				}
+				return true
+			})
+		}
+	}
+	// 🔴 POSITIVE CONTROL: the sites this exists for are found — by NAME, as
+	// the push-body control above derives its builders, not by a count. (It
+	// was "at least 6 sites"; #806 routed the Answered card's and the ask
+	// page's lines through attentionTitle, which keeps the target verbatim
+	// itself, so three call sites became one function's — a count would have
+	// read that consolidation as a broken walk.) attentionTitle is THE naming
+	// rule every attention head, delivery line and ask page title goes
+	// through; attentionPushBody and attentionSummaryItemOf name the window
+	// on a push body and the status bar's summary.
+	for _, must := range []string{"attentionTitle", "attentionPushBody", "attentionSummaryItemOf"} {
+		if keptIn[must] == 0 {
+			t.Fatalf("positive control FAILED: no TitleKeeping over a window-naming value found in %s (found %v); the walk is not measuring", must, keptIn)
+		}
+	}
+}
+
+// namesAWindow reports whether e reads an attention Source, a where, or an
+// ask's source (askSource / askSourceParts).
+func namesAWindow(e ast.Expr) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			if x.Sel.Name == "Source" || x.Sel.Name == "Where" {
+				found = true
+			}
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok && (id.Name == "askSource" || id.Name == "askSourceParts") {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 type read struct {
@@ -413,7 +550,8 @@ func coveredBy(stack []ast.Node) bool {
 	return false
 }
 
-// isTitleCall reports whether c applies the title rule: textplain.Title, or
+// isTitleCall reports whether c applies the title rule: textplain.Title,
+// textplain.TitleKeeping (Title with a verbatim part: see apiTitleNames), or
 // package ui's plainOr (Title with a raw fallback).
 func isTitleCall(c *ast.CallExpr) bool { return appliedArg(c) != nil }
 
@@ -424,7 +562,7 @@ func appliedArg(c *ast.CallExpr) ast.Expr {
 	}
 	switch f := c.Fun.(type) {
 	case *ast.SelectorExpr:
-		if id, ok := f.X.(*ast.Ident); ok && id.Name == "textplain" && f.Sel.Name == "Title" {
+		if id, ok := f.X.(*ast.Ident); ok && id.Name == "textplain" && (f.Sel.Name == "Title" || f.Sel.Name == "TitleKeeping") {
 			return c.Args[0]
 		}
 	case *ast.Ident:
@@ -682,7 +820,9 @@ func checkPushEmitters(t *testing.T) {
 				// is not) — applying the rule to it again is a double.
 				fields := map[string]int{}
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					if c, ok := n.(*ast.CallExpr); ok && isTitleCall(c) && len(c.Args) == 1 {
+					// len(c.Args) >= 1: TitleKeeping's second argument is the
+					// verbatim part, not a second plained value.
+					if c, ok := n.(*ast.CallExpr); ok && isTitleCall(c) && len(c.Args) >= 1 {
 						if s, ok := c.Args[0].(*ast.SelectorExpr); ok {
 							fields[s.Sel.Name]++
 						}

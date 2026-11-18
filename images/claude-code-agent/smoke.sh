@@ -33,11 +33,20 @@
 #   7. the entrypoint REFUSES to start (exit 1, naming the variable) with each of
 #      ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK,
 #      CLAUDE_CODE_USE_VERTEX, ANTHROPIC_BASE_URL set to a FAKE value — before it
-#      seeds or starts anything;
+#      seeds or starts anything; and under CCD_LLM_ROUTE=muster the installed
+#      credential check (/usr/local/lib/cc/credentials.sh, which the entrypoint
+#      sources) sets ANTHROPIC_BASE_URL to exactly $MUSTER_CONNECT_URL/llm and
+#      ANTHROPIC_AUTH_TOKEN to the pod's muster token, while the entrypoint
+#      still refuses, before seeding, a routed pod that also carries a
+#      subscription token, ANY preset base URL or auth token (even the exact
+#      values the check would set) or an API key;
 #   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json;
 #   9. with muster's connector store offered (FAKE url and token), seed registers
 #      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
-#      an unreachable muster fails fast and writes no git routing; curl is present;
+#      an unreachable muster fails fast and writes no git routing; curl and ssh
+#      are present; the optional hq CLI runs when the image carries it, and
+#      CCD_HQ_MCP=1 (with an hq on PATH) against an unreachable muster tries
+#      the connector, registers no hq server, and allows its tools;
 #  10. the seeded settings pin default permission mode and the approval hooks,
 #      and `ccd approve` with muster unreachable makes no decision (prints nothing).
 #  11. (runs FIRST, as part of step 0) with CCD_REPO (a local bare repository
@@ -64,6 +73,24 @@ want="${CLAUDE_CODE_VERSION:?the image sets CLAUDE_CODE_VERSION}"
 got="$(claude --version 2>/dev/null || true)"
 [[ "$got" == "$want "* ]] || fail "claude --version is '$got', expected '$want …'"
 echo "cc-smoke: claude $got ok"
+
+# The read-only gh shim (cmd/ccd/ghshim.go) is OPT-IN: 🔴 this image puts NO
+# `gh` on PATH (a script that probes `command -v gh` must keep finding none).
+# An officer that wants it runs its own image that links ccd as gh
+# (docs/officers.md "Reading pull requests with gh"); that link is made here in
+# a scratch directory, exactly as such an image makes it, and checked: it
+# answers its version, and a write is refused (exit 1) without sending
+# anything (no proxy environment is set here, so a write that tried would fail
+# differently: the refusal text is what is checked).
+if command -v gh >/dev/null 2>&1; then fail "gh is on PATH ($(command -v gh)): the shim must be opt-in, not in every image"; fi
+mkdir -p /tmp/smoke-gh-bin
+ln -s /usr/local/bin/ccd /tmp/smoke-gh-bin/gh
+ghv="$(/tmp/smoke-gh-bin/gh --version 2>&1 || true)"
+[[ "$ghv" == *"read-only shim"* ]] || fail "a gh link to ccd: --version is '$ghv', expected muster's read-only shim"
+if ghw="$(/tmp/smoke-gh-bin/gh pr merge 1 --repo example-org/example 2>&1)"; then fail "gh pr merge exited 0: $ghw"; fi
+[[ "$ghw" == *"refused, nothing was sent"* ]] || fail "gh pr merge said '$ghw', expected the shim's refusal"
+rm -rf /tmp/smoke-gh-bin
+echo "cc-smoke: no gh on PATH by default; a gh link to ccd is the read-only shim"
 
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-sk-ant-oat01-SMOKE-DELIBERATELY-INVALID}"
 export HOOKS_TOKEN="${HOOKS_TOKEN:-smoke-hooks-token}"
@@ -299,6 +326,34 @@ for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_C
   echo "cc-smoke: $v refused"
 done
 
+# 7b. The LLM route. Positive: the installed check, sourced as the entrypoint
+# sources it, in a routed pod's environment (FAKE values; nothing listens on
+# port 9), points the CLI at exactly the proxy with the pod's own token.
+route_env=(CCD_LLM_ROUTE=muster MUSTER_CONNECT_URL=http://127.0.0.1:9 MUSTER_HOOK_TOKEN=smoke-route-token-not-real)
+[[ -r /usr/local/lib/cc/credentials.sh ]] || fail "the credential check is not installed at /usr/local/lib/cc/credentials.sh"
+out="$(env -i PATH="$PATH" "${route_env[@]}" bash -c \
+  'source /usr/local/lib/cc/credentials.sh && cc_check_credentials && printf "%s %s" "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN"' 2>&1)" \
+  || fail "a routed pod's environment was refused: $out"
+[[ "$out" == "http://127.0.0.1:9/llm smoke-route-token-not-real" ]] \
+  || fail "under the route the check set '$out', want the proxy URL and the pod's token"
+echo "cc-smoke: CCD_LLM_ROUTE=muster points the CLI at the proxy with the pod's token"
+# Negative: the real entrypoint refuses each of these beside the route, before
+# it seeds anything.
+# A preset base URL or auth token is refused even when it is exactly the
+# value the check would set.
+for extra in CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-SMOKE-DELIBERATELY-INVALID ANTHROPIC_BASE_URL=https://elsewhere.invalid \
+  ANTHROPIC_AUTH_TOKEN=another-smoke-token ANTHROPIC_API_KEY=fake-smoke-value \
+  ANTHROPIC_BASE_URL=http://127.0.0.1:9/llm ANTHROPIC_AUTH_TOKEN=smoke-route-token-not-real; do
+  v="${extra%%=*}"
+  rc=0
+  out="$(env -u CLAUDE_CODE_OAUTH_TOKEN "${route_env[@]}" "$extra" CLAUDE_CONFIG_DIR=/tmp/route-cfg CCD_WORKSPACE=/tmp/route-ws \
+    CCD_LISTEN=127.0.0.1:18798 CCD_TMUX_SOCKET=route timeout 15 /usr/local/bin/cc-entrypoint 2>&1)" || rc=$?
+  [[ "$rc" == "1" && "$out" == *"$v"*"Refusing."* ]] \
+    || fail "under the route with $v set the entrypoint exited $rc, want 1 naming $v: $out"
+  [[ ! -e /tmp/route-cfg/settings.json ]] || fail "under the route with $v set the entrypoint seeded before refusing"
+  echo "cc-smoke: CCD_LLM_ROUTE=muster with $v refused"
+done
+
 # 8. env / apiKeyHelper planted in the persisted settings.json are removed by seed.
 cat >"$CLAUDE_CONFIG_DIR/settings.json" <<'JSON'
 {"env": {"ANTHROPIC_BASE_URL": "https://fake.invalid"}, "apiKeyHelper": "/bin/echo fake", "model": "kept"}
@@ -324,6 +379,37 @@ rc=0; timeout 15 ccd connect-git --timeout 3s github >/tmp/cg.out 2>&1 || rc=$?
 [[ "$rc" == "1" ]] || fail "connect-git against an unreachable muster exited $rc, want 1: $(cat /tmp/cg.out)"
 if git config --global --get-regexp '^url\.' >/dev/null 2>&1; then fail "connect-git wrote git routing without a grant"; fi
 curl --version >/dev/null || fail "curl is missing"
+# A private-repository pool's deploy key is used through ssh (podagent deploykey.go).
+ssh -V >/dev/null 2>&1 || fail "ssh (openssh-client) is missing"
+# The HQ CLI is OPTIONAL (the Dockerfile's `hq` build context). When the image
+# carries it, it must run from PATH; without it, nothing else may be on PATH as hq.
+if [[ -e /opt/hq/hq ]]; then
+  [[ "$(command -v hq || true)" == /usr/local/bin/hq ]] || fail "the image carries /opt/hq/hq, but command -v hq is '$(command -v hq || true)'"
+  hq --help >/tmp/hq.out 2>&1 || fail "hq --help failed: $(cat /tmp/hq.out)"
+  echo "cc-smoke: hq on PATH and runs"
+else
+  command -v hq >/dev/null && fail "hq is on PATH but /opt/hq/hq is not: it did not come from the build context"
+  echo "cc-smoke: no hq in this image (built without the hq context)"
+fi
+# The chief's HQ server flag with muster unreachable. A stand-in `hq` goes first
+# on PATH for this one step, so seed gets PAST its PATH lookup in every image
+# (CI's has no hq) and actually tries to read the `hq` connector: the read
+# fails, seed still succeeds, says it left the server as it was (absent),
+# allows the HQ tools, and seed --check agrees. Re-seeded without it after.
+mkdir -p /tmp/smoke-hq-bin
+printf '#!/bin/sh\nexit 0\n' > /tmp/smoke-hq-bin/hq
+chmod 0755 /tmp/smoke-hq-bin/hq
+PATH="/tmp/smoke-hq-bin:$PATH" CCD_HQ_MCP=1 ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json 2>/tmp/seed.err || fail "seed with CCD_HQ_MCP=1: $(cat /tmp/seed.err)"
+grep -q 'could not read the "hq" connector' /tmp/seed.err \
+  || fail "seed with CCD_HQ_MCP=1 and hq on PATH did not try (and fail) to read the connector: $(cat /tmp/seed.err)"
+grep -q '"hq": {' "$CLAUDE_CONFIG_DIR/.claude.json" && fail "seed registered an hq server without reading the connector"
+grep -qF '"mcp__hq__*"' "$CLAUDE_CONFIG_DIR/settings.json" || fail "CCD_HQ_MCP=1 did not allow the HQ tools: $(cat "$CLAUDE_CONFIG_DIR/settings.json")"
+CCD_HQ_MCP=1 ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json || fail "seed --check disagrees with CCD_HQ_MCP=1"
+rm -rf /tmp/smoke-hq-bin
+ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json 2>/tmp/seed.err || fail "re-seed without CCD_HQ_MCP: $(cat /tmp/seed.err)"
 echo "cc-smoke: connector store wiring ok"
 
 # 10. Approvals: the seeded settings pin default permission mode (never auto,

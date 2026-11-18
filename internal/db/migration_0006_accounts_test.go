@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/db"
-	"github.com/ZacxDev/muster/internal/github"
 )
 
 // applyThroughFrom applies every on-disk migration NEWER than the database's
@@ -100,12 +99,71 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - uploads (0024, the composer's attached files).
 //   - jobs (0037, the machine job API's jobs).
 //   - devices, device_pairing_codes (0039, the Android app's paired phones).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
+//   - connector_standing_grants (0043, an owner's shared connector approvals).
+//   - suggest_preferences (0048, suggested replies' per-user toggle).
+//   - suggest_usage (0049, suggested replies' per-user counts).
+//   - plugin_threads (0054, the threads a mirrored session started).
+//   - session_prs (0055, the pull requests a mirrored session authored).
+//   - mail_resumes (0056, the ended sessions mail resumed).
+//   - device_challenges (0058, a paired phone's signed-action challenges).
+//   - chief_preferences (0060, the chief's per-user on/off toggle).
+//   - chief_nudges (0064, the chief's stall-nudge decisions).
+//   - cc_account_failovers (0066, a claude-code agent's account rebinds).
+//   - task_ref_writes (0072, the writes queued on a plugin task reference).
+//   - session_episodes (0073, one row per stop of one of the owner's sessions).
+//   - officer_llm_usage (0075, the officer LLM proxy's per-day usage).
+//   - officer_judgement_sessions (0082, the judgement session cap's ledger).
+//   - officer_pr_loops (0119, a draft officer's review-loop announcements).
+//   - officer_public_branches (0138, a draft officer's public branches and their items).
+//   - officer_connector_blocks (0148, an officer's items blocked on a pending connector grant).
+//   - chief_session_llm_usage, chief_session_llm_reservations (0144, what the
+//     chief's OpenRouter sessions spend, and hold in flight).
+//   - fleet_owner_marks (0147, the fleet digest's marks).
+//   - officer_host_spawns (0125, a host officer's spawned sessions).
+//   - plugin_pair_requests (0122, a plugin's request for a token).
+//   - agent_secrets (0128, an agent's credentials, apart from its row).
+//   - session_tags (0086, the per-owner session tags).
+//   - asks (0089, the ask log: every question an agent put to its owner).
+//   - host_dispatches (0093, the chief's host spawns).
+//   - notify_preferences (0094, the per-user notification preferences).
+//   - chief_proposals (0100, a session continuing one the owner viewed).
+//   - plugin_handoffs (0104, a viewer plugin's one-time hand-off codes).
+//   - plugin_chief_instructions (0141, a plugin's one section for its owner's chief).
+//   - routing_rules, chief_turn_usage, plugin_message_handling (0107, the
+//     chief's routing rules and its token telemetry).
+//   - cc_account_usage (0108, each pooled Claude account's latest utilization).
+//   - ask_attempts (0113, the answer-attempt log: one row per Submit or Dismiss of a question card).
+//   - pages, page_versions, page_links, page_responses (0116, shareable pages).
+//   - officer_types, officer_defs, officer_items, officer_schedules (0118, the
+//     built-in officer backend's store).
+//   - officer_contacts, officer_contact_events (0132, a builtin officer's
+//     people and their engagement).
+var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_public_branches", "officer_host_spawns", "plugin_pair_requests", "agent_secrets", "pins", "plugin_chief_instructions", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials",
+	"routing_rules", "chief_turn_usage", "plugin_message_handling",
+	"pages", "page_versions", "page_links", "page_responses",
+	"officer_types", "officer_defs", "officer_items", "officer_schedules",
+	"officer_contacts", "officer_contact_events",
+	"chief_session_llm_usage", "chief_session_llm_reservations",
+	"fleet_owner_marks",
+	"officer_connector_blocks"}
 
-// rlsTables is every owned table today: ownedTables plus ownedAfter0006.
-func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
+// droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
+// stay in ownedTables because the backfill fixture stops at version 6, where
+// they still exist; they are not owned tables today.
+//
+//   - github_connection (0059, the removed per-user GitHub OAuth connection).
+var droppedAfter0006 = []string{"github_connection"}
+
+// ownedTablesNow is ownedTables less droppedAfter0006: the tables 0006 made
+// owned that still exist after every migration.
+func ownedTablesNow() []string {
+	return slices.DeleteFunc(slices.Clone(ownedTables), func(t string) bool { return slices.Contains(droppedAfter0006, t) })
+}
+
+// rlsTables is every owned table today: ownedTablesNow plus ownedAfter0006.
+func rlsTables() []string { return append(ownedTablesNow(), ownedAfter0006...) }
 
 var ownedTables = []string{
 	"agents",
@@ -134,6 +192,8 @@ var sharedTables = []string{"agent_retired_names", "schema_migrations"}
 var wantForeignKeys = []string{
 	"agents|agents_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE SET NULL (note_id)",
 	"agents|agents_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"cc_account_failovers|cc_account_failovers_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"cc_account_failovers|cc_account_failovers_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"cc_account_marks|cc_account_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"api_tokens|api_tokens_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",
 	"audit_log|audit_log_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",
@@ -145,8 +205,87 @@ var wantForeignKeys = []string{
 	"connector_audit|connector_audit_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"connector_grants|connector_grants_agent_owner_fkey|FOREIGN KEY (agent_id, owner_id) REFERENCES agents(id, owner_id) ON DELETE CASCADE",
 	"connector_grants|connector_grants_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0043: an automatic approval names its standing grant, of the SAME owner.
+	"connector_grants|connector_grants_standing_grant_owner_fkey|FOREIGN KEY (standing_grant_id, owner_id) REFERENCES connector_standing_grants(id, owner_id)",
+	"connector_standing_grants|connector_standing_grants_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"connectors|connectors_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	"github_connection|github_connection_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"suggest_preferences|suggest_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_preferences|chief_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_nudges|chief_nudges_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"suggest_usage|suggest_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_llm_usage|officer_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_pr_loops|officer_pr_loops_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_public_branches|officer_public_branches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_connector_blocks|officer_connector_blocks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_session_llm_usage|chief_session_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"fleet_owner_marks|fleet_owner_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"fleet_owner_marks|fleet_owner_marks_fleet_chat_id_fkey|FOREIGN KEY (fleet_chat_id) REFERENCES chat_sessions(id) ON DELETE SET NULL",
+	"officer_host_spawns|officer_host_spawns_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_pair_requests|plugin_pair_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0128: an agent's credentials are its own and its owner's, and go with it.
+	"agent_secrets|agent_secrets_agent_owner_fkey|FOREIGN KEY (agent_id, owner_id) REFERENCES agents(id, owner_id) ON DELETE CASCADE",
+	"agent_secrets|agent_secrets_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_judgement_sessions|officer_judgement_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"session_episodes|session_episodes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0089: the ask log; an ask's episode is the SAME owner's.
+	"asks|asks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0093: a host dispatch is its owner's; its task is unlinked when deleted.
+	"host_dispatches|host_dispatches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"host_dispatches|host_dispatches_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
+	// 0113: an answer attempt is its owner's.
+	"ask_attempts|ask_attempts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0108: an account's usage reading is its owner's.
+	"cc_account_usage|cc_account_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0116: a page, and every version, link and response of it, is its
+	// owner's; each child names its page (and a response its link) by the
+	// composite key, so it cannot name another owner's.
+	"pages|pages_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"page_versions|page_versions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"page_versions|page_versions_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
+	"page_links|page_links_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"page_links|page_links_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
+	"page_responses|page_responses_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"page_responses|page_responses_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
+	"page_responses|page_responses_link_fkey|FOREIGN KEY (link_id, owner_id) REFERENCES page_links(id, owner_id) ON DELETE CASCADE",
+	// 0118: the built-in officer backend's rows are their owner's; an officer
+	// names its type, and an item or a schedule its officer, by the composite
+	// key, so none can name another owner's.
+	"officer_types|officer_types_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_defs|officer_defs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_defs|officer_defs_type_fkey|FOREIGN KEY (owner_id, type_key) REFERENCES officer_types(owner_id, key)",
+	"officer_items|officer_items_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_items|officer_items_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
+	"officer_schedules|officer_schedules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_schedules|officer_schedules_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
+	// 0132: a contact names its officer, and an event its contact, by the
+	// composite key, so neither can name another owner's.
+	"officer_contacts|officer_contacts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_contacts|officer_contacts_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
+	"officer_contact_events|officer_contact_events_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_contact_events|officer_contact_events_contact_fkey|FOREIGN KEY (contact_id, owner_id) REFERENCES officer_contacts(id, owner_id) ON DELETE CASCADE",
+	// 0094: one notification-preferences row per user.
+	"notify_preferences|notify_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0100: a proposal is its owner's; its successor is a host dispatch.
+	"chief_proposals|chief_proposals_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_proposals|chief_proposals_host_dispatch_id_fkey|FOREIGN KEY (host_dispatch_id) REFERENCES host_dispatches(id)",
+	"asks|asks_episode_owner_fkey|FOREIGN KEY (episode_id, owner_id) REFERENCES session_episodes(id, owner_id) ON DELETE SET NULL (episode_id)",
+	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0105: the instance's branding names the admin who changed it last.
+	"instance_branding|instance_branding_updated_by_fkey|FOREIGN KEY (updated_by) REFERENCES users(id)",
+	// 0126: a membership names its team, its person and who added it — all
+	// users rows (a team is one); the KIND each must be is a trigger's job.
+	// 0127: an audit row names the team it acted on.
+	"audit_log|audit_log_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
+	// 0130: a host spawn names the team its owner lent it to (the KIND is
+	// lend_target's job: it admits only a team the owner operates).
+	"officer_host_spawns|officer_host_spawns_shared_team_id_fkey|FOREIGN KEY (shared_team_id) REFERENCES users(id)",
+	"team_members|team_members_added_by_fkey|FOREIGN KEY (added_by) REFERENCES users(id)",
+	"team_members|team_members_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
+	"team_members|team_members_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",
+	// (github_connection|github_connection_owner_id_fkey went with its table in 0059.)
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
 	"invites|invites_redeemed_by_fkey|FOREIGN KEY (redeemed_by) REFERENCES users(id)",
@@ -162,6 +301,14 @@ var wantForeignKeys = []string{
 	"note_comments|note_comments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_comments|note_comments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"notes|notes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// (0072's notes.ext_plugin_id has NO foreign key, deliberately — see the
+	// migration: notes_ext_plugin_is_owners checks it instead.)
+	// 0072: a write queued on a reference. Its plugin is a composite key (the
+	// plugin is the write owner's); its task is plain, owner-checked by
+	// task_ref_writes_task_is_owners (0027's reason).
+	"task_ref_writes|task_ref_writes_note_id_fkey|FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE",
+	"task_ref_writes|task_ref_writes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"task_ref_writes|task_ref_writes_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"agent_focus|agent_focus_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"agent_focus|agent_focus_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"agent_focus_history|agent_focus_history_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
@@ -176,14 +323,31 @@ var wantForeignKeys = []string{
 	"plugin_messages|plugin_messages_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_messages|plugin_messages_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	"plugin_handoffs|plugin_handoffs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_handoffs|plugin_handoffs_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	// 0141: a plugin's chief section is its owner's, for one of their plugins,
+	// and goes with the plugin row.
+	"plugin_chief_instructions|plugin_chief_instructions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_chief_instructions|plugin_chief_instructions_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	// 0107: a rule is its owner's, for one of their plugins; the telemetry
+	// rows name nothing but their owner (a row outlives what it counted).
+	"routing_rules|routing_rules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"routing_rules|routing_rules_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	"chief_turn_usage|chief_turn_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_message_handling|plugin_message_handling_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0027: a PLAIN key, its owner checked by plugin_messages_task_is_owners (a
 	// composite onto notes would block 0006's re-run; see the migration).
 	"plugin_messages|plugin_messages_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	// 0032: the same shape, its owner checked by attention_asks_task_is_owners.
 	"attention_asks|attention_asks_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
+	// 0051: a PLAIN key with no owner check — its one writer, the unrouted-message
+	// sweep, raises the ask as the message's own owner (see the migration).
+	"attention_asks|attention_asks_plugin_message_id_fkey|FOREIGN KEY (plugin_message_id) REFERENCES plugin_messages(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_message_owner_fkey|FOREIGN KEY (message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
 	"plugin_reply_drafts|plugin_reply_drafts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0121: an outbound draft names its plugin directly, under the same owner.
+	"plugin_reply_drafts|plugin_reply_drafts_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
@@ -192,11 +356,20 @@ var wantForeignKeys = []string{
 	"push_subscriptions|push_subscriptions_device_owner_fkey|FOREIGN KEY (device_id, owner_id) REFERENCES devices(id, owner_id) ON DELETE CASCADE",
 	"devices|devices_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"device_pairing_codes|device_pairing_codes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0058: a challenge names its device, the composite key keeping it to a
+	// device of the SAME owner.
+	"device_challenges|device_challenges_device_owner_fkey|FOREIGN KEY (device_id, owner_id) REFERENCES devices(id, owner_id) ON DELETE CASCADE",
+	"device_challenges|device_challenges_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_routes|session_routes_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"session_routes|session_routes_draft_id_fkey|FOREIGN KEY (draft_id) REFERENCES plugin_reply_drafts(id) ON DELETE SET NULL",
 	"session_routes|session_routes_message_owner_fkey|FOREIGN KEY (plugin_message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
 	"session_routes|session_routes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0053: 0027's shape, its owner checked by session_routes_task_is_owners.
+	"session_routes|session_routes_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0086: pins' shape (an agent row dies with its agent).
+	"session_tags|session_tags_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"session_tags|session_tags_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"user_credentials|user_credentials_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
@@ -534,56 +707,6 @@ func TestConnectorNamesAreUniquePerOwner(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != "connectors_owner_name_key" {
 		t.Fatalf("the same owner's duplicate name: got %v, want 23505 from connectors_owner_name_key", err)
-	}
-}
-
-// TestGitHubConnectionStoreKeepsItsSingleUserBehaviourAfter0006 drives the real
-// internal/github.PGStore against the re-keyed table: Get on empty, Save, Get,
-// upsert, Clear — all as owner 1, with one row — and shows the store is keyed by
-// owner rather than "the only row": another owner's row is neither read nor
-// cleared.
-func TestGitHubConnectionStoreKeepsItsSingleUserBehaviourAfter0006(t *testing.T) {
-	ctx := ctx0006(t)
-	pool := freshMigrated(ctx, t, "ms_0006_github")
-	st, err := github.NewPG(pool, []byte("0123456789abcdef0123456789abcdef"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The store acts for the PRINCIPAL's user since accounts PR 3b (it was the
-	// constant 1); the operator's principal keeps this test's single-user
-	// claims. The connection itself is still the migrator's.
-	op := asUser(ctx, 1)
-	if _, ok, err := st.Get(op); err != nil || ok {
-		t.Fatalf("Get on an empty table: ok=%v err=%v, want false/nil", ok, err)
-	}
-	if err := st.Save(op, "octo", "repo", "gho_first"); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	if err := st.Save(op, "octo2", "repo,read:org", "gho_second"); err != nil {
-		t.Fatalf("second Save (upsert): %v", err)
-	}
-	c, ok, err := st.Get(op)
-	if err != nil || !ok || c.Login != "octo2" || c.Scopes != "repo,read:org" || c.Token != "gho_second" {
-		t.Fatalf("Get after upsert: %+v ok=%v err=%v", c, ok, err)
-	}
-	var owner int64
-	if err := pool.QueryRow(ctx, `SELECT owner_id FROM github_connection`).Scan(&owner); err != nil || owner != 1 {
-		t.Fatalf("the store wrote owner %d (%v); want exactly one row, owner 1", owner, err)
-	}
-
-	two := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
-	mustExec(ctx, t, pool, `INSERT INTO github_connection (owner_id, login, token_ciphertext) VALUES ($1, 'someone-else', '\x00')`, two)
-	if c, _, err := st.Get(op); err != nil || c.Login != "octo2" {
-		t.Fatalf("Get with a second owner's row present: %+v %v", c, err)
-	}
-	if err := st.Clear(op); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := st.Get(op); ok {
-		t.Fatal("Clear left owner 1's connection")
-	}
-	if n := countRows(ctx, t, pool, "github_connection"); n != 1 {
-		t.Fatalf("Clear removed %d rows of another owner; want that row kept", 1-n)
 	}
 }
 

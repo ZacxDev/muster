@@ -1,18 +1,32 @@
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { createAgent, postAgents } from '../lib/seed';
+import { landedHome } from '../lib/nav';
+import { openAgentMenu } from '../lib/agent-menu';
+
+// ccAccount is the agent page's Claude account (its plain account name,
+// data-cc-account) — an item of the header's ⋯ menu since PR #527 (a claude-code
+// agent's page has one header row: agent_header_folded.go); the menu's
+// Terminal item beside it is what says the kind. Open the menu (openAgentMenu)
+// before asking whether it is visible.
+const ccAccount = (page: Page, account: string) => page.locator(`#agent-actions [data-cc-account="${account}"]`);
+
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
 // (e2e/gotrue/compose.yml) and a gotrue-mode muster with the claude-code kind
 // enabled over the noop driver and an ENVIRONMENT pool (the admin's).
 //
-// A MEMBER signs in, finds both agent kinds unavailable with what to add, adds a
-// (fake-shaped) Claude setup token in Account → Credentials, and the dispatch
-// form then offers Claude Code on THAT account — and never the admin's pool.
-// "Save for later" provisions nothing (noop), so no token is ever used; every
+// A MEMBER signs in, is refused an agent of either kind with what to add, adds a
+// (fake-shaped) Claude setup token in Account → Credentials, and an agent
+// created as them (POST /api/agents with the member's own agent-create token —
+// the route that replaced the deleted dispatch form, docs/design/chief-dispatch.md
+// phase 2) then runs Claude Code on THAT account — and never the admin's pool.
+// A stopped create provisions nothing (noop), so no token is ever used; every
 // token below is an obvious fake that never leaves this machine.
 
 // Own ports, own compose project: this spec must not share GoTrue or a
@@ -44,6 +58,7 @@ test.beforeAll(async () => {
   execFileSync('docker', ['compose', '-f', compose, 'up', '-d', '--wait'], { env: composeEnv, stdio: 'inherit' });
   server = await startServer(versionA, mainPort, {
     MUSTER_AUTH_MODE: 'gotrue',
+    MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     MUSTER_BROWSER_PORT: String(browserPort),
@@ -100,34 +115,29 @@ async function makeMember(email: string, password: string): Promise<number> {
   return Number(out.toString().trim());
 }
 
-test('a member brings their own Claude token; the dispatch form offers only it, never the admin pool (real GoTrue, 412px)', async ({ page }) => {
+test('a member brings their own Claude token; an agent they create runs on it, never the admin pool (real GoTrue, 412px)', async ({ page }) => {
   test.setTimeout(120_000);
   const email = `member-${Date.now()}@example.com`;
   const password = 'e2e-member-password-not-a-real-one';
   const uid = await makeMember(email, password);
   expect(uid).toBeGreaterThan(1);
+  const machineURL = `http://localhost:${mainPort}`;
 
   await page.goto(browserURL + '/login');
   await page.fill('#muster-email', email);
   await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
 
-  const sheet = page.locator('#agent-modal form');
-  const open = async () => {
-    await page.goto(browserURL + '/agents');
-    await page.click('#fab-agents');
-    await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  };
-
-  // 1. No credentials: both kinds disabled, and the form says what to add.
-  await open();
-  const notice = sheet.locator('[data-kind-unavailable-notice]');
-  await expect(notice).toContainText('Add your Claude setup token in Account → Credentials');
-  await expect(notice).toContainText('Add your OpenRouter key in Account → Credentials');
-  for (const kind of ['gateway', 'claude-code']) {
-    await expect(sheet.locator(`input[name="kind"][value="${kind}"]`)).toBeDisabled();
-  }
-  expect(await page.content()).not.toContain(ADMIN_POOL);
+  // 1. No credentials: both kinds are refused, each saying what to add, and
+  //    the admin's pool is never offered.
+  const noClaude = await postAgents(machineURL, { user: uid, kind: 'claude-code', prompt: 'e2e byo' });
+  expect(noClaude.status, noClaude.text).toBe(409);
+  expect(noClaude.text).toContain('Add your Claude setup token in Account → Credentials');
+  const noKey = await postAgents(machineURL, { user: uid, kind: 'gateway', prompt: 'e2e byo' });
+  expect(noKey.status, noKey.text).toBe(409);
+  expect(noKey.text).toContain('Add your OpenRouter key in Account → Credentials');
+  const pinned = await postAgents(machineURL, { user: uid, kind: 'claude-code', cc_account: ADMIN_POOL, prompt: 'e2e byo' });
+  expect(pinned.status, `pinning the admin's pool: ${pinned.text}`).toBe(409);
 
   // 2. Account → Credentials: add the setup token.
   await page.goto(browserURL + '/account/credentials');
@@ -146,27 +156,14 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw, 'no horizontal scroll at 412px').toBeLessThanOrEqual(cw);
 
-  // 3. The dispatch form now opens on Claude Code (Standard still needs an
-  //    OpenRouter key), its account pin live, listing the member's account and
-  //    NOT the admin's pool.
-  await open();
-  await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeDisabled();
-  await expect(sheet.locator('input[name="kind"][value="claude-code"]')).toBeChecked();
-  const account = sheet.locator('select[name="cc_account"]');
-  await expect(account).toBeVisible();
-  await expect(account).toBeEnabled();
-  await expect(account.locator('option')).toHaveText(['Auto (least rate-limited)', MEMBER_ACCOUNT]);
-  await expect(sheet.locator('[data-kind-unavailable-notice]')).not.toContainText('Claude setup token');
-  await expect(sheet.locator('[data-kind-unavailable-notice]')).toContainText('OpenRouter key');
-  expect(await page.content()).not.toContain(ADMIN_POOL);
-
-  // 4. Save for later: the agent lands on the member's own account.
-  await sheet.locator('textarea[name="note_text"]').fill('e2e byo: on my own account');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
-  await page.goto(browserURL + '/agents');
-  await expect(page.getByText(`Claude Code · ${MEMBER_ACCOUNT}`).first()).toBeVisible();
+  // 3. A stopped Claude Code agent created as the member lands on the member's
+  //    own account — its page says so in its header's ⋯ menu (PR #527) — and
+  //    never the admin's pool.
+  const agent = await createAgent(machineURL, { user: uid, kind: 'claude-code', prompt: 'e2e byo: on my own account' });
+  await page.goto(`${browserURL}/agents/${agent.name}`);
+  await expect(ccAccount(page, MEMBER_ACCOUNT)).toHaveText(MEMBER_ACCOUNT);
+  await openAgentMenu(page);
+  await expect(ccAccount(page, MEMBER_ACCOUNT)).toBeVisible();
   const agentsPage = await page.content();
   expect(agentsPage).not.toContain(ADMIN_POOL);
   expect(agentsPage).not.toContain('sk-ant-oat01');

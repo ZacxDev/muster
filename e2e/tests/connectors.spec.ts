@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { agentToken, connectPort, connectorsPort, fakeUpstreamPort, password, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { agentToken, connectPort, connectorsPort, fakeUpstreamPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // The secure connector store, end to end, at a phone's width (412×915): an
@@ -62,9 +63,7 @@ async function asAgent(path: string, init: RequestInit = {}): Promise<{ status: 
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
 async function noHorizontalScroll(page: Page) {
@@ -142,12 +141,48 @@ test('an agent requests a connector, the operator enters the credential, the pro
   await expect(page.locator('[data-grant="docs-sweeper"] [data-grant-status]')).toHaveText('approved');
   await noHorizontalScroll(page);
 
-  // 7. Revoking stops it.
+  // 7. The approval is SHARED with every agent of the operator's (a standing
+  // grant, migration 0043): the connector's card says so, with a thumb-sized
+  // "Revoke shared". Revoking it ends the shared approval AND the grant it was
+  // created from, so the agent is cut off.
+  const sharedRow = page.locator('[data-connector="fakehub"] [data-shared]');
+  await expect(sharedRow).toHaveCount(1);
+  await expect(sharedRow).toContainText('Shared with all your agents');
+  const rs = (await sharedRow.locator('[data-revoke-shared]').boundingBox())!;
+  expect(rs.height, 'Revoke shared is thumb-sized').toBeGreaterThanOrEqual(44);
+  page.once('dialog', (d) => d.accept());
+  await sharedRow.locator('[data-revoke-shared]').click();
+  await expect(page.locator('#connectors-notice')).toContainText('The shared approval of fakehub was revoked, with 1 agent grant(s) it gave.');
+  await expect(page.locator('[data-connector="fakehub"] [data-shared]')).toHaveCount(0);
+  const cut = await asAgent(proxied);
+  expect(cut.status).toBe(403);
+  expect(JSON.parse(cut.text).grant).toBe('revoked');
+  expect(seen.length).toBe(1);
+
+  // 8. Asking again is a new request — nothing approves it automatically now —
+  // and its card says that approving it is shared.
+  const again = await asAgent('/agent/connectors/fakehub/request', { method: 'POST', body: '{"reason":"again"}', headers: { 'Content-Type': 'application/json' } });
+  expect(again.status, again.text).toBe(202);
+  expect(JSON.parse(again.text).grant).toBe('pending');
+  await page.goto(origin + '/connectors');
+  const card2 = page.locator('[data-connector-request="fakehub"]');
+  await expect(card2.locator('[data-request-shares]')).toContainText('Approving also approves every request for fakehub from any of your agents');
+  await expect(card2.locator('[data-approve]')).toHaveText('Approve for all agents');
+  await noHorizontalScroll(page);
+  await card2.locator('[data-approve]').click();
+  await expect(page.locator('#connectors-notice')).toContainText('docs-sweeper approved for fakehub. Shared with all your agents.');
+  expect((await asAgent(proxied)).status).toBe(200);
+  expect(seen.length).toBe(2);
+
+  // 9. Revoking ONE agent's grant stops that agent (and the shared approval
+  // does not re-approve it).
   page.once('dialog', (d) => d.accept());
   await page.locator('[data-revoke="docs-sweeper"]').click();
   await expect(page.locator('#connectors-notice')).toContainText('revoked');
   const after = await asAgent(proxied);
   expect(after.status).toBe(403);
   expect(JSON.parse(after.text).grant).toBe('revoked');
-  expect(seen.length).toBe(1);
+  expect(seen.length).toBe(2);
+  const reask = await asAgent('/agent/connectors/fakehub/request', { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
+  expect(JSON.parse(reask.text).grant, 'a per-agent revoke outlives the shared approval').toBe('pending');
 });

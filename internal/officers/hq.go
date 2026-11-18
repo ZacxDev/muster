@@ -1,0 +1,1006 @@
+package officers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/cctranscript"
+)
+
+// ErrHQUnavailable is HQ not answering usefully: a transport failure, a
+// timeout, or a 5xx. The wake loop backs off on it and changes nothing; an MCP
+// tool reports it as "HQ is unavailable, try again".
+var ErrHQUnavailable = errors.New("officers: HQ unavailable")
+
+// HQError is HQ answering with a 4xx: a decision, not an outage. Body is HQ's
+// own JSON (bounded), passed back to the instance verbatim — a 409 on a claim
+// carries `held_by` and `lease_expires_at`, which is what the instance needs
+// to move on.
+type HQError struct {
+	Status int
+	Body   []byte
+	// Builtin: muster's built-in backend refused (internal/officers/builtin),
+	// not an HQ — so the text never says HQ answered.
+	Builtin bool
+}
+
+func (e *HQError) Error() string {
+	if e.Builtin {
+		return fmt.Sprintf("officers: the built-in backend answered %d: %s", e.Status, truncate(string(e.Body), 200))
+	}
+	return fmt.Sprintf("officers: HQ answered %d: %s", e.Status, truncate(string(e.Body), 200))
+}
+
+// Code is HQ's `code` in the body ("" when it has none).
+func (e *HQError) Code() string { return bodyCode(e.Body) }
+
+// RetryableError is HQ answering a 5xx that its route documents as
+// retryable (e.g. the obs route's 502 upstream): HQ's own JSON body, passed
+// back so the instance sees the code, with "retry" — never a final refusal.
+type RetryableError struct {
+	Status int
+	Body   []byte
+}
+
+func (e *RetryableError) Error() string {
+	return fmt.Sprintf("officers: HQ answered %d (retryable): %s", e.Status, truncate(string(e.Body), 200))
+}
+
+// Code is HQ's `code` in the body ("" when it has none).
+func (e *RetryableError) Code() string { return bodyCode(e.Body) }
+
+// bodyCode is the `code` of HQ's JSON error body ("" when it has none).
+func bodyCode(body []byte) string {
+	var b struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(body, &b)
+	return b.Code
+}
+
+// ItemID is an item id as HQ spells it. The contract does not say whether ids
+// are numbers or strings, so both decode; it is always used as a path segment.
+type ItemID string
+
+// UnmarshalJSON accepts a JSON string or number.
+func (id *ItemID) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*id = ItemID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return fmt.Errorf("item id %s is neither a string nor a number", b)
+	}
+	*id = ItemID(n.String())
+	return nil
+}
+
+// Item is the part of an HQ item the wake loop decides on. The MCP tools pass
+// HQ's full JSON through instead of this struct.
+type Item struct {
+	ID             ItemID     `json:"id"`
+	OfficerID      string     `json:"officer_id"`
+	Kind           string     `json:"kind"`
+	SubjectKey     string     `json:"subject_key"`
+	Status         string     `json:"status"`
+	ClaimedBy      string     `json:"claimed_by"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at"`
+	UpdatedAt      *time.Time `json:"updated_at"`
+	// Blocked is HQ's task ordering: the item's task waits on unfinished
+	// tasks, so HQ refuses to claim it (409 blocked). Absent — an unblocked
+	// item, or an HQ without ordering — is false: the item is claimable.
+	Blocked bool `json:"blocked"`
+	// Tier is HQ's `tier` as the item reads now: routine or judgement. Absent
+	// (an HQ without tiers) reads as judgement (ItemTier).
+	Tier string `json:"tier"`
+	// ClaimedAt is HQ's `claimed_at`: when the current (or last) claim was
+	// made. HQ sets it on every claim and a heartbeat keeps it, so it is the
+	// wall-time cap's clock (Officer.ItemCap), and it survives a restart of
+	// muster. Absent (an HQ without it): the item has no clock, and is not
+	// capped.
+	ClaimedAt *time.Time `json:"claimed_at"`
+	// Payload is HQ's `payload`, raw: what the item's producer attached. A
+	// pull-request loop item carries `pr_loop` (and a findings item `from`,
+	// the auditor's report written by HQ): officership.LoopPayload reads it.
+	// Absent: nil.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	// Shadow is HQ's `shadow`: true when HQ runs this item in shadow (a write
+	// it asks for is only recorded, never made), false when not. ABSENT (nil)
+	// when the officer's type has no shadow policy for items: the officer
+	// row's `shadow` decides (Client.Shadow).
+	Shadow *bool `json:"shadow,omitempty"`
+	// NotBefore is the item's `not_before`: it is not claimable before then
+	// (the claim answers 409 not_due), so it is not work before then either
+	// (Due). Absent: due now.
+	NotBefore *time.Time `json:"not_before,omitempty"`
+	// Origin is who put the item in the queue, as the built-in backend
+	// records it: OriginOwner for an item the officer's owner enqueued (the
+	// admin API behind `muster officer item enqueue`, "Run now", the owner's rejection of a
+	// draft), "" for everything else. Only OriginOwner bypasses the daily
+	// budget (Officer.BypassesBudget). HQ sends none: "".
+	Origin string `json:"origin,omitempty"`
+}
+
+// Due reports whether item it may be claimed at now: it has no not_before,
+// or not_before has passed. THE wake loop's rule for an item that is not yet
+// work (Decide); the built-in backend's claim refuses the same items (409
+// not_due, and claim-next's `claimable`).
+func (it Item) Due(now time.Time) bool {
+	return it.NotBefore == nil || !it.NotBefore.After(now)
+}
+
+// LeaseLive reports whether the item's lease is unexpired at now. An item with
+// no lease time has no live lease.
+func (it Item) LeaseLive(now time.Time) bool {
+	return it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now)
+}
+
+// Item statuses, as the contract names them.
+const (
+	StatusOpen      = "open"
+	StatusClaimed   = "claimed"
+	StatusDone      = "done"
+	StatusEscalated = "escalated"
+)
+
+// Client talks to one officer's HQ with that officer's token.
+//
+// 🔴 IT IS THE ONLY CODE THAT READS Officer.Token(). The token goes in the
+// Authorization header of requests to the officer's own HQ base URL, and
+// nowhere else: not in an error, not in a log line (HQError carries HQ's body,
+// never the request). (Scrub reads it too, only to REMOVE it from text.)
+type Client struct {
+	officer Officer
+	http    *http.Client
+}
+
+// ErrHQAnswerTooLarge is a 2xx answer over maxHQBody: muster read only the
+// first maxHQBody bytes, so it is refused as a whole (never passed on cut,
+// where it reads as "not JSON"). Final for that request: the caller must ask
+// for less (a smaller page, a narrower filter), not retry.
+var ErrHQAnswerTooLarge = fmt.Errorf("officers: HQ's answer is over muster's %d-byte cap", maxHQBody)
+
+// DefaultHQTimeout bounds one HQ request.
+const DefaultHQTimeout = 15 * time.Second
+
+// maxHQBody bounds what is read of one HQ response. A brief is size-bounded by
+// the contract; this is the backstop.
+const maxHQBody = 1 << 20
+
+// NewClient returns a client for o. hc nil uses a client with DefaultHQTimeout.
+//
+// ⚠ REDIRECTS ARE NOT FOLLOWED. Go's client re-sends the Authorization header
+// to a same-host redirect, and a misconfigured proxy answering 30x would
+// otherwise decide where the officer token goes next.
+func NewClient(o Officer, hc *http.Client) *Client {
+	if hc == nil {
+		hc = &http.Client{Timeout: DefaultHQTimeout}
+	}
+	c := *hc
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Client{officer: o, http: &c}
+}
+
+// Officer is the officer this client acts for.
+func (c *Client) Officer() Officer { return c.officer }
+
+// Do sends one request to path under the officer's HQ base (path starts with
+// '/'), with body JSON-encoded when non-nil, and returns HQ's body on a 2xx.
+// A 4xx is *HQError; a transport failure, a 3xx or a 5xx wraps ErrHQUnavailable.
+func (c *Client) Do(ctx context.Context, method, path string, body any) ([]byte, error) {
+	if body == nil {
+		return c.do(ctx, method, path, "", nil)
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("officers: encode request: %w", err)
+	}
+	return c.do(ctx, method, path, "application/json", b)
+}
+
+// do is Do with a body already encoded as contentType ("" and nil: no body),
+// e.g. an image's raw bytes (UploadAskImage).
+func (c *Client) do(ctx context.Context, method, path, contentType string, body []byte) ([]byte, error) {
+	return c.doCoded(ctx, method, path, contentType, body, nil, nil)
+}
+
+// doCoded is do, except that a 5xx whose body is HQ's JSON error with a
+// `code` in decisions is *HQError too (a route's stated, final refusal, not
+// an outage), and one with a `code` in retryable is *RetryableError (a
+// failure the route says to retry).
+func (c *Client) doCoded(ctx context.Context, method, path, contentType string, body []byte, decisions, retryable []string) ([]byte, error) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.officer.HQURL+path, rd)
+	if err != nil {
+		return nil, fmt.Errorf("officers: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.officer.Token())
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// The URL in a *url.Error is the base + path, which holds no token.
+		return nil, fmt.Errorf("%w: %s %s: %v", ErrHQUnavailable, method, path, scrubURLError(err))
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxHQBody+1))
+	over := len(raw) > maxHQBody
+	if over {
+		raw = raw[:maxHQBody]
+	}
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300 && over:
+		return nil, fmt.Errorf("%w: %s %s", ErrHQAnswerTooLarge, method, path)
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return raw, nil
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		return nil, &HQError{Status: resp.StatusCode, Body: raw}
+	case resp.StatusCode >= 500 && len(decisions) > 0 && hqCodeIn(raw, decisions):
+		return nil, &HQError{Status: resp.StatusCode, Body: raw}
+	case resp.StatusCode >= 500 && len(retryable) > 0 && hqCodeIn(raw, retryable):
+		return nil, &RetryableError{Status: resp.StatusCode, Body: raw}
+	default:
+		return nil, fmt.Errorf("%w: %s %s answered %d", ErrHQUnavailable, method, path, resp.StatusCode)
+	}
+}
+
+// hqCodeIn reports whether raw is a JSON object whose `code` is one of codes.
+func hqCodeIn(raw []byte, codes []string) bool {
+	var b struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(raw, &b) != nil || b.Code == "" {
+		return false
+	}
+	for _, c := range codes {
+		if b.Code == c {
+			return true
+		}
+	}
+	return false
+}
+
+func scrubURLError(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err.Error()
+	}
+	return err.Error()
+}
+
+func (c *Client) officerPath() string { return "/officers/" + url.PathEscape(c.officer.ID) }
+
+func (c *Client) itemPath(item ItemID, verb string) string {
+	return c.officerPath() + "/items/" + url.PathEscape(string(item)) + "/" + verb
+}
+
+// ItemsPage is one page of an officer's items.
+type ItemsPage struct {
+	Items      []Item
+	NextCursor string
+	// Raw is HQ's body, for the MCP tool that passes it through.
+	Raw json.RawMessage
+}
+
+// ItemsQuery is GET /officers/{id}/items's query.
+type ItemsQuery struct {
+	Status string
+	Limit  int
+	Cursor string
+	// Tier filters by the item's tier (`?tier=`); "" lists every tier.
+	Tier string
+}
+
+func (q ItemsQuery) encode() string {
+	v := url.Values{}
+	if q.Status != "" {
+		v.Set("status", q.Status)
+	}
+	if q.Limit > 0 {
+		v.Set("limit", strconv.Itoa(q.Limit))
+	}
+	if q.Cursor != "" {
+		v.Set("cursor", q.Cursor)
+	}
+	if q.Tier != "" {
+		v.Set("tier", q.Tier)
+	}
+	if len(v) == 0 {
+		return ""
+	}
+	return "?" + v.Encode()
+}
+
+// Items reads one page of the officer's items.
+//
+// The body is HQ's `{"items":[…],"next":…}`.
+func (c *Client) Items(ctx context.Context, q ItemsQuery) (ItemsPage, error) {
+	raw, err := c.Do(ctx, http.MethodGet, c.officerPath()+"/items"+q.encode(), nil)
+	if err != nil {
+		return ItemsPage{}, err
+	}
+	// HQ answers {items, next} (civ-hq docs/OFFICERS.md): next is the cursor
+	// of the following page, null on the last. ItemID decodes a cursor whether
+	// HQ spells it as a string or a number.
+	var env struct {
+		Items []Item  `json:"items"`
+		Next  *ItemID `json:"next"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return ItemsPage{}, fmt.Errorf("%w: items: %v", ErrHQUnavailable, err)
+	}
+	page := ItemsPage{Raw: raw, Items: env.Items}
+	if env.Next != nil {
+		page.NextCursor = string(*env.Next)
+	}
+	return page, nil
+}
+
+// maxItemPages bounds AllItems: the wake loop needs a count, not a census.
+const maxItemPages = 5
+
+// AllItems reads up to maxItemPages pages of items in status (PageAll).
+func (c *Client) AllItems(ctx context.Context, status string) ([]Item, error) {
+	return PageAll(ctx, c.Items, status)
+}
+
+// PageAll is THE AllItems of every backend: up to maxItemPages pages of 100
+// items in status, read through items (a backend's Items).
+func PageAll(ctx context.Context, items func(context.Context, ItemsQuery) (ItemsPage, error), status string) ([]Item, error) {
+	var out []Item
+	q := ItemsQuery{Status: status, Limit: 100}
+	for i := 0; i < maxItemPages; i++ {
+		page, err := items(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Items...)
+		if page.NextCursor == "" || len(page.Items) == 0 {
+			break
+		}
+		q.Cursor = page.NextCursor
+	}
+	return out, nil
+}
+
+// Brief is GET /officers/{id}/brief, HQ's JSON passed through.
+func (c *Client) Brief(ctx context.Context) ([]byte, error) {
+	return c.Do(ctx, http.MethodGet, c.officerPath()+"/brief", nil)
+}
+
+// Lease bounds, from the contract (30..3600 seconds).
+const (
+	MinLeaseSeconds     = 30
+	MaxLeaseSeconds     = 3600
+	DefaultLeaseSeconds = 600
+)
+
+// ClampLease is seconds within the contract's bounds; 0 is the default.
+func ClampLease(seconds int) int {
+	switch {
+	case seconds == 0:
+		return DefaultLeaseSeconds
+	case seconds < MinLeaseSeconds:
+		return MinLeaseSeconds
+	case seconds > MaxLeaseSeconds:
+		return MaxLeaseSeconds
+	}
+	return seconds
+}
+
+// Claim is POST …/items/{item}/claim. tier, when set, is sent as the claim's
+// `tier` (HQ then takes only an item of that tier: 409 wrong_tier otherwise);
+// "" sends no tier key at all — an untiered officer's claim, as before tiers.
+func (c *Client) Claim(ctx context.Context, item ItemID, instance string, leaseSeconds int, tier string) ([]byte, error) {
+	body := map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)}
+	if tier != "" {
+		body["tier"] = tier
+	}
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "claim"), body)
+}
+
+// ClaimNext is POST /officers/{id}/claim-next: HQ claims the next item in its
+// queue order (priority, then due, then age; never a blocked one) for
+// instance. tier, when set, is sent as the claim's `tier` (HQ then takes only
+// an item of that tier); "" sends no tier key. HQ answers {item,
+// lease_expires_at}, item null when nothing is claimable. An HQ from before
+// claim-next answers 404 (*HQError): the caller falls back to listing and
+// claiming by id.
+func (c *Client) ClaimNext(ctx context.Context, instance string, leaseSeconds int, tier string) ([]byte, error) {
+	body := map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)}
+	if tier != "" {
+		body["tier"] = tier
+	}
+	return c.Do(ctx, http.MethodPost, c.officerPath()+"/claim-next", body)
+}
+
+// Heartbeat is POST …/items/{item}/heartbeat.
+func (c *Client) Heartbeat(ctx context.Context, item ItemID, instance string, leaseSeconds int) ([]byte, error) {
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "heartbeat"), map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)})
+}
+
+// Completion is POST …/items/{item}/complete's body, less the instance.
+type Completion struct {
+	Outcome string   `json:"outcome"`
+	Summary string   `json:"summary"`
+	Links   []string `json:"links,omitempty"`
+	// Investigation is HQ's `investigation` block, sent only when set (an HQ
+	// from before the block refuses the field, even as null).
+	Investigation *Investigation `json:"investigation,omitempty"`
+	// InvestigationJSON is an instance's `investigation` argument, sent to HQ
+	// AS SENT when Investigation is nil: HQ's decoder is the one schema for
+	// it, so it is never decoded into Investigation (whose omitempty lists
+	// would reshape it). Empty or JSON null sends none.
+	InvestigationJSON json.RawMessage `json:"-"`
+	// AuthorsJSON, AttributedPRsJSON, AttributionJSON and TicketsJSON are an
+	// instance's `authors`, `attributed_prs`, `attribution` and `tickets`
+	// arguments (civ-hq docs/OFFICERS.md §5i author mail, §5b "Attributed
+	// PRs", and the release-ticket kind's links), each sent to HQ AS SENT —
+	// HQ's decoder is the one schema for them. Empty (the instance sent no
+	// such key) sends no key: an HQ that predates a field refuses it, even as
+	// null. Anything else the instance sent — null and [] included — is
+	// forwarded unchanged, for HQ to judge.
+	AuthorsJSON       json.RawMessage `json:"-"`
+	AttributedPRsJSON json.RawMessage `json:"-"`
+	AttributionJSON   json.RawMessage `json:"-"`
+	TicketsJSON       json.RawMessage `json:"-"`
+	// Cost is what working the item cost, sent as HQ's cost_usd + cost_from
+	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
+	// cost, and sends neither field.
+	Cost *ItemCost `json:"-"`
+	// Handoff is HQ's `handoff` (the review loop's next step, e.g. the next
+	// audit round of a pull request at HeadSHA). nil: not sent.
+	Handoff *Handoff `json:"-"`
+}
+
+// Handoff is a completion's `handoff`: {"head_sha": <40 lower-case hex>},
+// and on a shepherd's complete optionally "to": "author". HQ decides which items and outcomes take one (it refuses it on any
+// outcome but done) and where it goes; muster checks only its shape
+// (ValidHandoffHead) and that the outcome is done.
+type Handoff struct {
+	HeadSHA string `json:"head_sha"`
+	// To is HandoffToAuthor on a shepherd's hand-off of a clean round's
+	// fixes to the pull request's authoring officer; "" (not sent) otherwise.
+	To string `json:"to,omitempty"`
+}
+
+// HandoffToAuthor is the one `handoff.to` value: a shepherd hands a clean
+// round's fixes to the pull request's AUTHORING officer (HQ enqueues its
+// *.pr_fix item).
+const HandoffToAuthor = "author"
+
+// handoffHeadRE is a hand-off head: a full commit sha, lower-case.
+var handoffHeadRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// ValidHandoffHead reports whether sha is a hand-off head (40 lower-case hex).
+func ValidHandoffHead(sha string) bool { return handoffHeadRE.MatchString(sha) }
+
+// ItemCost is an item's cost as HQ takes it: USD, and who computed it.
+type ItemCost struct {
+	USD  float64
+	From string
+}
+
+// CostFromLLMProxy is cost_from for a cost muster's LLM proxy metered: the
+// provider-reported cost of every request the item's routine hold made. A
+// hold with a request booked from the proxy's estimate (a response that
+// reported no cost) has no known cost, and sends none.
+const CostFromLLMProxy = "muster:llm-proxy"
+
+// Investigation is HQ's investigation block on an `escalated` complete
+// (civ-hq docs/OFFICERS.md "Investigation"). HQ REQUIRES it to escalate an
+// item of an officer type whose policy sets `investigation: true` (else 400
+// naming `investigation`), and takes it on `escalated` for any type. Every
+// list is sent, empty when there is nothing.
+type Investigation struct {
+	Hypotheses []string            `json:"hypotheses"`
+	Eliminated []InvestigationRule `json:"eliminated"`
+	RootCause  string              `json:"root_cause"`
+	// Confidence: low, medium or high. Low gives Fix.OperatorSteps only.
+	Confidence string           `json:"confidence"`
+	Fix        InvestigationFix `json:"fix"`
+	NotChecked []string         `json:"not_checked"`
+}
+
+// InvestigationRule is one hypothesis ruled out, with its evidence and the
+// audit ids of the reads it came from.
+type InvestigationRule struct {
+	Hypothesis string  `json:"hypothesis"`
+	Evidence   string  `json:"evidence"`
+	AuditIDs   []int64 `json:"audit_ids"`
+}
+
+// InvestigationFix is EXACTLY ONE of: draft PRs, or operator steps.
+type InvestigationFix struct {
+	PRURLs        []string `json:"pr_urls,omitempty"`
+	OperatorSteps []string `json:"operator_steps,omitempty"`
+}
+
+// ConfidenceLow is the investigation confidence of no conclusion.
+const ConfidenceLow = "low"
+
+// Outcomes the contract accepts from every instance.
+var Outcomes = []string{"done", "escalated", "no_action"}
+
+// OutcomeNeedsJudgement hands a ROUTINE item to the judgement pool: HQ
+// promotes it to judgement in place (open again, no holder, the summary kept
+// for the judgement claimer, links refused) and closes nothing. HQ refuses it
+// on a judgement item.
+const OutcomeNeedsJudgement = "needs_judgement"
+
+// CompleteOutcomes is THE rule for which outcomes officer o's instances may
+// complete an item with (officer_complete's schema and its dispatch both ask
+// it): Outcomes, plus needs_judgement for a routine pool — the only pool
+// whose items HQ takes it for.
+func CompleteOutcomes(o Officer) []string {
+	if o.Tier == TierRoutine {
+		return append(append([]string{}, Outcomes...), OutcomeNeedsJudgement)
+	}
+	return Outcomes
+}
+
+// CompleteTakesInvestigation is THE rule for whether officer o's instances
+// may send officer_complete an `investigation` block: every pool but a
+// routine one. A routine instance that finds an item needs investigating
+// hands it to judgement (OutcomeNeedsJudgement); the investigation is the
+// judgement pool's.
+func CompleteTakesInvestigation(o Officer) bool { return o.Tier != TierRoutine }
+
+// MaxSummaryChars is HQ's bound on a completion summary, in CHARACTERS
+// (civ-hq: 24,576). A shadow officer puts a whole evaluation (≤10,000) or
+// report (≤20,000) there, so the contract's original 4 KB is long gone; HQ's
+// 128 KiB body cap holds even at 4 bytes a character.
+const MaxSummaryChars = 24576
+
+// MaxLinks is HQ's bound on a completion's links (civ-hq docs/OFFICERS.md).
+const MaxLinks = 10
+
+// MaxItemCostUSD is HQ's bound on an item's cost_usd (civ-hq
+// store/officer_cost.go): anything above it is a reporting error HQ refuses.
+const MaxItemCostUSD = 10000
+
+// Complete is POST …/items/{item}/complete. A done.Cost is sent as HQ's
+// cost_usd + cost_from; nil sends neither (an HQ from before item cost
+// refuses the fields: the caller retries without them, the package-level
+// CompleteDroppingCost).
+func (c *Client) Complete(ctx context.Context, item ItemID, instance string, done Completion) ([]byte, error) {
+	body := map[string]any{"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links}
+	// Only when given: an HQ that predates the hand-off never sees the field.
+	if done.Handoff != nil {
+		body["handoff"] = done.Handoff
+	}
+	if done.Cost != nil {
+		body["cost_usd"], body["cost_from"] = done.Cost.USD, done.Cost.From
+	}
+	if done.Investigation != nil {
+		body["investigation"] = done.Investigation
+	} else if raw := bytes.TrimSpace(done.InvestigationJSON); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		body["investigation"] = json.RawMessage(raw)
+	}
+	for key, raw := range map[string]json.RawMessage{
+		"authors":        done.AuthorsJSON,
+		"attributed_prs": done.AttributedPRsJSON,
+		"attribution":    done.AttributionJSON,
+		"tickets":        done.TicketsJSON,
+	} {
+		if raw = bytes.TrimSpace(raw); len(raw) > 0 {
+			body[key] = raw
+		}
+	}
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), body)
+}
+
+// Release is POST …/items/{item}/release.
+func (c *Client) Release(ctx context.Context, item ItemID, instance string) ([]byte, error) {
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "release"), map[string]any{"instance": instance})
+}
+
+// --- the transcript route (POST …/items/{item}/transcript) -------------------
+//
+// HQ's contract: {"instance", "events": [{"seq", "at", "kind", "text"}]}, at
+// most MaxTranscriptEvents events, each text at most MaxTranscriptText bytes,
+// seq strictly increasing per item and idempotent (HQ skips a seq at or below
+// its highest stored). It answers {"stored", "last_seq"}; 409 officer_disabled,
+// 404 (not this officer's item), 409 not_claimed (not claimed by this
+// instance), 400 on a limit.
+
+// Transcript route bounds, as HQ enforces them.
+const (
+	MaxTranscriptEvents = 100
+	MaxTranscriptText   = 8 << 10 // bytes
+)
+
+// Transcript event kinds, as the contract names them.
+const (
+	TranscriptUser       = "user"
+	TranscriptAssistant  = "assistant"
+	TranscriptToolUse    = "tool_use"
+	TranscriptToolResult = "tool_result"
+	TranscriptSystem     = "system"
+)
+
+// TranscriptEvent is one transcript event posted to HQ.
+type TranscriptEvent struct {
+	Seq  int64  `json:"seq"`
+	At   string `json:"at"`
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+}
+
+// TranscriptAck is HQ's answer to a transcript post.
+type TranscriptAck struct {
+	Stored  int   `json:"stored"`
+	LastSeq int64 `json:"last_seq"`
+}
+
+// PostTranscript is POST …/items/{item}/transcript.
+func (c *Client) PostTranscript(ctx context.Context, item ItemID, instance string, events []TranscriptEvent) (TranscriptAck, error) {
+	raw, err := c.Do(ctx, http.MethodPost, c.itemPath(item, "transcript"), struct {
+		Instance string            `json:"instance"`
+		Events   []TranscriptEvent `json:"events"`
+	}{instance, events})
+	if err != nil {
+		return TranscriptAck{}, err
+	}
+	var ack TranscriptAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		return TranscriptAck{}, fmt.Errorf("%w: transcript: HQ's answer is not {stored, last_seq}: %v", ErrHQUnavailable, err)
+	}
+	return ack, nil
+}
+
+// PUT /officers/{id}/usage: one instance's Claude usage per session and UTC
+// hour (docs/officers.md, "Claude usage to HQ"). HQ upserts each bucket by
+// (officer, instance, session, hour), REPLACING its counts, and answers 204;
+// 400 invalid, 403 another officer's token, 404 an unknown officer (or an HQ
+// without the route), 413 over MaxUsageBody bytes or MaxUsageBuckets buckets.
+
+// Usage route bounds, as HQ enforces them.
+const (
+	MaxUsageBuckets = 1000
+	MaxUsageBody    = 256 << 10 // bytes
+)
+
+// UsageReport is the usage route's body.
+//
+//   - Instance is the instance's muster agent name.
+//   - Pool is the instance's pool: TierRoutine, TierJudgement, or "" for an
+//     untiered officer.
+//   - Account is the pooled Claude account the instance is on NOW (its
+//     agent row's), "" for a pool on the LLM proxy: an account failover moves
+//     the instance, and every hour pushed after it is reported on the new one.
+//   - GeneratedAt is when muster built the report (RFC 3339, UTC).
+//   - Buckets are what the instance's ccd counted (cctranscript.UsageBucket),
+//     never null.
+type UsageReport struct {
+	Instance    string                     `json:"instance"`
+	Pool        string                     `json:"pool"`
+	Account     string                     `json:"account"`
+	GeneratedAt string                     `json:"generated_at"`
+	Buckets     []cctranscript.UsageBucket `json:"buckets"`
+}
+
+// PutUsage is PUT /officers/{id}/usage.
+func (c *Client) PutUsage(ctx context.Context, r UsageReport) error {
+	if r.Buckets == nil {
+		r.Buckets = []cctranscript.UsageBucket{}
+	}
+	_, err := c.Do(ctx, http.MethodPut, c.officerPath()+"/usage", r)
+	return err
+}
+
+// tokenWithheld is what Scrub writes in place of the officer token.
+const tokenWithheld = "[officer token withheld]"
+
+// Scrub is s with every occurrence of the officer's own token replaced — and
+// every word a cap cut short ("…" right after it) that ends in the token's
+// first 4 or more bytes. It is how text built from an instance's session
+// (which could echo anything) is cleared of the one credential this client
+// holds, without the token leaving the client: a shape-based secret filter
+// cannot know an opaque token's shape. (officership.RedactCutTail is the same
+// cut rule for the token SHAPES; it cannot be given this token.)
+func (c *Client) Scrub(s string) string {
+	t := c.officer.Token()
+	if t == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, t, tokenWithheld)
+	const cut = "…"
+	if !strings.Contains(s, cut) || len(t) < 8 {
+		return s
+	}
+	var b strings.Builder
+	for rest := s; ; {
+		j := strings.Index(rest, cut)
+		if j < 0 {
+			b.WriteString(rest)
+			break
+		}
+		before := rest[:j]
+		k := strings.LastIndexAny(before, " \t\n\"'=:") + 1
+		word := before[k:]
+		for i := 0; len(word)-i >= 4; i++ {
+			if strings.HasPrefix(t, word[i:]) {
+				before = before[:k] + word[:i] + tokenWithheld
+				break
+			}
+		}
+		b.WriteString(before)
+		b.WriteString(cut)
+		rest = rest[j+len(cut):]
+	}
+	return b.String()
+}
+
+// --- the release captain route (POST /releases/captain) ---------------------
+//
+// HQ's body (civ-hq docs/RELEASES.md §9.3, internal/store/release_captain.go):
+//
+//	{"service", "tag", "evaluation"?: {"level", "summary", "monitors"?: [{"name", "url"}]},
+//	 "report"?: "<text>", "instance"}
+//
+// at least one of evaluation/report; unknown fields are a 400. muster builds it
+// from the tool's explicit arguments (ParseCaptainPost validates them first, so
+// a malformed call fails before HQ) and sets instance itself.
+
+// Captain route bounds, as HQ enforces them.
+const (
+	MaxCaptainSummary     = 10000 // characters
+	MaxCaptainReport      = 20000 // characters
+	MaxCaptainMonitors    = 50
+	MaxCaptainMonitorName = 200 // characters
+	MaxCaptainMonitorURL  = 2048
+	MaxCaptainField       = 200 // service / tag: a local sanity bound
+)
+
+// CaptainLevels are HQ's risk levels.
+var CaptainLevels = []string{"low", "medium", "high", "severe"}
+
+// CaptainMonitor is one thing to watch after a release.
+type CaptainMonitor struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// CaptainEvaluation is the captain's risk evaluation of a release.
+type CaptainEvaluation struct {
+	Level    string           `json:"level"`
+	Summary  string           `json:"summary"`
+	Monitors []CaptainMonitor `json:"monitors,omitempty"`
+}
+
+// CaptainPost is what the release officer posts: the release, and an
+// evaluation and/or a post-release report.
+type CaptainPost struct {
+	Service    string             `json:"service"`
+	Tag        string             `json:"tag"`
+	Evaluation *CaptainEvaluation `json:"evaluation,omitempty"`
+	Report     *string            `json:"report,omitempty"`
+}
+
+// ParseCaptainPost decodes and validates the tool's arguments. Unknown fields
+// are refused at every level — release_id, an agent-sent instance, the inner
+// evaluation sent as the whole body — as HQ would refuse them, but before HQ.
+func ParseCaptainPost(raw []byte) (CaptainPost, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var p CaptainPost
+	if err := dec.Decode(&p); err != nil {
+		return CaptainPost{}, fmt.Errorf("arguments are {service, tag, evaluation?: {level, summary, monitors?: [{name, url}]}, report?: string}: %v", err)
+	}
+	if s := strings.TrimSpace(p.Service); s == "" || len(s) > MaxCaptainField {
+		return CaptainPost{}, errors.New("service is required (the release's service, as the item's payload names it)")
+	}
+	if s := strings.TrimSpace(p.Tag); s == "" || len(s) > MaxCaptainField {
+		return CaptainPost{}, errors.New("tag is required (the release's tag, as the item's payload names it)")
+	}
+	if p.Evaluation == nil && p.Report == nil {
+		return CaptainPost{}, errors.New("give evaluation, report, or both")
+	}
+	if e := p.Evaluation; e != nil {
+		ok := false
+		for _, l := range CaptainLevels {
+			ok = ok || e.Level == l
+		}
+		if !ok {
+			return CaptainPost{}, fmt.Errorf("evaluation.level must be one of %s", strings.Join(CaptainLevels, ", "))
+		}
+		if n := utf8.RuneCountInString(strings.TrimSpace(e.Summary)); n == 0 || utf8.RuneCountInString(e.Summary) > MaxCaptainSummary {
+			return CaptainPost{}, fmt.Errorf("evaluation.summary must be 1-%d characters", MaxCaptainSummary)
+		}
+		if len(e.Monitors) > MaxCaptainMonitors {
+			return CaptainPost{}, fmt.Errorf("at most %d evaluation.monitors", MaxCaptainMonitors)
+		}
+		for i, m := range e.Monitors {
+			if n := utf8.RuneCountInString(strings.TrimSpace(m.Name)); n == 0 || utf8.RuneCountInString(m.Name) > MaxCaptainMonitorName {
+				return CaptainPost{}, fmt.Errorf("evaluation.monitors[%d].name must be 1-%d characters", i, MaxCaptainMonitorName)
+			}
+			if !captainURL(m.URL) {
+				return CaptainPost{}, fmt.Errorf("evaluation.monitors[%d].url must be an absolute http(s) URL without user info, at most %d characters", i, MaxCaptainMonitorURL)
+			}
+		}
+	}
+	if r := p.Report; r != nil {
+		if n := utf8.RuneCountInString(strings.TrimSpace(*r)); n == 0 || utf8.RuneCountInString(*r) > MaxCaptainReport {
+			return CaptainPost{}, fmt.Errorf("report must be 1-%d characters", MaxCaptainReport)
+		}
+	}
+	return p, nil
+}
+
+func captainURL(raw string) bool {
+	if raw == "" || len(raw) > MaxCaptainMonitorURL || strings.ContainsAny(raw, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil
+}
+
+// ReleaseCaptain is POST /releases/captain with the officer token: p, with
+// instance set to the calling instance (HQ records officer + instance).
+func (c *Client) ReleaseCaptain(ctx context.Context, instance string, p CaptainPost) ([]byte, error) {
+	return c.Do(ctx, http.MethodPost, "/releases/captain", struct {
+		CaptainPost
+		Instance string `json:"instance"`
+	}{p, instance})
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// Enabled reads GET /officers/{id} and reports HQ's `enabled` for the
+// officer. A body without a boolean `enabled` is an error, never "enabled":
+// a shipping gate that cannot read the switch fails closed.
+func (c *Client) Enabled(ctx context.Context) (bool, error) {
+	raw, err := c.Do(ctx, http.MethodGet, c.officerPath(), nil)
+	if err != nil {
+		return false, err
+	}
+	var o struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil || o.Enabled == nil {
+		return false, fmt.Errorf("officers: HQ's officer %s carries no boolean `enabled`", c.officer.ID)
+	}
+	return *o.Enabled, nil
+}
+
+// Notice is the body a shipping officer's notice is POSTed with (the
+// sensitive-path notice before a merge). Kept small: HQ renders and signs it.
+type Notice struct {
+	PR      int      `json:"pr"`
+	HeadSHA string   `json:"head_sha"`
+	Paths   []string `json:"paths"`
+	Summary string   `json:"summary"`
+	Channel string   `json:"channel"`
+}
+
+// MaxNoticePaths bounds a notice's path list; the rest are counted in Summary.
+const MaxNoticePaths = 50
+
+// Shadow reads HQ's officer row (GET /officers/{id}) for its `shadow`: true
+// when HQ runs the officer in shadow. A row without a boolean `shadow` is an
+// error, and every caller treats an error as shadow (fail closed).
+func (c *Client) Shadow(ctx context.Context) (bool, error) {
+	raw, err := c.Do(ctx, http.MethodGet, c.officerPath(), nil)
+	if err != nil {
+		return false, err
+	}
+	var o struct {
+		Shadow *bool `json:"shadow"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil || o.Shadow == nil {
+		return false, fmt.Errorf("officers: HQ's officer %s carries no boolean `shadow`", c.officer.ID)
+	}
+	return *o.Shadow, nil
+}
+
+// PROpened is the body of POST /officers/{id}/pr-opened: a pull request the
+// officer just opened, which HQ may start a review loop for. Exactly these
+// fields (HQ refuses unknown ones).
+type PROpened struct {
+	// Repo is owner/name; PR the number; HeadSHA the 40-hex head the pull
+	// request was created on; HeadRef its branch; Base its base branch;
+	// Author its author's login as GitHub reports it (an App's bot is
+	// `<slug>[bot]`).
+	Repo    string `json:"repo"`
+	PR      int    `json:"pr"`
+	HeadSHA string `json:"head_sha"`
+	HeadRef string `json:"head_ref"`
+	Base    string `json:"base"`
+	Author  string `json:"author"`
+}
+
+// PROpenedAnswer is HQ's 200 to pr-opened: the loop items it created, and
+// the officers it skipped (each with HQ's reason, kept raw).
+type PROpenedAnswer struct {
+	Items []struct {
+		OfficerID string `json:"officer_id"`
+		ItemID    ItemID `json:"item_id"`
+		Created   bool   `json:"created"`
+	} `json:"items"`
+	Skipped []json.RawMessage `json:"skipped"`
+}
+
+// PROpened POSTs p to /officers/{id}/pr-opened with the officer's own token.
+// A 4xx (409 officer_shadow / officer_disabled / pr_opened_ambiguous, 400,
+// 403, 404) is *HQError; an outage wraps ErrHQUnavailable. It is called by
+// muster itself, never by an instance (no tool reaches it).
+func (c *Client) PROpened(ctx context.Context, p PROpened) (PROpenedAnswer, error) {
+	raw, err := c.Do(ctx, http.MethodPost, c.officerPath()+"/pr-opened", p)
+	if err != nil {
+		return PROpenedAnswer{}, err
+	}
+	var a PROpenedAnswer
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return PROpenedAnswer{}, fmt.Errorf("officers: HQ's pr-opened answer is not the expected JSON: %v", err)
+	}
+	return a, nil
+}
+
+// MergeAsk POSTs body (already validated and encoded JSON) to
+// /officers/{id}/items/{item}/merge-asks with the officer's own token and
+// returns HQ's 201 body. A 4xx is *HQError (HQ's body kept verbatim); HQ's
+// 502 github_unavailable is *RetryableError; any other failure wraps
+// ErrHQUnavailable.
+func (c *Client) MergeAsk(ctx context.Context, item ItemID, body []byte) ([]byte, error) {
+	return c.doCoded(ctx, http.MethodPost, c.itemPath(item, "merge-asks"), "application/json", body, nil, []string{"github_unavailable"})
+}
+
+// PostNotice POSTs n to path (under hq_url; ship.NoticeURLPath). Any failure
+// — a 4xx, a 5xx, no answer — is an error: the caller refuses the merge.
+func (c *Client) PostNotice(ctx context.Context, path string, n Notice) error {
+	_, err := c.Do(ctx, http.MethodPost, path, n)
+	return err
+}
+
+// Preflight is HQ's view of its database's backup health before a release
+// that adds a migration (POST /officers/{id}/preflight).
+type Preflight struct {
+	WAL struct {
+		LastArchivedTime *time.Time `json:"last_archived_time"`
+		LastFailedTime   *time.Time `json:"last_failed_time"`
+		FailedCount      *int64     `json:"failed_count"`
+	} `json:"wal"`
+	LastBackupTime *time.Time `json:"last_backup_time"`
+}
+
+// Preflight calls POST /officers/{id}/preflight.
+func (c *Client) Preflight(ctx context.Context) (Preflight, error) {
+	raw, err := c.Do(ctx, http.MethodPost, c.officerPath()+"/preflight", map[string]any{})
+	if err != nil {
+		return Preflight{}, err
+	}
+	var p Preflight
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return Preflight{}, fmt.Errorf("officers: HQ's preflight answer is not the expected JSON: %v", err)
+	}
+	return p, nil
+}

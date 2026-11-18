@@ -23,6 +23,15 @@ const (
 	// notice.go. Notice names its source, Status a task's status, Text its
 	// one-line summary and Output the detail shown when the row is expanded.
 	KindNotice = "notice"
+	// KindInjected marks a record the CLI wrote to inject context into the next
+	// request — an attachment record (a message typed while a tool ran,
+	// diagnostics, an edited file, a skill listing, a hook's added context…).
+	// Text is the attachment's type; it draws nothing. It exists so the
+	// tool-context ledger (toolctx.go) knows the growth before the next turn
+	// may not be the tool calls' alone — unless its type is one of the small
+	// reminders negligibleInjected names. Only ReadLines (the mirrored view's
+	// reader) emits it; Events, which every other reader uses, does not.
+	KindInjected = "injected"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -33,6 +42,9 @@ const (
 	MaxText = 32 << 10
 	// MaxInput bounds a tool call's input JSON (shown when the row is expanded).
 	MaxInput = 2 << 10
+	// MaxCwd bounds a prompt's working directory (Event.Cwd): a longer one is
+	// dropped, never cut — a cut path names another directory.
+	MaxCwd = 512
 	// MaxOutput bounds a tool result's output (shown when the row is expanded).
 	MaxOutput = 4 << 10
 )
@@ -73,6 +85,10 @@ type Event struct {
 	OK bool `json:"ok,omitempty"`
 	// Output is a result's text, capped at MaxOutput (and a notice's detail).
 	Output string `json:"output,omitempty"`
+	// Bytes is the UNCAPPED size of a tool_call's input or a tool_result's
+	// text: what a context estimate (toolctx.go) is sized by when there is no
+	// usage to measure with. 0 from a host that predates it.
+	Bytes int `json:"bytes,omitempty"`
 	// Notice is a notice's source (NoticeTask, NoticeCommandOutput); Status a
 	// task notice's status as the harness wrote it ("completed", "failed",
 	// "killed"…), "" when it gave none.
@@ -83,6 +99,25 @@ type Event struct {
 	// stateless, cannot — and Prompts names the same prompt by the same number,
 	// which is how the message index finds a prompt's bubble. 0 = not known.
 	Line int64 `json:"line,omitempty"`
+	// Cwd is a PROMPT's working directory, as its record said ("" on every
+	// other event, for one over MaxCwd, and from a host that predates it).
+	// muster stores the newest with the session's focus, to decide whether
+	// the fleet report may describe the session (internal/focus/cwd.go); it
+	// is never rendered. Prompts only, so the stream grows by one path per
+	// human turn, not per record.
+	Cwd string `json:"cwd,omitempty"`
+
+	// PromptAt is a PROMPT's own timestamp (its record's, Unix ms), 0 when the
+	// record has none. It is what lets muster tell how recent a message the
+	// person typed is (the chief nudge sweep only accepts the owner's last six
+	// hours of instructions: internal/api chief_nudge.go).
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster ignores
+	// the field; an older host never sends it, and muster then has NO timed
+	// prompt for that session, which the sweep reads as "no instruction it can
+	// verify" (an ask, never a nudge). Set on prompts only, so an events batch
+	// grows by one small number per prompt.
+	PromptAt int64 `json:"promptAt,omitempty"`
 	// Usage is the context an assistant turn used (usage.go), on the FIRST
 	// event its record contributes; nil on every other event, and from a host
 	// that predates it.
@@ -161,7 +196,11 @@ func Events(r Record) []Event {
 			if cmd, ok := slashCommand(text); ok {
 				text = cmd
 			}
-			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText)}}
+			ev := Event{Kind: KindPrompt, Text: Cap(text, MaxText), PromptAt: r.Time()}
+			if len(r.Cwd) <= MaxCwd {
+				ev.Cwd = r.Cwd
+			}
+			return []Event{ev}
 		}
 		if r.IsMeta || r.IsCompactSummary {
 			return nil
@@ -169,7 +208,7 @@ func Events(r Record) []Event {
 		var out []Event
 		for _, b := range r.Blocks() {
 			if b.Type == "tool_result" && b.ToolUseID != "" {
-				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(b.ResultText(), MaxOutput)})
+				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(b.ResultText(), MaxOutput), Bytes: b.ResultBytes()})
 			}
 		}
 		// The record's toolUseResult is ITS call's: believed only when the
@@ -207,7 +246,7 @@ func Events(r Record) []Event {
 				}
 			case "tool_use":
 				ev := Event{Kind: KindToolCall, ToolID: b.ID, Tool: b.Name,
-					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input))}
+					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input)), Bytes: len(b.Input)}
 				if b.Name == askq.ToolName {
 					if qs, err := askq.ParseInput(b.Input); err == nil {
 						ev.Ask = &Ask{Questions: qs}

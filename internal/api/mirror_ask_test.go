@@ -57,6 +57,7 @@ type askMirror struct {
 	cancelNote string
 	cancelErr  error
 	noCancel   bool
+	cancelHold chan struct{}
 	// hold, when set, keeps AnswerWindow typing until it is closed (or the
 	// call's ctx ends, which is then its error); typingCtx is the last call's
 	// ctx.
@@ -64,7 +65,13 @@ type askMirror struct {
 	typingCtx context.Context
 	feedCh    chan mirror.Msg
 	watchSeen int
+	// watchedAs is the principal of each WatchWindow, in order.
+	watchedAs []authz.Principal
 }
+
+// askTeamOwner is the team that owns "mmt_team"'s host (a fixture id no
+// constant in the code equals).
+const askTeamOwner = 900243
 
 func newAskMirror(interactive bool) *askMirror {
 	fm := &fakeMirror{online: true, interactive: interactive, v2: &fakeMirrorV2{},
@@ -85,9 +92,15 @@ func (a *askMirror) Hosts(ctx context.Context) []mirror.HostView {
 
 func (a *askMirror) CancelAsk(ctx context.Context, host, session, window string) (string, error) {
 	a.amu.Lock()
-	defer a.amu.Unlock()
 	a.cancels = append(a.cancels, host+" "+session+" "+window)
-	return a.cancelNote, a.cancelErr
+	note, err, hold := a.cancelNote, a.cancelErr, a.cancelHold
+	a.amu.Unlock()
+	// cancelHold, when set, is a slow dismissal: the Escape's outcome comes
+	// once it is closed.
+	if hold != nil {
+		<-hold
+	}
+	return note, err
 }
 
 func (a *askMirror) cancelsSoFar() []string {
@@ -132,7 +145,7 @@ func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
 	am, s, ts := askServer(t, true)
 	register(t, ts)
 	card := region(t, s, ts, `data-ask-state="pending"`)
-	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main:0? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
+	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("the pending card lacks %q:\n%s", want, card)
 		}
@@ -251,6 +264,9 @@ func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (in
 		return 1, "other", true
 	case "mmt_u2":
 		return 2, "ws", true
+	case "mmt_team":
+		// A TEAM host's token (team sharing 2b.2): its owner is the team.
+		return askTeamOwner, "ws", true
 	}
 	http.Error(w, "bad token", http.StatusUnauthorized)
 	return 0, "", false
@@ -283,10 +299,12 @@ func (a *askMirror) Nudge(owner int64) {
 // WatchWindow is the window's transcript stream: whatever feed sends, until
 // the watch ends. Only user 1's window main@1 has one.
 func (a *askMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
-	if p, ok := authz.From(ctx); !ok || p.UserID != 1 || host != "ws" || session != "main" || window != "@1" {
+	p, ok := authz.From(ctx)
+	if !ok || a.fakeMirror.user(ctx) != 1 || host != "ws" || session != "main" || window != "@1" {
 		return mirror.ErrHostOffline
 	}
 	a.amu.Lock()
+	a.watchedAs = append(a.watchedAs, p)
 	a.watchSeen++
 	a.amu.Unlock()
 	for {
@@ -540,8 +558,11 @@ func TestTheTerminalWinsTheRace(t *testing.T) {
 	am2.typeErr = mirror.ErrAskNoPicker
 	am2.amu.Unlock()
 	resp, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	// No answer form (nothing to type into): the card's one way on from here is
+	// "Send as a message" (ask_message.go), whose form posts elsewhere.
 	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed ||
-		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, "data-ask-form") {
+		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, `action="`+ui.MirrorAskPath+`"`) ||
+		!strings.Contains(body, `action="`+ui.MirrorAskMessagePath+`"`) {
 		t.Fatalf("a typing with no picker: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
 	am2.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})
@@ -695,8 +716,8 @@ func TestAnAnswerPassesEveryGate(t *testing.T) {
 	am.fakeMirror.mu.Lock()
 	am.fakeMirror.interactive = false
 	am.fakeMirror.mu.Unlock()
-	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.ErrInteractiveRefused.Error()) {
-		t.Fatalf("a read-only host: %d %q, want 409 saying it is read-only", resp.StatusCode, body)
+	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.ViewOnlyWords("ws")) {
+		t.Fatalf("a read-only host: %d %q, want 409 saying it is view-only", resp.StatusCode, body)
 	}
 }
 
@@ -938,7 +959,9 @@ func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
 	am.amu.Lock()
 	priors := append([]*askq.Progress(nil), am.priors...)
 	am.amu.Unlock()
-	want := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}, {Picks: []int{1, 2}}}, Keys: 4}
+	// Reset: a Try again after a failure also asks the host to reset a picker
+	// that is neither untouched nor exactly as those keys left it (askdrive).
+	want := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}, {Picks: []int{1, 2}}}, Keys: 4, Reset: true}
 	if len(priors) != 2 || priors[0] != nil || !reflect.DeepEqual(priors[1], want) {
 		t.Fatalf("the host was handed %+v then %+v, want nothing then %+v", priors[0], priors[len(priors)-1], want)
 	}

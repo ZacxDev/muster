@@ -83,3 +83,20 @@ func TestNoncesAreDrawnPerCall(t *testing.T) {
 		t.Fatalf("nonces %q %q", a, b)
 	}
 }
+
+// TestWebURLKeepsOnlyAnHTTPURLWithAHost: what an outside source may hand
+// muster to show as text, and nothing else.
+func TestWebURLKeepsOnlyAnHTTPURLWithAHost(t *testing.T) {
+	for _, ok := range []string{"https://example.test/p/1", "http://example.test:8080/a?b=c#d", "https://" + strings.Repeat("a", MaxURLBytes-8)} {
+		if WebURL(ok) != ok {
+			t.Errorf("WebURL(%q) dropped it", ok)
+		}
+	}
+	for _, bad := range []string{"", "javascript:alert(1)", "data:text/html,x", "ftp://example.test/x", "//example.test/x", "https://",
+		"https://user@example.test/", "https://example.test/a b", "https://example.test/‮", "https://example.test/\x1b",
+		"https://" + strings.Repeat("a", MaxURLBytes-7), "https://example.test/\xff"} {
+		if got := WebURL(bad); got != "" {
+			t.Errorf("WebURL(%q) = %q, want dropped", bad, got)
+		}
+	}
+}

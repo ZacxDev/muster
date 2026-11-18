@@ -339,14 +339,19 @@ func fileSecretName(instance string) string { return instance + "-secret-files" 
 // handed the other's credentials (provision.Sidecar).
 func sidecarEnvSecretName(instance string) string { return instance + "-sidecar-env" }
 
-// allFiles is every file the instance's pod places: its own and its sidecar's.
+// allFiles is every file the instance's pod places: its own, its sidecar's and
+// its key holder's.
 // They share the two file objects (keys are derived from distinct paths —
 // Spec.Validate refuses a repeat); each container MOUNTS only its own.
 func allFiles(spec provision.Spec) []provision.File {
-	if spec.Sidecar == nil || len(spec.Sidecar.Files) == 0 {
-		return spec.Files
+	files := spec.Files
+	if spec.Sidecar != nil && len(spec.Sidecar.Files) > 0 {
+		files = append(append([]provision.File(nil), files...), spec.Sidecar.Files...)
 	}
-	return append(append([]provision.File(nil), spec.Files...), spec.Sidecar.Files...)
+	if spec.KeyHolder != nil && len(spec.KeyHolder.Files) > 0 {
+		files = append(append([]provision.File(nil), files...), spec.KeyHolder.Files...)
+	}
+	return files
 }
 
 func pvcName(instance string) string { return instance + "-workspace" }
@@ -598,10 +603,12 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 	// The instance's container mounts ONLY its own files (a sidecar's are in
 	// the same objects; renderSidecar mounts those).
 	mounts := fileMounts(spec.Files)
-	mounts = append(mounts, corev1.VolumeMount{Name: workspaceVolumeName, MountPath: wsPath})
-	if spec.Security.ReadOnlyRoot {
-		mounts = append(mounts, corev1.VolumeMount{Name: tmpVolumeName, MountPath: "/tmp"})
+	// A key holder's shared directory, READ-ONLY here (provision.KeyHolder):
+	// the instance reads what the holder wrote and can change none of it.
+	if k := spec.KeyHolder; k != nil {
+		mounts = append(mounts, corev1.VolumeMount{Name: keyHolderSharedVolumeName, MountPath: k.SharedDir, ReadOnly: true})
 	}
+	mounts = append(mounts, corev1.VolumeMount{Name: workspaceVolumeName, MountPath: wsPath})
 
 	ports := make([]corev1.ContainerPort, 0, len(spec.Ports))
 	for _, p := range spec.Ports {
@@ -661,6 +668,13 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		}
 		containers = append(containers, sc)
 	}
+	if spec.KeyHolder != nil {
+		kh, err := d.renderKeyHolder(spec)
+		if err != nil {
+			return nil, err
+		}
+		containers = append(containers, kh)
+	}
 	podSpec := corev1.PodSpec{
 		ServiceAccountName: spec.Ref.Name,
 		Containers:         containers,
@@ -671,9 +685,11 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		no := false
 		podSpec.AutomountServiceAccountToken = &no
 	}
-	if spec.TerminationGraceSeconds > 0 {
-		grace := int64(spec.TerminationGraceSeconds)
-		podSpec.TerminationGracePeriodSeconds = &grace
+	// The registry credential the pod's images are pulled with: a Secret in the
+	// pod's own namespace (copied there from SecretSourceNamespace by
+	// copySecrets, when that is set). Unset, the field is not written at all.
+	if spec.ImagePullSecret != "" {
+		podSpec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: spec.ImagePullSecret}}
 	}
 	if len(spec.Init) > 0 {
 		podSpec.InitContainers = []corev1.Container{d.renderInitContainer(spec, container)}
@@ -780,24 +796,15 @@ func podSecurity(sec provision.Security) *corev1.PodSecurityContext {
 }
 
 func containerSecurity(sec provision.Security) *corev1.SecurityContext {
-	if !sec.Restricted && !sec.ReadOnlyRoot {
+	if !sec.Restricted {
 		return nil
 	}
-	sc := &corev1.SecurityContext{}
-	if sec.Restricted {
-		no := false
-		sc.AllowPrivilegeEscalation = &no
-		sc.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+	no := false
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &no,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
-	if sec.ReadOnlyRoot {
-		yes := true
-		sc.ReadOnlyRootFilesystem = &yes
-	}
-	return sc
 }
-
-// tmpVolumeName is the writable /tmp of an instance whose root is read-only.
-const tmpVolumeName = "tmp"
 
 // renderInitContainer runs Spec.Init before the application container.
 //
@@ -838,7 +845,7 @@ func (d *Driver) renderInitContainer(spec provision.Spec, main corev1.Container)
 // ⚠ NO PROBE IS DELIBERATE, NOT MISSING: every container's readiness gates the
 // pod's, so a probe here could only add ways for a sidecar fault to drop the
 // INSTANCE's endpoint. A sidecar that must survive its own process's exit says
-// so in its command (agentspec's gateway sidecar runs a supervisor); the kubelet
+// so in its command (the removed gateway sidecar ran a supervisor); the kubelet
 // restarting an exited sidecar takes the pod NotReady while it does.
 func (d *Driver) renderSidecar(spec provision.Spec, ns string) (corev1.Container, error) {
 	sc := spec.Sidecar
@@ -884,6 +891,69 @@ func fileMounts(files []provision.File) []corev1.VolumeMount {
 		mounts = append(mounts, corev1.VolumeMount{Name: secretFilesVolumeName, MountPath: f.Path, SubPath: fileKey(f.Path), ReadOnly: true})
 	}
 	return mounts
+}
+
+// secretMountMode is a key holder's secret's file mode: read-only, owner and
+// group. The kubelet writes it as root under the pod's fsGroup, which is a
+// supplementary group of every container in the pod — the holder reads it
+// through that group. The INSTANCE's container is in that group too, and that
+// is harmless only because the volume is never mounted there: the file does
+// not exist in its mount namespace (renderKeyHolder; ssh accepts a
+// group-readable private key that its user does not own).
+const secretMountMode = 0o440
+
+// secretMountVolumeName is the volume of a key holder's SecretMounts[i].
+func secretMountVolumeName(i int) string { return "muster-secret-mount-" + strconv.Itoa(i) }
+
+// keyHolderSharedVolumeName is the key holder's shared directory (an emptyDir).
+const keyHolderSharedVolumeName = "muster-key-holder-shared"
+
+// renderKeyHolder is the key holder's container (provision.KeyHolder): the
+// instance's image, the holder's command, environment and files, its secrets
+// mounted read-only through a subPath of their key, and the shared directory
+// read-write — and NOT the workspace, which the instance writes.
+//
+// 🔴 ITS OWN runAsUser/runAsGroup, non-root, no privilege escalation, every
+// capability dropped. The pod-level context still applies to the rest (the
+// fsGroup the holder reads its secret through, seccomp); the pod never sets
+// shareProcessNamespace, so the instance cannot see the holder's processes.
+//
+// ⚠ A subPath mount is not refreshed when the Secret changes: a rotated key
+// reaches the pod at its next restart.
+func (d *Driver) renderKeyHolder(spec provision.Spec) (corev1.Container, error) {
+	k := spec.KeyHolder
+	if k.Name == containerName || k.Name == initContainerName {
+		return corev1.Container{}, fmt.Errorf("%w: key holder name %q is the instance's own container's", provision.ErrInvalidSpec, k.Name)
+	}
+	resources, err := renderResources(k.Resources)
+	if err != nil {
+		return corev1.Container{}, err
+	}
+	env := make([]corev1.EnvVar, 0, len(k.Env))
+	for _, e := range k.Env {
+		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+	}
+	mounts := fileMounts(k.Files)
+	for i, m := range k.SecretMounts {
+		mounts = append(mounts, corev1.VolumeMount{Name: secretMountVolumeName(i), MountPath: m.Path, SubPath: m.Key, ReadOnly: true})
+	}
+	mounts = append(mounts, corev1.VolumeMount{Name: keyHolderSharedVolumeName, MountPath: k.SharedDir})
+	uid, yes, no := k.RunAsUser, true, false
+	return corev1.Container{
+		Name:         k.Name,
+		Image:        spec.Runtime.Image,
+		Command:      k.Command,
+		Env:          env,
+		Resources:    resources,
+		VolumeMounts: mounts,
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                &uid,
+			RunAsGroup:               &uid,
+			RunAsNonRoot:             &yes,
+			AllowPrivilegeEscalation: &no,
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+	}, nil
 }
 
 // renderVolumes projects the pod's files — the instance's and its sidecar's —
@@ -932,6 +1002,25 @@ func (d *Driver) renderVolumes(spec provision.Spec) []corev1.Volume {
 		})
 	}
 
+	if k := spec.KeyHolder; k != nil {
+		for i, m := range k.SecretMounts {
+			mode := int32(secretMountMode)
+			volumes = append(volumes, corev1.Volume{
+				Name: secretMountVolumeName(i),
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: m.Secret,
+						Items:      []corev1.KeyToPath{{Key: m.Key, Path: m.Key, Mode: &mode}},
+					},
+				},
+			})
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         keyHolderSharedVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+	}
+
 	ws := corev1.Volume{Name: workspaceVolumeName}
 	if spec.Workspace.Persist {
 		ws.VolumeSource = corev1.VolumeSource{
@@ -943,9 +1032,6 @@ func (d *Driver) renderVolumes(spec provision.Spec) []corev1.Volume {
 		ws.VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	}
 	volumes = append(volumes, ws)
-	if spec.Security.ReadOnlyRoot {
-		volumes = append(volumes, corev1.Volume{Name: tmpVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
-	}
 
 	return volumes
 }

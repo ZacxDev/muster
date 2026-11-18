@@ -111,6 +111,18 @@ func (s *Server) handleChiefThreadSearch(w http.ResponseWriter, r *http.Request)
 	activeID, _ := strconv.ParseInt(r.URL.Query().Get("session"), 10, 64)
 
 	if q == "" {
+		// The blank query IS the panel's list again, so it is the switcher's
+		// order (chiefChatViews: the primary first, then the side chats, the
+		// archived last) — not a second order a cleared box would show.
+		if views, ok, err := s.chiefChatViews(ctx, a, activeID); ok {
+			if err != nil {
+				s.logger.Printf("chief: thread search list chats: %v", err)
+				failed()
+				return
+			}
+			write(ui.ChiefThreadsView{Threads: views})
+			return
+		}
 		list, err := s.ext.Agents.ListSessions(ctx, a.ID)
 		if err != nil {
 			s.logger.Printf("chief: thread search list sessions: %v", err)

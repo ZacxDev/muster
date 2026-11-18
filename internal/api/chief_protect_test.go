@@ -285,43 +285,38 @@ func equalIDs(a, b []int64) bool {
 	return true
 }
 
-// TestTheChiefsCardOffersNoDelete: the card list reads the same predicate, so
-// the menu never offers a Delete the server refuses — and still offers it on
-// every other card (a menu that dropped Delete everywhere would pass a check
-// that only looked at the chief).
+// TestTheChiefsCardOffersNoDelete: the agent page's ⋯ menu (the retired list
+// card's, GET ui.AgentHeaderPath) reads the same predicate, so it never offers
+// a Delete the server refuses — and still offers it on every other agent (a
+// menu that dropped Delete everywhere would pass a check that only looked at
+// the chief).
 func TestTheChiefsCardOffersNoDelete(t *testing.T) {
-	s, h, _, _, _ := chiefFixture()
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
+	s, _, _, _, _ := chiefFixture()
 	for _, tc := range []struct {
 		id         int64
 		wantDelete bool
 	}{
 		{chiefSlugID, false}, {chiefResolvedID, false}, {lateLabelID, true}, {workerID, true},
 	} {
-		card := cardChunk(t, body, tc.id)
-		has := strings.Contains(card, `hx-delete="/agents/`+itoa(tc.id)+`"`)
-		if has != tc.wantDelete {
-			t.Errorf("agent %d's card offers delete = %v, want %v", tc.id, has, tc.wantDelete)
-		}
-		// The menu itself is still there: Start/Stop stays available to the chief.
-		if !strings.Contains(card, `aria-label="Agent actions"`) {
-			t.Errorf("agent %d's card has no ⋯ menu at all", tc.id)
+		if has := deletableOnPage(t, s, tc.id); has != tc.wantDelete {
+			t.Errorf("agent %d's page offers delete = %v, want %v", tc.id, has, tc.wantDelete)
 		}
 	}
 }
 
-// cardChunk is one agent's card: from its <article> to the next one.
-func cardChunk(t *testing.T, markup string, id int64) string {
+// deletableOnPage is whether one agent's page offers Delete in its ⋯ menu:
+// the card the page composes (agentPageCard, which decides the chief and
+// officer protection) asked the predicate the menu draws by
+// (ui.AgentCardView.Deletable; internal/ui's tests pin that the menu follows
+// it).
+func deletableOnPage(t *testing.T, s *Server, id int64) bool {
 	t.Helper()
-	start := strings.Index(markup, `<article id="agent-`+itoa(id)+`"`)
-	if start < 0 {
-		t.Fatalf("no card for agent %d", id)
+	ctx := operatorCtx()
+	a, err := s.ext.Agents.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("agent %d: %v", id, err)
 	}
-	rest := markup[start+1:]
-	if end := strings.Index(rest, `<article id="agent-`); end >= 0 {
-		return markup[start : start+1+end]
-	}
-	return markup[start:]
+	return s.agentPageCard(ctx, a, nil).Deletable()
 }
 
 // TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every top-level
@@ -343,10 +338,10 @@ func cardChunk(t *testing.T, markup string, id int64) string {
 //
 //	(1) the SET of such declarations is exactly the two named below — it fails
 //	    when one is added, including outside any function, or removed; and
-//	(2) each of them also mentions agentIsChief.
+//	(2) each of them also mentions agentIsDeleteProtected.
 //
 // It does NOT prove:
-//   - that agentIsChief's ANSWER gates the destroy (a function can call it and
+//   - that agentIsDeleteProtected's ANSWER gates the destroy (a function can call it and
 //     ignore it) — the behavioural tests above prove that for each named route;
 //   - anything about a destroy reached by REFLECTION, through an `any`, or
 //     through a concrete provisioner type rather than an interface; or
@@ -391,23 +386,23 @@ func (s *Server) ledgerControlNarrow() {
 			"about that shape", controls)
 	}
 	sort.Strings(names)
-	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,replaceChief,toolAgentDestroy"; got != want {
+	if got, want := strings.Join(names, ","), "acceptEndSession,dismissTask,handleAPIAgentRemove,handleAgentDelete,reapStoppedAgents,replaceChief,teardownInstanceWith,toolAgentDestroy"; got != want {
 		t.Fatalf("declarations that can reach the provisioner's Destroy = %s, want %s — a destroy "+
-			"path was added or removed; guard it with agentIsChief and add its route to the tests above", got, want)
+			"path was added or removed; guard it with agentIsDeleteProtected and add its route to the tests above", got, want)
 	}
 	// 🔴 replaceChief IS THE ONE DELIBERATE BYPASS: it exists to destroy the
 	// chief, behind an explicit confirm (chief_replace.go;
 	// TestReplacingTheChiefNeedsConfirmAndDeletesOnlyThen pins the confirm). Every
-	// other destroy path must still ask agentIsChief.
+	// other destroy path must still ask agentIsDeleteProtected.
 	bypass := map[string]bool{"replaceChief": true}
 	// destroyAgent counts as a guard for the doors that call it (destroyUsers),
-	// so it must itself ask agentIsChief.
-	if !funcMentions(t, "agents.go", "destroyAgent", "agentIsChief") {
-		t.Error("destroyAgent no longer mentions agentIsChief, but the doors that route through it are scored chief-guarded because of it")
+	// so it must itself ask agentIsDeleteProtected.
+	if !funcMentions(t, "agents.go", "destroyAgent", "agentIsDeleteProtected") {
+		t.Error("destroyAgent no longer mentions agentIsDeleteProtected, but the doors that route through it are scored chief-guarded because of it")
 	}
 	for _, n := range names {
 		if !bypass[n] && !users[n] {
-			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsChief", n)
+			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsDeleteProtected", n)
 		}
 	}
 }
@@ -415,7 +410,7 @@ func (s *Server) ledgerControlNarrow() {
 // destroyUsers type-checks this package's non-test files (plus extra, name ->
 // source) and returns each top-level declaration that uses a provisioner
 // Destroy (see the ledger's doc for what counts), mapped to whether it also
-// mentions agentIsChief.
+// mentions agentIsDeleteProtected.
 func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
@@ -482,8 +477,8 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 				}
 				// A door that routes its Destroy through destroyAgent — the one
 				// chief-guarded teardown — is guarded by it; that destroyAgent
-				// itself asks agentIsChief is pinned in the ledger test.
-				if sel.Sel.Name == "agentIsChief" || sel.Sel.Name == "destroyAgent" {
+				// itself asks agentIsDeleteProtected is pinned in the ledger test.
+				if sel.Sel.Name == "agentIsDeleteProtected" || sel.Sel.Name == "destroyAgent" {
 					guarded = true
 				}
 				return true

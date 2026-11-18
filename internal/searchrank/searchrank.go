@@ -24,12 +24,14 @@
 //   - the dispatch dialog's task, repo and model pickers and the directory
 //     picker (window.musterRank), and the model search's server-side cut
 //     (this package) — all of them, through the table;
-//   - the Agents list filter — window.musterRank over each card's titles;
 //   - NOT the chief thread search, which ranks in SQL (agents.PGStore
 //     .SearchSessions: ILIKE and a regexp, case-insensitive by Postgres's own
 //     rules, with no Fold). It agrees with the table on ASCII; outside it the
 //     differences Fold exists for (accents, final sigma, compatibility forms)
 //     are not applied there.
+//
+// (The retired Agents list's filter ranked each card's titles with
+// window.musterRank too.)
 package searchrank
 
 import (

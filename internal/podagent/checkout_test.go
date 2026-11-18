@@ -82,10 +82,40 @@ func newBranchCheckout(t *testing.T, repo, branch, dir, base string) *Checkout {
 	if base != "" {
 		cfg.ConnectBase, cfg.Token = base, "fixture-agent-token-81d0"
 	}
-	c := NewCheckout(cfg)
+	c, err := NewCheckout(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.Retry = 20 * time.Millisecond
 	c.Logf = t.Logf
 	return c
+}
+
+// runCheckout runs c.Run in the background for the rest of the test, and at
+// the test's cleanup cancels it AND WAITS FOR IT TO RETURN.
+//
+// 🔴 THE WAIT IS THE POINT. Run retries a clone every c.Retry, and a cancel only
+// asks the in-flight `git clone` to die: until Run returns, a clone started just
+// before the cancel can still be writing under the test's directories. Without
+// the join that write raced the TempDir cleanup ("unlinkat …: directory not
+// empty", CI, TestALocalCloneFailureFilesNoGithubRequest) — and in that test the
+// cleanup that restores the read-only parent's write bit is exactly what lets a
+// late clone get in. Run returns only after cmd.Wait, which also waits for every
+// process still holding the clone's stderr, so once it is back no clone is
+// writing. Registered after the fixture's own cleanups, it runs BEFORE them
+// (t.Cleanup is LIFO): the parent is still read-only while Run drains.
+func runCheckout(t *testing.T, c *Checkout) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		c.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-stopped
+	})
 }
 
 // TestAnEmptyRepositoryIsACheckout: a clone of a repository with no commit
@@ -161,9 +191,7 @@ func TestALocalFailureIsNotACloneFailure(t *testing.T) {
 	}
 	stub := &githubStub{}
 	c := newTestCheckout(t, "example-org/tide-charts", dir, stub.server(t).URL)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	runCheckout(t, c)
 	var st CheckoutState
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		if st = c.State(); st.State != CheckoutCloning {
@@ -279,9 +307,7 @@ func TestALocalCloneFailureFilesNoGithubRequest(t *testing.T) {
 	dir := filepath.Join(parent, "tide-charts")
 	stub := &githubStub{}
 	c := newTestCheckout(t, "example-org/tide-charts", dir, stub.server(t).URL)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	runCheckout(t, c)
 	var st CheckoutState
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		if st = c.State(); st.State != CheckoutCloning {

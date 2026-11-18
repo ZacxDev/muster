@@ -103,9 +103,23 @@ func (s *Server) chiefAgent(ctx context.Context) (agents.Agent, error) {
 	if err != nil {
 		return agents.Agent{}, err
 	}
-	found, ok := resolveChief(list)
+	// 🔴 AMONG THE CALLER'S OWN AGENTS ONLY (team sharing slice 4.4): since
+	// 0131 a member's list also holds the agents their teams own — the team
+	// chief among them — and "the lowest-id agent labelled chief" would make a
+	// member with no chief of their own talk to their team's. Under the team
+	// acting principal this resolves the team's chief.
+	found, ok := resolveChief(ownedBy(list, requestOwner(ctx)))
 	if !ok {
 		return agents.Agent{}, ErrNoChief
+	}
+	// The owner may have turned it off (chief_toggle.go): ErrChiefOff is an
+	// ErrNoChief, so every caller's "no chief" branch covers it.
+	on, err := s.chiefOn(ctx, requestOwner(ctx), list)
+	if err != nil {
+		return agents.Agent{}, err
+	}
+	if !on {
+		return agents.Agent{}, ErrChiefOff
 	}
 	return found, nil
 }
@@ -135,8 +149,8 @@ func resolveChief(list []agents.Agent) (agents.Agent, bool) {
 // as a side effect of dismissing the task it was once linked to, removes the
 // thing the operator talks to. Every caller of Provisioner.Destroy in this package
 // asks agentIsChief first (TestEveryDestroyCallSiteIsChiefGuarded holds the
-// ledger of those callers), and the card's menu reads the same answer to hide
-// Delete.
+// ledger of those callers), and the agent page's ⋯ menu reads the same answer
+// to hide Delete.
 //
 // "The chief" is BOTH of the two agents that can carry the role, because they
 // are different rows on a real fleet (see the header above):
@@ -165,8 +179,8 @@ func chiefRefusal(a agents.Agent) string {
 }
 
 // chiefPredicate is THE chief predicate, bound to one read of the agent list:
-// the chief is resolved once, so a caller deciding many agents (the card list)
-// pays one resolve, not one per card.
+// the chief is resolved once, so a caller deciding many agents (the sidebar's
+// entries) pays one resolve, not one per agent.
 //
 // 🔴 EVERY USER HAS A CHIEF (accounts PR 3b), so the label rule is applied PER
 // OWNER: an agent is the chief when it carries a reserved chief slug
@@ -193,6 +207,32 @@ func chiefPredicate(list []agents.Agent) func(agents.Agent) bool {
 		id, ok := chiefs[a.OwnerID]
 		return ok && a.ID == id
 	}
+}
+
+// primaryChief is THE chief a list's viewer is sent to: where `/` opens
+// (homeTarget) and the agent the sidebar pins first (AgentCardView.PrimaryChief,
+// composed in agentsListCardsLive) — one rule, so the two cannot disagree.
+//
+// Of the agents chiefPredicate calls the chief, it is the one chiefAgent
+// resolves — the lowest-id agent labelled "chief", which the panel, recaps and
+// `muster chief ask` talk to — and, with none labelled, the lowest-id reserved
+// slug (agents.IsChiefName), which is the chief by its name however it is
+// labelled. Lowest id is the tie-break each half already used: arbitrary but
+// stable. 🔴 IT TAKES ONE OWNER'S LIST: since 0131 a list read under row-level
+// security also holds the viewer's teams' agents, so every caller hands it
+// ownedBy(list, viewer) (homeTarget, agentsListEntries).
+func primaryChief(list []agents.Agent) (agents.Agent, bool) {
+	if c, ok := resolveChief(list); ok {
+		return c, true
+	}
+	var found agents.Agent
+	var ok bool
+	for _, a := range list {
+		if agents.IsChiefName(a.Name) && (!ok || a.ID < found.ID) {
+			found, ok = a, true
+		}
+	}
+	return found, ok
 }
 
 // isChiefAmong reports whether a is the chief, given the full agent list.

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -26,6 +28,28 @@ import (
 // COMMENT.
 var errCommentTaskNotFound = errors.New("task not found")
 
+// errCommentNotYours is a live comment on a team's task that the caller may
+// not retract (commentRetractAllowed): both callers answer 403.
+var errCommentNotYours = errors.New("on a team task, only the comment's author or a team manager can retract it")
+
+// commentRetractAllowed reports whether p may retract comment cid on n. On a
+// task p owns (or one whose owner the store does not read, 0), any comment,
+// as before team tasks. On a team's task, the comment's author, or a manager
+// of the team; a comment with no author_id (system scope, or written before
+// 0127) only a manager. A comment not in n's live thread is not decided here:
+// the store answers it (404), so this is no oracle for comment ids.
+func commentRetractAllowed(p authz.Principal, n notes.Note, cid int64) bool {
+	if n.OwnerID == 0 || n.OwnerID == p.UserID || taskRoleAllows(p, n.OwnerID, authz.TeamManager) {
+		return true
+	}
+	for _, c := range n.Comments {
+		if c.ID == cid && !c.Retracted {
+			return c.AuthorID != 0 && c.AuthorID == p.UserID
+		}
+	}
+	return true
+}
+
 // softDeleteTaskComment is the shared core behind BOTH retraction paths — the
 // machine DELETE /api/tasks/{id}/comments/{cid} and the session/UI
 // DELETE /tasks/{id}/comments/{cid} — so the two can never diverge on scoping,
@@ -36,16 +60,24 @@ var errCommentTaskNotFound = errors.New("task not found")
 // comment-shaped 404 the store's ErrNoRows would otherwise produce, and it is
 // what refuses a retraction against a dismissed task.
 //
+// On a team's task it also refuses, before the store is asked, a comment the
+// caller did not write unless they manage the team (commentRetractAllowed);
+// SoftDeleteComment holds the same rule in SQL.
+//
 // It returns errCommentTaskNotFound (caller → 404 "task not found"),
-// pgx.ErrNoRows (caller → 404 "comment not found": unknown comment id, a comment
-// belonging to a different task, or one already retracted), or any other store
-// error (caller → 500).
+// errCommentNotYours (caller → 403), pgx.ErrNoRows (caller → 404 "comment not
+// found": unknown comment id, a comment belonging to a different task, or one
+// already retracted), or any other store error (caller → 500).
 func (s *Server) softDeleteTaskComment(ctx context.Context, taskID, commentID int64) error {
-	if _, err := s.ext.Notes.Get(ctx, taskID); err != nil {
+	n, err := s.ext.Notes.Get(ctx, taskID)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errCommentTaskNotFound
 		}
 		return err
+	}
+	if p, ok := authz.From(ctx); ok && !commentRetractAllowed(p, n, commentID) {
+		return errCommentNotYours
 	}
 	if err := s.ext.Notes.SoftDeleteComment(ctx, taskID, commentID); err != nil {
 		return err
@@ -75,17 +107,16 @@ func (s *Server) softDeleteTaskComment(ctx context.Context, taskID, commentID in
 // browser login to get a session cookie. The session-tier twin below
 // (handleNoteCommentDelete) is the human spelling of the same operation.
 //
-// ⚠ requireHookToken is ENFORCE-WHEN-SET (an empty MUSTER_HOOK_TOKEN leaves it
-// open, with a startup warning) — that is the pre-existing, app-wide property of
-// every machine endpoint and is deliberately not special-cased here. So on a
-// server with no hook token this route IS the weaker of the two, which is the
-// opposite of what it was when requireSession authenticated nobody.
+// ⚠ requireHookToken is the shared machine secret: every hook script holds it,
+// and it names no caller. With no MUSTER_HOOK_TOKEN it admits nobody (and the
+// server does not boot).
 //
 // 🔴 STATUS CODES, PINNED (mirroring DELETE /api/tasks/{id}): bad task or comment
 // id → 400; unknown or dismissed task → 404 "task not found"; unknown comment,
 // a comment on a different task, or an ALREADY-retracted comment → 404 "comment
-// not found" (idempotent-by-404, exactly as a repeat task delete answers); store
-// failure → 500; no/bad hook token → 401 (middleware). Always JSON — never the
+// not found" (idempotent-by-404, exactly as a repeat task delete answers); a
+// team task's comment the caller may not retract → 403; store failure → 500;
+// no/bad hook token → 401 (middleware). Always JSON — never the
 // htmx card fragment the session route returns.
 func (s *Server) handleAPITaskCommentDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -102,6 +133,9 @@ func (s *Server) handleAPITaskCommentDelete(w http.ResponseWriter, r *http.Reque
 	case err == nil:
 	case errors.Is(err, errCommentTaskNotFound):
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
+		return
+	case errors.Is(err, errCommentNotYours):
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": errCommentNotYours.Error()})
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "comment not found"})
@@ -138,7 +172,9 @@ func (s *Server) handleAPITaskCommentDelete(w http.ResponseWriter, r *http.Reque
 //
 // Bad task or comment id → 400; unknown/dismissed task or unknown/already-
 // retracted comment → 404 (the session path does not distinguish the two — it
-// renders no body); store failure → 500; otherwise the re-rendered card.
+// renders no body); a team task's comment the caller did not write, unless
+// they manage the team → 403; store failure → 500; otherwise the re-rendered
+// card.
 func (s *Server) handleNoteCommentDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -154,6 +190,9 @@ func (s *Server) handleNoteCommentDelete(w http.ResponseWriter, r *http.Request)
 	case err == nil:
 	case errors.Is(err, errCommentTaskNotFound), errors.Is(err, pgx.ErrNoRows):
 		http.NotFound(w, r)
+		return
+	case errors.Is(err, errCommentNotYours):
+		http.Error(w, errCommentNotYours.Error(), http.StatusForbidden)
 		return
 	default:
 		s.logger.Printf("notes: comment delete %d/%d: %v", id, cid, err)

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"encoding/hex"
 	"net/url"
 	"strconv"
@@ -61,8 +63,21 @@ var QuickKeys = []QuickKey{
 
 // AgentTerminalView is the data the terminal page renders.
 type AgentTerminalView struct {
+	// Plugins is the owner's viewer plugins and the window's preview counts:
+	// the header's Preview button and its panel (plugin_chip.go); nil for
+	// none.
+	Plugins     *PluginChips
 	Name        string
 	DisplayName string
+	// SessionName is the session's name (internal/sessionname): the header
+	// and the <title> draw it when it is a human one. The zero value draws
+	// DisplayName / Name.
+	SessionName sessionname.Name
+	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
+	// overlay — the terminal's width is the far side's geometry, so no rail
+	// takes from it) and its hamburger, framed by the view swap or not
+	// (nav_layout.go says why).
+	Nav NavChrome
 	// Unavailable, when set, is why this deployment cannot attach a terminal;
 	// the page says so instead of opening a socket that would be refused.
 	Unavailable string
@@ -70,39 +85,76 @@ type AgentTerminalView struct {
 	// mirrored session has no agent page — its terminal is its page — so it goes
 	// back to the list.
 	BackHref string
-	// Badge is a short label beside the title ("Mirrored · <host>"); "" = none.
+	// Badge is a short label beside the title ("On <host>", MirrorBadgeText); "" = none.
 	Badge string
 	// BadgeHost and BadgeHostIcon are the mirrored host the badge names and its
 	// icon key (HostIconFor): the badge leads with the icon its cards draw.
 	BadgeHost, BadgeHostIcon string
-	// RawName, when set, is shown small and muted after the title, and as its
-	// tooltip (mirrorSessionTitle): a mirrored session titled by its host's
-	// label ("mango:1") keeps its real tmux session name findable. "" = the
-	// title alone.
+	// RawName, when set, is the title's tooltip (mirrorSessionTitle): a
+	// mirrored session titled by its host's label ("mango:1") keeps its real
+	// tmux session name findable (no longer drawn beside it: the header's room
+	// is the tags'). "" = the title alone.
 	RawName string
 	// TitleQualifier, when set, is drawn right after the title as part of it
 	// (" · laptop") and added to <title>: a mirrored entry whose name another
 	// listed entry shares (mirror.SessionView.Qualifier). "" = the title alone.
 	TitleQualifier string
+	// Tags is the viewer's own tags on the session — the agent, or the mirrored
+	// tmux session (internal/sessiontags) — drawn in the header after the
+	// title (sessionTagsHead); nil for none.
+	Tags []string
+	// TagTarget is the session Tags are on — the agent, or the mirrored tmux
+	// session — which the header names (data-session-tags-for), so the editor's
+	// copy into the other live view lands only on the same session's header.
+	TagTarget SessionTagTarget
 	// WSPath is the socket the page opens, WITHOUT its query ("" = the agent's
 	// /agents/{name}/terminal/ws). A mirrored session's is
 	// /mirror/terminal/ws?host=…&session=…, and the page appends mode/cols/rows.
 	WSPath string
-	// ReadOnlyOnly removes the Interactive switch: the far side cannot be typed
-	// into (a mirrored host that did not advertise -interactive). The server
-	// refuses an interactive attach regardless; this keeps the page from
-	// offering one.
+	// ReadOnlyOnly turns the keys off: the far side cannot be typed into (a
+	// mirrored host that did not advertise -interactive). The server refuses an
+	// interactive attach regardless; this keeps the page from asking for one,
+	// and its keys are drawn disabled.
 	ReadOnlyOnly bool
-	// InteractiveNote, when set, is shown as the switch's tooltip and beside it
-	// while interactive: what typing into this terminal really reaches.
+	// InteractiveNote, when set, is the tooltip of the status line and of the
+	// key bar: what typing into this terminal really reaches.
 	InteractiveNote string
 	// RenderedHref, when set, draws the Rendered | Terminal switch: the session
 	// also has a rendered view (a mirrored Claude Code pane), one tap away.
 	RenderedHref string
-	// StepUp, when set, puts the Interactive switch behind a FRESH sign-in
-	// (internal/stepup): a mirrored session. nil = the switch attaches at once
-	// (an agent pod's terminal).
+	// TerminalOnly, when set, is why this session has NO rendered view
+	// (mirror.SessionView.TerminalOnlyReason), drawn as one line under the
+	// header: a mirrored window that opens in the terminal says why instead of
+	// silently falling back. Never set together with RenderedHref.
+	TerminalOnly string
+	// LiveCopy is the warning that this window's conversation also runs
+	// elsewhere under another session id (mirror.SessionView.LiveCopyWarning),
+	// "" for none: a banner under the header (livecopy.go).
+	LiveCopy string
+	// Offline and Note are a mirrored window's host state, as MirrorViewView's
+	// (mirrorHostBanner). Note is drawn only where TerminalOnly does not
+	// already say it.
+	Offline bool
+	Note    string
+	// Switcher is the session switcher (switcher.go), the page's last row:
+	// below the composer — or below the key bar where there is no composer —
+	// spanning the screen, so the operator switches sessions without going
+	// back to the Rendered view. Its pin toggle is the page's pin: a window
+	// with no rendered view, whose only page this is, is pinned here too. It
+	// is drawn whether or not the composer can send. nil: none (no agent
+	// store, or the list could not be read).
+	Switcher *Switcher
+	// StepUp, when set, puts live keys behind a FRESH sign-in
+	// (internal/stepup): a mirrored session. The page attaches with live keys
+	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
+	// first key pressed. nil = live keys at once (an agent pod's terminal).
 	StepUp *StepUpView
+	// StepUpAttach, with StepUp, gates the WHOLE attach, not only live keys: a
+	// TEAM agent's terminal, which only an operator or a manager of its team
+	// with a fresh sign-in opens (internal/api teamAgentTerminal). On a stale
+	// sign-in the page attaches nothing and says so; Reconnect asks "Confirm
+	// it's you" and attaches once confirmed.
+	StepUpAttach bool
 	// Composer, when set, draws the message composer under the terminal: a
 	// mirrored session of an -interactive host (mirror_compose.go). It needs
 	// StepUp — a send refused as stale asks through the same dialog. nil = no
@@ -155,26 +207,28 @@ const (
 	ScrollRefusedNote = "The host refused the scroll. Drag again to retry."
 )
 
-// The Live keys switch's words, and the status line's. Exported so a test pins
-// the page against the same strings rather than a copy of them.
+// The status line's words. Exported so a test pins the page against the same
+// strings rather than a copy of them.
 const (
-	LiveKeysOff = "Live keys off"
-	LiveKeysOn  = "Live keys on"
-	// StatusConnected is the status while live keys are off. It says nothing
-	// about sending: the composer can send either way.
+	// StatusConnected is the status of an attach whose keys go straight into
+	// the session — LIVE KEYS ARE ALWAYS ON, so this is the ordinary state.
 	StatusConnected = "Connected"
-	StatusLiveKeys  = "Connected · live keys"
-	liveKeysTitle   = "Live keys: send your keystrokes and the quick keys straight into the session"
+	// StatusConfirmToType is a mirrored session's attach while the sign-in is
+	// not fresh: the first key pressed asks "Confirm it's you".
+	StatusConfirmToType = "Connected · confirm it's you to type"
+	// TerminalConfirmToOpen is a StepUpAttach terminal's line on a stale
+	// sign-in: nothing is attached until it is confirmed.
+	TerminalConfirmToOpen = "Opening this terminal needs a recent sign-in: tap Reconnect, then confirm it's you."
+	// StatusNoKeys is a host that takes no keys (it did not advertise
+	// -interactive), in plain words: no flag, no "host" (the operator rule).
+	// It never says "read-only" or "view-only": that explanation is the
+	// composer's own note (MirrorReadOnlyNote), said once.
+	StatusNoKeys = "Connected · typing is off"
+	// StatusReconnecting is a socket that closed and is coming back by itself.
+	StatusReconnecting = "Disconnected · reconnecting…"
+	// liveKeysTitle is the key bar's tooltip where no InteractiveNote says more.
+	liveKeysTitle = "Your keystrokes and the quick keys go straight into the session"
 )
-
-// termModeDisplay is the switch's display utility: gone when the far side is
-// read-only-only.
-func termModeDisplay(readOnlyOnly bool) string {
-	if readOnlyOnly {
-		return "hidden"
-	}
-	return "inline-flex"
-}
 
 // AgentTerminalPath is the terminal page of an agent.
 func AgentTerminalPath(name string) string { return "/agents/" + url.PathEscape(name) + "/terminal" }
@@ -192,18 +246,35 @@ func AgentSendPath(name string) string { return "/agents/" + url.PathEscape(name
 // else is the chat page.
 const AgentSendFromTerminal = "terminal"
 
-// AgentTerminalPage is a full-height document: a header with the Live keys
-// switch, the terminal, the quick-key bar and — for a mirrored session that can
-// be sent to — the message composer.
+// AgentTerminalPage is a full-height document: a header, the terminal, the
+// quick-key bar, the message composer (when there is one) and the session
+// switcher.
 //
-// 🔴 THE PAGE NEVER CALLS ITSELF "READ-ONLY". It used to: the switch read
-// "Read-only" and the status "Connected · read-only" whenever live keys were
-// off — while the composer under the terminal sends messages without the
-// switch, so the label told a person they could not send when they could. What
-// the switch gates is LIVE KEYS (keystrokes and the quick-key bar typed
-// straight into the session), and it says exactly that. A host that genuinely
-// cannot be sent to says so ONCE, in its composer's disabled note
-// (MirrorReadOnlyNote).
+// 🔴 THE SWITCHER IS SERVER-RENDERED AT A FIXED HEIGHT, BEFORE THE TERMINAL'S
+// SCRIPT, so the terminal's first measure of its box (agentTerminalScript's
+// proposed()) is already the box with the bar's room taken: its arrival, its
+// pending-until-whole visibility and a view switch in it change no layout,
+// and so send no resize. (And no size the page could send shrinks the far
+// side's window anyway: internal/termsize.)
+//
+// 🔴 LIVE KEYS ARE ALWAYS ON; THERE IS NO SWITCH (operator ask: "make live
+// terminal keys always enabled and hide the button for it"). Keystrokes and the
+// quick keys go straight into the session. ALWAYS-ON BYPASSES NO GATE:
+//   - a mirrored session's live keys still need a FRESH sign-in
+//     (internal/stepup). The page attaches with them when it believes the
+//     sign-in is fresh; otherwise it attaches without and the first key
+//     pressed asks "Confirm it's you" (passkey or password). The server
+//     refuses an interactive attach on a stale sign-in whatever the page does;
+//   - a host that did not advertise -interactive takes no keys: they are drawn
+//     disabled (ReadOnlyOnly), and the hub refuses an interactive attach to it.
+//
+// A terminal hidden behind the other view (view_swap.go) keeps its attach as
+// it is — its frame is inert there, so nothing can type into it — rather than
+// re-attaching twice on every swap.
+//
+// 🔴 THE PAGE NEVER CALLS ITSELF "READ-ONLY" — the composer under the terminal
+// sends whatever the keys can do. A host that genuinely cannot be sent to says
+// so ONCE, in its composer's disabled note (MirrorReadOnlyNote).
 //
 // 🔴 IT IS ITS OWN DOCUMENT, NOT A PANEL OF THE AGENT PAGE. The agent page is
 // hx-boost'ed and its chat script tears down and re-creates its socket on
@@ -213,28 +284,17 @@ const AgentSendFromTerminal = "terminal"
 // switch keeps that: it opens this page in a FRAME over the agent page — its
 // own document still — rather than in the agent page's body (view_swap.go).
 //
-// ⚠ LIVE KEYS OFF — A READ-ONLY ATTACH — IS THE STATE THE PAGE OPENS IN, AND
-// THE SERVER AGREES INDEPENDENTLY: the socket is opened with mode=ro until the
-// switch is flipped,
-// and the server attaches read-only for anything but mode=rw. (The one
-// exception is a mirrored host whose Interactive choice this browser session
-// remembers while its sign-in is still fresh — and the server re-checks that.)
+// ⚠ THE SERVER DECIDES INDEPENDENTLY: it attaches read-only for anything but
+// mode=rw, and refuses mode=rw where the gates above say no.
 //
 // 🔴 A WIDER FAR SIDE IS SCROLLED, NOT SQUEEZED (internal/termsize). When the
 // session's window is wider (or taller) than this page, the far side keeps its
 // size and says so in-band; the page renders that size inside #term-scroll,
 // which scrolls both ways and can be pinch-zoomed, and offers "Fit width".
 func AgentTerminalPage(v AgentTerminalView) g.Node {
-	// The page's name as a reader sees it (textplain): its <title>, its header.
-	// 🔴 PLAINED EXACTLY ONCE PER SINK. mirrorTerminalTitle (→ mirrorEntryTitle)
-	// applies the rule itself, so it takes the RAW name; handing it `title` ran
-	// the rule twice, which is not idempotent (`\*\*x\*\*` → "**x**" → "x"),
-	// and the tab and the header disagreed. TestTheTerminalTitleAndHeadingAgree.
-	raw := displayOr(v.DisplayName, v.Name)
-	title := plainOr(v.DisplayName, v.Name)
 	back := v.BackHref
 	if back == "" {
-		back = "/agents/" + url.PathEscape(v.Name)
+		back = AgentSessionHref(v.Name, 0)
 	}
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
@@ -243,22 +303,29 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
-				TitleEl(g.Text("Terminal · "+mirrorQualified(title, v.TitleQualifier)+" · muster")),
+				docHead(v.Nav.Feat.Brand),
+				TitleEl(g.Text(terminalDocTitle(v))),
+				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),
 				Script(Src(xtermFitJS)),
+				overlayNavHead(),
 				faroHead(),
 			),
 			Body(
 				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
+				// The navigation: position:fixed (no room taken in the column,
+				// so the terminal keeps its size), an overlay at every width.
+				overlayNav(v.Nav, ""),
 				Header(
 					// It WRAPS: with the view switch beside Fit width and the
 					// Interactive switch, a phone's width does not hold them all
 					// on one line, and a header that cannot wrap pushes the
 					// document sideways instead.
 					Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-2 py-1.5"),
+					// Polled: nothing else on a Terminal view refreshes the badge.
+					overlayNavButton(v.Switcher, true),
 					A(
 						ID("term-back"),
 						Href(back),
@@ -267,14 +334,23 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
-						Class("min-w-[6rem] flex-1"),
-						H1(Class("truncate text-sm font-semibold"),
-							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
-							// A mirrored entry: its label with the raw session name
-							// beside it, and/or its qualifier — drawn like its card.
-							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
-							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
-						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
+						// relative: a restore's Updating… chip (restore.go) sits at
+						// the right of the status line, taking none of its width.
+						Class("relative min-w-[6rem] flex-1"),
+						// The title, then the viewer's tags on the session
+						// (sessionTagsHead), on one line.
+						Div(Class("flex min-w-0 items-center gap-1.5"),
+							terminalTitle(v),
+							sessionTagsHeadNode(v.TagTarget, v.Tags)),
+						// The status line; below `sm` the Preview button is at its
+						// end (plugin_chip.go), so the title keeps its width.
+						Div(Class("flex min-w-0 items-center gap-2"),
+							P(ID("term-status"), Class("min-w-0 flex-1 truncate text-xs text-muted"), g.Attr("aria-live", "polite"),
+								// What typing here really reaches (InteractiveNote).
+								g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),
+								g.Text("Not connected")),
+							previewButtonSlot(v.Plugins, PreviewInRow)),
+						updatingChip("term-updating", "bottom-0 right-0 z-10"),
 					),
 					// Fit width: shown only while the far side is wider than this
 					// page. It scales the VIEW (the far side's size is untouched).
@@ -287,33 +363,24 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
-					// The switch. aria-checked is the LIVE-KEYS state, so
-					// "false" — keys off, a read-only attach — is what the page
-					// opens with. Its label names what it gates, never "read-only":
-					// the composer sends with it off (see AgentTerminalPage).
-					Button(
-						ID("term-mode"),
-						Type("button"),
-						g.Attr("role", "switch"),
-						g.Attr("aria-checked", "false"),
-						g.Attr("aria-label", "Live keys: type keystrokes and the quick keys straight into the session"),
-						g.If(v.Unavailable != "", g.Attr("disabled", "")),
-						// ⚠ The `hidden` CLASS, not the attribute: an author display
-						// utility (inline-flex) beats the UA's [hidden] rule.
-						g.If(v.ReadOnlyOnly, g.Attr("hidden", "")),
-						g.Attr("title", displayOr(v.InteractiveNote, liveKeysTitle)),
-						g.If(v.InteractiveNote != "", g.Attr("data-interactive-note", v.InteractiveNote)),
-						Class(termModeDisplay(v.ReadOnlyOnly)+" press min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
-						Span(ID("term-mode-label"), g.Text(LiveKeysOff)),
-					),
+					// The window's Preview button, while it has something to
+					// preview (plugin_chip.go).
+					previewButtonSlot(v.Plugins, PreviewInHeader),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
+				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
+				liveCopyBanner("term-live-copy", v.LiveCopy),
+				mirrorHostBanner("term-host-note", v.Offline, v.Note),
+				// The Preview button's panel, closed (plugin_chip.go).
+				previewPanel(v.Plugins),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),
 					g.If(v.Unavailable == "", g.Attr("hidden", "")),
 					Class("border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words"),
 					Span(ID("term-error-text"), g.Text(v.Unavailable)),
+					// The exact words of a refusal, behind an ⓘ (hostDetailSlot).
+					g.If(v.BadgeHost != "", hostDetailSlot("term-error-info", v.Nav.Feat.Setup)),
 					Button(
 						ID("term-reconnect"),
 						Type("button"),
@@ -339,8 +406,10 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.Attr("data-agent", v.Name),
 								g.If(v.WSPath != "", g.Attr("data-ws", v.WSPath)),
 								g.If(v.Unavailable != "", g.Attr("data-unavailable", "")),
+								g.If(v.ReadOnlyOnly, g.Attr("data-keys-off", "")),
 								g.Attr("data-size-osc", strconv.Itoa(termsize.ReportOSC)),
 								stepUpAttrs(v.StepUp),
+								stepUpAttachAttrs(v),
 								g.If(v.ScrollForm != "", g.Group([]g.Node{
 									g.Attr("data-scroll", MirrorTerminalScrollPath),
 									g.Attr("data-scroll-form", v.ScrollForm),
@@ -360,54 +429,186 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Text(ScrollGaveUpNote),
 					)),
 				),
-				quickKeyBar(v.Composer == nil),
-				terminalComposer(v.Composer),
+				quickKeyBar(v.Composer == nil && v.Switcher == nil, displayOr(v.InteractiveNote, liveKeysTitle)),
+				// 🔴 NO SCRIPT TAG BEFORE THE COMPOSER. The key bar sits above
+				// the composer in a column whose terminal takes the rest, so
+				// the composer's arrival moves the bar up by its height. A
+				// <script src> between them is parser-blocking: while its file
+				// is fetched (a first visit) Chromium paints the page without
+				// the composer, the bar at the bottom, and the composer then
+				// pushes it up — measured as a 0.01259 shift of #term-keys
+				// opening the terminal in its frame at 390px (cls.spec).
+				// TestTheViewPagesPaintWholeBeforeAnyScript pins the order.
+				terminalComposer(v.Composer, v.Switcher, v.Nav.Feat.Setup),
+				// No composer (an offline host): the bar is the column's foot on
+				// its own.
+				g.If(v.Composer == nil, terminalSwitcher(v.Switcher)),
+				floatingMenuScript(),
 				confirmDialog(v.StepUp),
 				g.If(v.StepUp != nil, stepUpScript()),
 				agentTerminalScript(),
 				g.If(v.Composer != nil, mirrorComposerScript()),
+				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),
 		),
 	)
 }
 
-// terminalComposer is the page's composer, nothing for nil.
-func terminalComposer(c *MirrorComposerView) g.Node {
+// terminalOnlyLabel leads the Terminal view's terminal-only line.
+const terminalOnlyLabel = "Terminal only."
+
+// terminalOnlyLine is the Terminal view's one line about why the session has
+// no Rendered view: in the document from the first paint (no layout shift),
+// above the terminal, wrapping rather than widening a phone's page.
+func terminalOnlyLine(reason string) g.Node {
+	return P(
+		ID("term-only"),
+		g.Attr("data-terminal-only", ""),
+		Class("border-b border-line bg-s1 px-3 py-1.5 text-xs text-fg2 break-words"),
+		Span(Class("font-semibold text-fg"), g.Text(terminalOnlyLabel)),
+		g.Text(" "),
+		Span(g.Attr("data-terminal-only-reason", ""), g.Text(reason)),
+	)
+}
+
+// terminalComposer is the page's composer with the session switcher as its
+// last row (s may be nil: none), as the Rendered view's composer draws it —
+// in flow here, not Pinned; nothing for nil. admin is the viewer's
+// (ComposerView.Admin).
+func terminalComposer(c *MirrorComposerView, s *Switcher, admin bool) g.Node {
 	if c == nil {
 		return nil
 	}
-	return mirrorComposer(*c)
+	v := *c
+	v.Switcher, v.Admin = s, admin
+	return mirrorComposer(v)
 }
 
-// quickKeyBar renders QuickKeys as a two-row grid that fits a phone's width
-// without scrolling. The buttons start DISABLED: the page opens with live keys
-// off.
+// terminalSwitcher is the session switcher at the foot of a Terminal view that
+// draws no composer: a box of exactly the bar's room (switcherRoom), in the
+// column from its first byte, holding the absolutely placed bar. Nothing for
+// nil.
+func terminalSwitcher(s *Switcher) g.Node {
+	if s == nil {
+		return nil
+	}
+	return Div(Class("relative flex-none "+switcherRoom(true)), switcherRoomMark(false), switcherBar(s, true))
+}
+
+// quickKeysPrimaryOrder is THE ONE LIST of the bar's large keys, by QuickKey
+// ID, left to right (operator ask: "show the up and down arrow keys and the
+// return button. As large key buttons, and then collapse the rest into a three
+// dots button context menu"): what moving through and answering a TUI's
+// choices takes. Every other QuickKey is in the ⋯ menu (quickKeysSplit).
+var quickKeysPrimaryOrder = []string{"up", "down", "enter"}
+
+// quickKeysSplit is QuickKeys split into the bar's large keys (in
+// quickKeysPrimaryOrder) and the ⋯ menu's (every OTHER key, in QuickKeys'
+// order). 🔴 THE MENU IS THE COMPLEMENT, NOT A SECOND LIST: a key is in the menu
+// unless it is drawn large, so no key can vanish from both. An ID in
+// quickKeysPrimaryOrder that QuickKeys lacks names no key, and so draws
+// nothing and hides nothing.
+func quickKeysSplit() (large, menu []QuickKey) {
+	byID := map[string]QuickKey{}
+	for _, k := range QuickKeys {
+		byID[k.ID] = k
+	}
+	drawn := map[string]bool{}
+	for _, id := range quickKeysPrimaryOrder {
+		if k, ok := byID[id]; ok && !drawn[id] {
+			large = append(large, k)
+			drawn[id] = true
+		}
+	}
+	for _, k := range QuickKeys {
+		if !drawn[k.ID] {
+			menu = append(menu, k)
+		}
+	}
+	return large, menu
+}
+
+// quickKeysMenuID is the "⋯" menu's id (its trigger's popovertarget).
+const quickKeysMenuID = "term-keys-menu"
+
+// quickKeyBar renders the quick keys: quickKeysPrimaryOrder (↑ ↓ ⏎) as large
+// buttons, and a "⋯" button whose floating menu (floatingMenuScript, placed on
+// the roomier side of it) holds every other key, in QuickKeys' order. Every
+// key — large or in the menu — is a [data-key] button carrying its bytes
+// (data-seq) inside #term-keys, so the page's script wires, enables and
+// disables all of them alike. The buttons start DISABLED, and so does the ⋯,
+// until the page's script has a terminal to type into: live keys are always
+// on, but a page whose script did not run has nothing to send them with.
+// title is the bar's tooltip (InteractiveNote, where there is one).
+//
+// FOCUS IS LEFT AS THE OLD BAR LEFT IT: a key is a plain button that takes
+// the tap (no pointerdown preventDefault), exactly as before; nothing here
+// changes what a tap does to the terminal's focus or a soft keyboard.
 //
 // last says the bar is the bottom of the page, and so carries the safe-area
-// inset; when a composer follows, the composer carries it instead.
-func quickKeyBar(last bool) g.Node {
+// inset; when a composer or the session switcher follows, the last of them
+// carries it instead.
+func quickKeyBar(last bool, title string) g.Node {
 	pad := "pb-2"
 	if last {
 		pad = "pb-[max(0.5rem,env(safe-area-inset-bottom))]"
 	}
-	keys := make([]g.Node, 0, len(QuickKeys))
-	for _, k := range QuickKeys {
-		keys = append(keys, Button(
-			Type("button"),
-			g.Attr("data-key", k.ID),
-			g.Attr("data-seq", hex.EncodeToString([]byte(k.Seq))),
-			g.Attr("aria-label", k.Aria),
-			g.Attr("disabled", ""),
-			Class("press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"),
-			g.Text(k.Label),
-		))
+	largeKeys, menuKeys := quickKeysSplit()
+	var big, rest []g.Node
+	for _, k := range largeKeys {
+		big = append(big, quickKeyButton(k, true))
+	}
+	for _, k := range menuKeys {
+		rest = append(rest, quickKeyButton(k, false))
 	}
 	return Nav(
 		ID("term-keys"),
 		g.Attr("aria-label", "Terminal keys"),
-		Class("grid grid-cols-6 gap-1 border-t border-line bg-bg px-2 pt-2 "+pad),
-		g.Group(keys),
+		g.Attr("title", title),
+		Class("flex items-stretch gap-2 border-t border-line bg-bg px-2 pt-2 "+pad),
+		g.Group(big),
+		Button(
+			Type("button"),
+			ID("term-keys-more"),
+			g.Attr("aria-label", "More keys"),
+			g.Attr("title", "More keys"),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("aria-expanded", "false"),
+			g.Attr("popovertarget", quickKeysMenuID),
+			g.Attr("disabled", ""),
+			Class("press inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-s2 text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:bg-s3 disabled:opacity-40"),
+			g.Raw(`<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
+		),
+		Div(
+			ID(quickKeysMenuID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "menu"),
+			g.Attr("aria-label", "More keys"),
+			g.Attr("data-floating-menu", ""),
+			Class("invisible hidden [&:popover-open]:grid m-0 w-64 grid-cols-3 gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+			g.Group(rest),
+		),
+	)
+}
+
+// quickKeyButton is one key: large (one of quickKeysPrimaryOrder) or a cell of the
+// ⋯ menu. Both send data-seq, through the same click handler.
+func quickKeyButton(k QuickKey, large bool) g.Node {
+	cls := "press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"
+	if large {
+		cls = "press inline-flex h-14 min-w-[44px] flex-1 items-center justify-center rounded-lg bg-accent/15 font-mono text-2xl font-bold text-fg ring-1 ring-inset ring-accent/50 transition hover:bg-accent/25 disabled:opacity-40"
+	}
+	return Button(
+		Type("button"),
+		g.Attr("data-key", k.ID),
+		g.Attr("data-seq", hex.EncodeToString([]byte(k.Seq))),
+		g.Attr("aria-label", k.Aria),
+		g.Attr("title", k.Aria),
+		g.If(!large, g.Attr("role", "menuitem")),
+		g.Attr("disabled", ""),
+		Class(cls),
+		g.Text(k.Label),
 	)
 }
 
@@ -439,18 +640,67 @@ func agentTerminalScript() g.Node {
     if (e) { e.hidden = false; document.getElementById('term-error-text').textContent = 'The terminal emulator did not load.'; }
     return;
   }
+` + liveRetryJS + `
   var agent = host.getAttribute('data-agent');
   var unavailable = host.hasAttribute('data-unavailable');
+  // A host that takes no keys (ReadOnlyOnly): the one case live keys are off.
+  var keysOff = host.hasAttribute('data-keys-off');
   var scrollEl = document.getElementById('term-scroll');
   var sizer = document.getElementById('term-sizer');
   var statusEl = document.getElementById('term-status');
   var errEl = document.getElementById('term-error');
   var errText = document.getElementById('term-error-text');
   var reconnectBtn = document.getElementById('term-reconnect');
-  var modeBtn = document.getElementById('term-mode');
-  var modeLabel = document.getElementById('term-mode-label');
   var fitwBtn = document.getElementById('term-fitw');
   var keys = document.querySelectorAll('#term-keys [data-key]');
+  var moreBtn = document.getElementById('term-keys-more');
+  var keysMenu = document.getElementById('` + quickKeysMenuID + `');
+  // 🔴 NO POPOVER API (iOS Safari < 17): the ⋯'s popovertarget does nothing
+  // there, and the nine menu keys — ^C among them — would be unreachable. So
+  // without HTMLElement.prototype.togglePopover the ⋯ toggles the menu itself:
+  // shown by class, marked data-menu-open so floatingMenuScript places it by
+  // the same rule (its trigger is data-menu-trigger), above the page by
+  // z-index (there is no top layer), closed by a tap outside it or Escape.
+  var noPopover = !!keysMenu && typeof HTMLElement.prototype.togglePopover !== 'function';
+  function fallbackOpen() { return !!keysMenu && keysMenu.hasAttribute('data-menu-open'); }
+  function setFallback(open) {
+    if (open) {
+      // Out of the flow BEFORE it is shown: in the bar's flex row it would
+      // push the ⋯ aside, and place() measures the ⋯ where it is then.
+      keysMenu.style.position = 'fixed';
+      keysMenu.style.top = '0';
+      keysMenu.style.left = '0';
+      keysMenu.setAttribute('data-menu-open', '');
+      keysMenu.classList.remove('hidden');
+      keysMenu.classList.add('grid');
+      if (window.__musterPlaceMenu) window.__musterPlaceMenu(keysMenu);
+      else keysMenu.style.visibility = 'visible';
+      keysMenu.style.zIndex = '60';
+    } else {
+      keysMenu.removeAttribute('data-menu-open');
+      keysMenu.classList.add('hidden');
+      keysMenu.classList.remove('grid');
+      keysMenu.removeAttribute('style');
+    }
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (noPopover) {
+    moreBtn.removeAttribute('popovertarget');
+    keysMenu.removeAttribute('popover');
+    moreBtn.setAttribute('data-menu-trigger', keysMenu.id);
+    moreBtn.addEventListener('click', function () { setFallback(!fallbackOpen()); });
+    document.addEventListener('pointerdown', function (ev) {
+      if (fallbackOpen() && !keysMenu.contains(ev.target) && !moreBtn.contains(ev.target)) setFallback(false);
+    }, true);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && fallbackOpen()) setFallback(false);
+    });
+  }
+  function closeKeysMenu() {
+    if (!keysMenu) return;
+    if (noPopover) { if (fallbackOpen()) setFallback(false); return; }
+    try { if (keysMenu.matches(':popover-open')) keysMenu.hidePopover(); } catch (e) {}
+  }
 
   var term = new Terminal({
     fontSize: 13,
@@ -463,9 +713,18 @@ func agentTerminalScript() g.Node {
   term.loadAddon(fit);
   term.open(host);
 
+  // mode is the CURRENT attach's: rw (live keys) or ro. Live keys are always
+  // on, so ro is only ever a gate's answer: a host that takes no keys, a
+  // sign-in that is not fresh, or a terminal hidden behind the other view.
   var mode = 'ro';
   var ws = null;
   var enc = new TextEncoder();
+  // Liveness and reconnection (live.go): when the socket last spoke, whether
+  // it has sent a heartbeat (only then can it be judged stale), when it was
+  // made, the failed attempts in a row, the pending retry, and whether the
+  // far side REFUSED or ended the attach (an error or exit frame) — which is
+  // retried at a wake, or by the Reconnect button, never in a loop.
+  var lastAt = 0, beat = false, madeAt = 0, retry = 0, retryTimer = 0, refusedEnd = false, left = false;
 
   // --- size -------------------------------------------------------------------
   var oscPrefix = '\x1b]' + host.getAttribute('data-size-osc') + ';';
@@ -476,7 +735,10 @@ func agentTerminalScript() g.Node {
 
   function proposed() {
     // Measured with #term back at the container's size: the fit is a property
-    // of the page, not of what the terminal currently draws.
+    // of the page, not of what the terminal currently draws. (Collapsing the
+    // sizer clamps the scroll area's scrollTop: the page's own scroll.)
+    ownScroll();
+    keepTop = scrollEl.scrollTop;
     sizer.style.width = ''; sizer.style.height = '';
     host.style.width = ''; host.style.height = ''; host.style.transform = '';
     var p = null;
@@ -489,7 +751,35 @@ func agentTerminalScript() g.Node {
     lastSent = k;
     ws.send(JSON.stringify({ type: 'resize', cols: cols, rows: rows }));
   }
+  // 🔴 AN OVERFLOW VIEW IS HELD AT ITS BOTTOM (atBottom). A far side taller
+  // than the page has its prompt and status line — a TUI's live rows — at
+  // the bottom; drawn from the top they are off screen on every load (a pod's
+  // window, grown once to a full desktop height, stays that tall: termsize
+  // never shrinks it). So the view starts at its bottom and goes back there
+  // on every redraw — a relayout (the keyboard, the session switcher coming
+  // back), Fit width — UNLESS THE PERSON SCROLLED IT AWAY themselves (a pan, a
+  // wheel, drag-to-scroll's panArea): then it stays where they left it, until
+  // they scroll back to the bottom. Every scroll the page makes itself
+  // (proposed() collapsing the sizer, the pin below) lands inside ownScrollUntil
+  // and is not taken for the person's.
+  var atBottom = true, ownScrollUntil = 0, keepTop = 0;
+  function ownScroll() { ownScrollUntil = Date.now() + 150; }
+  scrollEl.addEventListener('scroll', function () {
+    if (!overflowing || Date.now() < ownScrollUntil) return;
+    atBottom = scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 2;
+    host.setAttribute('data-at-bottom', atBottom ? '1' : '0');
+  }, { passive: true });
+  // pinBottom puts a redrawn overflow view back: at its bottom, or where the
+  // person left it (keepTop, read before proposed() collapsed the sizer).
+  function pinBottom() {
+    ownScroll();
+    scrollEl.scrollTop = atBottom ? scrollEl.scrollHeight : keepTop;
+  }
   function showOverflow(on) {
+    // Entering overflow (the first layout, or a page that stopped covering the
+    // far side): from its bottom, whatever an earlier overflow was scrolled to.
+    if (on && !overflowing) atBottom = true;
+    host.setAttribute('data-at-bottom', atBottom ? '1' : '0');
     overflowing = on;
     fitwBtn.hidden = !on;
     fitwBtn.classList.toggle('inline-flex', on);
@@ -516,6 +806,7 @@ func agentTerminalScript() g.Node {
     sizer.style.height = Math.ceil(h * k) + 'px';
     fitwBtn.setAttribute('aria-pressed', fitWidth ? 'true' : 'false');
     fitwBtn.textContent = fitWidth ? 'Actual size' : 'Fit width';
+    pinBottom();
   }
   var layouts = 0;
   function layout() {
@@ -565,41 +856,100 @@ func agentTerminalScript() g.Node {
   var confirmPath = host.getAttribute('data-step-up');
   var stepUp = confirmPath ? window.musterStepUp : null;
   var justConfirmed = false;
-  var rememberKey = 'muster.interactive.' + (host.getAttribute('data-remember') || '');
+  // attachGated: the WHOLE attach needs a fresh sign-in (StepUpAttach, a team
+  // agent's terminal), not only live keys. attachWhy is its own sentence for
+  // the dialog (data-step-up-why): when this view is framed it asks through
+  // the top window's dialog, whose page sentence is about something else.
+  var attachGated = !!confirmPath && host.hasAttribute('data-step-up-attach');
+  var attachWhy = host.getAttribute('data-step-up-why') || '';
+  function gatedStale() { return attachGated && !(stepUp && stepUp.fresh()); }
+  // whyOn writes attachWhy as the gate sentence of the dialog that will ask:
+  // the top window's when this view is framed (stepUpScript's topStepUp),
+  // else this page's.
+  function whyOn() {
+    if (!attachWhy) return;
+    var d = document;
+    try { if (window.parent !== window && window.parent.musterStepUp && window.parent.musterStepUp.framedAsk === true) d = window.parent.document; } catch (e) {}
+    var el = d.getElementById('term-confirm-why');
+    if (el && el.firstChild) el.firstChild.nodeValue = attachWhy + ' ';
+  }
+  function askToOpen() {
+    if (!stepUp || (stepUp.asking && stepUp.asking())) return;
+    whyOn();
+    stepUp.ask('', function () { justConfirmed = true; clearError(); mode = 'rw'; applyMode(); connect('step_up'); });
+  }
+  // rwProbe: an interactive attach that never opened, while the page still
+  // believed its sign-in fresh. That is a refused upgrade (the step-up gate's
+  // 403, which a browser socket cannot read) OR a network that was not there
+  // (a phone waking up). A read-only attach tells them apart: if it opens, the
+  // network is fine, and one more interactive attach decides.
+  var rwProbe = 0;
   function fresh() { return !!stepUp && stepUp.fresh(); }
-  function remember(on) {
-    if (!confirmPath) return;
-    try { if (on) sessionStorage.setItem(rememberKey, '1'); else sessionStorage.removeItem(rememberKey); } catch (e) {}
-  }
-  function remembered() {
-    try { return sessionStorage.getItem(rememberKey) === '1'; } catch (e) { return false; }
-  }
+  // canType: may the page attach with live keys now, without asking?
+  function canType() { return !keysOff && (!confirmPath || fresh()); }
   // openConfirm asks "Confirm it's you" and, once confirmed (passkey or
   // password), attaches interactively — the action that was waiting on it.
+  //
+  // 🔴 ONE ASK PER CONFIRM. Every key the person presses on a stale attach
+  // comes here, and several can arrive before the modal takes the keyboard (a
+  // paste, key-bar taps, a held key): while the dialog is open (asking — the
+  // top window's, from the view switch's frame) another ask is not sent. The
+  // first one's done still attaches; a key after the dialog closed asks again.
   function openConfirm(why) {
     if (!stepUp) return;
+    if (stepUp.asking && stepUp.asking()) return;
     stepUp.ask(why, function () { justConfirmed = true; goInteractive(); });
   }
 
   function setStatus(t) { statusEl.textContent = t; }
-  function showError(msg, canReconnect) {
+  // statusFor is the status line of a ready attach in mode m.
+  function statusFor(m) {
+    if (m === 'rw') return ` + strconv.Quote(StatusConnected) + `;
+    if (keysOff) return ` + strconv.Quote(StatusNoKeys) + `;
+    if (confirmPath && !fresh()) return ` + strconv.Quote(StatusConfirmToType) + `;
+    return ` + strconv.Quote(StatusConnected) + `;
+  }
+  var errInfo = document.getElementById('term-error-info');` + hostDetailJS + `
+  function showError(msg, canReconnect, detail) {
     errText.textContent = msg;
+    setDetail(errInfo, detail || '');
     reconnectBtn.hidden = !canReconnect;
     errEl.hidden = false;
   }
-  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; }
+  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; setDetail(errInfo, ''); }
+  // applyMode: the keys are on wherever the host takes keys (live keys are
+  // always on) and there is a terminal to type into; what an attach without
+  // them does with a key is send()'s.
   function applyMode() {
-    var rw = mode === 'rw';
-    modeBtn.setAttribute('aria-checked', rw ? 'true' : 'false');
-    modeLabel.textContent = rw ? '` + LiveKeysOn + `' : '` + LiveKeysOff + `';
-    term.options.disableStdin = !rw;
-    for (var i = 0; i < keys.length; i++) { keys[i].disabled = !rw; }
+    var on = !keysOff && !unavailable;
+    term.options.disableStdin = !on;
+    for (var i = 0; i < keys.length; i++) { keys[i].disabled = !on; }
+    if (moreBtn) moreBtn.disabled = !on;
+    if (!on) closeKeysMenu();
   }
-  function send(data) {
-    // The page's half of read-only; the server drops input to a read-only
-    // terminal regardless.
-    if (mode !== 'rw' || !ws || ws.readyState !== 1) return;
-    ws.send(typeof data === 'string' ? enc.encode(data) : data);
+  // send takes input for the session; byUser says the person produced it (a
+  // key, a paste, a key-bar tap) — see userInput below.
+  function send(data, byUser) {
+    if (keysOff || unavailable) return;
+    if (mode === 'rw') {
+      if (ws && ws.readyState === 1) ws.send(typeof data === 'string' ? enc.encode(data) : data);
+      return;
+    }
+    // 🔴 INPUT NOBODY TYPED IS DROPPED, AS IT ALWAYS WAS. The terminal answers
+    // some of what the far side writes BY ITSELF — tmux asks a client's
+    // Device Attributes and cursor position as it attaches, and with focus
+    // reporting on, a focus change is reported — and xterm.js hands those
+    // answers to the same onData as a keystroke. On an attach without live
+    // keys they go nowhere (the server drops input to a read-only attach);
+    // they must not ask "Confirm it's you" or re-attach, or the dialog opens
+    // with nothing pressed, even in a background tab (live 0.95.0).
+    if (!byUser) return;
+    // 🔴 A KEY ON AN ATTACH WITHOUT LIVE KEYS ASKS FOR THEM, THROUGH THE SAME
+    // GATE: a sign-in that is not fresh asks "Confirm it's you" first. The key
+    // itself is not replayed — it was typed at a terminal that could not take
+    // it. (The server drops input to a read-only attach regardless.)
+    if (confirmPath && !fresh()) { openConfirm(''); return; }
+    goInteractive();
   }
   function hexBytes(h) {
     var out = new Uint8Array(h.length / 2);
@@ -607,9 +957,23 @@ func agentTerminalScript() g.Node {
     return out;
   }
 
-  function connect() {
-    if (ws) { ws.onclose = null; ws.onmessage = null; try { ws.close(); } catch (e) {} }
+  // drop detaches the current socket and closes it: its close is nobody's.
+  function drop() {
+    var old = ws;
+    ws = null;
+    if (!old) return;
+    old.onopen = null; old.onclose = null; old.onmessage = null;
+    try { old.close(); } catch (e) {}
+  }
+  // connect attaches in the current mode; why is the reconnect's reason
+  // (live.go), nothing for the page's first attach and a mode change.
+  function connect(why) {
+    clearTimeout(retryTimer); retryTimer = 0;
+    if (left) return;
+    // 🔴 ONE SOCKET: the one before is detached and closed first.
+    drop();
     clearError();
+    refusedEnd = false;
     // A new attach: the far side reports its size afresh (or not at all).
     remote = null;
     host.removeAttribute('data-remote');
@@ -622,86 +986,200 @@ func agentTerminalScript() g.Node {
       : '/agents/' + encodeURIComponent(agent) + '/terminal/ws?';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host +
       base + 'mode=' + mode + '&cols=' + term.cols + '&rows=' + term.rows;
+    // The open, measured (faro.go's musterOpen; absent while telemetry is
+    // off): its socket carries the open's trace context as ?tp=. A reconnect
+    // says so, and why.
+    var view = wsPath ? 'mirror_terminal' : 'agent_terminal';
+    var attrs = { mode: mode };
+    if (why) { attrs.reconnect = true; attrs.reconnect_reason = why; }
+    var opening = window.musterOpen ? window.musterOpen.begin(view, attrs) : null, live = null, endReason = '';
+    var tp = opening ? opening.tp() : '';
+    if (tp) url += '&tp=' + encodeURIComponent(tp);
     setStatus('Connecting…');
     var sock = new WebSocket(url);
     sock.binaryType = 'arraybuffer';
+    madeAt = lastAt = Date.now(); beat = false;
     var refused = false, opened = false;
-    sock.onopen = function () { opened = true; };
+    sock.onopen = function () { opened = true; lastAt = Date.now(); if (opening) opening.mark('stream_connected'); };
     sock.onmessage = function (ev) {
+      lastAt = Date.now();
       if (typeof ev.data === 'string') {
+        // A heartbeat says only that the socket is alive.
+        if (ev.data === ` + strconv.Quote(LivePingFrame) + `) { beat = true; return; }
         var m;
         try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.type === 'ready') {
+          if (opening) { opening.mark('first_output'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
+          caughtUp();
+          retry = 0;
+          clearError();
           justConfirmed = false;
-          setStatus(m.mode === 'rw' ? '` + StatusLiveKeys + `' : '` + StatusConnected + `');
+          setStatus(statusFor(m.mode));
+          if (m.mode === 'rw') rwProbe = 0;
+          // The network is fine (this read-only attach opened): one more
+          // interactive attach decides whether the sign-in is.
+          else if (rwProbe === 1 && canType()) { rwProbe = 2; goInteractive(); }
         } else if (m.type === 'error') {
-          refused = true;
-          showError(m.message, true);
+          endReason = m.reason || 'error';
+          // "muster is restarting": not a refusal — it comes back by itself.
+          if (m.reason !== 'shutdown') refused = true;
+          caughtUp();
+          showError(m.message, refused, m.detail);
         } else if (m.type === 'exit') {
+          endReason = 'exited';
           refused = true;
+          caughtUp();
           showError(m.message, true);
         }
         return;
       }
       var bytes = readReport(new Uint8Array(ev.data));
-      if (bytes.length) term.write(bytes);
+      if (bytes.length) { caughtUp(); term.write(bytes); }
     };
-    sock.onclose = function () {
+    sock.onclose = function (ev) {
       if (ws !== sock) return;
+      ws = null;
       setStatus('Disconnected');
-      // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
-      // browser socket cannot read. An interactive mirrored attach that never
-      // opened is therefore taken as "not fresh any more": back to keys off,
-      // and ask — unless it was JUST confirmed, when asking again would loop.
-      if (!opened && mode === 'rw' && confirmPath) {
-        var again = !justConfirmed;
-        if (stepUp) stepUp.stale();
+      // Why, reported (faro.go): the server's closed word, else the close
+      // code; before the first output (opening) or while live.
+      var o = opening || live, why = endReason || (!opened ? 'not_opened' : 'closed_' + (ev && ev.code));
+      if (opening) opening.end(why);
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, mode: mode });
+      opening = null;
+      if (left) return;
+      // A GATED ATTACH (a team agent's terminal) that never opened. A
+      // refused upgrade and a server or network that is not there look the
+      // same here, so it is read as the SIGN-IN only when the page already
+      // believes it stale, or it was the attach right after a confirm: then
+      // say so and wait for Reconnect, which asks. Believed fresh, it is the
+      // network or a restart: the ordinary retry with backoff below — never
+      // the mirrored read-only probe (a gated attach has no read-only form).
+      // The page's freshness runs out on its own clock, so a sign-in that
+      // really did expire is asked for on the first failure after that.
+      if (!opened && attachGated) {
+        var was = justConfirmed;
         justConfirmed = false;
-        mode = 'ro';
-        remember(false);
-        applyMode();
-        connect();
-        if (again) openConfirm('');
-        else showError('The interactive terminal could not be opened.', true);
+        if (was || !fresh()) {
+          if (stepUp) stepUp.stale();
+          refusedEnd = true;
+          showError(was ? 'The terminal could not be opened.' : ` + strconv.Quote(TerminalConfirmToOpen) + `, true);
+          return;
+        }
+        retryLater();
         return;
       }
-      if (!refused) showError('The terminal connection closed.', true);
+      // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
+      // browser socket cannot read: an interactive mirrored attach that never
+      // opened. Just confirmed — the gate said no to a fresh sign-in, and
+      // asking again would loop. Believed fresh the first time — maybe only
+      // the network (rwProbe). Otherwise the sign-in is not fresh any more:
+      // attach without live keys, and the next key pressed asks.
+      if (!opened && mode === 'rw' && confirmPath) {
+        var asked = justConfirmed;
+        justConfirmed = false;
+        mode = 'ro';
+        applyMode();
+        if (!asked && rwProbe === 0 && fresh()) { rwProbe = 1; }
+        else { rwProbe = 0; if (stepUp) stepUp.stale(); }
+        connect('step_up');
+        if (asked) showError('The interactive terminal could not be opened.', true);
+        return;
+      }
+      retryLater();
     };
+    // retryLater: the far side refused or ended the attach — say so, and
+    // offer Reconnect; a wake tries it again (the host may be back). Anything
+    // else (a network gone, a server restarting, a phone that slept) comes
+    // back by itself; the button is offered only once that keeps failing.
+    function retryLater() {
+      if (refused) { refusedEnd = true; return; }
+      retry++;
+      setStatus(` + strconv.Quote(StatusReconnecting) + `);
+      if (retry > ` + strconv.Itoa(LiveManualAfter) + `) showError('The terminal connection keeps closing. Still trying…', true);
+      if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
+    }
     ws = sock;
   }
 
   function goInteractive() {
     mode = 'rw';
-    remember(true);
     applyMode();
     connect();
   }
+  // wake (restore.go): a closed socket reconnects at once (a refused or
+  // ended one only on the page's showing or the network's return); an open
+  // one that has heard no heartbeat for staleMs is replaced; one still
+  // opening is left to finish unless it has been opening for that long too.
+  function wake(why, staleMs) {
+    if (unavailable || left) return;
+    var now = Date.now();
+    if (!ws || ws.readyState > 1) {
+      if (!liveCanRetry()) return;
+      if (refusedEnd) { if (why === 'visibility' || why === 'online') { retry = 0; connect(why); } return; }
+      if (why === 'tick' && retryTimer) return;
+      retry = 0;
+      connect(why === 'tick' ? 'retry' : why);
+      return;
+    }
+    if (ws.readyState === 0) { if (now - madeAt > staleMs) connect(why === 'tick' ? 'stale' : why); return; }
+    if (beat && now - lastAt > staleMs) connect(why === 'tick' ? 'stale' : why);
+  }
 
-  term.onData(function (d) { send(d); });
+  // userInput: the PERSON just made an input event — a key, text entered
+  // (input, beforeinput), text committed by an input method (compositionend:
+  // a phone keyboard's swipe or voice, a CJK IME), a paste — on the terminal.
+  // xterm.js types what such an event makes either from inside its own
+  // handler (keys, paste, plain input) or from a setTimeout(0) the handler
+  // queues (a committed composition; text from a keyCode-229 key): onData
+  // then is the person's. Its answers to the far side's queries come from
+  // parsing output, in tasks of their own, and are not. A structural signal
+  // (the event and its isTrusted), not a guess from the bytes: a keystroke
+  // and an answer can be the very same bytes.
+  //
+  // 🔴 CLEARED TWO TASKS LATER, NOT ONE. These listeners run in the CAPTURE
+  // phase (xterm stops keydown/keypress from propagating), so before
+  // xterm's own handler: a clear queued here as setTimeout(0) would run
+  // BEFORE the timer xterm queues in the same event, and a committed
+  // composition was dropped as nobody's (audit #312). The clear is queued
+  // from a first timer, so it runs after every zero-delay timer the event's
+  // handlers queued.
+  var userInput = false, userInputTimer = 0;
+  ['keydown', 'keypress', 'beforeinput', 'input', 'compositionend', 'paste'].forEach(function (type) {
+    host.addEventListener(type, function (ev) {
+      if (!ev.isTrusted) return;
+      userInput = true;
+      clearTimeout(userInputTimer);
+      userInputTimer = setTimeout(function () {
+        userInputTimer = setTimeout(function () { userInput = false; }, 0);
+      }, 0);
+    }, true);
+  });
+  term.onData(function (d) { send(d, userInput); });
   term.onBinary(function (d) {
     var b = new Uint8Array(d.length);
     for (var i = 0; i < d.length; i++) { b[i] = d.charCodeAt(i) & 255; }
-    send(b);
+    send(b, userInput);
   });
   for (var i = 0; i < keys.length; i++) {
     keys[i].addEventListener('click', function (ev) {
-      send(hexBytes(ev.currentTarget.getAttribute('data-seq')));
+      var b = ev.currentTarget;
+      // A tap on the key bar is the person's, whatever it types.
+      send(hexBytes(b.getAttribute('data-seq')), true);
+      // A key picked from the ⋯ menu closes it, as a context menu does.
+      if (keysMenu && keysMenu.contains(b)) closeKeysMenu();
     });
   }
-  modeBtn.addEventListener('click', function () {
-    if (mode === 'rw') {
-      mode = 'ro';
-      remember(false);
-      applyMode();
-      connect();
-      return;
-    }
-    if (confirmPath && !fresh()) { openConfirm(''); return; }
-    goInteractive();
+  // Reconnect: the fallback, offered once the far side refused or ended the
+  // attach, or reconnecting by itself keeps failing.
+  reconnectBtn.addEventListener('click', function () {
+    retry = 0;
+    if (gatedStale()) { askToOpen(); return; }
+    if (mode === 'ro' && canType()) mode = 'rw';
+    connect('manual');
   });
-  reconnectBtn.addEventListener('click', connect);
   fitwBtn.addEventListener('click', function () {
     fitWidth = !fitWidth;
+    keepTop = scrollEl.scrollTop;
     if (overflowing) drawOverflow();
   });
 
@@ -868,12 +1346,41 @@ func agentTerminalScript() g.Node {
     // left to the browser (touch-action pan-x: #term-scroll pans as before);
     // a vertical one is ours, and never reaches xterm, whose own touch scroll
     // has nothing real to show. Two fingers are a pinch, never a scroll.
-    var start = null, axis = '', lastY = 0;
+    //
+    // 🔴 A TOUCH'S EVENTS ALL GO TO THE ELEMENT IT STARTED ON, even once that
+    // element has left the page. Here that is a span of xterm's rows, which
+    // xterm replaces whenever it redraws — the host's scrolled view arriving, a
+    // re-attach painting the screen. A node out of the page has no ancestors,
+    // so its touchmoves never passed scrollEl's capture listener and the REST
+    // OF THE DRAG WAS LOST (measured: a drag that began as a re-attach redrew
+    // asked for nothing). So the touch's own target is listened on too. A move
+    // on a target still in the page is not counted twice: scrollEl's capture
+    // listener sees it first and, once the axis is 'y', stops it there, so it
+    // never reaches the target. One it lets through (under the slop, or
+    // sideways) adds no lines either way.
+    var start = null, axis = '', lastY = 0, held = null;
+    function release() {
+      if (!held) return;
+      held.removeEventListener('touchmove', onMove);
+      held.removeEventListener('touchend', onEnd);
+      held.removeEventListener('touchcancel', onEnd);
+      held = null;
+    }
+    function hold(el) {
+      release();
+      if (!el || el === scrollEl) return;
+      held = el;
+      el.addEventListener('touchmove', onMove, { passive: true });
+      el.addEventListener('touchend', onEnd, { passive: true });
+      el.addEventListener('touchcancel', onEnd, { passive: true });
+    }
     function onStart(ev) {
       start = null;
+      release();
       if (ev.touches.length !== 1) return;
       start = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
       axis = '';
+      hold(ev.target);
     }
     function onMove(ev) {
       if (!start) return;
@@ -891,7 +1398,7 @@ func agentTerminalScript() g.Node {
       lastY = t.clientY;
       if (d) addPx(d);
     }
-    function onEnd() { start = null; }
+    function onEnd() { start = null; release(); }
     // The wheel: vertical only (a sideways one pans #term-scroll as before).
     function onWheel(ev) {
       if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
@@ -910,6 +1417,7 @@ func agentTerminalScript() g.Node {
       scrollEl.removeEventListener('touchend', onEnd, true);
       scrollEl.removeEventListener('touchcancel', onEnd, true);
       scrollEl.removeEventListener('wheel', onWheel, true);
+      release();
       touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
       host.removeAttribute('data-scroll-on');
       showNote('');
@@ -932,38 +1440,107 @@ func agentTerminalScript() g.Node {
     reconnectBtn.addEventListener('click', wire);
   })();
 
-  // 🟢 OFF SCREEN, NO LIVE KEYS (view_swap.go): a terminal hidden behind the
-  // other view while typing straight into the session drops to read-only —
-  // one re-attach — and takes live keys back only when it is on screen again,
-  // through the same freshness check the switch uses.
-  var rwWhenShown = false;
-  window.addEventListener('muster:view-hidden', function () {
-    if (mode !== 'rw') return;
-    rwWhenShown = true;
-    mode = 'ro';
-    applyMode();
-    connect();
-  });
-  window.addEventListener('muster:view-shown', function () {
-    if (!rwWhenShown) return;
-    rwWhenShown = false;
-    if (confirmPath && !fresh()) { openConfirm(''); return; }
-    goInteractive();
-  });
+  // ⚠ OFF SCREEN, THE ATTACH IS KEPT AS IT IS (view_swap.go: ONE stream per
+  // view for as long as the person stays on the window). A terminal behind
+  // the other view used to drop live keys — one re-attach going, one coming
+  // back — which, with live keys always on, would be two re-attaches on EVERY
+  // swap. Nothing can type into it there: the hidden frame is inert, so it
+  // takes no key, no tap and no focus until it is shown again.
 
   // Leaving the page ends the stream now rather than when the socket times out.
-  window.addEventListener('pagehide', function () { if (ws) { ws.onclose = null; ws.close(); } });
+  window.addEventListener('pagehide', function () { left = true; clearTimeout(retryTimer); drop(); });
+  // Back and Forward (restore.go): a restored terminal attaches again — the
+  // far side redraws its screen on an attach — and is caught up at its first
+  // answer: ready, the first bytes, or a refusal.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  ` + restoreJoinJS(`{
+    show: function (why) {
+      if (unavailable) return null;
+      if (gatedStale()) { showError(` + strconv.Quote(TerminalConfirmToOpen) + `, true); return null; }
+      left = false; retry = 0;
+      if (mode === 'ro' && canType()) mode = 'rw';
+      return new Promise(function (resolve) { restoring = resolve; connect(why || 'pageshow'); });
+    },
+    wake: wake
+  }`) + `
 
-  if (confirmPath && remembered() && fresh()) mode = 'rw';
+  // 🔴 LIVE KEYS FROM THE START wherever a gate allows them: a host that
+  // takes keys, and — for a mirrored session — a sign-in the page believes
+  // fresh (the server re-checks it on the attach).
+  if (canType()) mode = 'rw';
   applyMode();
-  if (!unavailable) connect();
+  if (!unavailable) {
+    if (gatedStale()) showError(` + strconv.Quote(TerminalConfirmToOpen) + `, true);
+    else connect();
+  }
 })();
 `))
 }
 
+// terminalDocName is the terminal page's name in its <title>: a human name as
+// it is (no qualifier: that is its technical id), else the name with its
+// qualifier.
+// terminalNames is a Terminal page's name as a reader sees it (textplain):
+// raw, the name as written (for mirrorTerminalTitle); title, as its <title>
+// and header draw it; named, whether it is a human name.
+//
+// 🔴 PLAINED EXACTLY ONCE PER SINK. mirrorTerminalTitle (→ mirrorEntryTitle)
+// applies the rule itself, so it takes the RAW name; handing it `title` ran
+// the rule twice, which is not idempotent (`\*\*x\*\*` → "**x**" → "x"),
+// and the tab and the header disagreed. TestTheTerminalTitleAndHeadingAgree.
+//
+// A session with a HUMAN name (internal/sessionname) is titled by it, already
+// plained, with no qualifier or raw tmux name beside it: those are its
+// technical id, the title's tooltip.
+func terminalNames(v AgentTerminalView) (raw, title string, named bool) {
+	raw = displayOr(v.DisplayName, v.Name)
+	title = plainOr(v.DisplayName, v.Name)
+	named = v.SessionName.Human()
+	if named {
+		title = v.SessionName.Text
+	}
+	return raw, title, named
+}
+
+// terminalDocTitle is a Terminal page's <title>: "Terminal · <name> · muster".
+// The page and a rename's in-place answer (TerminalRenamed) both draw it.
+func terminalDocTitle(v AgentTerminalView) string {
+	_, title, named := terminalNames(v)
+	return "Terminal · " + terminalDocName(title, v.TitleQualifier, named) + " · muster"
+}
+
+// TermTitleID is a Terminal page's header title (terminalTitle): what a
+// rename's in-place answer swaps, and focuses (by script only: tabindex -1).
+const TermTitleID = "term-title"
+
+// terminalTitle is a Terminal page's header title: a human name, else the
+// entry's label and qualifier as its card draws them, else the name; then the
+// mirrored badge. extra is a rename's in-place answer's hx-swap-oob
+// (TerminalRenamed): the whole heading is swapped, so a name given or cleared
+// draws as a reload would.
+func terminalTitle(v AgentTerminalView, extra ...g.Node) g.Node {
+	raw, title, named := terminalNames(v)
+	return H1(ID(TermTitleID), g.Group(extra), g.Attr("tabindex", "-1"),
+		Class("min-w-0 flex-1 truncate text-sm font-semibold focus:outline-none"),
+		g.If(named, sessionNameTitle(v.SessionName, "")),
+		g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
+		// A mirrored entry: its label (the raw session name its tooltip),
+		// and/or its qualifier — drawn like its card.
+		g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
+		g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon))))
+}
+
+func terminalDocName(title, qualifier string, named bool) string {
+	if named {
+		return title
+	}
+	return mirrorQualified(title, qualifier)
+}
+
 // mirrorTerminalTitle is the terminal page's title for a mirrored entry, drawn
 // by the same mirrorEntryTitle as its card: the label with the raw session name
-// beside it when rawName is set, else the title alone — either with its
+// as its tooltip when rawName is set, else the title alone — either with its
 // qualifier.
 func mirrorTerminalTitle(title, rawName, qualifier string) g.Node {
 	if rawName != "" {

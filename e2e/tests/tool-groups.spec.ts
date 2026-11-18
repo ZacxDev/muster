@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import { Page } from '@playwright/test';
-import { test, expect, useSuiteSession } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
+import { signIn as signInShared } from '../lib/signin';
 import { toolGroupsPort } from '../lib/env';
-import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
 
 // CONSECUTIVE TOOL CALLS COLLAPSE INTO ONE "N tool calls" ROW (internal/ui/
 // tool_groups.go). One sequence — three calls, text, one call, text, two calls —
@@ -82,7 +83,7 @@ const shapeJS = (root: Element) => {
       const rows = Array.from(body.children).filter((r) => r.hasAttribute('data-tool-row'));
       const count = el.querySelector(':scope > summary [data-tool-group-count]')!;
       const n = count.getAttribute('data-tool-group-count');
-      if (n !== String(rows.length) || count.textContent!.trim() !== `${n} tool calls`) out.push(`BAD-COUNT(${n}/${rows.length})`);
+      if (n !== String(rows.length) || count.textContent!.trim() !== `${n} steps`) out.push(`BAD-COUNT(${n}/${rows.length})`);
       out.push(`G${rows.length}[${el.getAttribute('data-tool-status')}](${rows.map(target).join(',')})`);
     } else if (el.hasAttribute('data-notice-row')) out.push('N');
     else if (el.textContent!.trim()) out.push('T');
@@ -91,7 +92,7 @@ const shapeJS = (root: Element) => {
 };
 
 async function signIn(page: Page, _baseURL: string) {
-  await useSuiteSession(page);
+  await signInShared(page);
 }
 
 test('history: a run of calls is one row; text and a single call stay where they were; a group opens to its rows', async ({ page, baseURL }) => {
@@ -103,7 +104,7 @@ test('history: a run of calls is one row; text and a single call stay where they
   expect(await log.evaluate(shapeJS)).toBe('T ' + WANT);
 
   const g3 = log.locator('[data-tool-group]').first();
-  await expect(g3.locator('summary [data-tool-group-count]')).toHaveText('3 tool calls');
+  await expect(g3.locator('summary [data-tool-group-count]')).toHaveText('3 steps');
   // A closed group hides its rows — and still says one of them failed.
   await expect(g3).not.toHaveAttribute('open', '');
   await expect(g3.locator('[data-tool-row]').first()).toBeHidden();
@@ -324,10 +325,10 @@ test('mirror: a socket that drops and resumes keeps the run in place, with no du
   const tr = rig.transcript(cc.prompt('resume me') + cc.toolUse('ra', 'Bash', { command: cmd('ra') }) +
     cc.toolUse('rb', 'Bash', { command: cmd('rb') }) + cc.toolUse('rc', 'Bash', { command: cmd('rc') }), 'resume');
   // 🔴 A SESSION OF ITS OWN ('resume', not 'main'): the host started before
-  // this test listed a Claude 'main', and its card stays listed (offline)
-  // after it stops, so waiting for "a Claude card" returned before THIS host
+  // this test listed a Claude 'main', and its entry stays listed (offline)
+  // after it stops, so waiting for "a Claude entry" returned before THIS host
   // had connected and the page opened was the old one (CI: the shape poll
-  // timed out; reproduced by starting this host 2 s late). A card for
+  // timed out; reproduced by starting this host 2 s late). An entry for
   // 'resume', online, can only be this host's.
   await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'resume', MUSTER_MIRROR_E2E_CLAUDE: 'resume=' + tr });
   const sockets: { close: () => Promise<void> }[] = [];
@@ -339,11 +340,13 @@ test('mirror: a socket that drops and resumes keeps the run in place, with no du
   await expect
     .poll(
       async () => {
-        const html = await (await page.request.get(rig.origin + '/ui/agents')).text();
-        const card = html.split('<article').find((a) => a.includes('data-f-session="resume"'));
-        return !!card && card.includes('data-mirror-claude') && !card.includes('data-mirror-offline');
+        // The sidebar's rows (GET /ui/nav/agents).
+        const html = await (await page.request.get(rig.origin + '/ui/nav/agents')).text();
+        return mirroredEntries(html).some(
+          (e) => e.state === 'online' && entryMatches(e.markup, 'data-f-session="resume"') && entryMatches(e.markup, 'data-mirror-claude'),
+        );
       },
-      { message: `this host's 'resume' card, online, as Claude Code (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
+      { message: `this host's 'resume' entry, online, as Claude Code (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
     )
     .toBe(true);
   await page.goto(rig.origin + rig.viewPath('resume'));
@@ -368,5 +371,5 @@ test('mirror: a socket that drops and resumes keeps the run in place, with no du
   const rb = log.locator('[data-tool-row]').nth(1);
   await expect(rb.locator('[data-tool-target]')).toHaveText('echo rb');
   await expect(rb).toHaveAttribute('data-tool-status', 'ok');
-  await expect(log.locator('[data-tool-group] > summary [data-tool-group-count]')).toHaveText('3 tool calls');
+  await expect(log.locator('[data-tool-group] > summary [data-tool-group-count]')).toHaveText('3 steps');
 });

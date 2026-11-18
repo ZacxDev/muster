@@ -22,7 +22,8 @@ it names, or one muster chooses from a named **worker pool**.
 >   own, outside the agent's checkout, in a fresh Claude Code session whose CLI
 >   starts in that worktree. Before the turn, these paths are removed and the
 >   repository's default branch's copies (`origin/HEAD`) put back where it has
->   them: every `.claude/` directory at any depth (settings with their hooks —
+>   them — or, with `config_ref`, that commit's copies, which must be on the
+>   default branch: every `.claude/` directory at any depth (settings with their hooks —
 >   commands the CLI runs — agents, and skills, which the CLI also finds in
 >   subdirectories); the root `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`
 >   (the instructions it loads at launch, `CLAUDE.local.md` being its personal
@@ -36,7 +37,9 @@ it names, or one muster chooses from a named **worker pool**.
 >   ([`realcli_test.go`](../internal/agentprovision/realcli_test.go), in CI's
 >   image job).
 > - **Write access to the repository, on a pool worker.** The commit is
->   fetched anonymously, as
+>   fetched anonymously (or, for a pool with a
+>   [read-only deploy key](#private-repositories-a-pools-deploy-key), by the
+>   pod's key holder with that key and nothing else), as
 >   pull request `pr`'s head from `https://github.com/<repo>` — not through
 >   muster's credentialed proxy, whatever git routing the pod has (in CI, with
 >   that routing in force, a plain fetch reaches the proxy and the job's fetch
@@ -52,7 +55,9 @@ it names, or one muster chooses from a named **worker pool**.
 >   turn's reply is discarded and the job fails `workdir_unconfirmed`.
 >
 > **Not isolated:** the turn runs in the worker's pod with the worker's Claude
-> account, its network (any public HTTPS host) and its volume. Every other file
+> account, its network (any public HTTPS host — or, on an
+> [egress-locked pool](#a-pools-egress-lock), what the operator's cluster
+> policy allows) and its volume. Every other file
 > in the commit is the commit's — `CLAUDE.md` / `AGENTS.md` below the root
 > (instructions the CLI reads as it works there), build scripts, tests,
 > dependencies — and the turn may run them if the prompt leads it there. The
@@ -87,6 +92,9 @@ POST /api/jobs
   "repo": "owner/name",            // optional: must be the agent's repository (required with worker_pool and sha)
   "sha": "0123456789abcdef0123456789abcdef01234567", // optional: a full 40-hex commit id
   "pr": 42,                        // required with sha (and only with it): the pull request the commit is on
+  "config_ref": "89abcdef0123456789abcdef0123456789abcdef", // optional, only with sha: the default-branch commit the agent configuration comes from
+  "base_sha": "abcdefabcdefabcdefabcdefabcdefabcdefabcd", // optional, only with sha: a commit fetched into refs/muster-jobs/<job_id>-base to diff against
+  "model": "sonnet",               // optional: the Claude model the job's own session runs on
   "result_path": "out/review.md",  // optional: relative to the job's working directory
   "timeout_s": 1800,               // optional: 1-2100, default 1800
   "idempotency_key": "review-42"   // optional, at most 128 bytes
@@ -100,9 +108,9 @@ job that returns the wrong thing.
 
 | answer | when |
 |---|---|
-| 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted |
+| 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted; a `config_ref` that is not a full 40-character id, or one without a `sha`; a `base_sha` that is not a full 40-character id, or one without a `sha`; a `model` outside the pattern below |
 | 404 | no agent by that name; no agent is a member of that `worker_pool` |
-| 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository |
+| 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository; an `idempotency_key` already used with a different `model`, `config_ref` or `base_sha` (below); a `config_ref` on a pool with a [deploy key](#private-repositories-a-pools-deploy-key) (by the pool's name or one of its workers'), whose jobs get none of the repository's agent configuration |
 | 429 | the agent already has 4 jobs queued or running (the per-agent limit); for a `worker_pool`, every member that could otherwise take the job has 4, or runs on a Claude account that is cooling down after a rate limit or already running its limit of concurrent jobs (`error` names each, and when a cooldown ends). Submit again once one finishes or the cooldown ends |
 | 501 | `sha` / `result_path` on a deployment with no provisioner |
 | 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job for a reason other than the limits above (`error` says why for each) |
@@ -110,8 +118,107 @@ job that returns the wrong thing.
 **Idempotency.** A second submission with an `idempotency_key` already used
 records nothing and answers the first job, with **200** and
 `"deduplicated": true` — before any agent is looked up or worker chosen, so a
-retry is answered even when its pool now has no eligible worker. The key is not
-compared with the rest of the body.
+retry is answered even when its pool now has no eligible worker.
+
+The key is compared with `model`, `config_ref` and `base_sha` and with nothing
+else in the body. If any differs from the first job's — including one sent where the
+first had none, or left out where it had one — the answer is **409** with
+`"idempotency_mismatch": true`, the first job's fields, and an `error` naming
+the first job and each difference
+(`idempotency_key "review-42" already names job 17, which has model "opus", not "sonnet"; use a new key for a different job`).
+Nothing is recorded or run. Use a new key to run the job with the new values.
+
+### `model`
+
+The Claude model the job's turn runs on. Absent, the CLI's default, as before.
+
+- **Accepted:** an alias (`opus`, `sonnet`, `haiku`) or a full model id,
+  optionally with the CLI's `[1m]` suffix: 1-80 characters of `[a-z0-9.-]`,
+  starting with a letter or digit, then optionally `[1m]`
+  (`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$`). This is the check a Claude Code
+  chat session's model gets, and ccd checks it again before it starts a CLI.
+  muster does not check that the account can use the model: a model the CLI
+  refuses fails the job with ccd's reason.
+- **Where it goes:** the job's own Claude Code session is opened with it, so
+  ccd starts that session's CLI with `--model`. The agent's main session and
+  every other session are not touched. On a deployment whose chat store cannot
+  open a session of the job's own, a job with a `model` fails `internal`
+  before its turn — the refusal a `sha` job gets there — rather than run in
+  the agent's own session.
+- **Confirmed, or discarded.** ccd answers a turn from a session CLI of the
+  job's own with `X-Muster-CC-Workdir-Used`, and only from one. A `model` job
+  whose answer lacks it — an agent image that ignores the session and model
+  headers and answers from its main CLI, on that CLI's model — fails
+  `model_unconfirmed`, its reply discarded, instead of succeeding with a
+  `model` it did not run on. An image whose ccd has sessions but predates that
+  header fails the same way: update the agent's image.
+- **Read back:** `model` on the job (`""` when none was given).
+
+### `config_ref`
+
+The commit a `sha` job's worktree takes its agent configuration from (the
+overlay above), instead of the default branch's tip. Absent, the default
+branch's tip (`origin/HEAD`), as before. A caller that recorded the version of
+the configuration it reviews with — a hash of a `.claude/agents/` file, say —
+sends the commit it read it at, so a merge to the default branch between its
+read and the job's start does not change what the job runs with.
+
+- **Accepted:** a full 40-character lowercase hex commit id, on a job with a
+  `sha` only (a job without one has no worktree and no overlay).
+- **Refused when it is not on the default branch.** The commit must be the
+  checkout's `origin/HEAD` or an ancestor of it. If it is not, the default
+  branch is fetched anonymously, the same way as the pull request (`HEAD` of
+  `https://github.com/<repo>`, into a ref of the job's own, deleted with the
+  worktree), and the commit must be its tip or an ancestor. Otherwise the job
+  fails `checkout_failed`, and nothing is run. Any other commit — the pull
+  request's own head, above all — would hand the commit under review its own
+  configuration back.
+- **Read back:** `config_ref` on the job (`""` when none was given).
+
+### A deploy-key pool's jobs get none of the repository's configuration
+
+Whether a `sha` job's worktree gets the repository's agent configuration is
+decided by the **pool**, on the server, not by the job: there is no field for
+it. A job on a worker of a pool with a
+[deploy key](#private-repositories-a-pools-deploy-key) always has the overlaid
+paths **removed** — every `.claude/` at any depth, the root `CLAUDE.md`,
+`CLAUDE.local.md`, `AGENTS.md` and `.mcp.json` — and **nothing restored**,
+neither the commit's copies nor the default branch's. The turn then has the
+job's prompt and muster's own configuration only: the managed-policy
+`CLAUDE.md` an agent's instructions are placed in, and the pod's user settings.
+Every other pool, and an agent in no pool, gets the overlay above, as before.
+
+- **A `config_ref` on such a pool is refused (409)** — by the pool's name, or
+  naming one of its workers — rather than silently ignored: it names a
+  configuration to overlay, and the pool's jobs have none. Nothing is recorded.
+  A job that reaches a worker anyway (the configuration changed in between)
+  fails `checkout_failed` before anything runs.
+- **Not changed by it:** everything else in the commit is still the commit's,
+  including `CLAUDE.md` / `AGENTS.md` files below the root (see the note at the
+  top). The fetch and the `sha`-on-the-pull-request check are the same.
+
+### `base_sha`
+
+A commit for the turn to compare the pull request against — typically the
+pull request's base. The job's worktree script fetches it **with the same
+credential path as the pull request's head**: anonymously from
+`https://github.com/<repo>`, or, for a pool with a
+[deploy key](#private-repositories-a-pools-deploy-key), over SSH with that key.
+It is stored at **`refs/muster-jobs/<job_id>-base`** in the agent's checkout,
+whose objects and refs the job's worktree shares, so the turn can run
+`git diff <base_sha>...HEAD` (or `git log <base_sha>..HEAD`) with no credential
+of its own. A lane session's own `git fetch` has no credential on a deploy-key
+pool, so this is the way a turn gets a commit that is not already in the
+checkout.
+
+- **Accepted:** a full 40-character lowercase hex commit id, on a job with a
+  `sha` only. It is not required to be on the default branch or on the pull
+  request; it must be a commit GitHub serves by id.
+- **Fetched before the worktree is made.** A base that cannot be fetched
+  fails the job `checkout_failed`, with an `error` that starts "the job's base
+  commit could not be fetched" and names the `base_sha`; nothing is run.
+- **Removed with the worktree**, like the job's pull-request ref.
+- **Read back:** `base_sha` on the job (`""` when none was given).
 
 ## Worker pools
 
@@ -122,24 +229,35 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 
 ### Creating a pool worker
 
-1. Open the dispatch form (the Agents tab's **+**, or a task's **Dispatch**).
-2. Pick **Claude Code** as the agent kind. The **Worker pool** field appears
-   under the Claude account; it is not shown for any other kind.
-3. Enter the pool's name, for example `reviewers`.
-4. Leave the Claude account on **Auto** unless you want to pin one; the account
-   pool chooses as it does for any agent. Pick the repository the pool's jobs
-   will name (with `repo`), which must be a **public** one (see below).
-5. **Dispatch** (or **Save for later** and Start it). A pool job can run only on
-   a `running` worker.
+Ask the chief ("start a worker in pool `reviewers`"): its `agent_dispatch`
+with `worker_pool` creates one (target `pod/claude-code`, no task, your typed
+request: [plugins.md](plugins.md#agent_dispatch-the-guards)), and such a worker
+holds one of the chief's live slots for as long as it runs. Without a chief
+that can, use [`muster agent create`](provisioner.md#creating-an-agent-without-the-chief)
+(`POST /api/agents`):
 
-The agent's card and page show a **pool** chip, and `GET /api/agents` reports
+```text
+MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --kind claude-code --worker-pool reviewers --repo example-org/site --start=true
+```
+
+(On a host with more than one tenant, put the token in that tenant's file
+instead: [cli.md](cli.md#configuration).)
+
+Leave the Claude account unset unless you want to pin one (`--cc-account`);
+the account pool chooses as it does for any agent. The repository the pool's
+jobs will name (with `repo`) must be a **public** one (see below), or the one
+private repository the pool has a
+[deploy key](#private-repositories-a-pools-deploy-key) for. A pool job can run
+only on a `running` worker (`--start=false`, then Start it from its page).
+
+The agent's page shows a **pool** chip, and `GET /api/agents` reports
 it as `workerPool`. Repeat with the same name for more workers; each takes its
 own account from the pool unless pinned.
 
-The form posts `worker_pool` to `POST /agents` with `kind=claude-code`. With any
-other kind, or a name outside the pattern, the server refuses the dispatch with
-**409** and the reason, and creates nothing. Neither the `muster` CLI nor the
-chief's `task_dispatch` can create an agent in a pool.
+With any kind but `claude-code`, or a name outside the pattern, both doors
+refuse with **409** (the chief's tool with its own sentence) and the reason,
+and create nothing. (The web UI's dispatch form, which used to be the way to
+create one, was deleted: [design](design/chief-dispatch.md), phase 2.)
 
 **A pool worker holds no GitHub credential.** The one way an agent gets one is
 a grant on a connector that reaches github.com — the `github` connector (the
@@ -162,7 +280,233 @@ An agent joins its pool when it is created, before it can hold any grant, so
 with both rules it never holds one. A worker therefore cannot clone a
 **private** repository (its clone has no credential, and the access request
 ccd files can never be approved): pools serve public repositories, the same
-ones a job's anonymous fetch can read.
+ones a job's anonymous fetch can read — unless the pool is given a read-only
+deploy key, below.
+
+### Private repositories: a pool's deploy key
+
+A pool can serve ONE private repository with a **read-only deploy key**, and
+nothing else changes: no GitHub grant, no proxy, no token.
+
+1. Make an SSH key pair and add its public half to the repository as a
+   **deploy key, without "Allow write access"** (Settings → Deploy keys).
+2. Store the private half in a Secret in **muster's own namespace**
+   (`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`), key `ssh-privatekey`:
+   `kubectl -n <muster's namespace> create secret generic <secret> --type=kubernetes.io/ssh-auth --from-file=ssh-privatekey=<file>`.
+   muster copies it into each worker's namespace (below); do not copy it there
+   yourself — a Secret of that name muster did not make is refused, never
+   overwritten.
+3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>`
+   ([configuration](configuration.md)) and restart muster. The pool is
+   [egress-locked](#a-pools-egress-lock): ship its cluster egress policy
+   first, or its workers reach nothing public.
+4. Create the pool's workers on that repository (Start an existing one again to
+   give it the mount).
+
+A worker of such a pool runs a second container beside the agent's, the **key
+holder** (`deploy-key`), under its own uid (1001, the image's `muster-keyholder`
+user, which ssh needs to exist; the agent's session runs as 1000). The holder, and only the holder, mounts the Secret's one key at
+`/etc/muster/deploy-key/ssh-privatekey` and GitHub's pinned host keys at
+`/etc/muster/deploy-key/known_hosts`. Every use of the key is the holder's:
+
+- **At the pod's start** it clones the repository from
+  `ssh://git@ssh.github.com:443/<owner>/<name>.git` into a bare **mirror** at
+  `/var/lib/muster-mirror/repo.git`, retrying every 30 s until it can. That
+  directory is an `emptyDir` the holder writes and the agent's container mounts
+  **read-only**. ccd is told the mirror's path (`CCD_REPO_MIRROR`) and clones
+  the agent's checkout from it — locally, with no credential. ccd's clone and
+  muster's job scripts pass
+  `--upload-pack='git -c safe.directory=<mirror> upload-pack'` on every git
+  that reads the mirror: the mirror belongs to uid 1001, and git 2.39's
+  upload-pack refuses another user's repository unless its own command line
+  marks it safe. **The session's own git cannot fetch `origin`** (the
+  mirror) on such a pool: the clone does not record that option, so a plain
+  `git fetch origin` in the checkout fails with "detected dubious
+  ownership". That is intended — a job's commits, its `base_sha` included
+  (`refs/muster-jobs/<id>-base`), are fetched for it before its turn.
+- **For each job**, muster execs into the holder: it probes the key for write
+  access and fetches the pull request's head (and the `base_sha`) into the
+  mirror; the job's worktree script then fetches them from the mirror, in the
+  agent's container. The pool's jobs get none of the repository's agent
+  configuration
+  ([above](#a-deploy-key-pools-jobs-get-none-of-the-repositorys-configuration)).
+
+⚠ **Upgrading from v0.110.0:** that release's docs had the operator create
+the Secret in each worker's namespace. Since this release it lives in
+**muster's own namespace**: create it there, and **delete every hand-made copy
+in the worker namespaces** — muster refuses a Secret of that name it did not
+make (the dispatch or Start fails naming it), and never overwrites one.
+
+**The Secret is copied, not shared.** Each time a worker's spec is applied
+(dispatch, Start, reapply) muster reads the Secret in its own namespace and
+writes the key the pod mounts (`ssh-privatekey`) and the Secret's type — no
+other key, label or annotation of it, under muster's ownership labels — to a
+Secret of the same name in the worker's namespace, before the pod. A source
+recreated with another type replaces muster's copy (a type cannot be changed
+in place). A
+source that is missing, or has no `ssh-privatekey`, fails that dispatch or
+Start with an error naming the Secret and the namespace, and no pod is started
+(it would otherwise wait in `ContainerCreating` forever). The copy is removed
+with the worker's namespace. muster never logs the Secret's data. In the
+shared-namespace layout (`MUSTER_AGENT_NAMESPACE_SHARED`) the pool's workers
+share one copy, which a worker's Destroy leaves; when that namespace is
+muster's own, nothing is copied.
+
+Port 443, because a worker may reach public addresses on 443 only; GitHub
+serves the same SSH endpoint there. The ssh command fixes every option
+(`-F /dev/null`, no agent, only this identity, only the pinned host keys), and
+the holder's gits ignore the system and global configuration and run in the
+mirror, whose configuration only the holder can write.
+
+- **Read-only, verified per job as far as muster can.** Before the fetch, the
+  holder opens GitHub's receive-pack with the key — a FORCED `git push
+  --dry-run` to `refs/heads/muster-read-only-probe`, which sends nothing and
+  writes no ref. (Forced, so a branch of that name already on GitHub, at any
+  commit, cannot turn the push into a non-fast-forward refused before write
+  access is asked.) GitHub refuses that for a read-only deploy key; if it is
+  accepted the key can push, and the job fails `checkout_failed` without
+  fetching. A probe that fails for any other reason (the network) is not a
+  refusal; the fetch then fails on its own. muster cannot see the key's setting
+  on GitHub, only how GitHub answers.
+- **One repository.** A worker of the pool on another repository is refused at
+  dispatch and Start, and a job naming another repository fails
+  `checkout_failed` before anything runs — never a silent anonymous fetch.
+- **Every other pool is unchanged:** anonymous, public repositories only, no
+  key holder.
+
+🔴 **How far the key is exposed.** The key is a file in the **holder's**
+container only (mode `0440`, root with the pod's group, mounted through a
+`subPath`). No process of the agent's session — ccd, the agent's main CLI,
+every lane's tools, whatever a lane's `Bash` runs, bypassed or not — can read
+its bytes or use it as a credential:
+
+- the file does not exist in the agent's container at any path: the secret
+  volume is mounted into the holder alone, and nothing in the agent's
+  container names its path (`CCD_REPO_MIRROR` names the mirror, not the key);
+- the holder runs as another uid, non-root, without privilege escalation or
+  capabilities, and the pod shares no process namespace, so the session cannot
+  reach the holder's `/proc/<pid>/root`, `environ` or memory; the key reaches
+  no argv or environment there either (ssh is given its path);
+- the session has no channel to the holder: it listens on nothing, and the
+  directory they share is read-only on the session's side, so the session can
+  neither plant configuration the holder reads nor ask it to fetch. Only muster
+  (an exec through the Kubernetes API) runs anything in it.
+
+What remains: the **mirror's contents** — the repository's branches at the
+pod's start, and every pull-request head and base fetched for the worker's
+jobs — are readable by the session, as the checkout always was. Whoever can
+exec into the pod or read the Secret through the Kubernetes API (muster's
+ServiceAccount, cluster admins) can read the key; the agent's pod mounts no
+ServiceAccount token. Rotating the key: replace the key in muster's namespace,
+then Stop → Start each worker (Start copies it again; a `subPath` mount is not
+refreshed in a running pod).
+
+### A pool's egress lock
+
+Every pool with a deploy key, and every pool listed in
+`MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS` ([configuration](configuration.md)), is
+**egress-locked** — the officer lock (docs/officers.md "The instance's
+network"), applied to a pool's workers. muster does two things, and only two:
+
+- **It removes egress.** The worker's NetworkPolicy keeps its ingress rule
+  (from muster's pods) and, when the connector store is offered, egress to
+  muster's connect port — and has **no DNS rule and no "any public address on
+  443" rule**. Network plugins union allows, so either rule would widen
+  whatever the cluster's policy narrows.
+- **It labels the pod**: `muster.agent/pool=<pool>` and
+  `muster.agent/egress=locked` (only locked workers carry them; every other
+  pod's labels are unchanged). The pod also gets
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does not try its
+  optional hosts (telemetry and error-report intake, the auto-updater,
+  release notes).
+
+🔴 **The allowlist is the operator's cluster policy, not muster's.** A policy
+selecting `muster.agent/egress=locked` is the only thing that lets a locked
+worker resolve a name or reach a host. Without one, a locked worker reaches
+nothing public and every turn fails — closed and loud. On Cilium, a
+`CiliumClusterwideNetworkPolicy` (clusterwide, because muster creates the
+worker namespaces itself):
+
+```yaml
+# Egress for muster's egress-locked pool workers: DNS for the allowed names
+# and cluster-internal names only, and those hosts on 443.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: muster-egress-locked-workers
+spec:
+  endpointSelector:
+    matchLabels:
+      # The driver's ownership pair, so a pod someone else labels
+      # egress=locked gets nothing from this policy.
+      app.kubernetes.io/managed-by: muster
+      app.kubernetes.io/name: muster-agent
+      muster.agent/egress: locked
+  enableDefaultDeny:
+    ingress: false   # ingress stays muster's NetworkPolicy
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchName: github.com
+              - matchName: api.github.com
+              - matchName: codeload.github.com
+              - matchName: ssh.github.com
+              - matchName: objects.githubusercontent.com
+              - matchName: api.anthropic.com
+              # Your cluster's DNS domain (the kubelet's clusterDomain): the
+              # search-path expansions every lookup is tried with first under
+              # ndots:5. `**.` is multi-level; `*.` matches one label only.
+              - matchPattern: "**.CLUSTER_DOMAIN"
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        - matchName: ssh.github.com          # a deploy-key holder's SSH, on 443
+        - matchName: objects.githubusercontent.com
+        - matchName: api.anthropic.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+```
+
+Why those hosts: GitHub for the clone, a job's anonymous fetch, the REST API,
+archives and raw objects, and SSH over 443 (`ssh.github.com`, the key
+holder's); `api.anthropic.com` for the CLI's inference, its WebFetch domain
+check and its token use. Add a pool's own hosts (an HQ, say) to both lists; to
+give pools different allowlists, select `muster.agent/pool` as well.
+
+⚠ **A worker keeps the policy it was started with.** The lock and the labels
+are written when its spec is applied (dispatch, Start, reapply); a worker
+started by an older muster keeps its public-443 rule until Stop → Start.
+Check with `kubectl -n <worker namespace> get networkpolicy -o yaml`: the
+egress list has no `ipBlock` and no port 53.
+
+What it still allows:
+
+- anything those hosts accept. A session can push what it reads to a GitHub
+  repository or gist of an attacker's, or call the Anthropic API with an
+  attacker's key and put data in the request; closing that needs an egress
+  proxy that checks credentials, which muster does not ship;
+- **muster's connector proxy**, when the connector store is offered: the
+  NetworkPolicy keeps egress to muster's connect port (`MUSTER_CONNECT_PORT`),
+  which the cluster policy does not see. An **approved connector grant** is
+  therefore an egress path out of a locked worker, bounded by muster's own
+  policy on that connector (its hosts and credential), not by the cluster's.
+  A pool worker can never hold an approved grant reaching github.com
+  ([Worker pools](#worker-pools)); grants to other connectors are decided by
+  their owner.
 
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works
@@ -186,11 +530,47 @@ idle workers are spread over both rather than sent to one until its limit
 refuses them.
 
 **The cooldown.** After a turn on an account answers `rate_limited`, the
-account rests: no pool job is placed on any worker using it until the reset
-time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9, 9am (UTC)`), or,
-when the message states none muster can read (no zone, for one),
-`MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It is
-usable again at exactly that time.
+account rests: no pool job is placed on any worker while it uses that account,
+until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
+9am (UTC)`), or, when the message states none muster can read (no zone, for
+one), `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It
+is usable again at exactly that time — or sooner, when the account's **live
+state** says so. With `MUSTER_CC_USAGE_POLL=1` the
+[usage poller](#claude-account-usage) keeps reading a cooling account at its
+ordinary interval, and when that reading shows the account usable it clears
+the mark (one log line: `ccusage: account <name>: cleared its rate-limit mark
+of <time> (cooldown was until <time>): <reason>`). Usable means:
+
+- **From the usage endpoint:** every window that carries a utilization is
+  below 100% (or past its own reset).
+- **From the probe:** the overall `anthropic-ratelimit-unified-status` is
+  `allowed` or `allowed_warning`, **and** the mark's own text names the
+  session limit (`You've hit your session limit`, or the earlier CLI's
+  `5-hour limit reached`) or the weekly limit (`You've hit your weekly
+  limit`), **and** that limit's window in the probe's headers — `5h` for the
+  session limit, `7d` for the weekly one — is present and under its limit (or
+  past its reset). The probe runs on a small model, so its overall status
+  says nothing about a per-model limit: a mark set by any other limit text
+  (`You've hit your Opus limit`, or a message naming no window) is never
+  cleared by the probe and ends at its stated reset.
+
+A 429, a `rejected` status, a window at 100% that has not reset, or a failed
+read keeps the mark. The clear is conditional on the mark it read before the
+reading: a turn that hits the limit again while the reading is in flight
+writes a newer mark, and that one stands. ⚠ Reading a cooling account whose
+token the usage endpoint refuses (a `setup-token`) is the one-token probe, so
+it **spends one output token of that account's quota per interval while it
+cools**. With the poller off, nothing reads the live state and nothing ends a
+cooldown early.
+
+A rate limit is counted per subscription, not per token, so replacing an
+account's token does **not** end its cooldown: a re-issued token on the same
+subscription is still limited. A changed token on a cooling account is read by
+the live probe on the poller's next pass, and that reading decides.
+
+While another account is usable a pool does not wait for any of that: a
+submission that finds no worker it can use moves one off the resting account
+(see [Account failover](#account-failover)).
 
 **The per-account cap** is opt-in (`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS`;
 unset, there is none). Jobs on one worker run one after another, so the jobs
@@ -204,6 +584,243 @@ agent is the caller's override.
 The job records the pool (`worker_pool`) and the worker (`agent`,
 `cc_account`). The choice is made once; a job is not moved to another worker
 later, and one worker still runs its jobs one at a time.
+
+### Account failover
+
+A worker is not stuck on an exhausted account, and a pool is not refused for
+one while another account is usable. When a turn on any `claude-code` agent —
+a pool worker, a named agent, an officer instance, the chief — fails
+`rate_limited` or `auth_failed`, muster marks the account as above and then,
+unless `MUSTER_AGENT_CC_FAILOVER=off`, **moves the agent to another of its
+owner's accounts**:
+
+- **Which account.** One that is usable: not cooling down after a
+  `rate_limited`, and not marked `auth_failed` for its current token. Of those,
+  the pool's order: never rate-limited first, then the one rate-limited longest
+  ago, then the account name. When there is none — every other account is
+  cooling down or failed — nothing moves and everything behaves as before
+  (the job fails `rate_limited`; a pool submission whose every worker is
+  cooling is a 429 that names each worker's reset). Nothing special happens at the reset: the next turn simply works. An account's cooldown also ends before its stated reset when its live reading shows it usable ([The cooldown](#worker-pools)); from then it is a failover target again.
+- **How.** The agent's row is moved to the new account (only if it is still on
+  the old one), and its spec is re-applied with the new account's setup-token,
+  which **restarts its pod**: the running CLI session and every job lane's CLI
+  restart; the volume (checkout, transcripts, settings), namespace and identity
+  are kept. The cost is one cold start of the pod.
+- **Pinned agents stay.** An agent whose account was named explicitly when it
+  was created — a dispatch's or `POST /api/chief/replace`'s `cc_account`, an
+  officer's `cc_account` — is not moved, unless it opted in: the `cc_failover`
+  field of `POST /api/agents` (`muster agent create --cc-failover`),
+  `"cc_failover": true` on `POST /api/chief/replace`, or the
+  officer's `cc_failover`.
+  Agents created before this existed read as not pinned (an officer instance
+  reads its officer's current configuration). The one exception is a pool
+  submission's move of a pool worker (below).
+- **Once per failure.** Two turns on one agent failing at once move it once:
+  the move is conditional on the account it is leaving, and in one process the
+  failovers of one agent run one at a time. A move never races a Stop or a
+  Delete into restarting a stopped or deleted agent: they run one at a time per
+  agent, and a move of an agent that is not running, provisioning or pending
+  does nothing.
+- **No fail-back.** The agent stays on its new account when the old one resets
+  (moving back would restart its pod again for nothing); it moves again only if
+  the new account fails in turn.
+- **A pool submission moves a worker itself.** A failover moves only the agent
+  whose own turn failed, and a pool that refuses a job runs no turn on its
+  workers — so a pool whose every worker sat on a cooling account used to
+  refuse every submission until that account reset, even with another account
+  usable (the 2026-11-07 incident). Now, when no worker of a pool can take a
+  job and some were skipped only because their account is cooling down or
+  failed authentication, the submission moves one of them that is **idle** —
+  no job queued or running on it, on any server — to a usable account (the
+  first by name), and places the job on it instead of answering 429.
+  Refused submissions to one pool fail over one at a time: one arriving while
+  another is moving a worker waits for that move and chooses again, so it
+  takes the moved worker rather than moving a second one. **A pool
+  overrides a pin:** a worker in a pool is moved this way even when its
+  account was pinned at creation and it did not opt in to `cc_failover`.
+  Nothing else does: a pinned named agent, officer instance or chief is moved
+  by nothing new, and failover off still moves nothing. A busy worker is not
+  moved here: its job's turn fails at its next model call, the failover moves
+  it then and re-queues the job (below), whereas restarting its pod under the
+  turn would fail the job with an error that is not an account failure. The
+  other workers on the cooling account stay there until a submission needs
+  one, or their own turn fails.
+- **A job on a just-moved worker waits for its new pod.** The worker's row
+  reads `running` at once, so a job placed on it waits (up to 5 minutes) for
+  the restarted pod before its turn, rather than sending the turn into the
+  restart; a pod not ready by then fails the job `agent_unavailable`.
+
+**The job that hit the limit is re-queued, not failed.** A job whose turn
+failed `rate_limited` or `auth_failed`, on an agent the failover moved off that
+account, goes back to `queued` on the **same worker**, waits for the worker's
+new pod to be ready (up to 5 minutes), and runs again with a fresh
+`timeout_s`. It is re-queued **at most once per account it failed on**, so it
+never loops: failing again on an account it already left ends it as before.
+Each re-queue is recorded on the job:
+
+```json
+"account_failovers": [
+  {"from": "alpha", "to": "beta", "reason": "rate_limited", "at": "…"}
+]
+```
+
+`cc_account` then names the account its last turn ran on. The agent's moves are
+on `GET /api/agents/{name}/account-failovers` (hook tier) —
+`{agent, ccAccount, ccAccountPinned, ccFailover, failoverAllowed, why?, events}`,
+each event `{id, agent_id, agent, from, to, reason, resets_at?, at}`, newest
+first — and the latest one on the agent's page next to its account. muster logs
+one line per move: `ccfailover: agent <name> (id <n>): account_failover from
+alpha to beta, reason rate_limited, resets <time>`. None of them carries a
+token.
+
+## Claude account usage
+
+With `MUSTER_CC_USAGE_POLL=1`, muster reads each of the admin's pooled Claude
+accounts' **subscription utilization** every `MUSTER_CC_USAGE_POLL_INTERVAL`
+(default 15 minutes, at least 5) and keeps the latest reading per account
+(`cc_account_usage`, migration 0108; numbers only). Members' own accounts are
+not read. The readings, and the pool's rate-limit and auth-failure marks, are
+kept under the pool's owner: the **lowest-id enabled admin** (not a fixed user
+1, whose own accounts could share the pool's names once demoted), so that
+admin's Account → Credentials shows them. The code is `internal/ccusage`. Each reading records its `source`.
+
+**`usage_api`: the endpoint Claude Code's `/usage` reads.** Read from the CLI's
+bundle (2.1.289): `GET https://api.anthropic.com/api/oauth/usage` with the
+account's token as `Authorization: Bearer` and `anthropic-beta:
+oauth-2025-04-20`. It answers `five_hour` and `seven_day` (and, when the
+account has them, `seven_day_opus`, `seven_day_sonnet` and others), each null or
+`{"utilization": <percent, 0-100>, "resets_at": "<RFC 3339>"}`, plus a `limits`
+array whose per-model weekly rows muster reads as `seven_day_model:<name>`.
+🔴 **A `claude setup-token` is refused there** (403 `permission_error`: the
+token lacks the `user:profile` scope; measured against a pool token), and the
+endpoint rate-limits hard (429, `Retry-After` about an hour). So each token
+gets **one discovery call**: a 2xx keeps the endpoint for that token, a 401/403
+retires it for that token for good, and a 429 rests it for its `Retry-After`.
+
+**`ratelimit_headers`: a one-token probe**, for every token the endpoint does
+not serve. It is `POST https://api.anthropic.com/v1/messages` (`anthropic-version:
+2023-06-01`, the same bearer and beta header) on `claude-haiku-4-5-20251001`
+with `max_tokens: 1` and one user message. Its answer's
+`anthropic-ratelimit-unified-*` headers are the reading. The window names
+follow the CLI bundle's map (`5h` → `five_hour`, `7d` → `seven_day`, `7d_oi` →
+`seven_day_overage_included`, `overage`). Each window has `-utilization`, a 0–1
+**fraction** that muster stores ×100 as a percent like the endpoint's, `-reset`
+(unix seconds) and `-status`. The answer also carries the overall `-status`,
+`-reset` and `-representative-claim`. A window whose headers are absent is
+absent: a measured answer carried 7d headers and no 5h ones. ⚠ **The probe
+spends one output token of the account's quota per read**, which is why the
+default interval is 15 minutes. An account the pool marks **rate-limited**
+(cooling down after a turn hit its limit) **is still read**, at the same
+interval and by the same path: its live reading is what clears the mark early
+when the account is usable again (see [The cooldown](#worker-pools)), so a
+cooling account read by the probe spends one output token per interval too.
+Only when the pool's cooldown cannot be read at all is an account not probed
+that pass (`error_kind` `cooling`). The response body is never read past its
+bytes, logged or stored.
+
+| the probe answers | muster |
+|---|---|
+| 2xx with the headers | stores the windows, `status`, `representative_claim` and `read_at`; an overall status `rejected` holds the account until its reset — unless the pool marks it cooling, which is read again at the interval |
+| 401, 403 | records `unauthorized` / `forbidden`; the token cannot make an inference call, and the account is not read again until its token changes (the row keeps the token's 12-character fingerprint, never the token) |
+| 429 | records `rate_limited` and waits the interval doubled per 429 in a row, at least `Retry-After`, at most 6 hours, or until the window's reset when its headers say `rejected` (not for an account the pool marks cooling); the 429's own headers are kept as the reading |
+| anything else, or a 2xx without the headers | records `error`; the next pass tries again |
+| (no token) | records `no_token` and calls nothing |
+
+A failed read keeps the last good numbers and their `read_at`. A usage refusal
+does **not** mark the account in the pool: selection and the failover read only
+what an agent's own turns report. The one thing a reading does to the pool is
+**clear** a `rate_limited` mark when it shows the account usable (above).
+
+### `GET /api/cc-accounts/usage`
+
+Read-only. It answers the **service tier** (`MUSTER_SERVICE_TOKEN` and
+`X-Muster-Actor`, as for the job API; the admin's accounts), or a personal
+token of scope **`account-usage`** (minted at `/account/tokens` as "Account
+usage only"; it reaches this route and nothing else) or `full` (the token's
+owner's accounts). Every other credential is refused: 401 with none, a wrong
+one or the hook token, 403 for a bar-summary or agent-create token or a service
+call without an actor.
+
+```json
+{"accounts": [
+  {"account": "alpha",
+   "five_hour": {"utilization": 42, "resets_at": "2026-11-10T20:00:00Z"},
+   "seven_day": {"utilization": 17.5, "resets_at": "2026-11-15T09:00:00Z"},
+   "windows": {"seven_day_opus": {"utilization": 3, "resets_at": "2026-11-15T09:00:00Z"}},
+   "read_at": "2026-11-10T18:20:00Z", "checked_at": "2026-11-10T18:20:00Z",
+   "source": "ratelimit_headers", "status": "allowed", "representative_claim": "seven_day",
+   "used_by": {
+     "last_24h": {"officers": [{"officer": "triage:example-web", "pool": "routine", "instances": 2}],
+                  "jobs": [{"requested_by": "pr-review", "jobs": 4}],
+                  "pool_workers": [{"pool": "reviewers", "workers": 3}],
+                  "interactive_agents": 1},
+     "last_7d": {"officers": [], "jobs": [], "pool_workers": [], "interactive_agents": 0}}}],
+ "poll_interval_seconds": 900, "generated_at": "2026-11-10T18:21:00Z"}
+```
+
+- `account` is the account's name as muster shows it everywhere (the pool's
+  name, never an e-mail). Every configured account is listed, read or not; one
+  never read has null windows.
+- `error` and `error_kind` (absent after a good read) say why the latest
+  attempt produced no reading; the numbers are then the last good ones.
+- `source` is `usage_api` or `ratelimit_headers` (above). From the probe, each
+  window also has its `status`, and the account has its overall `status` and
+  `representative_claim` (the window that decides it).
+- `used_by` counts, per window: **officer instances** by officer and pool
+  (`pool` absent for an untiered officer), **jobs** by `requested_by` (the
+  service caller's `X-Muster-Actor`), **pool workers** by pool (their work is
+  the jobs) and every other `claude-code` agent as **interactive** (the chief
+  included). An agent counts when it is live now or stopped inside the window;
+  a job when it was created inside it.
+- ⚠ An agent is counted on the account it is on **now**: one an [account
+  failover](#account-failover) moved inside the window counts on its new
+  account only. A job counts on the account its last turn ran on.
+- `poll_interval_seconds` is 0 with the poller off; the numbers then never move.
+
+### Pushing the readings
+
+With `MUSTER_CC_USAGE_PUSH_URL` set (and its `MUSTER_CC_USAGE_PUSH_TOKEN`),
+muster also **pushes** the readings to an external dashboard instead of
+waiting to be read: after each poll cycle, once, it sends
+
+```
+PUT <MUSTER_CC_USAGE_PUSH_URL>
+Authorization: Bearer <MUSTER_CC_USAGE_PUSH_TOKEN>
+Content-Type: application/json
+
+{"source_instance": "muster.example.com",
+ "read_at": "2026-11-10T18:21:00Z",
+ "poll_interval_seconds": 900,
+ "accounts": [ … ]}
+```
+
+- `accounts` is the admin's accounts **byte for byte** as `GET
+  /api/cc-accounts/usage` answers them (above, `used_by` included): both are
+  built by the same code.
+- `source_instance` is `MUSTER_CC_USAGE_PUSH_INSTANCE` (at most 64
+  characters), else `MUSTER_PUBLIC_URL`'s host, else `muster`. `read_at` is
+  when the push was built. `poll_interval_seconds` is the poller's
+  configured interval in whole seconds, as the API's own field: a dashboard can
+  mark the source stale once a few intervals pass with no push.
+- The push is made after **every** cycle, whether or not a reading changed, so
+  a dashboard can tell a quiet muster from a dead one.
+- The dashboard answers **`204`**. Anything else — a 4xx, a 5xx, another 2xx,
+  a redirect (never followed: it would re-send the bearer), no answer in 10
+  seconds, a transport error, or readings the store could not give — is logged
+  (the status or the error's class only, never the token or the body; on a
+  4xx, also the first 512 bytes of the dashboard's answer as one line, control
+  characters made spaces, at most 200 characters, the token redacted, so a
+  refusal such as a cap exceeded says why) and counted in
+  `muster_cc_usage_push_failures_total{reason}` (`http_4xx`, `http_5xx`,
+  `http_other`, `timeout`, `transport`, `build`, or `canceled` when muster
+  was shutting down mid-push). It
+  is not retried: the next cycle's push carries newer readings.
+- Boot is refused when the URL is set with the poller off, without the token,
+  or not `https` (plain `http` is allowed only to a loopback host, for tests),
+  and when the token or the instance is set without the URL.
+
+The same readings are drawn on **Account → Credentials** ("Claude account
+usage"), for the admin and for a member alike.
 
 ## Reading a job
 
@@ -223,6 +840,7 @@ GET /api/jobs/{id}
   "finished_at": "…",
   "created_at": "…",
   "repo": "", "sha": "", "result_path": "", "timeout_s": 1800,
+  "model": "", "config_ref": "", "base_sha": "",
   "session_id": 412
 }
 ```
@@ -276,28 +894,41 @@ kept — the job keeps its status and `error` says
 
 | `reason` | |
 |---|---|
-| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`). Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
+| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`), when the [account failover](#account-failover) could not move the agent (every other account cooling or failed, a pinned agent, or the failover off) or the job already failed once on that account. Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
-| `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously (a private repository, no such pull request, no network), the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
+| `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously, or with the pool's deploy key (a private repository without one, a key GitHub refuses, no such pull request, no network), the pool's deploy key can push (a dry-run push was accepted), the job's repository is not the one the pool's deploy key is for, the `base_sha` could not be fetched, the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the `config_ref` is not on the default branch (or the default branch could not be fetched to look for it), the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
 | `workdir_unconfirmed` | a `sha` job's turn succeeded, but the agent's runtime did not confirm it ran in the job's worktree (its image predates job worktrees); the reply was discarded — update the agent's image |
+| `model_unconfirmed` | a `model` job's turn succeeded, but the agent's runtime did not confirm it ran in a Claude Code session of the job's own (no `X-Muster-CC-Workdir-Used` on the answer, which ccd sends only from such a session's CLI): an image that ignores the session and model headers runs the turn in the agent's own session on that session's model. The reply was discarded — update the agent's image |
 | `result_read_failed` | the turn succeeded but `result_path` could not be returned |
 | `empty_reply` | the turn produced no reply text and no `result_path` was asked for |
 | `agent_unavailable` | the agent could not be loaded when the job was due to start |
 | `interrupted` | nothing finished the job by its deadline, so the reaper failed it: the server running it stopped, crashed or could not record the outcome (see [restarts](#what-it-does-not-do)) |
-| `internal` | muster failed around the turn — including a `sha` job on a deployment whose chat store cannot open a Claude Code session of the job's own, which is refused rather than run in the agent's own session |
+| `internal` | muster failed around the turn — including a `sha` job, or a job with a `model`, on a deployment whose chat store cannot open a Claude Code session of the job's own, which is refused rather than run in the agent's own session |
 
 ## How a job runs
 
-1. The job waits for its agent: jobs on one agent run one at a time.
-2. A new chat session is opened on the agent, on the `claude-code` runtime, so
-   ccd runs the job in a Claude Code CLI of its own (a fresh conversation)
-   rather than the agent's main one. The prompt and the reply are stored in
+1. The job waits for its agent: jobs on one agent run one at a time, oldest
+   first. The queue is the `jobs` table, not the server's memory: each
+   server takes an agent's next job from it when the agent is free (no job of
+   the agent `running`, on any server) — after a submission, and in the
+   reaper's pass at boot and every minute — so a job a crashed server left
+   queued is run by the next server to look, before the agent's newer jobs.
+2. A new chat session is opened on the agent, on the `claude-code` runtime
+   and with the job's `model` if it has one, so ccd runs the job in a Claude
+   Code CLI of its own (a fresh conversation, started with `--model` when there
+   is a model) rather than the agent's main one. The prompt and the reply are stored in
    it, so the job is readable on the agent's page (`session_id`).
 3. With `sha`, through the provisioner's exec in the agent's instance:
    - `refs/remotes/origin/HEAD` is resolved (asking `origin` once if the ref is
      missing; the job fails `checkout_failed` if it still cannot be);
+   - for a pool with a [deploy key](#private-repositories-a-pools-deploy-key),
+     FIRST, through an exec into the pod's key holder: the key is probed for
+     write access (a forced dry-run push) and the pull request's head (and the
+     `base_sha`) is fetched from `ssh://git@ssh.github.com:443/<repo>.git` into
+     the holder's mirror; every fetch below is then from that mirror, a local
+     path, with no credential, instead of anonymously from GitHub;
    - pull request `pr`'s head is fetched anonymously from
      `https://github.com/<repo>` (`+refs/pull/<pr>/head`, into a ref of the
      job's own) with git's global and system configuration ignored — where the
@@ -306,9 +937,15 @@ kept — the job keeps its status and `error` says
      own configuration would still rewrite that URL or add a header or
      credential, or if the `sha` is neither the fetched head nor an ancestor
      of it. `repo` is the agent's repository when the request names none;
+   - with `base_sha`, that commit is fetched the same way, into
+     `refs/muster-jobs/<job_id>-base`;
+   - with `config_ref`, the commit is checked to be on the default branch
+     (fetching the default branch anonymously when the checkout's
+     `origin/HEAD` does not reach it), and becomes the overlay's source;
    - `git worktree add --detach` creates the job's worktree at
      `<the agent's workspace>/.muster-jobs/<job_id>` — beside the agent's
-     checkout, on its volume — and the overlay above is applied to it.
+     checkout, on its volume — and the overlay above is applied to it (on a
+     pool with a deploy key, the configuration is removed and none restored).
 
    The agent's checkout, its branch, HEAD and working tree are not touched: an
    agent with uncommitted work is not refused and not changed.
@@ -321,7 +958,7 @@ kept — the job keeps its status and `error` says
 5. With `result_path`, the file is read back through the provisioner's exec.
 6. A `sha` job's worktree is removed (`git worktree remove --force`, the
    directory if git left it, `git worktree prune`), and its fetched
-   pull-request ref deleted. For a job without a
+   pull-request, default-branch and base refs deleted. For a job without a
    `sha`, the result file is deleted as above.
 
 The job's `timeout_s` covers steps 3–5, not the wait in step 1; the removal in
@@ -331,22 +968,41 @@ step 6 has its own bound.
 
 - **No isolation from the commit's code, and so no third-party commits.** See
   the note at the top.
-- **One job at a time per worker.** Each job has its own worktree and its own
+- **One job at a time per worker.** A server runs a worker's jobs one after
+  another, and takes none while one of its jobs reads `running`; two servers
+  of a rolling update can still both reach for the same next job in the same
+  instant, and the store's conditional start lets exactly one run it (the
+  other leaves an empty chat session on the agent). Each job has its own worktree and its own
   CLI, but one worker's turns share its Claude account and its pod's memory,
   and running several at once on one worker has not been exercised.
-- **No survival across a restart.** The turn runs inside the server process,
-  and nothing waits for it on shutdown. On a graceful shutdown the server
-  fails the jobs it holds itself — queued ones ("nothing was sent to the
+- **No survival of a running turn across a restart.** A **queued** job does
+  survive one: the queue is the table (step 1 of [How a job
+  runs](#how-a-job-runs)), so the next server's boot pass runs it, in its
+  place in line. A **running** one does not. The turn runs inside the server
+  process, and nothing waits for it on shutdown. On a graceful shutdown the
+  server first stops taking jobs from the table (a job it took but had not
+  started stays queued for another server), then fails the jobs it holds itself — queued ones ("nothing was sent to the
   agent") and running ones ("the agent may have done some of the work") —
   with `interrupted`, within 5 seconds; it never touches another server's
-  jobs. A job a crashed server leaves unfinished is
+  jobs, nor a job it accepted that another server has since started. A job a crashed server leaves unfinished is
   failed `interrupted` by the reaper, which runs at boot and every minute and
   fails a job only once it is past its own deadline: a `running` job at
   `started_at` + `timeout_s` + 5 minutes, a `queued` one at `created_at` + 2h40m
   (the longest a queued job can wait: 4 jobs × (2100 s + 5 minutes)). So a job
   can read `running` for up to that long after its server died, and a job the
   other server of a rolling update is still running is never failed by the new
-  one. The same pass ends a job orphaned by a crash in muster or by an outcome
+  one. ⚠ **A crashed server's running job holds its agent until then**: nothing
+  tells it from a job another server is still running, and the agent's runtime
+  may still be in its turn (a dropped request does not stop one), so the
+  agent's next job waits for the reaper's deadline rather than run beside it.
+  The pass that fails it starts the next one. For example, a job submitted with
+  `timeout_s` 1200 that was running when its server crashed holds its worker
+  for about 25 minutes (`started_at` + 1200 s + 5 minutes); every job queued
+  on that worker, older or newer, waits that long, and then runs in order.
+  This is deliberate: muster keeps no per-server lease that could tell a dead
+  server's job from a live one. A job re-queued by an [account
+  failover](#account-failover) is held the same way, for its own server, until
+  its start's deadline. The same pass ends a job orphaned by a crash in muster or by an outcome
   it could not record (the write is retried 3 times first). The agent may have
   done some of the work, so re-submitting is the caller's call. A server that
   stops or crashes mid-job also leaves that job's worktree on the agent's
@@ -360,7 +1016,16 @@ step 6 has its own bound.
 - **A pool is chosen from at submission, not re-balanced.** The marks it reads
   are the account pool's: `auth_failed` under the account's current token, and
   the latest `rate_limited`, whose cooldown is judged at submission: a job
-  already queued on a worker whose account is then rate-limited is not moved.
+  already queued on a worker whose account is then rate-limited is not moved
+  to another worker (the worker itself may be moved to another account by the
+  [account failover](#account-failover)).
+- **The account failover is per process.** A move is idempotent across
+  servers (it is conditional on the account it leaves), but serialising a move
+  against a Stop or Delete of the same agent holds only within one server; a
+  rolling update's two servers can still interleave them. Likewise, a job waits
+  for a worker's new pod only when its own server made the move: a job placed
+  on a worker another server has just moved can reach the restarting pod and
+  fail.
 - **`result_path` is checked as a string, not resolved.** No `..`, no absolute
   path — but a symlink in the worktree (or the working directory) is followed,
   so the file read can be outside it.

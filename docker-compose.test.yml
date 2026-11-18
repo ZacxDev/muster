@@ -40,7 +40,7 @@
 #
 #     MUSTER_TEST_PG_PORT=55433 make test-db     # a second, independent database
 #
-# ⚠ THE DEFAULT IS STILL 55432 AND MUST STAY SO: README.md, CONTRIBUTING.md,
+# ⚠ THE DEFAULT IS STILL 55432 AND MUST STAY SO: docs/development.md, CONTRIBUTING.md,
 # internal/dbtest's doc and one of tests/leakscan.py's negative-control fixtures
 # all spell the default DSN literally, and the leakscan fixture is there to prove
 # the gate does NOT flag it.

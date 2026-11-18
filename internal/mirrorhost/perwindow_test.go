@@ -32,23 +32,23 @@ func TestParseWindowsIsOneEntryPerWindowFromItsActivePane(t *testing.T) {
 	out := "" +
 		// session "scratch2": window @7 at index 3 (active), @4 at index 1, and a
 		// two-pane window @9 at index 8 whose SECOND pane is the active one.
-		"1\t@7\t3\t1\t%21\t4101\t1791903700\t1791903900\tclaude\t/dev/pts/121\t\t\tscratch2\n" +
-		"1\t@4\t1\t0\t%14\t4102\t1791903800\t1791903900\tzsh\t/dev/pts/114\t\t\tscratch2\n" +
-		"0\t@9\t8\t0\t%30\t4103\t1791903650\t1791903900\tzsh\t/dev/pts/130\t\t\tscratch2\n" +
-		"1\t@9\t8\t0\t%31\t4104\t1791903650\t1791903900\topencode\t/dev/pts/131\t\t\tscratch2\n" +
+		"1\t@7\t3\t1\t%21\t4101\t1791903700\t1791903900\tclaude\t/dev/pts/121\t\t\t\tscratch2\n" +
+		"1\t@4\t1\t0\t%14\t4102\t1791903800\t1791903900\tzsh\t/dev/pts/114\t\t\t\tscratch2\n" +
+		"0\t@9\t8\t0\t%30\t4103\t1791903650\t1791903900\tzsh\t/dev/pts/130\t\t\t\tscratch2\n" +
+		"1\t@9\t8\t0\t%31\t4104\t1791903650\t1791903900\topencode\t/dev/pts/131\t\t\t\tscratch2\n" +
 		// another session, one window, the session's activity OLDER than the window's.
-		"1\t@2\t0\t1\t%5\t4105\t1791903999\t1791903100\tvim\t/dev/pts/105\t\t\ta b: c\n" +
+		"1\t@2\t0\t1\t%5\t4105\t1791903999\t1791903100\tvim\t/dev/pts/105\t\t\t\ta b: c\n" +
 		// a viewer session's rows (it links scratch2's windows): never listed.
-		"1\t@7\t3\t0\t%21\t4101\t1791903700\t1791903000\tclaude\t/dev/pts/121\t\t\tmuster-view-0123456789ab\n" +
-		"1\t@4\t1\t1\t%14\t4102\t1791903800\t1791903000\tzsh\t/dev/pts/114\t\t\tmuster-view-0123456789ab\n" +
+		"1\t@7\t3\t0\t%21\t4101\t1791903700\t1791903000\tclaude\t/dev/pts/121\t\t\t\tmuster-view-0123456789ab\n" +
+		"1\t@4\t1\t1\t%14\t4102\t1791903800\t1791903000\tzsh\t/dev/pts/114\t\t\t\tmuster-view-0123456789ab\n" +
 		// junk: too few fields, a non-id window, a non-pane, a bad index, a bad pid,
 		// and a name tmux would never print (a control character).
 		"1\t@1\t0\t1\t%1\t1\t1\t1\tzsh\t/dev/pts/101\n" +
-		"1\t7\t0\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\t\t\tbadid\n" +
-		"1\t@1\t0\t1\t1\t10\t1\t1\tzsh\t/dev/pts/999\t\t\tbadpane\n" +
-		"1\t@1\tx\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\t\t\tbadindex\n" +
-		"1\t@1\t0\t1\t%1\t0\t1\t1\tzsh\t/dev/pts/101\t\t\tbadpid\n" +
-		"1\t@1\t0\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\t\t\tbad\x07name\r\n"
+		"1\t7\t0\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\t\t\t\tbadid\n" +
+		"1\t@1\t0\t1\t1\t10\t1\t1\tzsh\t/dev/pts/999\t\t\t\tbadpane\n" +
+		"1\t@1\tx\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\t\t\t\tbadindex\n" +
+		"1\t@1\t0\t1\t%1\t0\t1\t1\tzsh\t/dev/pts/101\t\t\t\tbadpid\n" +
+		"1\t@1\t0\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\t\t\t\tbad\x07name\r\n"
 	got := parseWindows(out)
 	want := []WindowInfo{
 		{Session: "a b: c", ID: "@2", Index: 0, Active: true, Pane: "%5", PanePID: 4105, TTY: "/dev/pts/105", Activity: 1791903999, Command: "vim"},
@@ -228,6 +228,9 @@ type windowsBackend struct {
 	pasted  []string // "pane text"
 	closed  []string
 	noPaste bool
+	// screens is a pane's screen as ClaudeScreen reads it, by pane id;
+	// a pane not in it shows idleClaudeScreen.
+	screens map[string]string
 }
 
 func (b *windowsBackend) set(w ...WindowInfo) {
@@ -277,6 +280,30 @@ func (b *windowsBackend) ClaudePanes(context.Context, []string) map[string]Claud
 func (b *windowsBackend) Paste(_ context.Context, p ClaudePane, text string) error {
 	return b.PastePane(context.Background(), p.Pane, text)
 }
+
+// ClaudeScreen and PasteChecked give the fake the Claude prompt guard's two
+// capabilities, as the tmux backend has them: a screen at Claude Code's idle
+// prompt, and the real checked paste around PastePane (its Enter records
+// nothing: PastePane records the whole send, as a plain paste did).
+func (b *windowsBackend) ClaudeScreen(_ context.Context, pane string) (string, error) {
+	if s, ok := b.screens[pane]; ok {
+		return s, nil
+	}
+	return idleClaudeScreen, nil
+}
+func (b *windowsBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return runCheckedPaste(ctx, checkedPasteSteps{
+		paste: func(ctx context.Context) error { return b.PastePane(ctx, p.Pane, text) },
+		enter: func(context.Context) error { return nil },
+		sleep: func(context.Context, time.Duration) error { return nil },
+	}, before, beforeEnter)
+}
+
+// idleClaudeScreen is Claude Code at its idle prompt, as ccdialog reads one:
+// the input box between two rules, the status line under it.
+const idleClaudeScreen = "● done\n\n" + "────────────────────────────────────────" + "\n❯ \n" +
+	"────────────────────────────────────────" + "\n  ? for shortcuts\n"
+
 func (b *windowsBackend) ActivePane(context.Context, string) (string, bool) {
 	b.note("ActivePane")
 	return "%legacy", true
@@ -636,12 +663,31 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// JSON writes six-fold; the list-wide bound (MaxPendingWindows)
 				// keeps the first windows' alone.
 				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64),
+					// And the last message at its largest: muster keeps it at most
+					// at now (a WAITING window's is the host's now anyway).
+					LastMessage: math.MaxInt64,
+					// And a live copy's id at the 64-byte bound on every window;
+					// the list-wide bound (MaxLiveCopyWindows) keeps the first
+					// windows' alone.
+					LiveCopy: strings.Repeat("e", 64),
 					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Tool: strings.Repeat("&", mirror.MaxPendingTool),
 						Last: strings.Repeat(">", mirror.MaxPendingLast)}},
 				// Every window with its other panes' Claude sessions at their
 				// per-window bound; the list-wide bound (MaxOtherClaude) keeps
 				// the first windows' alone.
 				Others: otherClaudeAtBound(i)})
+			// The last MaxTurnErrorWindows windows are IDLE instead, each
+			// carrying how its last turn failed with every field at its bound
+			// (a TurnError rides only an idle window, never beside a Pending).
+			// A usage limit is the largest kind: its 11 bytes and a reset time
+			// outweigh a 32-byte code with none.
+			if i >= n-mirror.MaxTurnErrorWindows {
+				c := *out[i].Claude
+				c.Status, c.Pending = mirror.StatusIdle, nil
+				c.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: math.MaxInt64, ResetsAt: math.MaxInt64,
+					Rejected: true, Prompt: strings.Repeat("f", 16), PrevAt: math.MaxInt64, Quick: mirror.MaxTurnErrorQuick}
+				out[i].Claude = &c
+			}
 		}
 		return out
 	}
@@ -681,12 +727,39 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		if pending != mirror.MaxPendingWindows {
 			t.Fatalf("instrument check: %d windows carry what they wait on, want the bound %d", pending, mirror.MaxPendingWindows)
 		}
+		turnErrors := 0
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
+			if e := w.TurnError; e != nil {
+				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || !e.Rejected || len(e.Prompt) != 16 || e.PrevAt != math.MaxInt64 || e.Quick != mirror.MaxTurnErrorQuick {
+					t.Fatalf("instrument check: a turn error field was cut, so this is not the worst case: %+v", e)
+				}
+				turnErrors++
+			}
+		}
+		liveCopies := 0
+		for _, w := range l.windows {
+			if w.LiveCopy != "" {
+				if len(w.LiveCopy) != 64 {
+					t.Fatalf("instrument check: a live copy was cut, so this is not the worst case: %q", w.LiveCopy)
+				}
+				liveCopies++
+			}
+		}
+		if liveCopies != mirror.MaxLiveCopyWindows {
+			t.Fatalf("instrument check: %d windows carry a live copy, want the bound %d", liveCopies, mirror.MaxLiveCopyWindows)
+		}
+		if turnErrors != mirror.MaxTurnErrorWindows {
+			t.Fatalf("instrument check: %d windows carry a turn error, want the bound %d", turnErrors, mirror.MaxTurnErrorWindows)
+		}
+		for _, w := range l.windows {
+			if w.Label == "" || w.Command == "" || !w.Claude || (w.Status != mirror.StatusWaiting && w.TurnError == nil) || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 ||
+				w.LastMessage < time.Now().Unix()-2*mirror.ActivityBucket {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}
 		m := l.msg(mirror.TypeHello)
+		// And the host's limit at its largest.
+		m.HostLimit = &mirror.HostLimit{At: math.MaxInt64, ResetsAt: math.MaxInt64}
 		m.Version, m.Host, m.Interactive, m.PanePaste, m.StatusReport = mirror.ProtocolVersion, strings.Repeat("h", 63), true, true, true
 		b, err := json.Marshal(m)
 		if err != nil {
@@ -766,12 +839,12 @@ func otherClaudeAtBound(i int) []ClaudePane {
 // beside its active one (what Windows locates Claude sessions in, so one in a
 // split resolves), each in its own window; a malformed one is dropped.
 func TestParseWindowsKeepsEveryPaneOfASplit(t *testing.T) {
-	out := "0\t@3\t1\t1\t%9\t5009\t1\t1\tclaude\t/dev/pts/109\t\t\twork\n" +
-		"1\t@3\t1\t1\t%7\t5007\t1\t1\tzsh\t/dev/pts/107\t\t\twork\n" +
-		"0\t@3\t1\t1\t%10\t5010\t1\t1\tvim\t/dev/pts/110\t\t\twork\n" +
-		"0\t@4\t2\t0\t%11\t5011\t1\t1\tzsh\t/dev/pts/111\t\t\twork\n" +
-		"1\t@4\t2\t0\t%12\t5012\t1\t1\tzsh\t/dev/pts/112\t\t\twork\n" +
-		"0\t@3\t1\t1\tnotapane\t5013\t1\t1\tzsh\t/dev/pts/999\t\t\twork\n"
+	out := "0\t@3\t1\t1\t%9\t5009\t1\t1\tclaude\t/dev/pts/109\t\t\t\twork\n" +
+		"1\t@3\t1\t1\t%7\t5007\t1\t1\tzsh\t/dev/pts/107\t\t\t\twork\n" +
+		"0\t@3\t1\t1\t%10\t5010\t1\t1\tvim\t/dev/pts/110\t\t\t\twork\n" +
+		"0\t@4\t2\t0\t%11\t5011\t1\t1\tzsh\t/dev/pts/111\t\t\t\twork\n" +
+		"1\t@4\t2\t0\t%12\t5012\t1\t1\tzsh\t/dev/pts/112\t\t\t\twork\n" +
+		"0\t@3\t1\t1\tnotapane\t5013\t1\t1\tzsh\t/dev/pts/999\t\t\t\twork\n"
 	got := parseWindows(out)
 	if len(got) != 2 || got[0].Pane != "%7" || got[1].Pane != "%12" {
 		t.Fatalf("%+v", got)

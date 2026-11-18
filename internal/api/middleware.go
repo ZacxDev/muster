@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/url"
@@ -9,6 +10,9 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/pages"
+	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // BuildVersion is the running build version, set from main via -ldflags
@@ -35,10 +39,52 @@ func SetTelemetryConnectSrc(rawURL string) {
 }
 
 // withMiddleware wraps the mux with the cross-cutting middleware chain, outermost
-// first: panic recovery (so a handler panic can never crash the single-replica
-// process), security headers, then access logging.
+// first: the plugin-origin Host refusal (refusePluginOriginHosts), panic
+// recovery (so a handler panic can never crash the single-replica process),
+// security headers, the request's server span (internal/telemetry; none while
+// tracing is off), then access logging.
+//
+// Every listener muster-server binds (the main port, MUSTER_CONNECT_PORT's
+// OnlyConnectSurface and MUSTER_BROWSER_PORT's BrowserListener) wraps this one
+// Handler, so the refusal covers all three (TestAPluginOriginHostIsRefusedOnEveryListener).
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
-	return s.recoverMiddleware(securityHeaders(s.accessLog(next)))
+	// Outermost: every layer below, and every handler, reads the address this
+	// resolves (clientIP / clientaddr.Of), whichever listener it arrived on.
+	return s.ext.ClientAddr.WithLog(s.logger.Printf).Middleware(
+		s.refusePluginOriginHosts(s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(next)), hstsFor(s.auth.PublicURL)))))
+}
+
+// PluginOriginHostRefusal is the 421 body for a request whose Host is under
+// MUSTER_PLUGIN_ORIGINS.
+const PluginOriginHostRefusal = "this host belongs to a plugin (MUSTER_PLUGIN_ORIGINS), not to muster\n"
+
+// refusePluginOriginHosts answers 421 Misdirected Request, before any handler,
+// for a request whose Host is under MUSTER_PLUGIN_ORIGINS.
+//
+// 🔴 WHY: those hosts are a plugin's (a preview gateway's zone), and muster's
+// same-origin checks trust the request's own Host (wsAllowedOrigins puts r.Host
+// on the list requireSameOrigin and the WebSockets accept). A request reaching
+// muster with Host and Origin both a plugin host, by a misrouted edge or a
+// chosen Host, would pass them as same-origin. Refusing the host outright
+// closes that, whatever the route. Unset: nothing is refused.
+//
+// Being outermost, a refusal is outside accessLog, the span and the http
+// metrics, so it counts and logs itself (muster_plugin_origin_refusals_total,
+// and a line in requireSameOrigin's shape).
+func (s *Server) refusePluginOriginHosts(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if plugins.AnyMatchesHost(s.ext.PluginOrigins, r.Host) {
+			metrics.PluginOriginRefusals.Inc()
+			s.logger.Printf("refused %s %s for Host %q: it is under MUSTER_PLUGIN_ORIGINS (421)", r.Method, r.URL.Path, r.Host)
+			h := w.Header()
+			h.Set("Content-Type", "text/plain; charset=utf-8")
+			h.Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusMisdirectedRequest)
+			_, _ = w.Write([]byte(PluginOriginHostRefusal))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // recoverMiddleware turns a panic in any handler into a logged 500 instead of a
@@ -64,14 +110,92 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 // external data (k8s objects, gateway responses, the DB).
 func safeGo(logger *log.Logger, what string, fn func()) {
 	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				metrics.Panics.WithLabelValues("goroutine").Inc()
-				logger.Printf("PANIC in goroutine %s: %v\n%s", what, rec, debug.Stack())
-			}
-		}()
+		defer recoverGoroutine(logger, what)
 		fn()
 	}()
+}
+
+// SuperviseBackoff is how long Supervise waits before restarting a loop that
+// panicked; it doubles per consecutive panic, up to SuperviseBackoffMax. A run
+// that stayed up at least SuperviseHealthy before it panicked counts as
+// healthy, and the wait starts again from SuperviseBackoff. Vars so a test
+// need not wait.
+var (
+	SuperviseBackoff    = 5 * time.Second
+	SuperviseBackoffMax = 5 * time.Minute
+	SuperviseHealthy    = 5 * time.Minute
+)
+
+// superviseExited, when set (tests only), is called with a supervised loop's
+// name as its supervisor goroutine returns.
+var superviseExited func(name string)
+
+// Supervise runs a background loop in a goroutine and keeps it alive across a
+// PANIC: the panic is logged and counted (as safeGo's are), and the loop is
+// started again after SuperviseBackoff, doubling per consecutive panic and
+// starting again from SuperviseBackoff after a run that stayed up
+// SuperviseHealthy. A loop that RETURNS (its ctx ended, or it is switched off)
+// is not restarted, and a ctx that ends during the backoff ends the
+// supervisor without another run.
+//
+// 🔴 EVERY LOOP cmd/muster-server STARTS GOES THROUGH IT. A bare `go` has no
+// recover, so one panicking pass of one sweep killed the whole process — and,
+// started again, the same sweep panicked again: a crash loop (a team row met
+// by a per-owner sweep, #654 round 1). Restarting the LOOP rather than
+// recovering once and returning keeps the rest of that loop's work running.
+// A loop with a "finished" signal for shutdown must raise it only when it
+// RETURNS, never on a panic's unwind (agentkickoff.Deliverer.Done,
+// officers.Reconciler.Done): a restarted run is still working.
+func Supervise(ctx context.Context, logger *log.Logger, name string, run func(context.Context)) {
+	safeGo(logger, "supervise "+name, func() {
+		if superviseExited != nil {
+			defer superviseExited(name)
+		}
+		wait := SuperviseBackoff
+		for {
+			started := time.Now()
+			if !runRecovered(ctx, logger, name, run) {
+				return
+			}
+			if time.Since(started) >= SuperviseHealthy {
+				wait = SuperviseBackoff
+			}
+			logger.Printf("supervise: %s panicked; restarting it in %s", name, wait)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			if wait *= 2; wait > SuperviseBackoffMax {
+				wait = SuperviseBackoffMax
+			}
+		}
+	})
+}
+
+// runRecovered runs run once and reports whether it panicked.
+func runRecovered(ctx context.Context, logger *log.Logger, name string, run func(context.Context)) (panicked bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicked = true
+			metrics.Panics.WithLabelValues("goroutine").Inc()
+			logger.Printf("PANIC in background loop %s: %v\n%s", name, rec, debug.Stack())
+		}
+	}()
+	run(ctx)
+	return false
+}
+
+// recoverGoroutine is safeGo's recover: deferred DIRECTLY (recover only works
+// in the deferred function itself), it counts and logs a panic of the
+// goroutine named what. safeGo defers it outside fn; a goroutine that needs a
+// defer of its own to run AFTER the panic is logged defers it inside fn, below
+// that defer (destroyAgent: destroyInFlight's Done).
+func recoverGoroutine(logger *log.Logger, what string) {
+	if rec := recover(); rec != nil {
+		metrics.Panics.WithLabelValues("goroutine").Inc()
+		logger.Printf("PANIC in goroutine %s: %v\n%s", what, rec, debug.Stack())
+	}
 }
 
 // permissionsPolicy is the Permissions-Policy every response carries.
@@ -89,14 +213,26 @@ const permissionsPolicy = "microphone=(self)"
 // is server-rendered HTML + vendored htmx/idiomorph + inline <script> blocks and
 // `hx-on:` attributes. htmx compiles `hx-on:` handlers via `new Function`, so the
 // script-src needs BOTH 'unsafe-inline' (inline scripts + hx-on attrs) AND
-// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break. The
-// CSP still earns its keep by blocking external origins, framing (clickjacking),
-// base-uri and form-action hijacking; Referrer-Policy:no-referrer keeps the
-// magic-link token out of the Referer header.
-func securityHeaders(next http.Handler) http.Handler {
+// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break.
+// ⚠ So the CSP is NOT an exfiltration barrier: an injected inline script can
+// always navigate (location = …), which no CSP directive governs. What it does
+// earn: framing (frame-ancestors, clickjacking), base-uri and form-action
+// hijacking, external SCRIPTS and styles (script-src/style-src 'self'), and
+// keeping the pages' own fetches same-origin (connect-src 'self', plus a Faro
+// collector when telemetry is on). img-src also admits other origins' brand
+// icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy:no-referrer
+// keeps the magic-link token out of the Referer header.
+//
+// hsts, when not empty, is the Strict-Transport-Security value (hstsFor): sent
+// on every response when the public URL is https. A browser ignores it on a
+// plain-http response, so a loopback development page is unaffected.
+func securityHeaders(next http.Handler, hsts string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'"))
+		if hsts != "" {
+			h.Set("Strict-Transport-Security", hsts)
+		}
+		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'", ""))
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
@@ -105,20 +241,59 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// hstsMaxAge is one year, the value browsers' preload lists ask for. No
+// includeSubDomains: the public URL's host is muster's, its siblings are not.
+const hstsMaxAge = "max-age=31536000"
+
+// hstsFor is the Strict-Transport-Security value for a server whose public URL
+// is publicURL: hstsMaxAge when it is https, "" (no header) otherwise.
+func hstsFor(publicURL string) string {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+		return ""
+	}
+	return hstsMaxAge
+}
+
+// serverSwitcherImgSrc is what the web app's server switcher may DRAW from
+// another origin (docs/design/web-server-switcher.md): another muster's
+// current logo icon, as a plain <img>, at the one path every muster serves it
+// on. The operator's decision on review ("Logo via <img>, no CORS"): nothing on
+// another origin is READ — connect-src stays 'self', and /api/instance and
+// /brand/* send no Access-Control-Allow-Origin.
+//
+// 🔴 ONE EXACT PATH, NOT AN ORIGIN AND NOT A PREFIX. The servers are the
+// person's own list, kept in their browser, so no origin can be named here; a
+// path source with no trailing slash matches that path only. http only for the
+// two loopback hosts the switcher accepts (development). ⚠ A source's path is
+// not checked after a redirect, and an image URL can carry a query: neither
+// matters for exfiltration, which a navigation already allows (above).
+// ⚠ A host wildcard does not match an IP address in a browser that follows the
+// CSP spec, so a server addressed by IP (other than 127.0.0.1) may show no
+// logo; the switcher then draws its colour and label.
+const serverSwitcherImgSrc = "https://*:*/brand/icon-192.png " +
+	"http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png"
+
 // contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
-// source: 'none' for every response but allowSameOriginFrame's.
-func contentSecurityPolicy(frameAncestors string) string {
+// source: 'none' for every response but allowSameOriginFrame's. frameSrc, when
+// not empty, is a frame-src directive's sources; "" writes none, so the
+// policy is exactly what it was before plugins could be framed (child frames
+// then fall back to default-src 'self').
+func contentSecurityPolicy(frameAncestors, frameSrc string) string {
 	connectSrc := "'self'"
 	if telemetryConnectSrc != "" {
 		connectSrc += " " + telemetryConnectSrc
 	}
-	return "default-src 'self'; " +
+	csp := "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
 		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; " +
+		"img-src 'self' data: " + serverSwitcherImgSrc + "; " +
 		"connect-src " + connectSrc + "; " +
-		"frame-ancestors " + frameAncestors + "; " +
-		"base-uri 'self'; " +
+		"frame-ancestors " + frameAncestors + "; "
+	if frameSrc != "" {
+		csp += "frame-src " + frameSrc + "; "
+	}
+	return csp + "base-uri 'self'; " +
 		"form-action 'self'"
 }
 
@@ -128,8 +303,14 @@ func contentSecurityPolicy(frameAncestors string) string {
 // X-Frame-Options SAMEORIGIN in place of the 'none' / DENY every other
 // response keeps. An uploaded file is served with a sandbox CSP, so its origin
 // is opaque, not 'self': it cannot frame these either.
-func allowSameOriginFrame(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'"))
+//
+// frameSrc is what the page itself may frame: "" (no frame-src, so
+// default-src 'self') on every page but a mirrored window's two session views,
+// which pass viewerFrameSrc — 'self' plus the origins of the owner's live
+// viewer plugins, for the session-view chip's Show here frame
+// (docs/plugins.md#the-session-view-chip).
+func allowSameOriginFrame(w http.ResponseWriter, frameSrc string) {
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'", frameSrc))
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 }
 
@@ -173,7 +354,9 @@ func accessLogPath(u *url.URL) string {
 }
 
 func loggedPath(p string) string {
-	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/"} {
+	// A page's share link (/s/<token>…) is a bearer capability: none of it
+	// is written, whatever follows the token.
+	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/", pages.SharePrefix} {
 		if strings.HasPrefix(p, prefix) {
 			return prefix + "[redacted]"
 		}

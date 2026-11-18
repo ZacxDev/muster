@@ -405,6 +405,20 @@ func TestReplacingTheChiefRefusesWhileAChatTurnRunsAndBlocksNewOnes(t *testing.T
 	if msgs, _ := agents.NewPG(f.pool).ListChatMessages(asUser(f.owner), sess.ID); len(msgs) != 0 {
 		t.Fatalf("the refused turn stored %d message(s)", len(msgs))
 	}
+	// A gate another operation closed (a forced chief_restart) refuses the swap,
+	// and the swap leaves that closure in place: the closure has ONE owner
+	// (turnGate.closeFor), so this swap neither proceeds nor reopens it.
+	if code, out := f.replace(ccReq(slug)); code != http.StatusConflict ||
+		out["error"] != "the chief is being restarted or replaced right now; nothing was changed — retry when it finishes" {
+		t.Fatalf("with the gate closed by another operation: %d %v", code, out)
+	}
+	if d := f.prov.destroyedIDs(); len(d) != 0 {
+		t.Fatalf("destroyed %v while another operation held the gate", d)
+	}
+	if f.srv.turns.enter(f.old.ID) {
+		f.srv.turns.leave(f.old.ID)
+		t.Fatal("the refused swap reopened a gate it did not close")
+	}
 	f.srv.turns.reopen(f.old.ID)
 	if code, out := f.replace(ccReq(slug)); code != http.StatusOK {
 		t.Fatalf("once the chat turn ended: %d %v", code, out)

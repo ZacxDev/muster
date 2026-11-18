@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"github.com/ZacxDev/muster/internal/features"
+	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"io"
 	"log"
 	"os"
@@ -12,9 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/connectors"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
@@ -195,7 +200,7 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{},
 			wantLine: `permission router: NONE, UNDECLARED — ` + envRouterURL + ` is unset ` +
 				`and ` + envStandalone + ` is not 1. This server will NOT report ready while ` +
-				`a notes store is wired, on purpose: see /readyz for the reason`,
+				`a notes store is wired, on purpose: /readyz answers 503 and logs the reason (a "readyz: not ready" line)`,
 			mustContain: []string{envRouterURL, "UNDECLARED"},
 			mustNotSay:  []string{envRouterToken + " is unset"},
 		},
@@ -272,6 +277,10 @@ func normaliseBannerLine(s string) string {
 // exclusion instead of gesturing at a parenthesised handful in prose.
 var bannerLedger = []string{
 	envDatabase,
+	// The outcome watchdog: `agent watchdog: ON — …` with all three, or OFF.
+	envAgentStuckNoReply, envAgentStuckSilent, envAgentWatchdogInterval,
+	// The officer runtime: `officers: ON — n declared …` or `officers: OFF`.
+	envOfficers,
 	// The Agents list's Idle section: one line in both directions (ON with the
 	// threshold / OFF).
 	envAgentsIdleAfter,
@@ -285,6 +294,8 @@ var bannerLedger = []string{
 	envBrowserPort,
 	envSecureCookies,
 	envHookToken,
+	// The metrics listener: one line, both directions.
+	envMetricsPort,
 	envServiceToken,
 	envRouterURL,
 	// The approval relay's own gate: its off-state is "every claude-code prompt
@@ -298,10 +309,11 @@ var bannerLedger = []string{
 	envMemoURL,
 	envMemoToken,
 	envMemoScopeMap,
-	// Dictation: the `dictation:` line names both in both directions (ON / OFF).
-	// Its off-state — no microphone on any message box — errors nowhere.
+	// Dictation: the `dictation:` line names all three in both directions (ON /
+	// OFF). Its off-state — no microphone on any message box — errors nowhere.
 	envSTTURL,
 	envSTTToken,
+	envSTTModel,
 	// File attachments: the `file attachments:` line names all eight in both
 	// directions (ON / OFF). Its off-state — no paperclip, every upload route
 	// 404 — errors nowhere, and a MISCONFIGURED set is off, not a refusal.
@@ -325,7 +337,13 @@ var bannerLedger = []string{
 	envPushExtraHosts,
 	// The Android pairing policy: a line in both directions (set / unset).
 	envAndroidAllowPINKeys,
-	envGitHubEncKey,
+	// The Android app's Digital Asset Links (its passkeys): a line in both
+	// directions — serving (the package and certificates) / OFF (the path is 404).
+	envAndroidPackage,
+	envAndroidCertSHA256,
+	// The Android shell's sign-in origins: a line in both directions — ON (the
+	// origins served) / OFF (the route answers none).
+	envAndroidSSOOrigins,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
 	// both variables, the CHAT arm names this one in each direction. It is ledgered
@@ -363,11 +381,14 @@ var bannerLedger = []string{
 	// told it is" with nothing in the log. One line names all three in each
 	// direction.
 	envConnectorEncKey,
-	// The GitHub App: the `github app:` line names all three in both directions
+	// The GitHub App: the `github app:` line names all four in both directions
 	// (ON / OFF), and the `checkout wait:` line names its variable in both.
 	envGitHubAppID,
 	envGitHubAppKey,
 	envGitHubAppAccounts,
+	// The access mode: the ON line names it with its value and the scope it
+	// mints; the OFF line says it does not apply.
+	envGitHubAppAccess,
 	envCheckoutWaitTimeout,
 	envConnectPort,
 	envAgentConnectURL,
@@ -384,15 +405,33 @@ var bannerLedger = []string{
 	// plugin that files tasks holds its notices, so the operator must be told
 	// which state this is (and which namespaces are accepted).
 	envPluginTaskNamespaces,
+	// The plugin origins: ON, every listener refuses a Host under them with 421,
+	// so an operator chasing a misdirected request must be told which state
+	// this is and which patterns.
+	envPluginOrigins,
+	// The client address: STRICT (both unset) or TRUSTED PROXIES with the
+	// ranges and the header, so an operator can read whose headers are believed.
+	envTrustedProxies, envClientIPHeader, envDirectClients,
 	// 🔴 SESSION ROUTING IS LEDGERED: ON, the chief can put an outside party's
 	// message into the operator's own sessions and relay the answer without
 	// approval to allowlisted senders, so the log must say which state this is
 	// and how many owners have an allowlist.
 	envSessionRouting,
 	envRouteRelayAllow,
-	// The route deadline: ON, the line names the value a route waits before it
-	// goes back to the chief; OFF, that it is not read.
-	envRouteTimeout,
+	// 🔴 PULL-REQUEST ROUTING IS LEDGERED: ON, a listed sender's mail decides
+	// which of the owner's sessions it is pasted into, so the log must say
+	// which state this is.
+	envPRMailSenders,
+	// 🔴 FLEET-REPORT REQUESTS ARE LEDGERED: ON, a listed sender's mail gets a
+	// reply muster sends without the owner's approval, carrying the owner's
+	// session names, hosts and focus titles, so the log must say which state
+	// this is.
+	envFleetReportSenders,
+	// 🔴 THE MAIL RESUME IS LEDGERED: ON, a listed sender's mail can make a
+	// host START A PROCESS (claude --resume), so the log must say which state
+	// this is — and whether the kill switch holds it off.
+	envMailResumeAllow,
+	envMailResumeOff,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
 	// the chief, and with dispatch the chief can start agents on the owner's
 	// credentials, so the log must say which state this is.
@@ -400,6 +439,34 @@ var bannerLedger = []string{
 	// CHIEF SESSION RUNTIMES ARE LEDGERED: ON, the chief's sessions may run on
 	// another runtime and model than its own, so the log must name which.
 	envChiefSessionRuntimes,
+	// 🔴 THE CHIEF'S STALL NUDGES ARE LEDGERED: ON, the chief reads the owner's
+	// stalled sessions and sends their text to its model provider, and a live
+	// owner's sessions get pasted into — so the log must say which state this
+	// is, shadow or live.
+	envChiefNudges,
+	// SESSION STATE IS LEDGERED: ON, a pass reads every owner's sessions every
+	// 30 s and, where the chief's nudges classify, the same classifier runs on
+	// it — so the log must say which state this is.
+	envSessionState,
+	// THE FLEET DIGEST IS LEDGERED: ON, the chief panel draws a card over
+	// every one of the owner's sessions and fleet_list reads their stops and
+	// pull requests (the GitHub App) — so the log must say which state this is.
+	envFleetDigest,
+	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
+	// databases; OFF, they reach whatever address they name — so the log must
+	// say which.
+	envDialDenyPrivate,
+	// THE ASK LOG IS LEDGERED: ON, every question an agent asks is recorded
+	// with its answer — transcript text, kept for the text TTL — so the log
+	// must say whether it is.
+	envAskLog,
+	// SHAREABLE PAGES ARE LEDGERED: ON, agents publish pages a share link
+	// serves to anyone holding it — so the log must say whether they do.
+	envPages,
+	// THE CLAUDE ACCOUNT USAGE POLLER IS LEDGERED: ON, muster-server calls the
+	// provider's usage endpoint with every pooled account's token, every
+	// interval — so the log must say whether it does.
+	envCCUsagePoll,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -419,16 +486,96 @@ var bannerLedger = []string{
 // change — it fails here until the variable is moved onto bannerLedger.
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
-// The prose this replaced claimed MUSTER_PUBLIC_URL and GITHUB_CLIENT_SECRET
-// were "reported through a different name"; githubAuthPosture names
-// GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
-// entries say what is actually true of them.
 var bannerExempt = map[string]string{
+	envDatabaseFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envUIPasswordFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envHookTokenFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envVAPIDPublicKeyFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envVAPIDPrivateKeyFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envPostgresPassword: "read by `muster-server compose-init` only (the Compose stack's muster-init one-shot), never by the " +
+		"server, which has no banner line to give it: compose-init writes it into Postgres's password file and DATABASE_URL's",
+	envInternalHTTPConnectors: "announced at boot on its own `internal_http connector <name>:` line per connector (withInternalHTTP), " +
+		"and only when set: a bad entry or a missing token REFUSES boot, so there is no silently half-on state; unset, there " +
+		"is no such connector and internal_http_request answers that the name is not one",
+	envTeamsOnServerPool: "announced at boot on its own `team server pool: ON` line naming each team, and only when set: " +
+		"every id is checked to be a team first and boot is REFUSED otherwise, so there is no silently half-on state; unset, " +
+		"no team is lent the pool and the team chief's page says so (Kubernetes only; refused beside MUSTER_CHIEF_RUNTIME=compose)",
+	envTeamsOnGitHubApp: "announced at boot on its own `team GitHub App: ON` line naming each team, and only when set: every id " +
+		"is checked to be a team first and boot is REFUSED otherwise, and refused with no GitHub App, so there is no silently " +
+		"half-on state; unset, no team is lent the App and the team's connectors page says so",
+	envOfficerImagePullSecret: "a Secret's NAME, used only beside an officer pool's own `image`; refused at boot wherever it " +
+		"could do nothing (validateOfficerImagePullSecret: not a Secret name, no kubernetes provisioner or muster's namespace, " +
+		"no " + officers.ImageRegistriesEnv + "), and listed on the Features page under Officers",
+	envCCUsagePushURL: "printed on its own `claude account usage push: ON/OFF` line, which is drawn only under the poller's ON " +
+		"line; refused at boot with the poller off, whose OFF line names " + envCCUsagePoll,
+	envCCUsagePushToken:    "a secret, never printed; refused at boot without " + envCCUsagePushURL + ", whose state the push line prints",
+	envCCUsagePushInstance: "printed with its value on the `claude account usage push: ON` line; refused at boot without " + envCCUsagePushURL,
+	envCCConsumerUsage: "printed with its value on its own `claude consumer usage push: ON/OFF` line, which is drawn only under the " +
+		"poller's ON line; refused at boot without " + envCCUsagePushURL + ", which is refused with the poller off",
+	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
+		"whose OFF line names " + envCCUsagePoll,
+	envPagesUploadBytes: "printed with its value on the `shareable pages: ON` line; it means nothing with pages off, whose OFF line names " + envPages,
+	envAskLogTextTTL:    "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
+	envAskLogClassify: "printed on the `ask log: ON` line in both its states (ON / off, naming itself); it means nothing with the " +
+		"log off, whose OFF line names " + envAskLog,
+	envChiefRuntime: "set, the compose driver logs `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` at boot " +
+		"(buildComposeDriver, pinned by TestTheComposeChiefIsWrittenWhereItsContainerReadsIt); unset there is no Compose " +
+		"chief, and the Features page and `muster doctor` report the chief's state with its reason. It is not on the " +
+		"shared ON fixture because it refuses that fixture's own agent-plane variables",
+	envChiefSpecDir: "printed with its value on the `chief runtime: COMPOSE` line; it means nothing without " +
+		"MUSTER_CHIEF_RUNTIME, which refuses to boot with it set alone",
+	envChiefLLMModel: "printed with its value on the `chief llm: … through the LLM proxy` line api.EnableChiefLLM logs on " +
+		"the Compose chief or with MUSTER_CHIEF_LLM=openrouter; it means nothing without one of them, and it is refused alone",
+	envChiefLLM: "set, api.EnableChiefLLM logs `chief llm: the admin's chief may reach <model> through the LLM proxy …` at boot " +
+		"(validateChiefLLM refuses boot without the key, so that is the one ON line); unset is the chief on its Claude " +
+		"account as before this variable existed, nothing new to announce, and the Features page lists it under the " +
+		"Claude Code agents feature's settings (Kubernetes; refused beside the Compose runtime)",
+	envChiefSessionsOpenRouter: "set to 1, api.EnableChiefSessionsLLM logs `chief sessions: the admin's chief's OpenRouter side " +
+		"chats may reach their models through the LLM proxy …` at boot, naming the caps (boot is refused without the key or a " +
+		"database, so that is the one ON line); unset, every request carrying X-Muster-Chief-Session is refused 400 and " +
+		"nothing else changes, nothing new to announce; the Features page lists it under Chief session runtimes",
+	envChiefSessionsKey: "a secret, never printed; named on the `chief sessions:` ON line, and refused at boot without " +
+		"MUSTER_CHIEF_SESSIONS_OPENROUTER=1 or when it equals MUSTER_AGENT_OPENROUTER_KEY",
+	envChiefSessionsDailyUSD: "printed with its value on the `chief sessions:` ON line; refused at boot without " +
+		"MUSTER_CHIEF_SESSIONS_OPENROUTER=1",
+	envChiefSessionsSessionUSD: "printed on the `chief sessions:` ON line in both its states (its value, or `no per-session " +
+		"cap`); refused at boot without MUSTER_CHIEF_SESSIONS_OPENROUTER=1",
+	envTestLLMUpstream: "TEST ONLY: announced on its own loud `llm proxy: 🔴 the chief's upstream is OVERRIDDEN …` line " +
+		"when set; unset (every real deployment) there is nothing to announce, and it is refused without the Compose chief runtime",
+	envChiefClaudeToken: "a secret, never printed; which credential the chief runs on is the Account page's to say, " +
+		"and it is refused at boot without MUSTER_CHIEF_RUNTIME",
+	envFleetReportPaths: "counted on the `fleet-report requests: ON` line, which names it; it does nothing without " +
+		"MUSTER_FLEET_REPORT_SENDERS, and senders set without it refuse to boot, so there is no silent state to announce",
+	envChiefNudgeLiveOwners: "counted on the `chief nudges: ON` line when set, and named there as empty on the SHADOW line; " +
+		"it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
+	envChiefNudgeNeedsYouLiveOwners: "counted on the live `chief nudges: ON` line (owners in both lists), and named on " +
+		"the SHADOW line as doing nothing; it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
+	envChiefNudgeChiefChatQuotesLiveOwners: "counted on the live `chief nudges: ON` line (owners also on the old list), and " +
+		"named on the SHADOW line as doing nothing; it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
+	envChiefNudgeIdle:         "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
+	envChiefNudgeAskThreshold: "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
+	envChiefNudgeHourlyCap: "printed with its VALUE on the live `chief nudges: ON` line (and enforced in shadow too); " +
+		"it means nothing with the sweep off",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
+	envChiefDispatchModels: "a list of OpenRouter ids for a card's options with no OFF state: unset is the default list, a " +
+		"malformed entry refuses to boot in loadConfig, and it turns nothing on — mirrored opencode dispatch is on per host (its hello)",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
 		"writes it gates; it has no OFF state (unset is the 12h default, an out-of-bounds value refuses to " +
 		"boot in loadConfig), and with the plugin off nothing reads it",
+	envLiveHeartbeat: "a tuning interval with no OFF state: unset is ui.DefaultLiveHeartbeat (15s), an " +
+		"out-of-bounds value refuses to boot in loadConfig, and it turns no feature on or off — it sets how " +
+		"often live streams beat and so how soon a page notices a dead one",
 	envAgentKinds: "announced on the `agent kinds:` line in both arms (gateway-only and claude-code " +
 		"enabled); the claude-code arm cannot be rendered by bannerBothDirections' fixture, whose " +
 		"provisioner is built without an account pool. TestTheKindsBannerLineNamesAccountsNeverTokens " +
@@ -441,18 +588,29 @@ var bannerExempt = map[string]string{
 		"with it (ccpool.DefaultCooldown, config.ccPoolLimits), so there is no OFF state to announce",
 	envAgentCCMaxJobs: "an optional, opt-in limit of the claude-code account pool (unset is no cap, config.ccPoolLimits); " +
 		"refused at boot without the kind, so there is no OFF state to announce",
+	envAgentCCFailover: "an optional switch of the claude-code account pool (unset is on; off disables the failover); " +
+		"refused at boot set off without the kind, and printed on the `account failover:` line when the failover is built",
 	envAgentCCBypassPools: "printed on the claude-code arm of the `agent kinds:` line in both states (the pools listed, or " +
 		"\"no worker pool bypasses\"), which bannerBothDirections' fixture cannot render; refused at boot without the " +
 		"kind (validateClaudeCodeKind), so outside that arm there is no state to announce. " +
 		"TestTheKindsBannerLineAnnouncesTheJobLaneBypassBothWays pins both",
-	envAgentHermesImage: "printed on the hermes arm of the `agent kinds:` line; refused at boot when the kind is not " +
-		"enabled (validateKinds), so there is no OFF state to announce. TestTheKindsBannerLineNamesTheHermesImage pins it",
-	envAgentHermesStorage: "an optional size for the hermes volume; refused at boot without the kind, defaulted with it (agentspec.DefaultHermesStorage)",
+	envAgentCCPoolDeployKeys: "printed on the claude-code arm of the `agent kinds:` line in both states (the pools, " +
+		"repositories and Secrets listed, or \"no worker pool has a deploy key\"), which bannerBothDirections' fixture " +
+		"cannot render; refused at boot without the kind, so outside that arm there is no state to announce. " +
+		"TestTheKindsBannerLineAnnouncesThePoolDeployKeysBothWays pins both",
 	envAgentNetpolFromNS: "named on the `claude-code network:` line in both arms (a policy is written / NOT CONFINED), " +
 		"which bannerBothDirections' fixture cannot render for the reason given for " + envAgentKinds + "; " +
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +
 		"state: validateKinds refuses it unset when a policy would be written and set when none would be",
 	envAgentNetpolFromLabels: "the other half of the same selector; same line, same test and same boot refusals as " + envAgentNetpolFromNS,
+	envOfficerEgressCIDRs: "printed on its own `officer egress:` line in both states (the blocks listed, or \"no address " +
+		"blocks\"), drawn under the kubernetes arm of the `claude-code network:` line, which bannerBothDirections' " +
+		"fixture cannot render; refused at boot whenever no agent NetworkPolicy is written (validateOfficerEgress), so " +
+		"outside that arm there is no state to announce. TestTheOfficerEgressBannerLineSaysBothStates pins both",
+	envOfficerEgressDNS: "the other half of the same line, same test and same boot refusal as " + envOfficerEgressCIDRs,
+	envAgentCCEgressLockedPools: "printed on the claude-code arm of the `agent kinds:` line whenever a pool is locked (this " +
+		"list or a deploy key), naming the pools and the label the cluster policy selects; with no locked pool there is " +
+		"nothing locked to announce. Refused at boot without the kind. TestTheKindsBannerLineAnnouncesTheEgressLock pins it",
 	envE2EHoldReadyDir: "a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver (e2eterm.go); the " +
 		"shipped binary has no reader, so it has no state to announce, and an e2e build already logs its own " +
 		"🔴 E2E BUILD line at boot",
@@ -462,6 +620,8 @@ var bannerExempt = map[string]string{
 		"pointing GitHub calls at the pickers spec's fake; the shipped binary has no reader",
 	envE2EOpenRouterModels: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
 		"pointing the model search at the pickers spec's fake catalogue; the shipped binary has no reader",
+	envE2ESuggestURL: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
+		"pointing the suggested replies' model at the chip row spec's fake; the shipped binary has no reader",
 	envE2EAgentEndpoint: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver " +
 		"(every agent endpoint at the answer-delivery spec's loopback fake runtime); the shipped binary has no reader",
 	envE2EGoTrueSkew: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2egotrue.go), " +
@@ -476,18 +636,9 @@ var bannerExempt = map[string]string{
 		"with ln.Addr()), which is the answer this variable is asked for and is strictly " +
 		"better than echoing the request — it is printed after the banner, by serve, not by " +
 		"logBanner",
-	envGitHubToken: "named by githubAuthPosture on the github-connection line whenever a " +
-		"credential exists; there is no off-line for it because the no-credential branch " +
-		"names it too, but only when MUSTER_GITHUB_ENCRYPTION_KEY is set at all — the " +
-		"encryption key is the ledgered variable that gates the whole surface",
-	envGitHubClientID: "named by githubAuthPosture as \"the OAuth App\" on the " +
-		"github-connection line; same one-directional shape as MUSTER_GITHUB_TOKEN and for " +
-		"the same reason",
-	envGitHubClientSec: "the OAuth App is reported by its CLIENT ID, which is the half that " +
-		"is safe to print and the half an operator checks. A secret's NAME in a log tells " +
-		"the reader nothing its sibling has not already told them",
-	envPublicURL: "the OAuth callback base URL — an input to the same GitHubOAuthConfig as " +
-		"the client id and secret (main.go), and reported through the same posture line",
+	envPublicURL: "the externally reachable origin: an input to the same-origin check " +
+		"(api.Extensions.PublicURL) and the base of every minted link; named by the " +
+		"`file attachments:` line when it is what disables uploads",
 	envFaroURL: "browser RUM: handed to ui.SetFaroConfig for the page agent, not a property " +
 		"of this server's auth or dependency posture. logBanner has no line for it on purpose",
 	envFaroKey: "browser RUM: the collect-endpoint key, handed to ui.SetFaroConfig with the " +
@@ -496,6 +647,12 @@ var bannerExempt = map[string]string{
 	envFaroTracing: "browser RUM: a tracing toggle on the page agent, handed to " +
 		"ui.SetFaroConfig with the URL and the key. It changes what the BROWSER emits, and " +
 		"nothing about what this process will or will not do at boot",
+	envFaroUpstream: "browser RUM: where the same-origin relay route forwards the page's Faro posts " +
+		"(api.SetFaroRelay); like MUSTER_FARO_URL it changes what the BROWSER emits and where it lands, not " +
+		"this server's auth or dependency posture, and a value it refuses stops the boot in validate",
+	envHostIcons: "display only: a host's icon by its name, handed to ui.SetHostPreferences. " +
+		"No server posture changes with it, and a value it refuses stops the boot in " +
+		"loadConfig, so there is no silent refusing state to announce",
 	envTagAutoDispatch: "a feature flag on the task surface (api.Extensions.TagAutoDispatch), " +
 		"not a refusal or a dependency. Nothing about the boot posture changes with it, so " +
 		"a banner line would be noise",
@@ -504,17 +661,34 @@ var bannerExempt = map[string]string{
 		"with no database there is no queue and nothing reads it, and an out-of-bounds value refuses to boot",
 	envFocusRetention: "the focus refresher's pruning logs each prune with the VALUE (internal/focus: \"pruned %d " +
 		"mirrored session(s) not seen for %s\"); an out-of-bounds value refuses to boot",
+	envSuggest: "suggested replies announce their state on the feature registry's line (features.go, logFeatures: " +
+		"\"feature suggested-replies: ON / OFF / MISCONFIGURED …\"), which is printed after logBanner; " +
+		"a value it refuses stops the boot",
+	envSuggestModel: "a tuning value with no OFF state, listed among suggested replies' settings on the Features page; " +
+		"an unknown model shows up as a failed generation, not at boot",
+	envFocusModel: "a tuning value with no OFF state, listed among session focus's settings on the Features page; " +
+		"an unknown model shows up as a failed refresh recorded on each session's focus, not at boot",
 	envFocusInterval: "the focus refresher announces its own state with the VALUE when it starts " +
 		"(internal/api/focus.go: \"focus: refresh every %s …\"); with no database or no " +
 		"summarizer nothing reads it, and an out-of-bounds value refuses to boot",
 	envTaskReapAfter: "the reaper announces its own state with the VALUE, at the point it " +
 		"starts (internal/api/server.go: \"task reaper: sweeping every %s for tasks idle for " +
 		">%s\"), which is where a reader looking for it will be",
+	envAgentReapStoppedAfter: "the agent reaper announces its own state with the VALUE, or that it " +
+		"is off, at the point it starts (internal/api/server.go: \"agent reaper: sweeping every %s " +
+		"for agents stopped for >%s\" / \"agent reaper: off\"); a value it refuses stops the boot",
 	envRouterToken: "reported by the permission-router line, which names whichever credential " +
 		"is MISSING (missingRouterCredential). A fully configured deployment deliberately " +
 		"says nothing about it, so it cannot satisfy the both-directions rule — " +
 		"TestTheRouterBannerNamesTheVariableThatIsActuallyMissing is what holds it",
 	envRouterActor: "reported by the permission-router line; see MUSTER_ROUTER_TOKEN",
+	envRouterActorHeader: "a wire spelling with a default, refused at boot when it is not a header name; " +
+		"a router that reads another name refuses the calls themselves (router.ErrUnauthorized), which is where a mismatch shows",
+	envLegacyProvenancePrefix: "a compatibility spelling for installed clients, refused at boot when it is not a " +
+		"header-name prefix; unset, the server reads only X-Muster-*, and a client still on the old spelling shows as " +
+		"tasks attributed `api` with no session link — the same signal it gave before this existed",
+	envRouterTokenHeader: "a wire spelling with a default, refused at boot when it is not a header name; the token also travels as " +
+		"Authorization: Bearer, and a router that reads neither refuses the calls themselves (router.ErrUnauthorized)",
 	envStandalone: "reported by the permission-router line's two NONE branches (DECLARED and " +
 		"UNDECLARED). When a router IS configured the line has nothing to say about it, " +
 		"which is the one-directional shape the ledger cannot express",
@@ -569,6 +743,10 @@ var bannerExempt = map[string]string{
 		"disagreeing with what internal/api writes into agents.namespace. That is pinned " +
 		"structurally by TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith, " +
 		"which is a stronger check than a log line a reader has to compare by eye",
+	envAgentNSClusterRole: "turns on the least-privilege RBAC layout; every combination where it would do nothing " +
+		"(another driver, the shared layout) is refused at boot by " +
+		"validateNamespaceClusterRole, and a cluster where the binding does not take effect fails the dispatch " +
+		"naming the ClusterRole (k8s waitForAccess), so there is no silent state to announce",
 	envAgentNSShared: "selects between the two namespace layouts; see " +
 		"MUSTER_AGENT_NAMESPACE and MUSTER_AGENT_NAMESPACE_PREFIX, both of which are " +
 		"guarded rather than announced",
@@ -598,12 +776,6 @@ var bannerExempt = map[string]string{
 		"the instance's own spec",
 }
 
-// bannerStubGitHubStore stands in for a wired GitHub store. Only its presence
-// is read by logBanner (`ext.GitHub != nil`), never any method, so embedding the
-// interface is enough and cannot accidentally be CALLED without panicking
-// loudly — which is the behaviour wanted if the banner ever starts reading it.
-type bannerStubGitHubStore struct{ github.Store }
-
 // bannerStubConnectorStore stands in for a wired connector store; only its
 // presence is read.
 type bannerStubConnectorStore struct{ connectors.Store }
@@ -611,7 +783,7 @@ type bannerStubConnectorStore struct{ connectors.Store }
 // bannerProvisioner builds the REAL lifecycle adapter over the noop driver, for
 // the banner's wired arm.
 //
-// ⚠ IT IS NOT A STUB, AND THE REASON IS THE ONE bannerStubGitHubStore GIVES IN
+// ⚠ IT IS NOT A STUB, AND THE REASON IS THE ONE bannerStubConnectorStore GIVES IN
 // REVERSE. logBanner reads only `ext.Provisioner != nil`, so a stub would do — but
 // this one is free, exercises buildAgentPlane (the function whose result the
 // banner is describing), and cannot drift from what the binary actually assigns.
@@ -661,6 +833,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Database:            "postgres://x/y",
 		UIPassword:          strings.Repeat("p", 40),
 		SecureCookies:       true,
+		MetricsPort:         18193,
 		AndroidAllowPINKeys: true,
 		HookToken:           "hook",
 		ServiceToken:        strings.Repeat("s", 40),
@@ -668,6 +841,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		GoTrueURL:           "http://auth.example.invalid:9999",
 		GoTrueSecret:        strings.Repeat("j", 40),
 		BrowserPort:         18192,
+		ClientAddr:          mustClientAddr(t, "192.0.2.0/24", "X-Forwarded-For"),
+		DirectClients:       true,
 		RouterURL:           "https://router.example.invalid",
 		RouterToken:         "t",
 		RouterActor:         "muster",
@@ -681,6 +856,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// renders would differ in nothing but a word inside one line — which the
 		// lines-must-differ check would pass while the WIRED arm stayed unrendered
 		// by any test. That is the same shape as the *pgxpool.Pool note above.
+		// The officer runtime: one declared officer, so the ON render takes the
+		// `officers: ON` arm.
+		Officers: []officers.Officer{{ID: "release:example-web", HQURL: "https://hq.example.invalid/api/v1", MaxInstances: 1}},
+
 		AgentProvisioner: provisionerNoop,
 		AgentImageRepo:   "registry.example.test/muster/agent-runtime",
 		AgentAPIURL:      "http://muster.example.test:8105",
@@ -721,9 +900,11 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		MemoScopeMap: "widgets=widgets,widgets-clone",
 		// Plugin tasks: the banner branches on the list (and on ext.Plugins, below).
 		PluginTaskNamespaces: []string{"tracker"},
+		PluginOrigins:        []plugins.OriginPattern{{Wildcard: true, Host: "preview.example.net"}},
 		// Dictation: the banner branches on ext.Transcriber (below).
 		STTURL:   "http://stt.example.invalid:8000",
 		STTToken: "stt-credential-fixture",
+		STTModel: "fixture-org/fixture-model",
 		// File attachments: the banner branches on ext.Uploads (below), built by
 		// the real buildUploads over these values and the pool.
 		PublicURL:        "https://muster.example.test",
@@ -742,12 +923,38 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Session routing: the banner branches on ext.Routing (below).
 		SessionRouting:     true,
 		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
+		// Pull-request routing: the banner branches on ext.PRMail (below).
+		PRMailSendersRaw: "review-gate/pr-check",
+		PRMailSenders:    plugins.PRMailSenders{"review-gate/pr-check": true},
+		// Fleet-report requests: the banner branches on ext.FleetReport (below).
+		FleetReportSenders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
+		FleetReportPaths:   plugins.FleetReportPaths{"/srv/example-work"},
+		// The mail resume: the banner branches on ext.MailResume (below).
+		MailResumeAllowRaw: "1:agent-mail:review-gate/pr-check",
+		MailResumeAllow:    bannerResumeAllowlist(t),
 		// Task routing: the banner branches on ext.TaskRouting (below).
 		TaskRouting:            true,
 		ChiefDispatchOwnersRaw: "1",
 		ChiefDispatchOwners:    map[int64]bool{1: true},
 		// Chief session runtimes: the banner branches on ext.SessionRuntimes (below).
-		ChiefSessionRuntimes: []string{"claude-code", "gateway"},
+		ChiefSessionRuntimes: []string{"claude-code"},
+		// The chief's stall nudges: the banner branches on ext.ChiefNudge (below).
+		ChiefNudges:          true,
+		ChiefNudgeIdle:       15 * time.Minute,
+		ChiefNudgeHourlyCap:  4,
+		ChiefNudgeLiveOwners: map[int64]bool{1: true},
+		// Session state: the banner branches on ext.Episodes (below).
+		SessionState: true,
+		// The fleet digest: the banner branches on ext.FleetDigest (below).
+		FleetDigest: true,
+		// The dial guard: the banner branches on ext.DialGuard (below).
+		DialDenyPrivate: true,
+		// The ask log: the banner branches on ext.AskLog (below).
+		AskLog: askLogConfig{On: true, TextTTL: 72 * time.Hour},
+		// Shareable pages: the banner branches on ext.Pages (below).
+		Pages: true,
+		// The usage poller: the banner branches on ext.CCUsageInterval (below).
+		CCUsage: ccUsageConfig{On: true, Interval: 5 * time.Minute},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -756,13 +963,35 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The Agents list's Idle section, at a value that is not the default.
 		AgentsIdleAfter:    72 * time.Hour,
 		AgentsIdleAfterRaw: "3d",
+		// The outcome watchdog: the banner branches on ext.Outcomes (below),
+		// and reports these, at values that are not the defaults.
+		AgentStuck:            agentoutcome.Thresholds{NoReply: 7 * time.Minute, Silent: 45 * time.Minute},
+		AgentWatchdogInterval: 2 * time.Minute,
+		// Android passkeys: the banner branches on ext.AssetLinks (below), built
+		// by the real config.assetLinks over these values.
+		AndroidPackage:    "app.example.passkeys",
+		AndroidCertSHA256: "0123456789abcdef00112233445566778899aabbccddeeff0f1e2d3c4b5a6978",
+		// The shell's sign-in origins: the banner branches on ext.SSOOrigins
+		// (below), parsed by the real config.ssoOrigins over this value.
+		AndroidSSOOrigins: "https://auth.example.test",
+	}
+	ssoOrigins, err := on.ssoOrigins()
+	if err != nil || len(ssoOrigins) == 0 {
+		t.Fatalf("banner fixture: ssoOrigins = %q, %v", ssoOrigins, err)
+	}
+	assetLinks, err := on.assetLinks()
+	if err != nil || assetLinks == nil {
+		t.Fatalf("banner fixture: assetLinks = %q, %v", assetLinks, err)
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
+		DialGuard:   on.dialGuard(),
+		AssetLinks:  assetLinks,
+		SSOOrigins:  ssoOrigins,
+		Outcomes:    agentoutcome.NewPG(nil),
 		GitHubApp:   bannerStubGitHubApp{},
 		Mirror:      mirror.NewService(nil, nil),
 		Push:        push.NewService(nil, nil, on.vapid(), nil),
 		Connectors:  bannerStubConnectorStore{},
-		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),
 		Gateway:     bannerGateway(t, on),
 		Transcriber: bannerTranscriber(t, on),
@@ -771,12 +1000,40 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Plugins:         bannerStubPlugins{},
 		PluginGateway:   bannerStubPluginGateway{},
 		Routes:          bannerStubRoutes{},
-		Routing:         &api.Routing{Allow: bannerAllowlist(t), Timeout: 45 * time.Minute},
+		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
+		PRMail:          &api.PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		FleetReport:     &api.FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true}, Paths: plugins.FleetReportPaths{"/srv/example-work"}},
+		MailResume:      &api.MailResume{Allow: bannerResumeAllowlist(t)},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
-		SessionRuntimes: []string{"claude-code", "gateway"},
+		SessionRuntimes: []string{"claude-code"},
+		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
+		Episodes:        sessionstate.NewPG(nil),
+		FleetDigest:     true,
+		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
+		Pages:           pages.NewPG(nil),
+		CCUsageInterval: 5 * time.Minute,
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
+}
+
+func bannerResumeAllowlist(t *testing.T) plugins.RelayAllowlist {
+	t.Helper()
+	l, err := plugins.ParseRelayAllowlist("1:agent-mail:review-gate/pr-check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// The mail resume's kill switch has its own banner line: with the allowlist
+// set and MUSTER_MAIL_RESUME_OFF=1 the log must say it is OFF, never ON.
+func TestTheBannerSaysTheMailResumeKillSwitchHoldsItOff(t *testing.T) {
+	cfg := config{MailResumeAllowRaw: "1:agent-mail:review-gate/pr-check", MailResumeAllow: bannerResumeAllowlist(t), MailResumeOff: true}
+	out := renderBannerWithPool(t, cfg, api.Extensions{MailResume: &api.MailResume{Allow: bannerResumeAllowlist(t), Off: true}}, nil)
+	if !strings.Contains(out, "mail resume: OFF by its kill switch ("+envMailResumeOff+"=1)") || strings.Contains(out, "mail resume: ON") {
+		t.Fatalf("the kill switch's line is missing or the banner says ON:\n%s", out)
+	}
 }
 
 func bannerAllowlist(t *testing.T) plugins.RelayAllowlist {
@@ -788,27 +1045,38 @@ func bannerAllowlist(t *testing.T) plugins.RelayAllowlist {
 	return l
 }
 
-// 🟢 Routing ON with no MUSTER_HOOK_TOKEN: a session answering on the shared
-// hook credential is refused (503), so its routes time out — a loud line.
-// With the token set (the control), no warning.
-func TestTheBannerWarnsWhenRoutingIsOnWithoutAHookToken(t *testing.T) {
-	ext := api.Extensions{Plugins: bannerStubPlugins{}, PluginGateway: bannerStubPluginGateway{},
-		Routes: bannerStubRoutes{}, Routing: &api.Routing{Allow: bannerAllowlist(t)}}
-	const warn = "WARNING — session routing: " + envHookToken + " is unset"
-	if out := renderBanner(t, config{SessionRouting: true, Plugins: true}, ext); !strings.Contains(out, warn) {
-		t.Errorf("routing on, no hook token: no warning.\nbanner:\n%s", out)
-	}
-	if out := renderBanner(t, config{SessionRouting: true, Plugins: true, HookToken: "hook"}, ext); strings.Contains(out, warn) {
-		t.Errorf("routing on WITH a hook token still warns.\nbanner:\n%s", out)
-	}
-}
-
 // bannerStubPlugins and bannerStubPluginGateway are present-but-inert: the
 // banner only asks whether they are wired.
 type bannerStubPlugins struct{ plugins.Store }
 type bannerStubGitHubApp struct{ api.GitHubApp }
+
+func (bannerStubGitHubApp) Access() githubapp.Access { return githubapp.AccessWrite }
+
 type bannerStubPluginGateway struct{ plugins.Gateway }
 type bannerStubRoutes struct{ plugins.RouteStore }
+
+// Session routing WITHOUT plugins is ON, not inert: the banner says what it
+// routes (the owner's typed requests and tasks) and that a plugin message is
+// not — and the registry agrees, never calling it misconfigured for want of
+// plugins. The control: with plugins wired too, the banner takes the ordinary
+// ON line.
+func TestSessionRoutingWithoutPluginsIsOnForRequestsAndTasks(t *testing.T) {
+	cfg := config{SessionRouting: true, HookToken: "hook"}
+	ext := api.Extensions{Routes: bannerStubRoutes{}, Routing: &api.Routing{}}
+	out := renderBanner(t, cfg, ext)
+	if !strings.Contains(out, "session routing: ON ("+envSessionRouting+"=1) WITHOUT plugins") ||
+		!strings.Contains(out, "a plugin message is never routed") || strings.Contains(out, "session routing: INERT") {
+		t.Fatalf("routing wired without plugins: the banner does not say it routes requests and tasks:\n%s", out)
+	}
+	withPlugins := api.Extensions{Plugins: bannerStubPlugins{}, PluginGateway: bannerStubPluginGateway{}, Routes: bannerStubRoutes{}, Routing: &api.Routing{}}
+	if both := renderBanner(t, config{SessionRouting: true, Plugins: true, HookToken: "hook"}, withPlugins); strings.Contains(both, "WITHOUT plugins") {
+		t.Fatalf("control: with plugins wired the banner still says WITHOUT plugins:\n%s", both)
+	}
+	f, _ := featureSet(t, cfg, ext, true).Get(features.SessionRouting)
+	if strings.Contains(f.Reason, envPlugins+"=") || strings.Contains(f.Reason, "inert") {
+		t.Fatalf("routing wired without plugins: the registry says %s %q", f.State, f.Reason)
+	}
+}
 
 func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 	onOut, offOut := bannerBothDirections(t)
@@ -1169,3 +1437,29 @@ func bannerTranscriber(t *testing.T, cfg config) api.Transcriber {
 	}
 	return tr
 }
+
+// The fleet digest's line says when its pull-request groups cannot fill (audit
+// round 1 🟡3): with no session_prs store (session routing + PR mail unwired)
+// it names the two variables that wire it; with the store but no GitHub App,
+// it says every state is unknown; with both it says they are on.
+func TestTheFleetDigestLineSaysWhatThePullRequestGroupsNeed(t *testing.T) {
+	cfg := config{FleetDigest: true, SessionState: true}
+	line := func(ext api.Extensions) string {
+		return lineNaming(renderBannerWithPool(t, cfg, ext, nil), envFleetDigest)
+	}
+	noPRs := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil)})
+	if !strings.Contains(noPRs, "pull-request groups EMPTY") || !strings.Contains(noPRs, envSessionRouting) || !strings.Contains(noPRs, envPRMailSenders) {
+		t.Errorf("no session_prs: the line does not say the PR groups are empty and why:\n%s", noPRs)
+	}
+	noApp := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil), PRSessions: plugins.NewPG(nil)})
+	if !strings.Contains(noApp, "pull-request groups EMPTY: every state is unknown with no GitHub App") {
+		t.Errorf("no GitHub App: the line does not say every state is unknown:\n%s", noApp)
+	}
+	both := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil), PRSessions: plugins.NewPG(nil), FleetPRStates: bannerPRStates{}})
+	if !strings.Contains(both, "pull-request groups ON") || strings.Contains(both, "EMPTY") {
+		t.Errorf("both wired: the line does not say the PR groups are on:\n%s", both)
+	}
+}
+
+// bannerPRStates is a GitHub pull-request read that is never called.
+type bannerPRStates struct{ api.PRStateReader }

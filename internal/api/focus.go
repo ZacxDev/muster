@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,9 +20,9 @@ import (
 // two sources (the agents table and the mirror hub), its periodic job, and the
 // card's focus chip. The tools are in focus_tools.go.
 //
-// 🔴 THE REFRESH RUNS IN MUSTER, NOT IN THE CHIEF (operator decision). A pass
-// (RunFocusRefresh) and the focus_refresh tool both run focus.Refresher here,
-// acting as each owner through focusPrincipal; the chief only ever READS focus.
+// 🔴 THE REFRESH RUNS IN MUSTER, NOT IN THE CHIEF (operator decision). The pass
+// (RunFocusRefresh) runs focus.Refresher here, acting as each owner through
+// focusPrincipal; the chief only ever READS focus.
 //
 // 🔴 A MIRRORED SESSION'S TAIL IS READ THROUGH THE HOST'S OWN WATCH. muster
 // never holds a transcript path or file: it opens the same transcript stream
@@ -125,6 +125,9 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 		if err != nil {
 			return nil, err
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		last := f.s.lastMessageByAgents(ctx, list)
 		for _, a := range list {
 			out = append(out, focus.Candidate{Subject: focus.AgentSubject(a.ID), ActiveAt: agents.LastActivity(a, last[a.ID])})
@@ -136,19 +139,39 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 			continue
 		}
 		seen[e.SessionKey()] = true
-		out = append(out, focus.Candidate{Subject: focus.MirrorSubject(e.SessionKey()), ActiveAt: e.ActiveAt()})
+		// ActiveAt is the window's CardActivity: a Claude window's transcript
+		// LAST MESSAGE (the time the cards show), else — an opencode window,
+		// an older host that reports none — tmux's window activity.
+		// ⚠ EXCEPT while a Claude window is busy or waiting: its host then
+		// reports its last message as the host's NOW (mirrorhost.WireWindows),
+		// so its activity moves every minute. A waiting one is skipped through
+		// WaitingSince below; a BUSY one is a candidate, and read, on every
+		// pass — and 20 or more busy windows, sorted newest first, fill
+		// focus.MaxPerPass ahead of an idle window whose tail did move.
+		c := focus.Candidate{Subject: focus.MirrorSubject(e.SessionKey()), ActiveAt: e.ActiveAt()}
+		// A Claude window waiting on the person (a permission prompt, an
+		// AskUserQuestion picker) writes no transcript row a focus tail
+		// renders until it is answered, so when it began waiting is when its
+		// tail last could have moved (focus.Candidate.WaitingSince). Claude
+		// windows only: the measurement behind it is Claude Code's.
+		if e.Claude && e.Status == mirror.StatusWaiting && e.StatusSince > 0 {
+			c.WaitingSince = time.UnixMilli(e.StatusSince)
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }
 
 // mirrorFocusEntries is every ONLINE mirrored window of ctx's principal whose
 // conversation focus can describe: a Claude Code window with its session id,
-// or a Hermes window whose host names its session (keyed "hermes:<id>",
-// mirror.SessionView.SessionKey), most recently active first.
+// or another runtime's window whose host names its session (keyed
+// "<runtime>:<id>", mirror.SessionView.SessionKey), most recently active
+// first.
 //
-// 🔴 FOCUS ONLY. Routing, the send queue and the sessions overview stay on
-// mirrorClaudeEntries: each of those is a way to SEND, and nothing sends to
-// Hermes before Phase 3.
+// 🔴 A READ, NEVER A SEND. Focus, the sessions overview's list (liveSessions)
+// and session_context read through it. Routing and the send queue stay on
+// mirrorClaudeEntries: each of those is a way to SEND, and they send only to
+// Claude Code (opencode's gated send is its own path, RuntimeSpec.GatedSend).
 func (s *Server) mirrorFocusEntries(ctx context.Context) []mirror.SessionView {
 	if s.ext.Mirror == nil {
 		return nil
@@ -236,8 +259,8 @@ func (f focusSessions) Tail(ctx context.Context, sub focus.Subject) ([]focus.Ent
 			return nil, errNoSession
 		}
 		// The stream names its conversation by the bare id (Msg.Gen): a
-		// Hermes key is "hermes:<id>".
-		return f.s.mirrorTail(ctx, e, strings.TrimPrefix(sub.Key, mirror.HermesKeyPrefix))
+		// runtime-qualified key is "<prefix><id>" ("opencode:<id>").
+		return f.s.mirrorTail(ctx, e, mirror.SessionIDOf(sub.Key))
 	}
 	return nil, focus.ErrBadSubject
 }
@@ -282,10 +305,53 @@ func (s *Server) agentTail(ctx context.Context, id int64) ([]focus.Entry, error)
 // mirror:sid. Every batch names its transcript (Msg.Gen); one that is not sid
 // (or names none) ends the read as errNoSession, and nothing is stored.
 func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid string) ([]focus.Entry, error) {
+	evs, err := s.mirrorEvents(ctx, e, sid)
+	if errors.Is(err, errNoSession) {
+		return nil, err
+	}
+	out := make([]focus.Entry, 0, len(evs))
+	for _, ev := range evs {
+		if en, ok := focusEntryOf(ev); ok {
+			out = append(out, en)
+		}
+	}
+	// As before mirrorEvents existed: a read that ended in an error is an
+	// error only when it yielded no ENTRY (events this tail does not keep,
+	// tool output, do not count).
+	if len(out) == 0 && err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// mirrorEvents is mirrorTail's read: the bounded backfill of e's transcript as
+// events (a prompt keeps its Line — its place in the transcript — which the
+// chief nudge sweep names it by), with mirrorTail's guard that the stream is
+// conversation sid (errNoSession). It returns what it read AND the watch's
+// error, so each caller decides what a partial read is worth.
+func (s *Server) mirrorEvents(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, error) {
+	evs, _, err := s.mirrorRead(ctx, e, sid)
+	return evs, err
+}
+
+// mirrorIndex is what a mirrored read learned about its own completeness: Got,
+// that the host's prompt index arrived (the backfill was sent in full — the
+// read did not end on the quiet timer or the deadline); Lines, the place of
+// every prompt the index lists (the whole transcript's, up to the backfill's
+// end); More, how many earlier ones it left out.
+type mirrorIndex struct {
+	Got   bool
+	Lines []int64
+	More  int
+}
+
+// mirrorRead is mirrorEvents with the read's prompt index.
+func (s *Server) mirrorRead(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, mirrorIndex, error) {
 	ctx, cancel := context.WithTimeout(ctx, focusTailTimeout)
 	defer cancel()
 	var mu sync.Mutex
-	var out []focus.Entry
+	var out []cctranscript.Event
+	var idx mirrorIndex
 	var otherConversation bool
 	got := make(chan struct{}, 1)
 	done := make(chan error, 1)
@@ -301,12 +367,14 @@ func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid strin
 			if m.Reset {
 				out = out[:0]
 			}
-			for _, ev := range m.Events {
-				if en, ok := focusEntryOf(ev); ok {
-					out = append(out, en)
+			out = append(out, m.Events...)
+			index := m.PromptIndex
+			if index {
+				idx.Got, idx.More, idx.Lines = true, m.PromptsMore, nil
+				for _, p := range m.Prompts {
+					idx.Lines = append(idx.Lines, p.Line)
 				}
 			}
-			index := m.PromptIndex
 			mu.Unlock()
 			if index {
 				// The prompt index follows the backfill: it is complete.
@@ -338,12 +406,9 @@ loop:
 	defer mu.Unlock()
 	if otherConversation {
 		s.logger.Printf("focus: %s@%s %s%s holds another conversation now, not %s; nothing stored", e.Session, e.Host, e.Session, e.Window, sid)
-		return nil, errNoSession
+		return nil, mirrorIndex{}, errNoSession
 	}
-	if len(out) == 0 && err != nil {
-		return nil, err
-	}
-	return append([]focus.Entry(nil), out...), nil
+	return append([]cctranscript.Event(nil), out...), idx, err
 }
 
 // focusEntryOf is one transcript event as a tail entry: a prompt, a reply, a
@@ -351,7 +416,7 @@ loop:
 func focusEntryOf(ev cctranscript.Event) (focus.Entry, bool) {
 	switch ev.Kind {
 	case cctranscript.KindPrompt:
-		return focus.Entry{Role: "user", Text: ev.Text}, true
+		return focus.Entry{Role: "user", Text: ev.Text, Cwd: ev.Cwd}, true
 	case cctranscript.KindText:
 		return focus.Entry{Role: "assistant", Text: ev.Text}, true
 	case cctranscript.KindToolCall:
@@ -362,6 +427,65 @@ func focusEntryOf(ev cctranscript.Event) (focus.Entry, bool) {
 		return focus.Entry{Role: "error", Text: ev.Text}, true
 	}
 	return focus.Entry{}, false
+}
+
+// withPreviousTitles sets each entry's previous focus titles (PrevFocus) — what
+// the command palette finds a session by after its current title — from ONE
+// read for every entry (focus.Store.RecentTitles over the whole retention,
+// bounded to each session's newest focus.PaletteTitleRows rows, at most
+// focus.MaxRecentTitles titles). Older titles are the palette's server search's
+// (handlePaletteHistory). The live set is exactly the entries
+// being drawn: the viewer's own agents and mirrored sessions. The read runs
+// under the request's principal, so row-level security keeps another owner's
+// history out even when a session key is shared. No store, nothing to read or
+// a failed read (logged) leaves every PrevFocus empty: the palette still finds
+// the entry by its name and current title.
+func (s *Server) withPreviousTitles(ctx context.Context, cards []ui.AgentCardView, mirrors []ui.MirrorCardView) {
+	if s.ext.Focus == nil {
+		return
+	}
+	var live focus.Live
+	for _, c := range cards {
+		live.Agents = append(live.Agents, c.ID)
+	}
+	for _, m := range mirrors {
+		if m.FocusKey != "" {
+			live.Mirrors = append(live.Mirrors, m.FocusKey)
+		}
+	}
+	if len(live.Agents) == 0 && len(live.Mirrors) == 0 {
+		return
+	}
+	got, err := s.ext.Focus.RecentTitles(ctx, live, s.now().Add(-focus.DefaultHistoryRetention), focus.PaletteTitleRows)
+	if err != nil {
+		s.logger.Printf("focus: previous titles for the palette: %v", err)
+		return
+	}
+	for i := range cards {
+		cards[i].PrevFocus = previousTitles(got[focus.AgentSubject(cards[i].ID)], cards[i].Focus)
+	}
+	for i := range mirrors {
+		if mirrors[i].FocusKey != "" {
+			mirrors[i].PrevFocus = previousTitles(got[focus.MirrorSubject(mirrors[i].FocusKey)], mirrors[i].Focus)
+		}
+	}
+}
+
+// previousTitles is ts's titles with the current focus's title left out: the
+// newest history row IS the current focus, and a title the session has now is
+// not a previous one.
+func previousTitles(ts []focus.TitleAt, cur *ui.FocusView) []string {
+	now := ""
+	if cur != nil {
+		now = cur.Title
+	}
+	var out []string
+	for _, t := range ts {
+		if t.Title != "" && t.Title != now {
+			out = append(out, t.Title)
+		}
+	}
+	return out
 }
 
 // focusIndex is the viewer's focus by subject, read once per render; empty
@@ -380,8 +504,10 @@ func (s *Server) focusIndex(ctx context.Context) focusIndex {
 	out := focusIndex{}
 	for _, f := range list {
 		// A row with no focus is kept when it says WHY (its last error): the
-		// card shows the reason instead of nothing.
-		if f.Has() || f.Problem() != "" {
+		// card shows the reason instead of nothing. And when it carries a
+		// NAME (a manual one set before any focus): the name reads it here
+		// (names.go), and view skips it.
+		if f.Has() || f.Problem() != "" || f.Name != (focus.Name{}) || f.Tasks.Declared() {
 			out[f.Subject] = f
 		}
 	}
@@ -389,10 +515,11 @@ func (s *Server) focusIndex(ctx context.Context) focusIndex {
 }
 
 // view is sub's focus as a card shows it — with why it is missing or stale,
-// when the latest refresh failed — nil for neither.
+// when the latest refresh failed — nil for neither (a row kept only for its
+// name).
 func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 	f, ok := fi[sub]
-	if !ok {
+	if !ok || (!f.Has() && f.Problem() == "") {
 		return nil
 	}
 	v := &ui.FocusView{Title: f.Title, Description: f.Description, UpdatedAt: f.UpdatedAt}
@@ -403,6 +530,45 @@ func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 		v.Problem, v.ProblemAt = p, f.ErrorAt
 	}
 	return v
+}
+
+// focusAgeFields is how old a session's focus title is, as everything the
+// chief reads carries it beside the title — fleet_list, sessions_overview and
+// focus_search rows, attention_list items — and as a notice's push and the
+// attention summary say it (withFocusAges).
+//
+// SetAt is when the title was written (RFC 3339): what every other time in
+// those answers is, so a title set an hour ago can be told from one set
+// yesterday. Age is THE focus age rule's verdict (ui.FocusAgeOf, the one the
+// dock, the palette and the Asks list draw): "2d" past a day. Both are absent
+// for a session with no title.
+//
+// No stale flag: to an LLM reader the age says it ("5d"), and in these tools
+// "stale" already means focus_problem's failed refresh (round 0 of #476, D1).
+type focusAgeFields struct {
+	SetAt string `json:"focus_set_at,omitempty"`
+	Age   string `json:"focus_age,omitempty"`
+}
+
+// ageFields is sub's focusAgeFields at now (none without a title: view gives a
+// title-less focus no UpdatedAt).
+func (fi focusIndex) ageFields(sub focus.Subject, now time.Time) focusAgeFields {
+	v := fi.view(sub)
+	if v == nil {
+		return focusAgeFields{}
+	}
+	return focusAgeFieldsOf(v.UpdatedAt, now)
+}
+
+// focusAgeFieldsOf is the focusAgeFields of a title written at updatedAt, at
+// now (none for a zero updatedAt: no title, or no known time). 🔴 now is the
+// SERVER's clock (s.now) at every caller: one clock for every age the chief
+// or a push is told.
+func focusAgeFieldsOf(updatedAt, now time.Time) focusAgeFields {
+	if updatedAt.IsZero() {
+		return focusAgeFields{}
+	}
+	return focusAgeFields{SetAt: updatedAt.UTC().Format(time.RFC3339), Age: ui.FocusAgeOf(updatedAt, now).Text}
 }
 
 // mirrorFocus is a mirrored entry's focus view: its Claude session's, nil

@@ -14,8 +14,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -23,7 +29,8 @@ import (
 // REPLY DRAFTS, THE OWNER'S AND THE PLUGIN'S HALVES (internal/plugins/drafts.go
 // holds the rules; reply_draft_tool.go is the chief's half).
 //
-//   - The OWNER decides on /plugins: each pending draft is a card showing the
+//   - The OWNER decides on the Asks page's Reply drafts tab (/attention,
+//     asks_drafts.go — they used to be on /plugins): each pending draft is a card showing the
 //     message it answers (untrusted, escaped) and the EXACT text that will be
 //     sent (flows.VisibleEscape, with its length). Approve needs a FRESH
 //     sign-in (stepup.Fresh, as typing into a mirrored session
@@ -41,20 +48,22 @@ import (
 // pluginRetryBatch bounds how many queued messages one claim retries.
 const pluginRetryBatch = 20
 
-// pluginDraftsShown is how many drafts /plugins lists.
+// pluginDraftsShown is how many drafts each Reply drafts view lists.
 const pluginDraftsShown = 50
 
 // claimPollInterval is how often a waiting claim looks again when nothing in
 // this process signalled an approval (another replica may have approved one).
-const claimPollInterval = time.Second
+// A var so a test can lengthen it: then only the signal (draftWake) can wake a
+// claim promptly.
+var claimPollInterval = time.Second
 
-// DraftStepUpWhy is the confirm dialog's sentence on /plugins.
+// DraftStepUpWhy is the confirm dialog's sentence on the Asks page.
 func DraftStepUpWhy() string {
 	return "Approving a reply sends it to an outside party in your name, so it needs a sign-in from the last " +
 		stepup.WindowText() + "."
 }
 
-// DraftStepUpRequired is the /plugins notice for an approval refused as stale
+// DraftStepUpRequired is the Asks page's notice for an approval refused as stale
 // (the page's script did not ask first).
 const DraftStepUpRequired = "Approving a reply needs a recent sign-in. Confirm it's you, then approve again."
 
@@ -123,6 +132,7 @@ func (s *Server) handlePluginDraftClaim(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if ok {
+			s.draftStatusMoved(p.OwnerID, c.DraftID)
 			s.writeJSON(w, http.StatusOK, c)
 			return
 		}
@@ -165,9 +175,17 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	p := pluginFromContext(r.Context())
-	d, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
+	d, fresh, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
 	switch {
 	case err == nil:
+		s.draftStatusMoved(p.OwnerID, d.ID)
+		if fresh && d.Status == plugins.DraftFailed {
+			// Once, on the result that made it failed: a repeat changes nothing.
+			s.draftRefused(r.Context(), p, d, true)
+		}
+		if fresh && d.Status == plugins.DraftSent {
+			s.outboundSettled(r.Context(), p.OwnerID, d, settledByPlugin)
+		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
@@ -182,6 +200,293 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	default:
 		s.logger.Printf("plugins: plugin %d result for draft %d: %v", p.ID, id, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the result could not be recorded"})
+	}
+}
+
+// handlePluginDraftRenew is POST /plugin/v1/drafts/{id}/renew (no body): a
+// plugin still sending a draft it claimed extends its lease
+// (plugins.PGStore.RenewDraft) to plugins.LeaseDuration from now, never past
+// plugins.MaxLeaseTotal after the claim. 200 {draft_id, lease_until,
+// lease_max}; another plugin's draft or none is 404; one not claimed or
+// already settled, a lapsed lease, or one already at the bound is 409, each
+// saying which.
+func (s *Server) handlePluginDraftRenew(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft claimed by this plugin"})
+		return
+	}
+	p := pluginFromContext(r.Context())
+	d, err := s.ext.Plugins.RenewDraft(r.Context(), p.ID, id)
+	switch {
+	case err == nil:
+		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "lease_until": d.LeaseUntil.UTC(),
+			"lease_max": d.ClaimedAt.Add(plugins.MaxLeaseTotal).UTC()})
+	case errors.Is(err, plugins.ErrNotFound):
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft claimed by this plugin"})
+	case errors.Is(err, plugins.ErrLeaseLapsed):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the lease already lapsed: the draft is unconfirmed and cannot be renewed; report its result", "draft_id": id, "code": "lease_lapsed"})
+	case errors.Is(err, plugins.ErrLeaseAtMax):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the lease already runs to its bound, " + plugins.MaxLeaseTotal.String() + " after the claim; report the result before then", "draft_id": id, "code": "lease_at_max"})
+	case errors.Is(err, plugins.ErrDraftState):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft is not claimed, or already settled", "draft_id": id, "status": string(d.Status), "code": "not_claimed"})
+	default:
+		s.logger.Printf("plugins: plugin %d renew draft %d: %v", p.ID, id, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the lease could not be renewed"})
+	}
+}
+
+// handlePluginDraftChecks is GET /plugin/v1/drafts/checks (CapDraftChecks):
+// 200 {drafts: [{draft_id, message_external_id, body, created_at, kind}]},
+// this plugin's pending drafts awaiting its verdict, oldest first, at most
+// plugins.MaxChecksListed. An outbound entry also carries media and the same
+// venue, target and because_ref (when it cites one) its claim will
+// (plugins.OutboundFields), so the plugin checks what it will act on. Nothing
+// is leased: answer each with POST /plugin/v1/drafts/{id}/check.
+func (s *Server) handlePluginDraftChecks(w http.ResponseWriter, r *http.Request) {
+	p := pluginFromContext(r.Context())
+	list, err := s.ext.Plugins.DraftsAwaitingCheck(r.Context(), p.ID, plugins.MaxChecksListed)
+	if err != nil {
+		s.logger.Printf("plugins: plugin %d drafts awaiting a check: %v", p.ID, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the drafts could not be read"})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"drafts": list})
+}
+
+// handlePluginDraftCheck is POST /plugin/v1/drafts/{id}/check {sendable,
+// detail} (CapDraftChecks): the plugin's verdict on one of its drafts awaiting
+// a check. sendable: the owner is now asked to approve it (the push and the
+// attention item it would have had at filing). Refused (detail required: the
+// plugin's reason): the draft is rejected and can never be approved, and it
+// goes back to whoever wrote it (draftRefused). 200 {draft_id, status,
+// check}; the same verdict again is 200 and changes nothing; the other
+// verdict is 409; a draft not awaiting a check is 409; another plugin's, or
+// none, is 404.
+func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft"})
+		return
+	}
+	var in struct {
+		Sendable *bool  `json:"sendable"`
+		Detail   string `json:"detail"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxResultRequestBytes)).Decode(&in); err != nil || in.Sendable == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"sendable": true|false, "detail"}`})
+		return
+	}
+	if !*in.Sendable && strings.TrimSpace(in.Detail) == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "a refusal names its reason in detail: it is what the reply's writer is told to fix"})
+		return
+	}
+	p := pluginFromContext(r.Context())
+	d, fresh, err := s.ext.Plugins.CheckDraft(r.Context(), p.ID, id, plugins.DraftCheck{Sendable: *in.Sendable, Detail: in.Detail})
+	switch {
+	case err == nil:
+		if fresh && d.CheckState == plugins.CheckSendable {
+			// Only now is the owner asked (notifyDraftAwaiting was held back
+			// while it awaited this verdict).
+			m, merr := s.ext.Plugins.Message(r.Context(), d.MessageID)
+			if merr != nil {
+				m = plugins.Message{}
+			}
+			s.notifyDraftAwaiting(r.Context(), p.OwnerID, d, m)
+			s.draftFiled(p.OwnerID, d)
+		}
+		if fresh && d.RefusedByCheck() {
+			s.draftRefused(r.Context(), p, d, false)
+		}
+		s.draftStatusMoved(p.OwnerID, d.ID)
+		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
+	case errors.Is(err, plugins.ErrInvalid):
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
+	case errors.Is(err, plugins.ErrNotFound):
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft of this plugin's"})
+	case errors.Is(err, plugins.ErrMediaMissing):
+		var mm plugins.MissingMediaError
+		errors.As(err, &mm)
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "upload every medium before saying it is sendable (POST " +
+			pluginAPIPrefix + "/drafts/{id}/media)", "draft_id": id, "missing": mm.Missing})
+	case errors.Is(err, plugins.ErrCheckConflict):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft already has the other verdict",
+			"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
+	case errors.Is(err, plugins.ErrDraftState):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft is not awaiting a check",
+			"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
+	default:
+		s.logger.Printf("plugins: plugin %d check of draft %d: %v", p.ID, id, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the verdict could not be recorded"})
+	}
+}
+
+// draftRefused is what follows a reply draft its plugin REFUSED — a result
+// ok=false after its claim (sending), or a refused pre-approval check — once,
+// on the call that recorded it. Its session route (when it has one) already
+// ended send_failed in the same transaction, owing a hand-back
+// (plugins.refuseRouteDraftTx): to the session that wrote it, to redraft it,
+// or to the chief. So:
+//   - the OWNER is pushed, on the draft's own tag, with the plugin's reason —
+//     always for a reply they approved that did not go (sending), and for one
+//     refused before they saw it only when it is not going back to its session
+//     (nothing is theirs to do while the session rewrites it);
+//   - a ROUTED draft's hand-back is delivered by the route sweep, woken now
+//     (deliverHandBack: the session again — redraftRoute, which tells the
+//     chief — or else the chief, as a timed-out route's);
+//   - a draft the chief filed itself (reply_draft) is noted to the chief;
+//   - unless another reply to the message was sent or is on its way
+//     (plugins.RefusalAnsweredElsewhere): then the store left the route as it
+//     was, and only the owner is pushed, saying so.
+func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
+	// 🔴 WHAT FOLLOWS IS WHAT THE STORE DECIDED (d.Refusal), in the transaction
+	// that recorded the refusal — never a second read, which could describe
+	// something else, or fail and drop the hand-back.
+	outcome := d.Refusal
+	if !routesOn(s.ext) && (outcome == plugins.RefusalRedraft || outcome == plugins.RefusalRouteToChief) {
+		// No route sweep runs to deliver the route's hand-back: tell the chief.
+		outcome = plugins.RefusalNoRoute
+	}
+	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v): %s", p.ID, d.ID, sending, outcome)
+	switch outcome {
+	case plugins.RefusalOutbound:
+		// An officer's outbound draft: its officer gets a draft.refused item
+		// (plugin_outbound.go) — at once, or, past the bound, HELD until one
+		// of its open ones is finished — and the owner's push says which.
+		where := refusalToOfficer
+		if s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin) {
+			where = refusalOfficerHeld
+		}
+		s.notifyDraftRefused(p, d, where)
+	case plugins.RefusalAnsweredElsewhere:
+		// Another reply went, or is on its way: nothing goes back anywhere.
+		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
+	case plugins.RefusalRedraft:
+		if sending {
+			s.notifyDraftRefused(p, d, refusalToSession)
+		}
+		s.kickRouteSweep()
+	case plugins.RefusalRouteToChief:
+		s.notifyDraftRefused(p, d, refusalToChief)
+		s.kickRouteSweep()
+	default:
+		s.notifyDraftRefused(p, d, refusalToChief)
+		s.noteDraftRefusedToChief(ctx, p, d, sending)
+	}
+}
+
+// Where a refused reply goes, as its push says (draftRefusedPushBody).
+const (
+	// refusalToChief: back to the chief (its hand-back, or a note).
+	refusalToChief = iota
+	// refusalToSession: back to the session that wrote it — unless that
+	// session is gone by the time the sweep hands it back (redraftRoute), when
+	// it goes to the chief; the push is sent before that is known, so it says
+	// both.
+	refusalToSession
+	// refusalAnsweredElsewhere: nowhere — another reply to the message was
+	// sent or is on its way (plugins.OtherReplyOut).
+	refusalAnsweredElsewhere
+	// refusalToOfficer: an outbound draft's officer, as a draft.refused item.
+	refusalToOfficer
+	// refusalOfficerHeld: the outbound draft's officer, later — it already
+	// has maxOpenRefusedItems open draft.refused items, so this one is held
+	// and delivered when one of them is finished.
+	refusalOfficerHeld
+)
+
+// The refused draft push's title (muster's), and its body's bound.
+const (
+	DraftRefusedPushTitle   = "A reply was not sent"
+	draftRefusedPushBodyMax = 240
+)
+
+// notifyDraftRefused pushes the `plugin` event to p's owner about refused
+// draft d, on the draft's own tag (draftTag), so it replaces that draft's
+// earlier notification on the owner's devices.
+//
+// 🔴 IT CARRIES THE PLUGIN'S REASON (operator decision), one line, cut — never
+// the draft or the message it answers (notifyDraftAwaiting's "who and where,
+// never what"): the reason is the plugin's words about the reply.
+func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, where int) {
+	id := strconv.FormatInt(d.ID, 10)
+	s.goNotify(p.OwnerID, push.EventPlugin, RouterNotification{
+		Type:  "plugin",
+		ID:    id,
+		Title: DraftRefusedPushTitle,
+		Body:  draftRefusedPushBody(p.Label, d.Detail, where),
+		Tag:   draftTag(d.ID),
+		Data:  map[string]string{"url": draftLink(d.ID)},
+	}, nil)
+}
+
+// draftRefusedPushBody is a refused draft's push body: "<plugin label>
+// refused it.", where it goes (one of the refusal* values), then "It said:
+// <reason>".
+func draftRefusedPushBody(label, detail string, where int) string {
+	body := "The plugin"
+	if l := mirror.OneLine(label, plugins.MaxLabelRunes); l != "" {
+		body = l
+	}
+	tail := " It went back to your chief."
+	switch where {
+	case refusalToSession:
+		tail = " It is going back to the session that wrote it, or to your chief if that session is gone."
+	case refusalAnsweredElsewhere:
+		tail = " Another reply to this message was already sent or is on its way, so nothing more is done."
+	case refusalToOfficer:
+		tail = " It went back to the officer that wrote it."
+	case refusalOfficerHeld:
+		tail = officerHeldTail
+	}
+	// Where it goes first: a long reason is what the bound cuts, never that.
+	return truncate(body+" refused it."+tail+" It said: "+plugins.RefusalText(detail), draftRefusedPushBodyMax)
+}
+
+// officerHeldTail is what a push about an outbound draft that ended unsent
+// says when its officer's draft.refused item is HELD (draftEndFor's bound).
+var officerHeldTail = " It goes back to the officer that wrote it once that officer has fewer than " + strconv.Itoa(maxOpenRefusedItems) +
+	" open " + draftRefusedKind + " items."
+
+// noteDraftRefusedToChief tells the chief that filed refused draft d (no
+// session route) why it was not sent, in p's chief session — while that is
+// still d's agent's — so its next turn can draft again.
+func (s *Server) noteDraftRefusedToChief(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
+	if s.ext.Agents == nil || d.AgentID == nil {
+		return
+	}
+	cur, err := s.ext.Plugins.Plugin(ctx, p.ID)
+	if err != nil || cur.ChiefAgentID == nil || cur.ChiefSessionID == nil || *cur.ChiefAgentID != *d.AgentID {
+		s.logger.Printf("plugins: draft %d refused: no chief session of plugin %d to tell", d.ID, p.ID)
+		return
+	}
+	when := "before your owner could approve it"
+	if sending {
+		when = "after your owner approved it"
+	}
+	text := "[muster] Your reply draft " + strconv.FormatInt(d.ID, 10) + " to plugin message_id " + strconv.FormatInt(d.MessageID, 10) +
+		" was NOT sent: the plugin refused it " + when + ", saying «" + plugins.RefusalText(d.Detail) + "». The sender has no " +
+		"reply from it. If they still need one, draft a new reply with reply_draft that fixes what the plugin refused."
+	// The chief's PRIMARY chat (primarySession), not the session the plugin
+	// last recorded: after a fresh primary that one is archived.
+	primary, ok := s.chiefPrimaryID(ctx, *d.AgentID)
+	if !ok {
+		s.logger.Printf("plugins: draft %d refused: no primary chat of agent %d to tell", d.ID, *d.AgentID)
+		return
+	}
+	if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *d.AgentID,
+		SessionID: primary, Role: "user", Content: text}); err != nil {
+		s.logger.Printf("plugins: draft %d refused: note to the chief: %v", d.ID, err)
+	}
+}
+
+// draftStatusMoved tells owner's open Asks pages that draft id's delivery
+// status moved (a plugin collected it, or reported it sent or failed), so the
+// Archived view re-reads it. The queue's own event, broadcast only: no ask
+// moved, so no attention waiter is woken.
+func (s *Server) draftStatusMoved(owner, id int64) {
+	if owner > 0 {
+		s.broadcastTo(owner, EventAttentionChanged, draftKey(id))
 	}
 }
 
@@ -223,7 +528,7 @@ func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 	})
 }
 
-// --- the owner's half (/plugins) ----------------------------------------------
+// --- the owner's half (the Asks page's Reply drafts tab) ----------------------
 
 func (s *Server) handleDraftApprove(w http.ResponseWriter, r *http.Request) {
 	s.decideDraft(w, r, "approve")
@@ -238,72 +543,218 @@ func (s *Server) handleDraftReject(w http.ResponseWriter, r *http.Request) {
 // only asks BEFORE submitting so the owner is not bounced. A stale approval is
 // 403 — to a script with X-Muster-Step-Up (refuseStale), to a browser form the
 // page again, saying so.
+//
+// It answers on the Asks page's Reply drafts tab (asks_drafts.go): a decision
+// lands on the card, now in Archived; a refusal draws the page with the reason
+// on the view the draft is in. The decision itself is decideDraftAs, the one
+// plugin_draft_decide makes too.
 func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", asksTabDrafts, id)
 		return
 	}
 	if how != "reject" && !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if isDocumentNavigation(r) {
 			w.Header().Set("X-Muster-Step-Up", "required")
-			s.renderPluginsPage(w, r, http.StatusForbidden, "", DraftStepUpRequired)
+			s.renderAsksPage(w, r, http.StatusForbidden, DraftStepUpRequired, asksTabDrafts, id)
 			return
 		}
 		refuseStale(w)
 		return
 	}
-	d, err := s.ext.Plugins.DecideDraft(r.Context(), id, how == "approve")
-	switch {
-	case err == nil:
-	case errors.Is(err, plugins.ErrNotFound):
-		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
+	// The card's approve form carries the body's and (for an outbound draft)
+	// the media's SHA-256 it showed: the store refuses an approval of anything
+	// else (plugins.DraftDecision).
+	dec := plugins.DraftDecision{Approve: how == "approve", Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}}
+	_ = r.ParseForm()
+	if how == "approve" {
+		dec.BodySHA256, dec.MediaSHA256 = r.PostForm.Get("body_sha256"), formMediaSHA256(r)
+	} else {
+		// The Reject (and Withdraw) form's optional reason: stored on the
+		// draft, and an outbound draft's officer is told it.
+		dec.Reason = r.PostForm.Get("reason")
+	}
+	d, refused := s.decideDraftAs(r.Context(), id, dec)
+	if refused != nil {
+		s.renderAsksPage(w, r, refused.code, refused.msg, refused.tab, id)
 		return
-	case how == "reject" && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "A plugin has already collected that draft, so it can no longer be withdrawn.")
-		return
-	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
-		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft has expired: it was not sent within 7 days of being written.")
-		return
-	case errors.Is(err, plugins.ErrDraftState):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft is no longer awaiting this decision (it is "+string(d.Status)+").")
-		return
-	case errors.Is(err, plugins.ErrReplyInFlight):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "Another reply to that message is already approved and not yet sent. "+
-			"Wait for its result before approving a second one.")
-		return
-	default:
-		s.logger.Printf("plugins: draft %d %s: %v", id, how, err)
-		s.renderPluginsPage(w, r, http.StatusInternalServerError, "", "The decision could not be recorded.")
-		return
+	}
+	http.Redirect(w, r, draftDecidedLink(d.ID), http.StatusSeeOther)
+}
+
+// draftRefusal is why an owner's decision on a draft was refused: the HTTP
+// status, the sentence the owner reads, and the Asks page view the draft is in.
+type draftRefusal struct {
+	code     int
+	msg, tab string
+}
+
+// decideDraftAs is THE OWNER'S DECISION ON REPLY DRAFT id, for both doors: the
+// Asks page (decideDraft, after its step-up) and plugin_draft_decide
+// (plugin_draft_tools.go, from a mirrored session). One store call —
+// plugins.PGStore.DecideDraftFrom, which makes the body and state refusals
+// under the row lock — one wording of every refusal, and one
+// aftermath: an approval wakes waiting claims, a rejection of an outbound
+// draft goes back to its officer (outboundSettled), and the decided draft
+// leaves the attention queue with its notification withdrawn on the owner's
+// devices.
+func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftDecision) (plugins.Draft, *draftRefusal) {
+	// 🔴 WHO MAY DECIDE A TEAM'S DRAFT (team sharing phase 3), before the
+	// store: read as the decider, so a draft they cannot see is the store's
+	// "No such draft." below, as before.
+	if cur, err := s.ext.Plugins.Draft(ctx, id); err == nil {
+		if msg := draftDeciderRefusal(authz.MustFrom(ctx), cur, dec.Approve); msg != "" {
+			return cur, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
+		}
+	}
+	d, err := s.ext.Plugins.DecideDraftFrom(ctx, id, dec)
+	if err != nil {
+		r := draftDecisionRefusal(d, err, dec.Approve)
+		if r.code == http.StatusInternalServerError {
+			s.logger.Printf("plugins: draft %d decide (approve %v, via %s): %v", id, dec.Approve, dec.Via, err)
+		}
+		return d, &r
 	}
 	if d.Status == plugins.DraftApproved {
 		s.draftWake.signal()
 	}
+	if !dec.Approve {
+		// 🔴 AN OWNER'S REJECTION OF AN OFFICER'S OUTBOUND DRAFT GOES BACK TO
+		// THE OFFICER, with the owner's reason (a draft.refused item, bounded
+		// like a plugin's refusal: past the bound it is HELD and delivered
+		// later, never dropped), and closes the item it was filed for. A
+		// reply draft's rejection goes nowhere, as before: its chief or
+		// session is not told (outboundSettled decides which, in one place).
+		if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Status == plugins.DraftRejected {
+			// A follow or a like rejected on its own: as an unticked batch
+			// entry, its item is finished quietly — nothing to redraft.
+			s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was rejected by the owner, not sent.")
+		} else {
+			s.outboundSettled(ctx, d.OwnerID, d, settledByOwner)
+		}
+	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
-	s.draftSettled(requestOwner(r.Context()), d.ID)
-	http.Redirect(w, r, pluginsPath+"#"+draftCardAnchor(d.ID), http.StatusSeeOther)
+	// 🔴 THE DRAFT'S OWNER, NOT THE DECIDER: a team's draft was pushed to
+	// each of its operators and managers (goNotify's fan-out), so it is
+	// withdrawn from each of them, and their pages — the decider's among
+	// them — refresh (attentionChanged's team arm).
+	owner := d.OwnerID
+	if owner <= 0 {
+		owner = requestOwner(ctx) // a store that does not read the column (a test fake)
+	}
+	s.draftSettled(owner, d.ID)
+	return d, nil
 }
 
-// draftsSectionHTML is /plugins' drafts: a card per draft, those awaiting a
-// decision first.
-func draftsSectionHTML(cards []plugins.DraftCard) string {
-	var b strings.Builder
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Reply drafts</h2>
-<p class="text-xs text-fg2">Your chief drafts replies; nothing is sent until you approve one. The plugin then sends it once.</p>
-<ul class="flex flex-col gap-2" data-testid="plugin-drafts">
-`)
-	if len(cards) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No drafts.</li>`)
+// The refusals draftDeciderRefusal answers (team sharing phase 3).
+const (
+	// DraftTeamSelfDecide: the TEAM ACTING PRINCIPAL (a team officer's
+	// instance or runtime, a team-owned agent) deciding a draft. A team's
+	// drafts are its managers' to decide; 0130's draft_approver trigger
+	// refuses the approval again in Postgres.
+	DraftTeamSelfDecide = "A team never decides its own drafts: one of its managers does, signed in."
+	// DraftTeamNotManager: a member below manager deciding a team's draft (an
+	// operator reads it; only a manager decides it — the plugin tables are
+	// managed, so Postgres refuses the write too).
+	DraftTeamNotManager = "Only a manager of the team that owns this draft decides it."
+	// DraftTeamOwnRequest: a manager approving a team draft they caused.
+	DraftTeamOwnRequest = "You caused this draft, so another manager of the team approves it."
+)
+
+// draftDeciderRefusal is why p may not make this decision on draft d, or ""
+// when it may. A PERSONAL draft (d's owner is p) is unchanged: the owner
+// decides it, as today. For a draft owned by a TEAM:
+//   - the team itself (p.Team) decides none;
+//   - a person must manage the team, by p.TeamScope — the memberships a door
+//     where a person is present carries (a personal API token, an agent and
+//     a mirror host carry none, so none of them decides a team's draft);
+//   - and approves none they caused (d.RequestedByUser).
+func draftDeciderRefusal(p authz.Principal, d plugins.Draft, approve bool) string {
+	if p.Team {
+		return DraftTeamSelfDecide
 	}
-	for _, c := range cards {
-		b.WriteString(draftCardHTML(c))
+	if d.OwnerID == p.UserID {
+		return ""
 	}
-	b.WriteString("</ul>\n")
-	return b.String()
+	if role, in := p.TeamScope().RoleIn(d.OwnerID); !in || role != authz.TeamManager {
+		return DraftTeamNotManager
+	}
+	if approve && d.RequestedByUser != nil && *d.RequestedByUser == p.UserID {
+		return DraftTeamOwnRequest
+	}
+	return ""
 }
+
+// draftDecisionRefusal words a refused decision; d is the draft as the store
+// read it (its state, when it was not in the one the decision needs). A
+// refusal is drawn on the pending view, except one about a draft that already
+// left it.
+func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal {
+	switch {
+	case pgHint(err) == draftApproverHint:
+		// 0130's draft_approver: the database refused what
+		// draftDeciderRefusal refuses first (a race past it, or a caller that
+		// skipped it).
+		return draftRefusal{http.StatusForbidden, DraftTeamOwnRequest, asksTabDrafts}
+	case errors.Is(err, plugins.ErrNotFound):
+		return draftRefusal{http.StatusNotFound, "No such draft.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftBodyMismatch):
+		return draftRefusal{http.StatusConflict, "body_sha256 is not the SHA-256 of that draft's text: " +
+			"read the draft again and decide on the text it holds.", asksTabDrafts}
+	case !approve && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
+		return draftRefusal{http.StatusConflict, "A plugin has already collected that draft, so it can no longer be withdrawn.", asksTabArchived}
+	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
+		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
+		return draftRefusal{http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftUnchecked):
+		return draftRefusal{http.StatusConflict, DraftUncheckedRefusal, asksTabDrafts}
+	case errors.Is(err, plugins.ErrMediaMissing):
+		return draftRefusal{http.StatusConflict, "Not every image or video of that draft has been uploaded yet, so it cannot be approved.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftMediaMismatch):
+		return draftRefusal{http.StatusConflict, "media_sha256 is not the SHA-256 of that draft's media, in order: " +
+			"look at the draft again and decide on the media it holds.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftState) && d.RefusedByCheck():
+		return draftRefusal{http.StatusConflict, "The plugin refused that draft before it could be approved, saying «" +
+			plugins.RefusalText(d.Detail) + "». It can never be sent; it went back to whoever wrote it for a new one.", asksTabArchived}
+	case errors.Is(err, plugins.ErrDraftState):
+		return draftRefusal{http.StatusConflict, "That draft is no longer awaiting this decision (it is " + string(d.Status) + ").", asksTabArchived}
+	case errors.Is(err, plugins.ErrReplyInFlight):
+		return draftRefusal{http.StatusConflict, "Another reply to that message is already approved and not yet sent. " +
+			"Wait for its result before approving a second one.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrBatchOnly):
+		return draftRefusal{http.StatusConflict, "A follow or a like is approved in its outreach batch: tick it on the batch's card " +
+			"(or plugin_outbound_batch_decide). It can still be rejected on its own.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrContactBlocked):
+		var cb plugins.ContactBlockedError
+		why := ""
+		if errors.As(err, &cb) {
+			why = plugins.BlockedText(cb.Why)
+		}
+		return draftRefusal{http.StatusConflict, "That draft's person is now " + why + ": it can never be approved. Reject it.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrInvalid):
+		return draftRefusal{http.StatusBadRequest, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "), asksTabDrafts}
+	}
+	return draftRefusal{http.StatusInternalServerError, "The decision could not be recorded.", asksTabDrafts}
+}
+
+// draftApproverHint is the HINT 0130's draft_approver trigger refuses with.
+const draftApproverHint = "muster:draft-approver"
+
+// pgHint is err's Postgres HINT, "" for none.
+func pgHint(err error) string {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		return pg.Hint
+	}
+	return ""
+}
+
+// DraftUncheckedRefusal is an approval refused because the draft's plugin has
+// not checked it yet (plugins.ErrDraftUnchecked).
+const DraftUncheckedRefusal = "The plugin has not yet checked that it can send that draft. " +
+	"It can be approved once the plugin says it can; if the plugin refuses it, it goes back to whoever wrote it."
 
 // draftStatusText is a draft's state in words.
 func draftStatusText(d plugins.Draft) string {
@@ -312,6 +763,14 @@ func draftStatusText(d plugins.Draft) string {
 			return ""
 		}
 		return " " + t.UTC().Format("2006-01-02 15:04") + " UTC"
+	}
+	switch {
+	case d.AwaitingCheck():
+		return "Waiting for the plugin to check that it can send it · expires" + at(&d.ExpiresAt)
+	case d.RefusedByCheck():
+		return "Refused by the plugin before approval" + at(d.CheckedAt) + " · never sent"
+	case d.Status == plugins.DraftPending && d.CheckState == plugins.CheckLapsed:
+		return "Awaiting your decision · the plugin did not check it in time · expires" + at(&d.ExpiresAt)
 	}
 	switch d.Status {
 	case plugins.DraftPending:
@@ -355,19 +814,35 @@ func draftCardHTML(c plugins.DraftCard) string {
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
 	var b strings.Builder
-	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + flowsCardClass + `" data-draft-id="` + id +
+	// THE CARD (the Asks page's design pass): who drafted it and for which
+	// plugin, its state under that; the message it answers as a QUOTE, marked
+	// untrusted; the reply in its own box; then ONE primary action (Approve
+	// and send) on its own row, with the secondary one (Reject, and its
+	// reason box) under it (ui.AsksDecisionClass).
+	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-<span class="break-all text-sm font-semibold text-fg">` + esc(flows.VisibleEscape(d.AgentName)) + ` drafted a reply · ` +
-		esc(c.PluginLabel) + `</span>
-<span class="text-xs text-fg2" data-draft-state>` + esc(draftStatusText(d)) + `</span>
-<div class="flex flex-col gap-1 rounded-md bg-s1 px-3 py-2 ring-1 ring-inset ring-edge" data-draft-original>
-<span class="text-xs font-semibold text-fg2">The message it answers — from an outside sender, untrusted (message ` +
-		strconv.FormatInt(m.ID, 10) + `)</span>
-<span class="break-all text-xs text-fg2">from ` + esc(m.Sender) + ` · subject ` + esc(m.Subject) + `</span>
-<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
+<div class="` + ui.AsksHeadTextClass + `"><span class="break-all text-sm font-semibold text-fg" data-draft-agent>` + esc(flows.VisibleEscape(d.AgentName)) + `</span>
+<span class="break-words text-xs text-fg2">` + esc(c.PluginLabel) + ` · <span data-draft-state>` + esc(draftStatusText(d)) + `</span></span></div>
+`)
+	if d.IsOutbound() {
+		// An officer's outbound draft (plugin_outbound.go): its venue and
+		// target, and every medium, in place of the message it answers.
+		b.WriteString(outboundCardHTML(c))
+	} else {
+		b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-original>
+<span class="break-all text-xs text-fg2"><span class="font-semibold">From ` + esc(m.Sender) + `</span> · untrusted · message ` +
+		strconv.FormatInt(m.ID, 10) + `</span>
+`)
+	if m.Subject != "" {
+		b.WriteString(`<span class="break-all text-xs text-fg2">` + esc(m.Subject) + `</span>
+`)
+	}
+		b.WriteString(`<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
 </div>
-<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
-<span class="text-xs font-semibold text-fg">The reply · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
+`)
+	}
+	b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
+<span class="text-xs font-semibold text-fg">` + draftTextLabel(d) + ` · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
 <code class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-draft-body>` + esc(flows.VisibleEscape(d.Body)) + `</code>
 </div>
 `)
@@ -379,25 +854,68 @@ func draftCardHTML(c plugins.DraftCard) string {
 		b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-detail>the plugin said: ` + esc(flows.VisibleEscape(d.Detail)) + `</span>
 `)
 	}
+	if d.DecisionReason != nil {
+		// The owner's own words with a rejection (0123), on the card's history.
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + esc(flows.VisibleEscape(*d.DecisionReason)) + `</span>
+`)
+	}
 	if d.Status == plugins.DraftPending && c.EarlierUnconfirmed {
 		b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-twice>An earlier reply to this message is unconfirmed: it may already have been sent. If you approve this one, the sender may get both.</span>
 `)
 	}
+	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` +
+		draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button></form>`
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
-			b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` +
-				flowsQuietButton + `" data-draft-withdraw>Withdraw the approval</button></form>
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` +
+				draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>Withdraw the approval</button></form></div>
 `)
 		}
 	case plugins.DraftPending:
-		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form><button type="submit" class="` +
-			flowsButtonClass + ` w-full" data-draft-approve>Approve and send</button></form>
-<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
+		if d.AwaitingCheck() {
+			// Not approvable until its plugin says it can send it (the store
+			// refuses it whatever the page draws): Reject only.
+			b.WriteString(`<span class="text-xs text-fg2" data-draft-awaiting-check>The plugin checks this reply before you can approve it.</span>
+<div class="` + ui.AsksActionsClass + `">` + reject + `</div>
+`)
+			break
+		}
+		binding := ""
+		if d.IsOutbound() {
+			if missing := d.MissingMedia(); len(missing) > 0 {
+				// The store refuses it anyway; the card does not offer it.
+				b.WriteString(`<span class="text-xs text-fg2" data-draft-media-pending>Not every medium is uploaded yet, so it cannot be approved.</span>
+<div class="` + ui.AsksActionsClass + `">` + reject + `</div>
+`)
+				break
+			}
+			binding = outboundApproveFields(d)
+		}
+		b.WriteString(`<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + binding + `<button type="submit" class="` +
+			ui.AsksPrimaryButtonClass + `" data-draft-approve>Approve and send</button></form>` + reject + `</div>
 `)
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason:
+// plain text, bounded as the store bounds it (plugins.ScreenDecisionReason).
+// For an officer's outbound draft the officer is told it.
+func draftReasonFieldHTML(id int64) string {
+	return `<label class="sr-only" for="draft-reason-` + strconv.FormatInt(id, 10) + `">Reason for rejecting (optional)</label>` +
+		`<input id="draft-reason-` + strconv.FormatInt(id, 10) + `" name="reason" maxlength="` + strconv.Itoa(plugins.MaxDecisionReasonRunes) +
+		`" placeholder="Reason (optional)" autocomplete="off" class="min-w-0 flex-1 ` + flowsInputClass + `" data-draft-reason-input>`
+}
+
+// draftTextLabel names the card's text: a reply's, or an outbound draft's
+// post.
+func draftTextLabel(d plugins.Draft) string {
+	if d.IsOutbound() {
+		return "Post"
+	}
+	return "Reply"
 }
 
 // draftTextLead says what the reply text is FOR, by state.
@@ -409,30 +927,13 @@ func draftTextLead(st plugins.DraftStatus) string {
 	return ""
 }
 
-// draftPageScript makes an Approve on a stale sign-in ask "Confirm it's you"
-// BEFORE it submits, and submit once confirmed. It is a convenience: the server
-// refuses a stale approval whatever this script did (decideDraft).
-const draftPageScript = `<script>
-(function () {
-  document.querySelectorAll('form[data-step-up-form]').forEach(function (f) {
-    f.addEventListener('submit', function (ev) {
-      var su = window.musterStepUp;
-      if (!su || su.fresh()) return;
-      ev.preventDefault();
-      su.ask('', function () { f.submit(); });
-    });
-  });
-})();
-</script>`
-
-// draftStepUpHTML is the confirm dialog, its script and the page's own, as HTML.
+// draftStepUpHTML is the Asks page's confirm dialog and its form script
+// (stepUpFormsHTML): an Approve on a stale sign-in asks "Confirm it's you"
+// BEFORE it submits, and submits once confirmed. It is a convenience: the
+// server refuses a stale approval whatever this did (decideDraft). The form
+// script binds BY DELEGATION, on the document: the Asks page re-draws its
+// drafts lists live (asksPageScript), and a listener bound to each form at
+// load would miss every card that arrived later.
 func (s *Server) draftStepUpHTML(r *http.Request) string {
-	v := s.stepUpView(r, "")
-	v.Why = DraftStepUpWhy()
-	var b strings.Builder
-	if err := ui.StepUpDialog(v).Render(&b); err != nil {
-		s.logger.Printf("plugins: render the confirm dialog: %v", err)
-		return ""
-	}
-	return b.String() + draftPageScript
+	return s.stepUpFormsHTML(r, DraftStepUpWhy())
 }

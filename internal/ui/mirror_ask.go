@@ -19,7 +19,8 @@ import (
 // tool_use record is not in the transcript yet — it is written with the
 // answer. So:
 //
-//   - THE LIVE REGION (#mv-asks, above the composer) draws what the SERVER
+//   - THE LIVE REGION (#mv-asks, the conversation's last child: a card at
+//     the end of the conversation, mirrorAsksRegion) draws what the SERVER
 //     knows (the window's `muster-mirror ask` hook registered it): every open
 //     question as a form — one fieldset per question (header and text), radio
 //     buttons for a single-select question and checkboxes for a multi-select
@@ -28,8 +29,13 @@ import (
 //     is TYPED into the terminal's picker by the host; the card then shows
 //     "typing", and how it ended once the CLI recorded it — answered here,
 //     answered in the terminal (with the answers), dismissed, or that it
-//     could not be typed in. The page polls it (MirrorAsksPath); a card stays a
-//     few minutes after it ends, until the conversation draws the call itself.
+//     could not be typed in. The page polls it (MirrorAsksPath). The server
+//     lists a card for a few minutes after it ends (mirrorAskShownFor in
+//     internal/api); the page HIDES it as soon as the conversation holds the
+//     call's result row — the row whose id the card names in data-ask-row
+//     (MirrorAskRowID, from the tool_use id) — so the question shows once.
+//     Until then (the CLI writes the call only with its answer) the card is
+//     the only place the question is.
 //   - THE CONVERSATION draws the call from the transcript once it is there:
 //     read-only, with the answers its result records (the toolUseResult) —
 //     however it was answered.
@@ -37,7 +43,8 @@ import (
 // 🔴 THE PAGE NEVER DECIDES ANYTHING. Which state a card is in is the server's
 // answer to the poll; a submit is refused server-side unless the question is
 // still open, the host is -interactive and the sign-in is fresh, exactly like
-// a Send.
+// a Send. What the page does decide is only whether to SHOW a card: one whose
+// call the conversation has drawn from its result is hidden (askScript).
 
 // MirrorAskPath takes a card's answers (POST); MirrorAsksPath is the window's
 // live region (GET).
@@ -47,6 +54,9 @@ const (
 	// MirrorAskCancelPath dismisses a card's picker in the terminal with one
 	// Escape (POST).
 	MirrorAskCancelPath = "/mirror/view/ask/cancel"
+	// MirrorAskMessagePath sends a failed card's answer to the session as an
+	// ordinary message (POST): "Send as a message".
+	MirrorAskMessagePath = "/mirror/view/ask/message"
 )
 
 // The states a card can be in, as data-ask-state carries them.
@@ -75,12 +85,21 @@ func MirrorAskRowID(toolID string) string { return toolRowID(toolID) }
 // askCardClass is the card's frame: the tool row's, a little wider.
 const askCardClass = "w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-sm ring-1 ring-inset ring-line"
 
-// askCardHead is the card's title line.
-func askCardHead(label string) g.Node {
+// AskCardKind is what a question card's head calls it (askCardHead).
+const AskCardKind = "Question"
+
+// askCardHead is the card's title line; extra (the conversation's card: its
+// context badge, tool_context.go) is drawn before the label.
+func askCardHead(label string, extra ...g.Node) g.Node {
 	return Div(Class("flex min-h-[44px] items-center gap-2 px-3 py-2 text-xs font-medium text-fg2"),
 		Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("❓")),
-		Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(askq.ToolName)),
-		Span(Class("ml-auto shrink-0 text-muted"), g.Text(label)))
+		// The card's kind, in words: "Question" — never the tool's identifier
+		// ("AskUserQuestion", code in the top layer: the operator rule). It
+		// gives way (truncates) so the badge and the label
+		// always fit, down to a 300px phone.
+		Span(g.Attr("data-ask-kind", ""), Class("min-w-0 truncate text-st-review-fg"), g.Text(AskCardKind)),
+		g.Group(extra),
+		Span(g.Attr("data-ask-label", ""), Class("ml-auto shrink-0 text-muted"), g.Text(label)))
 }
 
 // askQuestionHead is one question's header and text.
@@ -113,21 +132,35 @@ func askReadOnly(qs []askq.Question, answers map[string]string) g.Node {
 	return Div(Class("flex flex-col gap-3"), g.Group(items))
 }
 
+// AskNoCardNote is what a call the transcript holds with no result says
+// (MirrorAskCall). The page shows it only while muster has NO live card for
+// the call (askScript hides it behind one), so it says why muster cannot
+// answer it here and where to. muster tracks a call it reads open in a
+// WAITING session's transcript (internal/api's open-question scan), so a call
+// it does not track is one no longer on screen (an interrupted call, an ended
+// session) or one in a session its host does not report as waiting.
+const AskNoCardNote = "Muster isn't tracking this question, so it can't answer it from here — answer it in the terminal. " +
+	"(It may no longer be on the terminal's screen, or its host may not report that the session is waiting.)"
+
 // MirrorAskCall is a call the transcript holds with no result yet: its
-// questions, read-only. Claude Code 2.1.289 writes the call together with its
-// result (measured: neither is in the transcript while the picker shows), so
-// this is drawn only for a transcript cut between the two.
-func MirrorAskCall(rowID string, qs []askq.Question) g.Node {
+// questions, read-only. Claude Code writes the call when its picker opens and
+// its result once it is answered or dismissed (measured on 2.1.289), so this
+// is drawn for every open question. 🔴 IT IS A FALLBACK, NOT THE QUESTION'S
+// CARD: while the live region holds a card for the call (data-ask-row naming
+// this row), the page hides this row (askScript), so the question is on the
+// page once — answerable, or saying why not (a read-only, offline or older
+// host). Only a call muster tracks nothing of shows it, with AskNoCardNote.
+func MirrorAskCall(rowID string, qs []askq.Question, extra ...g.Node) g.Node {
 	return Section(
 		g.If(rowID != "", ID(rowID)),
 		g.Attr("data-ask", ""),
 		g.Attr("data-ask-state", AskStateWaiting),
 		g.Attr("aria-label", "Claude is asking"),
 		Class(askCardClass),
-		askCardHead("asking…"),
+		askCardHead("asking…", extra...),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"),
 			askReadOnly(qs, nil),
-			P(Class("text-xs text-muted"), g.Text("Waiting for the answer in the terminal.")),
+			P(g.Attr("data-ask-nocard", ""), Class("text-xs text-muted"), g.Text(AskNoCardNote)),
 		),
 	)
 }
@@ -135,7 +168,7 @@ func MirrorAskCall(rowID string, qs []askq.Question) g.Node {
 // MirrorAskResult is a call drawn from its result: read-only, with the answers
 // it was given (none, when the result carries none — the picker was dismissed —
 // and note says what the result said instead).
-func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string, note string) g.Node {
+func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string, note string, extra ...g.Node) g.Node {
 	label := "answered"
 	if len(answers) == 0 {
 		label = "not answered"
@@ -146,7 +179,7 @@ func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string
 		g.Attr("data-ask-state", AskStateHistory),
 		g.Attr("aria-label", "Claude asked"),
 		Class(askCardClass),
-		askCardHead(label),
+		askCardHead(label, extra...),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"),
 			askReadOnly(qs, answers),
 			g.If(note != "", P(Class("break-words text-xs text-muted"), g.Text(note))),
@@ -193,6 +226,33 @@ type MirrorAskLiveView struct {
 	// card replaces it.
 	Sent        string
 	SentShowing bool
+	// Agent names who asks ("" is Claude): an opencode window's card says
+	// "opencode" (internal/api's opencode cards).
+	Agent string
+	// NoOther: the card offers no answer of one's own (an opencode
+	// permission request: Allow once or Reject only); NoOtherFor the same for
+	// question i alone (an opencode question that takes only its options).
+	NoOther    bool
+	NoOtherFor []bool
+	// ByIndex: each option's value is its place in the question ("0", "1",
+	// …), not its label — an opencode card, answered by index.
+	ByIndex bool
+	// Record (failed) is the failure's own record on the Answers page: the
+	// card links to it.
+	Record string
+	// Message (failed) says the card offers "Send as a message": typing again
+	// cannot work (the picker is gone or unreadable), so the answer muster was
+	// typing is sent to the session as an ordinary message
+	// (MirrorAskMessagePath), the picker dismissed first if it is still there.
+	Message bool
+}
+
+// agent is who asks, as the card names it.
+func (v MirrorAskLiveView) agent() string {
+	if v.Agent == "" {
+		return "Claude"
+	}
+	return v.Agent
 }
 
 // askTerminalLink is the card's link to the window's terminal.
@@ -202,7 +262,7 @@ func askTerminalLink(v MirrorAskLiveView) g.Node {
 
 // MirrorAskLive is one card of the live region.
 func MirrorAskLive(v MirrorAskLiveView) g.Node {
-	label := "Claude is asking"
+	label := v.agent() + " is asking"
 	status := func(cls, text string, link bool) g.Node {
 		return P(g.Attr("role", "status"), Class("text-xs "+cls), g.Text(text), g.If(link, g.Group{g.Text(" "), askTerminalLink(v)}))
 	}
@@ -220,6 +280,9 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	case AskStateFailed:
 		label = "answer in the terminal"
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", v.Note, true)}
+		if v.Message && v.Unanswerable == "" {
+			body = g.Group{body, askMessageForm(v)}
+		}
 		switch {
 		case v.Retry && v.Unanswerable == "" && v.Chosen != nil:
 			// The picker holds part of THIS answer: Try again resends it as
@@ -232,7 +295,7 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 		}
 	case AskStateAnswered:
 		label = "answered here"
-		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-accent", "Answered here — Claude has it.", false)}
+		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-accent", "Answered here — "+v.agent()+" has it.", false)}
 	case AskStateAnsweredTerminal:
 		label = "answered in the terminal"
 		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-muted", "Answered in the terminal.", false)}
@@ -265,13 +328,17 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	if v.CanCancel && sent != "gone" && (v.State == AskStatePending || v.State == AskStateFailed) {
 		body = g.Group{body, askCancelControl(v)}
 	}
+	if v.Record != "" && (v.State == AskStateFailed || v.Error != "") {
+		body = g.Group{body, A(Href(v.Record), hx("hx-boost", "false"), g.Attr("data-ask-record", ""),
+			Class("inline-flex min-h-[44px] items-center text-xs text-accent underline"), g.Text("What happened (the failure's record)"))}
+	}
 	return Section(
 		g.Attr("data-ask-live", ""),
 		g.Attr("data-ask-tool", v.ToolID),
 		g.Attr("data-ask-row", MirrorAskRowID(v.ToolID)),
 		g.Attr("data-ask-state", v.State),
 		g.Attr("data-ask-sent", sent),
-		g.Attr("aria-label", "Claude is asking"),
+		g.Attr("aria-label", v.agent()+" is asking"),
 		Class(askCardClass),
 		askCardHead(label),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"), body),
@@ -290,23 +357,32 @@ func MirrorAsksLive(vs []MirrorAskLiveView) g.Node {
 // mirrorAsksRegion is the page's live region: empty and hidden until the poll
 // (askScript) fills it.
 //
-// 🔴 IT SHRINKS INTO THE ROOM ABOVE THE COMPOSER (min-h-0, never shrink-0). The
-// composer is pinned to the bottom of the screen and the column ends above it
-// (pinnedShellClass), so the room this region has is what the composer leaves —
-// and a queue drawn in the composer makes that much less. A region that
-// refused to shrink kept its full height and ran on under the pinned composer,
-// drawing the question's Submit under the queued messages, where it could not
-// be tapped. Shrunk, it scrolls within itself, and its Submit is in reach.
+// 🔴 IT IS THE LAST CHILD OF THE CONVERSATION (#mv-log), IN ITS FLOW — NEVER A
+// BOX BETWEEN THE CONVERSATION AND THE COMPOSER, AND NEVER fixed/absolute. The
+// operator's report: "ask user question shows as an overlay and makes it
+// impossible to see the conversation preceding the question". It was a region
+// of its own above the composer, up to 70% of the screen tall, so a long
+// question left the conversation a strip of about a hundred pixels (measured at
+// 412×915: 110px). Inside the one scroll region the card is read like the
+// message it follows, the conversation keeps the whole screen above the
+// composer, and scrolling up shows everything before the question. The
+// conversation's script keeps it last: a row is inserted before it and a reset
+// keeps it (mirrorViewScript's tail). askScript scrolls a newly arrived card
+// into view. Pinned by the "end of the conversation" spec in
+// e2e/tests/mirror-ask.spec.ts and TestTheLiveRegionIsTheConversationsLastChild.
 func mirrorAsksRegion(ref MirrorRef) g.Node {
 	return Section(
-		ID("mv-asks"),
+		ID(mirrorAsksID),
 		g.Attr("data-src", MirrorAsksSrc(ref)),
 		g.Attr("aria-label", "Questions from Claude"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("hidden", ""),
-		Class("flex max-h-[70vh] min-h-0 flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2"),
+		Class("flex shrink-0 flex-col gap-2"),
 	)
 }
+
+// mirrorAsksID is the live region's element id.
+const mirrorAsksID = "mv-asks"
 
 // askForm is a pending question set's form: one fieldset per question and
 // one Submit.
@@ -323,8 +399,12 @@ func askForm(v MirrorAskLiveView) g.Node {
 		opts := make([]g.Node, 0, len(q.Options)+1)
 		for j, o := range q.Options {
 			id := base + "-" + idx + "-" + strconv.Itoa(j)
+			value := o.Label
+			if v.ByIndex {
+				value = strconv.Itoa(j)
+			}
 			opts = append(opts, Label(For(id), Class("flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-s2"),
-				Input(Type(kind), ID(id), Name(name), Value(o.Label),
+				Input(Type(kind), ID(id), Name(name), Value(value),
 					Class("mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
 				Span(Class("flex min-w-0 flex-col"),
 					Span(Class("break-words text-fg"), g.Text(o.Label)),
@@ -334,7 +414,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 		}
 		// A question the terminal draws with previews has no row for an
 		// answer of one's own (askq.Question.Previews): no "Other" here either.
-		if !q.Previews() {
+		if !q.Previews() && !v.NoOther && !(i < len(v.NoOtherFor) && v.NoOtherFor[i]) {
 			otherID := base + "-" + idx + "-other"
 			opts = append(opts, Div(Class("flex flex-col gap-1 rounded-lg px-2 py-2"),
 				Label(For(otherID), Class("flex min-h-[44px] cursor-pointer items-center gap-2"),
@@ -361,7 +441,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 	return Form(
 		g.Attr("data-ask-form", ""),
 		Method("post"),
-		Action(MirrorAskPath),
+		Action(ownerPath(MirrorAskPath, v.Ref.Owner)),
 		Class("flex flex-col gap-4"),
 		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
@@ -373,6 +453,22 @@ func askForm(v MirrorAskLiveView) g.Node {
 			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text(submit)),
 			Span(Class("text-xs text-muted"), g.Text("The terminal shows this question too — whichever is answered first counts."))),
 	)
+}
+
+// askMessageForm is a failed card's "Send as a message": the card's call and
+// nothing else — the server sends the answer muster was typing (never one the
+// page names), dismissing the picker first if it is still on screen.
+func askMessageForm(v MirrorAskLiveView) g.Node {
+	hidden := func(n, val string) g.Node { return Input(Type("hidden"), Name(n), Value(val)) }
+	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-message", ""), Method("post"), Action(ownerPath(MirrorAskMessagePath, v.Ref.Owner)), Class("flex flex-col gap-2"),
+		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
+		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
+		hidden("tool", v.ToolID),
+		P(g.Attr("data-ask-error", ""), g.Attr("role", "alert"), g.Attr("hidden", ""),
+			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg")),
+		Div(Class("flex flex-wrap items-center gap-2"),
+			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text("Send as a message")),
+			Span(Class("text-xs text-muted"), g.Text("Dismisses the picker if it is still there, then sends your answer to "+v.agent()+" as a message."))))
 }
 
 // askRetryForm is a fixed retry: Chosen, as hidden fields, and "Try again" —
@@ -394,7 +490,7 @@ func askRetryForm(v MirrorAskLiveView) g.Node {
 			fields = append(fields, hidden("a"+idx, askq.OtherValue), hidden("o"+idx, v.Chosen[i].Other))
 		}
 	}
-	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-retry", ""), Method("post"), Action(MirrorAskPath), Class("flex flex-col gap-2"),
+	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-retry", ""), Method("post"), Action(ownerPath(MirrorAskPath, v.Ref.Owner)), Class("flex flex-col gap-2"),
 		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
 		hidden("tool", v.ToolID), g.Group(fields),
@@ -424,7 +520,7 @@ func askCancelControl(v MirrorAskLiveView) g.Node {
 			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg")),
 		Dialog(g.Attr("data-ask-cancel-dialog", ""), g.Attr("aria-labelledby", base+"-title"),
 			Class("m-auto w-[calc(100%-2rem)] max-w-sm rounded-2xl bg-s1 p-4 text-sm text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60"),
-			Form(g.Attr("data-ask-cancel-form", ""), Method("post"), Action(MirrorAskCancelPath), Class("flex flex-col gap-3"),
+			Form(g.Attr("data-ask-cancel-form", ""), Method("post"), Action(ownerPath(MirrorAskCancelPath, v.Ref.Owner)), Class("flex flex-col gap-3"),
 				hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 				g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
 				hidden("tool", v.ToolID),
@@ -444,7 +540,10 @@ func askCancelControl(v MirrorAskLiveView) g.Node {
 // it as pending again leaves it alone, so what a person has chosen or typed is
 // not thrown away. Any other state (typing, answered here or in the terminal,
 // dismissed) replaces it; a card the server no longer lists (a few minutes
-// after it ended) is removed.
+// after it ended) is removed. A card whose call the conversation (#mv-log)
+// holds as a result row — the element with the card's data-ask-row id, in
+// the history state — is hidden while that row is there, whichever arrived
+// first (tidy, on every poll and on every change to the conversation).
 //
 // It polls when the page's socket says the window's questions changed (a
 // message of type "asks"), so a question shows the moment its hook registers
@@ -455,8 +554,83 @@ func askScript() g.Node {
   var region = document.getElementById('mv-asks');
   if (!region) return;
   var busy = false, again = false;
+  var log = document.getElementById('mv-log');
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-  function tidy() { region.hidden = !region.querySelector('[data-ask-live]'); }
+  // A card whose call the conversation has drawn from its result (the row
+  // data-ask-row names, in the history state) is hidden, so the question is on
+  // the page once; it shows again if that row goes. Hidden, not removed: the
+  // server lists it for a few minutes more, and a removed card would come back
+  // with the next poll.
+  function drawn(card) {
+    var row = log && document.getElementById(card.getAttribute('data-ask-row'));
+    return !!(row && log.contains(row) && row.getAttribute('data-ask-state') === '`+AskStateHistory+`');
+  }
+  // A card that shows for the first time is scrolled into view in the
+  // conversation it ends (mirrorAsksRegion): wholly, when it fits — the
+  // conversation's end, the messages before it above — else from its start, so
+  // the question is read from its first line. Once per question: a poll or a
+  // redraw of the same card never moves a reader who has scrolled away.
+  //
+  // Of several shown at once, a PENDING one. A view opened on a pending
+  // question polls the cards before the conversation is drawn, so a card that
+  // has ended — answered, dismissed — shows too until the conversation's row
+  // for it hides it (drawn); revealing that one instead marked the pending
+  // question shown, and it never was (measured in the e2e suite: question 1
+  // 400 px above the screen at 412×915).
+  function pending(card) { return card.getAttribute('data-ask-state') === '`+AskStatePending+`'; }
+  //
+  // 🔴 THE CARD HOLDS THE CONVERSATION'S END UNTIL THE READER MOVES (held). A
+  // view opened on a question already pending draws the card BEFORE the
+  // conversation (its poll is faster than the transcript's first batch,
+  // measured 34 ms against 44 ms): a reveal then is on an empty log, and the
+  // reset batch that follows sticks to the bottom — question 1 ended up
+  // hundreds of pixels above the screen. So the revealed card is held: the
+  // conversation's every scroll to its end (mirrorViewScript's toEnd, through
+  // window.musterAskHold — a batch, a snapshot's paint, a resize) reveals the
+  // card again instead, until the reader scrolls, touches, clicks or types, or
+  // the card goes or changes state.
+  var revealed = {}, held = null;
+  function reveal(card) {
+    if (!log || !log.contains(card)) return;
+    var lr = log.getBoundingClientRect(), cr = card.getBoundingClientRect();
+    if (cr.height <= lr.height) log.scrollTop = log.scrollHeight;
+    else log.scrollTop += cr.top - lr.top - 12;
+  }
+  function hold() {
+    if (held && (held.hidden || !region.contains(held))) held = null;
+    if (held) reveal(held);
+  }
+  window.musterAskHold = hold;
+  ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(function (t) {
+    document.addEventListener(t, function () { held = null; }, { capture: true, passive: true });
+  });
+  // 🔴 A CALL WITH NO RESULT IS SHOWN BY ITS LIVE CARD WHEN THERE IS ONE: the
+  // conversation's "asking…" row (data-ask-state waiting) is the fallback for
+  // a question muster tracks nothing of, so it is hidden while a live card
+  // names it (data-ask-row) — and shows again if the card goes.
+  function tidy() {
+    var any = false, fresh = null, carded = {};
+    region.querySelectorAll('[data-ask-live]').forEach(function (c) {
+      var hide = drawn(c);
+      if (c.hidden !== hide) c.hidden = hide;
+      if (hide) return;
+      carded[c.getAttribute('data-ask-row')] = true;
+      any = true;
+      var tool = c.getAttribute('data-ask-tool');
+      if (revealed[tool]) return;
+      revealed[tool] = true;
+      if (!fresh || (!pending(fresh) && pending(c))) fresh = c;
+    });
+    region.hidden = !any;
+    if (log) log.querySelectorAll('[data-ask][data-ask-state="`+AskStateWaiting+`"]').forEach(function (row) {
+      var hide = !!carded[row.id];
+      if (row.hidden !== hide) row.hidden = hide;
+    });
+    if (fresh) { held = fresh; reveal(fresh); }
+  }
+  // The conversation draws (and redraws) its rows on its own socket, before or
+  // after this region's poll: either order ends with tidy().
+  if (log && typeof MutationObserver === 'function') new MutationObserver(tidy).observe(log, { childList: true, subtree: true });
   function merge(html) {
     var got = frag(html), seen = {};
     Array.prototype.slice.call(got.querySelectorAll('[data-ask-live]')).forEach(function (card) {
@@ -496,6 +670,9 @@ func askScript() g.Node {
     say('');
     if (btn) btn.disabled = true;
     var body = new URLSearchParams(new FormData(form));
+    // The door the answer came from (the answer-attempt log): the card in
+    // the Android app's shell, or in a browser.
+    body.set('door', window.musterApp ? 'phone' : 'card');
     fetch(form.getAttribute('action'), { method: 'POST', body: body, credentials: 'same-origin',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
@@ -542,7 +719,9 @@ func askScript() g.Node {
     function say(msg) { if (!note) return; note.textContent = msg || ''; note.hidden = !msg; }
     say('');
     if (btn) btn.disabled = true;
-    fetch(form.getAttribute('action'), { method: 'POST', body: new URLSearchParams(new FormData(form)), credentials: 'same-origin',
+    var cbody = new URLSearchParams(new FormData(form));
+    cbody.set('door', window.musterApp ? 'phone' : 'card');
+    fetch(form.getAttribute('action'), { method: 'POST', body: cbody, credentials: 'same-origin',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
         return r.text().then(function (t) {

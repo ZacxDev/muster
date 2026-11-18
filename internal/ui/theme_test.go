@@ -413,34 +413,52 @@ func TestNoHardCodedColourInUI(t *testing.T) {
 // THEME-COLOR METAS AND THE COMPLETED CARD.
 // ---------------------------------------------------------------------------
 
-var themeColorMetaRe = regexp.MustCompile(`<meta name="theme-color" content="([^"]*)" media="([^"]*)" data-theme-color="([^"]*)">`)
-
-// TestEveryDocumentCarriesBothThemeColorMetas: each standalone document ships
-// the dark meta live (media=all) and the light one parked (media="not all"),
-// with the CONSTANTS as content, and no other theme-color meta.
-func TestEveryDocumentCarriesBothThemeColorMetas(t *testing.T) {
-	docs := shellDocuments(t, Features{GitHub: true})
+// TestEveryDocumentIsDarkWithNoThemeToggle: the light theme is unreachable.
+// Each standalone document is server-rendered dark, tints the status bar with
+// the dark background ONLY (one theme-color meta, the constant, no media query
+// that could select another), loads the theme head script, and draws no toggle.
+func TestEveryDocumentIsDarkWithNoThemeToggle(t *testing.T) {
+	docs := shellDocuments(t, featuresAllOn)
 	docs["task detail"] = renderString(t, TaskDetailPage(sampleTaskDetailView(), Features{}))
+	docs["nav document"] = renderString(t, NavDocument(NavDocumentView{Title: "Account", Entry: NavAccount, Feat: featuresAllOn}))
+	wantMeta := `<meta name="theme-color" content="` + ThemeColorDark + `">`
 	for name, html := range docs {
-		if n := strings.Count(html, `<meta name="theme-color"`); n != 2 {
-			t.Errorf("%s: %d theme-color metas, want exactly 2", name, n)
-			continue
+		if !strings.Contains(html, `<html class="dark"`) {
+			t.Errorf("%s: <html> is not server-rendered dark", name)
 		}
-		m := themeColorMetaRe.FindAllStringSubmatch(html, -1)
-		if len(m) != 2 {
-			t.Errorf("%s: theme-color metas are not in the expected shape: %v", name, m)
-			continue
+		if n := strings.Count(html, `<meta name="theme-color"`); n != 1 || !strings.Contains(html, wantMeta) {
+			t.Errorf("%s: %d theme-color metas; want exactly one, %s", name, n, wantMeta)
 		}
-		want := [][3]string{{ThemeColorDark, "all", "dark"}, {ThemeColorLight, "not all", "light"}}
-		for i, w := range want {
-			if m[i][1] != w[0] || m[i][2] != w[1] || m[i][3] != w[2] {
-				t.Errorf("%s: theme-color meta %d = content %q media %q theme %q, want %q %q %q",
-					name, i, m[i][1], m[i][2], m[i][3], w[0], w[1], w[2])
+		// renderString inlines each static script's body, so this is the script
+		// the document loads, not a tag that might point elsewhere.
+		if !strings.Contains(html, themeHeadScript) {
+			t.Errorf("%s: the theme head script is not loaded, so a stored light opt-in is never cleared", name)
+		}
+		for _, gone := range []string{"data-theme-toggle", "musterSetTheme", "Light theme"} {
+			if strings.Contains(html, gone) {
+				t.Errorf("%s: still carries the light-theme toggle (%q)", name, gone)
 			}
 		}
-		if !strings.Contains(html, "window.musterSetTheme") {
-			t.Errorf("%s: the theme head script is missing, so a stored light opt-in is never applied", name)
-		}
+	}
+}
+
+// TestTheThemeHeadForcesDarkAndClearsTheStoredChoice pins the WHOLE head script,
+// and the sign-in page's inline copy of it: it re-asserts `dark` and deletes the
+// key the removed toggle stored (so a device that chose light loads dark), with
+// the storage access in a try/catch. A whole-string pin on purpose — a word
+// check is walkable by rewording, and this string IS the behaviour. The browser
+// half (a device with "light" stored loads dark) is e2e/tests/theme.spec.ts.
+func TestTheThemeHeadForcesDarkAndClearsTheStoredChoice(t *testing.T) {
+	const want = "(function () {\n" +
+		"  document.documentElement.classList.add('dark');\n" +
+		"  try { localStorage.removeItem('muster-theme'); } catch (e) {}\n" +
+		"})();"
+	if themeHeadScript != want {
+		t.Errorf("theme head script =\n%s\nwant\n%s", themeHeadScript, want)
+	}
+	wantHTML := `<meta name="theme-color" content="#110F1C">` + "\n<script>" + want + "</script>"
+	if got := ThemeHeadHTML(); got != wantHTML {
+		t.Errorf("ThemeHeadHTML() =\n%s\nwant\n%s", got, wantHTML)
 	}
 }
 

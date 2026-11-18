@@ -49,8 +49,9 @@ import (
 // live upstream — a machine bearer token that is enforce-when-set (unset means
 // OPEN), a browser session, a terminal token, an agent-resolved token and a
 // browser-terminal tier — and specifies a SIXTH, fail-closed service-to-service
-// door for exactly this split. Six tiers, one of which fails OPEN when its
-// secret is missing, and a gate that cannot tell any of them apart. The plan
+// door for exactly this split. Six tiers, one of which then failed OPEN when its
+// secret was missing (muster's hook tier has since been made fail-closed), and
+// a gate that cannot tell any of them apart. The plan
 // names getting a route's tier wrong as one of the two most likely ways the
 // carve ships broken.
 //
@@ -216,6 +217,24 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  75   routeFloor
 //
+// ⚠ AND AGAIN FOR THE CHIEF'S DISPATCHED-AGENT CARD: GET /ui/dispatch-card is a
+// new muster row, so the projection is 85 (71 + 14), same margin:
+//
+//	  85   manifest projection (71 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  76   routeFloor
+//
+// ⚠ AND AGAIN WHEN THE DISPATCH FORM WAS DELETED (docs/design/chief-dispatch.md
+// phase 2): its three rows (GET /ui/agents/new, GET /ui/agents/notes, POST
+// /agents) went and POST /api/agents came, so the projection is 83 (69 + 14),
+// same margin:
+//
+//	  83   manifest projection (69 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  74   routeFloor
+//
 // routeFloorProjection is checked against the MANIFEST, not against the code,
 // by TestRoutePartitionManifestIsATotalPartition.
 //
@@ -227,8 +246,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 84
-	routeFloor           = 75
+	routeFloorProjection = 83
+	routeFloor           = 74
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.
@@ -485,15 +504,34 @@ func TestRouteGatePositiveControl(t *testing.T) {
 // extra. The direction that matters is the one checked: a literal in the
 // source that the recorder never saw is a registration happening somewhere
 // this gate cannot see.
+// offTheMainMux is every literal route pattern the module registers on a
+// handler that is deliberately NOT registerAll's, with the reason. Each one is
+// asserted both ways: present in the sources (so the entry cannot outlive its
+// code) and ABSENT from the recorded set (so it is not served on the main
+// handler as well, which is the whole point of putting it elsewhere).
+var offTheMainMux = map[string]string{
+	"GET /metrics": "MetricsHandler: the metrics listener's own mux, served only on MUSTER_METRICS_PORT and on no " +
+		"listener the main handler backs (TestMetricsAreServedOnlyOnTheMetricsListener)",
+}
+
 func assertNoRouteOutsideTheChokepoint(t *testing.T, recorded []string, inSource map[string]string) {
 	t.Helper()
 	have := make(map[string]bool, len(recorded))
 	for _, r := range recorded {
 		have[r] = true
 	}
+	for pat := range offTheMainMux {
+		if _, ok := inSource[pat]; !ok {
+			t.Errorf("offTheMainMux lists %q, which no source registers any more: delete the entry", pat)
+		}
+		if have[pat] {
+			t.Errorf("offTheMainMux lists %q, and RegisterRoutes records it too: it is on the main handler, "+
+				"which is what registering it elsewhere was meant to prevent", pat)
+		}
+	}
 	var orphans []string
 	for pat, pos := range inSource {
-		if !have[pat] {
+		if _, off := offTheMainMux[pat]; !have[pat] && !off {
 			orphans = append(orphans, fmt.Sprintf("  %q at %s", pat, pos))
 		}
 	}
@@ -703,13 +741,22 @@ func moduleRoot(t *testing.T) string {
 //     internal/agentgateway; /hook/{event} is served only on ccd's hook socket (a
 //     unix socket, each hook authenticated with a credential only ccd's CLIs hold);
 //     GET /{$} is the same health check as /healthz, at muster's default agent
-//     health path ("/").
-//   - cmd/hermesd: the in-pod supervisor of the hermes-agent image (the hermes
-//     kind). The same agent wire as ccd's, and the same health check at both
-//     paths; no hook surface (Hermes runs no hooks of muster's in a pod).
+//     health path ("/"); GET /v1/transcript is the primary CLI's transcript,
+//     read incrementally by muster-server's officer transcript forwarder
+//     (internal/officers/transcript), bearer-authenticated like /v1/responses;
+//     GET /v1/clis is which CLIs in the pod are working by their own sessions
+//     files, read by task_dispatch's owner_asked (internal/api
+//     chief_owner_release.go), bearer-authenticated the same way; GET
+//     /v1/usage is the pod's Claude usage per session and UTC hour, counted
+//     from its transcripts, read by muster-server's officer usage collector
+//     (internal/officers/usage), bearer-authenticated the same way.
+//   - e2e/previewfix: the previews browser spec's fixture (e2e/tests/previews.spec.ts):
+//     the "dev server" a mirrored window runs, reached only on loopback through the
+//     preview gateway. A test tool in no shipped binary (internal/modulegate's
+//     ledger says so).
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd":     {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/chat/completions", "POST /v1/responses"},
-	"cmd/hermesd": {"GET /healthz", "GET /{$}", "POST /v1/responses"},
+	"cmd/ccd":        {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "GET /v1/usage", "POST /hook/{event}", "POST /v1/responses"},
+	"e2e/previewfix": {"GET /{$}", "GET /api/ping", "GET /attack", "GET /secret", "GET /sse", "GET /ws"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

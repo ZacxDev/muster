@@ -177,6 +177,91 @@ func (r Repo) PlainWorktree(t *testing.T, dir string) {
 	Git(t, r.Checkout, "worktree", "add", "-q", "--detach", dir, r.Commit)
 }
 
+// FakeSSHLogEnv, FakeSSHRootEnv and FakeSSHWritableEnv steer the fake ssh
+// FakeSSH installs.
+const (
+	FakeSSHLogEnv      = "MUSTER_FAKE_SSH_LOG"
+	FakeSSHRootEnv     = "MUSTER_FAKE_SSH_ROOT"
+	FakeSSHWritableEnv = "MUSTER_FAKE_SSH_WRITABLE"
+	// FakeSSHEnvLogEnv, set, is a file each invocation appends its whole
+	// environment to (`env`), for a test that reads what reached ssh.
+	FakeSSHEnvLogEnv = "MUSTER_FAKE_SSH_ENVLOG"
+)
+
+// FakeSSHReadOnlyRefusal is what the fake answers git-receive-pack with unless
+// FakeSSHWritableEnv is set: GitHub's refusal of a read-only deploy key.
+const FakeSSHReadOnlyRefusal = "ERROR: The key you are authenticating with has been marked as read only."
+
+// fakeSSH plays GitHub's SSH endpoint for git: it appends its whole argv (one
+// line) to $MUSTER_FAKE_SSH_LOG, then serves the repository its last argument
+// names (`git-upload-pack '/owner/name.git'`) from $MUSTER_FAKE_SSH_ROOT/owner/name.git,
+// or $MUSTER_FAKE_SSH_ROOT/owner/name when there is no such directory.
+// git-receive-pack is refused as GitHub refuses a read-only deploy key, unless
+// $MUSTER_FAKE_SSH_WRITABLE is set.
+const fakeSSH = `#!/bin/sh
+printf '%s\n' "$*" >> "$MUSTER_FAKE_SSH_LOG"
+[ -z "$MUSTER_FAKE_SSH_ENVLOG" ] || env >> "$MUSTER_FAKE_SSH_ENVLOG"
+last=
+for a do last=$a; done
+prog=${last%% *}
+path=${last#* }
+path=${path#\'}
+path=${path%\'}
+path=${path#/}
+dir=$MUSTER_FAKE_SSH_ROOT/$path
+[ -d "$dir" ] || dir=${dir%.git}
+case $prog in
+git-upload-pack) exec git-upload-pack "$dir" ;;
+git-receive-pack)
+	[ -n "$MUSTER_FAKE_SSH_WRITABLE" ] && exec git-receive-pack "$dir"
+	echo "` + FakeSSHReadOnlyRefusal + `" >&2
+	exit 1 ;;
+esac
+echo "fake ssh: unexpected command: $last" >&2
+exit 1
+`
+
+// FakeSSH sets PATH to a directory holding a fake `ssh` followed by path (the
+// caller's PATH, which the test reads: this package is not a _test.go file,
+// and a variable read here would count as configuration) for the rest of the
+// test, serving repositories from root (the fixture's anonymous base
+// directory: Origin is root/acme/widgets), and returns the file each
+// invocation's argv is appended to. With writable, it also accepts
+// git-receive-pack (a deploy key that can push).
+func FakeSSH(t *testing.T, path, root string, writable bool) (logPath string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath = filepath.Join(t.TempDir(), "ssh.log")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
+	t.Setenv(FakeSSHLogEnv, logPath)
+	t.Setenv(FakeSSHRootEnv, root)
+	if writable {
+		t.Setenv(FakeSSHWritableEnv, "1")
+	} else {
+		t.Setenv(FakeSSHWritableEnv, "")
+	}
+	return logPath
+}
+
+// SSHLog is what FakeSSH logged: one argv per line, "" when ssh never ran.
+func SSHLog(t *testing.T, logPath string) string {
+	t.Helper()
+	b, err := os.ReadFile(logPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// AnonRoot is the directory the fixture's anonymous base names (AnonBase
+// without its file:// scheme): Origin is AnonRoot/acme/widgets.
+func (r Repo) AnonRoot() string {
+	return strings.TrimSuffix(strings.TrimPrefix(r.AnonBase, "file://"), "/")
+}
+
 // MarkerFiles is the content of the markers directory: file name → content.
 func (r Repo) MarkerFiles(t *testing.T) map[string]string {
 	t.Helper()
@@ -214,4 +299,73 @@ func jsonQuote(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// GitShimLogEnv names the file GitShim's `git` appends each invocation to.
+const GitShimLogEnv = "MUSTER_GIT_SHIM_LOG"
+
+// gitShim records its argv (one line per call, arguments separated by \x1f)
+// and then execs the real git (REALGIT, its absolute path): what a call sent,
+// without changing what it does.
+const gitShim = `#!/bin/sh
+{
+	sep=
+	for a do printf '%s%s' "$sep" "$a"; sep=$(printf '\037'); done
+	printf '\n'
+} >> "$MUSTER_GIT_SHIM_LOG"
+exec REALGIT "$@"
+`
+
+// GitShim puts a `git` first on PATH (path is the caller's PATH, which the
+// test reads) for the rest of the test that logs every invocation's argv and
+// then runs the real git — including the gits git itself starts through the
+// shell (an --upload-pack command) — and returns the log's path (GitShimCalls).
+func GitShim(t *testing.T, path string) string {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on PATH")
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(strings.Replace(gitShim, "REALGIT", shQuote(real), 1)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(t.TempDir(), "git.log")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
+	t.Setenv(GitShimLogEnv, log)
+	return log
+}
+
+// GitShimCalls is every argv GitShim logged, in order.
+func GitShimCalls(t *testing.T, log string) [][]string {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		if line != "" {
+			calls = append(calls, strings.Split(line, "\x1f"))
+		}
+	}
+	return calls
+}
+
+// GitSubcommand is argv's git subcommand: the first argument that is not a
+// global option (-c and -C take a value).
+func GitSubcommand(argv []string) string {
+	for i := 0; i < len(argv); i++ {
+		switch a := argv[i]; {
+		case a == "-c" || a == "-C":
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			return a
+		}
+	}
+	return ""
 }

@@ -1,0 +1,110 @@
+package ui
+
+import (
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// The Rendered | Terminal segments are px-1.5 (not px-2.5) and still 44px
+// targets, and both pages that draw the switch use the one class.
+func TestViewToggleSegmentsArePaddedLess(t *testing.T) {
+	if !strings.Contains(" "+viewToggleSegClass, " px-1.5 ") || strings.Contains(viewToggleSegClass, "px-2.5") || !strings.Contains(viewToggleSegClass, "min-h-[44px]") {
+		t.Errorf("viewToggleSegClass = %q", viewToggleSegClass)
+	}
+	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@1", Interactive: true}))
+	for _, id := range []string{"view-rendered", "view-terminal"} {
+		if !regexp.MustCompile(`id="` + id + `"[^>]*class="` + regexp.QuoteMeta(viewToggleSegClass)).MatchString(page) {
+			t.Errorf("%s does not wear viewToggleSegClass", id)
+		}
+	}
+}
+
+// A switcher entry has NO cap at all — its pill is as wide as its whole
+// label, which is never truncated (it was 10rem, 20rem, then 26rem, and still
+// "often cut off").
+func TestTitleEntriesAreWider(t *testing.T) {
+	if switcherEntryBoxClass != "inline-flex h-11 shrink-0 items-center" {
+		t.Errorf("switcherEntryBoxClass = %q (a switcher entry has no width cap, and is never squeezed)", switcherEntryBoxClass)
+	}
+	got := renderString(t, switcherEntry(SwitcherItem{Href: "/agents/a", Label: "billing-reconcile-nightly:1", Kind: "agent"}))
+	if !strings.Contains(got, switcherEntryBoxClass+`"`) {
+		t.Errorf("an entry does not wear switcherEntryBoxClass:\n%s", got)
+	}
+	for _, banned := range []string{"max-w-", "truncate", "min-w-0", "text-ellipsis"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("a switcher entry still carries %q (a cap or a truncation):\n%s", banned, got)
+		}
+	}
+	if !strings.Contains(got, `<span class="`+switcherLabelClass+`">billing-reconcile-nightly:1</span>`) {
+		t.Errorf("the label is not drawn whole on one line:\n%s", got)
+	}
+}
+
+// The row's edge fade (switcherFadeJS) ships in the bar's own script and only
+// READS the row's scroll position — it never writes scrollLeft, so the offset
+// a refresh keeps is the reader's — and its two attributes are the ones the
+// stylesheet masks by. e2e dock-fade.spec.ts measures the fade at 412px.
+func TestTheRowFadeOnlyReadsTheScrollAndTheStylesheetKeysOffIt(t *testing.T) {
+	js := renderString(t, switcherScript())
+	if !strings.Contains(js, switcherFadeJS) {
+		t.Fatal("the fade is not in the bar's script")
+	}
+	for _, banned := range []string{"scrollLeft =", "scrollTo(", "scrollBy(", "scrollIntoView"} {
+		if strings.Contains(switcherFadeJS, banned) {
+			t.Errorf("the fade moves the row (%s)", banned)
+		}
+	}
+	css, err := os.ReadFile("../../web/css/input.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sel := range []string{
+		"[data-switcher-list][" + switcherFadeEndAttr + "] {",
+		"[data-switcher-list][" + switcherFadeStartAttr + "] {",
+		"[data-switcher-list][" + switcherFadeStartAttr + "][" + switcherFadeEndAttr + "] {",
+	} {
+		if !strings.Contains(string(css), sel) {
+			t.Errorf("web/css/input.css has no rule %q", sel)
+		}
+	}
+}
+
+// The rendered view's header title is a button inside the <h1> that targets
+// the full-title popover, wired to agentTitleFitScript (the one clipping rule)
+// in its disable mode; the popover is OUTSIDE the <h1> and holds the header
+// line whole (name, qualifier, "On <host>") and nothing else; the
+// <title> is the same name (mirrorViewName).
+func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
+	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "scratch2", Window: "@1", Label: "billing-reconcile-nightly:1", Qualifier: "tower", Interactive: true}))
+	h1 := regexp.MustCompile(`(?s)<h1 id="mv-heading" tabindex="-1" data-agent-title="" data-title-fit="disable" class="min-w-0 text-sm font-semibold"><button id="mv-title" type="button" data-mv-title="" data-agent-title-text="" data-title-more="" popovertarget="mv-title-full" aria-haspopup="dialog" aria-controls="mv-title-full" aria-expanded="false" class="block w-full min-w-0 truncate[^"]*">(.*?)</button></h1>`).FindStringSubmatch(page)
+	if h1 == nil {
+		t.Fatalf("no title button in the header's h1:\n%s", page[strings.Index(page, "<header"):][:2000])
+	}
+	if !strings.Contains(h1[1], `data-mirror-name`) || !strings.Contains(h1[1], `data-term-badge`) {
+		t.Errorf("the button does not hold the title and the badge:\n%s", h1[1])
+	}
+	if strings.Contains(h1[1], `data-title-full`) {
+		t.Error("the popover is inside the <h1>")
+	}
+	pop := regexp.MustCompile(`(?s)<div id="mv-title-full" popover="auto"[^>]*data-floating-menu=""[^>]*>(.*?)</div>`).FindStringSubmatch(page)
+	if pop == nil {
+		t.Fatal("no full-title popover")
+	}
+	// The header line in words: no tmux session, no window index — the address
+	// is the header's ⓘ (mirrorViewHeading).
+	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly · tower · On host-a</span>` {
+		t.Errorf("the popover is not exactly the whole title:\n%s", pop[1])
+	}
+	if !strings.Contains(page, "<title>billing-reconcile-nightly · tower · On host-a · muster</title>") {
+		t.Error("the <title> is not the header's name")
+	}
+	if !strings.Contains(page, "window.__musterFloatingMenu") || !strings.Contains(page, "window.__musterAgentTitleFit") || !strings.Contains(page, "data-title-fit') === 'disable'") {
+		t.Error("the page does not carry the popover's placement script and the shared fit script")
+	}
+	plain := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@1", Title: "main:1", Interactive: true}))
+	if !strings.Contains(plain, `<span class="[overflow-wrap:anywhere] text-sm font-semibold">main · On host-a</span></div>`) {
+		t.Error("an unlabelled window's popover is not its header line")
+	}
+}

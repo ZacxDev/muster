@@ -138,16 +138,14 @@
 
   /*
    * THE TMUX IDENTITY COLOUR (internal/ui/identity_color.go). A mirrored
-   * window's CARD (only the card: not its pages' headers) carries data-identity and four variants of its colour as "R G B" custom
+   * window's sidebar ROW (not its pages' headers) carries data-identity and four variants of its colour as "R G B" custom
    * properties: border and title, dark and light, each already moved in
-   * lightness to meet 3:1 / 4.5:1 against that theme's s1 and bg. These rules
-   * pick the theme's pair (the same class switch as the palette above, so no
-   * script) and apply it to the card's border and ring and to its title.
-   *
-   * The selectors are attribute pairs, (0,2,0), so they out-rank the card's
-   * own border-line / ring-line / text-fg utilities (0,1,0) wherever they are
-   * emitted; `group-hover:text-accent` (0,3,0) still wins on hover. An element
-   * with no colour has no data-identity, so nothing here touches it.
+   * lightness to meet 3:1 / 4.5:1 against that theme's s1 and bg. The first two
+   * rules pick the theme's pair (the same class switch as the palette above, so
+   * no script); the row's left edge reads --id-bd (navAgentRow).
+   * (The title variants, --id-tt, tinted the retired Agents list card's
+   * title; nothing reads them now.) An element with no colour has no
+   * data-identity, so nothing here touches it.
    */
   [data-identity] {
     --id-bd: var(--id-bd-d);
@@ -156,14 +154,6 @@
   :root:not(.dark) [data-identity] {
     --id-bd: var(--id-bd-l);
     --id-tt: var(--id-tt-l);
-  }
-  [data-identity][data-mirror-card] {
-    border-color: rgb(var(--id-bd));
-    --tw-ring-color: rgb(var(--id-bd));
-  }
-  [data-identity] [data-mirror-name],
-  [data-identity] [data-card-title] {
-    color: rgb(var(--id-tt));
   }
 
   /*
@@ -343,8 +333,23 @@
    * elements themselves (Tailwind utilities) so prefers-reduced-motion below
    * collapses them.
    */
+  /*
+   * 🔴 A SHUT PANEL IS ALSO visibility: hidden, NOT ONLY OFF SCREEN. Translated
+   * away, its contents are still hit-testable and focusable — and with the
+   * sidebar's <details> "More" in it, Chromium resolves a touch just inside the
+   * left edge, over the session switcher (then the Agents list's), to <html> instead of
+   * the bar (measured: elementFromPoint names the bar, the touchstart's target
+   * is <html>; replacing the <details> with a <div>, or hiding the panel,
+   * restores the bar). The bar's own swipe (ownsSideways) then never sees its
+   * mark, and the edge-swipe opens the drawer under the thumb
+   * (e2e/tests/recent-agents.spec.ts). Hidden, the shut panel takes no touch.
+   * visibility is in the transition so the panel stays drawn while it slides
+   * out (a visible/hidden transition is visible for its whole duration).
+   */
   #sidebar-root .sidebar-panel {
     transform: translateX(-100%);
+    visibility: hidden;
+    transition-property: transform, visibility;
   }
   #sidebar-root .sidebar-backdrop {
     opacity: 0;
@@ -352,6 +357,7 @@
   }
   #sidebar-root[data-open='true'] .sidebar-panel {
     transform: translateX(0);
+    visibility: visible;
   }
   #sidebar-root[data-open='true'] .sidebar-backdrop {
     opacity: 1;
@@ -363,12 +369,18 @@
    * regardless of the open/closed toggle — and the dimming backdrop never
    * shows. The content column is offset with lg:pl-72 in the markup, and the
    * hamburger is lg:hidden.
+   *
+   * EXCEPT on a page whose sidebar is an overlay at every width
+   * ([data-overlay], sidebarIn in internal/ui/components.go): the full-height
+   * mirrored view and terminal, whose layout is sized to the window. There the
+   * closed/open rules above keep applying on a desktop too.
    */
   @media (min-width: 1024px) {
-    #sidebar-root .sidebar-panel {
+    #sidebar-root:not([data-overlay]) .sidebar-panel {
       transform: translateX(0);
+      visibility: visible;
     }
-    #sidebar-root .sidebar-backdrop {
+    #sidebar-root:not([data-overlay]) .sidebar-backdrop {
       display: none;
     }
   }
@@ -425,13 +437,37 @@
 }
 
 /*
+ * Chat logs are bottom-aligned: a transcript shorter than its log sits at the
+ * log's BOTTOM, by the composer, as in a messaging app — on every chat surface
+ * (the mirrored view's #mv-log, the agent chat page's and the chief panel's
+ * #chat-log). It is also what lets a tail-first reply open with its end in
+ * place in a short transcript (bubble_clamp.go): there is always scroll to
+ * give back what the bubble grows.
+ *
+ * A zero-height ::before flex item takes all the free space (margin-bottom:
+ * auto), so it works whatever the first child is — hidden or not. Its
+ * margin-top cancels the log's gap-3 (0.75rem) between it and the first
+ * child, so a transcript that FILLS the log (free space 0, auto margin 0) is
+ * laid out exactly as before. Change the two together.
+ */
+#mv-log::before,
+#chat-log::before {
+  content: "";
+  flex: none;
+  margin-top: -0.75rem;
+  margin-bottom: auto;
+}
+
+/*
  * Chat bubble clamp (internal/ui/bubble_clamp.go). Outside every @layer on
  * purpose: these are attribute selectors with no class, and only a layer's
  * class candidates are what Tailwind matches against the views.
- * - [data-clamp]          : a bubble the script measured as over ~12 lines;
+ * - [data-clamp]          : a bubble the script measured as over ~15 lines;
  *                           its max-height animates between clamped and full.
  * - [data-clamp="closed"] : the clamped state; the bottom fades out (a mask,
  *                           so it fades over any bubble's background).
+ * - [data-clamp-from="tail"][data-clamp="closed"] : an agent's reply, clamped
+ *                           tail-first: its END shows, so the TOP fades in.
  */
 [data-clamp] {
   overflow: hidden;
@@ -445,6 +481,10 @@
   cursor: pointer;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+[data-clamp-from="tail"][data-clamp="closed"] {
+  -webkit-mask-image: linear-gradient(to top, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to top, #000 calc(100% - 2.5rem), transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   [data-clamp] {
@@ -480,6 +520,54 @@
 @supports (field-sizing: content) {
   .composer-fit {
     field-sizing: content;
+  }
+}
+
+/*
+ * An ask's answer box (internal/ui/attention.go, THE COMPACT ANSWER FORM):
+ * one line to start, as tall as its text as it is typed, capped at 8rem and
+ * scrolling inside past that. Without field-sizing it stays one line and
+ * scrolls. A plain class outside every @layer: Tailwind keeps it as written.
+ */
+.answer-fit {
+  max-height: 8rem;
+  overflow-y: auto;
+}
+@supports (field-sizing: content) {
+  .answer-fit {
+    field-sizing: content;
+  }
+}
+
+/*
+ * The Rendered view's COLLAPSIBLE message box (internal/ui/composer_reveal.go).
+ * On a touch screen (a coarse pointer) a form carrying data-mv-collapsed draws
+ * no box: its row ([data-mv-field], above the button row) is not drawn, and
+ * "Type a message" (#mv-text) is shown in the button row, right before the
+ * mic. The paperclip is a button of that row in both states (attach.go), so a
+ * file is attached without opening the box. The box stays in the DOM
+ * (display: none), so dictation and the draft still reach it. Revealing it is
+ * removing the attribute. With a fine pointer the box is shown and the button
+ * never is.
+ */
+#mv-text {
+  display: none;
+}
+@media (pointer: coarse) {
+  /*
+   * An EMPTY box stays one line: its placeholder is ellipsed rather than
+   * wrapped onto a second line on a narrow phone. A fine pointer is unchanged.
+   */
+  #mv-input::placeholder {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #mv-form[data-mv-collapsed] [data-mv-field] {
+    display: none;
+  }
+  #mv-form[data-mv-collapsed] #mv-text {
+    display: inline-flex;
   }
 }
 
@@ -521,27 +609,364 @@
 }
 
 /*
- * The Agents list's Idle section (internal/ui/idle_section.go). Outside every
- * @layer, like the rules above, so no utility can outrank it.
- *
- * WHERE: the header after the working entries, the idle entries after it — by
- * `order`, not by DOM position, so a background refresh the hold keeps in its
- * drawn DOM order (agentsFilterScript's keepDrawnOrder) still draws each card
- * in its section. COLLAPSED unless <html> carries data-agents-idle-open (this
- * viewer opened it; set from localStorage by the head script before the first
- * paint) or data-agents-searching (a term in the search box: a search finds
- * idle entries).
+ * The session switcher's row FADES AT AN EDGE THAT HAS MORE (internal/ui/
+ * switcher.go, switcherFadeJS): data-fade-end while there is more to scroll
+ * to on the right, data-fade-start once scrolled away from the left. A pill
+ * cut by the edge then reads as "more to scroll", not as broken. A mask, so
+ * it fades over any background and moves no layout; a row with neither
+ * attribute (it fits) is not masked at all.
  */
-#agents-list > [data-idle-head] {
-  order: 1;
+[data-switcher-list][data-fade-end] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.75rem), transparent);
 }
-#agents-list > article[data-idle-section] {
-  order: 2;
+[data-switcher-list][data-fade-start] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.75rem);
+  mask-image: linear-gradient(to right, transparent, #000 1.75rem);
 }
-html:not([data-agents-idle-open]):not([data-agents-searching]) #agents-list > article[data-idle-section] {
-  display: none !important;
+[data-switcher-list][data-fade-start][data-fade-end] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.75rem, #000 calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 1.75rem, #000 calc(100% - 1.75rem), transparent);
 }
-html[data-agents-idle-open] [data-idle-chevron],
-html[data-agents-searching] [data-idle-chevron] {
-  transform: rotate(90deg);
+
+/*
+ * The session switcher at a screen's foot STEPS ASIDE (internal/ui/
+ * switcher.go, switcherRoomMark): hidden, its room given back down to the
+ * safe-area inset, while a soft keyboard is up (html[data-keyboard], set by
+ * the bar's script) and — an in-flow room only — on a screen at most 30rem
+ * tall (a landscape phone). The selectors outrank the room's own pb-[…]
+ * utility by specificity, not by !important.
+ */
+html[data-keyboard] [data-switcher-room] {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+html[data-keyboard] [data-switcher-room] > #session-switcher {
+  display: none;
+}
+@media (max-height: 30rem) {
+  html [data-switcher-room="flow"] {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  html [data-switcher-room="flow"] > #session-switcher {
+    display: none;
+  }
+}
+
+/*
+ * The session switcher's view menu, its ⋯ menu and the search palette
+ * (internal/ui/switcher.go, switcher_pin.go). All are popovers (top layer,
+ * out of flow), so their opening moves nothing on the page. They ANIMATE open
+ * and closed: the view menu grows up out of the view button at the bar's left
+ * (the bar is at the screen's bottom), the ⋯ menu out of the ⋯ at its right, the palette
+ * drops in from above. display and overlay transition discretely, so the
+ * close plays before the box leaves the top layer; @starting-style is where an
+ * opening starts. Reduced motion: at once, both ways.
+ */
+#switcher-views,
+#switcher-more,
+#switcher-search {
+  opacity: 0;
+  transition:
+    opacity 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 160ms allow-discrete,
+    display 160ms allow-discrete;
+}
+#switcher-views,
+#switcher-more {
+  transform: translateY(8px) scale(0.96);
+  transform-origin: bottom left;
+}
+#switcher-more {
+  transform-origin: bottom right;
+}
+#switcher-search {
+  transform: translateY(-8px) scale(0.98);
+  transform-origin: top center;
+}
+#switcher-views:popover-open,
+#switcher-more:popover-open,
+#switcher-search:popover-open {
+  opacity: 1;
+  transform: none;
+}
+@starting-style {
+  #switcher-views:popover-open,
+  #switcher-more:popover-open {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  #switcher-search:popover-open {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #switcher-views,
+  #switcher-more,
+  #switcher-search {
+    transition: none;
+  }
+}
+
+/*
+ * The switcher dock (internal/ui/switcher_dock.go): a modal <dialog>, laid out
+ * as a bottom sheet in the touch layout, the only layout that opens it. ONE
+ * SNAP (operator decision: no full screen): 60% of the VISUAL viewport, never
+ * less than the header and three rows (its script writes --dock-half), its list
+ * scrolling inside it. It sits on a soft keyboard where one covers the page
+ * without resizing it (--dock-kb, 0 otherwise), so the filter stays above it.
+ * It slides up and its backdrop fades in, 220ms on the popovers' easing;
+ * display and overlay transition discretely so the close plays before it
+ * leaves the top layer, and a closed dock is display: none, so it adds nothing
+ * to first paint. Reduced motion: no transition at all, both ways.
+ */
+#switcher-dock {
+  position: fixed;
+  inset: auto 0 var(--dock-kb, 0px) 0;
+  margin: 0;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: var(--dock-half, 60dvh);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  border: 0;
+  border-radius: 1rem 1rem 0 0;
+  transform: translateY(100%);
+  transition:
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 220ms allow-discrete,
+    display 220ms allow-discrete;
+}
+#switcher-dock[open] {
+  display: flex;
+  transform: none;
+}
+/* The filter draws its own clear button (data-dock-filter-clear), so the
+ * search field's built-in one would be a second ×. */
+#dock-filter::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+#switcher-dock::backdrop {
+  background: rgb(0 0 0 / 0.5);
+  opacity: 0;
+  transition:
+    opacity 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 220ms allow-discrete,
+    display 220ms allow-discrete;
+}
+#switcher-dock[open]::backdrop {
+  opacity: 1;
+}
+@starting-style {
+  #switcher-dock[open] {
+    transform: translateY(100%);
+  }
+  #switcher-dock[open]::backdrop {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #switcher-dock,
+  #switcher-dock::backdrop {
+    transition: none;
+  }
+}
+
+/*
+ * The agent page's ⋯ menu draws BOTH Start and Stop (internal/ui/agent_actions.go
+ * agentLifecycleItems) and shows the one the status calls for, read off the
+ * header strip's #agent-status, which every strip refresh re-renders: Stop
+ * while running or provisioning, Start otherwise. So the menu is drawn once
+ * and never replaced — an open menu with an armed "Confirm delete" stays put.
+ * Outside every @layer, so the items' own `flex` utility cannot outrank it.
+ */
+body:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"])) #agent-actions [data-lifecycle="idle"],
+body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"]))) #agent-actions [data-lifecycle="live"] {
+  display: none;
+}
+
+/*
+ * The asker block (internal/ui/attention.go, ONE AT A TIME, CLAMPED): a
+ * collapsed list shows its first card only, and a question's text is four
+ * lines until its in-card "Show more" opens it. Outside every @layer, so the
+ * cards' own `flex` and the text's `whitespace-pre-wrap` cannot outrank it.
+ */
+#asker-asks [data-asks-collapsed] > [data-attention-item]:not(:first-child) {
+  display: none;
+}
+#asker-asks [data-attention-item] [data-attention-text]:not([data-ask-open]) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+/*
+ * While the block shows ONE card (a collapsed list, or a list of one) its cap
+ * rises from the max-h-[45vh] utility to 65dvh, so a real card — long
+ * options, the mic — fits whole and the conversation's scroller shrinks
+ * instead of the card being cut at the block's scroll edge (AskerAsksBlock).
+ * The id outranks the utility by specificity.
+ *
+ * NOT ON AN AGENT'S PAGE ([data-asks-page], askerAsksSection): there the block
+ * is capped at 40dvh and shrinks, scrolling inside, so it can never push the
+ * composer under the session switcher (an operator report).
+ */
+#asker-asks:not([data-asks-page]):has(> [data-asks-collapsed]),
+#asker-asks:not([data-asks-page]):has(> ul > [data-attention-item]:only-child) {
+  max-height: 65vh;
+  max-height: 65dvh;
+}
+/*
+ * The heading's fold (AskerAsksHeading, more than one question): folded, the
+ * block is its heading row alone.
+ */
+#asker-asks[data-asks-folded] > :not(:first-child) {
+  display: none;
+}
+
+/*
+ * THE ASKS CARD FEED (internal/ui/asks_card.go, docs/attention.md "The card
+ * feed"). Outside every @layer, so a card's own utilities (p-3, flex) cannot
+ * outrank the states below.
+ *
+ * - The document scrolls the feed; scroll-snap is PROXIMITY, never mandatory,
+ *   so a card taller than the screen still scrolls through.
+ * - data-expanded="true" opens a card: its more region grows from zero rows
+ *   (grid-template-rows 0fr -> 1fr) and turns visible, the question and the
+ *   context line unclamp, the chevron turns. Collapsed, the more region is
+ *   visibility:hidden, so its links are out of the tab order and the
+ *   accessibility tree.
+ * - .asks-leave collapses a card out (the feed's script set its height first),
+ *   .asks-enter brings one in, [data-asks-slide] slides a tab's panel in from
+ *   the side it came from.
+ * - ALL OF IT is off under prefers-reduced-motion: reduce (the last block).
+ */
+html:has([data-asks-feed]) {
+  scroll-snap-type: y proximity;
+  /* Clear of the shell's sticky header, so a snapped card is not under it. */
+  scroll-padding-top: 4.5rem;
+}
+/*
+ * The page's top is a snap point too: near it, the feed settles on the
+ * heading and the tabs rather than pulling the first card under the header.
+ */
+[data-testid="attention-page"] {
+  scroll-snap-align: start;
+  scroll-margin-top: 4.5rem;
+}
+.asks-card {
+  scroll-snap-align: start;
+  transition: box-shadow 150ms ease, background-color 150ms ease;
+}
+.asks-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.asks-clamp-1 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+}
+.asks-card[data-expanded="true"] .asks-clamp,
+.asks-card[data-expanded="true"] .asks-clamp-1 {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.asks-more {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.asks-more > * {
+  visibility: hidden;
+  transition: visibility 0s linear 220ms;
+}
+.asks-card[data-expanded="true"] .asks-more {
+  grid-template-rows: 1fr;
+}
+.asks-card[data-expanded="true"] .asks-more > * {
+  visibility: visible;
+  transition-delay: 0s;
+}
+.asks-chevron {
+  transition: transform 200ms ease;
+}
+.asks-card[data-expanded="true"] .asks-chevron {
+  transform: rotate(180deg);
+}
+.asks-leave {
+  height: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-bottom: -0.75rem !important;
+  opacity: 0;
+  overflow: hidden;
+  transform: scale(0.98);
+  pointer-events: none;
+  transition: height 240ms ease, padding 240ms ease, margin 240ms ease, opacity 180ms ease, transform 240ms ease !important;
+}
+.asks-enter {
+  animation: card-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.asks-instant,
+.asks-instant * {
+  transition: none !important;
+}
+[data-asks-slide="left"] {
+  animation: asks-slide-left 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+[data-asks-slide="right"] {
+  animation: asks-slide-right 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes asks-slide-left {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes asks-slide-right {
+  from { opacity: 0; transform: translateX(-24px); }
+  to { opacity: 1; transform: none; }
+}
+/*
+ * A sideways swipe on the feed is the page's (it switches tabs: the feed's
+ * script reads the touches, passively). touch-action is NOT narrowed to pan-y:
+ * pinch-zoomed in, a sideways drag must pan the zoomed page — the script then
+ * takes no swipe at all (visualViewport.scale, AsksSwipeMaxScale).
+ */
+[data-asks-swipe] {
+  touch-action: auto;
+  /* A panel sliding in from the side must not widen the page meanwhile (clip,
+     not hidden: no scroll container, the document still scrolls the feed). */
+  overflow-x: clip;
+}
+/*
+ * 🔴 THE DOCUMENT SCROLLS THE FEED, SO A PANEL MUST NOT BE A SCROLLER. A tab
+ * panel (ui.TabsSelected) is overflow-y:auto + overscroll-behavior:contain;
+ * on this page it never overflows (it grows with the document), and Chromium
+ * still treated it as a scroll container whose overscroll is contained: a
+ * vertical touch drag that began on a card scrolled NOTHING — measured on
+ * origin/main too, with CDP touch at 390x844 (e2e/tests/asks-feed.spec.ts).
+ */
+[data-asks-swipe] > [role="tabpanel"] {
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .asks-card,
+  .asks-card *,
+  .asks-more,
+  .asks-more > *,
+  .asks-leave,
+  .asks-enter,
+  [data-asks-slide] {
+    transition: none !important;
+    animation: none !important;
+  }
 }

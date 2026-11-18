@@ -14,6 +14,7 @@ import (
 const (
 	KeyEnter = "\r"
 	KeyDown  = "\x1b[B"
+	KeyUp    = "\x1b[A"
 )
 
 // Choice is the answer to one question (askq.Choice): the options chosen

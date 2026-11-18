@@ -213,10 +213,12 @@ func TestTheBoxIsStrippedOnEitherEdge(t *testing.T) {
 	if got, _ := unbox([]string{"│ one", "two"}); got[0] != "│ one" {
 		t.Errorf("a bar on one line only was stripped: %q", got)
 	}
-	// ONE line: a box is there only with both edges. A one-line question
-	// whose own text starts (or ends) with a bar is not boxed — the CLI
-	// boxes a question too long for a line, which is never one line with
-	// only a left edge — and keeps it.
+	// ONE line: a box is there with both edges, or with a left edge alone
+	// when the text after it is long enough for the CLI to box (over 80
+	// characters: gutterOver — a boxed question in a wide pane is one line
+	// with only a left edge; TestABarOfItsOwnIsKeptByTheLengthRule). A short
+	// one-line question whose own text starts (or ends) with a bar is not
+	// boxed, and keeps it.
 	if got, _ := unbox([]string{"│ one two │"}); strings.Join(got, "\n") != "one two" {
 		t.Errorf("a one-line box with both edges: %q", got)
 	}
@@ -233,7 +235,9 @@ func TestTheBoxIsStrippedOnEitherEdge(t *testing.T) {
 
 // TestAOneLineQuestionThatStartsWithABarIsReadAsAsked: a short question whose
 // own text begins "│ " (the real three-q1 capture, its question so) reads as
-// asked, bar and all — not as an untouched picker asking something else.
+// asked, bar and all — not as an untouched picker asking something else. It
+// is short (under the CLI's 80-character boxing rule), so the bar cannot be
+// the CLI's box; a long one-line "│ …" is (oneline_test.go).
 func TestAOneLineQuestionThatStartsWithABarIsReadAsAsked(t *testing.T) {
 	scr := strings.Replace(fixture(t, "three-q1"), "Which color do you prefer?", "│ Which color do you prefer?", 1)
 	if scr == fixture(t, "three-q1") {

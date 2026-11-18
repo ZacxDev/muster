@@ -65,7 +65,7 @@ func TestAnAnswerOwesADeliveryOnlyToAnAgent(t *testing.T) {
 	}
 	ins := mustAsk(t, s, 2, New{Asker: Asker{AgentID: agent}, Question: "which way?"})
 	time.Sleep(5 * time.Millisecond) // created_at strictly before the statement
-	got, err := s.AnswerInSession(as(2), Asker{AgentID: agent}, "go left", 0)
+	got, err := s.AnswerInSession(as(2), Asker{AgentID: agent}, "go left", 0, nil)
 	if err != nil || len(got) != 1 || got[0].ID != ins.ID || got[0].Delivery != DeliveryNone {
 		t.Errorf("an answer in session: %+v %v", got, err)
 	}

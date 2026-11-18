@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, password, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -132,21 +134,6 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// One password sign-in, its cookie handed to every context (sign-in is
-// throttled); a password sign-in is also a FRESH one, which the step-up gate
-// on queueing for a mirror needs.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 const phone = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true };
 
 // A separate browser context: another device, with its own page and no state
@@ -154,19 +141,23 @@ const phone = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile:
 async function otherDevice(browser: Browser): Promise<{ ctx: BrowserContext; page: Page }> {
   const ctx = await browser.newContext({ ...phone, storageState: { cookies: [], origins: [] } });
   const page = await ctx.newPage();
-  await login(page);
+  await signIn(page, origin);
   return { ctx, page };
 }
 
 async function openView(page: Page, host: string) {
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + viewPath(host));
   await expect(page.locator('#mv-input'), `the rendered view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+  await revealBox(page);
 }
 
 // queue queues text through Send's caret: the caret opens its menu, and the
 // menu's one item is Queue (composer_menu.go; Send's face never queues).
 async function queue(page: Page, text: string, touch: boolean) {
+  // Collapsed on a touch screen until revealed (lib/composer.ts).
+  await revealBox(page);
   await page.locator('#mv-input').fill(text);
   const more = page.locator('#mv-send-more');
   const btn = page.locator('#mv-queue-send');
@@ -228,11 +219,12 @@ test.describe('phone 390×844 touch', () => {
     busy(false);
     await expect.poll(pasted, { message: `the first message is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} first queued`]);
 
-    // Another device sees the queue: the first sent, the second waiting.
+    // Another device sees the queue: the first sent (so no longer listed: only
+    // what is still pending is), the second waiting.
     const other = await otherDevice(browser);
     await openView(other.page, newHost);
-    await expect(row(other.page, 'first queued')).toHaveAttribute('data-queue-state', 'sent');
     await expect(row(other.page, 'second queued')).toHaveAttribute('data-queue-state', 'queued');
+    await expect(row(other.page, 'first queued'), 'a sent message is not listed').toHaveCount(0);
     // Still idle — since BEFORE the first was sent: its turn has not ended,
     // so the second waits. The server says so, then holds it for as long as a
     // wrong send would take.
@@ -249,7 +241,10 @@ test.describe('phone 390×844 touch', () => {
       `${pane} first queued`,
       `${pane} second queued`,
     ]);
-    await expect(row(other.page, 'second queued'), 'the list updates live').toHaveAttribute('data-queue-state', 'sent', { timeout: 20_000 });
+    // The list updates live: the sent message leaves it, and with nothing
+    // pending the list is empty — the old rows do not linger.
+    await expect(row(other.page, 'second queued'), 'the list updates live').toHaveCount(0, { timeout: 20_000 });
+    await expect(rows(other.page), 'nothing pending: an empty list').toHaveCount(0);
     await other.ctx.close();
   });
 
@@ -264,9 +259,9 @@ test.describe('phone 390×844 touch', () => {
     const r = row(other.page, 'cancel me please');
     await expect(r).toHaveAttribute('data-queue-state', 'queued');
     await cancelRow(r, true);
-    await expect(r).toHaveAttribute('data-queue-state', 'cancelled');
+    await expect(r, 'a cancelled message leaves the list').toHaveCount(0);
     // The first device's list follows (it polls while anything is open).
-    await expect(row(page, 'cancel me please'), 'the first device sees the cancel').toHaveAttribute('data-queue-state', 'cancelled', { timeout: 20_000 });
+    await expect(row(page, 'cancel me please'), 'the first device sees the cancel').toHaveCount(0, { timeout: 20_000 });
 
     // Idle: had the cancel not held, the cancelled message would be the head and
     // go first. A message queued after it is the observable — it is sent, and
@@ -286,7 +281,7 @@ test.describe('phone 390×844 touch', () => {
   test('an older muster-mirror: Queue is off and says why, and the server refuses it', async ({ page }) => {
     await openView(page, oldHost);
     await expect(page.locator('#mv-queue-send')).toBeDisabled();
-    await expect(page.locator('#mv-queue-off')).toContainText('does not report whether Claude Code is busy');
+    await expect(page.locator('#mv-queue-off')).toContainText('needs a muster update before messages can wait for it');
     const res = await page.evaluate(async (host) => {
       const r = await fetch('/send-queue', {
         method: 'POST',
@@ -297,7 +292,7 @@ test.describe('phone 390×844 touch', () => {
       return { status: r.status, text: await r.text() };
     }, oldHost);
     expect(res.status).toBe(409);
-    expect(res.text).toContain('does not report whether Claude Code is busy');
+    expect(res.text).toContain('needs a muster update before messages can wait for it');
     // Send still works there: the queue being off is not the composer being
     // off — and a send does not switch Queue back on.
     await page.locator('#mv-input').fill('sent to the older host');
@@ -323,7 +318,7 @@ test.describe('desktop 1280×800', () => {
     await expect.poll(pasted, { message: 'Send pastes at once, busy or not' }).toEqual([`${pane} desktop sent now`]);
     // Tidy: the queued one is cancelled, so no later run sees it sent.
     await cancelRow(row(page, 'desktop queued'));
-    await expect(row(page, 'desktop queued')).toHaveAttribute('data-queue-state', 'cancelled');
+    await expect(row(page, 'desktop queued'), 'cancelled: no longer listed').toHaveCount(0);
     busy(false);
   });
 
@@ -398,7 +393,7 @@ test.describe('desktop 1280×800', () => {
   // D1: only the Rendered view queues. The Terminal view's composer pastes into
   // whatever pane is active, which is not the pane whose idle a queue waits on.
   test('the Terminal view of the same window has Send and no Queue', async ({ page }) => {
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(newHost)}&session=work&window=%401`);
     await expect(page.locator('#mv-input'), 'the Terminal view draws its composer').toBeVisible({ timeout: 20_000 });
     await expect(page.locator('#mv-queue-send')).toHaveCount(0);
@@ -429,10 +424,12 @@ test.describe('desktop 1280×800', () => {
     await busyAndSeen();
     await failed.getByRole('button', { name: 'Queue this failed message again' }).click();
     await expect(rowIn(page, text, 'queued'), 'Retry queues it again').toHaveCount(1, { timeout: 20_000 });
-    await expect(failed.getByRole('button', { name: /Queue this/ }), 'a retried message offers no second Retry').toHaveCount(0);
+    // A retried failure leaves the list (its retry row carries it), so it
+    // offers no second Retry.
+    await expect(failed, 'a retried message is no longer listed as failed').toHaveCount(0);
     busy(false);
     await expect.poll(pasted, { message: `the retried message is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
-    await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, text), 'sent: it leaves the list').toHaveCount(0, { timeout: 20_000 });
   });
 
   // 🔴 A MESSAGE PAST ITS 7 DAYS EXPIRES EVEN WHILE ITS WINDOW NEVER GOES IDLE:
@@ -455,11 +452,13 @@ test.describe('desktop 1280×800', () => {
     expect(pasted(), 'an expired message is not pasted').toEqual([]);
   });
 
-  // 🔴 A ROUTED MESSAGE THAT FAILED OFFERS NO RETRY: Retry would queue it again
-  // as the person's own, with no route and no session binding, past the gate
-  // its route is. A failed route goes back to the chief instead. The test
-  // above is the control: a person's failed row draws the same button.
-  test('a routed message that failed offers no Retry', async ({ page }) => {
+  // 🔴 A ROUTED MESSAGE THAT FAILED IS HANDED BACK, NOT LISTED: it has no Retry
+  // (Retry would queue it again as the person's own, with no route and no
+  // session binding, past the gate its route is) — its failed route goes back
+  // to the chief, which is its handling, so it leaves the list rather than
+  // waiting there for a Delete. The test above is the control: a person's own
+  // failure stays, with its Retry.
+  test('a routed message that failed leaves the list and is not pasted', async ({ page }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
     await openView(page, newHost);
@@ -468,18 +467,18 @@ test.describe('desktop 1280×800', () => {
     await expect(rowIn(page, text, 'queued')).toHaveCount(1);
     sqfix('route', newHost, text);
     busy(false);
-    const failed = rowIn(page, text, 'failed');
-    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+    await expect(row(page, text), `the route gate fails it, and it leaves the list (log:\n${mirrorLog})`).toHaveCount(0, { timeout: 30_000 });
+    await holdWindow();
     expect(pasted(), 'a routed message whose route is gone is not pasted').toEqual([]);
-    await expect(failed.getByRole('button', { name: /Queue this/ }), 'a failed routed row offers no Retry').toHaveCount(0);
+    await expect(row(page, text), 'and it does not come back').toHaveCount(0);
     await busyAndSeen();
   });
 
-  // 🔴 A FINISHED MESSAGE CAN BE DELETED — the operator's case: a failed
-  // message the chief routed has no Retry, and used to sit in the list until it
-  // was pruned. Its Delete removes the row without a page reload, and another
-  // device's list no longer has it. A queued message has no Delete (that is
-  // Cancel). On origin/main there is no Delete, so this fails at the button.
+  // 🔴 A FAILED MESSAGE CAN BE DELETED: a person's own failure stays in the
+  // list until it is retried or deleted. Its Delete removes the row without a
+  // page reload, and another device's list no longer has it. A queued message
+  // has no Delete (that is Cancel). On origin/main there is no Delete, so this
+  // fails at the button.
   test('a failed message has Delete, and Delete removes it without a reload, on every device', async ({ page, browser }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
@@ -489,11 +488,10 @@ test.describe('desktop 1280×800', () => {
     const queuedRow = rowIn(page, text, 'queued');
     await expect(queuedRow).toHaveCount(1);
     await expect(queuedRow.getByRole('button', { name: 'Delete this message' }), 'a queued message has no Delete').toHaveCount(0);
-    sqfix('route', newHost, text);
-    busy(false);
+    // Expired while busy: the dispatcher's own pass fails it, nothing pasted.
+    sqfix('age', newHost, text, String(7 * 24 * 3600 + 60));
     const failed = rowIn(page, text, 'failed');
-    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
-    await expect(failed.getByRole('button', { name: /Queue this/ }), 'no Retry: the operator case').toHaveCount(0);
+    await expect(failed, `the dispatcher expires it (log:\n${mirrorLog})`).toContainText('queued more than 7 days ago', { timeout: 30_000 });
 
     const other = await otherDevice(browser);
     await openView(other.page, newHost);
@@ -529,10 +527,10 @@ test.describe('desktop 1280×800', () => {
     const text = 'deleted mid-read ' + stamp;
     await queue(page, text, false);
     await expect(rowIn(page, text, 'queued')).toHaveCount(1);
-    sqfix('route', newHost, text);
-    busy(false);
+    // Expired while busy: the dispatcher's own pass fails it.
+    sqfix('age', newHost, text, String(7 * 24 * 3600 + 60));
     const failed = rowIn(page, text, 'failed');
-    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+    await expect(failed, `the dispatcher expires it (log:\n${mirrorLog})`).toContainText('queued more than 7 days ago', { timeout: 30_000 });
 
     // Hold the NEXT list read: read the real list now (the row in it), answer
     // only once released.
@@ -609,8 +607,9 @@ test.describe('desktop 1280×800', () => {
     await expect(rowIn(page, text, 'queued'), 'an accepted Retry queues it again').toHaveCount(1, { timeout: 20_000 });
     expect(posts, 'CONTROL: the accepted Retry posted once, saying it was confirmed').toEqual(['confirm=1']);
     // Tidy: cancel the copy, so no later run sees it sent.
+    await expect(rowIn(page, text, 'failed'), 'the retried failure leaves the list').toHaveCount(0);
     await cancelRow(rowIn(page, text, 'queued'));
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
     busy(false);
   });
 
@@ -629,7 +628,7 @@ test.describe('desktop 1280×800', () => {
     await expect(row(page, 'queued without a submitter')).toHaveAttribute('data-queue-state', 'queued');
     expect(pasted(), 'nothing was sent now').toEqual([]);
     await cancelRow(row(page, 'queued without a submitter'));
-    await expect(row(page, 'queued without a submitter')).toHaveAttribute('data-queue-state', 'cancelled');
+    await expect(row(page, 'queued without a submitter'), 'cancelled: it leaves the list').toHaveCount(0);
     busy(false);
   });
 });
@@ -653,7 +652,7 @@ test.describe('statuses', () => {
     // The turn ends with a background shell still running: "shell", a newer time.
     setStatus('shell');
     await expect.poll(pasted, { message: `sent once Claude Code reports "shell" (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
-    await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, text), 'sent: it leaves the list').toHaveCount(0, { timeout: 20_000 });
     await busyAndSeen();
   });
 });
@@ -680,7 +679,7 @@ test.describe('queued row menu, phone 390×844 touch', () => {
       `${pane} ${second}`,
     ]);
     await expect(page.locator('#mv-note')).toHaveText('Sent.');
-    await expect(rowIn(page, second, 'sent'), 'the row shows it sent').toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, second), 'sent: it leaves the list').toHaveCount(0, { timeout: 20_000 });
     await expect(rowIn(page, first, 'queued'), 'the other stays queued').toHaveCount(1);
     await holdWindow();
     expect(pasted(), 'the other is not sent while busy').toEqual([`${pane} ${second}`]);
@@ -705,8 +704,71 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     expect(await page.evaluate(() => navigator.clipboard.readText()), 'the clipboard holds the whole message').toBe(text);
     await expect(moreOf(r), 'the menu closed').toHaveAttribute('aria-expanded', 'false');
     await cancelRow(r, true);
-    await expect(rowIn(page, 'copy me ' + stamp, 'cancelled')).toHaveCount(1);
+    await expect(row(page, 'copy me ' + stamp), 'cancelled: it leaves the list').toHaveCount(0);
     expect(pasted().some((l) => l.includes('copy me ' + stamp)), 'a copy sends nothing').toBe(false);
+  });
+
+  // 🔴 THE WHOLE MESSAGE: a queued row's preview is cut (200 bytes) and clamped
+  // (two lines); a tap on it shows the whole text in a popover — the tail the
+  // preview cannot show included — moving nothing on the page, and the list's
+  // poll does not redraw it away while it is open. On origin/main the preview
+  // is plain text with nothing to tap, so this fails at the button.
+  test('a tap on a long queued message shows the whole of it, moves nothing, and stays open across the poll', async ({ page }) => {
+    await busyAndSeen();
+    await openView(page, newHost);
+    const tail = 'and the tail end ' + stamp;
+    const text = 'whole message ' + stamp + ' ' + 'consectetur adipiscing elit '.repeat(10) + tail;
+    await queue(page, text, true);
+    const r = rowIn(page, 'whole message ' + stamp, 'queued');
+    await expect(r).toBeVisible();
+    await expect(r.locator('[data-queue-full-open]'), 'the preview does not show the tail').not.toContainText(tail);
+    // As the menu test: the row drawn and painted before shifts are counted.
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    await page.evaluate(() => {
+      const w = window as unknown as { __shift: number; __shifts: string[] };
+      w.__shift = 0;
+      w.__shifts = [];
+      new PerformanceObserver((l) => {
+        for (const e of l.getEntries() as unknown as { value: number; sources: { node?: Node | null }[] }[]) {
+          const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
+          const ours = nodes.some((n) => {
+            const el = n instanceof Element ? n : n.parentElement;
+            return !!el && !!el.closest('#mv-compose, [data-queue-full]');
+          });
+          if (ours) w.__shift += e.value;
+          w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));
+        }
+      }).observe({ type: 'layout-shift', buffered: false });
+    });
+    const before = await r.boundingBox();
+    const open = r.getByRole('button', { name: /^Show the whole message/ });
+    const ob = await open.boundingBox();
+    expect(ob && ob.height >= 44, `the preview is a 44px target: ${JSON.stringify(ob)}`).toBe(true);
+    await open.tap();
+    const full = r.getByRole('dialog', { name: 'The whole message' });
+    await expect(full).toBeVisible();
+    await expect(full, 'the whole text, its tail included').toContainText(tail);
+    const fb = await full.boundingBox();
+    const vw = page.viewportSize()!.width;
+    expect(fb && fb.x >= 0 && fb.x + fb.width <= vw, `the popover is on screen: ${JSON.stringify(fb)}`).toBe(true);
+    // Open across more than one poll (3 s while anything is queued): not
+    // redrawn away.
+    await page.waitForTimeout(4_000);
+    await expect(full, 'still open after a poll').toBeVisible();
+    await full.getByRole('button', { name: 'Close' }).tap();
+    await expect(full).toBeHidden();
+    expect(await r.boundingBox(), 'the row did not move').toEqual(before);
+    // Enter on the focused preview opens it too; Escape closes it.
+    await open.focus();
+    await page.keyboard.press('Enter');
+    await expect(full).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(full).toBeHidden();
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'no layout shift opening or closing it: ' +
+      JSON.stringify(await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts))).toBeLessThan(0.001);
+    await cancelRow(r, true);
+    await expect(row(page, 'whole message ' + stamp), 'cancelled: it leaves the list').toHaveCount(0);
   });
 
   test('the menu fits the phone, moves nothing, and closes on a tap outside', async ({ page }) => {
@@ -769,7 +831,7 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'no layout shift opening or closing it: ' +
       JSON.stringify(await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts))).toBeLessThan(0.001);
     await cancelRow(r, true);
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
   });
 });
 
@@ -807,7 +869,7 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
     await page.keyboard.press('End');
     await expect(itemOf(r, 'Cancel this queued message')).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0, { timeout: 20_000 });
     expect(pasted().some((l) => l.includes(text)), 'a cancelled message is not sent').toBe(false);
   });
 
@@ -828,7 +890,7 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
 
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, javaScriptEnabled: false });
     const page = await ctx.newPage();
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + viewPath(newHost));
     const r = rowIn(page, sendText, 'queued');
     await moreOf(r).click();
@@ -841,7 +903,7 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
     await moreOf(c).click();
     await itemOf(c, 'Cancel this queued message').click();
     await expect(page.locator('#mv-note')).toContainText('Cancelled');
-    await expect(rowIn(page, cancelText, 'cancelled')).toHaveCount(1);
+    await expect(row(page, cancelText), 'cancelled: it leaves the list').toHaveCount(0);
     await ctx.close();
   });
 });
@@ -907,7 +969,7 @@ for (const vp of [
       // The second waits for the edited one's turn, then follows it.
       setStatus('idle');
       await expect.poll(pasted, { message: 'then the one behind it', timeout: 30_000 }).toEqual([`${pane} ${edited}`, `${pane} ${second}`]);
-      await expect(rowIn(page, edited, 'sent'), 'the list shows the edited text sent').toHaveCount(1, { timeout: 20_000 });
+      await expect(row(page, edited), 'sent: the edited message leaves the list').toHaveCount(0, { timeout: 20_000 });
       await busyAndSeen();
     });
 
@@ -982,7 +1044,7 @@ test.describe('edit a queued message without JavaScript, desktop 1280×800', () 
 
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, javaScriptEnabled: false });
     const page = await ctx.newPage();
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + viewPath(newHost));
     const r = rowIn(page, text, 'queued');
     await moreOf(r).click();
@@ -1014,7 +1076,11 @@ for (const vp of [
   { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
 ]) {
   test.describe(`drafts, ${vp.name}`, () => {
-    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+    // Service workers blocked: a test here answers the send with page.route,
+    // which a page the PWA's worker has claimed no longer reaches (see
+    // optimistic-send.spec.ts — measured there; the reveal step on a phone
+    // gives the worker the time to claim it).
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' });
 
     test('a draft survives navigating away and back, is cleared once sent, and is never restored into another window, host or view', async ({ page }) => {
       await busyAndSeen();
@@ -1063,7 +1129,7 @@ for (const vp of [
         await page.goto(origin + viewPath(newHost));
         await expect(page.locator('#mv-input'), 'a queued draft is not restored').toHaveValue('');
         await cancelRow(rowIn(page, queued, 'queued'), vp.touch);
-        await expect(rowIn(page, queued, 'cancelled')).toHaveCount(1);
+        await expect(row(page, queued), 'cancelled: it leaves the list').toHaveCount(0);
       } finally {
         writeFileAtomic(windowsFile, before);
       }
@@ -1126,3 +1192,392 @@ for (const vp of [
     });
   });
 }
+
+// 🔴 A USAGE LIMIT HOLDS THE QUEUE (internal/sendqueue limit.go). The bug: a
+// session hit its usage limit and the queue sent every message it held into
+// that limit. Claude Code under a limit rejects each message at once with a
+// record it writes itself ("You've hit your session limit · resets …", model
+// "<synthetic>") and goes back to its prompt — idle, with a newer time, which is
+// all the queue waited for. The fake CLI below plays exactly that against the
+// real host's transcript reader: every message pasted gets the limit as its
+// only reply and the status goes idle. On origin/main the queue then drains —
+// all three pasted, one per idle stretch — so the first test fails at its
+// "nothing more is sent into it" assertion.
+test.describe('a usage limit, phone 390×844 touch', () => {
+  test.use({ ...phone, storageState: { cookies: [], origins: [] } });
+
+  const iso = () => new Date().toISOString();
+  // The reset, two hours ahead, as the CLI names it: "resets 9:30pm (UTC)",
+  // and its own quotaLimits.resetsAt (Unix seconds), the one that wins.
+  const resetAt = () => {
+    const d = new Date(Date.now() + 2 * 3600_000);
+    d.setUTCSeconds(0, 0);
+    return d;
+  };
+  const resetText = (d: Date) => {
+    const h = d.getUTCHours();
+    const hh = h % 12 === 0 ? 12 : h % 12;
+    return `${hh}:${String(d.getUTCMinutes()).padStart(2, '0')}${h < 12 ? 'am' : 'pm'} (UTC)`;
+  };
+  const promptRow = (text: string) => JSON.stringify({ type: 'user', timestamp: iso(), message: { role: 'user', content: text } }) + '\n';
+  // limitRow is the CLI's limit record; null names no reset at all.
+  const limitRow = (d: Date | null) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: iso(),
+      error: 'rate_limit',
+      isApiErrorMessage: true,
+      apiErrorStatus: 429,
+      ...(d ? { quotaLimits: { status: 'rejected', resetsAt: Math.floor(d.getTime() / 1000), rateLimitType: 'five_hour' } } : {}),
+      message: {
+        model: '<synthetic>',
+        role: 'assistant',
+        content: [{ type: 'text', text: "You've hit your session limit" + (d ? ' · resets ' + resetText(d) : '') }],
+      },
+    }) + '\n';
+  const replyRow = (text: string) =>
+    JSON.stringify({ type: 'assistant', timestamp: iso(), message: { model: 'claude-e2e', role: 'assistant', content: [{ type: 'text', text }] } }) + '\n';
+
+  // limitedCLI is Claude Code under the limit: each new paste is written to the
+  // transcript as its prompt, answered only by the limit, and the status goes
+  // idle with a newer time. It runs until stopped.
+  function limitedCLI(reset: Date) {
+    let seen = pasted().length;
+    const timer = setInterval(() => {
+      const ps = pasted();
+      for (; seen < ps.length; seen++) {
+        fs.appendFileSync(tr, promptRow(ps[seen].slice(pane.length + 1)) + limitRow(reset));
+        setStatus('idle');
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }
+  // answered is a real answer to the latest prompt: the limit has lifted.
+  function answered(text: string) {
+    fs.appendFileSync(tr, replyRow(text));
+    setStatus('idle');
+  }
+
+  test('a usage limit holds the queue instead of draining it, fails the bounced message for a Retry by hand, and a real answer resumes the rest', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const [a, b, c] = ['limit one ' + stamp, 'limit two ' + stamp, 'limit three ' + stamp];
+    for (const t of [a, b, c]) await queue(page, t, true);
+    await expect(page.locator('#mv-queue-waiting'), `busy is seen (log:\n${mirrorLog})`).toContainText('working', { timeout: 20_000 });
+    const reset = resetAt();
+    const stop = limitedCLI(reset);
+    try {
+      busy(false);
+      await expect.poll(pasted, { message: `the first message is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${a}`]);
+      // The limit rejected it: the queue says it is held, until the reset in
+      // the reader's own time — and then holds for as long as a wrong send
+      // would take to land.
+      const waiting = page.locator('#mv-queue-waiting');
+      // Whichever comes first: the server says it holds, or a second message
+      // goes into the limit (origin/main: the drain, then the third).
+      await expect
+        .poll(async () => pasted().length > 1 || ((await waiting.textContent()) ?? '').includes('Held'), { timeout: 30_000 })
+        .toBe(true);
+      expect(pasted(), 'the limit rejected the first: nothing more is sent into it').toEqual([`${pane} ${a}`]);
+      await expect(waiting, `held on the limit (log:\n${mirrorLog})`).toContainText('Held — usage limit, resumes', { timeout: 20_000 });
+      await expect(waiting.locator('time[data-clock]')).toHaveAttribute('data-clock', String(reset.getTime()));
+      const local = await page.evaluate((ms) => {
+        const d = new Date(ms);
+        return d.toDateString() === new Date().toDateString()
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      }, reset.getTime());
+      await expect(waiting.locator('time[data-clock]'), 'the reset in the reader\'s local time').toHaveText(local);
+      await holdWindow();
+      await holdWindow();
+      expect(pasted(), 'nothing else is sent into the limit').toEqual([`${pane} ${a}`]);
+      // The bounced message is failed, saying why, with a plain Retry (no
+      // "may already have been sent" question: the limit refused it).
+      const bounced = rowIn(page, a, 'failed');
+      await expect(bounced, 'the bounced message is failed').toHaveCount(1, { timeout: 20_000 });
+      await expect(bounced).toContainText('Rejected: usage limit');
+      await expect(bounced.getByRole('button', { name: 'Queue this failed message again' })).toBeVisible();
+      await expect(rowIn(page, b, 'queued')).toHaveCount(1);
+      await expect(rowIn(page, c, 'queued')).toHaveCount(1);
+    } finally {
+      stop();
+    }
+    // A real answer (to a message typed by hand) shows the limit has lifted:
+    // the queue resumes at once, one per turn — and the bounced message is
+    // not among them: only its Retry sends it again.
+    answered('the limit has lifted');
+    await expect.poll(pasted, { message: `the next message is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${b}`]);
+    answered('answered ' + b);
+    await expect.poll(pasted, { timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
+    answered('answered ' + c);
+    await holdWindow();
+    expect(pasted(), 'the bounced message is not re-sent on its own').toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
+    await expect(rowIn(page, a, 'failed')).toHaveCount(1);
+    await busyAndSeen();
+  });
+
+  // A WEEKLY LIMIT resets days away: the held line says the date, not only a
+  // time (which would read as today's).
+  test('a limit that resets on another day shows its date', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'weekly ' + stamp;
+    await queue(page, text, true);
+    await expect(page.locator('#mv-queue-waiting')).toContainText('working', { timeout: 20_000 });
+    const reset = new Date(Date.now() + 3 * 24 * 3600_000);
+    reset.setUTCSeconds(0, 0);
+    fs.appendFileSync(tr, promptRow('typed by hand ' + stamp) + limitRow(reset));
+    setStatus('idle');
+    const clock = page.locator('#mv-queue-waiting time[data-clock]');
+    await expect(clock, `held (log:\n${mirrorLog})`).toHaveAttribute('data-clock', String(reset.getTime()), { timeout: 20_000 });
+    const want = await page.evaluate((ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), reset.getTime());
+    const month = await page.evaluate((ms) => new Date(ms).toLocaleString([], { month: 'short' }), reset.getTime());
+    await expect(clock).toHaveText(want);
+    await expect(clock).toContainText(month);
+    expect(pasted(), 'held: nothing is sent').toEqual([]);
+    await cancelRow(rowIn(page, text, 'queued'), true);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
+    answered('the limit has lifted');
+    await busyAndSeen();
+  });
+
+  // 🔴 THE HELD LINE TAKES RESERVED SPACE. The queue going from "working" to
+  // held is not the reader's input, so anything it moved would count against
+  // the page. Here the hold comes with no send at all (the latest turn — a
+  // message typed by hand — already hit the limit), so the only thing that
+  // changes is that line; and the limit names no reset time, so it says the
+  // LONGEST thing the held line says (two lines at this width, where
+  // "working" is one) — the case the reservation is for. The positive control
+  // is the same observer seeing a shift a block inserted above the queue
+  // makes.
+  test('going from working to held on a usage limit moves nothing (no layout shift)', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'held line ' + stamp;
+    await queue(page, text, true);
+    const waiting = page.locator('#mv-queue-waiting');
+    await expect(waiting).toContainText('working', { timeout: 20_000 });
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    // 🔴 EVERY READ OF THE COUNT IS settled(): a rendered frame, then the
+    // observer's pending records taken. An observer's entries reach its
+    // callback in a task of their own, AFTER the frame that made them — so a
+    // read straight after a change can miss that change's shift, which is then
+    // counted against whatever is measured next. CI (run 40915016547): the
+    // 320px resize's own shift (0.26) was not yet in before320 (0.0815, the
+    // control alone), so it was charged to the tap — 0.3424, "opening the whole
+    // line shifts nothing" red. takeRecords() makes the read include it.
+    await page.evaluate(() => {
+      const w = window as unknown as { __shift: number; __shifts: string[]; __drain: () => void };
+      w.__shift = 0;
+      w.__shifts = [];
+      const take = (list: PerformanceEntryList) => {
+        for (const e of list as unknown as { value: number; hadRecentInput: boolean; sources: { node?: Node | null }[] }[]) {
+          const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
+          const ours = nodes.some((n) => {
+            const el = n instanceof Element ? n : n.parentElement;
+            return !!el && !!el.closest('#mv-compose');
+          });
+          if (ours) w.__shift += e.value;
+          w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));
+        }
+      };
+      const obs = new PerformanceObserver((l) => take(l.getEntries()));
+      obs.observe({ type: 'layout-shift', buffered: false });
+      w.__drain = () => take(obs.takeRecords());
+    });
+    // settled: two frames (the second begins after the first's layout, where a
+    // shift is measured), then every entry the observer holds, then the count.
+    const settled = () =>
+      page.evaluate(
+        () =>
+          new Promise<{ shift: number; log: string[] }>((res) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                const w = window as unknown as { __shift: number; __shifts: string[]; __drain: () => void };
+                w.__drain();
+                res({ shift: w.__shift, log: w.__shifts.slice() });
+              }),
+            ),
+          ),
+      );
+    const before = await rowIn(page, text, 'queued').boundingBox();
+    // A prompt typed by hand, rejected by a limit that names no reset; the
+    // turn ends.
+    fs.appendFileSync(tr, promptRow('typed by hand ' + stamp) + limitRow(null));
+    setStatus('idle');
+    await expect(waiting, `held (log:\n${mirrorLog})`).toContainText('Held — usage limit; no reset time given', { timeout: 20_000 });
+    const lines = await waiting.evaluate((el) => Math.round(el.scrollHeight / parseFloat(getComputedStyle(el).lineHeight)));
+    expect(lines, 'instrument check: the held line wraps, so the reservation is what keeps it still').toBe(2);
+    await page.waitForTimeout(300);
+    const { shift, log } = await settled();
+    test.info().annotations.push({ type: 'layout-shift', description: `held line: ${shift} ${JSON.stringify(log)}` });
+    // Under 0.001, not the page budget's 0.01: one line of growth with no
+    // reservation measured 0.005–0.006 here (the composer's top moving), which the
+    // budget would let through.
+    expect(shift, 'no layout shift going to held: ' + JSON.stringify(log)).toBeLessThan(0.001);
+    expect(await rowIn(page, text, 'queued').boundingBox(), 'the queued row did not move').toEqual(before);
+    expect(pasted(), 'held: nothing is sent').toEqual([]);
+    // CONTROL: the observer sees a shift when something above the queue grows.
+    await page.evaluate(() => {
+      const q = document.getElementById('mv-queue');
+      const d = document.createElement('div');
+      d.style.height = '120px';
+      q?.parentElement?.insertBefore(d, q);
+    });
+    await page.waitForTimeout(300);
+    const control = (await settled()).shift;
+    test.info().annotations.push({ type: 'layout-shift', description: `control: ${control}` });
+    expect(control, 'CONTROL: the same observer sees an inserted block shift the queue').toBeGreaterThan(shift);
+    // At 320px the held line still takes at most its two reserved lines —
+    // clamped, the whole text in its title.
+    await page.setViewportSize({ width: 320, height: 640 });
+    const at320 = await waiting.evaluate((el) => ({
+      lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+      title: el.getAttribute('title') ?? '',
+    }));
+    expect(at320.lines, 'two lines at 320px').toBeLessThanOrEqual(2);
+    expect(at320.title).toContain('Held — usage limit; no reset time given');
+    // A tap shows the whole line in a popover — the clamped end ("…or tap
+    // Send now.") included — and moves nothing on the page.
+    const before320 = (await settled()).shift;
+    const rowBefore = await rowIn(page, text, 'queued').boundingBox();
+    await waiting.tap();
+    const full = page.locator('#mv-queue-waiting-full');
+    await expect(full).toBeVisible();
+    await expect(full).toContainText('Send now');
+    const opened = await settled();
+    expect(opened.shift, 'opening the whole line shifts nothing: ' + JSON.stringify(opened.log)).toBe(before320);
+    expect(await rowIn(page, text, 'queued').boundingBox(), 'the queued row did not move').toEqual(rowBefore);
+    await page.keyboard.press('Escape');
+    await expect(full).toBeHidden();
+    await page.setViewportSize({ width: 390, height: 844 });
+    // Tidy: cancel it, and leave the session answered for the specs after.
+    await cancelRow(rowIn(page, text, 'queued'), true);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
+    answered('the limit has lifted');
+    await busyAndSeen();
+  });
+});
+
+// 🔴 THE CLAUDE PROMPT GUARD: a message from muster must never be the keystroke
+// that answers a permission prompt. Each test runs its OWN host and transcript,
+// so it neither reads nor moves the shared one's status.
+// refusalOn: what the Rendered view says of the newest refused message — on
+// its bubble (composer_pending.go). 🔴 Not #mv-note: the operator accepted
+// (PR #450, audit round 0, D1) that a refusal's reason is said ONCE, on the
+// bubble, and the status line carries it only where there is no bubble.
+const refusalOn = (page: Page) => page.locator('#mv-log [data-pending-send] [data-pending-status]').last();
+test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
+
+  // ownHost starts a host whose Claude window writes transcript t, its status
+  // idle (since now) at its hello; extra overrides its environment.
+  function ownHost(name: string, extra: Record<string, string>) {
+    const host = `e2e-sqpg${name}-${stamp}`;
+    const t = path.join(dir, `eeeeeeee-${name}.jsonl`);
+    fs.writeFileSync(t, prompt('the conversation so far'));
+    const status = (s: string) => writeFileAtomic(t + '.status', JSON.stringify({ status: s, statusUpdatedAt: Date.now() }));
+    status('idle');
+    startMirror(host, t, extra);
+    const typed = () => read(t + '.pasted').split('\n').filter((l) => l !== '');
+    return { host, t, status, typed };
+  }
+  // connected waits until host's muster-mirror says it is connected: a view
+  // opened before that is a page with no composer, which does not recover.
+  const connected = (host: string) =>
+    expect.poll(() => mirrorLog.includes(`as host ${host} `), { message: `${host} connects`, timeout: 20_000 }).toBe(true);
+
+  // The host reports the prompt (its usual refresh): muster itself refuses
+  // Send, and holds a queued message until the prompt is answered.
+  test('Send is refused and types nothing; a queued message is held until the prompt is answered, then sent', async ({ page }) => {
+    const h = ownHost('seen', {});
+    await connected(h.host);
+    await openView(page, h.host);
+    h.status('waiting');
+    await seen();
+    await page.locator('#mv-input').fill('1');
+    await page.locator('#mv-send').click();
+    await expect(refusalOn(page)).toContainText('Claude is waiting on a permission prompt — answer it first');
+    await expect(page.locator('#mv-input'), 'the text stays in the box').toHaveValue('1');
+    await queue(page, 'after the prompt', false);
+    await expect(page.locator('#mv-queue-waiting'), 'the server holds it').toContainText('waiting for you', { timeout: 20_000 });
+    await holdWindow();
+    expect(h.typed(), 'nothing was typed into the prompt').toEqual([]);
+    h.status('idle');
+    await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 20_000 }).toEqual([`${pane} after the prompt`]);
+  });
+
+  // The race only the host can close: a host that last reported IDLE (its
+  // refresh is an hour, so muster never hears of the prompt) — the dispatcher
+  // decides to send, and the host, reading the status at the moment of typing,
+  // refuses. The message stays queued, is never typed into the prompt, and is
+  // sent once the prompt is answered. A person's Send into the same window is
+  // refused by the host in the same words.
+  test('a prompt that opened after the host last reported is refused at the moment of typing; the queued message waits and is then sent', async ({ page }) => {
+    const h = ownHost('race', { MUSTER_MIRROR_E2E_REFRESH: '1h' });
+    await connected(h.host);
+    await openView(page, h.host);
+    h.status('waiting');
+    const logFrom = mirrorLog.length;
+    await page.locator('#mv-input').fill('2');
+    await page.locator('#mv-send').click();
+    await expect(refusalOn(page)).toContainText('Claude is waiting on a permission prompt — answer it first');
+    // The refusal is the HOST's, at the moment of typing (muster never heard
+    // of the prompt): its own log says so.
+    expect(mirrorLog.slice(logFrom), 'the host refused it').toContain(`Claude Code in pane ${pane} is waiting on the person`);
+    const queuedFrom = mirrorLog.length;
+    await queue(page, 'raced the prompt', false);
+    // 🔴 HELD WITH THE HOST'S REASON, BACKING OFF — not re-sent at every
+    // 2-second dispatcher pass with nothing said.
+    await expect(page.locator('#mv-queue-waiting'), 'the hold says why').toContainText('Claude is waiting on a permission prompt', { timeout: 20_000 });
+    await holdWindow();
+    await holdWindow();
+    expect(h.typed(), 'nothing was typed into the prompt').toEqual([]);
+    await expect(row(page, 'raced the prompt'), 'still queued').toHaveAttribute('data-queue-state', 'queued');
+    const tries = mirrorLog.slice(queuedFrom).split(`Claude Code in pane ${pane} is waiting on the person`).length - 1;
+    expect(tries, 'the host was asked again with a backoff (4 s, 8 s, …), not every pass').toBeGreaterThanOrEqual(1);
+    expect(tries, 'the host was asked again with a backoff (4 s, 8 s, …), not every pass').toBeLessThanOrEqual(3);
+    h.status('idle');
+    await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 40_000 }).toEqual([`${pane} raced the prompt`]);
+  });
+
+  // The narrowest window: a prompt that opens AS the message lands, between
+  // the paste and its Enter. The host's checked paste reads the pane again
+  // before the Enter, sees the prompt, and withholds the Enter: the text sits
+  // in the input box, unsubmitted, and the reply says so.
+  test('a prompt that opens as the message lands gets no Enter, and the reply says pasted, not submitted', async ({ page }) => {
+    const h = ownHost('enter', {});
+    await connected(h.host);
+    await openView(page, h.host);
+    fs.writeFileSync(h.t + '.prompt-on-paste', '');
+    await page.locator('#mv-input').fill('3');
+    await page.locator('#mv-send').click();
+    await expect(refusalOn(page)).toContainText('Pasted, not submitted');
+    const inBox = () => read(h.t + '.typed').split('\n').filter((l) => l !== '');
+    expect(inBox(), 'the text landed in the box').toEqual([`${pane} 3`]);
+    expect(h.typed(), 'no Enter was pressed into the prompt').toEqual([]);
+
+    // 🔴 THE LEFTOVER: the prompt is answered, but "3" is still in the input
+    // box. Nothing more is pasted after it — a queued message or a Send would
+    // be submitted WITH it as one turn — until the box is cleared.
+    fs.rmSync(h.t + '.prompt-on-paste');
+    fs.rmSync(h.t + '.screen');
+    h.status('idle');
+    await seen();
+    await queue(page, 'after the leftover', false);
+    await expect(page.locator('#mv-queue-waiting'), 'held, saying why').toContainText('input box already has text', { timeout: 20_000 });
+    await holdWindow();
+    expect(inBox(), 'nothing was pasted after the leftover').toEqual([`${pane} 3`]);
+    expect(h.typed(), 'and nothing submitted').toEqual([]);
+    await page.locator('#mv-input').fill('4');
+    await page.locator('#mv-send').click();
+    await expect(refusalOn(page)).toContainText("Claude's input box already has text — clear or send it first");
+    expect(inBox(), 'a Send into the full box typed nothing').toEqual([`${pane} 3`]);
+    // The person clears the box: the queued message goes, on its own.
+    fs.rmSync(h.t + '.box');
+    await expect.poll(h.typed, { message: 'sent once the box is clear', timeout: 40_000 }).toEqual([`${pane} after the leftover`]);
+  });
+});

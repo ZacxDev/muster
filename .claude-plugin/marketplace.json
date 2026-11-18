@@ -1,0 +1,18 @@
+{
+  "name": "muster",
+  "description": "muster's own Claude Code plugin: a skill that installs muster.",
+  "owner": {
+    "name": "ZacxDev",
+    "url": "https://github.com/ZacxDev"
+  },
+  "plugins": [
+    {
+      "name": "muster",
+      "source": "./plugins/muster",
+      "description": "Install muster, the self-hosted server that shows your tmux coding-agent sessions on your phone, by following its INSTALL.md.",
+      "homepage": "https://github.com/ZacxDev/muster",
+      "repository": "https://github.com/ZacxDev/muster",
+      "license": "MIT"
+    }
+  ]
+}

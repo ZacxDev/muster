@@ -55,16 +55,21 @@ func TestTheComposerHasAPaperclipOnlyWhenUploadsAreOn(t *testing.T) {
 }
 
 // TestTheComposerScriptSendsTheAttachmentLines: the send script composes the
-// message through window.musterAttach on all three of its paths — the fetch
-// body, the browser's own submit, and the empty-text check.
+// message through window.musterAttach at the press, and that one text is what
+// every path sends — the fetch body and the browser's own submit — and the
+// empty-text check counts attachments.
 func TestTheComposerScriptSendsTheAttachmentLines(t *testing.T) {
 	js := renderString(t, mirrorComposerScript())
 	for _, want := range []string{
-		"window.musterAttach.compose(el.value)",                  // body()
-		"input.value = window.musterAttach.compose(input.value)", // native()
-		"att.pending()",              // a Send while uploading waits
-		"!(att && att.count())",      // attachments alone are a message
-		"window.musterAttach.sent()", // cleared after a send
+		// The message is composed ONCE, at the press (composer_pending.go):
+		// that text is what is drawn pending, posted (bodyOf) and, handed to
+		// the browser, put back in the box for its own submit (native).
+		"var text = att ? att.compose(typed) : typed;",
+		"if (el === input) b.append(el.name, p.text);", // bodyOf()
+		"input.value = p.text;",                         // native()
+		"att.pending()",                                 // a Send while uploading waits
+		"!(att && att.count())",                         // attachments alone are a message
+		"if (att) att.sent();",                          // cleared with the box, at the press
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the composer script lacks %q", want)
@@ -130,21 +135,21 @@ func TestBothTranscriptsDrawTheChip(t *testing.T) {
 	if len(ops) != 1 || !strings.Contains(ops[0].HTML, "data-attachment-chip") || strings.Contains(ops[0].HTML, "sig=") {
 		t.Errorf("the mirrored prompt op = %+v", ops)
 	}
-	user := renderString(t, chatBubble("user", msg, 7))
+	user := renderString(t, chatBubble("user", msg, 7, nil))
 	if !strings.Contains(user, "data-attachment-chip") || strings.Contains(user, "sig=") || strings.Contains(user, "data-md=") {
 		t.Errorf("the agent chat's user bubble: %s", user)
 	}
 	if !strings.Contains(user, `data-msg-id="7"`) {
 		t.Errorf("the bubble lost its message id: %s", user)
 	}
-	// An assistant quoting a line is not the user's attachment: drawn as it was.
-	asst := renderString(t, chatBubble("assistant", msg, 8))
-	if !strings.Contains(asst, "data-md") || strings.Contains(asst, "data-attachment-chip") {
+	// An assistant quoting a line is not the user's attachment: drawn as markdown.
+	asst := renderString(t, chatBubble("assistant", msg, 8, nil))
+	if !strings.Contains(asst, "data-md-rendered") || strings.Contains(asst, "data-attachment-chip") || strings.Contains(asst, "data-md=") {
 		t.Errorf("an assistant bubble: %s", asst)
 	}
 	var b bytes.Buffer
-	_ = chatBubble("user", "no attachment", 9).Render(&b)
-	if !strings.Contains(b.String(), "data-md") {
-		t.Errorf("a plain user bubble lost its client-side markdown: %s", b.String())
+	_ = chatBubble("user", "no **attachment**", 9, nil).Render(&b)
+	if !strings.Contains(b.String(), `data-md-rendered=""><p class="my-1">no <strong>attachment</strong></p></div>`) {
+		t.Errorf("a plain user bubble is not server-rendered markdown: %s", b.String())
 	}
 }

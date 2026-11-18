@@ -61,8 +61,16 @@ const (
 	writerTaskTool statusWriter = "task_set_status"
 	// writerDestroyReopen is the in_progress→open step after a mirrored
 	// session's agent_destroy tore down the last live agent on a task
-	// (agent_destroy_tool.go), so the chief can task_dispatch it again.
+	// (agent_destroy_tool.go), so the chief can agent_dispatch it again.
 	writerDestroyReopen statusWriter = "agent-destroy-reopen"
+	// writerPluginReference is a plugin task REFERENCE's snapshot moving the
+	// task's status (plugin_task_refs.go, applyReference): the upstream changed,
+	// and the row follows. It is the ONE writer a reference's status is stored
+	// from — every other writer's write on a reference is queued for the
+	// upstream (task_ref_queue.go) — and the one writer whose `complete` does
+	// NOT stop the chief's agent: an upstream close is not the owner stopping
+	// an agent.
+	writerPluginReference statusWriter = "plugin_reference"
 	// 🔴 TWO LABELS WERE DELETED HERE (upstream task #653 phase two), and the
 	// deletion-tracking note matters more than usual because these are LOG VALUES:
 	//
@@ -88,7 +96,7 @@ const (
 // (agents may not set `complete`) is a separate, deliberate rule that differs per
 // caller and must not be flattened here.
 //
-// 🔴 ONE SIDE EFFECT LIVES HERE, AND ONLY ONE: a write that moved the task
+// 🔴 TWO SIDE EFFECTS LIVE HERE. The first: a write that moved the task
 // INTO `complete` from another status stops the agent the chief started for it
 // (stopChiefAgentOnComplete). The previous status is the one the store's own
 // UPDATE replaced (notes.WithPreviousStatus), so a re-save of a task already
@@ -99,6 +107,15 @@ const (
 // per caller is a place for the next complete-writer to forget it. A failed
 // write stops nothing. TestTheCompleteStopIsOnTheStatusFunnel pins the call here.
 //
+// The second: the ready-for-review push (notifyTaskDone), for the same reason —
+// every writer passes here — and because only here does the context carry the
+// writer, which the push's title names (reviewSourceLabel: upstream or agent).
+// Five callers each used to call it after this returned, with a context that
+// did not carry the writer. TestReviewPushIsSentOnlyFromTheStatusFunnel pins it.
+// A snapshot's move (writerPluginReference) is first matched to the queued
+// write it confirms (notes.Store.ConfirmRefStatusWrite), so the title can name
+// that write's agent rather than the upstream.
+//
 // An empty writer is not silently accepted-as-fine: notes.WithWriter refuses to
 // store it, so the write logs `writer=UNLABELLED` rather than an empty field.
 //
@@ -108,11 +125,74 @@ const (
 // TestEveryStatusWriterIsLabelled's caller ledger, not the compiler; see the
 // UnlabelledWriter comment in internal/notes/statuslog.go, which used to claim
 // the opposite and is now consistent with this.
+//
+// 🔴 ON A PLUGIN TASK REFERENCE THE WRITE IS QUEUED, NOT STORED
+// (queueStatusIfReference, task_ref_queue.go): the upstream owns the status. The
+// task comes back unchanged with errQueuedUpstream, which every caller answers
+// as success (`queued: true`). Only writerPluginReference — the snapshot itself
+// — stores a reference's status, and its `complete` stops nothing.
 func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int64, status string) (notes.Note, error) {
+	queued, err := s.queueStatusIfReference(ctx, writer, id, status)
+	if err != nil {
+		return notes.Note{}, err
+	}
+	if queued {
+		// The claim release (task_claims.go): a person's, a session's or an
+		// agent's open releases the task's session claims even while the
+		// upstream has the write.
+		s.releaseClaimsOnStatus(ctx, writer, id, status, true)
+		n, err := s.ext.Notes.Get(ctx, id)
+		if err != nil {
+			return notes.Note{}, err
+		}
+		return n, errQueuedUpstream
+	}
 	wctx, previous := notes.WithPreviousStatus(notes.WithWriter(ctx, string(writer)))
 	n, err := s.ext.Notes.SetStatus(wctx, id, status)
-	if prev, ok := previous(); err == nil && status == notes.StatusComplete && ok && prev != notes.StatusComplete {
+	if prev, ok := previous(); err == nil && writer != writerPluginReference &&
+		status == notes.StatusComplete && ok && prev != notes.StatusComplete {
 		s.stopChiefAgentOnComplete(ctx, n)
 	}
+	if prev, ok := previous(); err == nil && writer == writerPluginReference && ok && prev != status {
+		// A snapshot moved a reference: was it one of the queued writes landing
+		// upstream? The match (same task, same status, not yet confirmed) is the
+		// store's, and spends the write, so it names at most one move.
+		// Only a real MOVE asks: a re-save of the status the row already had —
+		// the second of two identical snapshots that raced — is not one, and
+		// would otherwise take an older, unrelated write for that status.
+		// Best-effort: a failed lookup leaves the move the upstream's own.
+		if w, ok, cerr := s.ext.Notes.ConfirmRefStatusWrite(ctx, id, status); cerr != nil {
+			s.logger.Printf("tasks: task %d: match the snapshot's %s to a queued write: %v", id, status, cerr)
+		} else if ok {
+			wctx = withConfirmedRefWrite(wctx, w)
+		}
+	}
+	if err == nil {
+		// The ready-for-review push (and its withdrawal on leaving review), fed
+		// wctx so its title can name the writer's source (reviewSourceLabel).
+		s.notifyTaskDone(wctx, n)
+		// The claim release (task_claims.go claimReleasedBy): an open by a
+		// person, session or agent, an upstream reopen, a complete by anyone.
+		if s.releaseClaimsOnStatus(ctx, writer, id, status, false) {
+			if fresh, ferr := s.ext.Notes.Get(ctx, id); ferr == nil {
+				n = fresh
+			}
+		}
+	}
+	// The third: an AGENT moving its OWN task to review or complete ends its
+	// work — its outcome becomes done, said once (agent_outcome.go). Only an
+	// agent's writers, and only the task's own agent (outcomeTaskDone checks the
+	// actor): the owner moving a card, the chief or a mirrored session calling
+	// task_set_status on it, is not that agent reporting back.
+	if prev, ok := previous(); err == nil && ok && prev != status && agentStatusWriter(writer) &&
+		(status == notes.StatusReadyForReview || status == notes.StatusComplete) {
+		s.outcomeTaskDone(ctx, id, status, refOriginFrom(ctx).Agent)
+	}
 	return n, err
+}
+
+// agentStatusWriter reports whether writer is one of an agent's own status
+// writers (its route, its native tool, the all-agents task_set_status).
+func agentStatusWriter(w statusWriter) bool {
+	return w == writerAgentRoute || w == writerAgentTool || w == writerTaskTool
 }

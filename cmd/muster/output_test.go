@@ -162,6 +162,7 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 				`[{"id":11,"name":"clever-fox","nested":{"a":1}},{"id":12,"name":"chief","nested":{"a":1}}]`)
 			h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[],"count":0}`)
 			h.json("POST /api/agents/chief/messages", http.StatusOK, `{"reply":"ok","nested":{"a":1}}`)
+			h.json("POST /api/agents", http.StatusCreated, `{"agent":{"id":13,"nested":{"a":1}},"started":false}`)
 			h.json("GET /api/tasks", http.StatusOK, `[{"id":1,"nested":{"a":1}}]`)
 			h.json("GET /api/tasks/5", http.StatusOK, `{"id":5,"nested":{"a":1}}`)
 			h.json("POST /api/tasks", http.StatusOK, `{"id":5}`)
@@ -176,9 +177,27 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			h.json("POST /api/flows/jobs", http.StatusCreated, `{"id":9,"params":{"thread":"x"}}`)
 			h.json("GET /api/flows/jobs", http.StatusOK, `[{"id":9,"nested":{"a":1}}]`)
 			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"nested":{"a":1}}`)
+			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"nested":{"a":1}}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","nested":{"a":1}}`)
+			h.json("PUT /api/plugins/6/deliver-to", http.StatusOK, `{"plugin_id":6,"nested":{"a":1}}`)
+			h.json("DELETE /api/agents/officer-marketing-example-1", http.StatusAccepted, `{"removing":"officer-marketing-example-1","nested":{"a":1}}`)
+			for _, route := range []string{"GET /api/officers/types", "GET /api/officers/types/marketing", "PUT /api/officers/types/marketing",
+				"DELETE /api/officers/types/marketing", "GET /api/officers/defs", "PUT /api/officers/defs/marketing:example",
+				"DELETE /api/officers/defs/marketing:example", "GET /api/officers/defs/marketing:example/items",
+				"POST /api/officers/defs/marketing:example/items", "POST /api/officers/defs/marketing:example/items/7/resolve",
+				"GET /api/officers/defs/marketing:example/schedules", "PUT /api/officers/defs/marketing:example/schedules/nightly",
+				"DELETE /api/officers/defs/marketing:example/schedules/nightly", "GET /api/officers/defs/marketing:example/usage",
+				"GET /api/officers/declared", "POST /api/officers/declared", "POST /api/officers/declared/scout:main/pause",
+				"POST /api/officers/declared/scout:main/resume", "DELETE /api/officers/declared/scout:main"} {
+				h.json(route, http.StatusOK, `{"ok":true,"nested":{"a":1}}`)
+			}
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"nested":{"a":1}}`)
+			h.json("GET /api/pr-sessions", http.StatusOK, `{"repo":"acme/widget","pr":12,"sessions":[{"claude_session":"00000000-0000-4000-8000-000000000012","nested":{"a":1}}]}`)
+			h.json("GET /api/asks/log", http.StatusOK, `{"asks":[{"id":3,"kind":"plain_text","question":"Shall I continue?","nested":{"a":1}}],"next":null}`)
+			h.json("GET /api/asks/summary", http.StatusOK, `{"total":1,"by_kind":{"plain_text":1},"top_questions":[]}`)
+			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)
+			h.json("GET /api/doctor", http.StatusOK, `{"hook_token_armed":true,"push":true,"dictation":true,"mirror":{"enabled":true,"hosts":[{"host":"alpha","token":true,"online":true}]}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

@@ -2,35 +2,38 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
-import { test, expect, takeNew } from '../lib/fixtures';
-import { binDir, dsn, hookToken, listUxPort, password, repoRoot, versionTerm } from '../lib/env';
+import { Browser, Locator, Page } from '@playwright/test';
+import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, hookToken, listUxPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { agentLink } from '../lib/agent-link';
+import { coarse, pickView } from '../lib/switcher';
 
-// THE AGENTS LIST UX BATCH, in a real browser at a phone (390×844, touch) and
-// a desktop (1280×800), against a real muster-server (its own port, the
-// e2eterm binary, mirror plugin on) and a real muster-mirror over the tunnel
-// (the `-tags e2emirror` fake plays tmux only):
+// THE AGENTS LIST UX BATCH, WHERE IT IS NOW (the Agents list page is retired:
+// its entries are the sidebar's rows, and the session switcher's bar is on
+// every session page), in a real browser at a phone (390×844, touch) and a
+// desktop (1280×800), against a real muster-server (its own port, the e2eterm
+// binary, mirror plugin on) and a real muster-mirror over the tunnel (the
+// `-tags e2emirror` fake plays tmux only):
 //
-//   1. ONE FLAT LIST, most recently active first: a mirrored window active a
-//      minute ago is drawn ABOVE a dispatched agent active five minutes ago,
-//      and the windows and agents interleave by activity from there down.
+//   1. ONE LIST, FLAT ACROSS HOSTS: the sidebar draws whoever waits on the
+//      operator first, then the rest most recently active first — mirrored
+//      windows and dispatched agents interleaved by activity, each with its
+//      host's icon.
 //   2. A RECENCY DOT on the operator's tmux idle-fade scale, one colour per
-//      bucket (bright green, aqua, orange, grey).
-//   3. A LONG TITLE is clamped; its "…" is a button that opens the whole
-//      title — a tap (or Enter) never opens the agent.
-//   4. PRESET CHIPS: Waiting on ask (a Claude window stopped at a prompt),
-//      Waiting on question (a held AskUserQuestion, registered by the real
-//      `muster-mirror ask` hook), Idle >15m / >1h / >1d; combinable, kept
-//      across a list refresh and a reload (localStorage).
-//   5. MARK COMPLETE on an agent's page goes back OUT to the Agents list, with
+//      bucket (bright green, aqua, orange, grey), on each row.
+//   3. A LONG TITLE keeps its row one line, whole in its tooltip.
+//   4. WAITING ON YOU: an agent's attention_ask, a Claude window stopped at a
+//      prompt, a held AskUserQuestion registered by the real `muster-mirror
+//      ask` hook — and NOT an agent with only a reply draft. The sidebar marks
+//      exactly those, and the bar's Waiting view holds exactly those. (The
+//      list's preset chips — Waiting on you, Idle >15m / >1h / >1d — are gone
+//      with it; the sidebar's Idle group is agents-idle.spec.ts.)
+//   5. MARK COMPLETE on an agent's page goes back OUT of the agent, with
 //      JavaScript and without it.
-//
-// 🔴 REGRESSION TESTS: on the tree before, every agent was drawn above every
-// window, no card had a dot, no title was clamped, there were no chips, and
-// Mark complete opened /tasks (and did nothing at all without JavaScript).
 
 const origin = `http://localhost:${listUxPort}`;
 const stamp = Date.now().toString(36);
@@ -45,6 +48,13 @@ let mirrorLog = '';
 // The two agents on the list: one fresh with a LONG name, one three days idle.
 const freshAgent = 'lux-fresh-' + stamp;
 const oldAgent = 'lux-old-' + stamp;
+// An agent waiting on an attention_ask, and one whose only attention item is a
+// reply draft (which waits on nothing).
+const askAgent = 'lux-ask-' + stamp;
+const draftAgent = 'lux-draft-' + stamp;
+const draftPlugin = 'lux-draft-' + stamp;
+const fix = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 const LONG = 'Untangle the reconnect backoff so a flapping tunnel stops resetting its retry window every time';
 // The old agent's focus title, past the same clamp.
 const FOCUS = 'Sweeping the stale notes into the archive bucket and re-linking every task that still points at them';
@@ -64,7 +74,10 @@ const trQ = path.join(dir, sidQ + '.jsonl');
 const prompt = (t: string) => JSON.stringify({ type: 'user', promptId: 'p', origin: { kind: 'human' }, message: { role: 'user', content: t } }) + '\n';
 
 // The expected relative order of this spec's cards, newest first.
-const ORDER = ['luxnow', freshAgent, 'luxq', 'luxorange', 'luxancient', oldAgent];
+const ORDER = ['luxnow', askAgent, draftAgent, freshAgent, 'luxq', 'luxorange', 'luxancient', oldAgent];
+// What the "Waiting on you" chip shows: the window at a prompt, the asking
+// agent and the window holding a question — not the draft's agent.
+const WAITING = ['luxnow', askAgent, 'luxq'];
 
 const question = {
   question: 'Which region should the replica go to?',
@@ -82,6 +95,8 @@ test.beforeAll(async () => {
   server = await startServer(versionTerm, listUxPort, {
     MUSTER_MIRROR: '1',
     MUSTER_FOCUS_INTERVAL: '0',
+    // Reply drafts are an attention item only with the plugin interface on.
+    MUSTER_PLUGINS: '1',
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
@@ -97,6 +112,10 @@ test.beforeAll(async () => {
     MUSTER_E2E_ACTIVE_MINUTES_AGO: String(3 * 24 * 60),
     MUSTER_E2E_FOCUS: JSON.stringify([{ subject: 'self', title: FOCUS, description: 'Two buckets left.' }]),
   });
+  mkchat(askAgent, [{ role: 'user', content: 'Roll the fleet?' }], { MUSTER_E2E_ACTIVE_MINUTES_AGO: '2' });
+  mkchat(draftAgent, [{ role: 'user', content: 'Answer the mail.' }], { MUSTER_E2E_ACTIVE_MINUTES_AGO: '3' });
+  fix('ask', '1', askAgent, 'Roll the fleet now?');
+  fix('draft', '1', draftAgent, draftPlugin);
   for (const vp of VPS) {
     for (const js of [true, false]) {
       mkchat(doneAgent(vp, js), [{ role: 'user', content: 'Ship the fix.' }], {
@@ -177,79 +196,70 @@ test.afterAll(async () => {
   await server?.stop();
   mkchat(freshAgent, null);
   mkchat(oldAgent, null);
+  fix('rmplugin', '1', draftPlugin);
+  mkchat(askAgent, null);
+  mkchat(draftAgent, null);
   for (const vp of VPS) for (const js of [true, false]) mkchat(doneAgent(vp, js), null, { MUSTER_E2E_TASK: doneTask(vp, js) });
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
+// row is one of this spec's sidebar rows: a window by its tmux session, an
+// agent by its page.
+function row(page: Page, key: string): Locator {
+  if (key.startsWith('lux-')) return page.locator(`#sidebar-agents-list a[data-nav-agent="agent"]:is(${agentLink(key).replace(/a\[/g, '[')})`);
+  return page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="host=${host}&session=${key}&"]`);
 }
 
-// card is one of this spec's cards: a window by its tmux session, an agent by
-// the link to its page.
-function card(page: Page, key: string): Locator {
-  if (key.startsWith('lux-')) return page.locator(`#agents-list > article[id^="agent-"]:has(a[href="/agents/${key}"])`);
-  return page.locator(`#agents-list > article[data-mirror-card][data-f-session="${key}"]`);
-}
+// rowKey names a sidebar row the way row() finds it ('' for another spec's).
+const rowKeysJS = (els: Element[], h: string) =>
+  els.map((a) => {
+    const href = a.getAttribute('href') || '';
+    if (a.getAttribute('data-nav-agent') === 'agent') return href.split('?')[0].slice('/agents/'.length);
+    const q = new URLSearchParams(href.replace(/^[^?]*\?/, ''));
+    return q.get('host') === h ? q.get('session') || '' : '';
+  });
 
-// openList signs in, opens the Agents list with no chip chosen, and waits
-// until every card of this spec is drawn (applying anything held back).
-async function openList(page: Page, opts: { keepChips?: boolean } = {}) {
-  await login(page);
+// The sidebar's order (navOrder): whoever waits on the operator first — the
+// window at a prompt, the asking agent, the window holding a question, by
+// activity among themselves — then the rest by activity, windows and agents
+// interleaved. The reply draft waits on nothing.
+const NAV_ORDER = ['luxnow', askAgent, 'luxq', draftAgent, freshAgent, 'luxorange', 'luxancient', oldAgent];
+
+// openList signs in, opens a page with the sidebar and shows its list (the
+// drawer opened on a phone), and waits until every row of this spec is drawn.
+async function openList(page: Page, at = '/account') {
+  await signIn(page, origin);
   if (!asked) {
     await askQuestion();
     asked = true;
   }
-  await page.goto(origin + '/agents');
-  if (!opts.keepChips) {
-    await page.evaluate(() => localStorage.removeItem('muster:agents:chips'));
-    await page.goto(origin + '/agents');
+  await page.goto(origin + at);
+  if ((page.viewportSize()?.width ?? 0) < 1024) {
+    await page.locator('#sidebar-open').click();
+    await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
   }
   await expect
     .poll(
       async () => {
-        await takeNew(page);
         let n = 0;
-        for (const k of ORDER) n += await card(page, k).count();
+        for (const k of NAV_ORDER) n += await row(page, k).count();
+        if (n < NAV_ORDER.length) await page.evaluate(() => document.body.dispatchEvent(new Event('muster:resync', { bubbles: true })));
         return n;
       },
-      { timeout: 30_000, message: `every card of the spec is listed (log:\n${mirrorLog})` },
+      { timeout: 30_000, message: `every row of the spec is listed (log:\n${mirrorLog})` },
     )
-    .toBe(ORDER.length);
+    .toBe(NAV_ORDER.length);
 }
 
-// order is this spec's cards in the order the list draws them.
+// order is this spec's rows in the order the sidebar draws them.
 async function order(page: Page): Promise<string[]> {
-  // Each card named the way card() finds it.
-  const keys: string[] = await page.locator('#agents-list > article').evaluateAll((els) =>
-    els.map((a) =>
-      a.hasAttribute('data-mirror-card')
-        ? a.getAttribute('data-f-session') || ''
-        : (a.querySelector('a[href^="/agents/"]')?.getAttribute('href') || '').slice('/agents/'.length),
-    ),
-  );
-  return keys.filter((k) => ORDER.includes(k));
+  const keys = await page.locator('#sidebar-agents-list a[data-nav-agent]').evaluateAll(rowKeysJS, host);
+  return keys.filter((k) => NAV_ORDER.includes(k));
 }
 
-const dotOf = (c: Locator) => c.locator('[data-card-active] [data-recency]');
-const chip = (page: Page, id: string) => page.locator(`#agents-chips [data-chip="${id}"]`);
-
-// shown is which of this spec's cards the list shows now.
-async function shown(page: Page): Promise<string[]> {
-  const out: string[] = [];
-  for (const k of ORDER) if (await card(page, k).isVisible()) out.push(k);
-  return out;
-}
+const dotOf = (c: Locator) => c.locator('[data-recency]');
 
 for (const vp of [
   { name: 'phone', title: 'phone 390×844 touch', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
@@ -259,16 +269,19 @@ for (const vp of [
     test.use(vp.use);
     const press = (l: Locator) => (vp.use.hasTouch ? l.tap() : l.click());
 
-    test('one flat list, most recently active first: a window above an agent, interleaved by activity', async ({ page }) => {
+    test('the sidebar: who waits first, then the rest by activity, windows and agents interleaved; each with its host', async ({ page }) => {
       await openList(page);
-      expect(await order(page)).toEqual(ORDER);
-      // The host is still on each card: the window's host icon and footer,
-      // the agent's cluster mark.
-      await expect(card(page, 'luxnow').locator('[data-mirror-host]')).toHaveText(host);
-      await expect(card(page, freshAgent).locator('[data-host-icon]').first()).toBeVisible();
+      await expect.poll(() => order(page)).toEqual(NAV_ORDER);
+      // The waiting ones are marked; the draft's agent is not.
+      for (const k of WAITING) await expect(row(page, k), `${k} waits`).toHaveAttribute('data-nav-wait', '');
+      await expect(row(page, draftAgent)).not.toHaveAttribute('data-nav-wait', '');
+      // The host is still on each row: the window's host icon (its host in the
+      // tooltip), the agent's cluster mark.
+      await expect(row(page, 'luxorange').locator('[data-host-icon]')).toHaveAttribute('title', 'Host: ' + host);
+      await expect(row(page, freshAgent).locator('[data-host-icon]').first()).toBeVisible();
     });
 
-    test('each card draws a recency dot in its tmux idle-fade colour', async ({ page }) => {
+    test('each row draws a recency dot in its tmux idle-fade colour', async ({ page }) => {
       await openList(page);
       const want: Record<string, [string, string]> = {
         luxnow: ['0', 'rgb(184, 187, 38)'],
@@ -279,189 +292,91 @@ for (const vp of [
         [oldAgent]: ['7', 'rgb(102, 92, 84)'],
       };
       for (const [k, [bucket, colour]] of Object.entries(want)) {
-        const dot = dotOf(card(page, k));
+        const dot = dotOf(row(page, k));
         await expect(dot, k).toHaveAttribute('data-recency', bucket);
         await expect(dot, k).toHaveCSS('background-color', colour);
         const box = (await dot.boundingBox())!;
         expect(Math.round(box.width), `${k}: the dot is 8px`).toBe(8);
       }
-      // The words carry the same fact, beside the dot.
-      await expect(card(page, 'luxorange').locator('[data-card-active]')).toContainText(/active\s*3h\s*ago/);
     });
 
-    test('a long title is clamped; its "…" opens the whole title and never opens the agent', async ({ page }) => {
+    // The card's clamp and its "…" popover went with the list; a row is one
+    // line that clips, its whole title in its tooltip and its accessible text,
+    // and it never widens the sidebar or the page. A tap opens the agent.
+    test("a long title keeps one line on its row, whole in its tooltip; a tap opens the agent", async ({ page }) => {
       await openList(page);
-      const c = card(page, freshAgent);
-      const title = c.locator('[data-card-title]');
-      await expect(title).toHaveText(LONG.slice(0, 60).trimEnd());
-      await expect(title).toHaveAttribute('title', LONG);
-      const more = c.locator('button[data-title-more]');
-      await expect(more).toHaveAttribute('aria-expanded', 'false');
-      const box = (await more.boundingBox())!;
-      expect(box.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-      expect(box.width, 'a 44px target').toBeGreaterThanOrEqual(44);
-      const before = page.url();
-      if (vp.use.hasTouch) await more.tap();
-      else {
-        await more.focus();
-        await page.keyboard.press('Enter');
-      }
-      const pop = page.locator(`#${await more.getAttribute('aria-controls')}`);
-      await expect(pop).toBeVisible();
-      await expect(pop).toContainText(LONG);
-      await expect(more).toHaveAttribute('aria-expanded', 'true');
-      await page.waitForTimeout(300);
-      expect(page.url(), 'the tap did not navigate').toBe(before);
-      // The popover fits the screen.
-      const pb = (await pop.boundingBox())!;
-      expect(pb.x).toBeGreaterThanOrEqual(0);
-      expect(pb.x + pb.width).toBeLessThanOrEqual(vp.use.viewport.width);
-      await page.keyboard.press('Escape');
-      await expect(pop).toBeHidden();
-      await expect(more).toHaveAttribute('aria-expanded', 'false');
-      // The clamped words themselves still open the agent.
-      await Promise.all([page.waitForURL((u) => u.pathname === `/agents/${freshAgent}`), press(title)]);
-    });
-
-    test('each chip filters the list, they combine, and the choice survives a refresh and a reload', async ({ page }) => {
-      await openList(page);
-      await expect(page.locator('#agents-chips')).toHaveAttribute('role', 'group');
-      // Each chip on its own (and off again).
-      const cases: [string[], string[]][] = [
-        [['ask'], ['luxnow']],
-        [['question'], ['luxq']],
-        [['idle-15m'], ['luxq', 'luxorange', 'luxancient', oldAgent]],
-        [['idle-1h'], ['luxorange', 'luxancient', oldAgent]],
-        [['idle-1d'], ['luxancient', oldAgent]],
-        // The chips OR: a card matching ANY chosen chip is shown.
-        [['ask', 'question'], ['luxnow', 'luxq']],
-        [['ask', 'idle-1d'], ['luxnow', 'luxancient', oldAgent]],
-        [['ask', 'question', 'idle-1h'], ['luxnow', 'luxq', 'luxorange', 'luxancient', oldAgent]],
-      ];
-      for (const [chips, want] of cases) {
-        for (const id of chips) await press(chip(page, id));
-        for (const id of chips) await expect(chip(page, id)).toHaveAttribute('aria-pressed', 'true');
-        await expect.poll(() => shown(page), { message: `chips ${chips.join('+')}` }).toEqual(want);
-        for (const id of chips) await press(chip(page, id));
-        await expect.poll(() => shown(page), { message: `chips ${chips.join('+')} off again` }).toEqual(ORDER);
-      }
-      // The idle chips are one at a time.
-      await press(chip(page, 'idle-15m'));
-      await press(chip(page, 'idle-1d'));
-      await expect(chip(page, 'idle-15m')).toHaveAttribute('aria-pressed', 'false');
-      await expect(chip(page, 'idle-1d')).toHaveAttribute('aria-pressed', 'true');
-      await press(chip(page, 'idle-1d'));
-
-      // Remembered: choose two, refresh the list in the background, then reload.
-      const kept = ['luxq', 'luxancient', oldAgent];
-      await press(chip(page, 'question'));
-      await press(chip(page, 'idle-1d'));
-      await expect.poll(() => shown(page)).toEqual(kept);
-      const swapped = page.waitForResponse((r) => new URL(r.url()).pathname === '/ui/agents');
-      await page.evaluate(() => document.body.dispatchEvent(new Event('muster:resync', { bubbles: true })));
-      await swapped;
-      await page.waitForTimeout(300);
-      await expect(chip(page, 'question'), 'a list refresh keeps the chips').toHaveAttribute('aria-pressed', 'true');
-      expect(await shown(page), 'a list refresh keeps the filter').toEqual(kept);
-      expect(JSON.parse((await page.evaluate(() => localStorage.getItem('muster:agents:chips'))) || '[]')).toEqual(['question', 'idle-1d']);
-      await page.reload();
-      await expect(chip(page, 'question')).toHaveAttribute('aria-pressed', 'true');
-      await expect(chip(page, 'idle-1d')).toHaveAttribute('aria-pressed', 'true');
-      await expect.poll(() => shown(page), { timeout: 20_000 }).toEqual(kept);
-      await press(chip(page, 'question'));
-      await press(chip(page, 'idle-1d'));
-      await expect.poll(() => page.evaluate(() => localStorage.getItem('muster:agents:chips'))).toBeNull();
-      // The chip row never scrolls the page sideways.
+      const r = row(page, freshAgent);
+      // Its tooltip: the whole name, then the slug the row no longer spells.
+      await expect(r).toHaveAttribute('title', LONG + ' · ' + freshAgent);
+      await expect(r).toContainText(LONG);
+      const box = (await r.boundingBox())!;
+      expect(box.height, 'one 44px row').toBeLessThan(60);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      const clipped = await r.evaluate((a) => {
+        const t = [...a.querySelectorAll('span')].find((s) => s.classList.contains('truncate')) as HTMLElement;
+        return t.scrollWidth > t.clientWidth;
+      });
+      expect(clipped, 'instrument check: the title is long enough to clip here').toBe(true);
       const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(sw).toBeLessThanOrEqual(cw);
+      const panel = await page.evaluate(() => (document.getElementById('sidebar') as HTMLElement).scrollWidth - (document.getElementById('sidebar') as HTMLElement).clientWidth);
+      expect(panel, 'the sidebar does not scroll sideways').toBeLessThanOrEqual(0);
+      await Promise.all([page.waitForURL((u) => u.pathname === `/agents/${freshAgent}`), press(r)]);
     });
 
-    test('Clear turns every chip off, and is shown only while a chip is on', async ({ page }) => {
-      await openList(page);
-      const clear = page.locator('#agents-chips-clear');
-      await expect(clear, 'no chip on: no Clear').toBeHidden();
-      await press(chip(page, 'ask'));
-      await press(chip(page, 'idle-1h'));
-      await expect.poll(() => shown(page)).toEqual(['luxnow', 'luxorange', 'luxancient', oldAgent]);
-      await expect(clear).toBeVisible();
-      const box = (await clear.boundingBox())!;
-      expect(box.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-      await press(clear);
-      await expect(chip(page, 'ask')).toHaveAttribute('aria-pressed', 'false');
-      await expect(chip(page, 'idle-1h')).toHaveAttribute('aria-pressed', 'false');
-      await expect.poll(() => shown(page)).toEqual(ORDER);
-      await expect(clear).toBeHidden();
-      expect(await page.evaluate(() => localStorage.getItem('muster:agents:chips'))).toBeNull();
-      await page.reload();
-      await expect(clear, 'still cleared after a reload').toBeHidden();
+    // THE BOTTOM BAR'S WAITING VIEW (operator ask: a view "that uses the same
+    // filter as the waiting for you filter"): picked from the bar's view menu,
+    // its row holds EXACTLY the entries the sidebar marks waiting — a session
+    // at a prompt, an ask, a picker; not the reply draft — in the sidebar's
+    // order. (The list's "Waiting on you" chip this was compared against is
+    // retired; the sidebar's mark reads the same predicate, listEntry.waiting.)
+    // Compared whole, every marked row against every pill, so a seeded entry
+    // would count on both sides. Read on a session page (an agent's chat) that
+    // is not itself waiting.
+    test("the bottom bar's Waiting view holds exactly what the sidebar marks waiting", async ({ page }) => {
+      await openList(page, `/agents/${oldAgent}`);
+      // A link, normalised: an agent's page without its query.
+      const key = (h: string) => (h.startsWith('/agents/') ? h.split('?')[0] : h);
+      const marked = (
+        await page.locator('#sidebar-agents-list a[data-nav-agent][data-nav-wait]').evaluateAll((els) => els.map((a) => a.getAttribute('href') || ''))
+      ).map(key);
+      expect(marked.length, "instrument check: the sidebar marks the spec's waiting rows").toBeGreaterThanOrEqual(WAITING.length);
+      if (vp.use.viewport.width < 1024) await page.locator('#sidebar-close').click();
+      // The view, from the bar's menu (the mouse layout) or the dock (the
+      // touch layout, a coarse pointer): lib/switcher.ts pickView.
+      expect(await coarse(page), 'the layout this context emulates').toBe(vp.use.hasTouch);
+      await expect(page.locator('#switcher-views [data-switcher-pick="waiting"]')).toContainText('Waiting on you');
+      await pickView(page, 'waiting');
+      await expect(page.locator('#switcher-toggle').locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'waiting');
+      const viewRow = page.locator('#session-switcher [data-switcher-list="waiting"]');
+      await expect(viewRow).toBeVisible();
+      const pills = (await viewRow.locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href') || ''))).map(key);
+      expect(pills, "the Waiting view is the sidebar's waiting set, in its order").toEqual(marked);
+      await expect(page.locator('#switcher-views [data-switcher-count="waiting"]')).toHaveText(String(marked.length));
+      // The draft's agent is listed but not waiting: in neither.
+      expect(pills.some((h) => h.includes(draftAgent)), 'the reply draft is not waiting').toBe(false);
+      await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
     });
 
-    test('a long focus title is clamped too; its "…" opens the whole title and never opens the agent', async ({ page }) => {
-      await openList(page);
-      const c = card(page, oldAgent);
-      const heading = c.locator('[data-card-focus]');
-      await expect(heading.locator('span').first()).toHaveText(FOCUS.slice(0, 60).trimEnd());
-      const more = c.locator('[data-card-slot="focus"] button[data-title-more]');
-      const box = (await more.boundingBox())!;
-      expect(box.height).toBeGreaterThanOrEqual(44);
-      expect(box.width).toBeGreaterThanOrEqual(44);
-      const before = page.url();
-      await press(more);
-      const pop = c.locator('[data-focus-popover]');
-      await expect(pop).toBeVisible();
-      await expect(pop.locator('[data-focus-title]')).toHaveText(FOCUS);
-      await expect(more).toHaveAttribute('aria-expanded', 'true');
-      await page.waitForTimeout(300);
-      expect(page.url(), 'the tap did not navigate').toBe(before);
-      await page.keyboard.press('Escape');
-      await expect(pop).toBeHidden();
-    });
-
-    test('a card crossing an idle threshold under an idle chip waits behind the pill: nothing visible moves', async ({ page }) => {
-      // The page's clock is installed at the real time, so the server's
-      // activity times and the script's agree; then fifteen minutes pass with
-      // no input, carrying luxnow (1 min) and the fresh agent (5 min) past 15.
-      await page.clock.install({ time: new Date() });
-      await openList(page);
-      await press(chip(page, 'idle-15m'));
-      const visible = ['luxq', 'luxorange', 'luxancient', oldAgent];
-      await expect.poll(() => shown(page)).toEqual(visible);
-      const tops = async () => {
-        const out: number[] = [];
-        for (const k of visible) out.push(Math.round((await card(page, k).boundingBox())!.y));
-        return out;
-      };
-      const before = await tops();
-      await page.clock.fastForward('16:00');
-      await page.waitForTimeout(200);
-      expect(await tops(), 'no visible card moved').toEqual(before);
-      expect(await shown(page), 'the cards that crossed are not shown yet').toEqual(visible);
-      const pill = page.locator('#agents-new-pill');
-      await expect(pill).toBeVisible();
-      expect(Number(await pill.getAttribute('data-count')), 'both crossings wait on the pill').toBeGreaterThanOrEqual(2);
-      // The tap is input: what crossed is applied.
-      await pill.click();
-      await expect.poll(() => shown(page)).toEqual(ORDER);
-      await expect(pill).toBeHidden();
-      await press(chip(page, 'idle-15m'));
-    });
-
-    test('Mark complete on an agent page goes back out to the Agents list (with JavaScript)', async ({ page }) => {
-      await login(page);
+    // MARK COMPLETE LEAVES THE AGENT (operator ask: "after marking a task
+    // complete, it should just redirect back out of the agent instead of to
+    // another page"). It went to the Agents list; that page is retired, and
+    // home (`/`) now opens a session — which must not be the agent just left.
+    test('Mark complete on an agent page goes back out of the agent (with JavaScript)', async ({ page }) => {
+      await signIn(page, origin);
       await page.goto(origin + `/agents/${doneAgent(vp.name, true)}`);
       const btn = page.getByRole('button', { name: 'Mark complete' });
       await expect(btn).toBeVisible({ timeout: 20_000 });
-      await Promise.all([page.waitForURL((u) => u.pathname === '/agents', { timeout: 20_000 }), press(btn)]);
-      await expect(page.locator('#agents-list')).toBeVisible();
+      await Promise.all([page.waitForURL((u) => u.pathname !== `/agents/${doneAgent(vp.name, true)}`, { timeout: 20_000 }), press(btn)]);
       await expectTaskComplete(doneTask(vp.name, true));
     });
 
-    test('Mark complete on an agent page goes back out to the Agents list (without JavaScript)', async ({ browser }) => {
+    test('Mark complete on an agent page goes back out of the agent (without JavaScript)', async ({ browser }) => {
       await noJS(browser, vp.use, async (page) => {
         await page.goto(origin + `/agents/${doneAgent(vp.name, false)}`);
         const btn = page.getByRole('button', { name: 'Mark complete' });
         await expect(btn).toBeVisible();
-        await Promise.all([page.waitForURL((u) => u.pathname === '/agents', { timeout: 15_000 }), btn.click()]);
+        await Promise.all([page.waitForURL((u) => u.pathname !== `/agents/${doneAgent(vp.name, false)}`, { timeout: 15_000 }), btn.click()]);
       });
       await expectTaskComplete(doneTask(vp.name, false));
     });
@@ -473,9 +388,7 @@ async function noJS(browser: Browser, use: object, fn: (page: Page) => Promise<v
   const ctx = await browser.newContext({ ...use, javaScriptEnabled: false, baseURL: origin });
   try {
     const p = await ctx.newPage();
-    await p.goto(origin + '/login');
-    await p.fill('#muster-password', password);
-    await Promise.all([p.waitForURL((u) => !u.pathname.startsWith('/login')), p.click('button[type=submit]')]);
+    await signIn(p, origin);
     await fn(p);
   } finally {
     await ctx.close();

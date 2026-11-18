@@ -17,26 +17,45 @@ import (
 
 	"github.com/ZacxDev/muster/internal/askdrive"
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/tmuxver"
 )
 
-// ANSWERING A PICKER IN A REAL tmux PANE: the keys go in by `paste-buffer -S`
-// with muster's READ-ONLY viewer attached (with which `send-keys` is refused),
-// and land as keys — arrows, Enter, digits, text — in a program reading a raw
-// tty. The program is askdrive's FakePicker (internal/askdrive/fakepicker): the
-// picker as measured on Claude Code 2.1.289, where no Claude Code runs.
+// ANSWERING A PICKER IN A REAL tmux PANE: the keys go in by a raw paste —
+// `paste-buffer -S` on tmux 3.7+, plain `paste-buffer` before it (KeyPaste) —
+// with muster's READ-ONLY viewer attached (with which `send-keys` is refused
+// on 3.7+), and land as keys — arrows, Enter, digits, text — in a program
+// reading a raw tty. The program is askdrive's FakePicker
+// (internal/askdrive/fakepicker): the picker as measured on Claude Code
+// 2.1.289, where no Claude Code runs. The suite runs against whatever tmux is
+// first on PATH: CI runs it against the flake's (3.7+) AND Ubuntu's (3.4).
 
-// requireRawPasteTmux fails the test, saying why, on a tmux older than
-// MinRawPasteTmux: muster-mirror cannot type answers with one (no
-// `paste-buffer -S`), so nothing here could pass for a reason worth having.
-func requireRawPasteTmux(t *testing.T) {
+// tmuxHasRawFlag reports whether the tmux on PATH is MinRawPasteTmux or
+// later, failing the test when its version cannot be read.
+func tmuxHasRawFlag(t *testing.T) bool {
 	t.Helper()
 	out, err := exec.Command("tmux", "-V").Output()
 	if err != nil {
 		t.Fatalf("tmux -V: %v", err)
 	}
-	ok, known := tmuxAtLeast(string(out), MinRawPasteTmux)
-	if !known || !ok {
-		t.Fatalf("%s has no `paste-buffer -S` (added in tmux %s), which muster-mirror types answers with; run this suite with tmux %s or later (CI installs it from the flake's nixpkgs)", strings.TrimSpace(string(out)), MinRawPasteTmux, MinRawPasteTmux)
+	ok, known := tmuxver.AtLeast(string(out), MinRawPasteTmux)
+	if !known {
+		t.Fatalf("cannot read the tmux version %q", out)
+	}
+	return ok
+}
+
+// TestTmuxKeyPasteMatchesTheVersion: a real tmux server reports the paste its
+// version needs — -S on 3.7+, the plain paste before it — never "cannot".
+func TestTmuxKeyPasteMatchesTheVersion(t *testing.T) {
+	r := newTmuxRig(t)
+	r.run("new-session", "-d", "-s", "kp", "sh")
+	want := KeyPastePlain
+	if tmuxHasRawFlag(t) {
+		want = KeyPasteRawFlag
+	}
+	if got := (Tmux{Socket: r.sock}).KeyPaste(context.Background()); got != want {
+		v, _ := exec.Command("tmux", "-V").Output()
+		t.Fatalf("%s: KeyPaste %v, want %v", strings.TrimSpace(string(v)), got, want)
 	}
 }
 
@@ -44,7 +63,6 @@ func requireRawPasteTmux(t *testing.T) {
 // returns its pane and the file its result lands in.
 func (r *tmuxRig) pickerSession(name string, qs []askq.Question) (pane, result string) {
 	r.t.Helper()
-	requireRawPasteTmux(r.t)
 	dir := r.t.TempDir()
 	bin := filepath.Join(dir, "fakepicker")
 	if out, err := exec.Command("go", "build", "-o", bin, "github.com/ZacxDev/muster/internal/askdrive/fakepicker").CombinedOutput(); err != nil {
@@ -98,13 +116,15 @@ func TestTmuxAnswerAskTypesThroughAReadOnlyViewer(t *testing.T) {
 	defer term.Close()
 	go func() { _, _ = io.Copy(io.Discard, term) }()
 	waitFor(t, "the read-only viewer", func() bool { return strings.Contains(r.run("list-clients", "-F", "#{client_flags}"), "read-only") })
-	// The premise, version-dependent (tmux >= MinRawPasteTmux, checked by
-	// pickerSession): with the viewer attached — the only client, so the one
-	// tmux takes as current — send-keys IS refused. (tmux 3.4 lets it through,
-	// and has no paste-buffer -S either.)
-	if out, err := r.cmd("send-keys", "-t", pane, "x").CombinedOutput(); err == nil || !strings.Contains(string(out), "read-only") {
-		v, _ := exec.Command("tmux", "-V").Output()
-		t.Fatalf("send-keys with a read-only viewer on %s: %v %s — the premise of typing by paste-buffer -S does not hold on this tmux", strings.TrimSpace(string(v)), err, out)
+	// The premise, version-dependent: on tmux >= MinRawPasteTmux, with the
+	// viewer attached — the only client, so the one tmux takes as current —
+	// send-keys IS refused. (tmux 3.4 lets it through, so it is not tried
+	// there: the "x" would land in the picker.)
+	if tmuxHasRawFlag(t) {
+		if out, err := r.cmd("send-keys", "-t", pane, "x").CombinedOutput(); err == nil || !strings.Contains(string(out), "read-only") {
+			v, _ := exec.Command("tmux", "-V").Output()
+			t.Fatalf("send-keys with a read-only viewer on %s: %v %s — the premise of typing by a paste does not hold on this tmux", strings.TrimSpace(string(v)), err, out)
+		}
 	}
 	if err := answer1(b, context.Background(), pane, qs, cs); err != nil {
 		t.Fatalf("AnswerAsk: %v\n%s", err, r.pane("ask"))
@@ -123,7 +143,7 @@ func TestTmuxAnswerAskNeverTypesIntoATouchedPicker(t *testing.T) {
 	qs := []askq.Question{{Question: "Which pets do you have?", Header: "Pets", MultiSelect: true, Options: []askq.Option{{Label: "Cat"}, {Label: "Dog"}}}}
 	pane, result := r.pickerSession("touched", qs)
 	b := Tmux{Socket: r.sock}
-	if err := (tmuxPane{t: b, id: pane}).Send(context.Background(), "2"); err != nil {
+	if err := (tmuxPane{t: b, id: pane, paste: b.KeyPaste(context.Background())}).Send(context.Background(), "2"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the tick", func() bool { return strings.Contains(r.pane("touched"), "[✔] Dog") })
@@ -173,7 +193,7 @@ func typingRig(t *testing.T, name string, qs []askq.Question) (r *tmuxRig, b Tmu
 func TestTmuxFocusAndMouseDoNotStopADrive(t *testing.T) {
 	qs := []askq.Question{{Question: "Which pets do you have?", Header: "Pets", MultiSelect: true, Options: []askq.Option{{Label: "Cat"}, {Label: "Dog"}, {Label: "Fish"}}}}
 	r, b, pane, result, rw := typingRig(t, "focus", qs)
-	p := tmuxPane{t: b, id: pane}
+	p := tmuxPane{t: b, id: pane, paste: b.KeyPaste(context.Background())}
 	time.Sleep(2 * time.Second) // the attach-time activity is now old
 	before, _ := p.LastInput(context.Background())
 	// A viewer attaching now is not input.
@@ -251,7 +271,7 @@ func TestTmuxAKeystrokeMidDriveStopsIt(t *testing.T) {
 
 // TestTmuxLeftoverBuffersAreDropped: a buffer a dead muster-mirror left
 // between load-buffer and paste-buffer is deleted before the next drive; an
-// operator's own buffers are not. And this tmux has paste-buffer -S.
+// operator's own buffers are not.
 func TestTmuxLeftoverBuffersAreDropped(t *testing.T) {
 	r := newTmuxRig(t)
 	qs := []askq.Question{{Question: "Which color?", Header: "Color", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}}}}
@@ -270,9 +290,6 @@ func TestTmuxLeftoverBuffersAreDropped(t *testing.T) {
 		liveBuffers.Unlock()
 	}()
 	b := Tmux{Socket: r.sock}
-	if has, known := b.RawPaste(context.Background()); !has || !known {
-		t.Fatalf("this tmux (>= %s) reports paste-buffer -S has=%v known=%v", MinRawPasteTmux, has, known)
-	}
 	if err := answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{1}}}); err != nil {
 		t.Fatal(err)
 	}

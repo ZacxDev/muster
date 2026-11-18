@@ -5,7 +5,14 @@ this is opt-in and off by default.** On a default deployment, every agent-contro
 route is registered but answers **503**, with `"provisionerUnwired": true` in the
 body. The boot banner says `agent provisioning: UNWIRED`.
 
-The Agents list still works without it: it shows mirrored sessions
+The web UI has no dispatch form on any deployment: the chief starts agents
+(its `agent_dispatch` tool, [chief.md](chief.md)), and
+[`POST /api/agents`](#creating-an-agent-without-the-chief) creates one for a
+deployment, or a user, without a chief that can. The sidebar's **+**, the home
+page's "Dispatch an agent", a task card's **Dispatch** and "Save for later"
+were deleted ([design](design/chief-dispatch.md), phase 2).
+
+Everything else still works without it: the sidebar lists mirrored sessions
 ([mirroring.md](mirroring.md)) and any agent rows already stored.
 
 ## The two switches
@@ -30,26 +37,193 @@ What happens when you dispatch:
 
 - **No provisioner:** 503.
 - **A provisioner but no gateway:** a dispatch that asks for a kickoff is refused
-  with **409**, and nothing is created. "Save for later" followed by Start still
-  works, but the agent is never told what to do.
+  with **409**, and nothing is created. Creating it stopped
+  (`muster agent create --start=false`) followed by Start still works, but the
+  agent is never told what to do.
 - **Both:** the agent is created. A background deliverer then sends the task as
   its first turn once the instance is ready, every 10 seconds, at most once per
   agent. A failed kickoff is shown on the card, with the error.
 
-### What a Kubernetes deployment needs that this repository does not ship
+### What a Kubernetes deployment needs
 
-- **RBAC for muster's ServiceAccount:** create, read, update and delete on
-  Namespaces, ServiceAccounts, Secrets, ConfigMaps, Deployments and Services;
-  PersistentVolumeClaims when an agent gets a volume; `create` on `pods/exec`;
-  and NetworkPolicies when `claude-code` is enabled. The Kubernetes driver's
-  `render.go` is the authority on what it creates.
-- **The muster Deployment itself:** this repository ships a container image
-  definition (`Dockerfile`), but no manifests.
+The Helm chart in `charts/muster` ([kubernetes.md](kubernetes.md)) ships both:
+
+- **RBAC for muster's ServiceAccount**, in one of two layouts (see
+  [Kubernetes RBAC](#kubernetes-rbac) below). By default, a ClusterRole holding
+  every namespaced right cluster-wide; with `MUSTER_AGENT_NAMESPACE_CLUSTERROLE`
+  set, a narrow cluster-wide grant plus a per-namespace RoleBinding muster writes
+  itself. The Kubernetes driver's `render.go` is the authority on what it creates.
+- **The muster Deployment itself**, with its Postgres, Service and Ingress.
+
+### Kubernetes RBAC
+
+Each agent lives in its own namespace, `<MUSTER_AGENT_NAMESPACE_PREFIX><agent>`
+(unless `MUSTER_AGENT_NAMESPACE_SHARED` is set), holding a ServiceAccount, up to
+three Secrets, a ConfigMap, a PersistentVolumeClaim, a Deployment, a Service and
+a NetworkPolicy. muster also execs into the pod and reads its logs. These are
+the rights it needs **inside** an agent namespace; in both layouts they go in a
+ClusterRole:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: muster-agent-namespace
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts, secrets, configmaps, services, persistentvolumeclaims]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [networking.k8s.io]   # when claude-code is enabled
+    resources: [networkpolicies]
+    verbs: [get, create, update, delete]
+```
+
+**Default layout (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE` unset).** Because the
+namespaces are created at dispatch, the ClusterRole above is bound with a
+**ClusterRoleBinding**, plus `get`, `list`, `create` and `delete` on
+`namespaces`. That lets muster read Secrets and create Deployments in **every**
+namespace of the cluster.
+
+**Least-privilege layout (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE=<name>`).** muster
+binds its own ServiceAccount to the named ClusterRole **inside each agent
+namespace**, with a RoleBinding named `muster-provisioner` that it writes
+immediately after creating the namespace and before anything else in it. The
+ClusterRole above is then **not** bound cluster-wide; the cluster-wide grant
+shrinks to:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: muster-provisioner
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, create, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames: [muster-agent-namespace]   # = MUSTER_AGENT_NAMESPACE_CLUSTERROLE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: muster-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: muster-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: <muster's ServiceAccount>
+    namespace: <muster's namespace>
+```
+
+How it behaves:
+
+- **The subject is read off the pod's own ServiceAccount token** (its `sub`
+  claim), so there is nothing else to configure; muster refuses to boot if it
+  cannot read it.
+- **Propagation.** RBAC is not read-your-writes. After writing a binding, muster
+  probes the namespace with a real request (a `get` of the agent's
+  ServiceAccount) until it is no longer 403, for up to 30 seconds; past that the
+  dispatch fails naming the ClusterRole, having written nothing else in the
+  namespace. Check that the ClusterRole exists and grants `get` on
+  `serviceaccounts`.
+- **Agents created before you turn it on** have no RoleBinding. Every operation
+  on an agent — dispatch, Start, Stop, status, logs, terminal, Delete, and the
+  agent list — writes the binding first if it is missing. So: set the variable,
+  restart muster, and only then remove the old cluster-wide ClusterRoleBinding.
+- **A binding muster did not write**, under the name `muster-provisioner`, is
+  refused, never adopted. One of muster's with another ClusterRole or subject
+  (you renamed the role, or muster's ServiceAccount) is refused too, with an
+  error naming the mismatch: a roleRef is immutable and muster holds no `delete`
+  on RoleBindings, so delete it by hand
+  (`kubectl -n <namespace> delete rolebinding muster-provisioner`) and muster
+  writes the configured one at the agent's next operation. **Renaming the
+  ClusterRole (or muster's ServiceAccount) therefore means deleting every
+  agent's `muster-provisioner` binding by hand.** Until you do, each such agent
+  appears in the agent list with an unknown state (its card reads
+  provisioning, and the stopped-agent reaper leaves it alone), the server log
+  names its namespace once per list, and actions on that agent fail with the
+  mismatch. Every other agent is unaffected.
+- **Delete** removes the namespace, and the RoleBinding with it.
+- **The agent list** reads each agent namespace on its own instead of listing
+  Deployments and Pods cluster-wide. A namespace counts only when it is
+  muster-labelled and named exactly `<prefix><its agent label>`, so another
+  installation's namespaces are never read (or bound into), even when its prefix
+  starts with yours.
+- **Refused at boot** with any driver but `kubernetes`, and with
+  `MUSTER_AGENT_NAMESPACE_SHARED` (there is no namespace to bind in: grant muster
+  a Role in the shared namespace instead). A ClusterRole name that does not
+  exist is not caught at boot: the first dispatch fails after the propagation
+  wait, naming it.
+- **Outside agent namespaces:** a deploy-key pool's source Secret is read from
+  muster's own namespace (`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`). Under this
+  layout, grant `get` on `secrets` there with a Role and RoleBinding of its own.
+
+⚠ **What the narrow grant still allows.** `create` on `rolebindings` has to be
+cluster-wide, because agent namespaces are created at dispatch. So muster can
+still bind **itself** to that one ClusterRole in **any** namespace, and reach
+that namespace's Secrets that way: two deliberate, audited writes rather than a
+standing right, but not a boundary. (It holds no `delete` or `update` on
+RoleBindings, so it cannot remove or rewrite anyone else's.) Kubernetes RBAC
+cannot restrict a grant by namespace name. To close it, add an admission
+policy, for example:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: muster-rolebindings-in-agent-namespaces-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+  matchConditions:
+    - name: is-muster
+      expression: request.userInfo.username == "system:serviceaccount:<muster's namespace>:<muster's ServiceAccount>"
+  validations:
+    - expression: request.namespace.startsWith("devpod-")   # = MUSTER_AGENT_NAMESPACE_PREFIX
+      message: muster may only write or delete RoleBindings in its agent namespaces
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: muster-rolebindings-in-agent-namespaces-only
+spec:
+  policyName: muster-rolebindings-in-agent-namespaces-only
+  validationActions: [Deny]
+```
 
 ## Agent kinds
 
-`MUSTER_AGENT_KINDS` is a comma list of `gateway`, `claude-code` and `hermes`. It
+`MUSTER_AGENT_KINDS` is a comma list of `gateway` and `claude-code`. It
 defaults to `gateway`, and `gateway` must always be in it.
+
+A `hermes` kind existed (up to `d46b22e1`) and was removed. A `hermes` entry
+in `MUSTER_AGENT_KINDS` is now an unknown kind and refuses to boot, and
+migration `0047` refuses to run while any `hermes` agent row exists: destroy
+those agents with a build that still has the kind before upgrading.
 
 - **`gateway`** runs your agent image (`MUSTER_AGENT_IMAGE_REPO:TAG`), which
   serves an HTTP chat gateway. muster derives the bearer token the pod accepts as
@@ -77,9 +251,9 @@ defaults to `gateway`, and `gateway` must always be in it.
   to the admin; members use credentials they stored themselves
   ([auth.md](auth.md)).
 
-  **A worker pool.** The dispatch forms' **Worker pool** field, shown only
-  while Claude Code is picked, makes the new agent a member of that pool of
-  the machine job API ([jobs.md](jobs.md#worker-pools)). Leave it empty for an
+  **A worker pool.** `worker_pool` (on `agent_dispatch`, or `POST /api/agents`
+  with `kind: claude-code`) makes the new agent a member of that pool of the
+  machine job API ([jobs.md](jobs.md#worker-pools)). Leave it empty for an
   ordinary agent.
 
   **The pod.** It runs as uid 1000 with no ServiceAccount token, and has a
@@ -87,7 +261,11 @@ defaults to `gateway`, and `gateway` must always be in it.
   NetworkPolicy:
   - admits connections only from muster's pods;
   - allows egress only to cluster DNS and TCP 443 on public IPv4 addresses, plus
-    muster's connect port.
+    muster's connect port;
+  - for an **officer instance** only, drops the public-443 rule and the DNS
+    rule: the connect port, nothing else. The cluster must allow name-filtered
+    DNS and `api.anthropic.com` by name
+    ([officers.md](officers.md#the-instances-network)).
 
   See [limits.md](limits.md) for what that does and does not stop.
 
@@ -107,65 +285,14 @@ defaults to `gateway`, and `gateway` must always be in it.
   **Permission prompts.** These go to `ccd approve`. If
   `MUSTER_APPROVAL_GATE_URL` is configured, it relays the prompt to the
   permission router; otherwise the prompt falls back to the agent's own terminal.
-
-- **`hermes`** runs the image built from
-  [`images/hermes-agent`](../images/hermes-agent/flake.nix): Hermes at one pinned
-  upstream commit, run as `hermes gateway run` with its API server on loopback,
-  supervised by `hermesd` ([`cmd/hermesd`](../cmd/hermesd);
-  [design](design/hermes.md#the-hermes-agent-kind)).
-  - `hermesd` serves `POST /v1/responses` on port 18789. Each turn is one
-    Hermes run (`POST /v1/runs`, its SSE events); the reply is the run's output.
-  - It runs on the **OpenRouter key** the `gateway` kind uses
-    (`MUSTER_AGENT_OPENROUTER_KEY`, or a member's own), placed only in the
-    agent's own Secret as `OPENROUTER_API_KEY`. Hermes strips it from the
-    agent shell's own environment, but that is not a boundary: the agent runs
-    as the gateway's uid and **can read the key** from the gateway's
-    environment in `/proc` — accepted, as a `claude-code` agent can read its
-    own token. The model is the agent's (or `MUSTER_AGENT_MODEL`), and must be
-    an OpenRouter model, `openrouter/<vendor>/<model>` (case-sensitive) or a
-    one-part id such as `openrouter/auto`: a dispatch or a model change naming
-    anything else is refused before anything is created or stored.
-  - It requires `MUSTER_AGENT_HERMES_IMAGE`, pinned to a tag or digest, and on
-    Kubernetes both `MUSTER_AGENT_NETPOL_FROM_*` variables. The pod is the
-    `claude-code` pod's profile: uid 1000, no ServiceAccount token, a `/data`
-    volume (`MUSTER_AGENT_HERMES_STORAGE_SIZE`, default `10Gi`), the same
-    NetworkPolicy — and a termination grace of 60 s, over Hermes's 30 s drain,
-    and a **read-only root filesystem** with a writable emptyDir at `/tmp`
-    (`hermes` only; the `gateway` and `claude-code` pods render unchanged).
-  - 🔴 **The `/data` volume must be a local filesystem** (local-path, OpenEBS
-    hostpath, a block device), **not NFS or virtiofs**: Hermes keeps its
-    sessions in SQLite (`state.db`, WAL mode), whose locking a network or
-    shared filesystem does not honour reliably.
-  - **Off unless enabled:** the kind is offered only when `MUSTER_AGENT_KINDS`
-    includes `hermes` and `MUSTER_AGENT_HERMES_IMAGE` is set.
-  - **Instructions** are sent on every run (Hermes's `instructions`), from
-    `/etc/hermesd/instructions.md`, outside every volume. A worker gets none,
-    as a `claude-code` worker gets none.
-  - **Approvals.** A command Hermes flags is relayed to muster's approval queue
-    (the card a `claude-code` prompt makes) and answered `once` on approve.
-    Anything else — a deny, no answer within 240 s, no relay — is answered
-    `deny` by `hermesd`, before Hermes's own 300 s timeout.
-  - **Restarts.** `hermesd` keeps its own record of every turn on the volume and,
-    after every start of the gateway, resolves what a crash left unsettled
-    before it takes a turn (`/healthz` reports `recovering` meanwhile; turns are
-    `not_ready`). A turn whose outcome it cannot know is answered `may_have_run`,
-    never re-sent. A turn still running at its 30-minute budget is stopped
-    (`POST /v1/runs/{id}/stop`) and answered `turn_timeout`; nothing is
-    followed in the background. A recovery decision about a turn nobody waits
-    for any more is reported at the start of the session's next reply.
-  - Not in this release: a Terminal view (`agents.terminal` refuses the kind), a
-    `hermes` chief, or a `hermes` agent started by the chief's `task_dispatch`
-    (both refused: its MCP client against muster's tools is unverified),
-    questions from the agent (`clarify`, off for API-server turns).
-  - A repository is checked out as for `claude-code` (next section), by
-    `hermesd` (`HERMESD_REPO`, `HERMESD_REPO_BRANCH`, `HERMESD_WORKSPACE`), and
-    Hermes runs in it, loading its `AGENTS.md`. Only a connected repository is
-    accepted.
+  Two agents never prompt: an officer instance and the `claude-code` chief run
+  every tool in `bypassPermissions` (`CCD_PERMISSION_MODE`), so nothing reaches
+  `ccd approve` from them ([chief.md](chief.md#the-chief-runs-without-permission-prompts)).
 
 ### A claude-code agent's repository
 
 A claude-code agent can be dispatched with a repository (`owner/name`, and a
-branch), from the dispatch forms, the API or the chief's `task_dispatch`, like a
+branch), from `POST /api/agents` or the chief's `agent_dispatch`, like a
 gateway agent — but only one of your **connected** GitHub repositories, from
 every door (its session starts pre-trusted in the checkout, so the repository's
 own `.claude/` runs beside the subscription token; see below). An agent without
@@ -219,9 +346,85 @@ same resume (`--resume` of its own conversation by id).
   when the job ends. The checkout, its branch and its working tree are never
   moved.
 
-To start one from the chief: connect the repository on the Repos tab (it
-must be one of your connected repositories), make sure a `github` connector
-exists, then have the chief call `task_dispatch` with `repo`.
+To start one from the chief: the repository must be one of your connected
+repositories (in the GitHub App's installation, [github-app.md](github-app.md)),
+make sure a `github` connector exists, then have the chief call `agent_dispatch`
+with `target: "pod/claude-code"` and `repo`.
+
+### The image as a docker compose service
+
+The same image runs as a `docker compose` service when `CCD_SPEC_DIR` is set.
+The entrypoint then runs `ccd compose` (`cmd/ccd/compose.go`) and nothing else;
+without the variable, which is the Kubernetes case, it runs exactly as above.
+muster configures the service through files in a shared volume, not through a
+docker socket.
+
+- **The spec.** muster writes `$CCD_SPEC_DIR/spec.json`:
+  `{"version":1,"name":…,"generation":N,"replicas":0|1,"epoch":"<hex>","env":[{"name","value"}…],"secrets":[…]}`.
+  `ccd compose` reads it every 2 seconds. A `version` other than 1 is refused,
+  and so are a `generation` below 1, `replicas` other than 0 or 1, an `epoch`
+  that is not hex, a variable named twice, and `CCD_LISTEN`, `CCD_SPEC_DIR` or
+  `CCD_APPROVE_UNANSWERED` in `env` or `secrets`. Fields it does not name, and other
+  files in the directory, are ignored. Files that belong elsewhere in the
+  container are written under `$CCD_SPEC_DIR/files/<path>` and mounted
+  read-only by the compose file (`files/etc/claude-code` at `/etc/claude-code`);
+  `ccd compose` does not copy them.
+- **The child.** With `replicas` 1, `ccd compose` runs the entrypoint again
+  as a child, without `CCD_SPEC_DIR`, with the spec's `env` and `secrets` in its
+  environment, `CCD_LISTEN=127.0.0.1:18790` and `CCD_APPROVE_UNANSWERED=deny`.
+  It proxies every request on port 18789 to the child, streamed responses
+  included. A new `generation` or `epoch` stops the child and starts another.
+  With `replicas` 0, an absent `spec.json` or a refused one, no child runs:
+  no CLI, so no model calls. `ccd compose` itself keeps running, so the
+  container does not exit.
+- **Stopping.** SIGTERM to the child's process group, SIGKILL after 20
+  seconds, then `tmux kill-server` on the server `ccd` used, then SIGKILL to
+  anything still descended from `ccd compose`. The last two steps are needed
+  because tmux runs in a session of its own: killing `ccd` leaves tmux and
+  `claude` running. `ccd compose` is a child subreaper, so the sweep can find
+  them.
+- **The epoch.** Before each start, if `/data/.muster-epoch` exists and holds
+  a different epoch, everything under `/data` is removed. Then the spec's epoch
+  is written there. If the file does not exist, nothing is removed. This is how
+  a destroy and create gives a chief a fresh volume.
+- **Supervision.** A child that exits is started again after a backoff (1s,
+  doubling, at most 30s). A child whose `/healthz` has not answered 200 within
+  305 seconds of starting, or has not answered 200 for 90 seconds after it
+  once did, is stopped and, after the same backoff, started again. These are
+  the Kubernetes driver's startup and liveness budgets.
+- **`GET /compose/status`** always answers 200:
+  `{"state","generation","replicas","epoch","boot","ready","reason"}`. `state`
+  is `awaiting_spec`, `off`, `starting`, `running`, `exited` or `error`.
+  `boot` is a random id for each child start, `""` when no child is running.
+  `ready` is whether the child's `/healthz` answered 200 on the last check.
+  While no child runs, `/healthz` (and `GET /`) answers 503 with
+  `{"compose":<that status>}`, and every other request a 503 `not_ready`
+  failure.
+- **Permission prompts are denied.** Nobody can answer one: there is no
+  approval gate and no terminal muster can reach, so a prompt deferred to the
+  terminal would hang the turn. With `CCD_APPROVE_UNANSWERED=deny`, `ccd
+  approve` denies every prompt that reaches it, without contacting the relay.
+  Only tools that are pre-allowed run.
+- **Logs.** `ccd compose` logs variable counts, never values.
+- **Users.** `ccd compose` must run as uid 0 and refuses any other uid. The
+  compose service runs it as `0:1001` with every capability dropped except
+  `SETUID`, `SETGID` and `KILL`, so it has no DAC override: it reads what group
+  1001 may read. The driver writes `spec.json` 0640 in group 1001. The child
+  runs as uid 1000, gid 1000, supplementary groups exactly `[1000]`, so the CLI
+  and its tool calls cannot read `spec.json` and its secrets, the turn bearer
+  included. This keeps the bearer out of the session's reach, as the Kubernetes
+  path does ([configuration.md](configuration.md#ccd-inside-the-claude-code-agent-image)).
+  The files under `files/` are group 1000 and readable by the CLI. The `/data`
+  wipe, the epoch marker and `tmux kill-server` run as uid 1000 (`ccd
+  compose-epoch` is the wipe's helper), because uid 0 without DAC override
+  cannot touch uid 1000's 0700 `/data`. `ccd compose` marks itself
+  non-dumpable.
+
+`images/claude-code-agent/compose-smoke.sh <image>:<tag>` runs this mode
+with the real `ccd` and CLI, as `deploy/docker-compose.yml`'s own `chief`
+service, and CI runs it. A stand-in for muster writes the specs muster never
+would (a new generation, a new epoch, an unknown version, a removed spec).
+`tests/compose-up.sh`'s chief phase covers the rest with muster itself.
 
 ## Talking to an agent
 
@@ -233,14 +436,212 @@ When a gateway is configured, three routes are live:
 - `POST /agents/{name}/send` is the message box (see
   [sending-and-step-up.md](sending-and-step-up.md)).
 
-A `claude-code` agent has the same Rendered | Terminal switch as a mirrored
-session.
+A `claude-code` agent's page has one header row. Its Terminal, its Claude
+account, its account-switch line and its worker pool are in the header's ⋯
+menu; Terminal opens the terminal view over the chat, as a mirrored session's
+switch does. The terminal page has the Rendered | Terminal switch back to the
+chat.
+
+## Creating an agent without the chief
+
+`POST /api/agents` creates an agent as you, from a machine. It is what replaced
+the web UI's dispatch form, for a deployment or a user the chief cannot start an
+agent for: a user not in `MUSTER_CHIEF_DISPATCH_OWNERS`, a deployment without
+task routing, a chief that runs as a gateway, and one that cannot deliver a
+first turn at all (where creating it stopped, then Start, still works).
+
+- **Only a personal token of scope `agent-create` reaches it.** Mint one at
+  `/account/tokens` (**Create agents**). A full-access token is refused (403),
+  so the CLI's ordinary token cannot create agents; an `agent-create` token
+  reaches nothing else; the shared hook secret is refused too.
+- **The body** is JSON: `kind`, `repo`, `repo_branch`, `model`, `prompt` (the
+  first turn), `note_id` (a task of yours: its body is the first turn), `cc_account`,
+  `cc_failover`, `worker_pool`, and `start` (required: `true` dispatches now,
+  `false` creates it stopped and provisions nothing).
+- **The checks** are the ones every door applies: the kind and Claude account,
+  the worker pool, a connected repository, the model, a task's `gate:` tag (for
+  `start: true`), and whether this deployment can deliver a first turn (for
+  `start: true`, a 409 with the reason). There are no caps or budget: it is you
+  acting with your own credential, not the chief.
+- **The answer** is `201` with `agent` (as `GET /api/agents` shows it),
+  `started` and `href` (its page). A body over **1 MiB** is a `413` naming the
+  limit.
+
+`muster agent create` wraps it, with flags named after the fields
+(`--kind`, `--repo`, `--repo-branch`, `--model`, `--prompt`, `--note-id`,
+`--cc-account`, `--cc-failover`, `--worker-pool`, and the required `--start`).
+It reads its token from `MUSTER_AGENT_CREATE_TOKEN` (in the env file or the
+environment, under the same tenant pair rule as `MUSTER_TOKEN`:
+[cli.md](cli.md#configuration)) and never sends `MUSTER_TOKEN`:
+
+```text
+MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --start=false --prompt "Triage the flaky upload test"
+```
+
+That is a host with one tenant. With more than one, put
+`MUSTER_AGENT_CREATE_TOKEN=mst_…` in the tenant's file
+(`~/.muster/tenants/<name>.env`, or `~/.muster/muster.env` for `default`) and
+run `muster --tenant <name> agent create …`.
+
+## An agent's page
+
+A dispatched agent's page shows, under its title, the agent's live status (with
+**awaiting approval** while it waits at a permission prompt, **kickoff owed** or
+**kickoff failed**, and what it has running), and a **⋯** menu: **Rename**,
+**Start** or **Stop**, and **Delete** (two steps; never for the chief). A failed
+kickoff, a first turn held for your GitHub approval, or a GitHub App problem is
+explained above the transcript. To start a new agent, ask the chief, or use
+[`muster agent create`](#creating-an-agent-without-the-chief); an agent created
+stopped is started from its page.
+
+**kickoff failed** is not permanent: muster never re-sends a first turn on its
+own, but the badge and its explanation clear as soon as any later turn on that
+agent completes — your own message, a nudge or ask from the chief, a plugin or
+memo delivery. A later turn that fails, times out or comes back empty leaves it
+in place. One exception: when the first turn provably never reached the agent
+(the connection could not be opened, or the agent answered busy or not ready the
+whole time), the badge and its "safe to re-send" remedy stay even after later
+turns complete, because the task itself was never delivered.
+
+![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
+
+## How an agent's work ends
+
+Every agent started with a first turn — from `POST /api/agents` with
+`start: true`, or the chief's `agent_dispatch` — ends in an **outcome** you can
+see: never silently "running". The outcome is shown on the agent's page (a
+**failed** or **stuck** badge beside the status, and a notice above the
+transcript saying why), on its sidebar row, on the chief panel's card for it,
+and in `GET /api/agents` (`outcome`, `outcomeReason`, `outcomeAt`).
+
+| outcome | when | what happens |
+|---|---|---|
+| `running` | the agent was started with a first turn | — |
+| `waiting` | its turn ended and it is idle **without saying it finished** — it asked a question, or reported progress (or its pod's background work ended) | after 60 seconds, if you have neither replied nor opened the agent's page: one push, `<agent> is waiting for you: <the LAST line of its reply>`, and one note to the chief quoting its last lines (the same with `MUSTER_SESSION_STATE=1`; session state then does not push this wait again as a stalled conversation). A conversation you are in pushes nothing. Its next turn puts it back to `running` |
+| `done` | it **said** it finished: it moved its own task to **ready for review** or **complete** (the chief or a mirrored session moving it does not count), or called `agent_report_done{summary}` (offered to every agent but the chief — a gateway agent from its first turn on, which carries its muster tools as its chat turns and a `POST /api/agents/{name}/messages` turn do; a claude-code agent over its `/mcp`; a dispatch with no task is told to call it) | one push, `<agent> finished: <summary>` (none beside the task's own ready-for-review push), and a note to the chief; a new turn puts it back to `running` |
+| `failed` | a turn of it **failed**: the runtime reported the turn failed (a model it does not know, say — also when it then completes with no answer), it answered nothing, or its first turn was never delivered | its status becomes `error` with the reason as its error message; one push, `<agent> failed: <reason>`, linking to the agent; and a note to the chief that started it, so the chief can tell you and offer to start it again |
+| `stuck` | the [silence watchdog](#the-silence-watchdog) saw no activity | one push, `<agent> is stuck: <reason>`, and a note to the chief |
+
+🔴 **A reply is never "done".** A turn that ends is as often the agent's
+question ("Which repository should I work in?") as its result, so only an
+explicit signal finishes it; every other idle end is `waiting` on you.
+
+**What does not count as a failure:** you closing the chat while a turn runs,
+a runtime that refused a turn before it typed anything (busy, not ready, rate
+limited — the sender is told), a connection to a pod that is restarting, a
+turn that outlived its budget and a first turn cut off by muster itself
+shutting down (in both the runtime may still be running it; the watchdog
+judges what it does next), and an `error` event the runtime followed with a
+completed turn. **Only a dispatched agent is set to `error`** (one started by
+`POST /api/agents` with `start: true` or by the chief's `agent_dispatch`); an
+officer's instance or a stopped agent you Started keeps its status. **The chief is never set to
+`error` by a failed turn**: its status gates every delivery muster makes to
+it, so its failure is pushed and shown, and its next good turn clears it.
+
+**One push per change.** Every change of outcome is a database write
+conditional on the outcome it leaves, so of two writers (two replicas, a turn
+ending while the watchdog runs) exactly one applies it, and only that one
+pushes. A second failure of an agent already `failed` updates the reason and
+pushes nothing. The push is the `agent_outcome` event on **Account →
+Notifications**, under the same per-owner cap as every push
+([push.md](push.md)).
+
+**Starting it again.** **Start** from the ⋯ menu clears a `failed` or
+`stuck` outcome; the agent is then not watched until it is given new work.
+Fix the cause first: for a model the runtime did not know, change the agent's
+model (it is checked, below), then Start it.
+
+### What a turn muster starts carries
+
+A **gateway** agent gets muster's tools only in the turns muster sends it with
+them, so every place muster starts a turn says which it is. A **claude-code**
+agent gets its tools over its own `/mcp` in every turn, whatever the door, and
+ccd ignores any tools a request carries.
+
+| Door | What a gateway agent's turn carries |
+|---|---|
+| its chat (the agent page, the composer) | its system prompt and its tools |
+| its first turn (a dispatch's kickoff) | its system prompt and its tools, acting as its owner |
+| `POST /api/agents/{name}/messages` (`muster chief ask`) | its system prompt and its tools, acting as its owner: **exactly what its chat gives it**, so a gateway-kind chief gets its chief tools and a worker its worker tools (`agent_report_done` included). The system prompt is new here; this door used to send none. The turn is detached from the request: a caller that times out (the CLI's default is 30 s) does not cut it short; it runs to its own 30-minute budget, its reply is stored and its outcome recorded |
+| scheduled jobs, the memo relay, officer re-prompts | claude-code agents only |
+| the chief nudge | no tools, by design ([chief nudges](chief-nudges.md)) |
+
+### Models are checked before a pod starts
+
+Every door that sets an agent's model — `POST /api/agents`, a task's own model
+when it is dispatched, `POST /agents/{id}/model` on the agent page, replacing
+the chief (before the old one is removed), and the chief's `agent_dispatch`
+(before it reserves anything) — checks the value
+against the OpenRouter model catalogue (the list the task forms' model picker
+reads, cached for an hour):
+
+- an exact id passes (`openrouter/<id>`, or a bare `<id>`, stored as
+  `openrouter/<id>`);
+- a display name, or a case or spacing variant, that matches **exactly one**
+  model (its name, its name without the `Vendor: ` prefix, or its id's model
+  half) is resolved to that model's id, and both are recorded;
+- anything else is **refused** before any pod starts, with up to five of the
+  closest ids, so the chief can ask you which you meant.
+
+**What is stored is always the route form, `openrouter/<catalogue id>`**: a
+gateway agent holds one credential, OpenRouter's, and its runtime reads the
+provider from the model's prefix. (An id OpenRouter itself owns, such as
+`openrouter/auto`, is already in that form.)
+
+When the catalogue cannot be read, a value with the id shape passes unchecked
+(logged as a warning) — but a bare `vendor/model` is then still refused by the
+credential check, which names the route form (`did you mean
+"openrouter/vendor/model"`), so only `openrouter/<vendor>/<model>` gets through;
+a display name is refused.
+muster's own suggested models always pass. The chief's `task.chief_dispatch`
+audit row records the `model` the agent runs on, and `model_input` when the
+value given was resolved.
+
+### The silence watchdog
+
+A sweep, every `MUSTER_AGENT_WATCHDOG_INTERVAL` (`1m`), over every agent whose
+outcome is `running` or `stuck`:
+
+- **no first reply** and no activity for `MUSTER_AGENT_STUCK_NO_REPLY`
+  (`5m`) after its first turn was delivered → `stuck`, *no reply since
+  kickoff*;
+- **replied, still working**, and no activity for `MUSTER_AGENT_STUCK_SILENT`
+  (`30m`) → `stuck`, *silent for 30 min*;
+- `stuck`, and then any activity → `running` again (no push).
+
+"Activity" is everything muster can see the agent do: a turn **open** in
+muster — a chat turn, its first turn, a scheduled job's turn or a memo turn
+(a claude-code turn streams nothing until it ends, so an open turn is
+never "no reply since kickoff"), the runtime taking a turn or a turn ending, every read of a
+turn's stream (text, thinking, tool calls), its pod's work reports (sent every minute
+while it has subagents or background shells running), and the agent's row and
+transcript (the same "last active" the sidebar orders by). So a genuinely
+working agent is never flipped. A message the runtime refused before typing
+it (a `busy` session; muster holds it and asks again) is not activity, and does
+not put a waiting agent back to running: only a turn the runtime takes does. A
+job's or a memo's turn keeps the agent working while it runs and is judged as
+nothing (its reply is the job's result); a chat reply that ends during one is
+judged when it ends. A first turn muster stops waiting for
+at its budget is not a failure, but it is no longer open: if the agent then says
+nothing, it goes `stuck`. Before its first turn is delivered, the
+kickoff deliverer owns the verdict: an agent whose instance never became
+ready is failed after 15 minutes, as before, and that is now pushed too.
+
+### Reading an outcome
+
+`GET /api/agents` (the machine roster) carries `outcome` — `running`,
+`waiting`, `done`, `failed`, `stuck`, or `""` for an agent nobody dispatched —
+with `outcomeReason` and `outcomeAt`. The chief panel's card for an agent it
+started reads the same recorded outcome as the agent's page (`failed` and
+`stuck` with the reason, `waiting for you` with the last line, `done`),
+through one projection,
+`api.Server.AgentOutcomeOf`, so the two cannot disagree.
 
 ## Destroying an agent
 
 Two doors take the same teardown (`destroyAgent` in `internal/api/agents.go`):
 
-- **Delete** on the Agents page (`DELETE /agents/{id}`, a signed-in session);
+- **Delete** in an agent page's **⋯** menu (`DELETE /agents/{id}`, a signed-in session);
 - **`agent_destroy {name | id}`** from one of your own mirrored Claude Code
   sessions (`POST /mirror/mcp` only — see
   [attention.md](attention.md#the-agent-tools)), so a stuck agent can be torn
@@ -257,19 +658,20 @@ a turn it is running is not stopped first — the pod's teardown ends it.
 
 After a **successful** teardown, on both doors:
 
-- if the agent was the one the chief's `task_dispatch` started on its task, the
+- if the agent was the one the chief's `agent_dispatch` started on its task, the
   chief's one start on that task is **released** (an
   `task.chief_dispatch_released` row in the chief-dispatch ledger; nothing is
   deleted), so the chief may start one new agent there — see
-  [chief.md](chief.md). ⚠ This is new for the Agents page's Delete too.
+  [chief.md](chief.md). ⚠ This is new for the agent page's Delete too.
 - your open tabs re-fetch: `agent.changed` and `attention_queue.changed` are
   broadcast to you.
 
 **The task is kept on both doors** (unlike deleting the task, which tears its
 agent down). Only `agent_destroy` also moves it back: a task still
 `in_progress` with no other live agent goes to `open` (status writer
-`agent-destroy-reopen`), which `task_dispatch` needs (open, ungated, no live
-agent). The write is conditional — it moves the task only while it is still
+`agent-destroy-reopen`), which `agent_dispatch` needs (open, ungated, no live
+agent). A plugin task reference is never moved back: its status is the
+upstream's ([plugins.md](plugins.md#task-references)). The write is conditional — it moves the task only while it is still
 `in_progress` — so a status you set meanwhile is kept. After the browser's
 Delete the task stays as it was; reopen it on its card.
 
@@ -277,6 +679,70 @@ Neither door writes an audit row for the destroy: an `agent_destroy` call's
 host and session are in muster's server log only.
 
 A task becoming `complete` **stops** (never destroys) the agent the chief started for it: see [plugins.md](plugins.md#completing-a-task-stops-the-chiefs-agent).
+
+### Reaping stopped agents
+
+An agent whose stored status has been `stopped` for
+`MUSTER_AGENT_REAP_STOPPED_AFTER` (default `336h`, 14 days) is destroyed by
+the **stopped-agent reaper**, through the same teardown as the two doors above
+(`destroyAgent`, acting as the agent's owner): the chief is refused, then the
+provisioner's `Destroy` removes the instance and then the row, and after a
+successful teardown the chief's start on the agent's task is released and your
+open tabs are told, exactly as for the agent page's Delete. Like that Delete,
+it leaves the agent's task as it was.
+
+- **The clock** is `agents.stopped_at` (migration 0045): the time the row last
+  moved into `stopped`, stamped by a database trigger (today the writers of
+  `stopped` are Stop and the insert of an agent saved for later). Writing `stopped` over a row that
+  already is `stopped` does not move it. **Start** moves the row out of
+  `stopped`, so the next Stop starts a new clock: a restarted agent that is
+  stopped again waits a full window. Agents already stopped when 0045 was
+  applied have their clock started at that moment.
+- **Never reaped:** the chief (either kind, [below](#the-chief)); an agent in
+  any other status, `error` included; a [pool worker](jobs.md#worker-pools)
+  (`worker_pool` set); and an agent that **never ran** — saved for later and
+  never started. "Ran" is `agents.first_started_at` (migration 0045), stamped
+  by the same trigger the first time the row is written `provisioning` or
+  `running`: a dispatch writes `provisioning` only after the instance was
+  created, and Start only after it was brought up, while a save writes
+  `stopped` straight away and a refused or failed dispatch writes `error`.
+  Started once, it stays stamped. When 0045 was applied, a row counted as
+  having run only if it was `running` or a first turn had been handed to an
+  instance (`kicked_off`, a recorded kickoff pod, or a delivery attempt);
+  every other row, including a stopped agent that was started but never got
+  its first turn, counts as never started until it is Started again.
+- **When:** the reaper rides the idle-task reaper's sweep, every 30 minutes,
+  on every pod (`muster-server` installs no leader gate for these loops; see
+  [limits.md](limits.md#deployment)). Before it starts a teardown it claims the agent with one
+  conditional update that re-checks the stored conditions above (status,
+  pool, ran, window) and that no other claim is live, so two pods never both
+  destroy an agent, and an agent Started after the sweep read it (now
+  `provisioning` or `running`, or stopped again with a fresh `stopped_at`) is
+  left alone. A claim excludes other claims for an hour.
+- **The instance is checked too.** A stored `stopped` is not proof the
+  instance is down: Start brings the instance up before it writes
+  `provisioning`, so a Start whose status write failed leaves a running
+  instance under a `stopped` row. Before claiming anything, each pass reads
+  the provisioner's instances and skips (and logs: `agent-reap: agent <id>
+  (<name>) is stored stopped but its instance reads <status>; not reaped`)
+  any due agent whose instance reads anything but stopped, by the same rule
+  the agent's page uses. No instance at all, or one scaled to zero, counts as
+  stopped. If the instances cannot be read, or the read has not answered
+  within 30 seconds, the pass destroys nothing.
+- **The record** is one server log line per agent whose teardown it started
+  (`agent-reap: destroying agent <id> (<name>) of user <owner>, task <id or
+  none>: stopped since <time>, longer than <window>`). No task comment and no
+  audit row are written. A teardown that could not remove the instance is
+  logged and keeps the row with status `error` (rule 2 below), so it is not
+  retried; one that removed the instance but not the row leaves it `stopped`,
+  and it is claimed again once the hour has passed.
+- **Off:** `MUSTER_AGENT_REAP_STOPPED_AFTER=0` (or `off`). The boot log says
+  which (`agent reaper: sweeping every …` or `agent reaper: off`).
+
+⚠ A Start in flight — instance being brought up, `provisioning` not yet
+written — whose instance the pass's read did not yet see as up still reads
+`stopped` on both counts. A claim landing then wins, and the teardown removes
+what the Start brought up: the same race as pressing Start and Delete at once.
 
 ## The chief
 
@@ -304,6 +770,7 @@ the no-op driver brings in none of a cluster client's dependencies.
 |---|---|
 | `provision.Noop` | Records instead of provisioning. Use it to develop everything above the seam without a backend. |
 | `provision/k8s` | Renders its own minimal manifests and installs no chart: Namespace, ServiceAccount, **two** Secrets (confidential environment, and separately confidential files), ConfigMap, PVC, Deployment, Service, and a NetworkPolicy for `claude-code`. |
+| `provision/compose` | The chief on the `docker compose` install. It starts no container (that would need the Docker socket): it writes each admitted instance's spec and files into a volume shared with the `chief` container, whose supervisor runs, stops (replicas 0) and restarts (a new generation) the agent. It asks that container for its status. No exec, no network confinement, no resource limits: specs asking for those are refused. `Spec.Security` (`RunAsNonRoot`, `Restricted`, the uid and groups) is neither applied nor refused: this driver drops it, and the agent's identity and capabilities are whatever the Compose file and the image's supervisor give it. |
 
 `internal/agentprovision` adapts a driver to the API's lifecycle interface.
 `internal/agentgateway` speaks the chat protocol over the same driver.

@@ -117,9 +117,10 @@ func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 	if !hasText16px.MatchString(input) {
 		t.Errorf("the input is not 16px (text-base); iOS would zoom the page on focus: %s", input)
 	}
-	// The page opens read-only and the composer is there regardless.
-	if mode := tagOf(page, "term-mode"); !strings.Contains(mode, `aria-checked="false"`) {
-		t.Errorf("the page does not open read-only: %s", mode)
+	// Live keys are always on: there is no switch, and the composer is there
+	// beside the keys.
+	if mode := tagOf(page, "term-mode"); mode != "" {
+		t.Errorf("the page still draws the Live keys switch: %s", mode)
 	}
 	// A send refused as stale needs the dialog to ask through.
 	if !strings.Contains(page, `<dialog id="term-confirm"`) {
@@ -162,10 +163,10 @@ func TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy(t *testing.T) {
 	if !disabledAttr.MatchString(input) || !disabledAttr.MatchString(send) {
 		t.Errorf("a read-only host's composer is not disabled: %s / %s", input, send)
 	}
-	if !strings.Contains(input, `placeholder="Read-only host"`) {
+	if !strings.Contains(input, `placeholder="`+ui.MirrorReadOnlyPlaceholder+`"`) {
 		t.Errorf("the disabled input's placeholder: %s", input)
 	}
-	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {
+	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote("ws")) {
 		t.Error("the page does not say why nothing can be sent")
 	}
 }

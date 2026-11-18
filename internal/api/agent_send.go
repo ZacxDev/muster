@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -72,11 +70,8 @@ func agentSendBack(name, from, session string) string {
 	if from == ui.AgentSendFromTerminal {
 		return ui.AgentTerminalPath(name)
 	}
-	back := "/agents/" + url.PathEscape(name)
-	if id, err := strconv.ParseInt(session, 10, 64); err == nil && id > 0 {
-		back += "?session=" + strconv.FormatInt(id, 10)
-	}
-	return back
+	id, _ := strconv.ParseInt(session, 10, 64) // unparsable → 0 → the bare page
+	return ui.AgentSessionHref(name, id)
 }
 
 func (s *Server) handleAgentSendAgain(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +133,12 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusConflict, AgentNotRunningNotice, noticeNotRunning)
 		return
 	}
-	session, err := s.resolveSession(ctx, a, sessionParam)
+	// A member on a team agent sends only in its one shared room.
+	session, err := s.resolveTurnSession(ctx, a, sessionParam)
+	if errors.Is(err, ErrNotTheTeamRoom) {
+		refuse(http.StatusForbidden, err.Error(), noticeFailed)
+		return
+	}
 	if err != nil {
 		s.logger.Printf("agents: send session for %q: %v", a.Name, err)
 		refuse(http.StatusInternalServerError, "could not open a chat session for that agent", noticeFailed)
@@ -162,9 +162,11 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 	// Accepted: from here the message is the turn's. The claim is kept whatever
 	// the turn then does — a repeat of this post must not start a second turn.
 	finish(true)
-	// The operator wrote to the agent: its open asks are answered here.
-	s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, text)
-	s.startAgentTurn(ctx, a, session, text)
+	// The operator wrote to the agent: its open asks are answered here — or,
+	// for a member on a team agent, once the turn passes its fresh role check
+	// and the runtime takes it (addressAsker).
+	ctx = s.addressAsker(ctx, a, text)
+	s.startAgentTurn(ctx, a, session, text, ownerTypedBy(ctx), nil)
 	s.logger.Printf("agents: sent a message to %s (session %d)", a.Name, session.ID)
 	sent()
 }
@@ -182,16 +184,24 @@ func agentCanBeSent(status string) bool { return status == agents.StatusRunning 
 // logged.
 //
 // The caller has entered a's turn gate (s.turns.enter); this leaves it when the
-// turn ends.
-func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string) {
+// turn ends. typedBy is runEnteredTurn's: ownerTypedBy(ctx) from the owner's
+// composer (handleAgentSend) and the view's chief door (view_chief.go),
+// notTyped from every other caller; about is runEnteredTurn's (the view's chief
+// door's subject, nil everywhere else).
+func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, about *chatSubject) {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
+	// Counted NOW, before this request answers: the page this send redirects back
+	// to is drawn next, and must already show "working…" (session_turns.go).
+	endCount := s.countSessionTurn(a, session.SessionKey)
 	safeGo(s.logger, "agent turn (send)", func() {
 		defer cancel()
 		defer s.turns.leave(a.ID)
-		parts, err := s.runEnteredTurn(tctx, a, session, text, nil)
+		defer endCount() // a panic must not leave the count up (end is idempotent)
+		parts, err := s.runEnteredTurn(tctx, a, session, text, typedBy, nil, about)
+		endCount()
 		if err != nil {
 			s.logger.Printf("agents: a turn sent to %s failed: %v", a.Name, err)
-			parts = []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}
+			parts = turnFailedParts(err)
 		}
 		s.persistTurn(tctx, a, session, parts)
 	})
@@ -200,3 +210,12 @@ func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session age
 // AgentTurnFailedPrefix starts the stored line that stands in for a reply when
 // a turn started by POST /agents/{name}/send failed.
 const AgentTurnFailedPrefix = "⚠ This message was not answered: "
+
+// turnFailedParts is the stored line that stands in for the reply of a turn that
+// failed: AgentTurnFailedPrefix and the error's text. 🔴 THE ONE SPELLING of it,
+// for every door that stores a failure (the composer POST, the route hand-back,
+// chief_ask, the attention deliverer, and the chat socket's give-up after a busy
+// wait, chat_busy.go) — two copies are how the socket door came to store none.
+func turnFailedParts(err error) []agents.TurnPart {
+	return []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}
+}

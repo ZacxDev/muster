@@ -1,7 +1,6 @@
 // Package procstat parses /proc/<pid>/stat — the ONE parser muster-mirror
 // has: the process table the locators and the paste guard read
-// (internal/mirrorhost), and the Hermes hook's record of the gateway that ran
-// it (cmd/muster-mirror).
+// (internal/mirrorhost).
 package procstat
 
 import (
@@ -18,6 +17,10 @@ type Stat struct {
 	State string
 	// PPID is field 4.
 	PPID int
+	// TTY is field 7, tty_nr: the controlling terminal's device number, 0
+	// for none (a process that called setsid, a daemon). 0 also when the
+	// line is too short to hold it.
+	TTY int
 	// Start is field 22, the start time in clock ticks since boot, as
 	// written: what tells a live process from a reused pid. "" when absent.
 	Start string
@@ -36,6 +39,9 @@ func Parse(stat []byte) (Stat, bool) {
 	}
 	ppid, _ := strconv.Atoi(rest[1])
 	s := Stat{Comm: string(stat[open+1 : close]), State: rest[0], PPID: ppid}
+	if len(rest) > 4 {
+		s.TTY, _ = strconv.Atoi(rest[4])
+	}
 	if len(rest) > 19 {
 		s.Start = rest[19]
 	}

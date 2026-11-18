@@ -47,7 +47,7 @@ const (
 	envAgentToken = podagent.EnvAgentToken
 	// mcpServerName is the key muster's server is registered under, so its tools
 	// appear to the session as mcp__muster__<tool>.
-	mcpServerName = "muster"
+	mcpServerName = podagent.MCPServerName
 )
 
 // seedMCP adds (or, when the pod is not offered the connector store, removes)
@@ -124,7 +124,7 @@ func runConnectGit(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// The pieces below are internal/podagent's (hermesd shares them); these names
+// The pieces below are internal/podagent's; these names
 // keep ccd's call sites and tests reading as before.
 var noRedirects = podagent.NoRedirects
 

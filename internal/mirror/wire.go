@@ -1,10 +1,10 @@
 // Package mirror is the server half of MIRRORED sessions: tmux sessions that live
 // on an operator's own machines (a workstation, a laptop) and appear in muster's
-// Agents view beside its provisioned agents, so the view is complete.
+// sidebar and session switcher beside its provisioned agents, so the list is complete.
 //
 // 🔴 A MIRRORED SESSION IS NOT AN AGENT. Nothing about it is persisted: the hub
 // holds each connected host's session list IN MEMORY, keyed by the host's token
-// OWNER and host name, and the Agents view renders it from there. No agents row,
+// OWNER and host name, and the sidebar renders it from there. No agents row,
 // no kind, no chat, no lifecycle — so it can never be dispatched, deleted,
 // chatted with, or mistaken for an agent by name (a tmux session named "chief"
 // is not the chief). The only table is mirror_tokens (migration 0008).
@@ -238,8 +238,8 @@ type Msg struct {
 	// sent (Hub.AgentState says why).
 	StatusReport bool `json:"statusReport,omitempty"`
 	// CatalogReport (hello) is the host ADVERTISING that it answers a catalog
-	// request (TypeCatalog): a window's Claude Code commands, skills and the
-	// operator's snippets, for the composer's `/` and `:` menu (catalog.go).
+	// request (TypeCatalog): a window's Claude Code commands and skills, for the
+	// composer's `/` menu (catalog.go).
 	// Only a v2 host sets it.
 	//
 	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PaneScroll: an older
@@ -278,8 +278,18 @@ type Msg struct {
 	// over (a fresh backfill, a /clear, a rotated or truncated file).
 	Reset bool `json:"reset,omitempty"`
 	// Busy (events): Claude Code reports a turn running (its session status).
-	Busy   bool                 `json:"busy,omitempty"`
-	Events []cctranscript.Event `json:"events,omitempty"`
+	Busy bool `json:"busy,omitempty"`
+	// StatusSince (events) is the time Claude Code wrote the status Busy was
+	// read from (its statusUpdatedAt, Unix ms on the HOST's clock): the same
+	// number the host lists as Window.StatusSince. So a turn end on the stream
+	// names the exact status token of the turn's own idle, and muster can tell
+	// it from the idle BEFORE the turn without guessing (suggested replies,
+	// internal/api's suggestTracker). A status that moved with Busy unchanged
+	// (a turn the host never saw busy) is sent as a marker of its own.
+	// 🔴 NO VERSION BUMP: an older host never sends it (0), and an older muster
+	// ignores it.
+	StatusSince int64                `json:"statusSince,omitempty"`
+	Events      []cctranscript.Event `json:"events,omitempty"`
 	// PromptIndex (events) marks the message that carries the transcript's
 	// PROMPT INDEX: Prompts is every prompt in the WHOLE file up to the
 	// backfill's end (cctranscript.Prompts), the newest BoundPrompts keeps, and
@@ -302,20 +312,48 @@ type Msg struct {
 	// a pane it resolves as Claude Code NOW, and refuses otherwise: the rendered
 	// view's send must never land a prompt meant for Claude in a shell.
 	AnyPane bool `json:"anyPane,omitempty"`
-	// Runtime (paste) is the agent runtime muster decided this paste for.
-	// "hermes" sends it to the host's GATED SEND into a Hermes pane (Hermes
-	// Phase 3, docs/design/hermes.md; mirrorhost's hermes_send.go), which a
-	// host runs only with -hermes-send; "" is every other paste, unchanged.
-	// 🔴 A host never trusts it to OPEN anything: an unset Runtime aimed at a
-	// Hermes pane still meets the host's paste guard, and "hermes" aimed at
-	// a pane that runs no Hermes NOW is refused. An older host ignores it,
-	// and muster never sends it one (an older host never advertises
-	// HermesSend).
+	// Runtime (answer) is the agent runtime an answer is for: "opencode"
+	// relays it through opencode's API (OpenCodeReply); "" is Claude Code's
+	// picker. A host never trusts it to OPEN anything: it re-checks what runs
+	// in the pane NOW. On a PASTE it names a runtime's gated send
+	// (RuntimeSpec.GatedSend: "opencode", through its API), with Since and
+	// MessageID; an older host, which never advertised that send, is never
+	// sent one.
 	Runtime string `json:"runtime,omitempty"`
-	// Since (paste, Runtime "hermes") is the window's StatusSince the paste
-	// was decided on. The host sends only while the window's status is still
-	// idle at exactly this time, and refuses as superseded otherwise.
+	// Since (paste, with Runtime) is the window's StatusSince muster decided
+	// the gated send on: the host sends only while the window is still idle
+	// since exactly then.
 	Since int64 `json:"since,omitempty"`
+	// MessageID (paste, with Runtime "opencode") is the id the message is
+	// posted under (OpenCodeMessageID): the same send retried posts the same
+	// id, and opencode admits it once.
+	MessageID string `json:"messageID,omitempty"`
+	// AgentSession (paste, with Runtime) is the session the message was
+	// written for — the sender's view's, or a queued row's — which the hub has
+	// checked is the one its window list names now (ShownSessionCheck); so
+	// the ONLY session the host may post to: it refuses
+	// (PasteRefusalOpenCodeMoved) when the pane resolves to any other now,
+	// and refuses a pane bound by verification (Window.AgentBind) when the
+	// paste names none. 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host
+	// ignores it and sends only to launcher-bound panes, as before; an older
+	// muster never sends it, and so never reaches a verified pane.
+	//
+	// On a CLAUDE CODE paste (no Runtime, no AnyPane) it is the Claude
+	// session a queued message was queued for (Window.ClaudeSession then),
+	// which the hub has checked the window list still names: the host types
+	// only while the pane's session (ClaudePane.Gen) is still exactly it,
+	// else refuses (PasteRefusalClaudeMoved); "" checks nothing (a person's
+	// Send, a row queued before muster recorded it). 🔴 BACKWARD-COMPATIBLE
+	// BOTH WAYS: an older host ignores it on a Claude paste (its paste path
+	// never reads it), leaving the hub's check against the window list; an
+	// older muster never sends it.
+	AgentSession string `json:"agentSession,omitempty"`
+	// Context (events) is the agent's context fill for the view's header
+	// readout, from a runtime that reports it beside its events (opencode:
+	// AgentContext). Sent when it changed, and on the batch that ends a
+	// Reset's backfill. 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older muster
+	// ignores it (no readout, as before); an older host never sends it.
+	Context *AgentContext `json:"context,omitempty"`
 	// Lines (scroll) is how far to scroll the pane's history: positive is BACK
 	// (tmux scroll-up, older output), negative is forward (scroll-down, toward
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
@@ -350,38 +388,96 @@ type Msg struct {
 	// BACKWARD-COMPATIBLE BOTH WAYS: an older host never sets it (0: nothing
 	// muster can vouch for), and an older muster ignores it.
 	Keys int `json:"keys,omitempty"`
-	// HermesSend (hello) is the host ADVERTISING that it accepts a paste into
-	// a Hermes window (Window.Runtime RuntimeHermes), on an -interactive v2
-	// host. 🔴 NO HOST SETS IT YET: the host's flag and its gated send arrive
-	// together in Hermes Phase 3 (docs/design/hermes.md, the hermesSend
-	// switch). muster refuses every paste into a window the host REPORTS as
-	// Hermes unless the host advertised this (Hub.PasteWindow), so today every
-	// such paste is refused before it reaches the host.
-	//
-	// ⚠ WHAT THIS GATE DOES NOT COVER: a window the host does not report as
-	// Hermes. That is every window of a host older than this field, and any
-	// Hermes the strict mirroring rule does not recognise (a profile-launched
-	// `hermes -p coder chat`). Those rely on the host's own paste guard alone
-	// (Hermes Phase 1a, mirrorhost's typeInto), and a host older than that
-	// guard has none.
-	//
-	// NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
-	// muster ignores it (and never sees a Hermes window: it does not read
-	// Window.Runtime); an older host never sets it.
-	HermesSend bool `json:"hermesSend,omitempty"`
-	// HermesAnswer (hello) is the host ADVERTISING that it answers a Hermes
-	// approval through Hermes's gateway viewer (Hermes Phase 4,
-	// hermes_answer.go): an -interactive v2 host that runs with
-	// -hermes-answer. 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an
+	// Screen (answered, a refusal) is the pane as the host read it when the
+	// answer stopped — plain text, redacted and then capped at MaxAskScreen by the host (CapAskScreen) — for
+	// the answer-attempt log (internal/askattempt redacts and caps it again
+	// before it is stored). 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH
+	// WAYS: an older host never sets it (no snapshot), an older muster
+	// ignores it.
+	Screen string `json:"screen,omitempty"`
+	// OpenCodeAnswer (hello) is the host ADVERTISING that it relays an answer
+	// to an opencode ask — a permission request, a question-tool form —
+	// through the opencode server's API (opencode_answer.go): an -interactive
+	// v2 host that holds an opencode token — the same gate as AskAnswer.
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like AskCancel: an
 	// older muster ignores it; an older host never sets it, so muster never
-	// sends it an answer, and every Hermes approval there is answered in the
-	// terminal.
-	HermesAnswer bool `json:"hermesAnswer,omitempty"`
-	// HermesApproval (answer, with Runtime "hermes") is the Hermes approval to
+	// sends it an answer, and the ask says to answer it in the terminal.
+	OpenCodeAnswer bool `json:"openCodeAnswer,omitempty"`
+	// OpenCodeSend (hello) is the host ADVERTISING that it sends a message to
+	// an opencode session through the opencode server's API (a paste with
+	// Runtime "opencode", docs/design/opencode-first-class.md): an
+	// -interactive v2 host started with -opencode-send that holds an opencode
+	// token. Only to a window it lists as AgentSend (launcher-bound).
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like OpenCodeAnswer:
+	// an older muster ignores it; an older host never sets it, so muster sends
+	// it no opencode message and the composer says why.
+	OpenCodeSend bool `json:"openCodeSend,omitempty"`
+	// OpenCodeForms (hello) is the host ADVERTISING that it sends a pending
+	// opencode question's whole form (TypeOpenCodeForm → TypeOpenCodeFormed,
+	// Form) and takes its answer as OpenCodeReply.Picks (opencode_form.go):
+	// an -interactive v2 host that holds an opencode token. 🔴 NO VERSION
+	// BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster ignores it; an
+	// older host never sets it, so muster never asks it for a form.
+	OpenCodeForms bool `json:"openCodeForms,omitempty"`
+	// Form (opencode-formed) is the form asked for; nil with Error set when
+	// refused.
+	Form *OpenCodeForm `json:"form,omitempty"`
+	// OpenCodeReply (answer, with Runtime "opencode") is the opencode ask to
 	// answer and how: the PromptID muster showed (Pending.PromptID) and one of
-	// HermesApprovalChoices. An older host, which never advertised
-	// HermesAnswer, is never sent one.
-	HermesApproval *HermesApprovalAnswer `json:"hermesApproval,omitempty"`
+	// its offered answers (Pending.Offers). An older host, which never
+	// advertised OpenCodeAnswer, is never sent one.
+	OpenCodeReply *OpenCodeReply `json:"openCodeReply,omitempty"`
+	// ResumeSpawn (hello) is the host ADVERTISING that it resumes an ended
+	// Claude Code session in a new window (TypeSpawnResume, resume.go): an
+	// -interactive v2 host started with -resume-spawn. 🔴 NO VERSION BUMP,
+	// BACKWARD-COMPATIBLE BOTH WAYS, like PaneScroll: an older muster ignores
+	// it; an older host never sets it, so muster never asks it to resume.
+	ResumeSpawn bool `json:"resumeSpawn,omitempty"`
+	// AgentSpawn (hello) is the runtimes this host STARTS for the chief
+	// (TypeAgentSpawn, agentspawn.go): -interactive with -agent-spawn, and
+	// each runtime's binary found. Empty for every other host.
+	AgentSpawn []string `json:"agentSpawn,omitempty"`
+	// AgentSpawnSkipPermissions (hello) is the host saying it starts the
+	// CLAUDE CODE agents it spawns WITHOUT permission prompts
+	// (-agent-spawn-skip-permissions, OFF by default; never on a root mirror,
+	// where Claude Code refuses bypassPermissions). It is one bool per host,
+	// not per runtime, because Claude Code's is the only wording muster varies
+	// by it: an opencode spawn is told it does not ask either way. muster only
+	// words its prompts by it (what the agent and the chief are told): the HOST
+	// builds the argv, and nothing muster sends changes it. An older host never
+	// sets it, and starts in normal permission mode, which is what false reads as.
+	AgentSpawnSkipPermissions bool `json:"agentSpawnSkipPermissions,omitempty"`
+	// AgentSpawnClones (hello) is the host ADVERTISING that it answers an
+	// agent-clones request (TypeAgentClones, clones.go) and honours an
+	// agent-spawn's clone hint (AgentSpawnReq.Clone), checked against its own
+	// clones. Backward-compatible both ways: an older muster ignores it and
+	// sends no hint; an older host never sets it, so muster asks it nothing
+	// and sends it no hint (and a hint it was sent anyway it ignores, refusing
+	// a repository with several clones as it always did).
+	AgentSpawnClones bool `json:"agentSpawnClones,omitempty"`
+	// SpawnReady (hello, and TypeSpawnReady) is the host's spawn readiness
+	// (spawnready.go): its allow-list, scratch spawns, and whether claude is
+	// found and logged in. A hint muster reads, never a gate the host skips.
+	// Backward-compatible both ways; nil from an older host reads as unknown.
+	SpawnReady *SpawnReadiness `json:"spawnReady,omitempty"`
+	// CloneRepo is an agent-clones request's repository (<owner>/<repo>);
+	// Clones an agent-clones-list's answer (clones.go).
+	CloneRepo string       `json:"cloneRepo,omitempty"`
+	Clones    []AgentClone `json:"clones,omitempty"`
+	// Dispatch is the host dispatch an agent-spawn / agent-spawned is for, or
+	// the one a paste is for (ForDispatch: the host checks the window's tag).
+	Dispatch int64 `json:"dispatch,omitempty"`
+	// Spawn is an agent-spawn's request; Spawned an agent-spawned's window.
+	Spawn   *AgentSpawnReq `json:"spawn,omitempty"`
+	Spawned *AgentSpawned  `json:"spawned,omitempty"`
+	// AgentClose (hello) is the host ADVERTISING that it ends an agent window
+	// on muster's request (TypeAgentClose, agentclose.go): -interactive, and a
+	// backend that can close a window. Backward-compatible both ways.
+	AgentClose bool `json:"agentClose,omitempty"`
+	// CloseReq is an agent-close's window; CloseResult an agent-closed's
+	// outcome.
+	CloseReq    *AgentCloseReq    `json:"closeReq,omitempty"`
+	CloseResult *AgentCloseResult `json:"closeResult,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----
 
@@ -398,6 +494,16 @@ type Msg struct {
 	Agent string `json:"agent,omitempty"`
 	// Tail (subagent-tailed) is the answer; nil with Error set when refused.
 	Tail *SubagentTail `json:"tail,omitempty"`
+
+	// ---- Claude Code's own input queue (ccqueue.go) ----
+
+	// QueuedList (events) marks a message carrying the messages Claude Code
+	// has queued itself: Queued is the WHOLE list, oldest first (empty is a
+	// list too). Set on every backfill's Reset batch and resume marker by a
+	// host that reads the queue. Backward-compatible both ways, like
+	// SubagentList.
+	QueuedList bool     `json:"queuedList,omitempty"`
+	Queued     []string `json:"queued,omitempty"`
 
 	// ---- per-window registration ----
 
@@ -417,6 +523,12 @@ type Msg struct {
 	// per-session view of a per-window host from Windows — never from the
 	// host's Sessions, so the two cannot disagree.
 	Windows []Window `json:"windows,omitempty"`
+	// HostLimit (hello, sessions) is a usage limit the host's Claude Code
+	// sessions are under right now, across ALL its Claude windows — the limit
+	// is the account's, not a window's, and Windows carries a TurnError on at
+	// most MaxTurnErrorWindows of them. nil when none (turnerror.go).
+	// Backward-compatible both ways, like Windows' TurnError.
+	HostLimit *HostLimit `json:"hostLimit,omitempty"`
 	// Window (open, watch, paste) is the tmux window id (Window.ID) the request
 	// is for, within Session. Empty — every request before this field existed,
 	// and every request to a per-session host — is the session's ACTIVE window.
@@ -425,6 +537,10 @@ type Msg struct {
 	// Repos (repos) is, per window id, the short name of the repository the
 	// window works in — the WHOLE map each time (repos.go).
 	Repos map[string]string `json:"repos,omitempty"`
+	// GitHubRepos (repos) is, per window id, the GitHub <owner>/<name> the
+	// window's checkout's origin names — on the same message as Repos, the
+	// WHOLE map each time (repos.go).
+	GitHubRepos map[string]string `json:"github_repos,omitempty"`
 
 	// Work (work) is, per window id, the subagents and background shells its
 	// Claude Code session has running — the WHOLE map each time (work.go).
@@ -432,6 +548,27 @@ type Msg struct {
 	// Colors (colors) is, per window id, the window's tmux identity colour as
 	// lowercase #rrggbb — the WHOLE map each time (work.go).
 	Colors map[string]string `json:"colors,omitempty"`
+	// Outcomes (outcomes) is, per window id, the final reply of an idle
+	// opencode window the chief started — the WHOLE map each time (outcomes.go).
+	Outcomes map[string]WindowOutcome `json:"outcomes,omitempty"`
+	// Previews (previews) is, per window id, how many of its web servers the
+	// host offers and how many previews of it are open — the WHOLE map each
+	// time (previews.go).
+	Previews map[string]WindowPreviews `json:"previews,omitempty"`
+
+	// ---- tracing (internal/telemetry) ----
+
+	// Traceparent (every request muster sends a host: open, watch, paste,
+	// scroll, catalog, answer, cancel-ask, subagent-tail) is the W3C trace
+	// context of the server span that sent it, so the host's spans for the
+	// request are children of it — one trace from the browser to the host's
+	// transcript read. "" while the server's tracing is off.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older host's JSON
+	// decode ignores the field (its spans simply do not exist); a host whose
+	// tracing is off ignores it too; an older muster never sends it.
+	// TestAnOlderHostIgnoresTheTraceContext drives both directions.
+	Traceparent string `json:"traceparent,omitempty"`
 }
 
 // Window is one tmux window of a host (Msg.Windows).
@@ -454,8 +591,8 @@ type Window struct {
 	// (muster then shows "<session>:<index>").
 	Label string `json:"label,omitempty"`
 	// Activity is when the window was last active (Unix seconds, floored to
-	// ActivityBucket); 0 = unknown. Ordering and display only (the card's
-	// "active … ago").
+	// ActivityBucket); 0 = unknown. Ordering and display only (the sidebar
+	// row's recency dot).
 	Activity int64 `json:"activity,omitempty"`
 	// Claude: the window's active pane runs Claude Code with a transcript the
 	// host can read — it has a rendered view.
@@ -522,28 +659,69 @@ type Window struct {
 	// of a list. Backward-compatible both ways, like ClaudeSession.
 	Pending *Pending `json:"pending,omitempty"`
 	// Runtime names the agent CLI in the window's active pane when it is NOT
-	// Claude Code: RuntimeHermes, or "" (Claude Code, which Claude says, or
-	// no agent at all). AgentRuntime is the one way to read it.
+	// Claude Code: RuntimeOpenCode, or "" (Claude Code, which Claude says, or
+	// no agent at all). AgentRuntime is the one way to read it. A name muster
+	// does not know (an older host's "hermes") is dropped by NormalizeWindows:
+	// the window is a plain terminal window.
 	//
 	// 🔴 "" FOR CLAUDE CODE, NOT "claude", ON PURPOSE: a Claude window's bytes
 	// on the wire stay exactly what they were before runtimes existed, and the
 	// worst-case window list stays inside MaxFrame
-	// (TestTheLargestWindowListFitsOneFrame and its Hermes twin measure both).
+	// (TestTheLargestWindowListFitsOneFrame measures both).
 	//
-	// 🔴 A HERMES WINDOW IS NEVER Claude (NormalizeWindows enforces it), so an
-	// older muster — which ignores this field — shows it as a plain terminal
-	// window, and its only way in, the Terminal view's paste, is refused by
-	// every current host's Hermes paste guard. Backward-compatible both ways,
-	// like ClaudeSession.
+	// 🔴 A WINDOW OF A RUNTIME ON THE WIRE IS NEVER Claude (NormalizeWindows
+	// enforces it), so an older muster — which ignores this field — shows it
+	// as a plain terminal window, and its only way in, the Terminal view's
+	// paste, is refused by the host's paste guard. Backward-compatible both
+	// ways, like ClaudeSession.
 	Runtime string `json:"runtime,omitempty"`
 	// AgentSession is the SESSION ID of the conversation in a non-Claude
-	// window's pane (a Hermes id: "local-<64 hex>", or a rotated child's bare
-	// 32-hex id), "" when the host does not say. Bounded by ValidAgentSession,
+	// window's pane (an opencode session id), "" when the host does not say. Bounded by ValidAgentSession,
 	// which is wider than a Claude id's 64 bytes. A Claude window's id stays in
 	// ClaudeSession (never in both, so a list's worst case grows by one id per
 	// window at most). SessionKey is the runtime-qualified key it is stored by.
 	// Backward-compatible both ways, like ClaudeSession.
 	AgentSession string `json:"agentSession,omitempty"`
+	// AgentNote is a line for the person about a window of a runtime on the
+	// wire (opencode): why it has NO rendered view ("opencode is not paired on
+	// this host…", an ambiguous title, a refused token), or what its view's
+	// credential needs (a token about to expire, a failing renewal). On a
+	// window that is NOT Claude and names no runtime, it is why a Claude Code
+	// pane there has no rendered view (mirrorhost's NoView* lines: its
+	// transcript not written yet, not found, ambiguous, or a host that cannot
+	// read processes); a Claude window never carries one. "" for
+	// none. Bounded (MaxAgentNote bytes, on at most MaxAgentNoteWindows windows
+	// of a list) and stripped of control characters by NormalizeWindows.
+	// Backward-compatible both ways, like AgentSession.
+	AgentNote string `json:"agentNote,omitempty"`
+	// AgentNoteCode is the REASON of a Claude Code pane's no-view note
+	// (AgentNote on a window that is not Claude and names no runtime), as a
+	// code: one of the AgentNote* constants. "" for none — an older host
+	// sends only the words, and muster then knows no reason (ClaudeUnmatched
+	// is false). Kept only on such a window, and only a known code. It
+	// outlives the list-wide note bound (a few bytes): a capped note's window
+	// still says why. Backward-compatible both ways, like AgentNote.
+	AgentNoteCode string `json:"agentNoteCode,omitempty"`
+	// AgentSend: the host sends to this window's session (AgentSession)
+	// through its runtime's gated send — an opencode pane started by the
+	// launcher (`muster-mirror opencode`), whose session the host knows
+	// deterministically. Only a window of a GatedSend runtime naming a session
+	// keeps it (NormalizeWindows). A title-matched opencode pane never has it,
+	// and is view-only. Backward-compatible both ways, like AgentSession.
+	AgentSend bool `json:"agentSend,omitempty"`
+	// AgentBind is how a window of a gated-send runtime that is NOT AgentSend
+	// (an opencode pane muster's launcher did not start) is bound to its
+	// session, as a closed code (agentbind.go): AgentBindVerified — its host
+	// verified the binding through opencode's own API and sends to it, but
+	// only to a paste that names that very session (Msg.AgentSession) — or
+	// why it is not sent to (AgentBindTitleShared, AgentBindArgv,
+	// AgentBindStream). "" for none: a launcher-bound window, a window with
+	// no view, any other runtime's, and every window of an older host.
+	// 🔴 A SEPARATE FIELD FROM AgentSend ON PURPOSE, BACKWARD-COMPATIBLE BOTH
+	// WAYS: an older muster ignores it, so such a pane stays view-only there
+	// (and its pastes, which name no session, are refused by the host); an
+	// older host never sets it.
+	AgentBind string `json:"agentBind,omitempty"`
 	// LastMessage is when the Claude Code conversation in the window last had
 	// a MESSAGE — the newest timestamp of a user or assistant row in its
 	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
@@ -564,10 +742,29 @@ type Window struct {
 	// it (and keeps ordering by Activity); an older host sends none, and muster
 	// falls back to Activity.
 	LastMessage int64 `json:"lastMessage,omitempty"`
+	// TurnError is how the latest turn of an IDLE Claude window ended when it
+	// ended in an error Claude Code wrote itself — a usage limit, "Not logged
+	// in", an API error (turnerror.go); nil otherwise, and on at most
+	// MaxTurnErrorWindows windows of a list. What the send queue holds on.
+	// Backward-compatible both ways, like Pending.
+	TurnError *TurnError `json:"turnError,omitempty"`
+	// LiveCopy is the Claude Code session id of ANOTHER transcript of the same
+	// conversation that is still running elsewhere — a `claude --resume` of a
+	// conversation that was still open in another client copies it into a new
+	// session instead of attaching to it (livecopy.go) — "" for none. Only a
+	// Claude window carries one, and only one whose id ValidClaudeSession
+	// accepts, on at most MaxLiveCopyWindows windows of a list. muster shows
+	// it as a warning on the card and the views (SessionView.LiveCopyWarning).
+	// Backward-compatible both ways, like ClaudeSession.
+	LiveCopy string `json:"liveCopy,omitempty"`
+	// Dispatch is the host dispatch this window was started for: its own
+	// @muster-dispatch window option (DispatchOption), 0 for every window the
+	// chief did not start. An older muster ignores it.
+	Dispatch int64 `json:"dispatch,omitempty"`
 }
 
-// CardActivity is the window's activity as the Agents list uses it — the
-// order, the card's "active … ago" and the Idle section, one number: a Claude
+// CardActivity is the window's activity as the sidebar and the switcher use
+// it — the order, the recency dot and the Idle section, one number: a Claude
 // window's LastMessage when the host reported one, else Activity.
 func (w Window) CardActivity() int64 {
 	if w.Claude && w.LastMessage > 0 {
@@ -576,71 +773,112 @@ func (w Window) CardActivity() int64 {
 	return w.Activity
 }
 
-// The agent runtimes a window can run (Window.AgentRuntime), sized for exactly
-// the two muster mirrors (docs/design/hermes.md, the runtime seam).
+// The agent runtimes a window can run (Window.AgentRuntime). What muster
+// knows of each is its RuntimeSpec (runtime.go); RuntimeOpenCode is there.
 const (
 	// RuntimeClaude: Claude Code. On the wire it is Window.Claude, never
 	// Window.Runtime.
 	RuntimeClaude = "claude"
-	// RuntimeHermes: the Hermes CLI (`hermes chat`). No rendered view and no
-	// send path yet: the window is detected and listed, nothing more.
-	RuntimeHermes = "hermes"
 )
 
-// AgentRuntime is the agent CLI in w's active pane: RuntimeClaude,
-// RuntimeHermes, or "" for none. What the hub's waiting set, AgentState and
-// the hermesSend switch key on, instead of w.Claude.
+// AgentRuntime is the agent CLI in w's active pane: RuntimeClaude, a runtime
+// the wire carries as Window.Runtime (RuntimeSpec.OnWire: RuntimeOpenCode), or
+// "" for none. What the hub's waiting set, AgentState and the gated-send
+// switch key on, instead of w.Claude.
 func (w Window) AgentRuntime() string {
-	switch {
-	case w.Claude:
+	if w.Claude {
 		return RuntimeClaude
-	case w.Runtime == RuntimeHermes:
-		return RuntimeHermes
+	}
+	if r, ok := wireRuntime(w.Runtime); ok {
+		return r.Name
 	}
 	return ""
 }
+
+// Spec is the RuntimeSpec of w's AgentRuntime, false for none.
+func (w Window) Spec() (RuntimeSpec, bool) { return LookupRuntime(w.AgentRuntime()) }
 
 // SessionKey is the key w's conversation is stored by (a focus, a route, an
-// ask): a Claude session id as itself — exactly the key it always was — and a
-// Hermes one runtime-qualified, "hermes:<id>" (ValidSessionKey); "" when w
-// names no conversation.
+// ask): a Claude session id as itself — exactly the key it always was — and
+// another runtime's runtime-qualified, "opencode:<id>" (ValidSessionKey); ""
+// when w names no conversation.
 func (w Window) SessionKey() string {
-	switch w.AgentRuntime() {
-	case RuntimeClaude:
+	if w.Claude {
 		return w.ClaudeSession
-	case RuntimeHermes:
-		if w.AgentSession != "" {
-			return HermesKeyPrefix + w.AgentSession
-		}
+	}
+	if r, ok := w.Spec(); ok {
+		return r.AgentKey(w.AgentSession)
 	}
 	return ""
 }
 
-// HermesKeyPrefix starts a Hermes conversation's session key.
-const HermesKeyPrefix = RuntimeHermes + ":"
-
 // agentSessionPattern is a non-Claude session id as the wire carries one
-// (Window.AgentSession): 1-128 bytes. Hermes's are "local-<64 hex>" (70), or a
-// rotated child's bare 32 hex, so a Claude id's 64-byte bound cannot hold them.
+// (Window.AgentSession): 1-128 bytes, wider than a Claude id's 64-byte bound.
 var agentSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`)
 
 // ValidAgentSession reports whether id is a non-Claude session id the wire
 // carries.
 func ValidAgentSession(id string) bool { return agentSessionPattern.MatchString(id) }
 
-// SessionKeyPattern is every session key muster stores (SessionKey): a Claude
-// session id as it always was (1-64 bytes), or "hermes:" and a Hermes one
-// (1-128 bytes). 🔴 IT IS SPELLED ONCE: internal/focus validates with it, and
-// migration 0036 writes the same expression into the CHECKs of
-// agent_focus.subject_key, agent_focus_history.subject_key,
-// session_routes.target_key and attention_asks.mirror_session — a test there
-// reads the migration and fails when the two differ.
-const SessionKeyPattern = `^([0-9A-Za-z][0-9A-Za-z_-]{0,63}|hermes:[0-9A-Za-z][0-9A-Za-z_-]{0,127})$`
-
-var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
-
 // ValidSessionKey reports whether key is a session key muster stores.
 func ValidSessionKey(key string) bool { return sessionKeyPattern.MatchString(key) }
+
+// The AgentNote bounds: a note's bytes, and how many windows of one list
+// carry one (the frame budget: TestTheLargestWindowListFitsOneFrame).
+const (
+	MaxAgentNote        = 200
+	MaxAgentNoteWindows = 8
+)
+
+// The reasons a Claude Code pane has no rendered view (Window.AgentNoteCode;
+// mirrorhost's NoView* lines, one code each).
+const (
+	// AgentNoteNotYet: Claude Code runs and named its session, but has
+	// written no transcript for it yet — a NEW conversation (a CLI just
+	// started), so not one muster already knows.
+	AgentNoteNotYet = "not_yet"
+	// AgentNoteNoTranscript: Claude Code runs, holding a conversation the host
+	// cannot match to a transcript (none of its own, or only a guess another
+	// pane makes too).
+	AgentNoteNoTranscript = "no_transcript"
+	// AgentNoteNoEnv: Claude Code runs, and its environment could not be
+	// read, so which config directory — and so which transcript — is unknown.
+	AgentNoteNoEnv = "no_env"
+	// AgentNoteNoProcs: the host cannot read its process table at all; the
+	// pane only looks like Claude Code.
+	AgentNoteNoProcs = "no_procs"
+)
+
+// validNoteCode reports whether c is an AgentNote* code.
+func validNoteCode(c string) bool {
+	return c == AgentNoteNotYet || c == AgentNoteNoTranscript || c == AgentNoteNoEnv || c == AgentNoteNoProcs
+}
+
+// ClaudeUnmatched reports whether w is a Claude Code pane holding a
+// conversation the host could not match to its transcript (AgentNoteCode
+// no_transcript or no_env): a running conversation muster may already know
+// by its key. False for a NEW conversation (not_yet), a host that cannot read
+// processes (no_procs), and a note with no code (an older host: unknown).
+func (w Window) ClaudeUnmatched() bool {
+	return w.AgentNoteCode == AgentNoteNoTranscript || w.AgentNoteCode == AgentNoteNoEnv
+}
+
+// cleanNote is a note as the wire carries it: control characters made
+// spaces, trimmed, cut to MaxAgentNote bytes on a rune boundary.
+func cleanNote(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	for len(s) > MaxAgentNote {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
+}
 
 // The OtherClaude bounds.
 const (
@@ -871,8 +1109,8 @@ func NormalizeLabels(labels map[string]string, sessions []string) map[string]str
 //
 // 🔴 IT IS THE RE-SEND AND RE-ORDER POLICY, NOT A ROUNDING NICETY. A busy pane's
 // raw activity time moves every second; sent raw, every refresh would differ,
-// every one would be re-sent, and two busy sessions would swap places on the
-// Agents view each time. Floored, a host's map changes at most once per bucket
+// every one would be re-sent, and two busy sessions would swap places in the
+// sidebar each time. Floored, a host's map changes at most once per bucket
 // per session, sessions active within the same bucket TIE (and keep their
 // name order), and the list reorders only when a session falls a whole bucket
 // behind another.
@@ -971,19 +1209,44 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Label = ""
 		}
 		w.Command = validCommand(w.Command)
-		// 🔴 A HERMES WINDOW IS NEVER A CLAUDE ONE: a host claiming both gets
-		// the more restrictive reading, Hermes (no rendered view, no Claude
-		// paste, the hermesSend switch). Any other runtime name is dropped —
-		// muster mirrors exactly two.
-		switch {
-		case w.Runtime == RuntimeHermes:
-			// Its Pending is the Hermes ask's (boundPending).
+		// 🔴 A WINDOW OF A RUNTIME ON THE WIRE (opencode) IS NEVER A CLAUDE ONE:
+		// a host claiming both gets the more restrictive reading, that
+		// runtime's (its own view, no Claude paste).
+		// Any runtime name the wire does not carry is dropped — an older
+		// host's "hermes" among them: that window is a plain terminal window.
+		r, onWire := wireRuntime(w.Runtime)
+		unknownRuntime := w.Runtime != "" && !onWire
+		if onWire {
+			// Its Pending is its own runtime's (boundPending).
 			w.Claude, w.ClaudeSession = false, ""
-		default:
+		} else {
 			w.Runtime = ""
 		}
-		if w.Runtime != RuntimeHermes || !ValidAgentSession(w.AgentSession) {
+		if !onWire || r.KeyPrefix == "" || !ValidAgentSession(w.AgentSession) {
 			w.AgentSession = ""
+		}
+		// Only a gated-send runtime's window naming its session can be sent
+		// to that way.
+		if !onWire || !r.GatedSend || w.AgentSession == "" {
+			w.AgentSend = false
+		}
+		w.AgentBind = cleanAgentBind(w, onWire && r.GatedSend)
+		// A note says why a window has no rendered view (or what its runtime's
+		// credential needs): a window of a runtime on the wire, or a window
+		// with NO Claude view whose pane runs Claude Code all the same (the
+		// host's NoView lines). A Claude window has its view; it has no note.
+		// A note about a runtime muster does not know is that runtime's
+		// words: dropped with it.
+		if w.AgentNote = cleanNote(w.AgentNote); (!onWire && w.Claude) || unknownRuntime {
+			// Its code goes with it: the two never disagree.
+			w.AgentNote, w.AgentNoteCode = "", ""
+		}
+		// Its code names a Claude Code pane's reason: only on a window that is
+		// not Claude and names no runtime; only a known one. NOT tied to the
+		// note's words: the list-wide bound below (on either side of the wire)
+		// may drop those, and the code still says why.
+		if w.Claude || w.Runtime != "" || !validNoteCode(w.AgentNoteCode) {
+			w.AgentNoteCode = ""
 		}
 		// A status describes an agent's pane; a window without one has none.
 		if w.Status = NormalizeStatus(w.Status); w.AgentRuntime() == "" {
@@ -998,6 +1261,14 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.ClaudeSession = ""
 		}
 		w.OtherClaude = validOtherClaude(w.OtherClaude, w.ClaudeSession)
+		// A live copy is another conversation's id beside a Claude one's.
+		if !w.Claude || w.ClaudeSession == "" || !ValidClaudeSession(w.LiveCopy) || w.LiveCopy == w.ClaudeSession {
+			w.LiveCopy = ""
+		}
+		// A dispatch id is a positive row id; anything else names none.
+		if w.Dispatch < 0 {
+			w.Dispatch = 0
+		}
 		if w.Activity < 0 {
 			w.Activity = 0
 		}
@@ -1028,6 +1299,22 @@ func NormalizeWindows(in []Window, now int64) []Window {
 	if len(out) > MaxWindows {
 		out = out[:MaxWindows]
 	}
+	// The list-wide AgentNote bound, after the sort, likewise — in TWO passes:
+	// a runtime's notes first (opencode's: why it has no view, a token about
+	// to expire), then the "no rendered view" notes of Claude Code panes with
+	// what is left. A list of many fresh Claude Code windows must not push a
+	// credential warning off its card.
+	notes := 0
+	for _, runtimeFirst := range []bool{true, false} {
+		for i := range out {
+			if out[i].AgentNote == "" || (out[i].Runtime != "") != runtimeFirst {
+				continue
+			}
+			if notes++; notes > MaxAgentNoteWindows {
+				out[i].AgentNote = ""
+			}
+		}
+	}
 	// The list-wide OtherClaude bound, after the sort, so which windows keep
 	// theirs does not depend on the host's order.
 	others := 0
@@ -1042,6 +1329,8 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		others += len(out[i].OtherClaude)
 	}
 	boundPending(out)
+	boundTurnError(out)
+	boundLiveCopy(out)
 	active := map[string]bool{}
 	for i := range out {
 		if out[i].Active {
@@ -1198,8 +1487,10 @@ func (w Window) Equal(o Window) bool {
 	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
-		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
-		w.LastMessage == o.LastMessage
+		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession && w.AgentSend == o.AgentSend &&
+		w.AgentBind == o.AgentBind &&
+		w.AgentNote == o.AgentNote && w.AgentNoteCode == o.AgentNoteCode && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
+		w.LiveCopy == o.LiveCopy && w.Dispatch == o.Dispatch
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):
@@ -1215,51 +1506,125 @@ type AskTyping struct {
 	Prior *askq.Progress `json:"prior,omitempty"`
 }
 
-// The kinds of paste refusal a host names (Msg.Refusal on pasted): the
-// Hermes paste guard's (docs/design/hermes.md). An older host names none, and
-// muster then shows the host's prose as a plain refusal.
+// The kinds of paste refusal a host names (Msg.Refusal on pasted): the host
+// paste guard's (mirrorhost's paneguard.go). An older host names none — or a
+// kind muster no longer knows (an older host's "hermes…" kinds) — and muster
+// then shows the host's prose as a plain refusal.
 const (
-	// PasteRefusalHermes: the pane's process tree holds a Hermes-shaped
-	// process. Nothing was typed.
-	PasteRefusalHermes = "hermes"
 	// PasteRefusalMultiplexer: the pane's process tree holds a terminal
 	// multiplexer client (tmux, screen, dtach, abduco, zellij), which can hide
-	// a Hermes the host cannot see. Nothing was typed.
+	// an agent the host cannot see. Nothing was typed.
 	PasteRefusalMultiplexer = "multiplexer"
 	// PasteRefusalUnchecked: the host could not read the pane's processes, so
-	// it could not rule Hermes out. Nothing was typed.
+	// it could not rule out an agent it does not type into. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
-
-	// The gated send into a Hermes pane (Msg.Runtime "hermes"), by how it
-	// ended when it did not end "sent":
+	// PasteRefusalOpenCode: the pane's process tree holds opencode. muster
+	// never types into opencode (its send goes through opencode's own API, the
+	// gated send, from the Rendered view), so the host types nothing into such
+	// a pane. Nothing was typed.
+	PasteRefusalOpenCode = "opencode"
+	// PasteRefusalClaudeWaiting: the Claude prompt guard — the Claude Code
+	// pane is waiting on the person (its session status is waiting, or its
+	// screen shows a permission prompt, a picker or a select menu), or the host
+	// could not read its screen to rule that out. Enter there would ANSWER the
+	// dialog. Nothing was typed, so a queued message is decided on again
+	// (Hub.PasteWindow turns it into ErrSuperseded) and held until it clears.
+	PasteRefusalClaudeWaiting = "claude-waiting"
+	// PasteRefusalClaudePasted: the Claude prompt guard's check before the
+	// Enter refused — a dialog opened (or the pane changed) between the paste
+	// and its Enter — so the text is in Claude Code's input box and Enter was
+	// withheld. Not to be resent blindly: that would paste it twice.
+	PasteRefusalClaudePasted = "claude-pasted"
+	// PasteRefusalClaudeBox: the Claude prompt guard — Claude Code's input
+	// box already holds text (a message left there unsubmitted, say), which
+	// this one would be pasted after and submitted with as one turn. Nothing
+	// was typed; a queued message is held, as for PasteRefusalClaudeWaiting.
+	PasteRefusalClaudeBox = "claude-box"
+	// PasteRefusalClaudeMoved: the paste named the Claude session it was
+	// queued for (Msg.AgentSession) and the pane holds another now (its Gen:
+	// Claude Code restarted, or /clear). Nothing was typed. Unlike
+	// PasteRefusalClaudeWaiting it does not clear by waiting, so a queued
+	// message FAILS on it, saying so, rather than landing in the new session.
+	PasteRefusalClaudeMoved = "claude-moved"
+	// The opencode gated send's refusals (docs/design/opencode-first-class.md).
+	// Nothing was sent to opencode, except for PasteRefusalOpenCodeUnconfirmed.
 	//
-	// PasteRefusalHermesNotSubmitted: refused before anything was pasted (the
-	// text rules, the screen check, the Escape sequence's abort, the host's
-	// -hermes-send off). Nothing was typed but, possibly, Escapes.
-	PasteRefusalHermesNotSubmitted = "hermes-not-submitted"
-	// PasteRefusalHermesSuperseded: the window's status moved after muster
-	// decided (not idle, or idle since another time). Nothing was pasted; a
-	// queued message can be decided on again.
-	PasteRefusalHermesSuperseded = "hermes-superseded"
-	// PasteRefusalHermesPasted: pasted, NOT submitted: the text is in
-	// Hermes's input box and Enter was withheld. Not to be resent blindly.
-	PasteRefusalHermesPasted = "hermes-pasted"
-	// PasteRefusalHermesUnconfirmed: Enter was sent and Hermes recorded no
-	// message in time: it MAY have been submitted. Never resent blindly.
-	PasteRefusalHermesUnconfirmed = "hermes-unconfirmed"
+	// PasteRefusalOpenCodeOff: the host does not send to opencode (no
+	// -interactive, no -opencode-send or no token).
+	PasteRefusalOpenCodeOff = "opencode-off"
+	// PasteRefusalOpenCodeUnbound: the window's pane was not started by the
+	// launcher, so the host cannot say which session it shows.
+	PasteRefusalOpenCodeUnbound = "opencode-unbound"
+	// PasteRefusalOpenCodeNotIdle: the session is not idle since the status
+	// muster decided on (busy, waiting on an ask, or newer). A queued message is
+	// decided on again (Hub.PasteWindow turns it into ErrSuperseded).
+	PasteRefusalOpenCodeNotIdle = "opencode-not-idle"
+	// PasteRefusalOpenCodeSlash: the message starts with one of opencode's
+	// slash commands, which a prompt would hand the model as text.
+	PasteRefusalOpenCodeSlash = "opencode-slash"
+	// PasteRefusalOpenCodeGone: opencode has no such session any more.
+	PasteRefusalOpenCodeGone = "opencode-gone"
+	// PasteRefusalOpenCodeConflict: opencode holds the message's id in
+	// another session (409) — a Send again after the pane was started on
+	// another session. muster forgets that first try, so the next send is a
+	// new message.
+	PasteRefusalOpenCodeConflict = "opencode-conflict"
+	// PasteRefusalOpenCodeMoved: the pane resolves now to another session
+	// than the one the paste named (Msg.AgentSession), or a pane bound by
+	// verification was sent a paste naming none.
+	PasteRefusalOpenCodeMoved = "opencode-moved"
+	// PasteRefusalOpenCodeUnconfirmed: the host posted the message and heard
+	// no answer: it MAY have been admitted (muster reads it as
+	// ErrPasteUnconfirmed).
+	PasteRefusalOpenCodeUnconfirmed = "opencode-unconfirmed"
 )
 
 // The texts of the paste guard's refusals, for the person sending: the host
 // sends them as its reason, and muster shows the same words when the page
 // posted without script (one source, so the two paths cannot drift).
 const (
-	PasteRefusedHermesText = "Not sent: Hermes runs in this pane. muster sends to Hermes only from its window's " +
-		"rendered view, and only on a host whose muster-mirror runs with -hermes-send, because Enter there can " +
-		"answer a prompt Hermes is showing, such as a command approval. Type it in the terminal."
 	PasteRefusedMultiplexerText = "Not sent: this pane runs another terminal multiplexer (tmux, screen, dtach, " +
-		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
-	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +
+		"abduco or zellij), so muster cannot see what runs inside it. Type it in the terminal."
+	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check what runs in this pane. " +
 		"Type it in the terminal."
+	PasteRefusedOpenCodeText = "Not sent from here: opencode runs in this pane, and muster never types into it, " +
+		"because Enter there can answer a prompt opencode is showing, such as a permission request. Send it from " +
+		"the session's Rendered view (when it was started with `muster-mirror opencode`), or type it in the terminal."
+	// The opencode gated send's refusals, in the person's words.
+	// No flag in it (the operator rule): the setting is the ⓘ's, for an
+	// admin (OpenCodeSendSetting).
+	PasteRefusedOpenCodeOffText = "Not sent: replying to opencode from muster is not turned on for this computer. " +
+		"Type it in the terminal."
+	PasteRefusedOpenCodeUnboundText = "Not sent: muster can't be sure which session this opencode shows, " +
+		"because it wasn't started with `muster-mirror opencode`. Type it in the terminal, or restart it that way."
+	PasteRefusedOpenCodeBusyText    = "Not sent: opencode is working. Queue it instead."
+	PasteRefusedOpenCodeWaitingText = "Not sent: opencode is waiting for you (a permission request or a question). Answer it first."
+	PasteRefusedOpenCodeUnknownText = "Not sent: muster cannot tell whether opencode is idle right now. Try again in a moment."
+	PasteRefusedOpenCodeSlashText   = "Not sent: that is an opencode slash command, and muster cannot run opencode's " +
+		"commands yet (sent as a message, the model would read it as text). Type it in the terminal."
+	PasteRefusedOpenCodeGoneText     = "Not sent: that opencode session no longer exists."
+	PasteRefusedOpenCodeConflictText = "Not sent: opencode already has this message in another session " +
+		"(the pane was started on another session since the first try). Send it again to send it as a new message."
+	// The Claude prompt guard's refusals (PasteRefusalClaudeWaiting): its
+	// session says it is waiting on the person; its screen shows a dialog; its
+	// screen could not be read.
+	ClaudeWaitingText = "Not sent: Claude is waiting on a permission prompt — answer it first. " +
+		"Nothing was typed into the pane."
+	ClaudeDialogText = "Not sent: Claude Code's pane shows a dialog (a permission prompt, a question or a menu) — " +
+		"answer it first. Nothing was typed into the pane."
+	ClaudeScreenUnreadText = "Not sent: muster-mirror could not read Claude Code's screen, so it could not rule out " +
+		"a permission prompt. Nothing was typed into the pane."
+	// ClaudeBoxText (PasteRefusalClaudeBox): the input box holds text.
+	ClaudeBoxText = "Not sent: Claude's input box already has text — clear or send it first. Nothing was typed into the pane."
+	// ClaudeBoxUnreadText (PasteRefusalClaudeWaiting): the screen shows no
+	// input box muster-mirror can read, so it cannot tell the box is empty.
+	ClaudeBoxUnreadText = "Not sent: muster-mirror could not find Claude Code's input box on its screen, so it could not " +
+		"tell whether it is empty. Nothing was typed into the pane."
+	// ClaudeMovedText (PasteRefusalClaudeMoved): the window holds another
+	// Claude session now than the one the message was queued for.
+	ClaudeMovedText = "Not sent: the window no longer holds the Claude session this was queued for " +
+		"(Claude Code was restarted or cleared since). Nothing was typed into the pane. " +
+		"To send it there, write it again in the session shown now."
 )
 
 // The kinds of answer refusal a host names (Msg.Refusal on answered).

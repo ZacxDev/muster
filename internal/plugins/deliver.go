@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 )
 
 // Gateway is the half of a delivered turn that contacts no runtime: Resolve
@@ -81,6 +82,13 @@ type DelivererConfig struct {
 	// subject; the turn then lists them after the message (hints.go). Nil: no
 	// hint block, ever.
 	Hints HintFunc
+	// Tools, when set, is the chief's restricted tool set (ChiefTools); the
+	// turn names only tools in it. Nil, or nil for a chief: unrestricted.
+	Tools func(ctx context.Context, chief agents.Agent) ChiefTools
+	// Primary, when set, is THE chief's primary chat (internal/api's
+	// primarySession): the one place muster picks the session a delivery to the
+	// chief goes to. Nil: the store's default session (0030), as before.
+	Primary func(ctx context.Context, chief agents.Agent) (agents.ChatSession, error)
 }
 
 // Deliverer hands one stored message to the owner's chief as a fenced turn: the
@@ -102,6 +110,10 @@ type Deliverer struct {
 	routing bool
 	// hints: DelivererConfig.Hints.
 	hints HintFunc
+	// tools: DelivererConfig.Tools.
+	tools func(ctx context.Context, chief agents.Agent) ChiefTools
+	// primary: DelivererConfig.Primary.
+	primary func(ctx context.Context, chief agents.Agent) (agents.ChatSession, error)
 	// owner names this process in an agent's session claim.
 	owner string
 }
@@ -119,7 +131,7 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 		return nil, errors.New("plugins: DelivererConfig.Turn is required (the tool-capable chat turn a message is delivered as)")
 	}
 	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout,
-		routing: cfg.Routing, hints: cfg.Hints}
+		routing: cfg.Routing, hints: cfg.Hints, tools: cfg.Tools, primary: cfg.Primary}
 	if d.log == nil {
 		d.log = log.New(io.Discard, "", 0)
 	}
@@ -170,11 +182,12 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	}
 
 	// 🔴 THE CHIEF'S SESSION CLAIM, THE ONE A FIRST TURN AND A MEMO TURN HOLD
-	// (agents.Store.ClaimKickoff). It keeps a plugin turn from taking the session
+	// (taken here with agents.Store.ClaimKickoffForDelivery, which also loses while the
+	// owner's typed turn is in flight). It keeps a plugin turn from taking the session
 	// from a first turn still being handed over, and it makes "one message per
 	// turn" hold across processes: two deliveries cannot be inside this section for
 	// one chief, and the winner re-reads the message below.
-	won, err := d.agents.ClaimKickoff(ctx, chief.ID, d.owner, turn+claimMargin)
+	won, err := d.agents.ClaimKickoffForDelivery(ctx, chief.ID, d.owner, turn+claimMargin)
 	if err != nil {
 		return d.attempted(parent, messageID, "claim_failed")
 	}
@@ -221,6 +234,11 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if err != nil {
 		return d.attempted(parent, messageID, "chief_unreadable")
 	}
+	// The row carries no credentials (agents.Secrets); the no_token check below
+	// is about the stored one.
+	if fresh, err = agents.WithSecrets(ctx, d.agents, fresh); err != nil {
+		return d.attempted(parent, messageID, "chief_unreadable")
+	}
 	switch {
 	case fresh.OwnerID != p.OwnerID:
 		return d.attempted(parent, messageID, "not_owners_chief")
@@ -249,9 +267,15 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return Result{Outcome: OutcomeSettled}
 	}
 
-	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m), Retry{Count: retries, Now: time.Now()})
+	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m), Retry{Count: retries, Now: time.Now()}, d.ToolsFor(ctx, fresh))
 	pc := &agents.PartCollector{}
-	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
+	// What started this turn, for the chief's token telemetry (internal/chiefusage):
+	// this message — a task event, or an inbound message of p from its sender.
+	trigger := chiefusage.Trigger{Kind: chiefusage.TriggerPlugin, Plugin: p.Name, Sender: m.Sender, MessageID: m.ID}
+	if IsTaskEvent(m) {
+		trigger.Kind = chiefusage.TriggerTaskEvent
+	}
+	reply, err := d.run(chiefusage.WithTrigger(ctx, trigger), fresh, sess.SessionKey, message, pc.Observe)
 
 	// A DETACHED BUDGET THAT KEEPS parent's VALUES: a turn cut off by shutdown is
 	// the one most worth recording, and parent carries the owner's principal.
@@ -275,7 +299,9 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		d.log.Printf("plugins: message %d was sent (%s) but could NOT be recorded (settled=%v): %v",
 			messageID, outcome, ok, rerr)
 	}
-	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message})
+	// The row names the message it relays (chat_messages.plugin_message_id,
+	// migration 0096): what the agent page draws its collapsed relay row by.
+	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message, PluginMessageID: messageID})
 	// The reply's ORDERED parts — text and tool calls interleaved — as an
 	// ordinary chat turn stores them, so the session shows what the chief did.
 	parts := pc.Parts()
@@ -288,6 +314,29 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	}
 	d.log.Printf("plugins: plugin %d message %d: %s", pluginID, messageID, outcome)
 	return Result{Outcome: Outcome(outcome)}
+}
+
+// Handed records message m — handed to chief WITHOUT a turn, by a route by
+// thread (RouteViaThread, CreateRouteFrom) — in the chief's conversation for
+// p, rendered as its delivery turn would have shown it and followed by note.
+// It costs the chief no turn: the chief holds the message for its next one,
+// so a hand-back or a relay note names a message it has.
+func (d *Deliverer) Handed(ctx context.Context, p Plugin, chief agents.Agent, m Message, note string) error {
+	sess, err := d.session(ctx, p, chief)
+	if err != nil {
+		return err
+	}
+	_, err = d.agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user", PluginMessageID: m.ID,
+		Content: RenderMessage(p, m, d.routing, Hints{}, Retry{Now: time.Now()}, d.ToolsFor(ctx, chief)) + "\n\n" + note})
+	return err
+}
+
+// ToolsFor is chief's restricted tool set (DelivererConfig.Tools), or nil.
+func (d *Deliverer) ToolsFor(ctx context.Context, chief agents.Agent) ChiefTools {
+	if d.tools == nil {
+		return nil
+	}
+	return d.tools(ctx, chief)
 }
 
 // attempted counts a pending attempt on the message and returns it.
@@ -319,7 +368,13 @@ func (d *Deliverer) attempted(parent context.Context, messageID int64, reason st
 // with p's label.
 func (d *Deliverer) session(ctx context.Context, p Plugin, chief agents.Agent) (agents.ChatSession, error) {
 	if st, ok := d.agents.(agents.SessionRuntimeStore); ok {
-		s, err := st.DefaultSession(ctx, chief.ID, chief.Name)
+		var s agents.ChatSession
+		var err error
+		if d.primary != nil {
+			s, err = d.primary(ctx, chief)
+		} else {
+			s, err = st.DefaultSession(ctx, chief.ID, chief.Name)
+		}
 		if err != nil {
 			return agents.ChatSession{}, err
 		}

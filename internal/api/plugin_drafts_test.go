@@ -28,7 +28,7 @@ func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
 		`id="draft-9"`, `data-draft-status="pending"`,
 		`caf\u{e9}\nsee you`, `12 characters`, `data-runes="12"`,
 		`&lt;/pre&gt;&lt;script&gt;x()&lt;/script&gt;`, `&lt;b&gt;hi&lt;/b&gt;`, `Eve &lt;eve@example.invalid&gt;`,
-		"from an outside sender, untrusted",
+		"</span> · untrusted · message 4", `data-draft-original`,
 		`action="/plugins/drafts/9/approve" data-step-up-form`, `action="/plugins/drafts/9/reject"`,
 	} {
 		if !strings.Contains(got, want) {

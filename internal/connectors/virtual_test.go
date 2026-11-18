@@ -124,7 +124,7 @@ func TestTheProxyAsksTheVirtualConnectorOnlyForAnAllowlistedHost(t *testing.T) {
 	up := newUpstream(t)
 	host := "api.fake.test:" + up.port()
 	v := &stubVirtual{hosts: []string{host}}
-	p := &connectors.Proxy{Store: connectors.WithVirtual(approvedStub{}, v, allowAll), Policy: testPolicy()}
+	p := &connectors.Proxy{Store: connectors.WithVirtual(approvedStub{repo: "example-org/widget"}, v, allowAll), Policy: testPolicy()}
 	do := func(h, rest string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/connect/github/"+h+"/"+rest, nil)
@@ -240,7 +240,8 @@ func TestAGrantApprovedForAnotherSourceIsReopened(t *testing.T) {
 		if c.appOn {
 			s = connectors.WithVirtual(base, v, allowAll)
 		}
-		g, reopened, err := connectors.ReconcileGrant(ctx, s, c.g)
+		g, why, err := connectors.ReconcileGrant(ctx, s, c.g, "")
+		reopened := why != ""
 		if err != nil || reopened != c.reopened || (len(base.reopened) == 1) != c.reopened {
 			t.Errorf("%s: reopened=%v (calls %v) err=%v, want %v", c.name, reopened, base.reopened, err, c.reopened)
 		}
@@ -264,9 +265,9 @@ func TestReconcileNeverActsOnAnUncertainRole(t *testing.T) {
 		s := connectors.WithVirtual(base, v, func(context.Context) bool { return false }) // "member": no App
 		ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleMember,
 			Via: authz.ViaSession, RoleUncertain: c.uncertain})
-		_, reopened, err := connectors.ReconcileGrant(ctx, s, g)
-		if err != nil || reopened != c.want {
-			t.Errorf("uncertain=%v: reopened=%v err=%v, want %v", c.uncertain, reopened, err, c.want)
+		_, why, err := connectors.ReconcileGrant(ctx, s, g, "")
+		if reopened := why != ""; err != nil || reopened != c.want {
+			t.Errorf("uncertain=%v: reopened=%q err=%v, want %v", c.uncertain, why, err, c.want)
 		}
 	}
 }
@@ -296,5 +297,33 @@ func TestTheProxyNeverChoosesACredentialOnAnUncertainRole(t *testing.T) {
 	}
 	if w := do(false); w.Code != http.StatusOK || up.last(t).Header.Get("Authorization") == "" {
 		t.Fatalf("control: a certain role: %d, Authorization %q", w.Code, up.last(t).Header.Get("Authorization"))
+	}
+}
+
+// TestAGrantApprovedForAnotherRepositoryIsReopened (0061): an approved grant
+// whose recorded repository (Grant.Repo) is not the caller's effective one is
+// re-opened, with the reason naming both — another repository, none → some,
+// and some → none. The same repository in another case or with surrounding
+// space is the same one (GitHub names), and is left alone.
+func TestAGrantApprovedForAnotherRepositoryIsReopened(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, approvedFor, now, why string
+	}{
+		{"another repository", "example-org/widget", "example-org/other",
+			"re-opened: the agent's repository changed (approved for example-org/widget, now example-org/other)"},
+		{"none -> some", "", "example-org/widget",
+			"re-opened: the agent's repository changed (approved for no repository, now example-org/widget)"},
+		{"some -> none", "example-org/widget", "",
+			"re-opened: the agent's repository changed (approved for example-org/widget, now no repository)"},
+		{"same, other case and space", "Example-Org/Widget", " example-org/widget ", ""},
+		{"none, still none", "", "", ""},
+	} {
+		base := &reopenStub{}
+		g := connectors.Grant{ID: 11, Connector: "svc", Status: connectors.StatusApproved, Source: connectors.SourceStored, Repo: c.approvedFor}
+		_, why, err := connectors.ReconcileGrant(ctx, base, g, c.now)
+		if err != nil || why != c.why || (len(base.reopened) == 1) != (c.why != "") {
+			t.Errorf("%s: why=%q (calls %v) err=%v, want %q", c.name, why, base.reopened, err, c.why)
+		}
 	}
 }

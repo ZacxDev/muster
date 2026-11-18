@@ -1,5 +1,7 @@
 import { test, expect } from '../lib/fixtures';
-import { baseURL, password } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { baseURL } from '../lib/env';
+import { openMore } from '../lib/nav';
 
 // Account → Devices (the Android app's paired phones, Phase 1), end to end on
 // the shared password-mode server: inside the app's WebView — played here by
@@ -8,16 +10,11 @@ import { baseURL, password } from '../lib/env';
 // device credential; the phone is listed; Remove signs it out on its next
 // request. Outside the shell the pairing buttons are not drawn.
 //
-// A FRESH sign-in in the test, not the suite's stored session: pairing needs a
-// sign-in from the last five minutes.
+// Each test starts from an empty context and is handed the suite's session by
+// lib/signin.ts (no sign-in form: it is throttled). Pairing has no
+// recent-sign-in window, so the session's age does not matter.
 
 test.use({ viewport: { width: 412, height: 915 }, storageState: { cookies: [], origins: [] } });
-
-async function signIn(page: import('@playwright/test').Page) {
-  await page.goto(baseURL + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
 
 test('pair a phone from the app shell, see it on Account → Devices, remove it', async ({ page, request }) => {
   await page.addInitScript(() => {
@@ -25,7 +22,7 @@ test('pair a phone from the app shell, see it on Account → Devices, remove it'
     w.__appMsgs = [];
     w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
   });
-  await signIn(page);
+  await signIn(page, baseURL);
   await page.goto(baseURL + '/account');
   const section = page.getByTestId('paired-devices');
   await expect(section.getByRole('heading', { name: 'Devices' })).toBeVisible();
@@ -63,7 +60,7 @@ test('pair a phone from the app shell, see it on Account → Devices, remove it'
 });
 
 test('outside the app shell the pairing buttons are not drawn', async ({ page }) => {
-  await signIn(page);
+  await signIn(page, baseURL);
   await page.goto(baseURL + '/account');
   const section = page.getByTestId('paired-devices');
   await expect(section.getByRole('heading', { name: 'Devices' })).toBeVisible();
@@ -82,17 +79,19 @@ const fireInstall = `(() => {
 
 test('inside the app shell Install is never offered', async ({ page }) => {
   await page.addInitScript(() => { (window as unknown as { musterApp: { postMessage(m: string): void } }).musterApp = { postMessage: () => {} }; });
-  await signIn(page);
+  await signIn(page, baseURL);
   await page.goto(baseURL + '/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fireInstall);
   await expect(page.locator('#sidebar [data-install-app]')).toBeHidden();
 });
 
 test('CONTROL: outside the app shell the same event offers Install', async ({ page }) => {
-  await signIn(page);
+  await signIn(page, baseURL);
   await page.goto(baseURL + '/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fireInstall);
   await expect(page.locator('#sidebar [data-install-app]')).toBeVisible();
 });

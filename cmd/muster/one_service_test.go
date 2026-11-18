@@ -206,6 +206,7 @@ func observedRoutes(t *testing.T) map[string][]string {
 			`[{"id":11,"name":"clever-fox"},{"id":12,"name":"chief"}]`)
 		h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[],"count":0}`)
 		h.json("POST /api/agents/chief/messages", http.StatusOK, `{"reply":"ok"}`)
+		h.json("POST /api/agents", http.StatusCreated, `{"agent":{"id":13},"started":false}`)
 		h.json("GET /api/tasks", http.StatusOK, `[]`)
 		h.json("GET /api/tasks/5", http.StatusOK, `{"id":5}`)
 		h.json("POST /api/tasks", http.StatusOK, `{"id":5}`)

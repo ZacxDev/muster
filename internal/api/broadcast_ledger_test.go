@@ -37,7 +37,35 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 	want := []string{
 		// requests — the principal's user owns the event.
 		"(*Server).advanceTaskToInProgress → broadcast(ctx)",
+		// An agent's outcome changed (agent_outcome.go): its page and row, and the
+		// chief panel of the chief told about it.
+		"(*Server).outcomeChanged → agentChangedFor(a.OwnerID)",
+		// THE outcome note's writer (writeChiefNote), for a pod's outcome and a
+		// host dispatch's: the chief's owner, which both callers check is the
+		// agent's (or the row's) owner.
+		// A conversation of the agent started or stopped working
+		// (countSessionTurn): the agent's owner, whose open chats draw it.
+		"(*Server).countSessionTurn → broadcastTo(a.OwnerID)",
+		"(*Server).countSessionTurn → broadcastTo(a.OwnerID)", // its start and its end
+		// The machine message door stored its turn's reply (machine_agents.go):
+		// chat.reply to the agent's owner, whose open chats refetch on it — the
+		// door's principal is a machine token's, not the chats' viewer.
+		"(*Server).handleAPIAgentSendMessage → broadcastTo(a.OwnerID)",
+		"(*Server).writeChiefNote → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
+		// A claim made or released after a status write (task_claims.go): ctx
+		// is that write's — the machine route's, the card's or the task tool's
+		// principal — who owns the task (the write itself read it under RLS).
+		"(*Server).claimOnStatus → broadcast(ctx)",
+		// …its release on a status write (setNoteStatus's funnel: ctx is the
+		// write's, whose principal owns the task) and at a decision that reads a
+		// claim (the triage's or the chief's ctx: the task's owner).
+		"(*Server).releaseClaimsOnStatus → broadcast(ctx)",
+		"(*Server).releaseEndedClaimsOf → broadcast(ctx)",
+		// The claim sweep (ReleaseEndedClaims): each claim is read with its
+		// owner (one system-scoped read) and released as that owner, who is
+		// named explicitly because the sweep's context carries no principal.
+		"(*Server).ReleaseEndedClaims → broadcastTo(c.OwnerID)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
 		"(*Server).decideConnectorGrant → broadcast(ctx)",
 		"(*Server).dismissTask → broadcast(ctx)",
@@ -51,11 +79,72 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// teardown's WithoutCancel copy of the mirror request's, so its principal
 		// is the mirror token's owner, who owns the task.
 		"(*Server).reopenTaskAfterDestroy → broadcast(ctx)",
+		// A task route's answer, added as a comment (session_routes.go): ctx is
+		// the route's owner (route_reply's mirror principal, or the sweep's
+		// routePrincipal), who owns the task.
+		"(*Server).relayTaskRoute → broadcast(ctx)",
+		// The gate released on the owner's typed word (chief_owner_release.go):
+		// ctx is task_dispatch's, the chief's owner, who owns the task.
+		"(*Server).applyGateRelease → broadcast(ctx)",
+		// The gate released on the owner's Release tap (answer_release.go): ctx
+		// is the answer's — the owner's browser session or paired phone — and
+		// the ask's owner owns the task.
+		"(*Server).applyAnswerRelease → broadcast(ctx)",
+		// A host dispatch's late spawn reply (host_dispatch_reconcile.go): pctx
+		// is hostDispatchPrincipal(ctx, owner), the row's owner.
+		"(*Server).applySpawnReply → broadcast(pctx)",
+		// A host dispatch ended (host_dispatch.go): its owner, named explicitly
+		// because the reconciler's context carries no principal.
+		"(*Server).endHostDispatch → broadcastTo(owner)",
+		// A host dispatch's outcome changed (host_dispatch_done.go: done by its
+		// own session's agent_report_done, or done/waiting from its host's
+		// listing): h.Owner is the row's owner, read under the mirror token's or
+		// the hook's owner principal (row-level security), so it is that owner.
+		"(*Server).announceHostOutcome → broadcastTo(h.Owner)",
+		// A later turn re-armed a host dispatch (host_dispatch_outcome.go): the
+		// row's owner, read under hostDispatchPrincipal (row-level security).
+		"(*Server).rearmHostDispatch → broadcastTo(r.Owner)",
+		// A host's window listing moved a host dispatch (host_dispatch_reconcile.go):
+		// pctx is hostDispatchPrincipal(ctx, owner), the host's owner.
+		"(*Server).reconcileListing → broadcast(pctx)",
+		// A chief proposal changed (chief_proposal.go, succession.go), always
+		// lineage.changed, which carries no text: filed (agentOwnerID(chief) is the chief's owner, whose
+		// principal the tool call runs as), declined on the owner's own door
+		// (a.Owner is the card's owner, checked by attention.IsOwnerDoor), its
+		// successor reserved on that tap (requestOwner(ctx), the tap's
+		// principal), and its successor's dispatch moved (owner, the row's,
+		// named explicitly as endHostDispatch's and the reconciler's are).
+		"(*Server).fileProposal → broadcastTo(agentOwnerID(chief))",
+		"(*Server).proposalForAnswer → broadcastTo(a.Owner)",
+		"(*Server).reserveSuccession → broadcastTo(owner)",
+		"(*Server).successionDispatchMoved → broadcastTo(owner)",
+		// An end_session tapped (end_session.go acceptEndSession) and settled
+		// (settleEnd): owner is the tap's principal (requestOwner), carried to
+		// the settling goroutine.
+		"(*Server).acceptEndSession → broadcastTo(owner)",
+		"(*Server).settleEnd → broadcastTo(owner)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its
-		// body is createTaskOnce, which createTask and the plugin task route share.
-		"(*Server).createTaskOnce → broadcast(ctx)",
+		// side effects are taskCreatedEffects, which createTaskOnce (createTask,
+		// the plugin task route) and a plugin task reference filed new share.
+		"(*Server).taskCreatedEffects → broadcast(ctx)",
+		// Plugin task REFERENCES (plugin_task_refs.go, task_ref_queue.go): a
+		// snapshot applied or a reference detached (the plugin request's
+		// principal is the plugin token's owner, authz.ViaPlugin), and a write
+		// queued on one (the writer's request — the task's owner).
+		"(*Server).applyReference → broadcast(ctx)",
+		"(*Server).applyReference → broadcast(ctx)",
+		"(*Server).queueIfReference → broadcast(ctx)",
+		// The owner retried or dismissed a failed write on a reference
+		// (task_ref_write_actions.go): ctx is the owner's request, and the task
+		// was read under it first.
+		"(*Server).actOnRefWrite → broadcast(ctx)",
+		// A plugin claimed or settled queued writes: owner is the authenticated
+		// plugin row's OwnerID, and the claim and the result reach only that
+		// plugin's writes, on that owner's references.
+		"(*Server).handlePluginTaskWritesClaim → broadcastTo(p.OwnerID)",
+		"(*Server).handlePluginTaskWriteResult → broadcastTo(p.OwnerID)",
 		// The plugin task route's comment on an existing task (plugin_tasks.go),
 		// once on the create path (the task existed) and once on the comment-only
 		// path: the request's principal is the plugin token's owner (authz.ViaPlugin).
@@ -68,16 +157,41 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",
 		"(*Server).handleAgentTaskStatus → broadcast(r.Context())",
 		"(*Server).persistTurn → broadcast(ctx)",
+		// A chat-socket turn that FAILED stores nothing, so it asks pages to
+		// refetch: one opened mid-turn draws "working…" from the session's count and
+		// would otherwise keep it (session_turns.go). ctx is the socket's request.
+		"(*Server).handleAgentWS → broadcast(ctx)",
+		// An answer delivery's turn the runtime took NOTHING of stores nothing,
+		// so it asks pages to refetch (session_turns.go's "working…"). a is the
+		// asking agent, read under the ask's owner (attention_delivery.go).
+		"(*Server).runDeliveredTurn → broadcastTo(a.OwnerID)",
+		// A route turn the runtime refused: its row (stored before the turn)
+		// was removed, so pages redraw without it. chief is the route's chief,
+		// read under the route's owner (session_routes.go startRouteTurn).
+		"(*Server).startRouteTurn → broadcastTo(chief.OwnerID)",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",
 		"(*Server).handleConnectorRevoke → broadcast(r.Context())",
 		"(*Server).handleConnectorRotate → broadcast(r.Context())",
+		// Shared approvals (connector_standing.go, 0043): an automatic approval
+		// runs under the requesting agent's owner (the agent routes, the proxy)
+		// or the deciding owner (an approval's sweep) — the grant's owner either
+		// way; the revoke is the tab's request.
+		"(*Server).approveFromStanding → broadcast(ctx)",
+		"(*Server).handleStandingGrantRevoke → broadcast(ctx)",
+		// A manager's revoke of the team's standing grant (team_connectors.go,
+		// 4.8): under the team acting principal, the grant's owner, as
+		// decideConnectorGrant's approval is.
+		"(*Server).handleTeamStandingRevoke → broadcast(tctx)",
 		"(*Server).handleNoteEdit → broadcast(r.Context())",
 		"(*Server).handleNoteTagAdd → broadcast(r.Context())",
 		"(*Server).handleNoteTagRemove → broadcast(r.Context())",
 		"(*Server).handleTaskMerge → broadcast(r.Context())",
 		"(*Server).handleTaskMerge → broadcast(r.Context())",
+		// Moving a task into a team (team_tasks.go): the mover's own tab. The
+		// team's other members' live refresh waits for team SSE (4.6 / 2b).
+		"(*Server).handleTaskMove → broadcast(ctx)",
 		"(*Server).onConnectorRequested → broadcast(ctx)",
 		"(*Server).softDeleteTaskComment → broadcast(ctx)",
 		"(*Server).createAndDispatchAgent → agentChangedFor(requestOwner(ctx))",
@@ -91,13 +205,26 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// a is the agent row read under the status writer's principal and checked
 		// against the task's owner (a.OwnerID == n.OwnerID), so it is theirs.
 		"(*Server).stopChiefAgentOnComplete → agentChangedFor(a.OwnerID)",
+		// The Account page's chief switch (chief_toggle.go): owner is the
+		// request's own principal, whose switch and chief it is.
+		"(*Server).handleAccountChief → agentChangedFor(owner)",
+		// …and once more on the Off whose Stop failed, before it says so.
+		"(*Server).handleAccountChief → agentChangedFor(owner)",
 		// agent-named nudges: the owner is read from the agent row by name.
 		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
 		// the mirror plugin's host nudge: the hub names the host's owner.
 		"(*Server).BroadcastAgentsChangedFor → broadcastTo(owner)",
 		// the attention queue (attention.go): every change names its owner — the
 		// ask's row, the hub nudge's owner, or the request's principal.
+		// A TEAM's item reaches its members through their streams' team
+		// subscriptions (streamOwners, team sharing 2b.3), not a per-member
+		// send here (2b.1's teamViewRecipients, deleted).
 		"(*Server).attentionChanged → broadcastTo(owner)",
+		// A plugin's claim or result moved a reply draft's delivery status
+		// (plugin_drafts.go): owner is the authenticated plugin row's OwnerID —
+		// the plugin door confines both to that owner's drafts — so the Asks
+		// page's Archived view re-reads it.
+		"(*Server).draftStatusMoved → broadcastTo(owner)",
 		// plumbing.
 		"(*Server).agentChangedFor → broadcastTo(owner)",
 		"(*Server).broadcast → broadcastTo(requestOwner(ctx))",

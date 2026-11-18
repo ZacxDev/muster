@@ -75,8 +75,9 @@ var (
 	//
 	// It is not pinned by provisiontest.RunContract: a driver has to have a
 	// SHARED backend for a foreign co-named object to be expressible at all,
-	// and Noop's backend is its own map, so a contract case would be
-	// unfalsifiable for half the drivers in this repository. It is pinned in
+	// and Noop's backend is its own map (and compose's a volume only muster
+	// writes), so a contract case would be unfalsifiable for most of the
+	// drivers in this repository. It is pinned in
 	// the kubernetes driver's own ownership tests instead.
 	ErrNotManaged = errors.New("provision: an object under this name is not managed by this driver")
 
@@ -211,6 +212,14 @@ type Execer interface {
 	Exec(ctx context.Context, ref Ref, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
+// ContainerExecer runs a command inside a NAMED container of a live instance —
+// on Kubernetes, a container of the instance's pod other than its own, such as
+// a [KeyHolder]'s. OPTIONAL and type-asserted like [Execer], and gated by the
+// same capability through [ExecIn].
+type ContainerExecer interface {
+	ExecContainer(ctx context.Context, ref Ref, container string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error
+}
+
 // TermSize is a terminal's size in character cells.
 type TermSize struct {
 	Cols, Rows uint16
@@ -254,6 +263,23 @@ func Exec(ctx context.Context, p Provisioner, ref Ref, cmd []string, stdin io.Re
 		return fmt.Errorf("%w: driver %q reports no exec capability", ErrUnsupported, p.Driver())
 	}
 	return execer.Exec(ctx, ref, cmd, stdin, stdout, stderr)
+}
+
+// ExecIn runs a command inside the named container of an instance, refusing
+// when the driver declares it cannot exec, or cannot exec into a container
+// other than the instance's own.
+func ExecIn(ctx context.Context, p Provisioner, ref Ref, container string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	execer, ok := p.(ContainerExecer)
+	if !ok {
+		return fmt.Errorf("%w: driver %q cannot exec into a named container", ErrUnsupported, p.Driver())
+	}
+	if !p.Capabilities().Exec {
+		return fmt.Errorf("%w: driver %q reports no exec capability", ErrUnsupported, p.Driver())
+	}
+	if container == "" || len(cmd) == 0 {
+		return fmt.Errorf("%w: an exec into a named container needs the container and a command", ErrInvalidSpec)
+	}
+	return execer.ExecContainer(ctx, ref, container, cmd, stdin, stdout, stderr)
 }
 
 // ExecTTY runs a command inside an instance on a terminal, refusing when the
@@ -376,11 +402,6 @@ func Fingerprint(s Spec) string {
 		w("security", strconv.FormatInt(sec.RunAsUser, 10), strconv.FormatInt(sec.RunAsGroup, 10),
 			strconv.FormatInt(sec.FSGroup, 10), strconv.FormatBool(sec.RunAsNonRoot),
 			strconv.FormatBool(sec.Restricted), strconv.FormatBool(sec.NoServiceAccountToken))
-		// Its own line, only when declared: the line above is positional, and a
-		// field added to it would move every confined spec's fingerprint.
-		if sec.ReadOnlyRoot {
-			w("security-read-only-root")
-		}
 	}
 
 	// 🔴 NETWORK COUNTS, AND ONLY WHEN DECLARED — the rule and the reason are
@@ -407,6 +428,22 @@ func Fingerprint(s Spec) string {
 			sort.Strings(cports)
 			w("network-controller", strings.Join(cports, "\x1f"))
 		}
+		// Same rule again: its own line, only when set, so every spec that keeps
+		// cluster DNS keeps the fingerprint it had before the field existed, and
+		// one that drops it moves (an instance written with DNS re-renders).
+		if n.NoClusterDNS {
+			w("network-no-cluster-dns")
+		}
+		// Same rule again: its own line, only when declared, sorted (order
+		// admits nothing different).
+		if len(n.EgressCIDRs) > 0 {
+			cidrs := make([]string, 0, len(n.EgressCIDRs))
+			for _, c := range n.EgressCIDRs {
+				cidrs = append(cidrs, c.String())
+			}
+			sort.Strings(cidrs)
+			w("network-egress-cidrs", strings.Join(cidrs, "\x1f"))
+		}
 	}
 
 	// 🔴 THE SIDECAR COUNTS, AND ONLY WHEN DECLARED — Security's rule, for
@@ -425,11 +462,34 @@ func Fingerprint(s Spec) string {
 			strings.Join(files, "\x1f"), sc.Resources.CPURequest, sc.Resources.CPULimit, sc.Resources.MemoryRequest, sc.Resources.MemoryLimit)
 	}
 
-	// 🔴 THE TERMINATION GRACE COUNTS, AND ONLY WHEN DECLARED — Security's rule,
-	// for Security's reason: it is rendered into the pod template, and a spec that
-	// declares none keeps the fingerprint it had before the field existed.
-	if s.TerminationGraceSeconds > 0 {
-		w("termination-grace", strconv.Itoa(s.TerminationGraceSeconds))
+	// 🔴 THE KEY HOLDER COUNTS, AND ONLY WHEN DECLARED — Security's rule, for
+	// Security's reason. Its secrets' REFERENCES are digested (object, key,
+	// path), never their content, which this package never sees: a rotated key
+	// in the same Secret is not a spec change (the kubelet does not refresh a
+	// subPath mount, so a rotation reaches the pod at its next restart).
+	if k := s.KeyHolder; k != nil {
+		mounts := make([]string, 0, len(k.SecretMounts))
+		for _, m := range k.SecretMounts {
+			mounts = append(mounts, m.Secret+"|"+m.Key+"|"+m.Path)
+		}
+		sort.Strings(mounts)
+		files := make([]string, 0, len(k.Files))
+		for _, f := range k.Files {
+			sum := sha256.Sum256(f.Content)
+			files = append(files, fmt.Sprintf("%s|%o|%t|%s", f.Path, f.EffectiveMode(), f.Secret, hex.EncodeToString(sum[:8])))
+		}
+		sort.Strings(files)
+		w("key-holder", k.Name, strconv.FormatInt(k.RunAsUser, 10), strings.Join(k.Command, "\x1f"),
+			strings.Join(sortedEnvPairs(k.Env), "\x1f"), strings.Join(files, "\x1f"), strings.Join(mounts, "\x1f"), k.SharedDir,
+			k.Resources.CPURequest, k.Resources.CPULimit, k.Resources.MemoryRequest, k.Resources.MemoryLimit)
+	}
+
+	// THE IMAGE PULL SECRET COUNTS, AND ONLY WHEN SET — Security's rule, for
+	// Security's reason: it is rendered into the pod template (imagePullSecrets),
+	// and a spec without one keeps the fingerprint it had before the field
+	// existed. Its NAME only; the credential is the operator's object.
+	if s.ImagePullSecret != "" {
+		w("image-pull-secret", s.ImagePullSecret)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

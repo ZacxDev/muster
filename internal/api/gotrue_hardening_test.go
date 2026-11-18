@@ -194,12 +194,25 @@ func TestSignInBackoffIsPerAccountWithNoGlobalLockout(t *testing.T) {
 	if c := login("victim@example.com", good, "203.0.113.53"); c != http.StatusSeeOther {
 		t.Fatalf("after success the count must restart: %d, want 303", c)
 	}
-	// One address spraying many accounts hits the per-address limit.
+	// One address spraying many accounts hits the per-address limit — for its
+	// FAILURES: a wrong password there is 429, an email that is no muster
+	// account is refused unasked, and a correct sign-in is still admitted (a
+	// shared address must not be a lockout lever).
 	for i := 0; i < loginFailureLimit; i++ {
 		login("nobody"+string(rune('a'+i))+"@example.com", "wrong password!!", "192.0.2.77")
 	}
-	if c := login("other@example.com", good, "192.0.2.77"); c != http.StatusTooManyRequests {
-		t.Fatalf("a spraying address: %d, want 429", c)
+	calls := f.fake.CountCalls("POST", "/token")
+	if c := login("nobody-more@example.com", "wrong password!!", "192.0.2.77"); c != http.StatusTooManyRequests {
+		t.Fatalf("a spraying address, another invented email: %d, want 429", c)
+	}
+	if n := f.fake.CountCalls("POST", "/token"); n != calls {
+		t.Fatalf("an invented email from an address past its limit reached GoTrue (%d calls, was %d)", n, calls)
+	}
+	if c := login("other@example.com", "wrong password!!", "192.0.2.77"); c != http.StatusTooManyRequests {
+		t.Fatalf("a spraying address, a wrong password for a real account: %d, want 429", c)
+	}
+	if c := login("other@example.com", good, "192.0.2.77"); c != http.StatusSeeOther {
+		t.Fatalf("a spraying address, the CORRECT password: %d, want 303 (the address limit never refuses a correct credential)", c)
 	}
 	// No global lever: hundreds of failures on other accounts and addresses do
 	// not stop a fresh account from a fresh address.
@@ -256,12 +269,15 @@ func TestSafeReturnToRefusesEveryOffOriginShape(t *testing.T) {
 		"", "x", "//evil.example", "/\\evil.example", "/\t/evil.example/x", "/\n/evil.example", "/\r/evil.example",
 		"/ /evil", "/\x00/evil", "/\x7f/evil", "/%2F%2Fevil.example", "/%2f/evil.example", "/%5Cevil.example",
 		"/%09/evil.example", "/%0A/evil.example", "https://evil.example/", "http:evil.example", "\t//evil.example",
+		// Dot segments, which a browser resolves to ANOTHER path than the one
+		// read: raw and percent-encoded.
+		"/agents/../tasks", "/agents/%2e%2e/tasks", "/agents/%2E%2E/x", "/a/./b", "/a/%2e/b", "/..", "/a/..",
 	} {
 		if got := safeReturnTo(bad); got != "/" {
 			t.Errorf("safeReturnTo(%q) = %q, want /", bad, got)
 		}
 	}
-	for _, good := range []string{"/", "/tasks", "/tasks?tab=x&next=%2Fy", "/agents/keen-wren", "/a/b#frag"} {
+	for _, good := range []string{"/", "/tasks", "/tasks?tab=x&next=%2Fy", "/agents/keen-wren", "/a/b#frag", "/agents/v1.2", "/a/...b", "/f/x..y"} {
 		if got := safeReturnTo(good); got != good {
 			t.Errorf("safeReturnTo(%q) = %q, want it kept", good, got)
 		}

@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,13 +21,25 @@ import (
 // Authenticate, which the caller runs under authz.System because it is how the
 // owner is LEARNED.
 type Store interface {
-	// Create mints a plugin for ctx's principal and returns the token ONCE.
-	Create(ctx context.Context, name, label, dataScope string) (string, Plugin, error)
+	// CreatePlugin mints a plugin for ctx's principal and returns the token
+	// ONCE, with the capabilities (and, for CapViewer, the origin and entry
+	// URL) chosen. The caller validates the origin and entry
+	// URL against the deployment's MUSTER_PLUGIN_ORIGINS (ValidViewerLink).
+	CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error)
+	// MintHandoff mints a single-use hand-off code for one of the principal's
+	// live viewer plugins (handoffs.go). ErrNotFound for any other plugin.
+	MintHandoff(ctx context.Context, pluginID int64, in HandoffIn, now time.Time) (string, Plugin, error)
+	// RedeemHandoff spends a code minted for pluginID (handoffs.go): unknown,
+	// used, expired or another plugin's are one ErrNotFound.
+	RedeemHandoff(ctx context.Context, pluginID int64, code string, now time.Time) (Handoff, error)
 	// List is the principal's plugins, newest first.
 	List(ctx context.Context) ([]Plugin, error)
 	// Revoke revokes one of the principal's plugins, reporting whether it has
 	// such a plugin at all. Revoking twice keeps the first time.
 	Revoke(ctx context.Context, id int64) (bool, error)
+	// SetDraftChecks turns CapDraftChecks on or off for a live plugin, keeping
+	// its token and row; off lapses its drafts awaiting a check.
+	SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error)
 	// Authenticate resolves a token to its plugin and stamps last_seen_at. A
 	// revoked or unknown token, and one whose owner is disabled, are ErrBadToken.
 	Authenticate(ctx context.Context, token string) (Plugin, error)
@@ -54,7 +67,8 @@ type Store interface {
 	RecordAttempt(ctx context.Context, messageID int64) error
 	// BeginDelivery moves a queued message to `delivering` to agentID and counts
 	// the attempt, BEFORE the turn runs, so the chief can cite it on that turn. It
-	// reports false (and writes nothing) when the message was no longer queued.
+	// reports false (and writes nothing) when the message was no longer queued,
+	// or a mail resume holds it (resumeHolds).
 	BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error)
 	// AbandonDelivery returns a message `delivering` to agentID to `queued` and
 	// clears its agent: the turn provably sent nothing. The attempt stays counted.
@@ -96,17 +110,54 @@ type Store interface {
 	// DraftCards is the principal's drafts for /plugins, those awaiting a
 	// decision first.
 	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
-	// DecideDraft approves or rejects a pending draft.
-	DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error)
+	// DraftCard is one of the principal's drafts as a card.
+	DraftCard(ctx context.Context, id int64) (DraftCard, error)
+	// DecideDraftFrom approves or rejects a pending draft, recording where the
+	// decision was made (the Asks page or a mirrored session over MCP).
+	DecideDraftFrom(ctx context.Context, id int64, dec DraftDecision) (Draft, error)
 	// ClaimDraft leases one approved, unclaimed draft of pluginID's.
 	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
+	// RenewDraft extends pluginID's live lease on a draft it claimed, within
+	// MaxLeaseTotal of the claim.
+	RenewDraft(ctx context.Context, pluginID, draftID int64) (Draft, error)
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one
 	// supersedes the message's other pending or unclaimed approved drafts.
-	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (Draft, error)
-	// QueuedForOwner is ownerID's undelivered messages across live plugins.
+	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (d Draft, fresh bool, err error)
+	// DraftsAwaitingCheck is pluginID's drafts awaiting its pre-approval check
+	// (CapDraftChecks), oldest first; CheckDraft records its verdict on one.
+	DraftsAwaitingCheck(ctx context.Context, pluginID int64, limit int) ([]AwaitingCheck, error)
+	CheckDraft(ctx context.Context, pluginID, draftID int64, v DraftCheck) (d Draft, fresh bool, err error)
+	// DraftChecksDue is every owner's drafts whose check is past
+	// DraftCheckWait (system scope); LapseDraftCheck lapses one, as its owner.
+	DraftChecksDue(ctx context.Context) ([]DueDraftCheck, error)
+	LapseDraftCheck(ctx context.Context, id int64) (d Draft, lapsed bool, err error)
+	// QueuedForOwner is ownerID's undelivered messages across live plugins,
+	// except those a mail resume holds (resumeHolds).
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)
 	// QueuedCounts is the principal's undelivered messages per plugin.
 	QueuedCounts(ctx context.Context) (map[int64]int, error)
+
+	// A message the chief did not disposition (unrouted.go, migration 0051).
+
+	// SettleMessage records agentID's judgement that a message delivered to it
+	// needs nothing more, with reason.
+	SettleMessage(ctx context.Context, agentID, ownerID, messageID int64, reason string) (m Message, fresh bool, err error)
+	// UnroutedDue is every owner's messages due an ask as of asOf (system scope).
+	UnroutedDue(ctx context.Context, asOf time.Time, limit int) ([]Message, error)
+	// UnroutedAsksToClose is every owner's open ask raised for a message that
+	// has since been dispositioned (system scope).
+	UnroutedAsksToClose(ctx context.Context, limit int) ([]UnroutedAsk, error)
+	// SettleByAsk settles the message ask askID was raised for, with reason.
+	SettleByAsk(ctx context.Context, askID int64, reason string) (bool, error)
+	// A plugin bound to an officer (outbound.go, migration 0121).
+	// SetDeliverTo binds one of the principal's live plugins to an officer
+	// defined for its owner, or unbinds it ("").
+	SetDeliverTo(ctx context.Context, id int64, deliverTo string) (p Plugin, changed bool, err error)
+	// FileOutbound stores an officer's outbound draft for its bound plugin.
+	FileOutbound(ctx context.Context, agentID, ownerID int64, agentName string, in NewOutbound) (Draft, error)
+	// UploadDraftMedia records one ref's uploaded bytes for an outbound draft
+	// awaiting its plugin's check.
+	UploadDraftMedia(ctx context.Context, pluginID, draftID int64, m DraftMedia) (DraftMedia, bool, error)
 }
 
 // PGStore is the Postgres Store.
@@ -115,6 +166,10 @@ type PGStore struct {
 	// denyWords are the deployment's own names a reply draft may not carry
 	// (WithAgentDenyWords; drafts.go).
 	denyWords []string
+	// officers is the builtin officer store a bound plugin delivers to
+	// (WithOfficerLink; outbound.go). nil: bindings and their messages are
+	// refused.
+	officers OfficerLink
 }
 
 // NewPG returns the Postgres store.
@@ -122,17 +177,23 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to, rotate_at`
+
+// pluginDest is the scan destinations for pluginCols, in its order. THE ONE
+// COPY, as messageDest: every reader of pluginCols scans through it.
+func pluginDest(p *Plugin) []any {
+	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo, &p.RotateAt}
+}
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
 	var p Plugin
-	err := row.Scan(&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID)
+	err := row.Scan(pluginDest(&p)...)
 	return p, err
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at, settle_reason, thread, human_conversation, kind, venue, officer_item_id`
 
 // messageDest is the scan destinations for messageCols, in its order, with the
 // status into *st. THE ONE COPY: every reader of messageCols scans through it,
@@ -140,7 +201,8 @@ const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body
 // its own copy, which a new column broke).
 func messageDest(m *Message, st *string) []any {
 	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt}
+		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt,
+		&m.SettleReason, &m.Thread, &m.HumanConversation, &m.Kind, &m.Venue, &m.OfficerItemID}
 }
 
 func scanMessage(row pgx.Row) (Message, error) {
@@ -178,44 +240,134 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return tx.Commit(ctx)
 }
 
+// Create is CreatePlugin for a messages-only token. Not on Store: no request
+// path mints that way any more (the /plugins form goes through CreatePlugin);
+// it stays on PGStore as the tests' shorthand.
 func (s *PGStore) Create(ctx context.Context, name, label, dataScope string) (string, Plugin, error) {
-	label = strings.TrimSpace(label)
-	if err := ValidName(name); err != nil {
-		return "", Plugin{}, err
-	}
-	if err := ValidLabel(label); err != nil {
-		return "", Plugin{}, err
-	}
-	if err := ValidScope(dataScope); err != nil {
-		return "", Plugin{}, err
-	}
-	tok, err := NewToken()
-	if err != nil {
-		return "", Plugin{}, err
-	}
+	return s.CreatePlugin(ctx, NewPlugin{Name: name, Label: label, DataScope: dataScope, Capabilities: []Capability{CapMessages}})
+}
+
+// NewPlugin is what CreatePlugin mints.
+type NewPlugin struct {
+	Name, Label, DataScope string
+	Capabilities           []Capability
+	// Origin and EntryURL: set exactly when Capabilities has CapViewer.
+	Origin, EntryURL string
+	// DeliverTo binds the new plugin to an officer ("officer:<id>", "" for
+	// none): checked as SetDeliverTo checks it.
+	DeliverTo string
+}
+
+// ViewerOnlyDataScope is the data scope a token without CapMessages stores
+// (it brings no messages, so it names nowhere to record them).
+const ViewerOnlyDataScope = "none"
+
+func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error) {
+	var tok string
 	var p Plugin
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		p, err = scanPlugin(tx.QueryRow(ctx, `
-			INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, $2, $3, $4) RETURNING `+pluginCols,
-			name, label, HashToken(tok), dataScope))
-		if err != nil {
-			return err
-		}
-		return audit(ctx, tx, "plugin.created", Object(p.ID), map[string]any{"name": name, "data_scope": dataScope})
+		tok, p, err = s.createPluginTx(ctx, tx, in)
+		return err
 	})
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "plugins_owner_name_live" {
-		return "", Plugin{}, invalid("you already have a plugin named %q; revoke it first", name)
-	}
 	if err != nil {
 		return "", Plugin{}, err
 	}
 	return tok, p, nil
 }
 
+// createPluginTx is CreatePlugin in the caller's transaction tx, acting as
+// ctx's principal (the owner): the one minting path, the /plugins form's and
+// a pairing's hand-out (pairing.go).
+func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (string, Plugin, error) {
+	name, label, dataScope := in.Name, strings.TrimSpace(in.Label), in.DataScope
+	if err := ValidName(name); err != nil {
+		return "", Plugin{}, err
+	}
+	if err := ValidLabel(label); err != nil {
+		return "", Plugin{}, err
+	}
+	caps, err := validCapabilities(in.Capabilities)
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	viewer := slices.Contains(caps, CapViewer)
+	if viewer != (in.Origin != "" && in.EntryURL != "") || (in.Origin == "") != (in.EntryURL == "") {
+		return "", Plugin{}, invalid("a viewer plugin needs an origin and an entry URL, and only a viewer plugin has them")
+	}
+	if !slices.Contains(caps, CapMessages) {
+		dataScope = ViewerOnlyDataScope
+	}
+	if err := ValidScope(dataScope); err != nil {
+		return "", Plugin{}, err
+	}
+	var origin, entry *string
+	if viewer {
+		origin, entry = &in.Origin, &in.EntryURL
+	}
+	if err := ValidDeliverTo(in.DeliverTo); err != nil {
+		return "", Plugin{}, err
+	}
+	if in.DeliverTo != "" {
+		if !slices.Contains(caps, CapMessages) {
+			return "", Plugin{}, invalid("only a plugin with messages can be bound to an officer")
+		}
+		owner, _ := authz.From(ctx)
+		if err := s.officerDefined(ctx, owner.UserID, OfficerOf(in.DeliverTo)); err != nil {
+			return "", Plugin{}, err
+		}
+	}
+	tok, err := NewToken()
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	// A savepoint, so a name already taken is answered as ErrInvalid without
+	// aborting the caller's transaction.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	p, err := scanPlugin(sp.QueryRow(ctx, `
+		INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url, deliver_to)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, '')) RETURNING `+pluginCols,
+		name, label, HashToken(tok), dataScope, caps, origin, entry, in.DeliverTo))
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "plugins_owner_name_live" {
+		_ = sp.Rollback(ctx)
+		return "", Plugin{}, invalid("you already have a plugin named %q; revoke it first", name)
+	}
+	if err != nil {
+		_ = sp.Rollback(ctx)
+		return "", Plugin{}, err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return "", Plugin{}, err
+	}
+	detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
+	if viewer {
+		detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
+	}
+	if in.DeliverTo != "" {
+		detail["deliver_to"] = in.DeliverTo
+	}
+	if err := audit(ctx, tx, "plugin.created", Object(p.ID), detail); err != nil {
+		return "", Plugin{}, err
+	}
+	return tok, p, nil
+}
+
+// ownedByPrincipal is THE ONE OWNER FILTER of the plugin rows a principal
+// lists or changes (team sharing 2b.3b, #696 round 0, D2): the principal's
+// OWN rows — a person's, or a team's under the team acting principal — never
+// a team's that a member's session can also read (0127 shares plugins at
+// operator). Every path a person's page or a manager's team page reaches
+// carries it (List, Revoke, SetDraftChecks, SetDeliverTo, MintHandoff), so a
+// new listing or change of plugin rows is filtered by default;
+// TestEveryPluginRowReadSaysWhoseRowsItReads classes every other read.
+const ownedByPrincipal = `owner_id = ` + principalOwner
+
 func (s *PGStore) List(ctx context.Context) ([]Plugin, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+pluginCols+` FROM plugins ORDER BY id DESC`)
+	rows, err := s.pool.Query(ctx, `SELECT `+pluginCols+` FROM plugins WHERE `+ownedByPrincipal+` ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +395,7 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 	found := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var revoked *time.Time
-		err := tx.QueryRow(ctx, `SELECT revoked_at FROM plugins WHERE id = $1 FOR UPDATE`, id).Scan(&revoked)
+		err := tx.QueryRow(ctx, `SELECT revoked_at FROM plugins WHERE id = $1 AND `+ownedByPrincipal+` FOR UPDATE`, id).Scan(&revoked)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -257,21 +409,161 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 		if _, err := tx.Exec(ctx, `UPDATE plugins SET revoked_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
+		// A revoked plugin's chief section is gone with it (0141): never
+		// rendered again, whatever was approved.
+		if _, err := tx.Exec(ctx, `DELETE FROM plugin_chief_instructions WHERE plugin_id = $1`, id); err != nil {
+			return err
+		}
 		return audit(ctx, tx, "plugin.revoked", Object(id), nil)
 	})
 	return found, err
+}
+
+// ChecksOffDetail is an outbound draft's detail when its plugin's
+// draft_checks was turned off while it awaited the check (SetDraftChecks).
+const ChecksOffDetail = "the plugin's Checks replies was turned off before it checked this draft"
+
+// SetDraftChecks turns CapDraftChecks on or off for the principal's LIVE
+// plugin id, changing that one capability and no other (and the same token:
+// the plugin keeps its row — its rules, chief session, queued messages and
+// drafts), through setCapabilityTx, the one writer of plugins.capabilities
+// after the mint. Turning it on needs CapMessages (validCapabilities, the mint's rule). A
+// plugin that already has the asked state changes nothing (changed false, no
+// audit row). ErrNotFound for none, another owner's (row-level security) or
+// a revoked one.
+//
+// 🔴 TURNING IT OFF STRANDS NO DRAFT: every one of the plugin's drafts still
+// awaiting its check LAPSES in the same transaction (check_state 'lapsed', as
+// LapseDraftCheck does at its deadline), so it is an ordinary pending draft the
+// owner may approve; lapsed is them, for internal/api to ask the owner about.
+// An OUTBOUND draft awaiting its check is REFUSED instead (outbound.go: it
+// cannot be approved without the plugin's check), audited
+// plugin.draft.check_refused.
+// Audited: plugin.capability.changed {capability, old, new}, and a
+// plugin.draft.check_lapsed per draft.
+func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if p, changed, err = setCapabilityTx(ctx, tx, id, CapDraftChecks, on); err != nil || !changed || on {
+			return err
+		}
+		rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'lapsed', checked_at = now()
+			WHERE id IN (SELECT d.id FROM plugin_reply_drafts d JOIN plugin_messages m ON m.id = d.message_id
+			              WHERE m.plugin_id = $1 AND d.status = 'pending' AND d.check_state = 'awaiting'
+			                AND d.expires_at > now()
+			              ORDER BY d.id FOR UPDATE OF d)
+			RETURNING `+draftCols, id)
+		if err != nil {
+			return err
+		}
+		if lapsed, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) }); err != nil {
+			return err
+		}
+		for _, d := range lapsed {
+			if err := audit(ctx, tx, "plugin.draft.check_lapsed", DraftObject(d.ID), map[string]any{
+				"why": "the plugin's draft_checks was turned off"}); err != nil {
+				return err
+			}
+		}
+		// An OUTBOUND draft cannot lapse into an approvable one (its media
+		// reach muster only through the check, outbound.go): it is REFUSED,
+		// as a check refusal is, so it stops counting against its officer's
+		// pending cap and its card says why.
+		out, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'refused', checked_at = now(), status = 'rejected',
+				decided_at = now(), detail = $2
+			WHERE id IN (SELECT id FROM plugin_reply_drafts WHERE plugin_id = $1 AND message_id IS NULL
+			              AND status = 'pending' AND check_state = 'awaiting' ORDER BY id FOR UPDATE)
+			RETURNING `+draftCols, id, ChecksOffDetail)
+		if err != nil {
+			return err
+		}
+		refused, err := pgx.CollectRows(out, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) })
+		if err != nil {
+			return err
+		}
+		for _, d := range refused {
+			if err := audit(ctx, tx, "plugin.draft.check_refused", DraftObject(d.ID), map[string]any{
+				"why": ChecksOffDetail}); err != nil {
+				return err
+			}
+		}
+		// Its officer's item is settled with it (outboundEnded).
+		return s.outboundEnded(ctx, tx, refused, OutboundChecksOff)
+	})
+	return p, changed, lapsed, err
+}
+
+// setCapabilityTx turns capability c on or off for the principal's LIVE
+// plugin id in tx, changing that one capability and no other: THE ONE WRITER
+// of plugins.capabilities after the mint (SetDraftChecks, SetChiefExtension).
+// The new set passes validCapabilities, the mint's rule. A plugin that already
+// has the asked state changes nothing (changed false, no audit row).
+// ErrNotFound for none, another owner's (row-level security and
+// ownedByPrincipal) or a revoked one. Audited plugin.capability.changed
+// {capability, old, new}.
+func setCapabilityTx(ctx context.Context, tx pgx.Tx, id int64, c Capability, on bool) (p Plugin, changed bool, err error) {
+	cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL AND `+ownedByPrincipal+` FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Plugin{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Plugin{}, false, err
+	}
+	if cur.Has(c) == on {
+		return cur, false, nil
+	}
+	want := []Capability{}
+	for _, have := range cur.Capabilities {
+		if have != c {
+			want = append(want, have)
+		}
+	}
+	if on {
+		want = append(want, c)
+	}
+	caps, err := validCapabilities(want)
+	if err != nil {
+		return Plugin{}, false, err
+	}
+	if p, err = scanPlugin(tx.QueryRow(ctx, `UPDATE plugins SET capabilities = $2 WHERE id = $1 RETURNING `+pluginCols, id, caps)); err != nil {
+		return Plugin{}, false, err
+	}
+	if err := audit(ctx, tx, "plugin.capability.changed", Object(id), map[string]any{
+		"capability": string(c), "old": cur.Capabilities, "new": caps}); err != nil {
+		return Plugin{}, false, err
+	}
+	return p, true, nil
+}
+
+// SetChiefExtension turns CapChiefExtension on or off for the principal's
+// LIVE plugin id, keeping its token and row (setCapabilityTx). 🔴 TURNING IT
+// OFF DELETES THE PLUGIN'S STORED SECTION in the same transaction (approved or
+// not): nothing stays approved behind a capability that is off, so turning it
+// on again needs new text and a new approval. ErrNotFound as setCapabilityTx.
+func (s *PGStore) SetChiefExtension(ctx context.Context, id int64, on bool) (p Plugin, changed bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if p, changed, err = setCapabilityTx(ctx, tx, id, CapChiefExtension, on); err != nil || !changed || on {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM plugin_chief_instructions WHERE plugin_id = $1`, id)
+		return err
+	})
+	return p, changed, err
 }
 
 func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error) {
 	if !TokenShapeOK(token) {
 		return Plugin{}, ErrBadToken
 	}
-	p, err := scanPlugin(s.pool.QueryRow(ctx, `
+	var p Plugin
+	err := s.pool.QueryRow(ctx, `
 		UPDATE plugins p SET last_seen_at = now()
 		  FROM users u
 		 WHERE p.token_hash = $1 AND p.revoked_at IS NULL
-		   AND u.id = p.owner_id AND u.disabled_at IS NULL
-		RETURNING `+prefixed("p", pluginCols), HashToken(token)))
+		   AND u.id = p.owner_id AND u.id IN (`+users.EnabledPersonOrTeamIDs+`)
+		RETURNING `+prefixed("p", pluginCols)+`, coalesce(nullif(u.email, ''), u.display_name), u.kind = 'team'`, HashToken(token)).
+		Scan(append(pluginDest(&p), &p.OwnerLogin, &p.OwnerTeam)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Plugin{}, ErrBadToken
 	}
@@ -289,6 +581,12 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 // bucket. taskID links a task (a task event, or a notice route); routedTo, set
 // only with taskID, stores the row already delivered, routed around the chief.
 func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64, routedTo string) (Message, bool, error) {
+	// An engagement's shape first: its defaults (external_id, body) come from
+	// its person and event (engagement.go).
+	if err := engagementShape(in); err != nil {
+		return Message{}, false, err
+	}
+	in = in.withEngagementDefaults()
 	if err := in.Validate(); err != nil {
 		return Message{}, false, err
 	}
@@ -299,7 +597,9 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		// insert made by one transaction at a time per plugin: two concurrent POSTs
 		// cannot both see 59 and both land the 60th-and-61st.
 		var live bool
-		err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL FROM plugins WHERE id = $1 FOR UPDATE`, pluginID).Scan(&live)
+		var p Plugin
+		err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL, id, owner_id, name, deliver_to FROM plugins WHERE id = $1 FOR UPDATE`,
+			pluginID).Scan(&live, &p.ID, &p.OwnerID, &p.Name, &p.DeliverTo)
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !live) {
 			return ErrNotFound
 		}
@@ -313,6 +613,17 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		// 🔴 A PLUGIN BOUND TO AN OFFICER (outbound.go): its message becomes an
+		// item in that officer's queue, in THIS transaction — never a chief
+		// turn. Task events are muster's own and never take this path.
+		officer := ""
+		if taskID == nil {
+			if officer, err = boundOfficer(p, in); err != nil {
+				return err
+			}
+		} else if in.Kind != "" || in.Venue != "" || in.URL != "" || in.Person != nil || in.Event != nil {
+			return invalid("kind, venue and url are a plugin bound to an officer's")
 		}
 		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
 		// MaxPerHour / MaxQueued, task events (task_id set) against
@@ -344,15 +655,30 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		if routedTo != "" {
 			routed = routedTo
 		}
+		if officer != "" {
+			routed = RoutedToOfficer
+		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
 			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id,
-			                             routed_to, status, delivered_at)
+			                             routed_to, status, delivered_at, thread, human_conversation, kind, venue, routed_done_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text,
 			        CASE WHEN $10::text IS NULL THEN 'queued' ELSE 'delivered' END,
-			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed))
+			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END, nullif($11, ''), $12, nullif($13, ''), nullif($14, ''),
+			        CASE WHEN $10::text = 'officer' THEN now() END) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed, in.Thread,
+			in.HumanConversation, officerKind(officer, in.Kind), in.Venue))
 		if err != nil {
 			return err
+		}
+		switch {
+		case officer != "" && in.Kind == MessageKindEngagement:
+			if m, err = s.routeEngagement(ctx, tx, p, officer, m, in); err != nil {
+				return err
+			}
+		case officer != "":
+			if m, err = s.routeToOfficer(ctx, tx, p, officer, m, in.URL); err != nil {
+				return err
+			}
 		}
 		created = true
 		return nil
@@ -408,9 +734,11 @@ func (s *PGStore) RecordAttempt(ctx context.Context, messageID int64) error {
 }
 
 func (s *PGStore) BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE plugin_messages SET status = 'delivering', agent_id = $2,
+	// Not a message a resume holds (resumeHolds): the resume routes it, or
+	// gives it back to the chief once it has finished.
+	tag, err := s.pool.Exec(ctx, `UPDATE plugin_messages m SET status = 'delivering', agent_id = $2,
 		       attempts = attempts + 1, last_attempt_at = now()
-		 WHERE id = $1 AND status = 'queued'`, messageID, agentID)
+		 WHERE m.id = $1 AND m.status = 'queued' AND NOT `+resumeHolds, messageID, agentID)
 	if err != nil {
 		return false, err
 	}

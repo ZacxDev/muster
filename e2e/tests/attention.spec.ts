@@ -2,10 +2,13 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { revealBox } from '../lib/composer';
 
 // THE ATTENTION QUEUE, the operator's click path, every hop real:
 //
@@ -139,6 +142,19 @@ async function mcpCall(name: string, args: Record<string, unknown>): Promise<{ t
   return { text: j.result!.content[0].text, isError: !!j.result!.isError };
 }
 
+// clearOf: the two elements' boxes are at least gap px apart (the space
+// between their rectangles, on whichever axis separates them), each a 44px
+// target where it is a button.
+async function clearOf(a: ReturnType<Page['locator']>, b: ReturnType<Page['locator']>, gap: number) {
+  const ra = (await a.boundingBox())!;
+  const rb = (await b.boundingBox())!;
+  const dx = Math.max(rb.x - (ra.x + ra.width), ra.x - (rb.x + rb.width), 0);
+  const dy = Math.max(rb.y - (ra.y + ra.height), ra.y - (rb.y + rb.height), 0);
+  expect(Math.max(dx, dy), `the chevron and the Dismiss button are ${Math.max(dx, dy)}px apart`).toBeGreaterThanOrEqual(gap);
+  expect(rb.height, 'Dismiss is a 44px target').toBeGreaterThanOrEqual(44);
+  expect(rb.width, 'Dismiss is a 44px target').toBeGreaterThanOrEqual(44);
+}
+
 async function ask(question: string, options: string[]): Promise<number> {
   const { text, isError } = await mcpCall('attention_ask', { question, options });
   expect(isError, text).toBe(false);
@@ -149,9 +165,7 @@ async function ask(question: string, options: string[]): Promise<number> {
 
 test('an agent asks over MCP, the operator answers in the Attention view, and the waiting agent gets the answer', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 
   const id = await ask('Deploy the importer to production now?', ['deploy now', 'wait until Monday']);
   // The agent blocks on the answer — a real long poll through the connect door.
@@ -172,7 +186,15 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await page.waitForTimeout(1500); // a bounded observation window: a loop would add ~60 here
   expect(badgeFetches - settled, 'badge requests while nothing changed').toBeLessThanOrEqual(1);
 
+  // The queue is called "Asks" (operator decision "Rename to Asks"), at the
+  // same /attention, so every existing /attention#<key> link still lands.
+  // This server serves no plugins and no ask log, so there is no Drafts tab
+  // and no Log tab: its tabs are Open and Answered.
+  await expect(page.locator('#sidebar-attention')).toContainText('Asks');
   await page.goto(origin + '/attention');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
+  await expect(page).toHaveTitle('Asks · muster');
+  await expect(page.getByRole('tab'), 'no plugins, no ask log: Open and Answered only').toHaveText(['Open', 'Answered']);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');
@@ -187,9 +209,30 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // Newest first: the ask (just now) above the window (waiting since 30 s ago).
   await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
   await expect(page.locator('[data-attention-item]').nth(1)).toHaveAttribute('data-kind', 'session');
-  await expect(session.getByRole('link', { name: 'Open the session' })).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
+  // The waiting window's card (the card feed): its one line is what it waits
+  // on, and its footer's View in session is the way to its rendered view.
+  const open = session.locator('a[data-asks-view-session]');
+  await expect(open).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
+  await expect(open).toHaveText('View in session');
+  await expect(session.getByText('Open the session')).toHaveCount(0);
+  // The flat page: no intro, no "Back to muster"; each card its kind badge,
+  // the heading the open count.
+  await expect(page.getByText('Everything waiting on you')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Back to muster' })).toHaveCount(0);
+  await expect(askItem.locator('[data-asks-badge]')).toHaveText('Question');
+  await expect(session.locator('[data-asks-badge]')).toHaveText('Waiting');
+  await expect(page.locator('[data-asks-open-count]')).toHaveText('2 open');
+  // The answer box is on the card, under its options, a 44px target.
+  const box = askItem.locator('textarea');
+  await expect(box).toBeVisible();
+  expect((await box.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+  // Dismiss is a small icon button, named for a screen reader, in the card's
+  // footer — never in its head, beside the expand chevron (Round 0 of #620).
+  const dismissBtn = askItem.getByRole('button', { name: 'Dismiss without answering' });
+  await expect(dismissBtn).toHaveAttribute('title', 'Dismiss without answering');
+  await clearOf(askItem.locator('[data-asks-toggle] svg.asks-chevron'), dismissBtn, 16);
 
-  // The operator taps an option.
+  // The operator taps an option chip: that is the answer.
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
   const answer = await waited;
   expect(JSON.parse(answer.text)).toMatchObject({ id, status: 'answered', answer: 'wait until Monday' });
@@ -204,12 +247,22 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // Free text, then Dismiss on a third: both leave the list.
   await second.locator('textarea').fill('yes, rotate it');
   await Promise.all([page.waitForURL(origin + '/attention'), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
-  expect(JSON.parse((await mcpCall('attention_wait', { id: id2, wait_seconds: 0 })).text)).toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
+  // The page is already on /attention, so waitForURL can settle before the
+  // answer's post lands: poll for it, as for the dismiss below.
+  await expect
+    .poll(async () => JSON.parse((await mcpCall('attention_wait', { id: id2, wait_seconds: 0 })).text), { timeout: 15_000 })
+    .toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
   const id3 = await ask('Ignore me?', []);
   await page.reload();
-  await Promise.all([page.waitForURL(origin + '/attention'), page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click()]);
-  expect(JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text)).toMatchObject({ status: 'cancelled' });
+  await page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click();
+  // Dismiss is sent at once (the card's htmx post).
+  await expect
+    .poll(async () => JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text).status, { timeout: 15_000 })
+    .toBe('cancelled');
   await expect(page.locator('[data-attention-item][data-kind="ask"]')).toHaveCount(0);
+
+  // The waiting window's View in session opens its session.
+  await Promise.all([page.waitForURL(/\/mirror\/view\?host=e2e-attn-/), page.locator('[data-attention-item][data-kind="session"] a[data-asks-view-session]').tap()]);
 
   // The badge is back to the waiting window alone.
   await page.goto(origin + '/tasks');
@@ -236,10 +289,13 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   expect((fs.statSync(mcpSecretFile).mode & 0o777).toString(8), 'the secret file is private').toBe('600');
   const pane = '%e2e-work-@1';
   const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': pane, 'X-Muster-Tmux': fakeTMUX };
-  // Without the secret the endpoint refuses, and nothing is asked; nor from a
-  // pane of another tmux server.
+  // Without the secret the endpoint refuses, and nothing is asked. A pane of
+  // another tmux server sees a healthy server with no tools (multi-tenant
+  // phase 2): its call is a JSON-RPC error, HTTP 200, and nothing is asked.
   expect((await localCall('attention_ask', { question: 'no secret?' }, { 'X-Muster-Pane': pane, 'X-Muster-Tmux': fakeTMUX })).status).toBe(401);
-  expect((await localCall('attention_ask', { question: 'other server?' }, { ...auth, 'X-Muster-Tmux': '/tmp/tmux-1/other,9,0' })).status).toBe(400);
+  const outsider = await localCall('attention_ask', { question: 'other server?' }, { ...auth, 'X-Muster-Tmux': '/tmp/tmux-1/other,9,0' });
+  expect(outsider.status).toBe(200);
+  expect(((await outsider.json()) as { error?: { code: number } }).error?.code).toBe(-32602);
   // A chief tool is not on this surface.
   const chief = (await (await localCall('attention_list', {}, auth)).json()) as { error?: { code: number } };
   expect(chief.error?.code).toBe(-32602);
@@ -266,13 +322,13 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
   expect(id).toBeGreaterThan(0);
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
-  await expect(item.locator('[data-attention-source]')).toContainText('@ ' + host);
+  await expect(item.locator('[data-attention-source]')).toContainText('on ' + host);
+  // The other tmux server's call was never forwarded: no item carries its text.
+  await expect(page.locator('[data-attention-text]', { hasText: 'other server?' })).toHaveCount(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'hold' }).click()]);
   const got = (await waited) as { result: { content: { text: string }[] } };
@@ -285,7 +341,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const splitId = (JSON.parse(split.result.content[0].text) as { id: number }).id;
   expect(splitId).toBeGreaterThan(0);
   await page.reload();
-  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('@ ' + host);
+  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('on ' + host);
 });
 
 // ANSWERED IN THE SESSION: the mirrored session asks and waits; the operator,
@@ -303,9 +359,7 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   expect(id).toBeGreaterThan(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Tag the release latest too?');
@@ -313,9 +367,18 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
 
   // The operator answers in the session: its rendered view, in another tab.
+  // 🔴 The session is BUSY while it asks — a turn is running attention_wait —
+  // as a real one is. A window WAITING on the person (a permission prompt, a
+  // question) takes no Send at all: Enter there would answer the prompt (the
+  // Claude prompt guard), so the fixture's waiting status is lifted first and
+  // put back for the session check below.
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
+  await expect(page.locator('[data-attention-item][data-kind="session"]'), 'muster saw it busy').toHaveCount(0, { timeout: 15_000 });
   const view = await page.context().newPage();
   await view.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
   await expect(view.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+  await revealBox(view);
   await view.locator('#mv-input').fill('only next for now');
   await view.locator('#mv-send').click();
   await expect(view.locator('#mv-input')).toHaveValue('');
@@ -330,7 +393,8 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   // Claude Code stops waiting, the host's next report (its refresh, ~5 s)
   // takes the item out of the open queue — measured, not assumed.
   const session = page.locator('[data-attention-item][data-kind="session"]');
-  await expect(session).toHaveCount(1);
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
+  await expect(session).toHaveCount(1, { timeout: 15_000 });
   writeFileAtomic(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
   const flipped = Date.now();
   await expect(session).toHaveCount(0, { timeout: 15_000 });
@@ -352,11 +416,10 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
   const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
   await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  await revealBox(page);
   await page.locator('#mv-input').fill('yes, a minor bump');
   await page.locator('#mv-send-more').click();
   await page.locator('#mv-queue-send').click();
@@ -370,5 +433,156 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await row.getByRole('button', { name: 'More actions for this queued message' }).click();
   await row.getByRole('menuitem', { name: 'Cancel this queued message' }).click();
   await expect(page.locator('#mv-note')).toHaveText(/^Cancelled — but this message had already answered .+'s question, and that answer was delivered: it can't be un-sent\.$/);
-  await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
+  await expect(row, 'cancelled: it leaves the list').toHaveCount(0);
+});
+
+// ANSWERED ON THE ASKING SESSION'S OWN VIEW (attention_asker.go): the
+// notification's URL, /attention/open/<key>, resolves a mirrored session's
+// ask to the ask's own page when tapped (attention_push_target.go;
+// ask-page.spec.ts drives that page), whose context link is the session's
+// rendered view. The view shows the ask with the queue's own form; a second
+// ask arrives live; the operator answers there, lands back on the view, and
+// the session's wait returns the answer. On a phone the block stays above the
+// pinned composer.
+for (const vp of [
+  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`on a ${vp.name}`, () => {
+    test.use(vp.use);
+    test('a mirrored session\'s ask is answered on its own rendered view', async ({ page }) => {
+      test.setTimeout(120_000);
+      // The host writes its local secret once it is up (a fresh worker may run
+      // this test first).
+      await expect.poll(() => fs.existsSync(mcpSecretFile), { timeout: 30_000 }).toBe(true);
+      const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+      const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+      const askLocal = async (question: string, options: string[] = []) => {
+        const r = (await (await localCall('attention_ask', { question, options }, auth)).json()) as { result: { content: { text: string }[] } };
+        return (JSON.parse(r.result.content[0].text) as { id: number }).id;
+      };
+      const id = await askLocal(`Merge on the ${vp.name}?`, ['merge', 'hold']);
+
+      await signIn(page, origin);
+      // The notification's URL (the tap route) resolves to the ask's page,
+      // whose context link is the window's view.
+      const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
+      await page.goto(origin + `/attention/open/ask-${id}`);
+      await page.waitForURL(origin + `/attention/asks/${id}`);
+      await page.locator('[data-ask-context]').click();
+      await page.waitForURL(view);
+      const block = page.locator('#asker-asks');
+      const item = block.locator(`#ask-${id}`);
+      await expect(item.locator('[data-attention-text]')).toHaveText(`Merge on the ${vp.name}?`);
+      await expect(item.getByRole('button', { name: 'merge', exact: true })).toBeVisible();
+
+      // A second ask, raised while the view is open, arrives without a reload.
+      const id2 = await askLocal(`And the changelog on the ${vp.name}?`);
+      await expect(block.locator(`#ask-${id2}`)).toBeVisible({ timeout: 15_000 });
+      // One card at a time (ui.AskerAsksList): the newest is on show and the
+      // first waits behind "Show N more", which opens it in place — and keeps
+      // it open across the block's live refreshes. N counts what the block
+      // holds: the window may hold an earlier test's open ask too (the split
+      // pane's).
+      await expect(item).toBeHidden();
+      const held = await block.locator('[data-attention-item]').count();
+      expect(held).toBeGreaterThanOrEqual(2);
+      await expect(block.locator('[data-asks-more]')).toHaveText(`Show ${held - 1} more`);
+      await block.locator('[data-asks-more]').click();
+      await expect(item).toBeVisible();
+
+      // The layout holds: the block sits above the pinned composer, which is
+      // still inside the visible viewport, and the conversation keeps room.
+      const size = page.viewportSize()!;
+      const compose = (await page.locator('#mv-compose').boundingBox())!;
+      const asks = (await block.boundingBox())!;
+      const log = (await page.locator('#mv-log').boundingBox())!;
+      expect(compose.y + compose.height, 'the composer is on screen').toBeLessThanOrEqual(size.height + 1);
+      expect(asks.y + asks.height, 'the asks block ends above the composer').toBeLessThanOrEqual(compose.y + 1);
+      expect(log.height, 'the conversation keeps room').toBeGreaterThan(80);
+
+      // Answer by an option: back on this view, the session's wait gets it, the ask leaves.
+      const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
+      await Promise.all([page.waitForURL(view), item.getByRole('button', { name: 'hold', exact: true }).click()]);
+      const got = (await waited) as { result: { content: { text: string }[] } };
+      expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered', answer: 'hold' });
+      await expect(block.locator(`#ask-${id}`)).toHaveCount(0);
+
+      // Free text on the second: it leaves too.
+      const second = block.locator(`#ask-${id2}`);
+      await second.locator('textarea').fill('yes, add it');
+      await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
+      const w2 = (await (await localCall('attention_wait', { id: id2, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
+      expect(JSON.parse(w2.result.content[0].text)).toMatchObject({ status: 'answered', answer: 'yes, add it' });
+      await expect(block.locator(`#ask-${id2}`)).toHaveCount(0);
+    });
+  });
+}
+
+// HIDE UNTIL NEXT ASK, on the Rendered view (ui/attention.go): the operator's
+// "close it without taking any action". The block hides here and NOTHING is
+// sent — no request of any kind, so the session's wait still says pending and
+// the ask is still in the queue; an "N waiting" chip takes its place and
+// reopens it; a NEW ask (arriving live, by the queue's SSE event) brings the
+// block back by itself. 🔴 A REGRESSION TEST: at the base the block has no hide.
+test('the rendered view\'s asks hide until the next ask, without answering or sending anything', async ({ page }) => {
+  test.setTimeout(120_000);
+  await expect.poll(() => fs.existsSync(mcpSecretFile), { timeout: 30_000 }).toBe(true);
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+  const askLocal = async (question: string, options: string[] = []) => {
+    const r = (await (await localCall('attention_ask', { question, options }, auth)).json()) as { result: { content: { text: string }[] } };
+    return (JSON.parse(r.result.content[0].text) as { id: number }).id;
+  };
+  const status = async (id: number) => {
+    const r = (await (await localCall('attention_wait', { id, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
+    return (JSON.parse(r.result.content[0].text) as { status: string }).status;
+  };
+  const id = await askLocal('Rotate the staging key?', ['rotate', 'later']);
+
+  await signIn(page, origin);
+  const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
+  await page.goto(view);
+  const block = page.locator('#asker-asks');
+  const chip = page.locator('#asker-asks-chip');
+  await expect(block.locator(`#ask-${id}`)).toBeVisible();
+  // The window may hold an earlier test's open ask too (the split pane's): the
+  // chip counts what the block holds.
+  const n = await block.locator('[data-attention-item]').count();
+  expect(n).toBeGreaterThanOrEqual(1);
+
+  const sent: string[] = [];
+  page.on('request', (r) => {
+    if (r.resourceType() !== 'eventsource' && r.resourceType() !== 'websocket') sent.push(`${r.method()} ${new URL(r.url()).pathname}`);
+  });
+  await block.getByRole('button', { name: 'Hide until next ask' }).click();
+  await expect(block).toBeHidden();
+  await expect(chip).toHaveText(`${n} waiting`);
+  await page.waitForTimeout(500);
+  expect(sent.filter((s) => !s.startsWith('GET /mirror/view/asks')), 'the hide sent nothing (the asks poll aside, a GET)').toEqual([]);
+  expect(sent.filter((s) => !s.startsWith('GET ')), 'no POST of any kind').toEqual([]);
+  expect(await status(id), 'the session still waits: nothing answered or cancelled it').toBe('pending');
+  expect(await (await page.request.get(origin + '/attention')).text(), 'still in the Asks queue').toContain(`id="ask-${id}"`);
+
+  // A new ask arrives live: the block comes back by itself, with both.
+  const id2 = await askLocal('And the prod key?');
+  await expect(block.locator(`#ask-${id2}`)).toBeAttached({ timeout: 15_000 });
+  await expect(block).toBeVisible();
+  await expect(chip).toBeHidden();
+  // Hidden again, then reopened by the chip.
+  await block.getByRole('button', { name: 'Hide until next ask' }).click();
+  await expect(chip).toHaveText(`${n + 1} waiting`);
+  await chip.click();
+  await expect(block).toBeVisible();
+  await expect(chip).toBeHidden();
+  expect(sent.filter((s) => !s.startsWith('GET ')), 'still no POST').toEqual([]);
+
+  // Cleanup by the block's own answer forms (the queue is shared by the spec),
+  // newest first: the block shows one card at a time, the newest on top
+  // (ui.AskerAsksList), so each answer brings the next one into view.
+  const second = block.locator(`#ask-${id2}`);
+  await second.locator('textarea').fill('not now');
+  await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
+  expect(await status(id2)).toBe('answered');
+  await Promise.all([page.waitForURL(view), block.locator(`#ask-${id}`).getByRole('button', { name: 'later', exact: true }).click()]);
 });

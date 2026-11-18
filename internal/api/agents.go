@@ -1,13 +1,14 @@
 package api
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -15,15 +16,18 @@ import (
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessiontags"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -32,18 +36,19 @@ import (
 // streams over the chat WebSocket; this only caps the initial page payload.
 const chatHistoryCap = 200
 
-// registerAgentRoutes wires the Agents tab + lifecycle + realtime endpoints when
+// registerAgentRoutes wires the agent pages + lifecycle + realtime endpoints when
 // an agents store is set. Control/logs/chat routes additionally require a
-// provisioner (a real in-cluster wiring); without one only the list renders.
+// provisioner (a real in-cluster wiring).
 // 🔴 NO EARLY RETURN ON A nil DEPENDENCY — see the package doc in server.go.
 // Every handler below answers its own "nothing to serve from" case, so the
 // recorded route set is a function of the CODE and never of the fixture.
 func (s *Server) registerAgentRoutes(mux Mux) {
-	mux.HandleFunc("GET /ui/agents", s.requireSession(s.handleAgentsContent))
-	// Live status icon poll for the agent-detail / operator header (the bare
-	// colored dot, no label). Works without a provisioner (falls back to stored
-	// status), so it's registered alongside the list route.
+	// Live status icon poll for the agent page's header (the bare colored dot,
+	// no label). Works without a provisioner (falls back to stored status).
 	mux.HandleFunc("GET /ui/agents/{id}/status", s.requireSession(s.handleAgentStatusIcon))
+	// The agent page's status strip, ⋯ menu and notices (ui/agent_actions.go):
+	// what the retired Agents list's card showed, re-fetched on a change.
+	mux.HandleFunc("GET /ui/agents/{id}/header", s.requireSession(s.handleAgentHeader))
 	// Agent-reply notifications: the FAB's panel + OOB badge, and the per-session
 	// mark-read used by the chat client when a turn finishes. Both are pure DB
 	// reads/writes, so they're registered without a provisioner.
@@ -53,6 +58,10 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// Registered here, BEFORE the provisioner gate, because it is a pure DB read —
 	// it never touches k8s, so it works in a provisioner-less deployment too.
 	mux.HandleFunc("GET /api/agents", s.requireHookToken(s.handleAPIAgentList))
+	// `muster agent rm`: remove an agent by name (agent_rm.go). Before the
+	// provisioner gate: a host officer instance's row is removed with no
+	// provisioner at all; any other agent still needs one (503 without).
+	mux.HandleFunc("DELETE /api/agents/{name}", s.requireArmedHookToken(s.handleAPIAgentRemove))
 	// 🔴 THE MACHINE READ OF AN AGENT'S CHAT, ON THE AGENT-IDENTIFIED TIER — SAID
 	// OUT LOUD RATHER THAN SLIPPED IN BESIDE THE ROSTER ABOVE. Before it, no
 	// machine credential could read an agent's messages at all: the chat-log route
@@ -90,6 +99,8 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// same reason: it is a pure DB read and never touches k8s, so it works on a
 	// provisioner-less deployment.
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.requireHookToken(s.handleAPIAgentMessages))
+	// The agent's Claude account binding and its account failovers (failover.go).
+	mux.HandleFunc("GET /api/agents/{name}/account-failovers", s.requireHookToken(s.handleAPIAgentFailovers))
 	// 🔴 THE MACHINE WRITE HALF, AND THE ROUTE `muster chief ask` NOW POSTS TO
 	// (task #633 criterion 1). It used to post to POST /operator/agents/{id}/message
 	// behind requireOperatorToken — a gate that resolved the bearer to an agent ROW
@@ -106,13 +117,12 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// originally made about. Its caller runs on the operator's host and presents the
 	// shared secret.
 	//
-	// 🔴 requireARMEDHookToken — FAIL-CLOSED, AND THE ONE ROUTE ON THIS CREDENTIAL
-	// THAT IS. Every other requireHookToken route is enforce-when-set: with
-	// MUSTER_HOOK_TOKEN unset the wrapper calls the handler and the route is open to
-	// anyone who can reach the LAN NodePort — tmux.go, transcripts.go, layout.go,
-	// attention.go and comment_delete.go each carry that warning at their own routes.
-	// This one refuses instead. Two reasons, and the audit that produced them is
-	// task #633 round 1:
+	// 🔴 requireARMEDHookToken — FAIL-CLOSED. When this was written it was the one
+	// route on this credential that was: the rest of the hook tier then served an
+	// unconfigured server open. The whole tier is fail-closed now (an unset
+	// MUSTER_HOOK_TOKEN refuses boot, and every hook wrapper admits nobody without
+	// it), so requireArmedHookToken is requireHookToken. The two reasons it was
+	// made fail-closed first, from task #633 round 1, still stand:
 	//
 	//   - IT REPLACED A FAIL-CLOSED GATE. POST /operator/agents/{id}/message sat on
 	//     requireOperatorToken, which demanded a bearer UNCONDITIONALLY and resolved it
@@ -128,31 +138,35 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	//     what it REPLACED it loses: steering an agent used to need the reserved
 	//     operator's in-cluster uuid, held by one pod and readable only from that
 	//     pod's Secret. It now needs MUSTER_HOOK_TOKEN — one shared value handed to
-	//     every hook script on both hosts, travelling in cleartext to the LAN
+	//     every hook script on every host, travelling in cleartext to the LAN
 	//     NodePort many times a day, naming no caller (auth.go's ChiefWriteRefusal
 	//     says so at length, which is why that door refuses to equal it). That is a
 	//     deliberate trade for a CLI that works without a second privileged agent,
 	//     and refusing when the shared secret is absent is the least it should cost.
 	//
-	// ⚠ ITS GET TWIN STAYS enforce-when-set. Not an oversight: the read discloses a
-	// transcript, the write runs arbitrary work inside an agent instance (a shell,
-	// its repository checkout, whatever connectors it has been granted), and the
-	// read predates this change.
-	//
 	// ⚠ REGISTERED AFTER THE PROVISIONER GATE, unlike its GET twin: the write
 	// reaches Provisioner.Chat, so on a provisioner-less deployment there is nothing
 	// for it to talk to.
 	mux.HandleFunc("POST /api/agents/{name}/messages", s.requireArmedHookToken(s.requireGatewayProvisioner(s.handleAPIAgentSendMessage)))
-	mux.HandleFunc("GET /ui/agents/new", s.requireSession(s.handleAgentNewModal))
+	// 🔴 CREATING AN AGENT FROM A MACHINE (agent_create_api.go): the route that
+	// replaced the web UI's dispatch form, which docs/design/chief-dispatch.md
+	// phase 2 deleted (GET /ui/agents/new, GET /ui/agents/notes and POST
+	// /agents answer 404; removed_surfaces_test.go). Only a personal token of
+	// scope agent-create reaches it — a FULL token does not (explicitScopeRoutes)
+	// — and the handler refuses the shared hook secret. Auth outside, the
+	// provisioner doors inside, as every lifecycle route orders them.
+	mux.HandleFunc("POST /api/agents", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.requireDispatchServed(s.handleAPIAgentCreate))))
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
-	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
-	// Inline rename: the pencil swaps in the edit form; cancel re-fetches the card.
-	mux.HandleFunc("GET /ui/agents/{id}/rename", s.requireSession(s.handleAgentRenameForm))
-	mux.HandleFunc("GET /ui/agents/{id}/card", s.requireSession(s.handleAgentCard))
 	mux.HandleFunc("GET /api/openrouter/models", s.requireSession(s.handleOpenRouterModels))
-	mux.HandleFunc("POST /agents", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentCreate)))
 	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStart)))
 	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStop)))
+	// Credential rotation (team_admin.go): the owner's own agent, or a team
+	// agent by a manager of its team, as the team. Same-origin, like every
+	// form that changes an agent's identity. NOT behind
+	// requireLifecycleProvisioner: it reaches the provisioner only through
+	// the CredentialRotator assertion, which a nil provisioner fails — a 501
+	// that says so, never a 200 that did nothing.
+	mux.HandleFunc("POST /agents/{id}/credentials/rotate", s.requireOperatorWrite(s.handleAgentRotateCredentials))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
 	mux.HandleFunc("POST /agents/{id}/model", s.requireSession(s.handleAgentModel))
 	// Same-origin, like every other form that changes where the chief's turns
@@ -160,6 +174,10 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// or move the default session plugin deliveries and `chief ask` land in.
 	mux.HandleFunc("POST /agents/{id}/sessions", s.requireOperatorWrite(s.handleAgentSessionCreate))
 	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireOperatorWrite(s.handleAgentSessionDefault))
+	// The chief's primary and side chats (chief_chats.go).
+	s.registerChiefChatRoutes(mux)
+	// The fleet digest card (fleet_digest.go).
+	s.registerFleetDigestRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
@@ -167,6 +185,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// this page's WS — appears without a reload.
 	mux.HandleFunc("GET /ui/agents/{name}/chat-log", s.requireSession(s.handleAgentChatLog))
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
+	// One dispatched agent's card in the chief's chat (chat_log_live.go): the
+	// card's own refresh, and the live stream's.
+	mux.HandleFunc("GET /ui/dispatch-card", s.requireSession(s.handleDispatchCard))
 	mux.HandleFunc("GET /agents/{name}/logs/stream", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentLogsStream)))
 	mux.HandleFunc("GET /agents/{name}/ws", s.requireSession(s.requireGatewayProvisioner(s.handleAgentWS)))
 	// The claude-code agent's live terminal (terminal.go): the page, and the
@@ -188,110 +209,96 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /agents/{name}/terminal/ws", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentTerminalWS)))
 }
 
-// handleAgentsContent serves the /ui/agents partial: cards (status reconciled
-// with live pods) plus the FAB + dispatch modal.
-func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	cards, mirrors, err := s.agentsListCards(ctx)
-	if err != nil {
-		s.logger.Printf("agents: list: %v", err)
-		http.Error(w, "could not load agents", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx), s.ext.AgentsIdleAfter); err != nil {
-		s.logger.Printf("agents: render: %v", err)
-	}
-}
-
-// agentsListCards is the Agents list's cards as the viewer sees them: agents
-// most recently active first, pins marked, and the viewer's mirrored sessions.
-// The list partial renders them, and the shell resolves the "Recently viewed"
-// strip against them (handleIndex), so both read the one list.
-//
-// Every card carries its attention badge (withCardAttention).
-func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
-	return s.agentsListCardsWithin(ctx, 0)
-}
-
-// agentsListCardsWithin is agentsListCards with the provisioner's instance read
-// bounded by instancesWithin (0 = unbounded): past it the cards are drawn with
-// their STORED status (a nil index, liveStatusIndexed). See shellData.
-func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time.Duration) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+// agentsListEntries builds the entries the sidebar, the session switcher and
+// home (homeTarget) read: every agent and mirrored window, as views, each
+// agent with its STORED status — none of those surfaces shows a pod's live
+// status, so none of them holds a page's first byte on the apiserver. (The
+// live instance read was the retired Agents list page's.)
+func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
+	// A chief its owner turned off is left out of the list, the sidebar and the
+	// switcher (chief_toggle.go). It is not deleted: turning it on lists it again.
+	list = s.withoutOffChief(ctx, list)
 
-	instIdx := s.instanceIndexWithin(ctx, instancesWithin)
+	// nil = "live state was not observed": the stored status (liveStatusIndexed).
+	var instIdx map[string]*provision.Instance
 	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
 	// GET /api/agents publishes as lastActivityAt. The store's own order
 	// (created_at DESC) is left alone because the machine read documents
 	// "newest-first as the store returns them" to its consumers; only this view
 	// re-orders. One batched transcript read serves both the order and the
-	// footer's "active … ago", so the two cannot disagree.
+	// sidebar's recency dot, so the two cannot disagree.
 	lastMsg := s.lastMessageByAgents(ctx, list)
 	agents.SortByLastActivity(list, lastMsg)
 
-	// The viewer's pins, read once: each card is marked, and the list draws the
-	// pinned ones first (ui.AgentsCardsWithMirrors — the one place that orders
-	// by pin, and that interleaves these agents with the mirrored entries by
-	// activity; the order above decides ties among agents).
+	// The viewer's pins, read once: each view is marked, and the switcher orders
+	// the pinned ones first (ui's orderList — the one place that orders by pin,
+	// and that interleaves these agents with the mirrored entries by activity;
+	// the order above decides ties among agents).
 	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
 	isChief := chiefPredicate(list)
 	// The viewer's session focus (internal/focus), read once for every card.
 	focused := s.focusIndex(ctx)
+	// Each agent's latest session, read once for every card (ui.AgentSessionHref).
+	ids := make([]int64, 0, len(list))
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief, pinned, focused))
+		ids = append(ids, a.ID)
 	}
+	latest := s.latestSessionIDs(ctx, ids)
+	protected := s.deleteProtection(list)
+	for _, a := range list {
+		v := s.cardViewIndexed(a, instIdx, lastMsg[a.ID], latest[a.ID], isChief, pinned, focused)
+		v.DeleteProtected = protected(a)
+		cards = append(cards, v)
+	}
+	// Each TEAM agent's team (withAgentTeams): its sidebar group, and the
+	// switcher's and palette's label.
+	s.withAgentTeams(ctx, list, cards)
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
-	// in-memory hub, scoped to this request's principal. The list interleaves
-	// them with the agents by activity (ui.AgentsCardsWithMirrors).
+	// in-memory hub, scoped to this request's principal. ui's orderList
+	// interleaves them with the agents by activity.
 	mirrors := s.mirrorCards(ctx, pinned, focused)
+	// THE chief — where `/` opens — is marked from the same rule homeTarget
+	// reads (primaryChief), so the sidebar pins exactly the agent home opens.
+	if pc, ok := primaryChief(ownedBy(list, requestOwner(ctx))); ok {
+		for i := range cards {
+			cards[i].PrimaryChief = cards[i].ID == pc.ID
+		}
+	}
+	// Each entry's previous focus titles, one read for all of them (the
+	// command palette's search: withPreviousTitles).
+	s.withPreviousTitles(ctx, cards, mirrors)
+	// The viewer's tags on each entry, one read for all of them: the palette's
+	// and the dock's words, and the ⋯ menu's tag editor (session_tags.go).
+	s.withSessionTags(ctx, cards, mirrors)
 	s.withCardAttention(ctx, cards, mirrors)
 	// The Idle section (ui.InIdleSection), with the server's clock, after the
 	// pins are marked: decided on every build, so an entry active again leaves
 	// it on the next refresh.
 	ui.MarkIdle(cards, mirrors, s.now(), s.ext.AgentsIdleAfter)
+	// The sessions a running successor replaced (succession.go): the
+	// sidebar's Superseded group. One read for all of them.
+	if sup := s.supersededKeys(ctx); len(sup) > 0 {
+		for i := range mirrors {
+			mirrors[i].Superseded = mirrors[i].FocusKey != "" && sup[mirrors[i].FocusKey]
+		}
+	}
+	// The viewer's TEAMS' mirrored sessions (team sharing 2b.3), each in its
+	// team's group, added after every decorator above: those read the
+	// viewer's own pins, names, tags and attention by host name or session
+	// key, and none of them is a team session's (teamMirrorCards).
+	mirrors = append(mirrors, s.teamMirrorCards(ctx)...)
 	return cards, mirrors, nil
 }
 
-// handleAgentNewModal serves the /ui/agents/new partial: the dispatch form. It
-// renders INSTANTLY — the repo + task option lists (which hit the GitHub API /
-// DB) lazy-load into animated skeletons via /ui/agents/repos and /ui/agents/notes
-// once the modal opens, so the form never blocks on a slow upstream.
-//
-// When ?note=<id> is set (the Task-card Dispatch path) it loads the task and
-// renders the TASK-SCOPED confirm (fixed Model/Repository rows
-// pre-filled from the task's dispatch config). A missing/failed load falls back
-// to the plain FAB form so the modal always renders something usable.
-func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if noteParam := r.URL.Query().Get("note"); noteParam != "" && s.ext.Notes != nil {
-		if id, err := strconv.ParseInt(noteParam, 10, 64); err == nil {
-			if n, err := s.ext.Notes.Get(r.Context(), id); err == nil {
-				v := s.buildTaskDispatchView(r.Context(), n)
-				// Which document is opening this modal decides where its submit can
-				// land: #agents-list exists only on the shell. See
-				// ui.TaskDispatchView.FromDetailPage.
-				v.FromDetailPage = rendersInDetailShape(r, n.ID)
-				v.Kinds = s.kindChoices(r.Context())
-				if rerr := ui.RenderDispatchModalTask(w, v); rerr != nil {
-					s.logger.Printf("agents: render task dispatch modal: %v", rerr)
-				}
-				return
-			} else {
-				s.logger.Printf("agents: dispatch modal load task %d: %v", id, err)
-			}
-		}
-	}
-	if err := ui.RenderDispatchModal(w, s.kindChoices(r.Context())); err != nil {
-		s.logger.Printf("agents: render dispatch modal: %v", err)
-	}
-}
-
-// kindChoices is what the dispatch form offers THE CALLER: the enabled kinds,
+// kindChoices is what the caller may create (agent_dispatch's targets read it): the enabled kinds,
 // the caller's OWN Claude account names (never tokens — and never the admin's
 // pool for a member), and which kinds the caller has no credential for.
 func (s *Server) kindChoices(ctx context.Context) ui.KindChoices {
@@ -317,78 +324,20 @@ func callerID(ctx context.Context) int64 {
 	return 0
 }
 
-// buildTaskDispatchView resolves a task's dispatch config into the task-scoped
-// modal view: the stored model/repo/branch and — when the task has no stored
-// repo — a best-effort repo inference from its directory.
-func (s *Server) buildTaskDispatchView(ctx context.Context, n notes.Note) ui.TaskDispatchView {
-	// ui.TaskTitle, NOT n.Directory: a producer that sends the real `title` field
-	// (the capture extension since #244) would otherwise show its body's first
-	// line here instead of its heading.
-	label := ui.TaskTitle(n)
-	if label == "" {
-		label = firstLine(n.Body)
-	}
-	v := ui.TaskDispatchView{
-		NoteID:     n.ID,
-		Label:      truncate(label, 80),
-		Model:      n.Model,
-		Repo:       n.Repo,
-		RepoBranch: n.RepoBranch,
-	}
-	// Infer the repo from the task's directory when none is stored (best-effort;
-	// non-fatal): match the directory (or its last path segment) against a
-	// connected repo's full name / last segment.
-	if v.Repo == "" && n.Directory != "" {
-		v.Repo = s.inferRepoFromDirectory(ctx, n.Directory)
-	}
-	return v
-}
-
-// inferRepoFromDirectory returns a connected repo whose full name equals the
-// directory, or whose last path segment matches the directory's last segment;
-// "" when there's no GitHub connection, the list fails, or nothing matches. Cheap
-// and non-fatal — a miss just leaves the repo blank in the confirm. The match
-// itself is the pure matchRepoByDirectory (unit-tested).
-func (s *Server) inferRepoFromDirectory(ctx context.Context, directory string) string {
-	list, err := s.githubRepos(ctx)
-	if err != nil {
-		return ""
-	}
-	names := make([]string, 0, len(list))
-	for _, rp := range list {
-		names = append(names, rp.FullName)
-	}
-	return matchRepoByDirectory(directory, names)
-}
-
-// matchRepoByDirectory picks the repo full name that best matches a task's
-// working directory: an exact full-name match wins; otherwise the first repo
-// whose last path segment equals the directory's last segment. "" when nothing
-// matches. Pure (no I/O) so the inference logic is unit-testable with a faked
-// repo list.
-func matchRepoByDirectory(directory string, repoFullNames []string) string {
-	if strings.TrimSpace(directory) == "" {
-		return ""
-	}
-	for _, name := range repoFullNames {
-		if name == directory {
-			return name
-		}
-	}
-	dirBase := path.Base(strings.TrimRight(directory, "/"))
-	for _, name := range repoFullNames {
-		if path.Base(name) == dirBase {
-			return name
-		}
-	}
-	return ""
-}
-
 // handleAgentRepoOptions serves /ui/agents/repos: the repo combobox <li> options
 // (slow — hits the GitHub API), swapped in over the skeleton.
+//
+// ?owner=<id> names WHOSE object the picker is for (a team task's edit modal,
+// the new-task form's Owner select): the list is then the repositories THAT
+// owner's agents may use (githubAppForOwner), never the viewer's. A team is
+// answered only to an operator or above in it (the role that files and edits
+// its tasks); anyone else, and any other owner, gets an empty list. That is
+// the form's rule, NOT a secrecy boundary: a viewer of a listed team already
+// sees the App's repository names on the team's repo card and through the
+// team chief's repos_list.
 func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) {
 	repos := make([]ui.RepoView, 0)
-	if list, err := s.githubRepos(r.Context()); err == nil {
+	if list, err := s.repoPickerRepos(r.Context(), r.URL.Query().Get("owner")); err == nil {
 		for _, rp := range list {
 			repos = append(repos, ui.RepoView{FullName: rp.FullName, Private: rp.Private})
 		}
@@ -399,33 +348,30 @@ func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleAgentNoteOptions serves /ui/agents/notes: the task combobox <li> options,
-// swapped in over the skeleton.
-func (s *Server) handleAgentNoteOptions(w http.ResponseWriter, r *http.Request) {
-	notesOpts := make([]ui.NoteOption, 0)
-	if s.ext.Notes != nil {
-		if list, err := s.ext.Notes.ListSummaries(r.Context()); err == nil {
-			for _, n := range list {
-				// ui.TaskTitle, NOT n.Directory — see buildTaskDispatchView.
-				label := ui.TaskTitle(n)
-				if label == "" {
-					label = firstLine(n.Body)
-				}
-				notesOpts = append(notesOpts, ui.NoteOption{ID: n.ID, Label: truncate(label, 60)})
-			}
-		}
+// repoPickerRepos is the repository picker's list for the object owner names
+// ("" or the viewer: the viewer's own; see handleAgentRepoOptions).
+func (s *Server) repoPickerRepos(ctx context.Context, owner string) ([]github.Repo, error) {
+	owner = strings.TrimSpace(owner)
+	p := authz.MustFrom(ctx)
+	if owner == "" || owner == strconv.FormatInt(p.UserID, 10) {
+		return s.githubReposForOwner(ctx, p.UserID)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderNoteOptions(w, notesOpts); err != nil {
-		s.logger.Printf("agents: render note options: %v", err)
+	id, err := strconv.ParseInt(owner, 10, 64)
+	if err != nil || id <= 0 {
+		return nil, errNoGitHub
 	}
+	if role, in := p.TeamScope().RoleIn(id); !in || !role.AtLeast(authz.TeamOperator) {
+		return nil, errNoGitHub
+	}
+	return s.githubReposForOwner(ctx, id)
 }
 
 // handleAgentStatusIcon serves GET /ui/agents/{id}/status: the bare status icon
-// (no label) for the agent-detail / operator header, reflecting live pod state.
+// (no label) for the agent page's status strip, reflecting live pod state.
 // It loads the agent, computes the live status against pods (when a provisioner
 // is wired) exactly like handleAgentDetail, else falls back to the stored status,
-// and writes ui.RenderStatusIcon. Polled by liveStatusIcon (load + every 10s).
+// and writes ui.RenderStatusIcon. Polled by the strip (ui's agentStripBody,
+// every 10s).
 func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -446,15 +392,21 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	status := s.liveStatus(ctx, a)
 	awaiting := s.AwaitingApproval(a.ID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The card says what it was drawn with (ui.StatusPollPath); when that is no
-	// longer true its data-wait is stale, so the list is asked to re-render.
+	// The strip says what it was drawn with (ui.StatusPollPath); when that is no
+	// longer true, the strip is asked to re-fetch (ui.AgentsAwaitingEvent).
 	stale := false
 	if drawn := r.URL.Query().Get("awaiting"); drawn != "" && (drawn == "1") != awaiting {
 		stale = true
 	}
 	// The work chip too (agent_work.go): a report that expired is announced by no
-	// POST, so this poll is what takes a dead pod's chip off the card.
+	// POST, so this poll is what takes a dead pod's chip off the strip.
 	if drawn := r.URL.Query().Get("work"); drawn != "" && drawn != ui.WorkPollToken(s.cardWork(a.ID, status)) {
+		stale = true
+	}
+	// And the status itself: the poll swaps only its icon, so the strip's
+	// data-agent-status — which the ⋯ menu's Start/Stop follows — is redrawn by
+	// asking for the strip when the status moved.
+	if drawn := r.URL.Query().Get("status"); drawn != "" && drawn != status {
 		stale = true
 	}
 	if stale {
@@ -479,7 +431,8 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	rows := make([]ui.NotificationRow, 0, len(unread))
 	for _, u := range unread {
 		rows = append(rows, ui.NotificationRow{
-			Name: u.AgentName, DisplayName: u.DisplayName, SessionID: u.SessionID, Count: u.Count,
+			Name: u.AgentName, SessionID: u.SessionID, Count: u.Count,
+			SessionName: s.agentName(ctx, agents.Agent{ID: u.AgentID, Name: u.AgentName, DisplayName: u.DisplayName, DisplayNameSource: u.DisplayNameSource}),
 		})
 	}
 	active := s.activeNotificationRows(ctx)
@@ -520,7 +473,7 @@ func (s *Server) activeNotificationRows(ctx context.Context) []ui.ActiveRow {
 		if err != nil {
 			continue
 		}
-		row.DisplayName = a.DisplayName
+		row.SessionName = s.agentName(ctx, a)
 		if sess, serr := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name); serr == nil {
 			row.SessionID = sess.ID
 		}
@@ -564,18 +517,22 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // this literal for the LIST and cardViewFor wrote its own for the single-card
 // re-render (the inline rename's Cancel, GET /ui/agents/{id}/card) — the same
 // eleven fields, spelled twice, with the only difference being that one fetched
-// the instance index itself. A card composed in two places is a card that
-// disagrees with itself after the next additive field: the list would show a
-// badge the re-rendered card drops, which reads as "the warning went away".
+// the instance index itself. A view composed in two places is a view that
+// disagrees with itself after the next additive field: one surface would show
+// a badge the other drops, which reads as "the warning went away". (The list
+// and the single-card re-render are retired; the sidebar, the switcher and the
+// agent page all read this one.)
 // TestOneCardComposerFeedsEverySurface pins the single site.
 //
 // The status is reconciled against live instances through liveStatusIndexed, so
-// callers in a loop pass an index they fetched once; cardViewFor is the
+// callers in a loop pass an index they fetched once; agentPageCard is the
 // single-agent spelling.
-func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, isChief func(agents.Agent) bool, pinned pins.Set, focused focusIndex) ui.AgentCardView {
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, sessionID int64, isChief func(agents.Agent) bool, pinned pins.Set, focused focusIndex) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
-		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
+		// SessionID: the latest session, read once per render by the caller — what
+		// every link to this agent names (ui.AgentCardView.PageHref).
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: focused.agentName(a), SessionID: sessionID,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		Repo: a.Repo, Status: status, KickedOff: a.KickedOff, Model: a.Model,
 		// 🔴 THE BOOLEAN, NEVER a.PendingNote. agents.KickoffOwed reads the note to
@@ -593,18 +550,24 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// Decided from kickoff_error's muster-written prefix too; the boolean crosses.
 		KickoffAwaitingGrant: agents.KickoffAwaitingGrant(a),
 		GitHubProblem:        s.githubAgentProblem(a),
-		Namespace:            a.Namespace,
-		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// The outcome and its reason (agent_outcome.go), scrubbed of the note.
+		Outcome:       a.Outcome,
+		OutcomeReason: agents.ScrubNote(a.OutcomeReason, a.PendingNote),
+		Namespace:     a.Namespace,
+		NoteID:        a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
 		IsChief: isChief(a),
+		// The officer it is an instance of (officerOfRow, THE binding rule),
+		// "" for none: the sidebar draws it through its officer's row.
+		Officer: s.officerKeyOf(a),
 		// The viewer's pin (internal/pins), read once per render by the caller.
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
-		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
-		// agent blocked at a permission prompt.
+		// The polled badge's own answer (in memory), so the waiting predicate
+		// (ui's listEntry.waiting) finds an agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
 		// The pod's live work counts (agent_work.go): none unless it is running,
 		// and expired when stale.
@@ -612,54 +575,28 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 	}
 }
 
-// cardViewFor builds the single-card view for one agent, fetching the live
-// instance index itself. Used by the inline-rename re-render and the cancel/card
-// re-fetch. Do NOT use it in a loop — see liveStatus.
-//
-// The chief answer needs the whole list (the chief is resolved across it). A
-// failed read degrades to the reserved-slug half of the predicate only — the
-// card then may offer a Delete the server still refuses, which is the safe
-// direction to be wrong in.
-func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
+// agentPageCard is the agent page's card view (ui.AgentDetailView.Card): what
+// its status strip, ⋯ menu and notices draw — the retired Agents list's card,
+// composed by the ONE composer (cardViewIndexed) against the instance index
+// the page already read (idx: its status is the page's), so the strip and the
+// page cannot disagree. The chief answer needs the whole list; a failed read
+// degrades to the reserved-slug half of the predicate (the menu may then offer
+// a Delete the server still refuses — the safe direction to be wrong in).
+func (s *Server) agentPageCard(ctx context.Context, a agents.Agent, idx map[string]*provision.Instance) ui.AgentCardView {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
-		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
+		s.logger.Printf("agents: page card %d: list for chief check: %v", a.ID, err)
 		list = nil
 	}
-	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
-	// The same badge the list draws, so a re-rendered card keeps it.
-	one := []ui.AgentCardView{v}
-	s.withCardAttention(ctx, one, nil)
-	return one[0]
+	v := s.cardViewIndexed(a, idx, time.Time{}, 0, chiefPredicate(list), pins.Set{}, nil)
+	v.DeleteProtected = s.deleteProtection(list)(a)
+	v.CanRotateCredentials = s.canRotateCredentials(ctx, a)
+	return v
 }
 
-// handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename
-// form that REPLACES the card (outerHTML swap of #agent-{id}).
-func (s *Server) handleAgentRenameForm(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	a, err := s.ext.Agents.Get(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.NotFound(w, r)
-			return
-		}
-		s.logger.Printf("agents: rename form %d: %v", id, err)
-		http.Error(w, "could not load agent", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentRename(w, ui.AgentCardView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName}); err != nil {
-		s.logger.Printf("agents: render rename form %d: %v", id, err)
-	}
-}
-
-// handleAgentCard serves GET /ui/agents/{id}/card: re-renders one agent card
-// (used to cancel the inline rename), swapped as outerHTML of #agent-{id}.
-func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
+// handleAgentHeader serves GET /ui/agents/{id}/header: the agent page's status
+// strip, with its ⋯ menu and notices out of band (ui.RenderAgentHeader).
+func (s *Server) handleAgentHeader(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -672,19 +609,22 @@ func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.logger.Printf("agents: card %d: %v", id, err)
+		s.logger.Printf("agents: header %d: %v", id, err)
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentCard(w, s.cardViewFor(ctx, a)); err != nil {
-		s.logger.Printf("agents: render card %d: %v", id, err)
+	w.Header().Set("Cache-Control", "no-store")
+	if err := ui.RenderAgentHeader(w, s.agentPageCard(ctx, a, s.instanceIndex(ctx))); err != nil {
+		s.logger.Printf("agents: render header %d: %v", id, err)
 	}
 }
 
 // handleAgentName handles POST /agents/{id}/name: update the agent's display
-// name (the slug Name is immutable) and re-render the card (outerHTML swap of
-// #agent-{id}). A blank name falls back to the slug so the card stays labelled.
+// name (the slug Name is immutable). The agent page's rename form posts it;
+// with htmx the answer renames the page that posted it IN PLACE — its header,
+// its tab title, its dialogs and the switcher (name_drift.go), the sidebar by
+// agents:changed. A blank name falls back to the slug.
 func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -697,7 +637,28 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	ctx := r.Context()
-	updated, err := s.ext.Agents.SetDisplayName(ctx, id, name)
+	// 🔴 SAVING THE NAME IT ALREADY HAS CHANGES NOTHING: the dialog is
+	// prefilled with what the agent is called now, and a Save that kept an
+	// automatic (auto or task) name must not make it the person's.
+	a, gerr := s.ext.Agents.Get(ctx, id)
+	// done answers the rename: with htmx, IN PLACE on the page that posted
+	// it (name_drift.go); a plain form post (no script) is sent back to the
+	// agent's page with a 303, as the mirrored session's rename route does.
+	// renamed is the agent as it is now.
+	done := func(renamed agents.Agent) {
+		if r.Header.Get("HX-Request") == "" && gerr == nil {
+			http.Redirect(w, r, ui.AgentPath(a.Name), http.StatusSeeOther)
+			return
+		}
+		s.answerAgentRenamed(w, r, renamed)
+	}
+	if gerr == nil && name != "" {
+		if n := s.agentName(ctx, a); n.Source != sessionname.SourceManual && n.Human() && n.Text == name {
+			done(a)
+			return
+		}
+	}
+	renamed, err := s.ext.Agents.SetDisplayName(ctx, id, name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -707,159 +668,7 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update name", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentCard(w, s.cardViewFor(ctx, updated)); err != nil {
-		s.logger.Printf("agents: render card after rename %d: %v", id, err)
-	}
-}
-
-// handleAgentCreate handles POST /agents: build the record, then provision only when
-// the action is a dispatch.
-//
-// 🔴 THIS COMMENT HAS NOW BEEN WRONG IN TWO OPPOSITE DIRECTIONS, WHICH IS WHY IT SAYS
-// SO. It read "save = provision at 0 replicas". That was wrong when written — a save
-// reached Provisioner.Dispatch(kickoff=false), and provision.Spec.Replicas ZERO MEANS
-// ONE, so the instance came up with a replica running — and it is wrong again now in
-// the other direction, because the lifecycle adapter creates NOTHING on that path.
-// A save provisions nothing at all; Start is what provisions a saved agent. The gate
-// check below relies on exactly that, which is why this sentence is load-bearing
-// rather than decorative.
-func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	action := r.FormValue("action")
-	// 🔴 REFUSE A DISPATCH THIS DEPLOYMENT CANNOT SATISFY *HERE*, BEFORE THE ROW,
-	// BECAUSE THE PROVISIONER'S OWN REFUSAL CANNOT REACH THE PERSON WHO CLICKED.
-	// createAndDispatchAgent calls Dispatch inside safeGo — after the row exists and
-	// after this handler has answered — so a refusal there is a log line plus a red
-	// dot whose reason reaches no HTML surface. That was measured: with a kickoff
-	// undeliverable, POST /agents answered 200, rendered the agents list, and the
-	// operator's only evidence was a status colour.
-	//
-	// ⚠ ONLY action=dispatch IS REFUSED. "Save for later" asks for nothing this
-	// deployment cannot do, it is the operation the refusal's own remedy text points
-	// at, and refusing it would make that remedy a lie — the same asymmetry
-	// agentprovision.Adapter.Dispatch draws one layer down, and for the same reason.
-	// Both halves are pinned by TestADispatchIsRefusedWhileASaveAndAStartAreNot.
-	//
-	// 🔴 THE ANSWER IS THE PROVISIONER'S, NOT A SECOND OPINION ABOUT THE
-	// CONFIGURATION. Asking the implementation is what makes this pre-flight unable
-	// to disagree with what the dispatch would have done; computing it here from
-	// Extensions fields would be two expressions over one condition.
-	if action == "dispatch" {
-		if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-			// 409 rather than 503: the request conflicts with the deployment's
-			// current state and NOTHING about retrying it later is different, which
-			// is what 503 would promise. Same status and same shape as the
-			// `gate:<reason>` refusal below — internal/ui's htmx:responseError
-			// handler toasts the body verbatim, so this text is what the operator
-			// reads.
-			http.Error(w, reason, http.StatusConflict)
-			return
-		}
-	}
-	repo := strings.TrimSpace(r.FormValue("repo"))
-	branch := strings.TrimSpace(r.FormValue("repo_branch"))
-	model := strings.TrimSpace(r.FormValue("model"))
-	noteText := strings.TrimSpace(r.FormValue("note_text"))
-	kind := strings.TrimSpace(r.FormValue("kind"))
-	ccAccount := strings.TrimSpace(r.FormValue("cc_account"))
-	workerPool := strings.TrimSpace(r.FormValue("worker_pool"))
-
-	// Resolve the kickoff note: an existing note's body takes precedence.
-	var noteID *int64
-	if v := r.FormValue("note_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil && s.ext.Notes != nil {
-			if n, err := s.ext.Notes.Get(ctx, id); err == nil {
-				// A `gate:<reason>` routing tag means the task is NOT dispatchable yet.
-				// The card disables its Dispatch button, but this is the authoritative
-				// check (defense in depth — the modal can be opened by other paths).
-				// Refuse a real dispatch with 409 + the reason; "save for later" is
-				// still allowed (it provisions nothing).
-				if reason, gated := notes.GateReason(n.Tags); gated && action == "dispatch" {
-					http.Error(w, "task is gated ("+reason+") — remove the gate: tag to dispatch", http.StatusConflict)
-					return
-				}
-				noteText = n.Body
-				noteID = &id
-			}
-		}
-	}
-
-	if _, err := s.createAndDispatchAgent(ctx, dispatchParams{
-		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
-		Kickoff: action == "dispatch",
-		Kind:    kind, CCAccount: ccAccount, WorkerPool: workerPool,
-	}); err != nil {
-		s.logger.Printf("agents: create/dispatch: %v", err)
-		// A kind/account refusal is decided BEFORE the row exists and is the
-		// operator's to act on — the toast shows this text verbatim.
-		if errors.Is(err, ErrDispatchRefused) {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		// An uncredentialed model is the OPERATOR's typo, not a server fault, and
-		// the message carries the corrected slug — answer 400 with it rather than
-		// burying the one useful sentence in a log behind a generic 500.
-		if errors.Is(err, agents.ErrModelNotCredentialed) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Error(w, "could not create agent", http.StatusInternalServerError)
-		return
-	}
-
-	// Dispatching FROM a task advances it open→in_progress so its card reflects
-	// that an agent is now working it. Only for a real dispatch (not "save"), only
-	// when the task is still open (never downgrade a later status), and always
-	// best-effort — a status failure must not fail the dispatch the user just made.
-	if action == "dispatch" && noteID != nil {
-		s.advanceTaskToInProgress(ctx, *noteID)
-	}
-
-	// 🔴 THE ANSWER HAS TO FIT THE DOCUMENT THAT ASKED. The default response is
-	// the agents list, morphed into #agents-list — an element that exists ONLY on
-	// the shell. Dispatching from /tasks/{id} would target nothing, and htmx
-	// resolves hx-target BEFORE sending, so the POST was never made at all: no
-	// agent, no error, no toast, and a modal that stayed open. The detail page
-	// gets its own card back instead, which is where the dispatch's effect is
-	// visible anyway (open → in_progress, plus the new agent's status chip).
-	if noteID != nil && rendersInDetailShape(r, *noteID) {
-		note, err := s.ext.Notes.Get(ctx, *noteID)
-		if err == nil {
-			s.renderNoteCard(w, r, note)
-			return
-		}
-		// 🔴 DO NOT FALL THROUGH TO THE AGENTS LIST HERE, and the comment that used
-		// to sit in this branch called it a merely "wrong target". It is worse than
-		// that: #task-{id} DOES exist on this page, so handleAgentsContent's
-		// agents-list markup morphs cleanly OVER the task card and the detail page
-		// silently shows an unrelated panel where its task was, until something
-		// triggers a resync.
-		//
-		// 204 instead. htmx does not swap a No Content response, so the page keeps
-		// the card it already has — which is correct: the dispatch SUCCEEDED, only
-		// the re-read failed. A request that worked still answers 2xx; nothing is
-		// rendered that is not true.
-		//
-		// 🔴 AND THE RECOVERY IS NOW REAL. This comment used to end "…and
-		// taskDetailLive re-fetches on the next sse:agent.changed /
-		// muster:resync anyway", which was NOT established: the agent.changed
-		// for this dispatch fires from inside createAndDispatchAgent, i.e. BEFORE
-		// the status write above, so there was frequently no next one and the page
-		// could sit on `open` until the reader changed tab. advanceTaskToInProgress
-		// now broadcasts task.changed AFTER its commit, which taskDetailLive also
-		// listens for — so this branch strands nothing, and the re-fetch it
-		// triggers reads the advanced status rather than racing it.
-		s.logger.Printf("agents: reload task %d after dispatch: %v", *noteID, err)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	s.handleAgentsContent(w, r)
+	done(renamed)
 }
 
 // advanceTaskToInProgress flips a task open→in_progress after a dispatch. It
@@ -876,11 +685,23 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 		s.logger.Printf("agents: dispatch status get task %d: %v", noteID, err)
 		return
 	}
-	if n.Status != notes.StatusOpen {
+	// A reference advances (a queued in_progress for its upstream) only from
+	// an open SNAPSHOT: one already in progress upstream (dispatchableStatus
+	// lets the chief start an agent on it) needs no write, and one in review
+	// or complete there must not be pulled back.
+	from := n.Status
+	if n.Ref != nil {
+		from = n.Ref.Snapshot.Status
+	}
+	if from != notes.StatusOpen {
 		return
 	}
 	if _, err := s.setNoteStatus(ctx, writerDispatchAdvance, noteID, notes.StatusInProgress); err != nil {
-		s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		// A reference's advance is queued for its upstream (task_ref_queue.go),
+		// which broadcast already: the row moves when the plugin confirms.
+		if !errors.Is(err, errQueuedUpstream) {
+			s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		}
 		return
 	}
 	// 🔴 BROADCAST AFTER THE COMMIT, AND THIS IS THE ONLY POST-COMMIT EVENT THE
@@ -901,7 +722,7 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 	//
 	// Two things follow. Other open tabs and the board learned of the advance
 	// only by accident (an agent status tick, or a resync). And the 204 branch in
-	// handleAgentCreate promised "taskDetailLive re-fetches on the next
+	// the (since deleted) dispatch form's handleAgentCreate promised "taskDetailLive re-fetches on the next
 	// sse:agent.changed / muster:resync anyway" — a promise nothing kept, since
 	// the agent.changed for THIS dispatch had already fired. This broadcast is
 	// what makes it true: it is emitted after the status is committed, so the
@@ -912,6 +733,11 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 
 // dispatchParams are the inputs to create + provision an agent.
 type dispatchParams struct {
+	// Settled, when set, runs once the background dispatch (or start) of the
+	// new agent rec has ended, with its error: a manager's team chief
+	// provision is audited then (team_admin.go). It runs at once for a save,
+	// which starts nothing. nil: nothing.
+	Settled func(rec agents.Agent, err error)
 	// Name is a fixed slug (today: only agents.ChiefName, from handleChiefProvision);
 	// empty → auto-generated by BuildUniqueAgentName. ⚠ It read "e.g. the operator"
 	// until upstream task #653 phase two deleted handleOperatorProvision, which was
@@ -922,41 +748,54 @@ type dispatchParams struct {
 	// derives a task-labelled name ("#<id> · <title>"); otherwise it falls back to
 	// the slug Name.
 	DisplayName string
-	Repo        string
-	RepoBranch  string // explicit branch; empty → resolved to the repo's GitHub default (fallback "main")
-	Model       string
-	NoteText    string
-	NoteID      *int64
-	Kickoff     bool
+	// DisplayNameSource is who chose DisplayName (agents.NameDispatch for a
+	// task's, agents.NameSystem for a role's: the chief, an officer). It
+	// ranks the name (internal/sessionname): both outrank the session's auto
+	// name, so neither changes on its own. "" with a DisplayName is
+	// agents.NameDispatch.
+	DisplayNameSource string
+	Repo              string
+	RepoBranch        string // explicit branch; empty → resolved to the repo's GitHub default (fallback "main")
+	Model             string
+	NoteText          string
+	NoteID            *int64
+	Kickoff           bool
 	// Kind is the agent kind to create ("" = agents.KindGateway). It must be one
 	// Extensions.Kinds enables.
 	Kind string
 	// CCAccount PINS a claude-code agent's Claude account; "" lets the pool
 	// choose. Refused for any other kind.
 	CCAccount string
+	// CCAccountChosen says CCAccount was already chosen BY THE POOL (the chief
+	// replacement resolves its account before it deletes the old chief), so it
+	// is not a pin: the agent is created unpinned and fails over by default.
+	CCAccountChosen bool
+	// CCFailover opts a PINNED agent in to account failover
+	// (agents.Agent.CCFailover); an unpinned one fails over without it.
+	CCFailover bool
 	// WorkerPool makes a claude-code agent a member of that machine-job worker
 	// pool (agents.Agent.WorkerPool); "" for none. Refused for any other kind
 	// and for a name agents.ValidWorkerPool refuses.
 	WorkerPool string
+	// StartWithoutKickoff brings the new agent up with Provisioner.Start
+	// instead of Dispatch: an instance with no first turn claimed — what the
+	// deleted form's "Save for later, then Start" ended in — WITHOUT the save. The row
+	// is created `provisioning` and Start keeps it so; a save would store
+	// `stopped` first, and in that window the agent would drop out of the
+	// chief's live count (agent_dispatch's worker_pool without a prompt).
+	StartWithoutKickoff bool
+	// DispatchedBy is the chief agent starting this one (agent_dispatch), 0 for
+	// every other door: its outcome is then also said in that chief's chat
+	// (agent_outcome.go).
+	DispatchedBy int64
+	// TrackOutcome: this start is a DISPATCH whose work must end in an outcome
+	// (agent_outcome.go) — POST /api/agents and the chief's agent_dispatch. An
+	// officer's instance and the chief's own provisioning are not tracked.
+	TrackOutcome bool
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
 const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's own settings choose it); leave the model unset"
-
-// hermesModelRefusal applies agentspec.HermesModelID — the rule a hermes pod's
-// spec is built by — to a model a dispatch or a model change names for a
-// hermes agent, so a model the pod cannot run is refused before anything is
-// created or stored. An empty model (the deployment's default) is left to the
-// build. Any other kind: nil.
-func hermesModelRefusal(kind, model string) error {
-	if agents.ResolveKind(kind) != agents.KindHermes || model == "" {
-		return nil
-	}
-	if _, err := agentspec.HermesModelID(model); err != nil {
-		return fmt.Errorf("%w: a %s agent: %v", ErrDispatchRefused, agents.KindHermes, err)
-	}
-	return nil
-}
 
 // ErrDispatchRefused marks a dispatch refused before anything was created: a
 // kind this deployment does not enable, an account pin for a kind that has none,
@@ -965,7 +804,7 @@ var ErrDispatchRefused = errors.New("dispatch refused")
 
 // resolveKind is resolveKindAccount's kind half: the kind a dispatch names,
 // resolved, known, enabled on this deployment and usable by the caller — or the
-// refusal. The chief's task_dispatch asks it BEFORE it spends a reservation, so
+// refusal. The chief's agent_dispatch asks it BEFORE it spends a reservation, so
 // a kind it can never start is refused without one; createAndDispatchAgent asks
 // it again, through resolveKindAccount.
 func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
@@ -992,36 +831,72 @@ func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
 // row exists.
 //
 // 🔴 THE ACCOUNT IS CHOSEN HERE, ONCE, AND STORED ON THE ROW — the agent keeps
-// it for life (migration 0003 refuses a change). Every later build of this
-// agent's spec reads the stored name; nothing re-selects.
+// it until an account failover moves it (internal/ccfailover; migration 0003's
+// trigger refuses every other change). Every later build of this agent's spec
+// reads the stored name; nothing else re-selects.
 func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind, account string, err error) {
+	if s.ext.ComposeChief != nil {
+		return s.composeChiefKindAccount(ctx, p)
+	}
 	kind, err = s.resolveKind(ctx, p.Kind)
 	if err != nil {
 		return "", "", err
 	}
-	if kind != agents.KindClaudeCode {
-		if p.CCAccount != "" {
-			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
-		}
-		if err := hermesModelRefusal(kind, p.Model); err != nil {
-			return "", "", err
-		}
-		return kind, "", nil
+	account, err = s.resolveAccount(ctx, kind, p.CCAccount, p.Model)
+	if err != nil {
+		return "", "", err
 	}
-	if p.Model != "" {
-		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
+	return kind, account, nil
+}
+
+// resolveAccount is resolveKindAccount's account half, for an already-resolved
+// kind: the Claude account a new agent of kind runs on — pin when it names one
+// of the caller's accounts, else the pool's choice — or the refusal. A pin on
+// any other kind is refused, and so is a model on claude-code. It reads and
+// writes nothing but the account pool's own read (SelectClaudeAccount), so a
+// door that must refuse BEFORE it holds anything (dispatch_request) asks it
+// too: one rule, the one POST /api/agents applies at the create.
+func (s *Server) resolveAccount(ctx context.Context, kind, pin, model string) (string, error) {
+	if kind != agents.KindClaudeCode {
+		if pin != "" {
+			return "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
+		}
+		return "", nil
+	}
+	if model != "" {
+		return "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
 	}
 	// A repository IS taken (unlike a model): ccd checks it out before it starts
 	// the CLI and runs the CLI in the checkout (agentspec.podRepo,
 	// cmd/ccd/checkout.go).
 	if s.ext.Kinds == nil {
-		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
+		return "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
 	}
-	account, err = s.ext.Kinds.SelectClaudeAccount(ctx, callerID(ctx), p.CCAccount)
+	account, err := s.ext.Kinds.SelectClaudeAccount(ctx, callerID(ctx), pin)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
+		return "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
 	}
-	return kind, account, nil
+	return account, nil
+}
+
+// checkWorkerPool is THE worker-pool rule of an agent's create (POST
+// /api/agents and every door through createAndDispatchAgent, and
+// dispatch_request before it holds): a pool is machine jobs', which run on
+// claude-code agents only (migration 0041's agents_worker_pool_check refuses
+// the row as well), and its name is agents.ValidWorkerPool's. A pool exists by
+// its members: there is no registry of pools to look a name up in, so a valid
+// name is a known pool (a new one forms with its first worker). nil for no
+// pool.
+func checkWorkerPool(kind, pool string) error {
+	switch {
+	case pool == "":
+		return nil
+	case kind != agents.KindClaudeCode:
+		return fmt.Errorf("%w: worker_pool %q: only a %s agent can be a machine-job worker", ErrDispatchRefused, pool, agents.KindClaudeCode)
+	case !agents.ValidWorkerPool(pool):
+		return fmt.Errorf("%w: worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'", ErrDispatchRefused, pool)
+	}
+	return nil
 }
 
 // resolveRepoBranch decides which branch a repo-backed agent clones. An explicit
@@ -1049,8 +924,8 @@ func (s *Server) resolveRepoBranch(ctx context.Context, repo, branch string) str
 // 🔴 STORED UNCUT, TO A STORAGE BOUND ONLY. It used to be cut to 40 runes here,
 // which landed mid-markdown — "Fix the [login page](https://example.com…" —
 // and a cut link can never be plained at render. The title rule
-// (internal/textplain) runs on the whole line at render, and the card clamps
-// the PLAIN text (clampTitle). dispatchTitleMaxRunes only keeps a runaway
+// (internal/textplain) runs on the whole line at render, and the agent page
+// header clamps the PLAIN text (clampTitle). dispatchTitleMaxRunes only keeps a runaway
 // first line out of the row.
 func dispatchDisplayName(noteID int64, noteText string) string {
 	id := strconv.FormatInt(noteID, 10)
@@ -1066,32 +941,25 @@ func dispatchDisplayName(noteID int64, noteText string) string {
 const dispatchTitleMaxRunes = 300
 
 // createAndDispatchAgent inserts an agent record and provisions it in the
-// background (kickoff sends the note as the first message). Shared by the human
-// dispatch form and the chief provision.
+// background (kickoff sends the note as the first message); a save (no kickoff,
+// no StartWithoutKickoff) is only the `stopped` row, with no background step.
+// Shared by the human dispatch form and the chief provision.
 func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (agents.Agent, error) {
 	kind, account, err := s.resolveKindAccount(ctx, p)
 	if err != nil {
 		return agents.Agent{}, err
 	}
 	// A worker pool is machine jobs', which run on claude-code agents only
-	// (migration 0041's agents_worker_pool_check refuses the row as well).
-	if p.WorkerPool != "" {
-		if kind != agents.KindClaudeCode {
-			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q: only a %s agent can be a machine-job worker", ErrDispatchRefused,
-				p.WorkerPool, agents.KindClaudeCode)
-		}
-		if !agents.ValidWorkerPool(p.WorkerPool) {
-			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'", ErrDispatchRefused, p.WorkerPool)
-		}
+	// (checkWorkerPool, the one rule).
+	if err := checkWorkerPool(kind, p.WorkerPool); err != nil {
+		return agents.Agent{}, err
 	}
 	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
-	// door (the forms, the API, task_dispatch): its session starts PRE-TRUSTED
+	// door (the forms, the API, agent_dispatch): its session starts PRE-TRUSTED
 	// in the checkout (ccd seed), so the repository's .claude/settings.json
 	// (hooks, env) runs beside the subscription token. One predicate,
-	// connectedRepo, the same task_dispatch applies to every kind before it
+	// connectedRepo, the same agent_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
-	// The same holds for a hermes agent: hermesd checks the repository out and
-	// Hermes runs in it, loading its AGENTS.md (agents.RunsPodSupervisor).
 	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
 			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
@@ -1103,6 +971,18 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// rule cannot be right in one and absent in the other. See
 	// agents/modelauth.go for the measured failure this prevents — an agent that
 	// runs forever on its FALLBACK model while reporting nothing wrong.
+	//
+	// 🔴 AND, FIRST, A MODEL THAT IS NOT IN THE CATALOGUE (model_validate.go): a
+	// display name the runtime would read as a model of its default provider,
+	// failing every turn while the agent read `running`. A name that maps to one
+	// model is resolved to its id here; anything else is refused before the row.
+	if p.Model != "" {
+		model, err := s.checkAgentModel(ctx, p.Model)
+		if err != nil {
+			return agents.Agent{}, err
+		}
+		p.Model = model
+	}
 	if err := agents.ValidateModelCredential(p.Model); err != nil {
 		return agents.Agent{}, err
 	}
@@ -1114,15 +994,18 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		}
 		name = n
 	}
-	// Name the agent after its source task when dispatched from one, so the card
+	// Name the agent after its source task when dispatched from one, so the agent
 	// reads "#42 · fix the login bug" rather than the opaque slug. The k8s-safe
 	// slug Name is left untouched (the pod/namespace key stays stable). An explicit
 	// p.DisplayName wins; a task-less dispatch keeps the slug as the display name.
-	displayName := name
+	displayName, nameSource := name, agents.NameDefault
 	if p.DisplayName != "" {
-		displayName = p.DisplayName
+		displayName, nameSource = p.DisplayName, agents.NameDispatch
+		if p.DisplayNameSource != "" {
+			nameSource = p.DisplayNameSource
+		}
 	} else if p.NoteID != nil {
-		displayName = dispatchDisplayName(*p.NoteID, p.NoteText)
+		displayName, nameSource = dispatchDisplayName(*p.NoteID, p.NoteText), agents.NameDispatch
 	}
 	// 🔴 Namespace BELOW IS THE DEPLOYMENT'S PREFIX, NOT THIS PACKAGE'S CONSTANT.
 	// It read agents.NamespaceFor(name) — the package default — while the driver
@@ -1130,33 +1013,82 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// namespaces that hold nothing and read as "never provisioned". Nothing places
 	// anything with this value, so the disagreement failed nowhere. See
 	// Extensions.AgentNamespacePrefix and Extensions.AgentNamespace.
+	//
+	// 🔴 A STOPPED CREATE ("save for later": no kickoff, no Start) IS INSERTED
+	// `stopped`, NOT `provisioning`. Its old background step
+	// (agentprovision.Adapter.Dispatch with kickoff=false) built nothing — no
+	// driver call, no token — and only wrote `stopped`; it is no longer started
+	// at all (below). Inserted `provisioning`, the row read as live until that
+	// goroutine ran, AFTER the 201: the account
+	// pool's live count (ccpool.PGStore.LiveCounts) counted it, so a create
+	// right after it was steered to another account by Choose's fewest-live
+	// rank. The pool worker (StartWithoutKickoff) keeps `provisioning`: it IS
+	// coming up and must hold its live slot (TestAPoolWorkerStaysLiveWhileItStarts).
+	// Guarded by TestAStoppedCreateDoesNotSteerTheNextAccountChoice.
+	saved := !p.Kickoff && !p.StartWithoutKickoff
+	status := agents.StatusProvisioning
+	if saved {
+		status = agents.StatusStopped
+	}
 	rec, err := s.ext.Agents.Create(ctx, agents.Agent{
-		Name:        name,
-		Namespace:   s.ext.AgentNamespace(name),
-		DisplayName: displayName,
-		Repo:        p.Repo,
-		RepoBranch:  s.resolveRepoBranch(ctx, p.Repo, p.RepoBranch),
-		Model:       p.Model,
-		NoteID:      p.NoteID,
-		NoteText:    p.NoteText,
-		PendingNote: p.NoteText,
-		Status:      agents.StatusProvisioning,
-		Kind:        kind,
-		CCAccount:   account,
-		WorkerPool:  p.WorkerPool,
+		Name:              name,
+		Namespace:         s.ext.AgentNamespace(name),
+		DisplayName:       displayName,
+		DisplayNameSource: nameSource,
+		Repo:              p.Repo,
+		RepoBranch:        s.resolveRepoBranch(ctx, p.Repo, p.RepoBranch),
+		Model:             p.Model,
+		NoteID:            p.NoteID,
+		NoteText:          p.NoteText,
+		PendingNote:       p.NoteText,
+		Status:            status,
+		Kind:              kind,
+		CCAccount:         account,
+		// A pin is an account the CALLER named; the pool's own choice is not.
+		CCAccountPinned: account != "" && p.CCAccount != "" && !p.CCAccountChosen,
+		CCFailover:      account != "" && p.CCFailover,
+		WorkerPool:      p.WorkerPool,
 	})
 	if err != nil {
 		return agents.Agent{}, err
 	}
-	// The agent was just created (provisioning): nudge open Tasks/Agents tabs so a
-	// task's linked-agent chip + the agents list appear live (best-effort).
+	// A first turn is owed: the agent's work now has an outcome to end in
+	// (agent_outcome.go) — running until it answers, fails or goes quiet.
+	if p.Kickoff && p.TrackOutcome {
+		s.outcomeDispatched(ctx, rec, p.DispatchedBy)
+	}
+	// The agent was just created (provisioning, or stopped when saved): nudge open pages so a task's
+	// linked-agent chip + the sidebar's agent list appear live (best-effort).
 	s.agentChangedFor(requestOwner(ctx), rec.Name)
+	// 🔴 A SAVE STARTS NO BACKGROUND STEP. The row is already `stopped` (above),
+	// which is all Provisioner.Dispatch(kickoff=false) would write — and it writes
+	// it UNCONDITIONALLY, so a Start issued between this 201 and that goroutine
+	// running was overwritten back to `stopped` over the instance the Start had
+	// just brought up (and with first_started_at stamped, the reaper would later
+	// tear down a live agent). Guarded by
+	// TestAStartRightAfterASaveIsNotOverwrittenBackToStopped.
+	if saved {
+		if p.Settled != nil {
+			p.Settled(rec, nil)
+		}
+		return rec, nil
+	}
 	// WithoutCancel: the dispatch outlives this request, but it must keep the
 	// request's principal — row-level security scopes every store call the
 	// adapter makes to it (see Provisioner).
 	opCtx := context.WithoutCancel(ctx)
 	safeGo(s.logger, "dispatch "+rec.Name, func() {
-		if err := s.ext.Provisioner.Dispatch(opCtx, rec.ID, p.Kickoff); err != nil {
+		var err error
+		if p.Settled != nil {
+			defer func() { p.Settled(rec, err) }()
+		}
+		if p.StartWithoutKickoff && !p.Kickoff {
+			if err = s.ext.Provisioner.Start(opCtx, rec.ID); err != nil {
+				s.logger.Printf("agents: start %s: %v", rec.Name, err)
+			}
+			return
+		}
+		if err = s.ext.Provisioner.Dispatch(opCtx, rec.ID, p.Kickoff); err != nil {
 			s.logger.Printf("agents: dispatch %s: %v", rec.Name, err)
 			return
 		}
@@ -1165,50 +1097,146 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 }
 
 func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
-	// 🔴 A START IS REFUSED, LIKE A DISPATCH, FOR A KIND THE CALLER HAS NO
-	// CREDENTIAL FOR — 409 with what to add. Start re-applies the agent's spec
-	// through its owner's credentials (agentprovision.Adapter.Start), so a
-	// member who deleted their key would only get a background failure; this
-	// says why at the door. The row is read as the caller (row-level security),
-	// so another user's agent is not found here and falls through to the
-	// lifecycle path exactly as before.
-	if s.ext.Kinds != nil && s.ext.Agents != nil {
-		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
-				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
-					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
-					return
-				}
-			}
-		}
-	}
-	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
+	s.agentLifecycleRoute(w, r, lifecycleStart)
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
-	// A stopped pod cannot post its own clear: forget its work report now.
-	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		s.clearAgentWork(id)
-	}
-	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
+	s.agentLifecycleRoute(w, r, lifecycleStop)
 }
 
-// agentLifecycle runs a start/stop action in the background then re-renders the
-// agents panel.
-func (s *Server) agentLifecycle(w http.ResponseWriter, r *http.Request, action func(context.Context, int64) error, label string) {
+// agentLifecycleRoute is POST /agents/{id}/start and /stop: the agent page's
+// Start and Stop. A MANAGER on a team agent acts AS THE TEAM (teamLifecycle,
+// team_admin.go): the refusal and the provisioner then read the team's
+// credentials, never the manager's own.
+//
+// 🔴 A START IS REFUSED, LIKE A DISPATCH, FOR A KIND THE CALLER HAS NO
+// CREDENTIAL FOR — 409 with what to add (lifecycleRefusal). Start re-applies
+// the agent's spec through its owner's credentials
+// (agentprovision.Adapter.Start), so a member who deleted their key would only
+// get a background failure; this says why at the door. The row is read as the
+// caller (row-level security), so another user's agent is not found here and
+// falls through to the lifecycle path exactly as before.
+func (s *Server) agentLifecycleRoute(w http.ResponseWriter, r *http.Request, step lifecycleStep) {
+	actor := r
+	r, team, a, ok := s.teamLifecycle(w, r)
+	if !ok {
+		return
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	// Detached from the request's cancellation, NOT from its principal.
-	opCtx := context.WithoutCancel(r.Context())
-	safeGo(s.logger, label, func() {
-		if err := action(opCtx, id); err != nil {
-			s.logger.Printf("agents: %s %d: %v", label, id, err)
+	if a.ID == 0 && step != lifecycleStop && s.ext.Kinds != nil && s.ext.Agents != nil {
+		// Not read by the prologue (a principal with no team memberships).
+		if got, err := s.ext.Agents.Get(r.Context(), id); err == nil {
+			a = got
 		}
+	}
+	if a.ID != 0 {
+		if why := s.lifecycleRefusal(r.Context(), a, team, step); why != "" {
+			http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
+			return
+		}
+	}
+	if a.ID == 0 {
+		a.ID = id
+	}
+	s.goLifecycle(actor, r.Context(), team, a, step)
+	w.Header().Set("HX-Trigger", "agents:changed")
+	w.WriteHeader(http.StatusOK)
+}
+
+// lifecycleStep is one step of an agent's lifecycle a browser door takes.
+type lifecycleStep string
+
+const (
+	lifecycleStart   lifecycleStep = "start"
+	lifecycleStop    lifecycleStep = "stop"
+	lifecycleRestart lifecycleStep = "restart"
+)
+
+// lifecycleRefusal is why step on agent a cannot be taken for ctx's principal,
+// or "" — 🔴 ONE RULE FOR EVERY BROWSER DOOR THAT STARTS AN AGENT: the agent
+// page's Start and the team chief page's Restart (team_admin.go), both through
+// goLifecycle. A stop is never refused. A start or a restart is refused for a
+// kind the caller has no credential for (agentStartRefusal) and, on a TEAM's
+// chief (team > 0), for teamChiefRefusal's reasons (a team dropped from the
+// server pool, the claude-code kind off). A restart is checked BEFORE its stop,
+// as chief_restart checks: a refused start never begins with a stop.
+func (s *Server) lifecycleRefusal(ctx context.Context, a agents.Agent, team int64, step lifecycleStep) string {
+	if step == lifecycleStop {
+		return ""
+	}
+	if team > 0 && agents.IsChiefName(a.Name) {
+		if why := s.teamChiefRefusal(ctx, team); why != "" {
+			return why
+		}
+	}
+	return s.agentStartRefusal(ctx, a)
+}
+
+// goLifecycle runs step on agent a in the background, on ctx — detached from
+// the request's cancellation, NOT from its principal — after its refusal was
+// checked (lifecycleRefusal). When it acts for a team (team > 0) the manager's
+// audit row (actor: the original request) is written ONCE THE OUTCOME IS
+// KNOWN, saying whether it succeeded (auditManagerAction).
+func (s *Server) goLifecycle(actor *http.Request, ctx context.Context, team int64, a agents.Agent, step lifecycleStep) {
+	if step != lifecycleStart {
+		// A stopped pod cannot post its own clear: forget its work report now.
+		s.clearAgentWork(a.ID)
+	}
+	opCtx := context.WithoutCancel(ctx)
+	by, auditCtx := actorOf(actor), context.WithoutCancel(actor.Context())
+	safeGo(s.logger, string(step), func() {
+		err := s.runLifecycleStep(opCtx, a.ID, step)
+		if err != nil {
+			s.logger.Printf("agents: %s %d: %v", step, a.ID, err)
+		}
+		s.auditManagerAction(auditCtx, by, team, lifecycleAuditAction(a, team, step), a, err, nil)
 	})
-	s.handleAgentsContent(w, r)
+}
+
+// lifecycleAuditAction is the audit_log action of step on a: chief.<step> for
+// a team's chief, agent.<step> for any other agent.
+func lifecycleAuditAction(a agents.Agent, team int64, step lifecycleStep) string {
+	if team > 0 && agents.IsChiefName(a.Name) {
+		return "chief." + string(step)
+	}
+	return "agent." + string(step)
+}
+
+// runLifecycleStep is THE provisioner calls of a browser lifecycle step: Start
+// (and its restarted outcome), Stop, or Stop then Start. The provisioner
+// methods ARE the lifecycle (agentprovision.Adapter: the spec re-apply, the
+// status writes), so nothing of theirs is re-implemented here. Its routes are
+// behind requireLifecycleProvisioner, the nil barrier.
+func (s *Server) runLifecycleStep(ctx context.Context, id int64, step lifecycleStep) error {
+	if step != lifecycleStart {
+		if err := s.ext.Provisioner.Stop(ctx, id); err != nil {
+			return err
+		}
+		if step == lifecycleStop {
+			return nil
+		}
+	}
+	if err := s.ext.Provisioner.Start(ctx, id); err != nil {
+		return err
+	}
+	s.outcomeRestarted(ctx, id)
+	return nil
+}
+
+// agentStartRefusal is why a start of agent a is refused for its caller, or ""
+// — the kind the caller has no credential for (see agentLifecycleRoute). Every
+// door that starts an agent asks it: lifecycleRefusal (the agent page's Start,
+// the team chief page's Restart) and chief_restart (chief_restart_tool.go),
+// which then calls the provisioner's own Stop and Start and waits.
+func (s *Server) agentStartRefusal(ctx context.Context, a agents.Agent) string {
+	if s.ext.Kinds == nil {
+		return ""
+	}
+	return s.ext.Kinds.Unavailable(ctx, callerID(ctx))[agents.ResolveKind(a.Kind)]
 }
 
 // handleAgentModel handles POST /agents/{id}/model: update the agent's model in
@@ -1249,15 +1277,25 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update model", http.StatusInternalServerError)
 		return
 	}
-	if gerr == nil {
-		if err := hermesModelRefusal(cur.Kind, model); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-	}
 	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
 		return
+	}
+	// The catalogue check (model_validate.go), after the kind's refusal so a
+	// claude-code agent keeps its own sentence: a name resolves to its id, an
+	// unknown value is refused with the closest ids. Re-checked against the
+	// credential rule, since a resolved id is a new slug.
+	if model != "" {
+		resolved, err := s.checkAgentModel(ctx, model)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		model = resolved
+		if err := agents.ValidateModelCredential(model); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	updated, err := s.ext.Agents.SetModel(ctx, id, model)
 	if err != nil {
@@ -1292,7 +1330,10 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAgentDelete tears down the agent (release + namespace + record) in the
-// background and removes its card.
+// background and sends the page that asked home (HX-Redirect): the agent page's
+// ⋯ menu is where Delete is, and the agent it shows is going. Home leaves the
+// deleted agent out (homeTarget's except): its row outlives this response by a
+// moment, and the page must not land back on it.
 //
 // 🔴 THE CHIEF IS REFUSED WITH 409, BEFORE ANYTHING IS STARTED. The teardown is
 // asynchronous, so a check inside it could only log; the refusal has to happen
@@ -1304,11 +1345,31 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
+	// A manager on a team agent destroys it as the team (teamLifecycle): the
+	// chief check and the teardown then see the team's agents, so the team's
+	// chief is refused as a person's chief is.
+	acting, team, ta, ok := s.teamLifecycle(w, r)
+	if !ok {
+		return
+	}
 	var chief errDestroyChief
 	// The provisioner is called HERE, in this route's own closure: the route is
 	// behind requireLifecycleProvisioner, which is its nil barrier.
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	switch _, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{}); {
+	// A manager's delete is audited ONCE THE TEARDOWN HAS ENDED, saying whether
+	// it succeeded (auditManagerAction); nothing for an owner's own agent.
+	var hooks destroyHooks
+	if team > 0 {
+		by, auditCtx := actorOf(r), context.WithoutCancel(r.Context())
+		hooks.done = func(context.Context, agents.Agent) {
+			s.auditManagerAction(auditCtx, by, team, "agent.destroy", ta, nil, nil)
+		}
+		hooks.failed = func(_ context.Context, _ agents.Agent, err error) {
+			s.auditManagerAction(auditCtx, by, team, "agent.destroy", ta, err, nil)
+		}
+	}
+	deleted, err := s.destroyAgent(acting.Context(), id, destroy, hooks)
+	switch {
 	case err == nil:
 	case errors.As(err, &chief):
 		http.Error(w, chief.Error(), http.StatusConflict)
@@ -1318,28 +1379,78 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
 		return
 	}
-	// Empty 200: htmx removes the targeted #agent-<id> card.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	to, herr := s.homeTarget(r, homeExcept{agent: id})
+	if herr != nil {
+		s.logger.Printf("agents: home after delete %d: %v", id, herr)
+	}
+	to = homeAfterDelete(to, deleted.Name)
+	w.Header().Set("HX-Redirect", to)
 	w.WriteHeader(http.StatusOK)
+}
+
+// homeAfterDelete is where a DELETE sends the page: home as computed without
+// the deleted agent (to), or — when that found nowhere, or its read failed —
+// home again LEAVING THE DELETED AGENT (ui.HomeLeavingPath), so neither `/`
+// nor its /agents fallback can land back on the row the teardown has not
+// removed yet.
+func homeAfterDelete(to, deleted string) string {
+	if to != "" {
+		return to
+	}
+	return ui.HomeLeavingPath(deleted)
 }
 
 // errDestroyChief is destroyAgent's refusal of the chief; its text is
 // chiefRefusal's.
-type errDestroyChief struct{ a agents.Agent }
+//
+// It is also the refusal of a declared officer's instance (deleteProtection,
+// officers.go): why is protectedRefusal's text, so the type every door already
+// branches on covers both without a second error.
+type errDestroyChief struct {
+	a   agents.Agent
+	why string
+}
 
-func (e errDestroyChief) Error() string { return chiefRefusal(e.a) }
+func (e errDestroyChief) Error() string {
+	if e.why != "" {
+		return e.why
+	}
+	return chiefRefusal(e.a)
+}
 
-// destroyHooks are what a destroyAgent caller adds after the shared teardown.
+// errDestroyNotClaimed is destroyAgent's answer when the caller's claim hook
+// lost: nothing was started.
+var errDestroyNotClaimed = errors.New("the agent no longer qualifies, or another process claimed it")
+
+// destroyHooks are what a destroyAgent caller adds around the shared teardown.
 type destroyHooks struct {
+	// claim runs AFTER the chief check and BEFORE anything is started, on the
+	// caller's context. false (or an error) and nothing is torn down:
+	// destroyAgent answers errDestroyNotClaimed (or the error). nil: no claim.
+	// The stopped-agent reaper's conditional claim is the one user
+	// (agent_reap.go).
+	claim func(ctx context.Context) (bool, error)
 	// done runs in the teardown's goroutine after a SUCCESSFUL Destroy and the
 	// shared after-steps, on the same principal-keeping context. nil: nothing
 	// more.
 	done func(ctx context.Context, a agents.Agent)
+	// failed runs in the teardown's goroutine after a FAILED Destroy, with its
+	// error, on the same context. nil: nothing more (the failure is logged).
+	failed func(ctx context.Context, a agents.Agent, err error)
+	// goneOfficer is set by ONE caller, teardownGoneInstance (officerFleet.
+	// Start's teardown of an instance it created for an officer that was
+	// deleted meanwhile): that officer, as the start read it. destroyAgent
+	// then lets that officer's own instance row go although the roster still
+	// protects it — only when goneOfficerRow reads the database and finds
+	// the officer gone (a delete on another replica, which this replica's
+	// roster has not seen). nil for every other door: the protection stands.
+	goneOfficer *officers.Officer
 }
 
 // destroyAgent is THE agent teardown both doors take — the browser's DELETE
 // /agents/{id} (handleAgentDelete) and a mirrored session's agent_destroy
-// (agent_destroy_tool.go): the chief check, then the provisioner's Destroy in
+// (agent_destroy_tool.go) — and the stopped-agent reaper's (agent_reap.go),
+// which adds a claim: the chief check, then the provisioner's Destroy in
 // the background (instance, then the row; see agentprovision.Adapter.Destroy),
 // exactly as the browser always did. It returns the agent row the chief check
 // read (zero when the id names no agent the caller can see — the browser's
@@ -1358,25 +1469,62 @@ type destroyHooks struct {
 // and a failed read of the agent table refuses too (agentIsChief fails closed).
 // The teardown is asynchronous, so a check inside it could only log.
 func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(context.Context, int64) error, h destroyHooks) (agents.Agent, error) {
-	a, chief, err := s.agentIsChief(ctx, id)
+	a, protected, err := s.agentIsDeleteProtected(ctx, id)
 	if err != nil {
 		return agents.Agent{}, fmt.Errorf("chief check: %w", err)
 	}
-	if chief {
-		return a, errDestroyChief{a}
+	// 🔴 THE ONE EXCEPTION is an instance of an officer the DATABASE says is
+	// gone, asked for by the start that created it (destroyHooks.goneOfficer,
+	// goneOfficerRow): never the chief, never another officer's row, never on
+	// the roster's word alone.
+	if protected && !s.goneOfficerRow(ctx, a, h) {
+		return a, errDestroyChief{a: a, why: s.protectedRefusal(a)}
+	}
+	// 🔴 A HOST OFFICER INSTANCE'S ROW IS NEVER THE PROVISIONER'S
+	// (agents.Agent.RunsOnHost): its teardown is the row alone — whatever the
+	// door passed — so removing a row left from a moved or undeclared officer
+	// works without a provisioner, and never reaches one (which refuses it).
+	// Its drafts and grants go with it (ON DELETE CASCADE). The declared
+	// officer's own row was refused above (isDeclaredInstanceRow).
+	if !a.Provisioned() {
+		destroy = s.destroyHostRow
+	}
+	if h.claim != nil {
+		won, err := h.claim(ctx)
+		if err != nil {
+			return a, fmt.Errorf("claim: %w", err)
+		}
+		if !won {
+			return a, errDestroyNotClaimed
+		}
 	}
 	// A destroyed pod cannot post its own clear: forget its work report now.
 	s.clearAgentWork(id)
 	opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
+	// Registered HERE, before the goroutine exists, so a waiter that runs after
+	// destroyAgent returns cannot miss it (sync.WaitGroup: an Add from zero must
+	// happen before the Wait).
+	//
+	// 🔴 Done RUNS AFTER A PANIC IS LOGGED, NOT BEFORE. Under safeGo alone fn's
+	// own defers unwind before safeGo's recover, so a waiter released by Done
+	// could look for the "PANIC in goroutine destroy" line before it was
+	// written and read a panicked teardown as finished. The recover is deferred
+	// here, below Done, so it runs first (safeGo's own then finds nothing).
+	s.destroyInFlight.Add(1)
 	safeGo(s.logger, "destroy", func() {
+		defer s.destroyInFlight.Done()
+		defer recoverGoroutine(s.logger, "destroy")
 		if err := destroy(opCtx, id); err != nil {
 			s.logger.Printf("agents: destroy %d: %v", id, err)
+			if h.failed != nil {
+				h.failed(opCtx, a, err)
+			}
 			return
 		}
 		// After a SUCCESSFUL teardown, on both doors: the owner's destroy frees
 		// the chief's one start on the agent's task when the chief's start made
 		// this agent (operator decision), and the owner's open tabs re-fetch —
-		// the Agents views (agent.changed) and the attention queue, which lost
+		// the sidebar (agent.changed) and the attention queue, which lost
 		// the agent's asks with its row (attention_queue.changed).
 		s.releaseChiefStart(opCtx, a)
 		if a.ID != 0 {
@@ -1392,64 +1540,136 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 
 // handleAgentDetail renders the full detail page (logs + chat).
 func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// The open's document, phase by phase (open_trace.go).
+	op := s.openPhases(r, openViewAgent, openPartDocument, "agent", r.PathValue("name"))
+	outcome := telemetry.ReasonOK
+	defer func() { op.finish(outcome) }()
+	ctx := op.begin("agent")
 	a, err := s.ext.Agents.GetByName(ctx, r.PathValue("name"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			outcome = "not_found"
 			http.NotFound(w, r)
 			return
 		}
+		outcome = telemetry.ReasonError
 		s.logger.Printf("agents: get %q: %v", r.PathValue("name"), err)
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
-	status := s.liveStatus(ctx, a)
+	// The instance index, read ONCE: the page's status and its card view's
+	// (agentPageCard) are the same read.
+	idx := s.instanceIndex(op.begin("status"))
+	status := liveStatusIndexed(a, idx)
 	sessionParam := r.URL.Query().Get("session")
 	// ⚠ THE LIST-READ FAILURE IS DISCARDED HERE, AND THAT IS THE PAGE'S EXISTING
 	// BEHAVIOUR RATHER THAN AN OVERSIGHT: sessionDrawer renders no failure state, so
 	// there is nothing to hand it. resolveSessions logs the read for every caller.
+	ctx = op.begin("sessions")
 	active, sessions, _ := s.resolveSessions(ctx, a, sessionParam)
 	// On a bare open (no ?session=) put the resolved session in the URL so the
 	// page deep-links + the WS/mark-read paths agree on the session. Only redirect
 	// when the param is absent (no redirect loop once it's present).
 	if sessionParam == "" && active.ID != 0 {
-		http.Redirect(w, r, "/agents/"+a.Name+"?session="+strconv.FormatInt(active.ID, 10), http.StatusSeeOther)
+		// ui.AgentSessionHref is ALSO what every in-app link names, so a link and
+		// this redirect name the same URL by construction.
+		outcome = "redirect"
+		http.Redirect(w, r, ui.AgentSessionHref(a.Name, active.ID), http.StatusSeeOther)
 		return
 	}
-	// The viewer opened this agent: its "recently viewed" entry (best-effort).
-	s.recordAgentVisit(ctx, a.ID)
+	// A LIST link (ui.AgentListHref: a sidebar row, a switcher pill) names the
+	// session that was latest when it was drawn. If another session has become the latest since, go there —
+	// what the bare URL would have done at tap time. A link without the marker
+	// (the session drawer) means its session and is never moved.
+	if sessionParam != "" && r.URL.Query().Get(ui.FromListParam) == ui.FromListValue {
+		if latest := s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]; latest != 0 && latest != active.ID {
+			outcome = "redirect"
+			http.Redirect(w, r, ui.AgentSessionHref(a.Name, latest), http.StatusSeeOther)
+			return
+		}
+	}
+	// The viewer opened this agent: its "recently viewed" entry, and the open
+	// stop of the conversation the page draws ends (session_viewed.go) —
+	// best-effort, both.
+	ctx = op.begin("visit")
+	s.recordAgentVisit(ctx, a)
+	s.episodeViewedAgent(ctx, r, a.ID, active.ID)
+	if viewRequest(r) {
+		s.outcomeViewed(ctx, a) // a wait not yet told is seen (agent_outcome.go)
+	}
 	// Opening a session clears its unread replies (best-effort).
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)
 	}
+	ctx = op.begin("messages")
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
-	noteID, taskStatus := s.agentTaskStatus(ctx, a)
+	op.set("messages", strconv.Itoa(len(msgs)))
+	lines := chatLinesOf(msgs)
+	noteID, taskStatus := s.agentTaskStatus(op.begin("task"), a)
+	ctx = op.begin("view")
 	view := ui.AgentDetailView{
-		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(ctx, a), Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
-		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
+		LastFailover: s.lastFailoverLine(ctx, a),
+		Messages:     lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 		// The chat form's fallback when its socket cannot carry a message
 		// (agent_send.go): its nonce, and the outcome of such a send.
 		SendNonce: newSendNonce(),
 		// The chat form's microphone (transcribe.go); "" when there is none.
-		Dictate: s.dictatePath(),
+		Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
 		// The agent's focus history (focus_history.go); "" without a store.
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// The rename offer, when the agent's work has moved on from its name.
+	if view.Drift = s.agentDrift(r, a, view.SessionName); view.Drift != nil {
+		view.Drift.Back = r.URL.RequestURI()
+	}
+	// "working…" while a turn runs in this conversation, and the cards of the
+	// agents started in it (chat_log_live.go).
+	s.withChatLogLive(ctx, &view, active)
+	// The chief's chat bar: primary or side chat, its context, the chat
+	// actions (chief_chats.go).
+	if s.isChiefAgent(ctx, a) {
+		view.ChiefChat = chiefChatBarFor(ctx, a, active)
+	}
+	// The agent's open attention asks, answerable here (attention_asker.go).
+	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
+	// The session switcher below the chat form (ui/switcher.go).
+	view.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{AgentID: a.ID})
+	// The viewer's tags on the agent, in the header (ui/session_tags.go).
+	view.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{AgentID: a.ID})
+	// What the retired Agents list's card showed: the header's status strip,
+	// its ⋯ menu and the notices (ui/agent_actions.go).
+	view.Card = s.agentPageCard(op.begin("card"), a, idx)
+	// The page's step-up gated forms confirm in place: Rotate credentials
+	// (team_admin.go), and — on a TEAM's chief read by an operator or a
+	// manager of the team — the team's end and dispatch cards in its asks
+	// block, which the chief files and which can arrive with the block's live
+	// refresh (teamCardStepUpWhy; each form carries its own sentence).
+	switch {
+	case view.Card.CanRotateCredentials:
+		view.StepUp = s.stepUpView(r)
+		view.StepUp.Why = ui.AgentRotateWhy(view.StepUp.Window)
+	case memberOnTeamAgent(ctx, a) && !teamWatcherOf(ctx, a.OwnerID) && s.isChiefAgent(s.attentionPrincipal(ctx, a.OwnerID, true), a):
+		// (Whether it is the TEAM's chief is read among the team's agents,
+		// as the team: the member's own list mixes in their own.)
+		view.StepUp = s.stepUpView(r)
+		view.StepUp.Why = TeamDispatchCardWhy()
+	}
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
-		allowSameOriginFrame(w)
+		allowSameOriginFrame(w, "")
 	}
-	formDocument(w)
+	feat := s.shellFeatures(op.begin("nav"))
+	viewDocument(w)
+	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentDetail(w, view, s.shellFeatures(r.Context())); err != nil {
+	op.begin("render")
+	if err := ui.RenderAgentDetail(w, view, feat); err != nil {
+		outcome = telemetry.ReasonError
 		s.logger.Printf("agents: render detail: %v", err)
 	}
 }
@@ -1491,13 +1711,9 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 	status := s.liveStatus(ctx, a)
 	active, _ := s.resolveSession(ctx, a, r.URL.Query().Get("session"))
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentChatLog(w, ui.AgentDetailView{
+	lv := ui.AgentDetailView{
 		Name: a.Name, Status: status, Messages: lines, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
 		// The surface the refetch is FOR. #chat-log inside the chief panel asks with
@@ -1506,9 +1722,28 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 		// moment the thread has content, on the server's own count. An unknown or
 		// absent value is the page surface, i.e. every existing caller is unchanged.
 		Surface: chatSurfaceFromRequest(r),
-	}); err != nil {
-		s.logger.Printf("agents: render chat-log: %v", err)
 	}
+	// "working…" and the dispatched agents' cards, as the page draws them.
+	s.withChatLogLive(ctx, &lv, active)
+	body, version, err := ui.ChatLogBody(lv)
+	if err != nil {
+		s.logger.Printf("agents: render chat-log: %v", err)
+		http.Error(w, "could not render the transcript", http.StatusInternalServerError)
+		return
+	}
+	// 🔴 CONDITIONAL: the page sends the version it last drew (ui.ChatLogBody,
+	// ui.ChatLogVersionHeader). Unchanged → 204, which htmx does not swap, so an
+	// open no longer downloads its transcript a second time the moment its event
+	// stream connects. no-store keeps the browser's own cache out of it: the only
+	// conditional request is the page's, and a 204 is never replayed from a cache.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set(ui.ChatLogVersionHeader, version)
+	if r.Header.Get(ui.ChatLogVersionHeader) == version {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(body)
 }
 
 // resolveSessions picks the active chat session for a request and builds the
@@ -1549,8 +1784,24 @@ func (s *Server) resolveSessions(ctx context.Context, a agents.Agent, sessionPar
 			active = sess
 		}
 	}
+	// 🔴 THE CHIEF OPENS ON ITS PRIMARY CHAT, every other agent on its latest
+	// session. The chief's latest is whatever was touched last — a side chat the
+	// owner left, an old thread — while the primary is where every delivery
+	// lands (chief_chats.go).
+	chief := s.isChiefAgent(ctx, a)
+	if active.ID == 0 && chief {
+		active, _ = s.primarySession(ctx, a)
+	}
 	if active.ID == 0 {
 		active, _ = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	}
+	if chief {
+		if views, ok, err := s.chiefChatViews(ctx, a, active.ID); ok {
+			if err != nil {
+				s.logger.Printf("agents: list chats for %d: %v", a.ID, err)
+			}
+			return active, views, err
+		}
 	}
 	list, err := s.ext.Agents.ListSessions(ctx, a.ID)
 	if err != nil {
@@ -1714,7 +1965,7 @@ func (s *Server) answerSessionOpened(ctx context.Context, w http.ResponseWriter,
 	// deleted the route that could re-provision such an agent, so `operator` is now
 	// an unmintable name — but if a row of that name ever existed it would render at
 	// /agents/operator like any other.
-	target := "/agents/" + a.Name + "?session=" + strconv.FormatInt(sess.ID, 10)
+	target := ui.AgentSessionHref(a.Name, sess.ID)
 	w.Header().Set("HX-Redirect", target)
 	w.WriteHeader(http.StatusOK)
 }
@@ -1809,8 +2060,13 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolve the chat session this socket talks to: the ?session=<id> one when
 	// valid + owned by this agent, else the agent's latest (created if none). The
-	// session's key is the gateway context; messages persist under its id.
-	session, _ := s.resolveSession(r.Context(), a, r.URL.Query().Get("session"))
+	// session's key is the gateway context; messages persist under its id. A
+	// member on a team agent talks only in its one shared room (resolveTurnSession).
+	session, err := s.resolveTurnSession(r.Context(), a, r.URL.Query().Get("session"))
+	if errors.Is(err, ErrNotTheTeamRoom) {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
 	// Same-origin only: previously OriginPatterns:["*"] let ANY website open an
 	// authenticated agent-control socket in a logged-in user's browser. Allow the
 	// host the browser connected to (r.Host) plus any configured public host (for
@@ -1821,11 +2077,33 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	ctx := r.Context()
+	// The chat is usable once its socket is open: that is the open's end
+	// (telemetry.OpenDone), and every turn after it runs DETACHED from the
+	// open's trace — a chat open for a day would otherwise be one trace with
+	// every turn's queries and gateway calls in it.
+	telemetry.OpenDone(r, telemetry.ReasonOK)
+	ctx := telemetry.Detached(r.Context())
 	// The socket's open and end, like a terminal's attached/detached: how many
 	// chat sockets a page really holds (the browser suite counts them).
 	s.logger.Printf("agents: chat %s connected", a.Name)
 	defer s.logger.Printf("agents: chat %s disconnected", a.Name)
+	// The page judges the socket alive by hearing from it (ui/live.go); an
+	// idle chat says nothing, so it beats.
+	defer socketHeartbeat(ctx, s.logger, c)()
+	// 🔴 THE SOCKET ENDS WITH ITS REQUEST'S CONTEXT, EVEN MID-TURN (Issue #724
+	// round 1, F1). A member's socket on a team agent is registered for the
+	// membership sweep (admit → teamAgentSocketOpen), which cancels this
+	// context with errTeamChatClosed on a removal; while a turn runs the loop
+	// is not in c.Read, and nothing else closed the connection, so the turn
+	// kept streaming to the removed member until it ended. The turn runs on
+	// its own context (below) and is still stored; only this socket ends.
+	defer context.AfterFunc(ctx, func() {
+		why := "closed"
+		if cause := context.Cause(ctx); cause != nil {
+			why = cause.Error()
+		}
+		_ = c.Close(websocket.StatusPolicyViolation, truncate(why, 120))
+	})()
 
 	for {
 		_, data, err := c.Read(ctx)
@@ -1839,19 +2117,65 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
+		// 🔴 THE CONVERSATION IS WORKING FROM THE MOMENT ITS MESSAGE IS READ, BEFORE
+		// THE ECHO (session_turns.go). The page draws "working…" on send, and any
+		// #chat-log render of this session from then on must agree with it. The
+		// count used to start only inside chatTurnWhenFree — after the echo, the
+		// asks answered, the message stored and the owner's turn marked — so a
+		// refetch landing in that window was drawn with the row HIDDEN while the
+		// turn was about to run, and nothing redrew it until the reply. The
+		// composer's POST already counted before it answered (startAgentTurn);
+		// this is the socket door doing the same. Ended when the turn returns, as
+		// chatTurn's own count is, so the chat.reply refetch after "done" draws
+		// it hidden.
+		endCount := s.countSessionTurn(a, session.SessionKey)
+		// The page drew the message as plain text the moment it sent it; this is
+		// its html (agentChatScript's 'sent'), sent for every message read, so the
+		// page's queue of waiting bubbles and these echoes stay one to one.
+		_ = wsWriteJSON(ctx, c, wsSentEcho(in.Text))
 		// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
 		// message the gate refuses (the agent is being replaced) starts no turn,
 		// so it must not answer the agent's asks either.
 		if !s.turns.enter(a.ID) {
+			endCount()
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": ErrAgentBeingReplaced.Error()})
 			continue
 		}
-		// The operator wrote to the agent: its open asks are answered here.
-		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, in.Text)
-		parts, err := s.runEnteredTurn(ctx, a, session, in.Text, wsStreamEmit(ctx, c, s, a.Name))
+		// The operator wrote to the agent: its open asks are answered here — or,
+		// for a member on a team agent, once the turn passes its fresh role check
+		// and the runtime takes it (addressAsker).
+		mctx := s.addressAsker(ctx, a, in.Text)
+		// 🔴 THE TURN RUNS ON ITS OWN CONTEXT, NOT THE SOCKET'S. Closing the tab or
+		// reloading the page closes this socket; the turn the operator started must
+		// still run to its end and be stored, so a reload shows the reply (and, while
+		// it runs, "working…" — sessionTurnCount). The socket's context is used only
+		// to write to the socket, which fails harmlessly once it is gone. Bounded
+		// like the composer's background turn (startAgentTurn), by the kind's budget.
+		// ⚠ MEASURED: the socket's own context is not cancelled by a client close
+		// either (the connection is hijacked), so before this line a reload already
+		// left the turn running. This makes that a stated property rather than a
+		// side effect. TestAChiefTurnSurvivesTheSocketClosing is therefore an
+		// INVARIANT guard: it goes red for a turn tied to the socket's lifetime
+		// (c.CloseRead's context, measured), not for the line this replaced.
+		tctx, tcancel := context.WithTimeout(context.WithoutCancel(mctx), agentTurnBudget(a.Kind))
+		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
+		parts, err := func() ([]agents.TurnPart, error) {
+			defer endCount() // a panic must not leave the count up (end is idempotent)
+			return s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)
+		}()
 		s.turns.leave(a.ID)
+		// The reply's last bubble is drawn rendered before the turn's end is said.
+		stream.end()
 		if err != nil {
-			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})
+			tcancel()
+			_ = wsWriteJSON(ctx, c, wsTurnError(err, in.Text))
+			// A busy give-up is stored (chat_busy.go); every other failure is not.
+			s.storeChatBusyGiveUp(ctx, a, session, err)
+			// Nothing is stored for a failed turn, so nothing else would tell a page
+			// opened during it that it is over: its "working…" (drawn from the
+			// session's count) would stay up. The refetch this asks for redraws it
+			// from the count, which is zero now.
+			s.broadcast(ctx, EventChatReply, a.Name)
 			continue
 		}
 		// 🔴 "done" BEFORE the turn is persisted and chat.reply broadcast: the page
@@ -1859,9 +2183,30 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// refresh that chat.reply asks for is the one that swaps the streamed
 		// bubbles for the stored ones.
 		_ = wsWriteJSON(ctx, c, map[string]string{"type": "done"})
-		s.persistTurn(ctx, a, session, parts)
+		tcancel()
+		// Stored on a short context of its own: a reply that arrived in the turn
+		// budget's last moments must not be lost to that budget's expiry.
+		pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), persistTurnTimeout)
+		s.persistTurn(pctx, a, session, parts)
+		pcancel()
 	}
 }
+
+// wsTurnError is the socket's message for a turn that failed. A message that
+// waited out the turn in flight and was never sent (chat_busy.go) says so in
+// words, marked `unsent` and carrying the text, so the page shows it as a notice
+// rather than an "[error]" and gives the text back to the composer.
+func wsTurnError(err error, text string) map[string]any {
+	var busy *chatBusyError
+	if errors.As(err, &busy) {
+		return map[string]any{"type": "error", "content": err.Error(), "unsent": true, "text": text}
+	}
+	return map[string]any{"type": "error", "content": err.Error()}
+}
+
+// persistTurnTimeout bounds storing a finished turn's reply, on a context
+// detached from the turn's own budget (handleAgentWS).
+const persistTurnTimeout = 15 * time.Second
 
 // runUserTurn stores the user's message and runs the turn it starts against
 // a's gateway, with every stream event passed to emit (nil-safe). It returns
@@ -1882,19 +2227,71 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 		return nil, ErrAgentBeingReplaced
 	}
 	defer s.turns.leave(a.ID)
-	return s.runEnteredTurn(ctx, a, session, text, emit)
+	// 🔴 notTyped: its callers (the chief chats' fresh-primary handover, tests)
+	// pass muster's words, never a line the owner typed.
+	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit, nil)
+}
+
+// ownerTurnTyper is who an entered turn may mark as the OWNER'S TURN IN FLIGHT
+// (markOwnerTurn): typedBy, except for a line with a subject — one typed from
+// a session's view (view_chief.go) — which marks nothing. 🔴 NO OWNER RELEASE
+// FROM A VIEW (operator decision, PR #537 round 1): owner_asked releases
+// (ownerTurnFor) refuse while such a turn runs; the line is still recorded as
+// typed (typed_by).
+func ownerTurnTyper(typedBy int64, about *chatSubject) int64 {
+	if about != nil {
+		return notTyped
+	}
+	return typedBy
 }
 
 // runEnteredTurn is runUserTurn for a caller that has ALREADY entered a's turn
 // gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
 // must know the turn is admitted before they answer the agent's asks.
-func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
-	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
+//
+// typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's three chat
+// doors (handleAgentWS, handleAgentSend, and the view's chief door
+// handleViewChief) and notTyped from every other caller. When it
+// is a's owner AND the line has no subject (ownerTurnTyper: the view's door
+// never marks), the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
+// the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
+// thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
+// TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
+//
+// typedBy is also stored on the user row (chat_messages.typed_by, migration
+// 0081): the one record that a person TYPED this line, which is what lets a
+// Chief-chat turn be quoted as the owner's covering words (step 3b-1,
+// chief_chat_quotes.go). Every other writer of a chat row leaves it unset
+// (TestEveryChatWriterIsClassified).
+//
+// about is the session the owner was viewing when they typed text (the view's
+// chief door, view_chief.go: resolved by the server, never by the page), nil
+// from every other caller. Its session KEY only is stored on the user row
+// (chat_messages.about, migration 0098) beside text, and the runtime is handed
+// text behind a muster header rendered from the whole subject, in memory
+// (viewChiefTurnText). 🔴 THE ROW'S CONTENT IS ONLY
+// WHAT WAS TYPED: the header is muster's, so the owner's covering words
+// (chief_chat_quotes.go) never include it. TestOnlyTheViewDoorBindsASubject
+// pins who passes what.
+func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit, about *chatSubject) ([]agents.TurnPart, error) {
+	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text,
+		TypedBy: typedBy, AboutKey: about.key()})
+	if err != nil {
+		msg = agents.ChatMessage{} // no row to point at: nothing is marked
+	}
+	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, ownerTurnTyper(typedBy, about))
+	defer clearOwnerTurn()
+	// The turn's own input, carried to its tool calls (turn_session.go).
+	ctx = withTurnInput(ctx, msg.ID)
+	// What started it, for the chief's token telemetry (chief_usage.go).
+	ctx = chiefusage.WithTrigger(ctx, turnTriggerFor(typedBy, about))
 
 	// Mark active immediately (a turn always starts thinking) so the agent
 	// shows in the notification panel's ACTIVE section before its first stream
 	// event lands; the emit refines the phase as events arrive.
-	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
+	// The AGENT'S owner, not the request's: on a team agent the typer is a
+	// member and the entry is the team's.
+	s.markAgentActive(turnPanelOwner(ctx, a), a.Name, "thinking")
 	pc := &agents.PartCollector{}
 	collect := func(ev agents.StreamEvent) {
 		pc.Observe(ev)
@@ -1902,7 +2299,11 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 			emit(ev)
 		}
 	}
-	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, collect)
+	// A typed `busy` (another turn holds the session — a chief's kickoff, say)
+	// waits for that turn and sends again, rather than failing (chat_busy.go).
+	// On a team agent, the runtime is told who typed (teamTurnHeader): its one
+	// shared room has several people in it. In memory only, like the view's.
+	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, s.teamTurnHeader(ctx, a, typedBy)+viewChiefTurnText(about, text), collect)
 	// The turn ended (reply or error): drop the live phase. The entry lingers
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)
@@ -1919,11 +2320,15 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 // persistTurn stores a finished turn's parts and tells open pages a reply was
 // persisted.
 func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, parts []agents.TurnPart) {
+	var lastID int64 // the turn's last stored message (the ask log's anchor)
 	for _, part := range parts {
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+		m, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: session.ID, Role: "assistant",
 			Kind: part.Kind, Content: part.Content, ToolID: part.ToolID, ToolName: part.ToolName, ToolOK: part.ToolOK,
 		})
+		if err == nil && m.ID > lastID {
+			lastID = m.ID
+		}
 	}
 	if len(parts) > 0 {
 		// Nudge the shell's notification FAB to refetch its panel + badge: one
@@ -1931,6 +2336,8 @@ func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents
 		// needs the nudge).
 		s.broadcast(ctx, EventChatReply, a.Name)
 	}
+	// The ask log (ask_log.go): a turn ended; was its last word a question?
+	s.askLogAgentTurn(ctx, a, session, parts, lastID)
 }
 
 // resolveSession picks the chat session for a request: the ?session=<id> one
@@ -1955,7 +2362,7 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 	if r.Host != "" {
 		out = append(out, r.Host)
 	}
-	if base := s.ext.GitHubOAuth.BaseURL; base != "" {
+	if base := s.ext.PublicURL; base != "" {
 		if u, err := url.Parse(base); err == nil && u.Host != "" {
 			out = append(out, u.Host)
 		}
@@ -2017,16 +2424,79 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // dispatchOperatorTool arms; with it gone, a chat turn cannot render a pod at all.
 // That ledger is updated in the same commit — do not re-add a row for a path that
 // no longer exists.
-func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
+func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (reply string, err error) {
+	// 🔴 EVERY TURN'S COURSE FEEDS THE AGENT'S OUTCOME (agent_outcome.go
+	// outcomeTurn): the runtime taking it and its stream are activity the
+	// watchdog reads — an ask refused untyped (a held message's busy) is not —
+	// and its end, an answer or a failure, is recorded, pushed once when it
+	// changes the outcome, and told to the chief that started it. Wrapped here,
+	// the one function every chat door's turn passes.
+	// 🔴 A MEMBER'S TURN ON A TEAM AGENT RUNS AS THE TEAM (team_agents.go):
+	// its credentials, usage row, tools and reply are the team's, and the
+	// member's role is re-read now — every attempt, so a removed member's
+	// queued message is not sent. FIRST, so nothing below runs as the member.
+	ctx, err = s.turnActingContext(ctx, a)
+	if err != nil {
+		return "", err
+	}
+	// A member's message answers the agent's asks only now that the role check
+	// passed, and once the runtime takes it (team_agents.go addressAsker).
+	ctx, emit = addressAskerOnAccept(ctx, emit)
+	ctx, turn := s.outcomeTurn(ctx, a)
+	defer turn.close(&reply, &err)
+	// "working…" for any page that opens this conversation while the turn runs.
+	// 🔴 DEFERRED BEFORE THE TELEMETRY BELOW, SO IT ENDS AFTER IT: the end tells
+	// open pages (EventChatTurn), and the context chip they then re-read is the
+	// turn's own usage row (chief_chats.go), which must be written by then.
+	defer s.countSessionTurn(a, sessionKey)()
+	// 🔴 THE CHIEF'S TOKEN TELEMETRY (chief_usage.go): every chief turn, from
+	// every door, is recorded here — its trigger (the door's), its outcome
+	// (the tools it called) and the tokens its runtime reported.
+	if ctx2, usage := s.beginChiefTurnUsage(ctx, a, sessionKey); usage != nil {
+		ctx, emit = ctx2, usage.observe(emit)
+		defer func() { usage.finish(ctx, err) }()
+	}
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
-	instr, tools, dispatch := s.turnInstructions(ctx, a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
-	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
-	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
-	// 404 on request 2+ comes after the runtime answered request 1 and its tools
-	// ran; resending the message toolless there pastes it into the session twice
-	// (agents.AfterFirstRequestError).
+	// The session an owner card raised in this turn is answered in (both doors:
+	// the in-process dispatch reads ctx, a CLI's /mcp call the registry).
+	defer s.turnSessions.begin(a.ID, sessionKey)()
+	ctx = withTurnSession(ctx, sessionKey)
+	// Its input row (0: one muster did not store first), for the view line a
+	// tool call answers (ownerViewLine): ctx, and the registry for a CLI.
+	defer s.turnInputs.begin(a.ID, turnInputFrom(ctx))()
+	// The turn itself — what started it and an id of its own — for an approval
+	// card it raises (dispatch_approval.go): ctx, and the registry for a CLI.
+	ctx, endRecord := s.beginTurnRecord(ctx, a.ID)
+	defer endRecord()
+	// 🔴 A TEAM-OWNED GATEWAY AGENT TURNS TOOLLESS FROM EVERY CHAT DOOR, the
+	// answer-delivery one included (deliverAnswer → runDeliveredTurn → here,
+	// under the team acting principal), which turnPrincipal's refusal never
+	// sees (team_agents.go teamGatewayToolless).
+	if s.teamGatewayToolless(ctx, a) {
+		s.logger.Printf("agents: %s is a team's gateway agent; its turn goes out WITHOUT tools (no team gateway agents in phase 4)", a.Name)
+		var textEmit func(string)
+		if emit != nil {
+			textEmit = func(delta string) { emit(agents.StreamEvent{Kind: "text", Text: delta}) }
+		}
+		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, textEmit)
+	}
+	ctx, tt := s.turnTools(ctx, a)
+	return s.runTurnWithTools(ctx, a, sessionKey, text, tt, emit)
+}
+
+// runTurnWithTools sends one turn of agent a carrying tt (ChatWithTools), and
+// owns the one fallback such a turn has: a toolless Chat when the agent's image
+// predates /v1/responses. Every tool-enabled turn in this package goes through
+// it (chatTurn, gatewayTurn), so that rule is stated once.
+//
+// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
+// 404 on request 2+ comes after the runtime answered request 1 and its tools
+// ran; resending the message toolless there pastes it into the session twice
+// (agents.AfterFirstRequestError).
+func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKey, text string, tt agentkickoff.TurnTools, emit agents.StreamEmit) (string, error) {
+	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, tt.Instructions, text, tt.Tools, tt.Dispatch, emit)
 	if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
 		s.logger.Printf("agents: %s gateway lacks /v1/responses; retrying the turn WITHOUT tools "+
 			"(that runtime's image predates the endpoint, so it answers over chat-completions)", a.Name)
@@ -2040,9 +2510,11 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 }
 
 // wsStreamEmit builds an agents.StreamEmit that translates each StreamEvent into
-// the exact WS JSON message the chat client is built to consume. This is the
+// the exact WS JSON message the chat client is built to consume (wsChatStream,
+// chat_stream.go, which also renders the reply's markdown). This is the
 // server→browser half of the streaming bridge; it serves BOTH the worker and the
-// operator chat (they share the WS path).
+// operator chat (they share the WS path). The returned stream's end must be
+// called when the turn is over, before its "done" or "error".
 //
 // As a side effect it updates the server's active-agent registry so the
 // notification panel's ACTIVE section reflects the live phase: a text delta means
@@ -2050,8 +2522,13 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 // is responsible for the start ("thinking" on turn start) and the clear
 // (markAgentIdle on turn end). srv may be nil (tests / paths without a server),
 // in which case only the WS translation happens.
-func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) agents.StreamEmit {
+func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) (agents.StreamEmit, *wsChatStream) {
 	owner := requestOwner(ctx) // the chat's session user: the agent's owner under RLS
+	st := newWSChatStream(wsWriter(ctx, c))
+	if srv != nil {
+		// The reply's mentions are linked while it streams (ui/mentions.go).
+		st.mentions = srv.mentionIndex(ctx)
+	}
 	return func(ev agents.StreamEvent) {
 		if srv != nil {
 			switch ev.Kind {
@@ -2061,18 +2538,8 @@ func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName
 				srv.markAgentActive(owner, agentName, "thinking")
 			}
 		}
-		switch ev.Kind {
-		case "text":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "delta", "content": ev.Text})
-		case "thinking":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "thinking", "content": ev.Text})
-		case "tool_call":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs,
-				"target": cctranscript.ToolTarget(ev.ToolName, ev.ToolArgs)})
-		case "tool_result":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
-		}
-	}
+		st.emit(ev)
+	}, st
 }
 
 func wsWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
@@ -2091,4 +2558,11 @@ func firstNonEmptyLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// destroyHostRow is destroyAgent's teardown of a host officer instance's row:
+// the row, and nothing else — there is no instance to remove (its window is
+// its host's, and closing it is the officer runtime's).
+func (s *Server) destroyHostRow(ctx context.Context, id int64) error {
+	return s.ext.Agents.Delete(ctx, id)
 }

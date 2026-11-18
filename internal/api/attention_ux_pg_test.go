@@ -85,8 +85,9 @@ func recv(t *testing.T, c <-chan string) string {
 
 // TestTheQueueIsNewestFirstAcrossSources: an ask, a waiting session, a reply
 // draft and a second ask, each with its own time, come back newest first —
-// whichever source they were read from — on the read model, the page and
-// attention_list alike.
+// whichever source they were read from — on the read model and
+// attention_list; the page (less the draft, which is the Reply drafts tab's)
+// draws them in its groups, newest first within each.
 func TestTheQueueIsNewestFirstAcrossSources(t *testing.T) {
 	f := newAttnFixture(t)
 	base := time.Now().Add(-2 * time.Hour).Truncate(time.Millisecond) // the waiting window went waiting here
@@ -111,12 +112,19 @@ func TestTheQueueIsNewestFirstAcrossSources(t *testing.T) {
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("the queue's order: %v, want newest first %v", got, want)
 	}
+	// The page's Open feed draws them WITHOUT the draft (drafts are the
+	// Drafts tab's, asks_drafts.go), in askGroups' order (questions, then
+	// waiting — each card its badge) and newest first within each.
 	page := f.page(t, "/attention/items")
+	if strings.Contains(page, `id="`+draftKey(d.ID)+`"`) {
+		t.Fatalf("the Ask list draws the reply draft: %s", page)
+	}
 	at := -1
-	for _, k := range want {
-		i := strings.Index(page, `id="`+k+`"`)
-		if i < at {
-			t.Fatalf("the page lists %s before an older item: %s", k, page)
+	for _, k := range []string{`id="` + attentionAskKey(newest) + `"`, `data-asks-badge="question"`, `id="` + attentionAskKey(old) + `"`,
+		`id="` + sessionKey("ws", "main", "@1") + `"`, `data-asks-badge="waiting"`} {
+		i := strings.Index(page, k)
+		if i <= at {
+			t.Fatalf("the page does not draw %s after what precedes it (at %d, want after %d): %s", k, i, at, page)
 		}
 		at = i
 	}
@@ -151,14 +159,15 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 	f.mirror.windows[0].Pending = &mirror.Pending{Summary: "Bash: npm publish --tag next", Tool: "Bash", Last: "Tests pass. Publishing \x1b[31mnow\x1b[0m."}
 	f.mirror.mu.Unlock()
 	f.srv.BroadcastAgentsChangedFor(1)
+	pastWaitingGrace(f.srv) // its push waits the grace (since #463's follow-up)
 
 	items, _ = f.srv.attentionItems(asUser(1))
 	if len(items) != 1 || items[0].Text != "Bash: npm publish --tag next" || items[0].Detail != "Tests pass. Publishing [31mnow [0m." {
 		t.Fatalf("the waiting window's substance: %+v", items)
 	}
 	page := f.page(t, "/attention/items")
-	for _, want := range []string{"Bash: npm publish --tag next", `data-attention-detail>Tests pass. Publishing [31mnow [0m.</p>`,
-		`data-attention-focus>Publish the CLI release</span>`, `data-attention-source>main:1 @ ws</span>`} {
+	for _, want := range []string{"Bash: npm publish --tag next", `data-attention-detail>Tests pass. Publishing [31mnow [0m.</span>`,
+		`data-attention-focus>Publish the CLI release</span>`, `data-attention-source>on ws</span>`, `data-info-code="">tmux main:1 @ ws</code>`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the page lacks %q: %s", want, page)
 		}
@@ -169,8 +178,10 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 			body = p.Body
 		}
 	}
-	// The lock screen says who and where, never the command (the page has it).
-	if body != "Waiting: Bash · main:1 @ ws" {
+	// The notification says who and where, and the tool's NAME — never the
+	// command or Claude's words (operator decision: a waiting session stays
+	// summary only; the page has them).
+	if body != "Waiting: Bash · tmux main:1 @ ws" {
 		t.Fatalf("the push body: %q", body)
 	}
 }
@@ -225,7 +236,7 @@ func TestAMessageToTheSessionAnswersItsAsks(t *testing.T) {
 		"your question and NOT consent: if it does not clearly address the question, ask again with attention_ask" {
 		t.Fatalf("the note's wording moved: %q", answeredInSessionNote)
 	}
-	if desc := attentionToolDefs()[1].Description; !strings.Contains(desc, `(status "answered_in_session": `+answeredInSessionNote+`)`) {
+	if desc := attentionToolDefs(true)[1].Description; !strings.Contains(desc, `(status "answered_in_session": `+answeredInSessionNote+`)`) {
 		t.Fatalf("attention_wait's description does not carry the note: %s", desc)
 	}
 	if st := f.askStatus(t, a.ID); st.Status != attention.AnsweredInSession || st.AnsweredBy != attention.ByOperator {
@@ -369,6 +380,8 @@ func TestAHostThatDroppedIsListedAndNotifiedAlikeUntilItsGraceEnds(t *testing.T)
 	f.srv.BroadcastAgentsChangedFor(1)
 	clock = clock.Add(attentionRepushAfter + time.Minute)
 	f.setWindows(mirror.StatusWaiting)
+	f.srv.BroadcastAgentsChangedFor(1)
+	clock = clock.Add(EpisodeWaitingGrace + time.Second) // its push waits the grace (since #463's follow-up)
 	f.srv.BroadcastAgentsChangedFor(1)
 	// (Pushes are delivered concurrently, so they are counted, not ordered.)
 	count := func(line string) int {

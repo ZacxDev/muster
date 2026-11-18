@@ -1,12 +1,13 @@
 package ui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
 
 func stepUpFixture() *StepUpView {
-	return &StepUpView{ConfirmPath: "/auth/confirm", PasskeyPath: "/auth/confirm/passkey", FreshFor: 0, RememberKey: "mirror:host-a", Window: "12 hours"}
+	return &StepUpView{ConfirmPath: "/auth/confirm", PasskeyPath: "/auth/confirm/passkey", FreshFor: 0, Window: "12 hours"}
 }
 
 // script is the body of the page's inline <script> that contains marker.
@@ -32,7 +33,7 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 		Composer: &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main", Placeholder: "Message…", Aria: "Send a message into this session"}}))
 	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()}))
 
-	for _, marker := range []string{"window.musterStepUp = (function", "stepUp.ask('', function () { return post(sub); })"} {
+	for _, marker := range []string{"window.musterStepUp = (function", "stepUp.ask('', function () { if (over) return; over = true; set(p, p.queued && !p.el ? 'queuing' : 'sending'); return Promise.resolve(post(p)).then(resolve, resolve); }"} {
 		if a, b := strings.Count(term, marker), strings.Count(view, marker); a != 1 || b != 1 {
 			t.Fatalf("%q appears %d time(s) on the Terminal page and %d on the Rendered view; want once each", marker, a, b)
 		}
@@ -61,6 +62,17 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 	if !strings.Contains(tf, `method="post" action="/mirror/terminal/send?`) || !strings.Contains(vf, `method="post" action="/mirror/view/send?`) {
 		t.Fatalf("the forms do not post to their own routes:\n%s\n%s", tf, vf)
 	}
+	// The Rendered view's form is collapsible on a touch screen (composer_reveal.go);
+	// the Terminal's is not. Otherwise one element.
+	if !strings.Contains(vf, ` data-mv-collapsible=""`) || strings.Contains(tf, `data-mv-collapsible`) {
+		t.Errorf("the Rendered view's form is not the collapsible one, or the Terminal's is:\n%s\n%s", tf, vf)
+	}
+	vf = collapsibleBits.ReplaceAllString(vf, "")
+	// The layout differs on purpose (composer_rows_test.go: two rows on the
+	// Rendered view, one on a Terminal view), so the form's class is not
+	// compared.
+	noClass := regexp.MustCompile(` class="[^"]*"`)
+	tf, vf = noClass.ReplaceAllString(tf, ""), noClass.ReplaceAllString(vf, "")
 	if strings.Replace(tf, "/mirror/terminal/send", "/mirror/view/send", 1) != vf {
 		t.Errorf("the two composer forms differ in more than their route:\n%s\n%s", tf, vf)
 	}
@@ -68,7 +80,7 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 
 // TestTheComposerIsPhoneShaped: what the browser suite measures at 390×844,
 // pinned where a class rename would lose it — a 16px input (iOS zooms the page
-// on focusing a smaller one), 44px targets, and the safe-area inset on the form
+// on focusing a smaller one), a 44px box and 40px buttons, and the safe-area inset on the form
 // that is the bottom of the page. With a composer under it, the quick-key bar
 // no longer carries that inset (there would be a gap between the two).
 func TestTheComposerIsPhoneShaped(t *testing.T) {
@@ -93,8 +105,8 @@ func TestTheComposerIsPhoneShaped(t *testing.T) {
 	if strings.Contains(input, "text-sm") || strings.Contains(input, "text-xs") {
 		t.Errorf("the input is smaller than 16px: %s", input)
 	}
-	if !strings.Contains(tag(with, "mv-send"), "min-h-[44px]") {
-		t.Error("Send is not a 44px target")
+	if !strings.Contains(tag(with, "mv-send"), "min-h-[40px]") {
+		t.Error("Send is not a 40px target")
 	}
 	if !strings.Contains(tag(with, "mv-form"), "env(safe-area-inset-bottom)") {
 		t.Error("the composer does not carry the safe-area inset")
@@ -119,7 +131,7 @@ func TestTheComposerIsPhoneShaped(t *testing.T) {
 // screen, not merely greyed out.
 func TestADisabledComposerSaysWhy(t *testing.T) {
 	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: false}))
-	if !strings.Contains(view, `<p id="mv-readonly"`) || !strings.Contains(view, MirrorReadOnlyNote) {
+	if !strings.Contains(view, `<p id="mv-readonly"`) || !strings.Contains(view, MirrorReadOnlyNote("host-a")) {
 		t.Fatal("a read-only host's rendered view does not say why nothing can be sent")
 	}
 	if strings.Contains(view, `<dialog id="term-confirm"`) || strings.Contains(view, "window.musterStepUp = (function") {

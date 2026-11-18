@@ -33,7 +33,8 @@ import (
 //
 // 🔴 TWO KEYS, BECAUSE A GUESSER AND A LINK-HOLDER ARE DIFFERENT ATTACKS. An
 // unknown token has a different hash on every guess, so guessing is limited per
-// client address only (inviteIPLimit per minute, every POST) — and a hash that
+// client address only (inviteIPLimit misses per minute, counted AFTER the
+// lookup so a live link is never refused for its address) — and a hash that
 // names no live invite gets NO per-link record, so a spray of invented tokens
 // creates nothing to hold. A REAL link that keeps failing — a bound email
 // being guessed, GoTrue's "email exists" used to enumerate accounts — is held
@@ -115,13 +116,13 @@ func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
 	case !s.adminPagesServed():
 		http.NotFound(w, r)
 	case !s.auth.goTrueMode():
-		s.renderNotice(w, http.StatusServiceUnavailable, "Not open yet",
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Not open yet",
 			"This muster does not use per-user sign-in yet. Ask the operator to try the link again later.")
 	case !viaBrowserListener(r):
-		s.renderNotice(w, http.StatusForbidden, "Open this link at the public address",
+		s.renderNotice(w, r, http.StatusForbidden, "Open this link at the public address",
 			"This port serves muster's machine API only. Open the link at muster's public address"+s.publicURLSuffix()+".")
 	case r.Method == http.MethodPost && !s.isSameOrigin(r):
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 	default:
 		return false
 	}
@@ -130,8 +131,8 @@ func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
 
 // renderInvalidInvite is the ONE page for every bad link, so it cannot be used
 // to learn which tokens exist, which are bound, or why one failed.
-func (s *Server) renderInvalidInvite(w http.ResponseWriter) {
-	s.renderNotice(w, http.StatusNotFound, "This link is invalid or expired", "Ask the person who invited you for a new link.")
+func (s *Server) renderInvalidInvite(w http.ResponseWriter, r *http.Request) {
+	s.renderNotice(w, r, http.StatusNotFound, "This link is invalid or expired", "Ask the person who invited you for a new link.")
 }
 
 // fragmentForm is the bootstrap page: its script moves the URL fragment into
@@ -149,8 +150,8 @@ func fragmentForm(action, heading, body, button string, autoSubmit bool, extra, 
 
 // --- the link token when the fragment did not arrive -------------------------
 //
-// 🔴 A FRAGMENT DOES NOT SURVIVE A SIGN-IN REDIRECT. Measured live: with
-// Authelia in front of the host, opening <public>/auth/claim#<token> bounced
+// 🔴 A FRAGMENT DOES NOT SURVIVE A SIGN-IN REDIRECT. With a forward-auth
+// proxy in front of the host, opening <public>/auth/claim#<token> bounced
 // through the sign-in portal, whose rd= return URL carries no fragment, so the
 // page loaded with an empty token and the POST was refused as "invalid or
 // expired". So every link page (claim, invite, reset) renders a VISIBLE "Paste
@@ -217,7 +218,7 @@ func (s *Server) handleInvitePage(w http.ResponseWriter, r *http.Request) {
 	if s.inviteRefusal(w, r) {
 		return
 	}
-	writeAuthDocument(w, http.StatusOK, "You are invited", fragmentForm(InvitePath, "You are invited to muster",
+	writeAuthDocument(w, http.StatusOK, s.uiBrand(r.Context()), "You are invited", fragmentForm(InvitePath, "You are invited to muster",
 		"Continue to set up your account.", "Continue", true, `<input type="hidden" name="step" value="open">`, "", ""))
 }
 
@@ -238,7 +239,7 @@ func (s *Server) renderInviteForm(w http.ResponseWriter, code int, token string,
 	if locked {
 		email = inv.Email
 	}
-	writeAuthDocument(w, code, "Create your account", `<form method="POST" action="`+InvitePath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Create your account", `<form method="POST" action="`+InvitePath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Create your muster account</h1>
 <p class="text-sm text-fg2">You are joining as a member. This link works once.</p>
 `+problemNode(problem)+`
@@ -257,35 +258,42 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	ip := clientIP(r)
 	now := s.gt.now()
 	lim := &s.inviteLimits
-	if !lim.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
-		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
-		return
+	// 🔴 ONLY A LINK THAT DOES NOT OPEN COUNTS AGAINST THE ADDRESS, and the
+	// count is taken after the lookup: a live link is never refused for its
+	// address (a shared proxy or NAT address must not lock invitees out). Past
+	// inviteIPLimit an address's misses are answered 429.
+	miss := func() {
+		if !lim.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+			return
+		}
+		s.renderInvalidInvite(w, r)
 	}
 	token := postedLinkToken(r)
 	if token == "" {
-		s.renderInvalidInvite(w)
+		miss()
 		return
 	}
 	hash := claimHash(token)
 	inv, err := s.gt.Accounts.OpenInvite(r.Context(), hash)
 	if errors.Is(err, users.ErrInvalidInvite) {
 		// No live invite: no per-link record (only the per-address count).
-		s.renderInvalidInvite(w)
+		miss()
 		return
 	}
 	if err != nil {
 		s.logger.Printf("invite: open: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
 		return
 	}
 	if !lim.hold.take(inv.ID, now, inviteTokenFailWindow, inviteTokenFailures) {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	// The reserved slot is kept only by a failure (bad); every other way out
@@ -298,7 +306,7 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	}()
 	bad := func() {
 		failed = true
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 	}
 	if r.FormValue("step") != "redeem" {
 		s.renderInviteForm(w, http.StatusOK, token, inv, "", "", "")
@@ -341,6 +349,11 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		// counts against the link.
 		s.logger.Printf("invite: refused a redemption from %s: %v", ip, err)
 		bad()
+		return
+	case nameRefused(err):
+		// The store refused the name before creating anyone. The field is drawn
+		// empty: what was refused is invisible, so it would only be sent again.
+		s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, "", nameCharSentence("Your name", err))
 		return
 	case err != nil && *createErr != nil:
 		s.logger.Printf("invite: GoTrue create failed: %v", *createErr)
@@ -392,14 +405,15 @@ func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, emai
 	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
 	if err != nil {
 		s.logger.Printf("sign-in after account setup failed: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Your account is ready, but sign-in failed",
+		s.renderNotice(w, r, http.StatusBadGateway, "Your account is ready, but sign-in failed",
 			"Sign in with your email and new password in a moment.")
 		return
 	}
 	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-		s.renderNotice(w, code, "Your account is ready, but sign-in failed", problem)
+		s.renderNotice(w, r, code, "Your account is ready, but sign-in failed", problem)
 		return
 	}
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	http.Redirect(w, r, safeReturnTo(dest), http.StatusSeeOther)
 }
@@ -420,19 +434,41 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 	if s.inviteRefusal(w, r) {
 		return
 	}
-	renderResetForm(w, http.StatusOK, "", "")
+	s.renderResetForm(w, r, http.StatusOK, "", "", false)
 }
 
-func renderResetForm(w http.ResponseWriter, code int, token, problem string) {
+// resetRemovePasskeysField is the reset form's opt-in to remove every passkey
+// too. Unticked unless the person ticked it on a form that came back with a
+// problem.
+const resetRemovePasskeysField = "remove_passkeys"
+
+// resetRemovePasskeysLabel is that checkbox's label.
+const resetRemovePasskeysLabel = "Also remove all my passkeys (a device was lost or stolen)"
+
+func (s *Server) renderResetForm(w http.ResponseWriter, r *http.Request, code int, token, problem string, removePasskeys bool) {
 	pw := func(id, name, label string) string {
 		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
 <input id="` + id + `" name="` + name + `" type="password" autocomplete="new-password" required
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, "Set a new password", fragmentForm(ResetPath, "Set a new password",
-		"This link works once.", "Set password", false,
-		pw("reset-password", "password", "New password (at least 12 characters)")+pw("reset-password2", "password2", "New password again"),
-		token, problem))
+	fields := pw("reset-password", "password", "New password (at least 12 characters)") + pw("reset-password2", "password2", "New password again")
+	// 🔴 THE BOX IS ALWAYS OFFERED — NOT GATED ON GoTrue's passkeys_enabled.
+	// This form is only reached in gotrue mode (inviteRefusal), and the
+	// deletion goes through GoTrue's ADMIN passkey API whatever /settings
+	// says. Gating it on passkeysServed failed OPEN on a security control: a
+	// /settings error reads as "passkeys off" (uncached), so the box could
+	// vanish on the first load or on the re-render after a problem, and a
+	// person who meant to tick it submitted without it — the lost device's
+	// passkey survived. Likewise when passkeys are switched off in GoTrue while
+	// old ones still exist (TestTheResetPasskeyBoxSurvivesAFailingSettingsRead).
+	checked := ""
+	if removePasskeys {
+		checked = " checked"
+	}
+	fields += `<label for="reset-remove-passkeys" class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input id="reset-remove-passkeys" type="checkbox" name="` +
+		resetRemovePasskeysField + `" value="1"` + checked + `> ` + html.EscapeString(resetRemovePasskeysLabel) + `</label>`
+	writeAuthDocument(w, code, s.uiBrand(r.Context()), "Set a new password", fragmentForm(ResetPath, "Set a new password",
+		"This link works once.", "Set password", false, fields, token, problem))
 }
 
 // handleResetSubmit exchanges the recovery token SERVER-SIDE (GoTrue /verify),
@@ -443,18 +479,27 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	ip := clientIP(r)
 	now := s.gt.now()
-	if !s.inviteLimits.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
-		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
-		return
+	// As handleInviteSubmit: only a token that does not verify counts against
+	// the address, after it was tried, so a valid reset link is never refused
+	// for its address.
+	miss := func() bool {
+		if !s.inviteLimits.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+			return true
+		}
+		return false
 	}
 	token, pw, pw2 := postedLinkToken(r), r.FormValue("password"), r.FormValue("password2")
+	removePasskeys := r.PostFormValue(resetRemovePasskeysField) != ""
 	if token == "" {
-		s.renderInvalidInvite(w)
+		if !miss() {
+			s.renderInvalidInvite(w, r)
+		}
 		return
 	}
 	if len(pw) < gotrue.MinPasswordLength || pw != pw2 {
@@ -464,30 +509,32 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		if len(pw) >= gotrue.MinPasswordLength {
 			msg = "The two passwords are different."
 		}
-		renderResetForm(w, http.StatusBadRequest, token, msg)
+		s.renderResetForm(w, r, http.StatusBadRequest, token, msg, removePasskeys)
 		return
 	}
 	sess, err := s.gt.Client.VerifyRecovery(r.Context(), ip, token)
 	if gotrue.IsClientError(err) {
-		s.renderInvalidInvite(w)
+		if !miss() {
+			s.renderInvalidInvite(w, r)
+		}
 		return
 	}
 	if err != nil {
 		s.logger.Printf("reset: GoTrue /verify failed: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Password reset is unavailable right now", "Try the link again shortly.")
+		s.renderNotice(w, r, http.StatusBadGateway, "Password reset is unavailable right now", "Try the link again shortly.")
 		return
 	}
 	c, err := s.gt.Verifier.Verify(sess.AccessToken)
 	if err != nil {
 		s.logger.Printf("reset: a token GoTrue just issued does not verify: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Password reset is misconfigured on this server", "Tell the operator.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Password reset is misconfigured on this server", "Tell the operator.")
 		return
 	}
 	u, err := s.gt.Users.BySub(r.Context(), c.Subject)
 	if err != nil || u.Disabled() {
 		// A recovery token for a login with no (enabled) muster account sets
 		// nothing.
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	// 🔴 THE SESSION CUTOFF MOVES FIRST, BEFORE THE PASSWORD AND BEFORE THE NEW
@@ -506,7 +553,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)
 		// GoTrue has already SPENT the single-use recovery token (/verify
 		// above), so the link cannot be tried again.
-		s.renderNotice(w, http.StatusInternalServerError, "The password could not be set", "Ask for a new reset link.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "The password could not be set", "Ask for a new reset link.")
 		return
 	}
 	s.gt.forgetUser(u.ID)
@@ -519,23 +566,40 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// Recorded like a sign-out-everywhere, so a request that resolved before
 	// this point is refused when it registers after it (recordReset).
 	s.gt.recordReset(u.ID, c.Subject, cut)
-	// 🔴 AND EVERY PASSKEY GOES, BEFORE THE PASSWORD IS SET. A reset is what
-	// someone does after a credential leaked or a device was lost; a passkey on
-	// that device is a credential too, and the cutoff above only ends SESSIONS —
-	// a passkey would sign the thief straight back in. Deleted through GoTrue's
-	// admin API (list, then each). FAIL CLOSED: if any may remain, the password
-	// is not set and the person is told to ask for a new link — the sessions are
-	// already ended, which is the safe half (TestAResetDeletesEveryPasskey).
-	if n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject); err != nil {
-		s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
-		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
-		return
-	} else if n > 0 {
-		s.logger.Printf("reset: removed %d passkeys of user %d", n, u.ID)
-		s.setPasskeyFlag(r.Context(), c.Subject, "", nil)
+	// 🔴 PASSKEYS ARE KEPT UNLESS THE PERSON TICKED "Also remove all my
+	// passkeys". A reset is also what someone does after simply FORGETTING the
+	// password, and deleting every passkey then took away a way in they still had
+	// (TestAResetWithoutTheBoxKeepsThePasskeys). The cutoff above only ends
+	// SESSIONS, so a passkey on a lost or stolen device would sign the thief
+	// straight back in — that is what the box is for, and only the person
+	// knows which case theirs is. Ticked: every passkey goes, BEFORE the
+	// password is set, through GoTrue's admin API (list, then each). FAIL
+	// CLOSED: if any may remain, the password is not set and the person is told
+	// to ask for a new link — the sessions are already ended, which is the safe
+	// half (TestAResetDeletesEveryPasskey,
+	// TestAResetFailsClosedWhenPasskeysCannotBeRemoved). Unticked: nothing is
+	// deleted, and GoTrue's passkey API is only READ, after the password is
+	// set, to word the note (countPasskeys) — its failure fails nothing
+	// (TestAResetWithoutTheBoxNeverDeletesAPasskey).
+	audit := map[string]any{"ip": ip, "remove_passkeys": removePasskeys}
+	done := resetDonePath(removePasskeys, 0)
+	if removePasskeys {
+		n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject)
+		if err != nil {
+			s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
+			s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+			return
+		}
+		if n > 0 {
+			s.logger.Printf("reset: removed %d passkeys of user %d", n, u.ID)
+			s.setPasskeyFlag(r.Context(), c.Subject, "", nil)
+		}
+		audit["passkeys_removed"] = n
+		done = resetDonePath(true, n)
 	}
-	// The audit row (actor: the user; the client address in the detail)
-	// commits only if GoTrue set the password.
+	// The audit row (actor: the user; the client address, and whether the
+	// passkeys were removed and how many, in the detail) commits only if GoTrue
+	// set the password.
 	//
 	// ⚠ NO /logout OF THE RECOVERY SESSION AFTERWARDS. It always answered 403
 	// against the real GoTrue: the admin password change already revokes the
@@ -543,15 +607,34 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// and the cutoff above refuses their access tokens
 	// (TestAResetRevokesTheUsersOtherSessions).
 	if err := s.gt.Accounts.Audited(r.Context(), users.Actor{UserID: u.ID, Via: authz.Via("reset")}, "user.password_reset",
-		users.UserObject(u.ID), map[string]any{"ip": ip}, func() error {
+		users.UserObject(u.ID), audit, func() error {
 			return s.gt.Client.AdminSetPassword(r.Context(), ip, c.Subject, pw)
 		}); err != nil {
 		s.logger.Printf("reset: setting the password for user %d failed: %v", u.ID, err)
-		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+		s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
-	s.signInAfterCutoff(w, r, ip, u.Email, pw, cut)
+	if !removePasskeys {
+		// What the page says about the kept passkeys depends on whether there
+		// are any (resetDonePath). Counted AFTER the password is set and only
+		// read: a GoTrue failure here changes the sentence, never the reset.
+		done = resetDonePath(false, s.countPasskeys(r.Context(), ip, c.Subject))
+	}
+	s.signInAfterCutoff(w, r, ip, u.Email, pw, cut, done)
+}
+
+// countPasskeys is how many passkeys GoTrue lists for sub, or -1 when it
+// cannot say (within 5 seconds).
+func (s *Server) countPasskeys(ctx context.Context, ip, sub string) int {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	list, err := s.gt.Client.AdminPasskeys(ctx, ip, sub)
+	if err != nil {
+		s.logger.Printf("reset: could not count the passkeys that were kept: %v", err)
+		return -1
+	}
+	return len(list)
 }
 
 // signInAfterCutoff is signInNewLogin for a session that must be issued AFTER
@@ -565,7 +648,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 // ends on: the reset revoked the user's API tokens (users.ResetCredentials).
 const resetTokensRevoked = "Your API tokens were revoked."
 
-func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time) {
+func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time, done string) {
 	for attempt := 0; attempt < 3; attempt++ {
 		// Attempt n waits until n+1 whole seconds past the cutoff's second.
 		if wait := time.Until(cut.Truncate(time.Second).Add(time.Duration(attempt+1) * time.Second)); wait > 0 {
@@ -586,15 +669,17 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 			continue
 		}
 		if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-			s.renderNotice(w, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
+			s.renderNotice(w, r, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
 			return
 		}
+		clearSiteCaches(w)
 		s.setGoTrueCookies(w, sess)
 		// To /account, which says the reset revoked the user's API tokens
-		// (accounts PR 6), rather than straight to the board.
-		http.Redirect(w, r, accountResetDonePath, http.StatusSeeOther)
+		// (accounts PR 6) and what happened to the passkeys, rather than
+		// straight to the board.
+		http.Redirect(w, r, done, http.StatusSeeOther)
 		return
 	}
-	s.renderNotice(w, http.StatusBadGateway, "Your password is set, but sign-in failed",
+	s.renderNotice(w, r, http.StatusBadGateway, "Your password is set, but sign-in failed",
 		"Sign in with your email and new password in a moment. "+resetTokensRevoked)
 }

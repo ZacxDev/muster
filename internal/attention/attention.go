@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -42,6 +43,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Status is where an ask is.
@@ -61,8 +63,14 @@ const (
 
 // ByOperator is who answers an ask: the operator — on the attention view, or
 // (migration 0034) through one of their own mirrored Claude Code sessions'
-// attention_answer. No dispatched agent answers one — not even the chief.
+// attention_answer. No dispatched agent answers one — not even the chief —
+// except a question a mirrored session addressed TO the chief (ByChief).
 const ByOperator = "operator"
+
+// ByChief is answered_by for the chief's answer to a question a mirrored
+// session put to it with chief_ask (New.ToChief, migration 0050): the only ask
+// an agent answers (AnswerByChief).
+const ByChief = "chief"
 
 // ViaMCP is answered_via for an answer given through attention_answer, from a
 // mirrored session (migration 0034). An answer given on the attention view has
@@ -79,8 +87,50 @@ type AnswerSource struct {
 	Session string
 }
 
+// The owner's own doors (migration 0092), stamped by Answer from the answering
+// principal: the Attention view in a signed-in browser session, and the owner's
+// paired phone. NULL (the zero AnswerSource) is an answer recorded before 0092,
+// one settled in session, or one whose principal was neither — and no binding
+// reads that as an owner's door.
+const (
+	ViaBrowser = "browser"
+	ViaDevice  = "device"
+)
+
 // ViaSession reports whether src names a mirrored session (an MCP answer).
 func (src AnswerSource) ViaSession() bool { return src.Via == ViaMCP }
+
+// OwnerDoor reports whether src is one of the owner's own doors — their
+// browser or their phone (0092) — the doors IsOwnerDoor admits for a
+// release, read back from the row. An MCP answer, an unrecorded door and an
+// answer settled in session are not.
+func (src AnswerSource) OwnerDoor() bool { return src.Via == ViaBrowser || src.Via == ViaDevice }
+
+// answerVia is the door ctx's principal answers through (0092): ViaBrowser for
+// a signed-in browser session, ViaDevice for the owner's paired phone, "" for
+// anything else. THE one mapping from a principal to a recorded door.
+func answerVia(ctx context.Context) string {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.UserID <= 0 {
+		return ""
+	}
+	switch p.Via {
+	case authz.ViaSession:
+		return ViaBrowser
+	case authz.ViaDevice:
+		return ViaDevice
+	}
+	return ""
+}
+
+// IsOwnerDoor reports whether ctx is owner answering through one of their own
+// doors — a signed-in browser session or their paired phone (answerVia) — and
+// nobody else. THE predicate a binding to the owner's own tap uses (a
+// release); answerSQL holds an owner card to the same doors.
+func IsOwnerDoor(ctx context.Context, owner int64) bool {
+	p, ok := authz.From(ctx)
+	return ok && owner > 0 && p.UserID == owner && answerVia(ctx) != ""
+}
 
 // String is "<host>/<session>", "" for the view.
 func (src AnswerSource) String() string {
@@ -126,13 +176,35 @@ var (
 	ErrSameHost = errors.New("attention: a mirrored session cannot answer an ask raised by a session on its own host")
 	// ErrTooMany: the owner already has MaxOpenPerOwner open asks.
 	ErrTooMany = fmt.Errorf("attention: there are already %d open asks; wait for some to be answered", MaxOpenPerOwner)
+	// ErrNotice: an answer to a notice (KindNotice). A notice points at a
+	// session; it has nothing to answer, so nothing is recorded or relayed.
+	ErrNotice = errors.New("attention: that is a notice, not a question: it has no answer (open its session, or dismiss it)")
+)
+
+// Kind is what an attention_asks row is (migration 0071).
+type Kind string
+
+const (
+	// KindAsk is a question: it has an answer (or is dismissed or expires).
+	// Every row before 0071 is one.
+	KindAsk Kind = "ask"
+	// KindNotice is a POINTER muster raised itself (today: a live chief nudge,
+	// internal/api actAsk) at a session the owner may want to look at. It has
+	// no options and no answer — never answered, only dismissed, withdrawn or
+	// expired — and it does NOT count toward MaxOpenPerOwner.
+	//
+	// 🔴 NEVER ANSWERED, IN THREE PLACES: Clean refuses options on one; the
+	// answer UPDATE (answerSQL) moves only kind = 'ask'; and 0071's CHECK
+	// refuses an answer on a notice row whatever wrote it.
+	KindNotice Kind = "notice"
 )
 
 // SystemAskerLabel is the label of an ask muster itself raised.
 const SystemAskerLabel = "muster"
 
-// Asker is who raised an ask: a dispatched agent (AgentID), a mirrored Claude
-// Code session (MirrorHost + MirrorSession, the Claude session id), or muster
+// Asker is who raised an ask: a dispatched agent (AgentID), a mirrored
+// session (MirrorHost + MirrorSession: a Claude Code session id, or a mirrored
+// opencode session's key, "opencode:<id>" — mirror.ValidMCPCaller), or muster
 // itself (System: an ask nobody waits on, migration 0028). Exactly one is set.
 type Asker struct {
 	AgentID       int64
@@ -155,8 +227,8 @@ func (a Asker) Valid() error {
 		if err := mirror.ValidHost(a.MirrorHost); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
-		if !mirror.ValidClaudeSession(a.MirrorSession) {
-			return fmt.Errorf("%w: not a Claude session id", ErrInvalid)
+		if !mirror.ValidMCPCaller(a.MirrorSession) {
+			return fmt.Errorf("%w: not a mirrored session's id", ErrInvalid)
 		}
 	default:
 		return fmt.Errorf("%w: an ask needs an asker", ErrInvalid)
@@ -171,7 +243,9 @@ func (a Asker) Same(b Asker) bool {
 
 // Ask is one explicit ask.
 type Ask struct {
-	ID         int64     `json:"id"`
+	ID int64 `json:"id"`
+	// Kind is KindAsk or KindNotice (migration 0071).
+	Kind       Kind      `json:"kind,omitempty"`
 	Owner      int64     `json:"-"`
 	Asker      Asker     `json:"-"`
 	Question   string    `json:"question"`
@@ -200,6 +274,37 @@ type Ask struct {
 	// attention view (migration 0034): the zero value for the view (and for
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
+	// AnsweredByUser is the PERSON whose update answered the ask (migration
+	// 0127's answered_by_user, stamped by the database from muster.uid, never
+	// by the statement): on a team's ask, the member who answered it. 0 for an
+	// ask that is not answered, or was answered before 0127.
+	AnsweredByUser int64 `json:"-"`
+	// ToChief: a mirrored session's question to its owner's chief (chief_ask,
+	// migration 0050) — the chief may answer it (AnswerByChief), and the owner's
+	// Attention queue does not list it.
+	ToChief bool `json:"-"`
+	// RouteID is a question's routed message (New.RouteID), "" for none.
+	RouteID string `json:"-"`
+	// Suggestions are the suggested replies generated for the ask while it was
+	// open (migration 0057, SetSuggestions), at most MaxSuggestions; empty for
+	// none.
+	Suggestions []string `json:"-"`
+	// OwnerCard: ask_owner's stored card (New.OwnerCard, migration 0092).
+	OwnerCard bool `json:"-"`
+	// AskedSession is the chat session key the chief asked an owner card in
+	// (New.AskedSession), "" for unknown.
+	AskedSession string `json:"-"`
+	// SubjectKey is the session the chief's ask was raised about (New.SubjectKey,
+	// migration 0103), "" for none.
+	SubjectKey string `json:"-"`
+	// Context is the officer item the ask is about (New.Context, migration
+	// 0129), nil for none.
+	Context *ItemContext `json:"-"`
+	// Attachments are the files the asker attached (New.Attachments,
+	// migration 0145), nil for none.
+	Attachments []Attachment `json:"-"`
+	// Why is why the ask is here (New.Why, migration 0145), nil for none.
+	Why *AskWhy `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -239,12 +344,66 @@ type New struct {
 	Options  []string
 	// TaskID links the ask to one of the caller's tasks (0: none). Set ONLY by
 	// muster's task path (internal/api askOwnerAboutTask), never from an
-	// agent's arguments: task_dispatch trusts it as the provenance of the
+	// agent's arguments: agent_dispatch trusts it as the provenance of the
 	// owner's answer.
 	TaskID int64
+	// PluginMessageID links the ask to the plugin message it was raised for
+	// (0: none; migration 0051). Set ONLY by muster's unrouted-message sweep
+	// (internal/api unrouted.go; docs/plugins.md#a-message-the-chief-does-not-act-on).
+	PluginMessageID int64
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].
 	Timeout time.Duration
+	// ToChief addresses the ask to the owner's chief: set only by the mirrored
+	// sessions' chief_ask, and it writes an audit row with the ask
+	// (chief_question.asked). RouteID, when set, is the routed message the
+	// question is about, stored with it (a retried turn quotes it again) and
+	// on that row.
+	ToChief bool
+	RouteID string
+	// Notice files a KindNotice instead of a question: muster's own (System
+	// asker), no options, no task, never to the chief — Clean refuses
+	// anything else. It is not counted toward MaxOpenPerOwner.
+	Notice bool
+	// OwnerCard files ask_owner's stored card (internal/api raiseOwnerCard
+	// only): answered only through the owner's own doors (answerSQL), and a
+	// message the owner types to the asker settles at most one open card
+	// (AnswerInSession). AskedSession is the chat session key it was asked in
+	// ("" for unknown), where its answer is delivered.
+	OwnerCard    bool
+	AskedSession string
+	// SubjectKey is the session key (chat_messages.about) of the owner's view
+	// line the chief was answering when it raised the ask (migration 0103), ""
+	// for none. Set ONLY by internal/api (chiefAskSubject), never from an
+	// asker's arguments: WithdrawAbout withdraws by it when the chief files a
+	// proposal about that session.
+	SubjectKey string
+	// Context is the officer item the ask is about (migration 0129), nil for
+	// none. Set ONLY by muster's builtin-officer path (internal/api
+	// officerItemContext), never from an asker's arguments; Clean sanitises
+	// and bounds it (item_context.go).
+	Context *ItemContext
+	// Attachments are files of the asker's owner's upload store the ask
+	// carries (migration 0145; ask_media.go), nil for none. Set ONLY by
+	// internal/api's attention_ask, from upload rows it read under the
+	// owner's principal; Clean checks their shape and count.
+	Attachments []Attachment
+	// Why is why the ask is here (migration 0145): the agent's own context, or
+	// muster's fallback (ask_media.go). Clean sanitises and bounds it.
+	Why *AskWhy
+	// With is an audit row written in Create's OWN transaction, as the
+	// caller's principal, naming the new ask (Detail is called with its id):
+	// nil for none. Set ONLY by internal/api's agent_dispatch, for a held
+	// dispatch's card (its hold): the card and its hold then commit together,
+	// so no reader ever sees the card without its hold.
+	With *WithAudit
+}
+
+// WithAudit is New.With: the audit row's action and object, and its detail
+// for the new ask's id.
+type WithAudit struct {
+	Action, Object string
+	Detail         func(askID int64) map[string]any
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -281,6 +440,27 @@ func Clean(n New) (New, error) {
 		return n, fmt.Errorf("%w: at most %d options", ErrInvalid, MaxOptions)
 	}
 	n.Options = opts
+	ictx, err := n.Context.clean()
+	if err != nil {
+		return n, err
+	}
+	n.Context = ictx
+	if n.Attachments, err = CleanAttachments(n.Attachments); err != nil {
+		return n, err
+	}
+	if n.Why, err = CleanWhy(n.Why); err != nil {
+		return n, err
+	}
+	if n.Notice {
+		switch {
+		case !n.Asker.System:
+			return n, fmt.Errorf("%w: a notice is muster's own", ErrInvalid)
+		case len(n.Options) > 0:
+			return n, fmt.Errorf("%w: a notice has no options", ErrInvalid)
+		case n.ToChief || n.TaskID > 0 || n.PluginMessageID > 0 || n.RouteID != "":
+			return n, fmt.Errorf("%w: a notice is about a session only", ErrInvalid)
+		}
+	}
 	switch {
 	case n.Timeout <= 0:
 		n.Timeout = DefaultTimeout
@@ -290,6 +470,39 @@ func Clean(n New) (New, error) {
 		n.Timeout = MaxTimeout
 	}
 	return n, nil
+}
+
+// MaxSuggestions and MaxSuggestionRunes bound an ask's stored suggested
+// replies (0057's CHECK holds the count).
+const (
+	MaxSuggestions     = 3
+	MaxSuggestionRunes = 140
+)
+
+// CleanSuggestions is in as an ask stores it: each trimmed; a blank one, an
+// over-long one (more than MaxSuggestionRunes), a line-broken one and a
+// duplicate (of another suggestion or of one of options, case aside) dropped;
+// at most MaxSuggestions kept. A chip is sent as written, so a suggestion is
+// kept whole or not at all.
+func CleanSuggestions(in, options []string) []string {
+	seen := map[string]bool{}
+	for _, o := range options {
+		seen[strings.ToLower(strings.TrimSpace(o))] = true
+	}
+	out := []string{}
+	for _, t := range in {
+		t = strings.TrimSpace(t)
+		k := strings.ToLower(t)
+		if t == "" || seen[k] || strings.ContainsAny(t, "\r\n") || utf8.RuneCountInString(t) > MaxSuggestionRunes {
+			continue
+		}
+		seen[k] = true
+		out = append(out, t)
+		if len(out) == MaxSuggestions {
+			break
+		}
+	}
+	return out
 }
 
 // CleanAnswer validates an answer's text.
@@ -324,6 +537,15 @@ type Store interface {
 	// Answer records the operator's answer to an open ask, given on the
 	// attention view.
 	Answer(ctx context.Context, id int64, answer string) (Ask, error)
+	// AnswerByChief records the chief's answer to an open question a mirrored
+	// session addressed to it (ToChief); ErrNotFound for any other ask.
+	AnswerByChief(ctx context.Context, id int64, answer string) (Ask, error)
+	// QuestionsDue is every owner's open questions to the chief not yet put to
+	// it (system scope); MarkQuestionTurn takes one's turn, once;
+	// UnmarkQuestionTurn gives it back.
+	QuestionsDue(ctx context.Context, limit int) ([]Ask, error)
+	MarkQuestionTurn(ctx context.Context, id int64) (bool, error)
+	UnmarkQuestionTurn(ctx context.Context, id int64) error
 	// AnswerFromSession records the operator's answer to an open ask, given
 	// through attention_answer by their mirrored Claude Code session (host,
 	// session): the same transition as Answer, plus its provenance (ViaMCP).
@@ -334,18 +556,31 @@ type Store interface {
 	OpenForTask(ctx context.Context, taskID int64) ([]Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
+	// WithdrawAbout withdraws (Cancelled) every open, unexpired question agent
+	// agentID raised about session key (SubjectKey, migration 0103) — never
+	// ask except, and never an ask with no SubjectKey — and returns them.
+	WithdrawAbout(ctx context.Context, agentID int64, key string, except int64) ([]Ask, error)
 	// AnswerInSession settles as AnsweredInSession every open ask asker raised
-	// before this statement began (created_at < statement_timestamp()), with
+	// (of its owner cards, only the oldest) before this statement began (created_at < statement_timestamp()), with
 	// message (capped at MaxAnswerRunes) as the answer and queueID (0 = none)
 	// as the send-queue row that carried it, and returns them; none for a
-	// blank message.
-	AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error)
+	// blank message. keep (nil: none) names asks the message must NOT settle
+	// although they qualify — they stay open, and they still count as the
+	// oldest owner card (no younger card is settled in a kept one's place).
+	AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64, keep func(Ask) bool) ([]Ask, error)
 	// AnsweredByQueue is, for each of ids that answered asks in session, the
 	// label of the asker it answered.
 	AnsweredByQueue(ctx context.Context, ids []int64) (map[int64]string, error)
 	// ExpireDue moves every owner's lapsed open asks to Expired and returns
 	// them (system scope).
 	ExpireDue(ctx context.Context) ([]Ask, error)
+	// SetSuggestions stores the suggested replies of the caller's ask id
+	// (migration 0057) and returns the ask — ONLY while it is open and
+	// unexpired, and only once (an ask that already has some keeps them): ok is
+	// false, with nothing written, for an ask that is settled, lapsed, already
+	// suggested, or left with no suggestion once cleaned (CleanSuggestions);
+	// ErrNotFound for another owner's or a missing one.
+	SetSuggestions(ctx context.Context, id int64, suggestions []string) (a Ask, ok bool, err error)
 
 	// --- the answer's delivery (migration 0031) ---
 
@@ -387,7 +622,7 @@ type Store interface {
 	// AnswersForTask is the caller's asks linked to taskID that were answered
 	// THROUGH THE ASK ITSELF (Answered) — on the Attention view or through a
 	// mirrored session's attention_answer (ViaMCP; AnsweredVia says which) —
-	// newest first: task_dispatch's instructions provenance. Left out on
+	// newest first: agent_dispatch's instructions provenance. Left out on
 	// purpose: AnsweredInSession (one message to the asker's session settles
 	// every open ask that asker raised, on every task, so it is not an answer
 	// to any one task's ask).
@@ -418,17 +653,20 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
-	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, '')`
+	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
+	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
+	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0), attachments, why`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
-	var opts []byte
+	var opts, sugg, ictx, files, why []byte
 	var resolved, queued *time.Time
-	var status, delivery string
+	var status, delivery, kind string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
+		&a.SubjectKey, &ictx, &a.AnsweredByUser, &files, &why); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -436,14 +674,35 @@ func scan(row pgx.Row) (Ask, error) {
 	}
 	a.Status = Status(status)
 	a.Delivery = Delivery(delivery)
+	a.Kind = Kind(kind)
 	if err := json.Unmarshal(opts, &a.Options); err != nil {
 		return Ask{}, fmt.Errorf("attention: options of ask %d: %w", a.ID, err)
 	}
 	if a.Options == nil {
 		a.Options = []string{}
 	}
+	if len(sugg) > 0 {
+		if err := json.Unmarshal(sugg, &a.Suggestions); err != nil {
+			return Ask{}, fmt.Errorf("attention: suggestions of ask %d: %w", a.ID, err)
+		}
+	}
 	if resolved != nil {
 		a.ResolvedAt = *resolved
+	}
+	if len(ictx) > 0 {
+		if err := json.Unmarshal(ictx, &a.Context); err != nil {
+			return Ask{}, fmt.Errorf("attention: item context of ask %d: %w", a.ID, err)
+		}
+	}
+	if len(files) > 0 {
+		if err := json.Unmarshal(files, &a.Attachments); err != nil {
+			return Ask{}, fmt.Errorf("attention: attachments of ask %d: %w", a.ID, err)
+		}
+	}
+	if len(why) > 0 {
+		if err := json.Unmarshal(why, &a.Why); err != nil {
+			return Ask{}, fmt.Errorf("attention: why of ask %d: %w", a.ID, err)
+		}
 	}
 	return a, nil
 }
@@ -495,27 +754,96 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	// The per-owner cap, counted under the caller's principal: row-level
 	// security makes it this owner's count. Serialised per owner by an
 	// advisory lock so two concurrent asks cannot both pass at the cap.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('attention_asks:' || current_setting('muster.uid', true), 0))`); err != nil {
-		return Ask{}, err
+	//
+	// 🔴 QUESTIONS ONLY, BOTH SIDES OF THE CAP (migration 0071): a notice is
+	// neither counted (kind = 'ask') nor refused at it, so a burst of notices
+	// can never hold a real ask back — the 6 nudges once suppressed because
+	// the cap was full of nudge asks.
+	kind := KindAsk
+	if n.Notice {
+		kind = KindNotice
+	} else {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('attention_asks:' || current_setting('muster.uid', true), 0))`); err != nil {
+			return Ask{}, err
+		}
+		var open int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE status = 'open' AND expires_at > now() AND kind = 'ask'`).Scan(&open); err != nil {
+			return Ask{}, err
+		}
+		if open >= MaxOpenPerOwner {
+			return Ask{}, ErrTooMany
+		}
 	}
-	var open int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE status = 'open' AND expires_at > now()`).Scan(&open); err != nil {
-		return Ask{}, err
-	}
-	if open >= MaxOpenPerOwner {
-		return Ask{}, ErrTooMany
-	}
-	var task any
+	var task, message any
 	if n.TaskID > 0 {
 		task = n.TaskID
 	}
-	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9)
-		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task))
+	if n.PluginMessageID > 0 {
+		message = n.PluginMessageID
+	}
+	var ictx any
+	if n.Context != nil {
+		raw, err := json.Marshal(n.Context)
+		if err != nil {
+			return Ask{}, err
+		}
+		ictx = raw
+	}
+	var files, why any
+	if len(n.Attachments) > 0 {
+		raw, err := json.Marshal(n.Attachments)
+		if err != nil {
+			return Ask{}, err
+		}
+		files = raw
+	}
+	if n.Why != nil {
+		raw, err := json.Marshal(n.Why)
+		if err != nil {
+			return Ask{}, err
+		}
+		why = raw
+	}
+	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context, attachments, why)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb)
+		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx, files, why))
 	if err != nil {
 		return Ask{}, err
 	}
+	if n.ToChief {
+		detail := map[string]any{"host": n.Asker.MirrorHost, "session": n.Asker.MirrorSession, "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339)}
+		if n.RouteID != "" {
+			detail["route_id"] = n.RouteID
+		}
+		if err := auditAsk(ctx, tx, "chief_question.asked", a.ID, detail); err != nil {
+			return Ask{}, err
+		}
+	}
+	if w := n.With; w != nil {
+		p, ok := authz.From(ctx)
+		if !ok || p.UserID <= 0 || w.Detail == nil {
+			return Ask{}, errors.New("attention: an audited write needs a user principal and a detail")
+		}
+		if err := users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, w.Action, w.Object, w.Detail(a.ID)); err != nil {
+			return Ask{}, err
+		}
+	}
 	return a, tx.Commit(ctx)
+}
+
+// AskObject is the audit_log `object` naming an ask.
+func AskObject(id int64) string { return "attention_ask:" + strconv.FormatInt(id, 10) }
+
+// auditAsk appends one audit_log row about ask id as ctx's principal (0009's
+// self_append), in tx.
+func auditAsk(ctx context.Context, tx pgx.Tx, action string, id int64, detail map[string]any) error {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return errors.New("attention: an audited write needs a user principal")
+	}
+	return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, action, AskObject(id), detail)
 }
 
 func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
@@ -578,20 +906,73 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // (ErrSameHost says why the host, not the session). An agent's, the chief's
 // or a system ask has no mirror_host, so it is unaffected; an answer from
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
+//
+// The same-host clause applies to an MCP answer only ($4 = 'mcp'): a browser
+// or phone answer (0092) names no host, and must not be refused for that.
+//
+// 🔴 AN OWNER CARD MOVES ONLY THROUGH THE OWNER'S OWN DOORS, IN THE SAME
+// STATEMENT ($4 'browser' or 'device', which answerVia stamps from the
+// principal): attention_answer ('mcp') and any other principal (NULL) leave it
+// open, and the caller names why (ErrNotOwnerDoor).
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
-	WHERE id = $1 AND status = 'open' AND expires_at > now()
-	  AND ($4::text IS NULL OR mirror_host IS DISTINCT FROM $5::text)
+	WHERE id = $1 AND status = 'open' AND expires_at > now() AND kind = 'ask'
+	  AND ($4::text IS DISTINCT FROM 'mcp' OR mirror_host IS DISTINCT FROM $5::text)
+	  AND (NOT owner_card OR $4::text IN ('browser', 'device'))
 	RETURNING ` + cols
 
+// Answer records the owner's answer from the Attention view or their phone,
+// stamping the door from ctx's principal (answerVia; NULL for any other).
 func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
 	answer, err := CleanAnswer(answer)
 	if err != nil {
 		return Ask{}, err
 	}
-	return s.settle(ctx, id, answerSQL, id, answer, ByOperator, nil, nil, nil)
+	return ownerDoorRefused(noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nullable(answerVia(ctx)), nil, nil)))
+}
+
+// ErrNotOwnerDoor: an owner card answered through a door that is not the
+// owner's own (answerSQL); the card stays open.
+var ErrNotOwnerDoor = errors.New("attention: this question is your owner's to answer, in muster or on their phone")
+
+// ownerDoorRefused names a still-open owner card that answerSQL left unmoved:
+// the door was not the owner's.
+func ownerDoorRefused(a Ask, err error) (Ask, error) {
+	if errors.Is(err, ErrNotOpen) && a.OwnerCard && a.Status == Open {
+		return a, ErrNotOwnerDoor
+	}
+	return a, err
+}
+
+// ChosenOption is the index of the stored option a's answer picked: the answer
+// is exactly one of a's OWN stored options (the label a button sends), and ok is
+// false for a free-text answer, an unanswered ask, or a notice. It binds a tap
+// to the option tapped by the row muster stored, never by text the asker wrote
+// afterwards. Whether the door was the owner's is a separate question
+// (AnsweredVia.OwnerDoor).
+func (a Ask) ChosenOption() (int, bool) {
+	if a.Kind == KindNotice || (a.Status != Answered && a.Status != AnsweredInSession) {
+		return 0, false
+	}
+	ans := strings.TrimSpace(a.Answer)
+	for i, o := range a.Options {
+		if o == ans {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// noticeRefused is an answer's outcome with a refusal of an open notice named
+// as such (ErrNotice) rather than as "no longer open": answerSQL moves only
+// questions, so an open notice comes back from settle unmoved.
+func noticeRefused(a Ask, err error) (Ask, error) {
+	if errors.Is(err, ErrNotOpen) && a.Kind == KindNotice && a.Status == Open {
+		return a, ErrNotice
+	}
+	return a, err
 }
 
 // AnswerFromSession runs under the caller's principal, like Answer: row-level
@@ -608,13 +989,87 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 	if !mirror.ValidClaudeSession(session) {
 		return Ask{}, fmt.Errorf("%w: not a Claude session id", ErrInvalid)
 	}
-	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
+	a, err := ownerDoorRefused(noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)))
 	// Only a STILL-OPEN ask is refused for its host: one already answered,
 	// cancelled or expired says so (ErrNotOpen), whoever asked.
 	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.Asker.MirrorHost == host {
 		return a, ErrSameHost
 	}
 	return a, err
+}
+
+// AnswerByChief records the chief's answer to question id — an open question a
+// mirrored session addressed to the chief (ToChief) — as answered_by ByChief,
+// left for the session's attention_wait (pull), with its audit row. Any other
+// ask, another owner's (row-level security) and a missing one are ErrNotFound
+// alike: the chief answers no ask but one put to it.
+func (s *PGStore) AnswerByChief(ctx context.Context, id int64, answer string) (Ask, error) {
+	answer, err := CleanAnswer(answer)
+	if err != nil {
+		return Ask{}, err
+	}
+	var a Ask
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		a, err = scan(tx.QueryRow(ctx, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
+			  delivery = 'pull'
+			WHERE id = $1 AND to_chief AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, ByChief))
+		if err != nil {
+			return err
+		}
+		return auditAsk(ctx, tx, "chief_question.answered", id, map[string]any{"by": ByChief})
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return a, err
+	}
+	cur, gerr := s.Get(ctx, id)
+	if gerr != nil {
+		return Ask{}, gerr
+	}
+	if !cur.ToChief {
+		return Ask{}, ErrNotFound
+	}
+	return cur, ErrNotOpen
+}
+
+// QuestionsDue is every owner's open questions to the chief whose turn has not
+// started (chief_turn_at NULL: the chief was busy or stopped), oldest first,
+// at most limit (system scope: the attention sweep retries each as its owner).
+func (s *PGStore) QuestionsDue(ctx context.Context, limit int) ([]Ask, error) {
+	return collect(s.pool.Query(sys(ctx), `SELECT `+cols+` FROM attention_asks
+		WHERE to_chief AND status = 'open' AND expires_at > now() AND chief_turn_at IS NULL ORDER BY id LIMIT $1`, limit))
+}
+
+// MarkQuestionTurn takes question id's turn: one conditional UPDATE on its turn
+// not having started, so of two callers exactly one gets true and puts it to
+// the chief. False for a question no longer open.
+func (s *PGStore) MarkQuestionTurn(ctx context.Context, id int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET chief_turn_at = now()
+		WHERE id = $1 AND to_chief AND status = 'open' AND expires_at > now() AND chief_turn_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// UnmarkQuestionTurn gives question id's turn back (its runtime provably took
+// nothing), for the sweep to retry.
+func (s *PGStore) UnmarkQuestionTurn(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE attention_asks SET chief_turn_at = NULL WHERE id = $1 AND to_chief`, id)
+	return err
+}
+
+// inTx runs fn in one transaction under ctx's principal.
+func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // cutDetail bounds a delivery detail (0031's CHECK).
@@ -726,13 +1181,34 @@ func (s *PGStore) Cancel(ctx context.Context, id int64) (Ask, error) {
 		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id)
 }
 
+// WithdrawAbout runs under the caller's principal: row-level security keeps
+// it to the caller's own asks. 🔴 ONLY THE STRUCTURAL LINK: an ask is
+// withdrawn when agent agentID raised it (agent_id) about exactly key
+// (about_key, which only muster sets), never by what its question says; a
+// notice, a question to the chief and an ask with no about_key are never
+// touched.
+func (s *PGStore) WithdrawAbout(ctx context.Context, agentID int64, key string, except int64) ([]Ask, error) {
+	if agentID <= 0 || strings.TrimSpace(key) == "" {
+		return nil, nil
+	}
+	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'cancelled', resolved_at = now()
+		WHERE status = 'open' AND expires_at > now() AND kind = 'ask' AND NOT to_chief
+		  AND agent_id = $1 AND about_key = $2 AND id <> $3
+		RETURNING `+cols, agentID, key, except))
+}
+
 // AnswerInSession runs under the caller's principal, like Answer: row-level
 // security keeps it to the caller's own asks.
 //
 // 🔴 ONLY ASKS RAISED BEFORE THE MESSAGE: the caller runs it as the message is
 // sent (or queued), and an ask is answered only when its created_at is before
 // this UPDATE's statement_timestamp() — the time the statement began.
-func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error) {
+//
+// 🔴 ONE OWNER CARD PER MESSAGE (#496's one card per answer): of the asker's
+// open owner cards (OwnerCard), only the OLDEST is settled — the one the chat
+// draws as the card this message answers — and every other stays open for its
+// own answer. Every other ask settles as it always did.
+func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64, keep func(Ask) bool) ([]Ask, error) {
 	message = truncateRunes(strings.TrimSpace(message), MaxAnswerRunes)
 	if message == "" || asker.Valid() != nil {
 		return nil, nil
@@ -745,11 +1221,35 @@ func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message stri
 	if queueID > 0 {
 		queue = queueID
 	}
-	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $1, answered_by = $2, resolved_at = now(),
-		  answer_queue_id = $6::bigint
-		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
-		  AND agent_id IS NOT DISTINCT FROM $3::bigint AND mirror_host IS NOT DISTINCT FROM $4::text AND mirror_session IS NOT DISTINCT FROM $5::text
-		RETURNING `+cols, message, ByOperator, agent, nullable(asker.MirrorHost), nullable(asker.MirrorSession), queue))
+	// The asks this message settles, as one predicate ($1..$3 the asker).
+	const settles = `status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
+		  AND agent_id IS NOT DISTINCT FROM $1::bigint AND mirror_host IS NOT DISTINCT FROM $2::text AND mirror_session IS NOT DISTINCT FROM $3::text
+		  AND (NOT owner_card OR id = (SELECT min(c.id) FROM attention_asks c
+		    WHERE c.owner_card AND c.status = 'open' AND c.expires_at > now() AND c.created_at < statement_timestamp()
+		      AND c.agent_id IS NOT DISTINCT FROM $1::bigint AND c.mirror_host IS NOT DISTINCT FROM $2::text
+		      AND c.mirror_session IS NOT DISTINCT FROM $3::text))`
+	host, session := nullable(asker.MirrorHost), nullable(asker.MirrorSession)
+	if keep == nil {
+		return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $4, answered_by = $5, resolved_at = now(),
+		  answer_queue_id = $6::bigint WHERE `+settles+` RETURNING `+cols, agent, host, session, message, ByOperator, queue))
+	}
+	// With keep: the candidates first, then ONLY those not kept, by id — and
+	// still only while they settle (an ask answered in between is not).
+	cands, err := collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks WHERE `+settles, agent, host, session))
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, a := range cands {
+		if !keep(a) {
+			ids = append(ids, a.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $4, answered_by = $5, resolved_at = now(),
+		  answer_queue_id = $6::bigint WHERE id = ANY($7) AND `+settles+` RETURNING `+cols, agent, host, session, message, ByOperator, queue, ids))
 }
 
 // AnsweredByQueue runs under the caller's principal (row-level security keeps
@@ -790,4 +1290,36 @@ func askerLabelOf(a Asker) string {
 func (s *PGStore) ExpireDue(ctx context.Context) ([]Ask, error) {
 	return collect(s.pool.Query(sys(ctx), `UPDATE attention_asks SET status = 'expired', resolved_at = now()
 		WHERE status = 'open' AND expires_at <= now() RETURNING `+cols))
+}
+
+// SetSuggestions implements Store under the caller's principal (row-level
+// security: another owner's ask is not found, as a missing one is).
+//
+// 🔴 ONE CONDITIONAL UPDATE, ON THE ASK STILL BEING OPEN. A generation starts
+// after the ask is filed and can finish after it was answered, dismissed or
+// expired; the condition is what keeps a settled ask from being given chips —
+// and so from being re-pushed, which the caller does only on ok.
+func (s *PGStore) SetSuggestions(ctx context.Context, id int64, suggestions []string) (Ask, bool, error) {
+	cur, err := s.Get(ctx, id)
+	if err != nil {
+		return Ask{}, false, err
+	}
+	kept := CleanSuggestions(suggestions, cur.Options)
+	if len(kept) == 0 {
+		return cur, false, nil
+	}
+	b, err := json.Marshal(kept)
+	if err != nil {
+		return Ask{}, false, err
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE attention_asks SET suggestions = $2
+		WHERE id = $1 AND status = 'open' AND expires_at > now() AND suggestions = '[]'::jsonb AND kind = 'ask'
+		RETURNING `+cols, id, b))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cur, false, nil
+	}
+	if err != nil {
+		return Ask{}, false, err
+	}
+	return a, true, nil
 }

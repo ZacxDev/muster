@@ -109,15 +109,18 @@ export const clsSignedMainPort = port + 51;
 export const clsSignedBrowserPort = port + 52;
 export const clsSignedGotruePort = Number(process.env.MUSTER_E2E_CLS_GOTRUE_PORT ?? port + 53);
 export const clsSignedConnectPort = port + 54;
-// The composer-autosize, tool-group and agents-search specs' own servers (each
+// The composer-autosize, tool-group and agents-hold specs' own servers (each
 // the e2eterm binary with the mirror plugin on and a fake mirrored host).
 export const composerFitPort = port + 38;
 export const toolGroupsPort = port + 39;
-export const agentsSearchPort = port + 47;
+export const agentsHoldPort = port + 47;
 // The pickers spec's own e2eterm server, and its fake upstreams (GitHub,
 // OpenRouter's model list, a permission router) on one loopback port.
 export const pickersPort = port + 48;
 export const pickersFakePort = port + 49;
+// …and its connect listener: the GitHub App the repo picker reads needs the
+// connector store, which refuses to boot without one.
+export const pickersConnectPort = port + 247;
 // The send queue: its own server (the e2eterm binary, mirror plugin on, a short
 // MUSTER_SEND_QUEUE_IDLE) and its two mirrored hosts — one that reports Claude
 // Code's status and one that plays an older muster-mirror.
@@ -166,10 +169,9 @@ export const docsGotruePort = Number(process.env.MUSTER_E2E_DOCS_GOTRUE_PORT ?? 
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
 // The chief's sessions on more than one runtime (chief-runtimes.spec.ts): its
-// own server (the e2eterm binary, both kinds over the noop driver, both session
-// runtimes offered) and the fake OpenRouter model list it searches.
+// own server (the e2eterm binary, both kinds over the noop driver). port + 91
+// was its fake OpenRouter model list, gone with the gateway session runtime.
 export const chiefRuntimesPort = port + 90;
-export const chiefRuntimesFakePort = port + 91;
 // An answer delivered to the chief (attention-delivery.spec.ts): its own server
 // (the e2eterm binary, the agent gateway on, every agent endpoint pointed at the
 // spec's fake runtime), its /mcp door, and that fake runtime.
@@ -184,10 +186,8 @@ export const cardsConnectPort = port + 101;
 // Host icons and the Agents list's scroll positions (host-icons.spec.ts): its
 // own server (the e2eterm binary, mirror plugin on) and two mirrored hosts.
 export const hostIconsPort = port + 110;
-// A Hermes window's read-only rendered view and its card (hermes-view.spec.ts):
-// its own server (the e2eterm binary, mirror plugin on) and one mirrored host
-// whose Hermes conversation is a real state.db the fake host writes.
-export const hermesViewPort = port + 120;
+// port + 120 was a since-removed spec's: left unused,
+// so no other spec's ports move.
 // The Agents list UX batch (agents-list-ux.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and one mirrored host with four windows.
 export const listUxPort = port + 137;
@@ -206,7 +206,278 @@ export const clsListPort = port + 170;
 // The Agents list's Idle section (agents-idle.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and one mirrored host.
 export const agentsIdlePort = port + 175;
+// Host tab order, named-host icons and the host chip (host-names.spec.ts): its
+// own server (the e2eterm binary, mirror plugin on) and four mirrored hosts.
+export const hostNamesPort = port + 180;
+// The side nav on every signed-in page (sidenav.spec.ts): its own server (the
+// e2eterm binary, mirror and plugins on) and one per-window mirrored host.
+export const sidenavPort = port + 185;
+// The rendered view's snapshot (mirror-snapshot.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and one per-window mirrored host.
+export const mirrorSnapPort = port + 190;
+// The back/forward cache control (bfcache.spec.ts): a two-page static site the
+// spec serves itself, so whether a page is restored depends on the browser and
+// the harness alone, never on muster's headers.
+export const bfcacheControlPort = port + 194;
+// The long-transcript layout shift on a mirrored view (cls-long-transcript.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const clsLongMirrorPort = port + 196;
+// Suggested replies' chip row (suggested-replies.spec.ts): its own server
+// (the e2eterm binary, mirror plugin on, the model pointed at the spec's fake)
+// and that fake chat-completions endpoint.
+export const suggestPort = port + 197;
+export const suggestFakePort = port + 198;
+// Room for a title (title-room.spec.ts): the Rendered | Terminal switch's
+// padding, the rendered view's full-title popover, and the width of the
+// switcher's entries. Its own server (the e2eterm binary,
+// mirror plugin on) and one per-window mirrored host with long session names.
+export const titleRoomPort = port + 205;
+// An opencode window's read-only rendered view (opencode-view.spec.ts): its own
+// server (the e2eterm binary, mirror plugin on) and one mirrored host whose
+// opencode server is a fake in the host's own process.
+export const openCodeViewPort = port + 199;
+// Back and Forward restoring the view pages (bfcache-restore.spec.ts): its own
+// mirrored server (the e2eterm binary, mirror plugin on) and one mirrored host,
+// and a port of its own for the build A / build B pair (a deploy while a page
+// sits in the back/forward cache).
+export const bfcacheRestorePort = port + 150;
+export const bfcacheBuildPort = port + 151;
+// …and a static page of its own on another origin, to leave a page for when
+// the muster page left behind must not answer anything meanwhile.
+export const bfcacheAwayPort = port + 152;
+// Telemetry (telemetry.spec.ts): its own server (the e2eterm binary, mirror
+// plugin on) with tracing and the Faro relay pointed at the spec's own fake
+// receivers, which listen on ports the OS picks.
+export const telemetryPort = port + 210;
+// …and its metrics listener (MUSTER_METRICS_PORT): /metrics is on no other port.
+export const telemetryMetricsPort = port + 211;
+// How long opening a mirrored view takes in the browser (open-perf.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on, Faro relayed to the
+// spec's own fake receiver) and one mirrored host with a long transcript.
+export const openPerfPort = port + 215;
+// The session switcher's view menu and search palette (switcher-search.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host
+// whose windows carry codenames.
+export const switcherSearchPort = port + 220;
+// The session switcher docked on the Agents list (agents-switcher.spec.ts): its
+// own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const agentsSwitcherPort = port + 225;
+// tests/reconnect.spec.ts: a mirror rig whose server beats every 500 ms
+// (MUSTER_LIVE_HEARTBEAT), so a silent socket is judged stale in about a second.
+export const reconnectPort = port + 230;
+// The tool rows' context badges on the mirrored view (tool-context.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const toolContextPort = port + 235;
+// tests/ask-page.spec.ts: the ask page a notification opens — its own server
+// (the e2eterm binary, its suggestion model pointed at a FAKE this spec runs),
+// the agent connect door its asker uses, and that fake.
+export const askPagePort = port + 243;
+export const askPageConnectPort = port + 244;
+export const askPageFakePort = port + 245;
+// The first-run empty state on a fresh database (onboarding.spec.ts): its own
+// server (versionA) on a database e2e/emptydb creates.
+export const onboardingPort = port + 240;
+// tests/layout.spec.ts's dispatch-sheet checks: a server WITH an agent
+// provisioner (noop). The shared server has none, like the docker compose
+// install, so it offers no dispatch sheet to measure.
+export const layoutDispatchPort = port + 250;
+// tests/agent-page-actions.spec.ts: where the retired Agents list's actions
+// went — a server WITH an agent provisioner (noop), so Start, Stop, Delete and
+// the sidebar's dispatch "+" are offered.
+export const agentActionsPort = port + 251;
+// tests/switcher-dock.spec.ts: the switcher dock — its own server (a mirror rig
+// that can dispatch a claude-code agent, for the agent page's Terminal frame)
+// and one mirrored host with enough windows to fill the dock's Recent tab.
+export const dockPort = port + 255;
+// The feature registry spec (features.spec.ts): its own server with a mirrored
+// host and no dictation, attachments or connectors, so their hints show.
+export const featuresPort = port + 256;
+// tests/chief-mobile.spec.ts: a claude-code agent's page on a phone — its own
+// server with the claude-code kind on (noop driver), so the header draws the
+// account and the failover marker.
+export const chiefMobilePort = port + 260;
+// tests/optimistic-send.spec.ts: a sent message shows at once as pending — its
+// own server (mirror plugin on, a 1 s send-queue idle) and its own fake host.
+export const optimisticSendPort = port + 261;
+// tests/session-tags.spec.ts: session tags and the Rendered view's collapsible
+// box — its own server (mirror plugin on) and its own fake host.
+export const sessionTagsPort = port + 270;
+// tests/opencode-send.spec.ts: sending to a launcher-bound opencode window
+// through opencode's API — its own server (mirror plugin on, a 1 s send-queue
+// idle) and two fake hosts (one opted in to the send, one not), each with a
+// fake opencode server in its own process.
+export const openCodeSendPort = port + 271;
+// tests/chief-ux.spec.ts: the chief's working indicator across a reload, its
+// ask_owner question cards and its dispatched-agent cards — its own server (the
+// e2eterm binary, task routing and chief dispatch on, every agent endpoint
+// pointed at the spec's FAKE runtime), its /mcp door, and that fake runtime.
+export const chiefUxPort = port + 272;
+export const chiefUxConnectPort = port + 273;
+export const chiefUxFakePort = port + 274;
+// tests/agent-outcomes.spec.ts: a dispatched agent ends in a visible outcome —
+// its own server (the e2eterm build: a fake agent runtime every agent's
+// endpoint points at, a fake model catalogue, a 3 s silence watchdog).
+export const outcomesPort = port + 290;
+export const outcomesRuntimePort = port + 291;
+export const outcomesCatalogPort = port + 292;
+// tests/mcp-dispatch.spec.ts: the owner's mirrored session starts an agent in
+// two verbs (dispatch_request, dispatch_approve) — its own server (mirror plugin
+// on, chief dispatch on, both pod kinds over the noop driver), its connect
+// listener, and its fake host's loopback MCP endpoint.
+export const mcpDispatchPort = port + 300;
+export const mcpDispatchConnectPort = port + 301;
+export const mcpDispatchMirrorMCPPort = port + 302;
+// Its fake model catalogue (MUSTER_E2E_OPENROUTER_MODELS): the spec reaches no network.
+export const mcpDispatchCatalogPort = port + 303;
+// tests/session-names.spec.ts: a session's stable name, its rename and its
+// live line — its own server (mirror plugin on, the focus pass off) and its
+// own fake host. (+320: clear of the blocks other branches took.)
+export const sessionNamesPort = port + 320;
+// tests/waiting-composer.spec.ts: the ☰ button's waiting badge, the palette's
+// waiting mark and the paperclip at rest — its own server (the e2eterm binary,
+// mirror plugin on, attachments configured) and its connect listener (the
+// asking agent's /mcp door).
+export const waitingComposerPort = port + 330;
+export const waitingComposerConnectPort = port + 331;
+// tests/notify-tmux.spec.ts: "Show tmux sessions" — its own
+// server (mirror plugin on) and its own fake host. (+340: clear of the blocks
+// other branches took.)
+export const notifyTmuxPort = port + 340;
+// tests/chief-fold-in.spec.ts: the chief's page in a mirrored session's layout —
+// its own mirror rig (the e2eterm binary, mirror plugin on, the claude-code
+// kind over the noop driver) and one fake host, for the session it is compared
+// with. (+345: it was +340 until notify-tmux took that on main.)
+export const chiefFoldInPort = port + 345;
+// tests/chief-in-view.spec.ts: asking the chief from a session's view — its own
+// mirror rig (the e2eterm binary, mirror plugin on, the agent gateway on with
+// every agent endpoint pointed at the spec's FAKE runtime) with one fake host
+// whose opencode server is a fake in its own process, and that fake runtime.
+export const chiefInViewPort = port + 350;
+export const chiefInViewFakePort = port + 351;
+// tests/agent-chat-markdown.spec.ts: the agent chat's messages drawn by the
+// server's one markdown renderer, live and stored — its own server (the
+// e2eterm build, every agent endpoint pointed at the spec's FAKE runtime) and
+// that runtime. (+355: chief-in-view took +350/+351 on main.)
+export const chatMarkdownPort = port + 355;
+export const chatMarkdownRuntimePort = port + 356;
+// tests/chief-succession.spec.ts: a succession from a session's view (phase 2)
+// — its own mirror rig (as chief-in-view's, with task routing and the chief's
+// dispatch on), one fake host whose agent spawn is played, the spec's FAKE
+// runtime (the scripted chief) and its fake GitHub App. (+362: agent-chat-
+// markdown took +355/+356 on main.)
+export const chiefSuccessionPort = port + 362;
+export const chiefSuccessionFakePort = port + 363;
+export const chiefSuccessionGitHubPort = port + 364;
+// tests/chief-end-session.spec.ts: ending a session from its view — its own
+// mirror rig (as chief-succession's, no GitHub App) with one fake host that
+// plays agent-close (MUSTER_MIRROR_E2E_CLOSE), and the spec's FAKE runtime.
+// (+366: chief-succession takes +362..+365.)
+export const chiefEndSessionPort = port + 366;
+export const chiefEndSessionFakePort = port + 367;
+// tests/plugin-chip.spec.ts: the Preview button and panel on a mirrored window's
+// session views — its own server (mirror plugin on, MUSTER_PLUGINS=1,
+// MUSTER_PLUGIN_ORIGINS set) and one fake host. Its plugin's entry page is
+// played by the spec (page.route), so it needs no port of its own.
+export const pluginChipPort = port + 372;
+// cls.spec.ts "the session views with a live preview": its own server
+// (mirror plugin, plugins and MUSTER_PLUGIN_ORIGINS on) and one fake host, so
+// the Rendered and Terminal views are measured WITH the Preview button.
+export const clsChipPort = port + 373;
+// tests/branding.spec.ts: the instance branding — a password-mode server of
+// its own (the admin's upload), and a gotrue-mode pair with its own GoTrue
+// compose project (a member's Account page).
+export const brandingPort = port + 374;
+export const brandingMainPort = port + 375;
+export const brandingBrowserPort = port + 376;
+export const brandingGotruePort = Number(process.env.MUSTER_E2E_BRANDING_GOTRUE_PORT ?? port + 377);
+// tests/previews.spec.ts: the whole previews path — its own server (mirror
+// plugin, plugins and MUSTER_PLUGIN_ORIGINS on) and one fake host running
+// `-preview`; the REAL gateway (cmd/muster-preview: its public listener, which
+// browsers reach, and its mesh listener, which the host's tunnel dials); the
+// TLS edge in front of the public listener (e2e/previewfix edge), which the
+// browser's every preview name resolves to; and the dev app's two listeners
+// (e2e/previewfix app), the only ports the host's allowlist names.
+export const previewsPort = port + 380;
+export const previewsGatewayPort = port + 381;
+export const previewsMeshPort = port + 382;
+export const previewsEdgePort = port + 383;
+export const previewsAppPort = port + 384;
+export const previewsSiblingPort = port + 385;
+// tests/routing-rules.spec.ts: routing rules and the usage page — its own
+// server (plugins on, a gateway chief) and the spec's FAKE runtime (the
+// scripted chief, which proposes a rule). No mirror host. (+386: previews.spec
+// takes +380..+385.)
+export const routingRulesPort = port + 386;
+export const routingRulesFakePort = port + 387;
+// The tail-first bubble clamp (tail-clamp.spec.ts): its own server (the e2eterm
+// binary, mirror plugin on) and one fake mirrored host, for the mirrored view,
+// the agent chat page and the chief panel.
+export const tailClampPort = port + 388;
+// The mirrored view's context chip (mirror-context-chip.spec.ts): its own
+// server (the e2eterm binary, mirror plugin on) and one fake host whose fake
+// opencode server reports a long model id and a large window.
+export const contextChipPort = port + 389;
+// The message bar kept usable beside the preview panel
+// (preview-composer.spec.ts): its own server (mirror plugin, plugins and
+// MUSTER_PLUGIN_ORIGINS, speech-to-text and uploads configured so the mic and
+// the paperclip are drawn) and one interactive fake host. +391 is the
+// speech-to-text address it names, where nothing listens.
+export const previewComposerPort = port + 390;
+export const previewComposerSttPort = port + 391;
 export const baseURL = `http://localhost:${port}`;
+// tests/pages.spec.ts: shareable pages end to end — its own server (mirror
+// plugin, pages and attachments on, a fake permission router capturing the
+// owner's notifications), its fake S3, the fake router, and its fake host's
+// loopback MCP endpoint (the agent's tools). (+400: clear of the blocks above.)
+export const pagesPort = port + 400;
+export const pagesFakeS3Port = port + 401;
+export const pagesRouterPort = port + 402;
+export const pagesMirrorMCPPort = port + 403;
+// tests/pages-share.spec.ts: shareable pages shared at once
+// (a link key; its owner opts in to their agents sharing without asking) — its own server and its fake
+// host's loopback MCP endpoint, and the connect listener a link key needs
+// beside it. (+405 to +407: clear of the block above.)
+export const pagesSharePort = port + 405;
+export const pagesShareMirrorMCPPort = port + 406;
+export const pagesShareConnectPort = port + 407;
+// tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
+// 127.0.0.1) whose instance document and icon the spec controls.
+export const serverSwitcherStubPort = port + 404;
+// tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
+// desktop width — its own server (plugins on), no mirror host.
+export const draftCardPort = port + 413; // was +405, pagesSharePort's too (e2e/env-ports.test.mjs)
+// tests/asks-log.spec.ts: the Asks page's Log tab (the ask log on), at a phone
+// and a desktop width — its own server (+414: clear of the blocks above).
+export const asksLogPort = port + 414;
+// tests/asks-feed.spec.ts: the Asks page's card feed (plugins, task routing
+// and chief nudges on, so every tab is drawn) at a phone and a desktop width —
+// its own server (+421: clear of the blocks above).
+export const asksFeedPort = port + 421;
+// tests/chief-fleet-digest.spec.ts: the chief panel's fleet digest card at a
+// phone and a desktop width — its own mirror rig (session state on), its fake
+// runtime (which must hear nothing), its fake GitHub App and the App's connect
+// listener (+425 to +428: clear of the blocks above).
+export const chiefFleetPort = port + 425;
+export const chiefFleetFakePort = port + 426;
+export const chiefFleetGitHubPort = port + 427;
+export const chiefFleetConnectPort = port + 428;
+// tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
+// in through its own real GoTrue (+410 to +412: clear of the blocks above).
+export const teamUxMainPort = port + 410;
+export const teamUxBrowserPort = port + 411;
+export const teamUxGotruePort = Number(process.env.MUSTER_E2E_TEAMUX_GOTRUE_PORT ?? port + 412);
+// tests/ask-media.spec.ts: an agent's ask carrying an image — its own server
+// (uploads on, against a fake S3 the spec plays), its connect listener, and
+// the fake S3 (+430 to +432: clear of the blocks above, and of asksFeedPort's +421).
+export const askMediaPort = port + 430;
+export const askMediaConnectPort = port + 431;
+export const askMediaS3Port = port + 432;
+// tests/agent-sidebar.spec.ts: the sidebar's Officers group with an officer
+// that runs in a pod — its own server over the noop driver, and its connect
+// listener (a pod officer in MUSTER_OFFICERS needs one). +440/+441: clear of
+// the blocks above, and of askMediaPort's +430 to +432.
+export const sidebarOfficersPort = port + 440;
+export const sidebarOfficersConnectPort = port + 441;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

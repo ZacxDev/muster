@@ -55,6 +55,14 @@ func TestTheMirrorTokenCLIMintsListsAndRevokes(t *testing.T) {
 	if err != nil || rec.Host != host || rec.OwnerID != authz.OperatorUserID {
 		t.Fatalf("the minted token does not authenticate as %s: %+v %v", host, rec, err)
 	}
+	// stderr is the whole note, pinned: it must not end pointing at a token
+	// that, with stdout in a file, never follows it on the screen.
+	wantNote := "minted mirror token " + strconv.FormatInt(rec.ID, 10) + " for host " + host +
+		" (owner: user " + strconv.FormatInt(authz.OperatorUserID, 10) +
+		"). The token is printed ONCE, on stdout; keep it in that host's muster-mirror token file.\n"
+	if errs != wantNote {
+		t.Fatalf("create's stderr\n got %q\nwant %q", errs, wantNote)
+	}
 
 	rc, out, _ = cli("token", "ls")
 	if rc != 0 || !strings.Contains(out, host) || strings.Contains(out, tok) {

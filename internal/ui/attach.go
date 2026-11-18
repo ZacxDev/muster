@@ -8,15 +8,16 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // FILE ATTACHMENTS IN THE COMPOSER (internal/uploads; internal/api's
 // uploads.go).
 //
-// A paperclip beside the input (and pasting an image, or dropping a file on
-// the composer) uploads the file at once; it then sits ABOVE the input as a
-// chip — a thumbnail for an image, an icon for anything else, its name and
+// The paperclip in the composer's button row (and pasting an image, or
+// dropping a file on the composer) uploads the file at once; it then sits
+// ABOVE the input as a chip — a thumbnail for an image, an icon for anything else, its name and
 // size, and × to take it off again (which revokes its link). On Send, each
 // chip's line (uploads.AgentLine: a short description and a muster-signed
 // link) is appended to the message, so the agent receives text it can act on
@@ -53,9 +54,35 @@ const (
 	AttachStillUploading = "Wait for the attachment to finish uploading."
 )
 
-// attachButtonClass is the paperclip's look: the mic's (dictateButtonClass)
-// 44px square at rest.
-const attachButtonClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition disabled:opacity-60"
+// attachButtonClass is the paperclip's look: a 40px square in the mic's
+// clothes (dictateButtonClass), one of the controls of the composer's BUTTON
+// ROW, shown whether the box is collapsed or open (operator ask: "remove the
+// absolutely positioned attachment icon button from the text area and just
+// always show the dedicated attachment icon button"). It is never placed
+// inside the input, so the input carries no padding for it.
+const attachButtonClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition hover:bg-s3 hover:text-fg disabled:opacity-60"
+
+// attachControlOrOff is the paperclip of the composer's button row:
+// attachControl, or — when attachments are off on this server (path "" and
+// off) — a MUTED paperclip in its place, linking to the feature's row on the
+// Features page. Nothing for neither.
+func attachControlOrOff(path string, off bool) g.Node {
+	if path == "" && off {
+		return attachOffControl()
+	}
+	return attachControl(path)
+}
+
+// AttachOffLabel is the muted paperclip's accessible name.
+const AttachOffLabel = "File attachments are off on this server — how to turn them on"
+
+// attachOffControl is the muted paperclip: a link, not a button.
+func attachOffControl() g.Node {
+	return A(ID("mv-attach-off"), Href(FeatureHref(features.Attachments)), g.Attr("data-feature-off", features.Attachments),
+		g.Attr("aria-label", AttachOffLabel), g.Attr("title", AttachOffLabel),
+		Class(attachButtonClass+" opacity-40 hover:opacity-100"),
+		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`))
+}
 
 // attachControl is the paperclip and its hidden file input. Nothing when path
 // is "" (uploads are not configured).
@@ -250,7 +277,9 @@ func attachScript(path string) g.Node {
         say((err && err.message) || M.failed);
       });
   }
-  function addAll(files) { for (var i = 0; i < files.length; i++) upload(files[i]); }
+  // An attached file shows its chip above the box: a collapsed box is
+  // revealed with it (composer_reveal.go), so what is sent is in view.
+  function addAll(files) { if (files.length && input) { ` + composerRevealCallJS("input") + ` } for (var i = 0; i < files.length; i++) upload(files[i]); }
   btn.addEventListener('click', function () { picker.click(); });
   picker.addEventListener('change', function () { addAll(picker.files || []); picker.value = ''; });
   if (input) input.addEventListener('paste', function (e) {

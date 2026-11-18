@@ -51,6 +51,9 @@ func (s *Server) registerPluginRetryRoutes(mux Mux) {
 // ("" on success).
 func (s *Server) retryPluginMessage(ctx context.Context, id int64) (int, plugins.Message, string) {
 	if _, err := s.chiefAgent(ctx); err != nil {
+		if errors.Is(err, ErrChiefOff) {
+			return http.StatusConflict, plugins.Message{}, "Your chief is turned off (Account → Chief), so there is nothing to deliver it to."
+		}
 		if errors.Is(err, ErrNoChief) {
 			return http.StatusConflict, plugins.Message{}, "You have no chief agent to deliver it to."
 		}

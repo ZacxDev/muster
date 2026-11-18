@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"regexp"
@@ -27,14 +26,30 @@ import (
 // Keeping them here means "which file owns the helper" is answerable by looking
 // at the name, and a future carve takes one obvious file with it.
 
-// renderString renders a node to its HTML/JS source text.
+// renderString renders a node to its HTML/JS source text, with every static
+// script's tag expanded to the code it loads (expandStaticScripts) — so a test
+// reads the JavaScript the document runs, where it runs, as it did when the
+// scripts were inline. renderRaw is the document as sent.
 func renderString(t *testing.T, n g.Node) string {
 	t.Helper()
-	var b bytes.Buffer
-	if err := n.Render(&b); err != nil {
-		t.Fatalf("render: %v", err)
+	return expandStaticScripts(t, renderRaw(t, n))
+}
+
+// withoutDock is html with the switcher dock's dialog (switcher_dock.go, drawn
+// once in every document with the sidebar) cut out: for a test about the
+// page's OWN tabs, which the dock's tablist is not. Fails when html has no
+// dock, so a test that relies on the cut cannot go on cutting nothing.
+func withoutDock(t *testing.T, html string) string {
+	t.Helper()
+	i := strings.Index(html, `<dialog id="`+DockID+`"`)
+	if i < 0 {
+		t.Fatal("withoutDock: the document draws no switcher dock")
 	}
-	return b.String()
+	j := strings.Index(html[i:], "</dialog>")
+	if j < 0 {
+		t.Fatal("withoutDock: the switcher dock is not closed")
+	}
+	return html[:i] + html[i+j+len("</dialog>"):]
 }
 
 // renderNode is renderString under the name some tests call it by.
@@ -335,4 +350,6 @@ func renderDetailCard(w io.Writer, n notes.Note) error {
 // renderCard renders a task card with NO linked agent (the common case these
 // card tests exercise). Tests that need the dispatched-card state call
 // RenderNoteCard directly with a TaskCardView carrying an AgentBrief.
-func renderCard(w io.Writer, n notes.Note) error { return RenderNoteCard(w, TaskCardView{Note: n}) }
+func renderCard(w io.Writer, n notes.Note) error {
+	return RenderNoteCard(w, TaskCardView{Note: n})
+}

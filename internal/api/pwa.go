@@ -19,9 +19,11 @@ import (
 // lets GET/HEAD on exactly these two paths and /static/icons/*.png through
 // WITHOUT a session (Chrome's WebAPK icon hasher never sends cookies; without
 // the bypass a phone install degrades to a plain shortcut with no share target
-// and no shortcuts). Both handlers read nothing from the request, and the
-// manifest is a constant built once from constants.
-// TestPWAMetadataIsSessionIndependent pins that.
+// and no shortcuts). Both handlers read nothing from the request's identity:
+// the manifest is a constant built once from constants, or — on a server with
+// a logo — that constant with the logo's icons, the SERVER's branding, which
+// is the same for every caller (branding.go; its /brand/ icons are public
+// too). TestPWAMetadataIsSessionIndependent pins that.
 // ---------------------------------------------------------------------------
 
 type manifestImage struct {
@@ -76,10 +78,10 @@ type WebManifest struct {
 //   - share_target is GET. Behind the forward-auth edge a POST is answered 303
 //     with its body dropped; a GET's query survives the login round trip (and
 //     muster's own ?next=), so a share started while signed out still lands.
-//   - every image lives under /static/icons/, the one static prefix the edge is
-//     planned to let through without a session (an Authelia bypass) — the
-//     screenshots included, so the richer install sheet does not depend on how
-//     the browser fetches them. Hence the fixture-data-only rule on them below.
+//   - every image lives under /static/icons/, one static prefix a forward-auth
+//     proxy can let through without a session — the screenshots included, so
+//     the richer install sheet does not depend on how the browser fetches
+//     them. Hence the fixture-data-only rule on them below.
 //   - Chrome on Android shows at most three shortcuts; there are three.
 func Manifest() WebManifest {
 	icon := func(src, sizes, purpose string) manifestImage {
@@ -112,7 +114,6 @@ func Manifest() WebManifest {
 		Shortcuts: []manifestShortcut{
 			shortcut("New task", "New task", "/tasks?new=1", "/static/icons/shortcut-new-96.png"),
 			shortcut("Tasks", "Tasks", "/tasks", "/static/icons/shortcut-tasks-96.png"),
-			shortcut("Agents", "Agents", "/agents", "/static/icons/shortcut-agents-96.png"),
 		},
 		ShareTarget: manifestShareTarget{
 			Action: "/share",
@@ -128,7 +129,7 @@ func Manifest() WebManifest {
 		// planned to be reachable without auth, so anything in them is public.
 		Screenshots: []manifestImage{
 			shot("/static/icons/screenshot-tasks-narrow.png", "The task board, with a task ready for review"),
-			shot("/static/icons/screenshot-agents-narrow.png", "Agents at work, each with its live status"),
+			shot("/static/icons/screenshot-agents-narrow.png", "An agent at work: its chat, with its live status"),
 		},
 	}
 }
@@ -146,11 +147,45 @@ var manifestJSON = func() []byte {
 	return b.Bytes()
 }()
 
-// handleManifest serves the web app manifest from the document root.
-func (s *Server) handleManifest(w http.ResponseWriter, _ *http.Request) {
+// handleManifest serves the web app manifest from the document root: the
+// constant above, or — when the instance has a logo (branding.go) — the same
+// manifest with the logo's icons.
+func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(manifestJSON)
+	body := manifestJSON
+	if b := s.uiBrand(r.Context()); b.HasLogo() {
+		body = brandedManifestJSON(b)
+	}
+	_, _ = w.Write(body)
+}
+
+// BrandedManifest is Manifest with the instance logo's icons in place of
+// muster's: the 192 and 512 px squares, purpose "any".
+//
+// ⚠ NO MASKABLE ICON. A maskable icon must keep its subject inside the
+// central safe zone, and the logo's icons are letterboxed to the edges, so a
+// launcher's mask could cut the logo; the browser draws an "any" icon on a
+// plate of its own instead. muster's own maskable icons are dropped too: they
+// would put muster's mark back on the home screen of a branded server.
+func BrandedManifest(b ui.Brand) WebManifest {
+	m := Manifest()
+	m.Icons = []manifestImage{
+		{Src: b.Versioned(BrandIcon192Path), Sizes: "192x192", Type: "image/png", Purpose: "any"},
+		{Src: b.Versioned(BrandIcon512Path), Sizes: "512x512", Type: "image/png", Purpose: "any"},
+	}
+	return m
+}
+
+func brandedManifestJSON(b ui.Brand) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(BrandedManifest(b)); err != nil {
+		return manifestJSON
+	}
+	return buf.Bytes()
 }
 
 // swBuildPlaceholder is the literal sw.js carries where the build goes.
@@ -175,10 +210,32 @@ func ServiceWorkerSource() ([]byte, error) {
 	if bytes.Count(data, []byte(swAppCSSPlaceholder)) != 1 {
 		return nil, errSWPlaceholder
 	}
+	if bytes.Count(data, []byte(swShellJSPlaceholder)) != 1 {
+		return nil, errSWPlaceholder
+	}
 	v, _ := json.Marshal(BuildVersion) // a JSON string is a valid JS string literal
 	css, _ := json.Marshal(web.Asset("/static/app.css"))
+	js, _ := json.Marshal(shellScriptURLs()) // a JSON array is a valid JS array literal
 	data = bytes.Replace(data, []byte(swBuildPlaceholder), v, 1)
+	data = bytes.Replace(data, []byte(swShellJSPlaceholder), js, 1)
 	return bytes.Replace(data, []byte(swAppCSSPlaceholder), css, 1), nil
+}
+
+// swShellJSPlaceholder is the literal sw.js carries where the pages' scripts'
+// versioned URLs go: the offline shell precaches the code its document links.
+const swShellJSPlaceholder = `"__MUSTER_SHELL_JS__"`
+
+// shellScriptURLs is every generated page script (web.Generated), as pages
+// link it (web.Asset). All of them, not only the ones the offline "/" links:
+// the list is a few hundred bytes, and a precache of exactly the shell's set
+// would be a second copy of which scripts the shell carries.
+func shellScriptURLs() []string {
+	paths := web.Generated()
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, web.Asset(p))
+	}
+	return out
 }
 
 // swAppCSSPlaceholder is the literal sw.js carries where the stylesheet's
@@ -188,7 +245,7 @@ const swAppCSSPlaceholder = `"__MUSTER_APP_CSS__"`
 type swPlaceholderError struct{}
 
 func (swPlaceholderError) Error() string {
-	return "web/static/sw.js must contain each placeholder (build, app.css) exactly once"
+	return "web/static/sw.js must contain each placeholder (build, app.css, shell js) exactly once"
 }
 
 var errSWPlaceholder error = swPlaceholderError{}

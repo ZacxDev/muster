@@ -1,6 +1,6 @@
 // Package githubapp is muster's GitHub identity when a GitHub App is configured
 // (MUSTER_GITHUB_APP_ID + MUSTER_GITHUB_APP_PRIVATE_KEY): the `github`
-// connector's credential, the Repos tab's repository list, and the
+// connector's credential, the dispatch dialog's repository list, and the
 // "is this a connected repository" check behind every dispatch door.
 //
 // 🔴 ONLY INSTALLATIONS ON ALLOWLISTED ACCOUNTS EXIST (Config.Accounts,
@@ -22,18 +22,31 @@
 // FOUR PERMISSIONS. Each proxied request from an approved agent to its own
 // repository is served with an installation access token minted by POST
 // /app/installations/{id}/access_tokens with `repositories: [<the agent's
-// repo>]` and `permissions: {contents: write, pull_requests: write, checks:
-// read, statuses: read}` (GitHub adds metadata: read implicitly). Nothing wider
-// is ever asked for on an agent's behalf: the request body is a fixed struct
-// (mintRequest), pinned literally by the tests.
+// repo>]` and, in the default write mode (Config.Access, AccessWrite),
+// `permissions: {contents: write, pull_requests: write, checks: read, statuses:
+// read}`; in read mode (AccessRead, MUSTER_GITHUB_APP_ACCESS=read) every one of
+// the four is `read`, so a push or a pull-request write through the proxy is
+// refused by GitHub, never upgraded (GitHub adds metadata: read implicitly in
+// both). A caller marked ReadOnly (connectors.Caller.ReadOnly — an officer
+// instance) is minted in read mode whatever the App's mode (accessFor), and the
+// mode is part of the token cache's key. Nothing wider is ever asked for on an
+// agent's behalf: the request body is a fixed struct (mintRequest), pinned
+// literally by the tests for each mode.
 //
 // 🔴 THE TOKEN NEVER LEAVES MUSTER. It is injected by the connector proxy
 // (internal/connectors, /connect/github/...) on the way out, exactly as a stored
 // connector's secret is, and is held only in this process's memory: cached per
-// (agent, repository) until refreshBefore of its expiry (GitHub issues them for
+// (agent, repository, mode) until refreshBefore of its expiry (GitHub issues them for
 // one hour), never written to the database, a log line or a response.
 //
-// 🔴 A REQUEST FOR ANOTHER REPOSITORY CARRIES NO CREDENTIAL AT ALL. It is
+// ONE EXCEPTION, READ ONLY: a caller's further read repositories
+// (connectors.Caller.ReadRepos — an officer's `read_repos`). A request that
+// targets one of them is served with a token minted for THAT one repository,
+// always in AccessRead (the four read levels; metadata read implicitly),
+// whatever Config.Access and the caller's ReadOnly say. Each is cached under
+// its own (agent, repository, mode) key like any other.
+//
+// 🔴 A REQUEST FOR ANY OTHER REPOSITORY CARRIES NO CREDENTIAL AT ALL. It is
 // forwarded anonymously (a public dependency or submodule clones as it would
 // for anyone; a private one fails as it would for anyone), and the App token is
 // never attached to it. A path whose repository cannot be decided — a `.`/`..`
@@ -44,12 +57,14 @@
 // is used only for /app/... calls — listing installations and minting tokens —
 // and never leaves muster either.
 //
-// 🔴 THE APP IS THE ADMIN'S, NOT EVERY USER'S. The OAuth connection it replaces
-// was one GitHub account per muster user; the App is the deployment's. So it is
-// offered only to admin-role principals: the `github` connector is presented
-// to them alone (connectors.WithVirtual's allow), and internal/api's
-// github_source.go gives the App's repositories to them alone. A member keeps
-// their own OAuth connection and stored connectors, as before.
+// 🔴 THE APP IS THE ADMIN'S, NOT EVERY USER'S. The OAuth connection it replaced
+// (since removed) was one GitHub account per muster user; the App is the
+// deployment's. So it is offered only to admin-role principals — and to the
+// TEAMS an admin lists in MUSTER_TEAMS_ON_GITHUB_APP, through their own acting
+// principal (team sharing slice 4.8) — by ONE predicate, Admits: the `github`
+// connector is presented to them alone (connectors.WithVirtual's allow), and
+// internal/api's github_source.go gives the App's repositories to them alone. A
+// member keeps their stored connectors and has no connected repositories.
 package githubapp
 
 import (
@@ -94,17 +109,69 @@ const refreshBefore = 5 * time.Minute
 const installationsTTL = 10 * time.Minute
 
 // reposTTL bounds how stale the installation repository list may be. It is read
-// on every Repos tab render and every dispatch check, and changes only when the
+// on every repository picker render and every dispatch check, and changes only when the
 // owner edits the installation's repository access on GitHub.
 const reposTTL = time.Minute
 
 // maxRepoPages caps the repository listing (100 per page).
 const maxRepoPages = 30
 
+// Access is what an agent's token may do in its repository: AccessWrite (the
+// default) or AccessRead. It is the ONLY input to the agent mint's permission
+// levels (agentMintRequest).
+type Access string
+
+const (
+	// AccessWrite: contents + pull_requests write, checks + statuses read.
+	AccessWrite Access = "write"
+	// AccessRead: contents, pull_requests, checks and statuses all read.
+	AccessRead Access = "read"
+)
+
+// ParseAccess reads an access mode as the operator wrote it: "" (unset) is
+// AccessWrite, so a deployment that never set it is unchanged; "read" and
+// "write" (any case, surrounding space ignored) are themselves; anything else
+// is an error — a typo must never fall back to a wider grant.
+func ParseAccess(v string) (Access, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", string(AccessWrite):
+		return AccessWrite, nil
+	case string(AccessRead):
+		return AccessRead, nil
+	}
+	return "", fmt.Errorf("%q is not an access mode: want %q or %q", v, AccessRead, AccessWrite)
+}
+
+// Scope is what an agent's installation token may do in its own repository in
+// mode m, as every user-visible description of the connector says it (the
+// Connectors tab, the approve card, connector_requests_list, the boot banner).
+// It is derived from the same permission levels the mint asks for, so the text
+// cannot claim a level the token does not carry.
+func (m Access) Scope() string {
+	p := agentMintRequest("", m).Permissions
+	if p.Contents == "read" && p.PullRequests == "read" && p.Checks == "read" && p.Statuses == "read" {
+		return "READ ONLY: Contents, Pull requests, Checks and Commit statuses read — no push, no merge, no pull-request write"
+	}
+	return "Contents and Pull requests " + levelWords(p.Contents) + ", Checks and Commit statuses " + levelWords(p.Checks)
+}
+
+func levelWords(level string) string {
+	switch level {
+	case "write":
+		return "read and write"
+	case "read":
+		return "read"
+	}
+	return level
+}
+
 // Config is what New needs.
 type Config struct {
 	AppID      int64
 	PrivateKey *rsa.PrivateKey
+	// Access is the agent tokens' permission mode; "" means AccessWrite. New
+	// refuses any other value.
+	Access Access
 	// Accounts are the GitHub accounts (users or organizations) whose
 	// installations are used, matched by ID. REQUIRED: New refuses an empty
 	// list or an entry with no ID, because the App is installable by anyone.
@@ -156,11 +223,16 @@ type Account struct {
 	ID    int64
 }
 
-// tokenKey names a cached token: an agent's repository token (agent > 0), or an
-// installation's listing token (agent == 0, repo == "installation:<id>").
+// tokenKey names a cached token: an agent's repository token (agent > 0) in
+// one access mode, an installation's listing token (agent == 0, repo ==
+// "installation:<id>", access ""), or muster's pull-request read token for one
+// repository (agent == 0, repo == "pr-read:<owner>/<name>"). The mode is part of the key, so a write
+// token cached for an agent is never served to a read-only request of the same
+// agent (an agent that became an officer instance).
 type tokenKey struct {
-	agent int64
-	repo  string
+	agent  int64
+	repo   string
+	access Access
 }
 
 type token struct {
@@ -186,6 +258,13 @@ func New(cfg Config) (*App, error) {
 				"renamed and re-registered by someone else", acc.Login)
 		}
 	}
+	switch cfg.Access {
+	case "":
+		cfg.Access = AccessWrite
+	case AccessWrite, AccessRead:
+	default:
+		return nil, fmt.Errorf("githubapp: unknown access mode %q (want %q or %q)", cfg.Access, AccessRead, AccessWrite)
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = github.APIBaseURL()
 	}
@@ -209,6 +288,9 @@ func New(cfg Config) (*App, error) {
 
 // AppID is the configured App ID.
 func (a *App) AppID() int64 { return a.cfg.AppID }
+
+// Access is the agent tokens' permission mode (never "").
+func (a *App) Access() Access { return a.cfg.Access }
 
 // allowed reports whether in's ACCOUNT ID is on the allowlist. A matching id
 // under a different login (a rename) is allowed, and recorded once (Renames).
@@ -266,6 +348,15 @@ func (a *App) Renames() []string {
 
 // --- the connector ---------------------------------------------------------------
 
+// Hosts are the git and API hosts this App's connector serves (lowercase).
+// A nil App has none ("" "", which a caller reads as the defaults).
+func (a *App) Hosts() (git, api string) {
+	if a == nil {
+		return "", ""
+	}
+	return a.cfg.GitHost, a.cfg.APIHost
+}
+
 // Describe is the `github` connector's public description: the same hosts and
 // auth shape as the GitHub preset (basic, username x-access-token — the one
 // shape both git over HTTPS and the REST API accept), with no stored secret.
@@ -282,8 +373,11 @@ func (a *App) Describe() connectors.Connector {
 }
 
 // Credential is the installation token for caller's own repository; a request
-// for ANOTHER repository is anonymous (no credential at all); a request whose
-// repository cannot be decided is refused (targetRepo).
+// for one of caller's read repositories (caller.ReadRepos) gets a READ-ONLY
+// token for that repository; a request for ANY OTHER repository is anonymous
+// (no credential at all); a request whose repository cannot be decided is
+// refused (targetRepo). A path that names no repository (/graphql) is served
+// with the own repository's token.
 func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
 	repo := strings.TrimSpace(caller.Repo)
 	if repo == "" {
@@ -296,10 +390,17 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", connectors.ErrTargetRefused, err)
 	}
+	access := a.accessFor(caller)
 	if scoped && !strings.EqualFold(target, repo) {
-		return "", true, nil // another repository: anonymous, never the App token
+		read, ok := readRepo(caller, target)
+		if !ok {
+			return "", true, nil // another repository: anonymous, never the App token
+		}
+		// One of the caller's read repositories (an officer's read_repos): a
+		// token for THAT repository, READ ONLY whatever the App's mode.
+		repo, access = read, AccessRead
 	}
-	tok, err := a.repoToken(ctx, caller.AgentID, repo)
+	tok, err := a.repoToken(ctx, caller.AgentID, repo, access)
 	a.mu.Lock()
 	if err != nil {
 		a.problems[caller.AgentID] = err.Error()
@@ -308,6 +409,29 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	}
 	a.mu.Unlock()
 	return tok, false, err
+}
+
+// readRepo is the entry of caller.ReadRepos that target (as targetRepo decided
+// it) names, compared without case or surrounding space as GitHub names are;
+// ok false when it names none. 🔴 Its caller mints that entry's token in
+// AccessRead and nothing else.
+func readRepo(caller connectors.Caller, target string) (string, bool) {
+	for _, r := range caller.ReadRepos {
+		if r = strings.TrimSpace(r); r != "" && strings.EqualFold(r, target) {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// accessFor is the mode caller's token is minted in: AccessRead for a caller
+// that asks for read only (connectors.Caller.ReadOnly — an officer instance),
+// whatever this App's mode; the App's mode otherwise.
+func (a *App) accessFor(caller connectors.Caller) Access {
+	if caller.ReadOnly {
+		return AccessRead
+	}
+	return a.cfg.Access
 }
 
 // Rejected drops every cached token of caller's: GitHub answered 401 to one
@@ -337,60 +461,14 @@ func (a *App) Problem(agentID int64) string {
 	return ""
 }
 
-// targetRepo is the repository a proxied request is for. scoped is false for an
-// API path that names no repository (/graphql, /rate_limit, /user …): those
-// carry the agent's token, which can reach only the agent's repository anyway.
-//
-// The path is FULLY percent-decoded first and compared without case, as GitHub
-// routes it:
-//
-//   - github.com: every path is <owner>/<repo>[.git]/… (git's smart-HTTP
-//     protocol, and the web URLs). A path with fewer segments is refused.
-//   - api.github.com: /repos/<owner>/<repo>/… (any case) names a repository;
-//     /repositories/<id>/… is REFUSED (an id muster cannot match to the
-//     agent's repository without another API call); any other path is not
-//     repository-scoped.
-//
-// Refused outright, because the upstream may resolve them to another
-// repository after this check: a `.` or `..` segment, a leading empty segment
-// (`%2Frepos/…` decodes to one), a `%` left after decoding (double encoding), a
-// backslash, and an escape that does not decode.
+// targetRepo is the repository a proxied request is for, decided by
+// connectors.GitHubTargetRepo on this App's hosts (the rule, and every path it
+// refuses, is documented there; the standing public read decides with it too).
+// scoped is false for an API path that names no repository (/graphql,
+// /rate_limit, /user …): those carry the agent's token, which can reach only
+// the agent's repository anyway.
 func (a *App) targetRepo(host, rest string) (repo string, scoped bool, err error) {
-	p, err := url.PathUnescape(rest)
-	if err != nil {
-		return "", false, errors.New("the request path does not decode")
-	}
-	if strings.ContainsAny(p, "%\\") {
-		return "", false, errors.New("the request path is encoded more than once or holds a backslash")
-	}
-	segs := strings.Split(p, "/")
-	if segs[0] == "" {
-		return "", false, errors.New("the request path begins with an empty segment")
-	}
-	for _, s := range segs {
-		if s == "." || s == ".." {
-			return "", false, errors.New("the request path has a '.' or '..' segment")
-		}
-	}
-	switch host {
-	case a.cfg.GitHost:
-		if len(segs) < 2 || segs[1] == "" {
-			return "", false, fmt.Errorf("%s/%s names no repository", host, p)
-		}
-		return segs[0] + "/" + strings.TrimSuffix(segs[1], ".git"), true, nil
-	case a.cfg.APIHost:
-		switch strings.ToLower(segs[0]) {
-		case "repos":
-			if len(segs) < 3 || segs[1] == "" || segs[2] == "" {
-				return "", false, fmt.Errorf("%s/%s names no repository", host, p)
-			}
-			return segs[1] + "/" + segs[2], true, nil
-		case "repositories":
-			return "", false, fmt.Errorf("%s/%s names a repository by id; use /repos/<owner>/<name>", host, p)
-		}
-		return "", false, nil
-	}
-	return "", false, fmt.Errorf("host %s is not served by the GitHub App connector", host)
+	return connectors.GitHubTargetRepo(a.cfg.GitHost, a.cfg.APIHost, host, rest)
 }
 
 // mintRequest is the body of every agent token mint. 🔴 IT IS THE WHOLE
@@ -408,11 +486,16 @@ type mintPermissions struct {
 	Statuses     string `json:"statuses"`
 }
 
-func agentMintRequest(repoName string) mintRequest {
-	return mintRequest{
-		Repositories: []string{repoName},
-		Permissions:  mintPermissions{Contents: "write", PullRequests: "write", Checks: "read", Statuses: "read"},
+// agentMintRequest is the agent mint's body for repoName in mode access. 🔴
+// ANYTHING BUT AccessWrite GETS READ: the write levels are reachable only by
+// naming the write mode, so an unexpected value (New refuses one anyway) can
+// never widen a token.
+func agentMintRequest(repoName string, access Access) mintRequest {
+	p := mintPermissions{Contents: "read", PullRequests: "read", Checks: "read", Statuses: "read"}
+	if access == AccessWrite {
+		p.Contents, p.PullRequests = "write", "write"
 	}
+	return mintRequest{Repositories: []string{repoName}, Permissions: p}
 }
 
 // listingMintRequest is the body of the installation-wide token muster itself
@@ -421,13 +504,14 @@ func agentMintRequest(repoName string) mintRequest {
 // into an agent's request.
 var listingMintRequest = map[string]any{"permissions": map[string]string{"metadata": "read"}}
 
-// repoToken returns a cached or freshly minted token for agentID's repo.
-func (a *App) repoToken(ctx context.Context, agentID int64, repo string) (string, error) {
+// repoToken returns a cached or freshly minted token for agentID's repo, in
+// mode access.
+func (a *App) repoToken(ctx context.Context, agentID int64, repo string, access Access) (string, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return "", fmt.Errorf("%w: %q is not owner/name", connectors.ErrTargetRefused, repo)
 	}
-	key := tokenKey{agent: agentID, repo: strings.ToLower(repo)}
+	key := tokenKey{agent: agentID, repo: strings.ToLower(repo), access: access}
 	if t, ok := a.cached(key); ok {
 		return t, nil
 	}
@@ -440,7 +524,7 @@ func (a *App) repoToken(ctx context.Context, agentID int64, repo string) (string
 	if err != nil {
 		return "", err
 	}
-	t, err := a.mint(ctx, inst, agentMintRequest(name), "minting a token for "+repo)
+	t, err := a.mint(ctx, inst, agentMintRequest(name, access), "minting a token for "+repo)
 	if err != nil {
 		return "", err
 	}
@@ -691,19 +775,6 @@ func (a *App) Repos(ctx context.Context) ([]github.Repo, error) {
 	return all, nil
 }
 
-// Accounts are the logins the App is installed on, for the Repos tab's label.
-func (a *App) Accounts(ctx context.Context) ([]string, error) {
-	insts, err := a.installations(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(insts))
-	for _, in := range insts {
-		out = append(out, in.Account.Login)
-	}
-	return out, nil
-}
-
 // DefaultBranch reads repo's default branch with the installation's listing token.
 func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 	owner, name, ok := strings.Cut(repo, "/")
@@ -728,12 +799,198 @@ func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 	return r.DefaultBranch, nil
 }
 
+// PRState is a pull request's state as GitHub reports it: State "open" or
+// "closed", and Merged when a closed one was merged. HeadSHA is its head
+// commit ("" when GitHub names none), ClosedAt when it was closed (merged or
+// not; zero while open, or when GitHub names no time).
+type PRState struct {
+	State    string
+	Merged   bool
+	HeadSHA  string
+	ClosedAt time.Time
+}
+
+// prReadMintRequest is the body of the token muster itself uses to read one
+// repository's pull requests (PullRequestState): that repository only, metadata
+// and pull requests READ. A pull request of a PRIVATE repository is a 404 to a
+// metadata-only token (listingMintRequest), so the listing token cannot serve
+// this read. It is never injected into an agent's request.
+func prReadMintRequest(name string) map[string]any {
+	return map[string]any{"repositories": []string{name},
+		"permissions": map[string]string{"metadata": "read", "pull_requests": "read"}}
+}
+
+// ErrMintBusy is a pull-request read refused because another token is being
+// minted: PullRequestState never waits on the mint lock, so its caller's
+// deadline bounds the whole read (the caller reads it as "unknown").
+var ErrMintBusy = errors.New("githubapp: another token is being minted; not waiting for it")
+
+// prReadToken returns a cached or freshly minted prReadMintRequest token for
+// repo. Unlike repoToken and listingToken it does NOT wait for the mint lock:
+// a mint in progress (up to the HTTP client's timeout) would otherwise outlast
+// the caller's deadline, so a busy lock is ErrMintBusy at once.
+func (a *App) prReadToken(ctx context.Context, owner, name string) (string, error) {
+	key := tokenKey{repo: "pr-read:" + strings.ToLower(owner+"/"+name)}
+	if t, ok := a.cached(key); ok {
+		return t, nil
+	}
+	if !a.mintMu.TryLock() {
+		return "", ErrMintBusy
+	}
+	defer a.mintMu.Unlock()
+	if t, ok := a.cached(key); ok {
+		return t, nil
+	}
+	inst, err := a.installationFor(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	t, err := a.mint(ctx, inst, prReadMintRequest(name), "minting a pull-request read token for "+owner+"/"+name)
+	if err != nil {
+		return "", err
+	}
+	a.store(key, t)
+	return t.value, nil
+}
+
+// PullRequestState reads pull request n of repo with a token limited to that
+// repository and pull requests read (prReadToken): muster's own server-side
+// read, never handed to an agent. Every failure — a repository whose owner has
+// no allowlisted installation, a 404, a 5xx, ctx's deadline, a busy mint lock —
+// is an error, which the caller reads as "unknown".
+func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRState, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || n <= 0 {
+		return PRState{}, fmt.Errorf("%q #%d is not owner/name and a pull request number", repo, n)
+	}
+	tok, err := a.prReadToken(ctx, owner, name)
+	if err != nil {
+		return PRState{}, err
+	}
+	var r struct {
+		State  string `json:"state"`
+		Merged bool   `json:"merged"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		ClosedAt *time.Time `json:"closed_at"`
+	}
+	if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
+		strconv.FormatInt(n, 10), "token "+tok, nil, &r, "reading "+repo+" pull request #"+strconv.FormatInt(n, 10), owner); err != nil {
+		return PRState{}, err
+	}
+	if r.State != "open" && r.State != "closed" {
+		return PRState{}, fmt.Errorf("GitHub's answer for %s pull request #%d has state %q", repo, n, r.State)
+	}
+	st := PRState{State: r.State, Merged: r.Merged}
+	if validCommitSHA(r.Head.SHA) {
+		st.HeadSHA = r.Head.SHA
+	}
+	if r.ClosedAt != nil && r.State == "closed" {
+		st.ClosedAt = r.ClosedAt.UTC()
+	}
+	return st, nil
+}
+
+// validCommitSHA reports whether s is a full hex commit id (40 for SHA-1, 64
+// for SHA-256): the only head PRState passes on.
+func validCommitSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// prCommitPages bounds PullRequestCommits: GitHub lists at most 250 commits of
+// a pull request, 100 a page.
+const prCommitPages = 3
+
+// PullRequestCommits lists pull request n's commit shas, oldest first, with
+// the same repository-limited read token as PullRequestState (pull requests
+// read). A force-pushed-away head is not among them. Every failure is an
+// error, which the caller reads as "order unknown".
+func (a *App) PullRequestCommits(ctx context.Context, repo string, n int64) ([]string, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || n <= 0 {
+		return nil, fmt.Errorf("%q #%d is not owner/name and a pull request number", repo, n)
+	}
+	tok, err := a.prReadToken(ctx, owner, name)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for page := 1; page <= prCommitPages; page++ {
+		var r []struct {
+			SHA string `json:"sha"`
+		}
+		if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
+			strconv.FormatInt(n, 10)+"/commits?per_page=100&page="+strconv.Itoa(page), "token "+tok, nil, &r,
+			"listing "+repo+" pull request #"+strconv.FormatInt(n, 10)+"'s commits", owner); err != nil {
+			return nil, err
+		}
+		for _, c := range r {
+			out = append(out, c.SHA)
+		}
+		if len(r) < 100 {
+			break
+		}
+	}
+	return out, nil
+}
+
 // ListPullRequests lists agentID's own repository's pull requests with that
 // agent's repository token (server-side; the worker tool returns only the list).
 func (a *App) ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error) {
-	tok, err := a.repoToken(ctx, agentID, repo)
+	tok, err := a.repoToken(ctx, agentID, repo, a.cfg.Access)
 	if err != nil {
 		return nil, err
 	}
 	return github.ListPullRequestsAt(ctx, a.cfg.BaseURL, tok, repo, state)
+}
+
+// Slug reads the App's own slug (GET /app, as the App). The App's bot account
+// is `<slug>[bot]`: the identity its pull requests are authored by, which a
+// shipping officer's merge gate compares against (internal/officership).
+// Read fresh on every call — a renamed App changes its slug.
+func (a *App) Slug(ctx context.Context) (string, error) {
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := a.appCall(ctx, http.MethodGet, a.cfg.BaseURL+"/app", nil, &out, "reading the App", ""); err != nil {
+		return "", err
+	}
+	if out.Slug == "" {
+		return "", errors.New("GitHub's answer for the App carried no slug")
+	}
+	return out.Slug, nil
+}
+
+// CreatedAt reads when the App was created (GET /app's created_at, as the
+// App): no pull request of its bot is older, so a shipping officer's listing
+// of them stops there (internal/officership REST.OfficerPRs). An answer
+// without it is an error, never a zero time.
+func (a *App) CreatedAt(ctx context.Context) (time.Time, error) {
+	var out struct {
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := a.appCall(ctx, http.MethodGet, a.cfg.BaseURL+"/app", nil, &out, "reading the App", ""); err != nil {
+		return time.Time{}, err
+	}
+	if out.CreatedAt.IsZero() {
+		return time.Time{}, errors.New("GitHub's answer for the App carried no created_at")
+	}
+	return out.CreatedAt, nil
+}
+
+// RepoToken is a token for repo minted in the App's own mode, for muster's
+// own server-side calls on a shipping officer's behalf (merge, tag). It is
+// never injected into an agent's request: the proxy takes its credential from
+// Credential (or a connectors.Gate), not from here.
+func (a *App) RepoToken(ctx context.Context, repo string) (string, error) {
+	return a.repoToken(ctx, 0, repo, a.cfg.Access)
 }

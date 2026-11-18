@@ -41,24 +41,53 @@ import (
 // A histogram or counter with no labels has an empty slice — distinct from a
 // missing entry, which is the failure.
 var wantMetrics = map[string][]string{
-	"muster_build_info":                       {"version"},
-	"muster_http_requests_total":              {"code", "method", "route"},
-	"muster_http_request_duration_seconds":    {"method", "route"},
-	"muster_panics_total":                     {"source"},
-	"muster_agent_provision_total":            {"result"},
-	"muster_push_delivery_total":              {"result"},
-	"muster_push_suppressed_total":            {"reason"},
-	"muster_agent_provision_duration_seconds": {},
-	"muster_agent_kickoff_resend_total":       {"result"},
-	"muster_agent_kickoff_claim_total":        {"result"},
-	"muster_tasks_created_total":              {"source"},
-	"muster_task_routing_tags_total":          {"namespace"},
-	"muster_task_session_links_total":         {"role"},
-	"muster_task_session_links_skipped_total": {"reason"},
-	"muster_flow_jobs_total":                  {"flow", "outcome"},
-	"muster_memo_relay_agent_checks_total":    {"result"},
-	"muster_memo_relay_upstream_total":        {"result"},
-	"muster_memo_relay_deliveries_total":      {"result"},
+	"muster_officer_error_slots":                      nil,
+	"muster_officer_hq_faults":                        nil,
+	"muster_officer_cap_refusal_withheld":             nil,
+	"muster_officer_judgement_cap_reached":            nil,
+	"muster_officer_transcript_events_total":          {"result"},
+	"muster_officer_usage_push_total":                 {"result"},
+	"muster_cc_consumer_usage_push_total":             {"result"},
+	"muster_officer_pools_push_total":                 {"result"},
+	"muster_officer_llm_requests_total":               {"instance", "officer", "result"},
+	"muster_officer_llm_refused_total":                {"officer", "reason"},
+	"muster_officer_llm_tokens_total":                 {"dir", "instance", "officer"},
+	"muster_officer_llm_cost_usd_total":               {"instance", "officer"},
+	"muster_officer_llm_cost_estimated_total":         {"officer"},
+	"muster_officer_llm_upstream_auth_failures_total": {"officer", "status"},
+	"muster_officer_llm_upstream_auth_failing":        {"officer"},
+	"muster_officer_llm_spent_today_usd":              {"officer", "pool"},
+	"muster_officer_llm_budget_usd":                   {"officer", "pool"},
+	"muster_officer_llm_book_failures_total":          {"officer"},
+	"muster_build_info":                               {"version"},
+	"muster_asks_total":                               {"kind"},
+	"muster_ask_plain_text_prefilter_total":           {"result"},
+	"muster_ask_answer_seconds":                       {"answered_by", "kind"},
+	"muster_ask_capture_errors_total":                 {"kind", "stage"},
+	"muster_http_requests_total":                      {"code", "method", "route"},
+	"muster_http_request_duration_seconds":            {"method", "route"},
+	"muster_panics_total":                             {"source"},
+	"muster_plugin_origin_refusals_total":             {},
+	"muster_page_link_requests_total":                 {"route", "outcome"},
+	"muster_page_responses_total":                     {"kind", "outcome"},
+	"muster_page_share_decisions_total":               {"decision"},
+	"muster_page_upload_rollback_failures_total":      {},
+	"muster_plugin_handoffs_total":                    {"outcome", "purpose"},
+	"muster_agent_provision_total":                    {"result"},
+	"muster_push_delivery_total":                      {"result"},
+	"muster_push_suppressed_total":                    {"reason"},
+	"muster_agent_provision_duration_seconds":         {},
+	"muster_agent_kickoff_resend_total":               {"result"},
+	"muster_agent_kickoff_claim_total":                {"result"},
+	"muster_tasks_created_total":                      {"source"},
+	"muster_task_routing_tags_total":                  {"namespace"},
+	"muster_task_session_links_total":                 {"role"},
+	"muster_task_session_links_skipped_total":         {"reason"},
+	"muster_flow_jobs_total":                          {"flow", "outcome"},
+	"muster_memo_relay_agent_checks_total":            {"result"},
+	"muster_memo_relay_upstream_total":                {"result"},
+	"muster_memo_relay_deliveries_total":              {"result"},
+	"muster_cc_usage_push_failures_total":             {"reason"},
 }
 
 // 🔴 LABELS THAT MAY NEVER APPEAR, BY NAME. This is the denylist half: the
@@ -79,9 +108,19 @@ func gather(t *testing.T) map[string][]string {
 
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
+	PluginHandoffs.WithLabelValues("view", "minted")
+	PageLinkRequests.WithLabelValues("shell", "served")
+	PageResponses.WithLabelValues("submit", "recorded")
+	PageShareDecisions.WithLabelValues("approved")
+	AsksTotal.WithLabelValues("plain_text")
+	AskPlainTextPrefilter.WithLabelValues("kept")
+	AskAnswerSeconds.WithLabelValues("plain_text", "owner")
+	AskCaptureErrors.WithLabelValues("plain_text", "write")
 	AgentProvision.WithLabelValues("ok")
 	PushDelivery.WithLabelValues("ok")
 	PushSuppressed.WithLabelValues("muted")
+	PushSuppressed.WithLabelValues("team_read_failed")
+	PushSuppressed.WithLabelValues("owner_kind_unread")
 	AgentKickoffResend.WithLabelValues("resent")
 	AgentKickoffClaim.WithLabelValues("won")
 	TasksCreated.WithLabelValues("api")
@@ -92,6 +131,21 @@ func gather(t *testing.T) map[string][]string {
 	MemoRelayAgentChecks.WithLabelValues("eligible")
 	MemoRelayUpstream.WithLabelValues("ok")
 	MemoRelayDeliveries.WithLabelValues("delivered")
+	CCUsagePushFailures.WithLabelValues("timeout")
+	OfficerTranscriptEvents.WithLabelValues("posted")
+	OfficerUsagePush.WithLabelValues("pushed")
+	CCConsumerUsagePush.WithLabelValues("pushed")
+	OfficerPoolsPush.WithLabelValues("pushed")
+	OfficerLLMRequests.WithLabelValues("example:area", "1", "ok")
+	OfficerLLMRefused.WithLabelValues("none", "path")
+	OfficerLLMTokens.WithLabelValues("example:area", "1", "in")
+	OfficerLLMCost.WithLabelValues("example:area", "1")
+	OfficerLLMCostEstimated.WithLabelValues("example:area")
+	OfficerLLMUpstreamAuth.WithLabelValues("example:area", "401")
+	OfficerLLMUpstreamAuthFailing.WithLabelValues("example:area")
+	OfficerLLMSpentToday.WithLabelValues("example:area", "routine")
+	OfficerLLMBudget.WithLabelValues("example:area", "routine")
+	OfficerLLMBookFailures.WithLabelValues("example:area")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)
 
 	families, err := prometheus.DefaultGatherer.Gather()

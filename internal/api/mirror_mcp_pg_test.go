@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -42,9 +44,9 @@ const (
 // @1 (focusSID, waiting) and @3 (secondSID, with splitSID in its other pane). Tokens: ws's, user 1's OTHER
 // host's ("laptop", which lists nothing), and the member's token for a host
 // also named "ws".
-func newMirrorMCPFixture(t *testing.T) (*attnFixture, string, string, string) {
+func newMirrorMCPFixture(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) (*attnFixture, string, string, string) {
 	t.Helper()
-	f := newAttnFixture(t)
+	f := newAttnFixture(t, more...)
 	f.mirror.mu.Lock()
 	f.mirror.windows = append(attnWindows(mirror.StatusWaiting),
 		mirror.Window{Session: "side", ID: "@3", Index: 0, Active: true, Claude: true, ClaudeSession: secondSID, Status: mirror.StatusBusy, StatusSince: attnSince, Activity: 1_700_000_000,
@@ -88,9 +90,10 @@ func mcpToolCall(name string, args any) string {
 }
 
 // TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse: tools/list is
-// exactly the attention and task tools and the operator's own attention_answer
-// and connector decision tools; a chief tool or an agent tool called by name is
-// refused as unknown.
+// exactly the attention and task tools and the operator's own attention_answer,
+// connector decision and reply-draft decision tools; a chief tool or an agent tool called by name is
+// refused as unknown. chief_ask is listed whatever the owner's chief switch
+// says (mirrorTools); its call answers for an off or absent chief.
 func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
 	code, r, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
@@ -105,11 +108,11 @@ func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer agent_destroy connector_requests_list connector_request_decide"
+	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer agent_destroy chief_ask agents_list connector_requests_list connector_request_decide plugin_drafts_list plugin_draft_decide plugin_outbound_batch_get plugin_outbound_batch_decide plugin_requests_list plugin_request_decide muster_help"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
-	for _, n := range []string{attentionListTool, "attention_get", sessionTranscript, "fleet_list", "connector_request", "task_create_gated"} {
+	for _, n := range []string{attentionListTool, "attention_get", "session_transcript", "fleet_list", "connector_request", "task_create_gated"} {
 		_, r, _ := f.mirrorRPC(t, mirrorAs(ws, focusSID), mcpToolCall(n, map[string]any{"id": 1, "answer": "x", "subject": "agent:1"}))
 		if r == nil || r.Error == nil || r.Error.Code != -32602 {
 			t.Fatalf("%s by a mirrored session: %+v", n, r)
@@ -183,7 +186,11 @@ func TestAHostActsOnlyAsItsOwnSessions(t *testing.T) {
 			t.Errorf("%s: %d %s", name, code, body)
 			continue
 		}
-		if text, isErr := toolText(t, r); !isErr || !strings.Contains(text, "lists no window running Claude session") {
+		// The PROPERTY, not the sentence: a tool error (the tool did not run —
+		// nothing is asked, checked below) that names the header a Claude Code
+		// caller is bound by. A malformed or missing id is refused before any
+		// listing is read; an id no window shows, after it.
+		if text, isErr := toolText(t, r); !isErr || !strings.Contains(text, mirrorSessionHeader) {
 			t.Errorf("%s: %s", name, text)
 		}
 		for _, m := range []string{`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`} {

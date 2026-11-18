@@ -54,6 +54,9 @@ func (f *pluginRuntime) hold() (arrived <-chan struct{}, release func()) {
 // expect sets the credential the fake accepts: the one the production runtime
 // derives from a's token, through the gateway's own derivation.
 func (f *pluginRuntime) expect(a agents.Agent) {
+	if a.HooksToken == "" {
+		panic("pluginRuntime.expect: the agent carries no hooks token (an ordinary read returns none; use agents.WithSecrets)")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.want = agentgateway.HooksSHA256().Bearer(a.HooksToken)
@@ -96,7 +99,7 @@ func (f fixedEndpoint) Endpoint(context.Context, provision.Ref) (provision.Endpo
 	return f.ep, nil
 }
 
-var mintedPluginRE = regexp.MustCompile(`id="minted-plugin-token" readonly value="(mpl_[A-Za-z0-9_-]{43})"`)
+var mintedPluginRE = regexp.MustCompile(`id="minted-plugin-token"[^>]*>(mpl_[A-Za-z0-9_-]{43})<`)
 
 // TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane is the seam test:
 // the real Postgres stores, the real routes and wrappers, the real deliverer and
@@ -129,6 +132,9 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	as := agents.NewPG(pool)
 	chief, err := as.Create(asUser(a), agents.Agent{Name: "plgchief-" + suffix, Namespace: "devpod-plgchief-" + suffix,
 		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "plg-hooks-" + suffix})
+	if err == nil {
+		chief, err = agents.WithSecrets(asUser(a), as, chief) // Create returns no credentials
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +153,7 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,6 +370,14 @@ func (f *laterRoundRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.dial {
 		// The response below is the last thing this runtime ever serves: the next
 		// request dials a closed port, as after a pod restart.
+		//
+		// 🔴 THE LISTENER IS CLOSED BEFORE A BYTE OF THE RESPONSE IS WRITTEN. It
+		// used to be closed after the Flush, and the client — which sends
+		// request 2 the moment it has read request 1's answer — could dial
+		// inside that gap and reach a live listener (a flake under load, PR #609
+		// round 2). Closing a listener leaves this accepted connection open, so
+		// request 1 is still answered; "Connection: close" ends it after.
+		_ = f.srv.Listener.Close()
 		w.Header().Set("Connection", "close")
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -371,7 +385,6 @@ func (f *laterRoundRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"agent_get_task\",\"arguments\":\"{}\"}]}}\n\n")
 	if f.dial {
 		w.(http.Flusher).Flush()
-		_ = f.srv.Listener.Close()
 	}
 }
 
@@ -436,7 +449,7 @@ func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing
 			host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(rt.srv.URL, "http://"))
 			port, _ := strconv.Atoi(portStr)
 			gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-				Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: rt.srv.Client()})
+				Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: rt.srv.Client()})
 			if err != nil {
 				t.Fatal(err)
 			}

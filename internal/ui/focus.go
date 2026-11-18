@@ -1,21 +1,18 @@
 package ui
 
 import (
+	"strconv"
 	"time"
-
-	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
-
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
-// FocusView is a session's FOCUS (internal/focus) as a card shows it: what the
-// session is working on, and when that was last written. A card with none
-// shows nothing.
+// FocusView is a session's FOCUS (internal/focus): what the session is working
+// on, and when that was last written. The palette finds an entry by its title
+// (switcher.go focusTitle).
 type FocusView struct {
 	Title       string
 	Description string
-	UpdatedAt   time.Time
+	// UpdatedAt is when the title was last written: its age (FocusAgeOf).
+	UpdatedAt time.Time
 	// Problem is why the focus is missing (Title "") or stale (the latest
 	// refresh failed after it was written): a short, non-secret reason
 	// (focus.Reason), at ProblemAt. "" when the focus is current.
@@ -23,176 +20,131 @@ type FocusView struct {
 	ProblemAt time.Time
 }
 
-// focusHaystack is what the list's filter finds a card by through its focus:
-// the title and the description (agents_filter.go's data-filter).
-func focusHaystack(f *FocusView) []string {
-	if f == nil {
-		return nil
-	}
-	return []string{f.Title, f.Description}
-}
+// (The retired Agents list's card was headed by its focus title, with a
+// popover of the focus's description, age and refresh failure; Description,
+// Problem and ProblemAt were for that card. Its focus row sat beside the card's
+// control cluster, keeping the same pr-28 clear of it.)
 
-// THE FOCUS IS THE CARD'S TITLE (operator ask): a session with a focus is
-// headed by what it is working on (cardFocusTitle), and what the card was
-// called before — the agent's name, the mirrored window's title with its muted
-// session — moves under it as a subtitle (cardSubtitleClass). With no focus,
-// or only a recorded failure, the card keeps its old title and has no
-// subtitle, and the failure is the footer chip (cardFocus) it always was.
+// 🔴 THE FOCUS AGE RULE — ONE PLACE, ONE CLOCK. Every surface that shows a
+// focus title says how old it is through FocusAgeOf, at the SERVER's clock
+// (internal/api's s.now), and nothing else decides it:
 //
-// 🔴 THE TITLE IS A BUTTON OUTSIDE THE NAV ANCHOR, IN ITS OWN SLOT ("focus").
-// A button inside an <a> is invalid markup and its tap would bubble into the
-// navigation, so the focus row sits above the anchor, beside the control
-// cluster (it reserves the same pr-28): a tap on the title opens the popover
-// and never the card; the rest of the card is the anchor, as before.
+//   - the owner's: the switcher dock's second line and the palette's results
+//     (SwitcherCurrent.Now), the sidebar's rows (NavAgentsList's now), the
+//     Asks list's rows, a chief notice's push body, and the attention
+//     summary's why (the push's first line);
+//   - the chief's: fleet_list, sessions_overview and focus_search rows and
+//     attention_list items (internal/api's focusAgeFields), and the chief
+//     nudge's prompt (FocusAgeLabel, chiefnudge.Session.TitleAge).
 //
-// 🔴 THE FILTER'S RANKING IS UNTOUCHED BY THIS. agents_filter.go ranks on
-// data-rank-title (cardFields.Titles: the names), never on the visible
-// heading, so a typed name still ranks its card first while the card is
-// headed by its focus; the focus text stays in data-filter, as before.
-
-// cardHasFocusTitle reports whether a card is headed by its focus.
+// Not here: focus_search with since_hours, fleet_report and the session
+// hints, which list PAST titles each with the time it was written, not a
+// current title's age; and a plugin message's pull-request author hint
+// (internal/api's prAuthorHint), which uses the current title as the
+// session's NAME beside its own last_seen time — named here so it is not
+// mistaken for covered.
 //
-// The focus title is an LLM summary and routinely carries markdown, so every
-// read of it here goes through textplain.Title — including this one, so a
-// title that is ALL markup ("**") counts as no title rather than heading the
-// card with nothing.
-func cardHasFocusTitle(f *FocusView) bool { return f != nil && textplain.Title(f.Title) != "" }
-
-// cardTitleClass is a card's heading as it was (no focus); cardSubtitleClass
-// is that same text demoted under a focus title.
+// the dock and the palette draw in the browser, so the server computes the
+// age at RENDER time and hands them the result as attributes
+// (data-switcher-focus-age, data-switcher-focus-stale); their scripts only
+// draw it and hold no threshold of their own.
+//
+// A title summarises what the session was doing WHEN IT WAS WRITTEN; an idle
+// session keeps its last one for days, and without an age it reads as current.
+// So:
+//
+//   - older than FocusAgeShownAfter (a day): its age is shown after it, in
+//     whole days ("· 2d");
+//   - older than FocusStaleAfter (four days): it is also marked stale and
+//     drawn muted (FocusStaleClass).
+//
+// The age is UpdatedAt: when the title was last WRITTEN. A refresh that fails
+// keeps the old title and leaves UpdatedAt where it was, so a title that
+// stopped refreshing ages like any other. Problem plays no part: a refresh
+// that failed minutes after a fresh title does not make that title old.
 const (
-	cardTitleClass    = "mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"
-	cardSubtitleClass = "mr-auto break-all text-sm font-medium leading-tight text-fg2 group-hover:text-accent"
+	FocusAgeShownAfter = 24 * time.Hour
+	FocusStaleAfter    = 4 * 24 * time.Hour
 )
 
-// cardNameClass is the class of a card's own name: its title, or its subtitle
-// under a focus title.
-func cardNameClass(f *FocusView) string {
-	if cardHasFocusTitle(f) {
-		return cardSubtitleClass
-	}
-	return cardTitleClass
+// FocusStaleClass is the muted style of a stale focus title wherever one is
+// drawn. internal/api's Asks list uses it too; it is spelled here, in
+// Tailwind's content globs, so its classes are always in the stylesheet.
+const FocusStaleClass = "italic opacity-60"
+
+// FocusAge is how old a focus title is, as the surfaces show it: Text is ""
+// (no age shown) or whole days ("2d"), and Stale marks it stale.
+type FocusAge struct {
+	Text  string
+	Stale bool
 }
 
-// cardBodyClass is the nav anchor's box: its top padding moves to the focus
-// row when there is one, so the two read as one block.
-//
-// reserve is cardReserve's: what it keeps clear of the control cluster.
-func cardBodyClass(f *FocusView, reserve string) string {
-	if cardHasFocusTitle(f) {
-		return "flex flex-col gap-3 px-4 pb-4 pt-1 " + reserve
+// FocusAgeLabel is age in words, for its element's title and aria-label: the
+// focus age sits beside a waiting time drawn in the same "· 3m" shape, and
+// must not be read as one. "" when there is no age.
+func FocusAgeLabel(age FocusAge) string {
+	if age.Text == "" {
+		return ""
 	}
-	return "flex flex-col gap-3 p-4 " + reserve
+	l := "focus title set " + age.Text + " ago"
+	if age.Stale {
+		l += " (stale)"
+	}
+	return l
 }
 
-// focusChevron is the title's "this opens something" affordance: a down
-// chevron, turned when the popover is open (aria-expanded).
-const focusChevron = `<svg class="h-4 w-4 shrink-0 text-muted transition group-hover/focus:text-fg2 group-aria-expanded/focus:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`
-
-// cardFocusTitle is a card's focus row: the focus title as the card's heading,
-// a button that opens the focus popover, or nothing with no focus title.
-//
-// It must LOOK pressable, because it is the one heading on the page that does
-// not navigate: a chevron, a hover and focus-visible surface, the press
-// feedback, a 44px tap target, and aria-haspopup / aria-expanded (kept in step
-// with the popover by floatingMenuScript's toggle listener).
-//
-// A focus title past cardTitleMax is CLAMPED like a long name, through the same
-// row (cardTitleRow): the heading shows the clamped words and is followed by
-// the same "…" button, which opens the same focus popover — where the whole
-// title is (data-focus-title). The aria-label always carries the whole title.
-func cardFocusTitle(cardID string, f *FocusView, reserve string) g.Node {
-	if !cardHasFocusTitle(f) {
-		return g.Text("")
+// FocusAgeSuffix is age as plain text after its title — " · 2d" — or "" when
+// there is no age: the Asks list's age element and a notice's push body both
+// spell it through here.
+func FocusAgeSuffix(age FocusAge) string {
+	if age.Text == "" {
+		return ""
 	}
-	pop := cardID + "-focus"
-	title := textplain.Title(f.Title)
-	return cardTitleRow("focus", pop, title, "pt-3", reserve,
-		func(short string) g.Node {
-			return Button(
-				Type("button"),
-				g.Attr("data-card-focus", ""),
-				g.If(f.Problem != "", g.Attr("data-focus-stale", "")),
-				g.Attr("popovertarget", pop),
-				g.Attr("aria-haspopup", "dialog"),
-				g.Attr("aria-controls", pop),
-				g.Attr("aria-expanded", "false"),
-				g.Attr("aria-label", "Focus: "+title+" — show details"),
-				Class("press group/focus -ml-2 inline-flex min-h-[44px] min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-base font-semibold leading-tight text-fg transition hover:bg-s2 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-				Span(Class("min-w-0 break-words"), g.Text(short)),
-				g.If(f.Problem != "", Span(g.Attr("data-focus-stale-mark", ""),
-					Class("shrink-0 rounded-full bg-s2 px-1.5 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-line"),
-					g.Text("stale"))),
-				g.Raw(focusChevron),
-			)
-		},
-		focusPopover(pop, f))
+	return " · " + age.Text
 }
 
-// cardFocus is the card footer's focus chip for a session with NO focus but a
-// recorded failure: "focus unavailable", and — on a tap — a popover saying why.
-// A session with a focus is headed by it instead (cardFocusTitle), and a
-// session with neither shows nothing.
-//
-// 🔴 THE SAME NATIVE-POPOVER PATTERN AS THE ⋯ MENU AND THE MIRRORED MARK
-// (agentMenu, mirroredMark): a button with popovertarget, a popover="auto"
-// panel in the TOP LAYER (no card overflow can clip it; an outside tap or
-// Escape closes it), placed by floatingMenuScript ([data-floating-menu]) and
-// `invisible` until placed. It sits in the FOOTER, outside the card's nav
-// anchor, so a tap opens the popover and never the card; and it is a 44px tap
-// target, because a phone has no hover to show a tooltip with.
-func cardFocus(cardID string, f *FocusView) g.Node {
-	if f == nil || cardHasFocusTitle(f) || f.Problem == "" {
-		return g.Text("")
+// FocusAgeOf is the age at now of a focus title written at updatedAt. A zero
+// updatedAt (no focus, or no known time) has none.
+func FocusAgeOf(updatedAt, now time.Time) FocusAge {
+	if updatedAt.IsZero() {
+		return FocusAge{}
 	}
-	pop := cardID + "-focus"
-	return g.Group{
-		Button(
-			Type("button"),
-			g.Attr("data-card-focus", ""),
-			g.Attr("data-focus-stale", ""),
-			g.Attr("popovertarget", pop),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", pop),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Focus unavailable: "+f.Problem),
-			Class("press inline-flex min-h-[44px] min-w-0 max-w-full items-center gap-1 rounded-full px-2 text-left text-xs font-medium text-fg2 transition hover:bg-s2"),
-			Span(Class("shrink-0 text-muted"), g.Text("focus")),
-			Span(Class("truncate"), g.Text("unavailable")),
-		),
-		focusPopover(pop, f),
+	d := now.Sub(updatedAt)
+	if d <= FocusAgeShownAfter {
+		return FocusAge{}
 	}
+	return FocusAge{Text: strconv.Itoa(int(d/(24*time.Hour))) + "d", Stale: d > FocusStaleAfter}
 }
 
-// focusPopover is the focus's detail panel: the title, the description,
-// "updated … ago", and — when the latest refresh failed — why ("No focus: …"
-// with no title, "Last refresh failed: …" over a stale one).
-func focusPopover(pop string, f *FocusView) g.Node {
-	title := textplain.Title(f.Title)
-	problem := "Last refresh failed: "
-	if title == "" {
-		problem = "No focus: "
+// focusAgeOf is f's age at now; none for no focus (a FocusView with no title
+// has no UpdatedAt: internal/api's focusIndex.view).
+func focusAgeOf(f *FocusView, now time.Time) FocusAge {
+	if f == nil {
+		return FocusAge{}
 	}
-	return Div(
-		ID(pop),
-		g.Attr("popover", "auto"),
-		g.Attr("role", "dialog"),
-		g.Attr("aria-label", "Focus"),
-		g.Attr("data-floating-menu", ""),
-		g.Attr("data-focus-popover", ""),
-		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-		g.If(title != "", Span(g.Attr("data-focus-title", ""), Class("break-words text-sm font-semibold"), g.Text(title))),
-		g.If(textplain.Title(f.Description) != "", P(g.Attr("data-focus-description", ""), Class("break-words text-sm text-fg2"), g.Text(textplain.Title(f.Description)))),
-		g.If(!f.UpdatedAt.IsZero(), Span(
-			g.Attr("data-focus-updated", ""),
-			Class("inline-flex items-center gap-1 text-xs text-muted"),
-			g.Text("updated"), cardTime(f.UpdatedAt), g.Text("ago"),
-		)),
-		g.If(f.Problem != "", P(
-			g.Attr("data-focus-problem", ""),
-			Class("break-words text-xs text-muted"),
-			g.Text(problem+f.Problem),
-			g.If(!f.ProblemAt.IsZero(), Span(Class("inline-flex items-center gap-1"), g.Text(" ·"), cardTime(f.ProblemAt), g.Text("ago"))),
-		)),
-	)
+	return FocusAgeOf(f.UpdatedAt, now)
 }
+
+// focusAgeLineJS is the ONE script that draws a focus title with its age, for
+// both the dock (switcher_dock.go) and the palette (palette.go), each of which
+// splices it into its own script beside its own el(tag, cls, text).
+// focusAgeLine(age, stale, title) is title (the drawn title element) with
+// " · <age>" after it when age is set (data-switcher-focus-age, which
+// FocusAgeOf decided at render time — the script holds no threshold): a
+// flex line whose title truncates and whose age never does, muted when stale
+// (data-switcher-focus-stale). No age: title itself.
+const focusAgeLineJS = `  function focusAgeLine(age, stale, title) {
+    if (!age) return title;
+    var line = el('span', 'flex min-w-0 items-baseline gap-1 text-xs text-muted' + (stale ? ' ` + FocusStaleClass + `' : ''));
+    line.setAttribute('data-focus-line', '');
+    if (stale) line.setAttribute('data-focus-stale', '');
+    title.className += ' min-w-0';
+    line.appendChild(title);
+    var a = el('span', 'shrink-0', '\u00b7 ' + age);
+    a.setAttribute('data-focus-age', '');
+    var label = 'focus title set ' + age + ' ago' + (stale ? ' (stale)' : '');
+    a.setAttribute('title', label);
+    a.setAttribute('aria-label', label);
+    line.appendChild(a);
+    return line;
+  }`

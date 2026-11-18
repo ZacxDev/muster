@@ -157,8 +157,10 @@ func copyLabels(in map[string]string) map[string]string {
 //     in ControllerNamespace. The two selectors are ONE peer, so they are ANDed:
 //     written as two peers they would be ORed, and would admit every pod in the
 //     controller's namespace plus every namespace's pods carrying those labels;
-//   - EGRESS: UDP and TCP 53 to the cluster's DNS pods, each of the spec's
-//     PublicEgressTCPPorts to [publicIPv4] except [nonPublicIPv4], and each of its
+//   - EGRESS: UDP and TCP 53 to the cluster's DNS pods (none when the spec sets
+//     NoClusterDNS), each of the spec's
+//     PublicEgressTCPPorts to [publicIPv4] except [nonPublicIPv4], each of its
+//     EgressCIDRs (block and port, one rule each), and each of its
 //     ControllerEgressTCPPorts to the controller's pods (the ingress peer).
 //
 // 🔴 BOTH policyTypes ARE ALWAYS LISTED, WHATEVER THE RULES. A policy that lists
@@ -223,20 +225,26 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 		})
 	}
 
-	udp, tcp := corev1.ProtocolUDP, corev1.ProtocolTCP
-	dns := intstr.FromInt32(dnsPort)
-	egress := []networkingv1.NetworkPolicyEgressRule{{
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{labelNamespaceName: cfg.dnsNamespace()},
+	// 🔴 NoClusterDNS MEANS NO DNS RULE AT ALL — not even port 53 to the DNS
+	// pods. Plugins union allows, so an L4 :53 allow here would widen a
+	// cluster-side name-filtered DNS rule back to "any name" (provision.Network).
+	egress := []networkingv1.NetworkPolicyEgressRule{}
+	if !spec.Network.NoClusterDNS {
+		udp, tcp := corev1.ProtocolUDP, corev1.ProtocolTCP
+		dns := intstr.FromInt32(dnsPort)
+		egress = append(egress, networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{labelNamespaceName: cfg.dnsNamespace()},
+				},
+				PodSelector: &metav1.LabelSelector{MatchLabels: cfg.dnsPodLabels()},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &udp, Port: &dns},
+				{Protocol: &tcp, Port: &dns},
 			},
-			PodSelector: &metav1.LabelSelector{MatchLabels: cfg.dnsPodLabels()},
-		}},
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &udp, Port: &dns},
-			{Protocol: &tcp, Port: &dns},
-		},
-	}}
+		})
+	}
 
 	// Same rule as ingress, for the same reason: no public port, no public rule.
 	if len(spec.Network.PublicEgressTCPPorts) > 0 {
@@ -257,6 +265,30 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 			}},
 			Ports: ports,
 		})
+	}
+
+	// Named public blocks: one rule per (block, port), each a single ipBlock
+	// peer with a single TCP port, so a rule admits exactly the pair the spec
+	// names (one rule with several blocks and several ports would admit every
+	// block on every port). No except: provision.CheckEgressCIDR (through
+	// Spec.Validate) refuses any block that overlaps a non-public range.
+	// Sorted by block then port, so the rendered object is byte-stable.
+	if len(spec.Network.EgressCIDRs) > 0 {
+		cidrs := append([]provision.CIDRPort(nil), spec.Network.EgressCIDRs...)
+		sort.Slice(cidrs, func(i, j int) bool {
+			if cidrs[i].CIDR != cidrs[j].CIDR {
+				return cidrs[i].CIDR < cidrs[j].CIDR
+			}
+			return cidrs[i].Port < cidrs[j].Port
+		})
+		for _, c := range cidrs {
+			port := intstr.FromInt32(int32(c.Port))
+			proto := corev1.ProtocolTCP
+			egress = append(egress, networkingv1.NetworkPolicyEgressRule{
+				To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: c.CIDR}}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &proto, Port: &port}},
+			})
+		}
 	}
 
 	// Controller egress: the instance may open these ports on muster's own pods —

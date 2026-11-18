@@ -5,8 +5,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// queryTracer is the tracer every pool Connect opens gets (SetQueryTracer);
+// nil, the default, is none.
+var queryTracer pgx.QueryTracer
+
+// SetQueryTracer installs t on every pool Connect opens from now on:
+// muster-server hands it internal/telemetry's (nil while tracing is off). It
+// is a setter rather than an import so the packages that link internal/db
+// into the agent pod's binary do not link the tracing SDK with it.
+func SetQueryTracer(t pgx.QueryTracer) { queryTracer = t }
 
 // StatementTimeout is injected into every connection this package opens.
 //
@@ -38,6 +49,11 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	// principal; every release clears it. See scope.go.
 	cfg.PrepareConn = prepareConn
 	cfg.AfterRelease = afterRelease
+	// A span per query and per connection wait, inside a trace — none (the
+	// pool exactly as before) unless SetQueryTracer installed one.
+	if queryTracer != nil {
+		cfg.ConnConfig.Tracer = queryTracer
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open pool: %w", err)

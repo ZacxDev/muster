@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -110,17 +110,49 @@ type preflightStore struct {
 
 	mu      sync.Mutex
 	created []agents.Agent
+	// by is the user each Create ran as (the request principal's), so a test
+	// can tell "created as the token's owner" from "created as someone".
+	by []int64
 }
 
-func (s *preflightStore) Create(_ context.Context, a agents.Agent) (agents.Agent, error) {
+func (s *preflightStore) Create(ctx context.Context, a agents.Agent) (agents.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a.ID = int64(len(s.created) + 9001)
 	s.created = append(s.created, a)
+	uid := int64(-1)
+	if p, ok := authz.From(ctx); ok {
+		uid = p.UserID
+	}
+	s.by = append(s.by, uid)
 	return a, nil
 }
 
-func (s *preflightStore) NameExists(context.Context, string) (bool, error) { return false, nil }
+func (s *preflightStore) creators() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.by...)
+}
+
+// NameExists answers from the rows this fixture has created, as PGStore's does
+// from live rows, so BuildUniqueAgentName redraws on a taken name here too.
+//
+// It used to answer false unconditionally. The name pool is 16x16 = 256, so two
+// dispatches in one test drew the SAME name about once in 256 runs, and a test
+// that then looked a row up by name (pageablePreflight.GetByName, behind
+// GET /agents/<name>) got the first of the two. That is how
+// TestAPoolWorkerIsVisibleWhereAgentsAreListed failed in CI: its pool-less
+// control page rendered the pooled agent's chip.
+func (s *preflightStore) NameExists(_ context.Context, name string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.created {
+		if a.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 func (s *preflightStore) List(context.Context) ([]agents.Agent, error) {
 	s.mu.Lock()
@@ -153,23 +185,21 @@ func preflightServer(t *testing.T, prov Provisioner, store agents.Store) (*Serve
 	return s, s.Handler()
 }
 
-// postAgents drives POST /agents with one form action through the production chain.
+// postAgents drives POST /api/agents through the production chain, as the
+// operator's agent-create token. action "dispatch" is start: true and "save" is
+// start: false — the deleted dispatch form's two actions, which the machine
+// route replaced (docs/design/chief-dispatch.md phase 2).
 func postAgents(t *testing.T, s *Server, h http.Handler, action string) *httptest.ResponseRecorder {
 	t.Helper()
-	form := url.Values{"action": {action}}
-	req := httptest.NewRequest(http.MethodPost, "/agents", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	admit(s, req)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
+	return apiCreateAgent(t, s, h, map[string]any{"start": action == "dispatch"})
 }
 
 // TestADispatchIsRefusedWhileASaveAndAStartAreNot is the relationship guard.
 //
 // 🔴 THE THREE CASES ARE ONE CLAIM, NOT THREE. The property an operator depends on
 // is that the refusal is NARROW: the one request that cannot be satisfied is
-// refused, and the two that can — "Save for later", and Start, which is what
+// refused, and the two that can — a stopped create (the form's "Save for later",
+// now POST /api/agents with start: false), and Start, which is what
 // actually brings a saved agent up — still go through. Measured end to end, that
 // save-then-Start pair is the only way an agent has been brought up on this
 // deployment, so a pre-flight that caught it would delete the working path in order
@@ -196,7 +226,7 @@ func TestADispatchIsRefusedWhileASaveAndAStartAreNot(t *testing.T) {
 		rec := postAgents(t, s, h, "dispatch")
 
 		if rec.Code != http.StatusConflict {
-			t.Errorf("POST /agents action=dispatch answered %d, want %d.\n"+
+			t.Errorf("POST /api/agents start=true answered %d, want %d.\n"+
 				"    A dispatch whose kickoff cannot be delivered has to be refused to the "+
 				"caller: the provisioner's own refusal happens in a background goroutine "+
 				"after this handler has answered, so without this the operator gets a 2xx, "+
@@ -232,7 +262,7 @@ func TestADispatchIsRefusedWhileASaveAndAStartAreNot(t *testing.T) {
 		rec := postAgents(t, s, h, "save")
 
 		if rec.Code == http.StatusConflict {
-			t.Fatalf("POST /agents action=save was REFUSED %d.\n"+
+			t.Fatalf("POST /api/agents start=false was REFUSED %d.\n"+
 				"    A save provisions nothing and asks for no kickoff, so there is nothing "+
 				"to refuse — and it is the operation the refusal's own remedy text points the "+
 				"operator at, so refusing it makes that remedy a lie.\n    body: %s",
@@ -250,14 +280,17 @@ func TestADispatchIsRefusedWhileASaveAndAStartAreNot(t *testing.T) {
 				"the create path it claims to.\n  body: %s", len(rows),
 				truncate(rec.Body.String(), 400))
 		}
+		// A save is the `stopped` row and NO Dispatch: its kickoff=false Dispatch
+		// only rewrote `stopped` and could overwrite a Start that landed first
+		// (TestAStartRightAfterASaveIsNotOverwrittenBackToStopped). The wait bounds
+		// an absence, so it is short.
+		if rows := store.rows(); rows[0].Status != agents.StatusStopped {
+			t.Errorf("the save's row was inserted %q, want %q", rows[0].Status, agents.StatusStopped)
+		}
 		select {
 		case <-prov.dispatchC:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the save never reached Provisioner.Dispatch")
-		}
-		if d := prov.dispatches(); len(d) != 1 || d[0] {
-			t.Errorf("the save reached Dispatch with kickoff=%v, want exactly one call with "+
-				"kickoff=false", d)
+			t.Errorf("the save reached Provisioner.Dispatch (kickoff %v); want no call", prov.dispatches())
+		case <-time.After(200 * time.Millisecond):
 		}
 	})
 
@@ -370,6 +403,10 @@ type seamStore struct {
 func (s *seamStore) Get(context.Context, int64) (agents.Agent, error) { return s.agent, nil }
 
 func (s *seamStore) UpdateStatus(context.Context, int64, string, string, string) error { return nil }
+
+func (s *seamStore) Secrets(context.Context, int64) (agents.Secrets, error) {
+	return agents.Secrets{HooksToken: s.agent.HooksToken, GatewaySecret: s.agent.GatewaySecret}, nil
+}
 
 func (s *seamStore) SetHooksToken(_ context.Context, _ int64, token string) error {
 	s.agent.HooksToken = token

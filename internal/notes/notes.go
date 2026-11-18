@@ -17,6 +17,7 @@ package notes
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/taskstatus"
@@ -69,6 +70,32 @@ func ValidStatus(s string) bool { return taskstatus.Valid(s) }
 // not declare it complete.
 func StatusAllowedForAgent(s string) bool { return taskstatus.AllowedForAgent(s) }
 
+// Note.CreatedBy values (migration 0083). The two prefixed forms carry a name
+// after the colon; CreatedByAgent and CreatedByPlugin build them.
+const (
+	CreatedByOwner        = "owner"
+	CreatedByChief        = "chief"
+	CreatedByAgentPrefix  = "agent:"
+	CreatedByPluginPrefix = "plugin:"
+)
+
+// CreatedByAgent is the CreatedBy value for a task agent name filed; nil for a
+// blank name (nothing to record).
+func CreatedByAgent(name string) *string { return createdByNamed(CreatedByAgentPrefix, name) }
+
+// CreatedByPlugin is the CreatedBy value for a copy task plugin name filed;
+// nil for a blank name.
+func CreatedByPlugin(name string) *string { return createdByNamed(CreatedByPluginPrefix, name) }
+
+func createdByNamed(prefix, name string) *string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	v := prefix + name
+	return &v
+}
+
 // Note is a freeform note filed against a working directory.
 type Note struct {
 	ID        int64  `json:"id"`
@@ -103,6 +130,13 @@ type Note struct {
 	// only). Never serialised: the JSON shape is unchanged. Zero from a store
 	// that does not read the column — and zero reaches nobody.
 	OwnerID int64 `json:"-"`
+	// Owner is who Create files the task under (team sharing phase 4): 0 is
+	// the caller (owner_id's default, the person acting), a team id files it
+	// in that team. Only Create reads it, and Postgres decides whether the
+	// caller may (a team's notes are written at operator, migration 0127): a
+	// viewer's or a non-member's insert is refused with 42501, whatever the
+	// handler checked. Never serialised; never read back (OwnerID is).
+	Owner int64 `json:"-"`
 	// Tags  are the task's routing key + labels: a normalized,
 	// de-duplicated, SORTED set. Routing namespaces (initiative:/gate:/auto:) are
 	// behaviour-bearing and validated; everything else is a descriptive label. Always '{}' (never NULL) in the DB; omitempty keeps the JSON shape
@@ -120,10 +154,17 @@ type Note struct {
 	// then omits the field, and the card renders no provenance chip). SourceType is
 	// one of the taskSource allowlist producers (never the default "api", which is
 	// stored as NULL); SourceSessionID is opaque here (a label, not a document id).
-	SourceType      *string      `json:"sourceType,omitempty"`
-	SourceSessionID *string      `json:"sourceSessionId,omitempty"`
-	Attachments     []Attachment `json:"attachments,omitempty"`
-	Comments        []Comment    `json:"comments,omitempty"`
+	SourceType      *string `json:"sourceType,omitempty"`
+	SourceSessionID *string `json:"sourceSessionId,omitempty"`
+	// CreatedBy is WHO filed the task (migration 0083): CreatedByOwner,
+	// CreatedByChief, CreatedByAgent(name) or CreatedByPlugin(name); nil when not
+	// recorded (a pre-0083 row, a POST /api/tasks that names no caller, a plugin task
+	// reference — whose creator is the upstream's, Ref.Snapshot.Creator). Written
+	// once at create, never edited. Not serialised: the machine API's shape is
+	// unchanged; the task notifications read it (api.taskRefFragment).
+	CreatedBy   *string      `json:"-"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Comments    []Comment    `json:"comments,omitempty"`
 	// Sessions is the task's THREAD : every coding-agent session
 	// that created, worked or read this task, oldest-joined first. It is embedded
 	// on the full reads exactly as Comments and Attachments are — there is
@@ -132,6 +173,13 @@ type Note struct {
 	// omitempty keeps the JSON shape byte-identical for a task with no thread, so
 	// every existing producer sees no contract change.
 	Sessions []SessionLink `json:"sessions,omitempty"`
+	// Ref is set exactly when this task is a plugin task REFERENCE (migration
+	// 0072, references.go): the upstream owns it, and its status and comments
+	// written here are queued for the plugin. omitempty: an ordinary task's
+	// JSON is unchanged.
+	Ref *Reference `json:"reference,omitempty"`
+	// refRaw is the reference columns as scanned, before adoptRef.
+	refRaw refScan
 }
 
 // NoteUpdate is a PARTIAL edit to a task's editable content + dispatch config.
@@ -235,6 +283,13 @@ type Comment struct {
 	// consumers should render it as a tombstone (or skip it) — but MUST NOT treat
 	// an empty Body on a live comment as retraction; the flag is the predicate.
 	Retracted bool `json:"retracted,omitempty"`
+	// AuthorID is note_comments.author_id, the person who wrote it (0127's
+	// trigger forces it to the acting principal): 0 for a comment written
+	// under the system scope or before 0127. The reads (commentCols) fill
+	// it; AddComment's returned value leaves it 0. It decides who may
+	// retract a comment on a team task (SoftDeleteComment, and the handler
+	// above it), and is not part of the machine JSON.
+	AuthorID int64 `json:"-"`
 }
 
 // Attachment is a file attached to a note. Data is only populated when an
@@ -315,13 +370,16 @@ type Store interface {
 	Get(ctx context.Context, id int64) (Note, error)
 	List(ctx context.Context) ([]Note, error)
 	// ListSummaries returns every live note's OWN columns — no attachments, no
-	// comments, no session links — in ONE query. It backs the two readers that do
+	// comments, no session links — in ONE query. It backs the readers that do
 	// not need List's batched child fan-out: the dispatch-modal note picker (an id
-	// + a label) and the idle-task reaper (id + UpdatedAt, every 30 minutes).
+	// + a label), the idle-task reaper (id + UpdatedAt, every 30 minutes) and the
+	// chief's tasks_list (id, title, status, gate tag, UpdatedAt).
 	//
 	// 🔴 UpdatedAt IS POPULATED and must stay so: it is the reaper's selection
 	// predicate, and the zero time is BEFORE every cutoff, so a projection that
 	// dropped it would make the reaper treat the whole board as idle.
+	//
+	// 🔴 Status IS POPULATED too: the chief's tasks_list reports and filters on it.
 	ListSummaries(ctx context.Context) ([]Note, error)
 	// Delete PERMANENTLY destroys a note and — via the note_comments /
 	// note_attachments `ON DELETE CASCADE` FKs — its entire comment thread and every
@@ -420,9 +478,25 @@ type Store interface {
 	// touched it ⇒ an empty slice, not an error. The full reads (Get/List) already
 	// embed this on Note.Sessions; this is for callers holding only an id.
 	SessionsForTask(ctx context.Context, noteID int64) ([]SessionLink, error)
+	// ClaimByLink links l's session to the task as `worked` and records its
+	// CLAIM under the name by (claims.go); ReleaseClaims clears every session
+	// claim on the task. See Claims for what a claim does.
+	ClaimByLink(ctx context.Context, noteID int64, l SessionLink, by string, detailSeen bool) (bool, error)
+	ReleaseClaims(ctx context.Context, noteID int64) (int64, error)
+	// ClaimedSessions and ReleaseSessionClaim are the ended-session sweep's
+	// read (every owner's, system scope) and release (one session's claim).
+	ClaimedSessions(ctx context.Context, limit int) ([]ClaimedSession, error)
+	ReleaseSessionClaim(ctx context.Context, noteID int64, sessionID string) (bool, error)
+	ReleaseUpstreamClaim(ctx context.Context, noteID int64, sessionID, mark string) (bool, error)
+	SetClaimHost(ctx context.Context, noteID int64, sessionID, host string) error
 	// TasksForSession is the REVERSE lookup — every LIVE task a session touched,
 	// most-recently-touched first. It backs GET /api/sessions/{id}/tasks.
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)
+	// TasksForSessions is TasksForSession for many sessions in ONE read, by
+	// session id, each list cut to its perSession most recent (0: all); a
+	// session with no link has no entry; roles, when given, keeps only links of
+	// those roles, before the cut. It backs fleet_list's linked_tasks.
+	TasksForSessions(ctx context.Context, sessionIDs []string, perSession int, roles ...string) (map[string][]TaskLink, error)
 	// AddComment appends a comment to a task's thread.
 	AddComment(ctx context.Context, c Comment) (Comment, error)
 	// CreateOnceByTag creates n unless an OPEN task the caller can see already
@@ -549,6 +623,65 @@ type Store interface {
 	// There is no Restore twin: comment recovery, like task recovery, is
 	// store/DB-level only and no HTTP route exposes it.
 	SoftDeleteComment(ctx context.Context, noteID, commentID int64) error
+	// UpsertReference finds the live reference for in.Key (or the copy row it
+	// converts in place, or — with in.Create — files a new one) and applies
+	// in.Snapshot's title, body and snapshot, unless it is OLDER than the stored
+	// one (Applied false). It never writes the status: the caller does, through
+	// SetStatus under OnlyIfSnapshotAt, so the write is logged with its writer.
+	// in.Detach dismisses the row instead. A live reference of another plugin →
+	// ErrRefOtherPlugin. See references.go and PGStore.UpsertReference.
+	UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpsert, error)
+	// EnqueueRefWrite queues w for the plugin that owns task w.NoteID's
+	// reference, and reports whether it inserted (false: a dedupe hit — the row
+	// already queued is returned). A task that is not a live reference →
+	// ErrNotReference, and nothing is written: the caller writes locally.
+	EnqueueRefWrite(ctx context.Context, w RefWrite) (RefWrite, bool, error)
+	// ClaimRefWrites leases up to limit pending writes of plugin pluginID for
+	// lease, oldest first, after returning expired leases to pending.
+	ClaimRefWrites(ctx context.Context, pluginID int64, limit int, lease time.Duration) ([]RefWrite, error)
+	// FinishRefWrite records plugin pluginID's result for write id: done (ok) or
+	// failed with errText, and whether this call settled it (false: a repeat —
+	// the first result wins, and the stored row is returned). A write this
+	// plugin never held → ErrRefWriteNotLeased.
+	FinishRefWrite(ctx context.Context, pluginID, id int64, ok bool, errText string) (RefWrite, bool, error)
+	// ConfirmRefStatusWrite is called after a snapshot moved reference noteID
+	// to status: it marks, and returns (true), the queued status write that
+	// move confirms — the newest unconfirmed, undismissed, not-failed status
+	// write on the task asking for exactly that status — and marks as spent
+	// every other unconfirmed write already DONE upstream that was queued
+	// before it (every one, when none matched). No such write → false: the
+	// move is the upstream's own. A write confirms at most one move (0080).
+	// Call it only for a real move, never a re-save of the same status. See
+	// PGStore.ConfirmRefStatusWrite.
+	ConfirmRefStatusWrite(ctx context.Context, noteID int64, status string) (RefWrite, bool, error)
+	// RefWrites returns task noteID's writes that are not done (pending,
+	// claimed, failed) and not dismissed, oldest first: the task page's
+	// "sending…" / "failed" lines.
+	RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error)
+	// RetryRefWrite puts task noteID's FAILED write id back to pending for the
+	// plugin that holds the reference now (attempts 0, error and lease
+	// cleared). No such write on that task → ErrRefWriteNotFound; one that is
+	// not failed, or was dismissed → ErrRefWriteNotFailed; a status write a
+	// later status write already sent upstream supersedes → ErrRefWriteSuperseded; a task that
+	// is no longer a live reference → ErrNotReference. Nothing changes on a
+	// refusal.
+	RetryRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error)
+	// DismissRefWrite takes task noteID's FAILED write id off the task page
+	// (dismissed_at; the row is kept). The same refusals as RetryRefWrite,
+	// except that a superseded write, and a write on a task no longer a
+	// reference, may still be dismissed.
+	DismissRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error)
+	// ListLiveInNamespace returns the live tasks (not dismissed, not a merge
+	// loser) in q.Namespace that plugin q.PluginID may see — its own
+	// references, and COPY rows carrying a tag in the namespace — ascending by
+	// id, at most q.Limit, with their comments: what a plugin reconciles and
+	// converts. See RefListQuery for the filters.
+	ListLiveInNamespace(ctx context.Context, q RefListQuery) ([]Note, error)
+	// MoveToTeam moves task id from its owner from into team, with its
+	// children, in one system-scope transaction (move.go). The caller decides
+	// who may; this refuses a task not from's (ErrMoveNotYours) and one a link
+	// of another owner points at (*MoveBlockedError), moving nothing.
+	MoveToTeam(ctx context.Context, id, from, team int64) error
 	AddAttachment(ctx context.Context, noteID int64, a Attachment) (Attachment, error)
 	// GetAttachment returns a single attachment including its Data, for download.
 	GetAttachment(ctx context.Context, id int64) (Attachment, error)

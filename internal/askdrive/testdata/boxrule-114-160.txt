@@ -1,0 +1,15 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Short  ☒ Longer  ☐ Digest  ✔ Submit  →
+
+│ Should the weekly digest of the widget package changes go out on Monday mornings, or on Friday afternoons instead?
+
+❯ 1. Monday
+     Start of week
+  2. Friday
+     End of week
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+

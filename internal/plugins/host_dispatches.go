@@ -1,0 +1,540 @@
+package plugins
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/ZacxDev/muster/internal/authz"
+)
+
+// HOST DISPATCHES (migration 0093; docs/design/chief-dispatch.md 2.6 and 3.7): an
+// agent the chief started in a tmux window on one of its owner's hosts.
+//
+// 🔴 ONE SEAM LEDGER, EIGHT WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts
+// the set over the Go source):
+//
+//   - the PENDING INSERT, only inside ReserveHostDispatch's reservation
+//     transaction (reserveChiefDispatch's onReserved), recording the
+//     reservation's id;
+//   - UpdateHostDispatch: the window and session, running, missing_listings and
+//     host_seen_at — ONLY WHERE status <> 'ended', so a late reply or listing
+//     never revives an ended row. Called only by the reconciler;
+//   - EndHostDispatch: THE ONLY WRITER OF ended, and the only caller of
+//     releaseHostDispatchTx, in one transaction under the owner's lock. Called
+//     only by the reconciler and agent_destroy;
+//   - SetHostDispatchOrphanNotice: orphan_notice_id only, on an ended row
+//     whose column is still empty. Called only by the reconciler;
+//   - MarkHostDispatchDone (0097): done_at and done_summary only, once, on a
+//     RUNNING row whose host and agent_session are the caller's. It never
+//     ends the row (done is not ended: the slot is held until the window
+//     closes). Called only by agent_report_done on the mirror door;
+//   - RecordHostDispatchOutcome (0099): an OPENCODE row's done or waiting
+//     outcome, read from the reply its host observed, once per reply
+//     (outcome_mark), on a RUNNING row whose host and agent_session are the
+//     listing's. Called only by the outcome reconciler;
+//   - RearmHostDispatch (0099): a later turn clears done/waiting back to
+//     working — a Claude row only once settled. Called only by the outcome
+//     reconciler;
+//   - SettleHostDispatchDone (0099): done_settled, on a Claude row reported
+//     done that has since been listed idle. Called only by the outcome
+//     reconciler.
+
+// Host dispatch statuses.
+const (
+	HostDispatchPending = "pending"
+	HostDispatchRunning = "running"
+	HostDispatchEnded   = "ended"
+)
+
+// HostDispatch is one row as read.
+type HostDispatch struct {
+	ID, Owner                    int64
+	Host, Runtime, Model, HeldID string
+	Repo, Base, Branch, Worktree string
+	TaskID                       int64
+	ReservationID                int64
+	AgentSession, Window         string
+	Status                       string
+	MissingListings              int
+	HostSeenAt, CreatedAt        time.Time
+	EndedAt                      time.Time
+	Refusal, EndedWhy, Warning   string
+	OrphanNoticeID               int64
+	// DoneAt is when the dispatch said it finished — its own session's
+	// agent_report_done (Claude), or its reply's done line (opencode) — zero
+	// until then and after a later turn; DoneSummary its one line.
+	DoneAt      time.Time
+	DoneSummary string
+	// WaitingAt is when an opencode dispatch's turn ended without the done
+	// line (0099), zero otherwise; WaitingLine that reply's last line.
+	WaitingAt   time.Time
+	WaitingLine string
+	// OutcomeMark names the reply an opencode outcome was read from; "" for
+	// none. DoneSettled: a Claude dispatch reported done has been listed idle
+	// since (its reporting turn is over).
+	OutcomeMark string
+	DoneSettled bool
+}
+
+// HostDispatchNew is a pending row's fields, written with its reservation.
+type HostDispatchNew struct {
+	Host, Runtime, Model, HeldID, Repo, Base string
+	TaskID                                   int64
+	// Succession, when > 0, is the chief_proposals row this dispatch
+	// starts (migration 0100): linked IN THE SAME TRANSACTION, single use
+	// (linkSuccessionTx), with SuccessionMode the mode the owner's tap chose.
+	// SuccessionPrev is the dispatch the row is still linked to when this is
+	// the base fallback's second start (0 otherwise).
+	Succession, SuccessionPrev int64
+	SuccessionMode             string
+}
+
+// HostDispatchUpdate is what UpdateHostDispatch may write; a nil field is left.
+type HostDispatchUpdate struct {
+	Window, AgentSession, Worktree, Branch, Warning *string
+	Running                                         bool
+	MissingListings                                 *int
+	HostSeen                                        bool
+}
+
+// ErrHostDispatchNotFound: no row of the principal's has that id.
+var ErrHostDispatchNotFound = errors.New("plugins: no such host dispatch")
+
+const hostDispatchCols = `id, owner_id, host, runtime, coalesce(model, ''), coalesce(held_id, ''), repo, base, branch, worktree,
+	coalesce(task_id, 0), reservation_id, agent_session, tmux_window, status, missing_listings, host_seen_at, created_at,
+	coalesce(ended_at, 'epoch'), refusal, ended_why, warning, coalesce(orphan_notice_id, 0), coalesce(done_at, 'epoch'), done_summary,
+	coalesce(waiting_at, 'epoch'), waiting_line, outcome_mark, done_settled`
+
+func scanHostDispatch(row pgx.Row) (HostDispatch, error) {
+	var h HostDispatch
+	err := row.Scan(&h.ID, &h.Owner, &h.Host, &h.Runtime, &h.Model, &h.HeldID, &h.Repo, &h.Base, &h.Branch, &h.Worktree,
+		&h.TaskID, &h.ReservationID, &h.AgentSession, &h.Window, &h.Status, &h.MissingListings, &h.HostSeenAt, &h.CreatedAt,
+		&h.EndedAt, &h.Refusal, &h.EndedWhy, &h.Warning, &h.OrphanNoticeID, &h.DoneAt, &h.DoneSummary,
+		&h.WaitingAt, &h.WaitingLine, &h.OutcomeMark, &h.DoneSettled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return HostDispatch{}, ErrHostDispatchNotFound
+	}
+	if h.DoneAt.Unix() == 0 {
+		h.DoneAt = time.Time{}
+	}
+	if h.WaitingAt.Unix() == 0 {
+		h.WaitingAt = time.Time{}
+	}
+	return h, err
+}
+
+func hostDispatchOwner(ctx context.Context, what string) (int64, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return 0, errors.New("plugins: " + what + " needs a user principal")
+	}
+	return p.UserID, nil
+}
+
+// ReserveHostDispatch reserves one chief start for object exactly as
+// ReserveChiefDispatch does — the same request_key, prior-start, check and cap
+// rules, under the same lock — and, IN THE SAME TRANSACTION, inserts the host
+// dispatch's pending row recording the reservation's id. A replay or a prior
+// start inserts nothing (the returned HostDispatch is then the zero value).
+func (s *PGStore) ReserveHostDispatch(ctx context.Context, object string, detail map[string]any, check func() error, row HostDispatchNew) (ChiefDispatch, HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return ChiefDispatch{}, HostDispatch{}, err
+	}
+	var hd HostDispatch
+	res, err := s.reserveChiefDispatch(ctx, object, detail, check, func(tx pgx.Tx, reservationID int64) error {
+		var task any
+		if row.TaskID > 0 {
+			task = row.TaskID
+		}
+		var model, held any
+		if row.Model != "" {
+			model = row.Model
+		}
+		if row.HeldID != "" {
+			held = row.HeldID
+		}
+		var err error
+		hd, err = scanHostDispatch(tx.QueryRow(ctx, `INSERT INTO host_dispatches (owner_id, host, runtime, model, held_id, repo, base, task_id, reservation_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+hostDispatchCols,
+			owner, row.Host, row.Runtime, model, held, row.Repo, row.Base, task, reservationID))
+		if err != nil {
+			return err
+		}
+		// The host's live tokens are now tokens of a host that starts agents
+		// (mirror_tokens.spawned_at, 0150): the owner-authority step-up holds
+		// for them until they are rotated, whatever the host advertises later.
+		if _, err := tx.Exec(ctx, `UPDATE mirror_tokens SET spawned_at = now()
+			WHERE owner_id = $1 AND host = $2 AND revoked_at IS NULL AND spawned_at IS NULL`, owner, row.Host); err != nil {
+			return err
+		}
+		if row.Succession <= 0 {
+			return nil
+		}
+		// The succession's link, in this transaction: a row already decided
+		// rolls the whole reservation back, so a second tap inserts nothing.
+		return linkSuccessionTx(ctx, tx, owner, row.Succession, row.SuccessionPrev, hd.ID, row.SuccessionMode, row.Base)
+	})
+	if err != nil {
+		return res, HostDispatch{}, err
+	}
+	return res, hd, nil
+}
+
+// HostDispatchByID is the principal's host dispatch id as it stands now.
+func (s *PGStore) HostDispatchByID(ctx context.Context, id int64) (HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return HostDispatch{}, err
+	}
+	return scanHostDispatch(s.pool.QueryRow(ctx, `SELECT `+hostDispatchCols+` FROM host_dispatches WHERE id = $1 AND owner_id = $2`, id, owner))
+}
+
+// OpenHostDispatches is the principal's pending and running host dispatches,
+// oldest first.
+func (s *PGStore) OpenHostDispatches(ctx context.Context) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND status <> 'ended' ORDER BY id`, owner)
+}
+
+// RunningHostDispatchesForTask is the principal's running host dispatches on
+// taskID, newest first (liveOnTask's host half).
+func (s *PGStore) RunningHostDispatchesForTask(ctx context.Context, taskID int64) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND task_id = $2 AND status = 'running' ORDER BY id DESC`, owner, taskID)
+}
+
+// HostDispatchesForHost is the principal's rows for host that are not ended,
+// plus the ended ones whose window a listing may still carry (orphans), newest
+// first, at most 200: the reconciler's view of one listing.
+func (s *PGStore) HostDispatchesForHost(ctx context.Context, host string) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND host = $2 AND (status <> 'ended' OR ended_at > now() - interval '7 days') ORDER BY id DESC LIMIT 200`, owner, host)
+}
+
+// OpenHostDispatchesOnHost is EVERY one of the principal's rows for host that
+// is not ended — no limit: the owner-authority checks (internal/api
+// spawnedByRecord's window clause, hostSpawnStepUp's open-dispatch trigger)
+// must see an old open row however many rows the host has. Open rows are
+// bounded by the chief's live cap.
+func (s *PGStore) OpenHostDispatchesOnHost(ctx context.Context, host string) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND host = $2 AND status <> 'ended' ORDER BY id`, owner, host)
+}
+
+// StaleHostDispatches is the principal's open rows whose host was last seen
+// before cutoff (the 24-hour sweep's input).
+func (s *PGStore) StaleHostDispatches(ctx context.Context, olderThan time.Duration) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND status <> 'ended' AND host_seen_at < now() - make_interval(secs => $2) ORDER BY id`, owner, olderThan.Seconds())
+}
+
+// HostDispatchOwners is every owner with an open host dispatch (SYSTEM scope:
+// the sweep then acts as each, as the stopped-agent reaper finds its owners).
+func (s *PGStore) HostDispatchOwners(ctx context.Context) ([]int64, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT DISTINCT owner_id FROM host_dispatches WHERE status <> 'ended' ORDER BY owner_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var o int64
+		if err := rows.Scan(&o); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) hostDispatches(ctx context.Context, where string, args ...any) ([]HostDispatch, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+hostDispatchCols+` FROM host_dispatches WHERE `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []HostDispatch{}
+	for rows.Next() {
+		h, err := scanHostDispatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// UpdateHostDispatch writes u onto the principal's row id — ONLY while it is not
+// ended. It reports whether a row changed.
+func (s *PGStore) UpdateHostDispatch(ctx context.Context, id int64, u HostDispatchUpdate) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	var missing any
+	if u.MissingListings != nil {
+		missing = *u.MissingListings
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET
+		  tmux_window   = coalesce($3, tmux_window),
+		  agent_session = coalesce($4, agent_session),
+		  worktree      = coalesce($5, worktree),
+		  branch        = coalesce($6, branch),
+		  warning       = coalesce($7, warning),
+		  status        = CASE WHEN $8 THEN 'running' ELSE status END,
+		  missing_listings = coalesce($9::smallint, missing_listings),
+		  host_seen_at  = CASE WHEN $10 THEN now() ELSE host_seen_at END
+		WHERE id = $1 AND owner_id = $2 AND status <> 'ended'`,
+		id, owner, u.Window, u.AgentSession, u.Worktree, u.Branch, u.Warning, u.Running, missing, u.HostSeen)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ErrHostDispatchEnded: the row was ended already; nothing was written.
+var ErrHostDispatchEnded = errors.New("plugins: that host dispatch has already ended")
+
+// EndHostDispatch ends the principal's row id with why — refused when the host
+// REFUSED the spawn (its refusal is recorded, and the task's start and the
+// request_key are freed by refused_reservation) — and, in the SAME
+// transaction under the owner's reservation lock, releases the start its
+// reservation made (releaseHostDispatchTx). THE ONLY WRITER OF ended.
+func (s *PGStore) EndHostDispatch(ctx context.Context, id int64, why string, refused bool) (HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return HostDispatch{}, err
+	}
+	if len(why) > 200 {
+		why = why[:200]
+	}
+	var out HostDispatch
+	// inChiefDispatchLock: the owner's reservation lock, waited for without
+	// holding a pool connection (the reconciler ends rows concurrently with
+	// agent_dispatch starts).
+	err = s.inChiefDispatchLock(ctx, owner, func(tx pgx.Tx) error {
+		cur, err := scanHostDispatch(tx.QueryRow(ctx, `SELECT `+hostDispatchCols+` FROM host_dispatches WHERE id = $1 AND owner_id = $2 FOR UPDATE`, id, owner))
+		if err != nil {
+			return err
+		}
+		if cur.Status == HostDispatchEnded {
+			out = cur
+			return ErrHostDispatchEnded
+		}
+		refusal, endedWhy := "", why
+		if refused {
+			refusal, endedWhy = why, "refused"
+		}
+		out, err = scanHostDispatch(tx.QueryRow(ctx, `UPDATE host_dispatches SET status = 'ended', ended_at = now(), refusal = $3, ended_why = $4
+			WHERE id = $1 AND owner_id = $2 AND status <> 'ended' RETURNING `+hostDispatchCols, id, owner, refusal, endedWhy))
+		if err != nil {
+			return err
+		}
+		return releaseHostDispatchTx(ctx, tx, owner, out, refused)
+	})
+	return out, err
+}
+
+// releaseHostDispatchTx releases the start host dispatch h's reservation made,
+// keyed by THAT reservation (never "the latest"): when it is still its object's
+// latest unreleased reservation, an ActionChiefDispatchReleased row names it —
+// {host_dispatch_id, refused_reservation} for a refusal (which also frees the
+// request_key, requestKeyMatch), {host_dispatch_id, reservation} otherwise —
+// whether or not an agent row exists. A newer reservation, or one already
+// released, writes nothing: that start is no longer this dispatch's.
+func releaseHostDispatchTx(ctx context.Context, tx pgx.Tx, owner int64, h HostDispatch, refused bool) error {
+	var object string
+	err := tx.QueryRow(ctx, `SELECT object FROM audit_log WHERE id = $1 AND user_id = $2 AND action = $3`,
+		h.ReservationID, owner, ActionChiefDispatch).Scan(&object)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reserved, released, err := chiefStartRows(ctx, tx, owner, object)
+	if err != nil {
+		return err
+	}
+	if reserved != h.ReservationID || released > reserved {
+		return nil
+	}
+	key := "reservation"
+	if refused {
+		key = "refused_reservation"
+	}
+	return audit(ctx, tx, ActionChiefDispatchReleased, object, map[string]any{"host_dispatch_id": h.ID, key: h.ReservationID})
+}
+
+// SetHostDispatchOrphanNotice records the orphan notice raised for the
+// principal's ENDED row id, only while it has none. It reports whether it wrote.
+func (s *PGStore) SetHostDispatchOrphanNotice(ctx context.Context, id, noticeID int64) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET orphan_notice_id = $3
+		WHERE id = $1 AND owner_id = $2 AND status = 'ended' AND orphan_notice_id IS NULL`, id, owner, noticeID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// HostDispatchForSession is the principal's newest host dispatch on host whose
+// window runs Claude session session (agent_session, which the host minted and
+// its spawn reply recorded), ended or not. ErrHostDispatchNotFound when the
+// session is no dispatch's.
+func (s *PGStore) HostDispatchForSession(ctx context.Context, host, session string) (HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return HostDispatch{}, err
+	}
+	if session == "" {
+		return HostDispatch{}, ErrHostDispatchNotFound
+	}
+	return scanHostDispatch(s.pool.QueryRow(ctx, `SELECT `+hostDispatchCols+` FROM host_dispatches
+		WHERE owner_id = $1 AND host = $2 AND agent_session = $3 ORDER BY id DESC LIMIT 1`, owner, host, session))
+}
+
+// MarkHostDispatchDone records that the principal's host dispatch id is done,
+// with summary — ONLY while it is running, on host, its agent_session is
+// session, and it is not done already. It never ends the row. It reports
+// whether it wrote.
+func (s *PGStore) MarkHostDispatchDone(ctx context.Context, id int64, host, session, summary string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" {
+		return false, nil
+	}
+	if r := []rune(summary); len(r) > 300 {
+		summary = string(r[:300])
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_at = now(), done_summary = $5, done_settled = false
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running' AND done_at IS NULL`,
+		id, owner, host, session, summary)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// The outcomes RecordHostDispatchOutcome records.
+const (
+	HostOutcomeDone    = "done"
+	HostOutcomeWaiting = "waiting"
+)
+
+// RecordHostDispatchOutcome records outcome (HostOutcomeDone with line as its
+// summary, or HostOutcomeWaiting with line as its last line) on the
+// principal's host dispatch id, read from the reply its host names mark —
+// ONLY while it is an OPENCODE row, running, on host, its agent_session is
+// session, and mark is not the reply it last recorded. Done clears waiting and
+// waiting clears done. It never ends the row. It reports whether it wrote.
+func (s *PGStore) RecordHostDispatchOutcome(ctx context.Context, id int64, host, session, outcome, line, mark string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" || mark == "" || (outcome != HostOutcomeDone && outcome != HostOutcomeWaiting) {
+		return false, nil
+	}
+	line, mark = cutRunes(line, 300), cutRunes(mark, 128)
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET
+		  done_at      = CASE WHEN $5 = 'done' THEN now() END,
+		  done_summary = CASE WHEN $5 = 'done' THEN $6 ELSE '' END,
+		  waiting_at   = CASE WHEN $5 = 'waiting' THEN now() END,
+		  waiting_line = CASE WHEN $5 = 'waiting' THEN $6 ELSE '' END,
+		  outcome_mark = $7, done_settled = false
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND runtime = 'opencode'
+		  AND status = 'running' AND outcome_mark <> $7`,
+		id, owner, host, session, outcome, line, mark)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RearmHostDispatch clears the principal's host dispatch id's done or waiting
+// outcome — a later turn: it is working again — ONLY while it is running, on
+// host, its agent_session is session, it has one, and (a Claude row) its done
+// is settled. It reports whether it wrote.
+func (s *PGStore) RearmHostDispatch(ctx context.Context, id int64, host, session string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_at = NULL, done_summary = '', waiting_at = NULL, waiting_line = '',
+		  outcome_mark = '', done_settled = false
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running'
+		  AND (done_at IS NOT NULL OR waiting_at IS NOT NULL) AND (runtime = 'opencode' OR done_settled)`,
+		id, owner, host, session)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SettleHostDispatchDone records that the principal's host dispatch id,
+// reported done, has been listed idle since — ONLY while it is running, on
+// host, its agent_session is session, done and not settled. It reports
+// whether it wrote.
+func (s *PGStore) SettleHostDispatchDone(ctx context.Context, id int64, host, session string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_settled = true
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running'
+		  AND done_at IS NOT NULL AND NOT done_settled`,
+		id, owner, host, session)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RecordHostDispatchAgent writes the audit-only ActionChiefDispatchAgent row of
+// a host dispatch whose window exists ({host_dispatch_id}): the trail, and what
+// latestStartAgent reads as "this start made a host dispatch". The live count
+// does not read it (source C reads the row's status).
+func (s *PGStore) RecordHostDispatchAgent(ctx context.Context, object string, hostDispatchID int64) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		return audit(ctx, tx, ActionChiefDispatchAgent, object, map[string]any{"host_dispatch_id": hostDispatchID})
+	})
+}
+
+// HostDispatchObject is the ledger object a host dispatch's reservation names.
+func (s *PGStore) HostDispatchObject(ctx context.Context, h HostDispatch) (string, error) {
+	var object string
+	err := s.pool.QueryRow(ctx, `SELECT object FROM audit_log WHERE id = $1 AND user_id = $2 AND action = $3`,
+		h.ReservationID, h.Owner, ActionChiefDispatch).Scan(&object)
+	return object, err
+}

@@ -7,9 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -61,7 +59,7 @@ type WindowInfo struct {
 	Command string
 	// Claude is the Claude Code session in the active pane; nil for none.
 	Claude *ClaudePane
-	// Agent is the active pane's agent session of ANOTHER runtime (Hermes),
+	// Agent is the active pane's agent session of ANOTHER runtime (opencode),
 	// for a window whose pane Claude Code did not claim; nil for none, and
 	// always nil when Claude is set (attachAgents).
 	Agent *AgentPane
@@ -70,6 +68,9 @@ type WindowInfo struct {
 	// resolves window, then session, then global — "" when it is unset or not a
 	// colour (windowColor). docs/design/agent-cards.md (b).
 	Color string
+	// Dispatch is the host dispatch the window was started for (its
+	// @muster-dispatch, mirror.DispatchOption), 0 for none.
+	Dispatch int64
 	// Cwd is the working directory of the window's active pane (its
 	// /proc/<pid>/cwd link, " (deleted)" and all): of its Claude Code process
 	// when it runs one, else of the pane's root process (the shell), "" when it
@@ -83,6 +84,11 @@ type WindowInfo struct {
 	// panes is every non-active pane of the window, as the listing read them:
 	// what Windows locates Others from.
 	panes []pane
+	// NoView is why the window has no rendered view when its active pane runs
+	// Claude Code but no transcript was found for it (one of the NoView*
+	// lines, ClaudeLocator.whyNoView); "" otherwise, and always "" when
+	// Claude or Agent is set. Sent as mirror.Window.AgentNote.
+	NoView string
 }
 
 // WindowLister is a Backend that can list every window of every session, from
@@ -135,9 +141,8 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // window of every session. The session name is the LAST field, so it is taken
 // whole whatever it holds.
 //
-// #{pane_tty} is the pane's terminal device: what a Hermes CLI's breadcrumb
-// file is named by (internal/hermeshost), and what its stdin must be for the
-// strict identity rule to claim it.
+// #{pane_tty} is the pane's terminal device: what an opencode TUI's stdin must
+// be for its locator to claim the pane (opencode.go).
 //
 // The two fields before the session name are the identity colour option
 // (ColorOption, a constant: nothing from outside the binary is ever spliced
@@ -147,10 +152,19 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // the window. Every byte outside printable ASCII becomes '!', so such a value
 // is simply not a colour, and the line keeps its shape.
 const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t" +
-	"#{s/[^ -~]/!/;E:" + ColorOption + "}\t#{s/[^ -~]/!/:" + ColorOption + "}\t#{session_name}"
+	"#{s/[^ -~]/!/;E:" + ColorOption + "}\t#{s/[^ -~]/!/:" + ColorOption + "}\t#{s/[^0-9]//:" + mirror.DispatchOption + "}\t#{session_name}"
 
-// windowsFields is how many fields a windowsFormat line has.
-const windowsFields = 13
+// windowsFields is how many fields a windowsFormat line has. The field before
+// the session name is the window's host dispatch (mirror.DispatchOption,
+// digits only, `s/[^0-9]//`), read as Window.Dispatch.
+//
+// ⚠ A FORMAT READS AN OPTION WITH INHERITANCE (window, then session, then
+// global), so a global or session @muster-dispatch would tag every window. The
+// listing is identity for muster's records only; every check that BOUNDS
+// something reads the window's own value with `show-options -w` and no -A
+// (dispatchTagOf), and a spawn refuses while a global or `agents` session
+// value is set (agentspawn.go).
+const windowsFields = 14
 
 // ColorOption is the tmux user option a window's identity colour is read
 // from. A constant on purpose: a host's tmux config sets it (window, session or
@@ -200,10 +214,31 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	// lookup exactly as before the seam; then the others, for what is left.
 	// 🔴 ONE READ OF THE PROC TABLE FOR ALL OF THEM: a read is ~39 ms on a host
 	// of ~3,000 processes, and this runs every refresh (Config.Refresh).
-	procs, children := t.Claude.table()
-	claude := t.claudeRuntime()
+	procs, children, procErr := t.Claude.procs().table()
+	// 🔴 ONE CWD READ FOR THE WHOLE LISTING TOO: on macOS a cwd is an lsof
+	// exec. Every pid this listing may ask the cwd of — each pane's root and
+	// the Claude Code process below it, for the locator's guess and for the
+	// window's Cwd below — is read in one call, on first use (cwdMemo).
+	loc := t.Claude
+	src := newCwdMemo(loc.procs(), cwdCandidates(windows, procs, children))
+	loc.src = src
+	claude := claudeRuntime{loc: loc}
 	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
 	attachAgents(windows, procs, children, t.runtimes()[1:])
+	// Each Claude window whose conversation also runs elsewhere, under
+	// another session id (livecopy.go): from the proc table read above.
+	if t.LiveCopies != nil {
+		t.LiveCopies.attach(windows, procs, loc, time.Now())
+	}
+	// Why a window no runtime claimed has no rendered view, when its pane
+	// runs Claude Code (or, on a host that cannot read processes, looks like
+	// it): the card and the Terminal view say so instead of silently opening
+	// the terminal (WindowInfo.NoView).
+	for i := range windows {
+		if w := &windows[i]; w.Claude == nil && w.Agent == nil {
+			w.NoView = loc.whyNoView(pane{Session: w.Session, ID: w.Pane, PID: w.PanePID}, w.Command, procs, children, procErr)
+		}
+	}
 	// Each Claude window's background shells, from the CLI's own process tree
 	// (internal/cctasks): an in-memory walk of the table read above plus a few
 	// readlinks per descendant — and only while its status says something may
@@ -211,17 +246,54 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	for i := range windows {
 		if c := windows[i].Claude; c != nil && c.PID > 0 && mayRunWork(c.RawStatus) {
 			c.Shells = cctasks.CountShells(t.Claude.proc(), c.PID, children,
-				func(pid int) []string { return procs[pid].argv }, t.Claude.configDir())
+				func(pid int) []string { return procs[pid].argv }, claudeConfigDir(c, t.Claude))
 		}
 	}
-	// Each window's working directory: one readlink per window — a syscall, no
-	// process (windowCwdPID says whose).
+	// Each window's working directory (windowCwdPID says whose), from the
+	// listing's one cwd read (a pid outside it — an agent's — is read then).
+	var cwdPIDs []int
 	for i := range windows {
 		if pid := windowCwdPID(windows[i]); pid > 0 {
-			windows[i].Cwd, _ = os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(pid), "cwd"))
+			cwdPIDs = append(cwdPIDs, pid)
+		}
+	}
+	cwds := src.cwds(cwdPIDs)
+	for i := range windows {
+		if pid := windowCwdPID(windows[i]); pid > 0 {
+			windows[i].Cwd = cwds[pid]
 		}
 	}
 	return windows, nil
+}
+
+// cwdCandidates is every pid a Windows listing may need the cwd of: each
+// pane's root process and the Claude Code process findClaude finds below it.
+func cwdCandidates(windows []WindowInfo, procs map[int]procInfo, children map[int][]int) []int {
+	var out []int
+	add := func(root int) {
+		if root > 0 {
+			out = append(out, root)
+			if c := findClaude(root, procs, children); c > 0 {
+				out = append(out, c)
+			}
+		}
+	}
+	for _, w := range windows {
+		add(w.PanePID)
+		for _, p := range w.panes {
+			add(p.PID)
+		}
+	}
+	return out
+}
+
+// claudeConfigDir is the config dir c's CLI writes under, as the locator
+// found it (ClaudePane.ConfigDir), else loc's.
+func claudeConfigDir(c *ClaudePane, loc ClaudeLocator) string {
+	if c.ConfigDir != "" {
+		return c.ConfigDir
+	}
+	return loc.configDir()
 }
 
 // windowCwdPID is the process whose working directory is w's: its Claude Code
@@ -289,14 +361,14 @@ func parseWindows(out string) []WindowInfo {
 		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", windowsFields)
 		if len(f) == windowsFields && f[0] != "1" && strings.HasPrefix(f[4], "%") {
 			if pid, err := strconv.Atoi(f[5]); err == nil && pid > 0 {
-				others[wkey{f[12], f[1]}] = append(others[wkey{f[12], f[1]}], pane{Session: f[12], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
+				others[wkey{f[13], f[1]}] = append(others[wkey{f[13], f[1]}], pane{Session: f[13], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
 			}
 			continue
 		}
 		if len(f) != windowsFields || f[0] != "1" {
 			continue
 		}
-		session := f[12]
+		session := f[13]
 		if mirror.ValidSession(session) != nil || mirror.IsViewSession(session) ||
 			mirror.ValidWindowID(f[1]) != nil || !strings.HasPrefix(f[4], "%") {
 			continue
@@ -311,6 +383,9 @@ func parseWindows(out string) []WindowInfo {
 		}
 		w := WindowInfo{Session: session, ID: f[1], Index: index, Active: f[3] == "1", Pane: f[4], PanePID: pid, Command: f[8], TTY: paneTTY(f[9]),
 			Color: windowColor(f[10], f[11])}
+		if d, err := strconv.ParseInt(f[12], 10, 64); err == nil && d > 0 {
+			w.Dispatch = d
+		}
 		w.Activity, _ = strconv.ParseInt(f[6], 10, 64)
 		if w.Active {
 			if sa, err := strconv.ParseInt(f[7], 10, 64); err == nil && sa > w.Activity {
@@ -364,10 +439,12 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 	out := make([]mirror.Window, 0, len(windows))
 	for _, w := range windows {
 		m := mirror.Window{Session: w.Session, ID: w.ID, Index: w.Index, Active: w.Active,
-			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
+			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil, Dispatch: w.Dispatch}
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
 			m.LastMessage = w.Claude.LastMessage
+			m.TurnError = w.Claude.TurnError
+			m.LiveCopy = w.Claude.LiveCopy
 			// 🔴 BUSY COUNTS AS ACTIVE (operator decision). Claude Code writes no
 			// transcript row while a tool runs, while it waits on the person (a
 			// permission prompt, an AskUserQuestion picker) or while a background
@@ -383,6 +460,12 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			}
 		} else if claude && w.Agent != nil {
 			m.Runtime, m.AgentSession, m.Status, m.StatusSince, m.Pending = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince, w.Agent.Pending
+			m.AgentNote, m.AgentSend, m.AgentBind = w.Agent.Note, w.Agent.Send, w.Agent.Bind
+			m.TurnError = w.Agent.TurnError
+		} else if claude {
+			// A Claude Code pane with no rendered view says why — in words,
+			// and as a code muster can branch on (noViewCode).
+			m.AgentNote, m.AgentNoteCode = w.NoView, noViewCode(w.NoView)
 		}
 		if claude {
 			for _, o := range w.Others {
@@ -417,8 +500,13 @@ func viewSessionName() string {
 // run runs one tmux command against this server and returns its combined
 // output.
 func (t Tmux) run(ctx context.Context, args ...string) (string, error) {
+	return t.runEnv(ctx, tmuxEnv(), args...)
+}
+
+// runEnv is run with the tmux client's environment env.
+func (t Tmux) runEnv(ctx context.Context, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), args...)...)
-	cmd.Env = tmuxEnv()
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))

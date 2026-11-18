@@ -1,0 +1,15 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Report  ☒ Notes  ✔ Submit  →
+
+Review your answers
+
+ │ ● Should the nightly report also be sent to the shared channel as a longer summary?
+   → No
+ │ ● Should the release notes for the widget package also list every fixed issue by its number?
+   → Summary
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+

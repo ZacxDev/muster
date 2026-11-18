@@ -9,6 +9,20 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix label <agent-id> <display-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmagent <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question> [option…]   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ownercard <owner-id> <agent-name> <question> <option…>   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix prsession <owner-id> <claude-session> <owner/repo> <pr>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmprsessions <owner-id> <claude-session-prefix>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix episode <owner-id> <session-key> <stalled|needs_you> <host> <window>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmepisodes <owner-id> <session-key-prefix>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> [body] → prints the draft id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix notifypref <owner-id> clear
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix branding clear
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix agentinfo <owner-id> <agent-id> → prints {name,kind,model,note_id,note_text,pending_note} as JSON
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -31,6 +45,33 @@
 //	    (the chief IS the agent displayed "chief"), "chief" gives it back.
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
 //	    drafts cascade), so later specs on the shared database see neither.
+//	  - ask: an OPEN attention_ask from the named agent — the row its /mcp
+//	    attention_ask call stores (internal/attention), with the options given
+//	    after the question (none: a free-text ask) — for a spec about what
+//	    the Agents list does with it, not about the door (agent-cards.spec.ts
+//	    asks through the real /mcp door).
+//	  - rmask: deletes ONE ask of the owner's by id — what a spec that made one
+//	    with `ask` removes afterwards (or mid-test: an ask that left the queue
+//	    elsewhere), so later specs on the shared database never see it.
+//	  - draft: a PENDING reply draft by the named agent, to a delivered message
+//	    of a plugin of that name made for it — the attention queue's "plugin"
+//	    item on that agent's card. [body] replaces the draft's one-line text
+//	    (draft-card.spec.ts: a long, multi-line reply).
+//	  - rmplugin: removes one plugin of the owner's by name (its message and
+//	    draft cascade), leaving the owner's other plugins alone.
+//	  - rmchiefs: deletes every agent of the owner's that would be its chief
+//	    (labelled chief, or the reserved slug), for a spec about having none.
+//	  - agentinfo: one agent's kind, model, task and first message, read back
+//	    for a spec that started it through a real door (mcp-dispatch.spec.ts):
+//	    note_text is the first message as the agent was created with it.
+//	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
+//	    so a spec that used the Account page's switch leaves the default behind.
+//	  - notifypref: clears the owner's notification preferences
+//	    (notify_preferences), the same way: off, the default, is left behind.
+//	  - branding: clears the instance's branding (instance_branding, 0105) —
+//	    the server's, not an owner's, so it takes no owner: nothing set, the
+//	    built-in mark, is left behind for every later spec on the shared
+//	    database.
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which
@@ -39,6 +80,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -62,7 +104,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|rmagent|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|agent|agentinfo|delivering|unconfirmed|lapse|label|linknote|rmagent|rmchiefs|cleanup|ask|rmask|draft|rmplugin|chiefpref …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -101,6 +143,35 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println(id)
+	case "chiefpref":
+		// Clears the owner's chief switch (migration 0060), so the next reader
+		// sees the default again: on exactly when the owner has a chief agent.
+		owner, err := num(1)
+		if err != nil || len(args) != 3 || args[2] != "clear" {
+			return fmt.Errorf("usage: chiefpref <owner-id> clear")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM chief_preferences WHERE owner_id = $1`, owner); err != nil {
+			return err
+		}
+	case "notifypref":
+		// Clears the owner's notification preferences (migration 0094): the
+		// next reader sees the default, off.
+		owner, err := num(1)
+		if err != nil || len(args) != 3 || args[2] != "clear" {
+			return fmt.Errorf("usage: notifypref <owner-id> clear")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM notify_preferences WHERE owner_id = $1`, owner); err != nil {
+			return err
+		}
+	case "branding":
+		// Clears the instance's branding (migration 0105): every server on this
+		// database draws the built-in mark again once its cache (30 s) lapses.
+		if len(args) != 2 || args[1] != "clear" {
+			return fmt.Errorf("usage: branding clear")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM instance_branding`); err != nil {
+			return err
+		}
 	case "agent":
 		// A running, NON-chief agent with its own token: the attention spec's asker.
 		owner, err := num(1)
@@ -170,6 +241,51 @@ func run(args []string) error {
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("no agent %d", agent)
 		}
+	case "linknote":
+		// Links an agent to a task, as a dispatch from that task does: the agent
+		// page's title becomes the task-detail button.
+		agent, err := num(1)
+		if err != nil {
+			return err
+		}
+		note, err := num(2)
+		if err != nil {
+			return err
+		}
+		tag, err := conn.Exec(ctx, `UPDATE agents SET note_id = $2 WHERE id = $1`, agent, note)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("no agent %d", agent)
+		}
+	case "agentinfo":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: agentinfo <owner-id> <agent-id>")
+		}
+		id, err := num(2)
+		if err != nil {
+			return err
+		}
+		var out struct {
+			Name        string `json:"name"`
+			Kind        string `json:"kind"`
+			Model       string `json:"model"`
+			NoteID      *int64 `json:"note_id"`
+			NoteText    string `json:"note_text"`
+			PendingNote string `json:"pending_note"`
+		}
+		if err := conn.QueryRow(ctx, `SELECT name, kind, coalesce(model, ''), note_id, coalesce(note_text, ''), coalesce(pending_note, '')
+			FROM agents WHERE owner_id = $1 AND id = $2`, owner, id).Scan(&out.Name, &out.Kind, &out.Model, &out.NoteID, &out.NoteText,
+			&out.PendingNote); err != nil {
+			return err
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
 	case "rmagent":
 		// Deletes ONE agent and nothing else (cleanup also clears the owner's
 		// plugins, which a spec on the shared server must not do).
@@ -178,6 +294,29 @@ func run(args []string) error {
 			return fmt.Errorf("usage: rmagent <owner-id> <name>")
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
+		}
+	case "rmchiefs":
+		// Deletes every agent of the owner's that would be its chief — labelled
+		// chief, or holding the reserved slug — so a spec about having NO chief
+		// cannot be decided by one another spec left behind. Prints the names.
+		owner, err := num(1)
+		if err != nil || len(args) != 2 {
+			return fmt.Errorf("usage: rmchiefs <owner-id>")
+		}
+		rows, err := conn.Query(ctx, `DELETE FROM agents WHERE owner_id = $1
+			AND (lower(trim(display_name)) = 'chief' OR name = 'chief' OR name = 'chief-' || $1::text) RETURNING name`, owner)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				return err
+			}
+			fmt.Println(n)
+		}
+		if err := rows.Err(); err != nil {
 			return err
 		}
 	case "cleanup":
@@ -189,6 +328,139 @@ func run(args []string) error {
 			return err
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
+		}
+	case "ask":
+		owner, err := num(1)
+		if err != nil || len(args) < 4 {
+			return fmt.Errorf("usage: ask <owner-id> <agent-name> <question> [option…]")
+		}
+		opts, err := json.Marshal(append([]string{}, args[4:]...))
+		if err != nil {
+			return err
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, options, expires_at)
+			SELECT $1, id, name, $3, $4::jsonb, now() + interval '1 hour' FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
+			owner, args[2], args[3], string(opts)).Scan(&id); err != nil {
+			return fmt.Errorf("ask from %s: %w", args[2], err)
+		}
+		fmt.Println(id)
+	case "ownercard":
+		// An OPEN ask_owner card of the named agent's (owner_card, 0092): the
+		// row its ask_owner call stores, for the fleet digest's Needs you
+		// (chief-fleet-digest.spec.ts), which lists the chief's own open cards.
+		owner, err := num(1)
+		if err != nil || len(args) < 5 {
+			return fmt.Errorf("usage: ownercard <owner-id> <agent-name> <question> <option…>")
+		}
+		opts, err := json.Marshal(append([]string{}, args[4:]...))
+		if err != nil {
+			return err
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, options, expires_at, owner_card)
+			SELECT $1, id, name, $3, $4::jsonb, now() + interval '1 hour', true FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
+			owner, args[2], args[3], string(opts)).Scan(&id); err != nil {
+			return fmt.Errorf("owner card from %s: %w", args[2], err)
+		}
+		fmt.Println(id)
+	case "prsession":
+		// A session_prs row (0055): Claude session <claude-session> created
+		// pull request <repo>#<pr>, as its host's hook would report it.
+		owner, err := num(1)
+		if err != nil || len(args) != 5 {
+			return fmt.Errorf("usage: prsession <owner-id> <claude-session> <owner/repo> <pr>")
+		}
+		pr, err := num(4)
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO session_prs (owner_id, kind, repo, pr, claude_session) VALUES ($1, 'gh-pr-create', $2, $3, $4)
+			ON CONFLICT DO NOTHING`, owner, args[3], pr, args[2]); err != nil {
+			return err
+		}
+	case "episode":
+		// An OPEN stop (session_episodes, 0073) of a mirrored session, opened
+		// an hour ago: what the session-state pass writes once a window has
+		// been idle past MUSTER_CHIEF_NUDGE_IDLE — whose floor (10 minutes
+		// with the chief's nudges off) a browser spec cannot wait out. The
+		// pass then keeps it (it observes an open stop; it ends one only on
+		// work, the owner's word, or the window gone).
+		owner, err := num(1)
+		if err != nil || len(args) != 6 {
+			return fmt.Errorf("usage: episode <owner-id> <session-key> <stalled|needs_you> <host> <window>")
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO session_episodes (owner_id, session_kind, session_key, seq, state, mirror_host, mirror_session, mirror_window,
+				opened_at, state_since)
+			SELECT $1, 'mirror', $2, coalesce(max(seq), 0) + 1, $3, $4, 'work', $5, now() - interval '1 hour', now() - interval '1 hour'
+			FROM session_episodes WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2`,
+			owner, args[2], args[3], args[4], args[5]); err != nil {
+			return err
+		}
+	case "rmepisodes":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmepisodes <owner-id> <session-key-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM session_episodes WHERE owner_id = $1 AND starts_with(session_key, $2)`, owner, args[2]); err != nil {
+			return err
+		}
+	case "rmprsessions":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmprsessions <owner-id> <claude-session-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM session_prs WHERE owner_id = $1 AND starts_with(claude_session, $2)`, owner, args[2]); err != nil {
+			return err
+		}
+	case "rmask":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmask <owner-id> <ask-id>")
+		}
+		id, err := num(2)
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM attention_asks WHERE owner_id = $1 AND id = $2`, owner, id); err != nil {
+			return err
+		}
+	case "draft":
+		owner, err := num(1)
+		if err != nil || (len(args) != 4 && len(args) != 5) {
+			return fmt.Errorf("usage: draft <owner-id> <agent-name> <plugin-name> [body]")
+		}
+		body := "Yes, noon works."
+		if len(args) == 5 {
+			body = args[4]
+		}
+		var agentID int64
+		if err := conn.QueryRow(ctx, `SELECT id FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]).Scan(&agentID); err != nil {
+			return fmt.Errorf("agent %s: %w", args[2], err)
+		}
+		var pluginID, msgID, draftID int64
+		if err := conn.QueryRow(ctx, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
+			VALUES ($1, $2, $2, 'e2e-fixture-' || $2 || '-' || gen_random_uuid()::text, $2) RETURNING id`, owner, args[3]).Scan(&pluginID); err != nil {
+			return fmt.Errorf("plugin: %w", err)
+		}
+		if err := conn.QueryRow(ctx, `INSERT INTO plugin_messages (owner_id, plugin_id, external_id, sender, body, status, delivered_at, agent_id)
+			VALUES ($1, $2, 'e2e-1', 'someone', 'Are you free at noon?', 'delivered', now(), $3) RETURNING id`,
+			owner, pluginID, agentID).Scan(&msgID); err != nil {
+			return fmt.Errorf("message: %w", err)
+		}
+		if err := conn.QueryRow(ctx, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
+			VALUES ($1, $2, $3, $4, $5, now() + interval '1 hour') RETURNING id`,
+			owner, msgID, agentID, args[2], body).Scan(&draftID); err != nil {
+			return fmt.Errorf("draft: %w", err)
+		}
+		fmt.Println(draftID)
+	case "rmplugin":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmplugin <owner-id> <plugin-name>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM plugins WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
 			return err
 		}
 	default:

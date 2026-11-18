@@ -52,7 +52,7 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(feat.Brand),
 				TitleEl(g.Text(heading+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
@@ -106,17 +106,13 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 						taskDetailLive(v),
 					),
 				),
-				// The Edit button (hx-get /ui/tasks/{id}/edit → #task-modal-body) and
-				// the Dispatch button (→ #agent-modal-body) both target modal shells
-				// that must exist in the document, or their swap lands nowhere.
+				// The Edit button (hx-get /ui/tasks/{id}/edit → #task-modal-body)
+				// targets a modal shell that must exist in the document, or its swap
+				// lands nowhere. The modals' script is the sidebar's (sidebarIn).
 				noteModalShell(),
-				agentModalShell(),
-				// Transient error toasts for failed background actions.
-				actionToasts(),
+				// The error toasts' host is the sidebar's (sidebarIn).
 				// Keep the card's relative timestamp ('10s', '30m') live.
 				relTimeScript(),
-				// Task modal: dirty-guarded dismiss, save highlight, focus return.
-				taskModalScript(),
 				// The edit form's type-Enter-to-chip tag input.
 				tagScript(),
 				// 🔴 THE FAILURE-FEEDBACK LISTENERS LIVE HERE, and they are the only

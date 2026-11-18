@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // memPins is pins.Store in memory, per principal user — the PG store's
@@ -117,41 +119,51 @@ func pinServer(t *testing.T, fm *fakeMirror, mp *memPins) (*Server, http.Handler
 	return s, s.Handler()
 }
 
-var listArticle = regexp.MustCompile(`<article id="([^"]+)"`)
-
-// listOrder reads the rendered list's card order: "agent-<id>" for an agent
-// card, "<session><window>" ("chief@2") for a mirrored one.
-func listOrder(t *testing.T, body string) []string {
+// pinnedList is the order the viewer's entries are listed in — the session
+// switcher's All view (ui.NewSwitcher, the one orderList: pins first, then by
+// activity), the order the retired Agents list drew its cards in — as
+// "agent-<id>" for an agent and "<session>@<window>" ("chief@2") for a
+// mirrored window; and the Pins view, the same way.
+func pinnedList(t *testing.T, s *Server, h http.Handler) (pinned string, all []string) {
 	t.Helper()
-	locs := listArticle.FindAllStringSubmatchIndex(body, -1)
-	var out []string
-	for i, l := range locs {
-		end := len(body)
-		if i+1 < len(locs) {
-			end = locs[i+1][0]
-		}
-		id, chunk := body[l[2]:l[3]], body[l[0]:end]
-		if strings.HasPrefix(id, "agent-") {
-			out = append(out, id)
-			continue
-		}
-		m := regexp.MustCompile(`session=([a-z]+)&amp;window=%40([0-9]+)`).FindStringSubmatch(chunk)
-		if m == nil {
-			t.Fatalf("instrument check FAILED: card %s names no window:\n%s", id, chunk)
-		}
-		out = append(out, m[1]+"@"+m[2])
+	// The signed-in operator's principal — what requireSession attaches; the
+	// mirror's hosts are scoped to it (fakeMirror.Hosts lists none without).
+	ctx := operatorCtx()
+	sw := s.switcher(ctx, ui.SwitcherCurrent{})
+	if sw == nil {
+		t.Fatal("instrument check FAILED: no switcher was built")
 	}
-	return out
-}
-
-func pinnedList(t *testing.T, s *Server, h http.Handler) (string, []string) {
-	t.Helper()
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
-	return body, listOrder(t, body)
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int64{}
+	for _, a := range list {
+		ids[a.Name] = a.ID
+	}
+	name := func(it ui.SwitcherItem) string {
+		if it.Kind == "agent" {
+			return "agent-" + strconv.FormatInt(ids[it.Code], 10)
+		}
+		m := regexp.MustCompile(`session=([a-z]+)&window=%40([0-9]+)`).FindStringSubmatch(it.Href)
+		if m == nil {
+			t.Fatalf("instrument check FAILED: entry %q names no window: %s", it.Code, it.Href)
+		}
+		return m[1] + "@" + m[2]
+	}
+	var pins []string
+	for _, it := range sw.All {
+		all = append(all, name(it))
+	}
+	for _, it := range sw.Pins {
+		pins = append(pins, name(it))
+	}
+	return strings.Join(pins, ","), all
 }
 
 // TestPinnedCardsRenderFirstInTheirOriginalOrder: the operator ask "pinned
-// agents appear first in the list". The pinned entries are the LEAST recently
+// agents appear first in the list" — the session switcher's All view now (the
+// Agents list page is retired; its order, orderList, is the bar's). The pinned entries are the LEAST recently
 // active of each kind (agent 7, window chief@2), so pinned-first cannot pass by
 // accident of the activity order; the rest keep that order. Red before pins
 // existed: the list was 5,6,7 then main@1, chief@2 whatever was pinned.
@@ -174,7 +186,7 @@ func TestPinnedCardsRenderFirstInTheirOriginalOrder(t *testing.T) {
 	set := mp.pinFor(authz.OperatorUserID)
 	set.Agents[7] = true
 	set.Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] = true
-	body, got := pinnedList(t, s, h)
+	_, got = pinnedList(t, s, h)
 	if want := "agent-7,chief@2,agent-5,main@1,agent-6"; strings.Join(got, ",") != want {
 		t.Fatalf("pinned order = %s, want %s: the pinned agent and the pinned window first (most "+
 			"recently active first), then the unpinned ones in the same order", strings.Join(got, ","), want)
@@ -187,20 +199,9 @@ func TestPinnedCardsRenderFirstInTheirOriginalOrder(t *testing.T) {
 		t.Fatalf("two pinned agents = %s, want %s", strings.Join(got, ","), want)
 	}
 
-	// The pinned cards say so, and offer Unpin; the others offer Pin.
-	if n := strings.Count(body, `data-pinned-glyph`); n != 2 {
-		t.Errorf("%d pinned glyphs, want 2 (one per pinned card)", n)
-	}
-	card7 := body[strings.Index(body, `<article id="agent-7"`):strings.Index(body, `<article id="mirror-`)]
-	if !strings.Contains(card7, `action="/agents/pins/delete"`) || !strings.Contains(card7, ">Unpin<") {
-		t.Errorf("the pinned agent's menu does not offer Unpin:\n%s", card7)
-	}
-	card5 := body[strings.Index(body, `<article id="agent-5"`):strings.Index(body, `<article id="agent-6"`)]
-	if !strings.Contains(card5, `action="/agents/pins"`) || !strings.Contains(card5, ">Pin to top<") {
-		t.Errorf("an unpinned agent's menu does not offer Pin to top:\n%s", card5)
-	}
-	if !strings.Contains(body, `aria-pressed="true"`) || !strings.Contains(body, `aria-pressed="false"`) {
-		t.Errorf("the mirrored cards' pin toggles are not pressed/unpressed by pin state")
+	// The Pins view holds exactly the pinned entries, in the same order.
+	if pins, _ := pinnedList(t, s, h); pins != "agent-6,agent-7,chief@2" {
+		t.Errorf("the Pins view = %s, want agent-6,agent-7,chief@2", pins)
 	}
 }
 
@@ -213,12 +214,12 @@ func TestADormantMirrorPinReappearsWithItsWindow(t *testing.T) {
 	s, h := pinServer(t, fm, mp)
 	mp.pinFor(authz.OperatorUserID).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@9"}] = true
 
-	body, got := pinnedList(t, s, h)
+	pinsView, got := pinnedList(t, s, h)
 	if want := "agent-5,main@1,agent-6,agent-7,chief@2"; strings.Join(got, ",") != want {
 		t.Fatalf("with a dormant pin the list = %s, want the unpinned %s", strings.Join(got, ","), want)
 	}
-	if strings.Contains(body, "data-pinned") {
-		t.Fatalf("a dormant pin drew something pinned")
+	if pinsView != "" {
+		t.Fatalf("a dormant pin drew something pinned: %s", pinsView)
 	}
 
 	fm.mu.Lock()
@@ -246,9 +247,9 @@ func pinPost(t *testing.T, s *Server, h http.Handler, path string, form url.Valu
 }
 
 // TestThePinRoutesPinAndUnpinIdempotently: through the real mux — an htmx post
-// answers the re-rendered list with the pinned card first, a non-htmx form post
-// a 303 back to /agents (a route behaviour only: no page without JavaScript
-// draws a toggle), each twice with the same result.
+// answers an empty 200 with agents:changed (the list it used to answer with is
+// retired), a non-htmx form post a 303 home (a route behaviour only: no page
+// without JavaScript draws a toggle), each twice with the same result.
 func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 	fm := &fakeMirror{online: true, windows: pinWindows()}
 	mp := &memPins{agents: map[int64]bool{5: true, 6: true, 7: true}}
@@ -261,12 +262,12 @@ func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("htmx pin #%d = %d %s", i, rec.Code, rec.Body)
 		}
-		if got := listOrder(t, rec.Body.String()); len(got) == 0 || got[0] != "agent-7" {
-			t.Fatalf("htmx pin #%d answered a list whose first card is %v, want agent-7", i, got)
+		if rec.Body.Len() != 0 || rec.Header().Get("HX-Trigger") != "agents:changed" {
+			t.Fatalf("htmx pin #%d answered %q with HX-Trigger %q, want no body and agents:changed", i, rec.Body, rec.Header().Get("HX-Trigger"))
 		}
 		rec = pinPost(t, s, h, "/agents/pins", chief, false)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/agents" {
-			t.Fatalf("plain pin #%d = %d → %q, want 303 → /agents", i, rec.Code, rec.Header().Get("Location"))
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+			t.Fatalf("plain pin #%d = %d → %q, want 303 → /", i, rec.Code, rec.Header().Get("Location"))
 		}
 	}
 	if _, got := pinnedList(t, s, h); strings.Join(got, ",") != "agent-7,chief@2,agent-5,main@1,agent-6" {
@@ -329,7 +330,7 @@ func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 }
 
 // TestThePinRoutesAreRefusedOnTheMachineListener: in gotrue mode the pin
-// routes are browser-session routes, so the machine listener (:30306) refuses
+// routes are browser-session routes, so the machine listener (:8105) refuses
 // them with the off-browser 403 even for a valid session — and the browser
 // listener, same session and origin, pins (the control that makes the 403 a
 // fact about the listener).
@@ -350,5 +351,114 @@ func TestThePinRoutesAreRefusedOnTheMachineListener(t *testing.T) {
 		if w := do(f.edge, "POST", path, form, withCookies(at, rt), origin); w.Code != http.StatusSeeOther {
 			t.Errorf("%s on the browser listener (the control): %d %s, want 303", path, w.Code, w.Body)
 		}
+	}
+}
+
+// TestTheSwitcherPinToggleAnswersWithItselfAndTheBar: a post from the session
+// switcher's pin toggle (view=switcher) pins or unpins like any other, and an
+// htmx one answers with the toggle in its NEW state and the bar's rows and
+// counts out of band — the Pins row now holding (or no longer holding) the
+// session — never the Agents list. Without script it goes back to the
+// session's page; a "back" that is not a session page of this server goes to
+// /agents (no open redirect). Red at the commit before: the answer was the
+// list (and the redirect /agents) whatever was posted.
+func TestTheSwitcherPinToggleAnswersWithItselfAndTheBar(t *testing.T) {
+	fm := &fakeMirror{online: true, windows: pinWindows()}
+	mp := &memPins{agents: map[int64]bool{5: true, 6: true, 7: true}}
+	s, h := pinServer(t, fm, mp)
+	agent7 := url.Values{"kind": {"agent"}, "agent_id": {"7"}, "view": {"switcher"}, "back": {"/agents/idle-newest"}}
+
+	rec := pinPost(t, s, h, "/agents/pins", agent7, true)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || strings.Contains(body, "<article") {
+		t.Fatalf("htmx switcher pin = %d, and answered the list:\n%s", rec.Code, body)
+	}
+	if !mp.pinFor(authz.OperatorUserID).Agents[7] {
+		t.Fatal("agent 7 was not pinned")
+	}
+	if !strings.HasPrefix(body, `<form method="post" action="/agents/pins/delete" data-switcher-pin=""`) ||
+		!strings.Contains(body, `id="switcher-pin" type="submit" role="menuitem" data-pinned="true"`) || !strings.Contains(body, `<span>Unpin this session</span>`) ||
+		!strings.Contains(body, `name="back" value="/agents/idle-newest"`) || !strings.Contains(body, `name="agent_id" value="7"`) {
+		t.Errorf("the answer is not the ⋯ menu's pin item, pinned, posting Unpin for agent 7:\n%s", body)
+	}
+	pinsRow := regexp.MustCompile(`<div id="switcher-list-pins" hx-swap-oob="innerHTML">(.*?)</div><span id="switcher-count-pins" hx-swap-oob="innerHTML">(\d+)</span>`).FindStringSubmatch(body)
+	if pinsRow == nil || !strings.Contains(pinsRow[1], `aria-current="page"`) || pinsRow[2] != "1" {
+		t.Errorf("the bar's Pins row is not sent out of band holding the page's own session (count 1):\n%s", body)
+	}
+
+	rec = pinPost(t, s, h, "/agents/pins/delete", agent7, true)
+	body = rec.Body.String()
+	if mp.pinFor(authz.OperatorUserID).Agents[7] || !strings.Contains(body, `role="menuitem" data-pinned="false"`) || !strings.Contains(body, `<span>Pin this session</span>`) ||
+		!strings.Contains(body, `<span id="switcher-count-pins" hx-swap-oob="innerHTML">0</span>`) {
+		t.Errorf("unpin did not answer the unpressed toggle and an empty Pins count:\n%s", body)
+	}
+
+	// A window: its own (host, session, window) is what is pinned.
+	win := url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"chief"}, "window": {"@2"}, "view": {"switcher"}, "back": {"/mirror/view?host=ws&session=chief&window=%402"}}
+	if rec := pinPost(t, s, h, "/agents/pins", win, true); rec.Code != http.StatusOK ||
+		!mp.pinFor(authz.OperatorUserID).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] {
+		t.Fatalf("the window's switcher pin = %d; pinned %v", rec.Code, mp.pinFor(authz.OperatorUserID).Mirrors)
+	}
+
+	// Without script: back to the session's page — and only ever to one.
+	for _, c := range []struct{ back, want string }{
+		{"/agents/idle-newest", "/agents/idle-newest"},
+		{"/mirror/view?host=ws&session=chief&window=%402", "/mirror/view?host=ws&session=chief&window=%402"},
+		{"https://evil.example/agents/x", "/"},
+		{"//evil.example/agents/x", "/"},
+		{"/agents/x\r\nSet-Cookie: a=b", "/"},
+		{"/tasks", "/"},
+		{"", "/"},
+	} {
+		f := url.Values{"kind": {"agent"}, "agent_id": {"7"}, "view": {"switcher"}, "back": {c.back}}
+		rec := pinPost(t, s, h, "/agents/pins", f, false)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != c.want {
+			t.Errorf("plain switcher pin with back %q = %d → %q, want 303 → %q", c.back, rec.Code, rec.Header().Get("Location"), c.want)
+		}
+	}
+}
+
+// TestAPinFromATerminalViewAnswersWithTheBarsRows: every Terminal view draws
+// the session switcher now, so a pin posted from one (view=switcher, `back` a
+// /mirror/terminal… or /agents/<name>/terminal path) is answered like any
+// other session page's — the toggle AND the bar's rows and counts out of band,
+// the Pins row holding the page's own session. Red with the old exclusion
+// (pins.go skipped the rows for a back under /mirror/terminal, when that page
+// drew no bar): the answer was the toggle alone.
+func TestAPinFromATerminalViewAnswersWithTheBarsRows(t *testing.T) {
+	fm := &fakeMirror{online: true, windows: pinWindows()}
+	mp := &memPins{agents: map[int64]bool{5: true, 6: true, 7: true}}
+	s, h := pinServer(t, fm, mp)
+	oob := regexp.MustCompile(`<div id="switcher-list-pins" hx-swap-oob="innerHTML">(.*?)</div><span id="switcher-count-pins" hx-swap-oob="innerHTML">(\d+)</span>`)
+	for _, c := range []struct {
+		name string
+		form url.Values
+	}{
+		{"a mirrored Terminal view", url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"chief"}, "window": {"@2"}, "view": {"switcher"},
+			"back": {ui.MirrorRef{Host: "ws", Session: "chief", Window: "@2"}.TerminalPath()}}},
+		{"an agent's Terminal view", url.Values{"kind": {"agent"}, "agent_id": {"7"}, "view": {"switcher"}, "back": {ui.AgentTerminalPath("idle-newest")}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := pinPost(t, s, h, "/agents/pins", c.form, true)
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK || !strings.Contains(body, `id="switcher-pin" type="submit" role="menuitem" data-pinned="true"`) {
+				t.Fatalf("the pin = %d, not the pressed toggle:\n%s", rec.Code, body)
+			}
+			if !strings.Contains(body, `name="back" value="`+strings.ReplaceAll(c.form.Get("back"), "&", "&amp;")+`"`) {
+				t.Errorf("the toggle does not post back to the Terminal view %q:\n%s", c.form.Get("back"), body)
+			}
+			m := oob.FindStringSubmatch(body)
+			if m == nil || !strings.Contains(m[1], `aria-current="page"`) || m[2] != "1" {
+				t.Errorf("the bar's Pins row is not sent out of band holding the page's own session (count 1):\n%s", body)
+			}
+			for _, key := range []string{"recent", "waiting", "all"} {
+				if !strings.Contains(body, `<div id="switcher-list-`+key+`" hx-swap-oob="innerHTML">`) {
+					t.Errorf("no out-of-band %s row", key)
+				}
+			}
+			if rec := pinPost(t, s, h, "/agents/pins/delete", c.form, true); rec.Code != http.StatusOK {
+				t.Fatalf("unpin = %d", rec.Code)
+			}
+		})
 	}
 }

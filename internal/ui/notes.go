@@ -17,13 +17,17 @@ import (
 
 // AgentBrief is the minimal linked-agent info a task card renders: enough to
 // show a status chip and link to the agent's chat, with NO live k8s call (the
-// Status is the STORED agents.status, mirroring how the agents list avoids
+// Status is the STORED agents.status, mirroring how the sidebar's agent list avoids
 // per-agent pod lookups).
 type AgentBrief struct {
 	ID          int64
 	Name        string // slug — the /agents/{name} detail/chat link target
 	DisplayName string
 	Status      string // pending|provisioning|running|stopped|error
+	// SessionID is the agent's latest session (agents.Store.LatestSessionIDs), 0
+	// when it has none or the read failed: the "Open chat" link names it
+	// (AgentSessionHref), so a tap skips the bare page's 303.
+	SessionID int64
 }
 
 // TaskCardView carries one task plus its (optional) most-recent linked agent, so
@@ -47,14 +51,21 @@ type TaskCardView struct {
 	// In detail shape the title is the document's ONE <h1>; on the board it is an
 	// <h3> inside the list.
 	Detail bool
+
+	// RefWrites are a plugin task REFERENCE's writes still on their way to the
+	// upstream (pending, claimed, failed), for the detail shape's thread. Nil
+	// for an ordinary task, and on the board, which does not read them.
+	RefWrites []notes.RefWrite
 }
 
 // NotesPanel is the static shell for the Tasks tab. The + FAB (body-level, in
 // Page) is the sole task-create path; only the inner #tasks-list refreshes.
-// It lazy-loads /ui/tasks on first load, on tasks:changed (a local create/edit),
-// on sse:task.changed (an agent mutated a task out-of-band), and on
-// sse:agent.changed (a linked agent's status moved — so the card's status chip
-// stays live without a reload).
+// It refreshes from /ui/tasks on tasks:changed (a local create/edit), on
+// sse:task.changed (an agent mutated a task out-of-band), on sse:agent.changed
+// (a linked agent's status moved — so the card's status chip stays live without
+// a reload) and on muster:resync. Its FIRST content is drawn (non-nil drawn: the
+// Tasks tab's own document carries the board, tasks_list_ssr.go) or, on any
+// other tab, the skeleton its own `load` request replaces.
 // 🔴 IT TAKES NO PENDING COUNT, AND THE SEGMENTED CONTROL IS GONE WITH IT.
 // Upstream rendered a [Requests | Tasks] segmented toggle at the top of this
 // panel, carrying a live count of pending permission requests on the Requests
@@ -62,7 +73,7 @@ type TaskCardView struct {
 // two-position switch with one position — and the count would be a badge
 // permanently reading zero, which reads as "no requests" rather than "not a
 // thing this service does".
-func NotesPanel(active bool) g.Node {
+func NotesPanel(active bool, drawn *shellTasks) g.Node {
 	return Div(
 		ID(panelID("tasks")),
 		g.Attr("role", "tabpanel"),
@@ -74,10 +85,15 @@ func NotesPanel(active bool) g.Node {
 		// noteDeleteButton's confirm carries `hx-swap: outerHTML swap:200ms`
 		// targeting `#task-<id>`, which IS inside this panel. See panelClass.
 		Class(panelClass(active, true)+" min-h-[calc(100dvh-6rem)]"),
+		// Before #tasks-list, deliberately: see tasksRefilterGuard.
+		g.If(drawn != nil, tasksRefilterGuard()),
 		Div(
 			ID("tasks-list"),
 			Class("mt-4"),
 			hx("hx-get", "/ui/tasks"),
+			// A drawn board (tasks_list_ssr.go): its marks for the refilter guard
+			// and for the first SSE open.
+			tasksDrawnAttrs(drawn),
 			// 🔴 `muster:resync` IS WHY resyncScript EXISTS, AND THE BOARD WAS NOT
 			// LISTENING FOR IT. That script dispatches the event on focus, on
 			// visibility regain and on SSE reconnect, precisely because a connection
@@ -90,7 +106,8 @@ func NotesPanel(active bool) g.Node {
 			// happened to fire. The task DETAIL card has carried this trigger all
 			// along, which is what made the gap invisible — the feature demonstrably
 			// worked, on the other document.
-			hx("hx-trigger", "load, tasks:changed from:body, sse:task.changed from:body, sse:agent.changed from:body, muster:resync from:body"),
+			// No `load` when the document drew the board (tasksTrigger).
+			hx("hx-trigger", tasksTrigger(drawn)),
 			hx("hx-target", "#tasks-list"),
 			hx("hx-swap", "morph:innerHTML"),
 			// 🔴 A FAILED load must not read as "still loading". htmx does not swap a
@@ -122,7 +139,7 @@ func NotesPanel(active bool) g.Node {
 			// changing ONE card's status wiped the whole list (articles 1 → 0) and
 			// replaced it with "Couldn't load tasks.", a report of a failure that did
 			// not happen, on top of the correct per-request toast. Same idiom as
-			// dispatchCloseOnOwnSubmit (agents.go) and the edit form's after-request.
+			// the edit form's after-request.
 			hx("hx-on::response-error", "if(event.target===this && window.cgTasksListFailed)window.cgTasksListFailed(this)"),
 			hx("hx-on::send-error", "if(event.target===this && window.cgTasksListFailed)window.cgTasksListFailed(this)"),
 			hx("hx-on::timeout", "if(event.target===this && window.cgTasksListFailed)window.cgTasksListFailed(this)"),
@@ -133,7 +150,9 @@ func NotesPanel(active bool) g.Node {
 			// and the swap replaces like with like. ONE wrapper element (not N
 			// siblings) so idiomorph maps it 1:1 onto NotesCards' single root <div>
 			// instead of structurally morphing several loose placeholders.
-			tasksListSkeleton(),
+			// A document that drew the board carries the board instead
+			// (tasksListBody).
+			tasksListBody(drawn),
 		),
 	)
 }
@@ -219,8 +238,10 @@ func tasksListSkeleton() g.Node {
 // no once-only guard to get wrong. The Retry button's handler is bound to that
 // one element with addEventListener (not an inline onclick), which also keeps it
 // inside the app's CSP.
-func tasksListScript() g.Node {
-	return Script(g.Raw(`
+func tasksListScript() g.Node { return staticScript(tasksListScriptSrc) }
+
+// tasksListScriptSrc is the path tasksListScript's code is served at, /static/js/tasks-list.js (static_script.go).
+var tasksListScriptSrc = staticJS("tasks-list", `
 (function () {
   window.cgTasksListFailed = function (el) {
     var host = el || document.getElementById('tasks-list');
@@ -298,8 +319,7 @@ func tasksListScript() g.Node {
     } catch (e) {}
   };
 })();
-`))
-}
+`)
 
 // TasksView is everything the /ui/tasks partial renders: the task cards, the tag
 // vocabulary behind the filter chip row, and the ACTIVE filters. Every active
@@ -349,6 +369,105 @@ type TasksView struct {
 	// existed, and the tag filter had been silently resetting on the same channel
 	// for as long as it had shipped.
 	NextLimit int
+	// Groups is the board split by OWNER (team sharing phase 4): the viewer's
+	// own tasks, then each team's. Nil when every card is the viewer's own,
+	// and the board is then the one flat list it always was.
+	Groups []TaskOwnerGroup
+}
+
+// TaskOwnerGroup is one owner's cards on the task board: the viewer's own
+// (Team false) or one team's.
+type TaskOwnerGroup struct {
+	Owner int64
+	Team  bool
+	// Label is the group's heading: "Yours", or the team's name (author
+	// text: drawn through textplain.Title).
+	Label string
+	Cards []TaskCardView
+}
+
+// TaskOwnerOption is one owner a task may be filed under or moved to: a team
+// the viewer is at least an operator in. Label is the team's name.
+type TaskOwnerOption struct {
+	ID    int64
+	Label string
+}
+
+// taskOwnerGroups renders the board's owner groups, each its own heading and
+// grid; data-task-owner-group carries the owner's id.
+func taskOwnerGroups(groups []TaskOwnerGroup) g.Node {
+	nodes := make([]g.Node, 0, len(groups))
+	for _, gr := range groups {
+		nodes = append(nodes, Section(
+			g.Attr("data-task-owner-group", strconv.FormatInt(gr.Owner, 10)),
+			g.Attr("data-task-owner-team", boolAttr(gr.Team)),
+			Class("flex flex-col gap-2"),
+			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text(textplain.Title(gr.Label))),
+			Div(Class("grid grid-cols-1 gap-3 lg:grid-cols-2"), g.Map(gr.Cards, noteCard)),
+		))
+	}
+	return Div(g.Attr("data-tasks-flat", ""), Class("flex flex-col gap-4"), g.Group(nodes))
+}
+
+// repoOptionsURL is the repository picker's options URL for a task owned by
+// owner: the list is decided by the TASK's owner, never the viewer (api's
+// handleAgentRepoOptions). owner <= 0 is the viewer's own.
+func repoOptionsURL(owner int64) string {
+	if owner <= 0 {
+		return "/ui/agents/repos"
+	}
+	return "/ui/agents/repos?owner=" + strconv.FormatInt(owner, 10)
+}
+
+// ownerFollow is the new-task form's repository picker's follow selector:
+// the Owner select (taskOwnerSelect) when the form has one.
+func ownerFollow(owners []TaskOwnerOption) string {
+	if len(owners) == 0 {
+		return ""
+	}
+	return "#task-owner"
+}
+
+// taskOwnerSelect is the create form's Owner select: you (the default), or a
+// team you are at least an operator in. Nothing renders without such a team.
+func taskOwnerSelect(owners []TaskOwnerOption) g.Node {
+	if len(owners) == 0 {
+		return nil
+	}
+	opts := []g.Node{Option(Value(""), g.Attr("selected", ""), g.Text("You"))}
+	for _, o := range owners {
+		opts = append(opts, Option(Value(strconv.FormatInt(o.ID, 10)), g.Text(textplain.Title(o.Label))))
+	}
+	return labelledFieldFor("task-owner", "Owner", Select(ID("task-owner"), Name("owner"),
+		Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+		g.Group(opts)))
+}
+
+// taskMoveForm is the edit modal's "Move to a team": a separate form (a form
+// cannot nest), posting to /tasks/{id}/move. Rendered only when the viewer
+// owns the task and operates in a team.
+func taskMoveForm(id int64, teams []TaskOwnerOption) g.Node {
+	if len(teams) == 0 {
+		return nil
+	}
+	ids := strconv.FormatInt(id, 10)
+	opts := make([]g.Node, 0, len(teams))
+	for _, o := range teams {
+		opts = append(opts, Option(Value(strconv.FormatInt(o.ID, 10)), g.Text(textplain.Title(o.Label))))
+	}
+	return Form(
+		hx("hx-post", "/tasks/"+ids+"/move"),
+		hx("hx-target", "#task-"+ids),
+		hx("hx-swap", "outerHTML"),
+		g.Attr("data-task-move", ids),
+		Class("mt-4 flex flex-col gap-2 border-t border-line pt-4"),
+		labelledFieldFor("task-move-"+ids, "Move to a team", Select(ID("task-move-"+ids), Name("team"),
+			Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+			g.Group(opts))),
+		P(Class("text-xs text-muted"), g.Text("The team's members will see it, its comments and its attachments. It cannot be moved back.")),
+		Button(Type("submit"), Class("press inline-flex items-center justify-center rounded-xl bg-s2 px-4 py-2 text-sm font-medium text-fg ring-1 ring-inset ring-edge hover:bg-s3"),
+			g.Text("Move")),
+	)
 }
 
 // NotesCards is the /ui/tasks partial: the filter chip rows, then ONE flat list
@@ -408,11 +527,12 @@ func NotesCards(v TasksView) g.Node {
 		// "Select" over a queue with nothing selectable.
 		taskMergeToolbar(mergeableCards(v.Cards)),
 		taskMergeBar(mergeableCards(v.Cards)),
-		Div(
+		g.If(len(v.Groups) == 0, Div(
 			g.Attr("data-tasks-flat", ""),
 			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
 			g.Map(v.Cards, noteCard),
-		),
+		)),
+		g.If(len(v.Groups) > 0, taskOwnerGroups(v.Groups)),
 		tasksShowMore(v),
 	)
 }
@@ -598,10 +718,8 @@ func taskModalDiscardBar() g.Node { return modalDiscardBar("task-modal") }
 // standalone PWA, so hx-confirm/window.confirm would never resolve and the user
 // would be stuck. Hidden until cgModalDismiss(<modalID>) reveals it.
 //
-// 🔴 ONE pattern for BOTH sheets. The dispatch sheet holds the longest free text
-// in the app (the ad-hoc prompt) and Escape used to hide it unconditionally —
-// reopening refetches /ui/agents/new, so the prompt was gone. It gets this exact
-// bar, keyed by id, rather than a second discard idiom.
+// It is keyed by id, so a second sheet reuses this bar rather than growing a
+// second discard idiom (the dispatch sheet did, until it was deleted).
 //
 // The id contract is <modalID>-discard, which cgModalDismiss/cgModalClose derive.
 func modalDiscardBar(modalID string) g.Node {
@@ -731,7 +849,7 @@ func noteCard(v TaskCardView) g.Node {
 			// htmx attributes are INHERITED by descendants — a boosted click would
 			// swap the whole /tasks/{id} DOCUMENT into #tasks-list. That is a silent
 			// visual break, not an error: same trap already documented on
-			// openChatButton and the session rows below.
+			// openChatButtonPrimary and the session rows below.
 			hx("hx-boost", "false"),
 			g.Attr("data-task-link", ids),
 			// card-link is the hook the merge-selection CSS suppresses (see
@@ -951,6 +1069,11 @@ func noteCard(v TaskCardView) g.Node {
 				// · session abc12345…" when the task carries a source_type, else
 				// nothing (pre-0017 / header-less tasks). Nil-safe internally.
 				taskProvenanceChip(n),
+				// A plugin task REFERENCE (task_refs.go): its upstream's label.
+				taskRefChip(n),
+				// Who CLAIMED it (task_claims.go): a session's explicit pickup or
+				// the upstream's claimant.
+				taskClaimChip(n),
 				// Task-thread COUNT only (migration 0023) — one chip, beside the
 				// provenance chip and reusing its classes. The per-session detail is
 				// one tap away on the detail page.
@@ -976,6 +1099,8 @@ func noteCard(v TaskCardView) g.Node {
 			),
 			g.If(len(n.Attachments) > 0, noteAttachments(n.Attachments)),
 			taskSessionsSection(n),
+			taskRefSection(n, v.RefWrites),
+			taskLocalCommentsLabel(n),
 			taskComments(n.ID, n.Comments),
 			taskCommentForm(n.ID),
 		)),
@@ -1065,13 +1190,15 @@ func taskDetailHeading(n notes.Note) string {
 }
 
 // taskActionTrailing is the right-hand side of a task card's action row. With NO
-// linked agent it is the Dispatch button (unchanged behaviour). Once an agent is
-// linked it becomes a live agent-status chip (task-facing label) plus an "Open
-// chat" button that navigates to the agent's chat/detail view — replacing
-// Dispatch, so the card reflects that the task is being worked.
+// linked agent it draws nothing: the card's Dispatch button was deleted with the
+// dispatch form (docs/design/chief-dispatch.md phase 2, D8), and the chief starts
+// an agent on a task (agent_dispatch). Once an agent is linked it is a live
+// agent-status chip (task-facing label) plus an "Open chat" button that
+// navigates to the agent's chat/detail view, so the card reflects that the task
+// is being worked.
 func taskActionTrailing(v TaskCardView) g.Node {
 	if v.Agent == nil {
-		return noteDispatchButton(v.Note)
+		return nil
 	}
 	a := v.Agent
 	// shrink-0 pins the whole trailing cluster (chip + CTA) to the FAR RIGHT of the
@@ -1079,7 +1206,7 @@ func taskActionTrailing(v TaskCardView) g.Node {
 	return Div(
 		Class("flex shrink-0 items-center gap-2"),
 		agentStatusChip(a.Status),
-		openChatButtonPrimary(a.Name),
+		openChatButtonPrimary(AgentListHref(a.Name, a.SessionID)),
 	)
 }
 
@@ -1115,32 +1242,18 @@ func agentTaskChipLabel(status string) string {
 	}
 }
 
-// openChatButton links a task card to its dispatched agent's chat/detail view
-// (GET /agents/{name}, which redirects to the agent's active session). Like the
-// agent card's nav anchor it sets hx-boost="false": the button lives inside
-// #tasks-list (which carries hx-get/hx-target), and htmx attrs are inherited by
-// descendants, so a boosted click would swap the detail document into #tasks-list
-// (wrong target). Disabling boost makes it a plain navigation to the detail page.
-func openChatButton(name string) g.Node {
-	return A(
-		Href("/agents/"+name),
-		hx("hx-boost", "false"),
-		g.Attr("aria-label", "Open agent chat"),
-		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
-		g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h12v9H7l-3 3z"/></svg>`),
-		g.Text("Open chat"),
-	)
-}
-
 // openChatButtonPrimary is the LARGE, filled-accent "Open chat" CTA a task card
 // shows once it has an active linked agent (provisioning/running) — the card's
-// main action while work is in flight. It's the same link/target/a11y as the small
-// openChatButton (plain nav, boost off), styled up: filled accent bg, taller
-// (h-11), larger semibold text, more padding — clearly the primary CTA, with the
+// main action while work is in flight. href is AgentSessionHref — the agent's
+// latest session directly, not the bare /agents/{name} and its 303. It is a plain
+// navigation (hx-boost="false"): the card lives inside #tasks-list, which carries
+// hx-get/hx-target, and htmx attrs are inherited by descendants, so a boosted
+// click would swap the detail document into #tasks-list (wrong target). Filled
+// accent bg, h-11, semibold text — clearly the primary CTA, with the
 // agentStatusChip sitting alongside it (chip = state, button = action).
-func openChatButtonPrimary(name string) g.Node {
+func openChatButtonPrimary(href string) g.Node {
 	return A(
-		Href("/agents/"+name),
+		Href(href),
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Open agent chat"),
 		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full bg-accent px-4 text-sm font-semibold text-on-accent shadow-sm shadow-accent/20 transition hover:bg-accent/90 active:scale-[0.98]"),
@@ -1184,7 +1297,7 @@ func taskProvenanceChip(n notes.Note) g.Node {
 	if n.SourceType == nil {
 		return g.Text("")
 	}
-	label := sourceTypeLabel(*n.SourceType)
+	label := SourceTypeLabel(*n.SourceType)
 	text := "from " + label
 	if n.SourceSessionID != nil {
 		// truncate appends the ellipsis itself when it cuts (a real session id is a
@@ -1200,10 +1313,10 @@ func taskProvenanceChip(n notes.Note) g.Node {
 	)
 }
 
-// sourceTypeLabel maps a stored source_type producer id to a friendly display
+// SourceTypeLabel maps a stored source_type producer id to a friendly display
 // label. An unrecognized value falls back to the raw id (still escaped by g.Text
 // at the call site), so a future producer isn't hidden.
-func sourceTypeLabel(source string) string {
+func SourceTypeLabel(source string) string {
 	switch source {
 	case "claude-code":
 		return "Claude Code"
@@ -1386,7 +1499,7 @@ func taskSessionRow(l notes.SessionLink) g.Node {
 		Href("/suggestions/"+url.PathEscape(l.SessionID)),
 		// The card lives inside #tasks-list, which carries hx-get/hx-target, and htmx
 		// attributes are INHERITED by descendants — a boosted click would swap the
-		// session page into #tasks-list. Same reasoning as openChatButton.
+		// session page into #tasks-list. Same reasoning as openChatButtonPrimary.
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Open session "+l.SessionID),
 		Class(rowClass+" transition hover:bg-s1/80"),
@@ -1417,8 +1530,7 @@ func sessionRoleLabel(role string) string {
 // to the real field at their own pace with no behaviour change.
 //
 // EXPORTED because internal/api needs it too. It previously did not, and both
-// dispatch-picker labels (buildTaskDispatchView, handleAgentNoteOptions) read
-// n.Directory directly — so a producer that correctly sent `title` instead of
+// (since deleted) dispatch-picker labels read n.Directory directly — so a producer that correctly sent `title` instead of
 // smuggling it lost its heading in the picker, which is exactly where telling
 // captures apart matters. Any new label site MUST use this, not n.Directory.
 func TaskTitle(n notes.Note) string {
@@ -1754,51 +1866,6 @@ func noteDeleteButton(id int64) g.Node {
 	)
 }
 
-// noteDispatchButton opens the SHARED dispatch modal pre-selected to this task, so
-// the operator adjudicates → dispatches an agent for it in one tap. It mirrors the
-// FAB's exact open mechanism (hx-get the form body into #agent-modal-body, then
-// un-hide #agent-modal) but adds ?note=<id>&label=<short> so the "Existing task"
-// combobox is pre-filled. The label is the task's directory, falling back to a
-// truncated first line of the body.
-//
-// A `gate:<reason>` routing tag makes the task NOT dispatchable: the button
-// renders DISABLED with the reason as its title (and the dispatch endpoint 409s —
-// this is a hint, not the enforcement).
-func noteDispatchButton(n notes.Note) g.Node {
-	if reason, gated := notes.GateReason(n.Tags); gated {
-		return Button(
-			Type("button"),
-			Disabled(),
-			g.Attr("data-dispatch-gated", reason),
-			g.Attr("title", "Gated: "+reason+" — remove the gate: tag to dispatch"),
-			g.Attr("aria-label", "Dispatch blocked: "+reason),
-			Class("press inline-flex h-11 shrink-0 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted ring-1 ring-inset ring-line"),
-			g.Text("Dispatch"),
-		)
-	}
-	label := TaskTitle(n)
-	if label == "" {
-		label = truncate(firstLine(n.Body), 60)
-	}
-	q := url.Values{}
-	q.Set("note", strconv.FormatInt(n.ID, 10))
-	q.Set("label", label)
-	return Button(
-		Type("button"),
-		g.Attr("title", "Dispatch agent for this task"),
-		g.Attr("aria-label", "Dispatch agent for this task"),
-		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
-		// Mirror shellFAB: load the dispatch form into the modal body, then reveal
-		// the always-present modal shell.
-		hx("hx-get", "/ui/agents/new?"+q.Encode()),
-		hx("hx-target", "#agent-modal-body"),
-		hx("hx-swap", "innerHTML"),
-		hx("hx-on:click", modalOpenClick("agent-modal")),
-		g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 15l4-4M9 11l5-9M9 11l-4 4M14 2l4 4-9 5"/></svg>`),
-		g.Text("Dispatch"),
-	)
-}
-
 // noteEditButton renders the card's Edit control. When the task is in progress it
 // renders a DISABLED button with a hint (an in-progress task is immutable — the
 // same guard the edit route enforces server-side); otherwise it opens the SHARED
@@ -1846,6 +1913,49 @@ type NoteEditView struct {
 	// Vocabulary backs the tag input's <datalist> suggestions, so the human reuses
 	// existing labels instead of minting near-duplicates.
 	Vocabulary []notes.TagCount
+	// MoveTeams are the teams the viewer may move this task into (they own
+	// it and operate in each); none renders no move control.
+	MoveTeams []TaskOwnerOption
+}
+
+// editTitleBodyFields is the edit form's title and body. On a plugin task
+// reference they are the upstream's: shown READ-ONLY, as text, with NO form
+// field — so the form submits neither and the server leaves them alone
+// (api.refEditRefusal refuses a changed one on either edit path).
+func editTitleBodyFields(n notes.Note) g.Node {
+	if n.IsReference() {
+		ro := "w-full whitespace-pre-wrap break-words rounded-lg bg-s2 px-3 py-2 text-sm text-fg"
+		return g.Group{
+			P(Class("text-xs text-muted"), g.Attr("data-ref-readonly", ""),
+				g.Text("This task is a reference: its title and description follow the upstream. Edit them there.")),
+			labelledField("Title", Div(Class(ro), g.Attr("aria-readonly", "true"), g.Text(textplain.Title(n.Title)))),
+			labelledField("Task", Div(Class(ro), g.Attr("aria-readonly", "true"), g.Text(n.Body))),
+		}
+	}
+	return g.Group{
+		// Title (migration 0018): the real display title, no longer smuggled
+		// through `directory`. Optional — empty falls back to the directory.
+		labelledField("Title",
+			Input(
+				Type("text"),
+				Name("title"),
+				Value(n.Title),
+				Placeholder("short title (optional)"),
+				Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+			),
+		),
+		labelledField("Task",
+			Textarea(
+				Name("body"),
+				Rows("4"),
+				Required(),
+				g.Attr("autofocus", ""),
+				Placeholder("What needs doing?"),
+				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+				g.Text(n.Body),
+			),
+		),
+	}
 }
 
 // NotesEditModalBody is the /ui/tasks/{id}/edit partial: the EDIT-task form,
@@ -1901,28 +2011,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			// success feedback, since the modal simply vanished before.
 			hx("hx-on::after-request", "if(event.target===this && event.detail.successful){if(window.cgTaskModalSaved)window.cgTaskModalSaved('task-"+ids+"');if(window.cgTaskModalClose){window.cgTaskModalClose()}else{document.getElementById('task-modal').classList.add('hidden')}}"),
 			Class("flex flex-col gap-3"),
-			// Title (migration 0018): the real display title, no longer smuggled
-			// through `directory`. Optional — empty falls back to the directory.
-			labelledField("Title",
-				Input(
-					Type("text"),
-					Name("title"),
-					Value(n.Title),
-					Placeholder("short title (optional)"),
-					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-				),
-			),
-			labelledField("Task",
-				Textarea(
-					Name("body"),
-					Rows("4"),
-					Required(),
-					g.Attr("autofocus", ""),
-					Placeholder("What needs doing?"),
-					Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-					g.Text(n.Body),
-				),
-			),
+			editTitleBodyFields(n),
 			// Tags: chip editor (hidden `tag` inputs = the submitted set) + a
 			// vocabulary-backed suggestion list. Routing chips lock on an in-progress
 			// task (the server enforces the same refinement of the 409 rule).
@@ -1932,7 +2021,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			labelledField("Directory", directoryCombobox(v.Directories, n.Directory, v.DirectoriesFailed)),
 			labelledField("Model", modelFieldFor(n.Model, "")),
 			labelledField("Repository",
-				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", n.Repo, n.Repo)),
+				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", repoOptionsURL(n.OwnerID), "repos", n.Repo, n.Repo)),
 			labelledField("Branch",
 				Input(
 					Type("text"),
@@ -1954,6 +2043,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 				g.Text("Save changes"),
 			),
 		),
+		taskMoveForm(n.ID, v.MoveTeams),
 	}
 }
 
@@ -1968,6 +2058,12 @@ func NotesModalBody(directories []string, directoriesFailed bool) g.Node {
 // share or the "New task" shortcut opens (ComposePage). The text is a Textarea
 // CHILD, so gomponents escapes it: shared markup arrives as inert characters.
 func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill string) g.Node {
+	return NotesModalBodyFor(directories, directoriesFailed, prefill, nil)
+}
+
+// NotesModalBodyFor is NotesModalBodyWith with an Owner select over owners
+// (the teams the viewer may file in; none renders no select).
+func NotesModalBodyFor(directories []string, directoriesFailed bool, prefill string, owners []TaskOwnerOption) g.Node {
 	return g.Group{
 		Div(
 			Class("mb-4 flex items-center gap-3"),
@@ -2007,16 +2103,16 @@ func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill st
 				),
 			),
 			// Advanced: directory + optional dispatch config (model/repo).
-			// A task can carry the model/repo it should dispatch with, so
-			// its Dispatch button becomes a pre-filled confirm. Reuses the exact
-			// dispatch-modal controls; their field names (directory / model / repo)
-			// match what handleNoteCreate parses. advancedDefaults JS
+			// A task can carry the model/repo an agent started on it should
+			// use. Their field names (directory / model / repo) match what
+			// handleNoteCreate parses. advancedDefaults JS
 			// pre-fills directory/model from localStorage recents (last-used) so a
 			// returning user's sane defaults ride along even while collapsed.
+			taskOwnerSelect(owners),
 			advancedDisclosure(
 				labelledField("Directory", directoryCombobox(directories, "", directoriesFailed)),
 				labelledField("Model", modelField()),
-				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
+				labelledField("Repository", lazyComboboxFollowing("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", "", "", ownerFollow(owners))),
 			),
 			// labelledFieldFor (not labelledField): the file input had NO associated
 			// label at all, which axe reports as a CRITICAL `label` violation — an

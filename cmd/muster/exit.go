@@ -32,10 +32,11 @@ const (
 	// retrying, the third by fixing a token.
 	//
 	// 🔴 THE 503 IT MAPS FROM IS NOT AN OUTAGE, AND THE DISCRIMINATOR IS THE
-	// BODY RATHER THAN THE STATUS. Nearly every hook-tier route is
-	// enforce-when-set, so a 503 there really is a sick backend and stays
-	// exitServerError. api.requireArmedHookToken is the exception — it is
-	// fail-CLOSED and marks its refusal with api.HookUnarmedField. Folding that
+	// BODY RATHER THAN THE STATUS. A hook-tier route never answers 503 for
+	// configuration, so an unmarked 503 there is a sick backend and stays
+	// exitServerError. A fail-CLOSED surface (the service tier, the approval
+	// relay, the connector store) is the exception: it marks its refusal with
+	// api.HookUnarmedField. Folding that
 	// into exitServerError would report "the server broke" about a server doing
 	// exactly what it was built to do. See unarmedHookSurface.
 	exitUnarmed = 9 // a SERVER-side surface is not armed (503)
@@ -48,6 +49,17 @@ const (
 	// leave this process and its outcome is unknown here, so a blind retry can
 	// repeat a write that already landed. The remedy is a longer --timeout.
 	exitAborted = 10 // this CLIENT's own deadline or context ended the wait
+	// exitNoneWaiting is its own code because "there is nothing to do" is not a
+	// failure: `nudge next` (nudge.go) found no chief-nudge notice to jump to.
+	// A key binding branches on it to stay quiet instead of reporting an error.
+	// It is new in this binary; the upstream table has no 11.
+	exitNoneWaiting = 11 // nothing is waiting (`nudge next`): not an error
+
+	// exitFeatureDisabled: the route exists but its feature is off on this
+	// server (a typed 404, {"error":"feature_disabled"}). The message names the
+	// feature and the line that turns it on. Distinct from exitRouteAbsent (7),
+	// which is a server that predates the route.
+	exitFeatureDisabled = 12
 )
 
 // cliError carries the exit code alongside the message. Every failure path in
@@ -57,6 +69,11 @@ type cliError struct {
 	code int
 	msg  string
 	err  error
+	// status is the HTTP status of an otherwise-unclassified 4xx (client.go's
+	// generic exitUsage case), 0 everywhere else. It lets one verb read a
+	// status the shared mapping has no case for — `pr-session` reads a 405 as
+	// a server older than its route — without changing that mapping for all.
+	status int
 }
 
 func (e *cliError) Error() string {
@@ -107,7 +124,8 @@ const exitCodeHelp = `Exit codes:
   2  usage error (bad flags, ambiguous agent name, empty path parameter)
   3  auth failure (401/403) — the server examined the credential this request presented
      and rejected it. The message names the variable to check; the value is never printed
-  4  not found (404 on a known route)
+  4  not found (404 on a known route; ` + "`pr-session`" + `: no session is recorded as creating
+     that pull request — stdout is empty)
   5  conflict (409 — e.g. editing an in-progress task)
   6  network unreachable (DNS, connection refused, a broken connection) — nothing
      arrived, so a retry is free. A DEADLINE is 10, not this
@@ -120,6 +138,10 @@ const exitCodeHelp = `Exit codes:
  10  THIS CLIENT gave up waiting (its --timeout, or a cancelled context) — the request
      DID leave this process, so its outcome is unknown here. Raise --timeout rather than
      retrying blindly, because a write that already landed would be repeated
+ 11  nothing is waiting — ` + "`nudge next`" + ` found no chief-nudge notice to jump to on that
+     host. Not a failure: stdout is empty
+ 12  feature disabled — the route exists but its feature is off on that server (a typed
+     404). The message names the feature and the .env line that enables it
 
 Output discipline: JSON goes to stdout and NOTHING else ever goes to stdout.
 Diagnostics, warnings and version-skew notices go to stderr, so piping stdout

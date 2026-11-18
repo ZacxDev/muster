@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"strings"
-
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
@@ -24,16 +22,11 @@ const (
 	// control that makes a thread the default.
 	sessionDefaultAttr = "data-session-default"
 	makeDefaultAttr    = "data-make-default"
-	// sessionModelInputID / sessionModelListID are the OpenRouter model
-	// combobox's own ids: the agent page's header has one of its own
-	// (modelFieldForDisplay's "model-input"), and the panel can be open on it.
-	sessionModelInputID = "chief-session-model-input"
-	sessionModelListID  = "chief-session-model-list"
 )
 
 // SessionRuntimeView names a runtime the picker offers.
 type SessionRuntimeView struct {
-	Runtime string // "claude-code" | "gateway"
+	Runtime string // "claude-code"
 	Label   string
 }
 
@@ -44,8 +37,8 @@ func sessionRuntimeLine(sess SessionView) g.Node {
 		return nil
 	}
 	text := sess.RuntimeLabel
-	if m := strings.TrimPrefix(sess.Model, "openrouter/"); m != "" {
-		text += " · " + m
+	if sess.Model != "" {
+		text += " · " + sess.Model
 	}
 	return Span(
 		g.Attr(sessionRuntimeAttr, sess.Runtime),
@@ -61,29 +54,35 @@ func sessionDefaultBadge(sess SessionView) g.Node {
 	}
 	return Span(
 		g.Attr(sessionDefaultAttr, ""),
-		g.Attr("title", "Plugin messages and chief ask go to this thread"),
+		g.Attr("title", "The primary chat: every delivery to the chief — plugin mail, hand-backs, notes, chief ask — goes here"),
 		Class("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent ring-1 ring-inset ring-accent/50"),
-		g.Text("Default"),
+		g.Text("Primary"),
 	)
 }
 
-// makeDefaultControl makes a thread the default, re-rendering the panel on it.
-// Nothing for the default thread itself, or where defaults are not offered.
-func makeDefaultControl(sess SessionView) g.Node {
+// makeDefaultControl makes a thread the default, re-rendering the panel on the
+// thread it is on (current, ChiefCurrentParam; 0 = not known: on the thread
+// made default). Nothing for the default thread itself, or where defaults are
+// not offered.
+func makeDefaultControl(sess SessionView, current int64) g.Node {
 	if sess.IsDefault || sess.DefaultPath == "" {
 		return nil
 	}
+	path := sess.DefaultPath + "?" + ChatSurfaceQueryParam + "=" + string(ChatSurfaceChiefPanel)
+	if current > 0 {
+		path = withCurrent(path, current)
+	}
 	return Form(
-		hx("hx-post", sess.DefaultPath+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
+		hx("hx-post", path),
 		hx("hx-target", "#"+chiefPanelBodyID),
 		hx("hx-swap", "innerHTML"),
 		Class("contents"),
 		Button(
 			Type("submit"),
 			g.Attr(makeDefaultAttr, ""),
-			g.Attr("title", "Send plugin messages and chief ask to this thread"),
+			g.Attr("title", "Make this the primary chat: every delivery to the chief goes here"),
 			Class("press shrink-0 rounded-lg px-2 text-[11px] text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg"),
-			g.Text("Make default"),
+			g.Text("Make primary"),
 		),
 	)
 }
@@ -92,42 +91,9 @@ func makeDefaultControl(sess SessionView) g.Node {
 // form per offered runtime, each posting runtime + model to the session-create
 // route, whose panel answer re-renders the panel on the new session.
 func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
-	if len(runtimes) == 0 {
+	forms := runtimeModelForms(runtimes, claudeModels, agentSessionsPath(agentID), newSessionAttr, "Start")
+	if len(forms) == 0 {
 		return nil
-	}
-	forms := make([]g.Node, 0, len(runtimes))
-	for _, rt := range runtimes {
-		var model g.Node
-		switch rt.Runtime {
-		case "claude-code":
-			opts := make([]g.Node, 0, len(claudeModels))
-			for _, m := range claudeModels {
-				opts = append(opts, Option(Value(m), g.Text(m)))
-			}
-			model = Select(
-				Name("model"),
-				g.Attr("aria-label", rt.Label+" model"),
-				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
-				g.Group(opts),
-			)
-		default:
-			model = Div(Class("min-w-0 flex-1"), sessionModelCombobox(rt.Label+" model"))
-		}
-		forms = append(forms, Form(
-			g.Attr(newSessionAttr, rt.Runtime),
-			hx("hx-post", agentSessionsPath(agentID)+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
-			hx("hx-target", "#"+chiefPanelBodyID),
-			hx("hx-swap", "innerHTML"),
-			Class("flex items-center gap-2"),
-			Input(Type("hidden"), Name("runtime"), Value(rt.Runtime)),
-			Span(Class("w-20 shrink-0 text-xs text-fg2"), g.Text(rt.Label)),
-			model,
-			Button(
-				Type("submit"),
-				Class("press min-h-[40px] shrink-0 rounded-lg bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90"),
-				g.Text("Start"),
-			),
-		))
 	}
 	return Div(
 		g.Attr(sessionPickerAttr, ""),
@@ -137,41 +103,50 @@ func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeM
 	)
 }
 
-// sessionModelCombobox is the OpenRouter model search for a new session: the
-// shared combobox component (data-combobox, appScript) with the panel's own
-// ids, seeded with the curated models — minus "the cluster default", which is
-// not a model a session can be pinned to.
-func sessionModelCombobox(label string) g.Node {
-	var seeded []g.Node
-	for _, m := range curatedModels() {
-		if m.Value == "" {
+// runtimeModelForms is THE runtime + model form, one per offered runtime, for
+// both pickers that start a session on a runtime and a model: New session
+// (chiefNewSessionPicker) and Continue in a new session (chiefContinuePicker).
+// Each form posts runtime + model to path, answered into the panel body
+// (ChatSurfaceChiefPanel); formAttr (valued with the runtime) marks it, button
+// labels its submit, and extra adds attributes to the form (a confirm, say).
+// The form's controls are disabled while its request runs (hx-disabled-elt).
+//
+// 🔴 ONE BUILDER, so the two pickers cannot offer different runtimes or models:
+// a session is continued on exactly what New session would start.
+func runtimeModelForms(runtimes []SessionRuntimeView, claudeModels []string, path, formAttr, button string, extra ...g.Node) []g.Node {
+	var forms []g.Node
+	for _, rt := range runtimes {
+		// claude-code is the one session runtime (agents.SessionRuntimes): its
+		// model is one of the Claude aliases.
+		if rt.Runtime != "claude-code" {
 			continue
 		}
-		seeded = append(seeded, seededComboOption(ComboOption{Value: m.Value, Label: m.Label}))
+		opts := make([]g.Node, 0, len(claudeModels))
+		for _, m := range claudeModels {
+			opts = append(opts, Option(Value(m), g.Text(m)))
+		}
+		forms = append(forms, Form(
+			g.Attr(formAttr, rt.Runtime),
+			hx("hx-post", path+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
+			hx("hx-target", "#"+chiefPanelBodyID),
+			hx("hx-swap", "innerHTML"),
+			g.Group(extra),
+			hx("hx-disabled-elt", "find button, find select"),
+			Class("flex items-center gap-2"),
+			Input(Type("hidden"), Name("runtime"), Value(rt.Runtime)),
+			Span(Class("w-20 shrink-0 text-xs text-fg2"), g.Text(rt.Label)),
+			Select(
+				Name("model"),
+				g.Attr("aria-label", rt.Label+" model"),
+				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60"),
+				g.Group(opts),
+			),
+			Button(
+				Type("submit"),
+				Class("press min-h-[40px] shrink-0 rounded-lg bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90 disabled:opacity-60"),
+				g.Text(button),
+			),
+		))
 	}
-	return Div(
-		g.Attr("data-combobox", ""),
-		g.Attr("data-combobox-remote", "/api/openrouter/models"),
-		Class("relative"),
-		Input(Type("hidden"), Name("model"), g.Attr("data-combobox-hidden", "")),
-		Input(
-			Type("text"),
-			ID(sessionModelInputID),
-			g.Attr("data-combobox-input", ""),
-			g.Attr("role", "combobox"),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-controls", sessionModelListID),
-			g.Attr("aria-label", label),
-			g.Attr("autocomplete", "off"),
-			Placeholder("Search OpenRouter models…"),
-			Class("min-h-[40px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-		),
-		Ul(
-			ID(sessionModelListID),
-			g.Attr("data-combobox-list", ""),
-			g.Attr("role", "listbox"),
-			Class("hidden absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-s1 py-1 shadow-2xl ring-1 ring-line"),
-			g.Group(seeded),
-		),
-	)
+	return forms
 }

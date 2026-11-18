@@ -51,13 +51,17 @@ var accountsReset = []string{
 	`DELETE FROM agents WHERE owner_id <> 1`,
 	`DELETE FROM connectors WHERE owner_id <> 1`,
 	`DELETE FROM notes WHERE owner_id <> 1`,
-	`DELETE FROM github_connection WHERE owner_id <> 1`,
 	`DELETE FROM mirror_tokens WHERE owner_id <> 1`,
 	`DELETE FROM flow_requests WHERE owner_id <> 1`,
 	`DELETE FROM flow_jobs WHERE owner_id <> 1`,
 	`DELETE FROM flow_runner_tokens WHERE owner_id <> 1`,
-	// Plugins (0015): a member's plugin cascades to its messages and drafts.
+	// Plugins (0015): a member's plugin cascades to its messages, drafts and
+	// routing rules (0107).
 	`DELETE FROM plugins WHERE owner_id <> 1`,
+	// The chief's telemetry (0107): owned rows naming no plugin, so they do not
+	// cascade, and a member's would block the member's delete.
+	`DELETE FROM chief_turn_usage WHERE owner_id <> 1`,
+	`DELETE FROM plugin_message_handling WHERE owner_id <> 1`,
 	`DELETE FROM audit_log`,
 	`DELETE FROM invites`,
 	// Personal API tokens (accounts PR 6) reference users, so they go BEFORE
@@ -68,6 +72,10 @@ var accountsReset = []string{
 	// otherwise block the member's delete (push_subscriptions_owner_id_fkey).
 	`DELETE FROM push_subscriptions`,
 	`DELETE FROM push_preferences`,
+	// Teams (0126): a team is a users row, and its memberships reference it and
+	// its members (team_members_team_id_fkey) — cls.spec makes one for the team
+	// page, and it must go before the users do.
+	`DELETE FROM team_members`,
 	`DELETE FROM users WHERE id <> 1`,
 	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 }
@@ -111,8 +119,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect for reset: %w", err)
 	}
-	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit,
-		flow_jobs, flow_runner_tokens, flow_requests, plugins RESTART IDENTITY CASCADE`)
+	// The chief's telemetry (0107) goes with the plugins: its rows name
+	// plugin messages by id, and RESTART IDENTITY hands those ids out again.
+	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_standing_grants, connector_audit,
+		flow_jobs, flow_runner_tokens, flow_requests, plugins, chief_turn_usage, plugin_message_handling RESTART IDENTITY CASCADE`)
 	if err == nil {
 		// The accounts state the gotrue specs change: the admin claim binds
 		// user 1 to a GoTrue login and the invites spec creates members, which

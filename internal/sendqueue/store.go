@@ -15,15 +15,18 @@
 // delivery, which acts as that row's owner.
 //
 // 🔴 A MESSAGE IS CLAIMED ONCE AND NEVER RETRIED AFTER ANYTHING REACHED THE
-// HOST. Claim moves a row from queued to sending in one conditional UPDATE: a
-// send that fails is failed, and a process that dies mid-send leaves a row that
-// Recover marks failed (may have been delivered) once its claim's lease has
-// expired. The ONE way back to queued is a send the hub refused as superseded
+// HOST — BUT ONE IT REACHED THAT CLAUDE CODE PROVABLY REJECTED. Claim moves a
+// row from queued to sending in one conditional UPDATE: a send that fails is
+// failed, and a process that dies mid-send leaves a row that Recover marks
+// failed (may have been delivered) once its claim's lease has expired. The ONE
+// way back to queued is a send the hub refused as superseded
 // (Outcome.Superseded: another paste got into the window between the decision
 // and the paste), which by construction wrote nothing to the host. A message is
-// never pasted twice by the queue on its own: a failed row stays failed, and a
-// person's Retry (PGStore.Retry) queues its text again as a NEW row — its own
-// id, so its own delivery nonce — once per failed row.
+// never pasted twice by the queue on its own: a failed row stays failed — a
+// SENT row a usage limit bounced is failed too (Reject; limit.go), never
+// re-sent automatically — and a person's Retry (PGStore.Retry) queues its text
+// again as a NEW row — its own id, so its own delivery nonce — once per failed
+// row.
 //
 // 🔴 A CLAIM IS A LEASE, HELD BY ONE INSTANCE. Claim records the claiming
 // dispatcher (claimed_by) and lease_until, Renew extends it while the send
@@ -45,6 +48,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // State is where a queued message is.
@@ -95,6 +99,15 @@ type Target struct {
 	Host    string
 	Session string
 	Window  string
+	// Owner is WHOSE queue a caller's call addresses (team sharing 2b.4): 0 is
+	// the caller's own (muster.uid), a team's id is that team's (row-level
+	// security then decides whether the caller may: read at viewer, write at
+	// operator). 🔴 EVERY TARGET-SCOPED QUERY PINS IT (targetWhere): since
+	// 0127 a member's principal reads their teams' rows too, and a team's
+	// build-01 shares its host NAME with the member's own, so a query by
+	// address alone mixed the two queues. A scanned row's owner is
+	// Item.Owner; a scan leaves this 0.
+	Owner int64
 }
 
 // Valid reports whether t is a target the table can hold.
@@ -118,10 +131,23 @@ func (t Target) String() string {
 
 // Item is one queued message.
 type Item struct {
-	ID     int64
-	Owner  int64
-	Target Target
-	Body   string
+	ID    int64
+	Owner int64
+	// QueuedBy is the person who queued it (send_queue.queued_by, 0127: the
+	// acting principal's muster.uid, forced by its trigger): the owner on a
+	// person's own row, the member on a team's, the team itself on a row the
+	// team queued as itself. 0 for a row the system scope wrote, or one
+	// written before 0127 — read as the owner's own (Queuer).
+	QueuedBy int64
+	Target   Target
+	Body     string
+	// AgentSession is the agent session the message was queued for (migration
+	// 0106): the one the page showed for an opencode pane, or the Claude Code
+	// session a Claude window held when it was queued (internal/api's
+	// queuedForSession). It is delivered only while the window still holds
+	// that session (mirror.ShownSession, Window.ShownSessionRefusal). "" for
+	// none (an older row, a host that reports no session): delivered as before.
+	AgentSession string
 	// StepUpAt is the sign-in time of the session that queued the message (the
 	// step-up decision, recorded). It was inside the step-up window when the
 	// message was queued (the queue route's gate); the delivery checks that
@@ -151,6 +177,18 @@ type Item struct {
 	// session_routes): "" for a person's. Its delivery is gated on the route,
 	// not on a sign-in (internal/api's sendQueueSend).
 	RouteID string
+	// ChiefNudgeID marks a message the CHIEF NUDGE sweep queued — a labelled
+	// nudge or the owner's relayed answer (migration 0064, internal/chiefnudge):
+	// 0 for any other. Like RouteID it is gated on its origin, not on a sign-in
+	// (internal/api's sendQueueNudgeGate), and is never edited or retried. A row
+	// never carries both (0064's send_queue_one_origin).
+	ChiefNudgeID int64
+	// ChiefForwardDispatch marks a CHIEF FORWARD into a host-spawned window
+	// (migration 0093; internal/api's toolTaskForward, its only writer): the
+	// host dispatch it is for, 0 for any other row. Gated on that dispatch at
+	// delivery (sendQueueChiefForwardGate), pasted with mirror.ForDispatch so the
+	// host checks the window's own tag, and never edited or retried.
+	ChiefForwardDispatch int64
 	// RetriedAs is, on a failed row that was retried, the row its Retry queued
 	// (0: not retried). A row is retried at most once (Retry).
 	RetriedAs int64
@@ -190,9 +228,16 @@ const MaxOpenPerTarget = 20
 // MaxDetail bounds an outcome's detail (0019's send_queue_detail_cap).
 const MaxDetail = 1024
 
-// HistoryShown is how many finished messages List returns beside the open
-// ones: the recent outcomes a composer shows under its queue.
-const HistoryShown = 5
+// FailedShown bounds the failed messages List returns beside the open ones:
+// the FailedShown most recent of a person's own failures not yet retried,
+// newest first. A sent or cancelled message is never listed — it has been
+// handled — nor a routed message or a chief nudge that failed (its outcome
+// goes back to the chief, which is its handling). A person's own failure is
+// listed until they Retry or Delete it, or Prune deletes it Retention after it
+// failed, and only the newest FailedShown of them; an older one beyond that is
+// not shown. The bound is the open bound's size (TestFailedShownCoversAWholeQueue),
+// so a whole queue that failed is shown whole.
+const FailedShown = MaxOpenPerTarget
 
 var (
 	// ErrFull refuses a message past MaxOpenPerTarget.
@@ -216,6 +261,10 @@ var (
 	// the person's own, with no route and no session binding. It is an
 	// ErrNotRetryable (errors.Is), so a caller that maps that one maps this.
 	ErrRoutedNotRetryable = fmt.Errorf("%w: a message your chief routed is not retried here; its failed route goes back to the chief", ErrNotRetryable)
+	// ErrNudgeNotRetryable: the message is a chief nudge or a relayed answer
+	// (ChiefNudgeID). Requeued as the person's own it would lose the decision
+	// its delivery is gated on. An ErrNotRetryable (errors.Is).
+	ErrNudgeNotRetryable = fmt.Errorf("%w: a chief nudge is not retried here", ErrNotRetryable)
 )
 
 // PGStore is the queue on Postgres.
@@ -237,14 +286,25 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
 	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
-	coalesce(edit_stepup_at, 'epoch'::timestamptz)`
+	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0), coalesce(agent_session, ''),
+	coalesce(queued_by, 0)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
 		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
-		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt}
+		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID, &it.ChiefForwardDispatch, &it.AgentSession,
+		&it.QueuedBy}
+}
+
+// Queuer is who queued it: QueuedBy, or — a row the system scope wrote, or
+// one from before 0127 — its owner.
+func (it Item) Queuer() int64 {
+	if it.QueuedBy > 0 {
+		return it.QueuedBy
+	}
+	return it.Owner
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -267,16 +327,25 @@ func scanItem(row pgx.Row) (Item, error) {
 }
 
 // targetWhere is the SQL predicate "this row is target t's", with t's
-// parameters numbered from n.
+// parameters numbered from n: its address AND its owner (Target.Owner; 0 the
+// caller's own, muster.uid). Under the system scope muster.uid is unset, so a
+// target with no Owner matches nothing there: name one.
 func targetWhere(t Target, n int) (string, []any) {
-	return fmt.Sprintf(`mirror_host = $%d AND mirror_session = $%d AND mirror_window = $%d`, n, n+1, n+2),
-		[]any{t.Host, t.Session, t.Window}
+	return fmt.Sprintf(`mirror_host = $%d AND mirror_session = $%d AND mirror_window = $%d AND owner_id = %s`, n, n+1, n+2, ownerSQL(n+3)),
+		[]any{t.Host, t.Session, t.Window, t.Owner}
+}
+
+// ownerSQL is "the owner parameter $n names": that id, or for 0 the caller's
+// own (muster.uid).
+func ownerSQL(n int) string {
+	return fmt.Sprintf(`coalesce(nullif($%d::bigint, 0), nullif(current_setting('muster.uid', true), '')::bigint)`, n)
 }
 
 // Enqueue queues it for its target, as the caller, and returns the stored row.
 // Only its Target, Body, StepUpAt, AfterSince (the status time the window
-// held at its latest paste, as the hub knows it; 0 for none) and RouteID (a
-// routed message's route, "" for a person's) are read.
+// held at its latest paste, as the hub knows it; 0 for none), RouteID (a
+// routed message's route, "" for a person's) and ChiefNudgeID (a chief
+// nudge's decision, 0 for none) are read.
 //
 // The per-target bound is checked AFTER the insert, in the same transaction,
 // serialised per owner by an advisory lock, so two concurrent messages cannot
@@ -311,13 +380,30 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 		// sign-in time that admitted it could never be sent.
 		return Item{}, errors.New("sendqueue: a queued message needs the sign-in time of the session that queued it")
 	}
+	// Serialised per OWNER of the queue (a team's members queue into one).
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sendqueue.enqueue'),
-		coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
+		coalesce(`+ownerSQL(1)+`, 0)::int)`, it.Target.Owner); err != nil {
 		return Item{}, fmt.Errorf("sendqueue: lock: %w", err)
 	}
-	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id)
-		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, '')) RETURNING `+cols,
-		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID))
+	var nudge, forward any
+	if it.ChiefNudgeID > 0 {
+		nudge = it.ChiefNudgeID
+	}
+	if it.ChiefForwardDispatch > 0 {
+		forward = it.ChiefForwardDispatch
+	}
+	if it.MusterOrigins() > 1 {
+		return Item{}, errors.New("sendqueue: a row has at most one origin (a route, a chief nudge or a chief forward)")
+	}
+	if it.AgentSession != "" && !mirror.ValidAgentSession(it.AgentSession) {
+		return Item{}, errors.New("sendqueue: not an agent session id")
+	}
+	// owner_id: the target's owner (a team the caller operates: row-level
+	// security's insert arm refuses any other), else the caller's own.
+	// queued_by is the caller whatever this writes (0127's actor trigger).
+	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id, chief_forward_dispatch, agent_session)
+		VALUES (`+ownerSQL(11)+`, $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9, nullif($10, '')) RETURNING `+cols,
+		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge, forward, it.AgentSession, it.Target.Owner))
 	if err != nil {
 		return Item{}, fmt.Errorf("sendqueue: enqueue: %w", err)
 	}
@@ -364,7 +450,14 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 		if old.RouteID != "" {
 			return ErrRoutedNotRetryable
 		}
-		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince})
+		if old.ChiefNudgeID != 0 || old.ChiefForwardDispatch != 0 {
+			return ErrNudgeNotRetryable
+		}
+		// The same queue it failed in: a team's row is retried into the
+		// team's queue, never the retrier's own window of the same name.
+		t := old.Target
+		t.Owner = old.Owner
+		out, err = s.enqueueTx(ctx, tx, Item{Target: t, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince, AgentSession: old.AgentSession})
 		if err != nil {
 			return err
 		}
@@ -382,8 +475,12 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 	return out, nil
 }
 
-// List is the caller's messages for t: every open one, oldest first, then
-// the HistoryShown most recently finished, newest first.
+// List is the caller's messages for t that still need something: every open
+// one (queued or being sent), oldest first, then the FailedShown most recently
+// failed of the person's own (no route, no chief nudge) that were not
+// retried, newest first. A sent or cancelled message is not listed, nor a
+// failed one already retried (its retry row, a new message of its own, carries
+// it), nor a failed routed message or chief nudge (handed back to the chief).
 func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	if err := t.Valid(); err != nil {
 		return nil, err
@@ -391,8 +488,9 @@ func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	where, args := targetWhere(t, 1)
 	rows, err := s.pool.Query(ctx, `(SELECT `+cols+`, 0 AS part FROM send_queue WHERE state IN ('queued', 'sending') AND `+where+`)
 		UNION ALL
-		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state NOT IN ('queued', 'sending') AND `+where+`
-			ORDER BY finished_at DESC, id DESC LIMIT `+fmt.Sprint(HistoryShown)+`)
+		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state = 'failed' AND retried_as IS NULL
+			AND NOT `+musterOriginSQL+` AND `+where+`
+			ORDER BY finished_at DESC, id DESC LIMIT `+fmt.Sprint(FailedShown)+`)
 		ORDER BY part, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sendqueue: list: %w", err)
@@ -486,10 +584,12 @@ func (s *PGStore) Delete(ctx context.Context, id int64) error {
 			return ErrNotDeletable
 		}
 		if it.HoldsTurn() && it.AfterSince > 0 {
-			where, args := targetWhere(it.Target, 3)
+			t := it.Target
+			t.Owner = it.Owner
+			where, args := targetWhere(t, 2)
 			if _, err := tx.Exec(ctx, `UPDATE send_queue SET after_since = $1
-				WHERE owner_id = $2 AND state IN ('queued', 'sending') AND after_since < $1 AND `+where,
-				append([]any{it.AfterSince, it.Owner}, args...)...); err != nil {
+				WHERE state IN ('queued', 'sending') AND after_since < $1 AND `+where,
+				append([]any{it.AfterSince}, args...)...); err != nil {
 				return fmt.Errorf("sendqueue: delete: carry the turn: %w", err)
 			}
 		}
@@ -529,6 +629,69 @@ func (s *PGStore) NotePaste(ctx context.Context, t Target, since int64) error {
 	return nil
 }
 
+// SentBody is one message muster pasted into a window (SentBodies): its text
+// and its origin — a routed message (RouteID), a chief nudge or relayed answer
+// (ChiefNudgeID), or neither: the person's own, from their send queue.
+type SentBody struct {
+	Body         string
+	RouteID      string
+	ChiefNudgeID int64
+	// ChiefForwardDispatch is the host dispatch a chief forward was for.
+	ChiefForwardDispatch int64
+}
+
+// SentBodies is every message the caller's send queue SENT into window t (or
+// into its session's active window, a row with no window) since since, newest
+// first, at most limit. The ask log reads it to say what muster can prove of a
+// reply in a transcript: a body muster pasted, and for whom (internal/api
+// askLogProvenance).
+func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, limit int) ([]SentBody, error) {
+	if err := t.Valid(); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0) FROM send_queue
+		WHERE state = 'sent' AND mirror_host = $1 AND mirror_session = $2 AND (mirror_window = $3 OR mirror_window = '')
+		AND created_at >= $4 AND owner_id = `+ownerSQL(6)+` ORDER BY id DESC LIMIT $5`, t.Host, t.Session, t.Window, since, limit, t.Owner)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: sent bodies: %w", err)
+	}
+	defer rows.Close()
+	var out []SentBody
+	for rows.Next() {
+		var b SentBody
+		if err := rows.Scan(&b.Body, &b.RouteID, &b.ChiefNudgeID, &b.ChiefForwardDispatch); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// InjectedBodies is the text of every message muster itself queued for the
+// caller's windows since since — a routed message (RouteID), a chief nudge
+// or relayed answer (ChiefNudgeID), or a chief forward into a host-spawned
+// window (ChiefForwardDispatch), whatever became of it — newest first, at
+// most limit. A queued message lands in Claude Code's transcript as an
+// ordinary user prompt; the chief nudge sweep reads this to tell those apart
+// from the owner's own words.
+func (s *PGStore) InjectedBodies(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT body FROM send_queue WHERE `+musterOriginSQL+`
+		AND created_at >= $1 ORDER BY id DESC LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: injected bodies: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // CancelOwner cancels every message user owner still has queued, saying why
 // (detail): the account was disabled, or signed out everywhere. A message
 // already being sent is past cancelling; its delivery re-checks the account.
@@ -540,6 +703,40 @@ func (s *PGStore) CancelOwner(ctx context.Context, owner int64, now time.Time, d
 		return 0, fmt.Errorf("sendqueue: cancel owner: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// CancelQueuedBy cancels every message user QUEUED into a team's queue that
+// is still queued — team's only, or (team 0) every team's — saying why
+// (detail): the sibling of CancelOwner for the rows a person queued but does
+// not own (team sharing 2b.4). A disable and a sign-out everywhere call it
+// with team 0, as they call CancelOwner; a removal from a team or a drop to
+// viewer cancels that team's in its own transaction (internal/users,
+// CancelQueuedByTx: the one statement). Under the system scope.
+func (s *PGStore) CancelQueuedBy(ctx context.Context, team, user int64, now time.Time, detail string) (int, error) {
+	var n int64
+	err := pgx.BeginFunc(sys(ctx), s.pool, func(tx pgx.Tx) error {
+		var err error
+		n, err = users.CancelQueuedByTx(sys(ctx), tx, team, user, now, clampDetail(detail))
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sendqueue: cancel queued by: %w", err)
+	}
+	return int(n), nil
+}
+
+// CancelUser cancels everything user still has queued, saying why (detail):
+// their own rows (CancelOwner) and what they queued into every team's windows
+// (CancelQueuedBy, team 0). THE one call a disable and a sign-out everywhere
+// make — the server's and the CLI's — so no path cancels half. Under the
+// system scope.
+func (s *PGStore) CancelUser(ctx context.Context, user int64, now time.Time, detail string) (int, error) {
+	n, err := s.CancelOwner(ctx, user, now, detail)
+	if err != nil {
+		return 0, err
+	}
+	m, err := s.CancelQueuedBy(ctx, 0, user, now, detail)
+	return n + m, err
 }
 
 // clampDetail is detail cut to MaxDetail on a character boundary.
@@ -734,10 +931,13 @@ type Outcome struct {
 	// the window (or its status moved) after the decision (mirror.ErrSuperseded).
 	// NOTHING reached the host, so the row goes back to queued — the one way
 	// back — waiting behind AfterSince (the window's Pasted at the refusal).
+	// internal/api's chief-nudge gate uses the same way back, with AfterSince
+	// 0, for a row whose session state could not be read (SendQueueNudgeWait).
 	Superseded bool
 	AfterSince int64
-	// Pasted: the text was pasted into Hermes's input box and Enter withheld
-	// (the host's gated send): not submitted, and not to be resent blindly.
+	// Pasted: the text was pasted into the agent's input box and Enter
+	// withheld (the Claude prompt guard): not submitted, and not to be resent
+	// blindly.
 	Pasted bool
 }
 
@@ -780,8 +980,53 @@ func (s *PGStore) Finish(ctx context.Context, id int64, by string, o Outcome, no
 	return nil
 }
 
-// Retention is how long a finished message is kept (its outcome is shown
-// under the composer) before Prune deletes it.
+// RecentSent is, for every target of every owner whose most recently CLAIMED
+// message was claimed after `after`, that message — when it is sent. What
+// the dispatcher checks for a usage limit's bounce (rejectBounced): only a
+// target's latest send can be the one its latest turn answered, and it has to
+// be found whether or not anything else is still queued for the target (a
+// Heads pass sees only targets with an open row).
+func (s *PGStore) RecentSent(ctx context.Context, after time.Time) ([]Item, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT `+cols+` FROM (
+			SELECT DISTINCT ON (owner_id, mirror_host, mirror_session, mirror_window) *
+			FROM send_queue WHERE claimed_at > $1
+			ORDER BY owner_id, mirror_host, mirror_session, mirror_window, claimed_at DESC, id DESC
+		) latest WHERE state = 'sent' ORDER BY id`, after)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: recent sent: %w", err)
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var it Item
+		var state string
+		if err := rows.Scan(itemDests(&it, &state)...); err != nil {
+			return nil, fmt.Errorf("sendqueue: recent sent: %w", err)
+		}
+		settle(&it, state)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// Reject marks SENT message id failed because a usage limit bounced it before
+// Claude Code worked on it (limit.go): not delivered, detail saying why. It is
+// then an ordinary failed row — its Retry (PGStore.Retry) queues the text again
+// as a new row, by hand; nothing re-sends it on its own. Its after_since (the
+// status time it was pasted on) is kept, so the next message still waits for a
+// newer one. false when the row is no longer sent: one Reject per send,
+// whoever else tries.
+func (s *PGStore) Reject(ctx context.Context, id int64, detail string) (bool, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'failed', detail = $2, may_have_delivered = false
+		WHERE id = $1 AND state = 'sent'`, id, clampDetail(detail))
+	if err != nil {
+		return false, fmt.Errorf("sendqueue: reject: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// Retention is how long a finished message is kept (a person's own failure is
+// listed under the composer, List) before Prune deletes it.
 const Retention = 7 * 24 * time.Hour
 
 // Prune deletes every message that finished before before.
@@ -792,3 +1037,30 @@ func (s *PGStore) Prune(ctx context.Context, before time.Time) (int, error) {
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// musterOriginSQL is MusterOrigin in SQL: a row of muster's own (a route, a
+// chief nudge, a chief forward). THE one SQL statement of it, for every query
+// that tells muster's messages from a person's.
+const musterOriginSQL = `(route_id IS NOT NULL OR chief_nudge_id IS NOT NULL OR chief_forward_dispatch IS NOT NULL)`
+
+// MusterOrigins is how many of muster's own origins it carries (a route, a
+// chief nudge, a chief forward): 0 for a person's message. THE predicate every
+// "a person's own message" check reads (MusterOrigin), so a new origin cannot
+// be missed at one of them.
+func (it Item) MusterOrigins() int {
+	n := 0
+	if it.RouteID != "" {
+		n++
+	}
+	if it.ChiefNudgeID != 0 {
+		n++
+	}
+	if it.ChiefForwardDispatch != 0 {
+		n++
+	}
+	return n
+}
+
+// MusterOrigin reports whether it is muster's own message (routed, a nudge, a
+// forward), never the person's: never edited and never retried.
+func (it Item) MusterOrigin() bool { return it.MusterOrigins() > 0 }

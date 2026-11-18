@@ -53,8 +53,8 @@ const (
 	// ViaSession is the human browser tier: requireSession (and
 	// requireOperatorWrite, which wraps it).
 	ViaSession Via = "session"
-	// ViaHook is the shared machine hook token: requireHookToken,
-	// requireArmedHookToken, and the hook branch of requireHookOrServiceToken.
+	// ViaHook is the shared machine hook token: requireHookToken (which
+	// requireArmedHookToken is), and the hook branch of requireHookOrServiceToken.
 	ViaHook Via = "hook"
 	// ViaService is MUSTER_SERVICE_TOKEN plus an asserted X-Muster-Actor:
 	// requireServiceToken and the service branch of requireHookOrServiceToken.
@@ -86,7 +86,8 @@ const (
 	// ViaQueue is the SERVER-SIDE SEND QUEUE's dispatcher probing the window
 	// and delivering a message its owner queued from a signed-in session
 	// earlier (internal/sendqueue): the deferred end of that owner's own
-	// request, acting as the OWNER only. One site mints it — internal/api's
+	// request, acting as the OWNER only — for a team's row the team acting
+	// principal (team sharing 2b.4; teamActingVias). One site mints it — internal/api's
 	// queuedPrincipal, called only by the dispatcher — and it is a request door
 	// in the sense that matters here: one user, never everybody.
 	ViaQueue Via = "send-queue"
@@ -101,7 +102,8 @@ const (
 	// timing a route out and handing its message back to the chief: a
 	// background job acting as the route's OWNER only. One site mints it —
 	// internal/api's routePrincipal, called only by the sweep, handed each owner
-	// after plugins.PGStore.ExpiredRoutes read the due routes under System.
+	// after plugins.PGStore.ExpiredRoutes (or RoutedPastes) read the routes
+	// under System.
 	ViaRoute Via = "session-route"
 	// ViaAttention is the ATTENTION QUEUE's background work acting as one
 	// owner: reading that owner's mirrored windows to see which became (or
@@ -114,10 +116,43 @@ const (
 	ViaAttention Via = "attention"
 	// ViaAsk is the AskUserQuestion watcher (internal/api's question watch)
 	// acting as one owner: reading that owner's mirrored window's transcript
-	// for how a question it shows was answered. One site mints it —
-	// internal/api's askPrincipal — handed the owner of the question its host's
-	// hook registered.
+	// for how a question it shows was answered — or, the open-question scan,
+	// for a question a waiting window still shows open. One site mints it —
+	// internal/api's askPrincipal — handed the owner of a registered question,
+	// or the owner the mirror hub's nudge named.
 	ViaAsk Via = "ask"
+	// ViaReap is the STOPPED-AGENT REAPER (internal/api's reapStoppedAgents)
+	// destroying one owner's agent that has been stopped for
+	// MUSTER_AGENT_REAP_STOPPED_AFTER: a background job acting as the agent's
+	// OWNER only, through the same teardown the owner's own Delete takes. One
+	// site mints it — internal/api's reapPrincipal — handed each owner after
+	// agents.PGStore.ListReapableStopped read the due rows under System.
+	ViaReap Via = "agent-reap"
+	// ViaOfficer is the OFFICER RUNTIME's wake loop (internal/officers, bound
+	// in internal/api's officer fleet) reading, creating, starting and
+	// stopping one declared officer's instance agents: a background job acting
+	// as the officer's configured OWNER only. One site mints it —
+	// internal/api's officerPrincipal — handed the owner from MUSTER_OFFICERS.
+	// That owner may be a TEAM (team sharing phase 3): the principal is then
+	// the team acting principal (teamActingVias).
+	ViaOfficer Via = "officer"
+	// ViaKickoff is the KICKOFF DELIVERER (internal/agentkickoff) running a
+	// gateway agent's FIRST TURN with its tools in muster's process: each tool
+	// call that turn makes acts as the agent's OWNER only, as the same call in
+	// one of its chat turns does (the owner's session). One site mints it —
+	// internal/api's turnPrincipal, reached only through gatewayTurnTools
+	// (KickoffTurnTools), handed the agent row the deliverer read under System.
+	// 🔴 Never System itself: that would run an agent's tools across every
+	// owner's rows.
+	ViaKickoff Via = "kickoff"
+	// ViaAgentMessage is the MACHINE MESSAGE door (POST
+	// /api/agents/{name}/messages, `chief ask`) running a gateway agent's turn
+	// with its tools in muster's process: each tool call that turn makes acts
+	// as the agent's OWNER only — never as the request's own principal, which
+	// for the shared hook token is the operator, whoever owns the agent. One
+	// site mints it — internal/api's turnPrincipal, reached only through
+	// gatewayTurnTools (handleAPIAgentSendMessage's gatewayTurn).
+	ViaAgentMessage Via = "agent-message"
 	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
 	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
 	// through the host's muster-mirror, acting as the token's owner — and only
@@ -128,6 +163,30 @@ const (
 	// It acts as the device's OWNER, so row-level security confines the device
 	// to that owner's rows.
 	ViaDevice Via = "device"
+	// ViaHostDispatch is the HOST-DISPATCH RECONCILER (internal/api's
+	// host_dispatch_reconcile.go) moving one owner's host_dispatches rows on a
+	// spawn reply, a listing or its sweep: a background job acting as the row's
+	// OWNER only. One site mints it — internal/api's hostDispatchPrincipal.
+	ViaHostDispatch Via = "host-dispatch"
+	// ViaJobQueue is the MACHINE JOB QUEUE's runner (internal/api's job drain)
+	// running a job that no request of this process is holding — one a crashed
+	// or restarted server left queued — as the job's OWNER only, never as
+	// everybody. One site mints it — internal/api's jobPrincipal — handed the
+	// owner of a head jobs.PGStore.Heads read under System.
+	ViaJobQueue Via = "job-queue"
+	// ViaPageLink is a SHARE LINK of a page (internal/pages, migration 0116):
+	// a viewer with no muster account, holding /s/<token>, acting as the
+	// page's OWNER for that one page only — the link's capability, never a
+	// session. internal/api's requirePageLink, on the /s/{token}/* routes.
+	ViaPageLink Via = "page-link"
+	// ViaTeamAdmin is a TEAM MANAGER's lifecycle door (team sharing phase 4,
+	// slice 4.5): a person who manages a team, signed in, stopping, starting,
+	// destroying or rotating the credentials of an agent the TEAM owns, or
+	// provisioning and switching the team's chief (/teams/{id}/chief). The
+	// operation runs AS THE TEAM — its credentials, its budget, its rows — never
+	// on the manager's own. One site mints it — internal/api's teamAdminContext —
+	// after a FRESH read of the person's role says manager of that team.
+	ViaTeamAdmin Via = "team-admin"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -155,9 +214,113 @@ var requestVias = map[Via]bool{
 	// The question watcher, per owner (internal/api's askPrincipal). Without it
 	// the first watch PANICS here.
 	ViaAsk: true,
+	// The stopped-agent reaper, per owner (internal/api's reapPrincipal).
+	// Without it the first reap PANICS here.
+	ViaReap: true,
+	// The officer wake loop, per officer owner (internal/api's
+	// officerPrincipal). Without it the first wake PANICS here.
+	ViaOfficer: true,
+	// A gateway agent's first turn's tools, as its owner (internal/api's
+	// turnPrincipal). Without it the first tool-enabled kickoff PANICS here.
+	ViaKickoff: true,
+	// A gateway agent's machine-message turn's tools, as its owner
+	// (internal/api's turnPrincipal). Without it the first such turn PANICS here.
+	ViaAgentMessage: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 	ViaDevice:     true,
+	// The host-dispatch reconciler, per owner (internal/api's
+	// hostDispatchPrincipal). Without it the first spawn reply PANICS here.
+	ViaHostDispatch: true,
+	// The job queue's runner, per job owner (internal/api's jobPrincipal).
+	// Without it the first job left queued by a restart PANICS here.
+	ViaJobQueue: true,
+	// A page's share link (internal/api's requirePageLink).
+	ViaPageLink: true,
+	// A team manager's lifecycle door (internal/api's teamAdminContext).
+	ViaTeamAdmin: true,
+}
+
+// teamActingVias is the closed set of doors through which a principal may
+// name a TEAM (Principal.Team): the TEAM ACTING PRINCIPAL of
+// docs/design/team-sharing.md — {UserID: team, Team: true, Role: member,
+// Teams: ""} — so muster.uid is the team, muster.teams is empty and the
+// scope is never "all". Nobody signs in as a team; these are the doors where
+// something the TEAM owns acts as its owner:
+//
+//   - a team-owned agent's own token (ViaAgent, ViaConnect, ViaRelay — the
+//     team is the agent row's owner, never a sign-in; internal/api's admit
+//     admits a team on these three and on a team host's token, below);
+//   - the per-owner background work that meets a team-owned row (ViaReap,
+//     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue);
+//   - a TEAM OFFICER's runtime (ViaOfficer, team sharing phase 3): an officer
+//     whose MUSTER_OFFICERS owner is a team runs its wake loop, its builtin
+//     store and its outbound drafts as the team. It approves none of them —
+//     plugin_reply_drafts' draft_approver trigger (0130) refuses a team
+//     approving its own draft, and internal/api's draftDeciderRefusal says
+//     so first.
+//
+//   - a TEAM MANAGER's door (ViaTeamAdmin, phase 4 slice 4.5): a manager,
+//     after a fresh role read, stops, starts, destroys or rotates the
+//     credentials of a team agent, or provisions the team's chief — as the
+//     team, so the team's credentials are the ones used — and (slice 4.8)
+//     reads and decides the team agents' connector requests, which live in
+//     the personal connector tables the team owns (internal/api's
+//     teamAdminContext, the one site);
+//
+//   - a TEAM HOST (team sharing phase 2b.2): a muster-mirror connected with a
+//     team-owned mirror token. Its POST /mirror/mcp acts as the team
+//     (ViaMirrorHost; internal/api's admit lets a team through there, and
+//     the door serves only teamHostTools to a team token — row-level
+//     security shows the team acting principal EVERY team row, so that
+//     reduced tool set is the whole guard), and the AskUserQuestion watcher
+//     reads the team host's window as the team (ViaAsk, askPrincipal). The
+//     step-up card's runner (stepUpPrincipal, also ViaMirrorHost) refuses a
+//     team itself: a team has no phone, and a team host files no card.
+//     Team sharing 2b.4: the send queue's dispatcher probes and pastes into
+//     a team host's window as the team (ViaQueue, queuedPrincipal); whether
+//     the member who queued the row may still send it is checked from its
+//     queued_by at delivery.
+//
+// A team-owned GATEWAY agent's turn (ViaKickoff, ViaAgentMessage) is NOT in
+// the set: gateway agents are not team agents in phase 4. internal/api's
+// turnPrincipal refuses a team first (the turn goes toolless); this set's
+// panic is the second guard behind it.
+//
+// 🔴 EVERY OTHER DOOR REFUSES A PRINCIPAL THAT CARRIES Team = true
+// (WithPrincipal panics). A person's door (session, device, personal token),
+// a shared machine token, a plugin token outside its team arm, the focus
+// loop — a team principal arriving there is a bug, not a team.
+//
+// ⚠ THE PANIC KEYS ON THE FLAG, NOT ON THE OWNER ID. internal/api's
+// principalFor falls back, when the account cannot be read, to a principal
+// with RoleUncertain and Team = false — it cannot know the kind — and that
+// passes here at any request door. admit refuses it (a retryable 503), but a
+// BACKGROUND site hands it on: there the owner id acts as an ordinary member.
+// Today no team id reaches that fallback: no team-owned agent or task exists
+// before slice 4.5, and the owner reads behind the sites outside this set
+// (focus) are person-only (users.PersonIDs); a team mirror token's door is in
+// it since 2b.2, and admit refuses its unreadable account (a 503) before the
+// question watcher could meet one. For a team id it would still be muster.uid = the
+// team with no memberships — the same rows the team acting principal sees —
+// but the panic above would not fire; a site that must refuse a team on an
+// unreadable account has to check RoleUncertain itself.
+// TestTheTeamActingViasAreExactlyTheListedDoors pins the set.
+var teamActingVias = map[Via]bool{
+	ViaAgent: true, ViaConnect: true, ViaRelay: true,
+	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
+	ViaOfficer:   true,
+	ViaTeamAdmin: true,
+	// Team sharing 2b.2: a team host's MCP door and its question watcher.
+	ViaMirrorHost: true, ViaAsk: true,
+	// Team sharing 2b.3b: a team VIEWER plugin's token, served the hand-off
+	// redeem and /self only (internal/api teamPluginRoutes).
+	ViaPlugin: true,
+	// Team sharing 2b.4: the send queue's dispatcher probing and pasting into
+	// a team host's window AS THE TEAM. Who may still send is decided from
+	// the row's queued_by, on a fresh read, at delivery (internal/api
+	// sendQueueOwnerRefusal), never from the team acting principal.
+	ViaQueue: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the
@@ -177,6 +340,16 @@ type Principal struct {
 	// it is not — connectors.ReconcileGrant refuses to, and the connector door
 	// answers a retryable 503 instead of serving it.
 	RoleUncertain bool
+	// Team is true when UserID names a TEAM (users.kind = 'team',
+	// docs/design/team-sharing.md). A team owns things; nobody signs in as
+	// one. WithPrincipal accepts such a principal only as the TEAM ACTING
+	// PRINCIPAL (role member, no Teams) through one of teamActingVias, and
+	// internal/api's admit answers 403 on every door but an agent's own token.
+	Team bool
+	// Teams is the acting person's team memberships, read with the role (one
+	// read per request, internal/users Account). Phase 1 of team sharing reads
+	// it for nothing: no row a team owns is visible to a member yet.
+	Teams Memberships
 }
 
 // All reports whether this principal acts across every user's rows — true
@@ -203,7 +376,22 @@ type principalKey struct{}
 // row-level security a value that silently selects nobody (or, for a forged
 // ViaSystem, everybody). internal/api's recover middleware turns the panic into
 // a 500 for that one request.
+//
+// A TEAM principal (p.Team) is accepted only as the team acting principal:
+// through a door in teamActingVias, with role member and no Teams of its own
+// (a team is nobody's member, and muster.teams must stay empty for it).
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	if p.Team {
+		if !teamActingVias[p.Via] {
+			panic(fmt.Sprintf("authz: request principal names team %d at door %q; a team never signs in, and that door does not act as a team", p.UserID, p.Via))
+		}
+		if p.Role != RoleMember {
+			panic(fmt.Sprintf("authz: team acting principal %d with role %q; a team acts as a member", p.UserID, p.Role))
+		}
+		if p.Teams != "" {
+			panic(fmt.Sprintf("authz: team acting principal %d carries team memberships %q; it must carry none", p.UserID, p.Teams))
+		}
+	}
 	if p.UserID <= 0 {
 		panic(fmt.Sprintf("authz: request principal with no user (UserID %d)", p.UserID))
 	}

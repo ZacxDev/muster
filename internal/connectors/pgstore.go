@@ -2,9 +2,12 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -63,18 +66,44 @@ func createOwner(ctx context.Context) (int64, error) {
 var errNoOwner = errors.New("connectors: no acting user to own the connector")
 
 const connectorCols = `id, name, platform, hosts, auth_scheme, auth_header, auth_username,
-	created_at, updated_at, rotated_at, last_used_at`
+	created_at, updated_at, rotated_at, last_used_at, settings`
 
 func scanConnector(row pgx.Row) (Connector, error) {
 	var c Connector
 	var scheme string
+	var settings []byte
 	err := row.Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
-		&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt)
+		&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &settings)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Connector{}, ErrNotFound
 	}
+	if err != nil {
+		return Connector{}, err
+	}
 	c.Scheme = Scheme(scheme)
-	return c, err
+	return c, decodeSettings(&c, settings)
+}
+
+// decodeSettings fills a postgres connector's settings from the row's
+// settings column (migration 0067); every other scheme carries '{}'.
+func decodeSettings(c *Connector, raw []byte) error {
+	if c.Scheme != SchemePostgres {
+		return nil
+	}
+	var ps PostgresSettings
+	if err := json.Unmarshal(raw, &ps); err != nil {
+		return fmt.Errorf("connectors: connector %q: settings: %w", c.Name, err)
+	}
+	c.Postgres = &ps
+	return nil
+}
+
+// encodeSettings is the settings column's value for nc.
+func encodeSettings(ps *PostgresSettings) ([]byte, error) {
+	if ps == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(ps)
 }
 
 // ListConnectors returns every connector, by name.
@@ -115,16 +144,27 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 	if err != nil {
 		return Connector{}, err
 	}
+	// 🔴 A DATABASE CONNECTOR IS AN ADMIN'S. muster-server dials whatever host
+	// it names (no private-range rule applies to it unless
+	// MUSTER_DIAL_DENY_PRIVATE=1), so a member could otherwise use muster as a
+	// way into the cluster's network.
+	if nc.Scheme == SchemePostgres && !authz.IsAdmin(ctx) {
+		return Connector{}, fmt.Errorf("%w: only an admin may create a postgres connector", ErrInvalid)
+	}
+	settings, err := encodeSettings(nc.Postgres)
+	if err != nil {
+		return Connector{}, err
+	}
 	ct, err := s.seal.seal(binding{Owner: owner, Name: nc.Name, Hosts: nc.Hosts, Scheme: nc.Scheme, HeaderName: nc.HeaderName,
-		Username: nc.Username}, nc.Secret)
+		Username: nc.Username, Postgres: nc.Postgres}, nc.Secret)
 	if err != nil {
 		return Connector{}, err
 	}
 	c, err := scanConnector(s.pool.QueryRow(ctx, `
-		INSERT INTO connectors (owner_id, name, platform, hosts, auth_scheme, auth_header, auth_username, secret_ciphertext)
-		VALUES ($8, $1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO connectors (owner_id, name, platform, hosts, auth_scheme, auth_header, auth_username, secret_ciphertext, settings)
+		VALUES ($8, $1, $2, $3, $4, $5, $6, $7, $9)
 		RETURNING `+connectorCols,
-		nc.Name, nc.Platform, nc.Hosts, string(nc.Scheme), nc.HeaderName, nc.Username, ct, owner))
+		nc.Name, nc.Platform, nc.Hosts, string(nc.Scheme), nc.HeaderName, nc.Username, ct, owner, settings))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Connector{}, fmt.Errorf("%w: a connector named %q already exists", ErrInvalid, nc.Name)
@@ -157,11 +197,15 @@ func (s *PGStore) RotateSecret(ctx context.Context, name, secret string) error {
 	if err != nil {
 		return err
 	}
+	settings, err := encodeSettings(c.Postgres)
+	if err != nil {
+		return err
+	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connectors SET secret_ciphertext=$2, rotated_at=now(), updated_at=now()
 		WHERE name=$1 AND secret_ciphertext=$3 AND hosts=$4 AND auth_scheme=$5 AND auth_header=$6 AND auth_username=$7
-		  AND owner_id=$8`,
-		name, ct, old, c.Hosts, string(c.Scheme), c.HeaderName, c.Username, owner)
+		  AND owner_id=$8 AND settings=$9::jsonb`,
+		name, ct, old, c.Hosts, string(c.Scheme), c.HeaderName, c.Username, owner, settings)
 	if err != nil {
 		return err
 	}
@@ -171,9 +215,9 @@ func (s *PGStore) RotateSecret(ctx context.Context, name, secret string) error {
 	return nil
 }
 
-// DeleteConnector removes a connector AND every grant naming it, in one
-// transaction, so a connector later re-created under the same name starts with
-// no approvals.
+// DeleteConnector removes a connector AND every grant and standing grant naming
+// it, in one transaction, so a connector later re-created under the same name
+// starts with no approvals — shared or not.
 func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -192,6 +236,10 @@ func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM connector_grants WHERE owner_id=$2 AND connector_name=$1`, name, owner); err != nil {
+		return err
+	}
+	// After the grants: a grant names its standing grant by foreign key.
+	if _, err := tx.Exec(ctx, `DELETE FROM connector_standing_grants WHERE owner_id=$2 AND connector_name=$1`, name, owner); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -219,7 +267,7 @@ func (s *PGStore) Credential(ctx context.Context, name string) (Connector, strin
 // credentialRow reads a connector with its ciphertext and the row's owner_id —
 // the owner the ciphertext must have been sealed for.
 func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, int64, []byte, error) {
-	var ct []byte
+	var ct, settings []byte
 	var c Connector
 	var scheme string
 	owner, err := createOwner(ctx)
@@ -229,7 +277,7 @@ func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, in
 	err = s.pool.QueryRow(ctx, `SELECT `+connectorCols+`, owner_id, secret_ciphertext FROM connectors
 		WHERE owner_id=$2 AND name=$1`, name, owner).
 		Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
-			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &owner, &ct)
+			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &settings, &owner, &ct)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Connector{}, 0, nil, ErrNotFound
 	}
@@ -237,6 +285,9 @@ func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, in
 		return Connector{}, 0, nil, err
 	}
 	c.Scheme = Scheme(scheme)
+	if err := decodeSettings(&c, settings); err != nil {
+		return Connector{}, 0, nil, err
+	}
 	return c, owner, ct, nil
 }
 
@@ -254,7 +305,8 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
 	g.decided_at, g.decided_by, g.last_used_at, g.source,
-	coalesce(g.decided_via, ''), coalesce(g.decided_via_host, ''), coalesce(g.decided_via_session, '')`
+	coalesce(g.decided_via, ''), coalesce(g.decided_via_host, ''), coalesce(g.decided_via_session, ''),
+	coalesce(g.standing_grant_id, 0), coalesce(g.repo, a.repo, '')`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
@@ -262,7 +314,7 @@ func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
 		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source,
-		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session)
+		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session, &g.StandingGrantID, &g.Repo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -359,7 +411,7 @@ func (s *PGStore) GetGrant(ctx context.Context, id int64) (Grant, error) {
 // source the decision was about (SourceStored / SourceApp). It is a decision
 // on the Connectors tab: no provenance (DecideGrantFrom with the zero source).
 func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error) {
-	return s.DecideGrantFrom(ctx, id, approve, by, source, DecisionSource{})
+	return s.DecideGrantFrom(ctx, id, approve, by, source, "", DecisionSource{})
 }
 
 // DecideGrantFrom is DecideGrant recording where the operator made the
@@ -369,7 +421,10 @@ func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, s
 // session and one from the tab cannot drift apart, and two of them racing on
 // one request cannot both land: the loser is ErrNotPending. 0035's CHECK
 // refuses a half-written provenance or one on an undecided row.
-func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source string, via DecisionSource) (Grant, error) {
+//
+// repo is the repository the decision is for (migration 0061), stored trimmed;
+// "" stores NULL, which reads back as the agent row's own repository.
+func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source, repo string, via DecisionSource) (Grant, error) {
 	status := StatusDenied
 	if approve {
 		status = StatusApproved
@@ -383,8 +438,9 @@ func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, b
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), source=$4,
-		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text
-		WHERE id=$1 AND status='pending'`, id, status, by, source, v, host, sess)
+		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text, standing_grant_id=NULL,
+		  repo=nullif($8::text, '')
+		WHERE id=$1 AND status='pending'`, id, status, by, source, v, host, sess, strings.TrimSpace(repo))
 	if err != nil {
 		return Grant{}, err
 	}
@@ -403,7 +459,7 @@ func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, b
 func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status='pending', decided_by='', decided_at=NULL, source='stored',
-		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=NULL, repo=NULL
 		WHERE id=$1 AND status='approved'`, id)
 	if err != nil {
 		return Grant{}, false, err
@@ -419,7 +475,7 @@ func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error
 func (s *PGStore) RevokeGrant(ctx context.Context, id int64, by string) (Grant, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status='revoked', decided_by=$2, decided_at=now(),
-		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=NULL
 		WHERE id=$1 AND status IN ('pending', 'approved')`, id, by)
 	if err != nil {
 		return Grant{}, err
@@ -451,6 +507,9 @@ func (s *PGStore) TouchGrant(ctx context.Context, id int64) error {
 
 // --- audit ---------------------------------------------------------------------------
 
+// MaxAuditDetailBytes is how much of an audit entry's Detail is stored.
+const MaxAuditDetailBytes = 500
+
 // Audit appends one entry.
 func (s *PGStore) Audit(ctx context.Context, e AuditEntry) error {
 	var agentID *int64
@@ -461,8 +520,24 @@ func (s *PGStore) Audit(ctx context.Context, e AuditEntry) error {
 		INSERT INTO connector_audit (kind, agent_id, owner_id, agent_name, connector_name, method, host, path, status, detail)
 		VALUES ($1, $2, COALESCE((SELECT owner_id FROM agents WHERE id = $2), nullif(current_setting('muster.uid', true), '')::bigint),
 		        $3, $4, $5, $6, $7, $8, $9)`,
-		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, 500))
+		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, MaxAuditDetailBytes))
 	return err
+}
+
+// AuditID appends one entry and returns its id (connector_audit.id, a
+// BIGINT identity): what officer_kube_read hands the instance to cite.
+func (s *PGStore) AuditID(ctx context.Context, e AuditEntry) (int64, error) {
+	var agentID *int64
+	if e.AgentID != 0 {
+		agentID = &e.AgentID
+	}
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO connector_audit (kind, agent_id, owner_id, agent_name, connector_name, method, host, path, status, detail)
+		VALUES ($1, $2, COALESCE((SELECT owner_id FROM agents WHERE id = $2), nullif(current_setting('muster.uid', true), '')::bigint),
+		        $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, MaxAuditDetailBytes)).Scan(&id)
+	return id, err
 }
 
 // ListAudit returns the newest entries first.
@@ -498,9 +573,15 @@ func (s *PGStore) PruneAudit(ctx context.Context, before time.Time) (int64, erro
 	return tag.RowsAffected(), nil
 }
 
+// truncate is s cut to at most n bytes, on a rune boundary: a cut inside a
+// multi-byte rune leaves invalid UTF-8, which Postgres refuses (SQLSTATE
+// 22021), losing the whole row.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

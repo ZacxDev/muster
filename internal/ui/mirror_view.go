@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -39,10 +42,19 @@ func MirrorViewWSPath(host, session string) string {
 
 // MirrorViewView is the data the rendered view's page renders.
 type MirrorViewView struct {
+	// PlaceAddress is the window's exact tmux target ("tmux fern:1 @ atlas",
+	// mirror.WhereTarget), which the header's ⓘ holds (mirrorViewTitleRow);
+	// "" draws no ⓘ.
+	PlaceAddress string
 	// DraftUser is the signed-in user, the first part of the message box's
 	// draft key (composer_draft.go).
 	DraftUser int64
-	Host      string
+	// AgentSession is the agent session the view shows (a gated runtime's
+	// window, Window.AgentSession; "" for any other): the composer's
+	// AgentSessionField, which the page's script keeps equal to the session
+	// its stream draws.
+	AgentSession string
+	Host         string
 	// HostIcon is Host's icon key (HostIconFor), the one its cards draw.
 	HostIcon string
 	Session  string
@@ -56,21 +68,45 @@ type MirrorViewView struct {
 	// Label is the host's display name for the session ("mango:1"), "" for
 	// none: the page's title. Session stays the address.
 	Label string
+	// SessionName is the window's conversation's name (internal/sessionname):
+	// the header and the <title> draw it when it is a human one
+	// (mirrorDisplayName). The zero value draws Label / Title.
+	SessionName sessionname.Name
+	// Drift is the page's rename offer (driftBanner), nil for none.
+	Drift *SessionDrift
 	// Qualifier is what tells this entry apart from another listed entry of the
 	// same name ("" = none) — the SAME qualifier its Agents card shows
 	// (mirror.Qualified): part of the header's title and of <title>.
 	Qualifier string
+	// Tags is the viewer's own tags on the tmux session (internal/sessiontags),
+	// drawn in the header after the title (sessionTagsHead); nil for none.
+	Tags []string
+	// Owner is a TEAM host's owner (MirrorRef.Owner), 0 for the viewer's own;
+	// TeamNote, set on a team host's session for a VIEWER of the team, is what
+	// its disabled composer says (an operator or a manager types into it:
+	// team sharing 2b.4, TeamNote "").
+	Owner    int64
+	TeamNote string
 	// Interactive: the host advertised -interactive, so the composer is offered
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
 	Interactive bool
-	// Hermes: the window runs Hermes (docs/design/hermes.md). Its composer
-	// sends only when HermesSend — the host advertised hermesSend and is
-	// -interactive (Phase 3) — and is drawn disabled saying why
-	// (MirrorHermesNoSendNote), with no queue, otherwise.
-	Hermes bool
-	// HermesSend: a Hermes window whose host sends to Hermes.
-	HermesSend bool
+	// ViewOnly is the Kind of a runtime muster VIEWS but never sends to
+	// (opencode); "" otherwise. Its composer is drawn disabled saying why
+	// (MirrorViewOnlyNote), with no queue.
+	ViewOnly string
+	// ViewOnlyWhy is what the disabled composer of a ViewOnly window says
+	// (a gated send's refusal, mirror.SendBlocked); "" says
+	// MirrorViewOnlyNote.
+	ViewOnlyWhy string
+	// ViewOnlySetting is the host setting a ViewOnly window's send waits on
+	// (mirror.SendOffSetting: opencode's "-interactive -opencode-send"), ""
+	// when that is not why: the composer's ⓘ shows it to an admin.
+	ViewOnlySetting string
+	// Agent is the Kind of a runtime other than Claude Code that this window
+	// SENDS to (launcher-bound opencode): the composer's words name it. "" for
+	// Claude Code, and for a ViewOnly window.
+	Agent string
 	// StepUp is the "Confirm it's you" wiring (stepup_confirm.go): a send
 	// refused as stale asks there — passkey or password — and retries. Unused
 	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
@@ -83,50 +119,138 @@ type MirrorViewView struct {
 	Dictate string
 	// Upload is the composer's (ComposerView.Upload).
 	Upload string
+	// DictateOff and UploadOff are the composer's (ComposerView.DictateOff,
+	// ComposerView.UploadOff).
+	DictateOff, UploadOff bool
 	// Queue is the composer's send queue (ComposerView.Queue); nil for none.
 	Queue *ComposerQueue
 	// FocusHistory is the session's focus history, the newest page
 	// (FocusHistoryPath); "" when the host reports no Claude session for the
 	// window, which then has none. The index sheet's second tab.
 	FocusHistory string
+	// Asks and AsksSrc are the window's Claude sessions' OPEN attention asks
+	// and their fragment URL (AgentDetailView.Asks).
+	Asks    string
+	AsksSrc string
+	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
+	// overlay — this page is sized to the window) and its hamburger, framed
+	// by the view swap or not (nav_layout.go says why).
+	Nav NavChrome
+	// Switcher is the session switcher below the composer (switcher.go); nil
+	// for none.
+	Switcher *Switcher
+	// Suggest is the suggested replies' URL (ComposerView.Suggest); "" for
+	// none — another runtime's window, a host with suggestions not wired.
+	Suggest string
+	// SuggestPaused: the viewer's suggestions are auto-paused here
+	// (ComposerView.SuggestPaused).
+	SuggestPaused bool
+	// LiveCopy is the warning that this conversation also runs elsewhere
+	// under another session id (mirror.SessionView.LiveCopyWarning), "" for
+	// none: a banner under the header (livecopy.go).
+	LiveCopy string
+	// Offline: the host is not serving the window now (its muster-mirror is
+	// not connected, or it no longer lists the session). Note is the host's
+	// line about the window (mirror.SessionView.AgentNote), "" for none. Both
+	// drawn under the header (mirrorHostBanner).
+	Offline bool
+	Note    string
+	// Chief draws the composer's chief mode (view_chief.go): the owner has a
+	// chief that is on, and the window names a conversation the chief can be
+	// asked about. False draws the composer as it was.
+	Chief bool
+	// Succession is this session's newest succession (view_succession.go), nil
+	// for none; Predecessor the one this session's window continues, nil for
+	// none.
+	Succession, Predecessor *SuccessionView
+	// End is this session's newest proposal when it is an end_session's
+	// (view_end_session.go), drawn instead of Succession; nil otherwise.
+	End *EndView
+	// Plugins is the owner's viewer plugins and the window's preview counts:
+	// the header's Preview button and its panel (plugin_chip.go); nil for
+	// none.
+	Plugins *PluginChips
 }
 
-// MirrorReadOnlyNote is what a read-only host's composer says instead of
-// accepting text.
-const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
-
-// MirrorHermesNoSendNote is a Hermes window's rendered view's composer, drawn
-// disabled on a host that does not send to Hermes (docs/design/hermes.md).
-const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
+// MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
+// muster only views (opencode, docs/design/opencode.md).
+func MirrorViewOnlyNote(kind string) string {
+	return "Sending to " + kind + " isn't supported yet: muster shows this session read-only. Type in the terminal."
+}
 
 // MirrorViewPage is the rendered view's document.
 //
 // ⚠ ITS OWN DOCUMENT, like the terminal page: a real load (the links into it
 // opt out of boost), with its own socket and script.
 func MirrorViewPage(v MirrorViewView) g.Node {
-	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
+	ref := MirrorRef{Owner: v.Owner, Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
-		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
+		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: MirrorReadOnlyPlaceholder,
 		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Upload: v.Upload, Queue: v.Queue,
+		DictateOff: v.DictateOff, UploadOff: v.UploadOff,
 		DraftKey: MirrorDraftKey(v.DraftUser, "view", v.Host, v.Session, v.Window),
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
-		Pinned: true}
+		Pinned: true, Switcher: v.Switcher,
+		// The box collapsed on a touch screen behind "Type a message", and the
+		// session's ⋯ in the button row (composer_reveal.go; operator ask: more
+		// room by default, the ⋯ beside the message controls).
+		Collapsible: true, MoreInRow: true}
+	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
+	composer.Admin = v.Nav.Feat.Setup
+	// The session the view shows rides every message written here (a gated
+	// runtime's window): the script keeps it the one the stream draws.
+	if v.AgentSession != "" {
+		composer.Extra = append(composer.Extra, ComposerField{Name: AgentSessionField, Value: v.AgentSession})
+	}
+	shell := pinnedShellClass
+	if v.Switcher != nil {
+		shell = pinnedShellSwitcherClass
+	}
 	working := "Claude is working…"
 	switch {
-	case v.Hermes && !v.HermesSend:
-		working = "Hermes is working…"
-		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
-		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorHermesNoSendNote, "Sending to Hermes is not available", nil
-	case v.Hermes:
-		working = "Hermes is working…"
-		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
-		if !v.Interactive {
-			composer.Disabled = MirrorReadOnlyNote
+	case v.ViewOnly != "":
+		working = v.ViewOnly + " is working…"
+		composer.Placeholder, composer.Aria = "Message "+v.ViewOnly+"…", "Message "+v.ViewOnly+" in this session"
+		why := v.ViewOnlyWhy
+		if why == "" {
+			why = MirrorViewOnlyNote(v.ViewOnly)
 		}
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = why, "Replying is not turned on for this session", nil
+		composer.DisabledSetting, composer.DisabledSettingReply = v.ViewOnlySetting, true
+		composer.Suggest, composer.SuggestPaused = "", false
+	case v.Agent != "" && v.Interactive:
+		// A window muster sends to through its runtime's API: its own words;
+		// suggested replies are Claude Code's.
+		working = v.Agent + " is working…"
+		composer.Placeholder, composer.Aria = "Message "+v.Agent+"…", "Message "+v.Agent+" in this session"
+		composer.Suggest, composer.SuggestPaused = "", false
 	case !v.Interactive:
-		composer.Disabled = MirrorReadOnlyNote
+		composer.Disabled, composer.DisabledSetting = MirrorReadOnlyNote(v.Host), mirror.ViewOnlySetting
+	}
+	if v.Owner != 0 {
+		// A TEAM host's session (team sharing 2b.4): the form names the team
+		// (owner=), and keeps no draft — drafts are keyed by host NAME, so the
+		// viewer's own build-01 would share it — and offers no suggested
+		// replies (G4).
+		composer.Owner, composer.DraftKey = v.Owner, ""
+		composer.Suggest, composer.SuggestPaused = "", false
+	}
+	if v.TeamNote != "" {
+		// ...watched, not typed into, by a viewer of the team (2b.3).
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = v.TeamNote, "Watching a team session", nil
+		composer.DisabledSetting, composer.DisabledDetail = "", ""
+	}
+	if v.Chief {
+		agent := "Claude"
+		if v.ViewOnly != "" {
+			agent = v.ViewOnly
+		} else if v.Agent != "" {
+			agent = v.Agent
+		}
+		composer.Chief = &ComposerChief{Agent: agent, LogSrc: ref.ChiefLogPath(),
+			ModeKey: MirrorDraftKey(v.DraftUser, ViewToChief, v.Host, v.Session, v.Window)}
 	}
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
@@ -135,46 +259,78 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
-				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
+				docHead(v.Nav.Feat.Brand),
+				TitleEl(g.Text(mirrorViewDocTitle(v))),
+				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				overlayNavHead(),
 				faroHead(),
 			),
 			Body(
 				// The app shell (only #mv-log scrolls), sized to the visible
 				// viewport and ending above the pinned composer.
-				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
+				Class(shell+" bg-bg text-fg antialiased"),
+				// The navigation: position:fixed, so it takes no room in the
+				// column (nothing below moves), and an overlay at every width.
+				overlayNav(v.Nav, ""),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
+					// Polled only without the asks block, whose asks:changed refreshes it.
+					overlayNavButton(v.Switcher, v.AsksSrc == ""),
 					A(
 						ID("mv-back"),
-						Href("/agents"),
-						g.Attr("aria-label", "Back to the list"),
+						// Home (the chief, or the session opened last): the Agents list
+						// page this arrow went back to is retired.
+						Href(HomeLeavingMirrorPath(ref)),
+						g.Attr("aria-label", "Home"),
 						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
-						Class("min-w-0 flex-1"),
-						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
-							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon))),
+						// relative: the title button's 44px hit area
+						// (mirrorTitleHitClass) is placed on this column.
+						Class("relative min-w-0 flex-1"),
+						mirrorViewTitleRow(v),
 						Div(
-							Class("flex min-w-0 items-center gap-2"),
+							// relative: the Updating… chip is positioned in this row
+							// (mirrorUpdatingChip), taking none of its width.
+							Class("relative flex min-w-0 items-center gap-2"),
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+							mirrorPlaceInfo(v),
 							// The context readout (TakeContext): hidden until a turn
 							// has reported usage, and again after a reset.
-							Span(ID("mv-context"), g.Attr("hidden", ""), g.Attr("title", "Context used"),
-								Class("shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line")),
+							mirrorContextChip(),
+							mirrorUpdatingChip(),
+							// Below `sm` the Preview button is here, in the second
+							// row, so the title keeps its width (plugin_chip.go).
+							previewButtonSlot(v.Plugins, PreviewInRow),
 						),
 					),
 					chatIndexButton("mv-log"),
+					// The window's Preview button, while it has something to
+					// preview (plugin_chip.go).
+					previewButtonSlot(v.Plugins, PreviewInHeader),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
+				liveCopyBanner("mv-live-copy", v.LiveCopy),
+				// The rename offer, when the conversation has moved on from its
+				// name (session_name.go).
+				driftBanner(v.Drift),
+				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
+				// The Preview button's panel, closed (plugin_chip.go).
+				previewPanel(v.Plugins),
+				// A succession of this session's: the card, its line, the follow
+				// (view_succession.go).
+				successionRegion(ref, v.Succession, v.Predecessor, v.End, v.Chief),
 				Div(
 					ID("mv-error"),
 					g.Attr("role", "alert"),
 					g.Attr("hidden", ""),
 					Class("border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words"),
 					Span(ID("mv-error-text")),
+					// The exact words the host or the hub sent, behind an ⓘ
+					// (hostDetailSlot): the line above is plain.
+					hostDetailSlot("mv-error-info", v.Nav.Feat.Setup),
 				),
 				Main(
 					ID("mv-log"),
@@ -184,9 +340,17 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("data-subagent-src", ref.SubagentPath()),
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
+					// The questions the window's ask hook is holding
+					// (mirror_ask.go): the conversation's LAST child, a card at
+					// its end, so a question never takes the screen from what
+					// preceded it. The script below keeps it last (tail).
+					mirrorAsksRegion(ref),
 				),
-				// The questions the window's ask hook is holding (mirror_ask.go).
-				mirrorAsksRegion(ref),
+				// What Claude Code has queued itself (cc_queued.go): OUTSIDE the
+				// conversation, so it never moves what is being read there.
+				CCQueued(nil),
+				// The window's sessions' attention asks (attention_ask), answered here.
+				g.If(v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, false)),
 				Div(
 					ID("mv-working"),
 					g.Attr("hidden", ""),
@@ -194,12 +358,27 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Class("px-3 pb-1 text-xs text-muted"),
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
+				// The view's one /events stream, before the scripts that share it
+				// (the chief strip's, the succession region's).
+				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil || v.End != nil, viewStreamScript()),
 				mirrorComposer(composer),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend), confirmDialog(v.StepUp)),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend), stepUpScript()),
+				g.If(v.Interactive && v.ViewOnly == "", confirmDialog(v.StepUp)),
+				g.If(v.Interactive && v.ViewOnly == "", stepUpScript()),
+				// The snapshot store, PARSER-BLOCKING here (SnapScriptNow): it runs
+				// just before mirrorViewScript, which starts reading this window's
+				// snapshot — and opens the socket — while the rest of the document
+				// is still loading.
+				SnapScriptNow(v.Nav.Feat),
 				mirrorViewScript(),
+				// Places the header's full-title popover (mirrorViewTitle) by its
+				// title and keeps the title's aria-expanded in step.
+				floatingMenuScript(),
+				// Enables the title while it is clipped (mirrorViewTitle).
+				agentTitleFitScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
+				// The attention asks block's live refresh.
+				AskerAsksLive(v.AsksSrc),
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),
 				bubbleClampScript(),
@@ -208,6 +387,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
+				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil || v.End != nil, successionScript()),
+				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),
 		),
@@ -223,14 +404,36 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 // viewFrameScript opens that view in a frame over this one and keeps both, so
 // neither view's socket is torn down by a switch (view_swap.go). It stays a
 // real link — what a switch falls back to — and so does it without script.
+//
+// 🔴 BELOW `sm` (640px, the app's own phone/desktop breakpoint) THE SWITCH IS
+// ONE 44×44 ICON BUTTON: the link to the OTHER view. An operator ask: at 393px
+// the header row held three 44px buttons and this 147px switch, leaving the
+// rendered view's title 70px. The current view's segment is `max-sm:hidden`
+// (display:none — no width, not in the accessibility tree) and the link drops
+// its word for an icon, its name ("Show terminal" / "Show rendered view")
+// carried by an sr-only span that is itself display:none at `sm` and up, so a
+// desktop reads exactly the two segments it did. It is CSS only: one element
+// per action at every width, the same ids and the same data-view-swap link,
+// no script deciding the layout.
 func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 	seg := func(id, view, label, href string, current bool) g.Node {
-		// 44px: a thumb target, like every other control in these headers.
-		cls := "press inline-flex min-h-[44px] items-center px-2.5 text-xs font-semibold transition "
+		cls := viewToggleSegClass
 		if current {
-			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"bg-accent text-on-accent"), g.Text(label))
+			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"max-sm:hidden bg-accent text-on-accent"), g.Text(label))
 		}
-		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), Class(cls+"text-fg2 hover:bg-s3"), g.Text(label))
+		icon, name := viewIconTerminal, "Show terminal"
+		if view == ViewRendered {
+			icon, name = viewIconRendered, "Show rendered view"
+		}
+		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), g.Attr("data-view-toggle", ""),
+			// The icon's tooltip for a mouse below `sm` (a 480–639px window).
+			// The name stays the link's text: "Terminal" from `sm` up.
+			g.Attr("title", name),
+			Class(cls+viewToggleCompactClass+" text-fg2 hover:bg-s3"),
+			g.Raw(icon),
+			Span(Class("sr-only sm:hidden"), g.Text(name)),
+			Span(Class("max-sm:hidden"), g.Text(label)),
+		)
 	}
 	return Nav(
 		g.Attr("aria-label", "View"),
@@ -241,6 +444,187 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 		viewFrameScript(),
 	)
 }
+
+// mirrorViewTitle is the rendered view's header title: the window's name (its
+// label, qualifier and session, drawn as its card draws them) and its
+// "On <host>" badge, on ONE line that clips with an ellipsis.
+//
+// 🔴 THE TITLE IS A BUTTON THAT OPENS THE WHOLE TITLE IN A POPOVER (an
+// operator ask: "allow clicking on the ellipses to see the full title"). At
+// 390px the header leaves the title 67px (measured; 51px before the switch's
+// padding was cut) — a handful of characters — so a realistic title is
+// clipped on the operator's main device whatever the header's padding. The
+// popover is fullTitlePopover, the agent header's own: popover="auto" (top
+// layer; a tap outside it or Escape closes it), placed by floatingMenuScript
+// beside its trigger.
+//
+// The button is the line itself, not a "…" beside it (the agent header's
+// titleMoreButton): a separate 44px "…" would take back more room than the
+// switch's padding gave (viewToggleSegClass). It is block and truncating, so
+// it draws exactly the box the <h1> drew before (no new height, no shift).
+//
+// Whether it is clipped is decided by agentTitleFitScript — the agent
+// header's rule, not a copy of it: the <h1> is its [data-agent-title] box and
+// the button both its [data-agent-title-text] and its [data-title-more].
+// data-title-fit="disable" makes that script DISABLE the button while the
+// title fits (a tap on a whole title opens nothing) rather than hide it, as
+// it hides the agent header's "…". Without script the button stays enabled
+// and the popover works natively.
+//
+// The popover is OUTSIDE the <h1>, so the heading's text is still only the
+// title (specs read `header h1` and its [data-mirror-name]).
+func mirrorViewTitle(v MirrorViewView) g.Node {
+	return g.Group{
+		H1(
+			ID(MirrorHeadingID),
+			// Focusable by script only: where a rename's in-place answer moves
+			// focus (renameScript).
+			g.Attr("tabindex", "-1"),
+			g.Attr("data-agent-title", ""),
+			g.Attr("data-title-fit", "disable"),
+			Class("min-w-0 text-sm font-semibold"),
+			mirrorViewTitleButton(v),
+		),
+		fullTitlePopover(mirrorTitlePopoverID, mirrorViewHeading(v)),
+	}
+}
+
+// mirrorViewTitleButton is the header's title (mirrorViewTitle): the whole
+// name — a human name, or the label it falls back to — and the host's badge.
+// extra is a rename's in-place answer's hx-swap-oob (MirrorViewRenamed): the
+// whole button is swapped, so a name given or cleared draws as a reload would.
+func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
+	return Button(
+		ID(mirrorTitleID),
+		g.Group(extra),
+		Type("button"),
+		g.Attr("data-mv-title", ""),
+		g.Attr("data-agent-title-text", ""),
+		g.Attr("data-title-more", ""),
+		g.Attr("popovertarget", mirrorTitlePopoverID),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", mirrorTitlePopoverID),
+		g.Attr("aria-expanded", "false"),
+		Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
+		mirrorViewEntryTitle(v),
+		Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
+	)
+}
+
+// mirrorViewTitleRow is the header's first line: the title (mirrorViewTitle),
+// then the viewer's tags on the session (sessionTagsHead) — where the raw tmux
+// session name used to be drawn; that name is in the full-title popover
+// (mirrorViewHeading) and the palette's words now.
+func mirrorViewTitleRow(v MirrorViewView) g.Node {
+	return Div(
+		Class("flex min-w-0 items-center gap-1.5"),
+		Div(Class("min-w-0 flex-1"), mirrorViewTitle(v)),
+		sessionTagsHeadNode(SessionTagTarget{Host: v.Host, Session: v.Session}, v.Tags),
+	)
+}
+
+// mirrorPlaceInfo is the rendered view header's ⓘ (SessionPlaceSheet): the
+// window's exact tmux target, which the header's words no longer spell —
+// drawn only when the page has it (PlaceAddress: none on a team host's
+// session). It sits in the STATUS row, inline (InfoSheet.Inline): in the
+// title row its 44px button cost the title 44px of a phone header and grew
+// the header past its 57px (e2e title-room measured both), and the title
+// button's z-10 hit area spans both rows, so the trigger is raised over it.
+func mirrorPlaceInfo(v MirrorViewView) g.Node {
+	if v.PlaceAddress == "" {
+		return nil
+	}
+	s := SessionPlaceSheet(MirrorPlaceSheetID, mirrorViewName(v), v.Host, v.PlaceAddress)
+	s.Inline = true
+	return s.Node()
+}
+
+// MirrorPlaceSheetID is the rendered view header's ⓘ sheet (mirrorViewTitleRow).
+const MirrorPlaceSheetID = "mv-place"
+
+// mirrorViewName is the window's name as the rendered view's header and
+// <title> call it: mirrorDisplayName — entryTitle's rule, not a copy — and its
+// qualifier.
+//
+// A HUMAN name (internal/sessionname) is the name alone: no qualifier, which
+// is the window's technical id (the heading spells it).
+func mirrorViewName(v MirrorViewView) string {
+	if v.SessionName.Human() {
+		return v.SessionName.Text
+	}
+	name, _ := mirrorDisplayName(v.Label, v.Title, v.Session)
+	return mirrorQualified(name, v.Qualifier)
+}
+
+// mirrorViewDocTitle is the Rendered view's <title>: its name, then where it
+// is. The page and the drift offer's in-place answer both draw it.
+func mirrorViewDocTitle(v MirrorViewView) string {
+	return mirrorViewName(v) + " · " + MirrorBadgeText(v.Host) + " · muster"
+}
+
+// mirrorViewEntryTitle is the header's name node: the human name with its
+// technical id as the tooltip (sessionNameTitle), else the entry's label or
+// title as its card draws it (mirrorEntryTitle).
+func mirrorViewEntryTitle(v MirrorViewView) g.Node {
+	if v.SessionName.Human() {
+		return sessionNameTitle(v.SessionName, "")
+	}
+	return mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, "")
+}
+
+// mirrorViewHeading is the header line as text: the name, then its badge's
+// "On <host>" (MirrorBadgeText). The full-title popover shows exactly this, so when only
+// the badge is clipped the popover still says what the header did not.
+//
+// 🔴 NO TMUX ADDRESS (operator rule: no ids in the top layer). It
+// used to end with the window's technical id ("· tmux cedar:1 @ atlas", or
+// "· tmux session scratch2" under a label); that is the header's ⓘ now
+// (mirrorViewTitleRow), with a Copy button.
+func mirrorViewHeading(v MirrorViewView) string {
+	return mirrorViewName(v) + " · " + MirrorBadgeText(v.Host)
+}
+
+// mirrorTitleHitClass gives the title button a 44px-tall hit area (a thumb
+// target, like every other control in the header) WITHOUT changing the
+// header's layout: the button's line is 20px, so its ::after — positioned on
+// the title column (the button itself is not positioned, and its truncating
+// overflow does not clip a box whose containing block is outside it) — spans
+// the column's width and is 44px tall, centred on the title and status rows.
+// z-10 puts it over the status row (itself positioned, so later in paint
+// order). Not while the button is disabled (the title fits): the rows below
+// keep their own hover and selection then.
+const mirrorTitleHitClass = "after:absolute after:inset-x-0 after:top-1/2 after:z-10 after:h-11 after:-translate-y-1/2 disabled:after:hidden"
+
+// The rendered view's header title (mirrorViewTitle) and its popover. One of
+// each per document.
+const (
+	mirrorTitleID = "mv-title"
+	// MirrorTitleID is mirrorTitleID, which a rename's answer swaps;
+	// MirrorHeadingID the heading around it, which takes focus after.
+	MirrorTitleID        = mirrorTitleID
+	MirrorHeadingID      = "mv-heading"
+	mirrorTitlePopoverID = "mv-title-full"
+)
+
+// viewToggleSegClass is each Rendered | Terminal segment's class, before its
+// state's colours. 44px tall: a thumb target, like every other control in
+// these headers. px-1.5 (6px a side), not the px-2.5 it was: an operator ask —
+// the header's title was clipped too tightly beside the switch, and the
+// segments' padding was the cheapest room to give it (16px across the two;
+// each segment is still well over 44px wide).
+const viewToggleSegClass = "press inline-flex min-h-[44px] items-center px-1.5 text-xs font-semibold transition "
+
+// viewToggleCompactClass makes the switch's link a 44×44 icon button below
+// `sm` (viewToggle); from `sm` up it adds nothing.
+const viewToggleCompactClass = "max-sm:h-11 max-sm:w-11 max-sm:justify-center max-sm:px-0"
+
+// The switch's phone icons (viewToggle): a prompt for the terminal, a speech
+// bubble for the rendered conversation. Decorative; the link's name is its
+// sr-only text.
+const (
+	viewIconTerminal = `<svg class="h-5 w-5 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>`
+	viewIconRendered = `<svg class="h-5 w-5 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`
+)
 
 // The two views' names, as data-view-swap and the view frame spell them.
 const (
@@ -279,6 +663,11 @@ type MirrorOp struct {
 // reset with the view, and holds at most maxDrawnCalls calls (the oldest are
 // forgotten; a result for one draws as its own row).
 type MirrorTranscript struct {
+	// Mentions links the sessions, agents and tasks an assistant's text names
+	// (mentions.go), as the agent chat does; nil links none. It is the index
+	// as it stood when the socket opened (internal/api handleMirrorViewWS).
+	Mentions *MentionIndex
+
 	calls map[string]ChatLine
 	order []string
 	// The tool-call grouping (tool_groups.go): each drawn row's state, the
@@ -308,6 +697,9 @@ type MirrorTranscript struct {
 	// since TakeContext last reported it.
 	usage *cctranscript.Usage
 	fresh bool
+	// agentCtx is the context fill a runtime reported beside its events
+	// (SetAgentContext); it wins over usage.
+	agentCtx *mirror.AgentContext
 	// asks is the AskUserQuestion calls drawn as question cards (mirror_ask.go),
 	// with their questions: a result for one redraws its card. Bounded with
 	// calls (forget).
@@ -320,6 +712,15 @@ type MirrorTranscript struct {
 	Subagents bool
 	cards     map[string]subagentCall
 	subs      map[string]mirror.Subagent
+	// The context each tool call added (tool_context.go): the ledger that
+	// attributes it, and the costs it settled, by tool id. Bounded with calls
+	// (forget).
+	ledger cctranscript.ToolContext
+	costs  map[string]cctranscript.ToolCost
+	// queued is the Claude Code queued messages drawn last (cc_queued.go),
+	// and queuedDrawn whether any list has been drawn by this socket.
+	queued      []string
+	queuedDrawn bool
 }
 
 const maxDrawnCalls = 2048
@@ -358,7 +759,9 @@ func (t *MirrorTranscript) Reset() {
 	t.Subagents, t.cards, t.subs = false, nil, nil
 	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
 	t.Resumed = false
-	t.usage, t.fresh = nil, false
+	t.usage, t.fresh, t.agentCtx = nil, false, nil
+	t.ledger, t.costs = cctranscript.ToolContext{}, nil
+	t.queued, t.queuedDrawn = nil, false
 }
 
 // endRun records that something other than a tool row was drawn: the next
@@ -372,6 +775,7 @@ func (t *MirrorTranscript) forget(toolID string) {
 	delete(t.cards, toolID)
 	delete(t.subs, toolID)
 	delete(t.states, toolID)
+	delete(t.costs, toolID)
 	if gid, ok := t.groupOf[toolID]; ok {
 		delete(t.groupOf, toolID)
 		rows := t.groups[gid]
@@ -436,20 +840,177 @@ func (t *MirrorTranscript) appendRow(toolID, state string, row g.Node) []MirrorO
 }
 
 // ContextView is the header's context-usage readout (mirrorViewBatch.Context):
-// the latest turn's context, as a count ("124k context").
+// the latest turn's context, as a count — and, from a runtime that reports
+// them beside its events (opencode: SetAgentContext), its model and the
+// model's context window. The count means one thing for every runtime: the
+// tokens the latest model request was sent (input + cache read + cache write).
+//
+// 🔴 ONE RULE, ONE PLACE: contextView builds every field, for every runtime,
+// and the page only places them (mirrorViewScript's setContext) — it never
+// spells a label, a share or a threshold of its own.
 type ContextView struct {
 	Tokens int64  `json:"tokens"`
-	Label  string `json:"label"`
+	Limit  int64  `json:"limit,omitempty"`
+	Model  string `json:"model,omitempty"`
+	// Label is the chip's whole short text: "<name> · <count>", or <count>.
+	Label string `json:"label"`
+	// Name is the model without its provider prefix (contextModelName), ""
+	// with no model; the chip truncates it first.
+	Name string `json:"name,omitempty"`
+	// Count is "<tokens>/<window>" short ("29k/1M"), or "<tokens>" with no
+	// window known; the chip never truncates it.
+	Count string `json:"count"`
+	// Detail is the exact readout the chip's popover and tooltip show: the
+	// whole model id and the exact counts, with the share of a known window.
+	Detail string `json:"detail"`
+	// Level tints the chip as a known window fills: ContextLevelWarn,
+	// ContextLevelDanger, or "" (below ContextWarnPct, or no window known).
+	Level string `json:"level,omitempty"`
+	// Title is how the number is derived, "" when there is nothing to add.
+	Title string `json:"title,omitempty"`
 }
 
-// TakeContext is the context readout when Ops has drawn a newer one since the
-// last call, else nil — so a batch carries it only when it changed.
+// The chip's tint thresholds, in percent of a known context window, and the
+// separator between its name and count (the label's, and the page's when it
+// draws the two as parts).
+const (
+	contextSep         = " · "
+	ContextWarnPct     = 70
+	ContextDangerPct   = 90
+	ContextLevelWarn   = "warn"
+	ContextLevelDanger = "danger"
+)
+
+// AgentContextTitle is how a readout a runtime reported (SetAgentContext) is
+// derived; the chip's popover shows it under the detail.
+const AgentContextTitle = "Context used by the latest model request: its input + cache read + cache write tokens, " +
+	"as the agent reports them (output is not counted: it is in the next request's input), of the model's context window."
+
+// ClaudeContextTitle is how Claude Code's readout (a turn's usage) is
+// derived; its popover shows it under the exact count.
+const ClaudeContextTitle = "Context used by the latest request: its input + cache read + cache write tokens " +
+	"(output is not counted: it is in the next request's input)."
+
+// contextView is THE readout of tokens in context, of a window of limit (0:
+// unknown), on model ("" unknown).
+func contextView(tokens, limit int64, model, title string) *ContextView {
+	v := &ContextView{Tokens: tokens, Limit: limit, Model: model, Name: contextModelName(model), Title: title}
+	v.Count = tokenCount(tokens)
+	exact := groupDigits(tokens)
+	if limit > 0 {
+		v.Count += "/" + tokenCount(limit)
+		// One rounded share for the detail AND the tint, so the chip never
+		// says "(70%)" untinted or "(89%)" red.
+		pct := (tokens*100 + limit/2) / limit
+		exact += " of " + groupDigits(limit) + " tokens (" + strconv.FormatInt(pct, 10) + "%)"
+		switch {
+		case pct >= ContextDangerPct:
+			v.Level = ContextLevelDanger
+		case pct >= ContextWarnPct:
+			v.Level = ContextLevelWarn
+		}
+	} else {
+		exact += " tokens"
+	}
+	v.Label, v.Detail = v.Count, exact
+	if v.Name != "" {
+		v.Label = v.Name + contextSep + v.Count
+	}
+	if model != "" {
+		v.Detail = model + " — " + exact
+	}
+	return v
+}
+
+// contextModelName is model without its provider prefix: what follows its
+// last "/" ("vendor/name" → "name"), or model whole when nothing does.
+func contextModelName(model string) string {
+	if i := strings.LastIndexByte(model, '/'); i >= 0 && i < len(model)-1 {
+		return model[i+1:]
+	}
+	return model
+}
+
+// TakeContext is the context readout when Ops (or SetAgentContext) has drawn
+// a newer one since the last call, else nil — so a batch carries it only
+// when it changed.
 func (t *MirrorTranscript) TakeContext() *ContextView {
-	if !t.fresh || t.usage == nil {
+	if !t.fresh {
 		return nil
 	}
-	t.fresh = false
-	return &ContextView{Tokens: t.usage.Tokens, Label: tokenCount(t.usage.Tokens) + " context"}
+	switch {
+	case t.agentCtx != nil:
+		t.fresh = false
+		c := t.agentCtx
+		return contextView(c.Tokens, c.Limit, c.Model, AgentContextTitle)
+	case t.usage != nil:
+		t.fresh = false
+		return contextView(t.usage.Tokens, 0, "", ClaudeContextTitle)
+	}
+	return nil
+}
+
+// mirrorContextChipID is the header's context chip; mirrorContextPopoverID
+// its full-detail popover. One of each per document.
+const (
+	mirrorContextChipID    = "mv-context"
+	mirrorContextPopoverID = "mv-context-detail"
+)
+
+// mirrorContextChip is the header's context readout (ContextView), drawn
+// empty and hidden: the view script's setContext fills it from a batch's
+// parts. It is a button that opens the exact readout in a popover — the
+// header title's pattern (fullTitlePopover, placed by floatingMenuScript) —
+// so a tap shows it on a phone, and its title shows it on hover.
+//
+// 🔴 IT SHRINKS, NEVER PUSHES. min-w-0 and a max width let it give up room
+// to the header's buttons at a phone's width; inside it only the model name
+// truncates (min-w-0 truncate), the count is shrink-0 — the numbers are what
+// the chip is for. relative z-20: over the title button's 44px hit area
+// (mirrorTitleHitClass, z-10), which spans this row while the title is
+// clipped, so a tap on the chip opens the chip's popover and not the title's.
+// The row's Updating… chip (mirrorUpdatingChip) is z-30, over this one: a
+// long name runs under it at a phone's width, and the stale-page indicator
+// must stay seen (it is pointer-events-none, so a tap still reaches this).
+// The tint is data-level (ContextView.Level), on the warning and error tokens.
+func mirrorContextChip() g.Node {
+	return g.Group{
+		Button(
+			ID(mirrorContextChipID),
+			Type("button"),
+			g.Attr("hidden", ""),
+			g.Attr("title", "Context used"),
+			g.Attr("popovertarget", mirrorContextPopoverID),
+			g.Attr("aria-haspopup", "dialog"),
+			g.Attr("aria-controls", mirrorContextPopoverID),
+			g.Attr("aria-expanded", "false"),
+			Class("press relative z-20 inline-flex min-w-0 max-w-[16rem] items-center gap-1 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus [&[hidden]]:hidden "+
+				"data-[level=warn]:bg-st-warning-bg data-[level=warn]:text-st-warning-fg data-[level=warn]:ring-st-warning-fg/40 "+
+				"data-[level=danger]:bg-st-error-bg data-[level=danger]:text-st-error-fg data-[level=danger]:ring-st-error-fg/40"),
+			Span(g.Attr("data-ctx-name", ""), Class("min-w-0 truncate [&[hidden]]:hidden")),
+			Span(g.Attr("data-ctx-sep", ""), Class("shrink-0 [&[hidden]]:hidden")),
+			Span(g.Attr("data-ctx-count", ""), Class("shrink-0 whitespace-nowrap")),
+		),
+		Div(
+			ID(mirrorContextPopoverID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "dialog"),
+			g.Attr("aria-label", "Context used"),
+			g.Attr("data-floating-menu", ""),
+			Class(fullTitlePopoverClass),
+			Span(g.Attr("data-ctx-detail", ""), Class("[overflow-wrap:anywhere] text-sm font-semibold tabular-nums")),
+			Span(g.Attr("data-ctx-how", ""), Class("text-xs text-muted [&[hidden]]:hidden")),
+		),
+	}
+}
+
+// SetAgentContext records the context fill a runtime reported beside its
+// events (mirror.Msg.Context, cleaned): the readout TakeContext reports
+// next. nil leaves the readout as it is.
+func (t *MirrorTranscript) SetAgentContext(c *mirror.AgentContext) {
+	if c = mirror.CleanAgentContext(c); c != nil {
+		t.agentCtx, t.fresh = c, true
+	}
 }
 
 // tokenCount is n tokens, short: 950, 12k, 124k, 1M, 1.2M.
@@ -472,6 +1033,29 @@ func toolRowID(toolID string) string {
 	return "mt-" + hex.EncodeToString(sum[:8])
 }
 
+// promptMatchRunes bounds a user row's data-prompt: the pending bubble
+// compares only the first pendingMatchChars letters and digits, so the head
+// of the prompt is enough, and a pasted log does not double the page.
+const promptMatchRunes = 2000
+
+// promptHead is the first promptMatchRunes runes of text, up to its first
+// attachment. 🔴 An attachment's line carries its SIGNED link, which the row
+// deliberately never puts on the page (promptBody draws a chip with the
+// /uploads/ route); and only the typed part is compared anyway.
+func promptHead(text string) string {
+	if refs := uploads.FindRefs(text); len(refs) > 0 {
+		text = text[:refs[0].Start]
+	}
+	n := 0
+	for i := range text {
+		if n == promptMatchRunes {
+			return text[:i]
+		}
+		n++
+	}
+	return text
+}
+
 func render(n g.Node) string {
 	var b bytes.Buffer
 	_ = n.Render(&b)
@@ -486,11 +1070,20 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	if t.states == nil {
 		t.states, t.groupOf, t.groups = map[string]string{}, map[string]string{}, map[string][]string{}
 	}
+	// The batch's task refs, primed so its #N mentions cost one read.
+	if t.Mentions != nil {
+		for _, ev := range events {
+			if ev.Kind == cctranscript.KindText {
+				t.Mentions.Prime(ev.Text)
+			}
+		}
+	}
 	var ops []MirrorOp
 	for _, ev := range events {
 		if ev.Usage != nil {
 			t.usage, t.fresh = ev.Usage, true
 		}
+		ops = append(ops, t.observeCost(ev)...)
 		switch ev.Kind {
 		case cctranscript.KindPrompt:
 			// The bubble's id is the prompt's place in its transcript, the id the
@@ -499,10 +1092,15 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// page-unique one (chatIndexScript).
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
-				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), promptBody(ev.Text)))})
+				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""),
+				// data-prompt: the prompt as the transcript holds it, before
+				// markdown draws it — what the composer's pending bubble is
+				// matched against (composer_pending.go), since a link drawn as
+				// its label or a fence drawn as code no longer reads as typed.
+				g.Attr("data-prompt", promptHead(ev.Text)), promptBody(ev.Text)))})
 		case cctranscript.KindText:
 			t.endRun()
-			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdownWith(ev.Text, t.Mentions)))})
 		case cctranscript.KindError:
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(Div(
@@ -528,7 +1126,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			if _, seen := t.calls[ev.ToolID]; seen {
 				// The same call again: redrawn where it is, run and group untouched.
 				t.calls[ev.ToolID] = call
-				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id))})
+				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))})
 				t.states[ev.ToolID] = toolStateRunning
 				if gid, ok := t.groupOf[ev.ToolID]; ok {
 					ops = append(ops, t.groupStateOps(gid)...)
@@ -541,7 +1139,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				t.order = t.order[1:]
 			}
 			t.calls[ev.ToolID] = call
-			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id))...)
+			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))...)
 		case cctranscript.KindToolResult:
 			if qs, isAsk := t.asks[ev.ToolID]; isAsk || (ev.Ask != nil && len(ev.Ask.Questions) > 0) {
 				ops = append(ops, t.askResult(ev, qs, isAsk)...)
@@ -573,13 +1171,26 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 					t.order = t.order[1:]
 				}
 				ops = append(ops, t.appendRow(ev.ToolID, toolChipState(&result),
-					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))...)
+					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, t.ctxBadge(ev.ToolID)))...)
 				continue
 			}
-			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id))})
+			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id, t.ctxBadge(ev.ToolID)))})
 			t.states[ev.ToolID] = toolChipState(&result)
 			if gid, ok := t.groupOf[ev.ToolID]; ok {
 				ops = append(ops, t.groupStateOps(gid)...)
+			}
+			// A page tool's result is followed by its page card (page_card.go),
+			// which ends the run. A "replace" by the card's own id, so a result
+			// the socket sends again redraws the one card (a replace of an
+			// element the page does not have is an append).
+			// The view has no database: it draws a placeholder the page fills
+			// from the server (PageCardPlaceholder) — never the result's title.
+			if ev.OK {
+				if ref, ok := ReadPageToolResult(call.ToolName, ev.Output); ok {
+					t.endRun()
+					cid := PageCardID(ev.ToolID)
+					ops = append(ops, MirrorOp{Op: "replace", ID: cid, HTML: render(PageCardPlaceholder(ref, cid))})
+				}
 			}
 		}
 	}
@@ -606,7 +1217,7 @@ func (t *MirrorTranscript) askCall(ev cctranscript.Event) []MirrorOp {
 		t.asks = map[string][]askq.Question{}
 	}
 	id := toolRowID(ev.ToolID)
-	html := render(MirrorAskCall(id, ev.Ask.Questions))
+	html := render(MirrorAskCall(id, ev.Ask.Questions, t.ctxBadge(ev.ToolID)))
 	_, seen := t.calls[ev.ToolID]
 	t.track(ev.ToolID)
 	t.calls[ev.ToolID] = ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool}
@@ -633,7 +1244,7 @@ func (t *MirrorTranscript) askResult(ev cctranscript.Event, callQs []askq.Questi
 		note = ev.Output
 	}
 	id := toolRowID(ev.ToolID)
-	html := render(MirrorAskResult(id, qs, answers, note))
+	html := render(MirrorAskResult(id, qs, answers, note, t.ctxBadge(ev.ToolID)))
 	if drawn || t.Resumed {
 		return []MirrorOp{{Op: "replace", ID: id, HTML: html}}
 	}
@@ -655,13 +1266,14 @@ func (t *MirrorTranscript) askResult(ev cctranscript.Event, callQs []askq.Questi
 // ⚠ ONLY THE MIRRORED VIEW DRAWS ONE. A dispatched agent's chat is muster's own
 // persisted messages plus ccd's reply stream, which carries a turn's text and
 // tool calls and nothing the harness injects, so no notice ever reaches it.
+// (Its relayed plugin messages borrow this row's frame: relayRow.)
 func noticeRow(ev cctranscript.Event) g.Node {
 	icon, label := "🔔", "task"
 	switch ev.Notice {
 	case cctranscript.NoticeCommandOutput:
 		icon, label = "▸", "output"
-	case cctranscript.NoticeHermes:
-		icon, label = "☤", "hermes"
+	case cctranscript.NoticeOpenCode:
+		icon, label = "◇", "opencode"
 	}
 	// The status as the harness wrote it, drawn the tool rows' way: a known
 	// good one ✓, a known bad one ✗, anything else by name.
@@ -706,31 +1318,205 @@ func mirrorViewScript() g.Node {
 (function () {
   var log = document.getElementById('mv-log');
   if (!log) return;
+` + liveRetryJS + `
   var statusEl = document.getElementById('mv-status');
   var errEl = document.getElementById('mv-error');
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
-  var ctxEl = document.getElementById('mv-context');
+  var ctxEl = document.getElementById('` + mirrorContextChipID + `');
+  var ctxPop = document.getElementById('` + mirrorContextPopoverID + `');
+  // setContext draws the context chip (mirrorContextChip) from a batch's
+  // readout — the server's parts (ui.ContextView), placed as they come: this
+  // spells no label, share or threshold of its own. null hides it.
+  function setContext(c) {
+    function part(sel, text) {
+      var el = (sel === 'detail' || sel === 'how' ? ctxPop : ctxEl).querySelector('[data-ctx-' + sel + ']');
+      el.textContent = text || '';
+      el.hidden = !text;
+    }
+    if (!c) {
+      ctxEl.hidden = true;
+      // A closed popover's hidePopover throws in older engines; none without the API.
+      if (ctxPop.hidePopover) { try { ctxPop.hidePopover(); } catch (e) {} }
+      return;
+    }
+    part('name', c.name);
+    part('sep', c.name ? '` + contextSep + `' : '');
+    part('count', c.count);
+    part('detail', c.detail);
+    part('how', c.title);
+    ctxEl.title = c.detail;
+    if (c.level) ctxEl.setAttribute('data-level', c.level); else ctxEl.removeAttribute('data-level');
+    ctxEl.hidden = false;
+  }
+  // clearQueued empties the region of what Claude Code has queued
+  // (cc_queued.go) — looked up each time: a patch replaces the element. A
+  // view that ended (the window stopped being Claude, the CLI exited) or a
+  // snapshot taken back is no claim that anything is still queued.
+  function clearQueued() {
+    var q = document.getElementById('` + ccQueuedID + `');
+    if (!q) return;
+    q.hidden = true;
+    q.innerHTML = '';
+    q.setAttribute('data-cc-queued', '0');
+  }
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
+  // Liveness (live.go): when the socket last heard anything, whether it has
+  // heard a heartbeat (only then can it be judged stale), when it was made,
+  // and the pending retry of a closed one.
+  var lastAt = 0, beat = false, madeAt = 0, retryTimer = 0;
+  // begun: the page's first connect() has run. Until then the open is still
+  // reading its snapshot (start()), and no socket is not a closed socket.
+  var begun = false;
+  // The snapshot (web/static/mirror-snap.js): what this window's view drew,
+  // replayed at open, then resumed from its offset. snapRef stays null — no
+  // snapshot is read or written — when the store is unavailable. Set in
+  // start(); the store's script ran just before this one (SnapScriptNow).
+  var snap = null, snapRef = null;
+  // 🔴 THE SOCKET OPENS BEFORE THE DOCUMENT HAS FINISHED LOADING; WHAT IT SENDS
+  // IS DRAWN ONLY ONCE IT HAS. The open used to wait for DOMContentLoaded (the
+  // deferred scripts), then for the snapshot read, then for the snapshot's
+  // paint, and only then create the socket — so the host's whole round trip
+  // started after all of it. Now start() runs as this script is parsed: the
+  // snapshot is read at once, the socket is created the moment its resume
+  // point is known, and the paint and every socket event wait for parsed
+  // (DOMContentLoaded), queued in order, so every script that decorates the
+  // conversation is still listening before anything is drawn.
+  var parsed = document.readyState !== 'loading', queued = [];
+  var chip = document.getElementById('mv-updating');
+  // opLog is the batches drawn since the last reset (what a snapshot stores);
+  // provisional: the page shows a snapshot no socket has confirmed yet.
+  // opBytes is opLog's size (JSON characters), held to twice the store's
+  // bound in memory; firstAt is when this conversation was last read in full
+  // from the host (a reset), which ages the snapshot (mirror-snap.js).
+  var opLog = [], opBytes = 0, firstAt = 0, provisional = false, dirty = false, saveTimer = 0, chipTimer = 0;
+  // The open, measured (faro.go's musterOpen; absent while telemetry is off):
+  // opening is the socket's open until its first batch, lastOpen the one a
+  // later disconnect belongs to, and endReason the closed word the server
+  // gave for ending the stream, if it gave one.
+  var opening = null, lastOpen = null, endReason = '';
+  // drawnFor is the open whose first batch has been drawn.
+  var drawnFor = null;
+  // The snapshot store's warming (mirror-snap.js) as the current open began:
+  // a warm pass is another watch on a host, and the open reports how many
+  // started or were running between its start and usable (warm_overlap).
+  // The store's script ran before this one, so it can be read at once.
+  var warmFrom = null;
+  function warmNow() { var s = window.musterSnap; return s && s.warmState ? s.warmState() : null; }
+  function warmOverlap() {
+    var w = warmNow();
+    if (!w || !warmFrom) return 0;
+    return (w.starts - warmFrom.starts) + (warmFrom.inFlight ? 1 : 0);
+  }
 
-  function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
-  function clearError() { errEl.hidden = true; errText.textContent = ''; }
+  function showChip(on) {
+    if (!chip) return;
+    chip.classList.toggle('invisible', !on);
+    chip.setAttribute('aria-hidden', on ? 'false' : 'true');
+  }
+  function remember(m, size) {
+    if (!snapRef) return;
+    if (m.reset) { opLog = []; opBytes = 0; firstAt = Date.now(); }
+    if (!firstAt) firstAt = Date.now();
+    if (snap.worth(m)) { opLog.push(m); opBytes += size; }
+    if (opBytes > 2 * snap.maxBytes) { var b = snap.bound(opLog, snap.maxBytes); opLog = b.batches; opBytes = b.bytes; }
+    dirty = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 800);
+  }
+  function save() {
+    clearTimeout(saveTimer);
+    if (!snapRef || !dirty || provisional || !gen) return;
+    dirty = false;
+    snap.put(snapRef, { gen: gen, offset: offset, batches: opLog, firstAt: firstAt });
+  }
+  // settled: the socket answered, so what is on the page is current.
+  function settled() {
+    provisional = false;
+    clearTimeout(chipTimer);
+    showChip(false);
+    log.removeAttribute('data-snapshot');
+  }
+  // discard: a resume that failed or was refused before its first batch. What
+  // the snapshot painted is taken off the page and out of storage, and the
+  // next socket starts from the beginning.
+  function discard() {
+    settled();
+    clearLog();
+    clearQueued();
+    window.muMirrorIndex = null;
+    setContext(null);
+    document.dispatchEvent(new CustomEvent('muster:chat-index'));
+    gen = ''; offset = 0; opLog = []; opBytes = 0; firstAt = 0; dirty = false;
+    if (snap && snapRef) snap.drop(snapRef);
+  }
+  // paint draws a snapshot through apply() — the path a live batch takes —
+  // and leaves the page provisional until the socket speaks.
+  function paint(rec) {
+    if (opening) { opening.mark('snapshot_paint_start'); opening.count('snapshot_batches', rec.batches.length); }
+    // 🔴 ONE LAYOUT FOR THE WHOLE SNAPSHOT, NOT ONE PER BATCH. apply() reads
+    // the log's scroll position before a batch and writes it after, which
+    // forces a layout of everything drawn so far; a snapshot is tens of
+    // batches, so that was a layout per batch over a growing conversation
+    // (measured: 170–200 ms of a throttled open for 50 batches). A snapshot
+    // opens at its end, so the batches are drawn without reading, and the log
+    // is scrolled once.
+    bulk = true;
+    try { rec.batches.forEach(function (b) { apply(b); }); } finally { bulk = false; }
+    toEnd();
+    if (opening) opening.mark('snapshot_painted');
+    gen = rec.gen; offset = rec.offset;
+    opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
+    // A snapshot's last "busy" is not a claim about now.
+    working.hidden = true;
+    provisional = true;
+    log.setAttribute('data-snapshot', '');
+    // Catching up past a second shows "Updating…" in its reserved slot.
+    chipTimer = setTimeout(function () { if (provisional) showChip(true); }, 1000);
+  }
+
+  // 🔴 THE QUESTION CARDS' REGION (#mv-asks, mirror_ask.go) IS THE LOG'S LAST
+  // CHILD AND STAYS LAST: rows go in before it, and a reset keeps it. It is
+  // askScript's, not the transcript's — a reset is no claim that a question
+  // the hook holds has gone. tail() is it while it is in the log.
+  function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && t.parentNode === log ? t : null; }
+  // 🔴 A RESET KEEPS THE PENDING SENDS (composer_pending.go): a message on its
+  // way is not part of the transcript being redrawn, and its bubble is
+  // settled by the row that arrives for it (reconcile, below).
+  function clearLog() {
+    var t = tail(), ps = window.musterPendingSends ? window.musterPendingSends.kept() : [];
+    log.innerHTML = '';
+    ps.forEach(function (el) { log.appendChild(el); });
+    if (t) log.appendChild(t);
+  }
+  function rowCount() { return log.children.length - (tail() ? 1 : 0); }
+  // toEnd scrolls the conversation to its end — unless a question card that
+  // has just shown holds it (askScript's musterAskHold): then to the card,
+  // from its first line when it is taller than the screen. Every stick to the
+  // end goes through here (a batch, a snapshot's paint, a resize), so a reset
+  // drawn after the card arrived does not scroll the question away.
+  function toEnd() { log.scrollTop = log.scrollHeight; if (window.musterAskHold) window.musterAskHold(); }
+  var errInfo = document.getElementById('mv-error-info');` + hostDetailJS + `
+  function showError(msg, detail) { errText.textContent = msg; setDetail(errInfo, detail); errEl.hidden = false; }
+  function clearError() { errEl.hidden = true; errText.textContent = ''; setDetail(errInfo, ''); }
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-
+  var bulk = false;
   function apply(m) {
-    var stick = nearBottom() || m.reset;
+    var stick = bulk ? false : (nearBottom() || m.reset);
     // The prompt index (chatIndexScript reads it): a Reset starts a transcript
     // over, so its index is gone until the host sends the new one — and a host
     // that predates it never does.
-    if (m.reset) { log.innerHTML = ''; window.muMirrorIndex = null; ctxEl.hidden = true; ctxEl.textContent = ''; }
+    if (m.reset) { clearLog(); window.muMirrorIndex = null; setContext(null); }
     if (m.index) { window.muMirrorIndex = m.index; }
     if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
     // Context usage: only a batch whose usage changed carries it; an older
     // muster or host sends none and the readout stays hidden.
+    // The session this view draws (a gated runtime's: its gen) rides every
+    // message written here (AgentSessionField), so a send names what was shown.
+    if (m.gen) { var shownEl = document.querySelector('input[name="` + AgentSessionField + `"]'); if (shownEl) shownEl.value = m.gen; }
     if (m.context && m.context.label) {
-      ctxEl.textContent = m.context.label;
-      ctxEl.hidden = false;
+      setContext(m.context);
     }
     (m.ops || []).forEach(function (op) {
       // A group's state (tool_groups.go): one attribute, on the group.
@@ -783,43 +1569,205 @@ func mirrorViewScript() g.Node {
         }
       }
       if (op.id) { var dup = document.getElementById(op.id); if (dup) dup.remove(); }
-      // Into a group's body when it is on the page; else at the end, as before.
-      ((op.into && document.getElementById(op.into)) || log).appendChild(frag(op.html));
+      // Into a group's body when it is on the page; else at the end of the
+      // conversation — before the question cards' region (tail).
+      var into = op.into && document.getElementById(op.into);
+      if (into) into.appendChild(frag(op.html)); else log.insertBefore(frag(op.html), tail());
     });
+    // A message sent from this page whose row has just been drawn: its
+    // pending bubble goes in this same task, so the two are never on screen
+    // together (composer_pending.go).
+    if (window.musterPendingSends) window.musterPendingSends.reconcile();
     if (m.gen) gen = m.gen;
     if (typeof m.offset === 'number') offset = m.offset;
     working.hidden = !m.busy;
-    if (!log.firstElementChild) {
-      log.innerHTML = '<p data-mirror-empty class="m-auto text-sm text-muted">No conversation yet.</p>';
+    // A turn is running: no suggestion is for it (suggest_row.go).
+    if (m.busy && window.musterSuggest) window.musterSuggest({ state: 'busy' });
+    if (!rowCount()) {
+      log.insertBefore(frag('<p data-mirror-empty class="m-auto text-sm text-muted">No conversation yet.</p>'), tail());
     } else {
-      var empty = log.querySelector('[data-mirror-empty]'); if (empty && log.children.length > 1) empty.remove();
+      var empty = log.querySelector('[data-mirror-empty]'); if (empty && rowCount() > 1) empty.remove();
     }
-    if (stick) log.scrollTop = log.scrollHeight;
+    if (stick) toEnd();
   }
 
-  function connect() {
+  // painted calls fn once the browser has painted what was just drawn: the
+  // next animation frame, then a task after it (the frame's paint runs
+  // between the two).
+  function nextTask(fn) {
+    if (typeof MessageChannel === 'undefined') { setTimeout(fn, 0); return; }
+    var ch = new MessageChannel();
+    ch.port1.onmessage = function () { fn(); };
+    ch.port2.postMessage(0);
+  }
+  // 🔴 painted calls fn(true) once the browser has painted what was just drawn
+  // — the next animation frame, then a task (the frame's paint runs between)
+  // — or fn(false) after PAINT_WAIT_MS if no frame came (a page the browser is
+  // not rendering), and fn(false) at once in a hidden tab, whose frames do not
+  // run until it is shown: an open there ends at its insertion, flagged
+  // hidden, instead of counting the whole time the tab was in the background
+  // (and being reported as failed if its socket closed meanwhile). At most one
+  // is pending: later batches before it fired add nothing.
+  var PAINT_WAIT_MS = 100, paintPending = false;
+  function painted(fn) {
+    if (document.hidden) { fn(false); return; }
+    if (paintPending) return;
+    paintPending = true;
+    var done = false;
+    var go = function (p) { if (done) return; done = true; paintPending = false; fn(p); };
+    requestAnimationFrame(function () { nextTask(function () { go(true); }); });
+    setTimeout(function () { go(false); }, PAINT_WAIT_MS);
+  }
+  // A socket's events, in order: as they come once the document is parsed,
+  // queued until then. An event of a socket that has since been replaced is
+  // dropped — queued or not.
+  //
+  // 🔴 NOT ONLY ON THE QUEUED PATH. pagehide closes the socket without
+  // detaching it, and its close can be dispatched only after the restore's
+  // pageshow has opened the next one. Applied, that stale close ran onClose for
+  // the NEW socket: sock = null and a retry opened a third socket while the
+  // restore's stayed live and attached — two host streams, and when both
+  // resumed from the same offset, the reply that came meanwhile painted TWICE
+  // (CI flake of bfcache-restore.spec.ts; forced by delaying that close past
+  // pageshow).
+  function deliver(s, fn) {
+    if (!parsed) { queued.push(function () { if (s === sock) fn(); }); return; }
+    if (s === sock) fn();
+  }
+  // drop detaches the current socket and closes it: what it says from now
+  // on is nobody's, and its close is not a disconnect to recover from.
+  function drop() {
+    var old = sock;
+    sock = null;
+    if (!old) return;
+    old.onopen = null; old.onmessage = null; old.onclose = null;
+    try { old.close(); } catch (e) {}
+  }
+  // connect opens the socket; why is the reconnect's reason (live.go) —
+  // nothing for the page's first open.
+  function connect(why) {
+    clearTimeout(retryTimer); retryTimer = 0;
     // Left (pagehide): a pending retry opens nothing.
     if (closed) return;
+    begun = true;
+    // 🔴 ONE SOCKET: one still open or opening is closed before another is made.
+    if (sock && sock.readyState < 2) drop();
     var base = log.getAttribute('data-ws');
+    // A reconnect is an open of its own (the page's first began in start()).
+    if (!opening && window.musterOpen) {
+      opening = window.musterOpen.begin('mirror_view', { resume: !!gen, reconnect: true, reconnect_reason: why || 'retry' });
+      warmFrom = warmNow();
+    }
+    var tp = opening ? opening.tp() : '';
+    endReason = '';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
-      (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '');
+      (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '') + (tp ? '&tp=' + encodeURIComponent(tp) : '');
     statusEl.textContent = 'Connecting…';
-    sock = new WebSocket(url);
-    sock.onopen = function () { retry = 0; };
-    sock.onmessage = function (ev) {
+    var s = sock = new WebSocket(url);
+    madeAt = lastAt = Date.now(); beat = false;
+    if (opening) opening.mark('socket_created');
+    var first = true;
+    s.onopen = function () { lastAt = Date.now(); if (opening) opening.mark('stream_connected'); };
+    s.onmessage = function (ev) {
+      lastAt = Date.now();
+      // A heartbeat says only that the socket is alive.
+      if (ev.data === ` + strconv.Quote(LivePingFrame) + `) { beat = true; return; }
+      if (first && opening) { first = false; opening.mark('first_frame'); }
+      deliver(s, function () { onMessage(ev); });
+    };
+    s.onclose = function (ev) { deliver(s, function () { onClose(ev); }); };
+  }
+  function onMessage(ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { clearError(); statusEl.textContent = 'Live'; apply(m); }
-      else if (m.type === 'error') { showError(m.message || 'The view ended.'); }
+      if (m.type === 'batch') {
+        // A batch is the stream working: the backoff starts over.
+        retry = 0;
+        // The open's FIRST batch (a later one before the paint below is not).
+        var o = opening && opening !== drawnFor ? (drawnFor = opening) : null;
+        if (o) { o.mark('batch_insert_start'); o.count('first_batch_ops', (m.ops || []).length); }
+        if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp();
+        if (o) { o.mark('batch_insert_end'); lastOpen = o; }
+        // The open ends when the browser has PAINTED the batch, not when the
+        // script has inserted it: style, layout and paint of what was
+        // inserted come after, and on a long conversation they are a large
+        // part of it. A disconnect before then ends it with its reason.
+        if (o || !usableSent) painted(function (didPaint) {
+          if (o && opening === o) {
+            if (didPaint) o.mark('first_paint');
+            o.mark('usable');
+            o.flag('hidden', !!document.hidden);
+            o.count('warm_overlap', warmOverlap());
+            o.end('ok');
+            opening = null;
+          }
+          viewUsable();
+        });
+      }
+      else if (m.type === 'error') {
+        clearQueued();
+        endReason = m.reason || 'error';
+        if (provisional) discard(); showError(m.message || 'The view ended.', m.detail || ''); caughtUp();
+      }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
-    };
-    sock.onclose = function () {
+      // Suggested replies (suggest_row.go): pending, ready or none.
+      else if (m.type === 'suggest') { if (window.musterSuggest) window.musterSuggest(m); }
+  }
+  function onClose(ev) {
       statusEl.textContent = 'Disconnected — reconnecting…';
       working.hidden = true;
       if (closed) return;
-      retry = Math.min(retry + 1, 6);
-      setTimeout(connect, 500 * Math.pow(2, retry - 1));
-    };
+      // Why, reported (faro.go): the server's closed word when it said one,
+      // else the socket's close code; and whether it happened before the view
+      // had drawn anything (opening) or while it was live.
+      var o = opening || lastOpen, why = endReason || ('closed_' + (ev && ev.code));
+      if (opening) { opening.flag('hidden', !!document.hidden); opening.count('warm_overlap', warmOverlap()); opening.end(why); }
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, retry: retry });
+      opening = null;
+      // Closed before its first batch (refused, signed out, gone): the
+      // snapshot is not shown as current.
+      if (provisional) discard();
+      sock = null;
+      retry++;
+      // A hidden or offline page waits for its wake (live.go).
+      if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
+  }
+  // wake (restore.go): a closed socket reconnects at once; an open one that
+  // has heard no heartbeat for staleMs is replaced; one still opening is left
+  // to finish, unless it has been opening for longer than that too.
+  function wake(why, staleMs) {
+    // 🔴 NOT BEFORE THE FIRST OPEN: a wake during the snapshot read (a tick,
+    // the frame's focus) would open a from-the-start socket that the open
+    // then replaces — a second host stream for every view opened.
+    if (closed || !begun) return;
+    var now = Date.now();
+    if (!sock || sock.readyState > 1) {
+      if (!liveCanRetry() || (why === 'tick' && retryTimer)) return;
+      retry = 0;
+      connect(why === 'tick' ? 'retry' : why);
+      return;
+    }
+    if (sock.readyState === 0) { if (now - madeAt > staleMs) { replace(why); } return; }
+    if (beat && now - lastAt > staleMs) replace(why);
+  }
+  // replace swaps a socket that looks open but is dead for a new one,
+  // resuming from what the page drew; its open says why.
+  function replace(why) {
+    var o = opening || lastOpen;
+    if (o) o.disconnected('stale', { phase: opening ? 'opening' : 'live', retry: retry });
+    if (opening) { opening.end('stale'); opening = null; }
+    if (provisional) discard();
+    drop();
+    retry = 0;
+    connect(why === 'tick' ? 'stale' : why);
+  }
+  // viewUsable tells the page's other scripts that the open is over (the
+  // snapshot store's warming waits for it on this page: mirror-snap.js).
+  var usableSent = false;
+  function viewUsable() {
+    if (usableSent) return;
+    usableSent = true;
+    document.dispatchEvent(new CustomEvent('muster:view-usable'));
   }
   // The log's box shrinks when the keyboard opens or the composer grows: a
   // reader at the end stays at the end, rather than the last message sliding
@@ -827,10 +1775,101 @@ func mirrorViewScript() g.Node {
   var atEnd = true;
   log.addEventListener('scroll', function () { atEnd = nearBottom(); }, { passive: true });
   if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
+    new ResizeObserver(function () { if (atEnd) toEnd(); }).observe(log);
   }
-  window.addEventListener('pagehide', function () { closed = true; if (sock) sock.close(); });
-  connect();
+  // 🔴 NO STORAGE WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
+  // CACHE. A save is a chain of storage transactions, and one still running
+  // when the page is frozen there evicts it (measured, Chromium 153: Back
+  // reloaded the view, CDP reason IgnoreEventAndEvict, whenever the page was
+  // left within the save delay of a batch; with the store's put stubbed out it
+  // was restored). So a page that MAY be kept (pagehide persisted) saves
+  // nothing as it goes; one that is going for good saves, as before. Skipping
+  // it costs only freshness: the stored snapshot is the last one saved, whole
+  // at its own offset, and a later open resumes from there.
+  var leaving = false;
+  window.addEventListener('pagehide', function (e) { closed = true; clearTimeout(retryTimer); leaving = !!e.persisted; if (!e.persisted) save(); if (sock) sock.close(); });
+  // Back and Forward (restore.go): the pagehide above closed the socket; a
+  // restore opens it again, resuming from the offset the page already drew,
+  // so nothing is painted twice. Caught up is the socket's first answer.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  ` + restoreJoinJS(`{
+    show: function (why) {
+      closed = false; leaving = false; retry = 0;
+      return new Promise(function (resolve) {
+        restoring = resolve;
+        if (!sock || sock.readyState > 1) connect(why || 'pageshow');
+      });
+    },
+    wake: wake
+  }`) + `
+  // Leaving fires visibilitychange BEFORE pagehide, so the hidden save waits
+  // a quarter second and is skipped once pagehide has said the page may be kept:
+  // a tab that was only switched away gets no pagehide and saves then.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) setTimeout(function () { if (!leaving) save(); }, 250);
+  });
+  // Open: read this window's snapshot, if there is one this user may see,
+  // and connect — resuming from its offset — as soon as the read is done.
+  // Storage that is slow or absent costs at most readWaitMs, then the socket
+  // opens without it. The snapshot is painted once the document is parsed
+  // (whenParsed), before any socket event is applied.
+  var toPaint = null;
+  function start() {
+    // The page's first open begins HERE, before the snapshot read: faro-init
+    // loads the telemetry once no open is running (musterOpen.quiet), and an
+    // open begun only when the read had ended could be missed by that.
+    if (window.musterOpen) {
+      var o = opening = window.musterOpen.begin('mirror_view');
+      warmFrom = warmNow();
+      // The document's milestones, as they come.
+      var nav = function () {
+        try {
+          var n = performance.getEntriesByType('navigation')[0];
+          if (n && n.domContentLoadedEventStart > 0) o.markAt('dom_content_loaded', n.domContentLoadedEventStart);
+          if (n && n.loadEventStart > 0) o.markAt('load', n.loadEventStart);
+        } catch (e) {}
+      };
+      if (document.readyState === 'complete') nav(); else window.addEventListener('load', nav);
+      document.addEventListener('DOMContentLoaded', nav);
+    }
+    snap = window.musterSnap && window.musterSnap.enabled ? window.musterSnap : null;
+    snapRef = snap ? snap.refOf(log.getAttribute('data-ws')) : null;
+    if (!snapRef) { if (opening) { opening.attr('snapshot', 'off'); opening.flag('resume', false); } connect(); return; }
+    var started = false;
+    if (opening) opening.mark('snapshot_read_start');
+    function go(rec, outcome) {
+      if (started) return;
+      started = true;
+      // The read's outcome: hit, miss or timeout (a closed word).
+      if (opening) { opening.mark('snapshot_read_end'); opening.attr('snapshot', outcome); opening.flag('resume', !!rec); }
+      // The resume point is known: the socket opens now, and the snapshot is
+      // painted in this same task when the document is parsed (no socket
+      // event can come in between), else once it is.
+      if (rec) { gen = rec.gen; offset = rec.offset; }
+      connect();
+      if (rec) { if (parsed) paintSnapshot(rec); else toPaint = rec; }
+    }
+    var wait = setTimeout(function () { go(null, 'timeout'); }, snap.readWaitMs);
+    snap.get(snapRef).then(function (rec) { clearTimeout(wait); go(rec, rec ? 'hit' : 'miss'); }, function () { clearTimeout(wait); go(null, 'miss'); });
+  }
+  // paintSnapshot paints rec, which the socket is already resuming from. A
+  // snapshot that cannot be painted is discarded, and the socket replaced by
+  // one from the beginning.
+  function paintSnapshot(rec) {
+    try { paint(rec); } catch (e) {
+      discard();
+      drop();
+      connect();
+    }
+  }
+  function whenParsed() {
+    if (toPaint) { var rec = toPaint; toPaint = null; paintSnapshot(rec); }
+    parsed = true;
+    queued.splice(0).forEach(function (fn) { fn(); });
+  }
+  start();
+  if (parsed) whenParsed(); else document.addEventListener('DOMContentLoaded', whenParsed);
 
 })();
 `))

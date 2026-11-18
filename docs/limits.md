@@ -1,10 +1,42 @@
 # Limits, stated plainly
 
+## At a glance
+
+The limits most people meet first. Running one replica and an interactive
+mirror being a shell on its host are under [Deployment](#deployment) and
+[Mirroring](#mirroring).
+
+- **Linux.** No Windows. macOS hosts are experimental: see
+  [Mirroring](#mirroring).
+- **muster assumes sessions run without permission prompts.** Start your own
+  Claude Code sessions in `bypassPermissions` or auto mode. The agents a host
+  starts for your chief start in their normal permission mode unless that
+  host opts in with `-agent-spawn-skip-permissions`
+  ([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)),
+  and owner-authority calls from such a host need your phone
+  ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)).
+  A Claude Code permission prompt that does appear is answered in the Terminal
+  view: the chat view refuses to type into a waiting prompt, and there is no
+  one-tap approve ([sending-and-step-up.md](sending-and-step-up.md)).
+- **Codex and Gemini CLI get no waiting push** and no ask tool: they are
+  terminal views. The message box sends to opencode only on an opted-in host
+  ([mirroring.md](mirroring.md#sending-to-opencode)).
+- **It needs Docker on one machine and tmux on every machine**, and Tailscale
+  for your phone and other machines; what each machine needs is checked by
+  [INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine). muster sees
+  only sessions inside tmux.
+- **It is a PWA, not a native app.** On iOS, install it to the Home Screen
+  before it can receive push.
+- **Agent dispatch is opt-in and only lightly proven.** It needs Kubernetes:
+  the Helm chart in `charts/muster` installs it ([kubernetes.md](kubernetes.md)).
+
 ## Deployment
 
-- **Run one replica.** `internal/db` holds no lease, so the daily retention pass
-  and the idle-task reaper run on every pod. Both are idempotent, so a second
-  replica duplicates work rather than effects. But other state lives only in
+- **Run one replica.** `internal/db` holds no lease, so the daily retention pass,
+  the idle-task reaper and the stopped-agent reaper run on every pod. The first
+  two are idempotent, and the stopped-agent reaper claims each agent with a
+  conditional update before destroying it, so a second replica duplicates work
+  rather than effects. But other state lives only in
   memory: the mirror tunnel, the approval-relay ledger, and the send-nonce table.
   A second replica would split all three. The kickoff, status and memo loops use
   per-row claims and are safe either way.
@@ -15,11 +47,13 @@
 
 ## Agents
 
-- **The provisioner has two drivers, and neither has run against a real cluster
-  from this tree.** The Kubernetes driver's tests use a fake clientset. A fake
-  cannot see scheduling, image pulls, volume attachment, admission, or the exec
-  stream. A green suite there means the manifests are what the code says, not
-  that a pod came up.
+- **The Kubernetes driver has not run against a real cluster from this tree.**
+  Its tests use a fake clientset. A fake cannot see scheduling, image pulls,
+  volume attachment, admission, or the exec stream. A green suite there means
+  the manifests are what the code says, not that a pod came up.
+- **The compose driver's own tests use a temporary directory and a fake status
+  probe.** They pin what it writes to the shared volume and how it reads the
+  container's answer, not that a container acted on it.
 - **A first turn against an agent this binary provisioned has not been verified
   in-repo.** `internal/agentkickoff`'s seam test runs the real adapter, deliverer
   and gateway against a fake runtime over HTTP. A real turn needs
@@ -41,9 +75,23 @@
     of cluster it is on.
 
   Either way, the agent can still resolve names and send anything it holds to any
-  public HTTPS host. A `gateway`-kind agent gets no NetworkPolicy at all. And a
+  public HTTPS host. The exception is an **officer instance**, whose policy has
+  no public rule and no DNS rule at all (muster's connect port only); the
+  operator allows name-filtered DNS and the Anthropic API to it by name, with
+  the network plugin's own policy
+  ([officers.md](officers.md#the-instances-network)). With that policy live,
+  DNS tunnelling is closed for it, but `api.anthropic.com` stays a
+  full-bandwidth channel for anyone with their own Anthropic API key. A
+  `gateway`-kind agent gets no NetworkPolicy at all. And a
   NetworkPolicy is only a declaration: the cluster's network plugin enforces it
   or does not, and muster cannot tell which.
+
+  🔴 **The `claude-code` chief runs every tool without a prompt AND keeps public
+  egress** — the one agent with the bypass and without the officers' lock
+  (operator decision, an accepted risk). It reads untrusted text (plugin
+  messages, task notes, mail), so a message could try to make it send
+  `CLAUDE_CODE_OAUTH_TOKEN` or its muster token to any public HTTPS host, and no
+  prompt would stop it ([chief.md](chief.md#the-chief-runs-without-permission-prompts)).
 - **A machine job does not survive a restart, and its timeout does not stop the
   agent's turn.** The job API runs each job's turn inside the server process. A
   graceful shutdown fails the jobs that server holds (`interrupted`); after a
@@ -61,16 +109,29 @@
   isolation, such as an egress policy. Pool workers serve public repositories
   only. See [jobs.md](jobs.md).
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
-  eligible tasks. The one automatic start is the chief's `task_dispatch`
-  ([task routing](plugins.md#task_dispatch-the-guards)), off by default.
+  eligible tasks. The one automatic start is the chief's `agent_dispatch`
+  ([task routing](plugins.md#agent_dispatch-the-guards)), off by default.
 - **"Draft pull requests only" is an instruction to the agent the chief
   starts, not a check.** muster does not inspect the pull request an agent
   opens; the `github` connector's approval is the control.
 
 ## Mirroring
 
-- 🔴 **`-interactive` is a shell on the host** for anyone who can use muster's
-  Live keys switch for it ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
+- **macOS hosts are experimental, and have no Terminal view.** The Terminal
+  view's attach is Linux-only today (`internal/mirrorhost/pty_other.go`), so
+  on a Mac only a Claude Code window whose Rendered view resolves can be
+  viewed; shells, Codex and windows without a Rendered view cannot.
+- **The macOS process lookup has not been run on a real Mac yet.** On macOS,
+  muster-mirror finds Claude Code with `ps`, the `kern.procargs2` sysctl and
+  `lsof` instead of `/proc` ([mirroring.md](mirroring.md#how-a-panes-transcript-is-found)).
+  Its parsers are tested against the documented formats, not against
+  captured output. If a Mac's Claude Code windows still open in the Terminal
+  view only, the line at the top says which step failed.
+- **On macOS, only Claude Code is looked up that way.** opencode windows, and the count of a Claude Code session's background shells, still
+  read `/proc`, so on a Mac they are not found.
+- 🔴 **`-interactive` is a shell on the host** for anyone who can type into its
+  Terminal view in muster — live keys are always on there, behind a recent
+  sign-in ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
 - **While a window is being viewed, its viewer session is visible to tmux
   tooling** (`tmux ls`, session pickers, hooks).
 - **Scrolling history puts the pane itself in copy-mode**, for everyone attached
@@ -112,3 +173,10 @@ What the audit still accepts is written out in the module beside the table:
   extract);
 - IPv6 in any form;
 - the fixtures of every file the gate does scan.
+
+**The denied-name check needs its key.** Without `MUSTER_LEAKSCAN_KEY` a local
+run skips it (with a warning), and so does a pull request from a fork, which
+GitHub gives no secrets. The run on `main` after the merge has the key. A name
+matches anywhere inside one word of an identifier, and as a run of whole
+camelCase words (`<Na><Me>`). A name split by a separator (`<na>-<me>`), or one
+whose camelCase run would start or end inside a word, does not match.

@@ -169,10 +169,20 @@ type Config struct {
 	ScopeMap ScopeMap
 	// Logger is optional. No line it is given ever carries memo text.
 	Logger *log.Logger
+	// TurnHold, when set, is called with the agent as a memo turn is sent and
+	// returns the function that ends it: cmd/muster-server passes
+	// api.Server.OutcomeHold, so a dispatched agent reading a memo (a claude-code
+	// turn streams nothing until it ends) is working to the outcome watchdog,
+	// never "silent", and the memo turn's reply is judged as nothing. Optional.
+	TurnHold func(a agents.Agent) (release func())
 }
 
 // Relay delivers memos. Build it with [New].
 type Relay struct {
+	// session picks the chat session a memo turn runs in, and the context it is
+	// sent under — carrying that session's route (SetSession); nil: the
+	// agent's latest, on ctx as it is.
+	session  func(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error)
 	agents   agents.Store
 	taskRepo func(context.Context, int64) (string, error)
 	gw       Gateway
@@ -184,6 +194,7 @@ type Relay struct {
 	owner string
 	log   *log.Logger
 	turn  time.Duration
+	hold  func(a agents.Agent) (release func())
 
 	wg       sync.WaitGroup
 	done     chan struct{}
@@ -218,7 +229,7 @@ func New(cfg Config) (*Relay, error) {
 		agents: cfg.Agents, taskRepo: cfg.TaskRepo, gw: cfg.Gateway, src: cfg.Source, ledger: cfg.Ledger,
 		prefix: agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
 		scopes: cfg.ScopeMap,
-		log:    cfg.Logger, turn: DefaultTurnTimeout,
+		log:    cfg.Logger, turn: DefaultTurnTimeout, hold: cfg.TurnHold,
 		done: make(chan struct{}),
 		sent: map[int64]map[Key]bool{}, said: map[int64]string{},
 		counts: map[string]int{},
@@ -314,6 +325,9 @@ func (r *Relay) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list agents: %w", err)
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	rows = agents.ProvisionedOnly(rows)
 	byScope := map[string][]agents.Agent{}
 	listed := map[int64]bool{}
 	for _, a := range rows {
@@ -429,7 +443,7 @@ func (r *Relay) classify(ctx context.Context, a agents.Agent) (scopes []string, 
 		// while the CLI starts, and through all of that the row reads as kicked off. What
 		// keeps a memo out of THAT window is the session claim deliver takes.
 		return nil, ResultKickoffOwed
-	case a.HooksToken == "":
+	case !r.hasToken(ctx, a):
 		return nil, ResultNoToken
 	}
 	if s := r.scopes.scopesFor(a.Repo); len(s) > 0 {
@@ -458,6 +472,14 @@ func (r *Relay) say(a agents.Agent, result string) {
 		return
 	}
 	r.log.Printf("memorelay: agent %d (%s) is sent no memos: %s", a.ID, a.Name, result)
+}
+
+// hasToken reports whether a has a stored hooks token. a came from a list,
+// which carries no credentials (agents.Secrets), so it is read by id; a read
+// that fails counts as none, and the agent is counted, not sent.
+func (r *Relay) hasToken(ctx context.Context, a agents.Agent) bool {
+	s, err := r.agents.Secrets(ctx, a.ID)
+	return err == nil && s.HooksToken != ""
 }
 
 // forget drops per-agent memory of agents that are no longer listed.
@@ -548,7 +570,8 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	defer cancel()
 
 	// 🔴 THE AGENT'S SESSION CLAIM IS TAKEN FIRST, AND IT IS THE SAME CLAIM A FIRST TURN HOLDS
-	// (agents.Store.ClaimKickoff). internal/agentkickoff stamps a row kicked-off BEFORE it sends
+	// (taken here with agents.Store.ClaimKickoffForDelivery, which also loses while the owner's
+	// typed turn is in flight). internal/agentkickoff stamps a row kicked-off BEFORE it sends
 	// the first turn and then re-sends it for minutes while the CLI starts; all that time the
 	// row reads as eligible here. A memo that took the session in that window would leave the
 	// first turn answered `busy` — recorded as failed, never retried — and the agent would never
@@ -557,7 +580,7 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	//
 	// It is also what makes "once" hold across PROCESSES: two replicas cannot be inside this
 	// section for one agent, and the winner re-reads the row and the ledger below.
-	won, err := r.agents.ClaimKickoff(ctx, a.ID, r.owner, turn+claimMargin)
+	won, err := r.agents.ClaimKickoffForDelivery(ctx, a.ID, r.owner, turn+claimMargin)
 	if err != nil {
 		r.count(familyDelivery, ResultClaimFailed)
 		r.log.Printf("memorelay: agent %d (%s): the session claim could not be taken; sending nothing: %v", a.ID, a.Name, err)
@@ -601,14 +624,19 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 		r.count(familyDelivery, ResultUnresolved)
 		return
 	}
-	sess, err := r.agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	// 🔴 SENT UNDER THE SESSION'S ROUTE (sctx): ccd routes a turn by its
+	// X-Muster-CC-Session header, never by the body's session key, so without
+	// it a memo to a chief whose primary is a lane was pasted into ccd's
+	// ORIGINAL CLI — after a fresh primary, the archived conversation (PR #609
+	// round 2 N3).
+	sctx, sess, err := r.sessionFor(ctx, a)
 	if err != nil {
 		r.count(familyDelivery, ResultNoSession)
 		return
 	}
 
 	message := Render(scope, batch)
-	reply, err := r.gw.Send(ctx, target, sess.SessionKey, message, nil)
+	reply, err := r.send(sctx, a, target, sess.SessionKey, message)
 	if result := unsent(err); result != "" {
 		r.count(familyDelivery, result)
 		return
@@ -664,11 +692,47 @@ func failureNote(err error) string {
 	switch {
 	case errors.As(err, &rt):
 		return fmt.Sprintf(" (the runtime answered HTTP %d, type %q)", rt.Status, rt.Type)
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded) || agents.IsClientTimeout(err):
 		return " (the turn outlived its budget)"
 	case errors.Is(err, context.Canceled):
 		return " (the turn was cut off, most likely by this process shutting down)"
 	default:
 		return fmt.Sprintf(" (the send failed: %T)", err)
 	}
+}
+
+// send is one memo turn to a, held for its duration (Hold) and released on
+// every return.
+func (r *Relay) send(ctx context.Context, a agents.Agent, target agentgateway.Target, key, message string) (string, error) {
+	defer r.Hold(a)()
+	return r.gw.Send(ctx, target, key, message, nil)
+}
+
+// Hold holds a's turn the way every memo turn to it is held (Config.TurnHold)
+// and returns the release; a no-op without a TurnHold.
+func (r *Relay) Hold(a agents.Agent) (release func()) {
+	if r.hold == nil {
+		return func() {}
+	}
+	return r.hold(a)
+}
+
+// SetSession sets how the relay picks the chat session a memo turn runs in,
+// and the context it is sent under: cmd/muster-server passes
+// api.Server.DeliveryRoute, so a memo for the CHIEF (classify has no chief
+// exclusion) goes to its PRIMARY chat — never a side chat, which "latest" can
+// be — on that chat's route (its ccd lane, pinned), and any other agent's to
+// its latest, as before. Call it before Start.
+func (r *Relay) SetSession(fn func(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error)) {
+	r.session = fn
+}
+
+// sessionFor is the chat session a memo turn for a runs in and the context to
+// send it under (SetSession).
+func (r *Relay) sessionFor(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error) {
+	if r.session != nil {
+		return r.session(ctx, a)
+	}
+	sess, err := r.agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	return ctx, sess, err
 }

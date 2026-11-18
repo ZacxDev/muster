@@ -27,14 +27,16 @@ import (
 // (e2e/tests/mirrored.spec.ts builds it). It replaces tmux with a fake whose
 // sessions are MUSTER_MIRROR_E2E_SESSIONS (comma-separated) and whose terminal
 // prints, on screen, exactly what reached it: `FAKE-MIRROR session=<s>
-// mode=ro|rw`, `size=CxR` per resize and `in=<HEX>` per input chunk. The dial,
+// mode=ro|rw`, `size=CxR` per resize and `in=<HEX>` per input chunk (plus, when
+// MUSTER_MIRROR_E2E_PROMPT is set, canned prompt lines it draws itself). The dial,
 // the token, the registration, the tunnel and everything in muster are real.
 //
 // THE RENDERED VIEW (tunnel v2): with MUSTER_MIRROR_E2E_CLAUDE=<session>=<path>
 // that session's "pane" runs Claude Code writing the transcript at <path> — a
 // real JSONL file the spec appends records to while a turn "runs", read by the
 // real tailer. Its session id is the file's basename; it is busy while
-// <path>.busy exists. A paste is appended to the transcript as a prompt record
+// <path>.busy exists, and is NOT a Claude pane at all while <path>.gone
+// exists (the CLI exited: the view ends). A paste is appended to the transcript as a prompt record
 // (what the CLI would write on receiving it) and to <path>.pasted, so the spec
 // sees both. Unset, no session is a Claude pane — the v1-era behaviour the
 // terminal tests above rely on.
@@ -51,7 +53,7 @@ import (
 // lines, re-read on every listing so a spec can close, renumber or re-order
 // them:
 //
-//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>[|<identity colour>]]]
+//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>[|<identity colour>[|<why no rendered view>]]]]
 //
 // A window's active "pane" is `%e2e-<session>-<window id>`. Its terminal prints
 // `FAKE-MIRROR session=<s> window=<id> mode=ro|rw`, so a spec sees WHICH window
@@ -59,6 +61,18 @@ import (
 // exactly as MUSTER_MIRROR_E2E_CLAUDE's session does; a paste into such a
 // window is recorded in <transcript>.pasted, and one into any other window in
 // MUSTER_MIRROR_E2E_PASTE_FILE — each with the pane it reached.
+//
+// THE CLAUDE PROMPT GUARD: every Claude pane (claudeFake's, and each
+// windowFake Claude window) has both of the guard's capabilities, as tmux
+// does. Its SCREEN is <transcript>.screen when that exists, else Claude
+// Code's idle prompt. Its paste is the REAL checked paste
+// (mirrorhost.CheckedPaste): the text lands in <transcript>.typed (the input
+// box), then — only if the check before the Enter passes — the Enter records
+// it as above. While the text is unsubmitted it is in <transcript>.box, and
+// the screen's input box shows it (so the guard's empty-box check sees it).
+// While <transcript>.prompt-on-paste exists, the text landing
+// opens a permission prompt: the status file is rewritten to waiting and the
+// screen to a permission prompt, as the CLI would show one.
 //
 // AN OLDER HOST: with MUSTER_MIRROR_E2E_NO_PROMPT_INDEX=1 the host sends no
 // prompt index (mirrorhost.Config.NoPromptIndex), as one from before it did.
@@ -92,6 +106,12 @@ import (
 // request, which is what an older muster-mirror does: muster must then offer
 // the built-in commands alone.
 //
+// LIVE PREVIEWS: with MUSTER_MIRROR_E2E_PREVIEWS_FILE the host reports the
+// per-window preview counts that file holds (mirrorhost.Config.Previews), re-
+// read on every refresh, one `<window id> <offered> <open>` line per window; a
+// missing or empty file is none. So a spec turns a window's Preview button on
+// and off without a preview gateway (previews.spec.ts drives the real one).
+//
 // THE REFRESH: MUSTER_MIRROR_E2E_REFRESH (a Go duration) is how often the host
 // re-reads its windows, instead of mirrorhost's 5 s default, so the send-queue
 // spec waits for a status flip to reach muster rather than for a fixed 5 s
@@ -112,9 +132,20 @@ func init() {
 	e2eNoCatalog = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_CATALOG") == "1" }
 	e2eNoSubagents = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_SUBAGENTS") == "1" }
 	e2eNoWork = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_WORK") == "1" }
+	e2ePreviews = func() func() map[string]mirror.WindowPreviews {
+		f := os.Getenv("MUSTER_MIRROR_E2E_PREVIEWS_FILE")
+		if f == "" {
+			return nil
+		}
+		return func() map[string]mirror.WindowPreviews { return e2ePreviewsOf(f) }
+	}
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
-			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+			b = &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+		}
+		// The agent-close fake (e2eclose.go): only with MUSTER_MIRROR_E2E_CLOSE.
+		if wf, ok := windowFakeIn(b); ok && e2eCloseOn() {
+			b = &closeFake{Backend: b, w: wf}
 		}
 		return b
 	}
@@ -141,6 +172,9 @@ func (c claudeFake) ClaudePanes(_ context.Context, sessions []string) map[string
 	out := map[string]mirrorhost.ClaudePane{}
 	for _, s := range sessions {
 		if s == c.session {
+			if _, err := os.Stat(c.path + ".gone"); err == nil {
+				continue // the CLI exited: no Claude pane
+			}
 			_, err := os.Stat(c.path + ".busy")
 			out[s] = mirrorhost.ClaudePane{Pane: claudeFakePane, PID: 1, Transcript: c.path,
 				Gen: strings.TrimSuffix(filepath.Base(c.path), ".jsonl"), Busy: err == nil}
@@ -185,6 +219,97 @@ func (c claudeFake) PastePane(ctx context.Context, pane, text string) error {
 }
 
 const claudeFakePane = "%9"
+
+// e2eIdleScreen is Claude Code at its idle prompt; e2ePromptScreen at a
+// permission prompt (the shape ccdialog reads: the prompt below the last rule,
+// its footer last).
+const (
+	e2eRule         = "────────────────────────────────────────"
+	e2eIdleScreen   = "● done\n\n" + e2eRule + "\n❯ \n" + e2eRule + "\n  ? for shortcuts\n"
+	e2ePromptScreen = "● Bash(touch /tmp/x)\n\n" + e2eRule + "\n Bash command\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n"
+)
+
+// claudeScreenOf is the screen of the Claude pane writing transcript:
+// <transcript>.screen as written, else the idle prompt with the input box
+// holding <transcript>.box (what was pasted and not yet submitted).
+func claudeScreenOf(transcript string) (string, error) {
+	b, err := os.ReadFile(transcript + ".screen")
+	if err == nil {
+		return string(b), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	box, err := os.ReadFile(transcript + ".box")
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if len(box) == 0 {
+		return e2eIdleScreen, nil
+	}
+	return "● done\n\n" + e2eRule + "\n❯ " + strings.SplitN(string(box), "\n", 2)[0] + "\n" + e2eRule + "\n  ? for shortcuts\n", nil
+}
+
+// checkedClaudePaste is the guard's checked paste into the Claude pane
+// writing transcript: the text into <transcript>.typed, and the Enter is
+// enter (what a plain paste records).
+func checkedClaudePaste(ctx context.Context, transcript, pane, text string, enter func() error, before, beforeEnter func(context.Context) error) error {
+	return mirrorhost.CheckedPaste(ctx,
+		func(context.Context) error {
+			fh, err := os.OpenFile(transcript+".typed", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				return err
+			}
+			_, err = fh.WriteString(pane + " " + text + "\n")
+			_ = fh.Close()
+			if err != nil {
+				return err
+			}
+			// The text is in the input box until an Enter submits it.
+			if err := writeAtomic(transcript+".box", []byte(text)); err != nil {
+				return err
+			}
+			if _, err := os.Stat(transcript + ".prompt-on-paste"); err == nil {
+				st, _ := json.Marshal(map[string]any{"status": "waiting", "statusUpdatedAt": time.Now().UnixMilli()})
+				if err := writeAtomic(transcript+".status", st); err != nil {
+					return err
+				}
+				return writeAtomic(transcript+".screen", []byte(e2ePromptScreen))
+			}
+			return nil
+		},
+		func(context.Context) error {
+			// Submitted: the box is empty again.
+			if err := os.Remove(transcript + ".box"); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return enter()
+		},
+		before, beforeEnter)
+}
+
+// writeAtomic replaces path with b by a rename, so the host's own re-reads
+// never see it half-written.
+func writeAtomic(path string, b []byte) error {
+	tmp := path + ".tmp-e2e"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ClaudeScreen implements mirrorhost.ClaudeScreenBackend for the one Claude pane.
+func (c claudeFake) ClaudeScreen(_ context.Context, pane string) (string, error) {
+	if pane != claudeFakePane {
+		return "", fmt.Errorf("pane %s is not the Claude pane", pane)
+	}
+	return claudeScreenOf(c.path)
+}
+
+// PasteChecked implements mirrorhost.ClaudeCheckedPaster.
+func (c claudeFake) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return checkedClaudePaste(ctx, c.path, p.Pane, text, func() error { return c.Paste(ctx, p, text) }, before, beforeEnter)
+}
 
 type fakeBackend struct{}
 
@@ -280,6 +405,41 @@ func (fakeBackend) WindowSize(context.Context, string) (termsize.Size, error) {
 	return termsize.Size{Cols: c, Rows: r}, nil
 }
 
+// e2eAttachQueries is what the fake writes after its banner on every attach
+// when MUSTER_MIRROR_E2E_QUERIES=1: the terminal queries a real tmux sends a
+// client as it attaches — Primary and Secondary Device Attributes, a cursor
+// position report — and focus reporting turned on. A terminal emulator ANSWERS
+// each on its own, with no key pressed (xterm.js's onData), which is what a
+// spec about input nobody typed needs to see.
+func e2eAttachQueries() string {
+	if os.Getenv("MUSTER_MIRROR_E2E_QUERIES") != "1" {
+		return ""
+	}
+	return "\x1b[c\x1b[>c\x1b[6n\x1b[?1004h"
+}
+
+// e2ePrompt is what the fake writes last on every attach when
+// MUSTER_MIRROR_E2E_PROMPT is set: its lines (separated by "|"), drawn so the
+// last one sits on the window's BOTTOM row, where a real shell's prompt is
+// once it has any history. Without it the fake's only text is its banner on
+// row 1, which a window taller than the page never shows: the Terminal view
+// holds an overflowing view at its bottom on purpose (terminal.go, atBottom),
+// so row 1 is scrolled out of sight (#623). The cursor is put on the last row
+// with a row past any window's height (a terminal clamps it), then moved up to
+// the first of the lines; no newline follows the last one, so nothing scrolls.
+func e2ePrompt() string {
+	v := os.Getenv("MUSTER_MIRROR_E2E_PROMPT")
+	if v == "" {
+		return ""
+	}
+	lines := strings.Split(v, "|")
+	up := ""
+	if len(lines) > 1 {
+		up = fmt.Sprintf("\x1b[%dA", len(lines)-1)
+	}
+	return "\x1b[9999;1H" + up + strings.Join(lines, "\r\n")
+}
+
 // edgeLine is a ruler ending exactly at the client's last column with
 // RIGHT-EDGE, so a browser test can scroll to it: on a client wider than the
 // page it is off-screen until scrolled.
@@ -298,7 +458,7 @@ func (fakeBackend) Attach(_ context.Context, session string, readOnly bool, cols
 		mode = "ro"
 	}
 	t := &fakeTerm{r: pr, w: pw}
-	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s mode=%s size=%dx%d\r\n", session, mode, cols, rows) + edgeLine(cols))
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s mode=%s size=%dx%d\r\n", session, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries() + e2ePrompt())
 	return t, nil
 }
 
@@ -341,6 +501,24 @@ type windowFake struct {
 
 func windowFakePane(session, window string) string { return "%e2e-" + session + "-" + window }
 
+// windowFakePanePID is a window's pane root process (#{pane_pid}): from
+// MUSTER_MIRROR_E2E_PANE_PIDS ("<window id>=<pid>,…", re-read on every
+// listing), else 1. Previews (e2e/tests/previews.spec.ts) attribute a
+// listener to the window whose pane its process is or descends from
+// (internal/previewhost listeners.go), and that walk stops at pid 1, so a
+// window left at 1 is offered nothing: the spec names its dev app's real pid
+// here to put the app "in" a window.
+func windowFakePanePID(window string) int {
+	for _, kv := range strings.Split(os.Getenv("MUSTER_MIRROR_E2E_PANE_PIDS"), ",") {
+		if id, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok && id == window {
+			if pid, err := strconv.Atoi(v); err == nil && pid > 1 {
+				return pid
+			}
+		}
+	}
+	return 1
+}
+
 // Windows implements mirrorhost.WindowLister.
 func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	b, err := os.ReadFile(w.file)
@@ -350,13 +528,13 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	var out []mirrorhost.WindowInfo
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) < 7 || len(f) > 10 {
+		if len(f) < 7 || len(f) > 11 {
 			continue
 		}
 		index, _ := strconv.Atoi(f[2])
 		activity, _ := strconv.ParseInt(f[5], 10, 64)
 		info := mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: f[4],
-			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: 1}
+			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: windowFakePanePID(f[1])}
 		if f[6] != "" {
 			st := windowFakeStatus(f[6])
 			status := mirror.NormalizeStatus(st.Status)
@@ -370,8 +548,14 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		// A 10th field: the window's identity colour, as tmux would print the
 		// option (WindowInfo.Color; the host's wire normalisation drops
 		// anything that is not a lowercase #rrggbb).
-		if len(f) == 10 {
+		if len(f) >= 10 {
 			info.Color = f[9]
+		}
+		// An 11th field: why the window has NO rendered view, as the real
+		// host's ClaudeLocator.whyNoView says it (WindowInfo.NoView) — for a
+		// window with no transcript, whose pane "runs" Claude Code all the same.
+		if len(f) == 11 && f[6] == "" {
+			info.NoView = f[10]
 		}
 		// An 8th field: the transcript of a Claude Code session in the window's
 		// SECOND (non-active) pane, "<window pane>-split".
@@ -386,8 +570,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		}
 		out = append(out, info)
 	}
-	// Hermes windows (e2ehermes.go), after the file's.
-	return append(out, hermesWindowsE2E(context.Background())...), nil
+	return e2eWithoutClosed(append(out, openCodeWindowsE2E()...)), nil
 }
 
 // windowFakeStatus is a Claude window's status and when it was written. From
@@ -460,7 +643,7 @@ func (w windowFake) AttachWindow(_ context.Context, session, window string, read
 		mode = "ro"
 	}
 	t := &fakeTerm{r: pr, w: pw}
-	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols))
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries() + e2ePrompt())
 	return t, nil
 }
 
@@ -478,6 +661,39 @@ func (w windowFake) ClaudePanes(context.Context, []string) map[string]mirrorhost
 // for whichever Claude window p is.
 func (w windowFake) Paste(_ context.Context, p mirrorhost.ClaudePane, text string) error {
 	return claudeFake{path: p.Transcript}.Paste(context.Background(), p, text)
+}
+
+// ClaudeScreen implements mirrorhost.ClaudeScreenBackend: the screen of the
+// Claude window whose pane it is.
+func (w windowFake) ClaudeScreen(ctx context.Context, pane string) (string, error) {
+	ws, _ := w.Windows(ctx)
+	for _, win := range ws {
+		if win.Pane == pane && win.Claude != nil {
+			return claudeScreenOf(win.Claude.Transcript)
+		}
+	}
+	return "", fmt.Errorf("pane %s is not a Claude window's", pane)
+}
+
+// PasteChecked implements mirrorhost.ClaudeCheckedPaster. An agent asked to
+// exit (agent-close, e2eclose.go) exits on the checked paste's Enter, and its
+// window with it: the ONLY way the fake exits, as the real host types /exit
+// only through this checked paste (never a raw PastePane, and never into an
+// opencode pane).
+func (w windowFake) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	enter := func() error { return w.Paste(ctx, p, text) }
+	if text == "/exit" && e2eCloseOn() {
+		enter = func() error {
+			ws, _ := w.Windows(ctx)
+			for _, win := range ws {
+				if win.Pane == p.Pane {
+					e2eCloseWindow(win.Session, win.ID)
+				}
+			}
+			return nil
+		}
+	}
+	return checkedClaudePaste(ctx, p.Transcript, p.Pane, text, enter, before, beforeEnter)
 }
 
 // ActivePane is the per-session lookup; a per-window host is never asked it.
@@ -668,6 +884,15 @@ func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Questi
 	return keys, werr
 }
 
+// CapturePane implements mirrorhost.PaneReader: the window's picker as drawn
+// (the snapshot a refused answer sends), or a plain prompt when there is none.
+func (w windowFake) CapturePane(ctx context.Context, pane string) (string, error) {
+	if _, _, cur, err := w.pickerOf(ctx, pane); err == nil {
+		return cur.p.Screen(), nil
+	}
+	return "e2e fake pane: no picker on screen\n> ", nil
+}
+
 // fakePickerPane is a FakePicker as the driver's pane; its drop-th key (from
 // 1; 0: none) never reaches the picker. Every key sent is appended, as hex,
 // one per line, to keylog (T.picker.keys), so a spec sees exactly what reached
@@ -728,4 +953,26 @@ func (w windowFake) CancelAsk(ctx context.Context, pane string) (bool, error) {
 	_ = f.Close()
 	_ = os.Remove(transcript + ".picker.json")
 	return true, werr
+}
+
+// e2ePreviewsOf reads MUSTER_MIRROR_E2E_PREVIEWS_FILE (see the file comment);
+// a line that does not parse is skipped.
+func e2ePreviewsOf(path string) map[string]mirror.WindowPreviews {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out map[string]mirror.WindowPreviews
+	for _, line := range strings.Split(string(b), "\n") {
+		var w string
+		var offered, open int
+		if n, _ := fmt.Sscanf(strings.TrimSpace(line), "%s %d %d", &w, &offered, &open); n != 3 {
+			continue
+		}
+		if out == nil {
+			out = map[string]mirror.WindowPreviews{}
+		}
+		out[w] = mirror.WindowPreviews{Offered: offered, Open: open}
+	}
+	return out
 }

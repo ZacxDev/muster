@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -135,6 +134,18 @@ type server struct {
 	screenBlocked bool
 	clock         func() time.Time
 	pending       *pendingTurn
+	// clearWait is startNewConversation's wait for the CLI's /clear, while it
+	// waits (nil otherwise): handleHook hands it the new session id of a
+	// SessionStart with source "clear" that the primary CLI's own process
+	// fired, naming a session other than from.
+	clearWait *clearWait
+	// clearTypedIn is the session in which ccd typed /clear and saw no such
+	// SessionStart (the Enter may have landed while the TUI was ingesting the
+	// paste, leaving "/clear" in the input line): the next new conversation
+	// in that same session presses Enter rather than typing /clear again
+	// beside it. "" once a clear is confirmed, and when the CLI exits (the
+	// input line goes with it).
+	clearTypedIn string
 	// work reports the pod's work counts to muster (work.go); set on the
 	// primary's server only, nil when the pod is not offered muster's surface.
 	work *workReporter
@@ -155,13 +166,6 @@ type server struct {
 	// file by it: a hook cannot tell this CLI from a `claude` a tool call ran
 	// inside it (proctree.go), a pid can.
 	cliPID func(ctx context.Context) (int, error)
-
-	// gateway hands a gateway-runtime turn to the runtime beside ccd
-	// (gateway.go); nil when the pod runs none.
-	gateway *httputil.ReverseProxy
-	// gatewayOff is why gateway turns are refused on a pod that has the
-	// runtime beside ccd (gatewayBearerProblem); "" otherwise.
-	gatewayOff string
 }
 
 // started reports whether the session has sent SessionStart and has neither
@@ -217,7 +221,12 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
+	// The primary's transcript, incrementally (transcript_route.go).
+	mux.HandleFunc("GET /v1/transcript", s.handleTranscript)
+	// This pod's Claude usage per session and UTC hour (usage_route.go).
+	mux.HandleFunc("GET /v1/usage", s.handleUsage)
+	// Which CLIs in the pod are working, by their own sessions files (clis.go).
+	mux.HandleFunc("GET /v1/clis", s.handleCLIs)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster
@@ -246,12 +255,12 @@ func (s *server) gatewayHandler() http.Handler {
 // socket and read the credential (it inherits it from the CLI, and could read
 // /proc/<pid>/environ of any same-user process). The credential is defence in
 // depth against everything else, not against that user; and such a process does
-// not need ccd at all to answer a dialog — it can `tmux send-keys` itself. The gateway runtime beside ccd
-// in a chief's pod cannot: it is another container, with its own filesystem
-// (the socket is not in it, and no volume is shared) and its own process
-// namespace (no /proc of ccd's), and a unix socket bound to a PATH — unlike
-// 127.0.0.1, and unlike an abstract unix socket — is not reachable through the
-// network namespace the two share.
+// not need ccd at all to answer a dialog — it can `tmux send-keys` itself.
+// Another container in the pod cannot: it has its own filesystem (the socket is
+// not in it, and no volume is shared) and its own process namespace (no /proc
+// of ccd's), and a unix socket bound to a PATH — unlike 127.0.0.1, and unlike
+// an abstract unix socket — is not reachable through the network namespace the
+// two share.
 func (s *server) hookHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hook/{event}", s.handleHook)
@@ -304,8 +313,13 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if target.recordsPrimary && strings.EqualFold(ev.Event, "sessionstart") && ev.SessionID != "" {
 		if why := s.notFiredByPrimary(r); why != "" {
 			log.Printf("ccd: not recording session %s as the primary's: %s", ev.SessionID, why)
-		} else if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
-			log.Printf("ccd: record the primary session id: %v", err)
+		} else {
+			if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
+				log.Printf("ccd: record the primary session id: %v", err)
+			}
+			// Fired by the primary's own process: the /clear
+			// startNewConversation waits for, if its source says so.
+			target.primaryCleared(ev)
 		}
 	}
 	// A session a lane's hooks name that is not marked as a lane's (/clear in
@@ -358,6 +372,9 @@ func (s *server) cliExited() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionStarted, s.busy = false, false
+	// The input line went with the CLI: a /clear typed and unconfirmed is no
+	// longer sitting in it (startNewConversation).
+	s.clearTypedIn = ""
 }
 
 // notFiredByPrimary says why a hook cannot be shown to come from the primary
@@ -445,7 +462,7 @@ type responsesRequest struct {
 }
 
 // promptFrom extracts the LAST user message's text from `input`
-// (internal/podagent.PromptFrom, shared with hermesd).
+// (internal/podagent.PromptFrom).
 func promptFrom(raw json.RawMessage) (string, error) { return podagent.PromptFrom(raw) }
 
 // sanitizePrompt folds line endings and refuses control characters; handleResponses
@@ -668,11 +685,6 @@ func neutralizeInputMode(prompt string) string {
 }
 
 func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
-	// A turn for the gateway runtime beside ccd is handed over unread (gateway.go).
-	if isGatewayTurn(r) {
-		s.handleGatewayTurn(w, r)
-		return
-	}
 	if !bearerOK(r, s.cfg.Bearer) {
 		writeFailure(w, &failure{Status: http.StatusUnauthorized, Type: failUnauthorized,
 			Message: "missing or wrong bearer"})
@@ -702,31 +714,264 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// primary — every request without the header, as before (lanes.go).
 	target := s
 	if key := r.Header.Get(headerCCSession); key != "" {
-		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir))
+		mode := laneMode{
+			ephemeral:  r.Header.Get(headerCCEphemeral) == "1",
+			toolless:   r.Header.Get(headerCCToolless) == "1",
+			mcpSession: r.Header.Get(headerCCMCPSession) == "1",
+			mcpSecret:  r.Header.Get(headerCCLaneSecret),
+			pinned:     r.Header.Get(headerCCPinned) == "1",
+		}
+		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), mode)
 		if f != nil {
 			writeFailure(w, f)
 			return
 		}
 		// Held until runTurn returns: no eviction may take the lane under its turn.
+		// For a throwaway check lane this release also stops its CLI (lanes.release).
 		defer s.lanes.release(ln)
 		target = ln.srv
 		// Before any body is written: success or failure, the answer says where
 		// the lane's CLI works.
 		w.Header().Set(headerCCWorkdirUsed, s.lanes.dir(ln))
 	}
-	res, f := target.runTurn(r.Context(), prompt)
+	// 🔴 THE CLI TOOK THE PROMPT: a 103 carrying headerCCPromptAccepted, sent
+	// the moment its UserPromptSubmit matched the pasted text and before the turn
+	// runs (runTurn's onSubmitted). muster marks an owner's turn in flight on it
+	// (internal/agents turnaccepted.go); a turn refused before that (busy,
+	// not_ready, a paste that never submitted) sends none. Informational only:
+	// the final status still says how the turn ended. ONLY when the request asks
+	// for it (the same header, "1", on the request): a caller that never asked
+	// gets exactly the one answer it always got.
+	ctx := r.Context()
+	// A new conversation before the turn: the PRIMARY's only (an explicit
+	// session's lane is a conversation of its own already, and the header is
+	// ignored there). See startNewConversation.
+	if target == s && r.Header.Get(headerCCNewConversation) == "1" {
+		// Its answer names the new conversation, on the 103 below and the
+		// final answer: set before the 103 is written, which carries the
+		// headers set so far. A ccd that predates the request header never
+		// sets it, which is how muster tells one (agents.TurnAcceptance.
+		// NewConversation).
+		ctx = context.WithValue(ctx, newConversationKey{}, func(session string) {
+			w.Header().Set(headerCCNewConversationSession, session)
+		})
+	}
+	if r.Header.Get(headerCCPromptAccepted) == "1" {
+		ctx = withPromptSubmitted(ctx, func() {
+			w.Header().Set(headerCCPromptAccepted, "1")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Del(headerCCPromptAccepted)
+		})
+	}
+	res, f := target.runTurn(ctx, prompt)
 	if f != nil {
 		log.Printf("ccd: turn failed: %s (code=%q upstream=%d)", f.Error(), f.Code, f.Upstream)
 		writeFailure(w, f)
 		return
 	}
 	stream := req.Stream == nil || *req.Stream
-	writeResponse(w, res.promptID, res.Items, stream)
+	writeResponse(w, res.promptID, res.Items, res.Usage, stream)
 }
 
 type turnOutcome struct {
 	turnResult
 	promptID string
+}
+
+// promptSubmittedKey carries runTurn's onSubmitted callback (withPromptSubmitted).
+type promptSubmittedKey struct{}
+
+// withPromptSubmitted returns ctx carrying fn, which runTurn calls once, the
+// moment the CLI reports a UserPromptSubmit for the prompt ccd pasted.
+func withPromptSubmitted(ctx context.Context, fn func()) context.Context {
+	return context.WithValue(ctx, promptSubmittedKey{}, fn)
+}
+
+// newConversationKey carries, for a turn that starts a new conversation first
+// (headerCCNewConversation), the func startNewConversation hands the new
+// conversation's session id once it has one.
+type newConversationKey struct{}
+
+// clearCommand is the CLI's own command for a new conversation.
+const clearCommand = "/clear"
+
+// clearWait is one startNewConversation's wait (server.clearWait): the session
+// it cleared from, and where primaryCleared sends the new one.
+type clearWait struct {
+	from string
+	got  chan string // capacity 1
+}
+
+// primaryCleared hands a SessionStart the PRIMARY CLI's own process fired
+// (handleHook has checked: notFiredByPrimary) to the /clear wait, if one is
+// running and the event is that clear: source "clear", naming a session other
+// than the one cleared from. Any other SessionStart — another source, or
+// (never reaching here) one a `claude` nested in the pane sent — is not the
+// clear, and the wait goes on.
+func (s *server) primaryCleared(ev hookEvent) {
+	if !strings.EqualFold(ev.Source, "clear") || ev.SessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.clearWait; w != nil && ev.SessionID != w.from {
+		select {
+		case w.got <- ev.SessionID:
+		default:
+		}
+	}
+}
+
+// startNewConversation starts a NEW conversation in the CLI before a turn that
+// asked for one (headerCCNewConversation): muster sets it on every turn of an
+// officer instance whose pool works each item in a conversation of its own
+// (internal/api OfficerTurnContext). Called by runTurn under the turn slot,
+// with the CLI's pane; on success it hands the new conversation's session id
+// to the turn's newConversationKey func, which names it on the answer
+// (headerCCNewConversationSession).
+//
+// 🔴 IT IS THE CLI'S OWN /clear, AND ccd CONFIRMS IT BY THE HOOK. Measured on
+// the real CLI (2.1.289, a workstation, 2026-11-06): /clear, in the same
+// process, fires SessionEnd (reason "clear") for the old session, then
+// SessionStart (source "clear") with a NEW session id and a new transcript
+// path; the old transcript is left on disk as it was, and the CLI's
+// sessions/<pid>.json names the new id — which is what GET /v1/transcript
+// reads, so muster's per-item transcript forwarding follows the new
+// conversation. The image's 2.1.296 was read, not run: its bundle still has
+// /clear as the local command "Start a new session with empty context;
+// previous session stays on disk", with SessionStart source "clear" and
+// SessionEnd reason "clear" in its hook schema. ccd waits for a SessionStart
+// with source "clear", naming a session other than the one it saw before the
+// paste, that the PRIMARY CLI's own process fired (primaryCleared) — never one
+// a `claude` nested in the pane sent, which onHook does not tell apart. The
+// primary's handleHook records that session as the one every later start
+// resumes (primaryRecordFile), so a restart never returns to the old
+// conversation.
+//
+//   - No transcript yet (a CLI on a fresh volume: the CLI writes none until
+//     its first prompt): the conversation is already new; nothing is typed.
+//     (A /clear does write one at once — measured: its local-command record —
+//     so a second request right after a clear clears again.)
+//   - 🔴 No such SessionStart within SubmitTimeout: a typed failure that is
+//     NOT not_ready — "/clear" was typed and may still sit in the input line
+//     (an Enter that landed while the TUI was ingesting the paste), and
+//     not_ready promises nothing was typed, on which muster re-sends at once.
+//     The turn is NOT typed. ccd remembers the session it typed /clear in
+//     (clearTypedIn): the next new conversation asked for in that same
+//     session presses Enter instead of typing /clear again — which submits a
+//     /clear still in the input line, and is a no-op on an empty one — so it
+//     never pastes a second /clear beside the first ("/clear/clear", which the
+//     CLI would take as a prompt in the OLD conversation).
+//   - The pane refuses the paste (a dialog, the usage-limit menu, a dead
+//     pane): the same refusal a turn's own paste gets (pasteRefused), with
+//     nothing typed.
+func (s *server) startNewConversation(ctx context.Context, pane paneRef) *failure {
+	s.mu.Lock()
+	started, busy, old, path, typed := s.sessionStarted, s.busy, s.sessionID, s.transcriptPath, s.clearTypedIn
+	s.mu.Unlock()
+	switch {
+	case !started:
+		return notStartedFailure()
+	case busy:
+		return busyFailure()
+	}
+	named := func(session string) {
+		if fn, ok := ctx.Value(newConversationKey{}).(func(string)); ok && fn != nil {
+			fn(session)
+		}
+	}
+	if path == "" || !fileIsRegular(path) {
+		log.Printf("ccd: a new conversation was asked for; session %s has no transcript yet, so it is one already", old)
+		named(old)
+		return nil
+	}
+	wait := &clearWait{from: old, got: make(chan string, 1)}
+	s.mu.Lock()
+	s.clearWait = wait
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.clearWait == wait {
+			s.clearWait = nil
+		}
+		s.mu.Unlock()
+	}()
+	enterOnly := typed != "" && typed == old
+	var err error
+	if enterOnly {
+		log.Printf("ccd: a new conversation was asked for; ccd typed %s in session %s and saw it take no effect, so it presses Enter (never a second %s beside it)",
+			clearCommand, old, clearCommand)
+		err = s.term.Enter(ctx, pane)
+	} else {
+		err = s.term.Paste(ctx, pane, clearCommand)
+	}
+	if err != nil && !errors.Is(err, errPastedNotSubmitted) {
+		// Refused before anything was typed.
+		return s.pasteRefused(err)
+	}
+	s.mu.Lock()
+	s.clearTypedIn = old // until the clear is confirmed
+	s.mu.Unlock()
+	if err != nil {
+		return s.pasteRefused(err)
+	}
+	s.setScreenBlocked(false, "")
+	deadline := time.NewTimer(s.cfg.SubmitTimeout)
+	defer deadline.Stop()
+	select {
+	case id := <-wait.got:
+		s.mu.Lock()
+		s.clearTypedIn = ""
+		s.mu.Unlock()
+		log.Printf("ccd: started a new conversation, session %s; the previous one, %s, is kept at %s", id, old, path)
+		named(id)
+		return nil
+	case <-deadline.C:
+		return &failure{Status: http.StatusBadGateway, Type: failNewConversation,
+			Message: fmt.Sprintf("ccd typed %s for a new conversation, but the CLI sent no SessionStart (source clear) for a new session within %s; "+
+				"the turn was NOT typed. %s may still be in the input line: the next new-conversation turn presses Enter rather than typing it again — "+
+				"attach to the pane to see it", clearCommand, s.cfg.SubmitTimeout, clearCommand)}
+	case <-ctx.Done():
+		return &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
+			Message: "caller went away while ccd started a new conversation; the turn was not typed"}
+	}
+}
+
+// notStartedFailure is runTurn's refusal while the CLI has sent no SessionStart.
+func notStartedFailure() *failure {
+	return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
+		Message: "the session has not started (no SessionStart hook yet): the TUI may be on a " +
+			"first-run, trust or login screen, or restarting — attach to the pane to see it"}
+}
+
+// busyFailure is runTurn's refusal while a prompt submitted in the terminal runs.
+func busyFailure() *failure {
+	return &failure{Status: http.StatusConflict, Type: failBusy,
+		Message: "the session is mid-turn (a prompt was submitted in the terminal)"}
+}
+
+// pasteRefused is the failure for a Paste into the CLI's pane that failed, with
+// what the refusal tells: the usage-limit menu (the account's limit), a dialog
+// (awaiting approval), a pane that is not live (not_ready), else a terminal
+// error.
+func (s *server) pasteRefused(err error) *failure {
+	// The usage-limit menu first: it is a dialog too (errDialogShown), but
+	// the account's limit, not an approval (dialog.go limitMenuShown).
+	var lm *limitMenuShown
+	if errors.As(err, &lm) {
+		s.setScreenBlocked(true, err.Error())
+		f := limitMenuFailure(lm)
+		s.auth.observeTurn(f)
+		return f
+	}
+	if errors.Is(err, errDialogShown) {
+		s.setScreenBlocked(true, err.Error())
+		return awaitingApproval(err.Error())
+	}
+	if errors.Is(err, errPaneNotLive) {
+		return paneNotReady(err.Error())
+	}
+	return &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
 }
 
 // runTurn drives one prompt through the session and returns its reply or a
@@ -753,18 +998,21 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 			"restarting, crash_loop or terminal_lost — see /healthz)")
 	}
 
+	if _, ok := ctx.Value(newConversationKey{}).(func(string)); ok {
+		if f := s.startNewConversation(ctx, pane); f != nil {
+			return turnOutcome{}, f
+		}
+	}
+
 	p := &pendingTurn{want: turnKey(prompt), submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
 	s.mu.Lock()
 	switch {
 	case !s.sessionStarted:
 		s.mu.Unlock()
-		return turnOutcome{}, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
-			Message: "the session has not started (no SessionStart hook yet): the TUI may be on a " +
-				"first-run, trust or login screen, or restarting — attach to the pane to see it"}
+		return turnOutcome{}, notStartedFailure()
 	case s.busy:
 		s.mu.Unlock()
-		return turnOutcome{}, &failure{Status: http.StatusConflict, Type: failBusy,
-			Message: "the session is mid-turn (a prompt was submitted in the terminal)"}
+		return turnOutcome{}, busyFailure()
 	}
 	s.pending = p
 	// Where this turn's records can start: the transcript's size BEFORE the paste.
@@ -784,14 +1032,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}()
 
 	if err := s.term.Paste(ctx, pane, prompt); err != nil {
-		if errors.Is(err, errDialogShown) {
-			s.setScreenBlocked(true, err.Error())
-			return turnOutcome{}, awaitingApproval(err.Error())
-		}
-		if errors.Is(err, errPaneNotLive) {
-			return turnOutcome{}, paneNotReady(err.Error())
-		}
-		return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
+		return turnOutcome{}, s.pasteRefused(err)
 	}
 	s.setScreenBlocked(false, "")
 
@@ -833,6 +1074,10 @@ waitSubmit:
 			return turnOutcome{}, &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
 				Message: "caller went away before the prompt was submitted"}
 		}
+	}
+	// The CLI accepted THIS prompt: say so before the turn runs (handleResponses).
+	if fn, ok := ctx.Value(promptSubmittedKey{}).(func()); ok && fn != nil {
+		fn()
 	}
 
 	var stop hookEvent
@@ -985,6 +1230,27 @@ type health struct {
 	// Repo is the agent's repository checkout (checkout.go); absent when the
 	// pod was given none. Reported, never gating.
 	Repo *checkoutState `json:"repo,omitempty"`
+	// ToollessLanes says this ccd honours X-Muster-CC-Toolless (lanes.go "A
+	// CHECK LANE HAS NO TOOLS"), for an operator to read by hand after
+	// restarting a chief onto a new image (docs/chief-nudges.md, "Rolling
+	// out"): a ccd that predates it has no such field, and would start a
+	// check's CLI with every tool. True whenever ccd
+	// runs lanes (one with none refuses every session turn anyway). Reported,
+	// never gating; muster does not read it.
+	ToollessLanes bool `json:"toolless_lanes,omitempty"`
+	// NewConversation says this ccd honours X-Muster-CC-New-Conversation
+	// (startNewConversation) on the primary's turns, for an operator to read
+	// by hand after moving a fresh_session_per_item officer onto a new image:
+	// a ccd that predates it has no such field, and runs every item in the
+	// conversation its CLI already has. muster does not read it — it reads
+	// the per-turn answer (headerCCNewConversationSession) instead.
+	NewConversation bool `json:"new_conversation,omitempty"`
+	// MCPSessionLanes says this ccd starts a chat lane (X-Muster-CC-MCP-Session
+	// with its lane secret) with an MCP config naming the lane (lanes.go "A
+	// CHAT LANE SAYS WHO IT IS"). muster READS it: an officer's chat runs only
+	// on a ccd that says it (internal/api officerChatLanes.Supports). True
+	// whenever ccd runs lanes.
+	MCPSessionLanes bool `json:"mcp_session_lanes,omitempty"`
 	authSnapshot
 }
 
@@ -1039,7 +1305,10 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	h.Session = s.sessionState(started, ended)
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
+		h.ToollessLanes = true
+		h.MCPSessionLanes = true
 	}
+	h.NewConversation = true
 	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {
@@ -1095,7 +1364,12 @@ func credentialVisible(configDir string) func() bool {
 // refused unless it is exactly a job worktree of THIS workspace
 // (agents.IsJobWorktreeDir) and an existing directory, not a symlink — so the
 // header cannot point a CLI anywhere else on the volume (checkJobDir).
-func (s *server) laneFor(ctx context.Context, key, model, workdir string) (*lane, *failure) {
+//
+// mode.ephemeral (X-Muster-CC-Ephemeral: 1) makes it a throwaway check lane
+// (lanes.go): refused rather than stopping an operator lane at the cap, and
+// stopped when released — here too, when its CLI never reached its prompt.
+// mode.toolless (X-Muster-CC-Toolless: 1) starts its CLI with no tools.
+func (s *server) laneFor(ctx context.Context, key, model, workdir string, mode laneMode) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
 			"or CCD_MAX_SESSIONS is 0), so it cannot run a session of its own for " + strconv.Quote(key))
@@ -1117,7 +1391,7 @@ func (s *server) laneFor(ctx context.Context, key, model, workdir string) (*lane
 			return nil, f
 		}
 	}
-	ln, f := s.lanes.acquireIn(ctx, key, model, workdir)
+	ln, f := s.lanes.acquireIn(ctx, key, model, workdir, mode)
 	if f != nil {
 		return nil, f
 	}

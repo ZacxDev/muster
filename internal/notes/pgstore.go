@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -27,18 +28,23 @@ func (s *PGStore) Create(ctx context.Context, n Note) (Note, error) {
 	n.Tags = NormalizeTags(n.Tags)
 	// source_type / source_session_id are nullable (*string); a nil pointer encodes
 	// as SQL NULL (a pre-0017 / header-less task), which reads back as NULL.
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	//
+	// owner_id: n.Owner when it names one (a team task, filed explicitly),
+	// else the column's default — the acting person (muster.uid). Postgres's
+	// team_insert policy is what admits a team owner, at operator.
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by, owner_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			COALESCE(NULLIF($11::bigint, 0), nullif(current_setting('muster.uid', true), '')::bigint))
 		RETURNING `+noteCols,
-		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID).
-		Scan(scanNoteInto(&n)...)
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID, n.CreatedBy, n.Owner)
+	err := scanNote(row, &n)
 	return n, err
 }
 
 // noteCols is the SINGLE column list every full-note read uses, so Create/Get/
 // List/ListByTags can never drift out of sync with scanNoteInto's target order.
-const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_at, updated_at, owner_id`
+const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_by, created_at, updated_at, owner_id, ext_key, ext_plugin_id, ext_snapshot, ext_synced_at`
 
 // liveOnly is the SINGLE soft-delete predicate, spelled once so no read or write
 // path can quietly opt out of it. It now covers BOTH soft-deleted tables — notes
@@ -101,19 +107,32 @@ const ownerOfNote = `COALESCE((SELECT owner_id FROM notes WHERE id = $1), nullif
 // 🔴 The empty-string branch is deliberately NOT the placeholder text. The
 // tombstone COPY belongs to the renderer (internal/ui); baking it into SQL would
 // make it indistinguishable from a real comment body whose author typed it.
-const commentCols = `id, note_id, author, CASE WHEN deleted_at IS NULL THEN body ELSE '' END, created_at, (deleted_at IS NOT NULL)`
+const commentCols = `id, note_id, author, CASE WHEN deleted_at IS NULL THEN body ELSE '' END, created_at, (deleted_at IS NOT NULL), COALESCE(author_id, 0)`
 
 // scanCommentInto returns the Scan destinations for commentCols, in order.
 func scanCommentInto(c *Comment) []any {
-	return []any{&c.ID, &c.NoteID, &c.Author, &c.Body, &c.CreatedAt, &c.Retracted}
+	return []any{&c.ID, &c.NoteID, &c.Author, &c.Body, &c.CreatedAt, &c.Retracted, &c.AuthorID}
 }
 
-// scanNoteInto returns the Scan destinations for noteCols, in order.
+// scanNoteInto returns the Scan destinations for noteCols, in order. The four
+// reference columns land in n's scratch (refScan); scanNote — or a caller that
+// scans itself — must call n.adoptRef() afterwards, or Note.Ref stays nil.
 func scanNoteInto(n *Note) []any {
 	return []any{
 		&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch,
-		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedAt, &n.UpdatedAt, &n.OwnerID,
+		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt, &n.OwnerID,
+		&n.refRaw.key, &n.refRaw.pluginID, &n.refRaw.snapshot, &n.refRaw.syncedAt,
 	}
+}
+
+// scanNote scans one noteCols row into n (plus extra destinations after it)
+// and adopts its reference columns.
+func scanNote(row pgx.Row, n *Note, extra ...any) error {
+	if err := row.Scan(append(scanNoteInto(n), extra...)...); err != nil {
+		return err
+	}
+	n.adoptRef()
+	return nil
 }
 
 // Get returns a note with its attachment metadata (no blob data) and comments. A
@@ -122,7 +141,7 @@ func scanNoteInto(n *Note) []any {
 // when the row was really deleted.
 func (s *PGStore) Get(ctx context.Context, id int64) (Note, error) {
 	var n Note
-	err := s.pool.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE id=$1 AND `+liveOnly, id).Scan(scanNoteInto(&n)...)
+	err := scanNote(s.pool.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE id=$1 AND `+liveOnly, id), &n)
 	if err != nil {
 		return Note{}, err
 	}
@@ -147,7 +166,7 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Note, error) {
 
 // qualifyCols prefixes every column in a comma-joined projection with a table
 // alias. It is DERIVED rather than a second hand-written list, for exactly the
-// reason noteCols exists at all: a second spelling of the same 14 columns would
+// reason noteCols exists at all: a second spelling of the same 19 columns would
 // be a second thing to keep in sync with scanNoteInto's target order, and the
 // drift would be a silent mis-scan rather than a compile error.
 func qualifyCols(alias, cols string) string {
@@ -333,7 +352,7 @@ func (s *PGStore) ListPage(ctx context.Context, f ListFilter) (Page, error) {
 	for rows.Next() {
 		var n Note
 		var rowTotal int64
-		if err := rows.Scan(append(scanNoteInto(&n), &n.ActivityAt, &rowTotal)...); err != nil {
+		if err := scanNote(rows, &n, &n.ActivityAt, &rowTotal); err != nil {
 			return Page{}, err
 		}
 		total = rowTotal
@@ -386,7 +405,7 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // ListSummaries returns every LIVE note's own columns (newest-updated first) in a
 // SINGLE query, with NO attachment/comment/session fan-out. List does four
 // queries and hydrates every attachment, EVERY COMMENT OF EVERY NOTE and every
-// session link, which is what the Tasks page needs and what its two other callers
+// session link, which is what the Tasks page needs and what its other callers
 // do not:
 //
 //   - the dispatch-modal note picker renders only an id + a label (directory,
@@ -394,6 +413,13 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 //   - the idle-task reaper (api.reapIdleTasks) reads only id + updated_at, and
 //     since 0.8.x runs every 30 minutes rather than daily, so the fan-out it does
 //     not use would be paid ~48× a day over a set that only grows.
+//   - the chief's tasks_list tool (api.toolTasksList) reads id, title, status,
+//     tags (for the gate) and updated_at over the whole board.
+//
+// 🔴 status IS IN THE PROJECTION and must stay. It was missing until tasks_list
+// reported `"status": ""` for every task on the chief's board and its status
+// filter matched nothing (api.TestTheChiefsTasksListCarriesEachTasksStatusAndGate,
+// TestListSummariesCarriesStatus).
 //
 // 🔴 updated_at IS IN THE PROJECTION and must stay. It is the reaper's entire
 // selection predicate, and a Note scanned without it carries the ZERO time, which
@@ -416,7 +442,7 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // that grew three joins are separate regressions, each earned once already.
 func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, directory, title, body, model, repo, repo_branch, tags, updated_at, owner_id
+		SELECT id, directory, title, body, status, model, repo, repo_branch, tags, updated_at, owner_id
 		FROM notes WHERE `+liveOnly+` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -425,7 +451,7 @@ func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	out := make([]Note, 0)
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID); err != nil {
+		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -590,8 +616,15 @@ func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note,
 	args := []any{id, status}
 	from, conditional := onlyFrom(ctx)
 	if conditional {
-		sel += ` AND status = $3`
 		args = append(args, from)
+		sel += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	// A reference's snapshot status follows ITS snapshot only
+	// (OnlyIfSnapshotAt): a newer snapshot applied meanwhile wins.
+	if at, ok := onlyIfSnapshot(ctx); ok {
+		conditional = true
+		args = append(args, at)
+		sel += fmt.Sprintf(` AND ext_snapshot->>'updated_at' = $%d`, len(args))
 	}
 	q := `WITH old AS (` + sel + ` FOR NO KEY UPDATE)
 		UPDATE notes SET status=$2, updated_at=now() FROM old WHERE notes.id = old.id RETURNING old.status`
@@ -752,12 +785,11 @@ func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note, c *Co
 	created := !ok
 	if ok {
 		n = found
-	} else if err := tx.QueryRow(ctx, `
-		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	} else if err := scanNote(tx.QueryRow(ctx, `
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING `+noteCols,
-		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID).
-		Scan(scanNoteInto(&n)...); err != nil {
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID, n.CreatedBy), &n); err != nil {
 		return Note{}, false, false, err
 	}
 	// 🔴 THE COMMENT IS IN THIS TRANSACTION ON BOTH PATHS. Written after the
@@ -809,8 +841,8 @@ const supersededPattern = NSSupersededBy + ":%"
 // two used to be separately written lookups (audit D1).
 func findLiveByTag(ctx context.Context, q rowQuerier, key string) (Note, bool, error) {
 	var n Note
-	err := q.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+openOnly("$2")+`
-		ORDER BY id LIMIT 1`, key, supersededPattern).Scan(scanNoteInto(&n)...)
+	err := scanNote(q.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+openOnly("$2")+`
+		ORDER BY id LIMIT 1`, key, supersededPattern), &n)
 	switch {
 	case err == nil:
 		return n, true, nil
@@ -1069,6 +1101,18 @@ func (s *PGStore) SoftDelete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// retractCommentsByAuthorTx retracts every live comment author wrote on task
+// noteID, inside the caller's transaction: SoftDeleteComment's stamp, for a
+// set. Its one caller is UpsertReference converting a copy row into a plugin
+// task reference — the converting plugin's own relay comments are the
+// upstream's thread restated, and the reference renders that thread itself.
+// Tombstones, like any retraction: the thread does not silently shorten.
+func retractCommentsByAuthorTx(ctx context.Context, tx pgx.Tx, noteID int64, author string) error {
+	_, err := tx.Exec(ctx, `UPDATE note_comments SET deleted_at = now()
+		WHERE note_id = $1 AND author = $2 AND `+liveOnly, noteID, author)
+	return err
+}
+
 // SoftDeleteComment retracts ONE comment from a task's thread.
 // It mirrors SoftDelete exactly: `AND deleted_at IS NULL` is what makes a second
 // retraction of the same comment answer pgx.ErrNoRows rather than silently
@@ -1086,18 +1130,33 @@ func (s *PGStore) SoftDelete(ctx context.Context, id int64) error {
 // see. Both handlers probe the parent with Get first anyway; this is the atomic
 // backstop against a task dismissed between the probe and the update.
 //
-// Unknown comment id, wrong task id, already-retracted comment, dismissed parent
-// → pgx.ErrNoRows. There is deliberately NO restore route (as with tasks):
+// WHO MAY RETRACT (team sharing slice 4.3). On a task the caller owns, any
+// comment, as before. On a team's task, the comment's author (author_id), or
+// a manager of the team; a comment with no author_id (system scope, or
+// written before 0127) only a manager. The handler decides the same and
+// answers 403 first (softDeleteTaskComment); this arm is the backstop, and
+// reads the same settings row-level security does (muster.uid, the
+// caller's manager teams, the system scope).
+//
+// Unknown comment id, wrong task id, already-retracted comment, dismissed
+// parent, a comment the caller may not retract → pgx.ErrNoRows. There is
+// deliberately NO restore route (as with tasks):
 // recovery is a one-column UPDATE an operator runs against the DB.
 //
 // What the reads then do with the stamp is commentCols' business, not this
 // function's: the comment does not vanish, it comes back BODY-LESS with Retracted
-// set, and the renderer draws a tombstone. This is the ONLY writer of the column.
+// set, and the renderer draws a tombstone. It is one of TWO writers of the
+// column: retractCommentsByAuthorTx (a plugin task reference's conversion) is
+// the other, and stamps it exactly the same way.
 func (s *PGStore) SoftDeleteComment(ctx context.Context, noteID, commentID int64) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE note_comments SET deleted_at=now()
 		WHERE id=$2 AND note_id=$1 AND note_comments.`+liveOnly+`
-		  AND EXISTS (SELECT 1 FROM notes WHERE id=$1 AND notes.`+liveOnly+`)`, noteID, commentID)
+		  AND EXISTS (SELECT 1 FROM notes WHERE id=$1 AND notes.`+liveOnly+`
+		    AND (notes.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		      OR note_comments.author_id = nullif(current_setting('muster.uid', true), '')::bigint
+		      OR notes.owner_id = ANY (coalesce((SELECT public.muster_team_ids(3)), '{}'))
+		      OR current_setting('muster.scope', true) = 'all'))`, noteID, commentID)
 	if err != nil {
 		return err
 	}
@@ -1197,3 +1256,85 @@ func (s *PGStore) ListAttachments(ctx context.Context, noteID int64) ([]Attachme
 
 // compile-time assertion.
 var _ Store = (*PGStore)(nil)
+
+// --- Moving a task into a team (move.go) -----------------------------------
+
+// MoveChildren are the foreign keys onto notes whose rows MOVE with the task:
+// the three children whose composite key (note_id, owner_id) demands the
+// parent's owner (migration 0006). MoveToTeam rewrites them in the SAME
+// statement as the task, because a non-deferrable composite key refuses
+// either half alone (23503). A function, not a var: a note_comments literal
+// outside a function body would escape TestNoteCommentsReadPathLedger.
+func MoveChildren() []string {
+	return []string{"note_attachments.note_id", "note_comments.note_id", "task_sessions.note_id"}
+}
+
+// MoveToTeam moves task id, owned by from, to team. 🔴 ctx MUST BE THE
+// SYSTEM SCOPE (authz.System): owner_id changes nowhere else, so any other
+// principal's move fails closed at owner_fixed (42501). It refuses (nothing
+// moved) a task that is not from's (ErrMoveNotYours), a plugin task
+// reference (its plugin is from's), and a task any MoveRefusals row of
+// another owner than team points at (*MoveBlockedError). The caller has
+// already checked that from may act in team.
+func (s *PGStore) MoveToTeam(ctx context.Context, id, from, team int64) error {
+	if from <= 0 || team <= 0 || from == team {
+		return fmt.Errorf("notes: move %d from %d to %d: not a move", id, from, team)
+	}
+	sys := ctx
+	tx, err := s.pool.Begin(sys)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(sys)) }()
+	var owner int64
+	var plugin *int64
+	err = tx.QueryRow(sys, `SELECT owner_id, ext_plugin_id FROM notes WHERE id = $1 AND `+liveOnly+` FOR UPDATE`, id).Scan(&owner, &plugin)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && owner != from) {
+		return ErrMoveNotYours
+	}
+	if err != nil {
+		return err
+	}
+	var links []string
+	if plugin != nil {
+		links = append(links, "it is a plugin task reference (its plugin is yours)")
+	}
+	keys := make([]string, 0, len(MoveRefusals))
+	for k := range MoveRefusals {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		tbl, col, _ := strings.Cut(k, ".")
+		live := ""
+		if p := MoveRefusals[k].Live; p != "" {
+			live = ` AND ` + p
+		}
+		var n int
+		// tbl, col and the live predicate come from MoveRefusals, a constant
+		// ledger; never input. A finished row does not refuse (move.go).
+		if err := tx.QueryRow(sys, `SELECT count(*) FROM `+tbl+` WHERE `+col+` = $1 AND owner_id IS DISTINCT FROM $2`+live, id, team).Scan(&n); err != nil {
+			return fmt.Errorf("notes: move %d: read %s: %w", id, k, err)
+		}
+		if n > 0 {
+			links = append(links, fmt.Sprintf("%s (%s: %d)", MoveRefusals[k].Reason, tbl, n))
+		}
+	}
+	if len(links) > 0 {
+		return &MoveBlockedError{Links: links}
+	}
+	// The task and every MoveChildren row in ONE statement, so the composite
+	// keys are checked once, at its end, against the moved rows. No comment
+	// column is read: owner_id is all that changes.
+	tag, err := tx.Exec(sys, `WITH c AS (UPDATE note_comments SET owner_id = $2 WHERE note_id = $1 RETURNING 1),
+	a AS (UPDATE note_attachments SET owner_id = $2 WHERE note_id = $1 RETURNING 1),
+	s AS (UPDATE task_sessions SET owner_id = $2 WHERE note_id = $1 RETURNING 1)
+UPDATE notes SET owner_id = $2, updated_at = now() WHERE id = $1`, id, team)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("notes: move %d: moved %d tasks", id, tag.RowsAffected())
+	}
+	return tx.Commit(sys)
+}

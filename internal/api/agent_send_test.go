@@ -50,6 +50,21 @@ func (s *sendAgents) GetByName(_ context.Context, name string) (agents.Agent, er
 	return agents.Agent{}, pgx.ErrNoRows
 }
 
+// List and LastMessageByAgentIDs are what the session switcher reads to draw
+// the pages' bar (switcher.go): the two agents above, no transcript times.
+func (s *sendAgents) List(ctx context.Context) ([]agents.Agent, error) {
+	var out []agents.Agent
+	for _, n := range []string{"keen-wren", "plain-otter"} {
+		a, _ := s.GetByName(ctx, n)
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+func (s *sendAgents) LastMessageByAgentIDs(context.Context, []int64) (map[int64]time.Time, error) {
+	return map[int64]time.Time{}, nil
+}
+
 // Each agent has one session: 41 is keen-wren's, 52 plain-otter's.
 func (s *sendAgents) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
 	if agentID == 7 {
@@ -340,14 +355,15 @@ func TestTheSameMessagePostedToAnAgentTwiceIsOneTurn(t *testing.T) {
 // the agent's send route "from the terminal" with a nonce — enabled for a
 // running agent, DISABLED with the reason on screen for one that is not, and
 // for a build with no gateway to deliver through. The chat page has the switch
-// too, and both documents are never stored.
+// too, and both documents are cacheable VIEW documents (viewDocument): kept for
+// Back and Forward, never by a shared cache.
 func TestAnAgentsTerminalPageHasTheSwitchAndTheComposer(t *testing.T) {
 	store := newSendAgents()
 	s, ts := sendServer(t, store, &turnGateway{})
 	get := func(path string) (*http.Response, string) { return mirrorGet(t, s, ts, path) }
 
 	resp, term := get(ui.AgentTerminalPath("keen-wren"))
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != viewDocumentCacheControl {
 		t.Fatalf("the terminal page = %d, Cache-Control %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 	if got := resp.Header.Get("Referrer-Policy"); got != "same-origin" {
@@ -385,16 +401,23 @@ func TestAnAgentsTerminalPageHasTheSwitchAndTheComposer(t *testing.T) {
 	}
 	store.status["keen-wren"] = agents.StatusRunning
 
-	// The chat page: the switch, the form's fallback, never stored.
+	// The chat page: the switch, the form's fallback, a view document.
 	resp, chat := get("/agents/keen-wren?session=41")
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != viewDocumentCacheControl {
 		t.Fatalf("the chat page = %d, Cache-Control %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 	if got := resp.Header.Get("Referrer-Policy"); got != "same-origin" {
 		t.Errorf("the chat page's Referrer-Policy = %q, want same-origin (its form is one the browser may submit itself)", got)
 	}
-	if !strings.Contains(chat, `id="view-rendered" aria-current="page"`) || !strings.Contains(chat, `<a id="view-terminal" href="/agents/keen-wren/terminal"`) {
-		t.Error("the chat page has no Rendered | Terminal switch")
+	// The way to the terminal: a claude-code agent's page has ONE header row
+	// (ui foldedHeader, PR #527), so there is no Rendered segment, and the
+	// Terminal link is an item of its ⋯ menu — the same id and view-swap link.
+	if strings.Contains(chat, `id="view-rendered"`) {
+		t.Error("the chat page still draws the Rendered | Terminal switch")
+	}
+	menu := chat[strings.Index(chat, `id="`+ui.AgentMenuID+`"`):]
+	if !strings.Contains(chat, `id="`+ui.AgentMenuID+`"`) || !strings.Contains(menu, `<a id="view-terminal" href="/agents/keen-wren/terminal"`) {
+		t.Error("the chat page has no Terminal link in its ⋯ menu")
 	}
 	if form := tagOf(chat, "chat-form"); !strings.Contains(form, `method="post" action="/agents/keen-wren/send?session=41"`) {
 		t.Errorf("the chat form cannot be sent without its socket: %s", form)

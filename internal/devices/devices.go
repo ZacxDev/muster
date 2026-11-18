@@ -5,9 +5,11 @@
 // The flow, in one line each:
 //
 //   - A signed-in web session asks for a pairing code (CreatePairingCode, the
-//     caller's own principal). It needs a sign-in from the last five minutes —
-//     internal/api checks that, as for adding a passkey — because the device
-//     credential it leads to outlives the session.
+//     caller's own principal). Any valid signed-in session may ask, however
+//     long ago it signed in (an operator decision; internal/api has no
+//     recent-sign-in window for this). The session's sign-in time is stored
+//     with the code and becomes the device's paired_signin_at, which the
+//     revocation rule below reads.
 //   - The app redeems the code (Redeem) for the device credential, sending the
 //     device's name, app version and its step-up public key. The code is single
 //     use and lives PairingCodeTTL.
@@ -351,6 +353,12 @@ type Store interface {
 	// Remove deletes ctx's user's device id (its push subscription goes with
 	// it). found is false when the user has no such device.
 	Remove(ctx context.Context, id int64) (found bool, err error)
+	// CreateChallenge and SpendChallenge are a signed action's two halves
+	// (challenge.go), under the device owner's principal.
+	CreateChallenge(ctx context.Context, c Challenge, allowPIN bool) (nonce string, expiresAt time.Time, err error)
+	SpendChallenge(ctx context.Context, nonce string, c Challenge, sig []byte, allowPIN bool) error
+	// RecordAction audits a verified action's outcome (challenge.go).
+	RecordAction(ctx context.Context, c Challenge, outcome string) error
 }
 
 // PGStore is Store over Postgres (migration 0039).
@@ -545,7 +553,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Device, error
 	err := s.pool.QueryRow(ctx, `SELECT `+cols("d")+`,
 			u.disabled_at IS NOT NULL, u.sessions_not_before, u.signed_out_at
 		FROM devices d JOIN users u ON u.id = d.owner_id
-		WHERE d.token_sha256 = $1`, hash(token)).
+		WHERE d.token_sha256 = $1 AND u.id IN (`+users.PersonIDs+`)`, hash(token)).
 		Scan(append(deviceDest(&d), &disabled, &cutoff, &signedOut)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Device{}, ErrBadToken

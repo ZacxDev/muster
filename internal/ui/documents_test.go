@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	g "maragu.dev/gomponents"
 
@@ -57,12 +58,11 @@ type documentRenderer struct {
 var standaloneDocuments = []documentRenderer{
 	{
 		// PageWith is where the shell's Doctype is (Page calls it with no
-		// ShellData). The full render is the Agents tab with a "Recently viewed"
-		// strip drawn on first paint, so the strip's entries are in the sweep.
+		// ShellData). The full render is the Tasks tab with its board drawn on
+		// first paint.
 		fn: "PageWith", label: "the app shell (/)",
 		render: func(w io.Writer) error {
-			list := []AgentCardView{{ID: 1, Name: "keen-wren", DisplayName: "#12 · **fix** the `chip` row", Status: "running"}}
-			return RenderPageWith(w, "agents", featuresAllOn, ShellData{}.WithRecent(list, nil, []RecentRef{{AgentID: 1}}))
+			return RenderPageWith(w, "tasks", featuresAllOn, ShellData{}.WithTasks(sampleTasksView(), ""))
 		},
 		renderEmpty: func(w io.Writer) error { return RenderPage(w, "", featuresAllOn) },
 	},
@@ -156,10 +156,24 @@ var standaloneDocuments = []documentRenderer{
 		fn: "SendQueueRetryConfirmPage", label: "the send queue's retry confirm page (no script)",
 		render: func(w io.Writer) error {
 			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "May already have been sent. <b>Again</b>?",
-				"/mirror/view?host=laptop&session=main").Render(w)
+				"/mirror/view?host=laptop&session=main", Brand{}).Render(w)
 		},
 		renderEmpty: func(w io.Writer) error {
-			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "", "/agents").Render(w)
+			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "", "/agents", Brand{}).Render(w)
+		},
+	},
+	{
+		// A send refused because the same message may already have been
+		// delivered, answered with no script: its Send again, as a form. The
+		// message rides in a hidden field and is shown, both inert.
+		fn: "SendAgainPage", label: "the Send again page (a held message, no script)",
+		render: func(w io.Writer) error {
+			return SendAgainPage(SendAgainView{Action: "/mirror/view/send", Why: "Not sent again.", Text: "<b>run</b> \"it\" & </textarea>",
+				Button: "Send again", BackHref: "/mirror/view?host=laptop&session=main",
+				Fields: []ComposerField{{Name: "host", Value: "laptop"}, {Name: "text", Value: "<b>run</b> \"it\" & </textarea>"}}}).Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			return SendAgainPage(SendAgainView{Action: "/send-queue/7/send-now", Button: "Send it now anyway", BackHref: "/agents"}).Render(w)
 		},
 	},
 	{
@@ -171,6 +185,20 @@ var standaloneDocuments = []documentRenderer{
 		// /tasks/{id} whose id never parsed reaches this document with nothing to
 		// name.
 		renderEmpty: func(w io.Writer) error { return RenderTaskNotFound(w, "", featuresAllOn) },
+	},
+	{
+		// Every server-authored signed-in page internal/api writes (Attention,
+		// Account, Plugins, …) is this document around its own markup. The full
+		// render is the Attention page's shape: its entry marked, a list in the
+		// content; the empty one belongs to no entry (Plugins, Browser flows).
+		fn: "NavDocument", label: "a server-authored signed-in page (/attention, /account, /plugins, …)",
+		render: func(w io.Writer) error {
+			return RenderNavDocument(w, NavDocumentView{Title: "Attention", Entry: NavAttention, Feat: featuresAllOn,
+				Main: `<section data-testid="attention-page"><h1>Attention</h1><ul><li>Asked: <b>which</b> branch?</li><li>Waiting at a prompt</li></ul></section>`})
+		},
+		renderEmpty: func(w io.Writer) error {
+			return RenderNavDocument(w, NavDocumentView{Title: "Plugins", Feat: Features{}, Main: `<section><h1>Plugins</h1></section>`})
+		},
 	},
 }
 
@@ -234,16 +262,31 @@ func allDocumentsFrom(rows []documentRenderer) []namedDoc {
 		name: "shell:" + defaultTab + " — no optional subsystems built",
 		node: g.NodeFunc(func(w io.Writer) error { return RenderPage(w, defaultTab, Features{}) }),
 	})
+	// 🔴 NavDocument AS AN APP SCREEN (NavApp, the ask page) IS A DIFFERENT
+	// BODY and is swept as one: the NavDocument row renders the column layout
+	// only.
+	docs = append(docs, namedDoc{name: "NavDocument — an app screen", node: g.NodeFunc(func(w io.Writer) error {
+		return RenderNavDocument(w, sampleAppScreen())
+	})})
 	return docs
+}
+
+// sampleAppScreen is a NavDocument laid out as an app screen, with content and
+// a composer.
+func sampleAppScreen() NavDocumentView {
+	return NavDocumentView{Title: "Question", Entry: NavAttention, Feat: featuresAllOn,
+		Main: `<section data-testid="ask-page"><p>Deploy the importer?</p><button type="submit" form="f">deploy</button></section>`,
+		App: &NavApp{Back: "/attention", BackLabel: "Back to Asks", Heading: "worker-7 is asking",
+			Composer: `<form id="f" method="post" action="/attention/asks/1/answer"><label for="a">Your answer</label><textarea id="a" name="answer"></textarea><button type="submit">Answer</button></form>`}}
 }
 
 // featuresAllOn is the widest shell: every optional subsystem wired.
 //
 // 🔴 IT IS NAMED RATHER THAN SPELLED AT EACH CALL SITE SO A NEW Features FIELD
-// REACHES EVERY SWEEP AT ONCE. A field added with `Features{GitHub: true}`
+// REACHES EVERY SWEEP AT ONCE. A field added with `Features{Connectors: true}`
 // written out eight times would default to false at all eight, silently removing
 // whatever it gates from every document-level guard in this package.
-var featuresAllOn = Features{GitHub: true}
+var featuresAllOn = Features{Connectors: true}
 
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every
@@ -251,10 +294,13 @@ var featuresAllOn = Features{GitHub: true}
 // see a task card or an agent card.
 func listFragments() []namedDoc {
 	return []namedDoc{
+		// The agent page's status strip refresh (agent_actions.go): its strip,
+		// ⋯ menu and notices, for a card with every notice drawn.
+		{"agent-header", g.Group{agentStripBody(sampleHeaderCard()), agentActionsMenu(sampleHeaderCard()), agentNoticesBody(sampleHeaderCard())}},
 		{"tasks-list", NotesCards(sampleTasksView())},
-		{"agents-cards", AgentsCards(sampleAgentCards())},
-		{"repos-connected", ReposConnected("octo-owner", sampleRepos())},
 		{"notes-edit-modal", NotesEditModalBody(sampleNoteEditView())},
+		// The sidebar's agent list (nav_agents.go), one agent marked current.
+		{"nav-agents", NavAgentsList(sampleAgentCards(), navMirrorFixture(), "/agents/"+sampleAgentCards()[0].Name, time.Now())},
 	}
 }
 
@@ -359,7 +405,9 @@ func TestTheShellRendersOneTabpanelPerRegisteredTab(t *testing.T) {
 	for _, shape := range featureShapes() {
 		shape := shape
 		t.Run(shape.name, func(t *testing.T) {
-			html := renderString(t, Page(defaultTab, shape.feat))
+			// The switcher dock's own tablist (switcher_dock.go, on every page with
+			// the sidebar) is not the shell's: taken out, it alone.
+			html := withoutDock(t, renderString(t, Page(defaultTab, shape.feat)))
 
 			visible := visibleTabs(shape.feat)
 			want := make([]string, 0, len(visible))
@@ -481,10 +529,9 @@ func TestTheBrowserScriptsTabRegistryMatchesGos(t *testing.T) {
 			// document: jsSource needs a bare <script> node (its own doc says why —
 			// the closing tag desyncs the comment stripper), and the panels above
 			// already supply the independent reference this comparison needs.
-			js := mustStripJSComments(t, jsSource(t, appScript(shape.feat)))
-
-			tabsJS := jsValueAfter(t, js, "var TABS =")
-			headingsJS := jsValueAfter(t, js, "var HEADINGS =")
+			// The values travel on appScript's tag now (its code is a static
+			// file); appNavValues also checks the code takes them from there.
+			tabsJS, headingsJS, _ := appNavValues(t, shape.feat)
 
 			// POSITIVE CONTROL: the extractor must have found real content, or every
 			// assertion below is a comparison against an empty string.
@@ -599,6 +646,19 @@ func TestTheWordmarkSpellsMuster(t *testing.T) {
 	}
 }
 
+// TestTheWordmarkIsOneFlexItem: both sites hold the wordmark in an
+// `inline-flex … gap-2` box, where every child node is a flex item and the gap
+// falls between them. Rendered as a bare group (a span, then a text node) the
+// name was drawn "mu ster". The whole markup is pinned: one wrapping element,
+// the two syllables inside it.
+func TestTheWordmarkIsOneFlexItem(t *testing.T) {
+	const want = `<span><span class="text-accent">mu</span>ster</span>`
+	if got := renderString(t, wordmark()); got != want {
+		t.Errorf("the wordmark renders %q, want %q.\n"+
+			"Its container is inline-flex with a gap, so anything but ONE element is split by that gap on screen.", got, want)
+	}
+}
+
 // TestBothWordmarkSitesGoThroughTheOneRenderer is the other half: the helper
 // being correct is worth nothing if a call site stops using it.
 //
@@ -682,4 +742,15 @@ func TestTheShellCarriesNoPermissionRouterSurface(t *testing.T) {
 				"value that never changes.", s)
 		}
 	}
+}
+
+// sampleHeaderCard is an agent card with every line its page draws: the owed
+// badge is exclusive with the failed one, so this one has failed, awaits its
+// github grant, has a GitHub problem and has work running.
+func sampleHeaderCard() AgentCardView {
+	a := sampleAgentCards()[0]
+	a.KickoffFailed, a.KickoffFailure, a.Namespace = true, "the turn timed out", "ns-keen"
+	a.KickoffAwaitingGrant, a.GitHubProblem, a.AwaitingApproval = true, "the installation does not cover the repository", true
+	a.Work.Subagents = 2
+	return a
 }

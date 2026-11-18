@@ -87,5 +87,5 @@ test('Chrome finds the manifest valid and the app installable — and the check 
   expect(real.manifest.manifest?.shareTarget?.action).toMatch(/\/share$/);
   // CDP reports the method as its enum spelling ("kGet").
   expect((real.manifest.manifest?.shareTarget?.method ?? '').replace(/^k/, '').toUpperCase()).toBe('GET');
-  expect((real.manifest.manifest?.shortcuts ?? []).map((s) => new URL(s.url).pathname + new URL(s.url).search)).toEqual(['/tasks?new=1', '/tasks', '/agents']);
+  expect((real.manifest.manifest?.shortcuts ?? []).map((s) => new URL(s.url).pathname + new URL(s.url).search)).toEqual(['/tasks?new=1', '/tasks']);
 });

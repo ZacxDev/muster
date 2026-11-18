@@ -1,10 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"os"
 	"slices"
+	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -14,6 +22,8 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
+	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -59,13 +69,13 @@ import (
 // 🔴 TWO PREREQUISITES FOR `kubernetes` THAT LIVE OUTSIDE THIS REPOSITORY, NAMED
 // HERE BECAUSE NOTHING ELSE IN IT CAN CHECK THEM:
 //
-//  1. RBAC. This module ships no Kubernetes manifest of any kind, so nothing here
-//     grants muster's own ServiceAccount the Deployment / Service / Secret /
-//     ConfigMap / ServiceAccount / Namespace permissions internal/provision/k8s
-//     needs. Every dispatch then 403s — and a 403 from the apiserver reads as a
-//     driver defect rather than a missing Role. CLOSING CONDITION: a merged change
-//     in the deployment's own repository adding that Role/RoleBinding, verified by
-//     one real dispatch.
+//  1. RBAC. Nothing in the server grants muster's own ServiceAccount the
+//     Deployment / Service / Secret / ConfigMap / ServiceAccount / Namespace
+//     permissions internal/provision/k8s needs; the Helm chart's
+//     templates/rbac.yaml does (both layouts, measured against this driver by
+//     internal/provision/k8s/chart_rbac_test.go). A deployment made another way
+//     must grant them itself, or every dispatch 403s — and a 403 from the
+//     apiserver reads as a driver defect rather than a missing Role.
 //     ⚠ THE PRIVILEGE TIER (MUSTER_AGENT_PRIVILEGE_APPLY) USED TO NEED A FURTHER
 //     SET — write verbs plus `escalate`/`bind` on all four rbac resource types.
 //     It was removed with the privilege subsystem (superseded by connectors), so
@@ -125,6 +135,43 @@ func buildClaudePool(cfg config, src ccpool.Source, marks ccpool.Store) (*ccpool
 			"in Postgres, and %s is unset", envAgentKinds, agents.KindClaudeCode, envDatabase)
 	}
 	return ccpool.NewWithLimits(src, marks, cfg.ccPoolLimits())
+}
+
+// buildAccountFailover builds the claude-code account failover
+// (internal/ccfailover) over the pool, the agents store and the lifecycle
+// adapter, or nil when there is no claude-code pool or no adapter to restart
+// an agent with. It is built even when MUSTER_AGENT_CC_FAILOVER=off — it then
+// moves nothing, and the agent page and API say why.
+//
+// 🔴 nil IS RETURNED AS A TYPED NIL'S ABSENCE, NOT A nil *Service IN AN
+// INTERFACE: the caller assigns it to api.Extensions.AccountFailover only when
+// non-nil, so the api's nil check stays truthful.
+func buildAccountFailover(cfg config, pool *ccpool.Pool, store agents.Store, prov *agentprovision.Adapter,
+	db *pgxpool.Pool, logger *log.Logger) (*ccfailover.Service, error) {
+	if pool == nil || prov == nil || store == nil {
+		return nil, nil
+	}
+	fc := ccfailover.Config{
+		Enabled:   !cfg.AgentCCFailoverOff,
+		Pool:      pool,
+		Agents:    store,
+		Rebinder:  prov,
+		Instances: prov.Instances,
+		Logger:    logger,
+	}
+	if db != nil {
+		fc.Store = ccfailover.NewPG(db)
+	}
+	f, err := ccfailover.New(fc)
+	if err != nil {
+		return nil, err
+	}
+	state := "on"
+	if cfg.AgentCCFailoverOff {
+		state = "OFF (" + envAgentCCFailover + "=off)"
+	}
+	logger.Printf("account failover: %s", state)
+	return f, nil
 }
 
 // buildAgentPlaneWith is buildAgentPlane with the claude-code account pool,
@@ -195,7 +242,7 @@ func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, plan
 	//
 	// ⚠ nil IS A SUPPORTED OUTCOME, so this is a capability report and not an error
 	// check — see this function's own header on why neither nil is a failure.
-	gw, err := buildGatewayWith(cfg, driver, pool)
+	gw, err := buildGatewayWith(cfg, driver, pool, store)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -208,14 +255,18 @@ func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, plan
 			return nil, nil, err
 		}
 	}
-	prov, err := agentprovision.New(agentprovision.Config{
+	pc := agentprovision.Config{
 		Driver:             driver,
 		Store:              store,
 		Spec:               specCfg,
 		Credentials:        credResolver{pool: pool, plane: plane},
 		Logger:             logger,
 		KickoffDeliverable: kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired),
-	})
+	}
+	// The one rule for a chief on the LLM route (chiefllm.go): nil when no
+	// chief is, so every chief is built on its Claude account.
+	pc.ChiefLLMRoute = chiefLLMRoute(cfg, plane)
+	prov, err := agentprovision.New(pc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -260,20 +311,54 @@ func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 // deliverer sees exactly the instances the lifecycle routes see.
 //
 // onChange is called with an agent's name whenever the deliverer changes what that
-// agent's card shows; buildApp passes api.Server.BroadcastAgentChanged so an open
-// Agents list re-renders (agentkickoff.Config.OnChange).
-func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string), logger *log.Logger) (*agentkickoff.Deliverer, error) {
+// agent's page shows; buildApp passes api.Server.BroadcastAgentChanged so an open
+// agent page's strip and the sidebar re-fetch (agentkickoff.Config.OnChange).
+//
+// turnCtx is the context each first turn is sent under, for the agent
+// (agentkickoff.Config.TurnContext): buildApp passes api.Server.
+// OfficerTurnContext, so an officer instance of a fresh_session_per_item pool
+// gets its kickoff in a NEW conversation. outcome hears each first turn's
+// course (agentkickoff.Config.Outcome; nil: nothing is tracked). tools gives a
+// first turn the agent's muster tools (agentkickoff.Config.TurnTools): buildApp
+// passes api.Server.KickoffTurnTools, without which a dispatched gateway agent
+// is offered none of them — agent_report_done included — in the one turn it
+// does its work in.
+func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
+	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter,
+	tools func(context.Context, agents.Agent) (context.Context, agentkickoff.TurnTools, bool), logger *log.Logger) (*agentkickoff.Deliverer, error) {
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil
 	}
-	return agentkickoff.New(agentkickoff.Config{
+	return agentkickoff.New(kickoffConfig(cfg, store, prov, gw, onChange, turnCtx, outcome, tools, logger))
+}
+
+// kickoffConfig is the deliverer's configuration buildKickoffDeliverer builds:
+// separate so a test can read what each argument became
+// (TestKickoffConfigCarriesEveryHook) — Deliverer's fields are unexported.
+func kickoffConfig(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
+	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter,
+	tools func(context.Context, agents.Agent) (context.Context, agentkickoff.TurnTools, bool), logger *log.Logger) agentkickoff.Config {
+	return agentkickoff.Config{
 		Store:           store,
 		Instances:       prov,
 		Gateway:         gw,
 		NamespacePrefix: cfg.AgentNamespacePrefix,
 		Logger:          logger,
 		OnChange:        onChange,
-	})
+		TurnContext:     turnCtx,
+		Outcome:         outcome,
+		TurnTools:       tools,
+	}
+}
+
+// kickoffOutcomes is the server's outcome tracker as the deliverer's reporter,
+// or nil (a NIL INTERFACE, never a typed nil) when nothing is tracked: a first
+// turn's failure then changes no status, as before.
+func kickoffOutcomes(srv *api.Server) agentkickoff.OutcomeReporter {
+	if r, ok := srv.KickoffOutcomes(); ok {
+		return r
+	}
+	return nil
 }
 
 // buildStatusPromoter builds the loop that moves a stored `provisioning` status
@@ -312,14 +397,19 @@ func buildStatusPromoter(cfg config, store agents.Store, prov *agentprovision.Ad
 // one. A deployment that names a driver is saying where instances live; naming a
 // runtime is saying what protocol the thing inside speaks.
 func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gateway, error) {
-	return buildGatewayWith(cfg, driver, nil)
+	return buildGatewayWith(cfg, driver, nil, nil)
 }
 
 // buildGatewayWith is buildGateway with the claude-code account pool as the
 // gateway's failure marker. A nil pool leaves Accounts nil — NOT a typed nil
 // inside the interface, which would make the gateway's nil check pass and call
 // a method on a nil *Pool.
-func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Pool) (*agentgateway.Gateway, error) {
+//
+// store is the agents store, wired as the gateway's Kickoff so a completed turn
+// clears a stale "kickoff failed" record (agentgateway.Gateway.noteSuccess), and
+// as its Secrets, the one read of an agent's credentials (an ordinary read
+// carries none). A nil store leaves both nil for the same typed-nil reason.
+func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Pool, store agents.Store) (*agentgateway.Gateway, error) {
 	rt, err := agentRuntime(cfg)
 	if err != nil {
 		return nil, err
@@ -334,6 +424,10 @@ func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Poo
 	}
 	if pool != nil {
 		gc.Accounts = pool
+	}
+	if store != nil {
+		gc.Kickoff = store
+		gc.Secrets = store
 	}
 	return agentgateway.New(gc)
 }
@@ -380,6 +474,12 @@ func agentRuntime(cfg config) (agentgateway.Runtime, error) {
 // TestTheDefaultBuildCarriesNoFakeTerminal pins the nil.
 var e2eFakeTerminal func(provision.Provisioner) provision.Provisioner
 
+// k8sTestClient replaces the Kubernetes driver's in-cluster client. nil
+// (always, outside tests: nothing in this package's non-test code sets it) is
+// rest.InClusterConfig; a test sets a fake clientset so the pod a chief is
+// given can be read back from the objects the real driver renders.
+var k8sTestClient kubernetes.Interface
+
 // buildDriver builds the provisioning backend itself.
 func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
 	switch cfg.agentProvisioner() {
@@ -409,6 +509,8 @@ func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) 
 		return noop, nil
 	case provisionerK8s:
 		return buildK8sDriver(cfg, logger)
+	case provisionerCompose:
+		return buildComposeDriver(cfg, logger)
 	default:
 		// Unreachable: config.validateProvisioner refuses anything else at boot.
 		// A silent nil here would present as a working server whose every
@@ -429,6 +531,11 @@ func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) 
 // with a message naming what is missing, and that message is the correct outcome
 // outside a pod.
 func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
+	if k8sTestClient != nil {
+		dc := k8sDriverConfig(cfg, logger)
+		dc.Client = k8sTestClient
+		return k8sdriver.New(dc)
+	}
 	rc, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("%s=%s needs in-cluster credentials and there are none: %w "+
@@ -443,7 +550,53 @@ func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, erro
 	dc := k8sDriverConfig(cfg, logger)
 	dc.Client = client
 	dc.RESTConfig = rc
+	if dc.NamespaceRoleBinding != nil {
+		// The RoleBinding's subject is THIS pod's ServiceAccount, read off its
+		// own token rather than configured, so it cannot name another identity.
+		tok, err := os.ReadFile(rc.BearerTokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("%s is set but this pod's ServiceAccount token is unreadable: %w",
+				envAgentNSClusterRole, err)
+		}
+		ns, name, err := serviceAccountFromToken(tok)
+		if err != nil {
+			return nil, fmt.Errorf("%s is set but: %w", envAgentNSClusterRole, err)
+		}
+		dc.NamespaceRoleBinding.ServiceAccountNamespace = ns
+		dc.NamespaceRoleBinding.ServiceAccountName = name
+	}
 	return k8sdriver.New(dc)
+}
+
+// serviceAccountFromToken reads the ServiceAccount a Kubernetes token was
+// issued to from its `sub` claim ("system:serviceaccount:<namespace>:<name>").
+//
+// ⚠ IT DOES NOT VERIFY THE SIGNATURE, and does not need to: the token is this
+// pod's own, read from the path the in-cluster config authenticates with, and
+// the only thing taken from it is which identity to bind — the apiserver
+// authenticates every request with the same token regardless.
+func serviceAccountFromToken(tok []byte) (namespace, name string, err error) {
+	parts := strings.Split(strings.TrimSpace(string(tok)), ".")
+	if len(parts) != 3 {
+		return "", "", errors.New("the ServiceAccount token is not a JWT")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return "", "", fmt.Errorf("the ServiceAccount token's payload is not base64url: %w", err)
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", "", fmt.Errorf("the ServiceAccount token's payload is not JSON: %w", err)
+	}
+	const prefix = "system:serviceaccount:"
+	rest, ok := strings.CutPrefix(claims.Sub, prefix)
+	ns, sa, ok2 := strings.Cut(rest, ":")
+	if !ok || !ok2 || ns == "" || sa == "" || strings.Contains(sa, ":") {
+		return "", "", fmt.Errorf("the ServiceAccount token's subject %q is not %s<namespace>:<name>", claims.Sub, prefix)
+	}
+	return ns, sa, nil
 }
 
 // k8sDriverConfig maps this binary's configuration onto the driver's, WITHOUT
@@ -470,10 +623,15 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		EndpointTemplate:     cfg.AgentEndpointTemplate,
 		Logger:               logger,
 	}
+	if cfg.AgentNamespaceClusterRole != "" {
+		// The subject (this pod's ServiceAccount) is filled in by
+		// buildK8sDriver from the pod's token; it needs the pod.
+		dc.NamespaceRoleBinding = &k8sdriver.NamespaceRoleBindingConfig{ClusterRole: cfg.AgentNamespaceClusterRole}
+	}
 	if cfg.AgentWorkspacePersist || cfg.confinedKindsEnabled() {
-		// ⚠ ...OR A CONFINED KIND (claude-code, hermes) IS ENABLED: its /data volume
+		// ⚠ ...OR A CONFINED KIND (claude-code) IS ENABLED: its /data volume
 		// is not optional (the conversation `claude --resume <id>` resumes lives on
-		// it; Hermes's state.db, run records and API key do), so the driver
+		// it), so the driver
 		// must accept a persistent workspace even when gateway-kind agents keep
 		// theirs ephemeral. This raises the CAPABILITY only; a gateway-kind spec
 		// still asks for persistence exactly when AgentWorkspacePersist says so.
@@ -505,6 +663,10 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 			ControllerNamespace: cfg.AgentNetpolFromNS,
 			ControllerPodLabels: labels,
 		}
+		// 🔴 A deploy-key pool's Secret is kept in muster's OWN namespace (the
+		// one this variable names) and copied into each worker's namespace
+		// before its pod (k8s secretcopy.go).
+		dc.SecretSourceNamespace = cfg.AgentNetpolFromNS
 	}
 	return dc
 }
@@ -568,17 +730,19 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		CairnURL:         cfg.AgentCairnURL,
 		CairnToken:       cfg.AgentCairnToken,
 		Plugins:          cfg.pluginsEnabled(),
+		SessionRouting:   cfg.sessionRoutingEnabled(),
 		RuntimeConfig:    rc,
 		ClaudeCode:       claudeCodeSpecConfig(cfg),
-		Hermes:           hermesSpecConfig(cfg),
-		// A claude-code chief runs the gateway runtime beside ccd when its
-		// sessions may be started on that runtime (validateSessionRuntimes
-		// refuses this without the runtime bundle the sidecar is built from).
-		ChiefGatewaySidecar: cfg.claudeCodeEnabled() && slices.Contains(cfg.ChiefSessionRuntimes, agents.SessionRuntimeGateway),
 		// Both or neither: config.validateConnectors refuses a URL without the
 		// port, so a URL here always comes with the pod port its policy allows.
 		ConnectURL:  cfg.AgentConnectURL,
 		ConnectPort: cfg.ConnectPort,
+		// Officers only (agentspec.claudeCodeNetworkFor); config.validate
+		// refuses either without an agent NetworkPolicy.
+		OfficerEgressCIDRs: slices.Clone(cfg.OfficerEgressCIDRs),
+		OfficerEgressDNS:   cfg.OfficerEgressDNS,
+
+		ComposeContainer: cfg.chiefCompose(),
 	}, nil
 }
 
@@ -613,14 +777,6 @@ func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
 		accounts[k] = v
 	}
 	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage,
-		BypassPools: slices.Clone(cfg.AgentCCBypassPools)}
-}
-
-// hermesSpecConfig is the hermes kind's deployment half, or nil when the kind
-// is not enabled.
-func hermesSpecConfig(cfg config) *agentspec.HermesConfig {
-	if !cfg.hermesEnabled() {
-		return nil
-	}
-	return &agentspec.HermesConfig{Image: cfg.AgentHermesImage, StorageSize: cfg.AgentHermesStorage}
+		BypassPools: slices.Clone(cfg.AgentCCBypassPools), PoolDeployKeys: maps.Clone(cfg.AgentCCPoolDeployKeys),
+		EgressLockedPools: slices.Clone(cfg.AgentCCEgressLockedPools)}
 }

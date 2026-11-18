@@ -6,6 +6,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // This file is where every authentication wrapper turns "the credential
@@ -108,20 +109,20 @@ func (s *Server) roleOf(ctx context.Context, uid int64) authz.Role {
 	return s.principalFor(ctx, uid, "").Role
 }
 
-// roleOfChecked is roleOf WITHOUT the member fallback: a failed read is
-// returned, so a door whose decision a wrong "member" would CHANGE (not just
-// narrow) can refuse instead.
+// accountOfChecked is everything principalFor builds a principal from — the
+// role, whether uid is a team, the person's team memberships — WITHOUT the
+// member fallback: a failed read is returned.
 //
 // principalFor calls it and marks a failure as authz.Principal.RoleUncertain;
 // see there for the rule that flag carries.
-func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, error) {
+func (s *Server) accountOfChecked(ctx context.Context, uid int64) (users.Account, error) {
 	if s.ext.Users == nil {
 		if uid == authz.OperatorUserID {
-			return authz.RoleAdmin, nil
+			return users.Account{Role: authz.RoleAdmin}, nil
 		}
-		return authz.RoleMember, nil
+		return users.Account{Role: authz.RoleMember}, nil
 	}
-	return s.ext.Users.Role(authz.System(ctx), uid)
+	return s.ext.Users.Account(authz.System(ctx), uid)
 }
 
 // principalFor builds the request principal for a user admitted through via.
@@ -133,13 +134,66 @@ func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, erro
 // (connectors.ReconcileGrant) — holds on the session, route, agent and
 // connector doors alike.
 func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) authz.Principal {
-	r, err := s.roleOfChecked(ctx, uid)
+	a, err := s.accountOfChecked(ctx, uid)
 	if err != nil {
 		s.logger.Printf("principal: reading user %d's role: %v (acting as member, role uncertain)", uid, err)
 		return authz.Principal{UserID: uid, Role: authz.RoleMember, Via: via, RoleUncertain: true}
 	}
-	return authz.Principal{UserID: uid, Role: r, Via: via}
+	if a.Team {
+		return teamActingPrincipal(uid, via)
+	}
+	return authz.Principal{UserID: uid, Role: a.Role, Via: via, Teams: a.Teams}
 }
+
+// teamActingPrincipal is THE TEAM ACTING PRINCIPAL (team sharing phase 4,
+// docs/design/team-sharing.md §2): team acting through via as itself —
+// muster.uid is the team, role member, NO team memberships (muster.teams
+// empty) and never scope "all". It is built here, once, by construction: a
+// team row's role is always member (users_team_no_login) and a team is
+// nobody's member, but the principal does not depend on the row saying so.
+//
+// authz.WithPrincipal accepts it only through authz's teamActingVias; every
+// other door still refuses it (admit with a 403, a background site with
+// WithPrincipal's panic). TestEveryPerOwnerPrincipalSiteIsTeamSafe walks every
+// per-owner site with a team owner.
+func teamActingPrincipal(team int64, via authz.Via) authz.Principal {
+	return authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: via}
+}
+
+// TeamSignInRefusal is what every door but an agent's own token and a team
+// host's (teamAgentDoors) answers a credential that resolves to a TEAM (users.kind =
+// 'team'): a team owns things, and no one signs in as one
+// (docs/design/team-sharing.md). admit answers it before the principal is
+// attached; authz.WithPrincipal's panic is the backstop for any other caller.
+const TeamSignInRefusal = "a team cannot sign in; sign in as a person"
+
+// teamAgentDoors are the doors admit lets a TEAM through: an agent's own
+// per-agent token — the agent self-service API and /mcp (requireAgentToken),
+// the connector surface (requireConnectorAgent) and the approval relay
+// (requireRelayAgent). Each builds its principal from the agent row's owner
+// (agentPrincipal / principalFor over agentOwnerID), so a team here is a
+// team-owned agent acting as its owner, through the team acting principal.
+//
+// And, since team sharing 2b.2, a TEAM HOST's mirror token (ViaMirrorHost:
+// requireMirrorHostToken, POST /mirror/mcp and GET /mirror/host): the team is
+// the token's owner, never a sign-in, and the MCP door serves a team token
+// only teamHostTools (mirror_mcp.go) — opened in the same change as that
+// ledger, since row-level security shows the team acting principal every
+// team row.
+//
+// Every other door — a person's, a shared machine token's, a plugin's, a
+// device's, a share link's — refuses a team.
+//
+// And, since team sharing 2b.3b, a TEAM VIEWER PLUGIN's token (ViaPlugin:
+// requirePluginToken), which a manager mints on /teams/<id>/plugins: it is
+// served the hand-off redeem and /self only (teamPluginRoutes), whatever
+// capabilities its row claims — refused at the door before admit.
+var teamAgentDoors = map[authz.Via]bool{authz.ViaAgent: true, authz.ViaConnect: true, authz.ViaRelay: true, authz.ViaMirrorHost: true,
+	authz.ViaPlugin: true}
+
+// AccountUnreadableRefusal is what every door answers when the request's
+// account could not be read (admit: fail closed).
+const AccountUnreadableRefusal = "your account could not be read just now; retry shortly"
 
 // admit attaches p to the request and hands it to next. See the file header:
 // it is the only way a wrapper may call next.
@@ -152,9 +206,58 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	if s.refuseDeviceTokenElsewhere(w, r, p.Via) {
 		return
 	}
+	// A credential that resolves to a team is refused at every door but a
+	// team-owned AGENT's own token and a team HOST's (teamAgentDoors), where
+	// the team is the row's owner, never a sign-in. This is the one place each
+	// wrapper's principal passes (TestOnlyTheAgentDoorsAdmitATeam walks every
+	// route through it).
+	if p.Team && !teamAgentDoors[p.Via] {
+		s.logger.Printf("principal: refused a %s credential that resolves to team %d", p.Via, p.UserID)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamSignInRefusal})
+		return
+	}
+	// 🔴 FAIL CLOSED ON AN UNREADABLE ACCOUNT. When the users row could not be
+	// read, principalFor's fallback cannot know the KIND either: Team false
+	// there is a guess, and a guess must not admit a request that might be a
+	// team's. So no request door hands on a RoleUncertain principal: it is a
+	// retryable 503 (TestAnUnreadableAccountIsRefusedAtEveryDoor).
+	if p.RoleUncertain {
+		s.logger.Printf("principal: refused a %s request for user %d: the account could not be read", p.Via, p.UserID)
+		w.Header().Set("Retry-After", "5")
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": AccountUnreadableRefusal})
+		return
+	}
 	r = r.WithContext(authz.WithPrincipal(r.Context(), p))
 	if s.principalProbe != nil {
 		s.principalProbe(r)
+	}
+	// A route naming an agent the principal's TEAM owns is decided by the
+	// route's team rule (team_agents.go teamAgentRoutes): one place for every
+	// agent route, so a new one cannot forget it.
+	refused, sock := s.teamAgentGate(w, r)
+	if refused {
+		return
+	}
+	// A member's terminal or chat socket on a team's agent stays open only
+	// while they are an operator of the team: registered for the membership
+	// sweep, then read again (teamAgentSocketOpen).
+	if sock.team > 0 {
+		var done func()
+		if r, done = s.teamAgentSocketOpen(w, r, sock); r == nil {
+			return
+		}
+		defer done()
+	}
+	// A mirror route naming a TEAM host's entry (owner=) is decided by the
+	// route's team rule (mirror_team_routes.go mirrorTeamRoutes): one place
+	// for every mirror route. A member's view is aimed at the team's hub
+	// entries and registered for the membership sweep (team_live.go).
+	r, viewDone, ok := s.mirrorTeamGate(w, r)
+	if !ok {
+		return
+	}
+	if viewDone != nil {
+		defer viewDone()
 	}
 	next(w, r)
 }

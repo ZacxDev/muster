@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 )
 
 var (
@@ -94,6 +95,13 @@ type AuditEntry struct {
 
 // auditInsert writes one audit_log row inside tx.
 func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string, detail map[string]any) error {
+	return auditInsertFor(ctx, tx, by, 0, action, object, detail)
+}
+
+// auditInsertFor is auditInsert recording the TEAM acted on (audit_log.team_id,
+// migration 0127). 0 records none. A team's managers read the rows that name
+// it.
+func auditInsertFor(ctx context.Context, tx pgx.Tx, by Actor, owner int64, action, object string, detail map[string]any) error {
 	if detail == nil {
 		detail = map[string]any{}
 	}
@@ -105,8 +113,12 @@ func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string
 	if by.UserID > 0 {
 		uid = by.UserID
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail) VALUES ($1, $2, $3, $4, $5::jsonb)`,
-		uid, string(by.Via), action, object, string(b))
+	var ownerID any
+	if owner > 0 {
+		ownerID = owner
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail, team_id) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+		uid, string(by.Via), action, object, string(b), ownerID)
 	return err
 }
 
@@ -116,6 +128,14 @@ func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string
 // it, as the token's owner (0009's self_append policy).
 func AuditTx(ctx context.Context, tx pgx.Tx, by Actor, action, object string, detail map[string]any) error {
 	return auditInsert(ctx, tx, by, action, object, detail)
+}
+
+// AuditTeamTx is AuditTx recording the TEAM acted on (audit_log.team_id), so
+// the team's managers read it: `muster-server mirror token create --team`
+// records the team host token it mints in the mint's own transaction (team
+// sharing 2b.2).
+func AuditTeamTx(ctx context.Context, tx pgx.Tx, by Actor, team int64, action, object string, detail map[string]any) error {
+	return auditInsertFor(ctx, tx, by, team, action, object, detail)
 }
 
 // inTx runs fn in one System transaction.
@@ -137,6 +157,17 @@ func (s *PGStore) inTx(ctx context.Context, fn func(context.Context, pgx.Tx) err
 func (s *PGStore) Audit(ctx context.Context, by Actor, action, object string, detail map[string]any) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		return auditInsert(ctx, tx, by, action, object, detail)
+	})
+}
+
+// AuditTeam appends one audit_log row naming the TEAM acted on
+// (audit_log.team_id, 0127), for an action on a team's object taken outside
+// this package's transactions — a host spawn lent to or taken back from a
+// team, a team officer's charter edit (team sharing phase 3, design §4). The
+// team's managers read it on /teams/{id}.
+func (s *PGStore) AuditTeam(ctx context.Context, by Actor, team int64, action, object string, detail map[string]any) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return auditInsertFor(ctx, tx, by, team, action, object, detail)
 	})
 }
 
@@ -360,6 +391,11 @@ func (s *PGStore) RedeemInvite(ctx context.Context, tokenHash []byte, email, dis
 	create func(context.Context) (string, error), undo func(sub string)) (User, error) {
 	ctx = sys(ctx)
 	email, displayName = strings.TrimSpace(email), strings.TrimSpace(displayName)
+	// Refused before the transaction, so a refused name never creates a GoTrue
+	// user (create is not called). A *branding.NameCharError.
+	if err := branding.CheckNameText(displayName); err != nil {
+		return User{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return User{}, err
@@ -423,9 +459,9 @@ func (s *PGStore) RedeemInvite(ctx context.Context, tokenHash []byte, email, dis
 	return u, nil
 }
 
-// ListUsers returns every user, oldest first.
+// ListUsers returns every PERSON, oldest first (teams are on /admin/teams).
 func (s *PGStore) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT `+userCols+` FROM users ORDER BY id`)
+	rows, err := s.pool.Query(sys(ctx), `SELECT `+userCols+` FROM users WHERE kind = 'person' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

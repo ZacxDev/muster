@@ -1,0 +1,108 @@
+{
+  "create-model": {
+    "data": {
+      "id": "ses_e46e6f2beffeOJt8I3YN4cQH4D",
+      "projectID": "global",
+      "model": {
+        "id": "qwen/qwen3-coder",
+        "providerID": "openrouter",
+        "variant": "default"
+      },
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "time": {
+        "created": 1794106789230,
+        "updated": 1794106789230
+      },
+      "location": {
+        "directory": "/srv/fixture"
+      }
+    }
+  },
+  "create-unknown-model": {
+    "data": {
+      "id": "ses_e46e6f2beffeOJt8I3YN4cQH4Z",
+      "projectID": "global",
+      "model": {
+        "id": "nope/not-a-model",
+        "providerID": "openrouter",
+        "variant": "default"
+      },
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "time": {
+        "created": 1794106789282,
+        "updated": 1794106789282
+      },
+      "location": {
+        "directory": "/srv/fixture"
+      }
+    }
+  },
+  "model-openrouter": {
+    "id": "qwen/qwen3-coder",
+    "modelID": "qwen/qwen3-coder",
+    "providerID": "openrouter",
+    "family": "qwen",
+    "name": "Qwen3 Coder 480B A35B",
+    "package": "@opencode/ai/providers/openrouter",
+    "settings": {
+      "baseURL": "https://openrouter.ai/api/v1"
+    },
+    "headers": {
+      "HTTP-Referer": "https://opencode.ai/",
+      "X-Title": "opencode"
+    },
+    "capabilities": {
+      "tools": true,
+      "input": [
+        "text"
+      ],
+      "output": [
+        "text"
+      ],
+      "temperature": true
+    },
+    "variants": [],
+    "time": {
+      "released": 1753142400000
+    },
+    "cost": [
+      {
+        "input": 0.3,
+        "output": 1,
+        "cache": {
+          "read": 0.1,
+          "write": 0
+        }
+      }
+    ],
+    "status": "active",
+    "enabled": true,
+    "limit": {
+      "context": 262144,
+      "output": 65536
+    }
+  },
+  "delete-404": {
+    "_tag": "SessionNotFoundError",
+    "sessionID": "ses_e46e6f2beffeOJt8I3YN4cQH4D",
+    "message": "Session not found: ses_e46e6f2beffeOJt8I3YN4cQH4D"
+  }
+}

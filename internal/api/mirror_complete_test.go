@@ -70,16 +70,15 @@ func menuNames(m composerMenu) map[string]string {
 	return out
 }
 
-// TestTheMenuMergesTheHostsCatalogWithTheBuiltIns: the host's skills, the
-// window's project commands and the snippets, beside the built-ins — and a
-// host command named like a built-in shadows it.
+// TestTheMenuMergesTheHostsCatalogWithTheBuiltIns: the host's skills and the
+// window's project commands, beside the built-ins — and a host command named
+// like a built-in shadows it.
 func TestTheMenuMergesTheHostsCatalogWithTheBuiltIns(t *testing.T) {
 	cm := &catalogMirror{fakeMirror: &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}, cat: mirror.Catalog{
 		Commands: []mirror.CatalogEntry{
 			{Name: "handoff", Description: "write the handoff", Source: mirror.SourceUser, Kind: mirror.KindSkill},
 			{Name: "compact", Description: "the project's own compact", Source: mirror.SourceProject, Kind: mirror.KindCommand},
 		},
-		Snippets: []mirror.Snippet{{Trigger: ":eos", Label: "End of session", Body: "reflect and hand off"}},
 	}}
 	s, ts := viewServer(t, cm.fakeMirror)
 	s.ext.Mirror = cm
@@ -90,9 +89,6 @@ func TestTheMenuMergesTheHostsCatalogWithTheBuiltIns(t *testing.T) {
 	n := menuNames(m)
 	if n["handoff"] != mirror.SourceUser || n["clear"] != mirror.SourceBuiltin || n["compact"] != mirror.SourceProject {
 		t.Fatalf("commands: %v", n)
-	}
-	if len(m.Snippets) != 1 || m.Snippets[0].Trigger != ":eos" {
-		t.Fatalf("snippets: %+v", m.Snippets)
 	}
 	if got := cm.asked; len(got) != 1 || got[0] != "1 ws main " {
 		t.Fatalf("the plugin was asked %q, want once, for user 1's ws/main", got)
@@ -171,7 +167,6 @@ func TestTheMenusStringsCannotBeMarkup(t *testing.T) {
 	evil := `</script><img src=x onerror="alert(1)">&amp;`
 	cm := &catalogMirror{fakeMirror: &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}, cat: mirror.Catalog{
 		Commands: []mirror.CatalogEntry{{Name: "evil", Description: evil, Source: mirror.SourceUser, Kind: mirror.KindSkill}},
-		Snippets: []mirror.Snippet{{Trigger: ":evil", Label: evil, Body: evil}},
 	}}
 	s, ts := viewServer(t, cm.fakeMirror)
 	s.ext.Mirror = cm
@@ -190,8 +185,5 @@ func TestTheMenusStringsCannotBeMarkup(t *testing.T) {
 		if e.Name == "evil" && e.Description != evil {
 			t.Fatalf("the description decodes to %q, want %q", e.Description, evil)
 		}
-	}
-	if m.Snippets[0].Body != evil {
-		t.Fatalf("the snippet decodes to %q", m.Snippets[0].Body)
 	}
 }

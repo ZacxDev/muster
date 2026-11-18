@@ -492,3 +492,52 @@ func TestPGStoreListSummaries(t *testing.T) {
 			len(got.Attachments), len(got.Comments))
 	}
 }
+
+// TestListSummariesCarriesStatus: ListSummaries carries each note's real status.
+//
+// The projection once omitted `status`, so every summary held "" — and the
+// chief's tasks_list, which reads its whole board through ListSummaries,
+// reported `"status": ""` for every task and matched nothing on a status
+// filter. Three notes in three DIFFERENT statuses, so a projection that fills
+// the field with a constant (the column default, `open`) or from the wrong
+// column cannot satisfy all three.
+func TestListSummariesCarriesStatus(t *testing.T) {
+	store, ctx := flagIdleStore(t)
+
+	want := map[int64]string{}
+	for _, st := range []string{StatusOpen, StatusInProgress, StatusReadyForReview} {
+		n, err := store.Create(ctx, Note{Directory: "/work/status-" + st, Body: "a task in " + st})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		defer store.Delete(ctx, n.ID)
+		if st != StatusOpen {
+			if _, err := store.SetStatus(ctx, n.ID, st); err != nil {
+				t.Fatalf("set status %s: %v", st, err)
+			}
+		}
+		want[n.ID] = st
+	}
+
+	sums, err := store.ListSummaries(ctx)
+	if err != nil {
+		t.Fatalf("ListSummaries: %v", err)
+	}
+	got := map[int64]string{}
+	for _, s := range sums {
+		if _, ok := want[s.ID]; ok {
+			got[s.ID] = s.Status
+		}
+	}
+	for id, st := range want {
+		g, ok := got[id]
+		if !ok {
+			t.Errorf("note %d missing from ListSummaries", id)
+			continue
+		}
+		if g != st {
+			t.Errorf("ListSummaries returned status %q for note %d, want %q. The chief's tasks_list "+
+				"reads status from this projection: put `status` back in the SELECT and the Scan.", g, id, st)
+		}
+	}
+}

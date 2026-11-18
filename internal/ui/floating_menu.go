@@ -2,7 +2,6 @@ package ui
 
 import (
 	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
 )
 
 // floatingMenuScript places every [data-floating-menu] popover next to the
@@ -11,12 +10,21 @@ import (
 //
 // The rule, in order:
 //   - right-aligned to the trigger, just below it;
-//   - flipped ABOVE the trigger when below would cross the viewport bottom, and
-//     pinned to the bottom edge when neither side fits;
-//   - clamped horizontally inside an 8px edge. ⚠ DEFENSIVE, AND UNEXERCISED: the
-//     only trigger today sits at a card's right edge, where right-alignment can
-//     never leave the viewport, so no test reaches the clamp (a mutant deleting
-//     it survives the suite). It is kept for a trigger placed somewhere else.
+//   - flipped ABOVE the trigger when below would cross the viewport bottom;
+//   - when NEITHER side holds it whole, put on the ROOMIER side and capped to
+//     that side's height (it scrolls inside), so it never covers its own
+//     trigger — the agent header's full-title popover on a landscape phone
+//     (844×390) is taller than the space on either side of its "…". Only when
+//     both sides are under minSide (a trigger scrolled to an edge) is it
+//     pinned to the bottom edge as before;
+//   - clamped horizontally inside an 8px edge. EXERCISED by the agent header's
+//     "…" (agentTitle): at 390px it sits mid-row, and right-aligning the 288px
+//     panel to it would start left of the screen
+//     (e2e/tests/agent-long-title.spec.ts asserts the panel's box is inside
+//     the viewport).
+//
+// The height cap is THIS function's (maxHeight, inline); a popover carries no
+// max-height class of its own, which this inline style would silently beat.
 //
 // 🔴 IT RE-PLACES WHENEVER THE MENU CAN HAVE MOVED, GROWN, OR LOST ITS POSITION,
 // NOT ONLY ON OPEN. Three separate causes, each with its own observer because
@@ -28,31 +36,24 @@ import (
 //     the two saw the grown menu hanging over its trigger. ResizeObserver
 //     callbacks run in the rendering steps before paint.
 //   - THE TRIGGER MOVED. Scroll and resize.
-//   - A MORPH STRIPPED THE POSITION. #agents-list morphs in place on every
-//     lifecycle and chat event, and the server orders cards by last activity, so
-//     a reply RE-ORDERS them. (While the "N new ↑" pill holds the order — the
-//     usual case for a background refresh — the morph is handed the cards in
-//     the DRAWN order (agentsFilterScript's keepDrawnOrder) and is not
-//     re-ranked, and held arrivals sort last, so the held refresh itself moves
-//     no drawn card. (It can still HIDE one whose new text stops matching a
-//     typed filter — an open gap.) A
-//     re-order that is applied still moves cards: by moveBefore where the
-//     browser has it, which keeps the popover open; by appendChild where it
-//     does not, which CLOSES it.) An open popover stays open through a
-//     moveBefore move (its state is not an attribute), but when idiomorph
-//     moves its card it rewrites the
-//     element's attributes to the server's — which carry no inline style — and the
-//     menu fell to the popover default corner (measured: 0,0) with Start/Delete
-//     still live, nowhere near its trigger. Its SIZE does not change, so the
+//   - A MORPH STRIPPED THE POSITION. The retired Agents list (#agents-list)
+//     morphed its cards in place on every lifecycle and chat event, re-ordering
+//     them by last activity. An open popover stays open through a moveBefore
+//     move (its state is not an attribute), but when idiomorph moved its card
+//     it rewrote the element's attributes to the server's — which carry no
+//     inline style — and the menu fell to the popover default corner (measured:
+//     0,0) with Start/Delete still live, nowhere near its trigger. (The agent
+//     page's ⋯ menu is not morphed: its strip's refresh replaces the menu slot's
+//     content outright, RenderAgentHeader.) Its SIZE does not change, so the
 //     ResizeObserver cannot see it. A MutationObserver on the open menu's `style`
 //     attribute does, and runs as a microtask — before paint — so it is re-placed
 //     beside the trigger's NEW position. It is re-placed rather than closed:
-//     these morphs are fired by background events, and a menu that shuts under
+//     such morphs are fired by background events, and a menu that shuts under
 //     the operator's finger because some other agent replied is worse than one
-//     that follows its card.
-//     ⚠ What the morph still does: it closes the nested Delete step (the
-//     server's markup has no `open`), so an armed "Confirm delete" drops back to
-//     step 1. That is the safe direction and is left alone.
+//     that follows its trigger.
+//     ⚠ What such a morph still did: it closed the nested Delete step (the
+//     server's markup has no `open`), so an armed "Confirm delete" dropped back
+//     to step 1 — the safe direction.
 //
 // 🔴 AND IT IS INVISIBLE UNTIL PLACED. A popover opens synchronously on the
 // click, but its `toggle` event — where it is first placed — is a later task,
@@ -62,11 +63,11 @@ import (
 // until it is shown), so the markup carries `invisible` and place() is the only
 // thing that makes it visible; closing drops the inline style again.
 //
-// A trigger that DECLARES aria-expanded (the focus title, cardFocusTitle) is
+// A trigger that DECLARES aria-expanded (a clamped title's "…", titleMoreButton) is
 // kept in step with its popover on every toggle, open and close, whatever
 // closed it (a tap outside, Escape, a second tap) — AND after every htmx swap:
-// #agents-list's morph rewrites the trigger's attributes to the server's
-// aria-expanded="false" while its popover stays open, and no toggle fires, so
+// a morph can rewrite the trigger's attributes to the server's
+// aria-expanded="false" while its popover stays open (the retired #agents-list's did), and no toggle fires, so
 // the chevron and highlight (both keyed on aria-expanded) would drop under an
 // open popover. A trigger without the attribute is left without it.
 //
@@ -74,18 +75,29 @@ import (
 // request that fails (and morphs nothing) does not leave it open. Closing — by
 // any route — also closes the nested Delete step, so reopening starts at step 1.
 //
+// A page without the Popover API can still use the placement: it marks its
+// open menu data-menu-open, its trigger data-menu-trigger="<menu id>", and
+// calls window.__musterPlaceMenu(menu) (quickKeyBar's fallback does).
+//
 // Bound once per document (__musterFloatingMenu), like every other script here:
 // htmx re-executes in-body <script> tags on each boosted swap.
-func floatingMenuScript() g.Node {
-	return Script(g.Raw(`
+func floatingMenuScript() g.Node { return staticScript(floatingMenuScriptSrc) }
+
+// floatingMenuScriptSrc is the path floatingMenuScript's code is served at, /static/js/floating-menu.js (static_script.go).
+var floatingMenuScriptSrc = staticJS("floating-menu", `
 (function () {
   if (window.__musterFloatingMenu) return;
   window.__musterFloatingMenu = true;
-  var GAP = 4, EDGE = 8;
-  function isOpen(m) { try { return m.matches(':popover-open'); } catch (e) { return false; } }
+  var GAP = 4, EDGE = 8, MIN_SIDE = 120;
+  // data-menu-open: a menu a page opened WITHOUT the Popover API (its own
+  // fallback, quickKeyBar's on iOS < 17), placed by the same rule.
+  function isOpen(m) {
+    if (m.hasAttribute('data-menu-open')) return true;
+    try { return m.matches(':popover-open'); } catch (e) { return false; }
+  }
   function place(m) {
     if (!m || !m.id || !isOpen(m)) return;
-    var t = document.querySelector('[popovertarget="' + m.id + '"]');
+    var t = document.querySelector('[popovertarget="' + m.id + '"], [data-menu-trigger="' + m.id + '"]');
     if (!t) return;
     var r = t.getBoundingClientRect();
     var vw = document.documentElement.clientWidth, vh = window.innerHeight;
@@ -95,19 +107,35 @@ func floatingMenuScript() g.Node {
     m.style.maxHeight = (vh - 2 * EDGE) + 'px';
     m.style.overflowY = 'auto';
     var w = m.offsetWidth, h = m.offsetHeight;
-    var left = Math.max(EDGE, Math.min(r.right - w, vw - w - EDGE));
-    var top = r.bottom + GAP;
-    if (top + h > vh - EDGE) {
-      var above = r.top - GAP - h;
-      top = above >= EDGE ? above : Math.max(EDGE, vh - h - EDGE);
+    // Right edges aligned (a trigger at the right of its row), or — for a
+    // menu marked data-menu-align="start", whose trigger sits at its row's
+    // start (the agent page's ⋯) — left edges aligned; either kept inside the
+    // viewport.
+    var x = m.getAttribute('data-menu-align') === 'start' ? r.left : r.right - w;
+    var left = Math.max(EDGE, Math.min(x, vw - w - EDGE));
+    var below = vh - EDGE - (r.bottom + GAP), above = r.top - GAP - EDGE;
+    var top;
+    if (h <= below) {
+      top = r.bottom + GAP;
+    } else if (h <= above) {
+      top = r.top - GAP - h;
+    } else if (Math.max(below, above) >= MIN_SIDE) {
+      // Neither side holds it: the roomier side, capped, so it does not cover
+      // its trigger.
+      m.style.maxHeight = Math.max(below, above) + 'px';
+      h = m.offsetHeight;
+      top = below >= above ? r.bottom + GAP : r.top - GAP - h;
+    } else {
+      top = Math.max(EDGE, vh - h - EDGE);
     }
     m.style.left = left + 'px';
     m.style.top = top + 'px';
-    // Shown only now. The menu is rendered with the invisible class (agentMenu), so every
+    // Shown only now. The menu is rendered with the invisible class (agentActionsMenu), so every
     // frame before this line — and every frame after a morph strips this style —
     // draws nothing rather than a menu in the wrong place.
     m.style.visibility = 'visible';
   }
+  window.__musterPlaceMenu = place;
   function placeAll() {
     var ms = document.querySelectorAll('[data-floating-menu]');
     for (var i = 0; i < ms.length; i++) place(ms[i]);
@@ -162,5 +190,4 @@ func floatingMenuScript() g.Node {
     if (m && isOpen(m)) { try { m.hidePopover(); } catch (err) {} }
   });
 })();
-`))
-}
+`)

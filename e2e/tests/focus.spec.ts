@@ -2,30 +2,31 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page } from '@playwright/test';
+import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, focusPort, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, focusPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
+import { coarse } from '../lib/switcher';
 
-// SESSION FOCUS ON THE CARDS, in a real browser, against a real muster-server
+// SESSION FOCUS, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel (the
 // `-tags e2emirror` per-window fake). A dispatched agent of this spec's own
 // (e2e/mkchat) and a mirrored Claude Code window each carry a focus (written by
 // mkchat's MUSTER_E2E_FOCUS — the mirrored one keyed by the window's CLAUDE
 // SESSION ID, which the host reports from the transcript's name). On a phone
-// and on a desktop, each card's footer chip opens a popover with the title,
-// the description and "updated … ago", inside the viewport; and the filter
-// box finds each card by a word only its focus carries.
+// and on a desktop: the session switcher's palette finds each session by a
+// word only its focus carries (and a window with no Claude session has none).
 //
-// FOCUS AS THE CARD'S TITLE, AND FOCUS HISTORY (migration 0022): the focus
-// title heads each card — a popover trigger that does not navigate, reached by
-// Tab, opened by Enter, closed by Escape — over the card's own name; the
-// rendered view's "Your messages" sheet is tabbed with "Focus history" (arrow
-// keys, the choice kept across a reload) and scrolls back through 46 history
-// rows a page at a time; the agent's page has the same history in a dialog;
-// and none of it shifts the layout.
+// FOCUS HISTORY (migration 0022), on the session's own page: the rendered
+// view's "Your messages" sheet is tabbed with "Focus history" (arrow keys, the
+// choice kept across a reload) and scrolls back through 46 history rows a page
+// at a time, newest — the current focus, with its description and age — first;
+// the agent's page has the same history in a dialog, inside the viewport; and
+// none of it shifts the layout. (The retired Agents list's card focus chip and
+// its popover are gone.)
 
 const origin = `http://localhost:${focusPort}`;
 const stamp = Date.now().toString(36);
@@ -36,9 +37,28 @@ const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-'));
 const windowsFile = path.join(dir, 'windows');
 const transcript = path.join(dir, sid + '.jsonl');
-// A second Claude window whose only refresh FAILED: its card says why.
+// A second Claude window whose only refresh FAILED (no focus, a recorded
+// problem): the palette must not find it by the other window's focus.
 const sid2 = '0b2c3d4e-5f60-4718-8a9c-' + stamp.padStart(12, '0').slice(-12);
 const transcript2 = path.join(dir, sid2 + '.jsonl');
+// A third Claude window (@5) whose CURRENT focus is about something else and
+// whose PREVIOUS one names the reconciliation: the palette finds it by that
+// previous title, ranked after the window whose codename is the word
+// ("reconciling:1") and the agent whose CURRENT focus starts with it.
+const sid3 = '0b2c3d4e-5f60-4718-8a9d-' + stamp.padStart(12, '0').slice(-12);
+const transcript3 = path.join(dir, sid3 + '.jsonl');
+const PREVIOUS_TITLE = 'Reconciling the payout zephyr';
+// A fourth Claude window (@6), WAITING (so it is on the Asks list), whose focus
+// was written five days ago: its age is shown and it is stale. @5's focus is
+// two days old (an age, not stale); the agent's and @1's are fresh (no age).
+const sid4 = '0b2c3d4e-5f60-4718-8a9e-' + stamp.padStart(12, '0').slice(-12);
+const transcript4 = path.join(dir, sid4 + '.jsonl');
+const STALE_TITLE = 'Charting the heron migration';
+// A title @5 had LONG ago: older than the page's recent previous titles (it
+// is followed by more than the in-page bound of newer distinct titles), so
+// only the palette's server search can find it.
+const OLD_TITLE = 'Quokka census migration';
+const FILLERS = Array.from({ length: 14 }, (_, i) => `Sorting batch ${String(i + 1).padStart(2, '0')}`);
 // `history`: that many earlier focuses are written first (e2e/mkchat), so the
 // mirrored session's history is 46 rows — three pages of 20 — and the agent's 4.
 const MIRROR_HISTORY = 45;
@@ -47,12 +67,13 @@ const focusEnv = JSON.stringify([
   { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
   { subject: 'mirror:' + sid2, error: 'no OpenRouter key' },
+  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [OLD_TITLE, ...FILLERS, PREVIOUS_TITLE], ageHours: 50 },
+  { subject: 'mirror:' + sid4, title: STALE_TITLE, description: 'Plotting the flyway.', ageHours: 5 * 24 + 3 },
 ]);
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 let agentCleanup = false;
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
 
 function mkchat(extra: NodeJS.ProcessEnv, input = '') {
   execFileSync('go', ['run', './e2e/mkchat'], {
@@ -79,9 +100,12 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(transcript, '');
   fs.writeFileSync(transcript2, '');
+  fs.writeFileSync(transcript3, '');
+  fs.writeFileSync(transcript4, JSON.stringify({ type: 'user', message: { role: 'user', content: 'Chart the flyway.' } }) + '\n');
+  writeFileAtomic(transcript4 + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
   const now = Math.floor(Date.now() / 1000);
   // session|id|index|active|command|activity|claude-transcript
-  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\n`);
+  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\nfocuswin|@5|5|0|claude|${now - 300}|${transcript3}\nfocuswin|@6|6|0|claude|${now - 360}|${transcript4}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -108,31 +132,59 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
+// 🔴 THE LISTS THESE READ ARE RE-RENDERED LIVE (the Asks list and the sidebar
+// on SSE and a minute's tick), so an element a locator resolved can be
+// replaced before Playwright evaluates on it: measured, 1 read in 19 at
+// /attention found the row detached (isConnected false), reading "" for every
+// computed style and null for its box. So each read below is ONE evaluate that
+// answers null for a detached element, polled until a connected one answers.
+
+// styleOf polls line's computed font-style and opacity, from a connected
+// element only.
+const styleOf = (line: import('@playwright/test').Locator) =>
+  expect.poll(() => line.evaluate((e) => (e.isConnected ? [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity] : null)));
+
+// expectAgeInside: the line's age is drawn whole and inside the line's box
+// (at a phone's width too: the title cuts, the age never does).
+async function expectAgeInside(line: import('@playwright/test').Locator) {
+  const age = line.locator('[data-focus-age]');
+  await expect(age).toBeVisible();
+  // Both boxes and the cut check from one connected element, in one frame.
+  const read = () =>
+    line.evaluate((l) => {
+      const a = l.querySelector('[data-focus-age]') as HTMLElement | null;
+      if (!l.isConnected || !a) return null;
+      const ar = a.getBoundingClientRect(), lr = l.getBoundingClientRect();
+      // A line that is not rendered reads as a zero box, which would pass both checks.
+      if (ar.width <= 0 || lr.width <= 0) return null;
+      return { ageRight: ar.right, lineRight: lr.right, cut: a.scrollWidth > a.clientWidth + 0.5 };
+    });
+  let m: Awaited<ReturnType<typeof read>> = null;
+  await expect.poll(async () => (m = await read()), { message: 'both are laid out' }).not.toBeNull();
+  if (!m) throw new Error('both are laid out');
+  expect(m.ageRight, 'the age ends inside its line').toBeLessThanOrEqual(m.lineRight + 0.5);
+  expect(m.cut, 'the age is not cut').toBe(false);
 }
 
-const claudeCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%401"])`);
-const shellCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%402"])`);
-const failedCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%403"])`);
-const agentCard = (page: Page) => page.locator(`#agents-list article[id^="agent-"]:has(a[href="/agents/${agentName}"])`);
 const viewURL = origin + '/mirror/view?' + new URLSearchParams({ host, session: 'focuswin', window: '@1' }).toString();
 
-async function openList(page: Page) {
-  await login(page);
-  await page.goto(origin + '/agents');
-  await expect(claudeCard(page), `the host's Claude window (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  await expect(agentCard(page)).toHaveCount(1);
+// navRows is the sidebar's list partial (GET /ui/nav/agents: the rows the
+// session switcher's palette also searches), as markup.
+const navRows = async (page: Page) => (await page.request.get(origin + '/ui/nav/agents')).text();
+// rowOf is the sidebar row (its whole <a>…</a>) of this host's window `win`.
+const rowOf = (html: string, win: string) =>
+  [...html.matchAll(/<a\b[^>]*data-nav-agent="mirror"[^>]*>[\s\S]*?<\/a>/g)].map((m) => m[0]).find((a) => a.includes(`host=${host}`) && a.includes(`window=%40${win}`)) ?? '';
+
+// listed waits until the sidebar lists the host's Claude window @1 and the
+// shell window @2, and this spec's agent (the host is up and has reported).
+async function listed(page: Page) {
+  await signIn(page, origin);
+  await expect
+    .poll(async () => {
+      const html = await navRows(page);
+      return !!rowOf(html, '1') && !!rowOf(html, '2') && html.includes(`/agents/${agentName}`);
+    }, { message: `the host's windows and the agent are listed (log:\n${mirrorLog})`, timeout: 20_000 })
+    .toBe(true);
 }
 
 for (const vp of [
@@ -142,170 +194,249 @@ for (const vp of [
   test.describe(vp.name, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    for (const c of [
-      { kind: 'agent card', card: agentCard, title: 'Reconciling the quarterly ledgers', desc: 'Matching payouts to the bank export. Two left.', name: agentName },
-      { kind: 'mirror card', card: claudeCard, title: 'Bisecting the flaky tunnel test', desc: 'The backoff resets too early.', name: 'focuswin:1' },
-    ]) {
-      test(`the ${c.kind}'s focus title heads it and opens a popover with the focus, without navigating`, async ({ page }) => {
-        await openList(page);
-        const card = c.card(page);
-        const chip = card.locator('[data-card-focus]');
-        await expect(chip).toHaveCount(1);
-        await expect(chip).toContainText(c.title);
-        // It HEADS the card: its own slot, above the nav anchor, with the card's
-        // name under it as the subtitle.
-        await expect(card.locator('[data-card-slot="focus"] [data-card-focus]')).toHaveCount(1);
-        const subtitle = card.locator('[data-card-subtitle]');
-        await expect(subtitle).toContainText(c.name);
-        const tb = (await chip.boundingBox())!;
-        // The mirrored subtitle's wrapper is display:contents; its box is the name.
-        const subBox = card.locator('[data-card-subtitle], [data-card-subtitle] > [data-mirror-name]').last();
-        const sb = (await subBox.boundingBox())!;
-        expect(tb.y + tb.height, 'the focus title sits above the subtitle').toBeLessThanOrEqual(sb.y + 1);
-        const tfs = await chip.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
-        const sfs = await subBox.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
-        expect(tfs, 'the title is drawn larger than the subtitle').toBeGreaterThan(sfs);
-        expect(tb.height, 'the title is a 44px tap target').toBeGreaterThanOrEqual(44);
-        // It LOOKS pressable: a chevron, and a pointer.
-        await expect(chip.locator('svg')).toBeVisible();
-        const pop = card.locator('[data-focus-popover]');
-        await expect(pop).toBeHidden();
-        await expect(chip).toHaveAttribute('aria-expanded', 'false');
-        if (vp.use.hasTouch) await chip.tap();
-        else await chip.click();
-        await expect(pop).toBeVisible();
-        await expect(chip).toHaveAttribute('aria-expanded', 'true');
-        await expect(pop.locator('[data-focus-title]')).toHaveText(c.title);
-        await expect(pop.locator('[data-focus-description]')).toHaveText(c.desc);
-        await expect(pop.locator('[data-focus-updated]')).toContainText('updated');
-        await expect(pop.locator('[data-focus-updated]')).toContainText('ago');
-        // Placed (no longer invisible) and inside the viewport.
-        await expect.poll(() => pop.evaluate((e) => getComputedStyle(e).visibility)).toBe('visible');
-        const pb = (await pop.boundingBox())!;
-        expect(pb.x, 'the popover starts inside the viewport').toBeGreaterThanOrEqual(0);
-        expect(pb.x + pb.width, 'the popover ends inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
-        expect(pb.y + pb.height).toBeLessThanOrEqual(vp.use.viewport.height);
-        // The title is outside the card's nav anchor: opening it did not navigate.
-        await page.waitForTimeout(300);
-        expect(new URL(page.url()).pathname).toBe('/agents');
-        await page.keyboard.press('Escape');
-        await expect(pop).toBeHidden();
-        await expect(chip).toHaveAttribute('aria-expanded', 'false');
-        // The rest of the card still opens it: its subtitle is in the nav anchor.
-        await Promise.all([page.waitForURL((u) => u.pathname !== '/agents'), subtitle.click()]);
-      });
+    // (The Agents list's cards — retired — headed each session with its focus
+    // title, a popover trigger with the description and "updated … ago"; four
+    // tests here pinned that chip, its keyboard path, its survival of a list
+    // morph, and a failed refresh's "unavailable" on it. The focus is now shown
+    // on the session's own page — its focus history, whose newest row is the
+    // current focus with its description and age (the tests below) — and is the
+    // title the palette finds a session by.)
 
-      test(`the ${c.kind}'s focus title works from the keyboard: Tab reaches it, Enter opens, Escape closes`, async ({ page }) => {
-        await openList(page);
-        const card = c.card(page);
-        const chip = card.locator('[data-card-focus]');
-        const pop = card.locator('[data-focus-popover]');
-        // Tab from the last control of the card's control cluster lands on it.
-        await card.locator('[data-card-slot="controls"] button:visible').last().focus();
-        await page.keyboard.press('Tab');
-        await expect(chip).toBeFocused();
-        await page.keyboard.press('Enter');
-        await expect(pop).toBeVisible();
-        await expect(chip).toHaveAttribute('aria-expanded', 'true');
-        expect(new URL(page.url()).pathname, 'Enter on the title does not navigate').toBe('/agents');
-        await page.keyboard.press('Escape');
-        await expect(pop).toBeHidden();
-        await expect(chip).toHaveAttribute('aria-expanded', 'false');
-        expect(new URL(page.url()).pathname).toBe('/agents');
-      });
-    }
-
-    // A list refresh MORPHS the open card: the trigger's attributes are
-    // rewritten to the server's aria-expanded="false" while the popover stays
-    // open, and no toggle fires. The title must still say expanded — and keep
-    // the chevron turned and the highlight, both keyed on aria-expanded.
-    test('an open focus popover keeps its title expanded through a list refresh', async ({ page }) => {
-      await openList(page);
-      // Styles are read as end states: no transition caught half-way.
-      await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
-      const card = agentCard(page);
-      const chip = card.locator('[data-card-focus]');
-      const pop = card.locator('[data-focus-popover]');
-      const chevron = chip.locator('svg');
-      const closedBg = await chip.evaluate((e) => getComputedStyle(e).backgroundColor);
-      const closedTurn = await chevron.evaluate((e) => getComputedStyle(e).transform);
-      await chip.click();
-      await expect(pop).toBeVisible();
-      await expect(chip).toHaveAttribute('aria-expanded', 'true');
-      await page.mouse.move(0, 0); // no hover, so the highlight is aria-expanded's alone
-      const openBg = await chip.evaluate((e) => getComputedStyle(e).backgroundColor);
-      const openTurn = await chevron.evaluate((e) => getComputedStyle(e).transform);
-      expect(openBg, 'control: the open title is highlighted').not.toBe(closedBg);
-      expect(openTurn, 'control: the open chevron is turned').not.toBe(closedTurn);
-      // A refresh of the list, as an agent event would start it; wait for it to land.
-      const settled = page.evaluate(() => new Promise<void>((resolve) => {
-        document.body.addEventListener('htmx:afterSettle', (e) => {
-          if ((e.target as HTMLElement).id === 'agents-list') resolve();
-        });
-      }));
-      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
-      await settled;
-      await expect(pop, 'the popover stays open through the morph').toBeVisible();
-      await expect(chip).toHaveAttribute('aria-expanded', 'true');
-      expect(await chip.evaluate((e) => getComputedStyle(e).backgroundColor), 'the highlight stays').toBe(openBg);
-      expect(await chevron.evaluate((e) => getComputedStyle(e).transform), 'the chevron stays turned').toBe(openTurn);
+    test('a window whose host reports no Claude session has no focus, and the session switcher finds a session by its focus', async ({ page }) => {
+      await listed(page);
+      // The shell window (@2, no Claude session) is listed with no focus in
+      // what the palette finds it by; POSITIVE CONTROL: the Claude window's
+      // row (@1) does carry its focus title there.
+      const html = await navRows(page);
+      expect(rowOf(html, '1'), "the Claude window's row is searched by its focus").toContain('Bisecting the flaky tunnel test');
+      expect(rowOf(html, '2'), 'the shell window has no focus').not.toContain('Bisecting the flaky tunnel test');
+      // The command palette, opened from the sidebar's magnifier on a page
+      // that is neither session (the board: so neither is left out as the
+      // page's own), finds an entry by its focus title: one option, whose
+      // second line is it.
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${agentName}"]`)).toHaveCount(1);
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      await input.fill('quarterly ledgers');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toContainText('Reconciling the quarterly ledgers');
+      await input.fill('flaky tunnel');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toContainText('Bisecting the flaky tunnel test');
       await page.keyboard.press('Escape');
-      await expect(chip).toHaveAttribute('aria-expanded', 'false');
     });
 
-    // 🔴 A DISCRIMINATING PAIR: "reconciling" is the START of the agent's FOCUS
-    // TITLE and the start of a shell window's NAME ("reconciling:1"). Ranked by
-    // names (data-rank-title), the window ranks first; were the visible heading
-    // — the focus title — ranked, the agent would tie it at the top and keep
-    // its list place, ahead. Both stay listed: the filter matches focus text.
-    test("typing a card's NAME still ranks it first, though another card is headed by that word", async ({ page }) => {
-      await openList(page);
-      const named = page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="session=reconciling"])`);
-      await expect(named).toHaveCount(1);
-      const before = await page.locator('#agents-list > article').evaluateAll((as) => as.map((a) => a.id));
-      expect(before.indexOf(await agentCard(page).getAttribute('id') as string), 'control: unfiltered, the agent is listed before the window')
-        .toBeLessThan(before.indexOf(await named.getAttribute('id') as string));
-      await page.locator('#agents-search').fill('reconciling');
-      await expect(agentCard(page)).toBeVisible();
-      await expect(named).toBeVisible();
-      const ids = await page.locator('#agents-list > article:visible').evaluateAll((as) => as.map((a) => a.id));
-      expect(ids[0], `ranked ${ids}`).toBe(await named.getAttribute('id'));
+    // 🔴 PREVIOUS FOCUS TITLES (operator ask: "find agents by their focus
+    // titles, either current or previous"). Typed into the real palette, a
+    // fragment of a title the window @5 HAD finds it, saying why on its second
+    // line ("Previously: …"); and "reconciling" lists, in this order, the
+    // window whose codename starts with it, the agent whose CURRENT focus does,
+    // and @5 by its PREVIOUS one. Red at origin/main: @5 is not found at all.
+    test('the palette finds a session by a previous focus title, ranked after its name and a current title', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${agentName}"]`)).toHaveCount(1);
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      const w5 = options.filter({ has: page.locator('[data-match-previous]') });
+
+      await input.fill('payout zeph');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toHaveAttribute('data-match', 'previous');
+      await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + PREVIOUS_TITLE);
+      await expect(options.first().locator('span').first()).toHaveText('focuswin · window 5');
+
+      // The ranking: name, then current title, then previous title.
+      await input.fill('reconciling');
+      const rows = await options.evaluateAll((els) =>
+        els.map((e) => `${e.getAttribute('data-match')}:${(e.firstElementChild as HTMLElement).textContent}`));
+      const at = (re: RegExp) => rows.findIndex((r) => re.test(r));
+      const name = at(/^code:reconciling/), current = at(/^title:/), previous = at(/^previous:focuswin · window 5$/);
+      expect(name, `the codename match is listed: ${rows}`).toBeGreaterThanOrEqual(0);
+      expect(current, `the current-title match is listed: ${rows}`).toBeGreaterThan(name);
+      expect(previous, `the previous-title match is listed last of the three: ${rows}`).toBeGreaterThan(current);
+      await expect(w5).toHaveCount(1);
+      // The server search answers "reconciling" too — with the agent (its
+      // current title is in its history) and @5 — and neither is listed twice.
+      await page.waitForResponse((r) => r.url().includes('/ui/palette/history') && r.url().includes('q=reconciling'));
+      await page.waitForTimeout(100);
+      await expect(w5).toHaveCount(1);
+      await expect(options.filter({ hasText: agentName })).toHaveCount(1);
+
+      // Enter on it opens that window.
+      await input.fill('payout zephyr');
+      await page.keyboard.press('Enter');
+      await expect(page).toHaveURL(/window=%405/);
     });
 
-    test('a session whose refresh failed says why it has no focus', async ({ page }) => {
-      await openList(page);
-      const card = failedCard(page);
-      await expect(card).toHaveCount(1);
-      const chip = card.locator('[data-card-focus]');
-      await expect(chip).toContainText('unavailable');
-      await expect(chip).toHaveAttribute('data-focus-stale', '');
-      if (vp.use.hasTouch) await chip.tap();
-      else await chip.click();
-      const pop = card.locator('[data-focus-popover]');
-      await expect(pop).toBeVisible();
-      await expect(pop.locator('[data-focus-problem]')).toContainText('No focus: no OpenRouter key');
-      await expect(pop.locator('[data-focus-title]')).toHaveCount(0);
-      const pb = (await pop.boundingBox())!;
-      expect(pb.x).toBeGreaterThanOrEqual(0);
-      expect(pb.x + pb.width).toBeLessThanOrEqual(vp.use.viewport.width);
+    // 🔴 THE WHOLE RETENTION, ON TYPING (owner answer: "Recent in-page + full
+    // on typing"). @5's OLD title is not on the page — its row's previous
+    // titles stop at the in-page bound (the CONTROL) — and once typing pauses
+    // the server search finds it, shown as a previous title. Red at
+    // origin/main: no server search, no option.
+    test('a title older than the page is found once typing pauses', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      const row5 = page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:5"]');
+      await expect(row5).toHaveAttribute('data-switcher-prev', /Sorting batch 14/);
+      expect(await row5.getAttribute('data-switcher-prev'), 'the old title is not on the page').not.toContain('Quokka');
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      const answered = page.waitForResponse((r) => r.url().includes('/ui/palette/history') && r.url().includes('q=quokka%20cen'));
+      await input.fill('quokka cen');
+      await answered;
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toHaveAttribute('data-match', 'previous');
+      await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + OLD_TITLE);
+      await expect(options.first().locator('span').first()).toHaveText('focuswin · window 5');
     });
 
-    test('a window whose host reports no Claude session has no chip, and the filter finds cards by their focus', async ({ page }) => {
-      await openList(page);
-      await expect(shellCard(page)).toHaveCount(1);
-      await expect(shellCard(page).locator('[data-card-focus]')).toHaveCount(0);
-      const search = page.locator('#agents-search');
-      await search.fill('quarterly ledgers');
-      await expect(agentCard(page)).toBeVisible();
-      await expect(claudeCard(page)).toBeHidden();
-      await search.fill('flaky tunnel');
-      await expect(claudeCard(page)).toBeVisible();
-      await expect(agentCard(page)).toBeHidden();
-      await expect(shellCard(page)).toBeHidden();
+    // 🔴 ONLY THE LATEST ANSWER LANDS. The server search is intercepted: a
+    // two-character query is never asked; typing a key at a time asks once,
+    // after the pause; the answer to an earlier query is
+    // held until a later one has been answered and drawn, then released — and
+    // it changes nothing. The later answer is merged once (a hit for an entry
+    // the page already matched is dropped) and ranked as a previous title,
+    // after the page's current-title match.
+    test('the server search: a stale answer never overwrites a newer one; hits merge once, as previous titles', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      const agentHref = await page.locator(`#sidebar-agents-list a[data-switcher-code="${agentName}"]`).getAttribute('href');
+      const w5Href = await page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:5"]').getAttribute('href');
+      expect(agentHref && w5Href, 'both rows are on the page').toBeTruthy();
+      const asked: string[] = [];
+      let release = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      await page.route('**/ui/palette/history?**', async (route) => {
+        const q = new URL(route.request().url()).searchParams.get('q') ?? '';
+        asked.push(q);
+        if (q === 'zzstale') {
+          await held;
+          await route.fulfill({ json: { hits: [{ href: agentHref, title: 'Stale zzstale answer' }, { href: w5Href, title: 'Stale zzstale answer' }] } }).catch(() => {});
+          return;
+        }
+        if (q === 'claude code') {
+          await route.fulfill({ json: { hits: [{ href: w5Href, title: 'Old claude code audit' }] } });
+          return;
+        }
+        if (q === 'quarterly') {
+          await route.fulfill({ json: { hits: [{ href: agentHref, title: 'a duplicate of the page match' }, { href: w5Href, title: 'Old quarterly audit' }] } });
+          return;
+        }
+        await route.fulfill({ json: { hits: [] } });
+      });
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+
+      await input.fill('zz');
+      await page.waitForTimeout(700);
+      expect(asked, 'a two-character query is not sent').toEqual([]);
+      // Typed a key at a time, faster than the debounce: ONE request, for the
+      // whole word, not one per key.
+      await input.fill('');
+      await input.pressSequentially('zzdebounce', { delay: 60 });
+      await expect.poll(() => asked.length).toBe(1);
+      await page.waitForTimeout(700);
+      expect(asked, 'one request after typing pauses').toEqual(['zzdebounce']);
+      asked.length = 0;
+
+      await input.fill('zzstale');
+      await expect.poll(() => asked).toContain('zzstale');
+      await input.fill('quarterly');
+      const ofHref = (h: string) => page.locator(`#switcher-search-results [role="option"][data-href="${h}"]`);
+      await expect(ofHref(w5Href!)).toHaveCount(1);
+      const order = async () => options.evaluateAll((els) => els.map((e) => `${e.getAttribute('data-match')}:${e.getAttribute('data-href')}`));
+      const want = [`title:${agentHref}`, `previous:${w5Href}`];
+      const pick = (rows: string[]) => rows.filter((r) => want.includes(r));
+      expect(pick(await order()), 'the page match first, the server-only hit after it, each once').toEqual(want);
+      await expect(ofHref(w5Href!).locator('[data-match-previous]')).toHaveText('Previously: Old quarterly audit');
+      await expect(ofHref(agentHref!)).toHaveCount(1);
+
+      release();
+      await page.waitForTimeout(700);
+      expect(pick(await order()), 'the stale answer changed nothing').toEqual(want);
+      await expect(page.locator('#switcher-search-results')).not.toContainText('Stale zzstale answer');
+
+      // A server hit RAISES an entry the page matched less well: @5 matches
+      // "claude code" by its words (its kind) alone, and the hit lifts it to
+      // the previous-title rank, with its "Previously:" line.
+      await input.fill('claude code');
+      await expect(ofHref(w5Href!)).toHaveAttribute('data-match', 'previous');
+      await expect(ofHref(w5Href!).locator('[data-match-previous]')).toHaveText('Previously: Old claude code audit');
+      const rows2 = await order();
+      expect(rows2.indexOf(`previous:${w5Href}`), `@5 is listed before the words-only matches: ${rows2}`).toBe(0);
+      expect(rows2.slice(1).every((r) => r.startsWith('words:')), `the rest match by their words: ${rows2}`).toBe(true);
+      await page.unroute('**/ui/palette/history?**');
+    });
+
+    // The palette's rank as a table (window.musterPaletteMatch, the rule the
+    // palette above runs): the original substring ranks — codename prefix,
+    // codename substring, title — then ONE rank for a previous title (its
+    // newest match), then the words. Values pairwise distinct.
+    // The whole list as a table (window.musterPaletteRank): the page's matches
+    // with the server's hits merged — a hit adds an entry the page did not
+    // match (at the previous-title rank), RAISES one the page matched only by
+    // its words, leaves one the page matched better alone, and names no entry
+    // that is not on the page. Ties in page order.
+    test('the palette list: server hits add, raise, never lower, and name only page entries', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/tasks');
+      const got = await page.evaluate(() => {
+        const rank = (window as unknown as { musterPaletteRank: (es: object[], q: string, hits: object[]) => { e: { href: string }; r: number; why: string; hit?: string }[] }).musterPaletteRank;
+        const es = [
+          { href: '/a', code: 'ag-a', title: '', prev: [], words: 'acme-repo shell' },
+          { href: '/b', code: 'ag-b', title: 'Acme importer', prev: [], words: '' },
+          { href: '/c', code: 'ag-c', title: '', prev: [], words: '' },
+          { href: '/d', code: 'acme-d', title: '', prev: [], words: '' },
+        ];
+        const hits = [
+          { href: '/a', title: 'Old acme audit' },
+          { href: '/b', title: 'not shown: b matched better' },
+          { href: '/c', title: 'Old acme notes' },
+          { href: '/d', title: 'not shown: d matched by name' },
+          { href: '/gone', title: 'not on the page' },
+        ];
+        return rank(es, 'acme', hits).map((it) => `${it.e.href}=${it.r}/${it.why}${it.hit ? '/' + it.hit : ''}`);
+      });
+      expect(got).toEqual(['/d=0/code', '/b=2/title', '/a=3/previous/Old acme audit', '/c=3/previous/Old acme notes']);
+    });
+
+    test('the palette rank: name before current title before previous title before words', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/tasks');
+      const got = await page.evaluate(() => {
+        const m = (window as unknown as { musterPaletteMatch: (e: object, q: string) => { r: number; why: string; hit?: string } | null }).musterPaletteMatch;
+        const e = { code: 'mango:1', title: 'Porting the importer', prev: ['Bisecting the tunnel', 'Tunnel bisecting'], words: 'acme-repo claude code' };
+        return ['MANGO', 'go:1', 'porting', 'importer', 'tunnel', 'bisecting', 'acme', 'mg1', 'zzz', '  '].map((q) => {
+          const r = m(e, q);
+          return r ? `${q}=${r.r}/${r.why}${r.hit ? '/' + r.hit : ''}` : `${q}=none`;
+        });
+      });
+      expect(got).toEqual([
+        'MANGO=0/code',
+        'go:1=1/code',
+        'porting=2/title',
+        'importer=2/title',
+        'tunnel=3/previous/Bisecting the tunnel',
+        'bisecting=3/previous/Bisecting the tunnel',
+        'acme=4/words',
+        'mg1=none',
+        'zzz=none',
+        '  =0/',
+      ]);
     });
 
     test('the rendered view\'s sheet tabs "Your messages" with "Focus history", by arrow keys, and keeps the choice', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(viewURL);
       // Start from no stored choice.
       await page.evaluate(() => { try { localStorage.clear(); } catch (e) {} });
@@ -359,7 +490,7 @@ for (const vp of [
     });
 
     test('the focus history scrolls back through every page, newest first, to its start', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(viewURL);
       await page.locator('#chat-index-open').click();
       await page.locator('#chat-index [role="tab"][data-tab="focus"]').click();
@@ -391,7 +522,7 @@ for (const vp of [
     });
 
     test("the dispatched agent's page has its focus history in a dialog", async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(origin + '/agents/' + agentName);
       const open = page.locator('#focus-history-open');
       const dialog = page.locator('dialog#focus-history');
@@ -405,6 +536,9 @@ for (const vp of [
       const items = dialog.locator('[data-focus-history-item]');
       await expect(items).toHaveCount(AGENT_HISTORY + 1);
       await expect(items.first()).toContainText('Reconciling the quarterly ledgers');
+      // The newest row is the current focus, whole: its description and age.
+      await expect(items.first().locator('[data-focus-history-description]')).toHaveText('Matching payouts to the bank export. Two left.');
+      await expect(items.first().locator('[data-focus-history-at]')).toContainText('ago');
       await expect(items.last()).toContainText('Earlier focus 01');
       await expect(dialog.locator('[data-focus-history-end]')).toBeVisible();
       const db = (await dialog.boundingBox())!;
@@ -421,14 +555,103 @@ for (const vp of [
       await expect(dialog).toBeHidden();
     });
 
-    test('a card with its focus as its title, the rendered view and the agent page shift the layout less than 0.01', async ({ page }, testInfo) => {
-      await login(page);
+    // 🔴 A FOCUS TITLE SAYS HOW OLD IT IS (internal/ui FocusAgeOf, decided by
+    // the server at render time): past a day " · <n>d" follows it, past four
+    // days it is also marked stale and drawn muted — in the search palette's
+    // results and on the Asks list. CONTROL: the agent's fresh focus has no
+    // age. The stale mark is checked as COMPUTED style, so a class missing
+    // from the stylesheet fails. Red at origin/main: no age anywhere.
+    test("the palette's results and the Asks list show a focus title's age, and mute a stale one", async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:6"]')).toHaveAttribute('data-switcher-focus-age', '5d');
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+
+      await input.fill('heron migration');
+      await expect(options).toHaveCount(1);
+      const stale = options.first().locator('[data-focus-line]');
+      await expect(stale).toHaveText(STALE_TITLE + '· 5d');
+      await expect(stale.locator('[data-focus-age]')).toHaveText('· 5d');
+      // Labelled: it is how old the title is, not a waiting time.
+      await expect(stale.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 5d ago (stale)');
+      await expect(stale).toHaveAttribute('data-focus-stale', '');
+      await styleOf(stale).toEqual(['italic', '0.6']);
+      await expectAgeInside(stale);
+
+      await input.fill('cache eviction');
+      await expect(options).toHaveCount(1);
+      const aged = options.first().locator('[data-focus-line]');
+      await expect(aged.locator('[data-focus-age]')).toHaveText('· 2d');
+      await expect(aged).not.toHaveAttribute('data-focus-stale');
+      await expect.poll(() => aged.evaluate((e) => (e.isConnected ? getComputedStyle(e).fontStyle : null))).toBe('normal');
+
+      // CONTROL: the agent's focus is fresh — its title, and no age.
+      await input.fill('quarterly ledgers');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toContainText('Reconciling the quarterly ledgers');
+      await expect(options.first().locator('[data-focus-age]')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+
+      // The Asks list: @6 is waiting, its row's focus line has the age and is muted.
+      await page.goto(origin + '/attention');
+      const row = page.locator('[data-attention-item][data-kind="session"]').filter({ hasText: STALE_TITLE });
+      await expect(row).toHaveCount(1, { timeout: 15_000 });
+      await expect(row.locator('[data-attention-focus]')).toHaveText(STALE_TITLE);
+      await expect(row.locator('[data-focus-age]')).toHaveText('· 5d');
+      await expect(row.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 5d ago (stale)');
+      const line = row.locator('[data-focus-stale]');
+      await expect(line).toHaveCount(1);
+      await styleOf(line).toEqual(['italic', '0.6']);
+      await expectAgeInside(line);
+    });
+
+    // THE DOCK (the touch layout's bottom sheet: a coarse pointer opens it;
+    // a mouse opens the view menu instead, switcher-dock.spec.ts, so this case
+    // is declared for the phone only). Its row's second line is the focus
+    // title with its age after it, the age never cut; the stale one muted;
+    // CONTROL: the fresh agent's line has no age. Red at origin/main.
+    if (vp.use.hasTouch) {
+      test("the switcher dock's second line shows a focus title's age, and mutes a stale one", async ({ page }) => {
+        await listed(page);
+        await page.goto(viewURL);
+        await expect(page.locator('#session-switcher')).toBeVisible();
+        expect(await coarse(page), 'this context is the touch layout').toBe(true);
+        await page.locator('#switcher-toggle').tap();
+        const dock = page.locator('#switcher-dock');
+        await expect.poll(() => dock.evaluate((d) => (d as HTMLDialogElement).open)).toBe(true);
+        await dock.locator('[data-dock-tab="all"]').tap();
+        const rowOfLabel = (l: string) => dock.locator('#dock-list [data-dock-row]').filter({ has: page.locator('[data-dock-label]', { hasText: l }) });
+        const w6 = rowOfLabel('focuswin · window 6');
+        await expect(w6).toHaveCount(1);
+        await expect(w6.locator('[data-dock-focus]')).toHaveText(STALE_TITLE);
+        await expect(w6.locator('[data-focus-age]')).toHaveText('· 5d');
+        const line = w6.locator('[data-focus-line]');
+        await expect(line).toHaveAttribute('data-focus-stale', '');
+        await styleOf(line).toEqual(['italic', '0.6']);
+        await expectAgeInside(line);
+        const w5 = rowOfLabel('focuswin · window 5');
+        await expect(w5.locator('[data-focus-age]')).toHaveText('· 2d');
+        await expect(w5.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 2d ago');
+        await expect(w5.locator('[data-focus-line]')).not.toHaveAttribute('data-focus-stale');
+        // CONTROL: a fresh focus, no age.
+        const ag = rowOfLabel(agentName);
+        await expect(ag.locator('[data-dock-focus]')).toHaveText('Reconciling the quarterly ledgers');
+        await expect(ag.locator('[data-focus-age]')).toHaveCount(0);
+      });
+    }
+
+    test('the rendered view and the agent page shift the layout less than 0.01', async ({ page }) => {
+      await signIn(page, origin);
       await page.addInitScript(clsInit);
       const bad: string[] = [];
       for (const [label, url, ready] of [
-        ['/agents', origin + '/agents', '#agents-list [data-card-slot="focus"] [data-card-focus]'],
         ['rendered view', viewURL, '#mv-log'],
         ['agent page', origin + '/agents/' + agentName, '#focus-history-open'],
+        // The Asks list, whose row carries a focus title's age.
+        ['asks list', origin + '/attention', '[data-attention-item] [data-focus-age]'],
       ] as const) {
         await page.goto(url);
         await settle(page);
@@ -437,10 +660,6 @@ for (const vp of [
         await expect(page.locator(ready).first(), `${label} drew its content`).toBeVisible();
         console.log(`[focus cls ${vp.name}] ${label} ${r.total}`);
         if (r.total >= 0.01) bad.push(`${label}: ${r.total} ${JSON.stringify(r.shifts)}`);
-        if (label === '/agents') {
-          await agentCard(page).screenshot({ path: testInfo.outputPath(`agent-card-focus-${vp.use.viewport.width}.png`) });
-          await claudeCard(page).screenshot({ path: testInfo.outputPath(`mirror-card-focus-${vp.use.viewport.width}.png`) });
-        }
       }
       // The history arriving (by script: no input, so every shift counts)
       // moves nothing: the sheet is a fixed height, the rows land inside it.

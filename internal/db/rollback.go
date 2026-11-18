@@ -67,11 +67,11 @@ const pluginsMigrationVersion = 15
 // the same row-level security; same treatment again, keyed on that table.
 const pluginRepliesMigrationVersion = 16
 
-// pinsMigrationVersion is 0017: pins (the Agents list's pinned entries), owned
+// pinsMigrationVersion is 0017: pins (the session switcher's pinned entries), owned
 // and under the same row-level security; same treatment again.
 const pinsMigrationVersion = 17
 
-// recentsMigrationVersion is 0018: recents (the Agents list's recently viewed
+// recentsMigrationVersion is 0018: recents (the session switcher's recently viewed
 // entries), owned and under the same row-level security; same treatment again.
 const recentsMigrationVersion = 18
 
@@ -110,6 +110,271 @@ const jobsMigrationVersion = 37
 // same treatment again.
 const devicesMigrationVersion = 39
 
+// standingGrantsMigrationVersion is 0043: connector_standing_grants (an
+// owner's shared connector approvals), owned and under the same row-level
+// security; same treatment again.
+const standingGrantsMigrationVersion = 43
+
+// suggestPreferencesMigrationVersion is 0048: suggest_preferences (suggested
+// replies' per-user toggle), owned and under the same row-level security;
+// same treatment again.
+const suggestPreferencesMigrationVersion = 48
+
+// suggestUsageMigrationVersion is 0049: suggest_usage (suggested replies'
+// per-user counts), owned and under the same row-level security; same
+// treatment again.
+const suggestUsageMigrationVersion = 49
+
+// pluginThreadsMigrationVersion is 0054: plugin_threads (the threads a
+// mirrored session started), owned and under the same row-level security;
+// same treatment again.
+const pluginThreadsMigrationVersion = 54
+
+// sessionPRsMigrationVersion is 0055: session_prs (the pull requests a
+// mirrored session authored), owned and under the same row-level security;
+// same treatment again.
+const sessionPRsMigrationVersion = 55
+
+// mailResumesMigrationVersion is 0056: mail_resumes (the ended sessions agent
+// mail resumed), owned and under the same row-level security; same treatment
+// again.
+const mailResumesMigrationVersion = 56
+
+// deviceChallengesMigrationVersion is 0058: device_challenges (a paired
+// phone's signed-action challenges), owned and under the same row-level
+// security; same treatment again.
+const deviceChallengesMigrationVersion = 58
+
+// chiefPreferencesMigrationVersion is 0060: chief_preferences (the chief's
+// per-user on/off toggle), owned and under the same row-level security; same
+// treatment again.
+const chiefPreferencesMigrationVersion = 60
+
+// chiefNudgesMigrationVersion is 0064: chief_nudges (the chief's stall-nudge
+// decisions), owned and under the same row-level security; same treatment
+// again.
+const chiefNudgesMigrationVersion = 64
+
+// ccAccountFailoversMigrationVersion is 0066: cc_account_failovers (a
+// claude-code agent's account rebinds), owned and under the same row-level
+// security; same treatment again. Its body is idempotent (IF NOT EXISTS, DROP
+// … IF EXISTS, CREATE OR REPLACE), so re-applying it is safe.
+const ccAccountFailoversMigrationVersion = 66
+
+// taskRefWritesMigrationVersion is 0072: task_ref_writes (the writes queued on
+// a plugin task reference), owned and under the same row-level security; same
+// treatment again. Its body is idempotent, so re-applying it is safe.
+const taskRefWritesMigrationVersion = 72
+
+// sessionEpisodesMigrationVersion is 0073: session_episodes (one row per stop
+// of one of the owner's sessions), owned and under the same row-level
+// security; same treatment again. Its body is idempotent.
+const sessionEpisodesMigrationVersion = 73
+
+// officerLLMUsageMigrationVersion is 0075: officer_llm_usage (the officer LLM
+// proxy's per-day usage), owned and under the same row-level security; same
+// treatment again. Its body is idempotent, the connector_audit CHECK it
+// widens included.
+//
+// ⚠ LATENT TRAP: re-applying 0075 re-sets connector_audit_kind_check to
+// exactly ('proxy','grant','query','llm'). Once a later migration adds a
+// kind, RLSOn fails on that kind's rows: before adding one, move the CHECK out
+// of what RLSOn re-applies (for example, skip 0075's ALTER here).
+const officerLLMUsageMigrationVersion = 75
+
+// officerJudgementSessionsMigrationVersion is 0082: officer_judgement_sessions
+// (the judgement-tier daily session cap's ledger), owned and under the same
+// row-level security; same treatment again. Its body is idempotent.
+const officerJudgementSessionsMigrationVersion = 82
+
+// sessionTagsMigrationVersion is session_tags' migration (the per-owner session
+// tags, internal/sessiontags), owned and under the same row-level security;
+// same treatment again. Its body is idempotent.
+const sessionTagsMigrationVersion = 86
+
+// asksMigrationVersion is asks' migration (the ask log, internal/asklog),
+// owned and under the same row-level security; same treatment again. Its body
+// is idempotent. 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at
+// merge (TestMigrationAsksAppliesAndRollsBack checks the two agree).
+const asksMigrationVersion = 89
+
+// hostDispatchesMigrationVersion is host_dispatches' migration (the chief's
+// host spawns, internal/plugins/host_dispatches.go), owned and under the same
+// row-level security; same treatment again. Its body is idempotent. 🔴
+// RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const hostDispatchesMigrationVersion = 93
+
+// notifyPreferencesMigrationVersion is notify_preferences' migration (the
+// per-user notification preferences, internal/notifypref), owned and under
+// the same row-level security; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const notifyPreferencesMigrationVersion = 94
+
+// chiefProposalsMigrationVersion is chief_proposals' migration (a
+// session that continues one the owner was viewing,
+// internal/plugins/chief_proposals.go), owned and under the same
+// row-level security; same treatment again. Its body is idempotent. 🔴
+// RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const chiefProposalsMigrationVersion = 100
+
+// pluginHandoffsMigrationVersion is plugin_handoffs' migration (a viewer
+// plugin's one-time hand-off codes, internal/plugins/handoffs.go), owned and
+// under the same row-level security; same treatment again. Its body is
+// idempotent. 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at
+// merge.
+const pluginHandoffsMigrationVersion = 104
+
+// routingRulesMigrationVersion is routing_rules', chief_turn_usage's and
+// plugin_message_handling's migration (the chief's routing rules,
+// internal/plugins/rules.go, and its token telemetry, internal/chiefusage),
+// owned and under the same row-level security; same treatment again, re-applied
+// when routing_rules exists (the one migration creates all three). Its body is
+// idempotent. 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at
+// merge.
+const routingRulesMigrationVersion = 107
+
+// ccAccountUsageMigrationVersion is cc_account_usage's migration (each pooled
+// Claude account's latest utilization, internal/ccusage), owned and under the
+// same row-level security; same treatment again. Its body is idempotent. 🔴
+// RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const ccAccountUsageMigrationVersion = 108
+
+// askAttemptsMigrationVersion is ask_attempts' migration (the answer-attempt
+// log, internal/askattempt), owned and under the same row-level security;
+// same treatment again. Its body is idempotent. 🔴 RENUMBER IT WITH THE FILE
+// if the migration is renumbered at merge.
+const askAttemptsMigrationVersion = 113
+
+// pagesMigrationVersion is the shareable pages' migration (pages,
+// page_versions, page_links and page_responses, internal/pages), owned and
+// under the same row-level security; same treatment again, re-applied when
+// pages exists (the one migration creates all four). Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const pagesMigrationVersion = 116
+
+// officerBackendMigrationVersion is the built-in officer backend's migration
+// (officer_types, officer_defs, officer_items and officer_schedules,
+// internal/officers/builtin), owned and under the same row-level security;
+// same treatment again, re-applied when officer_types exists (the one
+// migration creates all four). Its body is idempotent. 🔴 RENUMBER IT WITH
+// THE FILE if the migration is renumbered at merge.
+const officerBackendMigrationVersion = 118
+
+// officerPRLoopsMigrationVersion is 0119: officer_pr_loops (a draft officer's
+// review-loop announcements, internal/officers prloops.go), owned and under
+// the same row-level security; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerPRLoopsMigrationVersion = 119
+
+// outboundDraftsMigrationVersion is 0121: outbound drafts on
+// plugin_reply_drafts (internal/plugins outbound.go). It owns no table, but
+// it RE-CREATES 0016's replyable trigger with WHEN (NEW.message_id IS NOT
+// NULL); RLSOn re-applies 0016 (the unconditional trigger), so it re-applies
+// this file after it, or every outbound draft would be refused after an
+// --rls-on. Keyed on the column it adds. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const outboundDraftsMigrationVersion = 121
+
+// pairRequestsMigrationVersion is 0122: plugin_pair_requests (plugin
+// pairing, internal/plugins pairing.go), owned and under the same row-level
+// security; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const pairRequestsMigrationVersion = 122
+
+// officerHostSpawnsMigrationVersion is 0125: officer_host_spawns (a host
+// officer's spawned sessions, internal/officers hostspawns.go), owned and
+// under the same row-level security; same treatment again. Its body is
+// idempotent. 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at
+// merge.
+const officerHostSpawnsMigrationVersion = 125
+
+// teamAccessMigrationVersion is 0127: the team access core (the four team
+// policies on the share-class tables). It re-applies AFTER the owned-table migrations
+// above, which re-create owner_isolation on those tables; its body drops it
+// again. Applied only on a schema that has it (muster_team_ids exists).
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const teamAccessMigrationVersion = 127
+
+// agentSecretsMigrationVersion is 0128: agent_secrets (an agent's
+// credentials, apart from its row; internal/agents secrets.go), owned and
+// under the same row-level security; same treatment again. Its body is
+// idempotent: the backfill fills only what a row lacks.
+// 🔴 RENUMBER IT WITH THE FILE when the migration is renumbered at merge.
+const agentSecretsMigrationVersion = 128
+
+// teamAgentsMigrationVersion is 0131: agents joins 0127's shared class, and a
+// team owner's agent keeps no credential in its row (muster_owner_is_team,
+// agents_team_no_secret). It re-applies AFTER 0007, which re-creates
+// owner_isolation on agents; its body drops it again. Applied only on a schema
+// that has it. Idempotent.
+// 🔴 RENUMBER IT WITH THE FILE when the migration is renumbered at merge.
+const teamAgentsMigrationVersion = 131
+
+// teamOfficersMigrationVersion is 0130: team officers (phase 3 of team
+// sharing) — a host spawn's team lend (officer_host_spawns.shared_team_id,
+// its team_lent_read policy and lend_target trigger) and who caused a draft.
+// Re-applied after 0125 (which re-creates owner_isolation on
+// officer_host_spawns and leaves team_lent_read alone), keyed on the column it
+// adds. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const teamOfficersMigrationVersion = 130
+
+// officerContactsMigrationVersion is 0132: officer_contacts and
+// officer_contact_events (a builtin officer's people and their engagement,
+// internal/officers/builtin contacts.go), owned and under the same row-level
+// security; same treatment again. It also widens 0121's outbound-draft
+// constraints and re-creates 0121's conditional replyable trigger, so once it
+// is applied RLSOn re-applies IT instead of 0121 (whose narrower constraints
+// would refuse the widened rows). Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerContactsMigrationVersion = 132
+
+// teamHostsMigrationVersion is 0133: phase 2b of team sharing (team hosts) —
+// team_members.notify, mirror_tokens.rotate_at and officer_host_spawns'
+// team_owner_read policy. Re-applied after 0125 and 0130 (which re-create
+// officer_host_spawns' other policies and leave team_owner_read alone), keyed
+// on the column it adds. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const teamHostsMigrationVersion = 133
+
+// officerPublicBranchesMigrationVersion is 0138: officer_public_branches (a
+// draft officer's branches in public repositories and the item each is for,
+// internal/officers public_branches.go), owned and under row-level security
+// in officer_pr_loops' share class; same treatment again. Its body is
+// idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerPublicBranchesMigrationVersion = 138
+
+// pluginChiefInstructionsMigrationVersion is 0141: plugin_chief_instructions
+// (a plugin's one instruction section for its owner's chief,
+// internal/plugins chief_instructions.go), owned and under row-level security,
+// personal; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const pluginChiefInstructionsMigrationVersion = 141
+
+// chiefSessionLLMUsageMigrationVersion is 0144: chief_session_llm_usage and
+// chief_session_llm_reservations (what the chief's OpenRouter sessions spend
+// and hold in flight, internal/chiefusage sessionllm.go), owned and under the
+// same row-level security; same treatment again, re-applied when
+// chief_session_llm_usage exists (the one migration creates both). Its body is
+// idempotent (the append-only trigger is re-created).
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const chiefSessionLLMUsageMigrationVersion = 144
+
+// fleetOwnerMarksMigrationVersion is 0147: fleet_owner_marks (the fleet
+// digest's marks, internal/fleet), owned and under the same row-level
+// security; same treatment again. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const fleetOwnerMarksMigrationVersion = 147
+
+// officerConnectorBlocksMigrationVersion is 0148: officer_connector_blocks (an
+// officer's items blocked on a pending connector grant, internal/officers
+// connector_blocks.go), owned and under row-level security in
+// officer_pr_loops' share class; same treatment again. Its body is
+// idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerConnectorBlocksMigrationVersion = 148
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -120,7 +385,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts, hasTeamHosts, hasOfficerPublicBranches, hasPluginChiefInstructions, hasChiefSessionLLMUsage, hasFleetOwnerMarks, hasOfficerConnectorBlocks bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -137,8 +402,51 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.uploads') IS NOT NULL,
 		to_regclass('public.attention_asks') IS NOT NULL,
 		to_regclass('public.jobs') IS NOT NULL,
-		to_regclass('public.devices') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices); err != nil {
+		to_regclass('public.devices') IS NOT NULL,
+		to_regclass('public.connector_standing_grants') IS NOT NULL,
+		to_regclass('public.suggest_preferences') IS NOT NULL,
+		to_regclass('public.suggest_usage') IS NOT NULL,
+		to_regclass('public.plugin_threads') IS NOT NULL,
+		to_regclass('public.session_prs') IS NOT NULL,
+		to_regclass('public.mail_resumes') IS NOT NULL,
+		to_regclass('public.device_challenges') IS NOT NULL,
+		to_regclass('public.chief_preferences') IS NOT NULL,
+		to_regclass('public.chief_nudges') IS NOT NULL,
+		to_regclass('public.cc_account_failovers') IS NOT NULL,
+		to_regclass('public.task_ref_writes') IS NOT NULL,
+		to_regclass('public.session_episodes') IS NOT NULL,
+		to_regclass('public.officer_llm_usage') IS NOT NULL,
+		to_regclass('public.officer_judgement_sessions') IS NOT NULL,
+		to_regclass('public.session_tags') IS NOT NULL,
+		to_regclass('public.asks') IS NOT NULL,
+		to_regclass('public.host_dispatches') IS NOT NULL,
+		to_regclass('public.notify_preferences') IS NOT NULL,
+		to_regclass('public.chief_proposals') IS NOT NULL,
+		to_regclass('public.plugin_handoffs') IS NOT NULL,
+		to_regclass('public.routing_rules') IS NOT NULL,
+		to_regclass('public.cc_account_usage') IS NOT NULL,
+		to_regclass('public.ask_attempts') IS NOT NULL,
+		to_regclass('public.pages') IS NOT NULL,
+		to_regclass('public.officer_types') IS NOT NULL,
+		to_regclass('public.officer_pr_loops') IS NOT NULL,
+		EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+			AND table_name = 'plugin_reply_drafts' AND column_name = 'media_refs'),
+		to_regclass('public.plugin_pair_requests') IS NOT NULL,
+		to_regclass('public.officer_host_spawns') IS NOT NULL,
+		to_regprocedure('public.muster_team_ids(integer)') IS NOT NULL,
+		to_regclass('public.agent_secrets') IS NOT NULL,
+		to_regprocedure('public.muster_agents_team_no_secret()') IS NOT NULL,
+		EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+			AND table_name = 'officer_host_spawns' AND column_name = 'shared_team_id'),
+		to_regclass('public.officer_contacts') IS NOT NULL,
+		EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+			AND table_name = 'team_members' AND column_name = 'notify'),
+		to_regclass('public.officer_public_branches') IS NOT NULL,
+		to_regclass('public.plugin_chief_instructions') IS NOT NULL,
+		to_regclass('public.chief_session_llm_usage') IS NOT NULL,
+		to_regclass('public.fleet_owner_marks') IS NOT NULL,
+		to_regclass('public.officer_connector_blocks') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts, &hasOfficerPublicBranches, &hasPluginChiefInstructions, &hasChiefSessionLLMUsage, &hasFleetOwnerMarks, &hasOfficerConnectorBlocks); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -159,7 +467,47 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == uploadsMigrationVersion && hasUploads) &&
 			!(m.version == attentionAsksMigrationVersion && hasAttentionAsks) &&
 			!(m.version == jobsMigrationVersion && hasJobs) &&
-			!(m.version == devicesMigrationVersion && hasDevices) {
+			!(m.version == devicesMigrationVersion && hasDevices) &&
+			!(m.version == standingGrantsMigrationVersion && hasStandingGrants) &&
+			!(m.version == suggestPreferencesMigrationVersion && hasSuggestPreferences) &&
+			!(m.version == suggestUsageMigrationVersion && hasSuggestUsage) &&
+			!(m.version == pluginThreadsMigrationVersion && hasPluginThreads) &&
+			!(m.version == sessionPRsMigrationVersion && hasSessionPRs) &&
+			!(m.version == mailResumesMigrationVersion && hasMailResumes) &&
+			!(m.version == deviceChallengesMigrationVersion && hasDeviceChallenges) &&
+			!(m.version == chiefPreferencesMigrationVersion && hasChiefPreferences) &&
+			!(m.version == chiefNudgesMigrationVersion && hasChiefNudges) &&
+			!(m.version == ccAccountFailoversMigrationVersion && hasCCAccountFailovers) &&
+			!(m.version == taskRefWritesMigrationVersion && hasTaskRefWrites) &&
+			!(m.version == sessionEpisodesMigrationVersion && hasSessionEpisodes) &&
+			!(m.version == officerLLMUsageMigrationVersion && hasOfficerLLMUsage) &&
+			!(m.version == officerJudgementSessionsMigrationVersion && hasOfficerJudgementSessions) &&
+			!(m.version == sessionTagsMigrationVersion && hasSessionTags) &&
+			!(m.version == asksMigrationVersion && hasAsks) &&
+			!(m.version == hostDispatchesMigrationVersion && hasHostDispatches) &&
+			!(m.version == notifyPreferencesMigrationVersion && hasNotifyPreferences) &&
+			!(m.version == chiefProposalsMigrationVersion && hasChiefProposals) &&
+			!(m.version == pluginHandoffsMigrationVersion && hasPluginHandoffs) &&
+			!(m.version == routingRulesMigrationVersion && hasRoutingRules) &&
+			!(m.version == ccAccountUsageMigrationVersion && hasCCAccountUsage) &&
+			!(m.version == askAttemptsMigrationVersion && hasAskAttempts) &&
+			!(m.version == pagesMigrationVersion && hasPages) &&
+			!(m.version == officerBackendMigrationVersion && hasOfficerBackend) &&
+			!(m.version == officerPRLoopsMigrationVersion && hasOfficerPRLoops) &&
+			!(m.version == outboundDraftsMigrationVersion && hasOutboundDrafts && !hasOfficerContacts) &&
+			!(m.version == pairRequestsMigrationVersion && hasPairRequests) &&
+			!(m.version == officerHostSpawnsMigrationVersion && hasOfficerHostSpawns) &&
+			!(m.version == teamAccessMigrationVersion && hasTeamAccess) &&
+			!(m.version == agentSecretsMigrationVersion && hasAgentSecrets) &&
+			!(m.version == teamAgentsMigrationVersion && hasTeamAgents) &&
+			!(m.version == teamOfficersMigrationVersion && hasTeamOfficers) &&
+			!(m.version == officerContactsMigrationVersion && hasOfficerContacts) &&
+			!(m.version == teamHostsMigrationVersion && hasTeamHosts) &&
+			!(m.version == officerPublicBranchesMigrationVersion && hasOfficerPublicBranches) &&
+			!(m.version == pluginChiefInstructionsMigrationVersion && hasPluginChiefInstructions) &&
+			!(m.version == chiefSessionLLMUsageMigrationVersion && hasChiefSessionLLMUsage) &&
+			!(m.version == fleetOwnerMarksMigrationVersion && hasFleetOwnerMarks) &&
+			!(m.version == officerConnectorBlocksMigrationVersion && hasOfficerConnectorBlocks) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

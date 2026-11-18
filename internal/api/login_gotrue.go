@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,16 +26,19 @@ import (
 // Sign-in throttles for gotrue mode.
 //
 // 🔴 THE KEY IS THE ACCOUNT, NOT THE ADDRESS, AND THERE IS NO GLOBAL CEILING.
-// The client address comes from CF-Connecting-IP / X-Forwarded-For on the
-// browser listener, and anything that reaches the edge without passing the CDN
-// can write those — so an address-only limit is walked by rotating it, and a
+// The client address (clientIP) is the TCP peer unless that peer is a trusted
+// proxy, so it is no longer client-typed — but one proxy can front every
+// client, and a trusted proxy can be misconfigured to pass a typed header
+// through — so an address-only limit can still be walked or shared, and a
 // process-wide ceiling (an earlier draft had one) is a lever any anonymous
 // caller pulls to lock EVERY user out. Failures are therefore counted per
 // ACCOUNT (the normalised email): after accountFreeFailures, each further
 // failure doubles the wait before that account may try again, from
 // accountBackoffBase up to accountBackoffMax. The per-address count
-// (loginFailureLimit per loginFailureWindow) is kept as a secondary limit on
-// one source spraying many accounts. GoTrue applies its own limits too.
+// (loginFailureLimit per loginFailureWindow) counts FAILURES only and never
+// refuses before the credential is judged: past it, a wrong guess is answered
+// 429, a correct one is admitted (a shared address must not be a lockout
+// lever). GoTrue applies its own limits too.
 //
 // ⚠ THE ACCOUNT BACKOFF IS ITSELF A TARGETED LOCKOUT: someone who knows your
 // email can keep you waiting up to accountBackoffMax by failing on purpose. That
@@ -96,8 +100,67 @@ const SignOutEverywhereTokenNote = "Paired phones are signed out too. API tokens
 // hand-typed /account?reset=1 shows it too. It reaches nothing else.
 const ResetDoneNote = "Your password was reset. Your API tokens were revoked; create new ones under API tokens below."
 
-// accountResetDonePath is where a successful reset redirects.
+// accountResetDonePath is where a successful reset redirects, before
+// resetDonePath adds what happened to the passkeys.
 const accountResetDonePath = "/account?reset=1"
+
+// resetPasskeysParam carries what the reset did to the passkeys on the
+// redirect: "kept" (the person has at least one, and kept it), "none" (they
+// had none), "unknown" (kept, but GoTrue could not say how many), or how many
+// it removed. ⚠ DISPLAY-ONLY, like reset=1 — with one exception that does not
+// trust it either: after a removal the page signals the passkeys GoTrue
+// still lists (handleAccountPage), never a set read off the query.
+const resetPasskeysParam = "passkeys"
+
+// ResetPasskeysKeptNote follows ResetDoneNote after a reset that kept them —
+// only when the person has at least one: said to someone with none, it told
+// them of passkeys they never had.
+const ResetPasskeysKeptNote = "Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."
+
+// ResetPasskeysUnknownNote follows ResetDoneNote after a reset that kept the
+// passkeys when GoTrue could not count them: true whether there are any or not.
+const ResetPasskeysUnknownNote = "Any passkeys you have were kept. You can review them under Passkeys."
+
+// resetDonePath is where a reset that set the password redirects: removed
+// says whether the person ticked "Also remove all my passkeys"; n is how many
+// went, or — unticked — how many the person has (negative: GoTrue could not
+// say).
+func resetDonePath(removed bool, n int) string {
+	v := strconv.Itoa(n)
+	if !removed {
+		switch {
+		case n < 0:
+			v = "unknown"
+		case n == 0:
+			v = "none"
+		default:
+			v = "kept"
+		}
+	}
+	return accountResetDonePath + "&" + resetPasskeysParam + "=" + v
+}
+
+// resetPasskeysNote is the sentence /account?reset=1 adds for the passkeys
+// value v, or "" for "none" and for a value resetDonePath never writes.
+func resetPasskeysNote(v string) string {
+	switch v {
+	case "kept":
+		return ResetPasskeysKeptNote
+	case "unknown":
+		return ResetPasskeysUnknownNote
+	}
+	n, err := strconv.Atoi(v)
+	switch {
+	case err != nil || n < 0 || strconv.Itoa(n) != v:
+		return ""
+	case n == 0:
+		return "You had no passkeys to remove."
+	case n == 1:
+		return "Your passkey was removed."
+	default:
+		return "All " + v + " of your passkeys were removed."
+	}
+}
 
 // registerAccountRoutes wires the claim and account routes. Literal patterns,
 // for the reason registerLoginRoutes gives.
@@ -109,11 +172,26 @@ func (s *Server) registerAccountRoutes(mux Mux) {
 }
 
 // renderNotice writes a one-message standalone page.
-func (s *Server) renderNotice(w http.ResponseWriter, code int, heading, body string) {
-	writeAuthDocument(w, code, heading, `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
-<h1 class="text-balance text-base font-semibold text-fg">`+html.EscapeString(heading)+`</h1>
-<p class="text-sm text-fg2">`+html.EscapeString(body)+`</p>
-</section>`)
+//
+// 🔴 WHO IS READING DECIDES WHETHER IT HAS THE SIDE NAV, AND THE REQUEST SAYS.
+// A notice shown to someone with a browser session — "Admins only", "Could not
+// load users", a passkeys failure — is a page inside the app, and draws the
+// nav (writeNavDocument). One shown to someone signed out — a bad or expired
+// link, a sign-in that is not configured, "Sign out everywhere did not finish"
+// (its session is already revoked and its cookies cleared when it is drawn) —
+// stays bare (writeAuthDocument): every nav link there would answer with the
+// sign-in form. The test is the principal requireSession attached, so a
+// caller cannot pick the wrong one: TestANoticeHasTheNavOnlyForASignedInReader.
+func (s *Server) renderNotice(w http.ResponseWriter, r *http.Request, code int, heading, body string) {
+	inner := `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">` + html.EscapeString(heading) + `</h1>
+<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>
+</section>`
+	if p, ok := authz.From(r.Context()); ok && p.Via == authz.ViaSession {
+		s.writeNavDocument(w, r, code, heading, "", false, inner)
+		return
+	}
+	writeAuthDocument(w, code, s.uiBrand(r.Context()), heading, inner)
 }
 
 // --- sign-in ------------------------------------------------------------------
@@ -124,7 +202,7 @@ func (s *Server) handleGoTrueLoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.gt == nil {
-		s.renderNotice(w, http.StatusServiceUnavailable, "Sign-in is not configured",
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Sign-in is not configured",
 			"This server is in gotrue mode but has no GoTrue configured, so it cannot sign anyone in.")
 		return
 	}
@@ -140,21 +218,28 @@ func (s *Server) handleGoTrueLoginPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email, problem string) {
 	passkey := ""
+	// "username webauthn" lets the browser offer the account's passkeys in
+	// the email field's suggestions (autofill; passkeySignInJS starts the
+	// conditional request that fills them). Only when passkeys are served:
+	// with them off there is no request to fill them.
+	emailAutocomplete := "username"
 	if s.gt != nil && s.gt.passkeysOn(context.Background()) {
-		// Outside the form: the passkey button posts nothing, so the form's
-		// required email/password never block it. The script prefetches the
-		// sign-in options and runs the ceremony (passkeySignInJS).
+		emailAutocomplete = "username webauthn"
+		// Outside the form: the passkey buttons post nothing, so the form's
+		// required email/password never block them. The script prefetches the
+		// sign-in options and runs the ceremonies (passkeySignInJS).
 		passkey = `<section class="mt-4 flex flex-col gap-2">
 <button type="button" id="passkey-signin" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign in with a passkey</button>
+<button type="button" id="passkey-signin-phone" class="press min-h-[44px] w-full rounded-md px-3 py-2 text-sm font-medium text-accent underline">Use a passkey from my phone</button>
 <p class="text-sm text-fg2" id="passkey-signin-status" role="status" aria-live="polite"></p>
 </section>
 <script>` + ui.PasskeyJS + passkeySignInJS + `</script>`
 	}
-	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	inner := s.loginBrandHTML(context.Background()) + `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
 ` + problemNode(problem) + `
 <label for="muster-email" class="text-sm font-medium text-fg">Email</label>
-<input id="muster-email" name="email" type="email" autocomplete="username" autofocus required value="` + html.EscapeString(email) + `"
+<input id="muster-email" name="email" type="email" autocomplete="` + emailAutocomplete + `" autofocus required value="` + html.EscapeString(email) + `"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <label for="muster-password" class="text-sm font-medium text-fg">Password</label>
 <input id="muster-password" name="password" type="password" autocomplete="current-password" required
@@ -162,7 +247,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
 </form>` + passkey
-	writeAuthDocument(w, code, "Sign in", inner)
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 
 func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +256,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.gt == nil {
-		s.renderNotice(w, http.StatusServiceUnavailable, "Sign-in is not configured",
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Sign-in is not configured",
 			"This server is in gotrue mode but has no GoTrue configured.")
 		return
 	}
@@ -179,7 +264,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		// Login CSRF: a cross-site form could otherwise sign the victim's
 		// browser into the ATTACKER'S account. Every browser sends Origin on
 		// a form POST, and muster's own form is same-origin.
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -217,6 +302,10 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("login: rejected a sign-in attempt from %s", ip)
+			if ticket.addrOver {
+				s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
+				return
+			}
 			s.renderGoTrueLogin(w, http.StatusUnauthorized, next, email, "That email and password do not match.")
 		default:
 			s.logger.Printf("login: GoTrue is unavailable: %v", err)
@@ -233,6 +322,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	outcome = outcomeSucceeded
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("login: user %d signed in", u.ID)
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
@@ -268,7 +358,7 @@ func (s *Server) admitFreshSession(ctx context.Context, sess gotrue.Session) (us
 // and the cookies.
 func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	scope := gotrue.ScopeLocal
@@ -303,9 +393,10 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
 		}
 	}
+	clearSiteCaches(w)
 	s.clearGoTrueCookies(w)
 	if failed != "" {
-		s.renderNotice(w, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
+		s.renderNotice(w, r, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
 		return
 	}
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
@@ -336,15 +427,31 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign out everywhere</button></form>
 <p class="text-sm text-fg2">` + SignOutEverywhereTokenNote + `</p>`
 	}
+	// The Passkeys link is there in every gotrue-mode server, whatever
+	// GoTrue's /settings says: a failed or slow read hid it, and the page
+	// itself says when passkeys are off (passkeyAccountCreds).
 	passkeysLink := ""
-	if s.passkeysServed(r.Context()) {
+	if s.auth.goTrueMode() && s.gt != nil {
 		passkeysLink = `<a href="` + accountPasskeysPath + `" id="account-passkeys" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Passkeys</a>`
+	}
+	// Account → Teams (team sharing phase 2b.1): your teams and each one's
+	// notify switch.
+	if s.accountTeams() != nil {
+		passkeysLink += `<a href="` + accountTeamsPath + `" id="account-teams-link" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Teams (your role, and each team's notifications)</a>`
 	}
 	resetNote := ""
 	if r.URL.Query().Get("reset") == "1" {
-		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
+		note := ResetDoneNote
+		v := r.URL.Query().Get(resetPasskeysParam)
+		if pk := resetPasskeysNote(v); pk != "" {
+			note += " " + pk
+		}
+		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + html.EscapeString(note) + `</p>`
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			resetNote += s.resetSignalNode(r)
+		}
 	}
-	writeAuthDocument(w, http.StatusOK, "Account", `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
 `+resetNote+`
 <p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
@@ -354,10 +461,34 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 `+passkeysLink+`
 <a href="/account/credentials" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Credentials (Claude, OpenRouter)</a>
 <a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
+<a href="`+FeaturesPagePath+`" id="account-features" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Features (what this server runs, and how to turn the rest on)</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>
 `+s.accountDevicesSection(r)+`
-`+s.accountNotificationsSection(r)+`</div>`)
+`+s.accountNotificationsSection(r)+`
+`+s.accountPagesSection(r)+`
+`+s.accountChiefSection(r)+`
+`+s.accountSuggestSection(r)+`
+`+s.accountBrandingSection(r)+`</div>`)
+}
+
+// resetSignalNode is, on the page a reset that REMOVED passkeys lands on, the
+// Signal API hand-off of the passkeys the account still has — so the password
+// manager stops offering the removed ones. 🔴 The set is GoTrue's list, read
+// now, never the query's count (which anyone can type): a hand-typed
+// ?reset=1&passkeys=3 signals only what is really there. "" when GoTrue
+// cannot list them.
+func (s *Server) resetSignalNode(r *http.Request) string {
+	creds, ok := gotrueCredsFrom(r.Context())
+	if !ok || s.gt == nil {
+		return ""
+	}
+	list, err := s.gt.Client.Passkeys(r.Context(), clientIP(r), creds.access)
+	if err != nil {
+		s.logger.Printf("passkeys: list for the reset signal: %v", err)
+		return ""
+	}
+	return s.passkeySignalNode(r.Context(), creds, list, s.passkeyFlags(r.Context(), creds.claims.Subject))
 }
 
 // --- the admin claim ------------------------------------------------------------
@@ -408,10 +539,10 @@ func (s *Server) claimRefusal(r *http.Request) (int, string) {
 	return 0, ""
 }
 
-func (s *Server) renderInvalidClaim(w http.ResponseWriter) {
+func (s *Server) renderInvalidClaim(w http.ResponseWriter, r *http.Request) {
 	// ONE page for every way a link can be bad, so it cannot be used to learn
 	// which tokens exist.
-	s.renderNotice(w, http.StatusNotFound, "This link is invalid or expired",
+	s.renderNotice(w, r, http.StatusNotFound, "This link is invalid or expired",
 		"Ask the operator for a new link.")
 }
 
@@ -421,7 +552,7 @@ func (s *Server) handleClaimPage(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.renderNotice(w, code, "Open this link at the public address", msg)
+		s.renderNotice(w, r, code, "Open this link at the public address", msg)
 		return
 	}
 	// The token is in the fragment, so the server cannot check it here; the
@@ -435,7 +566,7 @@ func (s *Server) renderClaimForm(w http.ResponseWriter, code int, token, email, 
 <input id="` + id + `" name="` + name + `" type="` + typ + `" autocomplete="` + auto + `" required value="` + html.EscapeString(value) + `"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, "Claim the admin account", `<form id="claim-form" method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Claim the admin account", `<form id="claim-form" method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Claim the admin account</h1>
 <p class="text-sm text-fg2">Choose the email and password you will sign in to muster with. This link works once.</p>
 `+problemNode(problem)+`
@@ -454,11 +585,11 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.renderNotice(w, code, "Open this link at the public address", msg)
+		s.renderNotice(w, r, code, "Open this link at the public address", msg)
 		return
 	}
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -468,17 +599,27 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{}, ip, s.gt.now())
 	if !ok {
-		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
+		s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
 		return
 	}
 	outcome := outcomeUnjudged
 	defer func() { s.gt.signin.settle(ticket, outcome) }()
+	// invalid answers a claim that failed: the uniform invalid page, or 429
+	// once this address is past its failure count (signinTicket.addrOver).
+	// A valid claim token is never refused for its address.
+	invalid := func() {
+		outcome = outcomeFailed
+		if ticket.addrOver {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
+			return
+		}
+		s.renderInvalidClaim(w, r)
+	}
 	token := postedLinkToken(r)
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
-		outcome = outcomeFailed
-		s.renderInvalidClaim(w)
+		invalid()
 		return
 	}
 	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
@@ -500,8 +641,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	createErr := *createErrp
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
-		outcome = outcomeFailed
-		s.renderInvalidClaim(w)
+		invalid()
 		return
 	case err != nil && createErr != nil:
 		var ae *gotrue.APIError
@@ -524,20 +664,21 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
 	if err != nil {
 		s.logger.Printf("claim: the new login could not sign in: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Claimed, but sign-in failed",
+		s.renderNotice(w, r, http.StatusBadGateway, "Claimed, but sign-in failed",
 			"The account is bound, but signing in with it failed. Try signing in again in a moment.")
 		return
 	}
 	if !s.auth.goTrueMode() {
-		s.renderNotice(w, http.StatusOK, "Admin account claimed",
+		s.renderNotice(w, r, http.StatusOK, "Admin account claimed",
 			"Your sign-in works. This server still uses the operator password; once it is switched to "+
 				"GoTrue sign-in (MUSTER_AUTH_MODE=gotrue) you will sign in with this email and password.")
 		return
 	}
 	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-		s.renderNotice(w, code, "Claimed, but sign-in failed", problem)
+		s.renderNotice(w, r, code, "Claimed, but sign-in failed", problem)
 		return
 	}
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

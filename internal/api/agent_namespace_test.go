@@ -85,8 +85,10 @@ func TestTheCreatedAgentRowCarriesTheConfiguredNamespace(t *testing.T) {
 				AgentNamespacePrefix: tc.prefix,
 			})
 
+			// Kickoff: a save starts no background Dispatch, so the wait below
+			// would have nothing to observe.
 			rec, err := srv.createAndDispatchAgent(context.Background(), dispatchParams{
-				Name: tc.name,
+				Name: tc.name, Kickoff: true,
 			})
 			if err != nil {
 				t.Fatalf("createAndDispatchAgent: %v", err)

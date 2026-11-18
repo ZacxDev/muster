@@ -38,6 +38,9 @@ func (s *shutdownStore) List(context.Context) ([]agents.Agent, error) {
 	return []agents.Agent{s.row}, nil
 }
 func (s *shutdownStore) Get(context.Context, int64) (agents.Agent, error) { return s.row, nil }
+func (s *shutdownStore) Secrets(context.Context, int64) (agents.Secrets, error) {
+	return agents.Secrets{HooksToken: s.row.HooksToken, GatewaySecret: s.row.GatewaySecret}, nil
+}
 
 // GetByName serves api.Server.agentOwner: an agent.changed nudge reaches its
 // agent's OWNER only (accounts PR 3b), so the server reads the row by name.
@@ -89,6 +92,13 @@ func (g *heldGateway) Send(ctx context.Context, _ agentgateway.Target, _, _ stri
 	close(g.entered)
 	<-ctx.Done()
 	return "", fmt.Errorf("post responses: %w", ctx.Err())
+}
+
+// SendWithTools is never reached: this fake's deliverer is built with no
+// Config.TurnTools, so every first turn is the toolless Send. An error, so a
+// call reads as a failure rather than a delivered turn.
+func (g *heldGateway) SendWithTools(context.Context, agentgateway.Target, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	return "", errors.New("heldGateway: SendWithTools is not expected (no TurnTools configured)")
 }
 
 type readyLister struct{ inst provision.Instance }

@@ -18,7 +18,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -39,10 +38,16 @@ type routeRuntime struct {
 
 type routedTurn struct {
 	key, runtime, ccSession, ccModel, gwModel string
+	// ccEphemeral is X-Muster-CC-Ephemeral: set on a chief's stall check only,
+	// so every operator session's turn here must arrive without it.
+	ccEphemeral string
+	// ccToolless is X-Muster-CC-Toolless: likewise a stall check's only — an
+	// operator session's CLI keeps its tools.
+	ccToolless string
 }
 
 func (r routedTurn) String() string {
-	return fmt.Sprintf("key=%s runtime=%q cc=%q ccmodel=%q gwmodel=%q", r.key, r.runtime, r.ccSession, r.ccModel, r.gwModel)
+	return fmt.Sprintf("key=%s runtime=%q cc=%q ccmodel=%q gwmodel=%q ephemeral=%q toolless=%q", r.key, r.runtime, r.ccSession, r.ccModel, r.gwModel, r.ccEphemeral, r.ccToolless)
 }
 
 func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +60,8 @@ func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.instructions = append(f.instructions, req.Instructions)
 	f.turns = append(f.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
 		runtime: r.Header.Get("X-Muster-Runtime"), ccSession: r.Header.Get("X-Muster-CC-Session"),
-		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model")})
+		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model"),
+		ccEphemeral: r.Header.Get("X-Muster-CC-Ephemeral"), ccToolless: r.Header.Get("X-Muster-CC-Toolless")})
 	f.mu.Unlock()
 	const reply = "noted"
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -96,13 +102,13 @@ func (f *routeRuntime) count() int {
 //
 //   - A claude-code chief holding the live shape — its legacy session and a
 //     NEWER plugin session — has the legacy one as its default.
-//   - A session opened on claude-code/opus and one on an OpenRouter model, over
+//   - Two sessions opened on claude-code (opus, haiku), over
 //     POST /agents/{id}/sessions, read back with their runtime and model; a bad
-//     model, an unknown runtime, and any runtime for a worker are refused and
-//     write nothing.
+//     model, an unknown runtime, the retired gateway runtime, and any runtime
+//     for a worker are refused and write nothing.
 //   - Each session's turn carries its route: none for a legacy session (ccd's
-//     original CLI), the session key and model for claude-code, the runtime and
-//     the model override for gateway.
+//     original CLI), the session key and model for claude-code — and never the
+//     retired gateway runtime's headers.
 //   - `chief ask` and a plugin delivery go to the DEFAULT session — not the
 //     latest, and not a session of the plugin's own — and carry its route; after
 //     POST …/default moves the default, both follow it.
@@ -157,7 +163,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +172,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	toks := newFakeAPITokens()
 	ownerTok := toks.add(t, owner)
 	srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Plugins: ps, PluginGateway: gw, Gateway: gw,
-		APITokens: toks, SessionRuntimes: []string{agents.SessionRuntimeClaudeCode, agents.SessionRuntimeGateway}})
+		APITokens: toks, SessionRuntimes: []string{agents.SessionRuntimeClaudeCode}})
 	const userHeader = "X-Rt-Test-User"
 	srv.sessionUserOverride = func(r *http.Request) int64 {
 		v, _ := strconv.ParseInt(r.Header.Get(userHeader), 10, 64)
@@ -201,7 +207,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 
 	// The default of the live shape is the legacy session, not the newer one.
-	if d, err := srv.defaultSession(asOwner, chief); err != nil || d.ID != legacy.ID {
+	if d, err := srv.primarySession(asOwner, chief); err != nil || d.ID != legacy.ID {
 		t.Fatalf("the chief's default: %+v, %v; want its legacy session %d (the plugin session %d is newer)", d, err, legacy.ID, pluginSess.ID)
 	}
 
@@ -224,17 +230,17 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	if cc.Runtime != "claude-code" || cc.Model != "opus" || cc.AgentID != chief.ID {
 		t.Fatalf("opening a claude-code/opus session: %d %q → %+v", rec.Code, rec.Body.String(), cc)
 	}
-	or, rec := open(chief, "gateway", "openrouter/vendor-x/model-y")
-	if or.Runtime != "gateway" || or.Model != "openrouter/vendor-x/model-y" {
-		t.Fatalf("opening an OpenRouter session: %d %q → %+v", rec.Code, rec.Body.String(), or)
+	or, rec := open(chief, "claude-code", "haiku")
+	if or.Runtime != "claude-code" || or.Model != "haiku" {
+		t.Fatalf("opening a claude-code/haiku session: %d %q → %+v", rec.Code, rec.Body.String(), or)
 	}
 	before := sessionsOf(chief)
 	for _, bad := range []struct {
 		a              agents.Agent
 		runtime, model string
 	}{
-		{chief, "gateway", "vendor-x/model-y"}, {chief, "claude-code", "opus --dangerously"}, {chief, "webchat", "opus"},
-		{worker, "gateway", "openrouter/vendor-x/model-y"},
+		{chief, "gateway", "openrouter/vendor-x/model-y"}, {chief, "claude-code", "opus --dangerously"}, {chief, "webchat", "opus"},
+		{worker, "claude-code", "opus"},
 	} {
 		if s, rec := open(bad.a, bad.runtime, bad.model); rec.Code != http.StatusBadRequest || s.ID != 0 {
 			t.Errorf("opening %s/%q on %s: %d %+v; want 400", bad.runtime, bad.model, bad.a.Name, rec.Code, s)
@@ -269,7 +275,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 		!strings.Contains(rec.Body.String(), CrossOriginRefusal) {
 		t.Errorf("a cross-site default move: %d %q; want 403 %q", rec.Code, rec.Body.String(), CrossOriginRefusal)
 	}
-	if d, _ := srv.defaultSession(asOwner, chief); d.ID != legacy.ID {
+	if d, _ := srv.primarySession(asOwner, chief); d.ID != legacy.ID {
 		t.Errorf("a cross-site POST moved the default to %d; want it still %d", d.ID, legacy.ID)
 	}
 
@@ -277,7 +283,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	want := map[int64]routedTurn{
 		legacy.ID: {key: legacy.SessionKey},
 		cc.ID:     {key: cc.SessionKey, ccSession: cc.SessionKey, ccModel: "opus"},
-		or.ID:     {key: or.SessionKey, runtime: "gateway", gwModel: "openrouter/vendor-x/model-y"},
+		or.ID:     {key: or.SessionKey, ccSession: or.SessionKey, ccModel: "haiku"},
 	}
 	for _, s := range []agents.ChatSession{legacy, cc, or} {
 		if _, err := srv.runUserTurn(asOwner, chief, s, "hello "+s.SessionKey, nil); err != nil {
@@ -347,21 +353,20 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 	chiefSessions := sessionsOf(chief)
 
-	// Move the default to the OpenRouter session: both doors follow it.
+	// Move the default to the haiku session: both doors follow it.
 	if rec := do("POST", "/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions/"+strconv.FormatInt(or.ID, 10)+"/default", "", ""); rec.Code != http.StatusOK {
 		t.Fatalf("POST …/default: %d %s", rec.Code, rec.Body.String())
 	}
 	if got, sid := ask(); got != want[or.ID] || sid != or.ID {
-		t.Errorf("chief ask with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
+		t.Errorf("chief ask with the haiku default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
 	}
-	// The gateway runtime beside ccd has no standing file of the chief's: the
-	// ask carries the chief's function-tool prose, as a chat turn there does.
-	if got, want := rt.lastInstructions(t), agentspec.ChiefInstructionsFunctionTools(true); got != want || want == "" {
-		t.Errorf("chief ask with the OpenRouter default carried instructions %.60q (%d bytes); want the chief's function-tool prose (%d bytes)",
-			got, len(got), len(want))
+	// A Claude Code CLI reads the chief's CLAUDE.md: this ask carries no
+	// instructions either.
+	if got := rt.lastInstructions(t); got != "" {
+		t.Errorf("chief ask with the haiku default carried %d bytes of instructions; want none", len(got))
 	}
 	if got, sid := deliver(); got != want[or.ID] || sid != or.ID {
-		t.Errorf("a plugin delivery with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
+		t.Errorf("a plugin delivery with the haiku default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
 	}
 	if got := sessionsOf(chief); got != chiefSessions {
 		t.Errorf("deliveries opened sessions: %d → %d", chiefSessions, got)
@@ -374,7 +379,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	if rec := do("POST", "/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions/"+strconv.FormatInt(other.ID, 10)+"/default", "", ""); rec.Code != http.StatusNotFound {
 		t.Errorf("making the worker's session the chief's default: %d; want 404", rec.Code)
 	}
-	if d, _ := srv.defaultSession(asOwner, chief); d.ID != or.ID {
+	if d, _ := srv.primarySession(asOwner, chief); d.ID != or.ID {
 		t.Errorf("a refused move changed the default to %d", d.ID)
 	}
 }
@@ -435,7 +440,7 @@ func TestChiefAskGoesToTheDefaultSessionWithTheRuntimesFlagUnset(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}

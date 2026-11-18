@@ -21,6 +21,21 @@ into a hard failure that names itself. CI sets it; set it locally too.
 
 `MUSTER_TEST_PG_PORT=55433 make test-db` gives a second checkout its own database.
 
+**No Docker?** `scripts/with-test-pg.sh` does the same job with the dev shell's
+own Postgres: it `initdb`s a throwaway cluster in a temp directory, starts it on
+a free loopback port, creates and migrates `muster_test`, exports
+`MUSTER_TEST_DATABASE_URL`, `MUSTER_TEST_PG_PORT` and `MUSTER_TEST_REQUIRE_DB=1`,
+runs your command, and stops Postgres and deletes the directory on exit —
+failure and SIGTERM/SIGINT included (SIGKILL cannot be trapped). On a signal
+it stops the command's whole process group, grandchildren included. It exits
+with the command's own code. TCP only (no Unix socket), so a long `$TMPDIR` is
+fine. It cannot run as root, because `initdb` refuses to.
+
+```sh
+nix develop -c scripts/with-test-pg.sh go test -race ./...
+nix develop -c python3 tests/with_test_pg_test.py    # the helper's own tests
+```
+
 **File attachments' object store** (`internal/uploads`, minio-go) is faked in
 process by `internal/uploads/uploadstest` for the service and route tests, and
 its timeouts are tested against a small HTTP fake. Neither checks a signature or
@@ -59,14 +74,11 @@ for a failure that actually happened.
 | `make check` | All of the above. |
 | `make e2e` | The Playwright suite (see below). |
 
-Two documentation gates run inside `go test ./internal/modulegate/`:
+One documentation gate runs inside `go test ./internal/modulegate/`:
 
 - `TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa` checks that the
   variables the code reads (collected by parsing the source) match the table in
   [configuration.md](configuration.md), in both directions.
-- `TestEveryRelativeDocLinkResolves` checks that every relative link and image in
-  `README.md`, `CONTRIBUTING.md` and `docs/` points at a file that exists, and
-  that every `#anchor` points at a heading.
 
 ## The browser suite (`e2e/`)
 
@@ -97,40 +109,115 @@ at 390×844 (touch) and 1280×800. What it measures, exactly:
   `internal/api/testdata/routes.golden`: a new `GET` route fails the spec until
   it is measured there or named as not a page;
 - the chief panel opened, and restored open on a load;
-- **after a load**, started by script so nothing counts as input: the Agents
-  list re-rendering with nothing changed, an agent arriving while the list is
-  open (held behind the "N new ↑" pill, so nothing moves until the reader taps
-  it — with a positive control: a fresh arrival APPLIED at once must read a
-  shift above 0), an in-page tab switch, and a boosted navigation and the
-  loads it starts. ⚠ Chromium's layout-shift entries leave out a node MOVED in
-  the DOM, so a re-order done by moving cards reads 0 however far they jump;
-  the hold's own e2e (agents-search) pins the DOM order instead;
+- **after a load**, started by script so nothing counts as input: the
+  sidebar's list refreshing, and a boosted navigation and the loads it starts,
+  with a positive control (an unprovoked shift must read above 0). ⚠ Chromium's
+  layout-shift entries leave out a node REPLACED or MOVED in the DOM, and a
+  sidebar refresh replaces its rows: its own rows read 0 however they change,
+  so the measurement is of what stays on the page around it;
+- a long list of mirrored windows (the sidebar's), arriving, refreshing live,
+  restored by Back and left by a boosted navigation;
+- the onboarding page `/agents` draws when home has nothing to open, on an
+  empty database;
 - a tapped tool-group expand is excluded as input, and the same expand by
   script is counted (the spec's own check of its exclusion).
+
+**Passkeys.** `authenticator(page)` in `e2e/lib/webauthn.ts` attaches
+Chromium's virtual authenticator, and also holds every conditional (autofill)
+WebAuthn request pending until the page aborts it. With a virtual
+authenticator, Chromium answers a conditional request at once with the first
+matching passkey, so without the hold every visit to `/login` on a page that
+holds a passkey would sign in by itself. A real person who ignores the
+suggestions leaves the request pending in the same way. `recordWebAuthn(page,
+…)`, called before `authenticator`, reports each request, abort and Signal API
+call to the spec, and its `autofill = 'real'` lets the conditional request
+through (`passkeys.spec.ts`).
 
 `e2e/verdict.mjs` fails the run on any skip, or on fewer passes than its floor.
 In CI the suite runs as parallel legs, each with its own Postgres
 (`e2e/legs.json`). The `e2e` check aggregates them, and refuses a spec that ran
 in no leg or in two.
 
+**Signing in.** Wrong password sign-ins are counted, 10 a minute per address and
+100 per server; past that, a browser with no known-device cookie and no session
+is refused. A spec that fills the sign-in form for
+every test still costs a server-side sign-in each time, so specs sign in once. Specs sign in with `signIn(page, origin)`
+from `e2e/lib/signin.ts`, which drives the form once per server and worker and
+reuses that session afterwards; the session key comes from the password, so a
+restarted server still accepts it. Pass `{ fresh: true }`
+when a test needs a session of its own. Every server the suite starts counts the
+password sign-ins it handled, from its own log. A test fails once any server has
+handled more than half of `loginRateBurst` (read from `internal/api/login.go`),
+however the form was filled. The shared server is checked in global teardown.
+
 ## Screenshots
 
 The images in [`docs/img/`](img) are generated, not hand-made:
 
 ```sh
-MUSTER_E2E_DATABASE_URL='…/muster_e2e?sslmode=disable' make screenshots
+MUSTER_E2E_DATABASE_URL='…/muster_e2e?sslmode=disable' \
+  nix-shell -p ffmpeg pngquant --run 'make screenshots'
 ```
 
 This runs `e2e/docshots/docs.spec.ts`. It uses only the seeded fixture board and
-a fake mirrored host, so no real data appears in it. It is opt-in and never part
-of `make e2e`. It drives:
+two fake mirrored hosts (`workstation` and `laptop`), whose windows and Claude
+Code transcripts the spec writes, so no real data appears in it. It is opt-in and
+never part of `make e2e`. It drives:
 
 - a gotrue-mode server against the real GoTrue image;
 - Chromium's virtual passkey authenticator;
-- a fake speech-to-text service.
+- Chromium's fake microphone and a fake speech-to-text service.
 
-It captures at 390×844, then compresses each PNG. `npm run capture` in `e2e/` is
-a separate generator, for the PWA manifest's install-sheet screenshots.
+Phone shots are 390×844 at 2×; `desktop.png` is 1280×800 at 2×. The spec also
+writes the frames of the README's two animations, each to its own directory with
+an ffmpeg concat list (each frame's hold), and the make target assembles each GIF
+from them:
+
+- `phone-flow.gif` (`e2e/.state/phone-flow/`): switch to a session by
+  searching a word of its name, dictate a reply, send it, and watch the session
+  answer;
+- `ask-flow.gif` (`e2e/.state/ask-flow/`): a session asks a question (Claude
+  Code's `AskUserQuestion`, registered by the real `muster-mirror ask` hook), it
+  shows in the sidebar and on the Asks page, the answer is tapped in the session
+  and typed into the fake host's picker, and the session carries on.
+
+🔴 **Every session is called by its work, never by a codename.** A Claude Code
+window's name is written as a focus refresh writes it (`e2e/mkchat`, judged by
+the same name bar over the conversation's first turn); a window with no
+conversation carries a work-style host label (`muster-mirror -labels-file`);
+the fixture's tmux sessions are named for their work too (`release`, `tasks`),
+since an ask's card shows a window's tmux address. `e2e/docshots/names.ts`
+checks every shot and every animation frame before it is written: a sidebar
+row, switcher entry or page header that calls a session by its codename fails
+the run.
+
+Three README images are not made here, and `make screenshots` does not
+regenerate them, nor re-compress them: `hero.gif`, `queue-next.png` and
+`officer-ask.png`. They are
+shot by a Playwright script outside this repository, against a throwaway
+server built from this repository and two `muster-mirror -tags e2emirror` fake
+hosts (the same fake as here), with an invented fleet: invented hosts,
+sessions, transcripts and focus rows, and SQL stand-ins for the rows a fake
+host cannot make (an officer's ask). The question in `hero.gif` is registered
+by the real `muster-mirror ask` hook and answered through the UI, as in
+`ask-flow.gif`. Every frame is checked before it is kept: no real host, user or
+home-directory name, no permission prompt, no session called by its codename
+(the rule `names.ts` holds here), and no page text showing beside an open
+sidebar. No model is called. `hero.gif` is a frame reel like the two above,
+with a caption band drawn above each frame.
+
+Then it compresses each PNG with pngquant when it is installed, and fails if a
+PNG is over 200 KB or a GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
+PWA manifest's install-sheet screenshots.
+
+`make docshots-check` runs the same spec as a check, with its images written to
+a temp dir so `docs/img/` is untouched, and `node verdict.mjs --docshots` judges
+the report: exactly the expected number of passes, all from `docs.spec.ts`, and
+no skip. CI's `docshots` job runs it on every change, so a UI change that breaks
+the generator goes red at once. The `mirror-terminal.png` shot also checks that
+rows with text are drawn inside the visible terminal, not just present in the
+page (#623: a fixture printing only on row 1 of a window taller than the page
+gave a blank image, because the Terminal view holds such a view at its bottom).
 
 ## What green does not prove
 

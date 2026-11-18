@@ -149,7 +149,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("push: device %s moved from owner=%d to owner=%d (a different user signed in on it)",
 			push.Short(sub.Endpoint), prev, owner)
 	}
-	s.setPushDeviceCookie(w, push.EndpointHash(sub.Endpoint))
+	s.setPushDeviceCookie(w, r, push.EndpointHash(sub.Endpoint))
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -172,7 +172,7 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the subscription could not be removed"})
 		return
 	}
-	s.clearPushDeviceCookie(w)
+	s.clearPushDeviceCookie(w, r)
 	s.writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
@@ -297,7 +297,29 @@ func (s *Server) sendPush(ctx context.Context, owner int64, p push.Payload) push
 	if !s.pushServed() || owner <= 0 {
 		return push.Report{}
 	}
+	if p.Type != push.TypeResolved {
+		p.Icon = s.pushIcon(ctx)
+	}
 	return s.ext.Push.SendTo(ctx, owner, p)
+}
+
+// defaultPushIcon is muster's own notification icon (web/static/sw.js draws
+// the same when a payload names none).
+const defaultPushIcon = "/static/icons/icon-192.png"
+
+// pushIcon is a Web Push notification's icon URL: the instance logo's 192 px
+// icon (versioned by its ETag) when one is set, muster's own icon otherwise.
+// Absolute under MUSTER_PUBLIC_URL when it is set, else a path on this server,
+// which a service worker resolves against its own origin.
+func (s *Server) pushIcon(ctx context.Context) string {
+	path := defaultPushIcon
+	if b := s.uiBrand(ctx); b.HasLogo() {
+		path = b.Icon192()
+	}
+	if base := strings.TrimRight(strings.TrimSpace(s.auth.PublicURL), "/"); base != "" {
+		path = base + path
+	}
+	return path
 }
 
 // forgetPushDevice removes the signing-out browser's own subscription (named by
@@ -309,7 +331,7 @@ func (s *Server) forgetPushDevice(w http.ResponseWriter, r *http.Request, uid in
 	if hash == "" {
 		return
 	}
-	s.clearPushDeviceCookie(w)
+	s.clearPushDeviceCookie(w, r)
 	if !s.pushServed() || uid <= 0 {
 		return
 	}
@@ -323,28 +345,31 @@ func (s *Server) forgetPushDevice(w http.ResponseWriter, r *http.Request, uid in
 	}
 }
 
-func (s *Server) setPushDeviceCookie(w http.ResponseWriter, hash string) {
+func (s *Server) setPushDeviceCookie(w http.ResponseWriter, r *http.Request, hash string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: pushDeviceCookie, Value: hash, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.auth.SecureCookies || s.auth.goTrueMode(),
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.passwordCookieSecure(r) || s.auth.goTrueMode(),
 		MaxAge: int((400 * 24 * time.Hour) / time.Second),
 	})
 }
 
-func (s *Server) clearPushDeviceCookie(w http.ResponseWriter) {
+func (s *Server) clearPushDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: pushDeviceCookie, Value: "", Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.auth.SecureCookies || s.auth.goTrueMode(), MaxAge: -1,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.passwordCookieSecure(r) || s.auth.goTrueMode(), MaxAge: -1,
 	})
 }
 
 // accountNotificationsSection renders the account page's Notifications
-// section: the caller's devices (row-level security), "send test", remove.
+// section: "Show tmux sessions" (notify_prefs.go — it names
+// sessions on the Asks list too, so it is drawn with or without Web Push), then
+// the caller's devices (row-level security), "send test", remove.
 func (s *Server) accountNotificationsSection(r *http.Request) string {
 	var b strings.Builder
 	b.WriteString(`<section id="notifications" data-testid="push-devices" class="flex flex-col gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h2 class="text-base font-semibold text-fg">Notifications</h2>
 `)
+	b.WriteString(s.accountNotifyTmuxForm(r))
 	if !s.pushServed() {
 		b.WriteString(`<p class="text-sm text-fg2">` + html.EscapeString(pushUnconfigured) + `</p></section>`)
 		return b.String()
@@ -359,11 +384,27 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 	case "saved":
 		b.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Notification settings saved.</p>`)
 	}
+	b.WriteString(s.accountPushDeviceList(r, false))
+	b.WriteString(s.pushPreferencesForm(r))
+	b.WriteString(`</section>`)
+	return b.String()
+}
+
+// accountPushDeviceList is the Notifications section's devices and its "Send a
+// test notification" button. Account → Devices' live list re-renders it out of
+// band (oob), so a phone's push registration shows here without a reload.
+func (s *Server) accountPushDeviceList(r *http.Request, oob bool) string {
+	var b strings.Builder
+	b.WriteString(`<div id="push-device-list" class="flex flex-col gap-3"`)
+	if oob {
+		b.WriteString(` hx-swap-oob="true"`)
+	}
+	b.WriteString(`>`)
 	devs, err := s.ext.Push.Store().Devices(r.Context())
 	if err != nil {
 		s.logger.Printf("push: list devices: %v", err)
 		b.WriteString(problemNode("The device list could not be read."))
-		b.WriteString(`</section>`)
+		b.WriteString(`</div>`)
 		return b.String()
 	}
 	if len(devs) == 0 {
@@ -396,8 +437,7 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 <form method="POST" action="` + accountPushTestPath + `">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Send a test notification</button></form>`)
 	}
-	b.WriteString(s.pushPreferencesForm(r))
-	b.WriteString(`</section>`)
+	b.WriteString(`</div>`)
 	return b.String()
 }
 

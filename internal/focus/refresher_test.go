@@ -38,13 +38,44 @@ func (m *memStore) Upsert(_ context.Context, s Subject, w Write) (Focus, error) 
 	if err != nil {
 		return Focus{}, err
 	}
-	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
+	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now(),
+		Name: m.rows[s].Name}
+	// PGStore.Upsert's name rule: the auto name freezes once, from a nameable
+	// write.
+	if f.Name.Auto == "" && w.Nameable && NameableTitle(t) {
+		f.Name.Auto, f.Name.AutoAt = t, f.UpdatedAt
+	}
+	// PGStore.Upsert's rule: a tail naming no directory keeps the stored one;
+	// a named one replaces it, malformed ones with "" (unknown).
+	if w.CwdNamed {
+		f.Cwd, _ = CleanCwd(w.Cwd)
+	} else {
+		f.Cwd = m.rows[s].Cwd
+	}
 	m.rows[s] = f
 	delete(m.errs, s)
 	return f, nil
 }
 func (m *memStore) RecordError(_ context.Context, s Subject, msg string) error {
 	m.errs[s] = msg
+	return nil
+}
+func (m *memStore) SetManualName(_ context.Context, s Subject, name string) (Name, error) {
+	f := m.rows[s]
+	f.Subject, f.Name.Manual = s, name
+	m.rows[s] = f
+	return f.Name, nil
+}
+func (m *memStore) SetTaskLink(_ context.Context, s Subject, l TaskLink) (TaskLink, error) {
+	f := m.rows[s]
+	f.Subject, f.Tasks = s, l
+	m.rows[s] = f
+	return l, nil
+}
+func (m *memStore) DismissDrift(_ context.Context, s Subject, title string) error {
+	f := m.rows[s]
+	f.Name.DriftDismissed = title
+	m.rows[s] = f
 	return nil
 }
 func (m *memStore) Owners(context.Context) ([]int64, error) { return m.owners, nil }
@@ -69,8 +100,17 @@ func (m *memStore) SearchHistory(context.Context, string, Live, time.Time, int) 
 func (m *memStore) MatchHistory(context.Context, string, Live, time.Time, int, int) ([]Match, error) {
 	return nil, nil
 }
-func (m *memStore) RecentTitles(context.Context, Live, time.Time) (map[Subject][]TitleAt, error) {
+func (m *memStore) RecentTitles(context.Context, Live, time.Time, int) (map[Subject][]TitleAt, error) {
 	return nil, nil
+}
+func (m *memStore) SearchTitles(context.Context, string, Live, time.Time, int) ([]HistoryHit, error) {
+	return nil, nil
+}
+func (m *memStore) SearchMeta(context.Context, string, []SessionMeta, int) ([]Subject, error) {
+	return nil, nil
+}
+func (m *memStore) WindowHistory(context.Context, time.Time, time.Time, int) (WindowReport, error) {
+	return WindowReport{}, nil
 }
 
 type fakeSource struct {
@@ -92,13 +132,15 @@ func (f *fakeSource) Tail(_ context.Context, s Subject) ([]Entry, error) {
 }
 
 type fakeSummarizer struct {
+	reqs  []Request
 	calls int
 	err   error
 	sum   Summary
 }
 
-func (f *fakeSummarizer) Summarize(context.Context, int64, string) (Summary, error) {
+func (f *fakeSummarizer) Summarize(_ context.Context, _ int64, req Request) (Summary, error) {
 	f.calls++
+	f.reqs = append(f.reqs, req)
 	return f.sum, f.err
 }
 
@@ -195,7 +237,7 @@ func TestRefreshOwnerSkipsSubjectsThatHaveNotMoved(t *testing.T) {
 	a, b, c := AgentSubject(1), AgentSubject(2), MirrorSubject("sess-c")
 	st.rows[b] = Focus{Subject: b, Title: "old", Source: SourceSummarizer, UpdatedAt: now.Add(-time.Hour), Fingerprint: "x"}
 	st.rows[c] = Focus{Subject: c, Title: "fresh", Source: SourceSummarizer, UpdatedAt: now, Fingerprint: "y"}
-	src.cands = []Candidate{{a, now}, {b, now.Add(-time.Minute)}, {c, now.Add(-time.Hour)}}
+	src.cands = []Candidate{{Subject: a, ActiveAt: now}, {Subject: b, ActiveAt: now.Add(-time.Minute)}, {Subject: c, ActiveAt: now.Add(-time.Hour)}}
 	for _, s := range []Subject{a, b, c} {
 		src.tails[s] = []Entry{{Role: "user", Text: s.String()}}
 	}
@@ -220,8 +262,8 @@ func TestRenderTailBoundsAndFingerprint(t *testing.T) {
 	if fp != Fingerprint(tail) || len(fp) != 64 {
 		t.Fatalf("fingerprint %q", fp)
 	}
-	t1, f1 := RenderTail([]Entry{{"user", "a"}, {"assistant", "b"}})
-	_, f2 := RenderTail([]Entry{{"user", "a"}, {"assistant", "c"}})
+	t1, f1 := RenderTail([]Entry{{Role: "user", Text: "a"}, {Role: "assistant", Text: "b"}})
+	_, f2 := RenderTail([]Entry{{Role: "user", Text: "a"}, {Role: "assistant", Text: "c"}})
 	if t1 != "user: a\nassistant: b" || f1 == f2 {
 		t.Fatalf("t1=%q f1=%s f2=%s", t1, f1, f2)
 	}

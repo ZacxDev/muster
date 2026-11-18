@@ -36,7 +36,7 @@ func TestDispatchWithoutAKickoffCreatesNothing(t *testing.T) {
 
 	if driver.creates != 0 {
 		t.Errorf("Dispatch(kickoff=false) called the driver's Create %d time(s), want 0.\n"+
-			"    The caller's other action is the UI's \"Save for later\", and internal/api's "+
+			"    The caller's other action is a stopped create (POST /api/agents start: false), and internal/api's "+
 			"gate check allows a save on a `gate:` task on the stated grounds that it "+
 			"provisions nothing. Creating here bypasses that gate.\n  transcript: %s",
 			driver.creates, store.transcript())

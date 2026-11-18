@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -17,7 +18,9 @@ import (
 
 // mcpLedger and gatewayOnlyLedger are the two halves of the registry with the
 // connector, flow and plugin stores configured, as the CHIEF sees it;
-// chiefOnlyLedger is the part of it no other agent is offered.
+// chiefOnlyLedger is the part of it no other agent is offered, and
+// workerMCPLedger is the MCP half as a worker sees it: without the chief-only
+// tools, and with the ones the chief is not offered (notChiefToolList).
 //
 // 🔴 BOTH ARE PINNED AS LITERALS AND THE TEST FAILS WHEN EITHER SET GROWS OR
 // SHRINKS. A new tool is a decision about which pods may call it: setting the
@@ -26,21 +29,43 @@ import (
 // is where that decision gets reviewed (agentTool's comment says why the
 // existing tools are gateway-only).
 var (
-	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
-		"browser_flow_request", "browser_flow_status", "task_create_gated", "reply_draft",
-		"fleet_list", "focus_search", "focus_refresh", "sessions_overview",
+	mcpLedger = []string{
+		// The chief's question card in its own chat (owner_ask.go): offered
+		// with no gate, so first in the registry.
+		"ask_owner",
+		"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle",
+		// The chief's routing-rule proposal (routing_rules.go): a card the
+		// owner taps; chief-only.
+		"routing_rule_propose",
+		"fleet_list", "focus_search", "sessions_overview", "session_context", "fleet_report",
 		// The attention queue (attention_tools.go): every agent asks and works the
-		// owner's tasks; the chief alone lists, answers and reads transcripts.
+		// owner's tasks; the chief alone lists the queue.
 		"attention_ask", "attention_wait", "attention_cancel",
 		"tasks_list", "task_get", "task_comment", "task_set_status",
-		"attention_list", "session_transcript"}
+		"attention_list",
+		// A mirrored session's question to the chief (chief_ask_tool.go).
+		"answer_session_question"}
+	workerMCPLedger = []string{"connectors_list", "connector_request", "connector_status",
+		// postgres_query (connector_tools.go): read-only SQL on a postgres
+		// connector the agent holds an approved grant for. On MCP because a
+		// claude-code pod reaches nothing but the connect port, and like the
+		// HTTP proxy it spends only a credential the owner granted THAT agent.
+		"postgres_query",
+		// internal_http_request (connector_tools.go): a call to one service an
+		// admin configured, for an agent holding an approved grant for it. On
+		// MCP for postgres_query's reason; the model picks only a method and a
+		// path, never the destination.
+		"internal_http_request",
+		"browser_flow_request", "browser_flow_status",
+		"attention_ask", "attention_wait", "attention_cancel",
+		"tasks_list", "task_get", "task_comment", "task_set_status"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search", "focus_refresh",
-		"sessions_overview", "attention_list", "session_transcript"}
+	chiefOnlyLedger = []string{"ask_owner", "task_create_gated", "reply_draft", "plugin_message_settle", "routing_rule_propose", "fleet_list", "focus_search",
+		"sessions_overview", "session_context", "fleet_report", "attention_list", "answer_session_question"}
 )
 
 // without returns list minus the names in drop, in order.
@@ -108,7 +133,7 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 		wantMCP []string
 	}{
 		{"chief", g.chief, g.chiefTok, mcpLedger},
-		{"worker", g.worker, g.workerTok, without(mcpLedger, chiefOnlyLedger)},
+		{"worker", g.worker, g.workerTok, workerMCPLedger},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mcpNames, tools := mcpListNames(t, g.connFixture, c.token)
@@ -122,6 +147,12 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 				gateway[d.Name] = normJSON(t, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
 				gatewayNames = append(gatewayNames, d.Name)
 			}
+			// The transport adds one tool of its own (mcp_help.go): muster_help,
+			// last. It is taken off here; every other tool is compared as served.
+			if mcpNames[len(mcpNames)-1] != mcpHelpTool {
+				t.Fatalf("/mcp does not end with %s: %v", mcpHelpTool, mcpNames)
+			}
+			mcpNames, tools = mcpNames[:len(mcpNames)-1], tools[:len(tools)-1]
 			for _, tl := range tools {
 				name, _ := tl["name"].(string)
 				want, ok := gateway[name]
@@ -167,11 +198,24 @@ func TestTheChiefOnlyToolsAreLedgered(t *testing.T) {
 		}
 		return out
 	}
+	// The outcome store, so agent_report_done (gated on it) is in the registry.
+	g.srv.ext.Outcomes = agentoutcome.NewPG(nil)
 	if got := chiefOnly(g.srv); !reflect.DeepEqual(got, chiefOnlyLedger) {
 		t.Errorf("chief-only tools = %v, want exactly %v", got, chiefOnlyLedger)
 	}
-	if got := chiefOnly(newConnFixture(t).srv); len(got) != 0 {
-		t.Errorf("with no plugin store the registry still declares chief-only tools %v", got)
+	var notChief []string
+	for _, tl := range g.srv.agentTools() {
+		if tl.notChief {
+			notChief = append(notChief, tl.def.Name)
+		}
+	}
+	if !reflect.DeepEqual(notChief, notChiefToolList) {
+		t.Errorf("not-chief tools = %v, want exactly %v", notChief, notChiefToolList)
+	}
+	// With no plugin or attention store, the one chief-only tool left is
+	// ask_owner: it needs no store and is offered with no gate (owner_ask.go).
+	if got := chiefOnly(newConnFixture(t).srv); !reflect.DeepEqual(got, []string{askOwnerTool}) {
+		t.Errorf("with no plugin store the registry declares chief-only tools %v, want exactly [ask_owner]", got)
 	}
 	// Behavioural half: each ledgered tool is offered to the chief and to nobody else.
 	names := func(a agents.Agent) map[string]bool {
@@ -205,6 +249,12 @@ func TestEveryRegisteredToolIsDispatched(t *testing.T) {
 			t.Errorf("%s is registered but not dispatched", d.Name)
 		}
 	}
+	// The tools the chief is not offered, as the worker they are offered to.
+	for _, n := range notChiefToolList {
+		if out := g.srv.dispatchAgentTool(g.asOwner, g.worker, n, "{}"); out == toolErr("unknown tool %q", n) {
+			t.Errorf("%s is registered but not dispatched", n)
+		}
+	}
 	// Control: the comparison above can see an unknown tool.
 	if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, "no_such_tool", "{}"); out != toolErr("unknown tool %q", "no_such_tool") {
 		t.Fatalf("control: an unregistered name answered %s", out)
@@ -228,7 +278,9 @@ func TestTheGatewayKindGetsTheConnectorToolsOnItsOwnPath(t *testing.T) {
 	}
 
 	bare := New(nil, AuthConfig{HookToken: connTestHookToken, UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
-	bare.UseExtensions(Extensions{Agents: stubAgentsStore{}})
+	// The agent list is read for the chief-only axis (ask_owner is always in
+	// the registry); this agent is not the chief.
+	bare.UseExtensions(Extensions{Agents: listingAgents{}})
 	var names []string
 	for _, d := range bare.AgentToolDefsFor(context.Background(), agents.Agent{ID: 1, Name: "bare"}) {
 		names = append(names, d.Name)
@@ -300,3 +352,9 @@ func TestTheCloseOutProtocolClaimsNoGitHubToken(t *testing.T) {
 		t.Error("without the store, the prompt points at a tool the agent is not given")
 	}
 }
+
+// listingAgents is stubAgentsStore with an empty agent list: the chief-only
+// axis's read (toolsFor), answered "no chief".
+type listingAgents struct{ stubAgentsStore }
+
+func (listingAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }

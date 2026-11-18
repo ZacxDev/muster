@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/podagent"
 )
@@ -36,18 +37,55 @@ const (
 	failTerminal     = "terminal"      // 502: tmux could not be driven
 	failTranscript   = "transcript"    // 502: the reply could not be read back
 	failAuth         = "auth_failed"   // 502: the model account's credential was rejected
-	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit
+	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit (409 from the limit menu: limitMenuFailure)
 	failBilling      = "billing_error" // 502
-	failTurn         = "turn_failed"   // 502: any other API failure
+	failTurn         = "turn_failed"   // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
 	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
+	// 500: a chat lane's MCP config could not be written (lanes.go "A CHAT
+	// LANE SAYS WHO IT IS"): its CLI is not run without it; nothing was typed.
+	failMCPConfig = "mcp_config"
+
+	// 502: ccd typed /clear for a new conversation (server.go
+	// startNewConversation) and the CLI never confirmed it; the turn was not
+	// typed. Deliberately NOT not_ready, which muster re-sends: /clear was typed.
+	failNewConversation = "new_conversation_unconfirmed"
 )
 
 // codeAwaitingApproval is the `code` of a `busy` refusal for a pane showing a
 // dialog (server.go awaitingApproval).
 const codeAwaitingApproval = "awaiting_approval"
 
-// failure is internal/podagent's typed failure (one wire, shared with hermesd).
+// codeRateLimit is the CLI's own error code for a usage limit (the transcript's
+// error=rate_limit), which classifyAPIError maps to rate_limited.
+const codeRateLimit = "rate_limit"
+
+// limitMenuFailure is the answer for a pane parked on the CLI's usage-limit
+// menu (dialog.go limitMenuShown): type rate_limited, code rate_limit — what
+// muster's gateway marks the account on and fails the agent over on
+// (internal/agentgateway noteFailure keys on the type alone).
+//
+// 🔴 ITS STATUS IS 409, NOT THE 429 OF A RATE-LIMITED TURN, BECAUSE NOTHING WAS
+// TYPED. A 429 is a turn that was pasted and failed; a 409 from ccd is a refusal
+// before any key (`busy` is the other), and muster's "provably unsent" reading
+// (internal/agentgateway.Unsent, internal/agentkickoff runtimeRefusedUnsent)
+// keys on that status, so the message is queued again rather than recorded as
+// possibly delivered — and the retry lands on the agent's next account.
+//
+// The message leads with the CLI's limit line when the screen shows it, so the
+// account pool reads its reset time ("resets Nov 2, 1am (UTC)",
+// internal/ccpool statedReset); without one the pool rests the account for its
+// default cooldown, as for any rate_limited whose message states no reset.
+func limitMenuFailure(lm *limitMenuShown) *failure {
+	msg := "the CLI's pane shows its usage-limit menu (" + lm.what + ")"
+	if lm.limit != "" {
+		msg = lm.limit + " — " + msg
+	}
+	return &failure{Status: http.StatusConflict, Type: failRateLimited, Code: codeRateLimit,
+		Message: msg + "; nothing was typed — the account hit its limit"}
+}
+
+// failure is internal/podagent's typed failure (one wire).
 type failure = podagent.Failure
 
 func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, f) }
@@ -57,7 +95,9 @@ func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, 
 // The CODE is checked first because it is the CLI's own classification and is
 // present even when no HTTP status is (a "Not logged in" record carries
 // error=authentication_failed and no apiErrorStatus). The status is the fallback
-// for codes this list does not know.
+// for codes this list does not know. One check precedes both: a message that is
+// an edge/CDN challenge page (edgeChallengePage) is turn_failed whatever its code
+// and status, because the response did not come from the API.
 //
 // ⚠ OWED: the rate-limit row is backed by real transcript records
 // (error=rate_limit, apiErrorStatus=429, "You've hit your session|weekly limit ·
@@ -76,7 +116,14 @@ func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, 
 func classifyAPIError(e apiError) *failure {
 	f := &failure{Code: e.Code, Upstream: e.Status, Message: e.Message}
 	switch {
-	case e.Code == "rate_limit":
+	case edgeChallengePage(e.Message):
+		// Before every code/status row: the CLI wraps this page as
+		// authentication_failed + 403, and auth_failed is a mark that clears only
+		// when the account's token is replaced. See edgeChallengePage.
+		f.Status, f.Type = http.StatusBadGateway, failTurn
+		f.Message = "an edge/CDN challenge page answered the request, not the model API " +
+			"(the credential was not judged; if it persists, check the egress): " + e.Message
+	case e.Code == codeRateLimit:
 		f.Status, f.Type = http.StatusTooManyRequests, failRateLimited
 	case e.Code == "authentication_failed":
 		f.Status, f.Type = http.StatusBadGateway, failAuth
@@ -93,4 +140,27 @@ func classifyAPIError(e apiError) *failure {
 		f.Message = "the turn failed with no message from the CLI"
 	}
 	return f
+}
+
+// cloudflareChallengeTitle is the <title> of Cloudflare's challenge/block page.
+// The CLI renders a non-JSON error body by its title, so a request the edge
+// challenged reaches ccd as "Please run /login · API Error: 403 Attention
+// Required! | Cloudflare" with error=authentication_failed.
+const cloudflareChallengeTitle = "Attention Required! | Cloudflare"
+
+// edgeChallengePage reports whether the CLI's error message is a CDN challenge
+// page rather than the model API's own answer.
+//
+// 🔴 SUCH A RESPONSE NEVER REACHED THE API, SO IT SAYS NOTHING ABOUT THE
+// CREDENTIAL. The CLI still types it authentication_failed (the status is 403),
+// and auth_failed makes muster mark the account until its token is replaced
+// (internal/ccpool) — so an egress hiccup would take an account out for good,
+// and with it every worker on it. It is classified turn_failed instead, which
+// no consumer marks an account for.
+//
+// The predicate is the page's exact title signature, case-sensitive, not the
+// word "Cloudflare": an API rejection that merely mentions Cloudflare is still
+// the API's answer and keeps its row in classifyAPIError.
+func edgeChallengePage(msg string) bool {
+	return strings.Contains(msg, cloudflareChallengeTitle)
 }

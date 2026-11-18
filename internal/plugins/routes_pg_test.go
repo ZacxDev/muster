@@ -143,9 +143,37 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 	if _, err := w.s.CreateRoute(session(2), worker.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a message not delivered to this agent: %v", err)
 	}
+	// CHANGED with one-way routes (0087): the CHIEF's route of a no_reply
+	// message is no longer refused (it is a one-way route:
+	// TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft); every other
+	// origin still refuses it.
 	noReply := w.delivered(t, "m-noreply", true)
-	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour); !errors.Is(err, ErrNoReply) {
-		t.Fatalf("a no_reply message: %v", err)
+	if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour,
+		RouteOrigin{Via: RouteViaMCP, Host: "h", Session: "s"}); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("a no_reply message routed via the owner's door: %v", err)
+	}
+	// muster's own route by thread takes a QUEUED message, so it is tried on a
+	// queued no_reply one: refused, and the message is left queued (the refusal
+	// rolls back the hand-over to the chief).
+	in := msg("m-noreply-queued")
+	in.NoReply = true
+	queued, _, err := w.s.Submit(plugin(2), w.p.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := RouteOrigin{Via: RouteViaThread, Session: "s", Thread: "thread-1"}
+	if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, queued.ID, target, time.Hour, thread); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("a no_reply message routed via %s: %v; want ErrNoReply", thread, err)
+	}
+	if m, _ := w.s.Message(plugin(2), queued.ID); m.Status != StatusQueued {
+		t.Fatalf("after the refused route via %s the message is %s; want still queued", thread, m.Status)
+	}
+	// CHANGED with reviews answered through HQ: a route by pull request takes
+	// a no_reply message — one-way, with its round, so Route.AnswersViaHQ.
+	pr := RouteOrigin{Via: RouteViaPR, Session: "s", PR: "o/r#1", HeadSHA: "0123456789abcdef0123456789abcdef01234567"}
+	r, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, queued.ID, target, time.Hour, pr)
+	if err != nil || !r.OneWay || r.PRHeadSHA != pr.HeadSHA || !r.AnswersViaHQ() {
+		t.Fatalf("a no_reply message routed via %s: %+v %v; want a one-way review route", pr, r, err)
 	}
 	w.route(t, w.m)
 	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrAlreadyRouted) {
@@ -155,6 +183,92 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 	w.approve(t, w.file(t, inflight, "already answered"))
 	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, inflight.ID, target, time.Hour); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("a message with a reply in flight: %v", err)
+	}
+}
+
+// 🔴 TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft (0087): the chief's
+// route of a no_reply message is ONE-WAY — marked on the row and its audit — its
+// answer is not screened with the deployment's deny words (it never leaves
+// muster) and is finished relayed OWING THE CHIEF the answer
+// (FinishAnswerToChiefRoute, RouteOneWayAnswerOwed), never as a draft. The
+// draft relay still refuses it: RelayRoute fails the route, files no draft,
+// and the schema itself refuses a draft on a one-way route. A replyable
+// message's route is not one-way (control), and FinishAnswerToChiefRoute
+// refuses it.
+func TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft(t *testing.T) {
+	w := newDraftWorld(t)
+	nr := w.delivered(t, "m-oneway", true)
+	r := w.route(t, nr)
+	if !r.OneWay || !r.AnswersToChief() || r.IsRequest() || r.IsTask() || r.MessageID != nr.ID {
+		t.Fatalf("a no_reply message's route: %+v; want one-way, carrying the message", r)
+	}
+	if acts := auditActions(t, w, RouteObject(r.RouteID)); len(acts) != 1 || acts[0] != "session_route.routed" {
+		t.Fatalf("audit: %v", acts)
+	}
+	var oneWayAudited bool
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce((detail->>'one_way')::bool, false)
+		FROM audit_log WHERE object = $1 AND action = 'session_route.routed'`, RouteObject(r.RouteID)).Scan(&oneWayAudited); err != nil || !oneWayAudited {
+		t.Fatalf("the routed audit row does not say one_way (%v)", err)
+	}
+	// Control: a replyable message's route is two-way, and cannot be finished
+	// as the chief's answer.
+	two := w.route(t, w.m)
+	if two.OneWay || two.AnswersToChief() {
+		t.Fatalf("control: a replyable message's route reads one-way: %+v", two)
+	}
+	if _, _, err := w.s.AnswerRoute(session(2), two.RouteID, "Yes."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.s.FinishAnswerToChiefRoute(session(2), two.RouteID); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("control: a replyable route finished as the chief's answer: %v", err)
+	}
+
+	// The answer: not screened against the deny words (it reaches only the chief).
+	w.s.denyWords = []string{"secretbox"}
+	a, fresh, err := w.s.AnswerRoute(session(2), r.RouteID, "Already fixing it on secretbox.")
+	if err != nil || !fresh || a.State != RouteAnswered {
+		t.Fatalf("a one-way answer naming a deny word: %+v %v %v; want it taken (it never leaves muster)", a, fresh, err)
+	}
+	got, err := w.s.FinishAnswerToChiefRoute(session(2), r.RouteID)
+	if err != nil || got.State != RouteRelayed || got.DraftID != nil {
+		t.Fatalf("finish: %+v %v", got, err)
+	}
+	owed, err := w.s.OwesHandBack(session(2), r.RouteID)
+	if err != nil || !owed {
+		t.Fatalf("the answer is not owed to the chief: %v %v", owed, err)
+	}
+	if _, reason, ok, err := w.s.TakeHandBack(session(2), r.RouteID); err != nil || !ok || reason != RouteOneWayAnswerOwed {
+		t.Fatalf("hand-back: %q %v %v; want %q", reason, ok, err, RouteOneWayAnswerOwed)
+	}
+	if again, err := w.s.FinishAnswerToChiefRoute(session(2), r.RouteID); err != nil || again.State != RouteRelayed {
+		t.Fatalf("finish again: %+v %v; want the relayed route as it is", again, err)
+	}
+
+	// The draft relay refuses a one-way route: no draft, the route failed.
+	nr2 := w.delivered(t, "m-oneway-2", true)
+	r2 := w.route(t, nr2)
+	if _, _, err := w.s.AnswerRoute(session(2), r2.RouteID, "On it."); err != nil {
+		t.Fatal(err)
+	}
+	failed, d, err := w.s.RelayRoute(session(2), r2.RouteID, w.chief.Name, true)
+	if !errors.Is(err, ErrRouteClosed) || d.ID != 0 || failed.State != RouteFailed || failed.DraftID != nil {
+		t.Fatalf("RelayRoute of a one-way route: %+v / %+v / %v; want it failed with no draft", failed, d, err)
+	}
+	var drafts int
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM plugin_reply_drafts WHERE message_id = ANY($1)`,
+		[]int64{nr.ID, nr2.ID}).Scan(&drafts); err != nil || drafts != 0 {
+		t.Fatalf("%d drafts exist for the no_reply messages (%v)", drafts, err)
+	}
+	// The schema: a one-way route cannot name a draft (0087's check), whatever
+	// a writer does — with a real draft id (control: the two-way route takes it).
+	other := w.delivered(t, "m-oneway-draft", false)
+	draft := w.file(t, other, "a real draft")
+	sys := authz.System(context.Background())
+	if _, err := w.s.pool.Exec(sys, `UPDATE session_routes SET draft_id = $2 WHERE route_id = $1`, r2.RouteID, draft.ID); err == nil {
+		t.Fatal("a one-way route took a draft_id")
+	}
+	if _, err := w.s.pool.Exec(sys, `UPDATE session_routes SET draft_id = $2 WHERE route_id = $1`, two.RouteID, draft.ID); err != nil {
+		t.Fatalf("control: a two-way route cannot take that draft_id either (%v), so the refusal above proves nothing", err)
 	}
 }
 
@@ -215,5 +329,95 @@ func TestARelayThatCannotBeMadeFailsTheRoute(t *testing.T) {
 	}
 	if got := auditActions(t, w, RouteObject(r.RouteID)); got[len(got)-1] != "session_route.failed" {
 		t.Fatalf("audit = %v", got)
+	}
+}
+
+// TestCreateRouteFromRecordsWhoRoutedIt: an MCP origin's route is the same row
+// and audit action as the chief's, with routed_via "mcp from <host>/<session>".
+// CONTROL: the chief's (zero) origin records no routed_via.
+func TestCreateRouteFromRecordsWhoRoutedIt(t *testing.T) {
+	w := newDraftWorld(t)
+	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
+	via := func(r Route) string {
+		var v string
+		if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce(detail->>'routed_via', '') FROM audit_log
+			WHERE object = $1 AND action = 'session_route.routed'`, RouteObject(r.RouteID)).Scan(&v); err != nil {
+			t.Fatalf("the routed audit row of %s: %v", r.RouteID, err)
+		}
+		return v
+	}
+	r, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour, RouteOrigin{Via: RouteViaMCP, Host: "tower", Session: sid})
+	if err != nil || r.State != RouteRouted || r.AgentID == nil || *r.AgentID != w.chief.ID {
+		t.Fatalf("an MCP route: %+v %v", r, err)
+	}
+	if got := via(r); got != "mcp from tower/"+sid {
+		t.Fatalf("the MCP route's routed_via = %q", got)
+	}
+	if got := via(w.route(t, w.delivered(t, "m-chief", false))); got != "" {
+		t.Fatalf("control, the chief's route: routed_via = %q", got)
+	}
+}
+
+// TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages: newest first, only
+// messages delivered to a chief that may be replied to, each with its LATEST
+// route — not a queued one, not a no_reply one, not another owner's.
+func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
+	w := newDraftWorld(t)
+	noReply := w.delivered(t, "m-noreply", true)
+	queued, _, err := w.s.Submit(plugin(2), w.p.ID, msg("m-queued"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := w.delivered(t, "m-later", false)
+	// A message whose chief was deleted since (agent_id goes NULL): no chief
+	// to file the reply as, so not routable.
+	gone := mustAgent(t, w.dsn, 2, "plg-gone-chief")
+	orphan, _, err := w.s.Submit(plugin(2), w.p.ID, msg("m-orphan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.s.BeginDelivery(plugin(2), orphan.ID, gone.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := w.s.RecordDelivery(plugin(2), orphan.ID, gone.ID, StatusDelivered); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	dbtest.OwnerExec(t, w.dsn, `DELETE FROM agents WHERE id = $1`, gone.ID)
+	_, p3 := mustCreate(t, w.s, 3, "example-inbox")
+	chief3 := mustAgent(t, w.dsn, 3, "plg-chief-3")
+	theirs, _, err := w.s.Submit(plugin(3), p3.ID, msg("m-theirs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.s.BeginDelivery(plugin(3), theirs.ID, chief3.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	first := w.route(t, w.m)
+	if _, err := w.s.FailRoute(session(2), first.RouteID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	second := w.route(t, w.m)
+
+	got, err := w.s.RoutableMessages(session(2), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := w.s.Message(session(2), orphan.ID); m.AgentID != nil || m.Status != StatusDelivered {
+		t.Fatalf("precondition: the orphan is %+v", m)
+	}
+	if len(got) != 2 || got[0].Message.ID != later.ID || got[1].Message.ID != w.m.ID {
+		t.Fatalf("RoutableMessages = %+v; want exactly [%d %d] (no_reply %d, queued %d, chief-less %d, another owner's %d left out)",
+			got, later.ID, w.m.ID, noReply.ID, queued.ID, orphan.ID, theirs.ID)
+	}
+	if got[0].Route.RouteID != "" || got[1].Route.RouteID != second.RouteID || got[1].Route.State != RouteRouted ||
+		got[1].Route.TargetKey != target.Key || got[1].PluginLabel != w.p.Label {
+		t.Fatalf("the routes: %+v / %+v", got[0].Route, got[1].Route)
+	}
+	if one, err := w.s.RoutableMessages(session(2), 1); err != nil || len(one) != 1 || one[0].Message.ID != later.ID {
+		t.Fatalf("limit 1: %+v %v", one, err)
+	}
+	// Another owner's view is theirs alone.
+	if g3, err := w.s.RoutableMessages(session(3), 10); err != nil || len(g3) != 1 || g3[0].Message.ID != theirs.ID {
+		t.Fatalf("owner 3's RoutableMessages = %+v %v", g3, err)
 	}
 }

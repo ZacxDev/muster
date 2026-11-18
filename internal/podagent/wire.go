@@ -12,8 +12,8 @@ import (
 
 // muster's agent wire as an in-pod supervisor answers it: the OpenAI-Responses
 // shape muster's client parses (internal/agents.parseResponsesSSE and
-// RuntimeError). ccd and hermesd both answer with this one writer; each drives
-// it with muster's own client in its contract test.
+// RuntimeError). ccd answers with this one writer, and drives it with
+// muster's own client in its contract test.
 //
 // 🔴 A FAILED TURN IS ALWAYS A NON-200 WITH A JSON BODY NAMING A STABLE TYPE —
 // NEVER A 200 WITH AN EMPTY REPLY. muster's client (RunToollessTurn) assembles
@@ -69,6 +69,24 @@ type responseObject struct {
 	Object string       `json:"object"`
 	Status string       `json:"status"`
 	Output []outputItem `json:"output"`
+	// Usage is the turn's tokens (WriteResponseUsage), absent when unknown.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is a settled turn's token usage, in the Anthropic split muster's
+// client reads (internal/agents turnusage.go): uncached input, output, cache
+// read and cache creation, summed over the turn's API calls.
+type Usage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	// ContextTokens is the context the turn's LAST model call was sent: its
+	// input + cache read + cache creation. The fields above are the turn's
+	// totals, summed over every call, so with tool calls they count the
+	// conversation once per call; this is what the next call starts from.
+	// nil: not reported (a runtime that predates it), and omitted on the wire.
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
 }
 
 // NativeToolItem is one tool call the agent ran itself during the turn,
@@ -119,7 +137,14 @@ func buildResponse(id string, items []ReplyItem) responseObject {
 // own message item; muster joins items with a blank line); tool calls are
 // streamed as native tool items.
 func WriteResponse(w http.ResponseWriter, id string, items []ReplyItem, stream bool) {
+	WriteResponseUsage(w, id, items, nil, stream)
+}
+
+// WriteResponseUsage is WriteResponse with the turn's token usage on
+// response.completed's response (nil: none, as WriteResponse writes).
+func WriteResponseUsage(w http.ResponseWriter, id string, items []ReplyItem, usage *Usage, stream bool) {
 	resp := buildResponse(id, items)
+	resp.Usage = usage
 	if !stream {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
@@ -133,7 +158,7 @@ func WriteResponse(w http.ResponseWriter, id string, items []ReplyItem, stream b
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b)
 	}
 	inProgress := resp
-	inProgress.Status, inProgress.Output = "in_progress", []outputItem{}
+	inProgress.Status, inProgress.Output, inProgress.Usage = "in_progress", []outputItem{}, nil
 	emit("response.created", map[string]any{"type": "response.created", "response": inProgress})
 	// Text deltas and tool items in turn order. A text item's output_index is
 	// its index in resp.Output (the completed event's); tool items take the

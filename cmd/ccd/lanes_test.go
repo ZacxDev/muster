@@ -21,6 +21,26 @@ func TestTheLaneHeadersAreMustersHeaders(t *testing.T) {
 	if headerCCSession != agents.HeaderCCSession || headerCCModel != agents.HeaderCCModel {
 		t.Fatalf("ccd reads %q/%q, muster sends %q/%q", headerCCSession, headerCCModel, agents.HeaderCCSession, agents.HeaderCCModel)
 	}
+	if headerCCEphemeral != agents.HeaderCCEphemeral {
+		t.Fatalf("ccd reads a throwaway check as %q, muster marks it %q", headerCCEphemeral, agents.HeaderCCEphemeral)
+	}
+	if headerCCPinned != agents.HeaderCCPinned {
+		t.Fatalf("ccd reads a pinned lane as %q, muster pins one with %q", headerCCPinned, agents.HeaderCCPinned)
+	}
+	if headerCCNewConversation != agents.HeaderCCNewConversation {
+		t.Fatalf("ccd reads a new conversation as %q, muster asks for one with %q", headerCCNewConversation, agents.HeaderCCNewConversation)
+	}
+	if headerCCNewConversationSession != agents.HeaderCCNewConversationSession {
+		t.Fatalf("ccd names a new conversation in %q, muster reads %q", headerCCNewConversationSession, agents.HeaderCCNewConversationSession)
+	}
+}
+
+// TestTheCapacityFailureIsMusters: the type of ccd's lanes-full refusal is the
+// one muster reads as "not sent, retry later" (agentgateway.LanesFull).
+func TestTheCapacityFailureIsMusters(t *testing.T) {
+	if failCapacity != agents.FailureCapacity {
+		t.Fatalf("ccd answers %q, muster reads %q", failCapacity, agents.FailureCapacity)
+	}
 }
 
 // TestTheLaneModelSetIsMusters: every model muster accepts for a claude-code

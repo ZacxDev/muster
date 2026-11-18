@@ -17,6 +17,10 @@ const (
 	UnsentRejected       = "rejected"     // the runtime refused the request's shape (a typed 400)
 	UnsentNeverConnected = "never_connected"
 	UnsentUnresolved     = "unresolved" // Resolve failed: no runtime was contacted
+	// UnsentCapacity: ccd's typed 503 `capacity` (LanesFull) — every Claude
+	// Code CLI it may run is held by a turn, so it started none and pasted
+	// nothing for this one.
+	UnsentCapacity = agents.FailureCapacity
 )
 
 // unresolved marks a [Gateway.Resolve] failure, which happens before any runtime
@@ -40,6 +44,11 @@ func (u unresolved) Unwrap() error { return u.err }
 //     400 (`bad_request`, `invalid_input`) — are each answered before it pastes anything. Only
 //     its typed body sets Type, so an untyped 409 or 503 from anything else is NOT read as
 //     "nothing was sent";
+//   - a 409 `rate_limited`: ccd's refusal from a pane parked on the CLI's usage-limit menu
+//     (cmd/ccd failure.go limitMenuFailure), also before anything is typed. It reads as
+//     [UnsentBusy], so a deliverer queues the message again as it did when ccd answered that
+//     menu `busy`; the gateway has already marked the account and failed the agent over.
+//     A rate-limited turn that WAS pasted is a 429 and is not read here;
 //   - a dial error is a connection that was never opened, so no byte of the request left;
 //   - a [Gateway.Resolve] failure, from a turn that resolves its agent itself, contacted nothing.
 //
@@ -69,10 +78,18 @@ func Unsent(err error) string {
 	var rt *agents.RuntimeError
 	if errors.As(err, &rt) {
 		switch {
-		case rt.Status == http.StatusConflict && rt.Type == "busy":
+		case rt.Status == http.StatusConflict && (rt.Type == "busy" || rt.Type == "rate_limited"):
 			return UnsentBusy
 		case rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready":
 			return UnsentNotReady
+		// 🔴 A TYPED `capacity` IS PRE-SEND (PR #609 round 1 F1). ccd answers it
+		// from laneFor → lanes.acquireIn, which returns before a lane is made and
+		// before runTurn — the only code that pastes — runs (cmd/ccd
+		// handleResponses; TestACapacityRefusalPastesNothing pins it). Read as
+		// "may have been sent", a plugin delivery to a chief whose primary is a
+		// lane settled unconfirmed and was never sent; now it is queued again.
+		case rt.Status == http.StatusServiceUnavailable && rt.Type == agents.FailureCapacity:
+			return UnsentCapacity
 		case rt.Status == http.StatusUnauthorized && rt.Type == "unauthorized":
 			return UnsentUnauthorized
 		case rt.Status == http.StatusBadRequest && (rt.Type == "bad_request" || rt.Type == "invalid_input"):
@@ -85,4 +102,50 @@ func Unsent(err error) string {
 		return UnsentNeverConnected
 	}
 	return ""
+}
+
+// TurnInFlight reports whether err is the runtime's typed 409 `busy` refusal —
+// another turn holds the session (or, with code [CodeAwaitingApproval], its pane
+// shows a dialog) and nothing was typed — and returns the refusal's code.
+//
+// It is the `busy` HALF of [UnsentBusy], read through [Unsent] so a tool turn's
+// request 2+ is never mistaken for one. The other half, a 409 `rate_limited`
+// (the CLI's usage-limit menu), is deliberately NOT a turn in flight: waiting for
+// it to clear is waiting for a reset hours away, not for a turn to end.
+//
+// A chat turn the owner typed waits on this and sends again (internal/api
+// chat_busy.go); that is the one reader that must tell the two halves apart.
+func TurnInFlight(err error) (code string, ok bool) {
+	if Unsent(err) != UnsentBusy {
+		return "", false
+	}
+	var rt *agents.RuntimeError
+	if !errors.As(err, &rt) || rt.Type != "busy" {
+		return "", false
+	}
+	return rt.Code, true
+}
+
+// CodeAwaitingApproval is the `code` of a `busy` refusal whose pane shows a
+// dialog (cmd/ccd awaitingApproval): the session is not mid-turn, it is waiting
+// for someone to answer a prompt in the terminal.
+const CodeAwaitingApproval = "awaiting_approval"
+
+// LanesFull reports whether err is ccd's typed 503 `capacity` refusal
+// (agents.FailureCapacity): the turn named an explicit session, its CLI was
+// not running, and every CLI ccd may run at once is held by a turn. ccd answers
+// it before starting a CLI or pasting anything, so it too proves the turn was
+// not sent.
+//
+// It is also one of [Unsent]'s reasons (UnsentCapacity, PR #609 round 1 F1):
+// every unsolicited deliverer — a plugin delivery, an answer's delivery, the
+// memo relay — queues the turn again rather than settling it unconfirmed. A
+// caller that must tell capacity from the other reasons (the stall check, which
+// skips rather than retries: chief_nudge.go) asks this first.
+func LanesFull(err error) bool {
+	if err == nil || agents.PastFirstRequest(err) {
+		return false
+	}
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && rt.Status == http.StatusServiceUnavailable && rt.Type == agents.FailureCapacity
 }

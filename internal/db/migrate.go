@@ -269,3 +269,4 @@ func loadMigrations() ([]migration, error) {
 	sortMigrations(out)
 	return out, nil
 }
+

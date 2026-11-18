@@ -72,9 +72,67 @@ import (
 // resumes it. When no lane is free to stop the new one is refused (503
 // capacity), never queued.
 //
+// 🔴 A CHECK LANE IS THROWAWAY (X-Muster-CC-Ephemeral: 1 — muster sets it on a
+// chief's stall check, internal/api nudgeRoute). Its key is one decision's, so
+// its conversation is never wanted again:
+//
+//   - its CLI is STOPPED, and its slot freed, as soon as the last turn holding
+//     it releases it — whatever the turn's outcome, a refusal before the paste
+//     included (lanes.release). Nothing keeps an idle check CLI resident;
+//   - it NEVER takes an operator lane's slot: at the cap a check may stop only
+//     another check lane (pickEvictLocked); failing that it is refused with the
+//     same typed 503 capacity, which muster reads as "not sent, retry next pass"
+//     (agentgateway.LanesFull);
+//   - an operator lane at the cap may stop an idle check lane like any other
+//     (with the first rule there is none to stop).
+//
+// Its transcript stays on disk (a few KiB a check); nothing deletes it.
+//
+// 🔴 A CHAT LANE SAYS WHO IT IS (X-Muster-CC-MCP-Session: 1 — muster sets it
+// on an officer's chat lane only, internal/api officerChatTurnContext). Every
+// CLI in the pod calls muster's MCP server with the agent's one token, so a
+// lane's call is otherwise indistinguishable from the primary's — and muster
+// must charge a chat lane's reads to its chat, and refuse it queue work. Such a
+// lane's CLI starts with `--mcp-config <file> --strict-mcp-config`: the file
+// (laneMCPConfig, written on every start) is the user-scope mcpServers `ccd
+// seed` registered, with muster's entry carrying X-Muster-CC-Session: <the
+// lane's key> on every request. Fixed for the lane's life. Every other lane
+// (the chief's, a job's) starts exactly as before.
+//
+// 🔴 A CHECK LANE HAS NO TOOLS (X-Muster-CC-Toolless: 1 — muster sets it on the
+// same route as ephemeral, internal/api withRoute). A check's prompt quotes
+// OTHER sessions' transcripts; fencing them as "data, not instructions" is
+// prose, and a CLI with the chief's tools (Bash, Edit, WebFetch, muster's MCP
+// route_to_session/agent_dispatch/…) could be steered into calling one. So the
+// lane's CLI is started with toollessArgs: no built-in tool and no MCP server,
+// and its only possible effect is its text reply, which muster parses and
+// validates. Hooks are not tools: SessionStart, UserPromptSubmit and Stop still
+// reach ccd, so the turn is driven exactly as any lane's. Fixed for the lane's
+// life like ephemeral; operator lanes and the primary never carry the flags.
+//
 // A lane at a permission prompt shows on the agent's "awaiting approval" badge
 // like the primary (blockedReporter), and one left there past stuckAfter may be
 // stopped for a new session (pickEvictLocked).
+//
+// 🔴 THE PINNED LANE (X-Muster-CC-Pinned: 1 — muster sets it on every turn of
+// the chief's PRIMARY chat when that chat is a lane, internal/api withRoute).
+// Every delivery muster makes to the chief goes to its primary, so its CLI must
+// never be the one stopped for an owner's side chat, nor refused at the cap:
+//
+//   - it is never evicted (pickEvictLocked skips it);
+//   - it does not count against maxLanes: a pinned lane is started whatever the
+//     cap, and an unpinned one is refused or evicts only among the unpinned;
+//   - ONE lane is pinned at a time — a turn that pins its lane unpins every
+//     other (after a fresh primary the old primary's lane becomes an ordinary
+//     one) — and an unpinning that leaves more unpinned lanes than the cap
+//     stops the least recently used idle ones until it does not (trimLocked),
+//     as does every release. So the cap is exceeded by the ONE pinned CLI, and
+//     beyond that only while every excess lane is held by a turn: each is
+//     stopped as soon as the turn holding it releases it (PR #609 round 2 N1 —
+//     before, each pin move left one more CLI running for good);
+//   - pinning is the LATEST turn's word, not fixed for the lane's life: a turn
+//     without the header unpins its lane (an old primary unarchived and talked
+//     to as a side chat).
 //
 // ⚠ WHAT A LANE DOES NOT HAVE, STATED: /healthz's ok is the primary's alone — a
 // lane that crash-loops is dropped and restarted by its next turn, it does not
@@ -93,7 +151,79 @@ const (
 	// lane's CLI works in — so muster can tell a ccd that honoured
 	// headerCCWorkdir from one that predates it.
 	headerCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
+	// headerCCEphemeral: "1" marks the lane a THROWAWAY check lane (see above).
+	// Read only on a turn that names a session (headerCCSession); any other
+	// value is an ordinary lane.
+	headerCCEphemeral = "X-Muster-CC-Ephemeral"
+	// headerCCToolless: "1" starts the lane's CLI with NO tools (see "A CHECK
+	// LANE HAS NO TOOLS" above). Read only on a turn that names a session; any
+	// other value is a lane with the CLI's usual tools.
+	headerCCToolless = "X-Muster-CC-Toolless"
+	// headerCCMCPSession: "1" starts the lane's CLI with an MCP config of its
+	// own naming its session (see "A CHAT LANE SAYS WHO IT IS" above). Read
+	// only on a turn that names a session; any other value changes nothing.
+	headerCCMCPSession = "X-Muster-CC-MCP-Session"
+	// headerCCLaneSecret: a chat lane's secret, required beside
+	// headerCCMCPSession and written into its MCP config, so its calls prove
+	// they are the lane's (internal/agents HeaderCCLaneSecret).
+	headerCCLaneSecret = "X-Muster-CC-Lane-Secret"
+	// headerCCPinned: "1" pins the lane — the chief's PRIMARY chat (see "THE
+	// PINNED LANE" above). Read only on a turn that names a session.
+	headerCCPinned = "X-Muster-CC-Pinned"
+	// headerCCPromptAccepted: "1" on the 103 informational answer ccd writes
+	// the moment the CLI accepted the pasted prompt (its UserPromptSubmit
+	// matched it) — muster's agents.HeaderCCPromptAccepted, which marks an
+	// owner's turn in flight from then until the turn's answer.
+	headerCCPromptAccepted = "X-Muster-CC-Prompt-Accepted"
+	// headerCCNewConversation: "1" on a turn of the PRIMARY (no
+	// headerCCSession) starts a new conversation in its CLI before the turn
+	// is typed (server.startNewConversation). Ignored on a lane's turn: an
+	// explicit session is a conversation of its own already.
+	headerCCNewConversation = "X-Muster-CC-New-Conversation"
+	// headerCCNewConversationSession: ccd's answer to a turn carrying
+	// headerCCNewConversation — the session id of the new conversation the
+	// turn was typed into, on the 103 and the final answer (muster's
+	// agents.HeaderCCNewConversationSession). Its absence is how muster tells
+	// a ccd that predates the request header.
+	headerCCNewConversationSession = "X-Muster-CC-New-Conversation-Session"
 )
+
+// toollessArgs are the flags a tool-less lane's CLI starts with: no built-in
+// tool (`--tools=`, the one-token spelling of the CLI's documented `--tools ""`
+// — "Use "" to disable all tools") and no MCP server (`--strict-mcp-config`
+// with no --mcp-config: only the servers --mcp-config names are loaded, which
+// is none, so the user-scope muster server `ccd seed` registers in .claude.json
+// and any project .mcp.json are not even started).
+//
+// 🔴 BOTH ARE NEEDED; NEITHER IS A DENY-LIST. `--tools` governs the BUILT-IN set
+// only: measured on the pinned CLI (2.1.296), `--tools=` alone still starts
+// every configured MCP server, and `--strict-mcp-config` alone keeps all 24
+// built-ins. Together the CLI's init reports tools [] and mcp_servers [], no
+// MCP server process is spawned, and SessionStart/UserPromptSubmit hooks still
+// fire (docs/configuration.md, "Tool-less check lanes"). Both are allow-lists
+// that are empty, so a tool added to a later CLI is not in them.
+//
+// One token, not `--tools ""`: an empty argv element must survive tmux
+// new-session and env intact, and this spelling does not depend on it.
+var toollessArgs = []string{"--tools=", "--strict-mcp-config"}
+
+// laneMode is what a turn's headers say about its lane beyond model and
+// workdir. Both are fixed for the lane's life (acquireIn refuses a turn that
+// disagrees with the running lane).
+type laneMode struct {
+	// ephemeral: headerCCEphemeral — a throwaway check lane.
+	ephemeral bool
+	// toolless: headerCCToolless — the CLI starts with toollessArgs.
+	toolless bool
+	// mcpSession: headerCCMCPSession — the CLI starts with laneMCPConfig.
+	mcpSession bool
+	// mcpSecret: headerCCLaneSecret — the lane's secret, which its MCP config
+	// sends muster (required with mcpSession).
+	mcpSecret string
+	// pinned: headerCCPinned — the chief's primary (see "THE PINNED LANE").
+	// Unlike the two above it is the latest turn's word (setPinnedLocked).
+	pinned bool
+}
 
 // laneModelPattern is what a lane's --model may be: an alias ("opus") or a model
 // id, optionally with the CLI's "[1m]" suffix. It is argv, so it is a closed set.
@@ -101,7 +231,14 @@ const (
 var laneModelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$`)
 
 // defaultMaxLanes is CCD_MAX_SESSIONS's default (see the memory note above).
+// An officer's chat sessions default to it (internal/officers
+// DefaultChatSessions; TestTheChatSessionDefaultIsCcdsLaneDefault).
 const defaultMaxLanes = 3
+
+// envMaxLanes is the lane cap's variable. A WIRE CONTRACT with muster's
+// agentspec.EnvCCDMaxSessions, which sets it on an officer pod that declares
+// chat_sessions (TestTheChatSessionDefaultIsCcdsLaneDefault).
+const envMaxLanes = "CCD_MAX_SESSIONS"
 
 // laneStartTimeout bounds how long a lane's first turn waits for its new CLI's
 // SessionStart. The CLI is starting because of THIS turn, so a not_ready on the
@@ -368,7 +505,28 @@ type lane struct {
 	// workdir is the directory the lane's CLI works in: a job's worktree
 	// (X-Muster-CC-Workdir), or "" for ccd's own workspace. Like the model it is
 	// fixed for the lane's life.
-	workdir  string
+	workdir string
+	// ephemeral: a throwaway check lane (headerCCEphemeral), stopped when its
+	// last turn releases it and never the reason an operator lane is stopped.
+	// Fixed for the lane's life.
+	ephemeral bool
+	// toolless: the CLI starts with toollessArgs (headerCCToolless). Fixed for
+	// the lane's life; set before its supervisor first builds argv.
+	toolless bool
+	// mcpSession: the CLI starts with an MCP config naming its session
+	// (headerCCMCPSession, laneMCPConfig). Fixed for the lane's life, like
+	// toolless; mcpSecret with it.
+	mcpSession bool
+	mcpSecret  string
+	// mcpPath is the lane's written MCP config (removed when it stops), and
+	// mcpBroken is set when a (re)start could not write it: the CLI then runs
+	// with no MCP server, and the lane's next turn is refused (and the lane
+	// stopped) rather than answered without tools. Guarded by startMu.
+	mcpPath   string
+	mcpBroken bool
+	// pinned: the chief's primary (headerCCPinned): never evicted, not counted
+	// against the cap. Guarded by lanes.mu; set by setPinnedLocked.
+	pinned   bool
 	srv      *server
 	sup      *supervisor
 	term     laneTerminal
@@ -388,6 +546,11 @@ type lane struct {
 	// lanes.mu, the lock eviction chooses under, so a turn that has its lane
 	// cannot lose it.
 	reserved int
+	// startReturned: the CLI's `tmux new-session` has returned (laneStartWatch);
+	// stoppedMidStart: stop ran before it had. Guarded by startMu.
+	startMu         sync.Mutex
+	startReturned   bool
+	stoppedMidStart bool
 }
 
 // lanes is the set of running lanes.
@@ -412,10 +575,19 @@ type lanes struct {
 
 	mu  sync.Mutex
 	set map[string]*lane // by laneID
+
+	// runs counts the lanes' run goroutines still going, stopped or not, so a
+	// test can wait for every one of them to end (stopAll) before the next
+	// test swaps the global logger they write to.
+	runs sync.WaitGroup
 }
 
 // errLanesFull: every lane is mid-turn and the cap is reached.
 var errLanesFull = errors.New("every Claude Code session ccd may run at once is mid-turn")
+
+// errChecksFull: a throwaway check found the cap reached with no other check
+// lane to stop (pickEvictLocked).
+var errChecksFull = errors.New("every Claude Code session ccd may run at once is in use")
 
 // dir is the directory ln's CLI works in.
 func (l *lanes) dir(ln *lane) string {
@@ -432,9 +604,9 @@ func (l *lanes) get(id string) *lane {
 	return l.set[id]
 }
 
-// acquire is acquireIn in ccd's own workspace.
+// acquire is acquireIn in ccd's own workspace, for an operator lane.
 func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure) {
-	return l.acquireIn(ctx, key, model, "")
+	return l.acquireIn(ctx, key, model, "", laneMode{})
 }
 
 // acquireIn returns key's lane, starting it in workdir ("" = ccd's workspace;
@@ -442,7 +614,12 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 // when at the cap — if it is not running. model and workdir must match a
 // running lane's. The lane comes back RESERVED (lane.reserved): the caller
 // releases it once its turn is over.
-func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lane, *failure) {
+//
+// mode.ephemeral marks a throwaway check lane: at the cap it may stop only
+// another check lane, never an operator's (pickEvictLocked), and release stops
+// it. mode.toolless starts its CLI with toollessArgs.
+func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode laneMode) (*lane, *failure) {
+	ephemeral := mode.ephemeral
 	id := laneID(key)
 	l.mu.Lock()
 	if ln, ok := l.set[id]; ok {
@@ -456,22 +633,71 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lan
 			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
 				Message: fmt.Sprintf("session %q works in %q, not %q: a session's working directory is fixed", key, l.dir(ln), workdir)}
 		}
+		if ln.ephemeral != ephemeral {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q is ephemeral=%v, not %v: whether a session is a throwaway check is fixed", key, ln.ephemeral, ephemeral)}
+		}
+		// 🔴 A running lane's tools are what it was started with: a turn asking
+		// for a tool-less CLI must never be pasted into one that has tools.
+		if ln.toolless != mode.toolless {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q is toolless=%v, not %v: whether a session's CLI has tools is fixed", key, ln.toolless, mode.toolless)}
+		}
+		if ln.mcpSession != mode.mcpSession || ln.mcpSecret != mode.mcpSecret {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q is mcp_session=%v with its own lane secret, not this turn's: whether a session's MCP calls name it, and its secret, are fixed", key, ln.mcpSession)}
+		}
+		if ln.mcpConfigBroken() {
+			// Its CLI is running with no MCP server: never answer a chat on it.
+			delete(l.set, id)
+			l.mu.Unlock()
+			go ln.stop()
+			return nil, &failure{Status: http.StatusInternalServerError, Type: failMCPConfig,
+				Message: fmt.Sprintf("session %q: its MCP config could not be written when its CLI restarted; the lane is stopped, and the next turn starts it again", key)}
+		}
 		ln.reserved++
+		l.setPinnedLocked(ln, mode.pinned)
 		l.mu.Unlock()
 		return ln, nil
 	}
+	if mode.mcpSession {
+		// 🔴 A CHAT LANE'S CONFIG IS WRITTEN BEFORE ITS CLI IS STARTED (and
+		// before another lane is evicted for it): a lane that would start with
+		// no MCP server is refused, never run.
+		if mode.mcpSecret == "" {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q asks for an MCP config naming it (%s) without its lane secret (%s)", key, headerCCMCPSession, headerCCLaneSecret)}
+		}
+		if _, err := writeLaneMCPConfig(l.configDir, id, key, mode.mcpSecret); err != nil {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusInternalServerError, Type: failMCPConfig,
+				Message: fmt.Sprintf("session %q: its MCP config could not be written: %v", key, err)}
+		}
+	}
 	var evict *lane
 	stuck := false
-	if len(l.set) >= l.max {
-		evict, stuck = l.pickEvictLocked()
+	// A pinned lane (the chief's primary) is started whatever the cap, and is
+	// not counted against it.
+	if !mode.pinned && l.unpinnedLocked() >= l.max {
+		evict, stuck = l.pickEvictLocked(ephemeral)
 		if evict == nil {
 			l.mu.Unlock()
+			if ephemeral {
+				return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
+					Message: fmt.Sprintf("%v (%d; CCD_MAX_SESSIONS), and a throwaway check never stops a session's CLI — retry later", errChecksFull, l.max)}
+			}
 			return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
 				Message: fmt.Sprintf("%v (%d; CCD_MAX_SESSIONS) — retry when one finishes", errLanesFull, l.max)}
 		}
 		delete(l.set, evict.id)
 	}
 	ln := l.newLane(id, key, model, workdir)
+	ln.ephemeral, ln.toolless, ln.mcpSession, ln.mcpSecret = ephemeral, mode.toolless, mode.mcpSession, mode.mcpSecret
+	l.setPinnedLocked(ln, mode.pinned)
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ln.cancel = cancel
@@ -489,8 +715,60 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lan
 		}
 		evict.stop()
 	}
-	go ln.run(runCtx, l)
+	l.runs.Add(1)
+	go func() {
+		defer l.runs.Done()
+		ln.run(runCtx, l)
+	}()
 	return ln, nil
+}
+
+// unpinnedLocked is how many running lanes count against maxLanes: every one
+// but the pinned. Caller holds l.mu.
+func (l *lanes) unpinnedLocked() int {
+	n := 0
+	for _, ln := range l.set {
+		if !ln.pinned {
+			n++
+		}
+	}
+	return n
+}
+
+// setPinnedLocked records the latest turn's word on whether ln is pinned: a
+// pin unpins every other lane (one pinned lane at a time). Caller holds l.mu.
+func (l *lanes) setPinnedLocked(ln *lane, pinned bool) {
+	unpinned := ln.pinned && !pinned
+	if pinned {
+		for _, o := range l.set {
+			if o != ln && o.pinned {
+				log.Printf("ccd: session %s (%s) is no longer pinned: %s (%s) is", o.id, o.key, ln.id, ln.key)
+				o.pinned = false
+				unpinned = true
+			}
+		}
+	}
+	ln.pinned = pinned
+	if unpinned {
+		l.trimLocked()
+	}
+}
+
+// trimLocked stops the least recently used idle unpinned lanes no turn holds
+// while more unpinned lanes run than the cap allows — the excess an unpinning
+// leaves (setPinnedLocked). A lane a turn holds is never taken
+// (pickEvictLocked); release trims again once its turn is over. Caller holds
+// l.mu; each stop is lane.stop's bounded teardown, as release's is.
+func (l *lanes) trimLocked() {
+	for l.max > 0 && l.unpinnedLocked() > l.max {
+		ev, _ := l.pickEvictLocked(false)
+		if ev == nil {
+			return
+		}
+		delete(l.set, ev.id)
+		log.Printf("ccd: stopping idle session %s (%s): more sessions run than the cap (%d) since the pinned primary moved", ev.id, ev.key, l.max)
+		ev.stop()
+	}
 }
 
 // stuckLaneAfter is stuckAfter's default.
@@ -514,8 +792,16 @@ const stuckLaneAfter = 10 * time.Minute
 // paste into it would answer the dialog rather than reach the model.
 //
 // ⚠ A LANE A TURN STILL HOLDS IS NEVER TAKEN, stuck or not (lane.reserved).
-func (l *lanes) pickEvictLocked() (evict *lane, stuck bool) {
+//
+// 🔴 FOR A CHECK (forCheck), ONLY ANOTHER CHECK LANE IS A CANDIDATE: a throwaway
+// stall check is never the reason an operator's session loses its CLI. With no
+// check lane to take, the caller refuses the check (503 capacity).
+func (l *lanes) pickEvictLocked(forCheck bool) (evict *lane, stuck bool) {
 	for _, ln := range l.set {
+		// The pinned lane (the chief's primary) is never stopped for another.
+		if ln.pinned || forCheck && !ln.ephemeral {
+			continue
+		}
 		if ln.reserved == 0 && ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
 			evict = ln
 		}
@@ -525,7 +811,7 @@ func (l *lanes) pickEvictLocked() (evict *lane, stuck bool) {
 	}
 	var oldest time.Time
 	for _, ln := range l.set {
-		if ln.reserved != 0 {
+		if ln.pinned || ln.reserved != 0 || forCheck && !ln.ephemeral {
 			continue
 		}
 		since, waiting := ln.srv.awaitingSince()
@@ -543,13 +829,33 @@ func (l *lanes) stuckAfterOr() time.Duration {
 	return stuckLaneAfter
 }
 
-// release ends one reservation acquire took.
+// release ends one reservation acquire took — and, for a throwaway check lane
+// no other turn holds, stops its CLI and frees its slot.
+//
+// 🔴 THE CHECK LANE IS STOPPED UNDER l.mu, out of the set AND killed in one
+// critical section. Its tmux session is killed BY NAME, and a lane started again
+// for the same key has the same name: removed from the set first and killed
+// after the lock, a turn for that key arriving in between would start a new CLI
+// that the kill then took down (the hazard lane.run's ownership check names).
+// Under the lock such a turn waits, then starts a fresh lane. The kill is two
+// tmux commands bounded by 5s (lane.stop) — the same teardown an eviction does.
+//
+// ⚠ ONLY THE LANE THIS RELEASE HOLDS (l.set[ln.id] == ln): one whose CLI ended
+// on its own was already dropped and killed by lane.run, and a replacement for
+// the key is a different lane with turns of its own.
 func (l *lanes) release(ln *lane) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if ln.reserved > 0 {
 		ln.reserved--
 	}
-	l.mu.Unlock()
+	if ln.ephemeral && ln.reserved == 0 && l.set[ln.id] == ln {
+		delete(l.set, ln.id)
+		log.Printf("ccd: stopping check session %s (%s): its turn is over and a check's CLI is never kept", ln.id, ln.key)
+		ln.stop()
+	}
+	// An excess an unpinning left while every candidate was held (trimLocked).
+	l.trimLocked()
 }
 
 func (l *lanes) newLane(id, key, model, workdir string) *lane {
@@ -558,7 +864,9 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		dir = workdir
 	}
 	term := l.newTerm("cc-" + id)
-	sup := newSupervisor(term, l.bin, l.configDir, dir)
+	ln := &lane{id: id, key: key, model: model, workdir: workdir, term: term,
+		done: make(chan struct{}), lastUsed: l.now()}
+	sup := newSupervisor(laneStartWatch{laneTerminal: term, ln: ln}, l.bin, l.configDir, dir)
 	if l.tweak != nil {
 		l.tweak(sup)
 	}
@@ -573,6 +881,28 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		if workdir != "" && l.jobBypass {
 			argv = append(argv, "--permission-mode", jobPermissionBypass)
 		}
+		// 🔴 A CHECK LANE'S CLI HAS NO TOOLS (see "A CHECK LANE HAS NO TOOLS").
+		// Read on every start, so a restart or a resume is tool-less too.
+		if ln.toolless {
+			argv = append(argv, toollessArgs...)
+		} else if ln.mcpSession {
+			// 🔴 A CHAT LANE SAYS WHO IT IS. Fail CLOSED: a config that cannot
+			// be written starts the lane with no MCP server at all, never with
+			// the user-scope one, whose calls would read as the primary's.
+			path, err := writeLaneMCPConfig(l.configDir, id, key, ln.mcpSecret)
+			ln.startMu.Lock()
+			ln.mcpBroken = err != nil
+			if err == nil {
+				ln.mcpPath = path
+			}
+			ln.startMu.Unlock()
+			if err != nil {
+				log.Printf("ccd: lane %s: its MCP config: %v; starting it with no MCP server, and refusing its next turn", id, err)
+				argv = append(argv, "--strict-mcp-config")
+			} else {
+				argv = append(argv, "--mcp-config", path, "--strict-mcp-config")
+			}
+		}
 		if transcriptExists(l.configDir, dir, uuid) {
 			return append(argv, "--resume", uuid), modeContinue
 		}
@@ -586,8 +916,25 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		srv.cliPID = func(ctx context.Context) (int, error) { return sup.runningPID(ctx, pp.PanePID) }
 	}
 	srv.blockedSrc = id
-	return &lane{id: id, key: key, model: model, workdir: workdir, srv: srv, sup: sup, term: term,
-		done: make(chan struct{}), lastUsed: l.now()}
+	ln.srv, ln.sup = srv, sup
+	return ln
+}
+
+// laneStartWatch is a lane's terminal as its supervisor sees it: it notes when
+// the lane's `tmux new-session` has returned (lane.startReturned), so lane.stop
+// can tell whether its kill could have missed a session that command was still
+// creating.
+type laneStartWatch struct {
+	laneTerminal
+	ln *lane
+}
+
+func (w laneStartWatch) Start(ctx context.Context, dir string, argv []string) (paneRef, error) {
+	ref, err := w.laneTerminal.Start(ctx, dir, argv)
+	w.ln.startMu.Lock()
+	w.ln.startReturned = true
+	w.ln.startMu.Unlock()
+	return ref, err
 }
 
 // run supervises the lane's CLI until it is stopped, crash-loops or loses its
@@ -595,28 +942,61 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 func (ln *lane) run(ctx context.Context, l *lanes) {
 	defer close(ln.done)
 	err := ln.sup.run(ctx)
-	if ctx.Err() == nil {
-		st := ln.sup.state()
-		log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
-		// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
-		// a lane started again for this key (after this one was taken out of
-		// the set) has the SAME name: killing it unconditionally here killed the
-		// replacement's CLI. A lane no longer in the set was removed by whoever
-		// took it out (an eviction stops it itself).
-		l.mu.Lock()
-		owned := l.set[ln.id] == ln
-		if owned {
-			delete(l.set, ln.id)
-		}
-		l.mu.Unlock()
-		if !owned {
-			return
-		}
-		ln.clearBlocked()
-		kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = ln.term.KillSession(kctx)
-		kcancel()
+	if ctx.Err() != nil {
+		ln.killLateSession(l)
+		return
 	}
+	st := ln.sup.state()
+	log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
+	// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
+	// a lane started again for this key (after this one was taken out of
+	// the set) has the SAME name: killing it unconditionally here killed the
+	// replacement's CLI. A lane no longer in the set was removed by whoever
+	// took it out (an eviction stops it itself).
+	l.mu.Lock()
+	owned := l.set[ln.id] == ln
+	if owned {
+		delete(l.set, ln.id)
+	}
+	l.mu.Unlock()
+	if !owned {
+		return
+	}
+	ln.clearBlocked()
+	ln.removeMCPConfig()
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = ln.term.KillSession(kctx)
+	kcancel()
+}
+
+// killLateSession runs once a stopped lane's supervisor has returned. When the
+// stop came while the CLI's `tmux new-session` was still running (a release
+// after waitStarted gave up on a slow start, or after the caller went away),
+// stop's kill-session found no session yet — and new-session may then have
+// created one: a cc-<id> CLI nothing would ever kill (a check's key is never
+// used again). So it is killed now, by name, under l.mu, and only while NO lane
+// holds that name: a replacement started for the key in between owns it (and
+// if the late session is still there, the replacement's own new-session fails
+// on the duplicate name, and its cleanup, lane.run, kills that session by name).
+//
+// A stop after new-session returned killed the session itself; nothing is done
+// again then.
+func (ln *lane) killLateSession(l *lanes) {
+	ln.startMu.Lock()
+	late := ln.stoppedMidStart
+	ln.startMu.Unlock()
+	if !late {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.set[ln.id] != nil {
+		return
+	}
+	log.Printf("ccd: session %s (%s) was stopped while its CLI was starting: killing its tmux session by name in case the start created it", ln.id, ln.key)
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer kcancel()
+	_ = ln.term.KillSession(kctx)
 }
 
 // clearBlocked withdraws the lane's "awaiting approval" from the agent's badge:
@@ -628,8 +1008,36 @@ func (ln *lane) clearBlocked() {
 	}
 }
 
+// mcpConfigBroken reports whether the lane's CLI last started with no MCP
+// server because its config could not be written.
+func (ln *lane) mcpConfigBroken() bool {
+	ln.startMu.Lock()
+	defer ln.startMu.Unlock()
+	return ln.mcpBroken
+}
+
+// removeMCPConfig deletes the lane's MCP config (it holds the agent's token
+// and the lane's secret): nothing keeps a stopped lane's.
+func (ln *lane) removeMCPConfig() {
+	ln.startMu.Lock()
+	path := ln.mcpPath
+	ln.mcpPath = ""
+	ln.startMu.Unlock()
+	if path != "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("ccd: lane %s: remove its MCP config: %v", ln.id, err)
+		}
+	}
+}
+
 // stop ends the lane's CLI and its tmux session.
 func (ln *lane) stop() {
+	ln.startMu.Lock()
+	if !ln.startReturned {
+		ln.stoppedMidStart = true
+	}
+	ln.startMu.Unlock()
+	defer ln.removeMCPConfig()
 	if ln.cancel != nil {
 		ln.cancel()
 	}
@@ -694,6 +1102,11 @@ type laneHealth struct {
 	CLI     string `json:"cli"`
 	Session string `json:"session"`
 	Busy    bool   `json:"busy"`
+	// Ephemeral: a throwaway check lane (headerCCEphemeral), stopped when its
+	// turn is over — seen here only while that turn runs.
+	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Toolless: the lane's CLI was started with no tools (headerCCToolless).
+	Toolless bool `json:"toolless,omitempty"`
 	// AwaitingApproval: the lane's CLI is at a permission prompt (since
 	// AwaitingSince); Stuck: for longer than stuckAfter, so a new session at
 	// the cap may stop it (pickEvictLocked).
@@ -713,7 +1126,7 @@ func (l *lanes) health() []laneHealth {
 	for _, ln := range list {
 		started, ended, busy := ln.srv.snapshot()
 		h := laneHealth{ID: ln.id, Model: ln.model, CLI: ln.sup.state().CLI,
-			Session: ln.srv.sessionState(started, ended), Busy: busy}
+			Session: ln.srv.sessionState(started, ended), Busy: busy, Ephemeral: ln.ephemeral, Toolless: ln.toolless}
 		if since, waiting := ln.srv.awaitingSince(); waiting {
 			h.AwaitingApproval, h.AwaitingSince = true, since.UTC().Format(time.RFC3339)
 			h.Stuck = l.now().Sub(since) >= l.stuckAfterOr()
@@ -721,4 +1134,57 @@ func (l *lanes) health() []laneHealth {
 		out = append(out, h)
 	}
 	return out
+}
+
+// laneMCPDir is where a chat lane's MCP config is written, under ccd's
+// config dir.
+const laneMCPDir = "ccd-lanes"
+
+// writeLaneMCPConfig writes the MCP config a chat lane id (session key) starts
+// with — `{"mcpServers": …}`: every user-scope server in <configDir>/.claude.json,
+// muster's (mcpServerName) with headerCCSession: key added to its headers —
+// and answers its path. The file holds the agent's muster token, as
+// .claude.json does, and is written 0600. An absent muster entry is an error
+// (the lane would have no muster tools, and nothing to name its session to).
+func writeLaneMCPConfig(configDir, id, key, secret string) (string, error) {
+	st, err := readJSONObject(filepath.Join(configDir, ".claude.json"), nil)
+	if err != nil {
+		return "", err
+	}
+	servers, _ := st["mcpServers"].(map[string]any)
+	m, ok := servers[mcpServerName].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("no %q server in .claude.json's mcpServers", mcpServerName)
+	}
+	out := map[string]any{}
+	for name, v := range servers {
+		out[name] = v
+	}
+	entry := map[string]any{}
+	for k, v := range m {
+		entry[k] = v
+	}
+	headers := map[string]any{}
+	if h, ok := m["headers"].(map[string]any); ok {
+		for k, v := range h {
+			headers[k] = v
+		}
+	}
+	headers[headerCCSession] = key
+	headers[headerCCLaneSecret] = secret
+	entry["headers"] = headers
+	out[mcpServerName] = entry
+	b, err := json.Marshal(map[string]any{"mcpServers": out})
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(configDir, laneMCPDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, id+".mcp.json")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }

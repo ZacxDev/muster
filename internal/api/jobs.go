@@ -24,8 +24,9 @@ import (
 // submits a one-shot job — "run this prompt on this agent, optionally at this
 // commit, and give me the result" — and polls for its outcome.
 //
-//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, result_path?, timeout_s?, idempotency_key?}
-//	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key)
+//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, config_ref?, base_sha?, model?, result_path?, timeout_s?, idempotency_key?}
+//	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key;
+//	                       409 when that key's job has a different model, config_ref or base_sha)
 //	GET  /api/jobs/{id}  → {job_id, status, result?, reason?, error?, started_at, finished_at, agent, cc_account, …}
 //
 // 🔴 ASYNCHRONOUS OVER THE EXISTING SYNCHRONOUS TURN, NOT NEW ccd PLUMBING. A
@@ -66,22 +67,22 @@ import (
 //     the worker's Claude account, network and volume; any other file in the
 //     commit (a build script, a test) is the commit's, and the turn may run it.
 //     So it is for commits by trusted members only (docs/jobs.md).
-//   - survival across a restart. The turn runs in this process and nothing waits
-//     for it on shutdown. A graceful shutdown fails the jobs THIS process holds
-//     (FailOwnJobs), never another's. After a crash, the reaper (RunJobReaper
-//     → jobs.Store.ReapOverdue, at boot and every JobReapInterval) fails a job
-//     only once it is past its own deadline, so a job a crashed process left
-//     behind is failed `interrupted`
-//     up to timeout_s + jobs.ReapSlack after it started (or jobs.MaxQueueWait
-//     after it was queued) — and a job the OTHER pod of a rolling update is
-//     still running is left alone.
+//   - survival of a RUNNING job across a restart. The turn runs in this
+//     process and nothing waits for it on shutdown. A graceful shutdown fails
+//     the jobs THIS process holds (FailOwnJobs), never another's. After a
+//     crash, the reaper (RunJobReaper → jobs.Store.ReapOverdue, at boot and
+//     every JobReapInterval) fails a running job only once it is past its own
+//     deadline, timeout_s + jobs.ReapSlack after it started — and a job the
+//     OTHER pod of a rolling update is still running is left alone. A QUEUED
+//     job does survive a crash: the queue is the table (jobs_queue.go), and the
+//     same pass runs it, after the running job ahead of it ends or is reaped.
 //   - more than jobs.MaxActivePerAgent jobs queued or running on one agent: a
 //     submission past that is refused 429.
 //   - cancellation of the agent's turn on timeout. The job's deadline aborts
 //     muster's request to ccd and the job ends timed_out, but ccd's turn may run
 //     on; a later job on the same agent can then be refused `busy` by ccd.
 //   - more than one job per agent at a time. Jobs on one agent run one after
-//     another in this process (jobLanes). Each has its own worktree and its own
+//     another, oldest first, from the agent's queue (jobs_queue.go, jobLanes). Each has its own worktree and its own
 //     CLI, so nothing on disk is shared any more; but one worker's turns share
 //     its Claude account and its pod's memory (ccd runs at most
 //     CCD_MAX_SESSIONS CLIs), and parallel job turns on one worker have not
@@ -110,6 +111,18 @@ type jobRequest struct {
 	ResultPath     string `json:"result_path"`
 	TimeoutS       *int   `json:"timeout_s"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// Model is the Claude model the job's own session runs on (absent: the
+	// CLI's default), held to the pattern a Claude Code chat session's model is
+	// (agents.ValidateSessionRuntime).
+	Model string `json:"model"`
+	// ConfigRef is the commit, reachable from the default branch, that a sha
+	// job's worktree takes its agent configuration from (absent: the default
+	// branch's tip, origin/HEAD).
+	ConfigRef string `json:"config_ref"`
+	// BaseSHA is a full commit id a sha job's worktree fetches (with the head's
+	// credential path) into refs/muster-jobs/<job id>-base, so the turn can
+	// diff against it with no credential of its own.
+	BaseSHA string `json:"base_sha"`
 }
 
 // jobBodyLimit bounds the request body: the prompt's cap plus room for the rest.
@@ -151,9 +164,7 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	if n.IdempotencyKey != "" {
 		j, err := s.ext.Jobs.ByIdempotencyKey(ctx, n.IdempotencyKey)
 		if err == nil {
-			v := jobView(j)
-			v["deduplicated"] = true
-			s.writeJSON(w, http.StatusOK, v)
+			s.writeJobReplay(w, j, n)
 			return
 		}
 		if !errors.Is(err, jobs.ErrNotFound) {
@@ -170,6 +181,10 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n.WorkerPool = strings.TrimSpace(req.WorkerPool)
+	if status, msg := s.configRefRefusal(n, agents.Agent{WorkerPool: n.WorkerPool}); status != 0 {
+		s.writeJSON(w, status, map[string]any{"error": msg})
+		return
+	}
 	n.RequestedBy, _ = serviceActorFromContext(ctx)
 	var j jobs.Job
 	var created bool
@@ -186,6 +201,10 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if n, status, msg = jobOnAgent(n, a); status != 0 {
+			s.writeJSON(w, status, map[string]any{"error": msg})
+			return
+		}
+		if status, msg := s.configRefRefusal(n, a); status != 0 {
 			s.writeJSON(w, status, map[string]any{"error": msg})
 			return
 		}
@@ -215,20 +234,61 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !created {
-		v := jobView(j)
-		v["deduplicated"] = true
-		s.writeJSON(w, http.StatusOK, v)
+		s.writeJobReplay(w, j, n)
 		return
 	}
 	// The run outlives the request: detached from its cancellation, keeping its
 	// principal (every store call below acts as the caller under row-level
 	// security).
 	runCtx := context.WithoutCancel(ctx)
-	// Registered BEFORE the goroutine starts, so a shutdown that begins right
+	// Registered BEFORE it is dispatched, so a shutdown that begins right
 	// after this response cannot miss it (FailOwnJobs).
 	s.ownJobs.add(j.ID, runCtx)
-	safeGo(s.logger, "job "+strconv.FormatInt(j.ID, 10), func() { s.runJob(runCtx, j) })
+	// To its agent's queue runner (jobs_queue.go), which runs the agent's jobs
+	// oldest first — this one after any a dead process left queued.
+	s.kickJobs(j.AgentID)
 	s.writeJSON(w, http.StatusAccepted, jobView(j))
+}
+
+// writeJobReplay answers a submission whose idempotency key already names job
+// j: that job, with 200 and deduplicated:true — unless the submission asks for
+// a different model, config_ref or base_sha (replayMismatch), which is a 409
+// naming the fields, recording and running nothing.
+//
+// 🔴 ONLY THOSE THREE FIELDS ARE COMPARED. Before they existed the key was
+// compared with nothing (docs/jobs.md, "Idempotency"), and a caller may rely on
+// that for the rest of the body; but a caller that changes the model or the
+// configuration a review runs with and gets the OLD job back would record a
+// result produced by a model or prompt it did not ask for.
+func (s *Server) writeJobReplay(w http.ResponseWriter, j jobs.Job, n jobs.NewJob) {
+	if why := replayMismatch(j, n); why != "" {
+		v := jobView(j)
+		v["error"] = "idempotency_key " + strconv.Quote(n.IdempotencyKey) + " already names job " +
+			strconv.FormatInt(j.ID, 10) + ", which " + why + "; use a new key for a different job"
+		v["idempotency_mismatch"] = true
+		s.writeJSON(w, http.StatusConflict, v)
+		return
+	}
+	v := jobView(j)
+	v["deduplicated"] = true
+	s.writeJSON(w, http.StatusOK, v)
+}
+
+// replayMismatch is "" when submission n may be answered with job j (its
+// idempotency key's), else how they differ: the model, the config_ref and the
+// base_sha, each as recorded (absent and "" are the same).
+func replayMismatch(j jobs.Job, n jobs.NewJob) string {
+	var diffs []string
+	if j.Model != n.Model {
+		diffs = append(diffs, fmt.Sprintf("has model %q, not %q", j.Model, n.Model))
+	}
+	if j.ConfigRef != n.ConfigRef {
+		diffs = append(diffs, fmt.Sprintf("has config_ref %q, not %q", j.ConfigRef, n.ConfigRef))
+	}
+	if j.BaseSHA != n.BaseSHA {
+		diffs = append(diffs, fmt.Sprintf("has base_sha %q, not %q", j.BaseSHA, n.BaseSHA))
+	}
+	return strings.Join(diffs, " and ")
 }
 
 // validateJobRequest checks the request's own fields — everything that needs no
@@ -241,6 +301,8 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		ResultPath:     strings.TrimSpace(req.ResultPath),
 		TimeoutSeconds: jobs.DefaultTimeoutSeconds,
 		IdempotencyKey: req.IdempotencyKey,
+		ConfigRef:      strings.TrimSpace(req.ConfigRef),
+		BaseSHA:        strings.TrimSpace(req.BaseSHA),
 	}
 	agent, pool := strings.TrimSpace(req.Agent), strings.TrimSpace(req.WorkerPool)
 	switch {
@@ -277,7 +339,24 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		return n, http.StatusBadRequest, fmt.Sprintf("idempotency_key is over %d bytes", jobs.MaxIdempotencyKeyBytes)
 	case req.IdempotencyKey != "" && strings.TrimSpace(req.IdempotencyKey) != req.IdempotencyKey:
 		return n, http.StatusBadRequest, "idempotency_key has leading or trailing whitespace"
+	case n.ConfigRef != "" && !jobs.ValidSHA(n.ConfigRef):
+		return n, http.StatusBadRequest, "config_ref must be a full commit id: 40 lowercase hex characters"
+	case n.ConfigRef != "" && n.SHA == "":
+		return n, http.StatusBadRequest, "config_ref is only for a job with a sha: only a sha job's worktree " +
+			"takes its agent configuration from the default branch"
+	case n.BaseSHA != "" && !jobs.ValidSHA(n.BaseSHA):
+		return n, http.StatusBadRequest, "base_sha must be a full commit id: 40 lowercase hex characters"
+	case n.BaseSHA != "" && n.SHA == "":
+		return n, http.StatusBadRequest, "base_sha is only for a job with a sha: it is fetched into the job's worktree, " +
+			"which only a sha job has"
 	}
+	// The same check a Claude Code chat session's model gets: it becomes the
+	// CLI's --model argument.
+	model, err := agents.ValidateSessionRuntime(agents.SessionRuntimeClaudeCode, req.Model)
+	if err != nil {
+		return n, http.StatusBadRequest, "model: " + err.Error()
+	}
+	n.Model = model
 	if req.PR != nil {
 		n.PR = *req.PR
 	}
@@ -318,6 +397,21 @@ func jobOnAgent(n jobs.NewJob, a agents.Agent) (jobs.NewJob, int, string) {
 	return n, 0, ""
 }
 
+// configRefRefusal is the 409 for a job with a config_ref on agent a — or, for
+// a pool job (a carries only the pool's name), on any worker of a's pool —
+// whose jobs get none of the repository's agent configuration
+// (JobWorkspace.StripsRepoConfig: a pool with a deploy key). A config_ref
+// names a configuration to overlay, and such a job has none, so it is refused
+// rather than silently run without it. 0 when the job may proceed.
+func (s *Server) configRefRefusal(n jobs.NewJob, a agents.Agent) (int, string) {
+	if n.ConfigRef == "" || s.ext.JobWorkspace == nil || a.WorkerPool == "" || !s.ext.JobWorkspace.StripsRepoConfig(a) {
+		return 0, ""
+	}
+	return http.StatusConflict, fmt.Sprintf("config_ref cannot be honoured: worker pool %q never gives a job the "+
+		"repository's agent configuration (it has a deploy key), so there is no configuration to overlay; "+
+		"submit the job without config_ref", a.WorkerPool)
+}
+
 // namedJobAgent loads the agent a job names; jobs run on claude-code agents only.
 func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, int, string) {
 	a, err := s.ext.Agents.GetByName(ctx, name)
@@ -355,10 +449,149 @@ func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, 
 // submitted at once to two idle workers with four places each — four went to
 // one, and two were refused. chooseWorker stays the one place that decides; it
 // is only called where its input cannot go stale.
+//
+// 🔴 A POOL REFUSED ONLY FOR ITS WORKERS' ACCOUNTS IS NOT REFUSED WHILE ANOTHER
+// ACCOUNT IS USABLE. When no worker is eligible and some idle worker was
+// skipped only because its Claude account is cooling down or failed
+// authentication, one such worker is failed over (failoverBlockedWorker: the
+// account failover's own move, to a usable account — a pool worker's PIN does
+// not stop it: ccfailover.Service.AccountFailedForPool) and the choice is made
+// again — so the job runs on it instead of being refused until the account
+// resets. A failover moves only the agent whose own turn failed, and a pool
+// that refuses upfront runs no turn on its workers, so without this it stayed
+// refused (2026-11-07). With no usable account nothing moves and the refusal
+// stands: the 429 naming each worker's reset.
+//
+// 🔴 ONE FAILOVER AT A TIME PER (owner, pool), AND THE CHOICE IS MADE AGAIN
+// UNDER IT. Refused submissions arriving together would otherwise each move a
+// worker (a burst of N moves N workers, restarting N pods for one job's worth
+// of need), and one arriving while another holds the worker it is moving would
+// read that worker as busy and answer the stale 429 although the move was about
+// to free it. So a refused submission takes the pool's failover lock, CHOOSES
+// AGAIN (a submission that waited finds the worker the one before it moved, and
+// takes it without moving another), and only if that is still refused moves a
+// worker itself.
 func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
+	j, created, blocked, err := s.createPoolJobOnce(ctx, n)
+	var refused *jobRefusal
+	if !errors.As(err, &refused) || len(blocked) == 0 || s.ext.AccountFailover == nil {
+		return j, created, err
+	}
+	unlock := s.poolFailovers.lock(strconv.FormatInt(callerID(ctx), 10) + "/" + n.WorkerPool)
+	j, created, blocked, err = s.createPoolJobOnce(ctx, n)
+	if !errors.As(err, &refused) || len(blocked) == 0 {
+		unlock()
+		return j, created, err
+	}
+	moved := s.failoverBlockedWorker(ctx, n.WorkerPool, blocked)
+	unlock()
+	if !moved {
+		return j, created, err
+	}
+	j, created, _, err = s.createPoolJobOnce(ctx, n)
+	return j, created, err
+}
+
+// keyedLocks is one mutex per key, made on first use.
+type keyedLocks struct {
+	mu sync.Mutex
+	m  map[string]*sync.Mutex
+}
+
+// lock blocks until key's mutex is free and returns its release.
+func (k *keyedLocks) lock(key string) func() {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = make(map[string]*sync.Mutex)
+	}
+	l, ok := k.m[key]
+	if !ok {
+		l = &sync.Mutex{}
+		k.m[key] = l
+	}
+	k.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// failoverBlockedWorker tries blocked in order (name order) and moves the first
+// that is idle (holdIdleAgent: its job lane is held across the move, so no job
+// of this process starts on it meanwhile) and that the account failover moves
+// to a usable account (AccountFailedForPool: a pool worker's pin does not stop
+// it). A worker on an account for which the failover found no usable target is
+// not tried again for the rest of blocked: every worker on that account would
+// get the same answer. It reports whether a worker is now off its account —
+// moved by this call, or found already moved by another server. When none
+// moves it logs ONE line naming why each worker tried was not.
+func (s *Server) failoverBlockedWorker(ctx context.Context, pool string, blocked []blockedWorker) bool {
+	noTarget := map[string]bool{}
+	var why []string
+	for _, b := range blocked {
+		if noTarget[b.a.CCAccount] {
+			continue
+		}
+		release, idle, busy := s.holdIdleAgent(ctx, b.a)
+		if !idle {
+			why = append(why, b.a.Name+" ("+busy+")")
+			continue
+		}
+		res := s.ext.AccountFailover.AccountFailedForPool(ctx, b.a.ID, b.a.CCAccount, b.failure,
+			"a submission to worker pool "+strconv.Quote(pool)+" found every worker's Claude account unusable")
+		release()
+		if res.Moved {
+			s.logger.Printf("jobs: pool %q: worker %s failed over from %s to %s (its account %s) so the job is not refused",
+				pool, b.a.Name, b.a.CCAccount, res.To, b.failure)
+			return true
+		}
+		if res.NoTarget {
+			noTarget[b.a.CCAccount] = true
+		}
+		why = append(why, b.a.Name+" ("+res.Why+")")
+	}
+	if len(why) > 0 {
+		s.logger.Printf("jobs: pool %q: no worker failed over: %s", pool, strings.Join(why, "; "))
+	}
+	return false
+}
+
+// holdIdleAgent is the pool submission failover's idle check: a is
+// idle when no job holds its lane in this process and the job store counts
+// none queued or running on it, in any process. When idle, a's lane is held
+// until release, so no job of this process starts a turn on it while its pod
+// is restarted; a job that arrives meanwhile waits, then re-reads the agent
+// and waits for its replacement pod (runJob). Not idle: release is nil.
+func (s *Server) holdIdleAgent(ctx context.Context, a agents.Agent) (func(), bool, string) {
+	release, ok := s.jobLanes.tryLock(a.ID)
+	if !ok {
+		return nil, false, "a job is running on it"
+	}
+	if s.ext.Jobs == nil {
+		return release, true, ""
+	}
+	counter, ok := s.ext.Jobs.(jobs.ActiveCounter)
+	if !ok {
+		release()
+		return nil, false, "the job store cannot count its jobs"
+	}
+	counts, err := counter.ActiveCounts(ctx, []int64{a.ID})
+	if err != nil {
+		release()
+		return nil, false, "its jobs could not be counted: " + err.Error()
+	}
+	if c := counts[a.ID]; c.Active() > 0 {
+		release()
+		return nil, false, fmt.Sprintf("%d job(s) queued or running", c.Active())
+	}
+	return release, true, ""
+}
+
+// createPoolJobOnce is one choice and record of createPoolJob. blocked is, when
+// it refused, the members skipped only for their Claude account (idle or not:
+// failoverBlockedWorker checks that when it moves one).
+func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, []blockedWorker, error) {
 	pool, repo := n.WorkerPool, n.Repo
-	refuse := func(status int, msg string) (jobs.Job, bool, error) {
-		return jobs.Job{}, false, &jobRefusal{status: status, msg: msg}
+	refuse := func(status int, msg string) (jobs.Job, bool, []blockedWorker, error) {
+		return jobs.Job{}, false, nil, &jobRefusal{status: status, msg: msg}
 	}
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
@@ -408,21 +641,24 @@ func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bo
 		s.logger.Printf("jobs: read connector grants for pool %q: %v", pool, err)
 		return refuse(http.StatusInternalServerError, "could not read the workers' connector grants")
 	}
-	return s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
-		a, why, full := chooseWorker(pool, members, peers, repo, states, active, github)
-		if why != "" {
+	var blocked []blockedWorker
+	j, created, err := s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
+		c := chooseWorkerDetail(pool, members, peers, repo, states, active, github)
+		if c.why != "" {
+			blocked = c.accountBlocked
 			status := http.StatusServiceUnavailable
-			if full {
+			if c.full {
 				status = http.StatusTooManyRequests
 			}
-			return jobs.NewJob{}, &jobRefusal{status: status, msg: why}
+			return jobs.NewJob{}, &jobRefusal{status: status, msg: c.why}
 		}
-		placed, status, msg := jobOnAgent(n, a)
+		placed, status, msg := jobOnAgent(n, c.chosen)
 		if status != 0 {
 			return jobs.NewJob{}, &jobRefusal{status: status, msg: msg}
 		}
 		return placed, nil
 	})
+	return j, created, blocked, err
 }
 
 // maxWorkerSkipsNamed bounds how many skipped workers a refusal names.
@@ -462,6 +698,35 @@ const maxWorkerSkipsNamed = 10
 // worker is a 503).
 func chooseWorker(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
 	active map[int64]jobs.ActiveCount, github map[int64]string) (chosen agents.Agent, why string, full bool) {
+	c := chooseWorkerDetail(pool, members, peers, repo, accounts, active, github)
+	return c.chosen, c.why, c.full
+}
+
+// blockedWorker is a pool member skipped ONLY for its Claude account, and the
+// account failure that stands for: auth_failed, or rate_limited for a
+// cooldown.
+type blockedWorker struct {
+	a       agents.Agent
+	failure string
+}
+
+// workerChoice is chooseWorkerDetail's answer: chooseWorker's three values,
+// and accountBlocked — the members skipped only because their Claude account
+// failed authentication or is cooling down (every check before those passed),
+// in name order. When none is eligible these are what an account failover can
+// return to the pool (createPoolJob), each only if it is idle when it is moved
+// (holdIdleAgent, the one idle rule — not the counts read here, which are
+// stale by the time the move runs).
+type workerChoice struct {
+	chosen         agents.Agent
+	why            string
+	full           bool
+	accountBlocked []blockedWorker
+}
+
+// chooseWorkerDetail is chooseWorker with the account-blocked members.
+func chooseWorkerDetail(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
+	active map[int64]jobs.ActiveCount, github map[int64]string) (out workerChoice) {
 	type cand struct {
 		a  agents.Agent
 		c  jobs.ActiveCount
@@ -498,17 +763,19 @@ func chooseWorker(pool string, members, peers []agents.Agent, repo string, accou
 			skip = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
 		case st.AuthFailed:
 			skip = fmt.Sprintf("its Claude account %q failed authentication", m.CCAccount)
+			out.accountBlocked = append(out.accountBlocked, blockedWorker{a: m, failure: ccpool.FailureAuthFailed})
 		case !st.CoolingUntil.IsZero():
 			skip = fmt.Sprintf("its Claude account %q is cooling down after a rate limit until %s",
 				m.CCAccount, st.CoolingUntil.UTC().Format(time.RFC3339))
-			full = true
+			out.full = true
+			out.accountBlocked = append(out.accountBlocked, blockedWorker{a: m, failure: ccpool.FailureRateLimited})
 		case c.Active() >= jobs.MaxActivePerAgent:
 			skip = fmt.Sprintf("already has %d jobs queued or running (the limit)", c.Active())
-			full = true
+			out.full = true
 		case c.Active() == 0 && st.MaxConcurrentJobs > 0 && busy[m.CCAccount] >= st.MaxConcurrentJobs:
 			skip = fmt.Sprintf("its Claude account %q is already running %d job(s) at once, its limit",
 				m.CCAccount, busy[m.CCAccount])
-			full = true
+			out.full = true
 		}
 		if skip != "" {
 			skipped = append(skipped, m.Name+" ("+skip+")")
@@ -522,7 +789,8 @@ func chooseWorker(pool string, members, peers []agents.Agent, repo string, accou
 		if len(named) > maxWorkerSkipsNamed {
 			named, more = named[:maxWorkerSkipsNamed], fmt.Sprintf("; and %d more", len(skipped)-maxWorkerSkipsNamed)
 		}
-		return agents.Agent{}, fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more), full
+		out.why = fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more)
+		return out
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
@@ -540,7 +808,7 @@ func chooseWorker(pool string, members, peers []agents.Agent, repo string, accou
 		}
 		return a.a.Name < b.a.Name
 	})
-	return cands[0].a, "", false
+	return workerChoice{chosen: cands[0].a}
 }
 
 func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
@@ -581,15 +849,23 @@ func jobView(j jobs.Job) map[string]any {
 		"pr":          j.PR,
 		"result_path": j.ResultPath,
 		"timeout_s":   j.TimeoutSeconds,
+		"model":       j.Model,
+		"config_ref":  j.ConfigRef,
 		"created_at":  jobTime(j.CreatedAt),
 		"started_at":  jobTime(j.StartedAt),
 		"finished_at": jobTime(j.FinishedAt),
 	}
+	v["base_sha"] = j.BaseSHA
 	if j.IdempotencyKey != "" {
 		v["idempotency_key"] = j.IdempotencyKey
 	}
 	if j.SessionID != 0 {
 		v["session_id"] = j.SessionID
+	}
+	// The account failovers the job was re-queued for (failoverJob), oldest
+	// first: present only on a job that had one.
+	if len(j.Failovers) > 0 {
+		v["account_failovers"] = j.Failovers
 	}
 	if j.HasResult {
 		v["result"] = j.Result
@@ -612,9 +888,9 @@ func jobTime(t time.Time) any {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// ownJobs is the set of jobs THIS process accepted and has not finished, so a
-// graceful shutdown can fail them (FailOwnJobs): a job runs only in the process
-// that accepted it, so nothing else ever will.
+// ownJobs is the set of jobs THIS process accepted, or took from the queue to
+// run (jobs_queue.go), and has not finished, so a graceful shutdown can fail
+// them (FailOwnJobs).
 type ownJobs struct {
 	mu sync.Mutex
 	m  map[int64]*ownJob
@@ -625,15 +901,52 @@ type ownJob struct {
 	// call on a job runs under it (row-level security).
 	ctx     context.Context
 	started bool
+	// adopted: taken from the queue, not accepted by this process (adopt).
+	adopted bool
 }
 
-func (o *ownJobs) add(id int64, ctx context.Context) {
+func (o *ownJobs) add(id int64, ctx context.Context) { o.put(id, &ownJob{ctx: ctx}) }
+
+// adopt registers a job this process took from the queue without having
+// accepted it.
+func (o *ownJobs) adopt(id int64, ctx context.Context) { o.put(id, &ownJob{ctx: ctx, adopted: true}) }
+
+func (o *ownJobs) put(id int64, j *ownJob) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.m == nil {
 		o.m = make(map[int64]*ownJob)
 	}
-	o.m[id] = &ownJob{ctx: ctx}
+	o.m[id] = j
+}
+
+// accepted reports whether this process accepted job id (rather than took it
+// from the queue).
+func (o *ownJobs) accepted(id int64) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	j, ok := o.m[id]
+	return ok && !j.adopted
+}
+
+// dropUnstarted is drop, unless the job has started here since it was read.
+func (o *ownJobs) dropUnstarted(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if j, ok := o.m[id]; ok && !j.started {
+		delete(o.m, id)
+	}
+}
+
+// ctxOf is the context job id was registered under, while it is this
+// process's.
+func (o *ownJobs) ctxOf(id int64) (context.Context, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if j, ok := o.m[id]; ok {
+		return j.ctx, true
+	}
+	return nil, false
 }
 
 func (o *ownJobs) markStarted(id int64) {
@@ -687,7 +1000,16 @@ func (s *Server) FailOwnJobs(timeout time.Duration) int {
 			msg = jobs.ShutdownRunningError
 		}
 		ctx, cancel := context.WithDeadline(context.WithoutCancel(p.ctx), deadline)
-		ok, err := s.ext.Jobs.Finish(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		var ok bool
+		var err error
+		if !p.started {
+			// 🔴 A JOB THIS PROCESS NEVER STARTED IS FAILED ONLY WHILE IT IS
+			// STILL QUEUED: the queue is the table (jobs_queue.go), so another
+			// process may have started it since, and its run is not ours to end.
+			ok, err = s.ext.Jobs.FinishQueued(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		} else {
+			ok, err = s.ext.Jobs.Finish(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		}
 		cancel()
 		switch {
 		case err != nil:
@@ -725,6 +1047,25 @@ func (l *jobLanes) lock(agentID int64) func() {
 	return lane.Unlock
 }
 
+// tryLock is lock without waiting: ok false when a job of agentID holds its
+// lane now.
+func (l *jobLanes) tryLock(agentID int64) (release func(), ok bool) {
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = make(map[int64]*sync.Mutex)
+	}
+	lane, found := l.m[agentID]
+	if !found {
+		lane = &sync.Mutex{}
+		l.m[agentID] = lane
+	}
+	l.mu.Unlock()
+	if !lane.TryLock() {
+		return nil, false
+	}
+	return lane.Unlock, true
+}
+
 // Recording a job's outcome: each attempt is bounded by jobFinishTimeout, on a
 // context detached from the job's own (which has usually just expired when a
 // job times out), and the write is attempted up to jobFinishAttempts times,
@@ -742,8 +1083,12 @@ const (
 const JobReapInterval = time.Minute
 
 // RunJobReaper fails abandoned jobs — each past its own deadline
-// (jobs.Store.ReapOverdue) — once immediately, then every interval until ctx ends.
+// (jobs.Store.ReapOverdue) — and dispatches every agent's queued jobs
+// (dispatchQueuedJobs), once immediately, then every interval until ctx ends.
 // It does nothing with no job store. Started by cmd/muster-server.
+//
+// 🔴 THE PASS AT BOOT IS WHAT RUNS A JOB A CRASH LEFT QUEUED. Its goroutine
+// died with the process; the row is the only thing left of it.
 //
 // 🔴 IT REPLACES A BOOT SWEEP THAT FAILED EVERY UNFINISHED JOB, which was wrong
 // under a rolling update: the new pod boots while the old one still runs jobs,
@@ -771,22 +1116,21 @@ func (s *Server) RunJobReaper(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// reapJobsOnce is one reaper pass at the reaper's clock.
+// reapJobsOnce is one reaper pass at the reaper's clock: it fails what is past
+// its deadline, THEN dispatches what is queued (dispatchQueuedJobs) — in that
+// order, so a job past its queue wait is failed rather than run, and an agent
+// a dead process's running job held is free for its next job in the same pass.
 func (s *Server) reapJobsOnce(ctx context.Context) {
-	now := time.Now
-	if s.jobNow != nil {
-		now = s.jobNow
-	}
-	n, err := s.ext.Jobs.ReapOverdue(ctx, now())
+	n, err := s.ext.Jobs.ReapOverdue(ctx, s.jobClock())
 	if err != nil {
 		if ctx.Err() == nil {
 			s.logger.Printf("jobs: reap overdue jobs: %v", err)
 		}
-		return
-	}
-	if n > 0 {
+	} else if n > 0 {
 		s.logger.Printf("jobs: failed %d job(s) past their deadline with nothing running them (reason %q)", n, jobs.ReasonInterrupted)
 	}
+	s.pruneOwnJobs()
+	s.dispatchQueuedJobs(ctx)
 }
 
 // jobTimeout is a job's timeout_s as a duration. jobSecond is a test seam (zero
@@ -800,13 +1144,30 @@ func (s *Server) jobTimeout(j jobs.Job) time.Duration {
 }
 
 // runJob runs one job to its end and records the outcome. ctx carries the
-// submitter's principal and no deadline.
+// submitter's principal (or, for a job taken from the queue that no request of
+// this process holds, its owner's: jobPrincipal) and no deadline. Its one
+// caller is the agent's queue runner (drainJobsOnce).
 func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 	// Deferred first, so it runs last: the job is this process's until its
-	// outcome is recorded.
-	defer s.ownJobs.drop(j.ID)
+	// outcome is recorded — or, on a stop before it started (below), until
+	// FailOwnJobs fails it, when this process accepted it.
+	keep := false
+	defer func() {
+		if !keep {
+			s.ownJobs.drop(j.ID)
+		}
+	}()
 	release := s.jobLanes.lock(j.AgentID)
 	defer release()
+	// held: this runner has started the job (Start succeeded), and so holds it
+	// until its outcome is recorded, an account failover's re-queue included.
+	//
+	// 🔴 UNTIL THEN THE JOB IS THE TABLE'S, NOT THIS RUNNER'S: another server
+	// may have started it since this one read it. Every outcome written before
+	// Start is therefore FinishQueued, which changes nothing once the job has
+	// started anywhere; an unconditional Finish there would end the winner's
+	// running job and drop its real result.
+	held := false
 	finish := func(o jobs.Outcome) {
 		pause := s.jobFinishBackoff
 		if pause <= 0 {
@@ -814,7 +1175,12 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		}
 		for attempt := 1; ; attempt++ {
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobFinishTimeout)
-			_, err := s.ext.Jobs.Finish(fctx, j.ID, o)
+			var err error
+			if held {
+				_, err = s.ext.Jobs.Finish(fctx, j.ID, o)
+			} else {
+				_, err = s.ext.Jobs.FinishQueued(fctx, j.ID, o)
+			}
 			cancel()
 			if err == nil {
 				return
@@ -845,10 +1211,32 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		finish(jobs.Failed(jobs.ReasonAgentUnavailable, fmt.Sprintf("agent %q could not be loaded: %v", j.Agent, err)))
 		return
 	}
-	sess, err := s.jobSession(ctx, a)
+	// 🔴 A WORKER THIS PROCESS JUST MOVED TO ANOTHER ACCOUNT IS RESTARTING ITS
+	// POD (a pool submission's failover, or another job's): its row reads
+	// running at once, so a job placed on it must wait for the replacement pod
+	// rather than send its turn into the restart, which would fail it with an
+	// error that is not an account failure, and so is never re-queued.
+	if s.ext.AccountFailover != nil {
+		if r, ok := s.ext.AccountFailover.Rebinding(a.ID); ok && r.To == a.CCAccount {
+			if err := s.ext.AccountFailover.AwaitRebound(ctx, r); err != nil {
+				s.logger.Printf("jobs: %d: %v", j.ID, err)
+				finish(jobs.Failed(jobs.ReasonAgentUnavailable, fmt.Sprintf("agent %q was moved to Claude account %q and its "+
+					"restarted instance was not ready in time", a.Name, a.CCAccount)))
+				return
+			}
+		}
+	}
+	sess, err := s.jobSession(ctx, a, j.Model)
 	if err != nil {
 		s.logger.Printf("jobs: %d: open a chat session on %q: %v", j.ID, a.Name, err)
 		finish(jobs.Failed(jobs.ReasonInternal, "could not open a chat session on the agent"))
+		return
+	}
+	// A stopping server starts nothing (StopJobs). A job it accepted stays
+	// registered, for FailOwnJobs to fail as before; one it took from the
+	// queue is left queued for another server.
+	if s.jobsStopping.Load() {
+		keep = s.ownJobs.accepted(j.ID)
 		return
 	}
 	// Marked BEFORE the row moves, so a shutdown racing the move reports the
@@ -864,9 +1252,31 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		// Not queued any more: something else already finished it.
 		return
 	}
-	jctx, cancel := context.WithTimeout(ctx, s.jobTimeout(j))
-	defer cancel()
-	finish(s.runJobTurn(jctx, a, sess, j))
+	held = true
+	for {
+		jctx, cancel := context.WithTimeout(ctx, s.jobTimeout(j))
+		o := s.runJobTurn(jctx, a, sess, j)
+		cancel()
+		// 🔴 AN ACCOUNT FAILOVER RE-QUEUES THE JOB ON THE SAME WORKER (failoverJob):
+		// the worker was moved to another Claude account and its pod restarted,
+		// so the job runs again there, with a fresh timeout, instead of failing
+		// rate_limited. At most once per account the job failed on.
+		next, again := s.failoverJob(ctx, j, a, o)
+		if !again {
+			finish(o)
+			return
+		}
+		a = next
+		started, err := s.ext.Jobs.Start(ctx, j.ID, a.CCAccount, sess.ID)
+		if err != nil {
+			s.logger.Printf("jobs: %d: start again after an account failover: %v", j.ID, err)
+			finish(jobs.Failed(jobs.ReasonInternal, "could not mark the job running again after its agent's account failover"))
+			return
+		}
+		if !started {
+			return
+		}
+	}
 }
 
 // jobSession opens the chat session a job's turn runs in: a new one per job, on
@@ -874,9 +1284,13 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 // runs it in a Claude Code session of its own rather than the agent's primary
 // conversation. The prompt and reply are stored in it like any other turn, so
 // the job is readable on the agent's page.
-func (s *Server) jobSession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+//
+// model ("" = the CLI's default) is the session's, so the turn's route carries
+// it as agents.HeaderCCModel (withSessionRoute) and ccd starts THIS session's
+// CLI with --model; no other session of the agent is touched.
+func (s *Server) jobSession(ctx context.Context, a agents.Agent, model string) (agents.ChatSession, error) {
 	if st, ok := s.sessionRuntimeStore(); ok {
-		return st.CreateSessionOn(ctx, a.ID, a.Name, agents.SessionRuntimeClaudeCode, "")
+		return st.CreateSessionOn(ctx, a.ID, a.Name, agents.SessionRuntimeClaudeCode, model)
 	}
 	return s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
 }
@@ -894,16 +1308,28 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// echo is the working directory ccd says the turn's CLI used
 	// (agents.HeaderCCWorkdirUsed), for a sha job.
 	var echo workdirEcho
+	// 🔴 A model JOB MUST BE ANSWERED FROM A SESSION CLI OF ITS OWN. ccd sends
+	// agents.HeaderCCWorkdirUsed only from such a CLI (a "lane", started with
+	// the job's --model); a ccd from before lanes ignores the session and model
+	// headers and answers from the agent's primary CLI, on that CLI's model,
+	// without it. So the echo is recorded for every model job, and its absence
+	// fails the job below (model_unconfirmed).
+	if j.Model != "" {
+		turnCtx = withTurnEcho(turnCtx, &echo)
+	}
+	// 🔴 A sha JOB OR A model JOB ONLY IN A SESSION OF ITS OWN. A turn with no
+	// explicit Claude Code session goes to the agent's primary CLI, which works
+	// in the agent's checkout — exactly where a commit's own configuration must
+	// not run — and which a job's model must never reach (the model travels as
+	// the job session's, jobSession). A job with neither still runs there, as
+	// it always has.
+	if (j.SHA != "" || j.Model != "") && sess.Runtime != agents.SessionRuntimeClaudeCode {
+		return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
+	}
 	if j.SHA != "" {
-		// 🔴 ONLY IN A SESSION OF ITS OWN. A turn with no explicit Claude Code
-		// session goes to the agent's primary CLI, which works in the agent's
-		// checkout — exactly where a commit's own configuration must not run.
-		if sess.Runtime != agents.SessionRuntimeClaudeCode {
-			return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
-		}
 		// Registered BEFORE the worktree is made, so a half-made one goes too.
 		defer func() { o = s.removeJobWorktree(ctx, a, j, o) }()
-		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA)
+		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA, j.ConfigRef, j.BaseSHA)
 		if err != nil {
 			if expired() {
 				return jobs.TimedOut("the job's timeout elapsed while creating its worktree at " + j.SHA + ": " + err.Error())
@@ -917,7 +1343,12 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// still belongs in the session it was sent to.
 	store := context.WithoutCancel(ctx)
 	_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: j.Prompt})
-	reply, err := s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
+	// Held open for the outcome watchdog while it runs (a long job is working,
+	// not silent), and judged as nothing: a job's reply is its result.
+	reply, err := func() (string, error) {
+		defer s.OutcomeHold(a)()
+		return s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
+	}()
 	if reply != "" {
 		_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 	}
@@ -940,6 +1371,11 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 				"output was discarded; update the agent's image", echo.want, got))
 		}
 	}
+	if j.Model != "" {
+		if _, ok := echo.get(); !ok {
+			return jobs.Failed(jobs.ReasonModelUnconfirmed, JobModelUnconfirmedError)
+		}
+	}
 	if j.ResultPath != "" {
 		o = s.readJobResult(ctx, a, worktree, j)
 		if worktree != 0 {
@@ -954,10 +1390,17 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	return o
 }
 
-// JobNoOwnSessionError is a sha job's error when the chat store cannot open a
-// Claude Code session of the job's own (agents.SessionRuntimeStore).
+// JobModelUnconfirmedError is a model job's error when its turn's answer did
+// not come from a session CLI of the job's own (no agents.HeaderCCWorkdirUsed).
+const JobModelUnconfirmedError = "the agent's runtime did not confirm it ran the turn in a Claude Code session of " +
+	"the job's own (no " + agents.HeaderCCWorkdirUsed + "), so it may have run in the agent's own session on that " +
+	"session's model; the turn's output was discarded; update the agent's image"
+
+// JobNoOwnSessionError is a sha or model job's error when the chat store
+// cannot open a Claude Code session of the job's own
+// (agents.SessionRuntimeStore).
 const JobNoOwnSessionError = "this deployment's chat store cannot open a Claude Code session of the job's own, " +
-	"so the turn could not be kept out of the agent's checkout; nothing was run"
+	"so the turn could not be kept out of the agent's checkout and session; nothing was run"
 
 // workdirEcho records the working directory ccd answered with for a turn.
 type workdirEcho struct {
@@ -993,6 +1436,14 @@ func withJobWorkdir(ctx context.Context, dir string, echo *workdirEcho) context.
 	h.Set(agents.HeaderCCWorkdir, dir)
 	r.Header = h
 	echo.want = dir
+	r.OnResponse = echo.record
+	return agents.WithTurnRoute(ctx, r)
+}
+
+// withTurnEcho is ctx with the turn's route recording into echo the directory
+// ccd answers its session CLI used (agents.HeaderCCWorkdirUsed), naming none.
+func withTurnEcho(ctx context.Context, echo *workdirEcho) context.Context {
+	r, _ := agents.TurnRouteFrom(ctx)
 	r.OnResponse = echo.record
 	return agents.WithTurnRoute(ctx, r)
 }

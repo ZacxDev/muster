@@ -27,7 +27,13 @@ type countingPlugins struct {
 // Short aliases: the leak gate reads `Bearer "+<a long identifier>` as a
 // credential-shaped string.
 const (
-	pgnTok    = "mpl_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	pgnTok = "mpl_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	// pgnViewerTok is a live token with the viewer capability and not messages.
+	pgnViewerTok = "mpl_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
+	// pgnChecksTok is a live token with messages and draft_checks.
+	pgnChecksTok = "mpl_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
+	// pgnExtTok is a live token with chief_extension alone.
+	pgnExtTok = "mpl_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	pgnSvc    = "plugins-test-service-token-0123456789abcd"
 	pgnRunner = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
 	pgnAgent  = "plugins-test-agent-own-token-0123456789"
@@ -55,8 +61,19 @@ func (c *countingPlugins) reset() {
 
 func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins.Plugin, error) {
 	c.note(ctx, "Authenticate")
-	if tok == pgnTok {
-		return plugins.Plugin{ID: 3, OwnerID: authz.OperatorUserID, Name: "example-inbox", Label: "Example inbox"}, nil
+	switch tok {
+	case pgnTok:
+		return plugins.Plugin{ID: 3, OwnerID: authz.OperatorUserID, Name: "example-inbox", Label: "Example inbox",
+			Capabilities: []plugins.Capability{plugins.CapMessages}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnViewerTok:
+		return plugins.Plugin{ID: 4, OwnerID: authz.OperatorUserID, Name: "example-viewer", Label: "Example viewer",
+			Capabilities: []plugins.Capability{plugins.CapViewer}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnChecksTok:
+		return plugins.Plugin{ID: 6, OwnerID: authz.OperatorUserID, Name: "example-checker", Label: "Example checker",
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnExtTok:
+		return plugins.Plugin{ID: 7, OwnerID: authz.OperatorUserID, Name: "example-guide", Label: "Example guide",
+			Capabilities: []plugins.Capability{plugins.CapChiefExtension}, OwnerLogin: "owner@example.invalid"}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -81,9 +98,19 @@ func (c *countingPlugins) DraftCards(ctx context.Context, _ int) ([]plugins.Draf
 	return nil, nil
 }
 
+func (c *countingPlugins) DraftCard(ctx context.Context, _ int64) (plugins.DraftCard, error) {
+	c.note(ctx, "DraftCard")
+	return plugins.DraftCard{}, plugins.ErrNotFound
+}
+
 func (c *countingPlugins) Retryable(ctx context.Context, _ int) ([]plugins.Message, error) {
 	c.note(ctx, "Retryable")
 	return nil, nil
+}
+
+func (c *countingPlugins) RenewDraft(ctx context.Context, _, _ int64) (plugins.Draft, error) {
+	c.note(ctx, "RenewDraft")
+	return plugins.Draft{}, plugins.ErrNotFound
 }
 
 func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Claim, bool, error) {
@@ -91,9 +118,9 @@ func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Clai
 	return plugins.Claim{}, false, nil
 }
 
-func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins.DraftResult) (plugins.Draft, error) {
+func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins.DraftResult) (plugins.Draft, bool, error) {
 	c.note(ctx, "FinishDraft")
-	return plugins.Draft{}, plugins.ErrNotFound
+	return plugins.Draft{}, false, plugins.ErrNotFound
 }
 
 // pluginsTestAgents resolves one agent by its own token (pgnAgent).
@@ -111,7 +138,9 @@ func newPluginsDoorServer(t *testing.T, store plugins.Store) (*Server, http.Hand
 	tf := newFakeAPITokens()
 	s := New(nil, AuthConfig{HookToken: tokTestHook, ServiceToken: pgnSvc, UIPassword: "plugins-test-operator-password"},
 		log.New(io.Discard, "", 0))
-	ext := Extensions{APITokens: tf, Users: stubUsers{}, Agents: pluginsTestAgents{}, Flows: principalFlows{}}
+	ext := Extensions{APITokens: tf, Users: stubUsers{}, Agents: pluginsTestAgents{}, Flows: principalFlows{},
+		// The viewer routes are on (plugin_handoffs.go), so the door tests reach them.
+		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}}}
 	if store != nil {
 		ext.Plugins = store
 	}
@@ -170,7 +199,7 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	for _, door := range pluginDoorRoutes {
 		for name, c := range foreign {
 			f.reset()
-			rec := pServe(h, "POST", door.path, door.body, c)
+			rec := pServe(h, door.verb(), door.path, door.body, c)
 			if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "this route takes a plugin token") {
 				t.Errorf("%s %s: %d %q; want 401 with the plugin-token refusal", door.path, name, rec.Code, rec.Body.String())
 			}
@@ -194,7 +223,7 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	// because this server wires no task store.
 	for _, door := range pluginDoorRoutes[1:] {
 		f.reset()
-		rec := pServe(h, "POST", door.path, door.body, pBearer(pgnTok))
+		rec := pServe(h, door.verb(), door.path, door.body, pBearer(pgnTok))
 		if door.reaches == "" {
 			if got := f.snapshot(); rec.Code != door.ownCode || len(got) != 1 || got[0] != "Authenticate as system" {
 				t.Errorf("CONTROL %s: %d, store calls %v; want %d after only the token lookup", door.path, rec.Code, got, door.ownCode)
@@ -209,14 +238,47 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 
 // pluginDoorRoutes is every /plugin/v1/* route with a body, the store method the
 // plugin's own token reaches, and what the countingPlugins fake makes it answer.
-var pluginDoorRoutes = []struct {
+var pluginDoorRoutes = []pluginDoorRoute{
+	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted, ""},
+	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent, ""},
+	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound, ""},
+	{"/plugin/v1/drafts/5/renew", "", "RenewDraft", http.StatusNotFound, ""},
+	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable, ""},
+	{"/plugin/v1/messages/5/owner-answered", `{}`, "", http.StatusNotFound, ""},
+	// Plugin task references (plugin_task_refs.go). They reach the task store,
+	// which this fixture does not wire: a 503 is still past the door.
+	{"/plugin/v1/tasks?namespace=tracker&live=true", "", "", http.StatusServiceUnavailable, http.MethodGet},
+	{"/plugin/v1/task-writes/claim", `{"wait_s":0}`, "", http.StatusServiceUnavailable, ""},
+	{"/plugin/v1/task-writes/5/result", `{"ok":true}`, "", http.StatusServiceUnavailable, ""},
+	// Who the token is (plugin_capabilities_test.go): it reaches no store
+	// method past the token lookup.
+	{"/plugin/v1/self", "", "", http.StatusOK, http.MethodGet},
+	// A hand-off redeem (plugin_handoffs.go) needs viewer: this fixture's
+	// messages token is refused at the capability check.
+	{"/plugin/v1/handoffs/redeem", `{"code":"x"}`, "", http.StatusForbidden, ""},
+	// The pre-approval check (plugin_drafts.go) needs draft_checks: this
+	// fixture's messages token is refused at the capability check.
+	{"/plugin/v1/drafts/checks", "", "", http.StatusForbidden, http.MethodGet},
+	{"/plugin/v1/drafts/5/check", `{"sendable":true}`, "", http.StatusForbidden, ""},
+	{"/plugin/v1/drafts/5/media?ref=a/b", "x", "", http.StatusForbidden, ""},
+	// A plugin's chief instructions (plugin_chief_instructions.go) need
+	// chief_extension: this fixture's messages token is refused at the
+	// capability check.
+	{"/plugin/v1/chief/instructions", `{"markdown":"x"}`, "", http.StatusForbidden, http.MethodPut},
+}
+
+// pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.
+type pluginDoorRoute struct {
 	path, body, reaches string
 	ownCode             int
-}{
-	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted},
-	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent},
-	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound},
-	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable},
+	method              string
+}
+
+func (d pluginDoorRoute) verb() string {
+	if d.method == "" {
+		return http.MethodPost
+	}
+	return d.method
 }
 
 // TestPluginDoorRoutesListsEveryPluginRoute: pluginDoorRoutes is a hand list that
@@ -225,7 +287,8 @@ var pluginDoorRoutes = []struct {
 func TestPluginDoorRoutesListsEveryPluginRoute(t *testing.T) {
 	listed := map[string]bool{}
 	for _, d := range pluginDoorRoutes {
-		listed["POST "+strings.Replace(d.path, "/5/", "/{id}/", 1)] = true
+		path, _, _ := strings.Cut(d.path, "?")
+		listed[d.verb()+" "+strings.Replace(path, "/5/", "/{id}/", 1)] = true
 	}
 	want := map[string]bool{}
 	for _, pattern := range routeVias[authz.ViaPlugin] {
@@ -311,6 +374,7 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 		{"POST", "/plugins/messages/1/retry", ""}, {"POST", "/api/plugins/messages/1/retry", ""},
 		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
 		{"POST", "/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`},
+		{"GET", "/plugin/v1/self", ""},
 	} {
 		for name, c := range map[string]pluginCred{"plugin token": pBearer(pgnTok), "session": session,
 			"hook token": pBearer(tokTestHook), "none": func(*http.Request) {}} {
@@ -406,12 +470,12 @@ type resultPlugins struct {
 	detail string
 }
 
-func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.DraftResult) (plugins.Draft, error) {
+func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.DraftResult) (plugins.Draft, bool, error) {
 	if err := r.Validate(); err != nil {
-		return plugins.Draft{}, err
+		return plugins.Draft{}, false, err
 	}
 	v.detail = r.Detail
-	return plugins.Draft{ID: id, Status: plugins.DraftSent}, nil
+	return plugins.Draft{ID: id, Status: plugins.DraftSent}, true, nil
 }
 
 // TestAValidDraftResultIsReadWhateverItsJSONEscaping (audit round 1): the result

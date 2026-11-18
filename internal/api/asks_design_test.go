@@ -1,0 +1,435 @@
+package api
+
+import (
+	"context"
+	"io"
+	"log"
+	"net/http/httptest"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/ui"
+)
+
+// THE ASKS CARD FEED (operator decision "Vertical card feed"; asks_feed.go,
+// ui/asks_card.go): every item is a card in one feed per tab — Open (questions,
+// notices, waiting sessions, tasks to route, each with its kind badge),
+// Answered, Drafts, Nudges, Log. A card's head is a toggle that expands it in
+// place (never a link); its footer holds View in session, the task link and
+// Dismiss. Every expected value here is a literal, not one read back from the
+// code under test.
+
+var designNow = time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+
+// designItems is one of every kind the Open feed draws, plus a reply draft (the
+// Drafts tab's, never the Open feed's).
+func designItems() []attentionItem {
+	since := designNow.Add(-9 * time.Minute)
+	win := mirror.Place{Code: "fern:1", Host: "atlas"}
+	return []attentionItem{
+		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, Source: "deploy-bot", Text: "Deploy now?", Options: []string{"Deploy now", "Wait"}, Since: since,
+			sessionLink: "/agents/deploy-bot", taskID: 42, suggestions: []string{"Deploy, then post the link"}},
+		{Key: "ask-2", Kind: attentionKindAsk, AskID: 2, Source: "deploy-bot", Text: "Rotate the key?", Since: since},
+		{Key: "session-aaaaaaaaaaaaaaaa", Kind: attentionKindQuestion, Source: "tmux fern:2 @ atlas", target: "tmux fern:2 @ atlas",
+			at: mirror.Place{Code: "fern:2", Host: "atlas"}, Text: "Which database?\nPick one.", Link: "/mirror/view?host=atlas&session=fern&window=%402", Since: since},
+		{Key: "session-bbbbbbbbbbbbbbbb", Kind: attentionKindSession, Source: "tmux fern:1 @ atlas", target: "tmux fern:1 @ atlas", at: win,
+			Text: "Bash: npm test", Detail: "Running the tests.", Link: "/mirror/view?host=atlas&session=fern&window=%401", Since: since},
+		{Key: "task-3", Kind: attentionKindTask, Source: "your chief has not routed it", Text: "Task #3: route it", Link: "/tasks/3", Since: since},
+		{Key: "draft-4", Kind: attentionKindPlugin, Source: "Example inbox", Text: "someone: hi", Link: draftLink(4), Since: since},
+		{Key: "ask-5", Kind: attentionKindNotice, AskID: 5, Source: "tmux fern:3 @ atlas", Text: "Waiting on you?", Since: since,
+			sessionLink: "/mirror/view?host=atlas&session=fern&window=%403"},
+	}
+}
+
+// itemLi is the <li> of key in out.
+func itemLi(t *testing.T, out, key string) string {
+	t.Helper()
+	i := strings.Index(out, `<li id="`+key+`"`)
+	if i < 0 {
+		t.Fatalf("no item %s:\n%s", key, out)
+	}
+	li := out[i:]
+	return li[:strings.Index(li, "</li>")+len("</li>")]
+}
+
+var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<button type="button" class="[^"]*" aria-expanded="false" aria-controls="([^"]+)" aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle><span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span><span id="([^"]+)"`)
+
+// TestTheOpenFeedOrdersCardsByKindWithABadgeEach: one flat feed, in the
+// order questions, notices, waiting sessions, tasks to route; each card opens
+// with its head — a toggle naming its more region — whose first child is its
+// kind badge (the old group header's words); no group headers; the reply
+// draft is not on it. RED at origin/main: grouped lists under labels, no
+// badge, no toggle.
+func TestTheOpenFeedOrdersCardsByKindWithABadgeEach(t *testing.T) {
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	out := s.askListHTML(context.Background(), designItems(), asksRead{}, designNow)
+	var got []string
+	for _, m := range cardBadge.FindAllStringSubmatch(out, -1) {
+		if m[2] != m[1]+"-more" {
+			t.Errorf("%s's toggle controls %q", m[1], m[2])
+		}
+		// Named "Details", described by its who-line (its own id).
+		if m[3] != m[1]+"-who" || m[6] != m[1]+"-who" {
+			t.Errorf("%s's toggle is described by %q, its who-line is %q", m[1], m[3], m[6])
+		}
+		got = append(got, m[1]+"="+m[4]+":"+m[5])
+	}
+	want := "ask-1=question:Question|ask-2=question:Question|session-aaaaaaaaaaaaaaaa=question:Question|ask-5=notice:Notice|" +
+		"session-bbbbbbbbbbbbbbbb=waiting:Waiting|task-3=task:Task to route"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("cards %q,\nwant %q:\n%s", strings.Join(got, "|"), want, out)
+	}
+	for _, bad := range []string{`id="draft-4"`, "data-asks-group", "<h2"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("the Open feed draws %q:\n%s", bad, out)
+		}
+	}
+}
+
+// TestTheOpenFeedIsAllClearWhenNothingWaits: nothing waiting and no stalled
+// rows is the calm empty state — "All clear", the old sentence under it, its
+// testid — and counts 0; a stalled row alone is not empty. RED at origin/main:
+// a bare "Nothing is waiting on you." line.
+func TestTheOpenFeedIsAllClearWhenNothingWaits(t *testing.T) {
+	out, n := askFeedHTML(nil, "", 0, designNow)
+	if n != 0 || !strings.Contains(out, `data-testid="attention-empty"`) || !strings.Contains(out, `>All clear</p>`) ||
+		!strings.Contains(out, `>Nothing is waiting on you.</p>`) {
+		t.Fatalf("the empty feed (%d): %s", n, out)
+	}
+	// Only a reply draft: still nothing on the Open feed.
+	if _, n := askFeedHTML(designItems()[5:6], "", 0, designNow); n != 0 {
+		t.Errorf("a draft alone counts %d on the Open feed", n)
+	}
+	out, n = askFeedHTML(nil, `<ul data-testid="attention-episodes"><li data-attention-episode></li></ul>`, 1, designNow)
+	if n != 1 || strings.Contains(out, "All clear") || !strings.Contains(out, `<li class="min-w-0" data-asks-episodes><ul data-testid="attention-episodes">`) {
+		t.Errorf("a stalled row alone (%d): %s", n, out)
+	}
+	if _, n := askFeedHTML(designItems(), "", 0, designNow); n != 6 {
+		t.Errorf("the design items count %d, want 6", n)
+	}
+	if got := ui.AsksOpenCountHTML(6); !strings.Contains(got, `data-asks-open-count`) || !strings.Contains(got, `>6 open</span>`) {
+		t.Errorf("the open count: %s", got)
+	}
+}
+
+// TestEachCardDrawsTheActionsItsKindHas: per kind, what a card offers — an
+// ask: its options, its suggested-reply chips, the answer box with the mic
+// and Answer, View in session, its task, Dismiss; a free-text ask: the box
+// (no options); a notice: View in session and Dismiss, no box; a held
+// question: no box, "Answer in session", View in session; a waiting window:
+// View in session, nothing to answer or dismiss; a task to route: "Open task",
+// no box, no Dismiss. RED at origin/main: no chips, no task link, no View in
+// session on the list, no footer.
+func TestEachCardDrawsTheActionsItsKindHas(t *testing.T) {
+	items := designItems()
+	for i := range items {
+		if items[i].Kind == attentionKindAsk {
+			items[i].dictate = ui.TranscribePath
+		}
+	}
+	out := attentionItemsHTML(items, designNow)
+	has := map[string]string{
+		"options": `data-attention-option>`, "chips": `data-asks-suggestion data-text=`, "box": `<textarea id="answer-`, "mic": `data-dictate-input="answer-`,
+		"answer": `">Answer</button>`, "view": `data-asks-view-session>View in session</a>`, "task": `data-asks-task>`, "dismiss": `data-attention-dismiss>`,
+		"held": `data-attention-held-cue>Answer in session</span>`,
+	}
+	order := []string{"options", "chips", "box", "mic", "answer", "view", "task", "dismiss", "held"}
+	for key, want := range map[string]string{
+		"ask-1":                    "options chips box mic answer view task dismiss",
+		"ask-2":                    "box mic answer dismiss",
+		"ask-5":                    "view dismiss",
+		"session-aaaaaaaaaaaaaaaa": "view held",
+		"session-bbbbbbbbbbbbbbbb": "view",
+		"task-3":                   "task",
+	} {
+		li := itemLi(t, out, key)
+		var got []string
+		for _, k := range order {
+			if strings.Contains(li, has[k]) {
+				got = append(got, k)
+			}
+		}
+		if strings.Join(got, " ") != want {
+			t.Errorf("%s offers %q, want %q:\n%s", key, strings.Join(got, " "), want, li)
+		}
+	}
+	// The links go where they say.
+	for key, want := range map[string]string{
+		"ask-1":                    `<a href="/agents/deploy-bot" class="` + ui.AsksCardLinkClass + `" data-asks-view-session>`,
+		"ask-5":                    `<a href="/mirror/view?host=atlas&amp;session=fern&amp;window=%403" class="` + ui.AsksCardLinkClass + `" data-asks-view-session>`,
+		"session-bbbbbbbbbbbbbbbb": `<a href="/mirror/view?host=atlas&amp;session=fern&amp;window=%401" class="` + ui.AsksCardLinkClass + `" data-asks-view-session>`,
+		"task-3":                   `<a href="/tasks/3" class="` + ui.AsksCardLinkClass + `" data-asks-task>Open task</a>`,
+	} {
+		if li := itemLi(t, out, key); !strings.Contains(li, want) {
+			t.Errorf("%s lacks %q:\n%s", key, want, li)
+		}
+	}
+	if li := itemLi(t, out, "ask-1"); !strings.Contains(li, `<a href="/tasks/42" class="`+ui.AsksCardLinkClass+`" data-asks-task>Open task #42</a>`) {
+		t.Errorf("the ask's task link:\n%s", li)
+	}
+	// A task card names the task, says why it is here, and reads the rest.
+	task := itemLi(t, out, "task-3")
+	for _, want := range []string{`data-attention-title>Task #3</span>`, `data-attention-text>route it</p>`, `data-asks-context><span>Your chief has not routed it yet.</span>`} {
+		if !strings.Contains(task, want) {
+			t.Errorf("the task card lacks %q:\n%s", want, task)
+		}
+	}
+	// The waiting window: its pending call, and its last words as the context.
+	wait := itemLi(t, out, "session-bbbbbbbbbbbbbbbb")
+	if !strings.Contains(wait, `data-attention-text>Bash: npm test</p>`) || !strings.Contains(wait, `data-asks-context><span data-attention-detail>Running the tests.</span>`) {
+		t.Errorf("the waiting card:\n%s", wait)
+	}
+	// The head is never a link: the card is reached by its toggle and footer.
+	for _, key := range []string{"ask-1", "ask-5", "session-bbbbbbbbbbbbbbbb", "task-3"} {
+		li := itemLi(t, out, key)
+		head := li[:strings.Index(li, "</button>")]
+		if strings.Contains(head, "<a ") || !strings.Contains(head, "data-asks-toggle") {
+			t.Errorf("%s's head is a link, or no toggle:\n%s", key, head)
+		}
+	}
+}
+
+// TestTheAnswerFormIsQuietBesideOptions: with options to tap, Answer is the
+// outlined button and the options are the primary action; with none, Answer
+// is the filled primary. RED before this change (the filled Answer on every
+// card was the loudest thing on the page).
+func TestTheAnswerFormIsQuietBesideOptions(t *testing.T) {
+	out := attentionItemsHTML(designItems(), designNow)
+	if li := itemLi(t, out, "ask-1"); !strings.Contains(li, `id="answer-1-submit" class="`+ui.AsksCardSendQuietClass+`">Answer</button>`) {
+		t.Errorf("Answer beside options is not quiet:\n%s", li)
+	}
+	if li := itemLi(t, out, "ask-2"); !strings.Contains(li, `id="answer-2-submit" class="`+ui.AsksCardSendClass+`">Answer</button>`) {
+		t.Errorf("Answer with no options is not the primary:\n%s", li)
+	}
+}
+
+// TestDismissIsASmallIconButtonWithAnAccessibleName: an ask's Dismiss and a
+// notice's are icon buttons (the close glyph, no words) named by aria-label
+// AND title, each joined by form= to its own /cancel form.
+func TestDismissIsASmallIconButtonWithAnAccessibleName(t *testing.T) {
+	out := attentionItemsHTML(designItems(), designNow)
+	for key, name := range map[string]string{"ask-1": "Dismiss without answering", "ask-5": "Dismiss"} {
+		li := itemLi(t, out, key)
+		id := strings.TrimPrefix(key, "ask-")
+		want := `<button type="submit" form="ask-` + id + `-dismiss" aria-label="` + name + `" title="` + name + `" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		if !strings.Contains(li, want) {
+			t.Errorf("%s: no icon Dismiss named %q:\n%s", key, name, li)
+		}
+		if !strings.Contains(li, `<form id="ask-`+id+`-dismiss" method="POST" action="/attention/asks/`+id+`/cancel" hidden hx-post="/attention/asks/`+id+`/cancel"`) {
+			t.Errorf("%s: its Dismiss has no /cancel form:\n%s", key, li)
+		}
+	}
+}
+
+// TestDismissIsInTheCardsFooterNeverItsHead (Round 0 of #620): the ✕ never
+// sits in the head — a thumb aimed at the head (now: expand) must not cancel
+// the ask. It is in the footer, after the question, at the footer's end. And a
+// session page's block (the old compact card) keeps the same rule.
+func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
+	out := attentionItemsHTML(designItems(), designNow)
+	for _, key := range []string{"ask-1", "ask-2", "ask-5"} {
+		li := itemLi(t, out, key)
+		head := li[:strings.Index(li, "</button>")]
+		if strings.Contains(head, "data-attention-dismiss") {
+			t.Errorf("%s: Dismiss is in the head:\n%s", key, head)
+		}
+		footer := regexp.MustCompile(`(?s)<div class="` + regexp.QuoteMeta(ui.AsksCardFooterClass) + `" data-asks-footer>(.*?)</div>`).FindStringSubmatch(li)
+		if footer == nil || !strings.HasSuffix(footer[1], `</svg></button>`) || !strings.Contains(footer[1], "data-attention-dismiss") {
+			t.Errorf("%s: Dismiss does not end the footer:\n%s", key, li)
+		}
+		if d, txt := strings.Index(li, "data-attention-dismiss"), strings.Index(li, "data-attention-text"); d < txt {
+			t.Errorf("%s: Dismiss comes before the question", key)
+		}
+	}
+	block := attentionItemsHTMLTo(designItems(), designNow, "/agents/deploy-bot")
+	for _, key := range []string{"ask-1", "ask-2"} {
+		li := itemLi(t, block, key)
+		if d, txt := strings.Index(li, "data-attention-dismiss"), strings.Index(li, "data-attention-text"); d < 0 || d < txt {
+			t.Errorf("session page block %s: Dismiss is not after the question:\n%s", key, li)
+		}
+	}
+}
+
+// TestASessionPageBlockKeepsItsCompactCard: a session page's asks block
+// (returnTo set) still draws the compact card — its box open beside its
+// options, its forms posting back to that page with boost off — not the feed's
+// card: the feed's toggle, badge and footer are the Asks page's alone.
+func TestASessionPageBlockKeepsItsCompactCard(t *testing.T) {
+	li := itemLi(t, attentionItemsHTMLTo(designItems(), designNow, "/agents/deploy-bot"), "ask-1")
+	for _, want := range []string{`<textarea id="answer-1"`, `<input type="hidden" name="return" value="/agents/deploy-bot">`, ` hx-boost="false"`, `class="` + ui.AskFormOptionClass + `" data-attention-option>Deploy now</button>`} {
+		if !strings.Contains(li, want) {
+			t.Errorf("the block's card lacks %q:\n%s", want, li)
+		}
+	}
+	for _, bad := range []string{"data-asks-toggle", "data-asks-badge", "data-asks-footer", "<details"} {
+		if strings.Contains(li, bad) {
+			t.Errorf("the block's card draws %q:\n%s", bad, li)
+		}
+	}
+}
+
+// TestCardTextIsEscapedEverywhere: markup in the head's title (a session's
+// Name), its place (Source/target; its tag-shaped markup is dropped by the
+// title rule first, so it carries bare < & " >), an option's label, a
+// suggestion chip and a waiting card's context line is drawn as text.
+func TestCardTextIsEscapedEverywhere(t *testing.T) {
+	const evil = `<img src=x onerror=alert(1)>"&`
+	const want = `&lt;img src=x onerror=alert(1)&gt;&#34;&amp;`
+	const placeEvil, placeWant = `1 < 2 & "x" >`, `1 &lt; 2 &amp; &#34;x&#34; &gt;`
+	items := []attentionItem{
+		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, Name: "Name " + evil, Source: "tmux fern:1 @ atlas " + placeEvil, target: "tmux fern:1 @ atlas " + placeEvil,
+			at: mirror.Place{Code: "fern:1", Host: "atlas " + placeEvil}, Text: "q? " + evil, Options: []string{"opt " + evil}, suggestions: []string{"chip " + evil}, Since: designNow},
+		{Key: "session-cccccccccccccccc", Kind: attentionKindSession, Source: "tmux fern:2 @ atlas", target: "tmux fern:2 @ atlas",
+			at: mirror.Place{Code: "fern:2", Host: "atlas"}, Text: "Bash: ls", Detail: "detail " + evil, Link: "/mirror/view", Since: designNow},
+	}
+	out := attentionItemsHTML(items, designNow)
+	if strings.Contains(out, "<img") || strings.Contains(out, `onerror=alert(1)>`) {
+		t.Fatalf("a raw tag reached the page:\n%s", out)
+	}
+	for name, frag := range map[string]string{
+		"title":    `data-attention-name>Name ` + want + `</span>`,
+		// The place is words ("on <host>"); the exact target is the ⓘ's.
+		"place":    `data-attention-source>on atlas ` + placeWant + `</span>`,
+		"address":  `data-info-code="">tmux fern:1 @ atlas ` + placeWant + `</code>`,
+		"copy":     `data-copy-text="tmux fern:1 @ atlas ` + placeWant + `"`,
+		"question": `data-attention-text>q? ` + want + `</p>`,
+		"option":   `data-attention-option>opt ` + want + `</button>`,
+		"chip":     `>chip ` + want + `</button>`,
+		"detail":   `data-attention-detail>detail ` + want + `</span>`,
+	} {
+		if !strings.Contains(out, frag) {
+			t.Errorf("the %s is not drawn escaped (want %q):\n%s", name, frag, out)
+		}
+	}
+}
+
+// TestEveryTabValueOpensWhereItDid: the tab a request names, through
+// asksTab and asksTabsHTML, as the selected top tab (and, for the Drafts
+// tab, its selected view) — every new name, every old one, junk, and a tab
+// that is not drawn. Pinned literally, request by request. RED at origin/main:
+// no Open or Answered tab ("ask" was the first), "answered" unknown.
+func TestEveryTabValueOpensWhereItDid(t *testing.T) {
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	sel := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)" [^>]*aria-selected="true"|aria-selected="true"[^>]* id="asks-tabs-tab-([a-z]+)"`)
+	arch := regexp.MustCompile(`<section id="asks-drafts-archived-section"[^>]*>`)
+	draw := func(query string, drafts bool, nudges string) (top, view string) {
+		r := httptest.NewRequest("GET", "/attention"+query, nil)
+		out := s.asksTabsHTML("<ul></ul>", "<ul></ul>", drafts, nil, nil, nudges, "log", asksTab(r))
+		for _, b := range regexp.MustCompile(`<button[^>]*role="tab"[^>]*>`).FindAllString(out, -1) {
+			if !strings.Contains(b, `aria-selected="true"`) {
+				continue
+			}
+			if m := sel.FindStringSubmatch(b); m != nil {
+				top = m[1] + m[2]
+			}
+		}
+		// The Drafts tab's view: its archived list shown ("archived") or not
+		// ("drafts"); "" when the tab is not drawn. No second tab strip.
+		if sec := arch.FindString(out); sec != "" {
+			view = "drafts"
+			if !strings.Contains(sec, " hidden") {
+				view = "archived"
+			}
+		}
+		if strings.Contains(out, `id="asks-drafts-tabs"`) {
+			t.Errorf("%q: the Drafts tab draws a second tab strip", query)
+		}
+		return top, view
+	}
+	for _, c := range []struct {
+		query, top, view string
+		drafts           bool
+		nudges           string
+	}{
+		{"", "open", "drafts", true, "n"},
+		{"?tab=open", "open", "drafts", true, "n"},
+		{"?tab=ask", "open", "drafts", true, "n"},
+		{"?tab=answered", "answered", "drafts", true, "n"},
+		{"?tab=drafts", "drafts", "drafts", true, "n"},
+		{"?tab=archived", "drafts", "archived", true, "n"},
+		{"?tab=drafts&draft=9", "drafts", "drafts", true, "n"},
+		{"?tab=nudges", "nudges", "drafts", true, "n"},
+		{"?tab=log", "log", "drafts", true, "n"},
+		{"?tab=junk", "open", "drafts", true, "n"},
+		// Not drawn: Drafts with plugins off, Nudges with the feature off.
+		{"?tab=drafts", "open", "", false, ""},
+		{"?tab=archived", "open", "", false, ""},
+		{"?tab=nudges", "open", "", false, ""},
+	} {
+		// view is the Drafts tab's own selected view, "" when it is not drawn.
+		if top, view := draw(c.query, c.drafts, c.nudges); top != c.top || view != c.view {
+			t.Errorf("%q (drafts %v, nudges %q): top %q view %q, want %q %q", c.query, c.drafts, c.nudges, top, view, c.top, c.view)
+		}
+	}
+	// The ask log off (no Log panel): no Log tab, and ?tab=log opens Open.
+	off := s.asksTabsHTML("<ul></ul>", "<ul></ul>", true, nil, nil, "n", "", asksTab(httptest.NewRequest("GET", "/attention?tab=log", nil)))
+	if strings.Contains(off, `id="asks-tabs-tab-log"`) || !regexp.MustCompile(`id="asks-tabs-tab-open" [^>]*aria-selected="true"|aria-selected="true"[^>]* id="asks-tabs-tab-open"`).MatchString(off) {
+		t.Errorf("with the ask log off ?tab=log draws a Log tab or does not open Open:\n%s", off)
+	}
+	// The labels and their order: Open · Answered · Drafts · Nudges · Log.
+	out := s.asksTabsHTML("", "", true, []plugins.DraftCard{{}, {}}, nil, "n", "log", asksTabOpen)
+	var labels []string
+	for _, m := range regexp.MustCompile(`role="tab"[^>]*>([^<]+)</button>`).FindAllStringSubmatch(out, -1) {
+		labels = append(labels, m[1])
+	}
+	if got := strings.Join(labels, " · "); !strings.HasPrefix(got, "Open · Answered · Drafts (2) · Nudges · Log") {
+		t.Errorf("the tabs read %q", got)
+	}
+	// The draft deep link (a push's tap target) names the Drafts tab and the card.
+	if got := draftLink(9); got != "/attention?tab=drafts#draft-9" {
+		t.Errorf("draftLink(9) = %q", got)
+	}
+	if got := draftDecidedLink(9); got != "/attention?tab=archived&draft=9#draft-9" {
+		t.Errorf("draftDecidedLink(9) = %q", got)
+	}
+	// The panels are the swipe area.
+	if !strings.Contains(out, `<div class="`+ui.AsksSwipeAreaClass+`" data-asks-swipe><div id="asks-tabs-panel-open"`) {
+		t.Errorf("the panels are not in the swipe area:\n%s", out)
+	}
+}
+
+// TestADraftCardKeepsItsSafetyWithOnePrimaryAction: the draft card still
+// draws exactly what is approved (flows.VisibleEscape, its length), the
+// message it answers marked untrusted and escaped, ONE primary action
+// (Approve and send, a step-up form, on its own row: ui.AsksDecisionClass)
+// with Reject under it; an approval not yet collected keeps Withdraw; a draft
+// no longer pending offers no Approve. A guard on the redesign (the safety
+// itself is the store's, asks_drafts_pg; the layout is
+// e2e/tests/draft-card.spec.ts's).
+func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
+	at := designNow
+	c := plugins.DraftCard{
+		Draft:       plugins.Draft{ID: 7, AgentName: "chief", Body: "ok\u200b", Status: plugins.DraftPending, CreatedAt: at, ExpiresAt: at.Add(plugins.DraftTTL)},
+		Message:     plugins.Message{ID: 3, Sender: "someone", Subject: "", Body: "<i>hi</i>"},
+		PluginLabel: "Example inbox",
+	}
+	got := draftCardHTML(c)
+	for _, want := range []string{`class="` + ui.AsksQuoteClass + `" data-draft-original>`, "· untrusted · message 3", "&lt;i&gt;hi&lt;/i&gt;",
+		`data-runes="3"`, `ok\u{200b}`, `<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/7/approve" data-step-up-form class="min-w-0"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-draft-approve>`,
+		`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button>`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the pending card lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, ui.AsksPrimaryButtonClass) != 1 || strings.Contains(got, "<i>") {
+		t.Errorf("the pending card has %d primary actions, or unescaped markup:\n%s", strings.Count(got, ui.AsksPrimaryButtonClass), got)
+	}
+	approved := c
+	approved.Draft.Status, approved.Draft.ApprovedAt = plugins.DraftApproved, &at
+	if got := draftCardHTML(approved); !strings.Contains(got, `data-draft-withdraw>Withdraw the approval</button>`) || strings.Contains(got, "data-draft-approve") {
+		t.Errorf("an uncollected approval lost Withdraw, or offers Approve:\n%s", got)
+	}
+	approved.Draft.ClaimedAt = &at
+	if got := draftCardHTML(approved); strings.Contains(got, "data-draft-withdraw") {
+		t.Errorf("a collected approval offers Withdraw:\n%s", got)
+	}
+	gone := c
+	gone.Draft.Status = plugins.DraftSuperseded
+	if got := draftCardHTML(gone); strings.Contains(got, "data-draft-approve") || strings.Contains(got, "data-draft-reject") {
+		t.Errorf("a replaced draft offers a decision:\n%s", got)
+	}
+}

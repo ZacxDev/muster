@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // `ccd seed` prepares CLAUDE_CONFIG_DIR so the interactive CLI starts straight at
@@ -41,6 +43,15 @@ type seedOpts struct {
 	// seeds the default posture, "bypassPermissions" the job-lane bypass one
 	// (jobPermissionSettings), anything else is refused.
 	jobPermissionMode string
+	// allowMCPTools and model are podagent.EnvAllowMCPTools / EnvModel as read.
+	allowMCPTools, model string
+	// permissionMode is podagent.EnvPermissionMode as read: "" the default
+	// posture, "bypassPermissions" every session starts with every tool
+	// allowed (sessionBypassSettings), anything else refused.
+	permissionMode string
+	// hqMCP is podagent.EnvHQMCP as read: "1" offers the HQ MCP server
+	// (hqmcp.go) and allows its tools (podagent.HQAllowEntry).
+	hqMCP string
 }
 
 func runSeed(args []string, stdout, stderr io.Writer) int {
@@ -52,6 +63,9 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.settingsTemplate, "settings-template", "", "settings.json template whose top-level keys are imposed")
 	fs.BoolVar(&o.check, "check", false, "verify an existing seed instead of writing one")
 	o.jobPermissionMode = os.Getenv(envJobPermissionMode)
+	o.allowMCPTools, o.model = os.Getenv(podagent.EnvAllowMCPTools), os.Getenv(podagent.EnvModel)
+	o.permissionMode = os.Getenv(podagent.EnvPermissionMode)
+	o.hqMCP = os.Getenv(podagent.EnvHQMCP)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -84,7 +98,130 @@ func (o seedOpts) validate() error {
 	if _, err := jobBypass(o.jobPermissionMode); err != nil {
 		return err
 	}
+	if _, err := podagent.ParseAllowMCPTools(o.allowMCPTools); err != nil {
+		return err
+	}
+	if _, err := podagent.ParseModel(o.model); err != nil {
+		return err
+	}
+	if _, err := podagent.ParsePermissionMode(o.permissionMode); err != nil {
+		return err
+	}
+	if _, err := podagent.ParseHQMCP(o.hqMCP); err != nil {
+		return err
+	}
 	return nil
+}
+
+// seedSettings is the top-level settings.json keys seed imposes and checkSeed
+// verifies: the template under the job permission mode (jobPermissionSettings),
+// plus the agent's own session settings (internal/podagent/session.go):
+//
+//   - podagent.EnvAllowMCPTools → permissions.allow, each entry
+//     "mcp__muster__<name>". It is added to the TEMPLATE's permissions object,
+//     which replaces the file's wholesale on every POD start (this seed; an
+//     in-pod CLI restart by the supervisor does not re-seed), so an allow list
+//     a session wrote for itself does not survive the next pod start, and the
+//     only entries seed ever writes are muster's own MCP tools — and, below,
+//     the one fixed HQ entry.
+//   - podagent.EnvHQMCP=1 (the chief only) → podagent.HQAllowEntry,
+//     "mcp__hq__*", appended to permissions.allow: every tool of the HQ MCP
+//     server (hqmcp.go). A fixed constant, never read from the variable.
+//   - podagent.EnvModel → "model". Unset removes a model seed itself wrote
+//     earlier (seededModelKey) and otherwise leaves the file's model alone
+//     (an operator's own choice in the pod).
+//
+// seed and checkSeed both call this, so they cannot disagree.
+func seedSettings(tmpl map[string]any, o seedOpts) (map[string]any, error) {
+	want, err := jobPermissionSettings(tmpl, o.jobPermissionMode)
+	if err != nil {
+		return nil, err
+	}
+	allow, err := podagent.ParseAllowMCPTools(o.allowMCPTools)
+	if err != nil {
+		return nil, err
+	}
+	if len(allow) > 0 {
+		perms, ok := want["permissions"].(map[string]any)
+		if !ok {
+			return nil, errors.New("settings template has no `permissions` object to add the allowed tools to")
+		}
+		with := make(map[string]any, len(perms)+1)
+		for k, v := range perms {
+			with[k] = v
+		}
+		entries := make([]any, len(allow))
+		for i, e := range allow {
+			entries[i] = e
+		}
+		with["allow"] = entries
+		want["permissions"] = with
+	}
+	hq, err := podagent.ParseHQMCP(o.hqMCP)
+	if err != nil {
+		return nil, err
+	}
+	if hq {
+		// Every HQ tool (podagent.HQAllowEntry), after any muster entries above.
+		// Inert while the server is not registered (hqmcp.go): no tool has the name.
+		perms, ok := want["permissions"].(map[string]any)
+		if !ok {
+			return nil, errors.New("settings template has no `permissions` object to add the HQ tools to")
+		}
+		with := make(map[string]any, len(perms)+1)
+		for k, v := range perms {
+			with[k] = v
+		}
+		prev, _ := perms["allow"].([]any)
+		with["allow"] = append(append([]any{}, prev...), podagent.HQAllowEntry)
+		want["permissions"] = with
+	}
+	model, err := podagent.ParseModel(o.model)
+	if err != nil {
+		return nil, err
+	}
+	if model != "" {
+		want["model"] = model
+	}
+	return sessionBypassSettings(want, o.permissionMode)
+}
+
+// sessionBypassSettings applies podagent.EnvPermissionMode to the imposed
+// top-level keys: unset changes nothing; podagent.PermissionModeBypass sets
+// permissions.defaultMode to bypassPermissions, drops
+// disableBypassPermissionsMode (the CLI refuses the mode while it is set) and
+// records the bypass disclaimer's consent (settingsSkipBypassPrompt), without
+// which the pinned CLI opens an accept/decline dialog at launch that the first
+// pasted turn would answer. Every session the CLI starts in this pod — the
+// primary, a workspace lane, a job lane — then runs with every tool allowed.
+//
+// 🔴 THIS IS THE ONE SETTINGS DOOR TO "ALLOW EVERYTHING", and muster opens it
+// for two agents only: an officer instance (internal/api
+// OfficerClaudeCodeSession, egress-locked) and the claude-code chief
+// (agentspec.ClaudeCodeSession.ChiefBypass, public egress kept — PR #626). It is
+// distinct from the job-lane bypass (CCD_JOB_PERMISSION_MODE, jobmode.go),
+// which leaves defaultMode alone and reaches bypass only by a job lane's argv.
+// seed and checkSeed both call this (through seedSettings), so they cannot
+// disagree.
+func sessionBypassSettings(want map[string]any, mode string) (map[string]any, error) {
+	bypass, err := podagent.ParsePermissionMode(mode)
+	if err != nil || !bypass {
+		return want, err
+	}
+	perms, ok := want["permissions"].(map[string]any)
+	if !ok {
+		return nil, errors.New("settings template has no `permissions` object to set the bypass mode in")
+	}
+	with := make(map[string]any, len(perms)+1)
+	for k, v := range perms {
+		if k != "disableBypassPermissionsMode" {
+			with[k] = v
+		}
+	}
+	with["defaultMode"] = podagent.PermissionModeBypass
+	want["permissions"] = with
+	want[settingsSkipBypassPrompt] = true
+	return want, nil
 }
 
 // settingsSkipBypassPrompt is the user-settings key the pinned CLI reads as
@@ -170,6 +307,8 @@ func seed(o seedOpts, stderr io.Writer) error {
 	// connector store, removed when it is not — so a pod restarted without it
 	// does not keep a server entry that can only fail.
 	seedMCP(st, os.Getenv(envConnectURL), os.Getenv(envAgentToken))
+	hq, _ := podagent.ParseHQMCP(o.hqMCP) // validated above
+	seedHQMCP(st, hq, os.Getenv(envConnectURL), os.Getenv(envAgentToken), stderr)
 	if err := writeJSONAtomic(stPath, st); err != nil {
 		return err
 	}
@@ -182,7 +321,7 @@ func seed(o seedOpts, stderr io.Writer) error {
 	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return fmt.Errorf("settings template %s: %w", o.settingsTemplate, err)
 	}
-	want, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	want, err := seedSettings(raw, o)
 	if err != nil {
 		return err
 	}
@@ -194,9 +333,33 @@ func seed(o seedOpts, stderr io.Writer) error {
 	for k, v := range want {
 		have[k] = v
 	}
+	// The model seed set before (seededModelKey) is removed when CCD_MODEL is
+	// now unset — the officer's model was dropped from its config, and the
+	// instance kept its volume — but only while the file still holds that
+	// value: a model changed in the pod since is someone's choice.
+	prev, _ := st[seededModelKey].(string)
+	switch {
+	case o.model != "":
+		st[seededModelKey] = o.model
+	case prev != "":
+		if _, templated := want["model"]; !templated && have["model"] == prev {
+			delete(have, "model")
+		}
+		delete(st, seededModelKey)
+	}
+	if o.model != "" || prev != "" {
+		if err := writeJSONAtomic(stPath, st); err != nil {
+			return err
+		}
+	}
 	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
 }
+
+// seededModelKey is the .claude.json key recording the model seed last wrote
+// to settings.json from CCD_MODEL, so a later seed without CCD_MODEL removes
+// that model (and only that one).
+const seededModelKey = "ccdSeededModel"
 
 // ensureWritableDir makes dir exist as a directory this process can create files
 // in, as os.MkdirAll(dir, perm) does — except that an EMPTY directory on dir's path
@@ -373,6 +536,10 @@ func checkSeed(o seedOpts) error {
 		return fmt.Errorf(".claude.json: muster's MCP server registered=%v but the connector store offered=%v (%s)",
 			registered, offered, envConnectURL)
 	}
+	hq, _ := podagent.ParseHQMCP(o.hqMCP) // validated above
+	if err := checkHQMCP(st, hq, os.Getenv(envConnectURL), os.Getenv(envAgentToken)); err != nil {
+		return err
+	}
 	tmpl, err := os.ReadFile(o.settingsTemplate)
 	if err != nil {
 		return err
@@ -381,7 +548,7 @@ func checkSeed(o seedOpts) error {
 	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return err
 	}
-	want, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	want, err := seedSettings(raw, o)
 	if err != nil {
 		return err
 	}

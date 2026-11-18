@@ -71,7 +71,7 @@ func TestNormalizeProjectSlugDoesNotTouchOtherTags(t *testing.T) {
 		{"runbook:-deploy-", "runbook:-deploy-"},
 		{"gate:-blocked-", "gate:-blocked-"},
 		{"auto:-dispatch-", "auto:-dispatch-"},
-		{"civitai:-frontend-", "civitai:-frontend-"},
+		{"acme:-frontend-", "acme:-frontend-"},
 		{"a/b-c", "a/b-c"},
 	}
 	for _, tc := range cases {
@@ -93,7 +93,7 @@ func TestProjectSlugCharset(t *testing.T) {
 	t.Run("legal slugs pass", func(t *testing.T) {
 		for _, tag := range []string{
 			"project:orbit",
-			"project:remix",
+			"project:zephyr",
 			"project:foo-bar",
 			"project:foo.bar",
 			"project:foo_bar",
@@ -139,7 +139,7 @@ func TestProjectSlugCharset(t *testing.T) {
 //
 // INVARIANT GUARD — pins that the narrowing did not leak into the general rule.
 func TestProjectSlugCharsetStillAllowsDescriptiveSlash(t *testing.T) {
-	for _, tag := range []string{"a/b", "initiative:a/b", "runbook:deploy/prod", "civitai:_frontend"} {
+	for _, tag := range []string{"a/b", "initiative:a/b", "runbook:deploy/prod", "acme:_frontend"} {
 		if err := ValidateTags([]string{tag}); err != nil {
 			t.Fatalf("ValidateTags(%q) = %v, want nil — only project: is narrowed", tag, err)
 		}
@@ -159,14 +159,14 @@ func TestAtMostOneProjectTag(t *testing.T) {
 	})
 
 	t.Run("two project tags are rejected, naming both", func(t *testing.T) {
-		// NormalizeTags sorts, so the pair arrives as (orbit, remix).
-		tags := NormalizeTags([]string{"project:remix", "project:orbit", "bug"})
+		// NormalizeTags sorts, so the pair arrives as (orbit, zephyr).
+		tags := NormalizeTags([]string{"project:zephyr", "project:orbit", "bug"})
 		err := ValidateTags(tags)
 		if err == nil {
 			t.Fatalf("ValidateTags(%q) = nil, want an error", tags)
 		}
 		msg := err.Error()
-		for _, want := range []string{"project:orbit", "project:remix"} {
+		for _, want := range []string{"project:orbit", "project:zephyr"} {
 			if !strings.Contains(msg, want) {
 				t.Fatalf("error %q must name %q — the whole point is to say WHICH two conflict", msg, want)
 			}
@@ -245,17 +245,17 @@ func TestProjectsFromVocabulary(t *testing.T) {
 		// input already being sorted.
 		in := []TagCount{
 			{Tag: "bug", Count: 99},           // not a project → excluded
-			{Tag: "project:remix", Count: 3},  //
+			{Tag: "project:zephyr", Count: 3}, //
 			{Tag: "initiative:x", Count: 50},  // not a project → excluded
 			{Tag: "project:orbit", Count: 12}, //
 			{Tag: "projectile", Count: 7},     // prefix-adjacent, NOT a project
-			{Tag: "project:alpha", Count: 3},  // ties with remix → alpha first
+			{Tag: "project:alpha", Count: 3},  // ties with zephyr → alpha first
 		}
 		got := ProjectsFromVocabulary(in)
 		want := []ProjectCount{
 			{Name: "orbit", Count: 12},
 			{Name: "alpha", Count: 3},
-			{Name: "remix", Count: 3},
+			{Name: "zephyr", Count: 3},
 		}
 		if len(got) != len(want) {
 			t.Fatalf("ProjectsFromVocabulary = %+v, want %+v", got, want)

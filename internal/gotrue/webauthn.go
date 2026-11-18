@@ -110,6 +110,32 @@ func decodeCredential[R any](raw json.RawMessage) (credential[R], error) {
 	return c, nil
 }
 
+// CredentialID is the id of a WebAuthn credential as the WebAuthn Signal API
+// takes it (allAcceptedCredentialIds, signalUnknownCredential's credentialId):
+// the base64url of the raw id, unpadded.
+func CredentialID(rawID []byte) string { return base64.RawURLEncoding.EncodeToString(rawID) }
+
+// AssertionIdentity reads which credential a sign-in assertion is from and
+// the user handle it names — GoTrue's user id as text (v2.197.0's
+// User.WebAuthnID is []byte(user.ID.String())), or nil when the authenticator
+// sent none. It reads only; it checks nothing (CanonicalAssertion does).
+func AssertionIdentity(raw json.RawMessage) (credID string, userHandle []byte, err error) {
+	c, err := decodeCredential[assertionResponse](raw)
+	if err != nil {
+		return "", nil, err
+	}
+	return CredentialID(c.RawID), c.Response.UserHandle, nil
+}
+
+// AttestationCredentialID is the id of the credential a registration creates.
+func AttestationCredentialID(raw json.RawMessage) (string, error) {
+	c, err := decodeCredential[attestationResponse](raw)
+	if err != nil {
+		return "", err
+	}
+	return CredentialID(c.RawID), nil
+}
+
 // CanonicalAssertion reads a sign-in credential (PublicKeyCredential JSON) and
 // returns its flags and the re-encoding to forward to GoTrue.
 func CanonicalAssertion(raw json.RawMessage) (AuthFlags, json.RawMessage, error) {

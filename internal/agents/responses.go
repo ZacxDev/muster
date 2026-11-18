@@ -115,8 +115,8 @@ type ToolDispatch func(name, arguments string) string
 // loop never emits: "user" (the kickoff prompt, shown first) and "done" (terminal,
 // releasing the chat's streaming guard) — carried over the same StreamEmit/hook.
 type StreamEvent struct {
-	Kind       string // "text" | "thinking" | "tool_call" | "tool_result" | "user" | "done"
-	Text       string // text/thinking chunk
+	Kind       string // "text" | "thinking" | "tool_call" | "tool_result" | "user" | "done" | "queued" / "accepted" (muster's own: the message waits for a turn in flight, then the runtime took it; internal/api chat_busy.go)
+	Text       string // text/thinking chunk; for "queued", the notice to show
 	ToolID     string // tool_call / tool_result: the function call_id
 	ToolName   string // tool_call / tool_result: the function name
 	ToolArgs   string // tool_call: raw JSON arguments
@@ -183,6 +183,9 @@ type responsesResponse struct {
 	ID     string                `json:"id"`
 	Status string                `json:"status"`
 	Output []responsesOutputItem `json:"output"`
+	// Usage is the turn's token usage as the runtime reported it
+	// (turnusage.go), nil when it reported none.
+	Usage *responsesUsage `json:"usage,omitempty"`
 }
 
 func (r *responsesResponse) messageText() string {
@@ -305,10 +308,22 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		req.Header.Set(sessionKeyHeader, sessionKey)
 	}
 	applyTurnRoute(req)
-	resp, err := client.Do(req)
+	// LAST, with every header set: ask ccd for its 103 and mark the turn
+	// accepted, in this request's lane, when it comes (turnaccepted.go).
+	req = traceTurnAccepted(req)
+	// The send fence, if the turn carries one (sendfence.go): checked and held
+	// from here to the request's verdict (or its cap), with nothing else in
+	// between.
+	freq, fenced, err := fenceRequest(req)
 	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(freq)
+	if err != nil {
+		fenced(false)
 		return nil, fmt.Errorf("request: %w", err)
 	}
+	fenced(resp.StatusCode == http.StatusOK)
 	defer resp.Body.Close()
 	observeTurnRoute(req, resp)
 	if resp.StatusCode == http.StatusNotFound {
@@ -324,7 +339,41 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		}
 		return nil, newRuntimeError(resp.StatusCode, respBody, snippet)
 	}
-	return parseResponsesSSE(resp.Body, emit)
+	out, err := parseResponsesSSE(activityBody(ctx, resp.Body), emit)
+	if out != nil {
+		// The request's tokens, into the turn's sink when its caller keeps one
+		// (WithTurnUsage): each request of a tool loop adds its own.
+		addTurnUsage(ctx, out.Usage)
+	}
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		// 🔴 THE CLIENT'S OWN TIMEOUT, NOT THE CALLER'S DEADLINE (ctx is alive).
+		// net/http's timeout error matches context.DeadlineExceeded, and the
+		// outcome tracker reads that as "the caller gave up" and records nothing
+		// — so a runtime that held a turn open past the request timeout left the
+		// agent `running` for ever. %v, not %w, on purpose: this is a failure
+		// of the runtime, and must not match the caller's deadline.
+		return nil, &ClientTimeoutError{cause: err.Error()}
+	}
+	return out, err
+}
+
+// ClientTimeoutError is the HTTP client's own Timeout ending a /v1/responses
+// request while the caller's context was still alive (streamResponses).
+//
+// 🔴 IT DELIBERATELY DOES NOT MATCH context.DeadlineExceeded (net/http's error
+// does): the outcome tracker reads DeadlineExceeded as "the caller gave up" and
+// records nothing, and this is a failure of the runtime. A reader that wants
+// "the turn outlived a budget" — a log label — asks [IsClientTimeout] as well.
+type ClientTimeoutError struct{ cause string }
+
+func (e *ClientTimeoutError) Error() string {
+	return "the runtime's /v1/responses request timed out before the turn finished: " + e.cause
+}
+
+// IsClientTimeout reports whether err is (or wraps) a [ClientTimeoutError].
+func IsClientTimeout(err error) bool {
+	var c *ClientTimeoutError
+	return errors.As(err, &c)
 }
 
 // RuntimeError is a non-200, non-404 answer from an agent runtime's
@@ -379,12 +428,42 @@ func newRuntimeError(status int, body []byte, snippet string) *RuntimeError {
 // split out from the HTTP plumbing so it is unit-testable against a synthetic
 // byte stream. It mirrors gateway.go's bufio.Scanner SSE approach with a raised
 // buffer cap (a single response.completed line carries the full output array).
+//
+// 🔴 IT STOPS READING AT THE TERMINAL EVENT — response.completed,
+// response.failed, response.incomplete — NOT AT EOF OR [DONE]. A runtime that
+// reports the turn failed and then keeps the connection open (a gateway
+// runtime does, on a provider failure: see stream_failure_shapes_test.go) held
+// the turn until the request timeout, with nothing stored and the outcome
+// `running`. The terminal event is the end of the turn in the Responses stream
+// protocol; nothing after it changes the answer.
+//
+// 🔴 A TERMINAL FAILURE IS AN ERROR WHATEVER THE STREAM CARRIED: a
+// response.failed, or a completion whose status is "failed" (the same gateway
+// writes one, carrying its placeholder text, after the failure). Only a BARE
+// `error` event is forgiven by an answer that follows it.
+//
+// ⚠ A BODY THAT ENDS (EOF) WITH NO TERMINAL EVENT AND NO [DONE] IS AN ERROR,
+// not an empty answer: a runtime that died mid-turn never answered, and reading
+// that as "" recorded the agent as having replied nothing. An explicit [DONE]
+// with no completion stays the empty answer it always was.
+//
+// ⚠ A BARE `error` IS NOT TERMINAL (a fallback's completion may follow it, after
+// a pause: TestAnErrorFollowedByACompletionIsNotAFailure), so the reader reads on
+// after one. A runtime that then goes silent is bounded by the HTTP client's
+// Timeout, and the read error that ends it is answered with the runtime's own
+// `error` (below), which streamResponses' timeout rewrap leaves counted.
 func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, error) {
 	var final *responsesResponse
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	var ev sseEvent
+	// failed is the runtime's own report that the turn FAILED (streamFailure):
+	// set, the turn is an error whatever else the stream carried.
+	var failed *StreamError
+	// terminal: a terminal event was read; terminalFailed: it was a failure;
+	// done: the runtime's explicit end-of-stream marker ([DONE]) was read.
+	var terminal, terminalFailed, done bool
 	// lastTextIndex is the output_index of the most recent text delta emitted this
 	// turn (-1 = none yet). A text delta whose index is higher belongs to a NEW
 	// message item, so handleResponsesEvent injects a paragraph break before it —
@@ -395,11 +474,19 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 			ev = sseEvent{}
 			return
 		}
+		f, isTerminal := streamFailure(ev)
+		if f != nil && failed == nil {
+			failed = f
+		}
+		if isTerminal {
+			terminal = true
+			terminalFailed = terminalFailed || f != nil
+		}
 		handleResponsesEvent(ev, emit, &final, &lastTextIndex)
 		ev = sseEvent{}
 	}
 
-	for sc.Scan() {
+	for !terminal && sc.Scan() {
 		line := sc.Text()
 		// A blank line terminates an event.
 		if strings.TrimSpace(line) == "" {
@@ -414,6 +501,7 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 			d := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if d == "[DONE]" {
 				flush()
+				done = true
 				break
 			}
 			if ev.data != "" {
@@ -422,14 +510,40 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 			ev.data += d
 		}
 	}
-	flush()
-	if err := sc.Err(); err != nil {
+	if !terminal {
+		flush()
+	}
+	if terminalFailed {
+		return nil, failed
+	}
+	// 🔴 A FAILURE ONLY WHEN NO ANSWER FOLLOWED. A runtime can report an
+	// `error` event mid-stream (a failover attempt) and then complete the turn
+	// on its fallback; a completed response that answers (text, or tool calls)
+	// is the answer, not the error. A completion that answers NOTHING after an
+	// error is the error: read as an empty answer it lost the runtime's own
+	// sentence, and the agent's outcome said "no reply text" instead. And a read
+	// that broke after the error (the request timeout) is
+	// the runtime's error, in its words, not the read's.
+	//
+	// ⚠ SO A CALLER MUST CHECK ctx.Err() BEFORE CLASSIFYING THE ERROR: a turn
+	// CANCELLED (or past the caller's deadline) after a bare `error` event comes
+	// back as that runtime StreamError, not as context.Canceled /
+	// DeadlineExceeded. turnFailureCounts (internal/api) does check ctx first.
+	if failed != nil && (final == nil || final.answersNothing()) {
+		return nil, failed
+	}
+	if err := sc.Err(); err != nil && !terminal {
 		return nil, err
 	}
+	if final == nil && done {
+		// An explicit [DONE] with no completion is the runtime ENDING the turn
+		// with nothing to say, which the transport has always read as an empty
+		// answer (not a truncation, which has no marker).
+		return &responsesResponse{}, nil
+	}
 	if final == nil {
-		// No response.completed seen (defensive): return an empty response rather
-		// than nil so callers can safely call functionCalls()/messageText().
-		final = &responsesResponse{}
+		return nil, errors.New("the runtime's stream ended without a terminal event " +
+			"(no response.completed or response.failed): the turn was never answered")
 	}
 	return final, nil
 }
@@ -446,6 +560,7 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 		Index    int    `json:"output_index"`
 		Response struct {
 			Output []responsesOutputItem `json:"output"`
+			Usage  *responsesUsage       `json:"usage"`
 		} `json:"response"`
 		Item responsesOutputItem `json:"item"`
 	}
@@ -475,8 +590,10 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 		// (textDeltasOnly) never sees this row, and still needs the blank line
 		// between the segments on either side of it. PartCollector starts a new
 		// part at the row and drops that separator from the part's head.
-	case kind == "response.completed":
-		r := &responsesResponse{Status: "completed", Output: env.Response.Output}
+	case kind == "response.completed" || kind == "response.incomplete":
+		// response.incomplete (a length stop) is terminal too, and its output is
+		// the answer as far as it got.
+		r := &responsesResponse{Status: "completed", Output: env.Response.Output, Usage: env.Response.Usage}
 		*final = r
 	case kind == "response.output_text.delta":
 		if emit != nil && env.Delta != "" {
@@ -555,20 +672,30 @@ func RunToolLoop(
 ) (string, error) {
 	input := []inputItem{{Type: "message", Role: "user", Content: userMessage}}
 
+	ending := false
 	for i := 0; i < MaxToolLoopIterations; i++ {
 		if ctx.Err() != nil {
 			return "", laterRequest(i, ctx.Err())
 		}
-		resp, err := streamResponses(ctx, client, url, token, sessionKey, responsesRequest{
+		req := responsesRequest{
 			Model:        model,
 			Input:        input,
 			Instructions: instructions,
 			Tools:        tools,
-		}, emit)
+		}
+		resp, err := streamResponses(ctx, client, url, token, sessionKey, req, emit)
 		if err != nil {
 			return "", laterRequest(i, err)
 		}
 		calls := resp.functionCalls()
+		// 🔴 AN ENDED TURN RUNS NO FURTHER TOOL, whatever this answer asks for.
+		// The request above carried the round's outputs back (the runtime's
+		// session must hold an output for every call it made) and nothing else:
+		// no tool_choice, which no runtime this ships against has been shown to
+		// accept. This return is the whole gate.
+		if ending {
+			return resp.messageText(), nil
+		}
 		if len(calls) == 0 {
 			// Terminal text turn: the text already streamed live via emit during
 			// streamResponses, so just return the assembled text (don't re-emit).
@@ -582,7 +709,15 @@ func RunToolLoop(
 			if emit != nil {
 				emit(StreamEvent{Kind: "tool_call", ToolID: id, ToolName: call.Name, ToolArgs: call.Arguments})
 			}
-			out := dispatch(call.Name, call.Arguments)
+			// 🔴 A CALL AFTER THE TURN ENDED IS ANSWERED, NOT RUN: a model can ask
+			// for ask_owner and agent_dispatch in ONE round, and the dispatch must
+			// not start an agent the owner is being asked about.
+			var out string
+			if TurnEnded(ctx) {
+				out = TurnEndedNotRun
+			} else {
+				out = dispatch(call.Name, call.Arguments)
+			}
 			if emit != nil {
 				emit(StreamEvent{
 					Kind:       "tool_result",
@@ -598,6 +733,7 @@ func RunToolLoop(
 				Output: out,
 			})
 		}
+		ending = TurnEnded(ctx)
 	}
 	// Every request was answered with calls that ran, so this is never "nothing sent".
 	return "", &AfterFirstRequestError{Request: MaxToolLoopIterations,
@@ -645,6 +781,10 @@ func laterRequest(i int, err error) error {
 	return &AfterFirstRequestError{Request: i + 1, Err: err}
 }
 
+// TurnEndedNotRun is the output of a call made in the same round as, and after,
+// a tool that ended the turn (EndTurn): it was not run.
+const TurnEndedNotRun = `{"error":"not run: your turn ended (you asked your owner a question) before this call; wait for their answer"}`
+
 // RunToollessTurn runs ONE /v1/responses turn carrying NO tools and returns the
 // assembled assistant text, streaming text/thinking deltas to emit (nil-safe).
 // 404 → ErrResponsesUnsupported, unwrapped, so a caller can fall back to
@@ -669,8 +809,10 @@ func laterRequest(i int, err error) error {
 // call for a tool the request never offered. One turn with no loop cannot reach it.
 //
 // ⚠ THE TEXT COMES FROM response.completed, NOT FROM THE DELTAS, which is the same
-// property RunToolLoop has: a stream that emits deltas and never completes assembles
-// to "". That is the transport's contract, not a fallback this function adds.
+// property RunToolLoop has: a stream that emits deltas and ends with [DONE] but no
+// completion assembles to "", and one that simply stops (EOF, no [DONE]) is an
+// error (parseResponsesSSE). That is the transport's contract, not a fallback this
+// function adds.
 func RunToollessTurn(
 	ctx context.Context,
 	client *http.Client,
@@ -734,3 +876,9 @@ func toolOutputIsError(out string) bool {
 // green. The httptest-server tests in this package and in agentgateway remain
 // necessary and remain insufficient on their own.
 // ---------------------------------------------------------------------------
+
+// answersNothing reports whether a completed response carries no answer: no
+// message text and no tool call.
+func (r *responsesResponse) answersNothing() bool {
+	return strings.TrimSpace(r.messageText()) == "" && len(r.functionCalls()) == 0
+}

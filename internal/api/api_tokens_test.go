@@ -47,7 +47,7 @@ func (f *fakeAPITokens) add(t *testing.T, uid int64) string {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.byTok[tok] = apitokens.Token{ID: int64(len(f.byTok) + 1), UserID: uid, Name: "t"}
+	f.byTok[tok] = apitokens.Token{ID: int64(len(f.byTok) + 1), UserID: uid, Name: "t", Scope: apitokens.ScopeFull}
 	return tok
 }
 
@@ -167,26 +167,26 @@ func TestADisabledOwnersTokenIsRefusedAndAnOutageIsNotRemembered(t *testing.T) {
 }
 
 // TestEveryHookTierWrapperTakesATokenEvenUnarmed: a personal token needs no
-// MUSTER_HOOK_TOKEN. On an UNARMED password-mode server a bad mst_ value is a
-// 401, not the open tier's anonymous admission as user 1; in gotrue mode,
-// where the unarmed hook tier is 503, a valid token is still admitted.
+// MUSTER_HOOK_TOKEN. On an UNARMED server — which refuses every shared-secret
+// caller 401 — a bad mst_ value is a 401 and a valid one is admitted as its
+// owner, in both modes.
 func TestEveryHookTierWrapperTakesATokenEvenUnarmed(t *testing.T) {
 	f := newFakeAPITokens()
 	tok := f.add(t, 7)
 	bad, _ := apitokens.New()
 	open := tokenTestServer(t, AuthConfig{UIPassword: "a-long-operator-password"}, f)
-	if code, body := whoami(t, open, "", ""); code != 200 || body["userId"] != float64(1) {
-		t.Fatalf("CONTROL: the unarmed tier with no credential: %d %v; want the open admission as user 1", code, body)
+	if code, body := whoami(t, open, "", "127.0.0.1:1234"); code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: the unarmed tier with no credential: %d %v; want 401", code, body)
 	}
 	if code, body := whoami(t, open, bad, ""); code != http.StatusUnauthorized {
-		t.Fatalf("an unknown personal token on the open tier: %d %v; want 401", code, body)
+		t.Fatalf("an unknown personal token on the unarmed tier: %d %v; want 401", code, body)
 	}
 	if code, body := whoami(t, open, tok, ""); code != 200 || body["userId"] != float64(7) {
 		t.Fatalf("a valid token on the open tier: %d %v", code, body)
 	}
 	gt := tokenTestServer(t, AuthConfig{Mode: AuthModeGoTrue}, f)
-	if code, _ := whoami(t, gt, "", ""); code != http.StatusServiceUnavailable {
-		t.Fatalf("CONTROL: gotrue mode, unarmed, no credential: %d; want 503", code)
+	if code, _ := whoami(t, gt, "", ""); code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: gotrue mode, unarmed, no credential: %d; want 401", code)
 	}
 	if code, body := whoami(t, gt, tok, ""); code != 200 || body["userId"] != float64(7) {
 		t.Fatalf("gotrue mode, unarmed: a valid personal token: %d %v", code, body)
@@ -200,7 +200,7 @@ type mintCountingTokens struct {
 	mints int
 }
 
-func (m *mintCountingTokens) Create(context.Context, string, int64) (string, apitokens.Token, error) {
+func (m *mintCountingTokens) Create(context.Context, string, int64, string) (string, apitokens.Token, error) {
 	m.mints++
 	tok, _ := apitokens.New()
 	return tok, apitokens.Token{ID: 99, UserID: 7}, nil
@@ -351,7 +351,7 @@ func TestPersonalTokenLifecycleOverHTTP(t *testing.T) {
 	if !strings.Contains(list, aTask.Title) || strings.Contains(list, bTask.Title) {
 		t.Fatalf("A's token's task list: %s", truncate(list, 400))
 	}
-	bTok, _, err := apitokens.NewPG(pool).Create(asUser(b), "b", 0)
+	bTok, _, err := apitokens.NewPG(pool).Create(asUser(b), "b", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
 	})
 	ts := apitokens.NewPG(w.pool)
 	asUser := authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
-	secret, _, err := ts.Create(asUser, "before-reset", 0)
+	secret, _, err := ts.Create(asUser, "before-reset", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,11 +511,11 @@ func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
 	if _, err := ts.Authenticate(sys, secret); !errors.Is(err, apitokens.ErrBadToken) {
 		t.Fatalf("the user's API token after a password reset: %v; want it revoked", err)
 	}
-	if loc := r.Header().Get("Location"); loc != "/account?reset=1" {
+	if loc := r.Header().Get("Location"); loc != "/account?reset=1&passkeys=none" { // no passkeys to keep
 		t.Fatalf("a successful reset lands on %q; want the account page that says the tokens were revoked", loc)
 	}
 	ck := setCookies(r)
-	page := do(w.edge, "GET", "/account?reset=1", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+	page := do(w.edge, "GET", "/account?reset=1&passkeys=none", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
 	if page.Code != 200 || !strings.Contains(page.Body.String(), "Your API tokens were revoked") {
 		t.Fatalf("the reset's landing page: %d, does not say the API tokens were revoked\n%s", page.Code, truncate(page.Body.String(), 600))
 	}
@@ -537,7 +537,7 @@ func TestSignOutEverywhereSaysItKeepsAPITokens(t *testing.T) {
 		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = 1`)
 	})
 	ts := apitokens.NewPG(w.pool)
-	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept", 0)
+	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ type refusingTokens struct {
 	err error
 }
 
-func (r refusingTokens) Create(context.Context, string, int64) (string, apitokens.Token, error) {
+func (r refusingTokens) Create(context.Context, string, int64, string) (string, apitokens.Token, error) {
 	return "", apitokens.Token{}, r.err
 }
 func (refusingTokens) List(context.Context) ([]apitokens.Token, error) { return nil, nil }
@@ -604,7 +604,7 @@ func TestAResetWhoseSignInFailsStillSaysTheTokensWereRevoked(t *testing.T) {
 	})
 	ts := apitokens.NewPG(w.pool)
 	secret, _, err := ts.Create(authz.WithPrincipal(context.Background(),
-		authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession}), "before", 0)
+		authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession}), "before", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ type iatCapturingTokens struct {
 	got *[]int64
 }
 
-func (c iatCapturingTokens) Create(_ context.Context, _ string, iat int64) (string, apitokens.Token, error) {
+func (c iatCapturingTokens) Create(_ context.Context, _ string, iat int64, _ string) (string, apitokens.Token, error) {
 	*c.got = append(*c.got, iat)
 	tok, _ := apitokens.New()
 	return tok, apitokens.Token{ID: 1}, nil

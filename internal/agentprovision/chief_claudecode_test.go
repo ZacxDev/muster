@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -44,12 +47,13 @@ func ccRow(name string) agents.Agent {
 func TestAClaudeCodeChiefGetsTheChiefProseAsItsManagedClaudeMD(t *testing.T) {
 	for _, chief := range []bool{true, false} {
 		for _, store := range []bool{true, false} {
-			for _, plugins := range []bool{true, false} {
+			for _, combo := range []struct{ plugins, routing bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+				plugins, routing := combo.plugins, combo.routing
 				cfg := ccSpecConfig()
 				if store {
 					cfg.CairnURL, cfg.CairnToken = "https://store.example.test:19001", "seam-fixture-store-credential-51ac9d"
 				}
-				cfg.Plugins = plugins
+				cfg.Plugins, cfg.SessionRouting = plugins, routing
 				row := ccRow("plain-worker")
 				if chief {
 					row = ccRow(agents.ChiefName)
@@ -74,8 +78,13 @@ func TestAClaudeCodeChiefGetsTheChiefProseAsItsManagedClaudeMD(t *testing.T) {
 						store, plugins, filePaths(spec))
 				}
 				got := string(spec.Files[0].Content)
-				if got != agentspec.ChiefInstructionsClaudeCode(plugins) {
-					t.Errorf("store=%v plugins=%v: the CLAUDE.md is not the claude-code chief prose for this plugins state", store, plugins)
+				if got != agentspec.ChiefInstructionsClaudeCode(plugins, routing, "", nil) {
+					t.Errorf("store=%v plugins=%v routing=%v: the CLAUDE.md is not the claude-code chief prose for this state", store, plugins, routing)
+				}
+				// Independent of the constant: the request-routing section rides on
+				// cfg.SessionRouting alone, with or without plugins.
+				if strings.Contains(got, "`owner_asked: true`. muster checks that the turn you are in is their own message, pastes") != routing {
+					t.Errorf("plugins=%v routing=%v: the request-routing section is in the prose = %v", plugins, routing, !routing)
 				}
 				// Independent of the constant: the claims that decide whether the
 				// prose is TRUE in this image.
@@ -133,5 +142,82 @@ func TestAClaudeCodeChiefWithNoMCPServerIsRefused(t *testing.T) {
 	// Control: a WORKER on the same config builds (it names no MCP tool).
 	if _, err := adapterWith(t, cfg, ccRow("plain-worker")).buildSpec(context.Background(), ccRow("plain-worker")); err != nil {
 		t.Fatalf("control: a claude-code worker without the MCP server: %v", err)
+	}
+}
+
+// TestOnlyTheClaudeCodeChiefIsOfferedTheHQServer: the built spec of the chief,
+// and of no worker, carries podagent.EnvHQMCP=1 — the pod's `ccd seed` then
+// registers the HQ MCP server and allows EVERY one of its tools
+// (internal/podagent/hqmcp.go). A worker must never carry it: a standing grant
+// would hand it the same unprompted reach into HQ.
+func TestOnlyTheClaudeCodeChiefIsOfferedTheHQServer(t *testing.T) {
+	for _, name := range []string{agents.ChiefName, "plain-worker"} {
+		row := ccRow(name)
+		spec, err := adapterWith(t, ccSpecConfig(), row).buildSpec(context.Background(), row)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var got []string
+		for _, e := range spec.Env {
+			if e.Name == "CCD_HQ_MCP" {
+				got = append(got, e.Value)
+			}
+		}
+		want := []string(nil)
+		if name == agents.ChiefName {
+			want = []string{"1"}
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") || len(got) != len(want) {
+			t.Errorf("%s: CCD_HQ_MCP values %q, want %q", name, got, want)
+		}
+		for _, s := range spec.Secrets {
+			if s.Name == "CCD_HQ_MCP" {
+				t.Errorf("%s: CCD_HQ_MCP is a secret; it is a flag", name)
+			}
+		}
+	}
+}
+
+// TestTheComposeChiefsProseNamesOnlyTheToolsItsSpecAllows is the seam between
+// the two halves of the Compose chief's built spec: every muster tool its
+// CLAUDE.md names is in the spec's own pre-allow list (the env the supervisor
+// turns into permissions.allow), in every plugins/routing state — every other
+// prompt is denied in that container. Control: the Kubernetes chief's spec
+// carries no allow list and keeps the claude-code chief prose.
+func TestTheComposeChiefsProseNamesOnlyTheToolsItsSpecAllows(t *testing.T) {
+	re := regexp.MustCompile(`mcp__muster__([a-z_]+)`)
+	for _, compose := range []bool{true, false} {
+		for _, combo := range []struct{ plugins, routing bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+			cfg := ccSpecConfig()
+			cfg.ComposeContainer = compose
+			cfg.Plugins, cfg.SessionRouting = combo.plugins, combo.routing
+			row := ccRow(agents.ChiefName)
+			spec, err := adapterWith(t, cfg, row).buildSpec(context.Background(), row)
+			if err != nil {
+				t.Fatalf("compose=%v %+v: %v", compose, combo, err)
+			}
+			prose := string(spec.Files[0].Content)
+			var allow string
+			for _, e := range spec.Env {
+				if e.Name == podagent.EnvAllowMCPTools {
+					allow = e.Value
+				}
+			}
+			if !compose {
+				if allow != "" || prose != agentspec.ChiefInstructionsClaudeCode(combo.plugins, combo.routing, "", nil) {
+					t.Errorf("control %+v: the Kubernetes chief's allow list = %q, or its prose changed", combo, allow)
+				}
+				continue
+			}
+			if prose != agentspec.ChiefInstructionsCompose(combo.plugins, combo.routing) {
+				t.Errorf("%+v: the Compose chief's CLAUDE.md is not ChiefInstructionsCompose", combo)
+			}
+			allowed := strings.Split(allow, ",")
+			for _, m := range re.FindAllStringSubmatch(prose, -1) {
+				if !slices.Contains(allowed, m[1]) {
+					t.Errorf("%+v: the Compose chief's prose names %s, which its spec does not pre-allow (%s)", combo, m[1], allow)
+				}
+			}
+		}
 	}
 }

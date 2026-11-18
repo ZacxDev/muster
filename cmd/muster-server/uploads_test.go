@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"testing"
@@ -145,7 +146,7 @@ func TestTheBootCheckWarnsWhenNothingExpiresTheUploads(t *testing.T) {
 		"unreadable":  {uploads.LifecycleCoverage{}, uploads.ErrLifecycleUnreadable, []string{"could NOT be read with this key"}, []string{expire, abort}},
 	} {
 		var buf bytes.Buffer
-		logUploadBucketCheck(context.Background(), &uploadstest.Objects{Coverage: tc.cov, RulesErr: tc.err}, log.New(&buf, "", 0))
+		logUploadBucketCheck(context.Background(), &uploadstest.Objects{Coverage: tc.cov, RulesErr: tc.err}, false, log.New(&buf, "", 0))
 		for _, w := range tc.want {
 			if !strings.Contains(buf.String(), w) {
 				t.Errorf("%s: logged %q; want %q", name, buf.String(), w)
@@ -156,5 +157,56 @@ func TestTheBootCheckWarnsWhenNothingExpiresTheUploads(t *testing.T) {
 				t.Errorf("%s: logged %q, which it should not", name, w)
 			}
 		}
+	}
+}
+
+// TestTheBootCheckWarnsWhenARuleExpiresPagesFiles: with shareable pages on, a
+// lifecycle rule that would expire objects under pages/ (Coverage counts a
+// rule with no prefix too) is a WARNING naming the prefix; with pages off it
+// is not, and with no such rule there is none.
+func TestTheBootCheckWarnsWhenARuleExpiresPagesFiles(t *testing.T) {
+	warn := "expire objects under pages/"
+	for name, tc := range map[string]struct {
+		cov     uploads.LifecycleCoverage
+		pagesOn bool
+		want    bool
+	}{
+		"a rule, pages on":  {uploads.LifecycleCoverage{Expire: 1, AbortIncomplete: 1, PagesExpire: 1}, true, true},
+		"a rule, pages off": {uploads.LifecycleCoverage{Expire: 1, AbortIncomplete: 1, PagesExpire: 1}, false, false},
+		"no rule, pages on": {uploads.LifecycleCoverage{Expire: 1, AbortIncomplete: 1}, true, false},
+	} {
+		var buf bytes.Buffer
+		logUploadBucketCheck(context.Background(), &uploadstest.Objects{Coverage: tc.cov}, tc.pagesOn, log.New(&buf, "", 0))
+		if got := strings.Contains(buf.String(), warn); got != tc.want {
+			t.Errorf("%s: warned=%v, want %v: %s", name, got, tc.want, buf.String())
+		}
+	}
+}
+
+// TestTheBootRefusesPagesWhoseStoreCannotWritePages: with shareable pages
+// and attachments on, a credential that cannot write (or delete) under
+// pages/ refuses the boot with a sentence naming what to grant; pages off or
+// no attachments probe nothing; a credential that can is no error.
+func TestTheBootRefusesPagesWhoseStoreCannotWritePages(t *testing.T) {
+	svc := func(o *uploadstest.Objects) *uploads.Service {
+		return &uploads.Service{Store: &uploadstest.Store{}, Objects: o, MaxBytes: 1 << 20}
+	}
+	if err := probePagesStore(context.Background(), true, svc(&uploadstest.Objects{})); err != nil {
+		t.Fatalf("control: a credential that can: %v", err)
+	}
+	for name, o := range map[string]*uploadstest.Objects{
+		"cannot write":  {FailPut: errors.New("AccessDenied")},
+		"cannot delete": {FailDelete: errors.New("AccessDenied")},
+	} {
+		err := probePagesStore(context.Background(), true, svc(o))
+		if err == nil || !strings.Contains(err.Error(), "pages/*") || !strings.Contains(err.Error(), envPages) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := probePagesStore(context.Background(), false, svc(&uploadstest.Objects{FailPut: errors.New("AccessDenied")})); err != nil {
+		t.Errorf("pages off probed: %v", err)
+	}
+	if err := probePagesStore(context.Background(), true, nil); err != nil {
+		t.Errorf("no attachments probed: %v", err)
 	}
 }

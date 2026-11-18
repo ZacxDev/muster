@@ -1,0 +1,1420 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// Private (RFC 1918) test hosts, each derived from its block's NAME so no test
+// spells an address anybody's network might use (tests/leakscan.py).
+var (
+	testLAN10  = netip.MustParsePrefix("10.0.0.0/8").Addr().Next().String()
+	testLAN192 = netip.MustParsePrefix("192.168.0.0/16").Addr().Next().String()
+	testLAN172 = netip.MustParsePrefix("172.16.0.0/12").Addr().Next().String()
+)
+
+// TestMain makes EVERY test in this package hermetic for doctor: run() builds
+// its doctorSystem from newDoctorSystem, and here that is a healthy fake, so no
+// test — the tree ledger's `doctor` row included — reads this machine's real
+// systemd units, launchd agents or tmux.
+func TestMain(m *testing.M) {
+	newDoctorSystem = func() doctorSystem { return healthySystem().sys() }
+	os.Exit(m.Run())
+}
+
+// fakeSystem is a scriptable machine.
+type fakeSystem struct {
+	goos      string
+	unitState string // systemctl --user is-active's stdout
+	unitErr   bool   // ... and whether it exits non-zero
+	launchctl string // launchctl print's stdout; "" = not loaded (exit non-zero)
+	tmux      bool
+	tmuxV     string // `tmux -V`'s stdout; "" = "tmux 3.4\n"
+	qrencode  bool
+	claude    bool   // a `claude` on PATH
+	who       string // `who`'s stdout (this user is "me")
+	whoErr    bool   // ... and whether it fails
+
+	mu   sync.Mutex
+	runs []string
+}
+
+func healthySystem() *fakeSystem {
+	return &fakeSystem{goos: "linux", unitState: "active", tmux: true, claude: true}
+}
+
+// doctorCwd is the directory the doctor's fake system reports it runs in
+// (Claude Code's project-scoped MCP servers are looked up for it). Set per
+// run by runDoctorAgainst.
+var doctorCwd string
+
+func (f *fakeSystem) sys() doctorSystem {
+	return doctorSystem{
+		goos: f.goos, uid: 1000, user: "me",
+		getwd: func() (string, error) { return doctorCwd, nil },
+		lookPath: func(name string) (string, error) {
+			switch {
+			case name == "tmux" && f.tmux:
+				return "/usr/bin/tmux", nil
+			case name == "qrencode" && f.qrencode:
+				return "/usr/bin/qrencode", nil
+			case name == "claude" && f.claude:
+				return "/usr/bin/claude", nil
+			}
+			return "", errors.New("not found")
+		},
+		run: func(_ context.Context, name string, args ...string) (string, error) {
+			f.mu.Lock()
+			f.runs = append(f.runs, name+" "+strings.Join(args, " "))
+			f.mu.Unlock()
+			switch name {
+			case "systemctl":
+				if f.unitErr {
+					return f.unitState + "\n", errors.New("exit status 3")
+				}
+				return f.unitState + "\n", nil
+			case "launchctl":
+				if f.launchctl == "" {
+					return "", errors.New("exit status 113")
+				}
+				return f.launchctl, nil
+			case "/usr/bin/tmux":
+				if f.tmuxV != "" {
+					return f.tmuxV, nil
+				}
+				return "tmux 3.4\n", nil
+			case "/usr/bin/qrencode":
+				return "QRBLOCKS:" + args[len(args)-1] + "\n", nil
+			case "who":
+				if f.whoErr { // realRun hands back what the command printed, with the error
+					return f.who, errors.New("exit status 1")
+				}
+				return f.who, nil
+			}
+			return "", fmt.Errorf("fake system: unexpected command %s", name)
+		},
+	}
+}
+
+// fakeMuster is a muster server, scriptable per check. Its zero-value-plus-
+// healthy() state passes every check.
+type fakeMuster struct {
+	healthBroken  bool
+	healthJSON    string // "" = muster's own; else this JSON (another service's health)
+	manifestBody  string
+	unarmed       bool
+	hookToken     string
+	noDoctorRoute bool
+	report        map[string]any
+	password      string
+	loginStatus   int // 0 = check the password
+	dropCookie    bool
+	// boardRedirect: GET /tasks answers 302 to this location, signed in or
+	// not (something in front of muster); "self" is muster's own absolute
+	// <scheme>://<host>/login.
+	boardRedirect string
+	// secureCookie: the session cookie is set Secure (MUSTER_SECURE_COOKIES
+	// on a server older than the loopback exception, or a LAN port).
+	secureCookie bool
+	// loginOrigin is the Origin the last POST /login carried.
+	loginOrigin    string
+	pushKey        string
+	transcribeCode int
+	transcribeText string
+	sawSample      bool
+	sawOrigin      string
+	// The machine's own mirror token as the server knows it (GET /mirror/host).
+	mirrorToken   string // "" = fakeMirrorToken
+	hostOnline    bool
+	noHostRoute   bool
+	otherToken    bool
+	loginAttempts int
+	// hostHits counts requests to /mirror/host carrying a mirror token.
+	hostHits int
+	// heldCode: /mirror/host answers held for a request presenting this
+	// attempt code (X-Muster-Attempt-Code); sawCode is the last one presented.
+	heldCode, sawCode string
+	// heldUnknown: /mirror/host answers held_unknown for any request not
+	// presenting heldCode (#688 round 1, Y1).
+	heldUnknown bool
+}
+
+// fakeMirrorToken is the mirror token runDoctorAgainst writes for the machine.
+const fakeMirrorToken = "mmt_fake-mirror-token-for-this-machine"
+
+const (
+	fakeHookToken = "hook-token-for-the-fake-server-not-a-real-secret"
+	fakePassword  = "fake-operator-password-long-enough"
+	fakeManifest  = `{"name":"muster","start_url":"/","display":"standalone","icons":[{"src":"/static/icons/a.png"}]}`
+)
+
+func healthyMuster() *fakeMuster {
+	return &fakeMuster{
+		manifestBody: fakeManifest,
+		hookToken:    fakeHookToken,
+		password:     fakePassword,
+		pushKey:      "BPUBLICKEY",
+		report: map[string]any{
+			"auth_mode": "password", "hook_token_armed": true,
+			"push": true, "dictation": true, "public_url": "",
+			"mirror": map[string]any{"enabled": true, "hosts": []any{
+				map[string]any{"host": "alpha", "token": true, "online": true, "interactive": true},
+				map[string]any{"host": "beta", "token": true, "online": true, "interactive": false},
+			}},
+			"features": []any{
+				map[string]any{"id": "mirror", "name": "Mirrored sessions", "core": true, "state": "on"},
+				map[string]any{"id": "dictation", "name": "Dictation", "state": "on"},
+				map[string]any{"id": "attachments", "name": "File attachments", "state": "off", "reason": "none of the required variables is set",
+					"enable_hint": "set MUSTER_S3_ENDPOINT and MUSTER_S3_BUCKET in .env and restart (docs/features.md#attachments)"},
+			},
+			"officers": []any{
+				map[string]any{"id": "sentinel:sessions", "managed_by": "db", "runtime": "auto", "runs_on": "host", "host": "alpha", "problems": []any{}},
+			},
+		},
+		transcribeCode: http.StatusOK,
+		transcribeText: "testing muster dictation",
+		hostOnline:     true,
+	}
+}
+
+func (f *fakeMuster) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		if f.healthBroken {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(w, "<html>some other site</html>")
+			return
+		}
+		if f.healthJSON != "" {
+			writeJSON(w, http.StatusOK, f.healthJSON)
+			return
+		}
+		writeJSON(w, http.StatusOK, `{"status":"ok","version":"1.2.3","uptime":3}`)
+	})
+	mux.HandleFunc("GET /manifest.webmanifest", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, f.manifestBody)
+	})
+	mux.HandleFunc("GET /api/doctor", func(w http.ResponseWriter, r *http.Request) {
+		if f.noDoctorRoute {
+			http.NotFound(w, r)
+			return
+		}
+		if f.unarmed {
+			writeJSON(w, http.StatusServiceUnavailable, `{"error":"not armed","unarmed":true}`)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+f.hookToken {
+			writeJSON(w, http.StatusUnauthorized, `{"error":"invalid or missing hook token"}`)
+			return
+		}
+		b, _ := json.Marshal(f.report)
+		writeJSON(w, http.StatusOK, string(b))
+	})
+	mux.HandleFunc("GET /mirror/host", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer mmt_") {
+			f.hostHits++
+		}
+		want := f.mirrorToken
+		if want == "" {
+			want = fakeMirrorToken
+		}
+		switch {
+		case f.noHostRoute:
+			http.NotFound(w, r)
+		case r.Header.Get("Authorization") != "Bearer "+want:
+			writeJSON(w, http.StatusUnauthorized, `{"error":"this route takes a mirror host token (mmt_…)"}`)
+		case f.heldCode != "" && r.Header.Get("X-Muster-Attempt-Code") == f.heldCode:
+			f.sawCode = r.Header.Get("X-Muster-Attempt-Code")
+			writeJSON(w, http.StatusOK, `{"host":"alpha","online":false,"interactive":false,"held":true}`)
+		default:
+			f.sawCode = r.Header.Get("X-Muster-Attempt-Code")
+			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"host":"alpha","online":%t,"interactive":%t,"other_token":%t,"held_unknown":%t}`,
+				f.hostOnline && !f.otherToken, f.hostOnline && !f.otherToken, f.otherToken, f.heldUnknown))
+		}
+	})
+	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
+		f.loginAttempts++
+		f.loginOrigin = r.Header.Get("Origin")
+		_ = r.ParseForm()
+		switch {
+		case f.loginStatus != 0:
+			w.WriteHeader(f.loginStatus)
+		case r.FormValue("password") != f.password:
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			if !f.dropCookie {
+				http.SetCookie(w, &http.Cookie{Name: "muster_session", Value: "signed", Path: "/", Secure: f.secureCookie})
+			} else {
+				http.SetCookie(w, &http.Cookie{Name: "muster_other", Value: "x", Path: "/"})
+			}
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		}
+	})
+	signed := func(r *http.Request) bool {
+		c, err := r.Cookie("muster_session")
+		return err == nil && c.Value == "signed"
+	}
+	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
+		switch f.boardRedirect {
+		case "":
+		case "self":
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			http.Redirect(w, r, scheme+"://"+r.Host+"/login", http.StatusFound)
+			return
+		default:
+			http.Redirect(w, r, f.boardRedirect, http.StatusFound)
+			return
+		}
+		if !signed(r) {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		_, _ = io.WriteString(w, "<html>board</html>")
+	})
+	mux.HandleFunc("GET /api/push/vapid-public-key", func(w http.ResponseWriter, r *http.Request) {
+		if !signed(r) {
+			writeJSON(w, http.StatusUnauthorized, `{}`)
+			return
+		}
+		if f.pushKey == "" {
+			writeJSON(w, http.StatusServiceUnavailable, `{"error":"Push notifications are not configured"}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, `{"key":"`+f.pushKey+`"}`)
+	})
+	mux.HandleFunc("POST /transcribe", func(w http.ResponseWriter, r *http.Request) {
+		if !signed(r) {
+			writeJSON(w, http.StatusUnauthorized, `{}`)
+			return
+		}
+		f.sawOrigin = r.Header.Get("Origin")
+		body, _ := io.ReadAll(r.Body)
+		f.sawSample = bytes.Equal(body, doctorSample)
+		if f.transcribeCode == http.StatusNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(f.transcribeCode)
+		_, _ = io.WriteString(w, f.transcribeText)
+	})
+	return mux
+}
+
+// doctorResult is one doctor run.
+type doctorResult struct {
+	code   int
+	stdout string
+	stderr string
+	doc    struct {
+		URL    string        `json:"url"`
+		OK     bool          `json:"ok"`
+		Checks []doctorCheck `json:"checks"`
+	}
+}
+
+func (r doctorResult) status(name string) doctorStatus {
+	for _, c := range r.doc.Checks {
+		if c.Name == name {
+			return c.Status
+		}
+	}
+	return ""
+}
+
+func (r doctorResult) check(name string) doctorCheck {
+	for _, c := range r.doc.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	return doctorCheck{}
+}
+
+// runDoctor drives `doctor` against srv (https unless plain) with sys, the
+// server's hook token and an --deploy-env carrying the password unless the
+// options say otherwise. It goes through the real command tree with an
+// injected transport, as runCapturingTimeout does.
+type doctorOpts struct {
+	plain bool
+	// host replaces the server URL's 127.0.0.1 (the client still dials the
+	// test server): a non-loopback name such as a LAN host.
+	host       string
+	noToken    bool
+	token      string
+	noPassword bool
+	password   string
+	// deployURL is the deploy file's MUSTER_PUBLIC_URL ("" = the server's own).
+	deployURL string
+	// tokenFile is the mirror token file's content ("" = fakeMirrorToken);
+	// noMirror writes no mirror settings at all.
+	tokenFile string
+	noMirror  bool
+	// mirrorURL is the settings file's MUSTER_MIRROR_URL ("" = this server).
+	mirrorURL string
+	// The agent ask tool's local setup, all present unless one of these says
+	// otherwise: the MCP listen line (and its secret file), Claude Code's
+	// user-scope registration of it, and the ask PreToolUse hook.
+	noMCPListen, noMCPSecret, noMCPRegistration, noAskHook bool
+	// mcpRegisteredURL is the url Claude Code's registration names ("" =
+	// the endpoint's own, http://127.0.0.1:47823/mcp).
+	mcpRegisteredURL string
+	// mcpScope is where it is registered: "user" (default), "local"
+	// (~/.claude.json's projects[cwd]) or "project" (cwd/.mcp.json).
+	mcpScope string
+	// askMatcher is the ask hook's matcher ("" = "AskUserQuestion").
+	askMatcher string
+	// mcpSecretFile, when set, is the settings' MUSTER_MIRROR_MCP_SECRET_FILE,
+	// and the secret is written there instead of at the default path. A
+	// leading "@/" is the test's own directory (an absolute path that exists);
+	// "~/" is left for the doctor to expand (the test's directory is the home).
+	mcpSecretFile string
+	// attemptCode, when set, is written where muster-mirror leaves its
+	// attempt code (internal/mirrorpath's default, under XDG_CONFIG_HOME).
+	attemptCode string
+	extra       []string
+	// stdout and stderr, when set, are the streams instead of buffers (the
+	// result's stdout/stderr are then empty: the caller reads its files).
+	stdout, stderr io.Writer
+}
+
+func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts) doctorResult {
+	t.Helper()
+	var ts *httptest.Server
+	if o.plain {
+		ts = httptest.NewServer(m.handler())
+	} else {
+		ts = httptest.NewTLSServer(m.handler())
+	}
+	t.Cleanup(ts.Close)
+	base := ts.URL
+	if o.host != "" {
+		base = strings.Replace(ts.URL, "127.0.0.1", o.host, 1)
+	}
+	dir := t.TempDir()
+	args := []string{"--api-url", base, "--env-file", filepath.Join(dir, "absent.env")}
+	token := fakeHookToken
+	if o.token != "" {
+		token = o.token
+	}
+	if !o.noToken {
+		args = append(args, "--token", token)
+	}
+	if !o.noPassword {
+		pw := fakePassword
+		if o.password != "" {
+			pw = o.password
+		}
+		deployURL := base
+		if o.deployURL != "" {
+			deployURL = o.deployURL
+		}
+		env := filepath.Join(dir, "deploy.env")
+		if err := os.WriteFile(env, []byte("MUSTER_PUBLIC_URL="+deployURL+"\nMUSTER_UI_PASSWORD='"+pw+"'\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "doctor", "--deploy-env", env)
+	} else {
+		args = append(args, "doctor")
+	}
+	mirrorEnv := filepath.Join(dir, "mirror", "env")
+	// muster-mirror's config directory, as os.UserConfigDir resolves it here
+	// (internal/mirrorpath): a synthetic XDG_CONFIG_HOME under the test dir.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	if o.attemptCode != "" {
+		_ = os.MkdirAll(filepath.Join(dir, "xdg", "muster-mirror"), 0o700)
+		if err := os.WriteFile(filepath.Join(dir, "xdg", "muster-mirror", "attempt-code"), []byte(o.attemptCode+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doctorCwd = filepath.Join(dir, "work")
+	_ = os.MkdirAll(doctorCwd, 0o700)
+	if !o.noMirror {
+		tok := fakeMirrorToken
+		if o.tokenFile != "" {
+			tok = o.tokenFile
+		}
+		if o.tokenFile == "EMPTY" {
+			tok = ""
+		}
+		_ = os.MkdirAll(filepath.Dir(mirrorEnv), 0o700)
+		tokPath := filepath.Join(dir, "mirror", "token")
+		if err := os.WriteFile(tokPath, []byte(tok+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		murl := base
+		if o.mirrorURL != "" {
+			murl = o.mirrorURL
+		}
+		envBody := "MUSTER_MIRROR_URL=" + murl + "\nMUSTER_MIRROR_TOKEN_FILE=" + tokPath + "\n"
+		if !o.noMCPListen {
+			envBody += "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823\n"
+		}
+		if o.mcpSecretFile != "" {
+			envBody += "MUSTER_MIRROR_MCP_SECRET_FILE=" + strings.Replace(o.mcpSecretFile, "@/", dir+"/", 1) + "\n"
+		}
+		if err := os.WriteFile(mirrorEnv, []byte(envBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !o.noMCPSecret {
+			// muster-mirror writes its secret at ONE path: the settings' file
+			// when they name one (then the default path stays absent), else
+			// the default under XDG_CONFIG_HOME.
+			secret := filepath.Join(dir, "xdg", "muster-mirror", "mcp-secret")
+			if o.mcpSecretFile != "" {
+				secret = o.mcpSecretFile
+				if rest, ok := strings.CutPrefix(secret, "~/"); ok {
+					secret = filepath.Join(dir, rest) // dir is the home
+				}
+				if rest, ok := strings.CutPrefix(secret, "@/"); ok {
+					secret = filepath.Join(dir, rest)
+				}
+			}
+			_ = os.MkdirAll(filepath.Dir(secret), 0o700)
+			_ = os.WriteFile(secret, []byte("a-synthetic-mcp-secret\n"), 0o600)
+		}
+		if !o.noMCPRegistration {
+			u := o.mcpRegisteredURL
+			if u == "" {
+				u = "http://127.0.0.1:47823/mcp"
+			}
+			srv := `{"muster":{"type":"http","url":"` + u + `","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}"}}}`
+			switch o.mcpScope {
+			case "local":
+				_ = os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"projects":{`+strconv.Quote(doctorCwd)+`:{"mcpServers":`+srv+`}}}`), 0o600)
+			case "project":
+				_ = os.WriteFile(filepath.Join(doctorCwd, ".mcp.json"), []byte(`{"mcpServers":`+srv+`}`), 0o600)
+			default:
+				_ = os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"mcpServers":`+srv+`}`), 0o600)
+			}
+		}
+		if !o.noAskHook {
+			m := o.askMatcher
+			if m == "" {
+				m = "AskUserQuestion"
+			}
+			_ = os.MkdirAll(filepath.Join(dir, ".claude"), 0o700)
+			_ = os.WriteFile(filepath.Join(dir, ".claude", "settings.json"),
+				[]byte(`{"hooks":{"PreToolUse":[{"matcher":`+strconv.Quote(m)+`,"hooks":[{"type":"command","command":"muster-mirror ask","timeout":10}]}]}}`), 0o600)
+		}
+	}
+	args = append(args, "--mirror-env", mirrorEnv)
+	args = append(args, o.extra...)
+
+	var out, errOut strings.Builder
+	var stdout, stderr io.Writer = &out, &errOut
+	if o.stdout != nil {
+		stdout, stderr = o.stdout, o.stderr
+	}
+	a := &app{
+		stdout: stdout, stderr: stderr,
+		getenv:   func(string) string { return "" },
+		homeDir:  dir,
+		progName: testProgName,
+		newHTTP: func(timeout time.Duration) *http.Client {
+			c := ts.Client() // trusts the test server's certificate
+			c.Timeout = timeout
+			if o.host != "" {
+				tr := c.Transport.(*http.Transport).Clone()
+				addr := ts.Listener.Addr().String()
+				tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				}
+				c.Transport = tr
+			}
+			return c
+		},
+		doctorSys: fs.sys(),
+	}
+	root := newRootCmd(a)
+	root.SetArgs(args)
+	err := root.ExecuteContext(context.Background())
+	if err != nil {
+		fmt.Fprintln(stderr, testProgName+": "+err.Error())
+	}
+	r := doctorResult{code: exitCodeFor(err), stdout: out.String(), stderr: errOut.String()}
+	if r.stdout != "" {
+		if jerr := json.Unmarshal([]byte(r.stdout), &r.doc); jerr != nil {
+			t.Fatalf("stdout is not one JSON document (%v):\n%s", jerr, r.stdout)
+		}
+	}
+	return r
+}
+
+// TestDoctorHealthyIsAllPass is the positive control for every red case below:
+// the same fake, unbroken, passes every check and exits 0 — so a FAIL in a
+// case is the breakage, not the fixture.
+func TestDoctorHealthyIsAllPass(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	if r.code != exitOK || !r.doc.OK {
+		t.Fatalf("exit %d ok=%v\n%s", r.code, r.doc.OK, r.stderr)
+	}
+	if len(r.doc.Checks) != len(doctorChecks) {
+		t.Fatalf("%d checks reported, want %d: %+v", len(r.doc.Checks), len(doctorChecks), r.doc.Checks)
+	}
+	for i, c := range r.doc.Checks {
+		if c.Name != doctorChecks[i] || c.Status != statusPass {
+			t.Errorf("check %d = %+v, want %s PASS", i, c, doctorChecks[i])
+		}
+	}
+	if !m.sawSample || m.sawOrigin == "" {
+		t.Fatalf("the dictation check did not send the bundled sample with an Origin (sample=%v origin=%q)", m.sawSample, m.sawOrigin)
+	}
+	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
+		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
+	}
+	if !strings.Contains(r.stderr, "15 passed, 0 failed, 0 skipped") {
+		t.Fatalf("stderr summary missing:\n%s", r.stderr)
+	}
+	// The human report is on stderr and nowhere on stdout.
+	if strings.Contains(r.stdout, "PASS  ") {
+		t.Fatalf("the human report leaked onto stdout:\n%s", r.stdout)
+	}
+}
+
+// TestDoctorEachCheckGoesRedWhenBroken is the matrix: for each check, the
+// healthy fixture with ONE thing broken turns exactly that check FAIL, with a
+// fix line, and the run exits 1. Paired with TestDoctorHealthyIsAllPass (the
+// green half), each row is red-when-broken / green-when-fixed.
+func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
+	cases := []struct {
+		check  string
+		why    string
+		breakM func(*fakeMuster)
+		breakS func(*fakeSystem)
+		opts   doctorOpts
+		detail string // a fragment the FAIL's detail must carry
+	}{
+		// Plain http to ANOTHER machine: still a FAIL (loopback http is a PASS,
+		// TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR).
+		{check: "server", why: "plain http", opts: doctorOpts{plain: true, host: "muster.example"}, detail: "plain http"},
+		{check: "server", why: "plain http to a LAN address", opts: doctorOpts{plain: true, host: testLAN192}, detail: "plain http"},
+		{check: "server", why: "plain http to localhost.evil.com", opts: doctorOpts{plain: true, host: "localhost.evil.com"}, detail: "plain http"},
+		{check: "server", why: "not muster", breakM: func(m *fakeMuster) { m.healthBroken = true }, detail: "not muster's health"},
+		{check: "server", why: "another service's JSON health", breakM: func(m *fakeMuster) { m.healthJSON = `{"healthy":true}` }, detail: "not muster's health"},
+		{check: "manifest", why: "not a manifest", breakM: func(m *fakeMuster) { m.manifestBody = "<html>portal</html>" }, detail: "not a manifest"},
+		{check: "manifest", why: "incomplete", breakM: func(m *fakeMuster) {
+			m.manifestBody = `{"name":"muster","start_url":"/","display":"browser","icons":[]}`
+		}, detail: "incomplete"},
+		{check: "hook-token", why: "unarmed", breakM: func(m *fakeMuster) { m.unarmed = true }, detail: "no MUSTER_HOOK_TOKEN"},
+		{check: "hook-token", why: "wrong token", opts: doctorOpts{token: "not-the-servers-token"}, detail: "refused this machine's token"},
+		{check: "hook-token", why: "old server", breakM: func(m *fakeMuster) { m.noDoctorRoute = true }, detail: "older than this CLI"},
+		{check: "hook-token", why: "personal token on an unarmed server", breakM: func(m *fakeMuster) { m.report["hook_token_armed"] = false }, detail: "no MUSTER_HOOK_TOKEN"},
+		{check: "mirror-hosts", why: "a host offline", breakM: func(m *fakeMuster) {
+			m.report["mirror"].(map[string]any)["hosts"].([]any)[1].(map[string]any)["online"] = false
+		}, detail: "NOT connected: beta"},
+		{check: "mirror-hosts", why: "no hosts", breakM: func(m *fakeMuster) {
+			m.report["mirror"].(map[string]any)["hosts"] = []any{}
+		}, detail: "no machine"},
+		{check: "mirror-hosts", why: "mirror off", breakM: func(m *fakeMuster) {
+			m.report["mirror"] = map[string]any{"enabled": false, "hosts": []any{}}
+		}, detail: "off on the server"},
+		{check: "this-host", why: "token refused", opts: doctorOpts{tokenFile: "mmt_a-revoked-or-foreign-token"}, detail: "refused this machine's mirror token"},
+		{check: "this-host", why: "another machine under this name", breakM: func(m *fakeMuster) { m.otherToken = true }, detail: "ANOTHER token"},
+		{check: "this-host", why: "not connected", breakM: func(m *fakeMuster) { m.hostOnline = false }, detail: "holds no connection"},
+		{check: "this-host", why: "empty token file", opts: doctorOpts{tokenFile: "EMPTY"}, detail: "missing or empty"},
+		{check: "this-host", why: "route absent", breakM: func(m *fakeMuster) { m.noHostRoute = true }, detail: "has no /mirror/host"},
+		{check: "mirror-service", why: "unit inactive", breakS: func(s *fakeSystem) { s.unitState, s.unitErr = "inactive", true }, detail: "is inactive"},
+		{check: "mirror-service", why: "unit failed", breakS: func(s *fakeSystem) { s.unitState, s.unitErr = "failed", true }, detail: "is failed"},
+		{check: "mirror-service", why: "launchd not loaded", breakS: func(s *fakeSystem) { s.goos = "darwin" }, detail: "not loaded"},
+		{check: "mirror-service", why: "launchd not running", breakS: func(s *fakeSystem) {
+			s.goos, s.launchctl = "darwin", "gui/1000/x = {\n\tstate = not running\n}"
+		}, detail: "not running"},
+		{check: "tmux", why: "absent", breakS: func(s *fakeSystem) { s.tmux = false }, detail: "not installed"},
+		{check: "sign-in", why: "wrong password", opts: doctorOpts{password: "a-stale-password-from-before"}, detail: "refused the password"},
+		{check: "sign-in", why: "no password configured", breakM: func(m *fakeMuster) { m.loginStatus = http.StatusServiceUnavailable }, detail: "no usable MUSTER_UI_PASSWORD"},
+		{check: "sign-in", why: "cookie dropped", breakM: func(m *fakeMuster) { m.dropCookie = true }, detail: "does not open a page"},
+		{check: "push", why: "no keys (signed in)", breakM: func(m *fakeMuster) { m.pushKey = "" }, detail: "no push keys"},
+		{check: "push", why: "no keys (report only)", opts: doctorOpts{noPassword: true}, breakM: func(m *fakeMuster) { m.report["push"] = false }, detail: "MUSTER_VAPID_"},
+		{check: "dictation", why: "route 404", breakM: func(m *fakeMuster) { m.transcribeCode = http.StatusNotFound }, detail: "404"},
+		{check: "dictation", why: "service refused", breakM: func(m *fakeMuster) {
+			m.transcribeCode, m.transcribeText = http.StatusBadGateway, "The transcription service refused this server's credential"
+		}, detail: "502"},
+		{check: "dictation", why: "heard nothing", breakM: func(m *fakeMuster) { m.transcribeText = "  " }, detail: "heard nothing"},
+		{check: "officers", why: "claude not logged in on its host", breakM: func(m *fakeMuster) {
+			m.report["officers"] = []any{map[string]any{"id": "sentinel:sessions", "runtime": "host", "runs_on": "host", "host": "alpha",
+				"problems": []any{map[string]any{"problem": "host alpha: Claude Code is not logged in there", "fix": "on alpha, run `claude` once"}}}}
+		}, detail: "sentinel:sessions: host alpha: Claude Code is not logged in there"},
+	}
+	for _, c := range cases {
+		t.Run(c.check+"/"+c.why, func(t *testing.T) {
+			m, s := healthyMuster(), healthySystem()
+			if c.breakM != nil {
+				c.breakM(m)
+			}
+			if c.breakS != nil {
+				c.breakS(s)
+			}
+			r := runDoctorAgainst(t, m, s, c.opts)
+			got := r.check(c.check)
+			if got.Status != statusFail {
+				t.Fatalf("%s = %+v, want FAIL\n%s", c.check, got, r.stderr)
+			}
+			if !strings.Contains(got.Detail, c.detail) {
+				t.Errorf("%s detail %q, want it to say %q", c.check, got.Detail, c.detail)
+			}
+			if got.Fix == "" {
+				t.Errorf("%s FAILed with no fix line", c.check)
+			}
+			if r.code != exitServerError || r.doc.OK {
+				t.Errorf("exit %d ok=%v, want 1 and ok=false on a FAIL", r.code, r.doc.OK)
+			}
+			if !strings.Contains(r.stderr, "FAIL  "+c.check) || !strings.Contains(r.stderr, "fix: ") {
+				t.Errorf("stderr does not show the FAIL and its fix:\n%s", r.stderr)
+			}
+		})
+	}
+}
+
+// TestDoctorTmuxSaysHowPickersAreAnswered: the tmux check PASSes for every
+// tmux version — none is refused for picker answers — and says which paste
+// muster-mirror types them with: -S on 3.7+, the plain paste before 3.7, and
+// for a version it cannot read, that the running server is asked instead.
+func TestDoctorTmuxSaysHowPickersAreAnswered(t *testing.T) {
+	for _, c := range []struct{ v, want, not string }{
+		{"tmux 3.4\n", "plain `paste-buffer` (tmux before 3.7 pastes raw", "-S`"},
+		{"tmux 3.6b\n", "plain `paste-buffer`", "`paste-buffer -S`"},
+		{"tmux 3.7c\n", "typed with `paste-buffer -S`", "plain"},
+		{"tmux next-3.8\n", "typed with `paste-buffer -S`", "plain"},
+		{"tmux master\n", "version not recognised", "paste-buffer"},
+	} {
+		s := healthySystem()
+		s.tmuxV = c.v
+		got := runDoctorAgainst(t, healthyMuster(), s, doctorOpts{}).check("tmux")
+		if got.Status != statusPass || !strings.Contains(got.Detail, c.want) || strings.Contains(got.Detail, c.not) {
+			t.Errorf("%q: %+v, want PASS saying %q and not %q", strings.TrimSpace(c.v), got, c.want, c.not)
+		}
+	}
+}
+
+// TestDoctorSkipsWhatThisMachineCannotCheck: with no token and no password (a
+// machine other than the server's), the server-side checks SKIP with a way to
+// run them, the local and public ones still run, and the run passes — a SKIP
+// never fails it.
+func TestDoctorSkipsWhatThisMachineCannotCheck(t *testing.T) {
+	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{noToken: true, noPassword: true})
+	want := map[string]doctorStatus{
+		"server": statusPass, "manifest": statusPass, "hook-token": statusSkip,
+		"mirror-hosts": statusSkip, "this-host": statusPass, "mirror-service": statusPass, "tmux": statusPass, "sign-in": statusSkip,
+		"push": statusSkip, "dictation": statusSkip,
+	}
+	for name, st := range want {
+		if got := r.status(name); got != st {
+			t.Errorf("%s = %s, want %s", name, got, st)
+		}
+	}
+	if r.code != exitOK {
+		t.Fatalf("exit %d, want 0: SKIPs must not fail the run\n%s", r.code, r.stderr)
+	}
+	if r.check("hook-token").Fix == "" || r.check("sign-in").Fix == "" {
+		t.Fatalf("a SKIP that can be enabled must say how: %+v %+v", r.check("hook-token"), r.check("sign-in"))
+	}
+}
+
+// TestDoctorAnUnreachableServerSkipsTheRestAndFails: nothing listening is a
+// server FAIL; every server-side check SKIPs rather than piling up FAILs.
+func TestDoctorAnUnreachableServerSkipsTheRestAndFails(t *testing.T) {
+	ts := httptest.NewTLSServer(http.NotFoundHandler())
+	url := ts.URL
+	ts.Close()
+	var out, errOut strings.Builder
+	a := &app{stdout: &out, stderr: &errOut, getenv: func(string) string { return "" }, homeDir: t.TempDir(),
+		progName: testProgName, newHTTP: func(d time.Duration) *http.Client { return &http.Client{Timeout: d} },
+		doctorSys: healthySystem().sys()}
+	root := newRootCmd(a)
+	root.SetArgs([]string{"--api-url", url, "--token", "t", "--env-file", filepath.Join(t.TempDir(), "x"), "doctor"})
+	err := root.ExecuteContext(context.Background())
+	if exitCodeFor(err) != exitServerError {
+		t.Fatalf("exit %d, want 1", exitCodeFor(err))
+	}
+	var doc struct{ Checks []doctorCheck }
+	if jerr := json.Unmarshal([]byte(out.String()), &doc); jerr != nil {
+		t.Fatal(jerr)
+	}
+	for _, c := range doc.Checks {
+		switch c.Name {
+		case "server":
+			if c.Status != statusFail {
+				t.Errorf("server = %+v, want FAIL", c)
+			}
+		case "manifest", "hook-token", "mirror-hosts", "this-host", "sign-in", "push", "dictation":
+			if c.Status != statusSkip {
+				t.Errorf("%s = %+v, want SKIP behind the server's FAIL", c.Name, c)
+			}
+		}
+	}
+}
+
+// TestDoctorPrintsTheQRWithQrencodeAndTheURLWithout: the URL is printed either
+// way; the code is drawn only when qrencode exists, and it encodes the URL.
+func TestDoctorPrintsTheQRWithQrencodeAndTheURLWithout(t *testing.T) {
+	with := healthySystem()
+	with.qrencode = true
+	r := runDoctorAgainst(t, healthyMuster(), with, doctorOpts{})
+	if !strings.Contains(r.stderr, "QRBLOCKS:"+r.doc.URL) {
+		t.Fatalf("qrencode present: no code for %s on stderr:\n%s", r.doc.URL, r.stderr)
+	}
+	if strings.Contains(r.stdout, "QRBLOCKS") {
+		t.Fatal("the QR code leaked onto stdout")
+	}
+	without := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{})
+	if strings.Contains(without.stderr, "QRBLOCKS") || !strings.Contains(without.stderr, "install qrencode") ||
+		!strings.Contains(without.stderr, without.doc.URL) {
+		t.Fatalf("qrencode absent: want the URL and the install hint, no code:\n%s", without.stderr)
+	}
+}
+
+// TestDoctorSkipFlag: --skip turns a check into SKIP without running it, and
+// an unknown name is a usage error rather than a silently ignored typo.
+func TestDoctorSkipFlag(t *testing.T) {
+	s := healthySystem()
+	s.tmux = false
+	r := runDoctorAgainst(t, healthyMuster(), s, doctorOpts{extra: []string{"--skip", "tmux"}})
+	if r.status("tmux") != statusSkip || r.code != exitOK {
+		t.Fatalf("--skip tmux: tmux=%s exit=%d", r.status("tmux"), r.code)
+	}
+	bad := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{extra: []string{"--skip", "tmuxx"}})
+	if bad.code != exitUsage {
+		t.Fatalf("--skip tmuxx: exit %d, want %d (usage)", bad.code, exitUsage)
+	}
+}
+
+// TestDoctorDeployEnvBeatsTheCLIConfig: during an install the hub checked is
+// the one --deploy-env names — its MUSTER_PUBLIC_URL and MUSTER_HOOK_TOKEN beat
+// an older ~/.muster/muster.env and the environment — and only --api-url /
+// --token beat it.
+func TestDoctorDeployEnvBeatsTheCLIConfig(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("MUSTER_PUBLIC_URL=https://from-deploy.example.test\nMUSTER_HOOK_TOKEN=deploy-token\nMUSTER_UI_PASSWORD=pw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An older CLI config pointing at ANOTHER muster, in both the env file and
+	// the environment (both token spellings).
+	cliEnv := filepath.Join(dir, "muster.env")
+	if err := os.WriteFile(cliEnv, []byte("MUSTER_API_URL=https://other.example.test\nMUSTER_TOKEN=other-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environ := map[string]string{"MUSTER_API_URL": "https://env.example.test", "MUSTER_TOKEN": "env-token", "MUSTER_HOOK_TOKEN": "env-hook"}
+	resolveWith := func(flagURL, flagToken string) *doctorRun {
+		a := &app{getenv: func(k string) string { return environ[k] }, homeDir: dir, flagEnvFile: cliEnv,
+			flagAPIURL: flagURL, flagToken: flagToken}
+		d := &doctorRun{a: a}
+		if err := d.resolve(env); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	d := resolveWith("", "")
+	if d.base != "https://from-deploy.example.test" || d.token != "deploy-token" || d.password != "pw" ||
+		d.passwordURL != "https://from-deploy.example.test" {
+		t.Fatalf("the deploy file must win over the CLI config: base %q token %q password %q passwordURL %q",
+			d.base, d.token, d.password, d.passwordURL)
+	}
+	d = resolveWith("https://flag.example.test", "flag-token")
+	if d.base != "https://flag.example.test" || d.token != "flag-token" {
+		t.Fatalf("flags must win: base %q token %q", d.base, d.token)
+	}
+	// Without --deploy-env the CLI config applies as before.
+	a := &app{getenv: func(k string) string { return environ[k] }, homeDir: dir, flagEnvFile: cliEnv}
+	plain := &doctorRun{a: a}
+	if err := plain.resolve(""); err != nil {
+		t.Fatal(err)
+	}
+	if plain.base != "https://env.example.test" || plain.token != "env-token" {
+		t.Fatalf("no deploy file: base %q token %q, want the environment's", plain.base, plain.token)
+	}
+}
+
+// TestDoctorNeverSendsThePasswordToAnotherServer: --deploy-env names one hub;
+// pointed (by --api-url) at a different server, doctor does not POST the
+// password there — sign-in SKIPs, and that server sees no /login at all.
+func TestDoctorNeverSendsThePasswordToAnotherServer(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{deployURL: "https://the-new-hub.example.test"})
+	if m.loginAttempts != 0 {
+		t.Fatalf("the password was posted to a server the deploy file does not name (%d attempts)", m.loginAttempts)
+	}
+	if r.status("sign-in") != statusSkip || !strings.Contains(r.check("sign-in").Detail, "not sent") {
+		t.Fatalf("sign-in = %+v, want SKIP saying it was not sent", r.check("sign-in"))
+	}
+	// Control: the same run with the deploy file naming this server signs in.
+	m2 := healthyMuster()
+	if r2 := runDoctorAgainst(t, m2, healthySystem(), doctorOpts{}); m2.loginAttempts != 1 || r2.status("sign-in") != statusPass {
+		t.Fatalf("control: %d login attempts, sign-in %s; want 1 and PASS", m2.loginAttempts, r2.status("sign-in"))
+	}
+}
+
+// TestDoctorSampleIsAWAVTheServerAccepts: the embedded sample is what
+// /transcribe sniffs as audio (RIFF…WAVE), and not empty — an embed that
+// resolved to nothing would send zero bytes and read as "heard nothing".
+func TestDoctorSampleIsAWAVTheServerAccepts(t *testing.T) {
+	if len(doctorSample) < 8000 || string(doctorSample[:4]) != "RIFF" || string(doctorSample[8:12]) != "WAVE" {
+		t.Fatalf("doctorSample is %d bytes starting %q; want a RIFF/WAVE recording", len(doctorSample), doctorSample[:12])
+	}
+}
+
+// TestDoctorSendsTheMirrorTokenOnlyToItsOwnServer: the settings file says the
+// mirror belongs to hub A; doctor is pointed at B. this-host SKIPs, naming A,
+// and B never sees the mirror token (round-2 audit, Y1). The control is the
+// healthy run, where the two agree and B — then the right server — is asked.
+func TestDoctorSendsTheMirrorTokenOnlyToItsOwnServer(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{mirrorURL: "https://hub-a.example.test"})
+	if m.hostHits != 0 {
+		t.Fatalf("the mirror token was sent to a server it does not belong to (%d requests)", m.hostHits)
+	}
+	if c := r.check("this-host"); c.Status != statusSkip || !strings.Contains(c.Detail, "hub-a.example.test") {
+		t.Fatalf("this-host = %+v, want a SKIP naming the mirror's own server", c)
+	}
+	m2 := healthyMuster()
+	if r2 := runDoctorAgainst(t, m2, healthySystem(), doctorOpts{}); m2.hostHits != 1 || r2.status("this-host") != statusPass {
+		t.Fatalf("control: %d requests, this-host %s; want 1 and PASS", m2.hostHits, r2.status("this-host"))
+	}
+}
+
+// TestDoctorRefusedMirrorTokenSaysToCheckBeforeMinting: a 401 can be a token
+// the server simply does not know; the fix line checks the list first rather
+// than sending the person to mint and revoke.
+func TestDoctorRefusedMirrorTokenSaysToCheckBeforeMinting(t *testing.T) {
+	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{tokenFile: "mmt_unknown-token"})
+	fix := r.check("this-host").Fix
+	if !strings.Contains(fix, "mirror token ls") || !strings.Contains(fix, "only if none is live") {
+		t.Fatalf("fix = %q, want it to check the token list before minting", fix)
+	}
+}
+
+// TestDoctorPromotesTheDeployTokenOnlyWithItsURL: a deploy file with a hook
+// token but NO MUSTER_PUBLIC_URL must not send that token to the CLI config's
+// URL (round-2 audit, G1).
+func TestDoctorPromotesTheDeployTokenOnlyWithItsURL(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("MUSTER_PUBLIC_URL=\nMUSTER_HOOK_TOKEN=hub-hook-token\nMUSTER_UI_PASSWORD=pw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cliEnv := filepath.Join(dir, "muster.env")
+	if err := os.WriteFile(cliEnv, []byte("MUSTER_API_URL=https://other.example.test\nMUSTER_TOKEN=other-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{getenv: func(string) string { return "" }, homeDir: dir, flagEnvFile: cliEnv}
+	d := &doctorRun{a: a}
+	if err := d.resolve(env); err != nil {
+		t.Fatal(err)
+	}
+	if d.base != "https://other.example.test" || d.token != "other-token" {
+		t.Fatalf("base %q token %q: the deploy file's hook token went to the CLI config's server", d.base, d.token)
+	}
+}
+
+// TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams pins the CLI's contract
+// on REAL files: stdout carries the one JSON document and stderr the report,
+// also when both are the SAME open file (a terminal, `>out 2>&1`). An agent
+// that wants only the report sends stdout to /dev/null (INSTALL.md, "Check it")
+// rather than the CLI guessing from the streams.
+func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
+	read := func(f *os.File) string {
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	open := func(name string) *os.File {
+		f, err := os.OpenFile(filepath.Join(t.TempDir(), name), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return f
+	}
+	const report, doc = "15 passed, 0 failed, 0 skipped", `"checks": [`
+
+	both := open("both")
+	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})
+	if got := read(both); r.code != exitOK || strings.Count(got, report) != 1 || strings.Count(got, doc) != 1 {
+		t.Fatalf("one file for both: exit %d; want the report and the JSON once each:\n%s", r.code, got)
+	}
+
+	out, errf := open("out"), open("err")
+	r = runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: out, stderr: errf})
+	var d struct {
+		OK     bool          `json:"ok"`
+		Checks []doctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(read(out)), &d); err != nil || r.code != exitOK || !d.OK || len(d.Checks) != len(doctorChecks) {
+		t.Fatalf("separate files: stdout must be the one JSON document (%v):\n%s", err, read(out))
+	}
+	if got := read(errf); strings.Count(got, report) != 1 || strings.Contains(got, doc) {
+		t.Fatalf("separate files: stderr must be the report alone:\n%s", got)
+	}
+}
+
+// TestDoctorChecksThisHostsSessionToolsLocally: the agent ask tool's setup on
+// THIS machine. Off (no listen line) is a SKIP naming the line; asked for (a
+// listen line) with no secret, or with no Claude Code registration, is a FAIL
+// with the exact fix; no ask hook is a SKIP with the hook to add. The healthy
+// fixture (all three set up) is the PASS (TestDoctorHealthyIsAllPass). No
+// secret reaches the output.
+func TestDoctorChecksThisHostsSessionToolsLocally(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		o      doctorOpts
+		check  string
+		status doctorStatus
+		detail string
+		fix    string
+	}{
+		{"no listen line", doctorOpts{noMCPListen: true}, "mcp-endpoint", statusSkip, "MUSTER_MIRROR_MCP_LISTEN is not set", "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823"},
+		{"no listen line, registration skipped", doctorOpts{noMCPListen: true}, "mcp-registration", statusSkip, "serves no MCP endpoint", ""},
+		{"listen but no secret", doctorOpts{noMCPSecret: true}, "mcp-endpoint", statusFail, "has not started with it yet", "restart muster-mirror"},
+		{"listen but not registered", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail, "registers an MCP server at it",
+			`claude mcp add-json --scope user muster '{"type":"http","url":"http://127.0.0.1:47823/mcp"`},
+		// The fix's export reads the secret where muster-mirror keeps it, quoted
+		// (macOS's default has a space in it), and fails loudly when it cannot:
+		// no 2>/dev/null hiding a missing or unreadable file.
+		{"not registered: the export reads the default secret", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `/xdg/muster-mirror/mcp-secret')"`},
+		{"not registered: the export reads the settings' secret file", doctorOpts{noMCPRegistration: true, mcpSecretFile: "/elsewhere/mcp secret"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `export MUSTER_MIRROR_MCP_SECRET="$(cat '/elsewhere/mcp secret')"`},
+		// A ' in the path closes the quote, adds an escaped one, and reopens it.
+		{"not registered: a ' in the secret's path stays one shell word", doctorOpts{noMCPRegistration: true, mcpSecretFile: "/elsewhere/it's mcp secret"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `export MUSTER_MIRROR_MCP_SECRET="$(cat '/elsewhere/it'\''s mcp secret')"`},
+		// The endpoint looks where the settings say, not at the default: here
+		// the default path holds no secret, so a check that ignored the
+		// settings' line would FAIL.
+		{"secret at the settings' path, none at the default", doctorOpts{mcpSecretFile: "@/settings-secret/mcp-secret"}, "mcp-endpoint", statusPass,
+			"/settings-secret/mcp-secret)", ""},
+		// "~/" in the settings is this user's home, as muster-mirror reads it:
+		// the check finds the file there, and the export names the expanded
+		// path (a '~' inside single quotes would never expand).
+		{"~/ in the settings' secret file is the home", doctorOpts{mcpSecretFile: "~/mm/mcp-secret"}, "mcp-endpoint", statusPass, "/mm/mcp-secret)", ""},
+		{"not registered: the export reads ~/ expanded", doctorOpts{noMCPRegistration: true, mcpSecretFile: "~/mm/mcp-secret"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `/mm/mcp-secret')"`},
+		// The secret is where muster-mirror writes it: os.UserConfigDir, which
+		// honours XDG_CONFIG_HOME (internal/mirrorpath) — not beside the settings.
+		{"secret under XDG_CONFIG_HOME", doctorOpts{}, "mcp-endpoint", statusPass, "/xdg/muster-mirror/mcp-secret", ""},
+		// The same endpoint spelled with another loopback name is the endpoint.
+		{"registered as localhost", doctorOpts{mcpRegisteredURL: "http://localhost:47823/mcp"}, "mcp-registration", statusPass, "registered: user", ""},
+		{"registered as [::1]", doctorOpts{mcpRegisteredURL: "http://[::1]:47823/mcp/"}, "mcp-registration", statusPass, "registered: user", ""},
+		// Claude Code's other scopes count, and say they are this directory's only.
+		{"registered in the local scope", doctorOpts{mcpScope: "local"}, "mcp-registration", statusPass, "registered for this directory only: local", ""},
+		{"registered in the project's .mcp.json", doctorOpts{mcpScope: "project"}, "mcp-registration", statusPass, "registered for this directory only: project", ""},
+		// The ask hook's matcher is a regular expression.
+		{"ask hook matcher is a regex", doctorOpts{askMatcher: "AskUserQuestion|Bash"}, "ask-hook", statusPass, "runs `muster-mirror ask`", ""},
+		{"ask hook matcher for another tool", doctorOpts{askMatcher: "Bash"}, "ask-hook", statusSkip, "no PreToolUse hook", ""},
+		// A server registered at ANOTHER address is not this endpoint.
+		{"registered at another address", doctorOpts{mcpRegisteredURL: "http://127.0.0.1:9999/mcp"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", "claude mcp add-json"},
+		{"no ask hook", doctorOpts{noAskHook: true}, "ask-hook", statusSkip, "no PreToolUse hook runs `muster-mirror ask`", `"command": "muster-mirror ask"`},
+		{"not a mirrored machine", doctorOpts{noMirror: true}, "mcp-endpoint", statusSkip, "it is not connected", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := runDoctorAgainst(t, healthyMuster(), healthySystem(), c.o)
+			got := r.check(c.check)
+			if got.Status != c.status || !strings.Contains(got.Detail, c.detail) || !strings.Contains(got.Fix, c.fix) {
+				t.Fatalf("%s = %+v, want %s with %q / fix %q", c.check, got, c.status, c.detail, c.fix)
+			}
+			if strings.HasPrefix(c.o.mcpSecretFile, "~/") && strings.Contains(got.Detail+got.Fix, "~/") {
+				t.Fatalf("%s = %+v: the secret's path must be shown expanded, not as ~/", c.check, got)
+			}
+			if strings.Contains(r.stderr+r.stdout, "a-synthetic-mcp-secret") {
+				t.Fatal("the MCP secret's content reached the output")
+			}
+		})
+	}
+}
+
+// TestDoctorFailsOnAMisconfiguredFeatureOnly: the features check FAILs on a
+// misconfigured feature (asked for, a dependency missing), naming it and its
+// fix, and passes with features merely off — the default install's state.
+func TestDoctorFailsOnAMisconfiguredFeatureOnly(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	if c := r.check("features"); c.Status != statusPass {
+		t.Fatalf("features off only: %+v", c)
+	}
+	if !strings.Contains(r.stderr, "features on this server:") || !strings.Contains(r.stderr, "enable: set MUSTER_S3_ENDPOINT") {
+		t.Fatalf("the feature list is not printed:\n%s", r.stderr)
+	}
+	m.report["features"] = append(m.report["features"].([]any), map[string]any{"id": "plugins", "name": "Plugins", "state": "misconfigured",
+		"reason": "plugin messages reach your chief through the agent gateway", "enable_hint": "set MUSTER_PLUGINS=1 in .env and restart (docs/features.md#plugins)"})
+	r = runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	c := r.check("features")
+	if c.Status != statusFail || !strings.Contains(c.Detail, "plugins (plugin messages reach your chief") || !strings.Contains(c.Fix, "plugins: set MUSTER_PLUGINS=1") {
+		t.Fatalf("misconfigured: %+v", c)
+	}
+	if r.code == exitOK {
+		t.Fatal("a misconfigured feature did not fail the run")
+	}
+}
+
+// TestDoctorShowsAHeldMachinesCode (team sharing 2b.2): doctor reads the
+// attempt code this machine's muster-mirror left (its config directory),
+// sends it to the token's own server, and — when the server answers held —
+// FAILs this-host with "give this code to a team manager: <code>". The
+// CONTROL: the same machine whose code the server does not hold PASSes, and
+// a machine with no code file sends none.
+//
+// Red at the #685 head (f8313e4f): doctor sends no code, so the server cannot
+// tell it is held, and it says nothing of a code.
+func TestDoctorShowsAHeldMachinesCode(t *testing.T) {
+	const code = "R8D4-NW2Q-7JKP"
+	run := func(m *fakeMuster, write bool) doctorResult {
+		t.Helper()
+		o := doctorOpts{}
+		if write {
+			o.attemptCode = code
+		}
+		return runDoctorAgainst(t, m, healthySystem(), o)
+	}
+	m := healthyMuster()
+	m.heldCode = code
+	r := run(m, true)
+	c := r.check("this-host")
+	if m.sawCode != code || c.Status != statusFail || !strings.Contains(c.Detail, "give this code to a team manager: "+code) {
+		t.Fatalf("server saw code %q; this-host = %+v; want the code sent and a FAIL showing it", m.sawCode, c)
+	}
+	ctl := healthyMuster()
+	ctl.heldCode = "ZZZZ-ZZZZ-ZZZZ"
+	if r := run(ctl, true); r.status("this-host") != statusPass || ctl.sawCode != code {
+		t.Fatalf("CONTROL: a machine whose code is not held: this-host %s, sent %q; want PASS, with its code sent", r.status("this-host"), ctl.sawCode)
+	}
+	none := healthyMuster()
+	none.heldCode = code
+	if r := run(none, false); r.status("this-host") != statusPass || none.sawCode != "" {
+		t.Fatalf("CONTROL: a machine with no code file: this-host %s, sent %q; want PASS, no code sent", r.status("this-host"), none.sawCode)
+	}
+}
+
+// TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine (#688 round 1,
+// Y1): the server answers held_unknown — machines are held for this team
+// host, and this machine's code is missing or not the live one's. doctor
+// FAILs this-host naming the code file it read, instead of PASSing
+// "connected". The CONTROL is the same machine without held_unknown: PASS.
+//
+// Red at e58c086f: doctor ignored held_unknown and PASSed.
+func TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine(t *testing.T) {
+	m := healthyMuster()
+	m.heldUnknown = true
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	c := r.check("this-host")
+	if c.Status != statusFail || !strings.Contains(c.Detail, "this may be a held machine") || !strings.Contains(c.Detail, filepath.Join("muster-mirror", "attempt-code")) {
+		t.Fatalf("this-host with held_unknown = %+v; want a FAIL naming the code file and that this may be held", c)
+	}
+	if r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{}); r.status("this-host") != statusPass {
+		t.Fatalf("CONTROL: without held_unknown this-host = %s; want PASS", r.status("this-host"))
+	}
+}
+
+// TestDoctorInAccountsModeNamesTheBrowserListener: in gotrue mode the port the
+// doctor checked is the machine-token one, which refuses a browser; a blind
+// install was told to open it (onboarding round 3). The note names the port
+// the server reports for its browser listener (a value distinct from the test
+// server's own port and from 8105/8107), and never tells a browser to open the
+// checked one. A server that reports no port is told apart; password mode is
+// the control.
+func TestDoctorInAccountsModeNamesTheBrowserListener(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		mode       string
+		port       any // the report's browser_port; nil = absent
+		want, nope string
+	}{
+		{"gotrue with the port", "gotrue", 18327, ":18327 on this machine only", "serves machine tokens"},
+		{"gotrue from an older server", "gotrue", nil, "signs in only on the browser listener (MUSTER_BROWSER_PORT, at the host port", ""},
+		{"password mode", "password", 18327, "on this machine only (open it in this machine's browser).\n", "browser listener"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := healthyMuster()
+			m.report["auth_mode"] = c.mode
+			if c.port != nil {
+				m.report["browser_port"] = c.port
+			}
+			r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true})
+			if !strings.Contains(r.stderr, c.want) {
+				t.Fatalf("want %q in:\n%s", c.want, r.stderr)
+			}
+			switch c.mode {
+			case "gotrue":
+				if strings.Contains(r.stderr, "muster is at "+r.doc.URL+" ") {
+					t.Fatalf("it told a browser to open the machine port %s:\n%s", r.doc.URL, r.stderr)
+				}
+				if !strings.Contains(r.stderr, r.doc.URL+" serves machine tokens and refuses a browser") {
+					t.Fatalf("the checked port is not named as the machine one:\n%s", r.stderr)
+				}
+			default:
+				if strings.Contains(r.stderr, c.nope) || !strings.Contains(r.stderr, "muster is at "+r.doc.URL+" ") {
+					t.Fatalf("password mode changed:\n%s", r.stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestDoctorTellsClaudeCodeMissingFromNotRegistered: the agent ask tool's
+// registration check says "install Claude Code first" when there is no
+// `claude` at all (a blind install had to work that out, round 3), and keeps
+// the plain registration fix when there is one, on PATH or only where its
+// installer puts it (~/.local/bin, which the doctor's shell may lack).
+func TestDoctorTellsClaudeCodeMissingFromNotRegistered(t *testing.T) {
+	sys := healthySystem()
+	sys.claude = false
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{noMCPRegistration: true})
+	got := r.check("mcp-registration")
+	if got.Status != statusFail || !strings.Contains(got.Detail, "Claude Code is not installed") ||
+		!strings.Contains(got.Fix, "install Claude Code first (`curl -fsSL https://claude.ai/install.sh | bash`") ||
+		!strings.Contains(got.Fix, "claude mcp add-json --scope user muster") {
+		t.Fatalf("no claude: %+v", got)
+	}
+	// Control: on PATH, the registration fix alone.
+	r = runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{noMCPRegistration: true})
+	if got := r.check("mcp-registration"); got.Status != statusFail || strings.Contains(got.Detail, "not installed") ||
+		strings.Contains(got.Fix, "install Claude Code") || !strings.Contains(got.Detail, "registers an MCP server at it") {
+		t.Fatalf("claude on PATH: %+v", got)
+	}
+}
+
+// TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt: a `claude` only where
+// Claude Code's installers put it, ~/.local/bin (the native installer) or
+// ~/.claude/local (the older local install), counts as installed, so the
+// doctor does not send a person to install what they have (docs/cli.md names
+// both). The controls: an empty home, and a non-executable file there.
+func TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt(t *testing.T) {
+	sys := healthySystem()
+	sys.claude = false
+	for _, dir := range [][]string{{".local", "bin"}, {".claude", "local"}} {
+		for _, mode := range []os.FileMode{0o755, 0o644} {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(append([]string{home}, dir...)...), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(append(append([]string{home}, dir...), "claude")...), []byte("#!/bin/sh\n"), mode); err != nil {
+				t.Fatal(err)
+			}
+			got := (&doctorRun{a: &app{homeDir: home}, sys: sys.sys()}).claudeInstalled()
+			if want := mode&0o111 != 0; got != want {
+				t.Fatalf("a claude in ~/%s (mode %o): installed = %v, want %v", filepath.Join(dir...), mode, got, want)
+			}
+		}
+	}
+	if (&doctorRun{a: &app{homeDir: t.TempDir()}, sys: sys.sys()}).claudeInstalled() {
+		t.Fatal("control: an empty home reads as installed")
+	}
+}
+
+// TestTheAskHookSettingsFilePassesTheDoctor: the whole ~/.claude/settings.json
+// for ask cards (a blind install had only a fragment to wrap, round 3) is one
+// JSON document, which this check reads as set up; with no settings file the
+// fix line hands over that whole file. docs/features.md shows the same
+// document: tests/features_config_test.py pins it equal to this constant (the
+// docs are not in the nix build's source, so that half is not read here). The
+// control is the same file with the hook's command changed, which fails.
+func TestTheAskHookSettingsFilePassesTheDoctor(t *testing.T) {
+	if !json.Valid([]byte(askHookSettingsFile)) {
+		t.Fatalf("askHookSettingsFile is not a whole JSON document: %s", askHookSettingsFile)
+	}
+	check := func(body string) doctorCheck {
+		home := t.TempDir()
+		if body != "" {
+			_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+			if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		env := filepath.Join(home, "mirror.env")
+		_ = os.WriteFile(env, []byte("MUSTER_MIRROR_URL=http://localhost:8105\n"), 0o600)
+		d := &doctorRun{a: &app{homeDir: home, getenv: func(string) string { return "" }}, mirrorEnv: env}
+		d.checkAskHook()
+		return d.checks[len(d.checks)-1]
+	}
+	if c := check(askHookSettingsFile); c.Status != statusPass {
+		t.Fatalf("the whole file: ask-hook %+v, want PASS", c)
+	}
+	if c := check(strings.Replace(askHookSettingsFile, "muster-mirror ask", "muster-mirror nope", 1)); c.Status == statusPass {
+		t.Fatalf("control: a file with another command passed: %+v", c)
+	}
+	if c := check(""); c.Status != statusSkip || !strings.Contains(c.Fix, "holding "+askHookSettingsFile) {
+		t.Fatalf("no settings file: %+v, want a SKIP whose fix is the whole file", c)
+	}
+}
+
+// TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR: muster at plain http on
+// THIS machine (localhost, 127.0.0.1, [::1]) is the local quickstart. The
+// server check PASSes and says the phone needs HTTPS (with where to read how),
+// and no phone QR code is drawn — a phone scanning a loopback URL opens its
+// own localhost. The control, in TestDoctorEachCheckGoesRedWhenBroken: the
+// same over plain http to a LAN name or address FAILs, as before.
+func TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR(t *testing.T) {
+	for _, host := range []string{"", "localhost", "[::1]"} {
+		sys := healthySystem()
+		sys.qrencode = true
+		r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{plain: true, host: host})
+		c := r.check("server")
+		if c.Status != statusPass || !strings.Contains(c.Detail, "phone needs HTTPS") || !strings.Contains(c.Detail, "#add-your-phone") {
+			t.Errorf("host %q: server check %+v, want a PASS saying the phone needs HTTPS and where to add it", host, c)
+		}
+		if r.code != exitOK {
+			t.Errorf("host %q: exit %d, want 0:\n%s", host, r.code, r.stderr)
+		}
+		if strings.Contains(r.stderr, "QRBLOCKS") || strings.Contains(r.stderr, "Open muster on your phone") {
+			t.Errorf("host %q: a phone QR code was drawn for a loopback URL:\n%s", host, r.stderr)
+		}
+		if !strings.Contains(r.stderr, "on this machine only") || !strings.Contains(r.stderr, r.doc.URL) {
+			t.Errorf("host %q: no 'this machine only' note naming the URL:\n%s", host, r.stderr)
+		}
+	}
+	// The control for the QR half: a non-loopback URL still gets its code.
+	sys := healthySystem()
+	sys.qrencode = true
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{host: "example.com"})
+	if !strings.Contains(r.stderr, "QRBLOCKS:"+r.doc.URL) {
+		t.Errorf("an https URL drew no QR code:\n%s", r.stderr)
+	}
+}
+
+// TestDoctorWarnsOfOtherUsersOnALoopbackURL (#707 round 0, F2): plain http to
+// localhost is private from other machines only, so on a loopback URL the
+// server check (still a PASS) warns when `who` lists users other than this
+// one, naming each once, sorted, with the single-user doc. No warning when only
+// this user is logged in, when `who` fails, or on an https URL (the controls).
+func TestDoctorWarnsOfOtherUsersOnALoopbackURL(t *testing.T) {
+	const who = "me       pts/0        2026-11-15 10:00 (:0)\nbob      pts/3        2026-11-15 10:02 (laptop.example)\n" +
+		"alice    tty2         2026-11-15 09:00\nbob      pts/4        2026-11-15 10:05\n"
+	sys := healthySystem()
+	sys.who = who
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{plain: true, host: "localhost"})
+	c := r.check("server")
+	if c.Status != statusPass || !strings.Contains(c.Detail, "WARNING: other users are logged in to this machine (alice, bob).") ||
+		!strings.Contains(c.Detail, "#this-machine-is-yours-alone") || !strings.Contains(c.Detail, "mirror token") {
+		t.Errorf("server check %+v, want a PASS warning of alice and bob with the single-user doc", c)
+	}
+	if r.code != exitOK {
+		t.Errorf("exit %d, want 0 (a warning, not a failure)", r.code)
+	}
+	for name, s := range map[string]*fakeSystem{
+		"only this user": {goos: "linux", unitState: "active", tmux: true, who: "me pts/0 2026-11-15 10:00\nme pts/1 2026-11-15 10:01\n"},
+		"who fails":      {goos: "linux", unitState: "active", tmux: true, who: who, whoErr: true},
+	} {
+		r := runDoctorAgainst(t, healthyMuster(), s, doctorOpts{plain: true, host: "localhost"})
+		if c := r.check("server"); c.Status != statusPass || strings.Contains(c.Detail, "WARNING") {
+			t.Errorf("%s: server check %+v, want a PASS with no warning", name, c)
+		}
+	}
+	https := healthySystem()
+	https.who = who
+	if c := runDoctorAgainst(t, healthyMuster(), https, doctorOpts{}).check("server"); c.Status != statusPass || strings.Contains(c.Detail, "WARNING") {
+		t.Errorf("an https URL: server check %+v, want a PASS with no warning", c)
+	}
+}
+
+// TestDoctorSignInNamesASecureCookieOverHTTP: when the session cookie comes
+// back Secure on a plain-http URL — it is then never sent back — the sign-in
+// FAIL says so, instead of blaming a proxy. The control: a cookie the server
+// simply did not set (dropCookie) still gets the proxy line.
+func TestDoctorSignInNamesASecureCookieOverHTTP(t *testing.T) {
+	m := healthyMuster()
+	m.secureCookie = true
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true, host: "muster.example"})
+	c := r.check("sign-in")
+	if c.Status != statusFail || !strings.Contains(c.Detail, "Secure session cookie on a plain-http URL") ||
+		strings.Contains(c.Fix, "proxy") || !strings.Contains(c.Fix, "https") {
+		t.Errorf("sign-in %+v, want a FAIL naming the Secure cookie over http, not a proxy", c)
+	}
+	d := healthyMuster()
+	d.dropCookie = true
+	r = runDoctorAgainst(t, d, healthySystem(), doctorOpts{plain: true, host: "muster.example"})
+	if c := r.check("sign-in"); c.Status != statusFail || !strings.Contains(c.Fix, "proxy") || strings.Contains(c.Detail, "Secure") {
+		t.Errorf("control: a dropped cookie gives %+v, want the proxy line", c)
+	}
+	// Over https a Secure cookie is the normal case: PASS.
+	s := healthyMuster()
+	s.secureCookie = true
+	if r := runDoctorAgainst(t, s, healthySystem(), doctorOpts{}); r.status("sign-in") != statusPass {
+		t.Errorf("a Secure cookie over https: sign-in %+v", r.check("sign-in"))
+	}
+}
+
+// TestDoctorSignsInWithThePagesOrigin: the sign-in POST carries the server's
+// own origin, as the sign-in page in a browser does — the server decides the
+// cookie's Secure attribute from it (internal/api passwordCookieSecure).
+func TestDoctorSignsInWithThePagesOrigin(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true})
+	if m.loginOrigin == "" || m.loginOrigin != r.doc.URL {
+		t.Errorf("POST /login carried Origin %q, want %q", m.loginOrigin, r.doc.URL)
+	}
+}
+
+// On macOS the launchd service holds a copy of the settings made when the
+// installer last ran, so a kickstart restarts the OLD settings: a fix that
+// follows a settings edit must re-run the installer. The command is exact and
+// pasteable: a Mac whose MUSTER_MIRROR_URL is another machine (it joined a
+// hub) gets MUSTER_JOIN_URL=<that url>, else re-running would start a server
+// here and repoint the mirror at it; a Mac whose mirror talks to its own
+// server gets the plain installer, and is told it upgrades that server. The
+// prose is outside the backticks. Linux's unit reads the file on every start.
+func TestDoctorMirrorRestartHintAppliesNewSettings(t *testing.T) {
+	const installer = "curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | "
+	for _, c := range []struct{ url, cmd, note string }{
+		{"https://hub.example.test", installer + "MUSTER_JOIN_URL='https://hub.example.test' sh", "for the hub this Mac joined"},
+		{"https://hub.example.test/", installer + "MUSTER_JOIN_URL='https://hub.example.test' sh", "for the hub this Mac joined"},
+		{"http://localhost:8105", installer + "sh", "upgrades the muster server this Mac runs"},
+		{"http://127.0.0.1:8105", installer + "sh", "upgrades the muster server this Mac runs"},
+		{"http://[::1]:8105", installer + "sh", "upgrades the muster server this Mac runs"},
+	} {
+		got := mirrorRestartHint("darwin", c.url)
+		if !strings.HasPrefix(got, "`"+c.cmd+"`, ") || !strings.Contains(got[len(c.cmd)+2:], c.note) || strings.Contains(got, "kickstart") || strings.Contains(got, "<hub>") {
+			t.Errorf("macOS hint for %s = %q: want `%s` then the note %q outside the backticks", c.url, got, c.cmd, c.note)
+		}
+	}
+	if got := mirrorRestartHint("linux", "https://hub.example.test"); got != "`systemctl --user restart muster-mirror.service`" {
+		t.Fatalf("Linux hint = %q", got)
+	}
+}
+
+// TestDoctorMacFixesCarryTheJoinURL: the two mcp-endpoint fixes that restart
+// muster-mirror name the exact installer command for THIS Mac's settings —
+// the hub's URL on a joined Mac, the plain installer on one running its own
+// server.
+func TestDoctorMacFixesCarryTheJoinURL(t *testing.T) {
+	const join = "install.sh | MUSTER_JOIN_URL='https://hub.example.test' sh`"
+	for _, c := range []struct {
+		name, mirrorURL, want, notWant string
+		o                              doctorOpts
+	}{
+		{"joined, no secret", "https://hub.example.test", join, "", doctorOpts{noMCPSecret: true}},
+		{"joined, no listen line", "https://hub.example.test", join, "", doctorOpts{noMCPListen: true}},
+		{"own server, no secret", "http://localhost:8105", "install.sh | sh`, which re-runs the installer; it also upgrades", "MUSTER_JOIN_URL", doctorOpts{noMCPSecret: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sys := healthySystem()
+			sys.goos = "darwin"
+			o := c.o
+			o.mirrorURL = c.mirrorURL
+			r := runDoctorAgainst(t, healthyMuster(), sys, o)
+			got := r.check("mcp-endpoint")
+			if !strings.Contains(got.Fix, c.want) || (c.notWant != "" && strings.Contains(got.Fix, c.notWant)) {
+				t.Fatalf("mcp-endpoint fix = %q, want %q", got.Fix, c.want)
+			}
+		})
+	}
+}

@@ -71,6 +71,9 @@ type mirrorCall struct {
 // belongs to user 1 only: Hosts and Attach act for ctx's principal, as
 // mirror.Service does.
 type fakeMirror struct {
+	// teamHost, when set, is a TEAM id whose principal this fake treats as
+	// owning "ws" as well (team sharing 2b.2's team host tests).
+	teamHost    int64
 	mu          sync.Mutex
 	online      bool
 	interactive bool
@@ -103,13 +106,12 @@ type fakeMirror struct {
 	scroll    bool
 	scrolls   []string
 	scrollErr error
-	// hermesSend: the host advertised hermesSend (HostView.HermesSend, when
-	// online and interactive).
-	hermesSend bool
 	// agentState is what AgentState answers (send_queue_fakes_test.go); nil =
 	// a host that reports no status. statusReport is HostView.StatusReport.
 	agentState   *mirror.AgentState
 	statusReport bool
+	// openCodeSend is HostView.OpenCodeSend (when online and interactive).
+	openCodeSend bool
 	// offlineSince is HostView.OfflineSince while offline (as the hub sets it
 	// for a host that dropped); zero = a host that never was online here.
 	offlineSince time.Time
@@ -123,6 +125,53 @@ type fakeMirror struct {
 	inPaste func()
 	// ranks is what HostRanks answers for user 1 (nil = no ranks known).
 	ranks map[string]int
+	// liveHosts is what LiveTokenHosts answers for user 1; liveErr its error.
+	liveHosts []string
+	liveErr   error
+	// hostTok is what HostToken answers for user 1 (host -> token id).
+	hostTok map[string]int64
+	// work is the host's per-window work counts (HostView.Work); nil = none.
+	work map[string]mirror.WindowWork
+	// previews is HostView.Previews (plugin_chip_test.go); nil = none.
+	previews map[string]mirror.WindowPreviews
+	// noHosts: Hosts lists nothing — a hub that has not seen the host (a
+	// fresh process before the host reconnects).
+	noHosts bool
+	// shown is the mirror.ShownSession each PasteWindow named, in order.
+	shown []string
+	// teamHosts is what VisibleHosts lists beside nothing of the fake's own
+	// (team sharing 2b.3): team hosts, each with its Owner.
+	teamHosts []mirror.HostView
+}
+
+// VisibleHosts is the fake's TEAM hosts only (f.teamHosts, as given, for
+// every principal): its callers read their own entries through Hosts, and a
+// test of a team host's view sets this.
+func (f *fakeMirror) VisibleHosts(context.Context) []mirror.HostView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]mirror.HostView(nil), f.teamHosts...)
+}
+
+// HostToken answers f.hostTok for the host's owner.
+func (f *fakeMirror) HostToken(ctx context.Context, host string) (int64, bool) {
+	if f.user(ctx) != 1 {
+		return 0, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.hostTok[host]
+	return id, ok
+}
+
+// LiveTokenHosts answers f.liveHosts for the host's owner, nothing for anyone else.
+func (f *fakeMirror) LiveTokenHosts(ctx context.Context) ([]string, error) {
+	if f.user(ctx) != 1 {
+		return []string{}, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.liveHosts, f.liveErr
 }
 
 // HostRanks answers f.ranks for the host's owner, nothing for anyone else.
@@ -144,6 +193,11 @@ func (f *fakeMirror) user(ctx context.Context) int64 {
 	if !ok || p.All() {
 		return 0
 	}
+	if f.teamHost != 0 && p.UserID == f.teamHost {
+		// The team host fixture (team sharing 2b.2): the TEAM's principal
+		// owns "ws" too, so a team token's calls bind to its windows.
+		return 1
+	}
 	return p.UserID
 }
 
@@ -153,8 +207,12 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.noHosts {
+		return nil
+	}
 	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	hv.StatusReport = f.statusReport && f.online
+	hv.OpenCodeSend = f.openCodeSend && f.online && f.interactive
 	if !f.online {
 		hv.OfflineSince = f.offlineSince
 	}
@@ -163,7 +221,8 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
 	hv.PaneScroll = f.online && f.interactive && f.scroll
-	hv.HermesSend = f.online && f.interactive && f.hermesSend
+	hv.Work = f.work
+	hv.Previews = f.previews
 	if f.windows != nil {
 		// A per-window host: its per-session view is derived from its windows,
 		// exactly as the hub derives it.
@@ -243,8 +302,9 @@ func mirrorGet(t *testing.T, s *Server, ts *httptest.Server, path string) (*http
 var mainPage = ui.MirrorTerminalPath("ws", "main")
 
 // TestTheMirrorPluginOffIsInvisible: with Extensions.Mirror nil every mirror
-// route 404s and the Agents view draws no mirrored card — and the SAME requests
-// with the plugin on reach it (the control that makes each 404 the off-state).
+// route 404s and the sidebar (where agents are listed since the Agents list
+// page was retired) draws no mirrored row — and the SAME requests with the
+// plugin on reach it (the control that makes each 404 the off-state).
 func TestTheMirrorPluginOffIsInvisible(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		var m Mirror
@@ -258,12 +318,12 @@ func TestTheMirrorPluginOffIsInvisible(t *testing.T) {
 		if resp, _ := mirrorGet(t, s, ts, mainPage); resp.StatusCode != map[bool]int{false: 404, true: 200}[on] {
 			t.Errorf("on=%v: the mirror terminal page = %d", on, resp.StatusCode)
 		}
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
-		if got := strings.Contains(list, "data-mirror-card"); got != on {
-			t.Errorf("on=%v: a mirrored card is drawn = %v", on, got)
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+		if got := strings.Contains(list, `data-nav-agent="mirror"`); got != on {
+			t.Errorf("on=%v: a mirrored row is drawn = %v", on, got)
 		}
 		if !strings.Contains(list, plainName) {
-			t.Errorf("on=%v: the gateway agent vanished from /ui/agents", on)
+			t.Errorf("on=%v: the gateway agent vanished from the sidebar", on)
 		}
 	}
 	s, ts := mirrorServer(t, nil, newFakeTerminal())
@@ -272,75 +332,92 @@ func TestTheMirrorPluginOffIsInvisible(t *testing.T) {
 	}
 }
 
-// mirrorCardOf is the mirrored card for session in the list markup.
-func mirrorCardOf(t *testing.T, markup, session string) string {
+// mirrorRowOf is the sidebar row (its whole <a>) of session's entry on host ws
+// in a GET ui.NavAgentsPath answer.
+func mirrorRowOf(t *testing.T, markup, session string) string {
 	t.Helper()
 	marker := `href="` + strings.ReplaceAll(ui.MirrorTerminalPath("ws", session), "&", "&amp;") + `"`
 	i := strings.Index(markup, marker)
 	if i < 0 {
-		t.Fatalf("no mirrored card for %s (%s) in:\n%s", session, marker, markup)
+		t.Fatalf("no mirrored row for %s (%s) in:\n%s", session, marker, markup)
 	}
-	start := strings.LastIndex(markup[:i], "<article")
+	start := strings.LastIndex(markup[:i], "<a ")
 	rest := markup[start:]
-	if j := strings.Index(rest, "</article>"); j >= 0 {
+	if j := strings.Index(rest, "</a>"); j >= 0 {
 		rest = rest[:j]
 	}
 	return rest
 }
 
-// TestAMirroredSessionIsACardOfItsOwnNotAnAgent: badged "Mirrored · ws",
-// "offline" exactly while the host is not serving it, a status dot from the
-// host, a link to its terminal — and NO agent menu (nothing to start, stop or
-// delete). The gateway card beside it is unchanged.
+// TestAMirroredSessionIsACardOfItsOwnNotAnAgent: a mirrored session is an
+// entry of its own — a sidebar row (data-nav-agent="mirror") linking its
+// terminal, "offline" exactly while the host is not serving it, and its page
+// badged "Mirrored · ws", saying "offline" too (#term-host-note) — and NO agent
+// menu anywhere (nothing to start, stop, rename or delete). The gateway
+// agent's row beside it is unchanged. (The retired list card drew a status
+// dot from the host; neither the row nor the page draws one.)
 func TestAMirroredSessionIsACardOfItsOwnNotAnAgent(t *testing.T) {
 	for _, online := range []bool{false, true} {
 		s, ts := mirrorServer(t, &fakeMirror{online: online}, newFakeTerminal())
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
-		card := mirrorCardOf(t, list, "main")
-		if !strings.Contains(card, "data-mirror-badge") || !strings.Contains(card, "Mirrored · ws") {
-			t.Errorf("online=%v: no Mirrored · ws badge:\n%s", online, card)
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+		row := mirrorRowOf(t, list, "main")
+		if !strings.Contains(row, `data-nav-agent="mirror"`) {
+			t.Errorf("online=%v: the row is not a mirrored entry:\n%s", online, row)
 		}
-		if got := strings.Contains(card, "data-mirror-offline"); got == online {
-			t.Errorf("online=%v: offline badge drawn = %v", online, got)
+		if got := strings.Contains(row, "data-nav-offline"); got == online {
+			t.Errorf("online=%v: the row's offline mark drawn = %v", online, got)
 		}
-		want := map[bool]string{false: "stopped", true: "running"}[online]
-		if !strings.Contains(card, `aria-label="Status: `+want+`"`) {
-			t.Errorf("online=%v: status is not %s:\n%s", online, want, card)
+		_, page := mirrorGet(t, s, ts, mainPage)
+		if !strings.Contains(page, "data-term-badge") || !strings.Contains(page, "On ws") {
+			t.Errorf("online=%v: the page has no On ws badge", online)
+		}
+		if got := strings.Contains(page, "data-mirror-offline"); got == online {
+			t.Errorf("online=%v: the page's offline note drawn = %v", online, got)
 		}
 		for _, agentOnly := range []string{"Agent actions", "/start", "/stop", "hx-delete", "Rename agent"} {
-			if strings.Contains(card, agentOnly) {
-				t.Errorf("online=%v: a mirrored card carries the agent control %q", online, agentOnly)
+			if strings.Contains(row, agentOnly) || strings.Contains(page, agentOnly) {
+				t.Errorf("online=%v: a mirrored entry carries the agent control %q", online, agentOnly)
 			}
 		}
-		if !strings.Contains(list, `id="agent-8"`) || !strings.Contains(list, "/agents/8/start") {
-			t.Errorf("control: the gateway card changed")
+		if !strings.Contains(list, `id="nav-agent-8"`) || !strings.Contains(list, `href="/agents/plain-otter"`) {
+			t.Errorf("control: the gateway agent's row changed")
 		}
 	}
 }
 
-// TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt.
+// TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt: live keys
+// are always on (no switch), EXCEPT on a host that did not advertise
+// -interactive, whose terminal has its keys off (data-keys-off) — and either
+// way the page says what live keys reach.
 func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.T) {
 	for _, interactive := range []bool{false, true} {
 		s, ts := mirrorServer(t, &fakeMirror{online: true, interactive: interactive}, newFakeTerminal())
 		_, page := mirrorGet(t, s, ts, mainPage)
-		i := strings.Index(page, `id="term-mode"`)
-		if i < 0 {
-			t.Fatalf("no switch element:\n%s", page)
+		if strings.Contains(page, `id="term-mode"`) {
+			t.Errorf("host interactive=%v: the page still draws the Live keys switch", interactive)
 		}
-		tag := page[strings.LastIndex(page[:i], "<"):]
-		tag = tag[:strings.Index(tag, ">")]
-		// The CLASS decides (an author display utility beats the [hidden]
-		// attribute), so the class is what is asserted.
-		offered := !strings.Contains(tag, `class="hidden `)
-		if offered != interactive {
-			t.Errorf("host interactive=%v: the Interactive switch is offered = %v (%s)", interactive, offered, tag)
+		term := tagOf(page, "term")
+		if term == "" {
+			t.Fatalf("no terminal element:\n%s", page)
 		}
-		if !strings.Contains(tag, `title="Live keys type into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host."`) {
-			t.Errorf("the switch does not say that live keys are a shell on the host: %s", tag)
+		keysOff := strings.Contains(term, ` data-keys-off`)
+		if keysOff == interactive {
+			t.Errorf("host interactive=%v: the terminal's keys are off = %v (%s)", interactive, keysOff, term)
+		}
+		const note = `Typing here goes straight to ws: from here you can reach anything on that computer.`
+		// Said where keys reach the host — and only there: a view-only
+		// host's keys are off, so the note would be untrue.
+		for _, id := range []string{"term-status", "term-keys"} {
+			if tag := tagOf(page, id); strings.Contains(tag, `title="`+note+`"`) != interactive {
+				t.Errorf("host interactive=%v: #%s says live keys reach the host = %v: %s", interactive, id, !interactive, tag)
+			}
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
-		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="/agents"`) {
-			t.Errorf("the page does not point at the mirror socket / back to the list")
+		// Home LEAVING this window (ui.HomeLeavingMirrorPath): bare home would
+		// be this very window, the session opened last.
+		wantBack := strings.ReplaceAll(ui.HomeLeavingMirrorPath(ui.MirrorRef{Host: "ws", Session: "main"}), "&", "&amp;")
+		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="`+wantBack+`" aria-label="Back`) {
+			t.Errorf("the page does not point at the mirror socket / back home leaving the window (want %s)", wantBack)
 		}
 	}
 }
@@ -418,8 +495,10 @@ func TestAnOfflineHostAnswersItsOwnReason(t *testing.T) {
 		if m["type"] != "error" {
 			continue
 		}
-		if m["message"] != fm.refuse.Error() {
-			t.Fatalf("the browser was told %q, want the plugin's own %q", m["message"], fm.refuse.Error())
+		// Plain words on the line; the plugin's own text is the ⓘ's detail.
+		if m["message"] != mirror.PlainWords(fm.refuse, "ws") || m["detail"] != fm.refuse.Error() {
+			t.Fatalf("the browser was told %q / %q, want %q with the plugin's own %q as the detail", m["message"], m["detail"],
+				mirror.PlainWords(fm.refuse, "ws"), fm.refuse.Error())
 		}
 		return
 	}

@@ -36,10 +36,10 @@ func renderedView(t *testing.T, queue *ComposerQueue, interactive bool) string {
 func TestSendIsTheFaceAndQueueIsBehindTheCaret(t *testing.T) {
 	page := renderedView(t, &ComposerQueue{Src: SendQueuePath + "?host=host-a"}, true)
 	send, more, menu, queue := elem(t, page, "mv-send"), elem(t, page, "mv-send-more"), elem(t, page, "mv-send-menu"), elem(t, page, "mv-queue-send")
-	if !strings.Contains(send, `type="submit"`) || strings.Contains(send, "formaction") || !strings.Contains(page, `aria-label="Send" class="`+composerSendSplitClass+`">Send</button>`) {
+	if !strings.Contains(send, `type="submit"`) || strings.Contains(send, "formaction") || !strings.Contains(send, `aria-label="Send" title="Send" class="`+composerSendSplitClass+`">`) {
 		t.Fatalf("Send: %s", send)
 	}
-	for _, a := range []string{`type="button"`, `popovertarget="mv-send-menu"`, `aria-haspopup="menu"`, `aria-expanded="false"`, `aria-controls="mv-send-menu"`, "min-h-[44px]", "min-w-[44px]"} {
+	for _, a := range []string{`type="button"`, `popovertarget="mv-send-menu"`, `aria-haspopup="menu"`, `aria-expanded="false"`, `aria-controls="mv-send-menu"`, "min-h-[40px]", "min-w-[40px]"} {
 		if !strings.Contains(more, a) {
 			t.Errorf("the caret lacks %s: %s", a, more)
 		}
@@ -78,7 +78,7 @@ func TestNoQueueNoCaret(t *testing.T) {
 				t.Errorf("%s: carries %s", name, id)
 			}
 		}
-		if !strings.Contains(elem(t, page, "mv-send"), composerSendClass) {
+		if !strings.Contains(elem(t, page, "mv-send"), `class="`+composerSendIconClass+`"`) {
 			t.Errorf("%s: Send is not the plain one: %s", name, elem(t, page, "mv-send"))
 		}
 	}
@@ -109,25 +109,116 @@ func TestTheMenuIsTheRenderedViewsAlone(t *testing.T) {
 		"terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "main", StepUp: stepUpFixture(),
 			Composer: &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main", Aria: "x"}})),
 	} {
-		if strings.Contains(p, "mv-complete") || strings.Contains(p, "aria-autocomplete") {
+		// The menu script's own aria-autocomplete, not the attribute: the
+		// sidebar's command palette (palette.go) carries one on every page.
+		if strings.Contains(p, "mv-complete") || strings.Contains(p, "input.setAttribute('aria-autocomplete', 'list')") {
 			t.Errorf("%s: carries the menu", name)
 		}
 	}
 }
 
+// buttonByID is the whole <button>…</button> with id in page.
+func buttonByID(t *testing.T, page, id string) string {
+	t.Helper()
+	open := elem(t, page, id)
+	i := strings.Index(page, open)
+	end := strings.Index(page[i:], "</button>")
+	if !strings.HasPrefix(open, "<button") || end < 0 {
+		t.Fatalf("%q is not a button: %s", id, open)
+	}
+	return page[i : i+end+len("</button>")]
+}
+
+// TestSendIsAPaperPlane: every composer's Send — the Rendered view's plain
+// one, its split one beside the Queue caret, and the agent chat's (page and
+// chief panel) — is an icon button: an inline aria-hidden svg drawn in
+// currentColor, no visible text, named "Send" by aria-label and title, a
+// 40×40 target. The ask card's Submit, which wears composerSendClass, keeps
+// its words; and the script's "Send again" takes that worded look rather than
+// copying the icon button's padless square.
+func TestSendIsAPaperPlane(t *testing.T) {
+	agent := AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1}
+	panel := agent
+	panel.Surface = ChatSurfaceChiefPanel
+	pages := map[string][2]string{
+		"plain (no queue)":  {renderedView(t, nil, true), "mv-send"},
+		"split (queue)":     {renderedView(t, &ComposerQueue{Src: SendQueuePath + "?host=host-a"}, true), "mv-send"},
+		"read-only":         {renderedView(t, &ComposerQueue{Src: SendQueuePath}, false), "mv-send"},
+		"agent chat page":   {renderString(t, agentChatPane(agent)), "chat-send"},
+		"agent chief panel": {renderString(t, agentChatPane(panel)), "chat-send"},
+	}
+	for name, p := range pages {
+		b := buttonByID(t, p[0], p[1])
+		if got := strings.TrimSpace(visibleText(t, b)); got != "" {
+			t.Errorf("%s: Send shows text %q, want an icon only: %s", name, got, b)
+		}
+		for _, want := range []string{`type="submit"`, `aria-label="Send"`, `title="Send"`, "min-h-[40px]", "min-w-[40px]", "<svg ", `aria-hidden="true"`, "currentColor"} {
+			if !strings.Contains(b, want) {
+				t.Errorf("%s: Send lacks %s: %s", name, want, b)
+			}
+		}
+		if strings.Contains(b, "<img") || strings.Contains(b, " src=") || strings.Contains(b, "<use") {
+			t.Errorf("%s: the icon is not inline: %s", name, b)
+		}
+	}
+	// The split half is rounded on the left only (the caret takes the right):
+	// one control.
+	if split := buttonByID(t, pages["split (queue)"][0], "mv-send"); !strings.Contains(split, "rounded-l-xl") || !strings.Contains(split, "rounded-r-none") {
+		t.Errorf("the split Send is not the left half: %s", split)
+	}
+	// CONTROL: the ask card's Submit keeps its words and its look.
+	ask := renderString(t, MirrorAskLive(MirrorAskLiveView{Ref: MirrorRef{Host: "lap", Session: "work", Window: "@3"}, ToolID: "toolu_Q", State: AskStatePending, Questions: askQs}))
+	sub := regexp.MustCompile(`<button type="submit" data-ask-submit=""[^>]*>([^<]*)</button>`).FindStringSubmatch(ask)
+	if sub == nil || sub[1] != "Submit answers" || !strings.Contains(sub[0], `class="`+composerSendClass+`"`) {
+		t.Errorf("the ask card's Submit lost its words or its look: %v", sub)
+	}
+	// "Send again" is built by the script: the worded look, not whatever Send wears.
+	if !strings.Contains(pages["plain (no queue)"][0], `againBtn.className = '`+composerSendClass+`';`) {
+		t.Error("the script's Send again does not take composerSendClass")
+	}
+}
+
+// TestBothSendsAreWiredThroughSendKeepsFocusJS: ⚠ A WIRING CHECK ONLY. Both
+// composers' scripts hand their Send to sendKeepsFocusJS exactly once (one
+// function, so the two cannot drift), and the Queue caret's script does not.
+// It says nothing about what the function DOES — it stays green with the
+// preventDefault removed or the listener on another event. The behaviour (a
+// press leaves the box focused; the first tap sends with the keyboard up) is
+// guarded by e2e: composer-menu.spec.ts and agent-composer.spec.ts.
+func TestBothSendsAreWiredThroughSendKeepsFocusJS(t *testing.T) {
+	for name, c := range map[string][2]string{
+		"rendered view": {renderedView(t, &ComposerQueue{Src: SendQueuePath}, true), "(" + sendKeepsFocusJS + ")(send);"},
+		"agent chat":    {renderString(t, agentChatScript("a")), "(" + sendKeepsFocusJS + ")(sendBtn);"},
+	} {
+		if strings.Count(c[0], c[1]) != 1 {
+			t.Errorf("%s: Send is wired through sendKeepsFocusJS %d times, want 1", name, strings.Count(c[0], c[1]))
+		}
+	}
+	// The caret's menu takes focus by design: it is not given the rule.
+	if strings.Contains(renderString(t, sendMenuScript()), sendKeepsFocusJS) {
+		t.Error("the Queue caret keeps focus off its menu")
+	}
+}
+
 // TestBothDocumentsRankWithOneFunction: 🔴 a SEAM guard. The Rendered view is
-// its own document, without appScript, so the menu embeds the ranker — and it
-// must be the SAME text appScript carries, not a second copy that drifts from
+// its own document, and its `/` menu embeds the ranker ITSELF — it must not
+// depend on another script (appScript, which the view also carries for its
+// side nav) having run first. So the view holds two copies, and the guard is
+// that there is no second VERSION: every definition of window.musterRank in
+// the document is a byte-identical rankJS — not a copy that drifts from
 // internal/searchrank's table (which e2e holds each document to).
 func TestBothDocumentsRankWithOneFunction(t *testing.T) {
 	view := renderedView(t, nil, true)
 	app := renderString(t, appScript(Features{}))
-	for name, page := range map[string]string{"rendered view": view, "app shell": app} {
-		if n := strings.Count(page, rankJS); n != 1 {
-			t.Errorf("%s carries rankJS %d times, want exactly 1", name, n)
+	menu := renderString(t, composerMenuScript("/x"))
+	for name, page := range map[string]string{"rendered view": view, "app shell": app, "the menu's own script": menu} {
+		copies, defs := strings.Count(page, rankJS), strings.Count(page, "window.musterRank = function")
+		if copies == 0 {
+			t.Errorf("%s carries no rankJS — its ranking would match nothing", name)
 		}
-		if n := strings.Count(page, "window.musterRank = function"); n != 1 {
-			t.Errorf("%s defines window.musterRank %d times, want 1 (a second definition is a second copy)", name, n)
+		if defs != copies {
+			t.Errorf("%s defines window.musterRank %d times but carries rankJS %d times — a definition that is not "+
+				"rankJS is a second version", name, defs, copies)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package mirrorhost
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -8,8 +9,17 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
+// Private (RFC 1918) test hosts, each derived from its block's NAME so no test
+// spells an address anybody's network might use (tests/leakscan.py).
+var (
+	testLAN10  = netip.MustParsePrefix("10.0.0.0/8").Addr().Next().String()
+	testLAN192 = netip.MustParsePrefix("192.168.0.0/16").Addr().Next().String()
+	testLAN172 = netip.MustParsePrefix("172.16.0.0/12").Addr().Next().String()
+)
+
 // TestConnectURLMapsSchemesAndRefusesCleartextUnlessAllowed: https→wss under any
-// path prefix; plain http only with AllowHTTP (the token rides every connect).
+// path prefix; plain http only with AllowHTTP (the token rides every connect),
+// or to this machine's loopback interface, which it never leaves.
 func TestConnectURLMapsSchemesAndRefusesCleartextUnlessAllowed(t *testing.T) {
 	for _, c := range []struct {
 		in        string
@@ -20,8 +30,18 @@ func TestConnectURLMapsSchemesAndRefusesCleartextUnlessAllowed(t *testing.T) {
 		{in: "https://muster.example.com", want: "wss://muster.example.com/mirror/connect"},
 		{in: "https://muster.example.com/", want: "wss://muster.example.com/mirror/connect"},
 		{in: "https://example.com/muster/?x=1#f", want: "wss://example.com/muster/mirror/connect"},
-		{in: "http://192.0.2.10:30306", errHas: "cleartext"},
-		{in: "http://192.0.2.10:30306", allowHTTP: true, want: "ws://192.0.2.10:30306/mirror/connect"},
+		{in: "http://192.0.2.10:8105", errHas: "cleartext"},
+		// Plain http to THIS machine never leaves it: no flag needed.
+		{in: "http://localhost:8105", want: "ws://localhost:8105/mirror/connect"},
+		{in: "http://127.0.0.1:8105/m", want: "ws://127.0.0.1:8105/m/mirror/connect"},
+		{in: "http://[::1]:8105", want: "ws://[::1]:8105/mirror/connect"},
+		// ...and everything that only looks like it stays refused.
+		{in: "http://localhost.evil.com:8105", errHas: "cleartext"},
+		{in: "http://127.0.0.1.evil.com", errHas: "cleartext"},
+		{in: "http://" + testLAN10 + ":8105", errHas: "cleartext"},
+		{in: "http://" + testLAN192 + ":8105", errHas: "cleartext"},
+		{in: "http://[fd00::1]:8105", errHas: "cleartext"},
+		{in: "http://192.0.2.10:8105", allowHTTP: true, want: "ws://192.0.2.10:8105/mirror/connect"},
 		{in: "ftp://x", errHas: "must be https"},
 		{in: "https://", errHas: "no host"},
 	} {
@@ -102,5 +122,28 @@ func TestTheDefaultRefreshIsFiveSeconds(t *testing.T) {
 	}
 	if c.cfg.Refresh != 5*time.Second {
 		t.Fatalf("default Refresh = %s, want 5s", c.cfg.Refresh)
+	}
+}
+
+// TestMCPTargetAcceptsLoopbackHTTPOnly: the ask tool's proxy target follows the
+// same rule as the connect URL.
+func TestMCPTargetAcceptsLoopbackHTTPOnly(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://localhost:8105": "http://localhost:8105" + MCPPath,
+		"http://127.0.0.1:8105": "http://127.0.0.1:8105" + MCPPath,
+		"http://[::1]:8105/m":   "http://[::1]:8105/m" + MCPPath,
+		"https://m.example.com": "https://m.example.com" + MCPPath,
+	} {
+		if got, err := MCPTarget(in, false); err != nil || got != want {
+			t.Errorf("MCPTarget(%q, false) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"http://192.0.2.10:8105", "http://localhost.evil.com", "http://" + testLAN10, "http://[fd00::1]"} {
+		if got, err := MCPTarget(in, false); err == nil {
+			t.Errorf("MCPTarget(%q, false) = %q; want a refusal", in, got)
+		}
+		if _, err := MCPTarget(in, true); err != nil {
+			t.Errorf("MCPTarget(%q, true): %v; -allow-http must still permit it", in, err)
+		}
 	}
 }

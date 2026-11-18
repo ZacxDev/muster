@@ -1,0 +1,70 @@
+-- muster 0059 — drop github_connection, the per-user GitHub OAuth connection.
+--
+-- The OAuth connection was removed from the code in #315 (the Repos tab, the
+-- /github/connect, /github/callback and /github/disconnect routes, the
+-- encrypted per-user token store and the static-token connect at boot). The
+-- GitHub App is muster's only GitHub identity (docs/github-app.md). #315 left
+-- the table in place, unread and unwritten, so that change could be rolled back;
+-- this drops it, with its owner_isolation policy (0007), its primary key and
+-- its foreign key to users (0006), which go with the table.
+--
+-- 🔴 IT IS IRREVERSIBLE, AND IT DELETES STORED OAUTH TOKENS. Every row is a
+-- user's encrypted GitHub OAuth token (token_ciphertext) with its login and
+-- scopes. Nothing here keeps a copy: once this commits, the tokens are gone.
+-- They are not needed by the binary that applies this migration (it never
+-- references the table), and a token GitHub issued is still valid at GitHub
+-- until the user revokes it there — dropping the ciphertext does not revoke it.
+--
+-- 🔴 ROLLBACK TO 0.101.0 OR AN EARLIER IMAGE. Read against that code — 0.101.0
+-- (#315 is in it: nothing reads the table) and the parent of #315 (which still
+-- has the OAuth connection) — not on a live deploy:
+--   * IT BOOTS. Its migration runner sees version 59 recorded, every version it
+--     embeds (<= 58) present, and applies nothing; it does not refuse a database
+--     newer than itself. 0.101.0's server code never names the table. In an
+--     image from before 0.101.0 nothing at boot reads it either: github.NewPG
+--     only builds the store, and the one boot-time write — MUSTER_GITHUB_TOKEN's
+--     static connect, which needs MUSTER_GITHUB_ENCRYPTION_KEY too — runs in a
+--     background goroutine and only LOGS its failure.
+--   * BEFORE 0.101.0, WITH MUSTER_GITHUB_ENCRYPTION_KEY SET, every on-demand
+--     read of the connection fails with "relation github_connection does not
+--     exist" instead of "not connected": the Repos tab, connect / callback /
+--     disconnect, and the OAuth fallback behind the repository list, the
+--     default-branch lookup and the claude-code dispatch repository check —
+--     that is, for a member, and for everyone on a deployment with no GitHub
+--     App. An admin on a deployment WITH
+--     an App is served by the App and never reaches the table. Without the key
+--     the store is never built and the table is never touched.
+--   * ITS --rls-off AND --rls-on FAIL — 0.101.0's included: its
+--     rollback/rls_off.sql and 0007 are the same as before #315 and name
+--     github_connection unconditionally, so `muster-migrate --rls-off` (and
+--     --rls-on) from it error with "relation public.github_connection does not
+--     exist". Each runs in one transaction, so the failure changes nothing: RLS
+--     is left as it was. Use this image's or a newer one's, whose copies skip
+--     the table when it is absent.
+--   To give such an image its table back (EMPTY — the tokens are not
+--   recoverable short of restoring a pg_dump taken before this migration), as
+--   the database owner:
+--     CREATE TABLE public.github_connection (
+--         owner_id BIGINT NOT NULL DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
+--                  REFERENCES public.users (id) PRIMARY KEY,
+--         login TEXT NOT NULL, scopes TEXT NOT NULL DEFAULT '',
+--         token_ciphertext BYTEA NOT NULL,
+--         connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+--         updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+--   then re-run 0007's body (`muster-migrate --rls-on` from this image does it)
+--   for its policy and grants, and DELETE FROM schema_migrations WHERE version = 59.
+--
+-- Must apply after 0058 (the contiguity test refuses a gap). Not re-applied by
+-- db.RLSOn. Idempotent (IF EXISTS), like the rest of the set; 0001, which
+-- creates the table on a fresh database, is not edited. No CASCADE: a dependency
+-- nobody listed here (a view, a foreign key added by hand) fails the migration
+-- loudly instead of being dropped with it.
+--
+-- LOCKS: the DROP takes an ACCESS EXCLUSIVE lock on users too (the foreign
+-- key's triggers live there), so a long reader on users — a running pg_dump,
+-- say — makes it hit the lock timeout below and roll back cleanly, applying
+-- nothing. Deploy it outside a backup window.
+
+SET LOCAL lock_timeout = '3s';
+
+DROP TABLE IF EXISTS public.github_connection;

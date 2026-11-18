@@ -80,11 +80,11 @@ func TestTheReplayMatchesTheSessionOnTheJobAndOnlyIt(t *testing.T) {
 	if hits, err := s.SearchHistory(as(3), "node-7k", live, since, 5); err != nil || len(hits) != 0 {
 		t.Fatalf("another owner's history search: %+v %v", hits, err)
 	}
-	if titles, err := s.RecentTitles(as(3), live, since); err != nil || len(titles) != 0 {
+	if titles, err := s.RecentTitles(as(3), live, since, 0); err != nil || len(titles) != 0 {
 		t.Fatalf("another owner's recent titles: %+v %v", titles, err)
 	}
 	// Control: the owner reads its titles through the same Live.
-	if titles, _ := s.RecentTitles(as(2), live, since); len(titles[a]) != 2 {
+	if titles, _ := s.RecentTitles(as(2), live, since, 0); len(titles[a]) != 2 {
 		t.Fatalf("control: the owner's titles for A: %+v", titles[a])
 	}
 }
@@ -104,7 +104,7 @@ func TestTheWindowIsTime(t *testing.T) {
 	for name, got := range map[string]int{
 		"match":  len(must(s.MatchHistory(as(2), replayText, live, time.Now().Add(-HistoryWindow), 2, 5))),
 		"search": len(must(s.SearchHistory(as(2), "node-7k", live, time.Now().Add(-HistoryWindow), 5))),
-		"titles": len(must(s.RecentTitles(as(2), live, time.Now().Add(-HistoryWindow)))),
+		"titles": len(must(s.RecentTitles(as(2), live, time.Now().Add(-HistoryWindow), 0))),
 	} {
 		if got != 0 {
 			t.Errorf("%s: a 7 h old row was read through a 6 h window (%d)", name, got)
@@ -128,7 +128,7 @@ func TestTheWindowIsNotARowCount(t *testing.T) {
 	if hits, err := s.SearchHistory(as(2), "node-7k", live, since, 5); err != nil || len(hits) != 1 {
 		t.Fatalf("search after 40 newer rows: %+v %v", hits, err)
 	}
-	titles, err := s.RecentTitles(as(2), live, since)
+	titles, err := s.RecentTitles(as(2), live, since, 0)
 	if err != nil || len(titles[a]) != MaxRecentTitles {
 		t.Fatalf("recent titles: %d (%v); want the display bound %d", len(titles[a]), err, MaxRecentTitles)
 	}
@@ -195,7 +195,7 @@ func TestRecentTitlesAreDistinctNewestFirst(t *testing.T) {
 	write(t, s, 2, a, "Reviewing the PR", "two", "")
 	backdate(t, a, "Reviewing the PR", 2*time.Hour)
 	write(t, s, 2, a, "Porting the importer", "three", "")
-	got, err := s.RecentTitles(as(2), Live{Agents: []int64{a.AgentID()}}, time.Now().Add(-HistoryWindow))
+	got, err := s.RecentTitles(as(2), Live{Agents: []int64{a.AgentID()}}, time.Now().Add(-HistoryWindow), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestAHistoryReadNeedsAWindow(t *testing.T) {
 	if _, err := s.MatchHistory(as(2), "x y", Live{}, time.Time{}, 1, 5); err == nil {
 		t.Error("match with no window")
 	}
-	if _, err := s.RecentTitles(as(2), Live{}, time.Time{}); err == nil {
+	if _, err := s.RecentTitles(as(2), Live{}, time.Time{}, 0); err == nil {
 		t.Error("titles with no window")
 	}
 }
@@ -316,6 +316,47 @@ func TestJunkCannotSteerTheHint(t *testing.T) {
 	// Control: one reference, in another spelling, still names its session.
 	if got := match("Any news on #137? The release is waiting on it."); fmt.Sprint(got) != fmt.Sprint([]string{pr.String()}) {
 		t.Errorf("control: \"#137\" named %v; want [%s]", got, pr)
+	}
+}
+
+// 🔴 TestACrossRepoReferenceNamesThePRSession: a review mail writes the PR
+// GitHub's cross-repo way, acme/widgets#7239, and the session on it says only
+// "PR #7239" in its focus. The message's '#' followed '/', which the bare '#'
+// form refuses, so it carried no "#7239" and named nobody. Now it names that
+// session and only it: not a session on PR #7240, nor one whose focus holds
+// 7239 as a bare number; and the same digits in a URL fragment or glued to a
+// word still name nothing.
+func TestACrossRepoReferenceNamesThePRSession(t *testing.T) {
+	s, pool := pgStore(t)
+	on := AgentSubject(mustAgent(t, pool, 2, "focus-hs-xrepo").ID)
+	near := AgentSubject(mustAgent(t, pool, 2, "focus-hs-xrepo-near").ID)
+	bare := AgentSubject(mustAgent(t, pool, 2, "focus-hs-xrepo-bare").ID)
+	write(t, s, 2, on, "Session working on PR #7239 rebase and audit", "", "")
+	write(t, s, 2, near, "Session working on PR #7240 rebase and audit", "", "")
+	write(t, s, 2, bare, "Session working on the pr queue, build 7239", "", "")
+	live := Live{Agents: []int64{on.AgentID(), near.AgentID(), bare.AgentID()}}
+	since := time.Now().Add(-HistoryWindow)
+	match := func(text string) []string {
+		t.Helper()
+		ms, err := s.MatchHistory(as(2), text, live, since, 2, MaxSearchResults)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return subjectsOf(ms)
+	}
+	// The mail's shape: subject and body joined as pluginSessionHints joins them.
+	mail := "[ask] pr-review acme/widgets#7239 @841aa42 r1\n# Review acme/widgets#7239 @841aa42"
+	if got := match(mail); fmt.Sprint(got) != fmt.Sprint([]string{on.String()}) {
+		t.Errorf("the review mail named %v; want [%s]", got, on)
+	}
+	for _, text := range []string{
+		"[ask] pr-review https://example.com/acme/widgets#7239 r1",
+		"[ask] pr-review example.com/widgets#7239 r1",
+		"[ask] pr-review widgets#7239 r1",
+	} {
+		if got := match(text); len(got) != 0 {
+			t.Errorf("%q named %v; a fragment or a glued '#' is no reference", text, got)
+		}
 	}
 }
 

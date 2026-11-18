@@ -41,7 +41,7 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// and one from anywhere else gets the compact card.
 	mux.HandleFunc("GET /ui/tasks/{id}/card", s.requireSession(s.handleNoteCard))
 	mux.HandleFunc("POST /tasks", s.requireSession(s.handleNoteCreate))
-	mux.HandleFunc("POST /tasks/{id}/edit", s.requireSession(s.handleNoteEdit))
+	mux.HandleFunc("POST /tasks/{id}/edit", s.requireSession(s.requireTaskOperator(s.handleNoteEdit)))
 	// Machine endpoint (hook-token-gated): the external task-spec-drafter routes a
 	// verified spec into the durable Tasks queue. Additive — does not touch the
 	// permission-request flow.
@@ -112,8 +112,7 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// machine (an external producer retracting what it posted) and a machine cannot
 	// complete a browser login to obtain a session cookie. The human spelling of
 	// the same operation is DELETE /tasks/{id}/comments/{cid} below. See
-	// handleAPITaskCommentDelete for the route shape rationale and the
-	// enforce-when-set caveat.
+	// handleAPITaskCommentDelete for the route shape rationale.
 	mux.HandleFunc("DELETE /api/tasks/{id}/comments/{cid}", s.requireHookToken(s.handleAPITaskCommentDelete))
 	// Task threads, REVERSE direction (migration 0023): every live task a Claude
 	// Code session touched, most-recently-touched first. The FORWARD direction has
@@ -132,20 +131,26 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	mux.HandleFunc("GET /api/projects", s.requireHookToken(s.handleAPIProjects))
 	// Session tag MERGE routes (set-union / set-difference, never replace) — the
 	// UI mirror of the machine addTags/removeTags contract. Both re-render the card.
-	mux.HandleFunc("POST /tasks/{id}/tags", s.requireSession(s.handleNoteTagAdd))
-	mux.HandleFunc("DELETE /tasks/{id}/tags/{tag}", s.requireSession(s.handleNoteTagRemove))
-	mux.HandleFunc("DELETE /tasks/{id}", s.requireSession(s.handleNoteDelete))
-	mux.HandleFunc("PATCH /tasks/{id}/status", s.requireSession(s.handleNoteStatus))
+	mux.HandleFunc("POST /tasks/{id}/tags", s.requireSession(s.requireTaskOperator(s.handleNoteTagAdd)))
+	mux.HandleFunc("DELETE /tasks/{id}/tags/{tag}", s.requireSession(s.requireTaskOperator(s.handleNoteTagRemove)))
+	mux.HandleFunc("DELETE /tasks/{id}", s.requireSession(s.requireTaskManager(s.handleNoteDelete)))
+	mux.HandleFunc("PATCH /tasks/{id}/status", s.requireSession(s.requireTaskOperator(s.handleNoteStatus)))
 	// The agent page's Mark-complete form WITHOUT JavaScript (a plain form can
-	// only GET or POST): completes the task and answers 303 → the Agents list.
-	mux.HandleFunc("POST /tasks/{id}/complete", s.requireSession(s.requireSameOrigin(s.handleNoteComplete)))
-	mux.HandleFunc("POST /tasks/{id}/comments", s.requireSession(s.handleNoteComment))
+	// only GET or POST): completes the task and answers 303 → home (ui.HomePath).
+	mux.HandleFunc("POST /tasks/{id}/complete", s.requireSession(s.requireSameOrigin(s.requireTaskOperator(s.handleNoteComplete))))
+	mux.HandleFunc("POST /tasks/{id}/comments", s.requireSession(s.requireTaskOperator(s.handleNoteComment)))
 	// The UI's per-comment trash control. 🔴 On the SESSION tier, like every other
 	// UI route — the browser carries no bearer token, so the alternative was
 	// rendering the hook token into the page. Flagged in full at
 	// handleNoteCommentDelete; deleting this ONE line removes the human spelling
 	// and leaves the machine route intact.
-	mux.HandleFunc("DELETE /tasks/{id}/comments/{cid}", s.requireSession(s.handleNoteCommentDelete))
+	mux.HandleFunc("DELETE /tasks/{id}/comments/{cid}", s.requireSession(s.requireTaskOperator(s.handleNoteCommentDelete)))
+	// The task page's Retry and Dismiss on a failed reference write: a session
+	// AND same-origin (requireOperatorWrite), like the plugin message retry.
+	// There is deliberately no /api twin: retrying what the upstream refused is
+	// a decision made looking at the task page (task_ref_write_actions.go).
+	mux.HandleFunc("POST /tasks/{id}/ref-writes/{wid}/retry", s.requireOperatorWrite(s.requireTaskOperator(s.handleTaskRefWriteRetry)))
+	mux.HandleFunc("POST /tasks/{id}/ref-writes/{wid}/dismiss", s.requireOperatorWrite(s.requireTaskOperator(s.handleTaskRefWriteDismiss)))
 	mux.HandleFunc("GET /tasks/{id}/attachments/{aid}", s.requireSession(s.handleNoteAttachment))
 	// Task MERGE (session only). SUPERSEDE semantics: the winner unions in the
 	// loser's tags + records the merge; the loser is closed with a pointer back.
@@ -154,4 +159,8 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// The literal "merge" segment cannot collide with POST /tasks/{id}/... — those
 	// patterns have a further segment — nor with POST /tasks, which has none.
 	mux.HandleFunc("POST /tasks/merge", s.requireSession(s.handleTaskMerge))
+	// Move one of your own tasks into a team you operate in (team_tasks.go):
+	// a session AND same-origin, like every other write that changes who
+	// owns something.
+	mux.HandleFunc("POST /tasks/{id}/move", s.requireOperatorWrite(s.handleTaskMove))
 }

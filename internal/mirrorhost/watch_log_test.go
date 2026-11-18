@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/hermeshost/hermestest"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -38,16 +39,16 @@ func (l *lockedBuf) String() string {
 // transcript from the start or to resume at an offset, and an `unwatched` line
 // per end.
 func TestAWatchLogsItsOpenAndItsEnd(t *testing.T) {
-	home := hermestest.New(t)
-	root := hermestest.LocalID()
-	home.Session(root, hermestest.SessionOpts{})
-	home.Message(root, hermestest.Msg{Role: "user", Content: "hello"})
-	src := NewHermesSource(home.Dir, t.TempDir())
-	t.Cleanup(func() { _ = src.State().Close() })
-	wb := &windowsBackend{windows: []WindowInfo{hermesWindowInfo(root)}}
+	const root = "g1"
+	tr := filepath.Join(t.TempDir(), root+".jsonl")
+	if err := os.WriteFile(tr, []byte(`{"type":"user","promptId":"p","origin":{"kind":"human"},"message":{"role":"user","content":"hello"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wb := &windowsBackend{windows: []WindowInfo{{Session: "h", ID: "@5", Index: 5, Active: true, Pane: "%5", PanePID: 1, Command: "claude",
+		Claude: &ClaudePane{Pane: "%5", PID: 1, Transcript: tr, Gen: root}}}}
 	d := newDrivenMuster(t)
 	var out lockedBuf
-	c, err := New(Config{URL: d.srv.URL, Token: mirror.TokenPrefix + "t", Host: "laptop", Backend: hermesBackend{wb, src},
+	c, err := New(Config{URL: d.srv.URL, Token: mirror.TokenPrefix + "t", Host: "laptop", Backend: wb,
 		AllowHTTP: true, Refresh: 10 * time.Millisecond, Logger: log.New(&out, "", 0)})
 	if err != nil {
 		t.Fatal(err)

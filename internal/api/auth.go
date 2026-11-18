@@ -46,23 +46,20 @@ const sessionTTL = 30 * 24 * time.Hour
 // (TestTheTerminalSocketRefusesTheHookToken).
 //
 // HookToken protects the machine-called surface via a bearer token. It is
-// enforce-when-set: an empty HookToken leaves those endpoints open, a
-// back-compat debt to callers that predate the token.
+// FAIL-CLOSED: an empty HookToken admits nobody on those endpoints (every
+// compare against it fails), and cmd/muster-server refuses to boot without one.
 //
-// UIPassword is the HUMAN tier, and it is FAIL-CLOSED — the opposite polarity
-// to HookToken, and that difference is the entire control. See
+// UIPassword is the HUMAN tier, and it is FAIL-CLOSED too. See
 // BrowserAuthRefusal.
 type AuthConfig struct {
-	// HookToken, when non-empty, is required (Bearer or X-Muster-Token) on the
-	// machine-called endpoints.
+	// HookToken is required (Bearer or X-Muster-Token) on the machine-called
+	// endpoints; empty, they admit no shared-secret caller at all.
 	HookToken string
 	// ServiceToken gates the SERVICE-TO-SERVICE door: the credential a NAMED
 	// sibling process presents, together with an X-Muster-Actor header naming
 	// the caller it is acting for.
 	//
-	// 🔴 IT IS FAIL-CLOSED. The hook tier's enforce-when-set shape is a
-	// back-compat debt to callers that predate the token; a door with no legacy
-	// caller is owed none, so unset means 503 here. See ServiceWriteRefusal for
+	// 🔴 IT IS FAIL-CLOSED: unset means 503 here. See ServiceWriteRefusal for
 	// each refusal and the reason it exists, and requireServiceToken for the
 	// trust this door widens.
 	ServiceToken string
@@ -70,9 +67,11 @@ type AuthConfig struct {
 	// FAIL-CLOSED: unset or too short means the browser surface refuses, it does
 	// NOT mean the surface is open. See BrowserAuthRefusal.
 	UIPassword string
-	// SecureCookies marks the session cookie Secure. It is off by default because
-	// a common path to this server is a plain-HTTP LAN port, and a Secure cookie
-	// there is never sent — which would present as "login succeeds and then
+	// SecureCookies marks the session cookie Secure. It is the RESOLVED value:
+	// cmd/muster-server turns it on when MUSTER_SECURE_COOKIES says so, or when
+	// that is unset and MUSTER_PUBLIC_URL is https (an explicit 0 is the
+	// opt-out). Off is right only for a plain-HTTP LAN port, where a Secure
+	// cookie is never sent — which would present as "login succeeds and then
 	// nothing is logged in".
 	SecureCookies bool
 	// Mode is MUSTER_AUTH_MODE. The zero value is AuthModePassword, so every
@@ -82,6 +81,11 @@ type AuthConfig struct {
 	// named in the refusal the machine-token listener gives a browser in
 	// gotrue mode, and it is the base of the admin claim link.
 	PublicURL string
+	// BrowserPort is MUSTER_BROWSER_PORT, the browser listener's port (0:
+	// none). Informational here: GET /api/doctor reports it in gotrue mode,
+	// so `muster doctor` names the port a browser can open instead of the
+	// machine-token one it was given.
+	BrowserPort int
 }
 
 // goTrueMode reports whether the human tier is GoTrue's.
@@ -102,10 +106,8 @@ const minServiceTokenLen = 32
 // ServiceWriteRefusal returns a human-readable reason this server will NOT serve
 // the service-to-service tier, or "" when it will.
 //
-// 🔴 IT IS THE ChiefWriteRefusal SHAPE WITH TWO MORE CASES, AND IT IS FAIL-CLOSED
-// FOR THE REASON HookArmingRefusal GIVES: "enforce-when-set" is a back-compat
-// promise to callers that predate the token, and a door that has never shipped has
-// no such caller. Inheriting the open default would give away a gate for nothing.
+// 🔴 IT IS THE ChiefWriteRefusal SHAPE WITH TWO MORE CASES, AND IT IS FAIL-CLOSED,
+// like every other door in this file, the hook tier included.
 //
 // The four refusals, in order:
 //
@@ -115,7 +117,7 @@ const minServiceTokenLen = 32
 //     operator decides otherwise.
 //   - too short — a placeholder rather than generated entropy.
 //   - identical to HookToken — that token is ONE shared value, handed to every hook
-//     script on both hosts and travelling in cleartext to the LAN NodePort many
+//     script on every host and possibly travelling in cleartext to a plain-HTTP port many
 //     times a day, so it NAMES NO CALLER. This door's whole content is an asserted
 //     identity; admitting the secret every hook holds would let any of them assert
 //     any name, which is a WRONG identity rather than a missing one.
@@ -150,7 +152,7 @@ func (c AuthConfig) ServiceWriteRefusal() string {
 	case len(c.ServiceToken) < minServiceTokenLen:
 		return fmt.Sprintf("MUSTER_SERVICE_TOKEN is shorter than %d characters (looks like a placeholder, not generated entropy)", minServiceTokenLen)
 	case c.ServiceToken == c.HookToken:
-		return "MUSTER_SERVICE_TOKEN is the same value as MUSTER_HOOK_TOKEN (one shared secret held by every hook script on both hosts, so it names no caller and every holder of it could assert any actor name at this door)"
+		return "MUSTER_SERVICE_TOKEN is the same value as MUSTER_HOOK_TOKEN (one shared secret held by every hook script on every host, so it names no caller and every holder of it could assert any actor name at this door)"
 	case c.ServiceToken == c.UIPassword:
 		return "MUSTER_SERVICE_TOKEN is the same value as MUSTER_UI_PASSWORD (which derives the session-cookie signing key, so a holder of this credential could mint signed operator browser sessions)"
 	}
@@ -244,11 +246,12 @@ func (s *Server) passwordSession(r *http.Request) (auth.Session, bool) {
 // session transcript pages, the approve/deny controls and the task surface.
 //
 // 🔴 IT USED TO BE A LITERAL `return next`, AND THAT IS WHAT THIS CLOSES. Human
-// auth had been removed on the reasoning that the public path is fronted by
-// Authelia and "the LAN is treated as trusted-open". The LAN half stopped being
-// tenable once the session page began rendering tool INPUTS and carrying a
-// free-form send-keys box: a NodePort bypasses the ingress entirely, so the
-// Authelia edge is not on this path at all and never was.
+// auth had been removed on the reasoning that the public path is fronted by a
+// forward-auth proxy and the local network is trusted. The second half stopped
+// being tenable once the session page began rendering tool INPUTS and carrying a
+// free-form send-keys box: a deployment reachable directly on the network (a
+// node port, a LAN address) bypasses the proxy entirely, so the proxy's
+// sign-in is not on that path at all.
 //
 // 🔴 THIS PARAGRAPH DESCRIBED A SECOND WRAPPER AND THREE ROUTES THAT DO NOT
 // EXIST HERE, AND THE CORRECTION MATTERS MORE THAN THE DELETION. It read: "the
@@ -306,6 +309,13 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 // CrossOriginRefusal is the error requireSameOrigin answers.
 const CrossOriginRefusal = "cross-origin request refused: this action must come from muster's own pages"
 
+// NoOriginRefusalHint is appended to CrossOriginRefusal when the request
+// carried NEITHER Origin nor Referer — a script, not a browser — so the
+// refusal names the header the check reads instead of leaving the caller to
+// guess. It loosens nothing: the request is refused all the same.
+const NoOriginRefusalHint = "the same-origin check found neither an Origin nor a Referer header; a browser sends Origin " +
+	"itself, and a script must send this server's own origin as Origin"
+
 // requireSameOrigin refuses a state-changing request whose Origin (or, when the
 // browser sent none, Referer) is not muster's own host (wsAllowedOrigins).
 //
@@ -331,8 +341,21 @@ func (s *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.logger.Printf("refused a cross-origin %s %s (Origin %q)", r.Method, r.URL.Path, r.Header.Get("Origin"))
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 	}
+}
+
+// refuseCrossOrigin writes the ONE same-origin refusal every door answers
+// (requireSameOrigin, the admin and passkey doors, step-up, sign-in): a 403
+// whose JSON error is CrossOriginRefusal, plus NoOriginRefusalHint when the
+// request carried neither header the check reads — the case a script hits, and
+// the one a bare "cross-origin" leaves unexplained.
+func (s *Server) refuseCrossOrigin(w http.ResponseWriter, r *http.Request) {
+	msg := CrossOriginRefusal
+	if strings.TrimSpace(r.Header.Get("Origin")) == "" && strings.TrimSpace(r.Header.Get("Referer")) == "" {
+		msg += " (" + NoOriginRefusalHint + ")"
+	}
+	s.writeJSON(w, http.StatusForbidden, map[string]any{"error": msg})
 }
 
 // isSameOrigin reports whether r's Origin — or Referer when Origin is absent —
@@ -374,7 +397,18 @@ func (s *Server) refuseUnauthenticated(w http.ResponseWriter, r *http.Request) {
 }
 
 // isDocumentNavigation reports whether this request is the browser fetching a
-// top-level document, as opposed to an htmx/fetch/XHR call.
+// document — top-level, or into the view swap's frame — as opposed to an
+// htmx/fetch/XHR call.
+//
+// 🔴 `iframe` IS A DOCUMENT TOO. The view swap (ui/view_swap.go) loads the
+// other view of a window into a same-origin frame laid over the whole page,
+// and that frame reloads itself (an expired session's auth gate, the update
+// toast): such a load says Sec-Fetch-Dest: iframe. Answered as an XHR, a
+// signed-out one got `{"error":"not signed in"}` drawn full-screen in the
+// frame — a path the view swap's load check accepts, because it is the
+// frame's own. Answered as a navigation it gets the 303 to sign-in, and the
+// load check hands /login to the TOP window
+// (TestAFramedLoadWithoutASessionIsSentToSignIn).
 //
 // It reads Sec-Fetch-Mode/Sec-Fetch-Dest where present (every browser this app
 // targets sends them) and falls back to "asks for HTML and is not an htmx
@@ -389,7 +423,7 @@ func isDocumentNavigation(r *http.Request) bool {
 		return false
 	}
 	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" {
-		return dest == "document"
+		return dest == "document" || dest == "iframe"
 	}
 	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
 		return mode == "navigate"
@@ -401,46 +435,32 @@ func isDocumentNavigation(r *http.Request) bool {
 // configured, the request must present it as `Authorization: Bearer <token>` or
 // `X-Muster-Token: <token>` (constant-time compared).
 //
-// 🔴 WHEN NO HookToken IS CONFIGURED THIS WRAPPER ADMITS EVERYONE WHO CAN REACH
-// THE PORT, AND ON THE LAN NodePort THAT IS ANYONE ON THE LAN. Say it that way
-// round: an earlier version of this comment said the handler is "left open for
-// back-compat", which describes the mechanism and hides the consequence. The
-// primary path to this server is a plain-HTTP NodePort that bypasses the Authelia
-// ingress entirely, so "open" here means every device on the house network can
-// call every route on this tier — POST /api/send, the /api/response poll cycle,
-// POST /api/tmux/snapshot — with no credential at all.
-//
-// The back-compat rationale is real and is kept: the hook scripts predate the
-// token, and refusing them on an unconfigured server would break the highest-traffic
-// operator-visible surface. It is a debt to EXISTING callers, not a house style —
-// every other door in this file (BrowserAuthRefusal, TerminalWriteRefusal,
-// ChiefWriteRefusal, ServiceWriteRefusal) is fail-closed, and HookArmingRefusal
-// exists so a NEW route on this credential does not inherit the opening. main()
-// warns at boot when the token is unset.
+// 🔴 WITH NO HookToken CONFIGURED IT ADMITS NOBODY. The hook token acts as user
+// 1, the admin, and the tier used to be "enforce-when-set": unset, it admitted
+// everyone who could reach the port. cmd/muster-server now refuses to boot
+// without one (validateListeners), and this wrapper fails closed on its own:
+// the compare below is against an empty secret, which auth.ConstantTimeEqual
+// never matches, so an unarmed server answers exactly the 401 an armed one
+// gives a missing token and says nothing about how it is configured
+// (TestAnUnarmedHookTierAdmitsNobody). A personal mst_ token is unaffected.
 func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A PERSONAL token (mst_…) is its own door, decided before anything about
 		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
-		// a bad one is refused rather than falling through to the open
-		// enforce-when-set case (api_tokens.go).
+		// a bad one is refused rather than falling through to the shared-secret
+		// compare (api_tokens.go).
 		if tok, ok := s.personalTokenFor(r); ok {
 			s.admitAPIToken(w, r, next, tok)
 			return
 		}
-		// ⚠ THE UNENFORCED CASE ACTS AS THE MACHINE USER TOO. It admitted
-		// everyone as the operator's own tier before principals existed; giving
-		// it a principal states that rather than changing it.
 		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
-		if s.refuseUnarmedHookInGoTrueMode(w) {
-			return
-		}
-		if !s.auth.hookTokenEnforced() || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
+		if auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": hookTokenRefusalText})
 	}
 }
 
@@ -489,44 +509,14 @@ func (s *Server) refuseSharedTokenOnBrowserListener(w http.ResponseWriter, r *ht
 	return true
 }
 
-// refuseUnarmedHookInGoTrueMode answers 503 (and reports true) when the hook
-// tier is unarmed in gotrue mode.
-//
-// 🔴 THE ENFORCE-WHEN-SET OPENING IS A PASSWORD-MODE DEBT ONLY. Unarmed, the
-// hook wrappers admit anyone as the machine user — user 1, the admin. With one
-// shared operator that is the documented back-compat; beside per-user logins it
-// is an anonymous admin door. cmd/muster-server refuses to BOOT gotrue mode
-// this way; this is the second wall, so a server built some other way still
-// cannot serve it (TestGoTrueModeClosesAnUnarmedHookTier).
-func (s *Server) refuseUnarmedHookInGoTrueMode(w http.ResponseWriter) bool {
-	if !s.auth.goTrueMode() || s.auth.hookTokenEnforced() {
-		return false
-	}
-	s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-		"error":          "this server does not serve the machine hook tier: " + s.auth.HookArmingRefusal(),
-		HookUnarmedField: true,
-	})
-	return true
-}
+// hookTokenRefusalText is the 401 body every hook-tier wrapper writes for a
+// missing or wrong credential — and, because the compare against an empty
+// secret always fails, on an unarmed server too.
+const hookTokenRefusalText = "invalid or missing hook token"
 
-// HookArmingRefusal reports why this server must not serve a FAIL-CLOSED hook-tier
-// route, or "" when it may. Today there is one reason: no MUSTER_HOOK_TOKEN.
-//
-// 🔴 IT EXISTS BECAUSE "enforce-when-set" IS A BACK-COMPAT PROMISE, AND A ROUTE THAT
-// HAS NEVER SHIPPED IS OWED NONE. requireHookToken leaves an unconfigured server
-// OPEN so the hook scripts that predate the token keep working; that is a debt to
-// EXISTING callers, not a house style. A brand-new route has no existing caller to
-// break, so inheriting the open default would be giving away a gate for nothing in
-// return — which is exactly what task #633's audit found: the agent-steering write
-// moved from a gate that refused unconditionally (requireOperatorToken, since
-// deleted with the operator tier in task #653 phase two) onto one that serves
-// anybody when a variable is unset.
-//
-// ⚠ THE SHAPE IS THE ONE THE OTHER DOORS THAT MATTER ALREADY USE. BrowserAuthRefusal
-// (the human tier), TerminalWriteRefusal and ChiefWriteRefusal are all fail-closed,
-// and main.go states the reason in so many words: "an unset value refuses the web UI
-// rather than serving it to anyone who can reach the LAN NodePort." The hook tier's
-// openness is the exception here, not the rule.
+// HookArmingRefusal reports why this server has no machine hook tier, or "" when
+// it has one. Today there is one reason: no MUSTER_HOOK_TOKEN. It goes into
+// GET /api/doctor's report (as a bool) and nowhere on the wire as text.
 func (c AuthConfig) HookArmingRefusal() string {
 	if !c.hookTokenEnforced() {
 		return "MUSTER_HOOK_TOKEN is not set, so this server cannot authenticate a machine caller"
@@ -534,71 +524,26 @@ func (c AuthConfig) HookArmingRefusal() string {
 	return ""
 }
 
-// HookUnarmedField is the JSON key requireArmedHookToken sets to `true` on its
-// 503, and the ONE thing a client may branch on to tell "this surface is not armed"
-// from "this server is sick".
+// HookUnarmedField is the JSON key a fail-closed surface (the service tier,
+// the approval relay, the connector store) sets to `true` on its 503, and the ONE
+// thing a client may branch on to tell "this surface is not armed" from "this
+// server is sick". The hook tier no longer sets it: an unarmed hook tier answers
+// the armed server's 401 (requireHookToken).
 //
 // 🔴 EXPORTED FOR THE REASON ServiceTierLogPrefix AND ChiefRefusalLogPrefix ARE: the
 // string a consumer matches must be the string the code writes, stated once. The
-// consumer is cmd/muster (unarmedHookSurface), and the two are pinned together
-// by internal/api's TestTheAgentSteeringWriteRefusesAnUnarmedServer (the server
-// writes it) and muster's TestTheUnarmedMarkerMatchesTheServer (the client
-// reads the same spelling) — a second spelling is a spelling that rots.
+// consumer is cmd/muster (unarmedHookSurface), and muster's
+// TestTheUnarmedMarkerMatchesTheServer pins the client's spelling to this one.
 const HookUnarmedField = "unarmed"
 
-// requireArmedHookToken is requireHookToken's FAIL-CLOSED sibling: same credential,
-// same constant-time comparison, but an unconfigured server REFUSES the route
-// instead of serving it open.
-//
-// 🔴 USE IT FOR A MACHINE WRITE THAT STEERS SOMETHING, NOT FOR A READ. The
-// distinction is the one the audit drew: reading an agent's transcript on an
-// unarmed LAN server is a disclosure; telling an agent what to do is arbitrary work
-// inside an agent instance — a shell, its repository checkout and whatever
-// connectors it has been granted. Leaving the second
-// one open when a variable happens to be unset is a strictly worse trade than the
-// back-compat it would be inherited for.
-//
-// 🔴 IT ANSWERS 503, NOT 401, AND THE CODE IS THE MESSAGE. 401 tells an operator
-// their credential is wrong and sends them to rotate a token that was never the
-// problem; the server is refusing to serve the surface AT ALL. That is the same
-// distinction requireTerminalToken and requireChiefToken already make, and
-// muster already maps it to its own exit code (exitUnarmed, 9) so a script can
-// tell "arm the server" from "fix your token" from "retry".
-//
-// ⚠ IT DOES NOT CHECK THE CREDENTIAL IN THE UNARMED CASE, and says so in the body:
-// the caller's own token was not the problem and was not looked at.
-//
-// 🔴 THE BODY CARRIES HookUnarmedField, AND THAT IS WHAT THE CLIENT BRANCHES ON —
-// NOT THE SENTENCE. Most 503s on this tier are genuine outages, so muster has
-// to tell them apart to choose between exitUnarmed and exitServerError, and a
-// discriminator made of prose is one a reword silently breaks. It is the same shape
-// `queued:false` gives the approval gate (cmd/muster's refusedApproval).
+// requireArmedHookToken is the hook credential on a machine write that steers
+// something (an agent, an officer, a dispatch). It used to differ from
+// requireHookToken by refusing an UNARMED server 503 while requireHookToken served
+// it open; both now fail closed the same way (an unarmed server answers 401), so
+// it is requireHookToken. The name is kept so those routes stay greppable as the
+// steering set.
 func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// A PERSONAL token (mst_…) is its own door, decided before anything about
-		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
-		// a bad one is refused rather than falling through to the open
-		// enforce-when-set case (api_tokens.go).
-		if tok, ok := s.personalTokenFor(r); ok {
-			s.admitAPIToken(w, r, next, tok)
-			return
-		}
-		if s.refuseSharedTokenOnBrowserListener(w, r) {
-			return
-		}
-		if reason := s.auth.HookArmingRefusal(); reason != "" {
-			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"error":          "this server does not serve the machine agent-steering write: " + reason,
-				HookUnarmedField: true,
-			})
-			return
-		}
-		if auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
-			return
-		}
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
-	}
+	return s.requireHookToken(next)
 }
 
 // ServiceTierLogPrefix is the prefix every ATTRIBUTED WRITE admitted by
@@ -645,7 +590,7 @@ type serviceActorCtxKey struct{}
 // 🔴 ok == false IS NOT AN ERROR. requireHookOrServiceToken admits two credential
 // kinds and only one names a caller; a request on the shared hook token is
 // legitimately unattributed, because that secret is held by every hook script on
-// both hosts. Callers must decide what absence MEANS for them — and for the
+// every host. Callers must decide what absence MEANS for them — and for the
 // ownership check it means the operator's own tier, which is unscoped by design.
 func serviceActorFromContext(ctx context.Context) (string, bool) {
 	name, ok := ctx.Value(serviceActorCtxKey{}).(string)
@@ -776,7 +721,7 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // actor INSTEAD OF an agent-row lookup", i.e. add a way in that does not need the
 // row. Half (a) MUST stay: the two real Claude Code shell hooks POST /api/attention
 // on the shared secret (§2.2 — they are 100% staying), and removing it breaks the
-// highest-traffic operator-visible surface on both hosts.
+// highest-traffic operator-visible surface on every host.
 //
 // 🔴 HALF (b) IS STILL HERE, AND ITS DELETION IS OWED TO PHASE 4 RATHER THAN DONE
 // NOW. §4.4 does say the sixth door "deletes … the agent half of
@@ -826,11 +771,10 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // agent would be rejected by the earlier comparison and this branch would never
 // execute.
 //
-// ⚠ ENFORCE-WHEN-SET IS INHERITED FROM requireHookToken, NOT INTRODUCED, and it is
-// kept EXACTLY as it was: with no hook token configured this serves everyone, so
-// every fail-closed claim here is scoped to a server that has one — production's
-// state. Changing that polarity is a separate decision with its own blast radius
-// (see requireHookToken's header for what "open" means on the LAN NodePort).
+// 🔴 WITH NO HOOK TOKEN CONFIGURED IT ADMITS NO SHARED-SECRET CALLER, like
+// requireHookToken: the hook compare against an empty secret always fails, so
+// such a request falls through to the service branch and its refusals.
+// cmd/muster-server refuses to boot without the token in any case.
 //
 // 🔴 THE EMPTY-TOKEN GUARD IS LOAD-BEARING TWICE OVER. The store resolves
 // `WHERE hooks_token=$1` (agents/pgstore.go), so one row with an empty hooks_token
@@ -851,8 +795,8 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A PERSONAL token (mst_…) is its own door, decided before anything about
 		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
-		// a bad one is refused rather than falling through to the open
-		// enforce-when-set case (api_tokens.go).
+		// a bad one is refused rather than falling through to the shared-secret
+		// compare (api_tokens.go).
 		if tok, ok := s.personalTokenFor(r); ok {
 			s.admitAPIToken(w, r, next, tok)
 			return
@@ -860,17 +804,10 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
-		if s.refuseUnarmedHookInGoTrueMode(w) {
-			return
-		}
-		if !s.auth.hookTokenEnforced() {
-			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
-			return
-		}
 		token := hookTokenFromRequest(r)
 		if auth.ConstantTimeEqual(token, s.auth.HookToken) {
 			// The operator's own tier: legitimately unattributed, because that
-			// secret is held by every hook script on both hosts and names nobody.
+			// secret is held by every hook script on every host and names nobody.
 			// (Unattributed means no ACTOR name; it still acts as the machine
 			// user, which is a different question.)
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))

@@ -23,7 +23,7 @@ func TestTheColourOptionIsFixedAndNothingIsSplicedIn(t *testing.T) {
 	}
 	prev := newTmuxBackend
 	t.Cleanup(func() { newTmuxBackend = prev })
-	newTmuxBackend = func(s, sp, dir string, h *mirrorhost.HermesSource) mirrorhost.Backend {
+	newTmuxBackend = func(s, sp, dir string) mirrorhost.Backend {
 		return mirrorhost.Tmux{Bin: bin, Claude: mirrorhost.ClaudeLocator{Proc: t.TempDir(), Home: t.TempDir()}}
 	}
 	if rc, _, errs := runWith(t, map[string]string{"MUSTER_MIRROR_COLOR_OPTION": "@from-env"}, "-list", "-windows"); rc != 0 {

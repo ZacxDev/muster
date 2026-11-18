@@ -61,6 +61,18 @@ func (f *fakeAgents) Get(_ context.Context, id int64) (agents.Agent, error) {
 	return agents.Agent{}, errors.New("no such agent")
 }
 
+// Secrets is the listed row's stored credentials.
+func (f *fakeAgents) Secrets(_ context.Context, id int64) (agents.Secrets, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.rows {
+		if a.ID == id {
+			return agents.Secrets{HooksToken: a.HooksToken, GatewaySecret: a.GatewaySecret}, nil
+		}
+	}
+	return agents.Secrets{}, errors.New("no such agent")
+}
+
 // ClaimKickoff wins iff the claim is unheld, exactly as the real conditional UPDATE does.
 //
 // ⚠ It does not model EXPIRY: the real claim is also winnable once its ttl has passed, so a ttl
@@ -80,6 +92,11 @@ func (f *fakeAgents) ClaimKickoff(_ context.Context, id int64, owner string, ttl
 	f.claims[id] = owner
 	f.claimTTLs = append(f.claimTTLs, ttl)
 	return true, nil
+}
+
+// ClaimKickoffForDelivery is ClaimKickoff: this fake keeps no owner-turn marker.
+func (f *fakeAgents) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return f.ClaimKickoff(ctx, id, owner, ttl)
 }
 
 // ReleaseKickoffClaim clears the claim only for its owner, and — like pgx — refuses a done ctx.
@@ -120,7 +137,13 @@ func (f *fakeAgents) List(ctx context.Context) ([]agents.Agent, error) {
 	if p, ok := authz.From(ctx); ok {
 		f.principals = append(f.principals, p)
 	}
-	return append([]agents.Agent(nil), f.rows...), nil
+	// As the real store lists them: with no credentials (agents.Secrets).
+	out := make([]agents.Agent, 0, len(f.rows))
+	for _, a := range f.rows {
+		a.HooksToken, a.GatewaySecret = "", ""
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func (f *fakeAgents) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
@@ -172,6 +195,10 @@ type sentTurn struct {
 	agent   string
 	session string
 	message string
+	// lane and pinned: the X-Muster-CC-Session / -Pinned the turn's context
+	// routed it with (agents.TurnRouteFrom) — "" / false for no route.
+	lane   string
+	pinned bool
 }
 
 // fakeGateway records every Send and fails it with whatever `fail` holds for the agent.
@@ -210,7 +237,11 @@ func (g *fakeGateway) Send(ctx context.Context, _ agentgateway.Target, sessionKe
 	pasted := unsent(err) == ""
 	if pasted {
 		// The runtime pasted it (or may have): this is what "the agent saw" means below.
-		g.sends = append(g.sends, sentTurn{agent: name, session: sessionKey, message: message})
+		st := sentTurn{agent: name, session: sessionKey, message: message}
+		if rt, ok := agents.TurnRouteFrom(ctx); ok {
+			st.lane, st.pinned = rt.Header.Get(agents.HeaderCCSession), rt.Header.Get(agents.HeaderCCPinned) == "1"
+		}
+		g.sends = append(g.sends, st)
 	}
 	g.mu.Unlock()
 	if pasted && hook != nil {
@@ -1235,5 +1266,44 @@ func TestNewRefusesAnIncompleteConfiguration(t *testing.T) {
 		if _, err := New(c); err == nil || !strings.Contains(err.Error(), "Config."+name) {
 			t.Errorf("without %s: err = %v, want a refusal naming Config.%s", name, err, name)
 		}
+	}
+}
+
+// TestAMemoTurnIsHeldForItsDuration: with Config.TurnHold, every memo turn is
+// held while its Send runs and released after it — on an answer and on a
+// runtime failure alike (cmd/muster-server passes api.Server.OutcomeHold, so a
+// dispatched agent reading a memo is working to the outcome watchdog).
+func TestAMemoTurnIsHeldForItsDuration(t *testing.T) {
+	w := newWorld(agent(1, "ada", "example/widgets"), agent(2, "bob", "example/widgets"))
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.gw.fail["bob"] = errors.New("the turn failed mid-stream")
+	var mu sync.Mutex
+	open := map[string]int{}
+	var log []string
+	w.gw.duringSend = func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		log = append(log, fmt.Sprintf("send(%s) held=%d", name, open[name]))
+	}
+	r, err := New(Config{Agents: w.store, Gateway: w.gw, Source: w.src, Ledger: w.ledger, NamespacePrefix: prefix,
+		TaskRepo: func(context.Context, int64) (string, error) { return "", nil },
+		TurnHold: func(a agents.Agent) func() {
+			mu.Lock()
+			open[a.Name]++
+			mu.Unlock()
+			return func() { mu.Lock(); open[a.Name]--; mu.Unlock() }
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(t, r)
+	mu.Lock()
+	defer mu.Unlock()
+	sort.Strings(log)
+	if want := []string{"send(ada) held=1", "send(bob) held=1"}; !reflect.DeepEqual(log, want) {
+		t.Fatalf("sends %q; want each held while it ran", log)
+	}
+	if open["ada"] != 0 || open["bob"] != 0 {
+		t.Fatalf("holds left open after the tick: %v", open)
 	}
 }

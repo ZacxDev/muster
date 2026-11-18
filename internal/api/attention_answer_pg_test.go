@@ -156,8 +156,10 @@ func TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom(t *testing.
 	if b := f.delivery(t, viewed); b.Delivery != attention.DeliveryDelivered {
 		t.Fatalf("control: the view's answer was not delivered: %q", b.Delivery)
 	}
-	if via, host, sess := f.provenance(t, viewed); via != "" || host != "" || sess != "" {
-		t.Fatalf("control: a view answer carries provenance (%q, %q, %q)", via, host, sess)
+	// A view answer records its door (0092: the owner's browser), and no
+	// mirror host or session.
+	if via, host, sess := f.provenance(t, viewed); via != attention.ViaBrowser || host != "" || sess != "" {
+		t.Fatalf("control: a view answer's provenance is (%q, %q, %q); want (browser, \"\", \"\")", via, host, sess)
 	}
 	all := f.turnsInto(f.def)
 	if len(all) != 2 || strings.Contains(all[1], "via MCP") || !strings.Contains(all[1], "your owner answered attention #"+strconv.FormatInt(viewed, 10)+", which you asked.") {
@@ -419,7 +421,7 @@ func TestAnMCPAnswerIsTaskDispatchInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.answerForm(t, b.ID, "use the view's words")
-	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "use the view's words"); why != "" || got.ID != b.ID || got.AnsweredVia.Via != "" {
+	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "use the view's words"); why != "" || got.ID != b.ID || got.AnsweredVia.Via != attention.ViaBrowser {
 		t.Fatalf("control: the view's answer: %+v %q", got, why)
 	}
 }

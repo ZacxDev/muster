@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -24,12 +25,14 @@ import (
 // them in one place, so a request filed BEFORE the virtual connector existed
 // becomes approvable the moment it does, with nothing re-filed and no row edited.
 // The grant flow is untouched: a grant names its connector BY NAME
-// (connector_grants.connector_name, not a foreign key), and the owner still
-// approves each agent's request.
+// (connector_grants.connector_name, not a foreign key), and the owner's
+// approval is shared by their agents on the SAME repository only (a standing
+// grant keyed on SourceApp and the repository: StandingRepo, migration 0043).
 //
 // 🔴 IT EXISTS ONLY FOR THE PRINCIPALS allow ADMITS. The App is the
-// deployment's, so on a multi-user muster it is the admin's alone (cmd/
-// muster-server passes authz.IsAdmin): every reader runs under the principal of
+// deployment's, so on a multi-user muster it is the admin's — and the listed
+// teams' own (cmd/muster-server passes githubapp.Admits: an admin, or the team
+// acting principal of a team in MUSTER_TEAMS_ON_GITHUB_APP): every reader runs under the principal of
 // the user it acts for — the agent's OWNER on the agent routes and the proxy,
 // the approver on the approve route, who row-level security makes the grant's
 // owner — and a member sees exactly the store beneath, as if no App were
@@ -89,12 +92,24 @@ func WithVirtual(s Store, v Virtual, allow func(context.Context) bool) Store {
 // principal, if any. The proxy uses it to take the credential from the
 // connector rather than from the sealed-secret table; the UI uses it to mark the
 // connector as managed.
+//
+// Wrappers nest (the GitHub App's, then kube-read's: KubeReadVirtual), so it
+// looks through each in turn: the outer one answering for its own name only,
+// as every virtualStore method does.
 func VirtualOf(ctx context.Context, s Store, name string) (Virtual, bool) {
-	vs, ok := s.(*virtualStore)
-	if !ok || vs.name != name || !vs.allow(ctx) {
-		return nil, false
+	for {
+		vs, ok := s.(*virtualStore)
+		if !ok {
+			return nil, false
+		}
+		if vs.name == name {
+			if !vs.allow(ctx) {
+				return nil, false
+			}
+			return vs.v, true
+		}
+		s = vs.Store
 	}
-	return vs.v, true
 }
 
 // SourceFor is the credential source connector name has for ctx's principal:
@@ -106,18 +121,39 @@ func SourceFor(ctx context.Context, s Store, name string) string {
 	return SourceStored
 }
 
-// ReconcileGrant puts an approved grant back to pending when its connector's
-// credential source (for ctx's principal, the grant's owner) is no longer the
-// one the approval was about — the GitHub App configured over a stored token,
-// or removed from under one. reopened reports that this call did it, so the
-// caller can prompt the owner. Any other grant is returned unchanged.
+// ReconcileGrant puts an approved grant back to pending when the approval no
+// longer describes what the grant would now serve, and says why:
+//
+//   - its connector's credential source (for ctx's principal, the grant's
+//     owner) is no longer the one the approval was about — the GitHub App
+//     configured over a stored token, or removed from under one (0033);
+//   - the agent's effective repository (repo: connectors.Caller.Repo, the
+//     officer's configured `repo` for an officer instance) is not the one the
+//     approval was made for (Grant.Repo, 0061) — compared without case or
+//     surrounding space, as GitHub names are. An officer approved for one
+//     repository and then pointed at another, or approved with none and then
+//     given one, asks its owner again. For an officer with `read_repos`, repo
+//     is the whole set as RepoScope writes it, so a change to either `repo`
+//     or `read_repos` re-opens the grant and a reordering does not. NOT for
+//     kube-read (KubeReadVirtual) or an internal_http connector
+//     (InternalHTTP): what they reach is the server's configuration, never a
+//     repository, so a repository change leaves their grant as it is (its
+//     credential source is still compared);
+//   - for an internal_http connector, the destination the approval was made
+//     for (Grant.Repo holds InternalHTTP.Destination there: GrantScope) is not
+//     the connector's destination now — its base URL or path prefix was
+//     changed and the server restarted. A grant recorded with none (or a
+//     repository) is re-opened too: it fails closed.
+//
+// reason is "" when the grant is returned unchanged, else the audit line's
+// why. The caller prompts the owner.
 //
 // 🔴 THIS IS THE ONE PLACE THE RULE LIVES; every reader that turns a grant into
 // "may this agent use the connector" calls it first (Proxy.CheckAccess, the
 // agent's connector status and request routes).
-func ReconcileGrant(ctx context.Context, s Store, g Grant) (Grant, bool, error) {
+func ReconcileGrant(ctx context.Context, s Store, g Grant, repo string) (Grant, string, error) {
 	if g.Status != StatusApproved {
-		return g, false, nil
+		return g, "", nil
 	}
 	// 🔴 NEVER ON A FALLBACK ROLE. When the principal's role could not be read it
 	// acts as member, and for an admin that makes the App connector vanish —
@@ -125,20 +161,122 @@ func ReconcileGrant(ctx context.Context, s Store, g Grant) (Grant, bool, error) 
 	// over one database blip. The grant is left as it is; the next request with
 	// a readable role decides.
 	if p, ok := authz.From(ctx); ok && p.RoleUncertain {
-		return g, false, nil
+		return g, "", nil
 	}
 	src := g.Source
 	if src == "" {
 		src = SourceStored
 	}
-	if src == SourceFor(ctx, s, g.Connector) {
-		return g, false, nil
+	reason := ""
+	switch {
+	case src != SourceFor(ctx, s, g.Connector):
+		reason = ReopenedSourceChanged
+	case !sameDestination(ctx, s, g):
+		reason = ReopenedDestinationChanged
+	case !SameRepo(g.Repo, repo) && !repoIndependent(ctx, s, g.Connector):
+		reason = reopenedRepoChanged(g.Repo, repo)
+	default:
+		return g, "", nil
 	}
 	ng, reopened, err := s.ReopenGrant(ctx, g.ID)
-	if err != nil {
-		return g, false, err
+	if err != nil || !reopened {
+		return ng, "", err
 	}
-	return ng, reopened, nil
+	return ng, reason, nil
+}
+
+// repoIndependent reports whether connector name is, for ctx's principal, a
+// virtual connector whose grant has nothing to do with a repository: kube-read
+// and every internal_http connector (their reach is the server's
+// configuration, never the agent's repository).
+func repoIndependent(ctx context.Context, s Store, name string) bool {
+	v, ok := VirtualOf(ctx, s, name)
+	return ok && (IsKubeRead(v) || IsInternalHTTP(v))
+}
+
+// GrantScope is what an approval of connector, for an agent whose effective
+// repository scope is repo (RepoScope), is recorded as being FOR (Grant.Repo,
+// DecideGrantFrom's repo): the connector's Destination for an internal_http
+// connector, whose reach is the server's configuration, and repo for every
+// other. 🔴 ONE PLACE: the approval writes it and ReconcileGrant compares
+// against it (sameDestination).
+func GrantScope(ctx context.Context, s Store, connector, repo string) string {
+	if ih, ok := InternalHTTPOf(ctx, s, connector); ok {
+		return ih.Destination()
+	}
+	return repo
+}
+
+// sameDestination reports whether g, for an internal_http connector, was
+// approved for the connector's current destination; true for every other
+// connector (it has none).
+func sameDestination(ctx context.Context, s Store, g Grant) bool {
+	ih, ok := InternalHTTPOf(ctx, s, g.Connector)
+	return !ok || strings.TrimSpace(g.Repo) == ih.Destination()
+}
+
+// ReopenedDestinationChanged is ReconcileGrant's reason for an internal_http
+// grant approved for another destination. It names neither: an address is
+// never in an agent-visible line.
+const ReopenedDestinationChanged = "re-opened: the connector's configured service (base URL or path prefix) changed"
+
+// ReopenedSourceChanged is ReconcileGrant's reason for a changed credential
+// source.
+const ReopenedSourceChanged = "re-opened: the connector's credential source changed"
+
+func reopenedRepoChanged(was, now string) string {
+	name := func(r string) string {
+		if strings.TrimSpace(r) == "" {
+			return "no repository"
+		}
+		return strings.TrimSpace(r)
+	}
+	return "re-opened: the agent's repository changed (approved for " + name(was) + ", now " + name(now) + ")"
+}
+
+// RepoScope is the repository SET a grant is approved for (Grant.Repo, and
+// ReconcileGrant's repo): the caller's own repository and its further
+// read-only ones (Caller.ReadRepos, an officer's `read_repos`), as ONE
+// canonical string.
+//
+//   - With no read repositories it is repo itself, trimmed — byte-for-byte
+//     what every approval before read_repos recorded, so adding this changed
+//     no existing grant's key and re-opened nothing.
+//   - Otherwise it is "<repo> (+ read: <a>, <b>)", the read repositories
+//     trimmed, lowercased, deduplicated and SORTED: declaring the same set in
+//     another order or case is the same scope and does not re-open a grant,
+//     while adding, removing or changing any entry — or changing repo — does.
+//
+// 🔴 ONE CANONICAL FORM, ONE PLACE. The approval records it
+// (api.decideConnectorGrant) and every reconcile compares against it (the
+// proxy's CheckAccess, the agent routes); a door that built it differently
+// would re-open every officer grant on its first use.
+func RepoScope(repo string, readRepos []string) string {
+	repo = strings.TrimSpace(repo)
+	if len(readRepos) == 0 {
+		return repo
+	}
+	seen := map[string]bool{}
+	set := make([]string, 0, len(readRepos))
+	for _, r := range readRepos {
+		r = strings.ToLower(strings.TrimSpace(r))
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		set = append(set, r)
+	}
+	if len(set) == 0 {
+		return repo
+	}
+	sort.Strings(set)
+	return repo + " (+ read: " + strings.Join(set, ", ") + ")"
+}
+
+// SameRepo reports whether two repository names are the same repository:
+// equal without case or surrounding space ("" is no repository).
+func SameRepo(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 type virtualStore struct {

@@ -36,6 +36,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -108,13 +110,34 @@ type Config struct {
 	// [DefaultTurnTimeout] is built when nil.
 	//
 	// ⚠ A KIND WITH ITS OWN TURN BUDGET (agents.KindTurnTimeout — today
-	// claude-code and hermes) gets a COPY of this client with that Timeout; the transport is
+	// claude-code) gets a COPY of this client with that Timeout; the transport is
 	// shared. The gateway kind uses this client exactly as given.
 	Client *http.Client
 	// Accounts records a claude-code agent's typed `rate_limited` / `auth_failed`
 	// failures against the Claude account it runs on. Optional: nil means no
 	// claude-code kind is enabled, and nothing is marked.
 	Accounts AccountMarker
+	// Secrets reads an agent's credentials (agents.Store satisfies it) at the
+	// moment a turn resolves: the agents.Agent a caller hands in came from an
+	// ordinary read, which carries none (agents.Secrets). Optional ONLY for a
+	// caller that builds its Agent by hand with the credentials in it
+	// (cmd/ccd/livecheck, tests): nil uses the Agent's own fields as given. A
+	// server that left it nil would refuse every turn as "no hooks token",
+	// which cmd/muster-server's TestTheBuiltGatewayReadsTheAgentsSecretsThroughTheStore
+	// pins against.
+	Secrets agents.SecretReader
+	// Kickoff clears an agent's stale "kickoff failed" record when a later turn
+	// on it completes (agents.Store.ClearKickoffFailure; the agents store
+	// satisfies it). Optional: nil means the record is cleared only by a
+	// re-delivered first turn, as before.
+	Kickoff KickoffFailureClearer
+}
+
+// KickoffFailureClearer is the one thing this package needs from the agents
+// store. Narrow for the reason AccountMarker is: a chat path has no business
+// writing any other column of the row.
+type KickoffFailureClearer interface {
+	ClearKickoffFailure(ctx context.Context, id int64) error
 }
 
 // AccountMarker is the one thing this package needs from the Claude account pool
@@ -151,6 +174,60 @@ type Gateway struct {
 	model    string
 	client   *http.Client
 	accounts AccountMarker
+	kickoff  KickoffFailureClearer
+	secrets  agents.SecretReader
+	// failover is the account failover (UseFailover); nil = none.
+	failoverMu sync.RWMutex
+	failover   AccountFailover
+	// noAccount says an agent runs on none of the shared Claude accounts
+	// whatever its row names (UseNoAccount); nil = every agent runs on its row's.
+	noAccount func(context.Context, agents.Agent) bool
+}
+
+// AccountFailover is what the gateway tells after a typed `rate_limited` /
+// `auth_failed` was marked against a claude-code agent's account
+// (internal/ccfailover.Service). It may move the agent to another account and
+// restart its pod; the gateway does not wait for the new pod, and the failed
+// turn's error is returned unchanged.
+type AccountFailover interface {
+	NoteAccountFailure(ctx context.Context, agentID int64, account, failure, detail string)
+}
+
+// UseFailover installs the account failover. It is set after construction
+// because the failover needs the lifecycle adapter, which is built after the
+// gateway (cmd/muster-server buildAgentPlaneWith).
+func (g *Gateway) UseFailover(f AccountFailover) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.failover = f
+}
+
+// UseNoAccount installs the rule for which agents run on none of the shared
+// Claude accounts although their row names one: a claude-code agent whose
+// model calls go through muster's LLM proxy (internal/api
+// Server.NoClaudeAccount: an officer pool's instance on the proxy, or the
+// chief on the LLM route). Such an agent's typed `rate_limited` /
+// `auth_failed` is not a Claude account's: the proxy passes an upstream
+// provider's 429 back as it is. So it marks no account and moves the agent
+// nowhere; a spent provider key must not cool down, or fail over from, an
+// account other agents run on. cmd/muster-server installs it once, after the
+// api server is built; a second call replaces the first.
+func (g *Gateway) UseNoAccount(f func(context.Context, agents.Agent) bool) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.noAccount = f
+}
+
+// AccountOf is the shared Claude account agent a's turns run on: its row's,
+// or "" when UseNoAccount's rule says it runs on none.
+func (g *Gateway) AccountOf(ctx context.Context, a agents.Agent) string {
+	g.failoverMu.RLock()
+	f := g.noAccount
+	g.failoverMu.RUnlock()
+	if f != nil && f(ctx, a) {
+		return ""
+	}
+	return a.CCAccount
 }
 
 // New validates the configuration and builds the gateway.
@@ -176,6 +253,8 @@ func New(cfg Config) (*Gateway, error) {
 		model:    cfg.Model,
 		client:   cfg.Client,
 		accounts: cfg.Accounts,
+		kickoff:  cfg.Kickoff,
+		secrets:  cfg.Secrets,
 	}
 	if g.client == nil {
 		g.client = &http.Client{Timeout: DefaultTurnTimeout}
@@ -236,11 +315,14 @@ func (g *Gateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message 
 type Target struct {
 	ep     provision.Endpoint
 	bearer string
-	// kind and account are the agent's, so Send can apply the kind's turn budget
-	// and mark the account a typed failure came from.
+	// kind is the agent's, so Send can apply the kind's turn budget; account
+	// is the Claude account a typed failure is marked against (AccountOf): the
+	// row's, or "" for an agent with no account (not claude-code) and for a
+	// claude-code agent on the LLM proxy (UseNoAccount).
 	kind    string
 	account string
 	owner   int64
+	agentID int64
 }
 
 // Resolve does the part of [Gateway.Chat] that contacts no agent runtime: it
@@ -257,7 +339,7 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, unresolved{err}
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: g.AccountOf(ctx, a), owner: a.OwnerID, agentID: a.ID}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
@@ -268,10 +350,13 @@ func (g *Gateway) Send(ctx context.Context, t Target, sessionKey, message string
 	reply, err := agents.RunToollessTurn(ctx, client, agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, "", message, textDeltasOnly(emit))
 	if !errors.Is(err, agents.ErrResponsesUnsupported) {
-		return reply, g.noteFailure(ctx, t, err)
+		err = g.noteFailure(ctx, t, err)
+	} else {
+		reply, err = agents.ChatStream(ctx, client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
+			g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
 	}
-	return agents.ChatStream(ctx, client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
-		g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
+	g.noteSuccess(ctx, t, reply, err)
+	return reply, err
 }
 
 // clientFor returns the HTTP client a kind's turns use: the configured client,
@@ -299,19 +384,14 @@ func (g *Gateway) clientFor(kind string) *http.Client {
 // ⚠ THE MARK IS WRITTEN ON A CONTEXT DETACHED FROM THE TURN'S, so a caller that
 // hangs up the moment the error arrives does not also cancel the record of why.
 func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
-	// ⚠ t.account IS THE ONLY KIND TEST, AND IT IS SUFFICIENT: migration 0003's
-	// agents_cc_account_matches_kind makes "has an account" and "is claude-code"
-	// the same row property. A second `t.kind` conjunct was unreachable — the
-	// mutation sweep showed it could be deleted with every test green — so it
-	// is not here pretending to guard something.
+	// ⚠ AN EMPTY t.account MEANS "MARK NOTHING", FOR TWO REASONS: the agent is
+	// not claude-code (migration 0003's agents_cc_account_matches_kind makes
+	// "has an account" and "is claude-code" the same row property), or it is a
+	// claude-code agent on the LLM proxy, which runs on no shared account
+	// (AccountOf, UseNoAccount). No separate `t.kind` conjunct: it was
+	// unreachable — the mutation sweep showed it could be deleted with every
+	// test green — so it is not here pretending to guard something.
 	if err == nil || g.accounts == nil || t.account == "" {
-		return err
-	}
-	// A turn routed to the GATEWAY runtime in a claude-code pod (the chief's
-	// sidecar, agents.TurnRoute) did not run on the Claude account at all: its
-	// failure is an OpenRouter one, and must not push that account to the back
-	// of the pool.
-	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Runtime == agents.SessionRuntimeGateway {
 		return err
 	}
 	var rt *agents.RuntimeError
@@ -326,11 +406,59 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if merr := g.accounts.MarkFailure(mctx, t.owner, t.account, rt.Type, rt.Message); merr != nil {
 		return fmt.Errorf("%w (recording %s against Claude account %q also failed: %v)", err, rt.Type, t.account, merr)
 	}
+	// After the mark, so the failover's choice already sees this account as
+	// cooling (or auth-failed). On its own detached budget: a rebind re-applies
+	// the agent's spec, which outlasts a mark write.
+	g.failoverMu.RLock()
+	f := g.failover
+	g.failoverMu.RUnlock()
+	if f != nil && t.agentID > 0 {
+		fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), failoverTimeout)
+		defer fcancel()
+		f.NoteAccountFailure(fctx, t.agentID, t.account, rt.Type, rt.Message)
+	}
 	return err
+}
+
+// noteSuccess clears the agent's stale "kickoff failed" record
+// (agents.KickoffFailed) when this turn COMPLETED: no error and a non-blank
+// reply. Which records clear is the store's decision, not this function's: a
+// resend-safe cause (agents.KickoffResendSafe) is kept by
+// agents.Store.ClearKickoffFailure's own predicate.
+//
+// 🔴 IT IS HERE, NOT AT EACH CALLER, BECAUSE THIS IS THE ONE PLACE EVERY TURN
+// PASSES THROUGH. Chat and ChatWithTools are Resolve + Send / SendWithTools, and
+// every turn muster runs — an operator chat turn, a chief nudge, a chief_ask, a
+// task forward, an attention delivery, a memo relay, a plugin delivery and the
+// first turn itself — goes through one of the two. The first-turn failure is
+// recorded once and never retried (at-most-once), so before this nothing but a
+// re-delivered first turn ever cleared it, and an agent that had completed many
+// turns since kept the badge for ever.
+//
+// ⚠ "COMPLETED" IS THE KICKOFF DELIVERER'S OWN TEST, so a turn this clears for is
+// one internal/agentkickoff would have called delivered: an error, or a blank
+// reply (agents.KickoffEmptyReplyReason), clears nothing. On the first turn
+// itself the clear is redundant with RecordKickoffDelivery and harmless.
+//
+// ⚠ A FAILED CLEAR IS NOT RETURNED: the turn succeeded, and turning a
+// delivered reply into an error over a badge would be the worse defect. The
+// next completed turn retries it. It runs on a context detached from the
+// turn's, as noteFailure's mark does, so a caller that hangs up on the reply
+// does not cancel it.
+func (g *Gateway) noteSuccess(ctx context.Context, t Target, reply string, err error) {
+	if err != nil || strings.TrimSpace(reply) == "" || g.kickoff == nil || t.agentID <= 0 {
+		return
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
+	defer cancel()
+	_ = g.kickoff.ClearKickoffFailure(cctx, t.agentID)
 }
 
 // markTimeout bounds the account-mark write.
 const markTimeout = 5 * time.Second
+
+// failoverTimeout bounds the account failover the gateway runs after a mark.
+const failoverTimeout = 2 * time.Minute
 
 // textDeltasOnly adapts Chat's text-delta callback to the responses transport's
 // event stream, and returns nil for a nil callback so the transport's own nil-safety
@@ -361,9 +489,20 @@ func (g *Gateway) ChatWithTools(ctx context.Context, a agents.Agent, sessionKey,
 	if err != nil {
 		return "", err
 	}
+	return g.SendWithTools(ctx, t, sessionKey, instructions, message, tools, dispatch, emit)
+}
+
+// SendWithTools runs the turn half of [Gateway.ChatWithTools] against a [Target]
+// from [Gateway.Resolve], for a caller that must resolve before its point of no
+// return (internal/agentkickoff's first turn, as [Gateway.Send] is for a
+// toolless one). It does NOT fall back on a 404: ErrResponsesUnsupported comes
+// back for the caller to decide.
+func (g *Gateway) SendWithTools(ctx context.Context, t Target, sessionKey, instructions, message string, tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error) {
 	reply, err := agents.RunToolLoop(ctx, g.clientFor(t.kind), agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, instructions, message, tools, dispatch, emit)
-	return reply, g.noteFailure(ctx, t, err)
+	err = g.noteFailure(ctx, t, err)
+	g.noteSuccess(ctx, t, reply, err)
+	return reply, err
 }
 
 // reach resolves where an agent is and what credential talks to it — the two
@@ -376,7 +515,17 @@ func (g *Gateway) ChatWithTools(ctx context.Context, a agents.Agent, sessionKey,
 // rotated or mismatched secret and sends the reader to the deployment's secrets,
 // while the real fault is a row the provisioner never finished. The refusal names
 // the agent and the field so the reader lands in the right place.
+//
+// The credentials come from g.secrets (agent_secrets), read here because the
+// row a caller holds came from an ordinary read and carries none.
 func (g *Gateway) reach(ctx context.Context, a agents.Agent) (provision.Endpoint, string, error) {
+	if g.secrets != nil {
+		var err error
+		if a, err = agents.WithSecrets(ctx, g.secrets, a); err != nil {
+			return provision.Endpoint{}, "", fmt.Errorf("read the credentials of agent %q (id %d): %w",
+				a.Name, a.ID, err)
+		}
+	}
 	if a.HooksToken == "" {
 		return provision.Endpoint{}, "", fmt.Errorf("agent %q (id %d) has no hooks token, so no "+
 			"gateway credential can be derived: the token is minted when the instance is created, "+

@@ -25,7 +25,7 @@ func TestParseReadsACommWithSpacesAndParens(t *testing.T) {
 // (internal/atomicfile). A second copy of either fails here.
 func TestOneStatParserAndOneAtomicWriter(t *testing.T) {
 	scanned := 0
-	for _, dir := range []string{"../../cmd/muster-mirror", "../mirrorhost", "../hermeshost"} {
+	for _, dir := range []string{"../../cmd/muster-mirror", "../mirrorhost"} {
 		files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
 		for _, f := range files {
 			if strings.HasSuffix(f, "_test.go") {

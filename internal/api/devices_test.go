@@ -33,15 +33,17 @@ func deviceRoutes() map[string]bool {
 
 // TestADeviceCredentialIsRefusedOutsideTheDeviceTier drives EVERY route in
 // routes.golden outside the device tier with a valid device credential, on a
-// server whose hook tier is UNARMED — so the hook-tier wrappers admit any
-// caller, and only admit's shape check (refuseDeviceTokenElsewhere) stands
-// between the credential and the handler. Session routes are driven with a
-// valid session cookie as well, for the same reason. None may reach a handler.
+// server whose hook tier is UNARMED. Session routes are driven with a valid
+// session cookie, so only admit's shape check (refuseDeviceTokenElsewhere)
+// stands between the credential and the handler. Hook-tier routes are refused
+// either by that check or by the hook tier itself, which fails closed unarmed
+// (an armed server's 401). None may reach a handler.
 //
 // The positive controls: the same credential on the device tier reaches its
 // handlers as the device's owner, and the shape refusal (DeviceTokenElsewhere)
-// is what answered at least every hook-tier and session route — so the zero
-// above is the check working, not every request failing for another reason.
+// answered at least every session route, and every hook-tier route was refused
+// by one of those two — so the zero above is the checks working, not every
+// request failing for another reason.
 func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	s, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
 	tier := deviceRoutes()
@@ -53,7 +55,7 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	for _, r := range routeVias[authz.ViaHook] {
 		hookish[r] = true
 	}
-	shapeRefused, driven, unarmed, unarmedHook := 0, 0, 0, 0
+	shapeRefused, driven, unarmed, unarmedHook, hookRefused := 0, 0, 0, 0, 0
 	for _, pattern := range readGolden(t) {
 		if tier[pattern] {
 			continue
@@ -86,6 +88,10 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 					t.Fatalf("the shape refusal answered %d; want 401", rec.Code)
 				}
 				shapeRefused++
+			} else if hookish[pattern] && rec.Code == http.StatusUnauthorized {
+				// The unarmed hook tier fails closed (a 401, whichever of its
+				// wrappers answered) before admit is reached.
+				hookRefused++
 			} else if rec.Code == http.StatusServiceUnavailable && strings.Contains(rec.Body.String(), `"`+HookUnarmedField+`":true`) {
 				// The fail-closed hook routes (requireArmedHookToken) refuse an
 				// unarmed server before any credential is looked at, and so does
@@ -101,13 +107,24 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 		})
 	}
 	// Only an unarmed HOOK route is excused from the session-and-hook floor (the
-	// four requireArmedHookToken routes); an unarmed service route was never in
-	// it, and at most the service tier's own routes may answer that way.
-	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmedHook; shapeRefused < want || driven < 200 ||
-		unarmedHook > 4 || unarmed-unarmedHook > len(routeVias[authz.ViaService]) {
+	// nine requireArmedHookToken routes; the seventh was GET /api/doctor, the eighth POST /api/agents, the ninth GET /api/pr-sessions);
+	// an unarmed service route was never in it, and at most the service tier's own routes may answer that way.
+	// The built-in officer store's admin API (officer_admin.go) is behind
+	// requireArmedHookToken too, every route of it, and so is the plugin
+	// binding's admin door (PUT /api/plugins/{id}/deliver-to): both counted below.
+	armedHook := 9
+	for _, r := range routeVias[authz.ViaHook] {
+		// `muster agent rm` (agent_rm.go) is the armed hook tier too.
+		if strings.Contains(r, " /api/officers/") || strings.HasSuffix(r, "/deliver-to") || r == "DELETE /api/agents/{name}" {
+			armedHook++
+		}
+	}
+	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmedHook - hookRefused; shapeRefused < want || driven < 200 ||
+		hookRefused == 0 ||
+		unarmedHook > armedHook || unarmed-unarmedHook > len(routeVias[authz.ViaService]) {
 		t.Fatalf("CONTROL: the shape refusal answered %d of %d routes; want at least the %d session and hook routes "+
-			"(unarmed: %d hook, %d other; at most 4 and %d)",
-			shapeRefused, driven, want, unarmedHook, unarmed-unarmedHook, len(routeVias[authz.ViaService]))
+			"(unarmed: %d hook, %d other; at most %d and %d)",
+			shapeRefused, driven, want, unarmedHook, unarmed-unarmedHook, armedHook, len(routeVias[authz.ViaService]))
 	}
 	// Positive control: the device tier admits it, as user 1 through ViaDevice.
 	for pattern := range tier {
@@ -197,43 +214,103 @@ func (c *codeStore) CreatePairingCode(_ context.Context, signin time.Time) (stri
 	return "mdp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", time.Now().Add(devices.PairingCodeTTL), nil
 }
 
-// TestPairingNeedsASignInFromTheLastFiveMinutes: a session signed in more than
-// stepup.CredentialMaxAge ago is refused a pairing code (reauth_required) and
-// the store is never asked; a session signed in just now gets one, recorded
-// with THAT sign-in time.
-func TestPairingNeedsASignInFromTheLastFiveMinutes(t *testing.T) {
+// TestAnyValidSessionMayPairHoweverOldItsSignIn: by operator decision there is
+// no recent-sign-in window on POST /account/devices/pair. Sessions signed in
+// six minutes, two hours and 29 days ago (the cookie lives 30 days) each get a
+// code, recorded with THAT session's sign-in time — which becomes the device's
+// paired_signin_at, the input to every later revocation check.
+func TestAnyValidSessionMayPairHoweverOldItsSignIn(t *testing.T) {
 	store := &codeStore{}
 	s := New(nil, AuthConfig{UIPassword: pPassword}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Devices: store})
 	h := s.Handler()
-	post := func(issued time.Time) *httptest.ResponseRecorder {
+	for i, age := range []time.Duration{6 * time.Minute, 2 * time.Hour, 29 * 24 * time.Hour} {
+		signedIn := time.Now().Add(-age).Truncate(time.Second)
 		req := httptest.NewRequest("POST", accountDevicesPairPath, nil)
-		req.Header.Set("Cookie", sessionCookieName+"="+auth.SignSession(s.auth.uiSessionSecret(), issued, sessionTTL))
+		req.Header.Set("Cookie", sessionCookieName+"="+auth.SignSession(s.auth.uiSessionSecret(), signedIn, sessionTTL))
 		req.Header.Set("Origin", "http://"+req.Host)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out struct {
+			Code      string `json:"code"`
+			ExpiresIn int    `json:"expires_in"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || !devices.CodeShapeOK(out.Code) || out.ExpiresIn != 60 {
+			t.Fatalf("a sign-in %v old: %d %s; want 200 and a code", age, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Error("the pairing code response is cacheable")
+		}
+		if len(store.signins) != i+1 || !store.signins[i].Equal(signedIn) {
+			t.Fatalf("a sign-in %v old: the code was minted with sign-ins %v; want the session's %v last", age, store.signins, signedIn)
+		}
+	}
+}
+
+// TestPairingStillNeedsAValidBrowserSession: with the recent-sign-in window
+// gone, requireSession is the wall. No credential, an expired session cookie,
+// a cookie signed by another server, a personal mst_ token and the shared hook
+// token (as X-Muster-Token and as a bearer) are each refused by requireSession
+// itself ("not signed in", not the handler's reauth_required), and the store is
+// never asked. The control is a valid session two hours old, admitted.
+func TestPairingStillNeedsAValidBrowserSession(t *testing.T) {
+	store := &codeStore{}
+	s := New(nil, AuthConfig{UIPassword: pPassword, HookToken: pHookToken, ServiceToken: pServiceToken}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Devices: store})
+	h := s.Handler()
+	secret := s.auth.uiSessionSecret()
+	cookie := func(v string) func(*http.Request) {
+		return func(r *http.Request) { r.Header.Set("Cookie", sessionCookieName+"="+v) }
+	}
+	header := func(k, v string) func(*http.Request) { return func(r *http.Request) { r.Header.Set(k, v) } }
+	post := func(set func(*http.Request)) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", accountDevicesPairPath, nil)
+		req.Header.Set("Origin", "http://"+req.Host)
+		set(req)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec
 	}
-	stale := post(time.Now().Add(-6 * time.Minute))
-	if stale.Code != http.StatusUnauthorized || !strings.Contains(stale.Body.String(), PasskeyReauthRequired) {
-		t.Fatalf("a six-minute-old sign-in: %d %s; want 401 %s", stale.Code, stale.Body.String(), PasskeyReauthRequired)
+	other := []byte("another server's session secret")
+	for name, set := range map[string]func(*http.Request){
+		"no credential":           func(*http.Request) {},
+		"an expired session":      cookie(auth.SignSession(secret, time.Now().Add(-2*time.Hour), time.Hour)),
+		"another server's cookie": cookie(auth.SignSession(other, time.Now().Add(-time.Minute), sessionTTL)),
+		"a personal mst_ token":   header("Authorization", "Bearer "+pAPIToken),
+		"the hook token (header)": header("X-Muster-Token", pHookToken),
+		"the hook token (bearer)": header("Authorization", "Bearer "+pHookToken),
+		"the service token":       header("Authorization", "Bearer "+pServiceToken),
+	} {
+		rec := post(set)
+		var body struct {
+			Error string `json:"error"`
+		}
+		if rec.Code != http.StatusUnauthorized || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != "not signed in" {
+			t.Errorf("%s: %d %s; want 401 not signed in (requireSession's refusal)", name, rec.Code, rec.Body.String())
+		}
 	}
 	if len(store.signins) != 0 {
-		t.Fatal("the store was asked for a code on a stale sign-in")
+		t.Fatalf("the store was asked for a code without a valid session: %v", store.signins)
 	}
-	signedIn := time.Now().Add(-time.Minute).Truncate(time.Second)
-	fresh := post(signedIn)
-	var out struct {
-		Code      string `json:"code"`
-		ExpiresIn int    `json:"expires_in"`
+	if rec := post(cookie(auth.SignSession(secret, time.Now().Add(-2*time.Hour), sessionTTL))); rec.Code != http.StatusOK {
+		t.Fatalf("CONTROL: a valid two-hour-old session: %d %s", rec.Code, rec.Body.String())
 	}
-	if fresh.Code != http.StatusOK || json.Unmarshal(fresh.Body.Bytes(), &out) != nil || !devices.CodeShapeOK(out.Code) || out.ExpiresIn != 60 {
-		t.Fatalf("CONTROL: a one-minute-old sign-in: %d %s", fresh.Code, fresh.Body.String())
+}
+
+// TestPairingWithNoRecordedSignInTimeAsksForASignIn: a session the wrapper
+// admitted without a sign-in time (a GoTrue token with no amr) gets
+// reauth_required and never reaches the store, so no phone is paired with a
+// paired_signin_at that Sign out everywhere could not compare.
+func TestPairingWithNoRecordedSignInTimeAsksForASignIn(t *testing.T) {
+	store := &codeStore{}
+	s := New(nil, AuthConfig{UIPassword: pPassword}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Devices: store})
+	rec := httptest.NewRecorder()
+	s.handleDevicePairCode(rec, httptest.NewRequest("POST", accountDevicesPairPath, nil))
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), PasskeyReauthRequired) {
+		t.Fatalf("no sign-in time: %d %s; want 401 %s", rec.Code, rec.Body.String(), PasskeyReauthRequired)
 	}
-	if fresh.Header().Get("Cache-Control") != "no-store" {
-		t.Error("the pairing code response is cacheable")
-	}
-	if len(store.signins) != 1 || !store.signins[0].Equal(signedIn) {
-		t.Fatalf("the code was minted with sign-in %v; want the session's %v", store.signins, signedIn)
+	if len(store.signins) != 0 {
+		t.Fatalf("the store was asked for a code with no sign-in time: %v", store.signins)
 	}
 }

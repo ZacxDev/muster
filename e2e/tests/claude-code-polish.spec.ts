@@ -1,15 +1,21 @@
 import { request as pwRequest, Page } from '@playwright/test';
-import { test, expect, takeNew } from '../lib/fixtures';
-import { hookToken, password, polishPort, versionA } from '../lib/env';
+import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
+import { hookToken, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { createAgent } from '../lib/seed';
+import { agentMenu, openAgentMenu } from '../lib/agent-menu';
 
 // Four operator reports, driven through the real UI against a REAL muster-server
 // with both agent kinds enabled over the noop driver (which reports a created
 // instance ready). Nothing here provisions a pod or uses a real token: the
 // setup-tokens are obvious fakes and never leave this process.
 //
-//   1. a Claude Code agent shows no model selector / OpenRouter controls;
-//   2. the Agents list is ordered by most recent activity, and re-orders LIVE;
+//   1. a Claude Code agent's page shows no model selector / OpenRouter controls
+//      (the dispatch form's half of this report went with the form,
+//      docs/design/chief-dispatch.md phase 2);
+//   2. the agents' list — the sidebar's rows, where the retired Agents list's
+//      cards went — is ordered by most recent activity, and re-orders LIVE;
 //   3. the Tasks board prints the activity time it is ordered by;
 //   4. a Started agent's STORED status reaches `running` once its instance is ready.
 //
@@ -59,35 +65,38 @@ async function agentRows(): Promise<AgentRow[]> {
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
-// saveAgent fills the FAB form and presses "Save for later" (nothing provisioned);
-// it returns the ONE row that appeared.
+// saveAgent creates one agent stopped (nothing provisioned) through POST
+// /api/agents (lib/seed.ts, which replaced the deleted dispatch form's "Save for
+// later"), opens its page, and returns the ONE row that appeared.
 async function saveAgent(page: Page, note: string, kind: 'gateway' | 'claude-code' = 'gateway'): Promise<AgentRow> {
-  await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  if (kind === 'claude-code') await sheet.locator('[data-kind-option="claude-code"]').click();
   const before = new Set((await agentRows()).map((a) => a.name));
-  await sheet.locator('textarea[name="note_text"]').fill(note);
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const agent = await createAgent(origin, { kind, prompt: note });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
+  expect(created[0].name).toBe(agent.name);
+  await page.goto(origin + '/agents/' + created[0].name);
   return created[0];
 }
 
-// cardOrder reads the Agents list's card ids, top to bottom, restricted to ids.
-async function cardOrder(page: Page, ids: number[]): Promise<number[]> {
-  const all = await page.locator('#agents-list article[id^="agent-"]').evaluateAll((els) =>
-    els.map((e) => Number(e.id.replace('agent-', ''))),
+// rowOrder reads the sidebar's agent row ids (nav-agent-<id>), top to bottom,
+// restricted to ids.
+async function rowOrder(page: Page, ids: number[]): Promise<number[]> {
+  const all = await page.locator('#sidebar-agents-list a[data-nav-agent="agent"]').evaluateAll((els) =>
+    els.map((e) => Number(e.id.replace('nav-agent-', ''))),
   );
   return all.filter((id) => ids.includes(id));
+}
+
+// showSidebar puts the sidebar on screen: the rail is there on a desktop; on a
+// phone it is a drawer, opened the way a person does. Its rows load (and follow
+// the server's events) only while it can be seen.
+async function showSidebar(page: Page) {
+  const list = page.locator('#sidebar-agents-list');
+  if (!(await list.isVisible())) await page.locator('#sidebar-open').click();
+  await expect(list).toBeVisible();
 }
 
 for (const vp of [
@@ -97,73 +106,6 @@ for (const vp of [
   test.describe(`${vp.label} ${vp.viewport.width}x${vp.viewport.height}`, () => {
     test.use({ viewport: vp.viewport, isMobile: vp.isMobile, hasTouch: vp.hasTouch });
 
-    test('1a. picking Claude Code removes the model selector and the OpenRouter options from the dispatch form', async ({ page }) => {
-      await login(page);
-      await page.goto(origin + '/agents');
-      await page.click('#fab-agents');
-      const sheet = page.locator('#agent-modal form');
-      await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeChecked();
-      // Standard: open Advanced, the model selector is there.
-      await sheet.locator('summary[aria-label="Advanced options"]').click();
-      const model = sheet.locator('#model-input');
-      await expect(model).toBeVisible();
-      // Claude Code: the gateway-only model selector leaves the screen and
-      // does not submit; the repository stays (a claude-code agent's session
-      // starts in a checkout of it), live, under Advanced.
-      await sheet.locator('[data-kind-option="claude-code"]').click();
-      await expect(model).toBeHidden();
-      await expect(sheet.locator('summary[aria-label="Advanced options"]')).toBeVisible();
-      await expect(sheet.locator('input[aria-label="Repository"]')).toBeVisible();
-      await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
-      await expect(sheet.locator('select[name="cc_account"]')).toBeVisible();
-      await expect(sheet.locator('input[name="model"]')).toBeDisabled();
-      // Back to Standard: it returns.
-      await sheet.locator('[data-kind-option="gateway"]').click();
-      await expect(model).toBeVisible();
-      await expect(sheet.locator('input[name="model"]')).toBeEnabled();
-      const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
-      expect(sw).toBeLessThanOrEqual(cw);
-    });
-
-    test('1b. the task-scoped dispatch confirm hides its Model row for Claude Code, and dispatches it onto the task repository', async ({ page }) => {
-      const ctx = await machine();
-      const repo = `example-org/polish-${vp.label.toLowerCase()}`;
-      const r = await ctx.post('/api/tasks', {
-        data: { title: `polish ${vp.label} task-dispatch`, body: 'task-scoped dispatch', repo, branch: 'release/e2e' },
-      });
-      expect(r.status(), await r.text()).toBeLessThan(300);
-      const task = (await r.json()) as { id: number };
-      await ctx.dispose();
-
-      await login(page);
-      await page.goto(origin + '/tasks');
-      await page.locator(`#task-${task.id} button[aria-label="Dispatch agent for this task"]`).click();
-      const sheet = page.locator('#agent-modal form');
-      const modelRow = sheet.locator('[data-dispatch-row]').filter({ hasText: 'Model' });
-      await expect(modelRow).toBeVisible();
-      await sheet.locator('[data-kind-option="claude-code"]').click();
-      await expect(modelRow).toBeHidden();
-      await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Repository' })).toBeVisible();
-      await sheet.locator('[data-kind-option="gateway"]').click();
-      await expect(modelRow).toBeVisible();
-      // Claude Code again, and dispatch: what the browser submits is a
-      // claude-code dispatch carrying the task's repository and branch and no
-      // model. (This server has no agent gateway, so the dispatch itself is
-      // refused for that reason — and for no other: not for the repository.
-      // That the server stores a claude-code row with its repository is
-      // TestAClaudeCodeDispatchKeepsItsRepository.)
-      await sheet.locator('[data-kind-option="claude-code"]').click();
-      const reqP = page.waitForRequest((x) => x.url().endsWith('/agents') && x.method() === 'POST');
-      const respP = page.waitForResponse((x) => x.url().endsWith('/agents') && x.request().method() === 'POST');
-      await sheet.locator('button[value="dispatch"]').click();
-      const form = new URLSearchParams((await reqP).postData() ?? '');
-      expect([form.get('kind'), form.get('repo'), form.get('repo_branch'), form.has('model')]).toEqual(['claude-code', repo, 'release/e2e', false]);
-      const resp = await respP;
-      const text = await resp.text();
-      expect(text).not.toContain('repositor');
-      expect([resp.status(), text]).toEqual([409, expect.stringContaining('cannot deliver an agent\'s first turn')]);
-    });
-
     test('1c. a Claude Code agent page shows its account where the model would be and never asks OpenRouter', async ({ page }) => {
       await login(page);
       const cc = await saveAgent(page, `polish ${vp.label}: cc detail`, 'claude-code');
@@ -172,7 +114,11 @@ for (const vp of [
         if (r.url().includes('/api/openrouter/')) openrouter.push(r.url());
       });
       await page.goto(origin + '/agents/' + cc.name);
-      await expect(page.getByText(/Claude Code · (alpha|beta)/).first()).toBeVisible();
+      // Its account is an item of the header's ⋯ menu (PR #527: a claude-code
+      // agent's page has one header row).
+      await expect(agentMenu(page).locator('[data-cc-account]')).toHaveText(/^(alpha|beta)$/);
+      await openAgentMenu(page);
+      await expect(agentMenu(page).locator('[data-cc-account]')).toBeVisible();
       await expect(page.locator('#model-input')).toHaveCount(0);
       await expect(page.locator('[data-combobox-remote]')).toHaveCount(0);
       await page.waitForTimeout(1000);
@@ -186,15 +132,16 @@ for (const vp of [
       expect(await page.content()).not.toContain('sk-ant-oat01');
     });
 
-    test('2+4. the Agents list is most-recently-active first and re-orders live; a Started agent is stored running', async ({ page }) => {
+    test('2+4. the sidebar lists agents most-recently-active first and re-orders live; a Started agent is stored running', async ({ page }) => {
       await login(page);
       const oldest = await saveAgent(page, `polish ${vp.label}: oldest`);
       const middle = await saveAgent(page, `polish ${vp.label}: middle`);
       const newest = await saveAgent(page, `polish ${vp.label}: newest`);
       const ids = [oldest.id, middle.id, newest.id];
 
-      await page.goto(origin + '/agents');
-      await expect.poll(() => cardOrder(page, ids)).toEqual([newest.id, middle.id, oldest.id]);
+      await page.goto(origin + '/tasks');
+      await showSidebar(page);
+      await expect.poll(() => rowOrder(page, ids)).toEqual([newest.id, middle.id, oldest.id]);
 
       // Start the OLDEST from outside this page. Nothing in this tab makes a
       // request: the list must re-order off the server's own event, once the
@@ -205,20 +152,14 @@ for (const vp of [
       await expect
         .poll(async () => (await agentRows()).find((a) => a.id === oldest.id)?.status, { timeout: 30_000 })
         .toBe('running');
-      // The new order waits behind the "N new ↑" pill (nothing moves under the
-      // reader); a tap applies it.
-      await expect(page.locator('#agents-new-pill'), 'the re-order waits behind the pill').toBeVisible({ timeout: 20_000 });
-      expect(await cardOrder(page, ids), 'held: no card moved').toEqual([newest.id, middle.id, oldest.id]);
-      await takeNew(page);
-      await expect.poll(() => cardOrder(page, ids), { timeout: 20_000 }).toEqual([oldest.id, newest.id, middle.id]);
+      await expect.poll(() => rowOrder(page, ids), { timeout: 20_000 }).toEqual([oldest.id, newest.id, middle.id]);
       // Live, not reloaded: the page never navigated.
-      expect(new URL(page.url()).pathname).toBe('/agents');
+      expect(new URL(page.url()).pathname).toBe('/tasks');
       // A SECOND server-driven re-render re-orders the list again.
       const res2 = await page.request.post(`${origin}/agents/${middle.id}/start`, { headers: { Origin: origin } });
       expect(res2.status()).toBe(200);
-      await expect(page.locator('#agents-new-pill')).toBeVisible({ timeout: 30_000 });
-      await takeNew(page);
-      await expect.poll(() => cardOrder(page, ids), { timeout: 30_000 }).toEqual([middle.id, oldest.id, newest.id]);
+      await expect.poll(() => rowOrder(page, ids), { timeout: 30_000 }).toEqual([middle.id, oldest.id, newest.id]);
+      expect(new URL(page.url()).pathname).toBe('/tasks');
     });
 
     test('3. the Tasks board prints the activity time it is ordered by', async ({ page }) => {

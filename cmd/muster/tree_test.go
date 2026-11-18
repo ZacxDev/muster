@@ -44,7 +44,31 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 21
+//
+// 23 → 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md),
+// ledgered in tenantWiring below because four of them reach no route at all.
+//
+// 28 → 29: `nudge next` (nudge.go), a host's oldest chief-nudge notice as a
+// tmux target for a jump key — read from the attention summary.
+//
+// 29 → 30: `agent create` (agent_create.go), POST /api/agents — the machine
+// route that replaced the web UI's dispatch form (docs/design/chief-dispatch.md
+// phase 2), on its own agent-create token.
+//
+// 43 → 44: `plugins deliver-to` (plugins.go), PUT /api/plugins/{id}/deliver-to —
+// bind a plugin to a builtin officer.
+//
+// 44 → 45: `pr-session` (pr_session.go), GET /api/pr-sessions — which of your
+// sessions created a pull request, and its `claude --resume` line.
+//
+// 46 → 47: `officer usage` (officer.go), GET /api/officers/defs/{officer}/usage
+// — an officer's model spend per UTC day.
+// 47 → 52: `officer ls|create|pause|resume|delete` (officer.go) — officers
+// declared in the database (migration 0136), with no restart.
+//
+// 52 → 54: `asks log` and `asks summary` (asks.go), GET /api/asks/log and
+// /api/asks/summary — reading the ask log (docs/asks.md).
+const wantVerbCount = 54
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -64,6 +88,12 @@ var wiring = []struct {
 	// unlike `chief ask` it performs no resolve step — asserting it reaches
 	// /api/agents/{name}/messages rather than /api/agents is what pins that.
 	{"agent messages", []string{"agent", "messages", "chief"}, "GET /api/agents/chief/messages"},
+	// Creating an agent (agent_create.go) on MUSTER_AGENT_CREATE_TOKEN, which
+	// the runner below sets: the verb refuses locally without it.
+	{"agent create", []string{"agent", "create", "--start=false", "--prompt", "x"}, "POST /api/agents"},
+	// Removing an agent by name (agent_rm.go): a host officer instance's
+	// left-over row needs no provisioner (docs/design/officers-on-hosts.md).
+	{"agent rm", []string{"agent", "rm", "officer-marketing-example-1"}, "DELETE /api/agents/officer-marketing-example-1"},
 	// The /agent/task* family carries no id: the token identifies the caller and
 	// the server resolves the bound task from it. That these three reach
 	// /agent/task* rather than /api/tasks/* is the whole point of the commands —
@@ -91,10 +121,93 @@ var wiring = []struct {
 	{"flow enqueue", []string{"flow", "enqueue", "muse.poll", "--param", "thread=Side chat"}, "POST /api/flows/jobs"},
 	{"flow ls", []string{"flow", "ls"}, "GET /api/flows/jobs"},
 	{"flow status", []string{"flow", "status", "9"}, "GET /api/flows/jobs/9"},
+	// The 22nd verb (muse dispatch): cancel a queued / dismiss a needs_operator job.
+	{"flow cancel", []string{"flow", "cancel", "9"}, "POST /api/flows/jobs/9/cancel"},
 	// Session routing: a mirrored session's reply_to_chief (route.go).
 	{"route reply", []string{"route", "reply", "rt_0123456789abcdef01234567", "--body", "x"}, "POST /api/routes/rt_0123456789abcdef01234567/reply"},
 	// Retrying an unconfirmed plugin message (plugin_retry.go).
 	{"plugins retry", []string{"plugins", "retry", "6"}, "POST /api/plugins/messages/6/retry"},
+	// Binding a plugin to a builtin officer (plugin_outbound.go).
+	{"plugins deliver-to", []string{"plugins", "deliver-to", "6", "officer:example:main"}, "PUT /api/plugins/6/deliver-to"},
+	// The built-in officer store's admin API (officer.go, #503 slice 7): ten
+	// verbs. `officer type put` reads its charter from a file (stdin here: the
+	// runner passes none, so the empty charter is what is sent).
+	{"officer type ls", []string{"officer", "type", "ls"}, "GET /api/officers/types"},
+	{"officer type get", []string{"officer", "type", "get", "marketing"}, "GET /api/officers/types/marketing"},
+	{"officer type put", []string{"officer", "type", "put", "marketing", "--charter-file", "-"}, "PUT /api/officers/types/marketing"},
+	{"officer type delete", []string{"officer", "type", "delete", "marketing"}, "DELETE /api/officers/types/marketing"},
+	{"officer def ls", []string{"officer", "def", "ls"}, "GET /api/officers/defs"},
+	{"officer def put", []string{"officer", "def", "put", "marketing:example"}, "PUT /api/officers/defs/marketing:example"},
+	{"officer def delete", []string{"officer", "def", "delete", "marketing:example"}, "DELETE /api/officers/defs/marketing:example"},
+	{"officer item ls", []string{"officer", "item", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/items"},
+	{"officer item enqueue", []string{"officer", "item", "enqueue", "marketing:example", "--kind", "post", "--subject", "s1"}, "POST /api/officers/defs/marketing:example/items"},
+	{"officer item resolve", []string{"officer", "item", "resolve", "marketing:example", "7"}, "POST /api/officers/defs/marketing:example/items/7/resolve"},
+	// Schedules (slice 8): three more.
+	{"officer schedule ls", []string{"officer", "schedule", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/schedules"},
+	{"officer schedule put", []string{"officer", "schedule", "put", "marketing:example", "nightly", "--cron", "0 6 * * *", "--kind", "k", "--subject", "s"}, "PUT /api/officers/defs/marketing:example/schedules/nightly"},
+	{"officer schedule delete", []string{"officer", "schedule", "delete", "marketing:example", "nightly"}, "DELETE /api/officers/defs/marketing:example/schedules/nightly"},
+	// An officer's model spend per day (officer_llm_usage).
+	{"officer usage", []string{"officer", "usage", "marketing:example", "--days", "7"}, "GET /api/officers/defs/marketing:example/usage"},
+	// Officers declared in the database (0136): five more.
+	{"officer ls", []string{"officer", "ls"}, "GET /api/officers/declared"},
+	{"officer create", []string{"officer", "create", "scout:main", "--runtime", "pod"}, "POST /api/officers/declared"},
+	{"officer pause", []string{"officer", "pause", "scout:main"}, "POST /api/officers/declared/scout:main/pause"},
+	{"officer resume", []string{"officer", "resume", "scout:main"}, "POST /api/officers/declared/scout:main/resume"},
+	{"officer delete", []string{"officer", "delete", "scout:main"}, "DELETE /api/officers/declared/scout:main"},
+	// The 23rd verb: `doctor` (doctor.go), the onboarding check. The harness
+	// serves plain http, so `server` would FAIL; it is skipped here, as are the
+	// checks that need a sign-in. What this row pins is the route.
+	{"doctor", []string{"doctor", "--skip", "server,manifest,sign-in,push,dictation"}, "GET /api/doctor"},
+	// A host's chief-nudge notices (nudge.go), read from the attention summary.
+	{"nudge next", []string{"nudge", "next", "--host", "alpha"}, "GET /api/attention/summary"},
+	// Which session created a pull request (pr_session.go), read from session_prs.
+	{"pr-session", []string{"pr-session", "acme/widget#12"}, "GET /api/pr-sessions"},
+	// Reading the ask log (asks.go): your asks, and their summary.
+	{"asks log", []string{"asks", "log", "--kind", "plain_text", "--since", "7d"}, "GET /api/asks/log"},
+	{"asks summary", []string{"asks", "summary"}, "GET /api/asks/summary"},
+}
+
+// tenantWiring is the `tenant …` half of the ledger. These verbs manage files
+// under ~/.muster, so they cannot run through `wiring`'s runner (which passes
+// --token, which `tenant add` refuses): each row runs in its own temp HOME.
+// wantRoute "" means the verb is LOCAL and must send no request at all.
+var tenantWiring = []struct {
+	name      string
+	run       func(f *leakFixture) result
+	wantRoute string
+}{
+	{"tenant list", func(f *leakFixture) result { return f.run(nil, "tenant", "list") }, ""},
+	{"tenant current", func(f *leakFixture) result { return f.run(nil, "tenant", "current") }, ""},
+	{"tenant use", func(f *leakFixture) result { return f.run(nil, "tenant", "use", "default") }, ""},
+	{"tenant remove", func(f *leakFixture) result { f.addWork(); return f.run(nil, "tenant", "remove", "work") }, ""},
+	{"tenant add", func(f *leakFixture) result {
+		return f.runStdin(nil, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL)
+	}, "GET /api/whoami"},
+}
+
+func TestEveryTenantVerbReachesItsRouteOrNone(t *testing.T) {
+	for _, w := range tenantWiring {
+		t.Run(w.name, func(t *testing.T) {
+			f := newLeakFixture(t)
+			got := w.run(f)
+			if got.code != exitOK {
+				t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+			}
+			var seen []string
+			for _, h := range []*harness{f.dflt, f.work, f.alien} {
+				for _, r := range h.requests() {
+					seen = append(seen, r.method+" "+strings.SplitN(r.uri, "?", 2)[0])
+				}
+			}
+			want := []string{}
+			if w.wantRoute != "" {
+				want = []string{w.wantRoute}
+			}
+			if strings.Join(seen, ",") != strings.Join(want, ",") {
+				t.Errorf("%s sent %v, want exactly %v", w.name, seen, want)
+			}
+		})
+	}
 }
 
 // runnableCommands walks the tree and returns the full path of every command
@@ -119,7 +232,7 @@ func TestTheVerbLedgerIsExactlyTheSpecifiedSet(t *testing.T) {
 	for _, r := range runnableCommands(root, "") {
 		registered = append(registered, strings.TrimPrefix(r, a.progName+" "))
 	}
-	t.Logf("%d commands registered, %d ledger rows, %d specified", len(registered), len(wiring), wantVerbCount)
+	t.Logf("%d commands registered, %d+%d ledger rows, %d specified", len(registered), len(wiring), len(tenantWiring), wantVerbCount)
 
 	if len(registered) < minRunnableCommands {
 		t.Fatalf("only %d runnable commands registered (%v), want at least %d — the tree is wired to nothing",
@@ -131,9 +244,9 @@ func TestTheVerbLedgerIsExactlyTheSpecifiedSet(t *testing.T) {
 			"Adding or removing a verb is a design decision: change wantVerbCount, add or drop the "+
 			"ledger row, and say so in the commit.", len(registered), registered, wantVerbCount)
 	}
-	if len(wiring) != wantVerbCount {
-		t.Fatalf("🔴 the wiring ledger has %d rows and this binary is specified to have %d verbs",
-			len(wiring), wantVerbCount)
+	if len(wiring)+len(tenantWiring) != wantVerbCount {
+		t.Fatalf("🔴 the wiring ledgers have %d+%d rows and this binary is specified to have %d verbs",
+			len(wiring), len(tenantWiring), wantVerbCount)
 	}
 
 	// (3) the two NAME SETS are equal, with a duplicate check so two rows naming
@@ -146,11 +259,18 @@ func TestTheVerbLedgerIsExactlyTheSpecifiedSet(t *testing.T) {
 		have[r] = true
 	}
 	want := map[string]bool{}
+	names := []string{}
 	for _, w := range wiring {
-		if want[w.name] {
-			t.Fatalf("the wiring ledger names %q twice — two rows for one verb would hide a missing row", w.name)
+		names = append(names, w.name)
+	}
+	for _, w := range tenantWiring {
+		names = append(names, w.name)
+	}
+	for _, n := range names {
+		if want[n] {
+			t.Fatalf("the wiring ledger names %q twice — two rows for one verb would hide a missing row", n)
 		}
-		want[w.name] = true
+		want[n] = true
 	}
 	for name := range want {
 		if !have[name] {
@@ -175,6 +295,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			// RIGHT name from one that took whatever came first.
 			h.json("GET /api/agents", http.StatusOK,
 				`[{"id":11,"name":"clever-fox"},{"id":12,"name":"chief"}]`)
+			h.json("POST /api/agents", http.StatusCreated, `{"agent":{"id":13,"name":"spry-newt"},"started":false}`)
 			h.json("GET /api/agents/chief/messages", http.StatusOK,
 				`{"agent":"chief","agentId":12,"sessionId":8,"sessionCount":1,"sessions":[],`+
 					`"messages":[{"id":1,"sessionId":8,"role":"user","kind":"text","content":"hi",`+
@@ -198,9 +319,38 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/flows/jobs", http.StatusCreated, `{"id":9,"flow":"muse.poll","status":"queued"}`)
 			h.json("GET /api/flows/jobs", http.StatusOK, `[]`)
 			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"status":"done"}`)
+			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"status":"cancelled"}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","retrying":true}`)
+			h.json("PUT /api/plugins/6/deliver-to", http.StatusOK, `{"plugin_id":6,"plugin_name":"example-relay","deliver_to":"officer:example:main"}`)
+			h.json("DELETE /api/agents/officer-marketing-example-1", http.StatusAccepted, `{"removing":"officer-marketing-example-1","id":5,"teardown":"row"}`)
+			h.json("GET /api/officers/types", http.StatusOK, `{"types":[]}`)
+			h.json("GET /api/officers/types/marketing", http.StatusOK, `{"key":"marketing"}`)
+			h.json("PUT /api/officers/types/marketing", http.StatusOK, `{"key":"marketing","charter_version":1}`)
+			h.json("DELETE /api/officers/types/marketing", http.StatusOK, `{"deleted":"marketing"}`)
+			h.json("GET /api/officers/defs", http.StatusOK, `{"defs":[]}`)
+			h.json("PUT /api/officers/defs/marketing:example", http.StatusOK, `{"officer":"marketing:example"}`)
+			h.json("DELETE /api/officers/defs/marketing:example", http.StatusOK, `{"deleted":"marketing:example"}`)
+			h.json("GET /api/officers/defs/marketing:example/items", http.StatusOK, `{"items":[]}`)
+			h.json("POST /api/officers/defs/marketing:example/items", http.StatusCreated, `{"id":7,"created":true}`)
+			h.json("POST /api/officers/defs/marketing:example/items/7/resolve", http.StatusOK, `{"item":{"id":7}}`)
+			h.json("GET /api/officers/defs/marketing:example/schedules", http.StatusOK, `{"schedules":[]}`)
+			h.json("PUT /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"name":"nightly"}`)
+			h.json("DELETE /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"deleted":"nightly"}`)
+			h.json("GET /api/officers/defs/marketing:example/usage", http.StatusOK, `{"days":[],"total_cost_usd":0}`)
+			h.json("GET /api/officers/declared", http.StatusOK, `{"officers":[]}`)
+			h.json("POST /api/officers/declared", http.StatusCreated, `{"id":"scout:main","managed_by":"db"}`)
+			h.json("POST /api/officers/declared/scout:main/pause", http.StatusOK, `{"id":"scout:main","paused":true}`)
+			h.json("POST /api/officers/declared/scout:main/resume", http.StatusOK, `{"id":"scout:main","paused":false}`)
+			h.json("DELETE /api/officers/declared/scout:main", http.StatusOK, `{"deleted":"scout:main"}`)
+			h.json("GET /api/pr-sessions", http.StatusOK, `{"repo":"acme/widget","pr":12,"sessions":[{"claude_session":"00000000-0000-4000-8000-000000000012","host":"alpha","kind":"gh-pr-create","first_seen":"2000-01-02T12:00:00Z"}]}`)
+			h.json("GET /api/asks/log", http.StatusOK, `{"asks":[{"id":3,"kind":"plain_text","question":"Shall I continue?","nested":{"a":1}}],"next":null}`)
+			h.json("GET /api/asks/summary", http.StatusOK, `{"total":1,"by_kind":{"plain_text":1},"top_questions":[]}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
+			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
+				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)
+			h.json("GET /api/doctor", http.StatusOK, `{"auth_mode":"password","hook_token_armed":true,`+
+				`"push":true,"dictation":true,"mirror":{"enabled":true,"hosts":[{"host":"alpha","token":true,"online":true}]}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

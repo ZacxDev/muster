@@ -76,6 +76,13 @@ func (s *Server) writeChiefPanelBody(ctx context.Context, w http.ResponseWriter,
 // panel body, and that function is now its chief-resolving front door rather than a
 // second copy.
 func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWriter, a agents.Agent, sessionParam string) {
+	s.writeChiefPanelBodyWith(ctx, w, a, sessionParam, "")
+}
+
+// writeChiefPanelBodyWith is writeChiefPanelBodyFor with a draft for the chat
+// box (ui.ChiefPanelView.Prefill; "" for none): the fleet digest's Fleet chat
+// (fleet_digest.go). The ONE renderer still: every panel body goes through here.
+func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWriter, a agents.Agent, sessionParam, prefill string) {
 	// Set again rather than assumed: this is reachable directly from the new-thread
 	// POST, which has written no headers of its own.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -105,8 +112,8 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	// below can mark it: the panel's first paint already writes (the session it
 	// opens on), and the election is the store's one rule (agents.DefaultSession)
 	// rather than a second copy of it in the view. The search route only reads.
-	if st, ok := s.sessionRuntimeStore(); ok {
-		if _, err := st.DefaultSession(ctx, a.ID, a.Name); err != nil {
+	if _, ok := s.sessionRuntimeStore(); ok {
+		if _, err := s.primarySession(ctx, a); err != nil {
 			s.logger.Printf("chief: elect the default session of %d: %v", a.ID, err)
 		}
 	}
@@ -115,32 +122,37 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 		s.logger.Printf("chief: mark session %d read: %v", active.ID, err)
 	}
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 
+	chat := ui.AgentDetailView{
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
+		Repo: a.Repo, Model: a.Model,
+		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
+		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
+		// 🔴 THE SURFACE IS WHAT ROUTES AROUND THE CONTAINING-BLOCK HAZARD.
+		// agentChatPane's sessionDrawer is `position: fixed`, and ChiefPanel's
+		// transform makes the panel its containing block — so inside the panel it
+		// would render at the panel's own right edge and go off-screen and inert
+		// with it. This field is what makes the panel render chiefThreadList (an
+		// absolutely-positioned sub-view of its own column) instead, and it is
+		// also what puts the zero-message intro on screen. See ui.ChatSurface.
+		Surface: ui.ChatSurfaceChiefPanel,
+		// The panel's message box has the microphone too (transcribe.go).
+		Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
+	}
+	// 🔴 "working…" IS DRAWN FROM THE SERVER'S COUNT: the panel opened (or the page
+	// reloaded) while the chief's turn runs shows it, and the chat.reply refetch
+	// hides it once the reply is stored (chat_log_live.go).
+	s.withChatLogLive(ctx, &chat, active)
+	// The chat bar (chief_chats.go): the panel is the chief's by construction.
+	chat.ChiefChat = chiefChatBarFor(ctx, a, active)
 	write(ui.ChiefPanelView{
 		Configured:      true,
 		ThreadsFailed:   listErr != nil,
 		SessionRuntimes: s.pickerRuntimes(ctx, a),
 		ClaudeModels:    agents.ClaudeCodeModels,
-		Chat: ui.AgentDetailView{
-			ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
-			Repo: a.Repo, Model: a.Model,
-			Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
-			NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
-			// 🔴 THE SURFACE IS WHAT ROUTES AROUND THE CONTAINING-BLOCK HAZARD.
-			// agentChatPane's sessionDrawer is `position: fixed`, and ChiefPanel's
-			// transform makes the panel its containing block — so inside the panel it
-			// would render at the panel's own right edge and go off-screen and inert
-			// with it. This field is what makes the panel render chiefThreadList (an
-			// absolutely-positioned sub-view of its own column) instead, and it is
-			// also what puts the zero-message intro on screen. See ui.ChatSurface.
-			Surface: ui.ChatSurfaceChiefPanel,
-			// The panel's message box has the microphone too (transcribe.go).
-			Dictate: s.dictatePath(),
-		},
+		Chat:            chat,
+		Prefill:         prefill,
 	})
 }
