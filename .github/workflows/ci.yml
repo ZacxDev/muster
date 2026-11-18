@@ -194,7 +194,7 @@ jobs:
   # the matrix list cannot leave an index unrun or run one twice. Adding a
   # shard is one more matrix entry and nothing else.
   test:
-    name: test (postgres, shard ${{ strategy.job-index }} of ${{ strategy.job-total }})
+    name: test (postgres, shard ${{ strategy.job-index }})
     needs: main-verdict
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
@@ -203,7 +203,7 @@ jobs:
       fail-fast: false
       matrix:
         # ⚠ COSMETIC: only the COUNT matters (see above).
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2]
 
     # 🔴 A `services:` CONTAINER, NOT A `docker run` FROM INSIDE THE SUITE. It
     # gives the external-DSN path for free on a hosted runner: no Docker-daemon
@@ -240,6 +240,13 @@ jobs:
       # executed all of it. A skip is invisible in a verdict. With it, an
       # unavailable database is a hard failure that names the variable.
       MUSTER_TEST_REQUIRE_DB: "1"
+      # 🔴 MULTI-PROCESS internal/api: each api shard runs its share as
+      # this many `go test` PROCESSES at once, process k against its own Postgres
+      # server on port 5431+k, so no two processes share a server (internal/dbtest
+      # names a package's database after the package, so two processes on one
+      # server would collide). internal/api's tests are serial within a process
+      # and the runner has 4 vCPU; shard 0 stays one process.
+      MUSTER_TEST_PROCS: ${{ strategy.job-index == 0 && 1 || 3 }}
       # 🔴 A PER-RUN VALUE, READ ONLY BY THE TESTS WHOSE RESULT GO'S TEST CACHE
       # MUST NEVER REPLAY: each runs `go list ./...` (or similar) in a subprocess,
       # whose reads the cache cannot see. Go keys a cached result on every
@@ -289,8 +296,9 @@ jobs:
       #     image and floats on its tag: its image DIGEST is in the key and
       #     every prefix too, so a new server (a tag bump or a minor under
       #     `16-alpine`) starts cold rather than replaying another server's pass.
-      # One cache per shard (the shards run different -run sets, and a cache
-      # key is written once). A restore prefix may come from an older commit;
+      # One cache per shard SHAPE — shard index, shard count and processes per
+      # shard (MUSTER_TEST_PROCS) are all in the prefix, because each changes the
+      # shard's -run sets, and a cache key is written once. A restore prefix may come from an older commit;
       # that is the point, and Go's own keys decide what it can replay.
       # ⚠ NO NIGHTLY EXISTS (removed in #691, see the `on:` block): nothing on
       # `main` currently re-runs the suite uncached, so a cache-replayed green is
@@ -305,7 +313,7 @@ jobs:
             pg=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
             pg=${pg#sha256:}
             [ -n "$pg" ] || { echo "no Postgres service image digest" >&2; exit 1; }
-            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}"
+            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}p${MUSTER_TEST_PROCS}"
             echo "image=img${ImageVersion}"
             echo "build=$(go env GOCACHE)"
             echo "mod=$(go env GOMODCACHE)"
@@ -325,24 +333,43 @@ jobs:
             ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-
             ${{ steps.gocache.outputs.prefix }}-
 
+      - name: start this shard's extra Postgres servers (one per extra process)
+        if: ${{ strategy.job-index != 0 }}
+        run: |
+          img=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
+          for k in $(seq 2 "$MUSTER_TEST_PROCS"); do
+            docker run -d --name "pg$k" -p "$((5431 + k)):5432" \
+              -e POSTGRES_USER=muster -e POSTGRES_PASSWORD=muster -e POSTGRES_DB=muster_test "$img"
+          done
+          for k in $(seq 2 "$MUSTER_TEST_PROCS"); do
+            for _ in $(seq 60); do
+              docker exec "pg$k" pg_isready -U muster -d muster_test -h 127.0.0.1 >/dev/null 2>&1 && break
+              sleep 1
+            done
+            docker exec "pg$k" pg_isready -U muster -d muster_test -h 127.0.0.1
+          done
+
       # Migrate the TEMPLATE once. Skipping this does not break anything — each
       # package would bootstrap its own copy — but it is the difference between
       # one schema build and one per package.
-      - name: migrate the template database
-        run: go run ./cmd/muster-migrate
-        env:
-          DATABASE_URL: ${{ env.MUSTER_TEST_DATABASE_URL }}
+      - name: migrate the template database (one per server)
+        run: |
+          go build -o "$RUNNER_TEMP/muster-migrate" ./cmd/muster-migrate
+          for k in $(seq 1 "$MUSTER_TEST_PROCS"); do
+            DATABASE_URL="postgres://muster:muster@127.0.0.1:$((5431 + k))/muster_test?sslmode=disable" "$RUNNER_TEMP/muster-migrate"
+          done
 
       # The verdict below is an instrument, so its refusals are exercised first:
       # one synthetic stream per refusal (skip, zero verdicts, failed test, failed
       # package, unreadable input). Milliseconds, and no database. So is the
       # shard planner: its partition (every test in exactly one shard) and its
       # refusals, on synthetic lists. Both in EVERY shard, before either is used.
-      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed
+      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed, main_red.py acts only on main's head
         run: |
           python3 tests/verdict_test.py
           python3 tests/goshard_test.py
           python3 tests/tag_gate_test.py
+          python3 tests/main_red_test.py
           python3 tests/gomtime_test.py
 
       # The repository-level checks below run once, in shard 0.
@@ -376,6 +403,14 @@ jobs:
       - name: the guides, their index and docs/features.md agree
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/docs_guides_test.py
+
+      # The front door: the community files exist, the issue templates parse,
+      # no internal notes are tracked or linked, the README's and the docs
+      # index's links and images resolve, its badges, and its install table
+      # matching the asset set scripts/release-build.sh builds.
+      - name: the README, the docs index and the community files
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/repo_front_door_test.py
 
       # The Claude Code plugin marketplace: names, source path, skill
       # frontmatter, and the setup skill pointing at INSTALL.md's URL.
@@ -417,6 +452,7 @@ jobs:
           --require TestEveryRouteIsClassifiedForIsolation
           --require TestNoRouteLetsOneUserReachAnothersData
           --require TestAnotherUsersWritesNeverReachYourEventStream
+          --procs ${{ env.MUSTER_TEST_PROCS }}
           --args-out "$RUNNER_TEMP/go-test-args" --verdict-out "$RUNNER_TEMP/verdict-args"
           -- -race -cover
 
@@ -481,12 +517,39 @@ jobs:
         # cached result's key, so removing it costs one cold run, nothing else.
         env:
           GODEBUG: gocachetest=1
+        # The MUSTER_TEST_PROCS processes run at once, each to its own
+        # -json file, and each exit status is written down; this step itself
+        # always exits 0 so the verdict below always reads the streams. The log
+        # arrives when the processes end, not streamed.
+        run: |
+          pids=()
+          for k in $(seq 1 "$MUSTER_TEST_PROCS"); do
+            MUSTER_TEST_DATABASE_URL="postgres://muster:muster@127.0.0.1:$((5431 + k))/muster_test?sslmode=disable" \
+              go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args.$k") \
+              > "$RUNNER_TEMP/go-test.$k.json" 2> "$RUNNER_TEMP/go-test.$k.err" &
+            pids+=("$!")
+          done
+          : > "$RUNNER_TEMP/go-test.rcs"
+          for pid in "${pids[@]}"; do
+            rc=0; wait "$pid" || rc=$?
+            echo "$rc" >> "$RUNNER_TEMP/go-test.rcs"
+          done
+          cat "$RUNNER_TEMP"/go-test.*.err >&2
+          echo "go test exit status per process: $(tr '\n' ' ' < "$RUNNER_TEMP/go-test.rcs")"
+
+      # ONE verdict over every process's stream (it counts tests, so the union
+      # is the shard's total), then every process's exit status: a run that
+      # exited non-zero over a clean stream still fails here, which is what
+      # pipefail carried when go test was the left side of the pipe.
+      - name: the verdict over every process, and every exit status
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+          cat "$RUNNER_TEMP"/go-test.*.json | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)
+          [ "$(wc -l < "$RUNNER_TEMP/go-test.rcs")" = "$MUSTER_TEST_PROCS" ] || { echo "missing exit statuses" >&2; exit 1; }
+          while read -r rc; do [ "$rc" = 0 ] || exit "$rc"; done < "$RUNNER_TEMP/go-test.rcs"
 
-      # PER-TEST TIMINGS: the `-json` stream above, tee'd (the SAME run the
-      # verdict read, never a second one), kept for an external weekly
+      # PER-TEST TIMINGS: the `-json` stream above, tee'd (the SAME union of the
+      # shard's processes the verdict read, never a second run), kept for an external weekly
       # per-test timing report, which ranks slow and flaky tests across runs. `!cancelled()` so a red run's timings are kept too: a flake
       # is a pass and a fail on one sha. Its own `test-times-` name, so no
       # download pattern in this workflow (`e2e-results-*`) can pick it up.
@@ -1795,6 +1858,42 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: python3 .github/scripts/tag_gate.py gate
+
+  # 🔴 MAIN IS RED, AND SOMEBODY HEARS ABOUT IT. A push to main that goes red
+  # opens (or comments on) ONE issue labelled main-red, which GitHub notifies the
+  # repository's watchers about; the next green main run closes it — that is the
+  # issue's closing condition. Operator decision 2026-11-18, after main HEAD
+  # 4c3d54f was red with nobody notified. The verdict is every job publish-gate
+  # needs plus docshots (the release tool refuses a sha whose docshots went red),
+  # pinned by TestCIMainRedNeedsWhatPublishGateNeeds and read by
+  # .github/scripts/main_red.py: any failure, or any skip other than
+  # main-verdict's (an undecided skip, as tag_gate.py gate treats it), is red; a
+  # cancellation decides nothing; only main's current head may open or close
+  # the issue. The issue is ASSIGNED to the repository owner, because an
+  # assignee is notified whether or not they watch the repository.
+  # ⚠ NOT COVERED: the image jobs downstream of publish-gate (a failed GHCR push).
+  # They would make this job downstream of publish-gate, and every such job must
+  # require publish-gate's success (TestCIPublishJobsCheckTheirNeedsExplicitly).
+  # `!cancelled()` and not success(): it must run when its needs FAILED.
+  # The ONLY job that can write issues, and it can do nothing else.
+  main-red:
+    name: main red? (open or close the main-red issue)
+    needs: [main-verdict, build, test, leakscan, govulncheck, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind, docshots]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: open, update or close the main-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          python3 .github/scripts/main_red.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"
+          --assignee "$GITHUB_REPOSITORY_OWNER"
+          --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
   # Local: docker buildx build --platform linux/amd64,linux/arm64 .
   #
