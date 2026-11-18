@@ -86,8 +86,7 @@ func autostartWriter(ctx context.Context) (int64, error) {
 //
 // Audited plugin.autostart.on {target, repo, daily_cap}.
 func (s *PGStore) SetAutostart(ctx context.Context, pluginID int64, target, repo string, dailyCap int) (Autostart, error) {
-	owner, err := autostartWriter(ctx)
-	if err != nil {
+	if _, err := autostartWriter(ctx); err != nil {
 		return Autostart{}, err
 	}
 	switch {
@@ -99,13 +98,13 @@ func (s *PGStore) SetAutostart(ctx context.Context, pluginID int64, target, repo
 		return Autostart{}, invalid("the cap must be 1 to %d a day", MaxAutostartDailyCap)
 	}
 	var a Autostart
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `UPDATE plugins p SET autostart_target = $2, autostart_repo = $3, autostart_daily_cap = $4,
 				autostart_at = now()
 			  FROM users u
-			 WHERE p.id = $1 AND p.owner_id = $5 AND p.revoked_at IS NULL AND u.id = p.owner_id AND u.kind <> 'team'
+			 WHERE p.id = $1 AND p.`+ownedByPrincipal+` AND p.revoked_at IS NULL AND u.id = p.owner_id AND u.kind <> 'team'
 			RETURNING p.autostart_target, p.autostart_repo, p.autostart_daily_cap, p.autostart_at`,
-			pluginID, target, repo, dailyCap, owner).Scan(&a.Target, &a.Repo, &a.DailyCap, &a.Since)
+			pluginID, target, repo, dailyCap).Scan(&a.Target, &a.Repo, &a.DailyCap, &a.Since)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -124,14 +123,13 @@ func (s *PGStore) SetAutostart(ctx context.Context, pluginID int64, target, repo
 //
 // Audited plugin.autostart.off when it was on.
 func (s *PGStore) ClearAutostart(ctx context.Context, pluginID int64) (bool, error) {
-	owner, err := autostartWriter(ctx)
-	if err != nil {
+	if _, err := autostartWriter(ctx); err != nil {
 		return false, err
 	}
 	changed := false
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var was *string
-		err := tx.QueryRow(ctx, `SELECT autostart_target FROM plugins WHERE id = $1 AND owner_id = $2 FOR UPDATE`, pluginID, owner).Scan(&was)
+		err := tx.QueryRow(ctx, `SELECT autostart_target FROM plugins WHERE id = $1 AND `+ownedByPrincipal+` FOR UPDATE`, pluginID).Scan(&was)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -139,7 +137,7 @@ func (s *PGStore) ClearAutostart(ctx context.Context, pluginID int64) (bool, err
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE plugins SET autostart_target = NULL, autostart_repo = NULL, autostart_daily_cap = NULL,
-				autostart_at = NULL WHERE id = $1 AND owner_id = $2`, pluginID, owner); err != nil {
+				autostart_at = NULL WHERE id = $1 AND `+ownedByPrincipal, pluginID); err != nil {
 			return err
 		}
 		changed = true

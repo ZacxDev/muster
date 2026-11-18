@@ -141,6 +141,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/{id}/deliver-to",
 		"POST /plugins/{id}/chief-extension",
+		"POST /plugins/{id}/autostart",
 		"POST /plugins/{id}/approve-chief-instructions",
 		"POST /plugins/pair/{id}/approve",
 		"POST /plugins/pair/{id}/deny",

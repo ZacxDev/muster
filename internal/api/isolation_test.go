@@ -518,6 +518,7 @@ var isolationClasses = map[string]routeClass{
 	// A's plugin by id; B's session must get the ghost's 404 (row-level
 	// security and the store's owner filter).
 	"POST /plugins/{id}/chief-extension":            classParam,
+	"POST /plugins/{id}/autostart":                  classParam,
 	"POST /plugins/{id}/approve-chief-instructions": classParam,
 	// A pairing request's decisions name it by id; another owner's is the
 	// ghost's 404 (row-level security).
