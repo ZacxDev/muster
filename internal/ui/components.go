@@ -666,6 +666,13 @@ func proseWidth() string {
 	return "max-w-[70ch]"
 }
 
+// StickyHeaderClass is EVERY page's sticky top bar (the shell's header, an
+// agent's and a task's): one class, so the bars cannot drift apart again.
+// 🔴 OPAQUE (bg-bg, no backdrop blur): at bg-bg/60–80 the page scrolled under
+// it ghosted through — a phone screenshot of the Asks page's Log tab showed
+// the cards behind the brand. TestEveryStickyHeaderIsOneOpaqueClass pins both.
+const StickyHeaderClass = "sticky top-0 z-20 border-b border-line bg-bg"
+
 // header is the sticky top bar carrying the hamburger (sidebar toggle), brand,
 // the auto-approve control, and the live pending count.
 // header is the sticky top bar: hamburger, brand, and the push-notification
@@ -682,7 +689,7 @@ func proseWidth() string {
 // permission and then fail on a 503.
 func header(push bool, brand Brand) g.Node {
 	return Header(
-		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60"),
+		Class(StickyHeaderClass),
 		Div(
 			// Same contentWidth() as the tab content column below — see the helper.
 			// The two MUST move together: widening only the content leaves the brand
