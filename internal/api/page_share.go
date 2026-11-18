@@ -103,7 +103,7 @@ func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string
 // (textplain.Title) and escaped by every surface that draws the question.
 //
 // 🔴 NO ADDRESS AND NO ID (the operator rule: none in the top layer). The
-// preview is one tap away on the card itself — its "Open the page" button
+// page is one tap away on the card itself — its "Open the page" button
 // (pageAskOpenHTML), found from the card's link — never a URL in the text.
 func pageShareQuestion(asker string, p pages.Page, reason string) string {
 	// 🔴 THE APPROVAL IS FOR THE PAGE, NOT FOR ONE VERSION (operator
@@ -124,7 +124,7 @@ const pageQuietButton = "press inline-flex min-h-[44px] items-center justify-cen
 // pageAskOpenLabel is the ask card's button to the page it asks about.
 const pageAskOpenLabel = "Open the page"
 
-// pageAskOpen is the preview of the page whose share link ask id asks for,
+// pageAskOpen is the owner's view of the page whose share link ask id asks for,
 // "" when it is no page's card (or pages are not served): what the card's "Open the
 // page" opens. ctx is the reader's: the link is read under their row-level
 // security, so another owner's card finds none.
@@ -136,7 +136,7 @@ func (s *Server) pageAskOpen(ctx context.Context, id int64) string {
 	if err != nil || l.PageID <= 0 {
 		return ""
 	}
-	return pagePath(l.PageID) + "/preview"
+	return pageViewPath(l.PageID)
 }
 
 // pageAskOpenHTML is the card's "Open the page" button, "" for none.

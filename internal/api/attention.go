@@ -310,7 +310,7 @@ type attentionItem struct {
 	// withAskBoxes for the pages that draw them, never by askItem: the item is
 	// built where no server is in reach (a push, attention_list).
 	dictate, sessionLink string
-	// pageOpen is the preview of the page a share link's card asks about
+	// pageOpen is the owner's view of the page a share link's card asks about
 	// (Server.pageAskOpen), "" for every other ask: the card's "Open the
 	// page" button, so its question needs no address. Set by withAskBoxes and
 	// the ask page, for the pages that draw cards; not serialised.

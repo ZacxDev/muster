@@ -221,7 +221,7 @@ func pageSection(t *testing.T, body, testid string) string {
 // admin is shown.
 //
 // REGRESSION TEST: red at origin/main, whose card said "See the page as it is
-// now: https://…/pages/<id>/preview", whose page screen drew the link in an
+// now: https://…/pages/<id>/view", whose page screen drew the link in an
 // input, "created 2026-11-11 14:02 UTC · 3fa9c2e1" per link, raw JSON with
 // "contact · version 1 · link 7" per response, and "(MUSTER_CONNECTOR_
 // ENCRYPTION_KEY is unset)".
@@ -281,10 +281,10 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			page := body[strings.Index(body, `<article`):]
 			page = page[:strings.Index(page, `</article>`)+len("</article>")]
 			assertPagePlain(t, "the share ask's page", page)
-			open := regexp.MustCompile(`<a href="/pages/` + sid + `/preview" class="[^"]*" data-ask-page-open>Open the page</a>`)
+			open := regexp.MustCompile(`<a href="/pages/` + sid + `/view" class="[^"]*" data-ask-page-open>Open the page</a>`)
 			for what, m := range map[string]string{"the feed's card": card, "the ask's page": page} {
 				if !open.MatchString(m) {
-					t.Errorf("%s has no “Open the page” to the preview:\n%s", what, m)
+					t.Errorf("%s has no “Open the page” to the owner's view:\n%s", what, m)
 				}
 			}
 
@@ -369,14 +369,14 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 				t.Errorf("a keyed server's page screen says sharing is not set up")
 			}
 
-			// A mirrored session's page screen: "By work on atlas", its pending
+			// A mirrored session's page screen: "Made by work on atlas", its pending
 			// link "asked for by work on atlas".
 			msid := strconv.FormatInt(mid, 10)
 			mdetail := pageSection(t, get("/pages/"+msid, func(w *httptest.ResponseRecorder, r *http.Request) {
 				f.srv.renderPageDetail(w, r, mid, 200, "", "", "")
 			}), "page-detail")
 			assertPagePlain(t, "a mirrored session's page screen", mdetail)
-			if !strings.Contains(mdetail, "By work on atlas.") || !strings.Contains(mdetail, "asked for by work on atlas") {
+			if !strings.Contains(mdetail, "Made by work on atlas.") || !strings.Contains(mdetail, "asked for by work on atlas") {
 				t.Errorf("a mirrored session's page screen does not name it in words:\n%s", mdetail)
 			}
 
