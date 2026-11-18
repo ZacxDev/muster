@@ -181,7 +181,7 @@ func taskDetailHeader() g.Node {
 		// is rendered INTO (TaskDetailPage's lg:pl-72 Div), which is where the
 		// shell puts it too. (This comment used to claim lg:pl-72 was on this
 		// element — it never was.)
-		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur"),
+		Class(StickyHeaderClass),
 		Div(
 			// Same contentWidth() as the <main> below, so the back link and the card
 			// under it cannot sit at different left edges.
