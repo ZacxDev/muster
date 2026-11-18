@@ -51,11 +51,21 @@ class Refused(Exception):
 
 
 def plan(shard: int, of: int, packages: list[str], split: str,
-         names: list[str], require: list[str]) -> tuple[list[str], list[str]]:
+         names: list[str], require: list[str],
+         procs: int = 1, proc: int = 1) -> tuple[list[str], list[str]]:
     """The `go test` args and verdict.py args for one shard (pure; no `go`).
 
     `packages` is `go list ./...` (shard 0 only), `names` the split package's
-    `go test -list` output (shards 1.. only); `split` is its import path."""
+    `go test -list` output (shards 1.. only); `split` is its import path.
+
+    `procs` / `proc`: an api shard's share is dealt again over `procs` test
+    PROCESSES on its own runner (each with its own Postgres); `proc` is 1..procs.
+    The (of-1)*procs parts are round-robin over the sorted names, so with
+    procs=1 this is exactly the one-process plan. Shard 0 is one process."""
+    if procs < 1 or not 1 <= proc <= procs:
+        raise Refused(f"--procs {procs}: process {proc} is not in 1..{procs}")
+    if shard == 0 and proc != 1:
+        raise Refused("shard 0 runs as one process")
     if of < 2:
         raise Refused(f"--of {of}: need at least 2 shards (the rest, and one for {split})")
     if not 0 <= shard < of:
@@ -77,9 +87,11 @@ def plan(shard: int, of: int, packages: list[str], split: str,
         if absent:
             raise Refused(f"REQUIRED test(s) not in {split}'s list (renamed, deleted, or filtered out "
                           f"by a build tag): {', '.join(absent)}")
-        mine = tests[shard - 1::of - 1]
+        parts = (of - 1) * procs
+        mine = tests[(shard - 1) * procs + (proc - 1)::parts]
         if not mine:
-            raise Refused(f"shard {shard} of {of} got no tests: {split} has only {len(tests)}")
+            raise Refused(f"shard {shard} of {of} (process {proc} of {procs}) got no tests: "
+                          f"{split} has only {len(tests)}")
         args = ["-run", "^(" + "|".join(mine) + ")$", split]
         vargs = [a for n in sorted(set(require) & set(mine)) for a in ("--require", n)]
     bad = [a for a in args + vargs if UNSAFE.search(a)]
@@ -102,6 +114,9 @@ def main() -> int:
     ap.add_argument("--of", type=int, required=True)
     ap.add_argument("--split", required=True, help="the package split across shards 1.., e.g. ./internal/api")
     ap.add_argument("--require", action="append", default=[])
+    ap.add_argument("--procs", type=int, default=None,
+                    help="deal an api shard over N processes; writes ARGS.<k> and VARGS.<k>, k=1..N "
+                         "(shard 0: only .1)")
     ap.add_argument("--args-out", required=True)
     ap.add_argument("--verdict-out", required=True)
     ap.add_argument("flags", nargs="*", help="after --: the go test flags the run uses (so -list reuses its build)")
@@ -109,21 +124,25 @@ def main() -> int:
     split = go(["list", a.split])[0]
     packages = go(["list", "./..."]) if a.shard == 0 else []
     names = go(["test", *a.flags, "-list", ".", split]) if a.shard != 0 else []
-    try:
-        args, vargs = plan(a.shard, a.of, packages, split, names, a.require)
-    except Refused as e:
-        print(f"goshard: REFUSED: {e}", file=sys.stderr)
-        return 1
-    with open(a.args_out, "w") as f:
-        f.write("\n".join(args) + "\n")
-    with open(a.verdict_out, "w") as f:
-        f.write("".join(v + "\n" for v in vargs))
-    if a.shard == 0:
-        print(f"shard 0 of {a.of}: {len(args)} packages (every package but {split})")
-    else:
-        n = args[1].count("|") + 1
-        print(f"shard {a.shard} of {a.of}: {n} of {split}'s {sum(1 for x in names if NAME.match(x))} "
-              f"top-level tests; requires: {' '.join(vargs[1::2]) or 'none'}")
+    procs = 1 if a.procs is None else a.procs
+    for k in range(1, (1 if a.shard == 0 else procs) + 1):
+        try:
+            args, vargs = plan(a.shard, a.of, packages, split, names, a.require, procs, k)
+        except Refused as e:
+            print(f"goshard: REFUSED: {e}", file=sys.stderr)
+            return 1
+        sfx = "" if a.procs is None else f".{k}"
+        with open(a.args_out + sfx, "w") as f:
+            f.write("\n".join(args) + "\n")
+        with open(a.verdict_out + sfx, "w") as f:
+            f.write("".join(v + "\n" for v in vargs))
+        if a.shard == 0:
+            print(f"shard 0 of {a.of}: {len(args)} packages (every package but {split})")
+        else:
+            n = args[1].count("|") + 1
+            print(f"shard {a.shard} of {a.of}, process {k} of {procs}: {n} of {split}'s "
+                  f"{sum(1 for x in names if NAME.match(x))} top-level tests; "
+                  f"requires: {' '.join(vargs[1::2]) or 'none'}")
     return 0
 
 
