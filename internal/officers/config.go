@@ -187,6 +187,11 @@ type Officer struct {
 	// The zero value caps nothing and batches nothing.
 	Budget Budget `json:"-"`
 
+	// chatSessions is the declared `chat_sessions` (0: none declared): how
+	// many chat lanes each instance runs at once. Read it through
+	// ChatSessions (chat.go).
+	chatSessions int
+
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
 	token string
@@ -309,6 +314,9 @@ type declared struct {
 	DailyBudgetUSD float64  `json:"daily_budget_usd"`
 	RoutineKinds   []string `json:"routine_kinds"`
 	RoutineWakeAt  string   `json:"routine_wake_at"`
+	// ChatSessions is how many chat sessions (ccd lanes) each instance runs
+	// at once, 1..MaxChatSessions; 0 (absent) is DefaultChatSessions (chat.go).
+	ChatSessions int `json:"chat_sessions"`
 	// InstanceSlug is never in MUSTER_OFFICERS: a DB-declared officer's
 	// server-allocated slug (Declaration.Officer), so the instance-name
 	// length check measures the names it will really have.
@@ -384,6 +392,9 @@ func (d declared) parseRuntime(backend string) (runtime, host string, err error)
 	}
 	if present(d.Kube) {
 		refuse("kube", "kube (kube reads are the judgement pool's, and need tiers)")
+	}
+	if d.ChatSessions != 0 {
+		refuse("chat_sessions", "chat_sessions (a chat runs in a ccd lane of a pod instance; a host instance has no ccd)")
 	}
 	if len(refused) > 0 {
 		return "", "", &FieldErrors{Prefix: `runtime "host" refuses `, List: refused}
@@ -893,6 +904,10 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 	if o.MaxInstances < 1 || o.MaxInstances > MaxInstancesCap {
 		return Officer{}, fieldErr("max_instances", fmt.Errorf("officer %s: max_instances %d is not 1..%d", o.ID, d.MaxInstances, MaxInstancesCap))
 	}
+	if d.ChatSessions < 0 || d.ChatSessions > MaxChatSessions {
+		return Officer{}, fieldErr("chat_sessions", fmt.Errorf("officer %s: chat_sessions %d is not 1..%d (leave it out for %d)", o.ID, d.ChatSessions, MaxChatSessions, DefaultChatSessions))
+	}
+	o.chatSessions = d.ChatSessions
 	if o.Owner == 0 {
 		o.Owner = 1
 	}

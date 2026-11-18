@@ -525,6 +525,7 @@ var agentReadCallers = map[string]string{
 	"Get Server.withdrawLapsedCard":           "machine: the hold-lapse sweep, as the card's owner; chief.OwnerID == a.Owner",
 	"Get focusSessions.Visible":               "visible: whether a focus subject is readable (read)",
 	"Get officerFleet.Reprompt":               "machine: an officer's door",
+	"Get officerChatLanes.Home":               "machine: an officer's door (a chat lane's instance)",
 
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
 	"GetByName Server.officerInstances":          "visible: a team officer's page links each instance agent's page to its members (a read; GET /officers/{officer}?owner=)",
@@ -558,6 +559,7 @@ var agentReadCallers = map[string]string{
 	"GetByName gatewayTranscripts.Read":          "machine: an officer's door",
 	"GetByName gatewayUsage.Read":                "machine: an officer's door",
 	"GetByName officerFleet.Reprompt":            "machine: an officer's door",
+	"GetByName officerChatLanes.instance":        "machine: an officer's door (a chat lane's instance)",
 	"GetByName officerFleet.start":               "machine: an officer's door",
 	"GetByName officerFleet.Stop":                "machine: an officer's door",
 	"GetByName Server.teardownInstanceWith":      "machine: an officer's door (a deleted or moved DB-declared officer's instances, read as its owner)",
