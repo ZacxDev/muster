@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -114,6 +116,9 @@ type Store interface {
 	// Responses is page id's responses with an id above after, oldest first,
 	// at most limit.
 	Responses(ctx context.Context, id, after int64, limit int) ([]Response, error)
+	// ResponsesBefore is page id's responses with an id below before (0: no
+	// bound), NEWEST first, at most limit (the owner's screen's pages).
+	ResponsesBefore(ctx context.Context, id, before int64, limit int) ([]Response, error)
 }
 
 // PGStore is Store on Postgres.
@@ -856,6 +861,12 @@ func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, c
 	}
 	out, err := scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (page_id, link_id, by_owner, version, component, kind, data, upload_public_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+responseCols, page, link, byOwner, v, component, string(kind), data, uploadID))
+	// The data's own CHECK (0116: pg_column_size(data) <= 40000) can refuse
+	// what CheckSubmit's byte bound let through (it bounds the JSON text,
+	// not its stored form): a refusal, never a server error.
+	if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == "23514" && strings.Contains(pe.ConstraintName, "data") {
+		return Response{}, fmt.Errorf("%w: the response is too large to keep", ErrResponseTooLarge)
+	}
 	if err != nil {
 		return Response{}, err
 	}
@@ -884,12 +895,37 @@ func (s *PGStore) Responses(ctx context.Context, id, after int64, limit int) ([]
 	return out, wrap("responses", rows.Err())
 }
 
+// ResponsesBefore is page id's responses with an id below before, newest
+// first, at most limit (1 to 500).
+func (s *PGStore) ResponsesBefore(ctx context.Context, id, before int64, limit int) ([]Response, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	if before <= 0 {
+		before = math.MaxInt64
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+responseCols+` FROM page_responses WHERE page_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, id, before, limit)
+	if err != nil {
+		return nil, wrap("responses", err)
+	}
+	defer rows.Close()
+	var out []Response
+	for rows.Next() {
+		r, err := scanResponse(rows)
+		if err != nil {
+			return nil, wrap("responses", err)
+		}
+		out = append(out, r)
+	}
+	return out, wrap("responses", rows.Err())
+}
+
 // wrap names a store error, leaving this package's own sentinels as they are.
 func wrap(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing} {
+	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing, ErrResponseTooLarge} {
 		if errors.Is(err, e) {
 			return err
 		}

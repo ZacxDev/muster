@@ -328,8 +328,11 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   expect((await page.request.get(url, { maxRedirects: 0 })).status()).toBe(404);
   await page.goto(origin + '/attention');
   const card = page.locator(`#ask-${askID}`);
-  await expect(card).toContainText('asks to share your page');
-  await expect(card).toContainText(`/pages/${pageID}/view`);
+  // The page by its title, in words; the page one tap away on the card,
+  // never an address in its text.
+  await expect(card).toContainText(`Share the page “Checkout launch ${stamp}”?`);
+  await expect(card).not.toContainText('/pages/', { useInnerText: true });
+  await expect(card.getByRole('link', { name: 'Open the page', exact: true })).toHaveAttribute('href', `/pages/${pageID}/view`);
   await Promise.all([page.waitForURL(origin + '/attention'), card.getByRole('button', { name: 'Approve link', exact: true }).click()]);
   // (Its push to the owner's phone is muster's own Web Push, which the
   // router never carries — goNotify skips attention events there. The Go
@@ -410,6 +413,11 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   // 7. The owner's Pages screen: the responses and the file to download.
   await page.goto(origin + `/pages/${pageID}`);
   await expect(page.locator('[data-response-kind="submit"]')).toHaveCount(2);
+  // Each response is labelled from the page's own form, never raw JSON.
+  const details = page.locator('[data-response-kind="submit"]').filter({ hasText: 'Your details' });
+  await expect(details.locator('dt', { hasText: 'Email' })).toBeVisible();
+  await expect(details.locator('[data-response-value]').first()).toHaveText('client@example.com');
+  await expect(page.locator('[data-testid="page-responses"]')).not.toContainText('"email"', { useInnerText: true });
   const dl = page.locator('[data-response-download]');
   await expect(dl).toHaveCount(1);
   const href = await dl.getAttribute('href');

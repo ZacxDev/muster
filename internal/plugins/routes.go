@@ -223,8 +223,8 @@ type Route struct {
 	// was sent (0151); "" for a route made before it.
 	TargetHost string
 	// PasteSHA256 is the SHA-256 of the block muster pasted into the target
-	// session (RoutedPasteSHA256; migration 0153), set with SendQueueID; ""
-	// for a route that pasted nothing or was made before 0153. A mirrored
+	// session (RoutedPasteSHA256; migration 0154), set with SendQueueID; ""
+	// for a route that pasted nothing or was made before 0154. A mirrored
 	// view draws a prompt as this route's "From …" card only when the prompt
 	// hashes to it (internal/api route_answer_cards.go routedPasteOnRecord).
 	PasteSHA256 string

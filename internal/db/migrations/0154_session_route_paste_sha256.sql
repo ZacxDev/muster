@@ -1,4 +1,4 @@
--- muster 0153 — A ROUTE RECORDS THE SHA-256 OF THE BLOCK IT PASTED
+-- muster 0154 — A ROUTE RECORDS THE SHA-256 OF THE BLOCK IT PASTED
 -- (internal/plugins routes.go Route.PasteSHA256; internal/api
 -- session_routes.go injectRoute writes it, route_answer_cards.go
 -- routedPasteOnRecord reads it).
@@ -27,12 +27,12 @@
 -- Idempotent; not re-applied by db.RLSOn (no new table or policy: 0021's
 -- policy and grants cover the column).
 --
--- Must apply after its predecessor, 0152_page_owner_view (the contiguity test
--- refuses a gap).
+-- Must apply after its predecessor, 0153_plugin_task_created_by_backfill (the
+-- contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   ALTER TABLE public.session_routes DROP COLUMN IF EXISTS paste_sha256;
---   DELETE FROM schema_migrations WHERE version = 153;
+--   DELETE FROM schema_migrations WHERE version = 154;
 
 SET LOCAL lock_timeout = '3s';
 

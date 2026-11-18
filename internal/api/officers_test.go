@@ -638,17 +638,19 @@ func officerWaitFor(t *testing.T, ok func() bool) {
 
 // TestADeclaredOfficersInstanceCannotBeDeleted: DELETE /agents/{id} refuses a
 // declared officer's instance with 409 and tears nothing down; its card offers
-// no Delete. An agent whose name LOOKS like an instance but is past the
-// officer's max, or belongs to no declared officer, is an ordinary agent.
+// no Delete — a chat-only instance (past max_instances, within the chat
+// ceiling) included. An agent whose name LOOKS like an instance but is past
+// the officer's slots, or belongs to no declared officer, is an ordinary agent.
 func TestADeclaredOfficersInstanceCannotBeDeleted(t *testing.T) {
 	r := newOfficerRig(t)
 	inst := r.addInstance(r.a, 1, 821)
-	past := r.addInstance(officers.Officer{ID: offA, MaxInstances: 3}, 3, 822) // past A's max of 2
+	chatOnly := r.addInstance(officers.Officer{ID: offA, MaxInstances: 3}, 3, 824) // past A's max of 2: a chat-only instance (chat ceiling 3)
+	past := r.addInstance(officers.Officer{ID: offA, MaxInstances: 4}, 4, 822)     // past A's slots
 	stranger := r.addInstance(officers.Officer{ID: "gone:officer", MaxInstances: 1}, 1, 823)
 	for _, tc := range []struct {
 		a       agents.Agent
 		protect bool
-	}{{inst, true}, {past, false}, {stranger, false}} {
+	}{{inst, true}, {chatOnly, true}, {past, false}, {stranger, false}} {
 		rec := doReq(t, r.s, r.h, http.MethodDelete, "/agents/"+strconv.FormatInt(tc.a.ID, 10))
 		got := waitDestroyed(r.prov, tc.a.ID)
 		if tc.protect {

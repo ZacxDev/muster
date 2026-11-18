@@ -157,6 +157,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages/{id}/view",
 		"GET /pages/{id}/preview",
 		"GET /pages/{id}/versions/{v}/content",
+		"GET /pages/{id}/responses/{rid}/raw",
 		"POST /pages/{id}/versions/{v}/submit",
 		"POST /pages/{id}/versions/{v}/upload",
 		"POST /pages/{id}/links/{link}/revoke",

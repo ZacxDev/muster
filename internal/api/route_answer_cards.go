@@ -93,7 +93,7 @@ func (s *Server) routeAnswerCardsFor(ctx context.Context, agentID int64, lines [
 // card is drawn only when the route the block names exists for the viewer,
 // targets the Claude session this window shows now (and the host it ran on,
 // when recorded), recorded the SHA-256 of exactly this text when it was queued
-// (Route.PasteSHA256, migration 0153), and was DELIVERED: its send-queue row
+// (Route.PasteSHA256, migration 0154), and was DELIVERED: its send-queue row
 // sent, the prompt no earlier than the delivery. The view asks only for the
 // FIRST prompt naming a route (ui.MirrorTranscript), so a replay of the same
 // block is a bubble too. Anything else is the bubble.

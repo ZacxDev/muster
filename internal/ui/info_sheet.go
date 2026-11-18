@@ -28,7 +28,9 @@ import (
 //     scroller or clipped header cuts it off. On a phone it is a bottom sheet
 //     the width of the screen; from `sm` up it is centred — the focus history
 //     dialog's own look.
-//   - Copy calls window.cgCopy (the app script's), which falls back to
+//   - Copy calls window.cgCopy (the app script's), which copies the sheet's
+//     own <code> text (never a second copy of it in an attribute: a long
+//     code would be drawn twice) and falls back to
 //     execCommand where the async clipboard is unavailable; the text is also
 //     selectable in place.
 //
@@ -56,6 +58,9 @@ type InfoSheet struct {
 	// are the setup ⓘs (HostSettingSheet, HostDetailSheet), for a viewer who
 	// is not an admin (Features.Setup).
 	Withheld bool
+	// Live: the code is filled in by a page script (a link the page's Share
+	// makes later), so its row and Copy are drawn even while Code is "".
+	Live bool
 	// WithheldText is what a withheld sheet says instead of its code; ""
 	// is InfoSheetWithheldText.
 	WithheldText string
@@ -123,7 +128,7 @@ func (s InfoSheet) sheet() g.Node {
 			text = InfoSheetWithheldText
 		}
 		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(text))
-	case s.Code != "":
+	case s.Code != "" || s.Live:
 		codeClass, rowClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
 		if s.Multiline {
 			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-fg"
@@ -134,7 +139,6 @@ func (s InfoSheet) sheet() g.Node {
 			Code(Class(codeClass), g.Attr("data-info-code", ""), g.Text(s.Code)),
 			Button(
 				Type("button"),
-				g.Attr("data-copy-text", s.Code),
 				g.Attr("data-info-copy", ""),
 				g.Attr("onclick", "window.cgCopy && window.cgCopy(this)"),
 				Class("press inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-4 text-sm font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),

@@ -1138,20 +1138,16 @@ func spawnPromptFor(runtime, host, repo, prompt string, task notes.Note, onTask,
 	var body string
 	if onTask {
 		// opencode has no muster tool path, so it is never pointed at task_get.
-		body = "Task #" + strconv.FormatInt(task.ID, 10) + " (read it in full with task_get if it is cut short below):\n\n" + task.Body
+		taskHead := "Task #" + strconv.FormatInt(task.ID, 10) + " (read it in full with task_get if it is cut short below):\n\n"
 		taskCut := "\n[cut: read the whole task with task_get]"
 		if runtime == mirror.SpawnRuntimeOpenCode {
-			body = "Task #" + strconv.FormatInt(task.ID, 10) + ":\n\n" + task.Body
+			taskHead = "Task #" + strconv.FormatInt(task.ID, 10) + ":\n\n"
 			taskCut = "\n[cut: the rest of the task did not fit; ask your owner for it in your reply]"
 		}
-		left := room - len(relay)
-		if len(body) > left {
-			if left > len(taskCut) {
-				body = cutBytes(body, left-len(taskCut)) + taskCut
-			} else {
-				body = ""
-			}
-		}
+		// The task's text through the one rule (task_kickoff.go), cut to what
+		// is left: an owner's exactly as before, a plugin's BEFORE it is
+		// fenced, so its fence always closes.
+		body = taskKickoffTextWithin(task, taskHead, room-len(relay), taskCut)
 	}
 	return head + "\n\n" + relay + body + rules
 }

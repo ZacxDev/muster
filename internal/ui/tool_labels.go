@@ -295,7 +295,8 @@ const toolSheetPlaceholder = "__tool_sheet__"
 //     MusterToolLabel reads it (bare, mcp__muster__…, muster_…), or ”.
 //   - musterToolSheet(rowKey, nm): the row's ⓘ line (toolNameSheet) as a
 //     node, drawn from the server's own markup (InfoSheetHTML) with the raw
-//     name set as TEXT, never as HTML.
+//     name set as TEXT, never as HTML (and never in an attribute: the sheet's
+//     Copy copies its <code>).
 func toolLabelsJS() string {
 	labels, _ := json.Marshal(musterToolLabels)
 	line, _ := toolNameSheet("", toolSheetPlaceholder, toolSheetPlaceholder)
@@ -323,9 +324,9 @@ func toolLabelsJS() string {
     var line = t.content.firstElementChild;
     if (!line) return null;
     var code = line.querySelector('[data-info-code]');
+    // The sheet's Copy copies this <code> as it reads (window.cgCopy): no
+    // second copy of the name goes in an attribute.
     if (code) code.textContent = String(nm || '');
-    var copy = line.querySelector('[data-info-copy]');
-    if (copy) copy.setAttribute('data-copy-text', String(nm || ''));
     return line;
   }
 `

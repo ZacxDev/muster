@@ -18,7 +18,9 @@ func TestTheInfoSheetIsAKeyboardReachableNamedDialogWithCopy(t *testing.T) {
 		`<p id="place-ask-7-title" class="flex-1 text-sm font-semibold text-fg">Where it runs</p>`,
 		`<p class="text-sm text-fg2">This session runs in a tmux window on atlas. To open it in a terminal on that computer, use this address:</p>`,
 		`data-info-code="">tmux fern:1 @ atlas</code>`,
-		`<button type="button" data-copy-text="tmux fern:1 @ atlas" data-info-copy="" onclick="window.cgCopy &amp;&amp; window.cgCopy(this)"`,
+		// Copy copies the sheet's <code> (cgCopy reads it): the code is never
+		// drawn a second time in an attribute.
+		`<button type="button" data-info-copy="" onclick="window.cgCopy &amp;&amp; window.cgCopy(this)"`,
 		`popovertarget="place-ask-7" popovertargetaction="hide" aria-label="Close"`,
 	} {
 		if !strings.Contains(out, want) {
@@ -31,7 +33,7 @@ func TestTheInfoSheetIsAKeyboardReachableNamedDialogWithCopy(t *testing.T) {
 	}
 	// Its text is escaped.
 	esc := renderString(t, SessionPlaceSheet("p", "", "a<b", `tmux x"y:1 @ a<b`).Node())
-	if strings.Contains(esc, "a<b") || !strings.Contains(esc, `data-copy-text="tmux x&#34;y:1 @ a&lt;b"`) {
+	if strings.Contains(esc, "a<b") || !strings.Contains(esc, `data-info-code="">tmux x&#34;y:1 @ a&lt;b</code>`) || strings.Contains(esc, "data-copy-text") {
 		t.Errorf("the sheet's text is not escaped:\n%s", esc)
 	}
 }
