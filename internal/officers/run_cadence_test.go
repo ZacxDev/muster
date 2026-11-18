@@ -3,7 +3,9 @@ package officers_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -270,6 +272,252 @@ func TestALatePassIsLoggedOncePerEpisode(t *testing.T) {
 	}
 	if got := strings.Count(logs.String(), line+"\n"); got != 2 {
 		t.Fatalf("the late-pass line %q appears %d time(s), want 2; log:\n%s", line, got, logs)
+	}
+}
+
+// passFleet is a poolFleet that counts each officer's Instances calls (one per
+// pass of an untiered officer) and holds each for hold, as a pass's slow fleet
+// read would — or, for an officer in block, until release closes or the
+// pass's context ends.
+type passFleet struct {
+	*poolFleet
+	hold    time.Duration
+	block   map[string]bool
+	release chan struct{}
+	mu      sync.Mutex
+	passes  map[string]int
+}
+
+func newPassFleet(hold time.Duration, block map[string]bool) *passFleet {
+	return &passFleet{poolFleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}, hold: hold, block: block,
+		release: make(chan struct{}), passes: map[string]int{}}
+}
+
+func (f *passFleet) Instances(ctx context.Context, o officers.Officer) ([]officers.InstanceState, error) {
+	f.mu.Lock()
+	f.passes[o.ID]++
+	f.mu.Unlock()
+	var wait <-chan time.Time
+	if !f.block[o.ID] {
+		wait = time.After(f.hold)
+	}
+	select {
+	case <-wait:
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return f.poolFleet.Instances(ctx, o)
+}
+
+// count is how many passes of officer id have read the fleet.
+func (f *passFleet) count(id string) int { f.mu.Lock(); defer f.mu.Unlock(); return f.passes[id] }
+
+// cadenceRoster is n officers cadence:<prefix>00.. polling every poll, sorted
+// by key in index order, and the HQ that knows them.
+func cadenceRoster(t *testing.T, prefix string, n int, poll time.Duration) ([]officers.Officer, *hqtest.Server) {
+	t.Helper()
+	toks := map[string]string{}
+	for i := range n {
+		toks[fmt.Sprintf("tok-cadence-%s%02d-5a6b", prefix, i)] = fmt.Sprintf("cadence:%s%02d", prefix, i)
+	}
+	hq := hqtest.New(toks)
+	t.Cleanup(hq.Close)
+	var list []officers.Officer
+	for i := range n {
+		id := fmt.Sprintf("cadence:%s%02d", prefix, i)
+		list = append(list, officers.Officer{ID: id, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: poll, Owner: 1}.
+			WithToken(fmt.Sprintf("tok-cadence-%s%02d-5a6b", prefix, i)))
+	}
+	return list, hq
+}
+
+// TestEveryDueOfficerGetsAPassSlot: Run gave each free pass slot to the first
+// due officer in KEY order, and a pass longer than poll_interval leaves its
+// officer due again the moment it ends — so with more officers due than
+// slots, the lowest keys took every freed slot and the highest-key officers
+// NEVER passed (and, their pass never starting, never showed a late start
+// either). Ten officers polling every 100ms, each pass 200ms, against the
+// loop's 4 slots: in 3s every officer must pass, and the busiest no more than
+// three times as often as the idlest. Key-order assignment gives the four
+// lowest keys every pass and the rest none.
+func TestEveryDueOfficerGetsAPassSlot(t *testing.T) {
+	saved := officers.RunTick
+	officers.RunTick = time.Millisecond
+	t.Cleanup(func() { officers.RunTick = saved })
+	const (
+		n      = 10
+		poll   = 100 * time.Millisecond
+		hold   = 200 * time.Millisecond
+		window = 3 * time.Second
+	)
+	list, _ := cadenceRoster(t, "f", n, poll)
+	fleet := newPassFleet(hold, nil)
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil), Fleet: fleet,
+		Logger: log.New(&syncBuffer{}, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go rec.Run(ctx)
+	t.Cleanup(func() { cancel(); <-rec.Done() })
+	time.Sleep(window)
+	got := make([]int, n)
+	for i, o := range list {
+		got[i] = fleet.count(o.ID)
+	}
+	t.Logf("passes per officer in key order: %v", got)
+	lo, hi := slices.Min(got), slices.Max(got)
+	if lo == 0 {
+		var starved []string
+		for i, c := range got {
+			if c == 0 {
+				starved = append(starved, list[i].ID)
+			}
+		}
+		t.Fatalf("%v had no pass in %s (%d officers due every %s, passes of %s): starved of a pass slot; passes per officer in key order: %v",
+			starved, window, n, poll, hold, got)
+	}
+	if hi > 3*lo {
+		t.Fatalf("passes per officer in key order %v: the busiest had %d, more than 3x the idlest's %d — slots are not shared by wait", got, hi, lo)
+	}
+}
+
+// TestAnOfficerWaitingForASlotIsLoggedAndMeasured: an officer that is due but
+// cannot start (every slot held) produces no pass, so the start-lag histogram
+// and the late-pass line — both written when a pass starts — cannot see it.
+// Four officers' passes block on their fleet read; a fifth (last by key) is
+// due and waits. On a test clock moved 2m (poll_interval 1m) it must be logged
+// as waiting, once, and muster_officer_pass_oldest_wait_seconds must read its
+// wait; moved another 1m, the line is not repeated and the gauge reads 180.
+// Released, its pass starts 3m late inside the same episode, so no
+// "pass started … late" line follows, and the gauge drops to 0.
+func TestAnOfficerWaitingForASlotIsLoggedAndMeasured(t *testing.T) {
+	saved := officers.RunTick
+	officers.RunTick = time.Millisecond
+	t.Cleanup(func() { officers.RunTick = saved })
+	list, hq := cadenceRoster(t, "w", 5, time.Minute)
+	clk := &clock{t: time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)}
+	hq.Now = clk.Now
+	block := map[string]bool{}
+	for _, o := range list[:4] {
+		block[o.ID] = true
+	}
+	waiter := list[4]
+	fleet := newPassFleet(0, block)
+	logs := &syncBuffer{}
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil), Fleet: fleet,
+		Logger: log.New(logs, "", 0), Now: clk.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go rec.Run(ctx)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(fleet.release)
+		}
+		cancel()
+		<-rec.Done()
+	})
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for end := time.Now().Add(5 * time.Second); !ok(); time.Sleep(time.Millisecond) {
+			if time.Now().After(end) {
+				t.Fatalf("%s; log:\n%s", what, logs)
+			}
+		}
+	}
+	waitFor("fixture: the four blocking officers' passes never all read their fleet", func() bool {
+		for _, o := range list[:4] {
+			if fleet.count(o.ID) != 1 {
+				return false
+			}
+		}
+		return true
+	})
+	if n := fleet.count(waiter.ID); n != 0 {
+		t.Fatalf("fixture: %s passed %d time(s) with every slot held, want 0", waiter.ID, n)
+	}
+	waitLine := func(secs int) string {
+		return fmt.Sprintf("officers: %s: due %ds ago and still waiting for a pass slot (4 of 4 running, poll_interval 1m0s); logged once until a pass starts on time\n", waiter.ID, secs)
+	}
+	clk.Advance(2 * time.Minute)
+	waitFor("no waiting-for-a-slot line for "+waiter.ID+" after it was due 2m (poll_interval 1m) with every slot held", func() bool {
+		return strings.Contains(logs.String(), waitLine(120))
+	})
+	gauge := func() float64 { return testutil.ToFloat64(metrics.OfficerPassOldestWait) }
+	if g := gauge(); g != 120 {
+		t.Fatalf("muster_officer_pass_oldest_wait_seconds = %v after %s waited 2m, want 120", g, waiter.ID)
+	}
+	clk.Advance(time.Minute)
+	waitFor("muster_officer_pass_oldest_wait_seconds never reached 180 after another 1m", func() bool { return gauge() == 180 })
+	if c := strings.Count(logs.String(), "still waiting for a pass slot"); c != 1 {
+		t.Fatalf("%d waiting-for-a-slot line(s) in one episode, want 1; log:\n%s", c, logs)
+	}
+	close(fleet.release)
+	released = true
+	waitFor(waiter.ID+" never passed once the slots were released", func() bool { return fleet.count(waiter.ID) >= 1 })
+	if strings.Contains(logs.String(), "officers: "+waiter.ID+": pass started") {
+		t.Fatalf("%s's late start was logged again inside the episode its wait already logged; log:\n%s", waiter.ID, logs)
+	}
+	waitFor("muster_officer_pass_oldest_wait_seconds did not return to 0 once no officer waited", func() bool { return gauge() == 0 })
+}
+
+// TestAPassDueAskedForEndsALateEpisode: a pass Due asks for (after a pause
+// or a resume) has no next-check time to be late against, and was neither
+// measured nor allowed to end a late episode — so after it, the officer's
+// next late start went unlogged, though the docs say the next pass that
+// starts on time ends the episode. On a test clock: +5m (4m late: logged),
+// then Due (starts at once: on time, the episode ends), then +5m (late again:
+// logged a second time).
+func TestAPassDueAskedForEndsALateEpisode(t *testing.T) {
+	saved := officers.RunTick
+	officers.RunTick = time.Millisecond
+	t.Cleanup(func() { officers.RunTick = saved })
+	hq := hqtest.New(map[string]string{cadenceSlowTok: cadenceSlowID})
+	t.Cleanup(hq.Close)
+	o := officers.Officer{ID: cadenceSlowID, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(cadenceSlowTok)
+	clk := &clock{t: time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)}
+	hq.Now = clk.Now
+	fleet := &countingFleet{poolFleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}, calls: make(chan struct{}, 16)}
+	logs := &syncBuffer{}
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry([]officers.Officer{o}), HQ: officers.NewBackends(nil), Fleet: fleet,
+		Logger: log.New(logs, "", 0), Now: clk.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go rec.Run(ctx)
+	t.Cleanup(func() { cancel(); <-rec.Done() })
+	passed := func(step string) {
+		t.Helper()
+		select {
+		case <-fleet.calls:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no pass ran; log:\n%s", step, logs)
+		}
+		for end := time.Now().Add(5 * time.Second); testutil.ToFloat64(metrics.OfficerPassesInFlight) != 0; {
+			if time.Now().After(end) {
+				t.Fatalf("%s: the pass never ended", step)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	lateLines := func() int { return strings.Count(logs.String(), "pass started") }
+	passed("first pass")
+	clk.Advance(5 * time.Minute)
+	passed("after +5m")
+	if got := lateLines(); got != 1 {
+		t.Fatalf("after +5m: %d late-pass line(s), want 1; log:\n%s", got, logs)
+	}
+	rec.Due(o.Key())
+	passed("after Due")
+	clk.Advance(5 * time.Minute)
+	passed("after Due, +5m")
+	if got := lateLines(); got != 2 {
+		t.Fatalf("after Due then +5m: %d late-pass line(s), want 2 — the pass Due asked for started on time and must have ended the first episode; log:\n%s", got, logs)
 	}
 }
 

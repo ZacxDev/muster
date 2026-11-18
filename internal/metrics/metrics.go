@@ -508,10 +508,19 @@ var (
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800},
 	})
 	// OfficerPassesInFlight is how many officers' passes run at once. At the
-	// loop's cap, a due officer waits for a slot (and its start lag grows).
+	// loop's cap every slot is busy; whether an officer is waiting for one is
+	// OfficerPassOldestWait.
 	OfficerPassesInFlight = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "muster_officer_passes_in_flight",
 		Help: "Officer wake-loop passes running now (bounded by the loop's concurrency cap).",
+	})
+	// OfficerPassOldestWait is, at the loop's last tick, how long the officer
+	// that has waited longest has been due without its pass starting (every
+	// slot taken); 0 when no due officer is waiting. It sees an officer that
+	// waits before its pass starts — OfficerPassStartLag only once it has.
+	OfficerPassOldestWait = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_pass_oldest_wait_seconds",
+		Help: "Seconds the longest-waiting due officer has waited for a wake-loop pass slot (0: none waiting).",
 	})
 	// CCConsumerUsagePush counts the consumer usage collector's per-instance
 	// attempts (internal/consumerusage, MUSTER_CC_CONSUMER_USAGE), by result:

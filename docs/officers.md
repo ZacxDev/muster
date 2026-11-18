@@ -843,17 +843,24 @@ most 4 at once (`maxConcurrentPasses` in `internal/officers/wake.go`), and
 never two for one officer: a pass is bounded at 2 minutes, and when the loop
 ran every officer's pass in turn, one slow pass (a slow HQ or fleet read)
 delayed every other officer's by as long — and with it the claim of their
-[chat](#chat-sessions) items, which happens at the end of a pass. An officer
-due while every slot is taken waits for the next tick. A pass that starts more
-than `poll_interval` after its officer was due is logged once per episode
-(`officers: <id>: pass started <N>s late (poll_interval <d>)`; the next pass
-that starts on time ends the episode). The loop's cadence is measured by
-`muster_officer_pass_start_lag_seconds` (how late each pass started),
+[chat](#chat-sessions) items, which happens at the end of a pass. When more
+officers are due than slots are free, the slots go to the officers that have
+waited longest (never-passed ones, and ones a pause or resume made due, first);
+the rest wait for a later tick, so a roster too large for the cap is passed
+round-robin, each officer later, none never. An officer that has waited more
+than `poll_interval` for a slot is logged once
+(`officers: <id>: due <N>s ago and still waiting for a pass slot (…)`), and a
+pass that starts more than `poll_interval` after its officer was due is logged
+once per episode (`officers: <id>: pass started <N>s late (poll_interval <d>)`)
+— one line per episode for both: the next pass that starts on time, a first
+pass or a pause/resume one included, ends it. The loop's cadence is measured by
+`muster_officer_pass_start_lag_seconds` (how late each pass started, its wait
+for a slot included), `muster_officer_pass_oldest_wait_seconds` (how long the
+longest-waiting due officer has waited for a slot so far; 0 when none is),
 `muster_officer_pass_duration_seconds` and `muster_officer_passes_in_flight`
-(at 4, officers are waiting for a slot) — unlabelled, like the other officer
-gauges; the log line names the officer. On shutdown the loop waits for the
-passes still running (each ends with the shutdown's context) before it reports
-stopped.
+(at 4, every slot is busy) — unlabelled, like the other officer gauges; the
+log lines name the officer. On shutdown the loop waits for the passes still
+running (each ends with the shutdown's context) before it reports stopped.
 
 **HQ down.** A pass whose HQ read fails with a transport error or a 5xx
 changes nothing — no start, no stop, no release — and the officer's next pass
