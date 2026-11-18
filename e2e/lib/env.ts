@@ -487,6 +487,12 @@ export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_M
 // tests/morning-report.spec.ts: the morning report's page on a phone — its own
 // server with MUSTER_MORNING_REPORT=1 (+445: clear of the blocks above).
 export const morningReportPort = port + 445;
+// tests/plugin-autostart.spec.ts: a plugin's auto-start on its /plugins card —
+// its own e2eterm server over the noop driver, its connect listener, and the
+// fake GitHub App it plays (+450 to +452: clear of the blocks above).
+export const pluginAutostartPort = port + 450;
+export const pluginAutostartConnectPort = port + 451;
+export const pluginAutostartFakePort = port + 452;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

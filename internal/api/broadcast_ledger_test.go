@@ -205,6 +205,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// a is the agent row read under the status writer's principal and checked
 		// against the task's owner (a.OwnerID == n.OwnerID), so it is theirs.
 		"(*Server).stopChiefAgentOnComplete → agentChangedFor(a.OwnerID)",
+		// An auto-start's Stop tap (plugin_autostart.go): ag is the agent row the
+		// auto-start ledger named for the ask's owner, checked ag.OwnerID ==
+		// a.Owner on the ask's own task, so it is theirs.
+		"(*Server).autostartStopForAnswer → agentChangedFor(ag.OwnerID)",
 		// The Account page's chief switch (chief_toggle.go): owner is the
 		// request's own principal, whose switch and chief it is.
 		"(*Server).handleAccountChief → agentChangedFor(owner)",

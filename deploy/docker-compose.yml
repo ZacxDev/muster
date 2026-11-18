@@ -359,7 +359,8 @@ services:
       # stall nudges, pod officers, the memo relay: MUSTER_AGENT_PROVISIONER,
       # MUSTER_CHIEF_NUDGES, …). Their provisioner uses Kubernetes in-cluster
       # credentials only, so they cannot run in this stack
-      # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH.
+      # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH,
+      # nor MUSTER_PLUGIN_AUTOSTART (plugin auto-start starts agents).
     # The chief's spec volume (read-write here; read-only in the chief
     # container), and the network the chief reaches muster on. muster writes
     # the chief's spec with group 1001 and its files with group 1000, the

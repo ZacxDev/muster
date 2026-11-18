@@ -106,6 +106,7 @@ func TestTheComposeChiefRefusesAnAgentPlaneVariableBesideIt(t *testing.T) {
 		envTeamsOnServerPool:    "12",
 		envChiefSessionRuntimes: "claude-code",
 		envTagAutoDispatch:      "1",
+		envPluginAutostart:      "1",
 		envAgentCairnURL:        "https://cairn.example.test",
 		envAgentCairnToken:      "a-synthetic-cairn-token",
 	} {

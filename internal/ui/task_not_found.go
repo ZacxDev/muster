@@ -51,7 +51,7 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				Div(
 					Class("lg:pl-72"),
 					Header(
-						Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur"),
+						Class(StickyHeaderClass),
 						Div(
 							// Same contentWidth() as the <main> below and as the detail
 							// page this is the 404 for — see TaskDetailPage.

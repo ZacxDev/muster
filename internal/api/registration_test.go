@@ -81,6 +81,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		APITokens:       stubAPITokens{},
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
+		PluginAutostart: true,
 		Provisioner:     stubProvisioner{},
 		// The Compose chief's settings: registration must not branch on them
 		// (its refusals live inside handlers, not in which routes exist).

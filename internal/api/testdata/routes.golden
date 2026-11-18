@@ -377,6 +377,7 @@ POST /plugins/outreach-batches/{id}/decide
 POST /plugins/pair/{id}/approve
 POST /plugins/pair/{id}/deny
 POST /plugins/{id}/approve-chief-instructions
+POST /plugins/{id}/autostart
 POST /plugins/{id}/chief-extension
 POST /plugins/{id}/deliver-to
 POST /plugins/{id}/draft-checks
