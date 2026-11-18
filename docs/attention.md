@@ -54,8 +54,9 @@ a screen reader), never in the head.
 | Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Open tab: with [plugins](plugins.md) on, the page has a **Drafts** tab ([below](#the-reply-drafts-tab)), whose label carries the count ("Drafts (2)"). The draft is still in the open count, the Open tab's empty state, its push and `attention_list`. |
 
 A **Session waiting** item for a Claude Code permission prompt should be rare:
-muster assumes sessions run without permission prompts, and the agents a host
-starts for your chief are started that way by default
+muster assumes sessions run without permission prompts. The agents a host
+starts for your chief start in their normal permission mode unless the host
+opts in to skipping them
 ([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). When one
 does wait, you answer it in the session's Terminal view; muster never types
 into it ([sending-and-step-up.md](sending-and-step-up.md)).
@@ -425,7 +426,7 @@ Each line is folded to one line, anything shaped like a secret is redacted, and
 the body is cut to 200 characters on a character boundary with a visible `…`
 (the options line keeps its room, at most 100; the question is cut first). 200
 is the Android app's own cut, so the browser and a paired phone are sent the
-same lines and the phone cuts nothing more. What the phone shows of them: the Android app as of muster-android `43d9b90` reads only `title`, `body` and `url`: it cuts the body at 200 characters (`PayloadV2.MAX_BODY`), sets it as the notification's one-line content text (so a collapsed notification shows the question's first line and the system's ellipsis; the options line is the second line), ignores `ask`, `actions` and `update`, and posts with `setOnlyAlertOnce(false)` — so the suggestions' re-push ALERTS AGAIN on it (operator-accepted until the app reads `update`). A reply draft's notification is unchanged (who and where only, below).
+same lines and the phone cuts nothing more. What the phone shows of them: since muster-android #16 (`7af3250b7`, v0.1.5), and still at v0.4.0, the Android app cuts the body at 200 characters (`PayloadV2.MAX_BODY`) and shows it in full as expanded text (`BigTextStyle`); it reads `ask` and `actions` and draws the ask's **options as notification buttons**, plus Dismiss, at most three in all (`AndroidNotifier.kt:104-110`, `AskPush.kt` `buttons()`; a suggested reply never becomes a button); and it reads `update`, so the suggestions' re-push replaces the notification without alerting again (`setOnlyAlertOnce(update)`). A reply draft's notification is unchanged (who and where only, below).
 Each item has one tag, so a notification is replaced, never stacked.
 
 **A tap opens the question's own page** (`/attention/asks/<id>`, below) while
@@ -495,9 +496,9 @@ from the question and its options, grounded in them by the same filter:
   moment it is filed; the suggestions are generated in the background and,
   when there are any, the notification is **pushed again under the same tag**
   carrying them, marked `update` in payload v2 so an app can replace it without
-  alerting again. ⚠ The Android app as shipped (muster-android `43d9b90`)
-  ignores `update` and alerts again on the re-push — accepted by the operator
-  until the app reads it. A browser replaces it silently (same tag, no
+  alerting again. The Android app reads it (muster-android #16, `7af3250b7`,
+  first in v0.1.5; still so at v0.4.0): the re-push replaces the notification
+  without alerting again (`onlyAlertOnce(p) = p.update`). A browser replaces it silently (same tag, no
   `renotify`) and shows no chips; its lines are the same.
 - **The same switches.** `MUSTER_SUGGEST=off`, your own toggle on Account (and
   its auto-pause), and no OpenRouter key for you each mean no call and no chips,
@@ -734,7 +735,8 @@ too, through its host's `muster-mirror`:
    serves MCP at `http://127.0.0.1:47823/mcp`. Only a literal loopback address
    is accepted. Every call must carry the host's local secret
    (`Authorization: Bearer <secret>`), kept in `-mcp-secret-file` (default
-   `$XDG_CONFIG_HOME/muster-mirror/mcp-secret`, created 0600 on first start —
+   `muster-mirror/mcp-secret` under the user config directory, which differs
+   by OS: [where it is](features.md#where-the-mcp-secret-is); created 0600 on first start —
    written to a temp file and linked into place, so nobody reads a partial
    one), so another user on the machine cannot use it. A request with an
    `Origin` header is refused. A symlink at the secret's path is refused. The
@@ -909,7 +911,9 @@ example `~/.claude.json`'s `mcpServers`, or a project's `.mcp.json`):
 ```
 
 with `MUSTER_MIRROR_MCP_SECRET` exported from the secret file in the shell that
-starts Claude Code (`export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret)"`).
+starts Claude Code (`export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"`, with
+`<path>` copied as [Where the MCP secret is](features.md#where-the-mcp-secret-is)
+says).
 
 The `:-` defaults matter: Claude Code expands `${VAR}` and `${VAR:-default}` in
 an HTTP server's `url` and `headers`, and a `${VAR}` with no value is a
@@ -936,7 +940,8 @@ If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 An opencode TUI in a mirrored window reaches `/mcp` too, through the same
 opencode caller path as the preview tools ([below](#opencode-sessions)): its
 entry, in opencode's config under `mcp`, sends the secret and a static
-`X-Muster-Client: opencode`, never pane headers.
+`X-Muster-Client: opencode`, never pane headers (`<path>` is the secret's
+path: [Where the MCP secret is](features.md#where-the-mcp-secret-is)).
 
 ```json
 "muster": {
@@ -944,7 +949,7 @@ entry, in opencode's config under `mcp`, sends the secret and a static
   "url": "http://127.0.0.1:47823/mcp",
   "oauth": false,
   "headers": {
-    "Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}",
+    "Authorization": "Bearer {file:<path>}",
     "X-Muster-Client": "opencode"
   }
 }
@@ -1040,7 +1045,8 @@ service's pane for every session. What opencode sends per session is the
 calling session's id, in every `tools/call`'s
 `params._meta["ai.opencode/sessionID"]`. So its entry (in opencode's config,
 under `mcp`) sends a static `X-Muster-Client: opencode` instead of the pane
-headers:
+headers (`<path>` is the secret's path:
+[Where the MCP secret is](features.md#where-the-mcp-secret-is)):
 
 ```json
 "preview": {
@@ -1048,7 +1054,7 @@ headers:
   "url": "http://127.0.0.1:47823/preview-mcp",
   "oauth": false,
   "headers": {
-    "Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}",
+    "Authorization": "Bearer {file:<path>}",
     "X-Muster-Client": "opencode"
   }
 }

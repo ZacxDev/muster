@@ -116,15 +116,10 @@ ambiguous name — or a display name rather than a slug — is settled here rath
 than becoming a request aimed at the wrong agent.
 
 🔴 IT NEEDS ONE CREDENTIAL, AND BOTH ITS STEPS PRESENT THE SAME ONE. GET
-/api/agents is behind requireHookToken and POST /api/agents/{name}/messages
-behind requireArmedHookToken; both compare against the server's single shared
-secret (or both accept your personal token), so both use ` + envToken + `.
-
-⚠ THE TWO WRAPPERS DIFFER IN THE UNCONFIGURED CASE, and the difference is
-visible from here: on a server with no ` + envTokenAlias + ` configured the ROSTER
-READ is served open (enforce-when-set, back-compat for callers that predate the
-token) while the WRITE answers 503 and this verb exits 9, not 3 — the remedy is
-to arm the server, not to fix your token.
+/api/agents and POST /api/agents/{name}/messages are both behind the hook
+token; both compare against the server's single shared secret (or both accept
+your personal token), so both use ` + envToken + `. The server does not start
+without ` + envTokenAlias + `.
 
 The message lands in the same transcript the operator sees on the agent's detail
 page — and the same chat session ` + "`agent messages <name>`" + ` reads by default —

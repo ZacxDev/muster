@@ -973,9 +973,7 @@ func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 		//      tree-wide (since deleted). It was not what rendered, and the retired
 		//      Agents list card's border was unconditional.
 		//   3. "reaches exactly ONE surface, the hook-token-gated GET /api/agents" —
-		//      newAgentJSON is also called from the task API (internal/api/notes.go),
-		//      and requireHookToken is ENFORCE-WHEN-SET, so on a server with no
-		//      MUSTER_HOOK_TOKEN it is gated by nothing.
+		//      newAgentJSON is also called from the task API (internal/api/notes.go).
 		//
 		// So the operator gets a dot that turns red instead of a card that silently
 		// reappears, and the REASON is machine-readable only. That is worth having and

@@ -67,7 +67,7 @@ func TestTheWaitingViewIsTheWaitingChipsSet(t *testing.T) {
 		labels = append(labels, it.Label)
 	}
 	sort.Strings(labels)
-	if got := strings.Join(labels, ","); got != "ag-approval,ag-asks,picker:2,prompt:1" {
+	if got := strings.Join(labels, ","); got != "ag-approval,ag-asks,picker,prompt" {
 		t.Errorf("Waiting holds %s", got)
 	}
 	// The sidebar marks the same entries waiting (data-nav-wait).

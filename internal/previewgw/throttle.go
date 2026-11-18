@@ -1,9 +1,6 @@
 package previewgw
 
 import (
-	"net"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -11,8 +8,10 @@ import (
 // The failed-token throttle, as muster's mirror connect has it
 // (docs/mirroring.md, "Tokens, revocation, rate limits"): only FAILURES count,
 // a valid token is never refused by it, and a peer past the limit gets 429
-// instead of 401 for its failures. The token's 256 bits are the guessing
-// defence; the throttle tells a misconfigured host it is hammering.
+// instead of 401 for its failures. The peer is the TCP peer (clientaddr.Of
+// outside muster's middleware): no forwarding header is read, so behind a
+// relay every host shares the relay's bucket. The token's 256 bits are the
+// guessing defence; the throttle tells a misconfigured host it is hammering.
 const (
 	// FailLimit failed token checks per FailWindow per peer; the next is 429.
 	FailLimit  = 10
@@ -26,27 +25,6 @@ const (
 	PathMesh   Path = "mesh"
 	PathPublic Path = "public"
 )
-
-// peerOf is the throttle's key for a request on a listener of path p. The
-// mesh listener sits behind the relay, which sets X-Real-IP; the public one
-// behind the edge, which sets CF-Connecting-IP. Without the header, the TCP
-// peer.
-//
-// It is a THROTTLE key, not an identity: nothing else reads it.
-func peerOf(p Path, r *http.Request) string {
-	h := "X-Real-IP"
-	if p == PathPublic {
-		h = "CF-Connecting-IP"
-	}
-	if v := strings.TrimSpace(r.Header.Get(h)); v != "" && len(v) <= 64 {
-		return v
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
 
 // maxFailKeys bounds the limiter's map. Keys are cheap for an
 // unauthenticated client to vary (a header on the public path), so past this

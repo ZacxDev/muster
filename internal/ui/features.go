@@ -34,6 +34,12 @@ type Features struct {
 	// served (accounts PR 5). It draws the sidebar's Admin link and nothing
 	// else: the pages refuse a member on their own (requireAdmin).
 	Admin bool
+	// Setup is true when the viewer's role is admin — the password operator
+	// included, where no admin pages are served: they may see SETUP details
+	// (how to turn a feature on, the muster-mirror setting a computer lacks).
+	// Anyone else is told to ask their admin (InfoSheet.Withheld). Not Admin,
+	// which is the Admin LINK and needs the admin pages too.
+	Setup bool
 	// Push is true when the server holds VAPID keys and a subscription store
 	// (muster-native Web Push). False draws no Enable button, no "on" pill and
 	// no subscribe script: the routes behind them would only answer 503, and an

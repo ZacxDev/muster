@@ -26,16 +26,19 @@ import (
 // Sign-in throttles for gotrue mode.
 //
 // 🔴 THE KEY IS THE ACCOUNT, NOT THE ADDRESS, AND THERE IS NO GLOBAL CEILING.
-// The client address comes from CF-Connecting-IP / X-Forwarded-For on the
-// browser listener, and anything that reaches the edge without passing the CDN
-// can write those — so an address-only limit is walked by rotating it, and a
+// The client address (clientIP) is the TCP peer unless that peer is a trusted
+// proxy, so it is no longer client-typed — but one proxy can front every
+// client, and a trusted proxy can be misconfigured to pass a typed header
+// through — so an address-only limit can still be walked or shared, and a
 // process-wide ceiling (an earlier draft had one) is a lever any anonymous
 // caller pulls to lock EVERY user out. Failures are therefore counted per
 // ACCOUNT (the normalised email): after accountFreeFailures, each further
 // failure doubles the wait before that account may try again, from
 // accountBackoffBase up to accountBackoffMax. The per-address count
-// (loginFailureLimit per loginFailureWindow) is kept as a secondary limit on
-// one source spraying many accounts. GoTrue applies its own limits too.
+// (loginFailureLimit per loginFailureWindow) counts FAILURES only and never
+// refuses before the credential is judged: past it, a wrong guess is answered
+// 429, a correct one is admitted (a shared address must not be a lockout
+// lever). GoTrue applies its own limits too.
 //
 // ⚠ THE ACCOUNT BACKOFF IS ITSELF A TARGETED LOCKOUT: someone who knows your
 // email can keep you waiting up to accountBackoffMax by failing on purpose. That
@@ -299,6 +302,10 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("login: rejected a sign-in attempt from %s", ip)
+			if ticket.addrOver {
+				s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
+				return
+			}
 			s.renderGoTrueLogin(w, http.StatusUnauthorized, next, email, "That email and password do not match.")
 		default:
 			s.logger.Printf("login: GoTrue is unavailable: %v", err)
@@ -597,12 +604,22 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome := outcomeUnjudged
 	defer func() { s.gt.signin.settle(ticket, outcome) }()
+	// invalid answers a claim that failed: the uniform invalid page, or 429
+	// once this address is past its failure count (signinTicket.addrOver).
+	// A valid claim token is never refused for its address.
+	invalid := func() {
+		outcome = outcomeFailed
+		if ticket.addrOver {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
+			return
+		}
+		s.renderInvalidClaim(w, r)
+	}
 	token := postedLinkToken(r)
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
-		outcome = outcomeFailed
-		s.renderInvalidClaim(w, r)
+		invalid()
 		return
 	}
 	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
@@ -624,8 +641,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	createErr := *createErrp
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
-		outcome = outcomeFailed
-		s.renderInvalidClaim(w, r)
+		invalid()
 		return
 	case err != nil && createErr != nil:
 		var ae *gotrue.APIError

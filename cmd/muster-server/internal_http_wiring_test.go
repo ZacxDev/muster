@@ -24,7 +24,7 @@ func (emptyStore) GetConnector(context.Context, string) (connectors.Connector, e
 // finds and a member's does not; the boot line names the service and never
 // the token.
 func TestInternalHTTPConnectorsAreWiredForAdminsOnly(t *testing.T) {
-	env := map[string]string{envDatabase: "postgres://unused", envStandalone: "1", envConnectorEncKey: connectorKey(1),
+	env := map[string]string{envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1", envConnectorEncKey: connectorKey(1),
 		envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/",
 		envInternalHTTPConnectors:               `[{"name":"app-driver","base_url":"http://app-driver.example.test:8080"}]`,
 		"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-wiring-token-99"}

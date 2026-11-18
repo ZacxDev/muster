@@ -288,7 +288,7 @@ for (const size of sizes) {
       await expect(page.locator('#term-status')).toHaveText('Connected');
       await expect(page.locator('#term-keys [data-key="enter"]')).toBeEnabled();
       // What live keys reach is still said (InteractiveNote).
-      await expect(page.locator('#term-status')).toHaveAttribute('title', /tmux client on/);
+      await expect(page.locator('#term-status')).toHaveAttribute('title', /Typing here goes straight to/);
     });
 
     test("an agent's chat socket, asleep and dead, is replaced when the page is shown", async () => {

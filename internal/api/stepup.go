@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -195,6 +194,9 @@ func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password 
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("stepup: user %d failed to confirm (from %s)", me.ID, ip)
+			if ticket.addrOver {
+				return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
+			}
 			return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 		default:
 			s.logger.Printf("stepup: GoTrue is unavailable: %v", err)
@@ -364,6 +366,12 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
+			if ticket.addrOver { // judged and wrong, from an address past its failure limit
+				// Not stepUpRefuseUnspent: GoTrue has seen, and may have spent,
+				// this challenge.
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
+				return
+			}
 		}
 		s.writeGoTrueRefusal(w, "a passkey confirm", err, PasskeyRejectedRefusal)
 		return
@@ -421,14 +429,18 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 // again, a new session cookie issued now.
 func (s *Server) confirmOperatorPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	now := time.Now()
-	if !s.loginRate.allow(now, loginRateBurst, loginRateWindow) {
+	// The same gate as the sign-in, except that the session this confirm carries
+	// is NOT a known device: only the signed device cookie is (passwordGate).
+	ok, refused, throttled := s.passwordGate(r, password, now, false)
+	if refused || throttled {
 		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
 	}
-	if password == "" || !auth.ConstantTimeEqual(password, s.auth.UIPassword) {
+	if !ok {
 		s.logger.Printf("stepup: rejected an operator-password confirm")
 		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
 	s.setPasswordSessionCookie(w, r)
+	s.setKnownDeviceCookie(w, r)
 	// SignSession stamps whole seconds; report what the cookie will read as.
 	issued := time.Unix(now.Unix(), 0)
 	return stepUpOutcome{Status: http.StatusOK, At: issued, FreshFor: issued.Add(stepup.Window()).Sub(now).Milliseconds()}

@@ -36,16 +36,16 @@ func TestAMirroredSessionIsHeadedByItsFrozenNameNotItsCodename(t *testing.T) {
 	s, ts := focusMirrorServer(t, fm, store, nil)
 	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
 	row := cardFor(t, body, ref("main", "@1").ViewPath())
-	for _, want := range []string{`title="Billing migration · mango:1 · tmux main:1 @ ws"`, `>Billing migration<`, `data-switcher-code="mango:1"`,
+	for _, want := range []string{`title="Billing migration · on ws"`, `>Billing migration<`, `data-switcher-code="mango:1"`,
 		`data-switcher-title="Billing migration · Fixing the Stripe webhook retry"`} {
 		if !strings.Contains(row, want) {
 			t.Errorf("@1's row lacks %s:\n%s", want, row)
 		}
 	}
-	if strings.Contains(row, `>mango:1<`) {
+	if strings.Contains(row, `>mango:1<`) || strings.Contains(row, `tmux main:1`) {
 		t.Errorf("@1's row still draws its codename as its name:\n%s", row)
 	}
-	if other := cardFor(t, body, ref("main", "@2").ViewPath()); !strings.Contains(other, `>main:2<`) {
+	if other := cardFor(t, body, ref("main", "@2").ViewPath()); !strings.Contains(other, `>main<`) {
 		t.Errorf("@2 (no conversation) lost its own name:\n%s", other)
 	}
 	_, page := mirrorGet(t, s, ts, ref("main", "@1").ViewPath())
