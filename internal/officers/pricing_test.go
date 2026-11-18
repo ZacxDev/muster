@@ -37,6 +37,23 @@ func TestTheClaudePriceList(t *testing.T) {
 			t.Errorf("EstimateClaudeUSD(%q) = %v, %v; want %v, %v", c.model, usd, known, c.usd, c.known)
 		}
 	}
+	// claude-haiku-5-5 is what CCD_MODEL=haiku resolves to (a live marketing
+	// officer transcript's model field, 2026-11-18). Its price is tiered by
+	// prompt length; the row is the >100k tier (0.50 in, 2.50 out, 0.05 read,
+	// 1.00 1h write). These are that day's 18 requests' live token counts:
+	// 36×0.5 + 6070×2.5 + 11163142×0.05 + 654858×1.00, /1e6. Unpriced, they
+	// were booked at the pessimistic 24.564162.
+	for _, model := range []string{"claude-haiku-5-5", "claude-haiku-5-5[1m]", "claude-haiku-5-5-20261101"} {
+		usd, known := officers.EstimateClaudeUSD(model, 36, 6070, 11_163_142, 654_858)
+		if math.Abs(usd-1.2282081) > 1e-9 || !known {
+			t.Errorf("EstimateClaudeUSD(%q, live day) = %v, %v; want 1.2282081, true", model, usd, known)
+		}
+	}
+	if p, known := officers.ClaudePriceOf("claude-haiku-5-5"); !known ||
+		p != (officers.ClaudePrice{Input: 0.50, Output: 2.50, CacheRead: 0.05, CacheWrite: 1.00}) {
+		t.Errorf("ClaudePriceOf(claude-haiku-5-5) = %+v, %v; want the >100k tier {0.5 2.5 0.05 1}, true", p, known)
+	}
+
 	if usd, _ := officers.EstimateClaudeUSD("claude-sonnet-5-5", -1, -1, -1, -1); usd != 0 {
 		t.Errorf("negative counts priced at %v, want 0", usd)
 	}
