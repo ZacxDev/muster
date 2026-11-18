@@ -290,8 +290,6 @@
     if (!detail) { slot.hidden = true; return; }
     var code = slot.querySelector('[data-info-code]');
     if (code) code.textContent = detail;
-    var copy = slot.querySelector('[data-info-copy]');
-    if (copy) copy.setAttribute('data-copy-text', detail);
     slot.hidden = false;
   }
 

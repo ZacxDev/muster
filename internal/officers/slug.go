@@ -57,9 +57,11 @@ func InstanceName(id string, n int) string {
 
 // parseInstance reports whether name is an instance of o, and of which pool
 // (Officer.Pool) and number. An untiered officer's instances are
-// `-<n>` for n in 1..o.MaxInstances; a tiered officer's are `-<n>` in
-// 1..judgement's max and `-r<n>` in 1..routine's max, read from o.Tiers, so o
-// may be either of its pools. A name past its pool's max is NOT its instance:
+// `-<n>` for n in 1..o.Slots(); a tiered officer's are `-<n>` in 1..the
+// judgement pool's slots and `-r<n>` in 1..routine's max, read from o.Tiers,
+// so o may be either of its pools. A pool that runs chats has slots past
+// max_instances, up to chat_max_instances (Officer.Slots: its chat-only
+// instances). A name past its pool's slots is NOT its instance:
 // a lowered max leaves the higher-numbered agents behind as ordinary
 // (deletable) agents rather than as instances the runtime would start.
 func parseInstance(o Officer, name string) (Officer, int, bool) {
@@ -79,7 +81,7 @@ func ParseInstance(o Officer, name string) (Officer, int, bool) {
 			rest, pool = r, o.Pool(TierRoutine)
 		}
 	}
-	n, ok := instanceNumber(rest, pool.MaxInstances)
+	n, ok := instanceNumber(rest, pool.Slots())
 	if !ok {
 		return Officer{}, 0, false
 	}

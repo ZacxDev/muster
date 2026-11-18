@@ -171,6 +171,28 @@ func PlaceWords(host string) string {
 	return "on " + host
 }
 
+// PlainStoredLabel is a label muster STORED for a window that had no human
+// name — its CodeTitle and host, "fern:1 @ atlas" or "Gold · scratch3:1 @
+// atlas" (internal/api mirrorLabel) — said as the top layer says a window
+// now: each part without tmux's window index (PlainCode), then PlaceWords
+// ("fern on atlas", "Gold · scratch3 on atlas"). host is the window's host as
+// the caller knows it independently of the label; only a label ending in
+// " @ " + host is read as one, so a human name holding " @ " ("deploy @
+// prod") is returned unchanged. For a stored label only: where the live
+// SessionView is in hand, its DisplayTitle (with its "window 2" qualifier)
+// and PlaceWords are the words.
+func PlainStoredLabel(label, host string) string {
+	suffix := " @ " + host
+	if host == "" || !strings.HasSuffix(label, suffix) || len(label) == len(suffix) {
+		return label
+	}
+	parts := strings.Split(strings.TrimSuffix(label, suffix), QualifierSep)
+	for i, p := range parts {
+		parts[i] = PlainCode(p)
+	}
+	return strings.Join(parts, QualifierSep) + " " + PlaceWords(host)
+}
+
 // Address is the entry's tmux address on its host, as an operator types it:
 // "<session>:<window index>" for a window, the session name for a per-session
 // host's entry. It is unique WITHIN one host at any moment — tmux allows one

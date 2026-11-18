@@ -310,6 +310,11 @@ type attentionItem struct {
 	// withAskBoxes for the pages that draw them, never by askItem: the item is
 	// built where no server is in reach (a push, attention_list).
 	dictate, sessionLink string
+	// pageOpen is the owner's view of the page a share link's card asks about
+	// (Server.pageAskOpen), "" for every other ask: the card's "Open the
+	// page" button, so its question needs no address. Set by withAskBoxes and
+	// the ask page, for the pages that draw cards; not serialised.
+	pageOpen string
 	// dictateOff: the server has no dictation, so the box draws the muted mic
 	// linking to its Features ⓘ sheet (answerMic). Set with dictate.
 	dictateOff bool
@@ -972,6 +977,7 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 			items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
 		}
 		if items[i].ownerCard && owner > 0 {
+			items[i].pageOpen = s.pageAskOpen(ctx, items[i].AskID)
 			if a, err := s.ext.Attention.Get(ctx, items[i].AskID); err == nil {
 				items[i].proposal = s.proposalKickoffBody(ctx, a)
 				if items[i].watchOnly == "" {
@@ -1902,6 +1908,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	}
 	b.WriteString(proposalBodyHTML(it.proposal))
 	b.WriteString(officerContextHTML(it.Context))
+	b.WriteString(pageAskOpenHTML(it.pageOpen))
 	switch {
 	case it.Kind == attentionKindNotice:
 		// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or

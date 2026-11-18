@@ -728,9 +728,11 @@ func taskCreator(n notes.Note) string {
 			if name := strings.TrimSpace(strings.TrimPrefix(v, notes.CreatedByAgentPrefix)); name != "" {
 				who = "agent " + name
 			}
-		case strings.HasPrefix(v, notes.CreatedByPluginPrefix):
-			if name := strings.TrimSpace(strings.TrimPrefix(v, notes.CreatedByPluginPrefix)); name != "" {
-				who = "plugin " + name
+		default:
+			// The one plugin-origin predicate (notes.Note.PluginOrigin); a
+			// reference was answered above, so this is a copy task's label.
+			if o, ok := n.PluginOrigin(); ok && o.Label != "" {
+				who = "plugin " + o.Label
 			}
 		}
 	case n.SourceType != nil:
