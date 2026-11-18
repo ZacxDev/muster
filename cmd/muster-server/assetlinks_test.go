@@ -18,6 +18,8 @@ func TestAndroidAssetLinksVariablesAreValidatedAtBoot(t *testing.T) {
 	load := func(pkg, certs string) (config, error) {
 		c, err := loadConfig(func(k string) string {
 			switch k {
+			case envHookToken:
+				return fixtureHookToken
 			case envDatabase:
 				return "postgres://x/y"
 			case envStandalone:

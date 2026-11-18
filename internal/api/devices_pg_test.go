@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -480,7 +481,7 @@ func TestTheDeviceRoutesAreThrottled(t *testing.T) {
 	call := func(method, path, bearer, body, ip string) int {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+bearer)
-		req.Header.Set("CF-Connecting-IP", ip)
+		req.RemoteAddr = net.JoinHostPort(ip, "40000")
 		w := httptest.NewRecorder()
 		r.edge.ServeHTTP(w, req)
 		return w.Code

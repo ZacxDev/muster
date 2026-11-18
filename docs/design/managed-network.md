@@ -220,19 +220,19 @@ has to fit.
 | The hub pings each host every 25 s; the host re-reads its windows every 5 s and polls an open rendered view every 300 ms | [internal/mirror/hub.go:54](../../internal/mirror/hub.go), [internal/mirrorhost/client.go:270-275](../../internal/mirrorhost/client.go) |
 | A host reconnects with jittered backoff, 1 s to 60 s | [internal/mirrorhost/client.go:312-347](../../internal/mirrorhost/client.go) |
 | Run **one replica**: the mirror tunnel keeps state in memory | [README.md:215-216](../../README.md) |
-| Password mode: one shared `MUSTER_UI_PASSWORD` acting as user 1, at least 12 characters, `POST /login` limited to 10 a minute, a 30-day cookie | [auth.md:7-17](../auth.md) |
-| The login bucket is **process-wide**, on purpose (a per-IP bucket is keyed on what the caller picks) | [internal/api/login.go:35-47](../../internal/api/login.go) |
+| Password mode: one shared `MUSTER_UI_PASSWORD` acting as user 1, at least 12 characters, `POST /login` counts wrong passwords (10 a minute); past that only a browser with a known-device cookie may still sign in, a 30-day cookie | [auth.md:7-17](../auth.md) |
+| The login failure count is **process-wide** and counts failures only; past it, unknown devices are refused and known devices (a signed device cookie) are not ([auth.md](../auth.md)) | [internal/api/login.go:35-47](../../internal/api/login.go) |
 | Password mode's session is a stateless cookie: no Sign out everywhere | [auth.md:527-530](../auth.md) |
 | Pairing code: `mdp_…`, single use, 60 s, minted by `POST /account/devices/pair` from any valid signed-in session (no recent-sign-in window, an operator decision), redeemed at `POST /api/device/pair` for an `mdv_…` credential confined to `/api/device/*`; only its sha256 stored; a machine token cannot mint one | [auth.md:515-536](../auth.md), [internal/devices/devices.go:81-91](../../internal/devices/devices.go), [internal/devices/devices.go:401](../../internal/devices/devices.go), [internal/api/devices.go:111](../../internal/api/devices.go), [internal/api/devices.go:206-236](../../internal/api/devices.go) |
-| Pairing is throttled at 10 a minute per client address, taken from `CF-Connecting-IP` / `X-Forwarded-For` on the browser listener | [auth.md:578-586](../auth.md) |
+| Pairing is throttled at 10 a minute per client address: the TCP peer, or the client a proxy in `MUSTER_TRUSTED_PROXIES` names ([configuration.md](../configuration.md#client-addresses-behind-a-proxy)) | [auth.md:578-586](../auth.md) |
 | At most 20 paired phones per user | [internal/devices/devices.go:91](../../internal/devices/devices.go) |
 | Step-up: a sign-in is fresh for 12 h by default; adding a credential needs one within 5 min | [internal/stepup/stepup.go:48](../../internal/stepup/stepup.go), [internal/stepup/stepup.go:64](../../internal/stepup/stepup.go) |
 | `SameSite=Lax` is **not** a CSRF defence against a sibling subdomain; writes are checked by `Origin` | [internal/api/auth.go:313-318](../../internal/api/auth.go) |
 | Session cookies are host-only (no `Domain`), named `muster_session` (gotrue: `muster_at`, `muster_rt`) | [internal/api/login.go:200-211](../../internal/api/login.go), [internal/api/auth.go:20](../../internal/api/auth.go), [internal/api/accounts.go:63-64](../../internal/api/accounts.go) |
 | Allowed origins for writes and WebSockets: the request's `Host`, plus `MUSTER_PUBLIC_URL`'s host | [internal/api/agents.go:2321-2333](../../internal/api/agents.go) |
 | In gotrue mode the browser never talks to GoTrue, and browser sessions are served only on `MUSTER_BROWSER_PORT` | [auth.md:26-30](../auth.md) |
-| `MUSTER_HOOK_TOKEN` is enforced only when set; while unset the hook routes are open | [auth.md:420](../auth.md) |
-| `GET /metrics` is unauthenticated | [architecture.md:54-55](../architecture.md) |
+| `MUSTER_HOOK_TOKEN` is required: muster does not boot without it | [configuration.md](../configuration.md#muster-server-sign-in-and-machine-credentials) |
+| `GET /metrics` is unauthenticated, and served only on `MUSTER_METRICS_PORT` | [architecture.md](../architecture.md#listeners) |
 | Absolute links are built from `MUSTER_PUBLIC_URL` in the background: uploads refuse to start without it, reset and invite links, the attention summary, Pages share links | [cmd/muster-server/uploads.go:69-70](../../cmd/muster-server/uploads.go), [internal/api/admin.go:398](../../internal/api/admin.go), [internal/api/admin.go:504](../../internal/api/admin.go), [internal/api/attention_summary.go:131](../../internal/api/attention_summary.go), [internal/api/pages.go:500](../../internal/api/pages.go) |
 | Pages share links are `<MUSTER_PUBLIC_URL>/s/<token>`, open to anyone with the link | [pages.md:93-97](../pages.md) |
 | Push: muster POSTs to the push services itself; browser subscriptions only on FCM, Mozilla, Apple, WNS | [push.md:5](../push.md), [push.md:158-170](../push.md) |
@@ -290,11 +290,7 @@ at `http://localhost:8105` on the hub machine.
    free tier stated: "your machines free, one phone or browser free, more
    with a subscription", and the operator named: "run by Innovation Upstream
    Inc.", with its terms and privacy policy linked.
-2. The owner presses **Turn on muster network**. It is **refused** while
-   `MUSTER_HOOK_TOKEN` is unset (the hook routes are open then,
-   [auth.md:420](../auth.md); they are never served on the tunnel anyway, but
-   an unset token means the server was configured for a private network), and
-   in password mode while `MUSTER_UI_PASSWORD` is shorter than 16 characters
+2. The owner presses **Turn on muster network**. It is **refused** in password mode while `MUSTER_UI_PASSWORD` is shorter than 16 characters
    ([password mode](#password-mode-on-the-network)). Each refusal says which
    variable to set.
 3. muster-server generates an **Ed25519 server key** and an **ACME account
@@ -563,7 +559,7 @@ a new stream on that server's tunnel.
   the link confirm ([flow (b)](#flow-b-link-a-device) step 6); a VPN or a
   carrier's gateway can make it wrong, and the confirm says "approximate".
   muster-server reads the header **only on the tunnel listener**, and uses
-  the address where it uses `CF-Connecting-IP` today
+  the address where it uses the client address today
   ([auth.md:578-586](../auth.md)), so the throttles keep working per visitor
   rather than per relay. 🔴 **This is safe only because the tunnel listener
   has no network socket:** it is an in-process `net.Listener` whose

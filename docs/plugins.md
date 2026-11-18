@@ -2600,8 +2600,7 @@ Claude Code's status is a target, the account check at delivery still applies
 refuses it), and the row is visible and cancellable in the window's queue.
 
 The answer comes back on `POST /api/routes/{route_id}/reply` with a personal
-API token or the hook token. With `MUSTER_HOOK_TOKEN` unset, only a personal
-token works, and the boot banner warns.
+API token or the hook token.
 
 ⚠ **The send queue does not see a half-typed prompt.** Claude Code reports
 `idle` while text sits unsent in its input box; a routed paste then lands after

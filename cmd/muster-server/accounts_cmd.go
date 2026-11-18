@@ -186,8 +186,8 @@ func (a *app) logAuthBanner() {
 	}
 	if c.BrowserPort != 0 {
 		l.Printf("browser listener: %s=%d — the only port gotrue mode serves a browser session, sign-in "+
-			"or claim on, and the only one whose X-Forwarded-For / CF-Connecting-IP is believed. The main "+
-			"port serves machine tokens only in gotrue mode", envBrowserPort, c.BrowserPort)
+			"or claim on. The main port serves machine tokens only in gotrue mode. The client address is "+
+			"decided the same way on every port (%s)", envBrowserPort, c.BrowserPort, envTrustedProxies)
 	} else {
 		l.Printf("browser listener: NONE — %s is unset; every listener is the main one (gotrue mode "+
 			"refuses to boot this way)", envBrowserPort)

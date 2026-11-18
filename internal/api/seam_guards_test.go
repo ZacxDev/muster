@@ -68,7 +68,8 @@ func TestUncomposedNotesStoreIsNotReady(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := New(nil, AuthConfig{}, log.New(os.Stderr, "", 0))
+			var logged strings.Builder
+			s := New(nil, AuthConfig{}, log.New(&logged, "", 0))
 			s.UseExtensions(tc.ext)
 			rec := httptest.NewRecorder()
 			s.handleReady(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -77,9 +78,14 @@ func TestUncomposedNotesStoreIsNotReady(t *testing.T) {
 				t.Fatalf("/readyz answered %d (ready=%v), want ready=%v.\nbody: %s",
 					rec.Code, gotReady, tc.wantReady, rec.Body.String())
 			}
-			if !tc.wantReady && !strings.Contains(rec.Body.String(), "SessionLiveness") {
-				t.Errorf("the refusal does not NAME the missing field, so an operator reading it "+
-					"cannot act on it.\nbody: %s", rec.Body.String())
+			// The reason goes to the LOG, where the operator reads it; the body,
+			// which anyone can fetch, carries the status only.
+			if !tc.wantReady && !strings.Contains(logged.String(), "SessionLiveness") {
+				t.Errorf("the refusal does not NAME the missing field in the log, so an operator reading it "+
+					"cannot act on it.\nlog: %s", logged.String())
+			}
+			if strings.Contains(rec.Body.String(), "SessionLiveness") || strings.Contains(rec.Body.String(), "detail") {
+				t.Errorf("the /readyz body carries the wiring detail; want the status only.\nbody: %s", rec.Body.String())
 			}
 		})
 	}

@@ -10,8 +10,36 @@
   admin.
 - If it is unset or shorter than 12 characters, every browser page answers 503
   and `/login` says which variable is missing. It fails closed.
-- `POST /login` compares in constant time and is limited to 10 attempts a
-  minute.
+- `POST /login` compares in constant time. Wrong passwords are counted per
+  client address (10 a minute) and for the whole server (100 a minute). The
+  step-up confirm shares the counts.
+- **Known devices.** A browser that has signed in correctly gets a
+  long-lived **device cookie** (`muster_device`: HttpOnly, `SameSite=Lax`,
+  `Secure` as the session cookie is, 400 days). It is signed with a key
+  derived from the operator password, so changing the password invalidates
+  every device cookie.
+  - At **sign-in**, a browser that is still signed in (a valid session
+    cookie) counts as a known device too. At the **step-up confirm** it does
+    not: step-up exists for the case where the session itself is in the wrong
+    hands, so there only the device cookie counts, and a session without one
+    is refused past the counts like any unknown device.
+  - Once its address's count, or the whole server's, is past its limit, a
+    request from an **unknown** device is refused with 429 before the password
+    is compared, correct or not. So a guesser is held to 10 guesses a minute
+    from one address, and 100 across all of them. Each refusal is logged (at
+    most one line a minute) so a flood is visible.
+  - A request from a **known** device is never refused for the counts when it
+    carries the correct password. So a flood of junk sign-ins cannot lock the
+    operator out of a browser they have used before.
+  - A wrong password from a known device still counts.
+  - The device cookie is not a credential: it admits nothing on its own.
+  - A browser that has never signed in (or whose cookies were cleared, or that
+    signed in before the password was changed) waits for the window to pass
+    while a flood from its own address is running.
+  - ⚠ Behind a reverse proxy that is not declared trusted
+    (`MUSTER_TRUSTED_PROXIES`), every client has the proxy's address, so one
+    address's flood refuses every unknown device. Declare the proxy to keep
+    the counts per client.
 - The session cookie lasts 30 days. Set `MUSTER_SECURE_COOKIES=1` when muster
   is served over TLS.
 
@@ -28,8 +56,24 @@ Supabase auth server.
 - **Two listeners.** `MUSTER_BROWSER_PORT` is the only listener that serves
   browser sessions. The main port then serves machine tokens only. On the browser
   listener, the shared hook and service secrets are refused with 403.
+- **The client topology must be declared.** muster refuses to boot in this
+  mode unless `MUSTER_TRUSTED_PROXIES` (with `MUSTER_CLIENT_IP_HEADER`) names
+  the proxy in front of it, or `MUSTER_DIRECT_CLIENTS=1` says there is none.
+  GoTrue keys its own per-address limits on the client address muster sends it
+  (`X-Muster-Client-IP`), and behind an undeclared proxy every user would share
+  one ([configuration.md](configuration.md#client-addresses-behind-a-proxy)).
 - **Throttling** is per account: 3 free failures, then a backoff that doubles up
-  to 5 minutes. There is also a limit per client address.
+  to 5 minutes. Failures are also counted per client address (10 in 10
+  minutes). That count never refuses a correct password or passkey: past it,
+  a wrong attempt is answered 429, and an attempt at an email that is not a
+  muster account is refused without asking GoTrue. The admin claim's failures
+  count the same way (429 past it). Passkey sign-in challenges are never
+  refused per address (the sign-in page fetches one on every load, and a
+  shared address must not lose passkey sign-in). GoTrue's own per-address
+  limit bounds how many one client can mint. muster remembers the challenges
+  it issued in one table of at most 8192, oldest dropped, and a passkey
+  verify naming a challenge it does not hold is refused without asking
+  GoTrue.
 
 ### Setting up the first admin
 
@@ -136,7 +180,15 @@ MUSTER_GOTRUE_JWT_SECRET=<48 random hex characters>   # env_secret MUSTER_GOTRUE
 GOTRUE_DB_PASSWORD=<random>                           # env_secret GOTRUE_DB_PASSWORD 24
 MUSTER_BROWSER_PORT=8107
 MUSTER_PUBLIC_URL=http://localhost:8107
+MUSTER_DIRECT_CLIENTS=1   # browsers reach 8107 directly; see below for a proxy
 ```
+
+The last line declares that nothing sits between the browsers and muster. This
+mode refuses to start without a declaration. If you put `tailscale serve` or
+another reverse proxy in front instead, remove it and set
+`MUSTER_TRUSTED_PROXIES` to the address muster sees the proxy connect from,
+and `MUSTER_CLIENT_IP_HEADER=X-Forwarded-For`
+([Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 `MUSTER_PUBLIC_URL` is the address a browser opens: the browser listener. With
 Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
@@ -147,7 +199,7 @@ Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
 
 **Turn it off:** delete `docker-compose.override.yml` **and** the `.env` lines
 above (`MUSTER_AUTH_MODE`, `MUSTER_GOTRUE_*`, `GOTRUE_*`,
-`MUSTER_BROWSER_PORT`), set `MUSTER_PUBLIC_URL` back to the main port's
+`MUSTER_BROWSER_PORT`, `MUSTER_DIRECT_CLIENTS`), set `MUSTER_PUBLIC_URL` back to the main port's
 address (`http://localhost:8105`, or the `https://` one with `tailscale serve`
 pointed at 8105 again), then `mi_dc up -d --wait --remove-orphans` (which
 stops the GoTrue containers). Both halves: an override left behind without its
@@ -556,7 +608,7 @@ buttons are.
 | credential | acts as | notes |
 |---|---|---|
 | Personal API token (`mst_…`) | you: your user id and role | Minted only in the browser at `/account/tokens`, and shown once. Only its sha256 is stored. A token cannot mint another token. Revoking one refuses it on the next request. Disabling a user revokes all of their tokens (their mirror and flow runner tokens too, in the same transaction), and re-enabling them brings none back. |
-| `MUSTER_HOOK_TOKEN` | user 1, admin | A shared secret, enforced only when set; while unset, the hook routes are open. gotrue mode requires it. |
+| `MUSTER_HOOK_TOKEN` | user 1, admin | A shared secret, required: muster refuses to boot without it, in both modes. |
 | `MUSTER_SERVICE_TOKEN` | user 1 | It also requires an `X-Muster-Actor` header. It fails closed (503 while unset) and must be at least 32 characters. |
 | Mirror token (`mmt_…`) | the host it was minted for | A **team host token** (owned by a team) is served a reduced tool set and never remotely; see [Teams](#teams) ("Team hosts"). A disabled owner's token is refused, and the owner's open host connections end at the next token recheck (30s). Disabling a user revokes all of their mirror tokens, and re-enabling them brings none back. Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes, `POST /mirror/mcp` and `POST /mirror/ask-attachments` (a file for one of that host's listed sessions' asks, stored as an upload of its owner: [attention.md](attention.md#attachments-and-context)). Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `agent_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` — a READ of its owner's officers' outreach batches (the people, their engagement excerpts, the officers' reasons) and an approval as the operator of any follows and likes in them (recorded as via MCP from that host; the same accepted risk), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `agents_list`, a READ of its owner's agents (name, kind, worker pool, Claude account name but never a token, status, task) — and, through `chief_restart`, a **restart (Stop then Start) of its owner's own chief**, which with `force` cuts off a turn in flight (the same as the agent page's Stop/Start, which need no fresh sign-in either; **no audit row**: the host is named in muster's server log — [chief.md](chief.md#restarting-the-chief)) — and, with the chief's dispatch on, through `dispatch_request` and `dispatch_approve`, the **start of a new agent on its owner's behalf** with a prompt of the caller's choosing, or a **machine-job worker in any pool it names**, on one of its owner's Claude accounts — **including a pool that carries deployment privileges** (`MUSTER_AGENT_CC_BYPASS_POOLS`: the pool's job turns run without permission prompts; `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`: the worker's pod holds a mirror of that pool's private repository, and must work on that one repository) — but **a pool worker takes no prompt** on this door (refused at the request, and again at the approval), so the token cannot give that worker instructions: its only turns are the jobs submitted to its pool. A worker it adds holds one of the owner's live slots and takes a share of the pool's jobs. All within the chief's caps (each request and approval is an audit row naming the host and session; each start notifies the owner — [chief.md](chief.md#starting-an-agent-from-your-own-session)) — never another task (but for the comment `route_reply` adds to a task the chief [routed](plugins.md#routing-a-task-to-a-session) to one of that host's sessions), another host's session, another owner's ask or request, a secret, or a chief tool. 🔴 **With a token whose host has started agents for the chief** (the token is marked the first time its host advertises `-agent-spawn` or has a host dispatch, and stays marked until it is rotated), or from a host running a host officer, every one of those decisions — `attention_answer`, `connector_request_decide`, `plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`, `plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`, `agent_destroy`, `chief_restart` — is instead a confirmation card that runs only when the owner confirms it on their paired phone ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)), so such a token alone decides nothing (but for a `route_reply` from the session the route was sent to). Rotate a host's token when you turn its `-agent-spawn` off, once the agents it started have ended. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | A disabled owner's token is refused. Disabling a user revokes all of their runner tokens, and re-enabling them brings none back. See [browser-flows.md](browser-flows.md). |
@@ -714,15 +766,17 @@ with nothing cached: a phone whose pairing sign-in is at or before the account's
 session cutoff or latest Sign out everywhere, or whose account is disabled, is
 refused, and is not sent notifications, even if its row somehow survived.
 
-**Throttles.** Pairing is limited to 10 attempts a minute per client address.
+**Throttles.** Failed pairing attempts are limited to 10 a minute per client
+address. The code is checked first, so a valid code is redeemed whatever the
+address's count.
 A device route request with a valid credential is charged only to its phone:
 60 a minute. A refused request (no, a malformed, or an unknown or revoked
 credential) is charged to its address: 120 a minute, then 429. So junk sent
 from an address a phone shares cannot lock that phone out. Registering push,
 which makes muster send a test push, is limited to 5 a minute per phone. The
-address is the one the edge reports: on the browser listener that is
-`CF-Connecting-IP` (or the first `X-Forwarded-For` entry), which only an edge in
-front of muster can be trusted to set.
+address is the TCP peer, or the client a trusted proxy names
+(`MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER`; see
+[Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 **Account → Devices** (on `/account`) lists each phone: its name, app version,
 when it was paired, when it was last seen, whether push is registered, and its

@@ -124,8 +124,12 @@ vet:
 
 # Run the server. Every MUSTER_* name is spelled once, in
 # cmd/muster-server/config.go; DATABASE_URL is required and the binary says so.
+# The server does not start without MUSTER_HOOK_TOKEN; unless the environment
+# sets one, scripts/dev-hook-token.sh makes one once into .dev.env (gitignored,
+# mode 600) and reuses it, refusing an empty or short value. Give the same
+# value to a dev muster-mirror or hook: `. ./.dev.env`.
 run:
-	go run ./cmd/muster-server
+	@tok=$$(scripts/dev-hook-token.sh .dev.env) && MUSTER_HOOK_TOKEN=$$tok exec go run ./cmd/muster-server
 
 # 🔴 THE IMAGE BUILD RUNS css-check IN ITS FIRST STAGE, so this target is also
 # the cheapest end-to-end proof that the stylesheet the container would serve is

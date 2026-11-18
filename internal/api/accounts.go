@@ -6,13 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
-	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
@@ -45,8 +44,9 @@ import (
 // unreachable from the LAN. That is the network's job (a NodePort with
 // externalTrafficPolicy: Local plus a NetworkPolicy admitting only the edge
 // proxy). What it guarantees on its own is that the machine-token port never
-// serves, mints or refreshes a browser session — and that the client-IP headers
-// (X-Forwarded-For, CF-Connecting-IP) are believed only on the edge port.
+// serves, mints or refreshes a browser session. The client address is NOT
+// part of the split: it is the TCP peer on every listener unless that peer is
+// a trusted proxy (clientIP, internal/clientaddr).
 
 // AuthMode is MUSTER_AUTH_MODE.
 type AuthMode string
@@ -1017,47 +1017,22 @@ func viaBrowserListener(r *http.Request) bool {
 	return v
 }
 
-// clientIP is the address muster rate-limits on and forwards to GoTrue as
-// X-Muster-Client-IP.
+// clientIP is the address muster rate-limits on, writes into audit rows and
+// logs, and forwards to GoTrue as X-Muster-Client-IP: clientaddr.Of, which
+// Handler's outermost middleware resolved for this request.
 //
-// On the browser listener the request came through the edge proxy chain, so
-// the TCP peer is the proxy and the client is in the headers:
-// CF-Connecting-IP (set by the CDN at the front) first, then the left-most
-// X-Forwarded-For entry. On any other listener the headers are whatever the
-// caller typed, so only the TCP peer is believed.
+// 🔴 THE SAME ON EVERY LISTENER, AND THE TCP PEER UNLESS THE PEER IS TRUSTED.
+// It used to believe CF-Connecting-IP, then the left-most X-Forwarded-For
+// entry, on the browser listener — because of WHERE the request arrived, not
+// who sent it — so anything that reached that port without the CDN chose its
+// own address. Now a header is believed only from a peer inside
+// MUSTER_TRUSTED_PROXIES, only the header MUSTER_CLIENT_IP_HEADER names, and
+// X-Forwarded-For is walked from the right (internal/clientaddr). Unset, it is
+// the TCP peer everywhere: behind a proxy every client then shares the proxy's
+// address, which is a shared bucket, not a spoofable one.
 //
-// ⚠ THE HEADERS ARE TRUSTED BECAUSE OF WHERE THE REQUEST ARRIVED, NOT BECAUSE
-// OF WHO SENT IT. Anything that can reach the browser port without passing the
-// CDN can choose its own address — which is why every per-address limit is a
-// SECONDARY signal: sign-in is throttled per ACCOUNT (signin_limiter.go) and
-// invite links per INVITE (login_invite.go), neither keyed on this value. There
-// is no process-wide ceiling (an earlier draft had one; it was a lockout lever).
+// ⚠ Sign-in is still throttled per ACCOUNT too (signin_limiter.go) and invite
+// links per INVITE (login_invite.go); neither is keyed on this value.
 func clientIP(r *http.Request) string {
-	if viaBrowserListener(r) {
-		if ip := parseIP(r.Header.Get("CF-Connecting-IP")); ip != "" {
-			return ip
-		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			if ip := parseIP(first); ip != "" {
-				return ip
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if ip := parseIP(host); ip != "" {
-		return ip
-	}
-	return "unknown"
-}
-
-func parseIP(v string) string {
-	ip := net.ParseIP(strings.TrimSpace(v))
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
+	return clientaddr.Of(r)
 }
