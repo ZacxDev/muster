@@ -136,36 +136,9 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
 
 ## Limits
 
-- **Linux.** macOS hosts are experimental: the Terminal view cannot attach on
-  macOS yet (`internal/mirrorhost/pty_other.go`), so there only a Claude Code
-  window whose Rendered view resolves can be viewed, and Rendered-view
-  detection is unverified on a real Mac. No Windows.
-- **muster assumes sessions run without permission prompts.** Start your own
-  Claude Code sessions in `bypassPermissions` or auto mode; the agents a host
-  starts for your chief are started without them by default, so they run
-  their tools without asking (`-agent-spawn-skip-permissions=false` turns that
-  off: [docs/mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)).
-  A Claude Code permission prompt that does appear is answered in the Terminal
-  view: the chat view refuses to type into a waiting prompt, and there is no
-  one-tap approve ([docs/sending-and-step-up.md](sending-and-step-up.md)).
-- **Codex and Gemini CLI get no waiting push** and no ask tool: they are
-  terminal views. The message box sends to opencode only on an opted-in host
-  ([docs/mirroring.md](mirroring.md#sending-to-opencode)).
-- **It needs Docker on one machine and tmux on every machine**, and Tailscale
-  for your phone and other machines; what each machine needs is checked by
-  [INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine). muster sees
-  only sessions inside tmux.
-- **It is a PWA, not a native app.** On iOS, install it to the Home Screen
-  before it can receive push.
-- **Run one replica.** Some background loops and the mirror tunnel keep their
-  state in memory.
-- **An interactive mirror is a shell on that host.** Anyone who can type into
-  that host's Terminal view (after a recent sign-in) can run commands as the
-  user `muster-mirror` runs as.
-- **Agent dispatch is opt-in and only lightly proven.** It needs Kubernetes:
-  the Helm chart in `charts/muster` installs it ([docs/kubernetes.md](kubernetes.md)).
-
-The full list is in [docs/limits.md](limits.md).
+What muster does not do, or has not proven (platforms, permission prompts,
+agents without a waiting push, one replica, an interactive mirror being a
+shell on its host, dispatch): [limits.md](limits.md).
 
 ## The name
 

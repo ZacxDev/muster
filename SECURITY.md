@@ -19,11 +19,12 @@ Before you report, check that the problem still happens on the latest release.
 **Please do not report a security problem in a public issue, discussion or pull
 request.**
 
-Report it privately with GitHub's private vulnerability reporting: open the
-repository's **Security** tab and choose **Report a vulnerability**, or go
-straight to
+Report it through GitHub's private vulnerability reporting, the one channel
+for security reports: open the repository's **Security** tab and choose
+**Report a vulnerability**, or go straight to
 [the private report form](https://github.com/ZacxDev/muster/security/advisories/new).
-Only the maintainers can read the report.
+Only you and the maintainers can read the report, and the fix is prepared in
+that same private advisory.
 
 A useful report says:
 
@@ -34,10 +35,6 @@ A useful report says:
 - what an attacker needs (network position, a token, a signed-in account) and
   what they gain;
 - the steps to reproduce it, and a proof of concept if you have one.
-
-If the **Report a vulnerability** button is not shown, open an issue that only
-says you have a security report and asks for a private channel. Leave every
-detail out of it.
 
 ## What happens next
 

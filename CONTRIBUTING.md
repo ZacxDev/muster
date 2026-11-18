@@ -12,24 +12,11 @@ Thanks for helping. Bug reports, fixes, docs and features are all welcome.
 
 ## Set up
 
-You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux.
+You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux;
 `nix develop` gives you all of them (see [The gates](#the-gates)).
-
-```sh
-git clone https://github.com/ZacxDev/muster && cd muster
-make test-db                       # a throwaway Postgres; prints the test exports
-docker compose -f docker-compose.test.yml exec postgres createdb -U muster muster_dev
-
-export DATABASE_URL='postgres://muster:muster@127.0.0.1:55432/muster_dev?sslmode=disable'
-export MUSTER_UI_PASSWORD='pick-a-password-of-12+-chars'
-export MUSTER_STANDALONE=1         # no external permission router
-export MUSTER_MIRROR=1             # turn mirrored sessions on
-make run                           # go run ./cmd/muster-server: migrates, then listens
-```
-
-[docs/development.md](docs/development.md) carries on from there: the address to
-open, mirroring your own tmux sessions into it, and what this setup leaves open.
-`make help` lists every target. `make test-db-down` removes the database.
+[docs/development.md](docs/development.md) runs muster from source against a
+throwaway database (`make test-db`, then `make run`) and mirrors your own tmux
+sessions into it. `make help` lists every target.
 
 ## 🔴 Read this first: a green `go test ./...` may mean nothing
 
@@ -198,8 +185,9 @@ The README is the front door: what muster is, the quick start, the install
 options and links. Keep it short; a detail belongs on a page in
 [`docs/`](docs/README.md), and a new page gets a line in that index.
 `tests/repo_front_door_test.py` pins the README's install table to the assets a
-release builds, the community files, and that every relative link and image in
-the README and the docs index resolves.
+release builds, the community files, the one private channel for security and
+conduct reports (this repository's advisory form), and that every relative link
+and image in the README and the docs index resolves.
 Two tests in `internal/modulegate` keep the docs honest, and both run in
 `go test ./...`:
 

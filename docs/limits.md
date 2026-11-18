@@ -1,5 +1,35 @@
 # Limits, stated plainly
 
+## At a glance
+
+The limits most people meet first. Running one replica and an interactive
+mirror being a shell on its host are under [Deployment](#deployment) and
+[Mirroring](#mirroring).
+
+- **Linux.** macOS hosts are experimental: the Terminal view cannot attach on
+  macOS yet (`internal/mirrorhost/pty_other.go`), so there only a Claude Code
+  window whose Rendered view resolves can be viewed, and Rendered-view
+  detection is unverified on a real Mac. No Windows.
+- **muster assumes sessions run without permission prompts.** Start your own
+  Claude Code sessions in `bypassPermissions` or auto mode; the agents a host
+  starts for your chief are started without them by default, so they run
+  their tools without asking (`-agent-spawn-skip-permissions=false` turns that
+  off: [mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)).
+  A Claude Code permission prompt that does appear is answered in the Terminal
+  view: the chat view refuses to type into a waiting prompt, and there is no
+  one-tap approve ([sending-and-step-up.md](sending-and-step-up.md)).
+- **Codex and Gemini CLI get no waiting push** and no ask tool: they are
+  terminal views. The message box sends to opencode only on an opted-in host
+  ([mirroring.md](mirroring.md#sending-to-opencode)).
+- **It needs Docker on one machine and tmux on every machine**, and Tailscale
+  for your phone and other machines; what each machine needs is checked by
+  [INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine). muster sees
+  only sessions inside tmux.
+- **It is a PWA, not a native app.** On iOS, install it to the Home Screen
+  before it can receive push.
+- **Agent dispatch is opt-in and only lightly proven.** It needs Kubernetes:
+  the Helm chart in `charts/muster` installs it ([kubernetes.md](kubernetes.md)).
+
 ## Deployment
 
 - **Run one replica.** `internal/db` holds no lease, so the daily retention pass,

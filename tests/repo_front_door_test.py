@@ -8,10 +8,18 @@ Static. What it pins:
 
 * COMMUNITY FILES. Every file in COMMUNITY_FILES exists and is not empty.
 * ISSUE TEMPLATES PARSE. Every .github/ISSUE_TEMPLATE/*.yml is a YAML mapping.
-  config.yml's `blank_issues_enabled` is a boolean, and one of its contact
-  links is the private vulnerability report form (ADVISORY_URL), the route
-  SECURITY.md names too. Every other template is an issue form: a name, a
-  description and a non-empty `body` list.
+  config.yml's `blank_issues_enabled` is a boolean. Every other template is an
+  issue form: a name, a description and a non-empty `body` list.
+* ONE PRIVATE CHANNEL FOR SECURITY AND CONDUCT REPORTS: this repository's own
+  private vulnerability report form. Its URL is DERIVED from go.mod's module
+  path (github.com/<owner>/<repo> -> https://github.com/<owner>/<repo>/
+  security/advisories/new), never spelled here, so a fork or a rename that
+  leaves the docs pointing at another repository's form fails. config.yml's
+  FIRST contact link has exactly that URL (parsed: https, github.com, that
+  path, no query), and SECURITY.md and CODE_OF_CONDUCT.md each carry a
+  Markdown link whose TARGET is that URL (the link text is not read).
+  Whether the form is switched on is a repository setting no static test can
+  see; `gh api repos/<owner>/<repo>/private-vulnerability-reporting` reads it.
 * NO INTERNAL NOTES. No tracked path is under claudedocs/, no tracked file
   names a note that moved out (MOVED_NOTES), and no Markdown link points into
   claudedocs/. (`claudedocs/**` also appears in the officers' docs-only gate,
@@ -43,11 +51,12 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from features_config_test import broken_links, strip_code  # noqa: E402  (one link rule, not two)
+from features_config_test import MD_LINK, broken_links, strip_code  # noqa: E402  (one link rule, not two)
 
 ROOT = Path(__file__).resolve().parent.parent
 README = "README.md"
@@ -55,7 +64,16 @@ DOCS_INDEX = "docs/README.md"
 TEMPLATES = ROOT / ".github/ISSUE_TEMPLATE"
 RELEASE_BUILD = ROOT / "scripts/release-build.sh"
 
-ADVISORY_URL = "https://github.com/ZacxDev/muster/security/advisories/new"
+
+
+def repo_slug(gomod: str) -> str:
+    """<owner>/<repo> from go.mod's `module github.com/<owner>/<repo>`."""
+    m = re.search(r"(?m)^module github\.com/([\w.-]+/[\w.-]+)\s*$", gomod)
+    assert m, "go.mod's module path is not github.com/<owner>/<repo>"
+    return m.group(1)
+
+
+ADVISORY_URL = f"https://github.com/{repo_slug((ROOT / 'go.mod').read_text())}/security/advisories/new"
 
 COMMUNITY_FILES = [
     "README.md",
@@ -127,15 +145,31 @@ def template_problems(files: dict[str, str]) -> list[str]:
         if name == "config.yml":
             if not isinstance(doc.get("blank_issues_enabled"), bool):
                 errs.append("config.yml: blank_issues_enabled is not a boolean")
-            urls = [c.get("url") for c in doc.get("contact_links") or [] if isinstance(c, dict)]
-            if ADVISORY_URL not in urls:
-                errs.append(f"config.yml: no contact link is the private vulnerability report form {ADVISORY_URL}")
         else:
             for key in ("name", "description"):
                 if not isinstance(doc.get(key), str) or not doc[key].strip():
                     errs.append(f"{name}: no {key}")
             if not isinstance(doc.get("body"), list) or not doc["body"]:
                 errs.append(f"{name}: no body (an issue form needs at least one field)")
+    return errs
+
+
+def security_route_problems(config: dict, docs: dict[str, str], advisory: str = ADVISORY_URL) -> list[str]:
+    """Where the private report channel is not ADVISORY: config.yml's first
+    contact link, and a Markdown link target in each of DOCS ({name: text})."""
+    errs = []
+    want = urlsplit(advisory)
+    links = config.get("contact_links") if isinstance(config, dict) else None
+    first = links[0] if isinstance(links, list) and links and isinstance(links[0], dict) else {}
+    got = urlsplit(str(first.get("url", "")))
+    if (got.scheme, got.netloc, got.path.rstrip("/"), got.query, got.fragment) != (
+            "https", want.netloc, want.path, "", ""):
+        errs.append(f"config.yml: the first contact link is {first.get('url')!r}, not this repository's "
+                    f"private report form {advisory}")
+    for name, text in sorted(docs.items()):
+        targets = {m.group(1).strip("<>") for m in MD_LINK.finditer(strip_code(text))}
+        if advisory not in targets:
+            errs.append(f"{name}: no link targets this repository's private report form {advisory}")
     return errs
 
 
@@ -213,9 +247,8 @@ class FrontDoor(unittest.TestCase):
         files = {p.name: p.read_text() for p in TEMPLATES.glob("*.yml")} if TEMPLATES.is_dir() else {}
         self.assertGreaterEqual(len(files), 3, "positive control: found almost no issue templates")
         self.assertEqual(template_problems(files), [])
-        self.assertIn(ADVISORY_URL, (ROOT / "SECURITY.md").read_text(), "SECURITY.md names another route")
-        # Negative controls: bad YAML, a string where a boolean belongs, no
-        # advisory link, and a form with no fields are each reported.
+        # Negative controls: bad YAML, a string where a boolean belongs and a
+        # form with no fields are each reported.
         planted = dict(files)
         planted["config.yml"] = "blank_issues_enabled: 'no'\ncontact_links: []\n"
         planted["broken.yml"] = "name: [unclosed\n"
@@ -223,10 +256,34 @@ class FrontDoor(unittest.TestCase):
         errs = template_problems(planted)
         self.assertEqual([e for e in errs if not e.startswith("broken.yml")], [
             "config.yml: blank_issues_enabled is not a boolean",
-            f"config.yml: no contact link is the private vulnerability report form {ADVISORY_URL}",
             "empty.yml: no body (an issue form needs at least one field)",
         ])
         self.assertEqual(len([e for e in errs if e.startswith("broken.yml does not parse as YAML")]), 1, errs)
+
+    def test_security_and_conduct_reports_go_to_the_private_form(self) -> None:
+        self.assertEqual(repo_slug("module github.com/Some-Org/a.b\n\ngo 1.0\n"), "Some-Org/a.b")
+        self.assertEqual(urlsplit(ADVISORY_URL).path.count("/"), 5, f"positive control: {ADVISORY_URL}")
+        config = yaml.safe_load((TEMPLATES / "config.yml").read_text())
+        docs = {n: (ROOT / n).read_text() for n in ("SECURITY.md", "CODE_OF_CONDUCT.md")}
+        self.assertEqual(security_route_problems(config, docs), [])
+        # Negative controls. Another repository's form (what a fork that kept
+        # these files would show), the form's URL only as link TEXT, the form
+        # moved to second place, and a query string are each reported.
+        other = ADVISORY_URL.replace(urlsplit(ADVISORY_URL).path.split("/")[1], "someone-else", 1)
+        self.assertEqual(security_route_problems(config, docs, other), [
+            f"config.yml: the first contact link is {ADVISORY_URL!r}, not this repository's private report form {other}",
+            f"CODE_OF_CONDUCT.md: no link targets this repository's private report form {other}",
+            f"SECURITY.md: no link targets this repository's private report form {other}",
+        ])
+        text_only = {"SECURITY.md": f"Report it at [{ADVISORY_URL}](https://github.com/)."}
+        self.assertEqual(security_route_problems(config, text_only), [
+            f"SECURITY.md: no link targets this repository's private report form {ADVISORY_URL}"])
+        swapped = {"contact_links": list(reversed(config["contact_links"]))}
+        self.assertEqual(len(security_route_problems(swapped, {})), 1)
+        queried = {"contact_links": [{"url": ADVISORY_URL + "?x=1"}]}
+        self.assertEqual(len(security_route_problems(queried, {})), 1)
+        self.assertEqual(security_route_problems({"contact_links": [{"url": ADVISORY_URL + "/"}]}, {}), [],
+                         "control: a trailing slash is the same page")
 
     def test_no_internal_notes_in_the_tree(self) -> None:
         files = {p: text_of(p) for p in tracked()}
