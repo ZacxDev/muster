@@ -29,13 +29,14 @@ var sessionNameAdapters = []string{
 // is a decision: add it here, with what it is) or SHRINKS (a surface that
 // stopped asking the rule now names sessions some other way, or not at all).
 var sessionNameCallers = []string{
-	"agents.go Server.activeNotificationRows", // the notifications panel's active rows
-	"agents.go Server.cardViewIndexed",        // the sidebar rows, switcher pills and palette (agents)
-	"agent_outcome.go Server.agentLabel",      // an agent outcome's push title and its note to the chief
-	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
-	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
-	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
-	"attention.go Server.withNamesFrom",       // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"agents.go Server.activeNotificationRows",   // the notifications panel's active rows
+	"agents.go Server.cardViewIndexed",          // the sidebar rows, switcher pills and palette (agents)
+	"agent_outcome.go Server.agentLabel",        // an agent outcome's push title and its note to the chief
+	"agents.go Server.handleAgentDetail",        // the agent page's header and <title>
+	"agents.go Server.handleAgentName",          // a Save of the unchanged prefilled name is not a rename
+	"agents.go Server.handleNotifications",      // the notifications panel's unread rows
+	"attention.go Server.withNamesFrom",         // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"asks_drafts.go Server.withDraftAgentNames", // a reply draft's card: the drafting agent's name (the Asks Drafts tab)
 	"chat_log_live.go Server.dispatchCardFor",
 	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
@@ -47,6 +48,7 @@ var sessionNameCallers = []string{
 	"mirror_mcp.go Server.handleMirrorMCP",                       // a mirrored session's ask label
 	"name_drift.go Server.answerAgentRenamed",                    // an htmx rename answered in place: the agent page's or its Terminal page's header and <title>
 	"name_drift.go Server.answerMirrorRenamed",                   // an htmx rename answered in place: the Rendered view's or Terminal page's header and <title>
+	"pages.go Server.pageSessionLink",                            // the session that made a page: its owner's session button, "Made by" in the version popover and on /pages/{id}
 	"plugin_message_route_tools.go Server.routeSubjectFor",       // the route candidates the chief is offered
 	"pr_routes.go Server.prAuthorHint",                           // a plugin message's PR author hint
 	"session_names.go Server.mirrorNameUnchanged",                // a Save of the unchanged prefilled name is not a rename
@@ -93,6 +95,7 @@ var noTmuxAddress = map[string]string{
 	"agents.go Server.handleNotifications":                       "notifications panel: agents only (no tmux window)",
 	"agent_outcome.go Server.agentLabel":                         "an agent outcome's push: an agent (no tmux window)",
 	"agents.go Server.cardViewIndexed":                           "navigation, not a notification",
+	"asks_drafts.go Server.withDraftAgentNames":                  "a draft card on the Asks page: an agent (no tmux window), not a notification",
 	"agents.go Server.handleAgentDetail":                         "a page header, not a notification",
 	"agents.go Server.handleAgentName":                           "the rename form",
 	"chat_log_live.go Server.dispatchCardFor":                    "a chat card, not a notification",
@@ -105,6 +108,7 @@ var noTmuxAddress = map[string]string{
 	"mirror_mcp.go Server.handleMirrorMCP":                       "an ask's STORED label: shown only when no window holds the session, so there is no address to vouch for",
 	"name_drift.go Server.answerAgentRenamed":                    "a page header redrawn in place, not a notification",
 	"name_drift.go Server.answerMirrorRenamed":                   "a page header redrawn in place, not a notification",
+	"pages.go Server.pageSessionLink":                            "a page's owner chrome (a link to the session), not a notification",
 	"plugin_message_route_tools.go Server.routeSubjectFor":       "a chief tool",
 	"pr_routes.go Server.prAuthorHint":                           "a plugin message hint",
 	"session_names.go Server.mirrorNameUnchanged":                "the rename form",

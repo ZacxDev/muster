@@ -165,8 +165,9 @@ const NOT_A_PAGE: Record<string, string> = {
   // here has: pages.spec.ts measures them (its own server, the same bar).
   'GET /pages': 'measured in pages.spec.ts (the Pages screen)',
   'GET /pages/{id}': 'measured in pages.spec.ts (one page)',
-  'GET /pages/{id}/preview': 'measured in pages.spec.ts (the owner\'s preview shell)',
-  'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the preview frames',
+  'GET /pages/{id}/view': 'measured in pages.spec.ts (the owner\'s own view: its shell)',
+  'GET /pages/{id}/preview': 'a redirect to /pages/{id}/view, the view\'s former address (no document of its own)',
+  'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the owner\'s view frames',
   'GET /pages/{id}/card': 'a page card fragment the chat\'s live stream fetches and inserts (no document of its own)',
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',

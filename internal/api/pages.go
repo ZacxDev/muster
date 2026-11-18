@@ -41,7 +41,7 @@ import (
 //
 // 🔴 THE CONTENT DOCUMENT IS SERVED SANDBOXED BY HTTP HEADER
 // (pages.SetContentHeaders): an opaque origin even when opened directly.
-// Every content response — a link's and the owner's preview's — goes through
+// Every content response — a link's and the owner's view's — goes through
 // servePageContent, the one writer.
 //
 // 🔴 A REFUSED LINK IS ONE ANSWER: unknown, pending, denied, revoked, expired
@@ -98,8 +98,14 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	// The owner's: a signed-in session; writes same-origin too.
 	mux.HandleFunc("GET "+pagesPath, s.requireSession(s.handlePagesList))
 	mux.HandleFunc("GET "+pagesPath+"/{id}", s.requireSession(s.handlePageDetail))
+	mux.HandleFunc("GET "+pagesPath+"/{id}/view", s.requireSession(s.handlePageView))
+	// The view's former address, still in older notifications and cards.
 	mux.HandleFunc("GET "+pagesPath+"/{id}/preview", s.requireSession(s.handlePagePreview))
 	mux.HandleFunc("GET "+pagesPath+"/{id}/versions/{v}/content", s.requireSession(s.handlePageVersionContent))
+	// The owner's own responses from their view: their session and muster's
+	// own Origin (requireOperatorWrite), never a link's token.
+	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}/submit", s.requireOperatorWrite(s.handleOwnerPageSubmit))
+	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}/upload", s.requireOperatorWrite(s.handleOwnerPageUpload))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/links/{link}/revoke", s.requireOperatorWrite(s.handlePageRevokeLink))
 	// The Share button and its ⋯ menu (page_card.go): the page's one reusable
 	// link. And the chat's page card, for the live stream.
@@ -189,12 +195,12 @@ func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // pageRenderOptions is how a content document is rendered here.
-func (s *Server) pageRenderOptions(preview bool) pages.RenderOptions {
-	return pages.RenderOptions{Markdown: ui.MarkdownHTML, Preview: preview, Uploads: s.ext.Uploads != nil}
+func (s *Server) pageRenderOptions() pages.RenderOptions {
+	return pages.RenderOptions{Markdown: ui.MarkdownHTML, Uploads: s.ext.Uploads != nil}
 }
 
 // servePageContent is THE writer of a content document: every one — a link's
-// and the owner's preview's — is served with pages.SetContentHeaders, which
+// and the owner's view's — is served with pages.SetContentHeaders, which
 // replaces the app's own page policy.
 //
 // 🔴 ONLY INTO A FRAME. A browser that says where the document is going
@@ -259,7 +265,7 @@ func (s *Server) handlePageContent(w http.ResponseWriter, r *http.Request) {
 		refusePageLink(w, "content")
 		return
 	}
-	if servePageContent(w, r, pages.Content(v, s.pageRenderOptions(false))) {
+	if servePageContent(w, r, pages.Content(v, s.pageRenderOptions())) {
 		metrics.PageLinkRequests.WithLabelValues("content", "served").Inc()
 	}
 }
@@ -278,19 +284,123 @@ func pageStoreRefusal(err error) (int, string, string) {
 		return http.StatusBadRequest, strings.TrimPrefix(err.Error(), pages.ErrInvalid.Error()+": "), "invalid"
 	case errors.Is(err, pages.ErrTooMany):
 		return http.StatusConflict, "This page is not taking any more responses.", "full"
-	case errors.Is(err, pages.ErrLinkNotFound), errors.Is(err, pages.ErrNotFound):
+	case errors.Is(err, pages.ErrLinkNotFound), errors.Is(err, pages.ErrNotFound), errors.Is(err, pages.ErrClosing):
 		return http.StatusNotFound, strings.TrimSpace(pageLinkGone), "not_found"
 	}
 	return http.StatusInternalServerError, "It could not be recorded. Try again later.", "error"
 }
 
+// pageResponder is who a response is recorded as: a share link's viewer, or
+// the page's signed-in owner from their own view (migration 0152). Both go
+// through the SAME submit and upload code (pageSubmit, pageUpload), with the
+// same checks, rate limits, caps and size bounds; only the identity, the
+// version and the store call differ.
+type pageResponder struct {
+	page int64
+	// link is the viewer's link; zero for the owner.
+	link pages.Link
+	// owner: the page's owner, signed in (requireOperatorWrite: the session
+	// and muster's own Origin, as every owner write).
+	owner bool
+	// version is the version answered: 0, a link's, is the page's current
+	// one; the owner answers the version their view shows (?v=N included).
+	version int
+}
+
+// String names the responder in a log line (ids only).
+func (p pageResponder) String() string {
+	if p.owner {
+		return "page " + strconv.FormatInt(p.page, 10) + "'s owner"
+	}
+	return "link " + strconv.FormatInt(p.link.ID, 10)
+}
+
+// rateKey is the responder's key in the submit and upload windows: per link,
+// and for the owner per page — the same limits either way.
+func (p pageResponder) rateKey() string {
+	if p.owner {
+		return "owner-" + strconv.FormatInt(p.page, 10)
+	}
+	return strconv.FormatInt(p.link.ID, 10)
+}
+
+// slotKey is the responder's key in the page upload slots: a link id, or for
+// the owner the page id negated (link and page ids are both positive, so the
+// two never meet).
+func (p pageResponder) slotKey() int64 {
+	if p.owner {
+		return -p.page
+	}
+	return p.link.ID
+}
+
+// record records one response as the responder.
+func (s *Server) recordPageResponse(ctx context.Context, p pageResponder, v int, component string, kind pages.ResponseKind, data []byte, uploadID string) (pages.Response, error) {
+	if p.owner {
+		return s.ext.Pages.AddOwnerResponse(ctx, p.page, v, component, kind, data, uploadID)
+	}
+	return s.ext.Pages.AddResponse(ctx, p.link, v, component, kind, data, uploadID)
+}
+
 // handlePageSubmit is POST /s/{token}/submit: {component, data}, checked
-// against the CURRENT version's component and recorded.
+// against the CURRENT version's component and recorded through the link.
 func (s *Server) handlePageSubmit(w http.ResponseWriter, r *http.Request) {
+	l, _ := pageLinkOf(r.Context())
+	s.pageSubmit(w, r, pageResponder{page: l.PageID, link: l})
+}
+
+// handlePageUpload is POST /s/{token}/upload: a file through the link.
+func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
+	l, _ := pageLinkOf(r.Context())
+	s.pageUpload(w, r, pageResponder{page: l.PageID, link: l})
+}
+
+// ownerResponder is the owner's POST /pages/{id}/versions/{v}/submit or
+// /upload as a responder: false (answered 404, the one "missing") for a bad
+// id or version, or one that is not the caller's — the store's read is under
+// their row-level security, so another owner's page reads as missing — before
+// any byte of the body is read.
+func (s *Server) ownerResponder(w http.ResponseWriter, r *http.Request) (pageResponder, bool) {
+	id, ok := pageIDParam(r)
+	n, err := strconv.Atoi(r.PathValue("v"))
+	if s.pagesOn() && ok && err == nil && n > 0 {
+		_, err = s.ext.Pages.Version(r.Context(), id, n)
+		if err == nil {
+			return pageResponder{page: id, owner: true, version: n}, true
+		}
+		if !errors.Is(err, pages.ErrNotFound) {
+			s.logger.Printf("pages: page %d: the owner's response: read version %d: %v", id, n, err)
+		}
+	}
+	s.pageWriteError(w, http.StatusNotFound, "No such page or version.")
+	return pageResponder{}, false
+}
+
+// handleOwnerPageSubmit is POST /pages/{id}/versions/{v}/submit: the OWNER's
+// own response from their view of version v, recorded as theirs (by_owner).
+func (s *Server) handleOwnerPageSubmit(w http.ResponseWriter, r *http.Request) {
+	if p, ok := s.ownerResponder(w, r); ok {
+		s.pageSubmit(w, r, p)
+	}
+}
+
+// handleOwnerPageUpload is POST /pages/{id}/versions/{v}/upload: the owner's
+// own file.
+func (s *Server) handleOwnerPageUpload(w http.ResponseWriter, r *http.Request) {
+	if p, ok := s.ownerResponder(w, r); ok {
+		s.pageUpload(w, r, p)
+	}
+}
+
+// pageSubmit is THE submit: {component, data}, checked against the
+// responder's version's component and recorded as the responder.
+//
+// 🔴 AN OLD VERSION'S SUBMIT (the owner viewing ?v=N) IS RECORDED AGAINST
+// THAT VERSION, checked against ITS blocks: a response always names the
+// version it answered, as a link's always has.
+func (s *Server) pageSubmit(w http.ResponseWriter, r *http.Request, p pageResponder) {
 	ctx := r.Context()
-	l, _ := pageLinkOf(ctx)
-	linkKey := strconv.FormatInt(l.ID, 10)
-	if !s.pageState.submits.take(linkKey, s.now(), pageLimitWindow, pageSubmitLimit) {
+	if !s.pageState.submits.take(p.rateKey(), s.now(), pageLimitWindow, pageSubmitLimit) {
 		metrics.PageResponses.WithLabelValues(string(pages.KindSubmit), "throttled").Inc()
 		w.Header().Set("Retry-After", "60")
 		s.pageWriteError(w, http.StatusTooManyRequests, "Too many responses through this link for now. Try again in a minute.")
@@ -311,7 +421,7 @@ func (s *Server) handlePageSubmit(w http.ResponseWriter, r *http.Request) {
 		s.pageWriteError(w, http.StatusBadRequest, "That is not a component of this page.")
 		return
 	}
-	v, err := s.ext.Pages.Version(ctx, l.PageID, 0)
+	v, err := s.ext.Pages.Version(ctx, p.page, p.version)
 	if err != nil {
 		status, msg, outcome := pageStoreRefusal(err)
 		metrics.PageResponses.WithLabelValues(string(pages.KindSubmit), outcome).Inc()
@@ -325,29 +435,29 @@ func (s *Server) handlePageSubmit(w http.ResponseWriter, r *http.Request) {
 		s.pageWriteError(w, status, msg)
 		return
 	}
-	resp, err := s.ext.Pages.AddResponse(ctx, l, v.Version, in.Component, pages.KindSubmit, data, "")
+	resp, err := s.recordPageResponse(ctx, p, v.Version, in.Component, pages.KindSubmit, data, "")
 	if err != nil {
 		status, msg, outcome := pageStoreRefusal(err)
 		if outcome == "error" {
-			s.logger.Printf("pages: link %d: record a submit: %v", l.ID, err)
+			s.logger.Printf("pages: %s: record a submit: %v", p, err)
 		}
 		metrics.PageResponses.WithLabelValues(string(pages.KindSubmit), outcome).Inc()
 		s.pageWriteError(w, status, msg)
 		return
 	}
 	metrics.PageResponses.WithLabelValues(string(pages.KindSubmit), "recorded").Inc()
-	s.pageResponded(ctx, l, v, resp)
+	s.pageResponded(ctx, p, v, resp)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	s.writeJSON(w, http.StatusOK, map[string]any{"id": resp.ID})
 }
 
-// handlePageUpload is POST /s/{token}/upload: a multipart body of `component`
-// then `file`, streamed to the upload store as the page's owner and recorded
-// as an upload response. The type is sniffed from the bytes (uploads.Put),
-// and the file is only ever served back through uploads.SetServeHeaders.
-func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
+// pageUpload is THE upload: a multipart body of `component` then `file`,
+// streamed to the upload store as the page's owner and recorded as an upload
+// response of the responder. The type is sniffed from the bytes
+// (uploads.Put), and the file is only ever served back through
+// uploads.SetServeHeaders.
+func (s *Server) pageUpload(w http.ResponseWriter, r *http.Request, p pageResponder) {
 	ctx := r.Context()
-	l, _ := pageLinkOf(ctx)
 	svc := s.ext.Uploads
 	fail := func(status int, msg, outcome string) {
 		metrics.PageResponses.WithLabelValues(string(pages.KindUpload), outcome).Inc()
@@ -357,8 +467,7 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusNotFound, "File uploads are not available on this server.", "invalid")
 		return
 	}
-	linkKey := strconv.FormatInt(l.ID, 10)
-	if !s.pageState.uploads.take(linkKey, s.now(), pageLimitWindow, pageUploadLimit) {
+	if !s.pageState.uploads.take(p.rateKey(), s.now(), pageLimitWindow, pageUploadLimit) {
 		w.Header().Set("Retry-After", "60")
 		fail(http.StatusTooManyRequests, "Too many files through this link for now. Try again in a minute.", "throttled")
 		return
@@ -373,10 +482,11 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 🔴 A STRANGER'S UPLOAD TAKES A PAGE SLOT, NEVER THE OWNER'S: the slots
-	// are per link and a server-wide page pool (pageState.uploadSlots), apart
-	// from the composer's per-user slots, with a shorter read deadline — so a
-	// link holder trickling bodies cannot make the owner's own attach busy.
-	leave, err := s.pageState.uploadSlots.enter(l.ID)
+	// are per link (per page for the owner's own view) and a server-wide page
+	// pool (pageState.uploadSlots), apart from the composer's per-user slots,
+	// with a shorter read deadline — so a link holder trickling bodies cannot
+	// make the owner's own attach busy.
+	leave, err := s.pageState.uploadSlots.enter(p.slotKey())
 	if err != nil {
 		w.Header().Set("Retry-After", "5")
 		fail(http.StatusTooManyRequests, "Too many files are arriving right now. Try again shortly.", "throttled")
@@ -393,7 +503,7 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, "Send the file as multipart/form-data.", "invalid")
 		return
 	}
-	v, err := s.ext.Pages.Version(ctx, l.PageID, 0)
+	v, err := s.ext.Pages.Version(ctx, p.page, p.version)
 	if err != nil {
 		status, msg, outcome := pageStoreRefusal(err)
 		fail(status, msg, outcome)
@@ -401,9 +511,9 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	// The page's byte quota: what its files may still add (MUSTER_PAGES_UPLOAD_BYTES).
 	quota := s.pageUploadQuota()
-	used, err := s.ext.Pages.UploadBytes(ctx, l.PageID)
+	used, err := s.ext.Pages.UploadBytes(ctx, p.page)
 	if err != nil {
-		s.logger.Printf("pages: link %d: read its page's file total: %v", l.ID, err)
+		s.logger.Printf("pages: %s: read its page's file total: %v", p, err)
 		fail(http.StatusInternalServerError, "The file could not be stored. Try again later.", "error")
 		return
 	}
@@ -441,7 +551,7 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		// Under the page's own prefix (pages/<id>/…), which the bucket's
 		// uploads/ lifecycle rule does not reach: kept until the page is
 		// deleted (handlePageDelete deletes them).
-		stored, err := svc.PutForPage(ctx, part, part.FileName(), l.PageID, room)
+		stored, err := svc.PutForPage(ctx, part, part.FileName(), p.page, room)
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			switch {
@@ -452,25 +562,25 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, uploads.ErrEmpty):
 				fail(http.StatusBadRequest, "The file is empty.", "invalid")
 			default:
-				s.logger.Printf("pages: link %d: store an upload: %v", l.ID, err)
+				s.logger.Printf("pages: %s: store an upload: %v", p, err)
 				fail(http.StatusInternalServerError, "The file could not be stored. Try again later.", "error")
 			}
 			return
 		}
-		resp, err := s.ext.Pages.AddResponse(ctx, l, v.Version, component, pages.KindUpload, nil, stored.PublicID)
+		resp, err := s.recordPageResponse(ctx, p, v.Version, component, pages.KindUpload, nil, stored.PublicID)
 		if err != nil {
 			// The file is stored but not recorded: take it away again, so no
 			// object outlives its row.
-			s.dropUnrecordedUpload(ctx, l, stored.PublicID)
+			s.dropUnrecordedUpload(ctx, p, stored.PublicID)
 			status, msg, outcome := pageStoreRefusal(err)
 			if outcome == "error" {
-				s.logger.Printf("pages: link %d: record an upload: %v", l.ID, err)
+				s.logger.Printf("pages: %s: record an upload: %v", p, err)
 			}
 			fail(status, msg, outcome)
 			return
 		}
 		metrics.PageResponses.WithLabelValues(string(pages.KindUpload), "recorded").Inc()
-		s.pageResponded(ctx, l, v, resp)
+		s.pageResponded(ctx, p, v, resp)
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		s.writeJSON(w, http.StatusOK, map[string]any{"id": resp.ID, "name": stored.Name, "size": stored.Size, "type": stored.ContentType})
 		return
@@ -478,23 +588,24 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 // pageResponded is what follows a recorded response: a waiting page_responses
-// call is woken, and the owner is pushed — at most once per page per
-// pagePushWindow, naming the page and the component, never the viewer's text.
-func (s *Server) pageResponded(ctx context.Context, l pages.Link, v pages.Version, r pages.Response) {
-	s.pageState.waits.wake(l.PageID)
-	if !s.pageState.pushes.take(strconv.FormatInt(l.PageID, 10), s.now(), pagePushWindow, 1) {
+// call is woken, and — for a VIEWER's response — the owner is pushed, at most
+// once per page per pagePushWindow, naming the page and the component, never
+// the viewer's text. The owner's own response pushes nobody: they sent it.
+func (s *Server) pageResponded(ctx context.Context, p pageResponder, v pages.Version, r pages.Response) {
+	s.pageState.waits.wake(p.page)
+	if p.owner || !s.pageState.pushes.take(strconv.FormatInt(p.page, 10), s.now(), pagePushWindow, 1) {
 		return
 	}
 	what := "a response"
 	if r.Kind == pages.KindUpload {
 		what = "a file"
 	}
-	s.pushTask(l.OwnerID, pushEventPage, RouterNotification{
+	s.pushTask(p.link.OwnerID, pushEventPage, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page “" + truncate(v.Title, 60) + "” got " + what,
 		Body:  "Through " + r.Component + ". Open the page in muster to see it.",
-		Tag:   "page-" + strconv.FormatInt(l.PageID, 10) + "-response",
-		Data:  map[string]string{"url": pagePath(l.PageID)},
+		Tag:   "page-" + strconv.FormatInt(p.page, 10) + "-response",
+		Data:  map[string]string{"url": pagePath(p.page)},
 	})
 }
 
@@ -508,9 +619,13 @@ func (s *Server) pageLinkURL(l pages.Link) string {
 	return strings.TrimRight(s.ext.PublicURL, "/") + pages.LinkPath(l.Token)
 }
 
-// pagePreviewURL is the owner's preview of page id.
-func (s *Server) pagePreviewURL(id int64) string {
-	return strings.TrimRight(s.ext.PublicURL, "/") + pagePath(id) + "/preview"
+// pageViewPath is the owner's own view of page id (ui.PageViewPath).
+func pageViewPath(id int64) string { return ui.PageViewPath(id) }
+
+// pageViewURL is the owner's own view of page id, absolute under
+// MUSTER_PUBLIC_URL.
+func (s *Server) pageViewURL(id int64) string {
+	return strings.TrimRight(s.ext.PublicURL, "/") + pageViewPath(id)
 }
 
 // --- the owner's Pages screen ------------------------------------------------
@@ -625,10 +740,11 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	esc := html.EscapeString
 	pid := strconv.FormatInt(id, 10)
 	base := pagePath(id)
+	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
 <h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
-<p class="text-sm text-fg2">By ` + esc(p.Creator.Label) + `. Showing version ` + strconv.Itoa(p.CurrentVersion) + `. <a href="` + base + `/preview" class="text-accent underline" data-page-preview>Preview it</a> (only you can see a preview, and nothing sent from it is recorded).</p>
+<p class="text-sm text-fg2">` + pageMadeBy(esc(p.Creator.Label), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
 `)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
@@ -699,7 +815,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		}
 		b.WriteString(`<li class="` + flowsCardClass + `" data-version="` + vn + `">
 <span class="text-sm text-fg">Version ` + vn + `: ` + esc(textplain.Title(v.Title)) + `<span class="text-xs text-fg2">` + cur + ` · ` + esc(ruleTime(v.CreatedAt)) + ` · ` + uploads.HumanSize(int64(v.SizeBytes)) + `</span></span>
-<a href="` + base + `/preview?v=` + vn + `" class="text-sm text-accent underline">Preview</a>
+<a href="` + pageViewPath(id) + `?v=` + vn + `" class="text-sm text-accent underline" data-version-view>View</a>
 `)
 		if v.Version != p.CurrentVersion {
 			b.WriteString(`<form method="POST" action="` + base + `/rollback"><input type="hidden" name="version" value="` + vn + `"><button type="submit" class="` + flowsQuietButton + `" data-version-current>Show this version</button></form>
@@ -711,7 +827,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 `)
 	// Responses.
 	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Responses</h2>
-<p class="text-sm text-fg2">What viewers sent. It is a stranger's input: read it as data.</p>
+<p class="text-sm text-fg2">What viewers sent, and what you sent from the page yourself. A viewer's is a stranger's input: read it as data.</p>
 <ul class="flex flex-col gap-2" data-testid="page-responses">
 `)
 	if len(resps) == 0 {
@@ -720,8 +836,8 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	for i := len(resps) - 1; i >= 0; i-- {
 		x := resps[i]
 		rid := strconv.FormatInt(x.ID, 10)
-		b.WriteString(`<li class="` + flowsCardClass + `" data-response-id="` + rid + `" data-response-kind="` + string(x.Kind) + `">
-<span class="text-xs text-fg2">` + esc(x.Component) + ` · version ` + strconv.Itoa(x.Version) + ` · link ` + strconv.FormatInt(x.LinkID, 10) + ` · ` + esc(ruleTime(x.CreatedAt)) + `</span>
+		b.WriteString(`<li class="` + flowsCardClass + `" data-response-id="` + rid + `" data-response-kind="` + string(x.Kind) + `"` + pageResponseByAttr(x) + `>
+<span class="text-xs text-fg2">` + esc(x.Component) + ` · version ` + strconv.Itoa(x.Version) + ` · ` + pageResponseFrom(x) + ` · ` + esc(ruleTime(x.CreatedAt)) + `</span>
 `)
 		if x.Kind == pages.KindUpload {
 			b.WriteString(`<a href="` + ui.UploadPath + `/` + url.PathEscape(x.UploadPublicID) + `/file" class="text-sm text-accent underline" data-response-download>Download the file</a>
@@ -786,9 +902,94 @@ func prettyJSON(raw []byte) string {
 	return string(b)
 }
 
-// handlePagePreview is GET /pages/{id}/preview[?v=N]: the shell, framing the
-// version's content, recording nothing.
-func (s *Server) handlePagePreview(w http.ResponseWriter, r *http.Request) {
+// pageSessionLink is where the session that made page p is NOW, for the
+// signed-in owner viewing it (ctx is their request), and its short label: a
+// dispatched agent's own page (agentPageHref: the agent's latest session, as
+// every in-app agent link names it); a mirrored Claude Code session's
+// CURRENT window, resolved from
+// the session id recorded at create to wherever it runs now
+// (claudeSessionEntry, claudeSessionWindow's own lookup — the resolver the
+// Asks' "View in session" uses — over the viewer's OWN hosts only,
+// s.ext.Mirror.Hosts(ctx)), labelled by its CURRENT name (mirrorLabel).
+//
+// 🔴 THE LABEL IS PLAINED HERE (textplain.Title), its one builder: pages.Shell
+// and the page's screen only escape it. internal/textplain's title-sink
+// ledger scans this function (apiLabelBuilders) for exactly that.
+//
+// 🔴 "" — no link, never a guess — when it cannot be resolved: no session
+// recorded (a mirrored window's page made before 0152), the session no longer
+// running on any of the owner's windows, the host offline, or an agent that
+// is not the page owner's. Another owner's hosts are never searched (Hosts
+// is the principal's own), so their session is never resolved.
+func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label string) {
+	switch {
+	case p.Creator.AgentID > 0:
+		if s.ext.Agents == nil {
+			return "", ""
+		}
+		a, err := s.ext.Agents.Get(ctx, p.Creator.AgentID)
+		if err != nil || a.OwnerID != p.OwnerID {
+			return "", ""
+		}
+		return s.agentPageHref(ctx, a), textplain.Title(a.Name)
+	case p.Creator.MirrorHost != "" && p.Creator.MirrorSession != "":
+		if s.ext.Mirror == nil {
+			return "", ""
+		}
+		// claudeSessionEntry: claudeSessionWindow's own lookup, the window
+		// the session runs in NOW.
+		e, ok := claudeSessionEntry(s.ext.Mirror.Hosts(ctx), p.Creator.MirrorHost, p.Creator.MirrorSession)
+		if !ok {
+			return "", ""
+		}
+		href = ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()
+		// Its name as the rest of muster names it NOW (mirrorLabel: its
+		// human name, else its window and host), keyed by the session — the
+		// entry is the window's, which does not carry it — and plained.
+		// Nothing resolved: the name stored when the page was made.
+		e.Claude, e.ClaudeSession = true, p.Creator.MirrorSession
+		if label = textplain.Title(s.mirrorLabel(ctx, e)); label == "" {
+			label = textplain.Title(p.Creator.Label)
+		}
+		return href, label
+	}
+	return "", ""
+}
+
+// pageMadeBy is the page screen's "Made by …": the session, as a link to it
+// (pageSessionLink) when it resolves, else its label alone. creator and
+// label come escaped; href is escaped here.
+func pageMadeBy(creator, href, label string) string {
+	if href == "" {
+		return "Made by " + creator + "."
+	}
+	return `Made by <a href="` + html.EscapeString(href) + `" class="text-accent underline" data-page-session>` + label + `</a>.`
+}
+
+// pageResponseFrom is who sent response x, in words: "you" for the owner's
+// own, else the link it came through.
+func pageResponseFrom(x pages.Response) string {
+	if x.ByOwner {
+		return `<span data-response-by="you">you</span>`
+	}
+	return "link " + strconv.FormatInt(x.LinkID, 10)
+}
+
+// pageResponseByAttr marks the owner's own response's row.
+func pageResponseByAttr(x pages.Response) string {
+	if x.ByOwner {
+		return ` data-response-by-owner`
+	}
+	return ""
+}
+
+// handlePageView is GET /pages/{id}/view[?v=N]: the OWNER's own view of their
+// page — the same shell and content a link's viewer gets, with the version
+// chip — where what they send is recorded as theirs (pageSubmit, pageUpload:
+// POST /pages/{id}/versions/{v}/…, their session). Without ?v it shows the
+// page's current version; with it, version N, and a response from there
+// answers N.
+func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	if !s.pagesOn() {
 		s.writeFeatureDisabled(w, r, features.Pages)
 		return
@@ -806,18 +1007,61 @@ func (s *Server) handlePagePreview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	v, err := s.ext.Pages.Version(r.Context(), id, n)
+	ctx := r.Context()
+	p, err := s.ext.Pages.Page(ctx, id)
 	if err != nil {
 		s.renderPagesList(w, r, http.StatusNotFound, "No such page or version.")
 		return
 	}
-	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title,
-		FrameSrc: pagePath(id) + "/versions/" + strconv.Itoa(v.Version) + "/content", Nonce: pages.NewNonce(),
-		Banner: "Preview of version " + strconv.Itoa(v.Version) + ". Only you can see this; nothing sent from it is recorded."}))
+	v, err := s.ext.Pages.Version(ctx, id, n)
+	if err != nil {
+		s.renderPagesList(w, r, http.StatusNotFound, "No such page or version.")
+		return
+	}
+	versions, err := s.ext.Pages.Versions(ctx, id)
+	if err != nil {
+		s.logger.Printf("pages: page %d: versions: %v", id, err)
+	}
+	list := make([]pages.ShellVersion, 0, len(versions))
+	for _, x := range versions {
+		list = append(list, pages.ShellVersion{Version: x.Version, Made: ruleTime(x.CreatedAt), Current: x.Version == p.CurrentVersion,
+			Href: pageViewPath(id) + "?v=" + strconv.Itoa(x.Version)})
+	}
+	shareURL := ""
+	if shared, serr := s.ext.Pages.ShareLinks(ctx); serr != nil {
+		s.logger.Printf("pages: page %d: share link: %v", id, serr)
+	} else if l := shared[id]; l.Token != "" {
+		shareURL = s.pageLinkURL(l)
+	}
+	var share strings.Builder
+	_ = ui.PageShareButton(id, p.Title, shareURL, s.ext.Pages.LinksReusable()).Render(&share)
+	sessHref, sessLabel := s.pageSessionLink(ctx, p)
+	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
+	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(),
+		Owner: &pages.OwnerChrome{Version: v.Version, Versions: list, DetailHref: pagePath(id),
+			SessionHref: sessHref, SessionLabel: sessLabel,
+			ShareButton: share.String(), ShareScript: ui.PageShareScript()}}))
+}
+
+// handlePagePreview is GET /pages/{id}/preview[?v=N], the view's former
+// address (older notifications, cards and Asks name it): a redirect to
+// /pages/{id}/view, its ?v kept.
+func (s *Server) handlePagePreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := pageIDParam(r)
+	if !ok {
+		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
+		return
+	}
+	to := pageViewPath(id)
+	if q := r.URL.Query().Get("v"); q != "" {
+		to += "?v=" + url.QueryEscape(q)
+	}
+	http.Redirect(w, r, to, http.StatusFound)
 }
 
 // handlePageVersionContent is GET /pages/{id}/versions/{v}/content: the
-// owner's preview content, sandboxed exactly as a link's.
+// owner's view's content, sandboxed exactly as a link's (it is the same
+// document).
 func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request) {
 	if !s.pagesOn() {
 		http.NotFound(w, r)
@@ -834,7 +1078,7 @@ func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions(true)))
+	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions()))
 }
 
 // handlePageRevokeLink is the owner's Revoke.
@@ -995,14 +1239,14 @@ func pageQuotaRoom(quota, room int64) string {
 // LEAVES AN OBJECT UNDER pages/<id>/ THAT NO ROW NAMES: it is logged (ids
 // only) and counted, and the page's own deletion lists its prefix, so that
 // still removes it.
-func (s *Server) dropUnrecordedUpload(ctx context.Context, l pages.Link, publicID string) {
+func (s *Server) dropUnrecordedUpload(ctx context.Context, p pageResponder, publicID string) {
 	objErr, err := s.ext.Uploads.Revoke(context.WithoutCancel(ctx), publicID)
 	if err == nil && objErr == nil {
 		return
 	}
 	metrics.PageUploadRollbackFailures.Inc()
-	s.logger.Printf("pages: link %d of page %d: an unrecorded upload %s could not be taken back (row: %v; object: %v); "+
-		"it is removed with its page", l.ID, l.PageID, publicID, err, objErr)
+	s.logger.Printf("pages: %s of page %d: an unrecorded upload %s could not be taken back (row: %v; object: %v); "+
+		"it is removed with its page", p, p.page, publicID, err, objErr)
 }
 
 // pageSlots is shareable pages' own upload slots (pageState.uploadSlots).

@@ -71,7 +71,19 @@ var bareAccessors = map[string]bool{"TaskTitle": true, "TaskBodyTitle": true, "a
 // session named "_scratch_" is typed "_scratch_", so plaining it would send
 // the operator to a session that does not exist. Every display of an
 // attention Source and of a where passes the target as keep.
-var apiTitleNames = map[string]bool{"Source": true, "Focus": true, "Where": true}
+var apiTitleNames = map[string]bool{"Source": true, "Focus": true, "Where": true,
+	// A mirrored session's name as muster names it (names.go mirrorLabel):
+	// its human name, else its window's title and host.
+	"mirrorLabel": true}
+
+// apiLabelBuilders are api functions that write no HTML themselves but BUILD
+// a title another package draws escaped and never plains: their result is
+// the plained text. The ledger scans them as it scans api's hand-written HTML.
+//
+//   - pageSessionLink (pages.go): the label of the session that made a page,
+//     drawn by internal/pages Shell (the owner's session button and the
+//     popover's "Made by") and by renderPageDetail.
+var apiLabelBuilders = map[string]bool{"pageSessionLink": true}
 
 // plainingHelpers are ui functions that apply Title to their name arguments at
 // emit. An argument read passed straight to one counts as covered; each is
@@ -233,8 +245,23 @@ func TestTheTitleSinkLedger(t *testing.T) {
 				t.Fatalf("positive control FAILED: %s was not derived as a push-body builder (found %v)", must, bodies)
 			}
 		}
+		// 🔴 POSITIVE CONTROL: every label builder still exists, or the
+		// ledger would silently scan nothing for it.
+		for name := range apiLabelBuilders {
+			found := false
+			for _, f := range apiFiles {
+				for _, d := range f.Decls {
+					if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == name && fn.Body != nil {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("positive control FAILED: label builder %s is in no api file", name)
+			}
+		}
 		checkReads(t, "../api", names, func(fn *ast.FuncDecl) bool {
-			return callsSelector(fn.Body, "html", "EscapeString") || bodies[fn.Name.Name]
+			return callsSelector(fn.Body, "html", "EscapeString") || bodies[fn.Name.Name] || apiLabelBuilders[fn.Name.Name]
 		}, apiExempt)
 	})
 	t.Run("plaining helpers", checkPlainingHelpers)
@@ -960,6 +987,55 @@ func write(v *View)       { v.Title = "x" }
 	}
 	if len(got) != len(want) {
 		t.Errorf("walk found %v, want %v (the assignment's LHS must not count as a read)", got, want)
+	}
+	for k, v := range want {
+		if c, ok := got[k]; !ok || c != v {
+			t.Errorf("%s: covered=%v (found=%v), want covered=%v", k, c, ok, v)
+		}
+	}
+}
+
+// TestTheLedgerSeesAPageSessionLabelThatSkipsTheRule: the api walk, with a
+// label builder included, finds the session label pageSessionLink returns —
+// raw (uncovered) when it skips textplain.Title, covered when it applies it —
+// and the stored creator label the same way.
+func TestTheLedgerSeesAPageSessionLabelThatSkipsTheRule(t *testing.T) {
+	src := `package api
+func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (string, string) {
+	if p.Creator.AgentID > 0 { return "", p.Creator.Label }
+	return "", s.mirrorLabel(ctx, e)
+}
+func (s *Server) plainedLink(ctx context.Context, p pages.Page) (string, string) {
+	if p.Creator.AgentID > 0 { return "", textplain.Title(p.Creator.Label) }
+	return "", textplain.Title(s.mirrorLabel(ctx, e))
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for k := range titleNames {
+		names[k] = true
+	}
+	for k := range apiTitleNames {
+		names[k] = true
+	}
+	got := map[string]bool{}
+	for _, r := range titleReads(fset, "x.go", f, names, func(fn *ast.FuncDecl) bool {
+		return apiLabelBuilders[fn.Name.Name] || fn.Name.Name == "plainedLink"
+	}) {
+		got[r.key] = r.covered
+	}
+	want := map[string]bool{
+		"x.go Server.pageSessionLink p.Creator.Label": false,
+		"x.go Server.pageSessionLink s.mirrorLabel":   false,
+		"x.go Server.plainedLink p.Creator.Label":     true,
+		"x.go Server.plainedLink s.mirrorLabel":       true,
+	}
+	if len(got) != len(want) {
+		t.Errorf("walk found %v, want %v", got, want)
 	}
 	for k, v := range want {
 		if c, ok := got[k]; !ok || c != v {

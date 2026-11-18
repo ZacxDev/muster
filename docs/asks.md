@@ -79,10 +79,13 @@ by default so the volume is measured before the classifier is spent on it.
 The point of the log is to find the questions your agents could have answered
 themselves. Three readers, all of **your own** asks only:
 
-- **The Asks page's Log tab** (`/attention?tab=log`). Filters on top — kind,
+- **The Asks page's Log tab** (`/attention?tab=log`). Every filter — kind,
   outcome, who answered, when (the last 24 hours, 7 days, 30 days, or every
-  row kept), and behind *More filters* the runtime, host, repository and
-  session. Then the summary of the filtered asks, then the asks themselves,
+  row kept), the runtime, host, repository and session — is behind one
+  **Filters** toggle, shut when the tab opens; it says how many are set
+  (*Filters (2)*). Kinds are named plainly: *Question in chat*, *Question with
+  choices*, *Agent's question*, *opencode question*, *opencode permission
+  request*. Then the summary of the filtered asks, then the asks themselves,
   newest first, 50 a page (*Older* / *Newest*). The tab's panel is read when
   you open it, not with the rest of the Asks page. With `MUSTER_ASK_LOG` off
   the page has no Log tab; on, with nothing recorded yet, it says that; with

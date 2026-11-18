@@ -40,9 +40,10 @@ import (
 // (POST PageSharePath), which answers with the page's CURRENT reusable link,
 // making one when it has none.
 //
-// Open goes to the PREVIEW (/pages/{id}/preview), not the page's settings
-// screen: "bring it up" is the page itself, as a viewer sees it, one tap
-// away; the settings screen (links, versions, responses) is in the ⋯ menu.
+// Open goes to the owner's VIEW of the page (/pages/{id}/view), not its
+// settings screen: "bring it up" is the page itself, as a viewer sees it, one
+// tap away, and what the owner sends from it is recorded as theirs; the
+// settings screen (links, versions, responses) is in the ⋯ menu.
 
 // The page tools a card is drawn for.
 const (
@@ -62,8 +63,9 @@ const (
 // The owner's page paths (internal/api pages.go serves them).
 func pageBase(id int64) string { return "/pages/" + strconv.FormatInt(id, 10) }
 
-// PagePreviewPath is page id's preview (what Open opens).
-func PagePreviewPath(id int64) string { return pageBase(id) + "/preview" }
+// PageViewPath is the owner's own view of page id (what Open opens). Its
+// former address, /pages/{id}/preview, redirects here.
+func PageViewPath(id int64) string { return pageBase(id) + "/view" }
 
 // PageDetailPath is page id's own screen.
 func PageDetailPath(id int64) string { return pageBase(id) }
@@ -296,12 +298,40 @@ func PageCard(v PageCardView, id string) g.Node {
 			Span(g.Attr("data-page-card-title", ""), Class("min-w-0 truncate text-sm font-semibold text-fg"), g.Text(t))),
 		P(g.Attr("data-page-card-note", ""), g.If(live != "", g.Attr("data-note-live", live)), Class("break-words text-xs text-muted"), g.Text(note)),
 		Div(Class("flex flex-wrap items-center gap-2"),
-			A(Href(PagePreviewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
+			A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
 			PageShareButton(v.ID, v.Title, "", v.Reusable),
 			PageShareMenu(v.ID, v.Title, true)),
 	)
 }
+
+// cgCopyTextJS defines window.cgCopyText(text): a Promise that resolves once
+// text is on the clipboard (the async Clipboard API, else a hidden textarea's
+// execCommand). appScript's cgCopy and the page Share button (pageShareJS)
+// use it.
+const cgCopyTextJS = `  window.cgCopyText = function (text) {
+    return new Promise(function (resolve, reject) {
+      function fallback() {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          var ok = document.execCommand('copy'); document.body.removeChild(ta);
+          if (ok) resolve(); else reject(new Error('copy refused'));
+        } catch (e) { reject(e); }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(resolve, fallback);
+      } else { fallback(); }
+    });
+  };
+`
+
+// PageShareScript is the page Share button's behaviour with what it needs,
+// for a document without appScript: the owner's own view of a page (its
+// shell, internal/pages Shell), whose version popover carries the same
+// PageShareButton. A toast needs an #action-toasts element on the page.
+func PageShareScript() string { return cgCopyTextJS + pageShareJS }
 
 // pageShareJS is the Share button's and the ⋯ menu's behaviour, in appScript
 // (every document with the nav: the chat, the mirrored view, the Pages

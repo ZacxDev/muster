@@ -161,7 +161,7 @@ async function openCard(page: Page) {
   const card = page.locator(`[data-page-card][data-page-id="${pageID}"]`);
   await expect(card, `the page card is drawn (mirror log:\n${mirrorLog})`).toBeVisible({ timeout: 20_000 });
   await expect(card.locator('[data-page-card-title]')).toHaveText(TITLE);
-  await expect(card.getByRole('link', { name: `Open “${TITLE}”` })).toHaveAttribute('href', `/pages/${pageID}/preview`);
+  await expect(card.getByRole('link', { name: `Open “${TITLE}”` })).toHaveAttribute('href', `/pages/${pageID}/view`);
   return card;
 }
 

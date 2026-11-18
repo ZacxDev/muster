@@ -257,13 +257,12 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 		}
 		for _, m := range tags {
 			mic, input := m[1], m[2]
-			// The ask page's composer and the Asks list's cards draw the round
-			// ↑ (ui.DictateSendPill); a session page's block the wide one.
+			// Every box draws the round ↑ (ui.DictateSendPill): the Asks list's
+			// cards and a session page's block are ONE form since the design
+			// review (a block drew the wide one).
 			submit, shape := input+"-submit", "rounded-full px-5"
 			if mic == "ask-dictate" {
 				submit = "ask-send"
-			} else if name == "a block" {
-				shape = "flex-1 rounded-md"
 			}
 			tag := regexp.MustCompile(`<button id="` + mic + `" type="button"[^>]*>`).FindString(page)
 			for _, want := range []string{`data-dictate-wave="` + mic + `-wave"`, `data-dictate-arrow="` + mic + `-send"`} {
