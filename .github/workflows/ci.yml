@@ -496,9 +496,26 @@ jobs:
       - name: the verdict over every process, and every exit status
         run: |
           set -o pipefail
-          cat "$RUNNER_TEMP"/go-test.*.json | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)
+          cat "$RUNNER_TEMP"/go-test.*.json | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)
           [ "$(wc -l < "$RUNNER_TEMP/go-test.rcs")" = "$MUSTER_TEST_PROCS" ] || { echo "missing exit statuses" >&2; exit 1; }
           while read -r rc; do [ "$rc" = 0 ] || exit "$rc"; done < "$RUNNER_TEMP/go-test.rcs"
+
+      # PER-TEST TIMINGS: the `-json` stream above, tee'd (the SAME union of the
+      # shard's processes the verdict read, never a second run), kept for an external weekly
+      # per-test timing report, which ranks slow and flaky tests across runs. `!cancelled()` so a red run's timings are kept too: a flake
+      # is a pass and a fail on one sha. Its own `test-times-` name, so no
+      # download pattern in this workflow (`e2e-results-*`) can pick it up.
+      # One artifact per ATTEMPT (`-a<run_attempt>`): a re-run of a red shard would
+      # otherwise collide on the name, and the red attempt plus its green re-run on
+      # one sha is exactly the flake the reader counts.
+      - name: keep the go test -json stream (per-test timings)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test.json
+          if-no-files-found: warn
+          retention-days: 8
 
       # Saved even when a test failed: Go never caches a failing result, and
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
