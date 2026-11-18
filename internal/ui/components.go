@@ -1011,7 +1011,7 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
 				// The Connectors tab, when its feature is off: not dropped
-				// silently, but a muted entry saying so, linking to its row on
+				// silently, but a muted entry saying so, linking to its ⓘ sheet on
 				// the Features page — for an ADMIN, who can turn it on. Anyone
 				// else is never sent to a page of server settings (the operator
 				// rule: how-to-enable details are an admin's), so theirs is
@@ -1075,7 +1075,7 @@ func accountLinks(feat Features, activeTab, currentTab string) g.Node {
 }
 
 // featureOffNavLink is a nav entry for a page whose feature is off: muted, and
-// labelled as off, linking to that feature's row on the Features page (where
+// labelled as off, linking to that feature's ⓘ sheet on the Features page (where
 // the line that turns it on is) instead of to the page itself.
 func featureOffNavLink(id, feature, label, icon string) g.Node {
 	return A(ID(id), Href(FeatureHref(feature)), hx("hx-boost", "false"), g.Attr("data-feature-off", feature),

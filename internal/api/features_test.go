@@ -174,8 +174,11 @@ func TestTheFeaturesPageRendersEachRowWithItsState(t *testing.T) {
 			t.Errorf("no %s row in state %s", c.id, c.state)
 		}
 	}
-	if !strings.Contains(body, `<pre data-feature-enable`) || !strings.Contains(body, "EXAMPLE_STT_TOKEN=&lt;value&gt;") {
-		t.Error("the dictation row does not show its .env line")
+	// The .env line is the code of the row's ⓘ sheet (an admin's: the
+	// password operator), and what its Copy button copies.
+	if !strings.Contains(body, `id="dictation-setup" popover="auto"`) || !strings.Contains(body, `data-info-code="">EXAMPLE_STT_TOKEN=&lt;value&gt;</code>`) ||
+		!strings.Contains(body, `data-copy-text="EXAMPLE_STT_TOKEN=&lt;value&gt;"`) {
+		t.Error("the dictation row's sheet does not hold its .env line")
 	}
 	if !strings.Contains(body, "data-features-counts") {
 		t.Error("no counts line")
@@ -299,7 +302,7 @@ func (fakeTranscriberForFeatures) Transcribe(context.Context, io.Reader, string)
 func TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
 	off := askComposerHTML(r, attention.Ask{ID: 9}, "", true)
-	if !strings.Contains(off, `id="ask-dictate-off" href="/account/features#dictation"`) || strings.Contains(off, `id="ask-dictate"`) {
+	if !strings.Contains(off, `id="ask-dictate-off" href="/account/features#dictation-setup"`) || strings.Contains(off, `id="ask-dictate"`) {
 		t.Errorf("ask page, dictation off: %s", off)
 	}
 	on := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false)
@@ -308,7 +311,7 @@ func TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff(t *testing.T) {
 	}
 	item := attentionItem{Kind: attentionKindAsk, AskID: 12, dictateOff: true}
 	list := attentionItemsHTMLTo([]attentionItem{item}, time.Now(), "")
-	if !strings.Contains(list, `id="answer-12-dictate-off" href="/account/features#dictation"`) {
+	if !strings.Contains(list, `id="answer-12-dictate-off" href="/account/features#dictation-setup"`) {
 		t.Errorf("Asks list, dictation off: no muted mic in the answer box")
 	}
 	item.dictate, item.dictateOff = ui.TranscribePath, false

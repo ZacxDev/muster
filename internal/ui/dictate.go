@@ -327,7 +327,7 @@ func dictateSend(path, buttonID string, shape DictateSendShape, submit, hide []s
 const DictateOffLabel = "Dictation is off on this server — how to turn it on"
 
 // dictateOffControl is the mic's place when the server has no dictation: a
-// muted mic that links to the feature's row on the Features page. Shown
+// muted mic that links to the feature's ⓘ sheet on the Features page. Shown
 // without script (it is a plain link), unlike the real mic. id is the box's
 // own (one per answer box on the Asks list).
 //

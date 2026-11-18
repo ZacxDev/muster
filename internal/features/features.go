@@ -148,6 +148,14 @@ type Feature struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// PlainName and OneLine are what the Features page's TOP LAYER says (the
+	// operator rule: muster is for people who are not engineers): a name a
+	// non-engineer recognises, and one plain sentence of what it does — no
+	// variable, command, profile, flag or product internals. Name and
+	// Description stay what the doctor, the docs and the hints use; they and
+	// every setup line are behind the row's ⓘ, an admin's only.
+	PlainName string `json:"plain_name,omitempty"`
+	OneLine   string `json:"one_line,omitempty"`
 	// Core: part of the documented install (the Compose stack, its Postgres,
 	// muster-mirror and tmux). Everything else is optional.
 	Core bool `json:"core"`
@@ -177,6 +185,16 @@ type Feature struct {
 	// Reason is why the feature is off or misconfigured ("" when on), or, for
 	// a feature that is on, what it still depends on ("" when nothing).
 	Reason string `json:"reason,omitempty"`
+}
+
+// ShownName is the name the Features page shows: PlainName, or Name for an entry
+// that has none (a test's synthetic catalog; the real one gives every entry
+// one, cmd/muster-server's TestEveryFeatureHasAPlainNameAndOneLine).
+func (f Feature) ShownName() string {
+	if f.PlainName != "" {
+		return f.PlainName
+	}
+	return f.Name
 }
 
 // Docs is the feature's docs reference, e.g. docs/features.md#dictation.
