@@ -67,7 +67,7 @@ func headerFolded(v AgentDetailView) bool {
 func foldedHeader(v AgentDetailView) g.Node {
 	return Header(
 		g.Attr("data-folded-header", ""),
-		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur lg:pl-72"),
+		Class(StickyHeaderClass+" lg:pl-72"),
 		Div(
 			// py-1.5: a mirrored session's header's (MirrorViewPage) — the row is
 			// its 44px controls, so the two headers are one height.

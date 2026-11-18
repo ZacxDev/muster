@@ -111,9 +111,22 @@ const (
 // label's; a visually-hidden ", " between them makes a screen reader say
 // "Questions, 2" rather than "Questions2".
 func AsksGroupLabel(id, label string, n int) string {
-	return `<h2 id="` + html.EscapeString(id) + `" class="flex items-center gap-2 px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-asks-group-label>` +
+	return `<h2 id="` + html.EscapeString(id) + `" class="` + AsksGroupLabelClass + `" data-asks-group-label>` +
 		html.EscapeString(label) + `<span class="sr-only">, </span><span class="` + AsksPillClass + ` tabular-nums" data-asks-group-count>` +
 		strconv.Itoa(n) + `</span></h2>`
+}
+
+// AsksGroupLabelClass is THE Asks page's section heading: small, upper case,
+// tracked. Every group and section heading on the page carries it — with a
+// count (AsksGroupLabel) or without (AsksSectionLabel) — so no tab reads as
+// a second design.
+const AsksGroupLabelClass = "flex items-center gap-2 px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg2"
+
+// AsksSectionLabel is a section heading with no count: AsksGroupLabel's look,
+// for a section whose number is already on screen (the ask log's breakdowns,
+// whose rows carry their own counts).
+func AsksSectionLabel(id, label string) string {
+	return `<h2 id="` + html.EscapeString(id) + `" class="` + AsksGroupLabelClass + `" data-asks-group-label>` + html.EscapeString(label) + `</h2>`
 }
 
 // AsksChevron is the "opens" mark at a linked head's or row's end.

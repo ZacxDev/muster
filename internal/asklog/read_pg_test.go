@@ -124,7 +124,9 @@ func TestTheSummaryIsTheOwnersRowsOnly(t *testing.T) {
 	if s.MedianAnswer != 40*time.Second || s.P90Answer != 128*time.Second {
 		t.Errorf("median %s p90 %s; want 40s and 2m8s", s.MedianAnswer, s.P90Answer)
 	}
-	want := []TopQuestion{{Norm: "shall i continue", Count: 3, ByOwner: 2, MedianAnswer: 20 * time.Second, TopAnswer: "yes", TopAnswerCount: 2,
+	// Question: the NEWEST of its rows' own text (cont3's), as the owner saw it
+	// — not cont2's lower-case "shall I continue?" nor cont1's two sentences.
+	want := []TopQuestion{{Norm: "shall i continue", Question: "Shall I continue?", Count: 3, ByOwner: 2, MedianAnswer: 20 * time.Second, TopAnswer: "yes", TopAnswerCount: 2,
 		LastAsked: t0.Add(3 * time.Hour)}}
 	for i := range s.Top {
 		s.Top[i].LastAsked = s.Top[i].LastAsked.UTC()
