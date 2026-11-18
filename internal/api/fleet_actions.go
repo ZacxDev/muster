@@ -521,6 +521,17 @@ func fleetMirrorDelivery(h mirror.HostView, e mirror.SessionView) fleetDelivery 
 // "moved on" predicate) and — when one was recorded — the same pull request
 // head. nudgeUnknown when any of it cannot be read: never moved on.
 func (s *Server) fleetStillOn(ctx context.Context, a fleet.Action) nudgeState {
+	switch {
+	case a.Class == fleet.ClassAnswerPick:
+		// A picker on screen is a WAITING window, not an idle one: the stop
+		// and the held question itself are what must still hold.
+		return s.fleetPickStillOn(ctx, a)
+	case a.Evidence.MergeCheck:
+		// merge_when_green: its merge check holds again, on the same head.
+		if st := s.fleetMergeStillOn(ctx, a); st != nudgeStalled {
+			return st
+		}
+	}
 	d := chiefnudge.Decision{Kind: a.SubjectKind, Key: a.SubjectKey, Host: a.Host, TmuxSession: a.TmuxSession, Window: a.Window,
 		AgentID: a.AgentID, ChatSessionID: a.ChatSessionID, StreakKey: a.StreakKey, EpisodeID: a.EpisodeID}
 	// DecidedAt stays zero: an episode PUSHED after the proposal is not moved
@@ -611,7 +622,12 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 			return fleetApproveResult{note: FleetNotDeliverable + why}
 		}
 	}
-	if a.Class == fleet.ClassClose {
+	switch a.Class {
+	case fleet.ClassAnswerPick:
+		// Typed into the picker as the owner's tap types it: no text, no
+		// attribution line (a picker takes an option, not a paste).
+		return s.fleetDeliverPick(ctx, a)
+	case fleet.ClassClose:
 		return s.fleetDeliverClose(ctx, a)
 	}
 	body := fleet.Body(s.personName(ctx, requestOwner(ctx)), s.now(), a.Text)

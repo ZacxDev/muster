@@ -483,37 +483,64 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	att.shape(entry.Questions, choices)
+	res := s.typeAskChoices(r.Context(), h, e, key, entry, choices, answers)
+	if res.err != nil {
+		att.failed(res.err)
+	} else {
+		att.end(res.kind)
+	}
+	if !res.card {
+		if res.status == http.StatusNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, res.msg, res.status)
+		return
+	}
+	s.writeAskLive(w, res.status, questionCard(h, e, res.entry))
+}
+
+// askTyped is one typing of an answer into a held picker (typeAskChoices):
+// the entry as it stands after, the answer's status and — when card is false —
+// its plain-text refusal, the attempt's end (kind) and, for a typing that
+// failed, its error.
+type askTyped struct {
+	entry  askq.Entry
+	status int
+	card   bool
+	msg    string
+	kind   string
+	err    error
+}
+
+// typeAskChoices types choices (answers, as the CLI records them) into window
+// e's picker for question set entry (key): its host must answer asks, the
+// entry must not be typing already (a double submit is "duplicate", never
+// typed twice), and the host types it reading the pane before and after every
+// key. 🔴 THE ONE TYPING OF AN ANSWER: the person's card (handleMirrorAskAnswer)
+// and an approved fleet pick (fleet_answers.go) both type through it, so a pick
+// is typed exactly as the owner's tap on that picker would be.
+func (s *Server) typeAskChoices(ctx context.Context, h mirror.HostView, e mirror.SessionView, key askq.Key, entry askq.Entry,
+	choices []askq.Choice, answers map[string]string) askTyped {
 	a, can := s.ext.Mirror.(mirrorAsker)
 	if !can || !h.AskAnswer {
-		att.end("unsupported")
-		http.Error(w, mirror.ErrAskUnsupported.Error(), http.StatusConflict)
-		return
+		return askTyped{status: http.StatusConflict, msg: mirror.ErrAskUnsupported.Error(), kind: "unsupported"}
 	}
 	retrying := entry.State == askq.Failed
 	got, again, err := s.asks.BeginTyping(key, answers)
 	switch {
 	case errors.Is(err, askq.ErrNotFound):
-		att.end("not-found")
-		http.NotFound(w, r)
-		return
+		return askTyped{status: http.StatusNotFound, kind: "not-found"}
 	case errors.Is(err, askq.ErrBusy):
-		att.end("in-progress")
-		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, got))
-		return
+		return askTyped{entry: got, status: http.StatusConflict, card: true, kind: "in-progress"}
 	case errors.Is(err, askq.ErrClosed):
-		att.end("closed")
-		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, got))
-		return
+		return askTyped{entry: got, status: http.StatusConflict, card: true, kind: "closed"}
 	case err != nil:
-		att.end("invalid")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return askTyped{status: http.StatusBadRequest, msg: err.Error(), kind: "invalid"}
 	case again:
 		// The same answers again (a double submit): already typed, or being
 		// typed — never typed twice.
-		att.end("duplicate")
-		s.writeAskLive(w, http.StatusOK, questionCard(h, e, got))
-		return
+		return askTyped{entry: got, status: http.StatusOK, card: true, kind: "duplicate"}
 	}
 	// 🔴 NOT THE REQUEST'S CONTEXT: a page that goes away (a dropped
 	// connection, a closed tab) must not end the wait while the host may
@@ -530,22 +557,19 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 		prior.Reset = true
 	}
-	err = a.AnswerWindow(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, entry.Questions, choices, prior)
+	err = a.AnswerWindow(context.WithoutCancel(ctx), h.Host, e.Session, e.Window, entry.Questions, choices, prior)
 	metrics.MirrorAskTyping.WithLabelValues(askTypingResult(err)).Inc()
 	if err != nil {
-		att.failed(err)
 		s.logger.Printf("mirror: typing an answer into %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
 		failed, _ := s.asks.TypingFailed(key, askFailure(err, choices))
-		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, failed))
-		return
+		return askTyped{entry: failed, status: http.StatusConflict, card: true, err: err}
 	}
-	att.end("typed")
 	s.asks.TypingDone(key)
 	s.logger.Printf("mirror: typed an answer into %s/%s%s (%s)", h.Host, e.Session, e.Window, got.ID)
 	// The watcher resolves it from the CLI's record; a page reading this
 	// before then shows "typing".
 	now, _ := s.asks.Find(key)
-	s.writeAskLive(w, http.StatusOK, questionCard(h, e, now))
+	return askTyped{entry: now, status: http.StatusOK, card: true, kind: "typed"}
 }
 
 // askCancelFailure is what a card says when muster could not dismiss its
