@@ -632,7 +632,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if cfg.SessionState {
 			ext.Episodes = sessionstate.NewPG(a.pool)
 		}
-		// The fleet digest's marks (migration 0147): the "since you last
+		// The fleet digest's marks (migration 0148): the "since you last
 		// looked" baseline and the Fleet side chat (internal/api fleet_digest.go).
 		ext.Fleet = fleet.NewPG(a.pool)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
@@ -975,6 +975,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// A draft officer's public branches and their items (migration
 			// 0138): the only proof a public branch is the officer's.
 			ocfg.PublicBranches = officers.NewPGPublicBranchStore(a.pool)
+			// Which items an officer instance held while a pending connector
+			// grant refused it (migration 0148): an approval days later, after
+			// a restart or on the other replica, still re-runs them.
+			ocfg.ConnectorBlocks = officers.NewPGConnectorBlockStore(a.pool)
 			// A builtin officer's type, charter, switch and queue live here
 			// too (migration 0118); one declared with no database is refused.
 			ocfg.Builtin = officerStore
