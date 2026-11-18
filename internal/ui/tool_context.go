@@ -70,60 +70,23 @@ func (t *MirrorTranscript) Ledger() cctranscript.ToolContext { return t.ledger.C
 // very place this socket resumes from.
 func (t *MirrorTranscript) RestoreLedger(l cctranscript.ToolContext) { t.ledger = l.Clone() }
 
-// ctxBadge is a tool row's badge: its settled cost, or the hidden empty slot.
+// ctxBadge is a tool row's context slot, always hidden: its settled cost as
+// data (kind and tokens), or the empty slot.
+//
+// 🔴 NOT DRAWN (the operator rule: no token counters in the top layer —
+// "~+140 ctx" means nothing to someone who is not an engineer). The slot
+// carries only the measurement's kind and tokens, which the ledger's tests
+// read; no text node, no tooltip.
 func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
 	id := ctxBadgeID(toolRowID(toolID))
 	c, ok := t.costs[toolID]
 	if !ok {
 		return Span(ID(id), g.Attr("data-tool-ctx", ""), g.Attr("hidden", ""))
 	}
-	text, title := "+"+ctxCount(c.Tokens)+" ctx", ""
-	switch c.Kind {
-	case cctranscript.CostMeasured:
-		title = "Measured: the context grew " + groupDigits(c.Tokens) +
-			" tokens from the turn that made this call to the next one (the call, its result, anything else that turn wrote, and any small reminder the CLI adds)"
-	case cctranscript.CostSplit:
-		text = "~" + text
-		title = "About " + groupDigits(c.Tokens) + " tokens: a share of " + groupDigits(c.GroupTokens) +
-			" measured for " + strconv.Itoa(c.GroupSize) + " parallel calls, split by the size of each call and result (an image by its pixels)"
-	default:
-		text = "~" + text
-		why := "no usage was recorded to measure it by"
-		switch c.Why {
-		case cctranscript.WhyInterrupted:
-			why = "something else entered the context before the next turn (a message, a notice, or context the CLI injected), so the growth is not this call's alone"
-		case cctranscript.WhyShrank:
-			why = "the context shrank before the next turn (a compaction), so the growth cannot be measured"
-		}
-		rate := "about " + strconv.FormatFloat(cctranscript.ResultBytesPerToken, 'f', -1, 64) + " bytes per token (an image by its pixels)"
-		if c.OutputKnown {
-			title = "Estimated: this call's share of its turn's output (" + groupDigits(c.Output) + " tokens) plus its result at " + rate +
-				", a rate calibrated against measured Claude Code calls"
-		} else {
-			title = "Estimated from the call and result size at " + rate +
-				", a rate calibrated on Claude Code transcripts only: for another runtime or model it is not validated"
-		}
-		title += ". " + strings.ToUpper(why[:1]) + why[1:]
-	}
 	return Span(ID(id),
 		g.Attr("data-tool-ctx", c.Kind),
 		g.Attr("data-tool-ctx-tokens", strconv.FormatInt(c.Tokens, 10)),
-		g.Attr("title", title),
-		Class("ml-auto shrink-0 whitespace-nowrap font-mono text-[10px] tabular-nums text-muted"),
-		g.Text(text))
-}
-
-// ctxCount is a badge's token count, short and precise enough to compare
-// calls by: 950, 3.3k, 12k, 1.2M.
-func ctxCount(n int64) string {
-	switch {
-	case n < 1000:
-		return strconv.FormatInt(n, 10)
-	case n < 9950: // past it, one decimal would print "10.0k"
-		return strings.TrimSuffix(strconv.FormatFloat(float64(n)/1000, 'f', 1, 64), ".0") + "k"
-	default:
-		return tokenCount(n)
-	}
+		g.Attr("hidden", ""))
 }
 
 // groupDigits is n with thousands separators: 6,000.

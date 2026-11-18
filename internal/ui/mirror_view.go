@@ -99,6 +99,10 @@ type MirrorViewView struct {
 	// (a gated send's refusal, mirror.SendBlocked); "" says
 	// MirrorViewOnlyNote.
 	ViewOnlyWhy string
+	// ViewOnlySetting is the host setting a ViewOnly window's send waits on
+	// (mirror.SendOffSetting: opencode's "-interactive -opencode-send"), ""
+	// when that is not why: the composer's ⓘ shows it to an admin.
+	ViewOnlySetting string
 	// Agent is the Kind of a runtime other than Claude Code that this window
 	// SENDS to (launcher-bound opencode): the composer's words name it. "" for
 	// Claude Code, and for a ViewOnly window.
@@ -168,10 +172,6 @@ type MirrorViewView struct {
 	Plugins *PluginChips
 }
 
-// MirrorReadOnlyNote is what a read-only host's composer says instead of
-// accepting text.
-const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
-
 // MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
 // muster only views (opencode, docs/design/opencode.md).
 func MirrorViewOnlyNote(kind string) string {
@@ -185,7 +185,7 @@ func MirrorViewOnlyNote(kind string) string {
 func MirrorViewPage(v MirrorViewView) g.Node {
 	ref := MirrorRef{Owner: v.Owner, Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
-		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
+		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: MirrorReadOnlyPlaceholder,
 		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Upload: v.Upload, Queue: v.Queue,
 		DictateOff: v.DictateOff, UploadOff: v.UploadOff,
 		DraftKey: MirrorDraftKey(v.DraftUser, "view", v.Host, v.Session, v.Window),
@@ -198,6 +198,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// room by default, the ⋯ beside the message controls).
 		Collapsible: true, MoreInRow: true}
 	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
+	composer.Admin = v.Nav.Feat.Setup
 	// The session the view shows rides every message written here (a gated
 	// runtime's window): the script keeps it the one the stream draws.
 	if v.AgentSession != "" {
@@ -216,7 +217,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		if why == "" {
 			why = MirrorViewOnlyNote(v.ViewOnly)
 		}
-		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = why, "Sending to "+v.ViewOnly+" is not available", nil
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = why, "Replying is not turned on for this session", nil
+		composer.DisabledSetting, composer.DisabledSettingReply = v.ViewOnlySetting, true
 		composer.Suggest, composer.SuggestPaused = "", false
 	case v.Agent != "" && v.Interactive:
 		// A window muster sends to through its runtime's API: its own words;
@@ -225,7 +227,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		composer.Placeholder, composer.Aria = "Message "+v.Agent+"…", "Message "+v.Agent+" in this session"
 		composer.Suggest, composer.SuggestPaused = "", false
 	case !v.Interactive:
-		composer.Disabled = MirrorReadOnlyNote
+		composer.Disabled, composer.DisabledSetting = MirrorReadOnlyNote(v.Host), mirror.ViewOnlySetting
 	}
 	if v.Owner != 0 {
 		// A TEAM host's session (team sharing 2b.4): the form names the team
@@ -238,6 +240,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	if v.TeamNote != "" {
 		// ...watched, not typed into, by a viewer of the team (2b.3).
 		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = v.TeamNote, "Watching a team session", nil
+		composer.DisabledSetting, composer.DisabledDetail = "", ""
 	}
 	if v.Chief {
 		agent := "Claude"
@@ -325,6 +328,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("hidden", ""),
 					Class("border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words"),
 					Span(ID("mv-error-text")),
+					// The exact words the host or the hub sent, behind an ⓘ
+					// (hostDetailSlot): the line above is plain.
+					hostDetailSlot("mv-error-info", v.Nav.Feat.Setup),
 				),
 				Main(
 					ID("mv-log"),
@@ -441,7 +447,7 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 
 // mirrorViewTitle is the rendered view's header title: the window's name (its
 // label, qualifier and session, drawn as its card draws them) and its
-// "Mirrored · <host>" badge, on ONE line that clips with an ellipsis.
+// "On <host>" badge, on ONE line that clips with an ellipsis.
 //
 // 🔴 THE TITLE IS A BUTTON THAT OPENS THE WHOLE TITLE IN A POPOVER (an
 // operator ask: "allow clicking on the ellipses to see the full title"). At
@@ -501,7 +507,7 @@ func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
 		g.Attr("aria-expanded", "false"),
 		Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
 		mirrorViewEntryTitle(v),
-		Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
+		Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
 	)
 }
 
@@ -553,7 +559,7 @@ func mirrorViewName(v MirrorViewView) string {
 // mirrorViewDocTitle is the Rendered view's <title>: its name, then where it
 // is. The page and the drift offer's in-place answer both draw it.
 func mirrorViewDocTitle(v MirrorViewView) string {
-	return mirrorViewName(v) + " · Mirrored · muster"
+	return mirrorViewName(v) + " · " + MirrorBadgeText(v.Host) + " · muster"
 }
 
 // mirrorViewEntryTitle is the header's name node: the human name with its
@@ -567,7 +573,7 @@ func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 }
 
 // mirrorViewHeading is the header line as text: the name, then its badge's
-// "Mirrored · <host>". The full-title popover shows exactly this, so when only
+// "On <host>" (MirrorBadgeText). The full-title popover shows exactly this, so when only
 // the badge is clipped the popover still says what the header did not.
 //
 // 🔴 NO TMUX ADDRESS (operator rule: no ids in the top layer). It
@@ -575,7 +581,7 @@ func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 // "· tmux session scratch2" under a label); that is the header's ⓘ now
 // (mirrorViewTitleRow), with a Copy button.
 func mirrorViewHeading(v MirrorViewView) string {
-	return mirrorViewName(v) + " · Mirrored · " + v.Host
+	return mirrorViewName(v) + " · " + MirrorBadgeText(v.Host)
 }
 
 // mirrorTitleHitClass gives the title button a 44px-tall hit area (a thumb
@@ -1490,24 +1496,11 @@ func mirrorViewScript() g.Node {
   // end goes through here (a batch, a snapshot's paint, a resize), so a reset
   // drawn after the card arrived does not scroll the question away.
   function toEnd() { log.scrollTop = log.scrollHeight; if (window.musterAskHold) window.musterAskHold(); }
-  function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
-  function clearError() { errEl.hidden = true; errText.textContent = ''; }
+  var errInfo = document.getElementById('mv-error-info');` + hostDetailJS + `
+  function showError(msg, detail) { errText.textContent = msg; setDetail(errInfo, detail); errEl.hidden = false; }
+  function clearError() { errEl.hidden = true; errText.textContent = ''; setDetail(errInfo, ''); }
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-  // keepCtx: a redraw that carries an EMPTY context-badge slot (tool_context.go)
-  // where the page shows a filled one keeps the filled one. A socket that
-  // resumed did not settle the costs an earlier socket drew, so its redraw of
-  // that row or card (a subagent's summary, a question card) knows no badge;
-  // the badge the page has is still true. Only an empty, hidden slot gives way:
-  // a redraw that carries a badge of its own replaces it.
-  function keepCtx(oldEl, f) {
-    var slots = f.querySelectorAll('[data-tool-ctx][hidden]');
-    for (var i = 0; i < slots.length; i++) {
-      var id = slots[i].id, cur = id && (oldEl.id === id ? oldEl : oldEl.querySelector('#' + CSS.escape(id)));
-      if (cur && !cur.hidden && cur.getAttribute('data-tool-ctx')) slots[i].replaceWith(cur.cloneNode(true));
-    }
-  }
-
   var bulk = false;
   function apply(m) {
     var stick = bulk ? false : (nearBottom() || m.reset);
@@ -1546,7 +1539,7 @@ func mirrorViewScript() g.Node {
       // Only where it is: a subagent card's summary (subagent_cards.go).
       if (op.op === 'patch') {
         var pt = op.id && document.getElementById(op.id);
-        if (pt) { var pf = frag(op.html); keepCtx(pt, pf); pt.replaceWith(pf); }
+        if (pt) pt.replaceWith(frag(op.html));
         return;
       }
       if (op.op === 'result' && op.id) {
@@ -1568,7 +1561,6 @@ func mirrorViewScript() g.Node {
         if (old) {
           var f = frag(op.html), el = f.firstElementChild;
           if (el && old.open) el.open = true; // keep a row the reader expanded
-          keepCtx(old, f);
           old.replaceWith(f);
           // A row redrawn inside a group: the group's count and state follow it
           // (a resumed socket cannot redraw a group it never drew).
@@ -1714,7 +1706,7 @@ func mirrorViewScript() g.Node {
       else if (m.type === 'error') {
         clearQueued();
         endReason = m.reason || 'error';
-        if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp();
+        if (provisional) discard(); showError(m.message || 'The view ended.', m.detail || ''); caughtUp();
       }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }

@@ -44,7 +44,8 @@ type recencyStep struct {
 	// web/css/input.css (--mu-idle-<i>, both themes) — this package names no
 	// hue (TestNoHardCodedColourInUI).
 	Class string
-	// Name is the script's own word for the bucket: the dot's tooltip.
+	// Name is the dot's tooltip: how long ago, in words — not the script's
+	// own word for the bucket ("ancient"), which is jargon to a reader.
 	Name string
 }
 
@@ -53,14 +54,14 @@ type recencyStep struct {
 // 14400, 28800, 86400 — and its colours, in order: bright green, green, aqua,
 // yellow, orange, red, purple, grey.
 var recencySteps = []recencyStep{
-	{10 * time.Minute, "bg-idle-0", "fresh (under 10 min)"},
-	{30 * time.Minute, "bg-idle-1", "active (10–30 min)"},
-	{time.Hour, "bg-idle-2", "warm (30–60 min)"},
-	{2 * time.Hour, "bg-idle-3", "cooling (1–2 h)"},
-	{4 * time.Hour, "bg-idle-4", "idle (2–4 h)"},
-	{8 * time.Hour, "bg-idle-5", "stale (4–8 h)"},
-	{24 * time.Hour, "bg-idle-6", "dormant (8–24 h)"},
-	{0, "bg-idle-7", "ancient (over 24 h)"},
+	{10 * time.Minute, "bg-idle-0", "Last active under 10 minutes ago"},
+	{30 * time.Minute, "bg-idle-1", "Last active 10 to 30 minutes ago"},
+	{time.Hour, "bg-idle-2", "Last active 30 to 60 minutes ago"},
+	{2 * time.Hour, "bg-idle-3", "Last active 1 to 2 hours ago"},
+	{4 * time.Hour, "bg-idle-4", "Last active 2 to 4 hours ago"},
+	{8 * time.Hour, "bg-idle-5", "Last active 4 to 8 hours ago"},
+	{24 * time.Hour, "bg-idle-6", "Last active 8 to 24 hours ago"},
+	{0, "bg-idle-7", "Last active over a day ago"},
 }
 
 // recencyBucket is the index in recencySteps of an entry last active at t, as

@@ -190,12 +190,17 @@ func TestSendNowIsRefusedWhereASendIsAndWhereTheDispatchersDeliveryIs(t *testing
 		f.mirror.mu.Unlock()
 	}
 	set(true, false)
-	if code, body := post(it.ID); code != http.StatusConflict || !strings.Contains(body, "read-only") {
+	if code, body := post(it.ID); code != http.StatusConflict || !strings.Contains(body, "view-only") {
 		t.Fatalf("a read-only host: %d %q", code, body)
+	} else {
+		// Plain words: no flag, no raw "mirror:" error (the jargon audit).
+		assertPlainLine(t, "Send now on a view-only host", strings.TrimSpace(body))
 	}
 	set(false, false)
 	if code, body := post(it.ID); code != http.StatusConflict && code != http.StatusNotFound {
 		t.Fatalf("an offline host: %d %q", code, body)
+	} else if code == http.StatusConflict {
+		assertPlainLine(t, "Send now on an offline host", strings.TrimSpace(body))
 	}
 	set(true, true)
 	if got := f.row(t, it.ID); got.State != sendqueue.Queued || len(f.pasted()) != 0 {

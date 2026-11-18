@@ -308,7 +308,7 @@ func TestAVerifiedPanesViewSaysItIsSentTo(t *testing.T) {
 	d.send(t, mirror.Msg{Type: mirror.TypeWatch, ID: 4, Session: "o", Window: "@7"})
 	waitUntil(t, "the backfill", func() bool { evs, _, _ := watchEvents(d, 4); return len(evs) >= 1 })
 	evs, _, _ := watchEvents(d, 4)
-	if !strings.HasPrefix(evs[0].Text, "matched by title, verified: Alpha fixture") || !strings.Contains(evs[0].Output, "only while the pane still shows this session") {
+	if evs[0].Text != "Showing “Alpha fixture”" || evs[0].Output != OpenCodeFoundVerified {
 		t.Fatalf("the first row: %+v", evs[0])
 	}
 }

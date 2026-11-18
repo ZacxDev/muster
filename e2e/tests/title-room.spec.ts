@@ -268,7 +268,7 @@ for (const vp of [
         await title(page).click();
         await expect(pop(page)).toBeVisible();
         // The whole header line, the badge's host included.
-        await expect(pop(page)).toHaveText(`${titleOf(LONG)} · Mirrored · ${rig.host}`);
+        await expect(pop(page)).toHaveText(`${titleOf(LONG)} · On ${rig.host}`);
         await expect(title(page)).toHaveAttribute('aria-expanded', 'true');
         const box = (await pop(page).boundingBox())!;
         expect(box.x, 'the popover starts inside the screen').toBeGreaterThanOrEqual(0);

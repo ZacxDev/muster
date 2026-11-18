@@ -136,10 +136,10 @@ func TestTheHeaderDrawsTheSessionsTags(t *testing.T) {
 // TestBothViewsDrawTagsInTheHeaderAndNotTheRawSession: the Rendered and
 // Terminal views draw the tags after the title in the header, and neither
 // draws the raw tmux session name beside a label (data-mirror-session); it is
-// the title's tooltip on both, and in the Rendered view's full-title popover.
+// in the header's ⓘ when the page knows the address (never a tooltip).
 func TestBothViewsDrawTagsInTheHeaderAndNotTheRawSession(t *testing.T) {
 	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "scratch4", Label: "mango:1", Interactive: true, Tags: []string{"alpha", "beta"}}))
-	term := renderString(t, AgentTerminalPage(AgentTerminalView{Name: "scratch4", DisplayName: "mango:1", RawName: "scratch4", Badge: "Mirrored · tower",
+	term := renderString(t, AgentTerminalPage(AgentTerminalView{Name: "scratch4", DisplayName: "mango:1", RawName: "scratch4", Badge: MirrorBadgeText("tower"),
 		Tags: []string{"alpha", "beta"}}))
 	for name, page := range map[string]string{"rendered": view, "terminal": term} {
 		h := page[strings.Index(page, "<header"):]
@@ -150,13 +150,14 @@ func TestBothViewsDrawTagsInTheHeaderAndNotTheRawSession(t *testing.T) {
 		if strings.Contains(page, "data-mirror-session") || strings.Contains(h, `>scratch4<`) {
 			t.Errorf("%s: the raw session name is still drawn beside the label", name)
 		}
-		if !strings.Contains(h, `title="tmux session scratch4"`) {
-			t.Errorf("%s: the title lost its tmux-session tooltip", name)
+		// No tooltip spells the tmux session (F012: the ⓘ holds the address).
+		if strings.Contains(h, `title="tmux session`) {
+			t.Errorf("%s: the title still has a tmux-session tooltip", name)
 		}
 	}
 	// The full-title popover is the header line in words: no tmux session,
 	// no window index (the address is the header's ⓘ, when the page knows it).
-	if !strings.Contains(view, `>mango · Mirrored · tower</span>`) || strings.Contains(view, `tower · tmux session`) {
+	if !strings.Contains(view, `>mango · On tower</span>`) || strings.Contains(view, `tower · tmux session`) {
 		t.Error("the Rendered view's full-title popover is not the header line in words")
 	}
 }
