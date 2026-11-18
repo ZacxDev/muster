@@ -443,7 +443,24 @@ jobs:
           GODEBUG: gocachetest=1
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+
+      # PER-TEST TIMINGS: the `-json` stream above, tee'd (the SAME run the
+      # verdict read, never a second one), kept for an external weekly
+      # per-test timing report, which ranks slow and flaky tests across runs. `!cancelled()` so a red run's timings are kept too: a flake
+      # is a pass and a fail on one sha. Its own `test-times-` name, so no
+      # download pattern in this workflow (`e2e-results-*`) can pick it up.
+      # One artifact per ATTEMPT (`-a<run_attempt>`): a re-run of a red shard would
+      # otherwise collide on the name, and the red attempt plus its green re-run on
+      # one sha is exactly the flake the reader counts.
+      - name: keep the go test -json stream (per-test timings)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test.json
+          if-no-files-found: warn
+          retention-days: 8
 
       # Saved even when a test failed: Go never caches a failing result, and
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
@@ -2086,6 +2103,10 @@ jobs:
             echo "Server by hand: download \`docker-compose.yml\` and \`docker compose up -d --wait\` (no .env needed: the secrets are generated; \`env.example\`, saved as \`.env\`, sets your own)."
             echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
             echo "Kubernetes: the Helm chart \`muster-$v.tgz\` (its default image is this release): \`helm install muster https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/muster-$v.tgz\` (docs/kubernetes.md)."
+            echo
+            # Transition notice for the ClankMail plugin's move out of the image:
+            # remove this line (and the blank echo after it) once v0.250.0 ships.
+            echo "ClankMail plugin: the muster image no longer ships \`/muster-clankmail\` (earlier releases did). Use its own image, \`ghcr.io/$owner/muster-clankmail\` (https://github.com/ZacxDev/muster-clankmail; docs/clankmail.md)."
             echo
           } > "$RUNNER_TEMP/notes-header.md"
           .github/scripts/release-publish.sh "$tag" dist "$RUNNER_TEMP/notes-header.md"
