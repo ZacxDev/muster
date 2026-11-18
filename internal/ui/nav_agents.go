@@ -489,6 +489,9 @@ func navWaitingSlot(s *Switcher, poll bool) g.Node {
 	n, trigger := 0, navWaitingTrigger
 	if s != nil {
 		n, trigger = len(s.Waiting), navWaitingEventsTrigger
+		if s.MenuCount != nil {
+			n = *s.MenuCount
+		}
 		if poll {
 			trigger += ", every 60s [(" + navWaitingShownJS + ")&&!document.hidden]"
 		}

@@ -111,11 +111,18 @@ for (const vp of [
   });
 }
 
-test('with the ask log off the Log tab says how to turn it on', async ({ page }) => {
+// With the ask log off there is no Log tab at all (it used to be a tab of
+// setup prose: "set MUSTER_ASK_LOG=1 and restart"), and ?tab=log opens Open.
+// RED at origin/main d1ff2dbe: the tab was drawn, with that prose. The
+// positive control is this file's own log-on server, whose Log tab the tests
+// above open.
+test('with the ask log off there is no Log tab', async ({ page }) => {
   await signIn(page, baseURL);
   await page.goto(`${baseURL}/attention`);
-  await page.getByRole('tab', { name: 'Log' }).click();
-  const off = page.locator('[data-asklog-off]');
-  await expect(off).toBeVisible();
-  await expect(off).toContainText('MUSTER_ASK_LOG=1');
+  await expect(page.getByRole('tab', { name: 'Open', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Log' })).toHaveCount(0);
+  await page.goto(`${baseURL}/attention?tab=log`);
+  await expect(page.locator('#asks-tabs [role="tab"][aria-selected="true"]')).toHaveAttribute('data-tab', 'open');
+  await expect(page.locator('[data-asklog-off]')).toHaveCount(0);
+  await expect(page.getByText('MUSTER_ASK_LOG')).toHaveCount(0);
 });
