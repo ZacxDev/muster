@@ -202,10 +202,11 @@ func TestAPendingChatStartsTheInstanceItNeeds(t *testing.T) {
 	if fmt.Sprint(d.Start) != "[2]" {
 		t.Fatalf("a chat whose lane lives on instance 2: start %v, want [2]", d.Start)
 	}
-	// A want beyond max_instances (an old home) starts nothing.
+	// A preferred home past the chat ceiling (3, the default) is not started:
+	// the chat is re-homed, so the lowest down instance is started instead.
 	obs.ChatPlan = officers.ChatPlan{Need: 1, Prefer: []int{4}}
-	if d := officers.Decide(o, obs, time.Time{}, now, nil); len(d.Start) != 0 {
-		t.Fatalf("a want beyond max_instances: start %v, want none", d.Start)
+	if d := officers.Decide(o, obs, time.Time{}, now, nil); fmt.Sprint(d.Start) != "[1]" {
+		t.Fatalf("a home past the chat ceiling: start %v, want [1]", d.Start)
 	}
 }
 
