@@ -3,6 +3,7 @@ package ui
 import (
 	"html"
 	"strconv"
+	"strings"
 )
 
 // THE ASKS CARD FEED (operator decision "Vertical card feed", docs/attention.md
@@ -41,10 +42,10 @@ const (
 	// short feed still switches tabs.
 	AsksSwipeAreaClass = "flex min-h-[60dvh] min-w-0 flex-col"
 	// AsksFeedClass is a tab's feed: the <ul> of cards.
-	AsksFeedClass = "asks-feed flex flex-col gap-3"
+	AsksFeedClass = "asks-feed flex flex-col gap-2"
 	// AsksFeedCardClass is one card (an <li>). data-expanded drives the more
 	// region and the clamp (input.css).
-	AsksFeedCardClass = "asks-card relative flex min-w-0 flex-col gap-2 rounded-2xl bg-s1 p-3 ring-1 ring-inset ring-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus data-[expanded=true]:ring-edge"
+	AsksFeedCardClass = "asks-card relative flex min-w-0 flex-col gap-1.5 rounded-2xl bg-s1 p-3 ring-1 ring-inset ring-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus data-[expanded=true]:ring-edge"
 	// AsksCardHeadClass is the head: one full-width toggle button.
 	AsksCardHeadClass = "press -m-1 flex min-h-[44px] min-w-0 items-center gap-2 rounded-lg p-1 text-left transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	// AsksCardWhoClass wraps the head's name and its sub line.
@@ -58,7 +59,9 @@ const (
 	AsksCardMoreClass      = "asks-more"
 	AsksCardMoreInnerClass = "flex min-h-0 min-w-0 flex-col gap-2 overflow-hidden"
 	// AsksCardFooterClass is the footer row: links, then Dismiss at its end.
-	AsksCardFooterClass = "flex min-w-0 flex-wrap items-center gap-1"
+	// It sits into the card's bottom padding (-mb-2): its 44px links carry
+	// their own whitespace (the design review's density target).
+	AsksCardFooterClass = "-mb-2 flex min-w-0 flex-wrap items-center gap-1"
 	// AsksCardLinkClass is a footer link (View in session, the task).
 	AsksCardLinkClass = "press inline-flex min-h-[44px] items-center gap-1 rounded-lg px-2 text-sm font-semibold text-accent transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	// AsksCardChipsClass / AsksCardChipClass are the suggested replies: a tap
@@ -66,12 +69,12 @@ const (
 	AsksCardChipsClass = "flex flex-wrap gap-1.5"
 	AsksCardChipClass  = "press min-h-[44px] max-w-full break-words rounded-full bg-bg px-3 py-1.5 text-left text-sm text-fg ring-1 ring-inset ring-accent/40 transition hover:bg-s2"
 	// AsksCardSendClass is the answer row's Answer: compact, beside the box.
-	AsksCardSendClass = "press min-h-[44px] shrink-0 rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90"
+	AsksCardSendClass = AsksPrimaryButtonBase + " shrink-0"
 	// AsksCardSendQuietClass is Answer on a card whose options are its primary
 	// action: outlined, not filled.
 	AsksCardSendQuietClass = "press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
 	// AsksCountClass is the page header's "N open".
-	AsksCountClass = "inline-flex items-center rounded-full bg-s2 px-2 py-0.5 text-xs font-semibold tabular-nums text-fg2"
+	AsksCountClass = AsksPillClass + " tabular-nums"
 	// AsksCardErrorClass is a card's refusal line (AsksCardErrorHTML), in its
 	// error slot.
 	AsksCardErrorClass = "rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"
@@ -92,7 +95,7 @@ func AsksKindBadge(kind, label string) string {
 	case "answered":
 		cls = "bg-st-complete-bg text-st-complete-fg"
 	}
-	return `<span class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ` + cls +
+	return `<span class="` + AsksPillBaseClass + ` uppercase tracking-wide ` + cls +
 		`" data-asks-badge="` + html.EscapeString(kind) + `">` + html.EscapeString(label) + `</span>`
 }
 
@@ -110,23 +113,53 @@ func AsksOpenCountHTML(n int) string {
 	return `<span class="` + AsksCountClass + `" data-asks-open-count aria-live="polite">` + strconv.Itoa(n) + ` open</span>`
 }
 
+// AsksEmptyHTML is THE Asks empty state, an <li> (the design review: there
+// were three hand-rolled ones). attrs is the li's own attributes (its data-*
+// hooks); icon an optional glyph above; title an optional bold line; line the
+// sentence; action an optional link under it. Without a title it is the
+// compact one (a list's "nothing here" line).
+func AsksEmptyHTML(attrs, icon, title, line, action string) string {
+	if title == "" {
+		return `<li class="px-1 py-6 text-center text-sm text-fg2"` + attrs + `>` + line + action + `</li>`
+	}
+	return `<li class="flex flex-col items-center gap-2 rounded-2xl px-4 py-10 text-center"` + attrs + `>` + icon +
+		`<p class="text-base font-semibold text-fg">` + title + `</p><p class="text-sm text-fg2">` + line + `</p>` + action + `</li>`
+}
+
 // AsksAllClearHTML is the Open feed's empty state: calm, one line of words.
 // Its testid and sentence are the old empty line's, so a reader (or a test)
 // that looked for "Nothing is waiting on you." still finds it.
-const AsksAllClearHTML = `<li class="flex flex-col items-center gap-2 rounded-2xl px-4 py-10 text-center" data-testid="attention-empty" data-asks-empty>` +
-	`<svg class="h-8 w-8 text-st-complete-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>` +
-	`<p class="text-base font-semibold text-fg">All clear</p><p class="text-sm text-fg2">Nothing is waiting on you.</p></li>`
+var AsksAllClearHTML = AsksEmptyHTML(` data-testid="attention-empty" data-asks-empty`,
+	`<svg class="h-8 w-8 text-st-complete-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>`,
+	"All clear", "Nothing is waiting on you.", "")
 
 // AsksDraftsWaitHTML is the Open feed's empty state while reply drafts wait
 // (n > 0): NOT "All clear" — something is still pending, on the Drafts tab.
-// Same calm layout as AsksAllClearHTML, no check mark, and a link to the tab.
-// Its count is its own element (data-asks-drafts-n), so the feed's script can
-// draw it from its template (asks-drafts-wait-tpl) with the live number.
+// The same empty state, no check mark, and a link to the tab. Its count is its
+// own element (data-asks-drafts-n), so the feed's script can draw it from its
+// template (asks-drafts-wait-tpl) with the live number.
 func AsksDraftsWaitHTML(n int) string {
-	return `<li class="flex flex-col items-center gap-2 rounded-2xl px-4 py-10 text-center" data-asks-empty="drafts">` +
-		`<p class="text-base font-semibold text-fg">Nothing else is open</p>` +
-		`<p class="text-sm text-fg2" data-asks-drafts-wait>` + AsksDraftsWaitWords(n) + `</p>` +
-		`<a href="/attention?tab=drafts" class="` + AsksCardLinkClass + `" data-asks-drafts-link>Review drafts</a></li>`
+	return strings.Replace(AsksEmptyHTML(` data-asks-empty="drafts"`, "", "Nothing else is open", AsksDraftsWaitWords(n),
+		`<a href="/attention?tab=drafts" class="`+AsksCardLinkClass+`" data-asks-drafts-link>Review drafts</a>`),
+		`<p class="text-sm text-fg2">`, `<p class="text-sm text-fg2" data-asks-drafts-wait>`, 1)
+}
+
+// AsksFixedCardAttrs are the attributes of an Asks card that does not expand
+// (a draft, an outreach batch, a nudge, a log row, a stalled session): it IS
+// a card (data-asks-card: the feed's keys reach it, and
+// TestEveryAsksListItemIsACard counts it), fixed (data-asks-fixed: a tap on it
+// is not an expand).
+const AsksFixedCardAttrs = ` data-asks-card data-asks-fixed`
+
+// AsksFixedHeadHTML is a fixed card's head: its kind badge (badge, "" for
+// none), its title and the muted line under it — the feed card head's
+// anatomy without the toggle.
+func AsksFixedHeadHTML(badge, title, sub string) string {
+	out := `<div class="flex min-h-[44px] min-w-0 items-center gap-2" data-asks-head>` + badge + `<span class="` + AsksCardWhoClass + `">` + title
+	if sub != "" {
+		out += `<span class="` + AsksSubClass + `">` + sub + `</span>`
+	}
+	return out + `</span></div>`
 }
 
 // AsksDraftsWaitWords is the drafts empty state's sentence for n drafts.
@@ -438,10 +471,20 @@ var asksFeedJS = `(function () {
     c.removeAttribute('data-asks-leaving');
     c.classList.remove('asks-leave');
     c.style.height = ''; c.style.display = '';
-    var slot = c.querySelector('[data-asks-card-error]');
-    if (slot) { slot.innerHTML = ''; slot.appendChild(why); }
+    errorSlot(c).replaceChildren(why);
     count();
     focusCard(c);
+  }
+  // errorSlot: the card's error slot, made when first needed (the server
+  // draws none: an empty slot was a gap on every card), above its footer.
+  function errorSlot(c) {
+    var slot = c.querySelector('[data-asks-card-error]');
+    if (slot) return slot;
+    slot = document.createElement('div');
+    slot.setAttribute('data-asks-card-error', '');
+    var foot = c.querySelector('[data-asks-footer]');
+    if (foot && foot.parentElement === c) c.insertBefore(slot, foot); else c.appendChild(slot);
+    return slot;
   }
   function feedCard(form) {
     var list = feed();

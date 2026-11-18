@@ -322,7 +322,7 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 	if rec := d.do("POST", "/plugin/v1/drafts/"+strconv.FormatInt(d1, 10)+"/result", `{"ok":true,"external_ref":"ref-1"}`, bearerTok(tok)); rec.Code != http.StatusOK {
 		t.Fatalf("result: %d", rec.Code)
 	}
-	if c = archivedCard(d1); !strings.Contains(c, `data-draft-status="sent"`) || !strings.Contains(c, ">Sent ") || !strings.Contains(c, "ref-1") {
+	if c = archivedCard(d1); !strings.Contains(c, `data-draft-status="sent"`) || !strings.Contains(c, "data-draft-state>Sent</span>") || !strings.Contains(c, "ref-1") {
 		t.Fatalf("the sent card:\n%s", c)
 	}
 
@@ -330,7 +330,7 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 	_, d2 := file("a2", "Second.")
 	decide(d2, "reject")
 	audited(d2, "plugin.draft.rejected")
-	if c = archivedCard(d2); !strings.Contains(c, `data-draft-status="rejected"`) || !strings.Contains(c, ">Rejected ") ||
+	if c = archivedCard(d2); !strings.Contains(c, `data-draft-status="rejected"`) || !strings.Contains(c, "data-draft-state>Rejected</span>") ||
 		strings.Contains(c, "<form") {
 		t.Fatalf("the rejected card:\n%s", c)
 	}
@@ -346,7 +346,7 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 	if got := d.draft(d3); got.Status != plugins.DraftRejected || got.ApprovedAt != nil {
 		t.Fatalf("the withdrawn draft: %s approved_at=%v; want rejected, approval cleared", got.Status, got.ApprovedAt)
 	}
-	if c = archivedCard(d3); !strings.Contains(c, ">Rejected ") || strings.Contains(c, "data-draft-withdraw") {
+	if c = archivedCard(d3); !strings.Contains(c, "data-draft-state>Rejected</span>") || strings.Contains(c, "data-draft-withdraw") {
 		t.Fatalf("the withdrawn card:\n%s", c)
 	}
 	if rec := d.claim(tok, 0); rec.Code != http.StatusNoContent {
