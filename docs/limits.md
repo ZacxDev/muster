@@ -108,6 +108,13 @@ mirror being a shell on its host are under [Deployment](#deployment) and
   (a pull request from a fork) away from it until workers get execution
   isolation, such as an egress policy. Pool workers serve public repositories
   only. See [jobs.md](jobs.md).
+- **A plugin's task text is fenced in an agent's first message, not in a
+  tool's answer.** Every door that starts an agent on a task hands it a
+  plugin-filed title and body only inside the untrusted fence
+  ([plugins.md](plugins.md#post-pluginv1tasks-one-task-per-upstream-record)).
+  An agent that then calls `task_get` (or reads `GET /api/tasks`) gets the
+  task as stored, title, body and comments included, as JSON in the tool's
+  result, with no fence around it.
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
   eligible tasks. The one automatic start is the chief's `agent_dispatch`
   ([task routing](plugins.md#agent_dispatch-the-guards)), off by default.
