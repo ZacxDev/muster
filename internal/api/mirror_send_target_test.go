@@ -59,7 +59,7 @@ func TestAnOlderMirrorDrawsTheComposerDisabledWhereItCannotPaste(t *testing.T) {
 		t.Fatalf("an older mirror's non-Claude session: the composer is not disabled: %s / %s", input, send)
 	}
 	// Plain words and an ⓘ (the exact refusal is its detail, for an admin).
-	if !strings.Contains(chief, "ws needs a muster update for this. Use the terminal for now.") ||
+	if !strings.Contains(chief, "ws needs a muster update before muster can send into this session.") ||
 		!strings.Contains(input, `placeholder="Cannot send here yet"`) || !strings.Contains(chief, `id="mv-readonly-info-open"`) {
 		t.Error("the disabled composer does not say why")
 	}

@@ -36,17 +36,14 @@ func TestOpsPatchesAMeasuredBadgeIntoTheRow(t *testing.T) {
 	if patch == nil || patch.ID != id+"-x" {
 		t.Fatalf("no patch of the badge slot:\n%s", opsHTML(next))
 	}
-	for _, want := range []string{`data-tool-ctx="measured"`, `data-tool-ctx-tokens="3299"`, `data-tool-ctx-text="+3.3k ctx"`, "Measured: the context grew 3,299 tokens"} {
+	for _, want := range []string{`data-tool-ctx="measured"`, `data-tool-ctx-tokens="3299"`, `hidden=""`} {
 		if !strings.Contains(patch.HTML, want) {
 			t.Errorf("badge lacks %q:\n%s", want, patch.HTML)
 		}
 	}
-	if strings.Contains(patch.HTML, "~") {
-		t.Errorf("a measured badge is marked approximate:\n%s", patch.HTML)
-	}
 	// A later redraw of the row keeps the badge.
 	again := tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "toolu_a", OK: true, Output: "out", Bytes: 2600}})
-	if !strings.Contains(opsHTML(again), `data-tool-ctx-text="+3.3k ctx"`) {
+	if !strings.Contains(opsHTML(again), `data-tool-ctx-tokens="3299"`) {
 		t.Errorf("a redrawn row lost its badge:\n%s", opsHTML(again))
 	}
 }
@@ -59,10 +56,7 @@ func TestOpsDrawsAnEstimateWithTheResult(t *testing.T) {
 	ops := tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "call_e", OK: true, Output: "x", Bytes: 1238}})
 	html := opsHTML(ops)
 	// No output known: (19 + 1238) / 2.2 = 571.4, rounded up: 572.
-	for _, want := range []string{`data-tool-ctx="estimate"`, `data-tool-ctx-tokens="572"`, `data-tool-ctx-text="~+572 ctx"`,
-		"Estimated from the call and result size at about 2.2 bytes per token",
-		"a rate calibrated on Claude Code transcripts only: for another runtime or model it is not validated",
-		"No usage was recorded to measure it by"} {
+	for _, want := range []string{`data-tool-ctx="estimate"`, `data-tool-ctx-tokens="572"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("estimate lacks %q:\n%s", want, html)
 		}
@@ -87,9 +81,8 @@ func TestOpsSplitBadgesNameTheirMeasuredTotal(t *testing.T) {
 	ops := tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Both.", Usage: &cctranscript.Usage{Tokens: 48226}}})
 	html := opsHTML(ops)
 	for _, want := range []string{
-		"patch|" + toolRowID("toolu_p") + "-x|", `data-tool-ctx-text="~+1.5k ctx"`,
-		"patch|" + toolRowID("toolu_q") + "-x|", `data-tool-ctx-text="~+4.5k ctx"`,
-		"a share of 6,000 measured for 2 parallel calls",
+		"patch|" + toolRowID("toolu_p") + "-x|", `data-tool-ctx-tokens="1500"`,
+		"patch|" + toolRowID("toolu_q") + "-x|", `data-tool-ctx-tokens="4500"`, `data-tool-ctx="split"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("split badges lack %q:\n%s", want, html)
@@ -97,19 +90,15 @@ func TestOpsSplitBadgesNameTheirMeasuredTotal(t *testing.T) {
 	}
 }
 
-func TestCtxCount(t *testing.T) {
-	for n, want := range map[int64]string{7: "7", 999: "999", 1000: "1k", 3299: "3.3k", 9949: "9.9k", 9950: "10k", 12345: "12k", 1_260_000: "1.3M"} {
-		if got := ctxCount(n); got != want {
-			t.Errorf("ctxCount(%d) = %q, want %q", n, got, want)
-		}
-	}
+func TestGroupDigits(t *testing.T) {
 	if got := groupDigits(1234567); got != "1,234,567" {
 		t.Errorf("groupDigits = %q", got)
 	}
 }
 
-// An estimate's tooltip says WHY it is one: the reason the ledger gave.
-func TestAnEstimatesTitleSaysWhy(t *testing.T) {
+// A call whose next turn came after something else entered the context is an
+// estimate: its turn's output share plus its result at the calibrated rate.
+func TestAnInterruptedCallIsAnEstimate(t *testing.T) {
 	var tr MirrorTranscript
 	tr.Ops([]cctranscript.Event{
 		{Kind: cctranscript.KindToolCall, ToolID: "toolu_w", Tool: "Bash", Input: `{"command":"date"}`, Bytes: 18, Usage: &cctranscript.Usage{Tokens: 45641, Output: 211}},
@@ -118,31 +107,16 @@ func TestAnEstimatesTitleSaysWhy(t *testing.T) {
 	})
 	html := opsHTML(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Noted.", Usage: &cctranscript.Usage{Tokens: 48401}}}))
 	// The turn's output 211 + 81 / 2.2 = 36.8 → 37: 248.
-	for _, want := range []string{`data-tool-ctx-text="~+248 ctx"`, `data-tool-ctx="estimate"`, "context the CLI injected",
-		"this call&#39;s share of its turn&#39;s output (211 tokens) plus its result at about 2.2 bytes per token"} {
+	for _, want := range []string{`data-tool-ctx-tokens="248"`, `data-tool-ctx="estimate"`} {
 		if !strings.Contains(html, want) {
-			t.Errorf("the badge lacks %q:\n%s", want, html)
+			t.Errorf("the slot lacks %q:\n%s", want, html)
 		}
 	}
-	if strings.Contains(html, "no usage was recorded") {
-		t.Errorf("an interrupted estimate claims there was no usage:\n%s", html)
-	}
 }
 
-// No estimate claims a direction it was never measured in: the size-only one
-// says where its rate comes from, not that it "reads low".
-func TestASizeOnlyEstimateClaimsNoDirection(t *testing.T) {
-	var tr MirrorTranscript
-	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolCall, ToolID: "call_h", Tool: "terminal", Bytes: 29}})
-	html := opsHTML(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "call_h", OK: true, Bytes: 4093}}))
-	if !strings.Contains(html, `data-tool-ctx="estimate"`) || strings.Contains(html, "reads low") {
-		t.Fatalf("a size-only estimate claims a direction:\n%s", html)
-	}
-}
-
-// An output share that rounds to 0 is a KNOWN output: the title says it was
-// counted (0 tokens), never "not known".
-func TestAZeroOutputShareIsTitledAsKnown(t *testing.T) {
+// An output share that rounds to 0 is a KNOWN output: the estimate is the
+// result's size alone.
+func TestAZeroOutputShareCountsTheResultAlone(t *testing.T) {
 	var tr MirrorTranscript
 	tr.Ops([]cctranscript.Event{
 		{Kind: cctranscript.KindToolCall, ToolID: "toolu_z1", Tool: "Bash", Bytes: 20, Usage: &cctranscript.Usage{Tokens: 70929, Output: 50}},
@@ -153,8 +127,7 @@ func TestAZeroOutputShareIsTitledAsKnown(t *testing.T) {
 	})
 	p := patchFor(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "OK.", Usage: &cctranscript.Usage{Tokens: 72133, Output: 11}}}), "toolu_z1")
 	// 0 + 400 / 2.2 (181.8 → 182).
-	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx-text="~+182 ctx"`) || !strings.Contains(p.HTML, "share of its turn&#39;s output (0 tokens)") ||
-		strings.Contains(p.HTML, "not validated") {
-		t.Fatalf("a zero share is not titled as a known output: %+v", p)
+	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx-tokens="182"`) || !strings.Contains(p.HTML, `data-tool-ctx="estimate"`) {
+		t.Fatalf("a zero share is not counted as the result alone: %+v", p)
 	}
 }

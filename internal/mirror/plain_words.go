@@ -29,20 +29,28 @@ func PlainWords(err error, host string) string {
 	case errors.Is(err, ErrHostOffline):
 		return lead + " is not connected to muster right now."
 	case errors.Is(err, ErrSessionGone):
-		return "This session has ended on " + where + "."
+		// It may also have been renamed: the hub cannot tell the two apart.
+		return lead + " no longer shows this session. It may have ended or been renamed."
 	case errors.Is(err, ErrWindowGone):
-		return "This window has closed on " + where + "."
+		return lead + " no longer shows this window. It may have been closed."
 	case errors.Is(err, ErrHostDisconnected):
 		return "The connection to " + where + " dropped. Reconnect to carry on."
 	case errors.Is(err, ErrOverrun), errors.Is(err, ErrViewOverrun):
 		return "This page fell behind the session. Reconnect to carry on."
 	case errors.Is(err, ErrInteractiveRefused):
-		return PlainViewOnly
+		return ViewOnlyWords(host)
 	case errors.Is(err, ErrTooManyStreams), errors.Is(err, ErrTooManyWatches):
 		return "Too many views of " + where + " are open. Close one (it may be in another tab) and try again."
-	case errors.Is(err, ErrNoRenderedView), errors.Is(err, ErrPanePasteUnsupported),
-		errors.Is(err, ErrScrollUnsupported), errors.Is(err, ErrCatalogUnsupported):
-		return lead + " needs a muster update for this. Use the terminal for now."
+	case errors.Is(err, ErrNoRenderedView):
+		return lead + " needs a muster update to show this session as a chat. Use the terminal view for now."
+	case errors.Is(err, ErrPanePasteUnsupported):
+		return lead + " needs a muster update before muster can send into this session."
+	case errors.Is(err, ErrCatalogUnsupported):
+		return lead + " needs a muster update to list its commands."
+	case errors.Is(err, ErrScrollUnsupported):
+		// Not "needs an update": a view-only host cannot scroll either
+		// (scroll.go), so the words claim no cause.
+		return "Scrolling this session is not available from here."
 	case errors.Is(err, ErrNoStatusReport):
 		return lead + " needs a muster update before messages can wait for it. Send them yourself for now."
 	case errors.Is(err, ErrNotClaude):
@@ -51,13 +59,20 @@ func PlainWords(err error, host string) string {
 	return PlainUnknown
 }
 
-// PlainUnknown is PlainWords of an error it has no words for.
-const PlainUnknown = "Something went wrong with this session. The details have more."
+// PlainUnknown is PlainWords of an error it has no words for. It points to no
+// details: the exact text is an admin's (the ⓘ), and a member has none.
+const PlainUnknown = "Something went wrong with this session."
 
-// PlainViewOnly is what a page says of a host that takes no typing (it did
-// not advertise -interactive): the sentence the composer and the terminal's
-// refusal share. The setting that changes it is the ⓘ's (ViewOnlySetting).
-const PlainViewOnly = "This computer is view-only, so you cannot type into it from here."
+// ViewOnlyWords is what a page says of host when it takes no typing (it did
+// not advertise -interactive), naming it ("" = "This computer"): the sentence
+// the composer and the refusals share. The setting that changes it is the
+// ⓘ's (ViewOnlySetting).
+func ViewOnlyWords(host string) string {
+	if host == "" {
+		host = "This computer"
+	}
+	return host + " is view-only, so you cannot type into it from here."
+}
 
 // ViewOnlySetting is the muster-mirror setting a view-only host lacks: what
 // its ⓘ shows an admin, never the top layer.

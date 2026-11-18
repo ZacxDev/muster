@@ -110,15 +110,18 @@ func openCodeMatchedNotice(p AgentPane, sends bool) cctranscript.Event {
 	if p.Source == SourceLauncher {
 		// Bound by its launcher record (opencode_launch.go): muster sends to it.
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
-			Text: OpenCodeStartedText,
-			Output: cctranscript.Cap("muster-mirror started this session ("+p.Gen+") and sends your messages to it "+
-				"through opencode, never as keystrokes.", cctranscript.MaxTarget*4)}
+			Text: OpenCodeStartedText, Output: OpenCodeStartedDetail}
 	}
 	title := ""
 	if p.OpenCode != nil {
 		title = p.OpenCode.Match.Title
 	}
-	text := cctranscript.Cap("Showing “"+title+"”", cctranscript.MaxTarget*4)
+	// The session's own title; a session with none is named in words, never
+	// as an empty "Showing “”".
+	text := "Showing this opencode session"
+	if title != "" {
+		text = cctranscript.Cap("Showing “"+title+"”", cctranscript.MaxTarget*4)
+	}
 	if p.Bind == mirror.AgentBindVerified && sends {
 		// A hand-opened pane whose title match was verified (opencode_bind.go).
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
@@ -132,6 +135,11 @@ func openCodeMatchedNotice(p AgentPane, sends bool) cctranscript.Event {
 const (
 	// OpenCodeStartedText: a session muster-mirror's launcher started.
 	OpenCodeStartedText = "muster started this opencode session"
+	// OpenCodeStartedDetail is its row's detail: no session id and no binary
+	// name. The row is drawn for every viewer (it is not an admin's ⓘ), and
+	// the id names nothing a person acts on — the view already shows that
+	// session.
+	OpenCodeStartedDetail = "muster started this session and sends your messages to it through opencode, never as keystrokes."
 	// OpenCodeFoundVerified: a hand-opened pane's session, found by its title
 	// and checked with opencode's API: muster sends to it.
 	OpenCodeFoundVerified = "muster found this opencode session by its title and checked it with opencode. It sends your " +

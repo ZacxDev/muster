@@ -534,7 +534,6 @@ test('tool-context.png — tool calls grouped as steps', async ({ page }) => {
   await group.locator(':scope > summary').click();
   const badges = page.locator('#mv-log [data-tool-ctx]');
   await expect(badges).toHaveCount(3);
-  await expect(badges.nth(1)).toHaveAttribute('data-tool-ctx-text', '+4.8k ctx');
   await shoot(page, 'tool-context.png');
 });
 

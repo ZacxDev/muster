@@ -166,7 +166,7 @@ func TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy(t *testing.T) {
 	if !strings.Contains(input, `placeholder="`+ui.MirrorReadOnlyPlaceholder+`"`) {
 		t.Errorf("the disabled input's placeholder: %s", input)
 	}
-	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {
+	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote("ws")) {
 		t.Error("the page does not say why nothing can be sent")
 	}
 }

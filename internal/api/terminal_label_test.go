@@ -97,7 +97,7 @@ func TestAnInteractiveHostsTerminalPageSaysNothingIsReadOnly(t *testing.T) {
 func TestAReadOnlyHostsOnlyExplanationIsItsComposersNote(t *testing.T) {
 	s, ts := viewServer(t, &fakeMirror{online: true, interactive: false, v2: &fakeMirrorV2{}})
 	_, page := mirrorGet(t, s, ts, chiefTermPage)
-	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {
+	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote("ws")) {
 		t.Fatal("a read-only host's page does not carry its composer's note")
 	}
 	if term := tagOf(page, "term"); !strings.Contains(term, ` data-keys-off`) {
@@ -109,7 +109,7 @@ func TestAReadOnlyHostsOnlyExplanationIsItsComposersNote(t *testing.T) {
 	if got := readOnlyWording(page); len(got) == 0 {
 		t.Fatal("control: readOnlyWording does not see the composer's own note")
 	}
-	rest := strings.ReplaceAll(page, ui.MirrorReadOnlyNote, "")
+	rest := strings.ReplaceAll(page, ui.MirrorReadOnlyNote("ws"), "")
 	rest = strings.Replace(rest, `placeholder="`+ui.MirrorReadOnlyPlaceholder+`"`, "", 1)
 	if got := readOnlyWording(rest); len(got) != 0 {
 		t.Errorf("a read-only host's page says read-only outside its composer's note:\n  %s", strings.Join(got, "\n  "))

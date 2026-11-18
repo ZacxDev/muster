@@ -1111,7 +1111,7 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	// Send now of a team row is aimed at the team by the route gate. A ctx
 	// whose windows are another owner's pastes nothing.
 	if windowOwner(ctx) != it.Owner {
-		return sendqueue.Outcome{Detail: notSent(mirror.ErrHostOffline)}
+		return sendqueue.Outcome{Detail: notSent(mirror.ErrHostOffline, it.Target.Host)}
 	}
 	var h mirror.HostView
 	found := false
@@ -1122,10 +1122,10 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		}
 	}
 	if !found {
-		return sendqueue.Outcome{Detail: notSent(mirror.ErrHostOffline)}
+		return sendqueue.Outcome{Detail: notSent(mirror.ErrHostOffline, it.Target.Host)}
 	}
 	if !h.Interactive {
-		return sendqueue.Outcome{Detail: notSent(mirror.ErrInteractiveRefused)}
+		return sendqueue.Outcome{Detail: notSent(mirror.ErrInteractiveRefused, h.Host)}
 	}
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		return sendQueueStale()

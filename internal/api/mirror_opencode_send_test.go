@@ -137,6 +137,9 @@ func TestAnOpenCodeRefusalSaysItsOwnWords(t *testing.T) {
 		want string
 	}{
 		{&mirror.OpenCodeNotIdleError{Status: mirror.StatusBusy}, mirror.PasteRefusedOpenCodeBusyText},
+		// Wrapped with the hub's context: still its own plain words, never the
+		// wrapped text (the jargon audit's "no raw error on the line").
+		{fmt.Errorf("%w (host %q, window %q)", &mirror.OpenCodeNotIdleError{Status: mirror.StatusWaiting}, "ws", "@1"), mirror.PasteRefusedOpenCodeWaitingText},
 		{&mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeSlashText, Refusal: mirror.PasteRefusalOpenCodeSlash}, mirror.PasteRefusedOpenCodeSlashText},
 		{&mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeUnboundText, Refusal: mirror.PasteRefusalOpenCodeUnbound, Cause: mirror.ErrOpenCodeUnbound}, mirror.PasteRefusedOpenCodeUnboundText},
 		{&mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeGoneText, Refusal: mirror.PasteRefusalOpenCodeGone}, mirror.PasteRefusedOpenCodeGoneText},

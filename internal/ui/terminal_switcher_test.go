@@ -41,7 +41,7 @@ func TestATerminalViewsSwitcherIsTheColumnsFootAndInPlaceBeforeTheTerminalMeasur
 		composer *MirrorComposerView
 	}{
 		{"with a composer", &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "laptop", Session: "s-fresh", Window: "@8"}},
-		{"with a disabled composer", &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "laptop", Session: "s-fresh", Disabled: MirrorReadOnlyNote}},
+		{"with a disabled composer", &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "laptop", Session: "s-fresh", Disabled: MirrorReadOnlyNote("laptop")}},
 		{"with no composer", nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -95,7 +95,10 @@ type ComposerView struct {
 	// "" draws none. Admin: the viewer may see setup details; anyone else's
 	// ⓘ says to ask their admin. The page sets it from its navigation.
 	DisabledSetting, DisabledDetail string
-	Admin                           bool
+	// DisabledSettingReply: the setting turns on REPLYING to an opencode
+	// session, not typing (its ⓘ is named for that).
+	DisabledSettingReply bool
+	Admin                bool
 	// Notice, when set, is drawn in the status line when the page loads: the
 	// outcome of a send the BROWSER submitted (no script), which came back here
 	// as a redirect. NoticeOK says it is good news (it is styled as such).
@@ -300,9 +303,9 @@ func disabledNote(v ComposerView) g.Node {
 	var info g.Node
 	switch {
 	case v.DisabledSetting != "":
-		info = HostSettingSheet("mv-readonly-info", v.DisabledSetting, v.Admin).Node()
+		info = HostSettingSheet("mv-readonly-info", v.DisabledSetting, v.DisabledSettingReply, v.Admin).Node()
 	case v.DisabledDetail != "":
-		info = HostDetailSheet("mv-readonly-info", v.DisabledDetail, v.Admin).Node()
+		info = HostDetailSheet("mv-readonly-info", "Why sending is off", v.DisabledDetail, v.Admin).Node()
 	default:
 		return P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))
 	}

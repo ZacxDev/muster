@@ -9,16 +9,14 @@ import { clsInit, readCls, resetCls } from '../lib/cls';
 // EACH TOOL ROW KNOWS HOW MUCH CONTEXT ITS CALL AND RESULT ADDED (internal/ui/
 // tool_context.go, cctranscript/toolctx.go) — and draws none of it: a token
 // counter is jargon in muster's top layer (the operator rule), so the row's
-// slot stays hidden and carries the measurement as data (data-tool-ctx-text,
-// data-tool-ctx-why), on a mirrored Claude Code pane whose SYNTHETIC
+// slot stays hidden and carries only the measurement's kind and tokens
+// (data-tool-ctx, data-tool-ctx-tokens), on a mirrored Claude Code pane whose SYNTHETIC
 // transcript carries message.usage:
 //
-//   - one call, measured: the next turn's context minus its own — "+3.3k ctx";
-//   - two parallel calls: one measured growth, split by size — "~+1.5k ctx" and
-//     "~+4.5k ctx", marked approximate;
+//   - one call, measured: the next turn's context minus its own — 3299 tokens;
+//   - two parallel calls: one measured growth, split by size ("split");
 //   - a call whose next turn came after a prompt: not attributable, so an
-//     estimate — its turn's output plus its result at the calibrated rate —
-//     "~+417 ctx";
+//     estimate — its turn's output plus its result at the calibrated rate;
 //   - a call with a long MCP-style tool name: the name truncates, and the
 //     status stays inside the row at a phone's width;
 //   - a call whose next turn has not happened: no badge at all;
@@ -135,7 +133,6 @@ for (const s of SIZES) {
 
       // Measured: 1203+4511+20017 = 25731 → 7+3292+25731 = 29030, +3299.
       const ta = row(page, 'cat notes.txt').locator('[data-tool-ctx]');
-      await expect(ta).toHaveAttribute('data-tool-ctx-text', '+3.3k ctx');
       await expect(ta).toHaveAttribute('data-tool-ctx', 'measured');
       await expect(ta).toHaveAttribute('data-tool-ctx-tokens', '3299');
       // The pair: answered, but its next turn has not been written — no badge.
@@ -165,17 +162,13 @@ for (const s of SIZES) {
       // 6000 split by bytes: ls -la 20+380 = 400, pwd -P 20+1180 = 1200.
       const tp = row(page, 'ls -la').locator('[data-tool-ctx]');
       const tq = row(page, 'pwd -P').locator('[data-tool-ctx]');
-      await expect(tp).toHaveAttribute('data-tool-ctx-text', '~+1.5k ctx', { timeout: 15_000 });
-      await expect(tq).toHaveAttribute('data-tool-ctx-text', '~+4.5k ctx');
+      await expect(tp).toHaveAttribute('data-tool-ctx', 'split', { timeout: 15_000 });
       for (const b of [tp, tq]) await expect(b).toHaveAttribute('data-tool-ctx', 'split');
-      await expect(tq).toHaveAttribute('data-tool-ctx-why', /a share of 6,000 measured for 2 parallel calls/);
       // After a prompt: an estimate, the turn's output 97 + 702 / 2.2 (319.1 → 320) = 417.
       const te = row(page, 'sleep').locator('[data-tool-ctx]');
-      await expect(te).toHaveAttribute('data-tool-ctx-text', '~+417 ctx');
       await expect(te).toHaveAttribute('data-tool-ctx', 'estimate');
       // The long-named call: measured, 41720 − 40218 = 1502.
       const tl = row(page, 'lookup').locator('[data-tool-ctx]');
-      await expect(tl).toHaveAttribute('data-tool-ctx-text', '+1.5k ctx');
       await expect(tl).toHaveAttribute('data-tool-ctx', 'measured');
       // The last call's next turn has not happened: no badge.
       await expect(row(page, 'make')).toBeVisible();
@@ -234,11 +227,12 @@ for (const s of SIZES) {
       // The subagent's card: 32321 → 36421, +4100, measured.
       const card = log.locator('[data-subagent-card]');
       const cardBadge = card.locator('[data-tool-ctx]');
-      await expect(cardBadge).toHaveAttribute('data-tool-ctx-text', '+4.1k ctx', { timeout: 15_000 });
-      await expect(cardBadge).toHaveAttribute('data-tool-ctx', 'measured');
+      await expect(cardBadge).toHaveAttribute('data-tool-ctx', 'measured', { timeout: 15_000 });
+      await expect(cardBadge).toBeHidden();
       // The question card: 36421 → 36941, +520, measured.
       const ask = log.locator('[data-ask]');
-      await expect(ask.locator('[data-tool-ctx]')).toHaveAttribute('data-tool-ctx-text', '+520 ctx');
+      await expect(ask.locator('[data-tool-ctx]')).toHaveAttribute('data-tool-ctx', 'measured');
+      await expect(ask.locator('[data-tool-ctx]')).toBeHidden();
       // The running call: no badge yet.
       await expect(row(page, 'make')).toBeVisible();
       await expect(row(page, 'make').locator('[data-tool-ctx]')).toBeHidden();
@@ -247,28 +241,16 @@ for (const s of SIZES) {
       await sockets[0].close();
       await expect.poll(() => sockets.length, { message: 'the page reconnected', timeout: 15_000 }).toBe(2);
       await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
-      // The agent moves: the NEW socket redraws its card's summary, which it
-      // never badged itself — the page keeps the badge it has.
+      // The agent moves: the NEW socket redraws its card's summary.
       fs.appendFileSync(subFile, subTool(0, 'Read', { file_path: '/src/module.go' }));
       await expect(card.locator('[data-subagent-last]')).toHaveText('Read: /src/module.go', { timeout: 15_000 });
-      await expect(cardBadge).toHaveAttribute('data-tool-ctx-text', '+4.1k ctx');
       // The call's result and its next turn arrive over the NEW socket: 38055 → 40233, +2178.
       fs.appendFileSync(tr, CARDS_LATER);
       const tm = row(page, 'make').locator('[data-tool-ctx]');
-      await expect(tm).toHaveAttribute('data-tool-ctx-text', '+2.2k ctx', { timeout: 15_000 });
-      await expect(tm).toHaveAttribute('data-tool-ctx', 'measured');
+      await expect(tm).toHaveAttribute('data-tool-ctx', 'measured', { timeout: 15_000 });
       await expect(tm).toHaveAttribute('data-tool-ctx-tokens', '2178');
-      // The cards kept theirs.
-      await expect(cardBadge).toHaveAttribute('data-tool-ctx-text', '+4.1k ctx');
-      await expect(ask.locator('[data-tool-ctx]')).toHaveAttribute('data-tool-ctx-text', '+520 ctx');
-
-      // Each badge sits inside its card or row, and the page does not scroll sideways.
-      for (const [el, what] of [[card, 'subagent card'], [ask, 'question card'], [row(page, 'make'), 'row']] as const) {
-        const r = (await el.boundingBox())!;
-        const b = (await el.locator('[data-tool-ctx]').first().boundingBox())!;
-        expect(b.x, `${what}: the badge starts inside it`).toBeGreaterThanOrEqual(r.x);
-        expect(b.x + b.width, `${what}: the badge ends inside it`).toBeLessThanOrEqual(r.x + r.width);
-      }
+      // Nothing draws a count: no card or row shows "ctx".
+      for (const el of [card, ask, row(page, 'make')]) await expect(el).not.toContainText('ctx');
       const label = (await ask.locator('[data-ask-label]').boundingBox())!;
       const ab = (await ask.boundingBox())!;
       expect(label.x + label.width, 'the question card\'s label stays inside the card').toBeLessThanOrEqual(ab.x + ab.width);

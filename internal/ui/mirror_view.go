@@ -218,7 +218,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 			why = MirrorViewOnlyNote(v.ViewOnly)
 		}
 		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = why, "Replying is not turned on for this session", nil
-		composer.DisabledSetting = v.ViewOnlySetting
+		composer.DisabledSetting, composer.DisabledSettingReply = v.ViewOnlySetting, true
 		composer.Suggest, composer.SuggestPaused = "", false
 	case v.Agent != "" && v.Interactive:
 		// A window muster sends to through its runtime's API: its own words;
@@ -227,7 +227,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		composer.Placeholder, composer.Aria = "Message "+v.Agent+"…", "Message "+v.Agent+" in this session"
 		composer.Suggest, composer.SuggestPaused = "", false
 	case !v.Interactive:
-		composer.Disabled, composer.DisabledSetting = MirrorReadOnlyNote, mirror.ViewOnlySetting
+		composer.Disabled, composer.DisabledSetting = MirrorReadOnlyNote(v.Host), mirror.ViewOnlySetting
 	}
 	if v.Owner != 0 {
 		// A TEAM host's session (team sharing 2b.4): the form names the team
@@ -1501,20 +1501,6 @@ func mirrorViewScript() g.Node {
   function clearError() { errEl.hidden = true; errText.textContent = ''; setDetail(errInfo, ''); }
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-  // keepCtx: a redraw that carries an EMPTY context-badge slot (tool_context.go)
-  // where the page shows a filled one keeps the filled one. A socket that
-  // resumed did not settle the costs an earlier socket drew, so its redraw of
-  // that row or card (a subagent's summary, a question card) knows no badge;
-  // the badge the page has is still true. Only an empty, hidden slot gives way:
-  // a redraw that carries a badge of its own replaces it.
-  function keepCtx(oldEl, f) {
-    var slots = f.querySelectorAll('[data-tool-ctx][hidden]');
-    for (var i = 0; i < slots.length; i++) {
-      var id = slots[i].id, cur = id && (oldEl.id === id ? oldEl : oldEl.querySelector('#' + CSS.escape(id)));
-      if (cur && !cur.hidden && cur.getAttribute('data-tool-ctx')) slots[i].replaceWith(cur.cloneNode(true));
-    }
-  }
-
   var bulk = false;
   function apply(m) {
     var stick = bulk ? false : (nearBottom() || m.reset);
@@ -1553,7 +1539,7 @@ func mirrorViewScript() g.Node {
       // Only where it is: a subagent card's summary (subagent_cards.go).
       if (op.op === 'patch') {
         var pt = op.id && document.getElementById(op.id);
-        if (pt) { var pf = frag(op.html); keepCtx(pt, pf); pt.replaceWith(pf); }
+        if (pt) pt.replaceWith(frag(op.html));
         return;
       }
       if (op.op === 'result' && op.id) {
@@ -1575,7 +1561,6 @@ func mirrorViewScript() g.Node {
         if (old) {
           var f = frag(op.html), el = f.firstElementChild;
           if (el && old.open) el.open = true; // keep a row the reader expanded
-          keepCtx(old, f);
           old.replaceWith(f);
           // A row redrawn inside a group: the group's count and state follow it
           // (a resumed socket cannot redraw a group it never drew).

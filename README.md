@@ -65,7 +65,7 @@ Helm chart, [docs/kubernetes.md](docs/kubernetes.md).
 <sub>A Claude Code question becomes a form on your phone, pushed with its text; answer it and the session carries on. One-time setup per machine.</sub>
 </td>
 <td align="center" valign="top" width="33%">
-<img src="docs/img/tool-context.png" width="220" alt="A Claude Code session, 'Speed up the task-list endpoint', rendered as a chat on a phone, its three tool calls grouped as steps"><br>
+<img src="docs/img/tool-context.png" width="220" alt="A Claude Code session, 'Speed up the task-list endpoint', rendered as a chat on a phone"><br>
 <b>A chat, not a terminal</b><br>
 <sub>A Claude Code session reads as a chat, with the message box under your thumb.</sub>
 </td>

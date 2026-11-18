@@ -37,12 +37,12 @@ func TestASubagentCardIsBadgedWhenItsNextTurnArrives(t *testing.T) {
 	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "toolu_sub", OK: true, Output: "found it", Bytes: 6203}})
 	// 31407 → 36553: +5146, measured.
 	p := patchFor(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Done.", Usage: usage(36553, 41)}}), "toolu_sub")
-	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx="measured"`) || !strings.Contains(p.HTML, `data-tool-ctx-text="+5.1k ctx"`) {
+	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx="measured"`) || !strings.Contains(p.HTML, `data-tool-ctx-tokens="5146"`) {
 		t.Fatalf("no measured badge patched into the card: %+v", p)
 	}
 	// The card's summary, redrawn as the agent's state changes, keeps it.
 	sum := opsHTML(tr.SubagentOps([]mirror.Subagent{{ToolID: "toolu_sub", Agent: "a1b2c3", State: mirror.SubagentDone, Description: "Survey the module"}}))
-	if !strings.Contains(sum, `data-tool-ctx-text="+5.1k ctx"`) {
+	if !strings.Contains(sum, `data-tool-ctx-tokens="5146"`) {
 		t.Fatalf("a redrawn summary dropped the badge:\n%s", sum)
 	}
 }
@@ -60,7 +60,7 @@ func TestAQuestionCardIsBadgedWhenItsNextTurnArrives(t *testing.T) {
 		Ask: &cctranscript.Ask{Questions: qs, Answers: map[string]string{"Which colour?": "Teal"}}}})
 	// 27011 → 27329: +318, measured.
 	p := patchFor(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Teal it is.", Usage: usage(27329, 23)}}), "toolu_ask")
-	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx-text="+318 ctx"`) {
+	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx-tokens="318"`) {
 		t.Fatalf("no measured badge patched into the question card: %+v", p)
 	}
 }
@@ -82,7 +82,7 @@ func TestAResumedSocketBadgesACallTheEarlierSocketDrew(t *testing.T) {
 	}
 	// 52009 → 54187: +2178, measured.
 	p := patchFor(second.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Built.", Usage: usage(54187, 61)}}), "toolu_run")
-	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx="measured"`) || !strings.Contains(p.HTML, `data-tool-ctx-text="+2.2k ctx"`) {
+	if p == nil || !strings.Contains(p.HTML, `data-tool-ctx="measured"`) || !strings.Contains(p.HTML, `data-tool-ctx-tokens="2178"`) {
 		t.Fatalf("the resumed socket did not badge the earlier socket's row: %+v", p)
 	}
 
@@ -108,7 +108,7 @@ func TestALedgerCheckpointIsACopy(t *testing.T) {
 	other.RestoreLedger(cp)
 	other.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "toolu_c1", OK: true, Bytes: 707}})
 	// 11003 → 11713: +710.
-	if p := patchFor(other.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "x", Usage: usage(11713, 7)}}), "toolu_c1"); p == nil || !strings.Contains(p.HTML, `data-tool-ctx-text="+710 ctx"`) {
+	if p := patchFor(other.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "x", Usage: usage(11713, 7)}}), "toolu_c1"); p == nil || !strings.Contains(p.HTML, `data-tool-ctx-tokens="710"`) {
 		t.Fatalf("the checkpoint moved with its socket: %+v", p)
 	}
 }

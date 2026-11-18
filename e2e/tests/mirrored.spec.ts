@@ -168,7 +168,7 @@ test('a read-only host’s sessions appear in the sidebar and open the shared te
         s.onclose = () => { clearTimeout(t); resolve('closed'); };
       }),
   );
-  expect(refusal, 'an interactive attach to a read-only host is refused').toContain('this host is read-only');
+  expect(refusal, 'an interactive attach to a read-only host is refused').toContain(`${host} is view-only`);
   expect(refusal).toMatch(/^error: /);
   await stopMirror();
 });
@@ -214,9 +214,10 @@ test('a labelled session shows its pretty name, follows the active window, and s
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
     await expect(page.locator('header h1')).toContainText('Mango');
     await expect(page.locator('header h1')).not.toContainText('Mango:3');
-    // The raw tmux name is the title's tooltip, no longer drawn beside it (the
-    // header's room is the session's tags: session_tags.go).
-    await expect(page.locator('header h1 [data-mirror-name]')).toHaveAttribute('title', 'tmux session main');
+    // The raw tmux name is not drawn beside it (the header's room is the
+    // session's tags: session_tags.go), nor is it a tooltip (the header's ⓘ
+    // holds the address).
+    await expect(page.locator('header h1 [data-mirror-name]')).not.toHaveAttribute('title', /tmux session/);
     await expect(page.locator('header [data-mirror-session]')).toHaveCount(0);
     await expect(page).toHaveTitle(/Mango/);
     await noHorizontalScroll(page);
@@ -348,7 +349,7 @@ test('the terminal never says read-only where its composer can send; a read-only
   await expect(page.locator('#term-status')).toHaveText('Connected · typing is off');
   await expect(page.locator('#term-mode')).toHaveCount(0);
   await expect(page.locator('#mv-input')).toBeDisabled();
-  await expect(page.locator('#mv-readonly')).toContainText('This computer is view-only');
+  await expect(page.locator('#mv-readonly')).toContainText(`${host} is view-only`);
   expect((await readOnlyShown(page)).length, 'control: the note itself is seen').toBeGreaterThan(0);
   // The composer's note, and the composer's own fields (its tooltip and placeholder carry the same words).
   expect(await readOnlyShown(page, ['#mv-readonly', '#mv-compose']), 'read-only wording outside the composer').toEqual([]);
@@ -865,7 +866,7 @@ for (const size of [
         await waitForCards(page, false);
         await input.fill('this one cannot be delivered');
         await act(send);
-        await expect(page.locator('#mv-note')).toContainText('offline');
+        await expect(page.locator('#mv-note')).toContainText('is not connected to muster right now');
         await expect(input).toHaveValue('this one cannot be delivered');
         expect(sends[sends.length - 1], 'the refusal was the server\'s').toBe(503);
         expect(pasted(), 'nothing more was pasted').toBe('%e2e-scratch git status\n%e2e-scratch line one\nline two\n');
@@ -898,7 +899,22 @@ test.describe('phone 390×844 touch: a view-only computer says so plainly', () =
   const shot = async (page: Page, name: string) => {
     if (shots) await page.screenshot({ path: path.join(shots, name + '.png') });
   };
-  const jargon = /(^|[\s(])--?[a-z][a-z-]*\b|\bmirror: |muster-mirror|\(host "|\bctx\b|\btool calls?\b/;
+  const jargon = /(^|[\s(`"'“‘])--?[a-z][a-z-]*\b|\bmirror: |muster-mirror|\(host "|\bctx\b|\btool calls?\b/;
+  // words is what a person reads in sel: its visible text and the tooltips,
+  // accessible names and placeholders of its elements — never an ⓘ sheet's
+  // (the one place the setting belongs).
+  const words = (page: Page, sel: string) =>
+    page.locator(sel).first().evaluate((root) => {
+      const out = [(root as HTMLElement).innerText];
+      root.querySelectorAll('[title], [aria-label], [placeholder]').forEach((el) => {
+        if (el.closest('[data-info-sheet]')) return;
+        for (const a of ['title', 'aria-label', 'placeholder']) {
+          const v = el.getAttribute(a);
+          if (v) out.push(v);
+        }
+      });
+      return out.join('\n');
+    });
 
   test('the view-only note is plain, and its ⓘ holds the setting with Copy', async ({ page }) => {
     test.setTimeout(90_000);
@@ -910,11 +926,11 @@ test.describe('phone 390×844 touch: a view-only computer says so plainly', () =
     await waitForClaude(page, 'read-only');
     await page.goto(origin + viewPath('main'));
     const note = page.locator('#mv-readonly');
-    await expect(note).toHaveText('This computer is view-only, so you cannot type into it from here.');
+    await expect(note).toHaveText(`${host} is view-only, so you cannot type into it from here.`);
     await expect(page.locator('#mv-input')).toHaveAttribute('placeholder', 'View only');
     await shot(page, 'view-only-banner');
-    for (const sel of ['header', '#mv-compose']) {
-      expect(await page.locator(sel).first().innerText(), `nothing visible in ${sel} spells a flag or a raw host message`).not.toMatch(jargon);
+    for (const sel of ['header', '#mv-compose', '#mv-readonly']) {
+      expect(await words(page, sel), `nothing a person reads in ${sel} spells a flag or a raw host message`).not.toMatch(jargon);
     }
     const info = page.locator('#mv-readonly-info-open');
     await expect(info).toHaveAccessibleName('How to turn on typing');
@@ -947,11 +963,11 @@ test.describe('phone 390×844 touch: a view-only computer says so plainly', () =
     await page.goto(origin + termPath('main'));
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
     await expect(page.locator('#term-status')).toHaveText('Connected · typing is off');
-    await expect(page.locator('#mv-readonly')).toHaveText('This computer is view-only, so you cannot type into it from here.');
+    await expect(page.locator('#mv-readonly')).toHaveText(`${host} is view-only, so you cannot type into it from here.`);
     await expect(page.locator('#mv-readonly-info-open')).toHaveAccessibleName('How to turn on typing');
     await shot(page, 'view-only-terminal');
-    for (const sel of ['header', '#mv-compose']) {
-      expect(await page.locator(sel).first().innerText(), `the Terminal view's ${sel} spells no flag`).not.toMatch(jargon);
+    for (const sel of ['header', '#mv-compose', '#mv-readonly']) {
+      expect(await words(page, sel), `the Terminal view's ${sel} spells no flag`).not.toMatch(jargon);
     }
   });
 });
@@ -969,7 +985,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
     await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=ro`);
     await expect(page.locator('#mv-input'), `${session}: a read-only host’s composer is disabled`).toBeDisabled();
     await expect(page.locator('#mv-send')).toBeDisabled();
-    await expect(page.locator('#mv-readonly')).toContainText('This computer is view-only');
+    await expect(page.locator('#mv-readonly')).toContainText(`${host} is view-only`);
     await expect(page.locator('#term-keys'), 'control: the rest of the page is there').toBeVisible();
   }
 

@@ -243,7 +243,7 @@ func TestAWindowParameterThatIsNotAWindowIDIsNotFound(t *testing.T) {
 	// Well-formed, not listed: the plugin's refusal, as a 409.
 	fm.v2.pasteErr = mirror.ErrWindowGone
 	code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"scratch2"}, "window": {"@99"}, "text": {"hi"}})
-	if code != http.StatusConflict || !strings.Contains(body, "Not sent: this window has closed on this computer.") {
+	if code != http.StatusConflict || !strings.Contains(body, "Not sent: ws no longer shows this window. It may have been closed.") {
 		t.Fatalf("a send to a window the host no longer lists: %d %q, want 409 saying so", code, body)
 	}
 }

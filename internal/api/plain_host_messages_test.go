@@ -1,13 +1,21 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
+
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -20,11 +28,12 @@ import (
 // message a host sent, is in the ⓘ details sheet (ui.InfoSheet) beside it.
 
 // hostJargon is what a session page's top layer must not hold: a command-line
-// flag ("-interactive", "-opencode-send": a dash starting a word), the hub's
+// flag ("-interactive", "-opencode-send": a dash starting a word, bare or
+// inside backticks or quotes — "`-interactive`", "\"-s\""), the hub's
 // raw "mirror:" prefix, the host binary's name, a quoted id the hub appends
 // ("(host "atlas", …)"), a token counter ("~+140 ctx", "+3.3k ctx"), and the
 // tool-call count's own words ("2 tool calls").
-var hostJargon = regexp.MustCompile(`(^|[\s(])--?[a-z][a-z-]*\b|\bmirror: |muster-mirror|\(host "|\bctx\b|\btool calls?\b`)
+var hostJargon = regexp.MustCompile("(^|[\\s(`\"'“‘])--?[a-z][a-z-]*\\b|\\bmirror: |muster-mirror|\\(host \"|\\bctx\\b|\\btool calls?\\b|\\bdetails have more\\b")
 
 // assertNoHostJargon fails for every top-layer text of markup (topLayerTexts:
 // text, title, aria-label and placeholder, never an ⓘ sheet, a script or a
@@ -70,6 +79,9 @@ func TestTheHostJargonScanSeesAFlagAMirrorErrorAndACounter(t *testing.T) {
 		`<span>+3.3k ctx</span>`,
 		`<summary><span>2 tool calls</span></summary>`,
 		`<input placeholder="run it with --server">`,
+		"<p>restart it with `-interactive`</p>",
+		`<p>this opencode was started on one session (its "-s")</p>`,
+		`<p>its ‘-opencode-send’ is off</p>`,
 	} {
 		hit := false
 		for _, s := range topLayerTexts(t, bad) {
@@ -82,7 +94,7 @@ func TestTheHostJargonScanSeesAFlagAMirrorErrorAndACounter(t *testing.T) {
 	ok := `<p>This computer is view-only, so you cannot type into it from here.</p>` +
 		`<div data-info-sheet=""><p>Restart its muster-mirror with this setting:</p><code>-interactive -opencode-send</code></div>` +
 		`<script>var e="mirror: x (host \"a\")"</script>` +
-		`<span data-tool-ctx-text="~+140 ctx" hidden=""></span><p>2 steps · up-to-date · re-run</p>`
+		`<span data-tool-ctx="split" data-tool-ctx-tokens="140" hidden=""></span><p>2 steps · up-to-date · re-run</p>`
 	for _, s := range topLayerTexts(t, ok) {
 		if hostJargon.MatchString(s) {
 			t.Errorf("the scan flagged %q in %s", s, ok)
@@ -138,7 +150,7 @@ func TestNoTopLayerOfASessionPageSpellsAHostMessage(t *testing.T) {
 		// It says why, in words, and the ⓘ beside it holds the setting: the
 		// viewer is the password operator, an admin (a member's is withheld:
 		// ui's TestAViewOnlyNotesInfoShowsAnAdminTheSettingAndOthersAskYourAdmin).
-		if !strings.Contains(body, html.EscapeString(ui.MirrorReadOnlyNote)) {
+		if !strings.Contains(body, html.EscapeString(ui.MirrorReadOnlyNote("ws"))) {
 			t.Errorf("%s: the composer does not say the computer is view-only", name)
 		}
 		note := body[strings.Index(body, `id="mv-readonly"`):]
@@ -161,15 +173,17 @@ func TestNoTopLayerOfASessionPageSpellsAHostMessage(t *testing.T) {
 }
 
 // TestASessionPagesSocketErrorsArePlainWithTheExactTextInTheDetail: every
-// refusal a Rendered or Terminal view's socket can end with is told to the
-// page in plain words (the banner's line) and the exact error as its detail
-// (the banner's ⓘ) — never the error itself on the line.
+// refusal a Rendered or Terminal view's socket can end with — and an error
+// it has no words for — is told to the page in plain words (the banner's
+// line); the exact error is the detail (the banner's ⓘ) for an admin only,
+// and a member's frame carries none.
 //
 // REGRESSION TEST for the jargon audit's F009: red at origin/main, whose
 // banner said "mirror: the host is online but no longer lists this tmux
 // session (host "atlas", session "nosuch")".
 func TestASessionPagesSocketErrorsArePlainWithTheExactTextInTheDetail(t *testing.T) {
 	gone := fmt.Errorf("%w (host %q, session %q)", mirror.ErrSessionGone, "atlas", "nosuch")
+	other := errors.New("mirror: something odd (host \"atlas\", -interactive)")
 	for _, err := range []error{
 		gone,
 		fmt.Errorf("%w (host %q, session %q, window %q)", mirror.ErrWindowGone, "atlas", "nosuch", "@9"),
@@ -178,28 +192,34 @@ func TestASessionPagesSocketErrorsArePlainWithTheExactTextInTheDetail(t *testing
 		fmt.Errorf("%w (host %q)", mirror.ErrTooManyStreams, "atlas"),
 		fmt.Errorf("%w (host %q)", mirror.ErrTooManyWatches, "atlas"),
 		fmt.Errorf("%w (host %q)", mirror.ErrNoRenderedView, "atlas"),
+		fmt.Errorf("%w (host %q)", mirror.ErrScrollUnsupported, "atlas"),
 		fmt.Errorf("%w (host %q, session %q)", mirror.ErrNotClaude, "atlas", "nosuch"),
 		mirror.ErrHostDisconnected, mirror.ErrOverrun, mirror.ErrViewOverrun, mirror.ErrPasteTimeout,
 		mirror.ErrScrollPaneInMode, mirror.ErrCatalogTimeout, mirror.ErrStepUpRequired,
+		other, // no words for it: the terminal's and the view's own plain line
 	} {
-		for page, words := range map[string]func(error, string) (string, string){
+		for page, words := range map[string]func(error, string, bool) (string, string){
 			"terminal": terminalErrorWords, "rendered view": viewErrorWords,
 		} {
-			msg, detail := words(err, "atlas")
+			msg, detail := words(err, "atlas", true)
 			assertPlainLine(t, page+" of "+err.Error(), msg)
 			if detail != err.Error() {
-				t.Errorf("%s of %v: the detail is %q, want the exact error", page, err, detail)
+				t.Errorf("%s of %v: an admin's detail is %q, want the exact error", page, err, detail)
+			}
+			if mmsg, mdetail := words(err, "atlas", false); mmsg != msg || mdetail != "" {
+				t.Errorf("%s of %v: a member's frame is %q / %q, want the same line and NO detail", page, err, mmsg, mdetail)
 			}
 		}
 	}
-	// Pinned literally: the audit's own example.
-	if msg, _ := terminalErrorWords(gone, "atlas"); msg != "This session has ended on atlas." {
+	// Pinned literally.
+	if msg, _ := terminalErrorWords(gone, "atlas", true); msg != "atlas no longer shows this session. It may have ended or been renamed." {
 		t.Errorf("a gone session's line: %q", msg)
 	}
-	// An error the view has no words for is plain too, its text the detail.
-	other := errors.New("mirror: something odd (host \"atlas\")")
-	if msg, detail := viewErrorWords(other, "atlas"); msg != MirrorViewEndedPlain || detail != other.Error() {
-		t.Errorf("an unknown view error: %q / %q", msg, detail)
+	if msg, _ := viewErrorWords(other, "atlas", true); msg != MirrorViewEndedPlain {
+		t.Errorf("an unknown view error: %q", msg)
+	}
+	if msg, _ := terminalErrorWords(other, "atlas", true); msg != MirrorTerminalEndedPlain {
+		t.Errorf("an unknown terminal error of a mirrored session: %q", msg)
 	}
 }
 
@@ -219,9 +239,23 @@ func TestEveryComposerRefusalAboutAComputerIsPlain(t *testing.T) {
 		}
 		assertPlainLine(t, "notice "+code, n.text)
 	}
-	assertPlainLine(t, "the queue's view-only refusal", notSent(mirror.ErrInteractiveRefused))
-	if got := composerNotices[noticeGone].text; got != "Not sent: this session has ended on this computer." {
-		t.Errorf("the gone notice: %q", got)
+	for _, err := range []error{mirror.ErrInteractiveRefused, mirror.ErrWindowGone, mirror.ErrHostOffline} {
+		assertPlainLine(t, "the queue's refusal "+err.Error(), notSent(err, "atlas"))
+	}
+	// A notice about the computer names it, when the page knows it.
+	for code, want := range map[string]string{
+		noticeGone:     "Not sent: atlas no longer shows this session. It may have ended or been renamed.",
+		noticeReadOnly: "Not sent: atlas is view-only, so you cannot type into it from here.",
+		noticeOffline:  "Not sent: atlas is not connected to muster right now.",
+	} {
+		if got := noticeText(code, "atlas"); got != want {
+			t.Errorf("notice %s on atlas: %q, want %q", code, got, want)
+		}
+	}
+	// The opencode idle gate: its own plain words (busy, waiting), never the
+	// wrapped error's text.
+	for _, st := range []string{mirror.StatusBusy, mirror.StatusWaiting, ""} {
+		assertPlainLine(t, "the opencode idle gate ("+st+")", (&mirror.OpenCodeNotIdleError{Status: st}).Error())
 	}
 }
 
@@ -255,10 +289,122 @@ func TestAToolRowDrawsNoTokenCounterAndAGroupCountsSteps(t *testing.T) {
 		t.Fatalf("CONTROL: no measured cost in the rows:\n%s", got)
 	}
 	assertNoHostJargon(t, "the tool rows", got)
-	if !strings.Contains(got, `data-tool-ctx-text="~+`) {
-		t.Errorf("the rows lost the count as data:\n%s", got)
+	if strings.Contains(got, "data-tool-ctx-text") || strings.Contains(got, "data-tool-ctx-why") || strings.Contains(got, `title="Measured`) {
+		t.Errorf("the rows still carry the count's words:\n%s", got)
 	}
 	if !strings.Contains(got, `>2 steps<`) {
 		t.Errorf("the group does not count 2 steps:\n%s", got)
+	}
+}
+
+// asRole is user 1 with role — the fake mirror's owner — as a browser session.
+func asRole(role authz.Role) context.Context {
+	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: role, Via: authz.ViaSession})
+}
+
+// TestAMembersSessionPagesCarryNoSetup: a view-only computer's Rendered and
+// Terminal views, rendered for a MEMBER, hold no muster-mirror setting —
+// neither "-interactive" nor any ⓘ code at all — and say to ask the admin;
+// the same pages for an ADMIN (the control) hold the setting in the ⓘ.
+// Setup details are an admin's (ui.Features.Setup, authz.IsAdmin).
+func TestAMembersSessionPagesCarryNoSetup(t *testing.T) {
+	s, _ := viewServer(t, readOnlyHost(false))
+	render := func(role authz.Role, path string, h func(http.ResponseWriter, *http.Request)) string {
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest("GET", path, nil).WithContext(asRole(role)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s as %s: %d", path, role, rec.Code)
+		}
+		return rec.Body.String()
+	}
+	for name, page := range map[string]struct {
+		path string
+		h    func(http.ResponseWriter, *http.Request)
+	}{
+		"Rendered view": {ref("main", "@1").ViewPath(), s.handleMirrorViewPage},
+		"Terminal view": {ref("main", "@1").TerminalPath(), s.handleMirrorTerminalPage},
+	} {
+		// noteOf is the composer's note and its ⓘ, the region the member
+		// check reads.
+		noteOf := func(page string) string {
+			n := page[strings.Index(page, `id="mv-readonly"`):]
+			return n[:strings.Index(n, `</div></div></div>`)]
+		}
+		admin := render(authz.RoleAdmin, page.path, page.h)
+		if !strings.Contains(noteOf(admin), `data-info-code="">-interactive</code>`) {
+			t.Fatalf("CONTROL: %s: an admin's composer ⓘ lacks the setting (the region the member check reads)", name)
+		}
+		// What the page draws (its scripts' own text is code, not a detail),
+		// and the composer note's ⓘ: no setting, and no code row at all.
+		member := scriptBlock.ReplaceAllString(sessionBody(t, render(authz.RoleMember, page.path, page.h)), "")
+		if i := strings.Index(member, "-interactive"); i >= 0 {
+			t.Errorf("%s: a member's page carries the setting: …%s…", name, member[max(0, i-200):min(len(member), i+40)])
+		}
+		note := noteOf(member)
+		if strings.Contains(note, "data-info-code") || strings.Contains(note, "data-info-copy") {
+			t.Errorf("%s: a member's composer ⓘ carries a code:\n%s", name, note)
+		}
+		if !strings.Contains(member, `data-info-withheld="">`+ui.InfoSheetWithheldText) {
+			t.Errorf("%s: a member's ⓘ does not say to ask the admin", name)
+		}
+	}
+}
+
+// errorFrameAs dials path on handler h as user 1 with role and returns the
+// socket's first error frame.
+func errorFrameAs(t *testing.T, h func(http.ResponseWriter, *http.Request), path string, role authz.Role) map[string]string {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h(w, r.WithContext(authz.WithPrincipal(r.Context(), authz.Principal{UserID: 1, Role: role, Via: authz.ViaSession})))
+	}))
+	defer ts.Close()
+	hd := http.Header{}
+	hd.Set("Origin", ts.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+path, &websocket.DialOptions{HTTPHeader: hd})
+	if err != nil {
+		t.Fatalf("%s %s: dial: %v", path, role, err)
+	}
+	defer c.CloseNow()
+	for {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("%s %s: no error frame: %v", path, role, err)
+		}
+		var m map[string]string
+		if typ != websocket.MessageText || json.Unmarshal(data, &m) != nil || m["type"] != "error" {
+			continue
+		}
+		return m
+	}
+}
+
+// TestAMembersSocketErrorCarriesNoDetail: a Rendered view's and a Terminal
+// view's socket that ends on a refusal tell a MEMBER the plain line only
+// (detail ""), and an ADMIN (the control) the plain line with the exact
+// refusal as its detail — through the real handlers, so the role is read
+// where each frame is written.
+func TestAMembersSocketErrorCarriesNoDetail(t *testing.T) {
+	notClaude := fmt.Errorf("%w (host %q, session %q)", mirror.ErrNotClaude, "ws", "main")
+	sv, _ := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{watchErr: notClaude}})
+	offline := fmt.Errorf("%w (host %q)", mirror.ErrHostOffline, "ws")
+	st, _ := mirrorServer(t, &fakeMirror{online: false, refuse: offline}, newFakeTerminal())
+	for name, c := range map[string]struct {
+		h       func(http.ResponseWriter, *http.Request)
+		path    string
+		refusal error
+	}{
+		"rendered view": {sv.handleMirrorViewWS, ui.MirrorViewWSPath("ws", "main"), notClaude},
+		"terminal":      {st.handleMirrorTerminalWS, ui.MirrorTerminalWSPath("ws", "main"), offline},
+	} {
+		admin := errorFrameAs(t, c.h, c.path, authz.RoleAdmin)
+		if admin["detail"] != c.refusal.Error() {
+			t.Fatalf("CONTROL: %s: an admin's frame: %v", name, admin)
+		}
+		member := errorFrameAs(t, c.h, c.path, authz.RoleMember)
+		if member["message"] != admin["message"] || member["detail"] != "" {
+			t.Errorf("%s: a member's frame: %v, want the same line and an empty detail", name, member)
+		}
 	}
 }

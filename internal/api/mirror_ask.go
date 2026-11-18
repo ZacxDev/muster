@@ -270,7 +270,7 @@ func questionCard(h mirror.HostView, e mirror.SessionView, x askq.Entry) ui.Mirr
 	}
 	switch {
 	case !h.Interactive:
-		v.Unanswerable = ui.MirrorReadOnlyNote
+		v.Unanswerable = ui.MirrorReadOnlyNote(h.Host)
 	case !h.Online:
 		v.Unanswerable = "This host is offline — answer it in the terminal."
 	case !h.AskAnswer:
@@ -439,7 +439,7 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.Interactive {
 		att.end("read-only")
-		http.Error(w, mirror.PlainViewOnly, http.StatusConflict)
+		http.Error(w, mirror.ViewOnlyWords(h.Host), http.StatusConflict)
 		return
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
@@ -603,7 +603,7 @@ func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.Interactive {
 		att.end("read-only")
-		http.Error(w, mirror.PlainViewOnly, http.StatusConflict)
+		http.Error(w, mirror.ViewOnlyWords(h.Host), http.StatusConflict)
 		return
 	}
 	if !toolUseIDPattern.MatchString(tool) {

@@ -151,7 +151,7 @@ async function openBound(page: Page) {
   await rig.login(page);
   await page.goto(rig.origin + viewOf('@2'));
   await expect(page.locator('#mv-log [data-notice-row="opencode"]').first(), `the bound notice (mirror log:\n${rig.log})`).toContainText(
-    'this session (' + bound + ')',
+    'muster started this opencode session',
     { timeout: 20_000 },
   );
   await revealBox(page);

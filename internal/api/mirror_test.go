@@ -405,9 +405,11 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 			t.Errorf("host interactive=%v: the terminal's keys are off = %v (%s)", interactive, keysOff, term)
 		}
 		const note = `Typing here goes straight to ws: from here you can reach anything on that computer.`
+		// Said where keys reach the host — and only there: a view-only
+		// host's keys are off, so the note would be untrue.
 		for _, id := range []string{"term-status", "term-keys"} {
-			if tag := tagOf(page, id); !strings.Contains(tag, `title="`+note+`"`) {
-				t.Errorf("#%s does not say that live keys are a shell on the host: %s", id, tag)
+			if tag := tagOf(page, id); strings.Contains(tag, `title="`+note+`"`) != interactive {
+				t.Errorf("host interactive=%v: #%s says live keys reach the host = %v: %s", interactive, id, !interactive, tag)
 			}
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
