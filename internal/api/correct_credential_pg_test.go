@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -55,38 +56,68 @@ func TestALiveLinkWorksFromAnAddressPastItsMissLimit(t *testing.T) {
 	}
 }
 
-// TestPasskeySignInOptionsAreLimitedPerAddress: passkeyOptionsPerAddr unused
-// sign-in challenges from one address, then the next is 429 without asking
-// GoTrue; another address is unaffected; and a passkey sign-in from the address
-// clears its count (failure-only: a signed-in browser is never held).
-func TestPasskeySignInOptionsAreLimitedPerAddress(t *testing.T) {
+// TestASharedAddressIsNeverBlockedFromPasskeySignIn: the NAT case. Fifty
+// sign-in page loads from one address (each fetches a challenge) — then a
+// passkey sign-in from that same address succeeds.
+func TestASharedAddressIsNeverBlockedFromPasskeySignIn(t *testing.T) {
 	w := newPasskeyWorld(t)
-	_, sub, _, _ := w.joinMember("pk-opts@invite.test")
-	w.fake.AddPasskey(sub, "cred-opts")
-	for i := 0; i < passkeyOptionsPerAddr; i++ {
+	_, sub, _, _ := w.joinMember("pk-nat@invite.test")
+	w.fake.AddPasskey(sub, "cred-nat")
+	for i := 0; i < 50; i++ {
 		if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(sharedAddress)); rec.Code != http.StatusOK {
-			t.Fatalf("options %d: %d", i, rec.Code)
+			t.Fatalf("page load %d's challenge from the shared address: %d, want 200 (never refused per address)", i+1, rec.Code)
 		}
 	}
-	calls := w.fake.CountCalls(http.MethodPost, "/passkeys/authentication/options")
-	if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(sharedAddress)); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("options past the limit: %d, want 429", rec.Code)
+	if rec := w.passkeySignIn("cred-nat", gotruetest.FlagUPUV, arriveFrom(sharedAddress)); rec.Code != http.StatusOK {
+		t.Fatalf("a passkey sign-in from the shared address after 50 page loads: %d %s, want 200", rec.Code, rec.Body)
 	}
-	if n := w.fake.CountCalls(http.MethodPost, "/passkeys/authentication/options"); n != calls {
-		t.Fatalf("options past the limit still asked GoTrue (%d calls, was %d)", n, calls)
+}
+
+// TestAPasskeyVerifyNeedsAChallengeMusterIssued: a verify naming a challenge
+// muster never issued, one already used, or one evicted from the capped table
+// is refused with PasskeyChallengeGone WITHOUT asking GoTrue; a held one is
+// verified (the positive control).
+func TestAPasskeyVerifyNeedsAChallengeMusterIssued(t *testing.T) {
+	w := newPasskeyWorld(t)
+	_, sub, _, _ := w.joinMember("pk-ch@invite.test")
+	w.fake.AddPasskey(sub, "cred-ch")
+	verify := func(ch string) *httptest.ResponseRecorder {
+		return postJSON(w.edge, passkeySignInVerifyPath, map[string]any{
+			"challenge_id": ch, "credential": gotruetest.Assertion("cred-ch", gotruetest.FlagUPUV), "next": "/"})
 	}
-	if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom("198.51.100.150")); rec.Code != http.StatusOK {
-		t.Fatalf("CONTROL: another address: %d", rec.Code)
+	options := func() string {
+		o := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{})
+		ch, _ := jsonBody(t, o)["challenge_id"].(string)
+		if o.Code != http.StatusOK || ch == "" {
+			t.Fatalf("options: %d %s", o.Code, o.Body)
+		}
+		return ch
 	}
-	// Clearing: a sign-in from a fresh address that had used challenges.
-	const other = "198.51.100.151"
-	for i := 0; i < passkeyOptionsPerAddr-1; i++ {
-		postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(other))
+	gone := func(what string, rec *httptest.ResponseRecorder, before int) {
+		t.Helper()
+		if rec.Code != http.StatusBadRequest || errorOf(rec) != PasskeyChallengeGone {
+			t.Errorf("%s: %d %s, want 400 %q", what, rec.Code, rec.Body, PasskeyChallengeGone)
+		}
+		if n := w.fake.CountCalls(http.MethodPost, "/passkeys/authentication/verify"); n != before {
+			t.Errorf("%s reached GoTrue's verify (%d calls, was %d)", what, n, before)
+		}
 	}
-	if rec := w.passkeySignIn("cred-opts", gotruetest.FlagUPUV, arriveFrom(other)); rec.Code != http.StatusOK {
-		t.Fatalf("a passkey sign-in on the last challenge: %d", rec.Code)
+	calls := func() int { return w.fake.CountCalls(http.MethodPost, "/passkeys/authentication/verify") }
+
+	n := calls()
+	gone("a challenge muster never issued", verify("never-issued-challenge"), n)
+
+	ch := options()
+	if rec := verify(ch); rec.Code != http.StatusOK {
+		t.Fatalf("CONTROL: a held challenge: %d %s, want 200", rec.Code, rec.Body)
 	}
-	if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(other)); rec.Code != http.StatusOK {
-		t.Fatalf("options after a passkey sign-in from that address: %d, want 200 (the sign-in cleared the count)", rec.Code)
-	}
+	n = calls()
+	gone("the same challenge again", verify(ch), n)
+
+	w.s.passkeyChallenges = boundedWindow{cap: 2}
+	old := options()
+	options()
+	options() // evicts old
+	n = calls()
+	gone("an evicted challenge", verify(old), n)
 }

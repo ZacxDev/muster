@@ -10,24 +10,33 @@
   admin.
 - If it is unset or shorter than 12 characters, every browser page answers 503
   and `/login` says which variable is missing. It fails closed.
-- `POST /login` compares in constant time. Wrong passwords are counted for the
-  whole server, 10 a minute. The step-up confirm shares the count.
+- `POST /login` compares in constant time. Wrong passwords are counted per
+  client address (10 a minute) and for the whole server (100 a minute). The
+  step-up confirm shares the counts.
 - **Known devices.** A browser that has signed in correctly gets a
   long-lived **device cookie** (`muster_device`: HttpOnly, `SameSite=Lax`,
   `Secure` as the session cookie is, 400 days). It is signed with a key
   derived from the operator password, so changing the password invalidates
   every device cookie.
-  - Past the count, a request **without** a valid device cookie is refused
-    with 429 before the password is compared, correct or not. So a guesser is
-    held to 10 guesses a minute.
-  - A request **with** one is never refused for the count when it carries the
-    correct password. So a flood of junk sign-ins cannot lock the operator
-    out of a browser they have used before.
+  - A browser that is still signed in (a valid session cookie) counts as a
+    known device too.
+  - Once its address's count, or the whole server's, is past its limit, a
+    request from an **unknown** device is refused with 429 before the password
+    is compared, correct or not. So a guesser is held to 10 guesses a minute
+    from one address, and 100 across all of them. Each refusal is logged (at
+    most one line a minute) so a flood is visible.
+  - A request from a **known** device is never refused for the counts when it
+    carries the correct password. So a flood of junk sign-ins cannot lock the
+    operator out of a browser they have used before.
   - A wrong password from a known device still counts.
   - The device cookie is not a credential: it admits nothing on its own.
-  - A browser that has never signed in (or whose cookie was cleared, or that
+  - A browser that has never signed in (or whose cookies were cleared, or that
     signed in before the password was changed) waits for the window to pass
-    while a flood is running.
+    while a flood from its own address is running.
+  - ⚠ Behind a reverse proxy that is not declared trusted
+    (`MUSTER_TRUSTED_PROXIES`), every client has the proxy's address, so one
+    address's flood refuses every unknown device. Declare the proxy to keep
+    the counts per client.
 - The session cookie lasts 30 days. Set `MUSTER_SECURE_COOKIES=1` when muster
   is served over TLS.
 
@@ -55,9 +64,13 @@ Supabase auth server.
   minutes). That count never refuses a correct password or passkey: past it,
   a wrong attempt is answered 429, and an attempt at an email that is not a
   muster account is refused without asking GoTrue. The admin claim's failures
-  count the same way (429 past it). Passkey sign-in challenges are limited to
-  30 per 10 minutes per address, and a passkey sign-in clears its address's
-  count.
+  count the same way (429 past it). Passkey sign-in challenges are never
+  refused per address (the sign-in page fetches one on every load, and a
+  shared address must not lose passkey sign-in). GoTrue's own per-address
+  limit bounds how many one client can mint. muster remembers the challenges
+  it issued in one table of at most 8192, oldest dropped, and a passkey
+  verify naming a challenge it does not hold is refused without asking
+  GoTrue.
 
 ### Setting up the first admin
 

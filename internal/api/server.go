@@ -151,9 +151,15 @@ type Server struct {
 	// inviteLimits throttles invite redemption and the password reset
 	// (accounts PR 5; login_invite.go).
 	inviteLimits inviteLimits
-	// passkeyOptions counts unused passkey sign-in challenges per client
-	// address (passkeys.go, passkeyOptionsPerAddr).
-	passkeyOptions boundedWindow
+	// loginRateAddr counts wrong operator passwords per client address;
+	// loginRefusedLog rate-limits the log of refused unknown devices
+	// (known_device.go, passwordGate).
+	loginRateAddr   boundedWindow
+	loginRefusedLog everyMinute
+	// passkeyChallenges is the sign-in challenges muster issued and has not
+	// seen used, one global table capped at passkeyChallengeCap, the oldest
+	// evicted (passkeys.go). Its cap is set in New.
+	passkeyChallenges boundedWindow
 
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
@@ -676,6 +682,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		taskReapAfter:           defaultTaskReapAfter,
 		agentReapStoppedAfter:   DefaultAgentReapStoppedAfter,
 		reapInstancesWithin:     defaultAgentReapInstancesWithin,
+		passkeyChallenges:       boundedWindow{cap: passkeyChallengeCap},
 	}
 }
 

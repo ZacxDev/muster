@@ -2,7 +2,9 @@ package api
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/auth"
@@ -16,9 +18,10 @@ import (
 // POSTs a minute); one that only counts lets a guesser run at line rate, since a
 // correct guess is admitted whatever the count. The device cookie separates the
 // two populations: a browser that has signed in correctly before carries a
-// cookie this server signed, and is NEVER refused for the shared count with the
-// correct password; every other request shares the failure count and is
-// REFUSED past it, correct password or not (loginGate).
+// cookie this server signed (or a valid session), and is NEVER refused for the
+// failure counts with the correct password; any other request is REFUSED once
+// its address's count, or the process-wide one, is past its limit, correct
+// password or not (passwordGate).
 //
 //   - Issued on every successful operator-password sign-in and step-up confirm.
 //   - HttpOnly, SameSite=Lax, Secure as the session cookie is
@@ -66,18 +69,76 @@ func (s *Server) setKnownDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// passwordGate is the operator-password check behind the shared failure count.
-//   - refused: an UNKNOWN device while the count is past loginRateBurst; the
-//     password was not compared (answer 429).
+// loginRateGlobalBurst bounds wrong operator passwords per loginRateWindow
+// across ALL addresses: a guesser spread over many addresses is held to it.
+// Each address has its own loginRateBurst (Server.loginRateAddr), so a flood
+// from one address does not refuse an unknown device at another.
+const loginRateGlobalBurst = 100
+
+// passwordGate is the operator-password check behind the failure counts.
+//
+// A request is from a KNOWN device when it carries a valid device cookie or a
+// valid session cookie (that session already proved the current password).
+//   - refused: an UNKNOWN device whose address is past loginRateBurst, or
+//     while the process-wide count is past loginRateGlobalBurst; the password
+//     was not compared (answer 429). Logged at most once a minute.
 //   - ok: the password is correct.
-//   - !ok && !refused: a wrong password, counted; throttled reports that the
-//     count is now past the burst (answer 429 rather than 401).
+//   - !ok && !refused: a wrong password, counted against its address and the
+//     process; throttled reports that either is now past its burst (answer
+//     429 rather than 401).
+//
+// ⚠ Behind a proxy that is not declared trusted (MUSTER_TRUSTED_PROXIES),
+// every client is the proxy's address, so the per-address count is one count
+// for everyone: a flood refuses every unknown device. Known devices and
+// signed-in browsers are unaffected either way.
 func (s *Server) passwordGate(r *http.Request, password string, now time.Time) (ok, refused, throttled bool) {
-	if !s.knownDevice(r) && s.loginRate.over(now, loginRateBurst, loginRateWindow) {
-		return false, true, false
+	ip := clientIP(r)
+	if !s.knownDevice(r) && !s.hasValidSession(r) {
+		addrOver := s.loginRateAddr.count(ip, now, loginRateWindow) >= loginRateBurst
+		if addrOver || s.loginRate.over(now, loginRateGlobalBurst, loginRateWindow) {
+			s.loginRefusedLog.do(now, func(suppressed int) {
+				which := "the whole server's failure count"
+				if addrOver {
+					which = "its address's failure count"
+				}
+				s.logger.Printf("login: refused an operator-password attempt from %s with no known device: %s is past "+
+					"its limit, so the password was not checked%s", ip, which, suppressedNote(suppressed))
+			})
+			return false, true, false
+		}
 	}
 	if password != "" && auth.ConstantTimeEqual(password, s.auth.UIPassword) {
 		return true, false, false
 	}
-	return false, false, s.loginRate.fail(now, loginRateBurst, loginRateWindow)
+	s.loginRateAddr.add(ip, now, loginRateWindow)
+	globalOver := s.loginRate.fail(now, loginRateGlobalBurst, loginRateWindow)
+	return false, false, globalOver || s.loginRateAddr.count(ip, now, loginRateWindow) > loginRateBurst
+}
+
+// everyMinute runs a function at most once a minute and counts what it
+// skipped (the refusal log above).
+type everyMinute struct {
+	mu         sync.Mutex
+	last       time.Time
+	suppressed int
+}
+
+func (e *everyMinute) do(now time.Time, f func(suppressed int)) {
+	e.mu.Lock()
+	if !e.last.IsZero() && now.Sub(e.last) < time.Minute {
+		e.suppressed++
+		e.mu.Unlock()
+		return
+	}
+	n := e.suppressed
+	e.last, e.suppressed = now, 0
+	e.mu.Unlock()
+	f(n)
+}
+
+func suppressedNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d more like it in the last minute not logged)", n)
 }

@@ -163,27 +163,42 @@ func (s *Server) writeGoTrueRefusal(w http.ResponseWriter, what string, err erro
 	}
 }
 
-// passkeyOptionsPerAddr / passkeyOptionsWindow bound the sign-in challenges
-// one client address may have GoTrue mint without signing in.
+// passkeyChallengeCap / passkeyChallengeWindow bound the sign-in challenges
+// muster remembers having issued (Server.passkeyChallenges).
 //
-// 🔴 MUSTER'S OWN LIMIT IN FRONT OF A GoTrue-LIMITED ROUTE. Every options call
-// costs a GoTrue call and spends GoTrue's own per-address bucket; with no limit
-// here, looping this anonymous route was the cheap way to empty GoTrue's
-// bucket for an address. A challenge counts until a passkey sign-in from the
-// same address succeeds, which clears the count (failure-only: a signed-in
-// browser is never held). Options carry no credential, so refusing them past
-// the limit refuses no correct credential.
+// 🔴 NO PER-ADDRESS REFUSAL OF OPTIONS, AND WHY. The sign-in page fetches a
+// challenge on every load: autofill (conditional mediation) needs one at once,
+// and the button must reach WebAuthn with no network between the tap and the
+// prompt or iOS drops the gesture (passkeySignInJS). A per-address cap on
+// options was therefore spent by page views, so an office or carrier NAT —
+// or anyone sharing its address — could block every passkey sign-in there.
+// Instead:
+//   - options are never refused by muster. What one client can make GoTrue
+//     mint is bounded by GoTrue's own per-address limit, which is per real
+//     client because gotrue mode requires a declared client topology
+//     (cmd/muster-server validateClientTopology);
+//   - muster records each challenge it issued in ONE global table, capped at
+//     passkeyChallengeCap, the oldest evicted — memory is bounded and no
+//     address can be refused;
+//   - a verify must name a challenge in that table, used once: one muster
+//     never issued, already used, or evicted is refused WITHOUT asking GoTrue
+//     (PasskeyChallengeGone), so a flood of junk verifies costs no GoTrue call.
+//
+// The cost, stated: a flood minting more than passkeyChallengeCap challenges
+// within one person's ceremony evicts theirs, and their verify asks them to
+// try again (a fresh challenge). That needs the flood spread over many
+// addresses, past GoTrue's per-address limit.
 const (
-	passkeyOptionsPerAddr = 30
-	passkeyOptionsWindow  = 10 * time.Minute
+	passkeyChallengeCap    = 8192
+	passkeyChallengeWindow = 15 * time.Minute
 )
+
+// PasskeyChallengeGone answers a verify naming a challenge muster does not
+// hold (never issued, used, or evicted).
+const PasskeyChallengeGone = "That passkey prompt has expired. Try again."
 
 func (s *Server) handlePasskeySignInOptions(w http.ResponseWriter, r *http.Request) {
 	if s.passkeySignInRefusal(w, r) {
-		return
-	}
-	if !s.passkeyOptions.take(clientIP(r), s.gt.now(), passkeyOptionsWindow, passkeyOptionsPerAddr) {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
 		return
 	}
 	o, err := s.gt.Client.PasskeySignInOptions(r.Context(), clientIP(r))
@@ -197,6 +212,7 @@ func (s *Server) handlePasskeySignInOptions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.gt.noteRPID(opts)
+	s.passkeyChallenges.add(o.ChallengeID, s.gt.now(), passkeyChallengeWindow)
 	s.writeJSON(w, http.StatusOK, map[string]any{"challenge_id": o.ChallengeID, "options": json.RawMessage(opts)})
 }
 
@@ -213,6 +229,13 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
 		return
 	}
+	// The challenge must be one this muster issued and still holds; it is used
+	// once (passkeyChallengeCap's comment).
+	if s.passkeyChallenges.count(body.ChallengeID, s.gt.now(), passkeyChallengeWindow) == 0 {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyChallengeGone})
+		return
+	}
+	s.passkeyChallenges.forget(body.ChallengeID)
 	ip := clientIP(r)
 	// The ADDRESS side of the sign-in limiter: a passkey assertion names no
 	// account muster can key on before GoTrue answers (the user is in the
@@ -281,7 +304,6 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	outcome = outcomeSucceeded
-	s.passkeyOptions.forget(ip)
 	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	s.backfillCredentialID(r.Context(), ip, u.GotrueSub, credID)

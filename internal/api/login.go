@@ -35,14 +35,15 @@ const loginPath = "/login"
 
 // loginRateBurst / loginRateWindow count wrong operator passwords, process-wide.
 //
-// 🔴 THE COUNT HOLDS FAILURES ONLY, AND IT REFUSES ONLY UNKNOWN DEVICES
-// (passwordGate, known_device.go). Past loginRateBurst in a window, a request
-// with no valid known-device cookie is refused before the compare, correct
-// password or not, so a guesser is held to loginRateBurst a minute; a browser
-// that signed in correctly before is never refused for the count with the
-// correct password, so a junk flood cannot lock the operator out of a browser
-// they use (TestAJunkFloodDoesNotLockAKnownDeviceOut). A wrong password from a
-// known device still counts.
+// 🔴 THE COUNTS HOLD FAILURES ONLY, AND THEY REFUSE ONLY UNKNOWN DEVICES
+// (passwordGate, known_device.go). Past loginRateBurst in a window from one
+// client address (or loginRateGlobalBurst across all of them), a request with
+// no valid known-device cookie and no valid session is refused before the
+// compare, correct password or not, so a guesser is held to loginRateBurst a
+// minute per address; a browser that signed in correctly before is never
+// refused with the correct password, so a junk flood cannot lock the operator
+// out of a browser they use (TestAJunkFloodDoesNotLockAKnownDeviceOut). A wrong
+// password from a known device still counts.
 const (
 	loginRateBurst  = 10
 	loginRateWindow = time.Minute
