@@ -36,6 +36,9 @@ type KickoffGrants struct {
 
 // KickoffTextWith is KickoffText for an officer whose type grants g.
 func KickoffTextWith(o Officer, n int, g KickoffGrants) string {
+	if o.ChatOnly(n) {
+		return chatOnlyKickoff(o, n)
+	}
 	caps := DeclaredCapabilities(o)
 	w := kickoffWordingFor(o)
 	list := []string{ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease}
@@ -64,6 +67,22 @@ Start now:
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
 		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ask,
 		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork, whereNote(o), w.rebrief) + tierNote(o, w.source) + repoNote(o) + standingReadNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
+}
+
+// chatOnlyKickoff is the first message of a chat-only instance (Officer.
+// ChatOnly: numbered past max_instances, started for chats): its primary
+// takes no queue work — officer_claim refuses it (internal/api) and the wake
+// loop never re-prompts it — so it is told to end its turn. Its chats run in
+// sessions of their own, each loading the charter on its first turn.
+func chatOnlyKickoff(o Officer, n int) string {
+	queue := "instance 1 works the queue"
+	if o.MaxInstances > 1 {
+		queue = fmt.Sprintf("instances 1 to %d work the queue", o.MaxInstances)
+	}
+	return fmt.Sprintf("You are officer %s, instance %s (%s). "+
+		"muster started this instance for chat sessions: it runs each chat with a team member in a Claude Code session of its own beside this one, and gives this session no queue work. "+
+		"Do not claim items: %s refuses this instance (%s). There is nothing to do in this session: end your turn now.",
+		o.ID, o.InstanceLabel(n), o.InstanceName(n), ToolClaim, queue)
 }
 
 // podWhere is what a pod instance is told about where it runs.

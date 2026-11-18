@@ -59,7 +59,7 @@ func (f *fakeFleet) Instances(_ context.Context, o officers.Officer) ([]officers
 		return nil, errors.New("provisioner blind")
 	}
 	var out []officers.InstanceState
-	for n := 1; n <= o.MaxInstances; n++ {
+	for n := 1; n <= o.Slots(); n++ {
 		out = append(out, officers.InstanceState{N: n, Name: officers.InstanceName(o.ID, n), Exists: f.exists[n], Up: f.up[n] || f.errored[n],
 			Error: f.errored[n], PromptPending: f.pending[n], Down: f.down[n]})
 	}
