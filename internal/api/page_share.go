@@ -125,11 +125,11 @@ const pageQuietButton = "press inline-flex min-h-[44px] items-center justify-cen
 const pageAskOpenLabel = "Open the page"
 
 // pageAskOpen is the preview of the page whose share link ask id asks for,
-// "" when it is no page's card (or pages are off): what the card's "Open the
+// "" when it is no page's card (or pages are not served): what the card's "Open the
 // page" opens. ctx is the reader's: the link is read under their row-level
 // security, so another owner's card finds none.
 func (s *Server) pageAskOpen(ctx context.Context, id int64) string {
-	if s.ext.Pages == nil || id <= 0 {
+	if !s.pagesOn() || id <= 0 {
 		return ""
 	}
 	l, err := s.ext.Pages.LinkByAsk(ctx, id)
