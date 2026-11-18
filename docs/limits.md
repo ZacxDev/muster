@@ -6,10 +6,8 @@ The limits most people meet first. Running one replica and an interactive
 mirror being a shell on its host are under [Deployment](#deployment) and
 [Mirroring](#mirroring).
 
-- **Linux.** macOS hosts are experimental: the Terminal view cannot attach on
-  macOS yet (`internal/mirrorhost/pty_other.go`), so there only a Claude Code
-  window whose Rendered view resolves can be viewed, and Rendered-view
-  detection is unverified on a real Mac. No Windows.
+- **Linux.** No Windows. macOS hosts are experimental: see
+  [Mirroring](#mirroring).
 - **muster assumes sessions run without permission prompts.** Start your own
   Claude Code sessions in `bypassPermissions` or auto mode; the agents a host
   starts for your chief are started without them by default, so they run

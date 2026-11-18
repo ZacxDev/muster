@@ -7,7 +7,12 @@ index, and internal notes kept out of the public tree.
 Static. What it pins:
 
 * COMMUNITY FILES. Every file in COMMUNITY_FILES exists and is not empty.
-* ISSUE TEMPLATES PARSE. Every .github/ISSUE_TEMPLATE/*.yml is a YAML mapping.
+* ISSUE TEMPLATES PARSE. Every .github/ISSUE_TEMPLATE/*.yml is a YAML mapping,
+  read by load_yaml_subset below (stdlib only: the dev shell's python has no
+  PyYAML). It reads the block-YAML subset the templates use and REFUSES
+  anything outside it, so it can reject valid YAML but never accept a file
+  GitHub could not parse: a template that needs more YAML than it reads
+  fails here, and the fix is to widen the reader, with a control.
   config.yml's `blank_issues_enabled` is a boolean. Every other template is an
   issue form: a name, a description and a non-empty `body` list.
 * ONE PRIVATE CHANNEL FOR SECURITY AND CONDUCT REPORTS: this repository's own
@@ -46,14 +51,13 @@ fail, so a check that cannot fail is reported rather than passed.
 from __future__ import annotations
 
 import itertools
+import json
 import re
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from urllib.parse import urlsplit
-
-import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from features_config_test import MD_LINK, broken_links, strip_code  # noqa: E402  (one link rule, not two)
@@ -128,6 +132,151 @@ def missing_community_files(root: Path) -> list[str]:
     return [f for f in COMMUNITY_FILES if not (root / f).is_file() or not (root / f).read_text().strip()]
 
 
+class YAMLSubsetError(ValueError):
+    pass
+
+
+_KEY = re.compile(r"^([A-Za-z_][\w-]*):(?: (.*))?$")
+_PLAIN_BAD_START = tuple("[]{},&*!|>'\"%@`#?:-")
+
+
+def _scalar(v: str, where: str):
+    v = v.strip()
+    if v.startswith('"'):
+        try:
+            out = json.loads(v)
+        except ValueError as e:
+            raise YAMLSubsetError(f"{where}: bad double-quoted string {v!r}: {e}") from None
+        if not isinstance(out, str):
+            raise YAMLSubsetError(f"{where}: {v!r} is not a string")
+        return out
+    if v.startswith("'"):
+        if len(v) < 2 or not v.endswith("'") or "'" in v[1:-1].replace("''", ""):
+            raise YAMLSubsetError(f"{where}: bad single-quoted string {v!r}")
+        return v[1:-1].replace("''", "'")
+    if v.startswith("["):
+        try:
+            out = json.loads(v)  # a flow sequence, in its JSON spelling only
+        except ValueError as e:
+            raise YAMLSubsetError(f"{where}: bad flow sequence {v!r}: {e}") from None
+        if not isinstance(out, list):
+            raise YAMLSubsetError(f"{where}: {v!r} is not a sequence")
+        return out
+    if not v or v.startswith(_PLAIN_BAD_START) or ": " in v or " #" in v or v.endswith(":"):
+        raise YAMLSubsetError(f"{where}: {v!r} is outside the plain-scalar subset (quote it)")
+    return {"true": True, "false": False, "null": None, "~": None}.get(v, v)
+
+
+def load_yaml_subset(text: str):
+    """Block YAML, the subset the issue templates use: mappings, `- `
+    sequences (a mapping may start on the dash's line), plain, double- or
+    single-quoted scalars, JSON-spelled flow sequences and `|` literal
+    blocks; full-line comments and blank lines. Anything else, a tab in the
+    indent, a duplicate key or an indent it did not expect raises
+    YAMLSubsetError."""
+    lines = []
+    for n, raw in enumerate(text.split("\n"), 1):
+        body = raw.rstrip()
+        indent = len(body) - len(body.lstrip(" "))
+        if body[indent:indent + 1] == "\t":
+            raise YAMLSubsetError(f"line {n}: a tab in the indent")
+        lines.append((n, indent, body[indent:], raw))
+    pos = 0
+
+    def skip():
+        nonlocal pos
+        while pos < len(lines) and (not lines[pos][2] or lines[pos][2].startswith("#")):
+            pos += 1
+
+    def literal(parent: int):
+        nonlocal pos
+        block = []
+        while pos < len(lines) and (not lines[pos][2] or lines[pos][1] > parent):
+            block.append(lines[pos][3])
+            pos += 1
+        while block and not block[-1].strip():
+            block.pop()
+        if not block:
+            raise YAMLSubsetError(f"line {lines[pos - 1][0] if pos else 0}: an empty | block")
+        cut = min(len(b) - len(b.lstrip(" ")) for b in block if b.strip())
+        return "\n".join(b[cut:] for b in block) + "\n"
+
+    def node(indent: int, first: str | None = None):
+        nonlocal pos
+        skip()
+        if first is None and (pos >= len(lines) or lines[pos][1] != indent):
+            raise YAMLSubsetError(f"line {lines[pos][0] if pos < len(lines) else 'EOF'}: expected a block at indent {indent}")
+        head = first if first is not None else lines[pos][2]
+        if head == "-" or head.startswith("- "):
+            return seq(indent)
+        return mapping(indent, first)
+
+    def seq(indent: int):
+        nonlocal pos
+        out = []
+        while True:
+            skip()
+            if pos >= len(lines) or lines[pos][1] != indent or not (lines[pos][2] == "-" or lines[pos][2].startswith("- ")):
+                break
+            n, _, content, _ = lines[pos]
+            rest = content[1:].strip()
+            if not rest:
+                pos += 1
+                out.append(node(indent + 2))
+            elif _KEY.match(rest):
+                out.append(mapping(indent + 2, rest))
+            else:
+                pos += 1
+                out.append(_scalar(rest, f"line {n}"))
+        return out
+
+    def mapping(indent: int, first: str | None = None):
+        nonlocal pos
+        out = {}
+        while True:
+            if first is None:
+                skip()
+                if pos >= len(lines) or lines[pos][1] < indent:
+                    break
+                if lines[pos][1] > indent:
+                    raise YAMLSubsetError(f"line {lines[pos][0]}: unexpected indent")
+                content = lines[pos][2]
+            else:
+                content, first = first, None
+            n = lines[pos][0]
+            m = _KEY.match(content)
+            if not m:
+                if content == "-" or content.startswith("- "):
+                    break
+                raise YAMLSubsetError(f"line {n}: {content!r} is not `key: value`")
+            key, value = m.group(1), (m.group(2) or "").strip()
+            if key in out:
+                raise YAMLSubsetError(f"line {n}: duplicate key {key!r}")
+            pos += 1
+            if value == "|":
+                out[key] = literal(indent)
+            elif value:
+                out[key] = _scalar(value, f"line {n}")
+            else:
+                skip()
+                if pos < len(lines) and lines[pos][1] > indent:
+                    out[key] = node(lines[pos][1])
+                elif pos < len(lines) and lines[pos][1] == indent and (lines[pos][2] == "-" or lines[pos][2].startswith("- ")):
+                    out[key] = seq(indent)
+                else:
+                    out[key] = None
+        return out
+
+    skip()
+    if pos >= len(lines):
+        raise YAMLSubsetError("an empty document")
+    doc = node(0)
+    skip()
+    if pos < len(lines):
+        raise YAMLSubsetError(f"line {lines[pos][0]}: content after the document")
+    return doc
+
+
 def template_problems(files: dict[str, str]) -> list[str]:
     """What is wrong with the issue templates FILES ({name: YAML text})."""
     errs = []
@@ -135,8 +284,8 @@ def template_problems(files: dict[str, str]) -> list[str]:
         errs.append("config.yml is missing")
     for name, text in sorted(files.items()):
         try:
-            doc = yaml.safe_load(text)
-        except yaml.YAMLError as e:
+            doc = load_yaml_subset(text)
+        except YAMLSubsetError as e:
             errs.append(f"{name} does not parse as YAML: {e}")
             continue
         if not isinstance(doc, dict):
@@ -260,10 +409,29 @@ class FrontDoor(unittest.TestCase):
         ])
         self.assertEqual(len([e for e in errs if e.startswith("broken.yml does not parse as YAML")]), 1, errs)
 
+    def test_the_yaml_subset_reader(self) -> None:
+        # Positive control: every construct the templates use, read to an
+        # exact, literal structure (never derived from the reader itself).
+        doc = ("# c\nname: Bug report\nlabels: [\"bug\"]\nok: false\nbody:\n  - type: markdown\n"
+               "    attributes:\n      value: |\n        Line one.\n\n        Line two.\n"
+               "  - type: input\n    id: v\n    attributes:\n      description: \"`x --y`, z.\"\n"
+               "      q: 'it''s'\nlinks:\n- url: https://example.com/a\n  about: plain text, here.\n")
+        self.assertEqual(load_yaml_subset(doc), {
+            "name": "Bug report", "labels": ["bug"], "ok": False,
+            "body": [{"type": "markdown", "attributes": {"value": "Line one.\n\nLine two.\n"}},
+                     {"type": "input", "id": "v", "attributes": {"description": "`x --y`, z.", "q": "it's"}}],
+            "links": [{"url": "https://example.com/a", "about": "plain text, here."}],
+        })
+        # Negative controls: each is refused, never read as something else.
+        for bad in ("name: [unclosed\n", "a: b: c\n", "a: `x`\n", "a: 1\na: 2\n", "a:\n  b: 1\n    c: 2\n",
+                    "a:\n\tb: 1\n", "a: \"open\n", "a: 'open\n", "just text\n", "a: x # note\n", "a: |\n", ""):
+            with self.assertRaises(YAMLSubsetError, msg=repr(bad)):
+                load_yaml_subset(bad)
+
     def test_security_and_conduct_reports_go_to_the_private_form(self) -> None:
         self.assertEqual(repo_slug("module github.com/Some-Org/a.b\n\ngo 1.0\n"), "Some-Org/a.b")
         self.assertEqual(urlsplit(ADVISORY_URL).path.count("/"), 5, f"positive control: {ADVISORY_URL}")
-        config = yaml.safe_load((TEMPLATES / "config.yml").read_text())
+        config = load_yaml_subset((TEMPLATES / "config.yml").read_text())
         docs = {n: (ROOT / n).read_text() for n in ("SECURITY.md", "CODE_OF_CONDUCT.md")}
         self.assertEqual(security_route_problems(config, docs), [])
         # Negative controls. Another repository's form (what a fork that kept

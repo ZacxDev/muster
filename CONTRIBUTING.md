@@ -13,7 +13,8 @@ Thanks for helping. Bug reports, fixes, docs and features are all welcome.
 ## Set up
 
 You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux;
-`nix develop` gives you all of them (see [The gates](#the-gates)).
+`nix develop` gives you Go and the Docker client (see [The gates](#the-gates));
+the Docker daemon and tmux are the host's own.
 [docs/development.md](docs/development.md) runs muster from source against a
 throwaway database (`make test-db`, then `make run`) and mirrors your own tmux
 sessions into it. `make help` lists every target.
@@ -123,7 +124,8 @@ stylesheet check, the real-tmux suites, the Nix outputs and the Helm chart. Its
 comments give the local command for each job.
 
 A **draft** pull request skips the slowest integration jobs (the browser suite,
-the release dry run, the image builds and the screenshot check). Marking it
+the release dry run, the image builds, the Helm chart on kind and the screenshot
+check). Marking it
 ready for review starts a full run, and that run is the verdict. Read it with
 `gh pr checks <number>` or on the pull request page.
 
