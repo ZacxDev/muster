@@ -249,14 +249,14 @@ for (const vp of [
       await expect(options).toHaveCount(1);
       await expect(options.first()).toHaveAttribute('data-match', 'previous');
       await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + PREVIOUS_TITLE);
-      await expect(options.first().locator('span').first()).toHaveText('focuswin:5');
+      await expect(options.first().locator('span').first()).toHaveText('focuswin · window 5');
 
       // The ranking: name, then current title, then previous title.
       await input.fill('reconciling');
       const rows = await options.evaluateAll((els) =>
         els.map((e) => `${e.getAttribute('data-match')}:${(e.firstElementChild as HTMLElement).textContent}`));
       const at = (re: RegExp) => rows.findIndex((r) => re.test(r));
-      const name = at(/^code:reconciling:1/), current = at(/^title:/), previous = at(/^previous:focuswin:5$/);
+      const name = at(/^code:reconciling/), current = at(/^title:/), previous = at(/^previous:focuswin · window 5$/);
       expect(name, `the codename match is listed: ${rows}`).toBeGreaterThanOrEqual(0);
       expect(current, `the current-title match is listed: ${rows}`).toBeGreaterThan(name);
       expect(previous, `the previous-title match is listed last of the three: ${rows}`).toBeGreaterThan(current);
@@ -295,7 +295,7 @@ for (const vp of [
       await expect(options).toHaveCount(1);
       await expect(options.first()).toHaveAttribute('data-match', 'previous');
       await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + OLD_TITLE);
-      await expect(options.first().locator('span').first()).toHaveText('focuswin:5');
+      await expect(options.first().locator('span').first()).toHaveText('focuswin · window 5');
     });
 
     // 🔴 ONLY THE LATEST ANSWER LANDS. The server search is intercepted: a
@@ -624,7 +624,7 @@ for (const vp of [
         await expect.poll(() => dock.evaluate((d) => (d as HTMLDialogElement).open)).toBe(true);
         await dock.locator('[data-dock-tab="all"]').tap();
         const rowOfLabel = (l: string) => dock.locator('#dock-list [data-dock-row]').filter({ has: page.locator('[data-dock-label]', { hasText: l }) });
-        const w6 = rowOfLabel('focuswin:6');
+        const w6 = rowOfLabel('focuswin · window 6');
         await expect(w6).toHaveCount(1);
         await expect(w6.locator('[data-dock-focus]')).toHaveText(STALE_TITLE);
         await expect(w6.locator('[data-focus-age]')).toHaveText('· 5d');
@@ -632,7 +632,7 @@ for (const vp of [
         await expect(line).toHaveAttribute('data-focus-stale', '');
         await styleOf(line).toEqual(['italic', '0.6']);
         await expectAgeInside(line);
-        const w5 = rowOfLabel('focuswin:5');
+        const w5 = rowOfLabel('focuswin · window 5');
         await expect(w5.locator('[data-focus-age]')).toHaveText('· 2d');
         await expect(w5.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 2d ago');
         await expect(w5.locator('[data-focus-line]')).not.toHaveAttribute('data-focus-stale');

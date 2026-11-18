@@ -64,7 +64,7 @@ it off. The full list of features, with every `.env` line, is
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
 - [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
 - [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
-- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: keys, handle, peers, the first message, troubleshooting
+- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: what muster needs, and a pointer to the plugin's own repository (setup, pairing, troubleshooting)
 - [officers-builtin.md](officers-builtin.md) — **start here for officers**: standing Claude Code agents with a charter and a queue, made on the Officers page (New officer, templates, Shadow then Live) on muster's own built-in backend; how they work, and the `MUSTER_OFFICERS`, CLI and admin-API reference
 - [officers.md](officers.md) — the officer reference: the HQ backend, and what every officer's instances get (pods, network, runner image, repositories, tools, tiers, the LLM proxy)
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back

@@ -14,9 +14,10 @@ import (
 
 // TestAnAnsweredCardIsTitledByTheSessionsName: a named mirrored session's ask
 // is titled "Ledger cleanup" on the Open tab; answered, its Answered card is
-// titled the SAME (the one naming rule, attentionTitle), with its tmux target
-// small under it — never its window's place as the title. (Its delivery line
-// keeps the exact place: TestAnAnswersDeliveryLineNamesTheExactTmuxTarget.)
+// titled the SAME (the one naming rule, attentionTitle), "on <host>" under it
+// and its tmux target in its ⓘ — never its window's place as the title.
+// (Its delivery line names it in words too, and its ⓘ holds the target:
+// TestAnAnswersDeliveryLineNamesTheExactTmuxTarget.)
 //
 // RED at origin/main d1ff2dbe: the Answered card's title was the window's
 // place, "tmux main:1 @ ws".
@@ -40,7 +41,9 @@ func TestAnAnsweredCardIsTitledByTheSessionsName(t *testing.T) {
 	card := itemLi(t, f.page(t, "/attention?tab=answered"), "answered-"+strconv.FormatInt(a.ID, 10))
 	for _, want := range []string{
 		`data-attention-title>Ledger cleanup</span>`,
-		`data-attention-source>tmux main:1 @ ws</span>`,
+		// Where it runs in words; the exact target in the card's ⓘ.
+		`data-attention-source>on ws</span>`,
+		`data-info-code="">tmux main:1 @ ws</code>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the Answered card lacks %q:\n%s", want, card)

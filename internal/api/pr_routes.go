@@ -140,7 +140,7 @@ func (s *Server) prAuthorHint(ctx context.Context, m plugins.Message) *plugins.A
 		Repo: hit.Repo, PR: hit.PR, HeadRef: hit.HeadRef, LastSeen: hit.LastSeen}
 	e, online := s.mirrorEntryForSession(ctx, hit.ClaudeSession)
 	if online {
-		a.Online, a.Host, a.Name, a.Where = true, e.Host, e.DisplayTitle(), e.Where()
+		a.Online, a.Host, a.Name, a.Where = true, e.Host, e.CodeTitle(), e.Where()
 	}
 	if s.ext.Focus != nil {
 		if f, has, err := s.ext.Focus.Get(ctx, focus.MirrorSubject(hit.ClaudeSession)); err == nil && has && f.Has() {

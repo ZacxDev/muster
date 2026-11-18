@@ -176,7 +176,7 @@ func TestARenamedMirrorIsRedrawnInPlace(t *testing.T) {
 		if name == "named" && !strings.Contains(body, `data-session-name="manual"`) {
 			t.Errorf("named: the button does not draw the manual name:\n%s", body)
 		}
-		if name == "cleared" && (strings.Contains(body, renamedName) || !strings.Contains(body, ">mango:1<")) {
+		if name == "cleared" && (strings.Contains(body, renamedName) || !strings.Contains(body, ">mango<")) {
 			t.Errorf("cleared: the button does not fall back to the label:\n%s", body)
 		}
 	}
@@ -225,8 +225,9 @@ func TestARenamedTerminalIsRedrawnInPlace(t *testing.T) {
 	named := sessionname.Name{Text: renamedName, Source: sessionname.SourceManual, Technical: "tmux main:1 @ atlas"}
 	for name, v := range map[string]AgentTerminalView{
 		"agent":          {Name: "agent-7", DisplayName: renamedName, SessionName: named},
-		"mirror":         {Name: "main", DisplayName: "mango:1", RawName: "main", SessionName: named, Badge: "Mirrored · atlas", BadgeHost: "atlas"},
-		"mirror cleared": {Name: "main", DisplayName: "mango:1", RawName: "main", Badge: "Mirrored · atlas", BadgeHost: "atlas"},
+		// DisplayName is the window's PlainTitle, as internal/api sends it.
+		"mirror":         {Name: "main", DisplayName: "mango", RawName: "main", SessionName: named, Badge: "Mirrored · atlas", BadgeHost: "atlas"},
+		"mirror cleared": {Name: "main", DisplayName: "mango", RawName: "main", Badge: "Mirrored · atlas", BadgeHost: "atlas"},
 	} {
 		page := renderRaw(t, AgentTerminalPage(v))
 		head := renderRaw(t, terminalTitle(v))
@@ -242,7 +243,7 @@ func TestARenamedTerminalIsRedrawnInPlace(t *testing.T) {
 				t.Errorf("%s: a Terminal page's answer swaps %s, which it has not", name, other)
 			}
 		}
-		if name == "mirror cleared" && (strings.Contains(body, renamedName) || !strings.Contains(body, "mango:1")) {
+		if name == "mirror cleared" && (strings.Contains(body, renamedName) || !strings.Contains(body, ">mango<")) {
 			t.Errorf("cleared: the heading does not fall back to the label:\n%s", body)
 		}
 	}

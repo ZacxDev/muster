@@ -761,8 +761,18 @@ test.describe('an ask’s answer boxes', () => {
     const mic = page.locator(`#answer-${id}-dictate`);
     await expect(box).toBeVisible();
     await expect(mic, 'the box has its mic').toBeVisible();
-    const lastOption = (await card.locator('[data-attention-option]').last().boundingBox())!;
-    expect((await box.boundingBox())!.y, 'the box is under the options').toBeGreaterThan(lastOption.y);
+    // Both boxes are read in ONE pass, retried: a live refresh of the feed
+    // (an SSE /attention/items, measured landing between two separate
+    // boundingBox() calls in CI) swaps the card, and a box read from the
+    // node it replaced is null — a race in the reading, not the layout.
+    const boxUnderOptions = () => page.evaluate((askId) => {
+      const opts = document.querySelectorAll(`#ask-${askId} [data-attention-option]`);
+      const input = document.getElementById(`answer-${askId}`);
+      if (!opts.length || !input) return null;
+      const o = opts[opts.length - 1].getBoundingClientRect(), b = input.getBoundingClientRect();
+      return o.height > 0 && b.height > 0 ? b.y > o.y : null;
+    }, id);
+    await expect.poll(boxUnderOptions, { message: 'the box is under the options' }).toBe(true);
     await noHorizontalScroll(page);
     await box.fill('ap-south');
     expect(sent(), 'typing sent nothing').toBe(0);

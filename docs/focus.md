@@ -90,7 +90,7 @@ first of these that a session has wins:
 | 2 | **system** | a name muster pinned for a role: the chief, an officer's instance. The rest of muster finds the role by it, so the automatic name never replaces it. |
 | 3 | **dispatch** | an agent dispatched from a task: `#42 · Fix the login bug`. It is the agent's stable name: it never changes on its own, and only a manual rename replaces it. |
 | 4 | **auto** | the session's **first good focus title**, frozen ([below](#the-name-bar)). Set once and never changed by a later focus. (A task-dispatched agent's auto name is frozen too, but never shown: its task name ranks above it.) |
-| 5 | fallback | the session's technical id: an agent's slug, a mirrored window's host label (`mango:1`) or tmux address. |
+| 5 | fallback | the session's technical id: an agent's slug; a mirrored window's host label or tmux session **without tmux's window index** (`mango`, not `mango:1`). |
 
 A mirrored window's **host label** (`muster-mirror -labels-file`, drawn as
 `<codename>:<window index>`) ranks as a fallback, not a name: it is the
@@ -138,9 +138,19 @@ holds its only callers; `TestTheSessionNameCallerLedger` lists every surface):
   shown.)
 
 A named session's **technical ids** — an agent's slug, a window's codename,
-tmux address and host — are off those main surfaces: they are the row's,
-pill's and header's tooltip, the Asks row's tooltip, the Rendered view's full
-title, and still what the palette finds the session by (its codename first).
+tmux address and host — are off those main surfaces. A mirrored window says
+where it runs in words, **on &lt;host&gt;** (its tooltip, the line under its
+name on an Asks card); its exact tmux address (`tmux fern:1 @ atlas`) is
+behind the **ⓘ** beside it — on its Asks card, its ask's page and its page's
+header — in a details sheet with a **Copy** button. Its codename is still
+what the palette finds the session by (first). An agent's slug stays its
+tooltip.
+
+**No window index in a name.** tmux numbers a window (`:1`); that number is
+not a name, so a window with no human name is called by its codename without
+it (`mango`). Two such windows of one host that would read alike are told
+apart by their window (`mango · window 2`), and only when their windows share
+a number too by their tmux address.
 The chief keeps them where it needs an address: every row's `id`
 (`agent:<id>`, `mirror:<session key>`), a mirrored row's `where`, and
 `fleet_list`'s `code` (an agent's slug). A waiting session's push

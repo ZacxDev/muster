@@ -227,7 +227,7 @@ for (const vp of [
       writeFocus([{ subject, title: 'Greeting the user', tail: GREETING_TAIL }]);
       await page.goto(origin + view(w));
       await openSidebar(page);
-      await expect(rowOf(page, w).locator('[data-nav-name]')).toHaveText(`walnut:${w}`);
+      await expect(rowOf(page, w).locator('[data-nav-name]')).toHaveText(new RegExp(`^walnut( · window ${w})?$`));
 
       // 2. The first good title becomes the name.
       writeFocus([{ subject, title: 'Billing migration', tail: REAL_TAIL }]);
@@ -238,11 +238,12 @@ for (const vp of [
       const row = rowOf(page, w);
       await expect(row.locator('[data-nav-name]')).toHaveText('Billing migration');
       await expect(row.locator('[data-nav-focus]')).toContainText('Billing migration');
-      // The technical ids are off the row's text, and in its tooltip.
+      // The technical ids are off the row's text; its tooltip says where it
+      // runs in words (the tmux address is the page's ⓘ).
       const text = (await row.innerText()).toLowerCase();
       expect(text, 'the codename is not on the row').not.toContain('walnut');
       expect(text, 'the host is not on the row').not.toContain(host.toLowerCase());
-      await expect(row).toHaveAttribute('title', new RegExp(`^Billing migration · walnut:${w} · tmux namesx:${w} @ ${host}$`));
+      await expect(row).toHaveAttribute('title', `Billing migration · on ${host}`);
 
       // 3. A later title moves the live line, not the name.
       writeFocus([{ subject, title: 'Fixing the Stripe webhook retry', tail: [...REAL_TAIL, { role: 'user', text: 'now the webhooks' }, { role: 'assistant', text: 'Looking.' }] }]);

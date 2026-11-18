@@ -132,6 +132,7 @@ var uiExempt = map[string]exemption{
 	"subagent_cards.go subagentCallOf in.Description":    {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":    {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go terminalNames v.DisplayName":            {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
+	"info_sheet.go InfoSheet.trigger s.Label":            {2, "the ⓘ's accessible name and tooltip (aria-label, title): SessionPlaceSheet builds it around a session name its callers already plained (attentionTitle in internal/api, mirrorViewName here), so a Title here would apply the rule twice (\"applied once\"); the other InfoSheets' labels are muster's own words"},
 	"switcher.go mirrorCodeName m.Label":                 {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
 	"agent_actions.go agentRenameFields a.DisplayName":   {1, whyForm},
 	"switcher_pin.go newSwitcherPin e.agent.DisplayName": {1, whyForm},
@@ -254,37 +255,53 @@ func TestTheTitleSinkLedger(t *testing.T) {
 // tmux target's own characters ("_scratch_" → "scratch"). See apiTitleNames.
 func checkWhereKept(t *testing.T) {
 	fset, files := parseDir(t, "../api")
-	kept := 0
+	keptIn := map[string]int{}
 	for name, f := range files {
-		ast.Inspect(f, func(n ast.Node) bool {
-			c, ok := n.(*ast.CallExpr)
-			if !ok || len(c.Args) == 0 {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok || len(c.Args) == 0 {
+					return true
+				}
+				sel, ok := c.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "textplain" {
+					return true
+				}
+				if !namesAWindow(c.Args[0]) {
+					return true
+				}
+				switch sel.Sel.Name {
+				case "TitleKeeping":
+					keptIn[fn.Name.Name]++
+				case "Title":
+					var b strings.Builder
+					_ = printer.Fprint(&b, fset, c)
+					t.Errorf("%s: %s plains a value that can name a mirrored window with Title; use textplain.TitleKeeping with its target", name, b.String())
+				}
 				return true
-			}
-			sel, ok := c.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "textplain" {
-				return true
-			}
-			if !namesAWindow(c.Args[0]) {
-				return true
-			}
-			switch sel.Sel.Name {
-			case "TitleKeeping":
-				kept++
-			case "Title":
-				var b strings.Builder
-				_ = printer.Fprint(&b, fset, c)
-				t.Errorf("%s: %s plains a value that can name a mirrored window with Title; use textplain.TitleKeeping with its target", name, b.String())
-			}
-			return true
-		})
+			})
+		}
 	}
-	// 🔴 POSITIVE CONTROL: the sites this exists for are found.
-	if kept < 6 {
-		t.Fatalf("positive control FAILED: only %d TitleKeeping calls over a window-naming value in ../api; the walk is not measuring", kept)
+	// 🔴 POSITIVE CONTROL: the sites this exists for are found — by NAME, as
+	// the push-body control above derives its builders, not by a count. (It
+	// was "at least 6 sites"; #806 routed the Answered card's and the ask
+	// page's lines through attentionTitle, which keeps the target verbatim
+	// itself, so three call sites became one function's — a count would have
+	// read that consolidation as a broken walk.) attentionTitle is THE naming
+	// rule every attention head, delivery line and ask page title goes
+	// through; attentionPushBody and attentionSummaryItemOf name the window
+	// on a push body and the status bar's summary.
+	for _, must := range []string{"attentionTitle", "attentionPushBody", "attentionSummaryItemOf"} {
+		if keptIn[must] == 0 {
+			t.Fatalf("positive control FAILED: no TitleKeeping over a window-naming value found in %s (found %v); the walk is not measuring", must, keptIn)
+		}
 	}
 }
 
