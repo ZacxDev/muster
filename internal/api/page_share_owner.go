@@ -54,6 +54,11 @@ func (s *Server) pageShareFail(w http.ResponseWriter, r *http.Request, id int64,
 	s.renderPageDetail(w, r, id, status, msg, "", "")
 }
 
+// pageShareNotSetUp is a share action's refusal on a server that keeps no
+// lasting links (no link key) — said plainly; the setting is the page screen's
+// admin-only ⓘ (pageShareSetupSheet).
+const pageShareNotSetUp = "Sharing isn't set up on this server, so the page has no lasting link: Share makes a new one each time."
+
 // pageShareStoreFail is a store error as a share action's refusal.
 func (s *Server) pageShareStoreFail(w http.ResponseWriter, r *http.Request, id int64, what string, err error) {
 	switch {
@@ -64,9 +69,9 @@ func (s *Server) pageShareStoreFail(w http.ResponseWriter, r *http.Request, id i
 	case errors.Is(err, pages.ErrTooMany):
 		s.pageShareFail(w, r, id, http.StatusConflict, strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "))
 	case errors.Is(err, pages.ErrLinkUnreadable):
-		s.pageShareFail(w, r, id, http.StatusConflict, "This page's link can no longer be shown (the server's encryption key changed). Use New link from ⋯.")
+		s.pageShareFail(w, r, id, http.StatusConflict, "This page's link can no longer be shown, because a setting on the server changed. Use New link from ⋯.")
 	case errors.Is(err, pages.ErrNoLinkKey):
-		s.pageShareFail(w, r, id, http.StatusConflict, "This server keeps no reusable links (MUSTER_CONNECTOR_ENCRYPTION_KEY is unset): Share makes a new link each time.")
+		s.pageShareFail(w, r, id, http.StatusConflict, pageShareNotSetUp)
 	default:
 		s.logger.Printf("pages: page %d: %s: %v", id, what, err)
 		s.pageShareFail(w, r, id, http.StatusInternalServerError, "The link could not be "+what+". Try again.")

@@ -273,6 +273,49 @@ test('phone: Share opens the native share sheet with the title and the same link
   }
 });
 
+// THE PAGE'S OWN SCREEN, ON A PHONE: no address in its top layer — Copy link
+// puts the page's exact link on the clipboard, and the ⓘ beside it shows that
+// same link (with its own Copy). A stranger opens what was copied.
+test('phone: the page screen’s Copy link copies the exact link, and its ⓘ shows it', async ({ browser }) => {
+  test.setTimeout(120_000);
+  await publish();
+  let ctx: BrowserContext | undefined;
+  try {
+    ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      permissions: ['clipboard-read', 'clipboard-write'],
+      baseURL: origin,
+    });
+    const page = await ctx.newPage();
+    await signIn(page, origin);
+    await page.goto(origin + `/pages/${pageID}`);
+    const box = page.locator('[data-page-share-box]');
+    await expect(box).toBeVisible();
+    // The top layer spells no address: the only place it is is the ⓘ.
+    await expect(box.locator('input')).toHaveCount(0);
+    await expect(page.locator('[data-testid="page-detail"]')).not.toContainText('/s/', { useInnerText: true });
+    await page.evaluate(() => navigator.clipboard.writeText('cleared'));
+    await page.getByRole('button', { name: `Copy the link to “${TITLE}”` }).tap();
+    await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copied).toMatch(linkRE);
+    if (sharedURL) expect(copied, 'the same link Share hands out').toBe(sharedURL);
+    // The ⓘ shows exactly that link.
+    const sheet = page.locator(`#page-link-${pageID}`);
+    await expect(sheet).toBeHidden();
+    await page.getByRole('button', { name: "This page's link" }).tap();
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator('[data-info-code]')).toHaveText(copied);
+    await expect(sheet.locator('[data-info-copy]')).toHaveAttribute('data-copy-text', copied);
+    await strangerSees(browser, copied);
+    sharedURL = copied;
+  } finally {
+    await ctx?.close();
+  }
+});
+
 test('an owner who opts in on Account: the agent’s share request is live at once and returns the page’s same link', async ({ browser }) => {
   await publish();
   // Before the opt-in the agent is asked to wait for the owner.

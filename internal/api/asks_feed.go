@@ -109,11 +109,18 @@ func asksCardContextSlot(it attentionItem, now time.Time) string {
 // images as thumbnails that open full size, other files as chips. The strip
 // carries data-asks-media, so the card's script never takes a tap or a swipe
 // on it for the card's own (its thumbnails and chips are links besides).
+//
+// A share link's card (it.pageOpen) also draws its "Open the page" button
+// here: the page it asks about is one tap away, never an address in its text.
 func asksCardMediaSlot(it attentionItem) string {
-	if it.Kind != attentionKindAsk || len(it.Attachments) == 0 {
+	if it.Kind != attentionKindAsk {
 		return ""
 	}
-	return ui.AskMediaStrip(askMediaView(it.AskID, it.Attachments)) + "\n"
+	open := pageAskOpenHTML(it.pageOpen)
+	if len(it.Attachments) == 0 {
+		return open
+	}
+	return ui.AskMediaStrip(askMediaView(it.AskID, it.Attachments)) + "\n" + open
 }
 
 // askCardWhy is the why line an item's card draws in its context slot: an

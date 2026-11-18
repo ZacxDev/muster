@@ -446,7 +446,7 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 		}
 		return pageToolRefusal("shared", p.ID, err)
 	}
-	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: c.asker, Question: s.pageShareQuestion(creator.Label, p, in.Reason),
+	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: c.asker, Question: pageShareQuestion(creator.Label, p, in.Reason),
 		Options: []string{pageShareApproveLabel, pageShareDenyLabel}, Timeout: attention.MaxTimeout, OwnerCard: true})
 	if err == nil {
 		err = s.ext.Pages.SetLinkAsk(ctx, l.ID, a.ID)

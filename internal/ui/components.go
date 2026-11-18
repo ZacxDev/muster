@@ -1603,7 +1603,7 @@ var appScriptSrc = staticJS("app", `
       setTimeout(function () { btn.textContent = prev; }, 1200);
     }, function () {});
   };
-`+pageShareJS+`
+`+pageShareJS+plainWhenJS+`
 
   // setOpen looks elements up live (not via captured refs) so it stays correct
   // after an hx-boost body swap re-creates the shell.

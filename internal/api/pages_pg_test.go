@@ -274,9 +274,11 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	}
 	ask, err := f.srv.ext.Attention.Get(f.as(f.owner, authz.ViaSession), askID)
 	if err != nil || !ask.OwnerCard || ask.Asker.AgentID != f.agent.ID || strings.Join(ask.Options, "|") != pageShareApproveLabel+"|"+pageShareDenyLabel ||
-		!strings.Contains(ask.Question, "/pages/"+strconv.FormatInt(id, 10)+"/preview") ||
+		// The page by its title, in words; no address or id in the question
+		// (the card's "Open the page" holds the preview).
+		!strings.HasPrefix(ask.Question, "Share the page “Launch date”? ") || strings.Contains(ask.Question, "/pages/") || strings.Contains(ask.Question, "http") ||
 		// Y4: the approval is for the page, whatever is published later.
-		!strings.Contains(ask.Question, "always shows the page's latest published version") || strings.Contains(ask.Question, "(version") {
+		!strings.Contains(ask.Question, "always shows the page's latest version, including changes the agent makes after you approve") || strings.Contains(ask.Question, "(version") {
 		t.Fatalf("the card: %+v %v", ask, err)
 	}
 	links, _ := f.pages.Links(f.as(f.owner, authz.ViaSession), id)
@@ -732,8 +734,10 @@ func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 	sid := strconv.FormatInt(id, 10)
 	// The new link is shown ONCE, in the Share's own answer (no-store).
 	mint := f.call(t, http.MethodPost, "/pages/"+sid+"/share", nil, f.ownerHdr())
-	m := regexp.MustCompile(`data-link-new>[^<]*<span[^>]*>[^<]*</span>\s*<input type="text" readonly value="` +
-		regexp.QuoteMeta(pagesPublicURL+pages.SharePrefix) + `([A-Za-z0-9_-]{43})"`).FindStringSubmatch(mint.Body.String())
+	// Its address is on the Copy link button and in the ⓘ beside it, never
+	// drawn in the top layer.
+	m := regexp.MustCompile(`data-link-new>[^<]*<span[^>]*>[^<]*</span>\s*<div[^>]*><button type="button"[^>]* data-copy-text="` +
+		regexp.QuoteMeta(pagesPublicURL+pages.SharePrefix) + `([A-Za-z0-9_-]{43})"[^>]*data-link-copy>Copy link</button>`).FindStringSubmatch(mint.Body.String())
 	if mint.Code != http.StatusOK || m == nil || mint.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("mint: %d %v %s", mint.Code, mint.Header(), mint.Body.String())
 	}
@@ -753,7 +757,7 @@ func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 	// Afterwards the page shows its state and label — never the token.
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr())
 	if strings.Contains(detail.Body.String(), token) || strings.Contains(detail.Body.String(), "data-link-new") ||
-		!strings.Contains(detail.Body.String(), `data-link-label>`+ls[0].Label()+`<`) {
+		!strings.Contains(detail.Body.String(), `data-info-code="">`+ls[0].Label()+`</code>`) {
 		t.Fatalf("the detail page after the mint: %s", detail.Body.String())
 	}
 	// It shows a bearer link: never cached. (That it loads no telemetry is

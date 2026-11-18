@@ -242,6 +242,34 @@ func PageShareButton(id int64, title, shareURL string, reusable bool) g.Node {
 			Span(g.Attr("aria-hidden", "true"), g.Text("↗")), Span(g.Text("Share"))))
 }
 
+// PageCopyButton is page id's Copy link button, on the page's own screen:
+// Share's link, always to the clipboard (never the share sheet) — the same
+// form, the same POST PageSharePath and the same address (pageShareJS), so
+// a copy and a share hand out one link. shareURL and reusable are
+// PageShareButton's.
+func PageCopyButton(id int64, title, shareURL string, reusable bool) g.Node {
+	t := pageCardTitle(title)
+	pid := strconv.FormatInt(id, 10)
+	return Form(Method("POST"), Action(PageSharePath(id)), Class("contents"),
+		Button(Type("submit"), g.Attr("data-page-copy", ""), g.Attr("data-page-id", pid), g.Attr("data-share-title", t),
+			g.If(shareURL != "", g.Attr("data-share-url", shareURL)),
+			g.If(reusable, g.Attr("data-share-reusable", "")),
+			g.Attr("aria-label", "Copy the link to “"+t+"”"), Class(pageButtonQuiet), g.Text("Copy link")))
+}
+
+// PageLinkSheetID is the element id of page id's link ⓘ.
+func PageLinkSheetID(id int64) string { return "page-link-" + strconv.FormatInt(id, 10) }
+
+// PageLinkSheet is THE ⓘ holding page id's link address (shareURL), with
+// Copy: the page's screen says "Copy link" / "Share" and never spells the
+// address in its top layer. pageShareJS keeps its text current when the
+// link changes (New link, Revoke). Never withheld: the link is the owner's.
+func PageLinkSheet(id int64, shareURL string) g.Node {
+	return Div(Class("contents"), g.Attr("data-page-link-sheet", ""), g.Attr("data-page-id", strconv.FormatInt(id, 10)),
+		InfoSheet{ID: PageLinkSheetID(id), Label: "This page's link", Heading: "The page's link",
+			Lead: "Anyone with this link can open the page. Copy it to send it yourself:", Code: shareURL}.Node())
+}
+
 // PageShareMenu is page id's ⋯ menu: Revoke link, New link (the old one stops
 // working), and — off its own screen — the page's screen.
 func PageShareMenu(id int64, title string, withDetail bool) g.Node {
@@ -352,11 +380,15 @@ const pageShareJS = `
       setTimeout(function () { t.remove(); }, 5000);
     };
     var setShareURL = function (id, url) {
-      document.querySelectorAll('[data-page-share][data-page-id="' + id + '"]').forEach(function (b) {
+      document.querySelectorAll('[data-page-share][data-page-id="' + id + '"], [data-page-copy][data-page-id="' + id + '"]').forEach(function (b) {
         b._ensure = null;
         if (url) b.setAttribute('data-share-url', url); else b.removeAttribute('data-share-url');
       });
-      document.querySelectorAll('[data-share-url-field][data-page-id="' + id + '"]').forEach(function (f) { f.value = url || ''; });
+      // The page's link ⓘ (PageLinkSheet) holds the address, and copies it.
+      document.querySelectorAll('[data-page-link-sheet][data-page-id="' + id + '"]').forEach(function (s) {
+        s.querySelectorAll('[data-info-code]').forEach(function (c) { c.textContent = url || ''; });
+        s.querySelectorAll('[data-info-copy]').forEach(function (c) { c.setAttribute('data-copy-text', url || ''); });
+      });
     };
     var postJSON = function (src) {
       return fetch(src, { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(function (r) {
@@ -405,10 +437,12 @@ const pageShareJS = `
     var sharePage = function (btn) {
       var title = btn.getAttribute('data-share-title') || document.title;
       var have = btn.getAttribute('data-share-url');
+      // Copy link (PageCopyButton) is Share without the sheet: the clipboard.
+      var sheetOK = !btn.hasAttribute('data-page-copy');
       if (have) {
         // The fast path: synchronous, inside the click's own dispatch.
         var data = { title: title, url: have };
-        if (canSheet(data)) sheet(data, function () { return copyShare(btn, have); });
+        if (sheetOK && canSheet(data)) sheet(data, function () { return copyShare(btn, have); });
         else copyShare(btn, have);
         return;
       }
@@ -430,13 +464,13 @@ const pageShareJS = `
       };
       got.then(function (url) {
         var data = { title: title, url: url };
-        if (canSheet(data)) return sheet(data, function () { return copiedOr(url); });
+        if (sheetOK && canSheet(data)) return sheet(data, function () { return copiedOr(url); });
         return copiedOr(url);
       }).catch(function (e) { pageToast(e.message || 'The link could not be made.'); })
         .then(function () { btn.removeAttribute('aria-busy'); });
     };
     var early = function (e) {
-      var btn = e.target.closest && e.target.closest('[data-page-share]');
+      var btn = e.target.closest && e.target.closest('[data-page-share], [data-page-copy]');
       if (btn && btn.hasAttribute('data-share-reusable') && !btn.getAttribute('data-share-url')) ensure(btn).catch(function () {});
     };
     // The mirrored view's placeholders: each filled once from the server, or
@@ -459,7 +493,7 @@ const pageShareJS = `
     document.addEventListener('pointerdown', early, true);
     document.addEventListener('focusin', early, true);
     document.addEventListener('click', function (e) {
-      var btn = e.target.closest && e.target.closest('[data-page-share]');
+      var btn = e.target.closest && e.target.closest('[data-page-share], [data-page-copy]');
       if (!btn) return;
       e.preventDefault();
       sharePage(btn);
