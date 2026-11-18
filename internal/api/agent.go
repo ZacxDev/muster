@@ -1077,7 +1077,7 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolEndSessionPropose(ctx, a, arguments)
 	case fleetReportToolName:
 		return s.toolFleetReport(ctx, a, arguments)
-	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool:
+	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool, sessionAnswerTool:
 		out, _ := s.dispatchFleetTool(ctx, name, arguments)
 		return out
 	case routeToSessionToolName:

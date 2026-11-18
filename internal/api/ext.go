@@ -408,6 +408,11 @@ type Extensions struct {
 	// FleetActions is the fleet's action log (internal/fleet, migration
 	// 0157). nil (no database): fleet proposals are off whatever FleetPropose.
 	FleetActions fleet.Actions
+	// FleetChecks is the GitHub App's CI read of one commit (fleet_answers.go
+	// fleetCIRead: ci_result and merge_when_green's check), read only for an
+	// owner the App admits (githubAppForOwner), behind a two-minute cache.
+	// nil — no GitHub App — reads every commit's CI as unknown.
+	FleetChecks CIReader
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

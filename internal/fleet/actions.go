@@ -76,12 +76,12 @@ var InstructClasses = []string{ClassContinue, ClassHandoff, ClassStopNote, Class
 
 // ClassVerb is each class as the card's verb.
 var ClassVerb = map[string]string{
-	ClassContinue: "Continue",
-	ClassHandoff:  "Write handoff",
-	ClassStopNote: "Stop and wait",
-	ClassCustom:   "Send the chief's message",
-	ClassWrap:     "Write handoff, then close",
-	ClassReassign: "Move a task",
+	ClassContinue:       "Continue",
+	ClassHandoff:        "Write handoff",
+	ClassStopNote:       "Stop and wait",
+	ClassCustom:         "Send the chief's message",
+	ClassWrap:           "Write handoff, then close",
+	ClassReassign:       "Move a task",
 	ClassAnswerRule:     "Answer",
 	ClassAnswerComposed: "Answer (the chief's words)",
 	ClassAnswerPick:     "Pick an option",
@@ -304,6 +304,17 @@ type Evidence struct {
 	// MergeCheck: an answer_rule merge_when_green, whose merge check is read
 	// again at the tap and the paste.
 	MergeCheck bool `json:"merge_check,omitempty"`
+	// Dispatch is a reassign's NEW session (§5.2's `to` as a dispatch spec),
+	// nil for a reassign to an existing session.
+	Dispatch *DispatchSpec `json:"dispatch,omitempty"`
+}
+
+// DispatchSpec is a reassign's new session, as agent_dispatch takes it.
+type DispatchSpec struct {
+	Target string `json:"target"`
+	Repo   string `json:"repo,omitempty"`
+	Base   string `json:"base,omitempty"`
+	Model  string `json:"model,omitempty"`
 }
 
 // Proposal is what Propose writes.

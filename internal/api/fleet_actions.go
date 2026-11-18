@@ -115,15 +115,23 @@ func fleetWriteToolDefs() []agents.ToolDef {
 			Parameters: objSchema(map[string]any{"subject": subject, "reason": reason}, "subject", "reason")},
 		{Type: "function", Name: workReassignTool,
 			Description: "PROPOSE moving one of your owner's tasks from one session to another: ONE card, two steps. On your owner's " +
-				"tap muster routes the task to `to` (a mirrored Claude Code session, as route_to_session does), then tells `from` " +
+				"tap muster routes the task to `to` (a mirrored Claude Code session, as route_to_session does) — or, with dispatch " +
+				"in place of to, starts a NEW session on it as agent_dispatch starts one on a task (its own caps and cards) — then tells `from` " +
 				"the task moved and asks it for its handoff. `from` must be stopped now. Nothing happens without the tap. Returns " +
 				"{action_id, state, refused?, card?}.",
 			Parameters: objSchema(map[string]any{
 				"task_id": intProp("The task's id (one of your owner's tasks).", 1, 1<<62),
 				"from":    strProp("The session the task leaves: its fleet id (\"mirror:<key>\" or \"agent:<id>\"), stopped now."),
-				"to":      strProp("The session the task goes to: a mirrored Claude Code session's fleet id (\"mirror:<key>\")."),
-				"reason":  reason,
-			}, "task_id", "from", "to", "reason")},
+				"to":      strProp("The session the task goes to: a mirrored Claude Code session's fleet id (\"mirror:<key>\"). Or leave it out and pass dispatch."),
+				"dispatch": objSchema(map[string]any{
+					"target": strProp("Where the new session starts, as agent_dispatch's target."),
+					"repo":   strProp("As agent_dispatch's repo."),
+					"base":   strProp("As agent_dispatch's base."),
+					"model":  strProp("As agent_dispatch's model."),
+				}, "target"),
+				"reason": reason,
+			}, "task_id", "from", "reason")},
+		sessionAnswerToolDef(),
 		{Type: "function", Name: fleetActionsListTool,
 			Description: "Read your fleet proposals and what became of them (the fleet's action log): each {action_id, class, " +
 				"subject, state (proposed, approved, rejected, expired, queued, sent, failed, suppressed:<why>), outcome, reason, " +
@@ -156,13 +164,14 @@ func fleetToolResult(a fleet.Action, refused, why string) string {
 // dispatchFleetTool runs a fleet tool; ok false when name is not one.
 func (s *Server) dispatchFleetTool(ctx context.Context, name, arguments string) (string, bool) {
 	switch name {
-	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool:
+	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool, sessionAnswerTool:
 	default:
 		return "", false
 	}
 	// 🔴 RE-CHECKED AT THE CALL: a gateway runtime can name a tool it was
-	// never offered.
-	if !s.fleetProposeOn() {
+	// never offered. A TEAM's chief has none in this phase (the plan: "a
+	// team's chief gets none of these tools in v1").
+	if !s.fleetProposeOn() || s.ownerIsTeam(ctx, requestOwner(ctx)) {
 		return fleetToolResult(fleet.Action{}, fleetRefusedOff, "fleet proposals are off on this server (MUSTER_FLEET_ORCHESTRATION)"), true
 	}
 	switch name {
@@ -172,6 +181,8 @@ func (s *Server) dispatchFleetTool(ctx context.Context, name, arguments string) 
 		return s.toolSessionWrap(ctx, arguments), true
 	case workReassignTool:
 		return s.toolWorkReassign(ctx, arguments), true
+	case sessionAnswerTool:
+		return s.toolSessionAnswer(ctx, arguments), true
 	}
 	return s.toolFleetActionsList(ctx, arguments), true
 }
@@ -334,15 +345,17 @@ func (s *Server) toolSessionWrap(ctx context.Context, arguments string) string {
 
 func (s *Server) toolWorkReassign(ctx context.Context, arguments string) string {
 	var in struct {
-		TaskID int64  `json:"task_id"`
-		From   string `json:"from"`
-		To     string `json:"to"`
-		Reason string `json:"reason"`
+		TaskID   int64               `json:"task_id"`
+		From     string              `json:"from"`
+		To       string              `json:"to"`
+		Dispatch *fleet.DispatchSpec `json:"dispatch"`
+		Reason   string              `json:"reason"`
 	}
 	dec := json.NewDecoder(strings.NewReader(orEmptyJSON(arguments)))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil || in.TaskID <= 0 || strings.TrimSpace(in.From) == "" || strings.TrimSpace(in.To) == "" {
-		return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "arguments are {task_id, from, to, reason}")
+	if err := dec.Decode(&in); err != nil || in.TaskID <= 0 || strings.TrimSpace(in.From) == "" ||
+		(strings.TrimSpace(in.To) == "") == (in.Dispatch == nil) {
+		return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "arguments are {task_id, from, to | dispatch, reason}: exactly one of to and dispatch")
 	}
 	chief, err := s.chiefAgent(ctx)
 	if err != nil {
@@ -354,6 +367,22 @@ func (s *Server) toolWorkReassign(ctx context.Context, arguments string) string 
 	sub, refused, why := s.fleetStoppedSubject(ctx, in.From)
 	if refused != "" {
 		return fleetToolResult(fleet.Action{}, refused, why)
+	}
+	if in.Dispatch != nil {
+		// §5.2's other `to`: a NEW session for the task, as agent_dispatch
+		// starts one on a task — its own guards and caps, run on the pass
+		// after the owner's tap (fleetStartDispatch), never before.
+		d := *in.Dispatch
+		d.Target, d.Repo, d.Base, d.Model = strings.TrimSpace(d.Target), strings.TrimSpace(d.Repo), strings.TrimSpace(d.Base), strings.TrimSpace(d.Model)
+		if !chiefDispatchOn(s.ext) || !taskRoutingOn(s.ext) {
+			return fleetToolResult(fleet.Action{}, fleetRefusedUnavailable, "starting agents is off on this server (agent_dispatch)")
+		}
+		if d.Target == "" || len(d.Target) > 200 || len(d.Repo) > 200 || len(d.Base) > 200 || len(d.Model) > 200 {
+			return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "dispatch is {target, repo?, base?, model?}, as agent_dispatch takes them")
+		}
+		p := s.fleetProposalFor(sub, fleet.ClassReassign, fleet.ReassignHandoffText(in.TaskID, "a new session on "+d.Target), in.Reason)
+		p.TaskID, p.ToSubject, p.Evidence.Dispatch = in.TaskID, "dispatch:"+d.Target, &d
+		return s.fleetFile(ctx, sub, p)
 	}
 	to, ok := s.fleetSubjectFor(ctx, strings.TrimSpace(in.To))
 	if !ok || s.fleetSubjectGuarded(ctx, to) || to.row.ID == sub.row.ID {
@@ -616,6 +645,12 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 	if !ok {
 		return fleetApproveResult{note: FleetDecided}
 	}
+	if a.Class == fleet.ClassReassign && a.Evidence.Dispatch != nil {
+		// The new session starts on the next pass (the card's route never
+		// reaches a provisioner), and the handoff follows it.
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateApproved, Outcome: "the new session starts on the next pass"}, fleet.StateApproved)
+		return fleetApproveResult{note: FleetDispatchQueued, sent: true}
+	}
 	if a.Class == fleet.ClassReassign {
 		if why := s.fleetRouteTask(ctx, &a); why != "" {
 			s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: why, Finish: true}, fleet.StateApproved)
@@ -682,6 +717,41 @@ func (s *Server) fleetDeliver(ctx context.Context, a fleet.Action, body string, 
 	}
 	s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: t.why, Finish: true}, fleet.StateApproved)
 	return fleetApproveResult{note: FleetNotDeliverable + t.why}
+}
+
+// FleetDispatchQueued is an approved dispatch reassign's note.
+const FleetDispatchQueued = "Approved: the new session starts within a minute, then the old one is asked for its handoff."
+
+// fleetStartDispatch is an approved dispatch reassign's first step, on the
+// pass: the task's new session started as agent_dispatch starts one on a task
+// (its own guards, caps and cards, s.fleetDispatch), then the handoff text
+// queued to the session the task leaves (fleetDeliver). A refused start fails
+// the action, its sentence the outcome; nothing is sent to the old session.
+func (s *Server) fleetStartDispatch(octx context.Context, a fleet.Action) {
+	chief, err := s.chiefAgent(octx)
+	if err != nil {
+		s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: "the chief could not be read", Finish: true})
+		return
+	}
+	d := a.Evidence.Dispatch
+	in := agentDispatchIn{Target: d.Target, TaskID: a.TaskID, Repo: d.Repo, Base: d.Base, Model: d.Model,
+		RequestKey: "fleet-" + strconv.FormatInt(a.ID, 10)}
+	dispatch := s.fleetDispatch
+	if dispatch == nil {
+		dispatch = s.toolAgentDispatch
+	}
+	var m map[string]any
+	_ = json.Unmarshal([]byte(dispatch(octx, chief, in)), &m)
+	if e, bad := m["error"]; bad {
+		s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: "the new session was not started: " + fmt.Sprint(e), Finish: true})
+		return
+	}
+	moved, ok := s.fleetMove(octx, a, fleet.Move{State: fleet.StateApproved, Outcome: "started a new session for the task"}, fleet.StateApproved)
+	if !ok {
+		return
+	}
+	moved.Evidence.Dispatch = nil // the handoff step is an ordinary delivery
+	s.fleetDeliver(octx, moved, fleet.Body(s.personName(octx, a.Owner), a.DecidedAt, a.Text), false)
 }
 
 // fleetRouteTask is a reassign's first step: its task routed to its `to`
@@ -832,6 +902,7 @@ func (s *Server) fleetPass(octx context.Context, owner int64, facts []nudgeCandi
 	}
 	s.fleetSettle(octx, facts)
 	s.fleetProposeWraps(octx, facts)
+	s.fleetProposeCIResults(octx, facts)
 	s.fleetPushWaiting(octx, owner)
 }
 
@@ -869,6 +940,10 @@ func (s *Server) fleetSettle(octx context.Context, facts []nudgeCandidate) {
 				s.fleetWrapClose(octx, a, facts)
 			}
 		case fleet.StateApproved:
+			if a.Class == fleet.ClassReassign && a.Evidence.Dispatch != nil {
+				s.fleetStartDispatch(octx, a)
+				continue
+			}
 			// Approved but neither queued nor failed: a stop between the two.
 			if now.Sub(a.DecidedAt) > chiefnudge.QueueRepairAfter {
 				s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: "its delivery was interrupted", Finish: true})

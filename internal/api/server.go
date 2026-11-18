@@ -147,6 +147,12 @@ type Server struct {
 	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
 	// fleetChat): owner id → *sync.Mutex.
 	fleetChatOpen sync.Map
+	// fleetCI is the fleet's cache of GitHub's CI answers (fleet_answers.go
+	// fleetCIRead).
+	fleetCI fleetCICache
+	// fleetDispatch, when set (a test), stands in for toolAgentDispatch in a
+	// dispatch reassign's start (fleet_actions.go fleetStartDispatch).
+	fleetDispatch func(ctx context.Context, a agents.Agent, in agentDispatchIn) string
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd

@@ -17,7 +17,6 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/prroute"
-	"github.com/ZacxDev/muster/internal/sessionstate"
 )
 
 // ---------------------------------------------------------------------------
@@ -401,32 +400,67 @@ func (s *Server) fleetWindowOf(ctx context.Context, a fleet.Action) (mirror.Sess
 
 // --- route and end_session outside an owner turn ----------------------------------------
 
+// fleetCardsFor reports whether chief's call outside an owner turn files a
+// card: fleet proposals on, and chief a PERSON's (a team's chief has no fleet
+// tools in this phase: the plan's "a team's chief gets none of these").
+func (s *Server) fleetCardsFor(ctx context.Context, chief agents.Agent) bool {
+	return s.fleetProposeOn() && !s.ownerIsTeam(ctx, agentOwnerID(chief))
+}
+
 // fleetRouteCard files a route card: the chief's text for session subject
-// (route_to_session's or route_many's), which its call outside an owner turn
-// could not route. ok false when fleet proposals are off (the call then
-// refuses as before).
-func (s *Server) fleetRouteCard(ctx context.Context, subject focus.Subject, text, reason string) (string, bool) {
-	if !s.fleetProposeOn() {
+// (route_to_session's), which its call outside an owner turn could not route.
+// ok false when no card is filed this way (the call then refuses as before).
+func (s *Server) fleetRouteCard(ctx context.Context, chief agents.Agent, subject focus.Subject, text string) (string, bool) {
+	if !s.fleetCardsFor(ctx, chief) {
 		return "", false
 	}
 	sub, refused, why := s.fleetStoppedSubject(ctx, subject.String())
 	if refused != "" {
 		return fleetToolResult(fleet.Action{}, refused, why+" (outside your owner's turn, a route is a card on a stopped session)"), true
 	}
-	return s.fleetFile(ctx, sub, s.fleetProposalFor(sub, fleet.ClassRoute, text, firstNonBlank(reason, "a request outside your owner's turn"))), true
+	return s.fleetFile(ctx, sub, s.fleetProposalFor(sub, fleet.ClassRoute, text, "a request outside your owner's turn")), true
+}
+
+// fleetRouteManyCards files a route card per subject of a route_many called
+// outside an owner turn: {proposed: [{subject, action_id, card}], refused:
+// [{subject, refused, error}]}.
+func (s *Server) fleetRouteManyCards(ctx context.Context, chief agents.Agent, subjects []string, text string) (string, bool) {
+	if !s.fleetCardsFor(ctx, chief) {
+		return "", false
+	}
+	proposed, refusedList := []map[string]any{}, []map[string]any{}
+	seen := map[string]bool{}
+	for _, raw := range subjects {
+		sub, err := focus.ParseSubject(raw)
+		if err != nil || seen[sub.String()] {
+			refusedList = append(refusedList, map[string]any{"subject": capRunes(raw, 120), "refused": fleetRefusedBadArgs})
+			continue
+		}
+		seen[sub.String()] = true
+		out, _ := s.fleetRouteCard(ctx, chief, sub, text)
+		var m map[string]any
+		_ = json.Unmarshal([]byte(out), &m)
+		if m["refused"] != nil {
+			refusedList = append(refusedList, map[string]any{"subject": sub.String(), "refused": m["refused"], "error": m["error"]})
+			continue
+		}
+		proposed = append(proposed, map[string]any{"subject": sub.String(), "action_id": m["action_id"], "card": m["card"]})
+	}
+	return toolJSON(map[string]any{"proposed": proposed, "refused": refusedList,
+		"next": "Outside your owner's turn nothing is routed: each session got a card in the fleet digest, sent only when your owner taps Approve. Tell them."}), true
 }
 
 // fleetCloseCard files a close card for the session end_session_propose named
 // (a mirrored session's key, or agent:<name>) outside an owner turn. ok false
-// when fleet proposals are off.
-func (s *Server) fleetCloseCard(ctx context.Context, key string) (string, bool) {
-	if !s.fleetProposeOn() {
+// when no card is filed this way.
+func (s *Server) fleetCloseCard(ctx context.Context, chief agents.Agent, key string) (string, bool) {
+	if !s.fleetCardsFor(ctx, chief) {
 		return "", false
 	}
 	id := "mirror:" + key
 	if name, isAgent := strings.CutPrefix(key, "agent:"); isAgent {
 		ag, err := s.ext.Agents.GetByName(ctx, name)
-		if err != nil {
+		if err != nil || ag.OwnerID != agentOwnerID(chief) {
 			return fleetToolResult(fleet.Action{}, fleetRefusedNotFound, fleetNotFoundWhy), true
 		}
 		id = "agent:" + strconv.FormatInt(ag.ID, 10)
