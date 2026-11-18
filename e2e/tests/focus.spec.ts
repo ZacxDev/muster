@@ -524,7 +524,8 @@ for (const vp of [
     test("the dispatched agent's page has its focus history in a dialog", async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + agentName);
-      const open = page.locator('#focus-history-open');
+      // Focus history is an item of the header's ⋯ menu (opened first).
+      const open = await menuItem(page, '#focus-history-open');
       const dialog = page.locator('dialog#focus-history');
       await expect(open).toBeVisible();
       await expect(dialog).toBeHidden();
@@ -549,7 +550,7 @@ for (const vp of [
       await expect(dialog).toBeHidden();
       await expect(open).toHaveAttribute('aria-expanded', 'false');
       // The close button closes it too.
-      await open.click();
+      await (await menuItem(page, '#focus-history-open')).click();
       await expect(dialog).toBeVisible();
       await dialog.locator('[data-focus-history-close]').click();
       await expect(dialog).toBeHidden();
@@ -649,7 +650,7 @@ for (const vp of [
       const bad: string[] = [];
       for (const [label, url, ready] of [
         ['rendered view', viewURL, '#mv-log'],
-        ['agent page', origin + '/agents/' + agentName, '#focus-history-open'],
+        ['agent page', origin + '/agents/' + agentName, 'button[aria-label="New chat session"]'],
         // The Asks list, whose row carries a focus title's age.
         ['asks list', origin + '/attention', '[data-attention-item] [data-focus-age]'],
       ] as const) {

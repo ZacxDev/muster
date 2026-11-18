@@ -161,18 +161,20 @@ Counted in `muster_plugin_handoffs_total{purpose,outcome}`: `minted`,
 
 Where a [hand-off](#viewer-hand-off) starts. (The heading keeps its old name
 so links to it hold; the chip row it named is gone.) On a mirrored window's
-two session views, `/mirror/view` and `/mirror/terminal`, the header carries a
-**Preview** button beside the Rendered | Terminal switch, and it opens the
-owner's live `viewer` plugin in a panel. A window with no rendered view opens
-on `/mirror/terminal`, so the button is on both. An agent's pages
-(`/agents/{name}`) draw none.
+two session views, `/mirror/view` and `/mirror/terminal`, the header carries an
+**Open** button beside the Rendered | Terminal switch, and its panel's
+**Previews** tab opens the owner's live `viewer` plugin. (The same button and
+panel carry the session's [pages](pages.md#a-sessions-pages), in a Pages tab;
+its count is the previews plus the pages.) A window with no rendered view
+opens on `/mirror/terminal`, so the button is on both. An agent's page
+(`/agents/{name}`) has the button for its pages only: an agent has no
+previews.
 
-- **Where it sits.** From `sm` (640 px) up, in the header row beside the
-  switch: an icon, "Preview" and the count. Below `sm`, in the header's
-  **second row** (the status line under the title), as a small pill with the
-  count and a 44 px tap target, so the title keeps its whole width; it lays
-  out at that row's own height, so neither the title nor the header moves
-  when it appears. Each place has its own slot, polled only at its width.
+- **Where it sits.** In the header row at every width, beside the switch: an
+  icon and the count over its corner (from `sm`, 640 px, up, the word "Open"
+  too). Its width is fixed, so a new count moves nothing, and the title, which
+  takes the rest of the row and truncates, gives it room when it appears. One
+  slot, polled every 10 s.
 
 - **Only while the window has something to preview.** The window's host
   reports, per tmux window, how many of its web servers it offers and how many

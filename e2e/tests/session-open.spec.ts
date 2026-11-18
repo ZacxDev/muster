@@ -459,8 +459,11 @@ function expectOneRow(m: Awaited<ReturnType<typeof headerBoxes>>, label: string)
 // cls sums the page's layout shifts (not input-caused) while fn runs.
 async function cls(page: Page, fn: () => Promise<void>): Promise<number> {
   await page.evaluate(() => {
-    const w = window as unknown as { __cls: number };
+    const w = window as unknown as { __cls: number; __clsOn?: boolean };
     w.__cls = 0;
+    // ONE observer per document: a second would count every shift twice.
+    if (w.__clsOn) return;
+    w.__clsOn = true;
     new PerformanceObserver((l) => {
       for (const e of l.getEntries() as unknown as { value: number; hadRecentInput: boolean }[]) if (!e.hadRecentInput) w.__cls += e.value;
     }).observe({ type: 'layout-shift', buffered: false });
@@ -536,12 +539,14 @@ for (const vp of [
       expect(after.header.h, 'the header kept its height').toBeCloseTo(before.header.h, 1);
       fix('rmpage', id);
       // POSITIVE CONTROL: the same measurement sees a shift that is there (a
-      // line pushed in above the conversation by script, not by input).
+      // line pushed in above the header by script, not by input; inside the
+      // conversation scroll anchoring would hide it).
       const control = await cls(page, async () => {
         await page.evaluate(() => {
           const d = document.createElement('div');
           d.style.height = '60px';
-          document.getElementById('mv-log')!.prepend(d);
+          d.style.flex = 'none';
+          document.body.prepend(d);
         });
       });
       expect(control, 'the CLS measurement sees an unprovoked shift').toBeGreaterThan(0.001);

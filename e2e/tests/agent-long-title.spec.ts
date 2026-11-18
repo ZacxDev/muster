@@ -31,8 +31,10 @@ const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
 // Inside the 60-character budget, but wider than a 390px header leaves the
-// title (~10 characters), and narrower than a 1280px one.
-const medium = 'Fix the importer retry backoff';
+// title, and narrower than a 1280px one. (50 characters: since Chat history and
+// Focus history moved into the ⋯ menu, a 390px header's first row leaves the
+// title room for ~30.)
+const medium = 'Fix the importer retry backoff and the queue drain';
 const short = 'Short';
 
 const agents: { name: string; id: string; title: string; full: string; linked: boolean }[] = [
@@ -190,7 +192,7 @@ test.describe('a short-but-clipped title', () => {
   test.describe('at 390x844', () => {
     test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-    test('a 30-character title is clipped, shows its "…", and opens whole', async ({ page }) => {
+    test('a 50-character title is clipped, shows its "…", and opens whole', async ({ page }) => {
       // Positive control: a 5-character title fits, so it has no "…".
       await page.goto('/agents/' + agents[3].name);
       await expect(page.locator('#chat-input')).toBeVisible();
@@ -201,7 +203,7 @@ test.describe('a short-but-clipped title', () => {
       await page.goto('/agents/' + agents[2].name);
       await expect(page.locator('#chat-input')).toBeVisible();
       const clipped = await page.locator('header h1').evaluate((el) => el.scrollWidth > el.clientWidth);
-      expect(clipped, 'fixture: the 30-character title must be clipped at 390').toBe(true);
+      expect(clipped, 'fixture: the 50-character title must be clipped at 390').toBe(true);
       await expect(more(page)).toBeVisible();
       const mb = (await more(page).boundingBox())!;
       expect(mb.x + mb.width).toBeLessThanOrEqual(390);

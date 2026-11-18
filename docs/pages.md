@@ -277,6 +277,34 @@ viewer never does.
 
 `/pages/{id}/preview`, the view's former address, redirects to it.
 
+## A session's pages
+
+When you look at a session, the pages it made are a tap away. The session's
+header has one **Open** button (an icon and a count on a phone) that counts
+its [previews](previews.md#what-you-do) and its pages together, and opens a
+panel with two tabs, **Previews** and **Pages** (swipe between them on a
+phone). It is drawn whenever the session has either. Pages need no viewer
+plugin. The panel opens on the tab that has something; when both do, on the
+one you used last on this browser.
+
+The **Pages** tab lists the pages the session **created**, newest first, each
+with its current version and whether it has a live link. Tap one to read it in
+the panel (your own view of it, with its version chip), or **Open full page**
+for `/pages/{id}/view`.
+
+Which session made a page:
+
+- **A dispatched agent's** pages are on its page (`/agents/{name}`): the
+  pages its tools made.
+- **A mirrored window's** pages are the ones made from the Claude Code (or
+  opencode) session running in it, on that machine. muster records the
+  session a page came from when the page is made.
+- **A page a mirrored session made before muster recorded sessions** has no
+  session to match, so it is listed under no window. It is still on the Pages
+  screen.
+- Only your own pages are listed. A team session's window lists none: a
+  team's pages are the team's, and its members do not see them.
+
 ## The Pages screen
 
 **Pages** is in the sidebar (under More). `/pages` lists your pages, newest

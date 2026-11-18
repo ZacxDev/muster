@@ -156,14 +156,14 @@ for (const [label, viewport] of sizes) {
       const menuTop = await page.locator('#agent-actions-open').evaluate((el) => el.getBoundingClientRect().top);
       expect(menuTop, 'the ⋯ is below the title row').toBeGreaterThan(titleTop + 20);
       // …and the title's row holds no control it did not hold before: the
-      // hamburger (a phone's; the desktop has the rail), the title, New chat,
-      // Chat history and Focus history (this server has a focus store).
+      // hamburger (a phone's; the desktop has the rail), the title and New
+      // chat (Chat history and Focus history are the ⋯ menu's items).
       const firstRow = await titleRow.evaluate((el) =>
         [...(el.parentElement as HTMLElement).querySelectorAll('button, a, label[role="button"]')]
           .filter((c) => !(el as HTMLElement).contains(c) && (c as HTMLElement).getClientRects().length > 0)
           .map((c) => c.getAttribute('aria-label') || c.id),
       );
-      const want = ['New chat session', 'Chat history', 'Focus history'];
+      const want = ['New chat session'];
       expect(firstRow, "the title row's controls").toEqual(label === 'phone' ? ['Open menu', ...want] : want);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 'no sideways scroll').toBe(0);
 
