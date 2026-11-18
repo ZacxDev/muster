@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import type { Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, pagesFakeS3Port, pagesMirrorMCPPort, pagesPort, pagesRouterPort, repoRoot, versionTerm } from '../lib/env';
@@ -726,5 +726,142 @@ for (const vp of [
     } finally {
       await ctx.close();
     }
+  });
+}
+
+// --- ROUND 1 ON #802 ----------------------------------------------------------
+//
+// 🔴-1: the page's own script forging the owner's tap through Object.prototype:
+// a setter on a field the SDK used to ASSIGN after building a message ran with
+// the message as `this` and set act. Each attempt below runs on load, with no
+// tap, and must leave no row (the owner's view records nothing untapped).
+// Measured on 6e619e6: the first recorded one POST as the owner.
+const FORGE = `<p id="f-data">-</p><p id="f-act">-</p><p id="f-file">-</p><p id="f-req">-</p>
+<script>
+function said(id){return function(r){document.getElementById(id).textContent='saved:'+r.id;};}
+function no(id){return function(e){document.getElementById(id).textContent='refused:'+e.message;};}
+function setter(k){Object.defineProperty(Object.prototype,k,{configurable:true,set:function(v){
+  Object.defineProperty(this,k,{value:v,enumerable:true,writable:true,configurable:true});this.act=true;}});}
+// a. round 1's exact payload: a setter on data.
+setter('data');
+muster.submit({s:'forge'}).then(said('f-data'),no('f-data'));
+delete Object.prototype.data;
+// b. a getter and setter on act itself.
+Object.defineProperty(Object.prototype,'act',{configurable:true,get:function(){return true;},set:function(){}});
+muster.submit({s:'forge-act'}).then(said('f-act'),no('f-act'));
+delete Object.prototype.act;
+// c. setters on file and name, through an upload.
+setter('file');setter('name');
+muster.upload(new File(['forged'],'forged.txt',{type:'text/plain'}),{component:'fu'}).then(said('f-file'),no('f-file'));
+delete Object.prototype.file;delete Object.prototype.name;
+// d. a scripted requestSubmit() of a built-in form, the data setter on.
+setter('data');
+document.querySelector('[data-muster-component="fq"] form').requestSubmit();
+delete Object.prototype.data;
+document.getElementById('f-req').textContent='done';
+</script>`;
+const FORGE_BLOCKS = [
+  { type: 'question', id: 'fq', label: 'Forged question' },
+  { type: 'upload', id: 'fu', label: 'Forged file' },
+  { type: 'html', html: FORGE },
+];
+
+// 🔴-2: a page that sets itself up on DOMContentLoaded and on window.onload
+// (both had already passed when the markup went in, on 6e619e6). Each counts
+// how often it ran: exactly once.
+const READY = `<p id="dcl">0</p><p id="onl">0</p><script>
+document.addEventListener('DOMContentLoaded',function(){var e=document.getElementById('dcl');e.textContent=String(+e.textContent+1);});
+window.onload=function(){var e=document.getElementById('onl');e.textContent=String(+e.textContent+1);};
+</script>`;
+
+// 🟡-1: a page that scrolls itself down, then stops its own scrolling, so no
+// scroll up can ever be reported. Measured on 6e619e6: the header stayed
+// hidden through wheel-ups and PageUp.
+const STUCK = `<div style="height:4000px">tall</div><script>setTimeout(function(){window.scrollTo(0,800);
+setTimeout(function(){document.documentElement.style.overflow='hidden';},300);},300);</script>`;
+
+const ROUND1_VIEWPORTS = [
+  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true },
+  { name: 'desktop', viewport: { width: 1280, height: 800 }, touch: false },
+];
+// owner opens a signed-in context at vp, runs fn with its page, and closes it.
+async function asOwner(browser: Browser, vp: (typeof ROUND1_VIEWPORTS)[number], fn: (page: Page) => Promise<void>) {
+  const ctx = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+  try {
+    const page = await ctx.newPage();
+    await signIn(page, origin);
+    await fn(page);
+  } finally {
+    await ctx.close();
+  }
+}
+
+for (const vp of ROUND1_VIEWPORTS) {
+  test(`at ${vp.name}, a page's script cannot forge the owner's tap through Object.prototype (round 1, 🔴-1)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = page.frameLocator('iframe#page');
+      const forged = await call('page_create', { title: 'Forge ' + vp.name + ' ' + stamp, blocks: FORGE_BLOCKS });
+      const forgedID = forged.body.page_id as number;
+      await page.goto(origin + `/pages/${forgedID}/view`);
+      await expect(frame.locator('#f-req')).toHaveText('done');
+      for (const id of ['#f-data', '#f-act', '#f-file']) {
+        await expect(frame.locator(id), `${id} forged a tap`).toHaveText('refused:Tap to send');
+      }
+      await expect(frame.locator('[data-muster-component="fq"] [data-muster-status]')).toHaveText('Tap to send');
+      await page.waitForTimeout(1000);
+      const rows = await call('page_responses', { page_id: forgedID });
+      expect(rows.body.count, 'a forged tap recorded a row: ' + JSON.stringify(rows.body)).toBe(0);
+    });
+  });
+
+  test(`at ${vp.name}, a page's DOMContentLoaded and load handlers run once, for the owner and a link's viewer (round 1, 🔴-2)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = page.frameLocator('iframe#page');
+      const ready = await call('page_create', { title: 'Ready ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: READY }] });
+      const readyID = ready.body.page_id as number;
+      await page.goto(origin + `/pages/${readyID}/view`);
+      await expect(frame.locator('#dcl'), 'the owner: DOMContentLoaded').toHaveText('1');
+      await expect(frame.locator('#onl'), 'the owner: window.onload').toHaveText('1');
+      const shared = await page.request.post(origin + `/pages/${readyID}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+      try {
+        const sp = await stranger.newPage();
+        await sp.goto((await shared.json()).url as string);
+        const sf = sp.frameLocator('iframe#page');
+        await expect(sf.locator('#dcl'), 'a link viewer: DOMContentLoaded').toHaveText('1');
+        await expect(sf.locator('#onl'), 'a link viewer: window.onload').toHaveText('1');
+      } finally {
+        await stranger.close();
+      }
+      await page.waitForTimeout(800);
+      await expect(frame.locator('#dcl'), 'DOMContentLoaded ran more than once').toHaveText('1');
+      await expect(frame.locator('#onl'), 'load ran more than once').toHaveText('1');
+    });
+  });
+
+  test(`at ${vp.name}, a page that stops its own scrolling cannot keep the header hidden (round 1, 🟡-1)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = page.frameLocator('iframe#page');
+      const header = page.locator('header[data-page-brand]');
+      const stuck = await call('page_create', { title: 'Stuck ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: STUCK }] });
+      await page.goto(origin + `/pages/${stuck.body.page_id as number}/view`);
+      // Only once the page has stopped its own scrolling: a scroll up before
+      // that is a real one, and reports itself.
+      await expect.poll(() => frame.locator('body').evaluate(() => document.documentElement.style.overflow)).toBe('hidden');
+      await expect(header, 'the page hid the header').toHaveAttribute('data-hidden', '');
+      await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+      await page.mouse.wheel(0, -400);
+      await page.keyboard.press('PageUp');
+      await expect(header, 'the header came back on its own').not.toHaveAttribute('data-hidden', { timeout: 5000 });
+      // The control: an ordinary scroll down hides it, and it comes back by
+      // the same rule once the scrolling stops.
+      const long = await call('page_create', { title: 'Long ' + vp.name + ' ' + stamp, blocks: [{ type: 'markdown', text: LONG }] });
+      await page.goto(origin + `/pages/${long.body.page_id as number}/view`);
+      await expect(frame.locator('p').first()).toBeVisible();
+      await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+      await page.mouse.wheel(0, 900);
+      await expect(header).toHaveAttribute('data-hidden', '');
+      await expect(header, 'control: back once the scrolling stops').not.toHaveAttribute('data-hidden', { timeout: 5000 });
+    });
   });
 }

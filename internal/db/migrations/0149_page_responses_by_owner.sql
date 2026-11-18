@@ -18,18 +18,21 @@
 --
 -- Inert without its code: an older image never writes a NULL link_id, and
 -- reads by_owner nowhere. But an older image DOES scan link_id into an int64,
--- so roll the rows back first (below) before rolling the image back.
+-- so it must find no owner row; and THIS image reads and writes by_owner, so
+-- the column stays until it is gone. Hence the order below.
 --
 -- Must apply after its predecessor, 0148_officer_connector_blocks (the contiguity
 -- test refuses a gap). 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK, in this order:
---   DELETE FROM public.page_responses WHERE by_owner;
---   ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_one_responder;
---   ALTER TABLE public.page_responses DROP COLUMN IF EXISTS by_owner;
---   ALTER TABLE public.page_responses ALTER COLUMN link_id SET NOT NULL;
---   then roll the image back, and:
---   DELETE FROM schema_migrations WHERE version = 149;
+--   1. DELETE FROM public.page_responses WHERE by_owner;
+--   2. Roll the image back.
+--   3. DELETE FROM public.page_responses WHERE by_owner;
+--      (again: the rows the new image wrote between 1 and 2)
+--   4. ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_one_responder;
+--      ALTER TABLE public.page_responses DROP COLUMN IF EXISTS by_owner;
+--      ALTER TABLE public.page_responses ALTER COLUMN link_id SET NOT NULL;
+--      DELETE FROM schema_migrations WHERE version = 149;
 -- (An owner's upload row deleted above leaves its file under pages/<id>/,
 -- which the page's own Delete still removes: it lists the prefix.)
 

@@ -152,6 +152,17 @@ func TestThePagesMarkupIsNotInTheDocument(t *testing.T) {
 			t.Errorf("the SDK lacks %q", want)
 		}
 	}
+	for _, want := range []string{
+		// Round 1's 🔴-2: in once the document is parsed; DOMContentLoaded
+		// dispatched to the page's scripts after they run, load too when past.
+		`if(!m||R(gRS,D,[])==="loading"){R(AEL,D,["DOMContentLoaded",show]);return;}`,
+		`R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
+ if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);`,
+	} {
+		if !strings.Contains(sdk, want) {
+			t.Errorf("the SDK lacks %q", want)
+		}
+	}
 	if strings.Count(sdk, "show();") != 2 {
 		t.Errorf("show() is called from %d places, want 2 (the port, and no parent at all)", strings.Count(sdk, "show();"))
 	}
@@ -213,9 +224,11 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
  R(SIP,ev,[]);`,
 		`},true]);`,
 		`if(port&&!queued){queued=true;R(RAF,W,[report]);}`,
-		`var msg={muster:1,id:id,op:op,act:tapped===undefined?act():tapped===true,component:payload.component};`,
-		`R(PM,port,[msg]);`,
-		`var tapped=act();`,
+		`return op==="upload"?{muster:1,id:id,op:op,act:false,component:component,file:value,name:fname}:
+  {muster:1,id:id,op:op,act:false,component:component,data:value};`,
+		`var a=act();
+ for(i=0;i<n;i++){ms[i].act=a;R(PM,port,[ms[i]]);}`,
+		`waiting=Object.create(null)`, `P=W.Promise`,
 	} {
 		if !strings.Contains(sdk, want) {
 			t.Errorf("the SDK lacks %q", want)
@@ -223,6 +236,16 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 	}
 	if strings.Count(sdk, `op:"scroll"`) != 1 || strings.Count(sdk, "R(PM,port,") != 2 {
 		t.Error("the SDK sends some other way than its port")
+	}
+	// Round 1's 🔴-1: a field of a message is never ASSIGNED where it is not
+	// already the message's own (a page's Object.prototype setter would run,
+	// with the message as this, and could set act). The one assignment is
+	// act, on the literal's own property, right after the tap is read.
+	if got := regexp.MustCompile(`[\w\]\)]\.(act|data|file|name|component|op|id)=[^=]`).FindAllString(sdk, -1); len(got) != 1 || got[0] != "].act=a" {
+		t.Errorf("the SDK assigns a message field outside its literal: %q", got)
+	}
+	if strings.Contains(sdk, "new Promise") || strings.Contains(sdk, ".then(") {
+		t.Error("the SDK uses the page's Promise or its then")
 	}
 	// It is the content document's FIRST script, ahead of every block.
 	out := Content(Version{Title: "x", Version: 1}, RenderOptions{})
@@ -258,13 +281,13 @@ func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{`credentials:"omit"`, `referrerPolicy:"no-referrer"`, `TAP=false`,
 		`if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");`, `if(d.op==="submit"){`,
-		`fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`, `base="/s/TOKEN"`} {
+		`fetch(base+(d.op==="submit"?"/submit":"/upload"),opts)`, `queue=queue.then(function(){return fetch(`, `base="/s/TOKEN"`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the relay lacks %q", want)
 		}
 	}
-	if strings.Count(js, "fetch(") != 2 {
-		t.Errorf("the relay makes %d kinds of request, want exactly the two", strings.Count(js, "fetch("))
+	if strings.Count(js, "fetch(") != 1 {
+		t.Errorf("the relay fetches in %d places, want the one, to the two routes", strings.Count(js, "fetch("))
 	}
 	if strings.Contains(js, `credentials:"include"`) || strings.Contains(js, `credentials:"same-origin"`) {
 		t.Error("a link's relay sends credentials")
@@ -272,24 +295,24 @@ func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 }
 
 // TestTheOwnersRelaySendsTheirSessionOnlyWithATap: the owner's relay sends
-// their session same-origin, with a referrer policy that keeps muster's
-// Origin on the POST (no-referrer would make it "null", which every owner
-// write refuses), and only a send whose act is true; one without is answered
+// their session same-origin, with a same-origin referrer policy (so a
+// Referer is there for requireSameOrigin should a browser send no Origin),
+// and only a send whose act is true; one without is answered
 // "Tap to send", before any request.
 func TestTheOwnersRelaySendsTheirSessionOnlyWithATap(t *testing.T) {
 	js := ShellScript("/pages/7/versions/2", true)
-	if strings.Count(js, "fetch(") != 2 {
-		t.Errorf("the owner's relay makes %d kinds of request, want exactly the two", strings.Count(js, "fetch("))
+	if strings.Count(js, "fetch(") != 1 {
+		t.Errorf("the owner's relay fetches in %d places, want the one", strings.Count(js, "fetch("))
 	}
 	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`, `TAP=true`,
 		`if(TAP&&d.act!==true)return reply(false,"Tap to send");
- var comp=`, `fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`} {
+ var comp=`, `fetch(base+(d.op==="submit"?"/submit":"/upload"),opts)`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the owner's relay lacks %q", want)
 		}
 	}
 	if strings.Contains(js, `credentials:"omit"`) || strings.Contains(js, `"no-referrer"`) {
-		t.Error("the owner's relay omits their session or sends Origin null")
+		t.Error("the owner's relay omits their session or its Referer")
 	}
 }
 
@@ -304,6 +327,9 @@ func TestTheShellHidesItsHeaderOnlyByTheRules(t *testing.T) {
 		`if(typeof y!=="number"||!isFinite(y)||y<0)return;`,
 		`if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);`,
 		`if(m.op==="scroll")onY(m.y);`,
+		// Round 1's 🟡-1: the shell's own rule — back after 3s with no report.
+		`clearTimeout(quiet);
+ if(hdr&&hdr.hasAttribute("data-hidden"))quiet=setTimeout(function(){window.__musterHeader(true);},3000);`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the header's rules lack %q", want)

@@ -92,8 +92,14 @@ only right after a tap or key press inside the page; otherwise they are
 answered `Tap to send` and record nothing.
 
 The page's own markup is put in by this script once it is connected to
-muster's shell, so the page's scripts run then, in order, not while the
-document is parsed. Talk to muster only through `muster.submit` and
+muster's shell and the document is parsed, so the page's scripts run then,
+in order, like `defer` scripts, not while the document is parsed. After they
+run, `DOMContentLoaded` is dispatched to `document`, and `load` to `window`
+when the window has already loaded (otherwise the real one follows), once
+each, so code waiting for either works. What differs from a plain page:
+`document.readyState` is already `interactive` or `complete` while your
+scripts run, and `document.write` cannot add to the page (it replaces it, as
+after load). Talk to muster only through `muster.submit` and
 `muster.upload`: a message posted to the parent window directly is ignored.
 
 Inside the share page's frame the page has **no network**: `fetch`, images
@@ -203,8 +209,8 @@ A link's viewer and you see the same page under the same header: one slim
 row (about 40px) with the instance's logo and name, and the page's title on
 one line, cut short with an ellipsis (the whole title shows on hover). The
 header slides away as the page is scrolled down and comes back on any scroll
-up, and whenever the page is near its top; it is always there when the page
-opens. The page cannot hide it on its own: the frame reports its scroll on a
+up, whenever the page is near its top, and on its own once the page has not
+scrolled for 3 seconds; it is always there when the page opens. The page cannot hide it on its own: the frame reports its scroll on a
 private channel the page's own script never holds (it is connected before any
 of the page's script runs), and the shell only accepts
 a number there.
@@ -225,10 +231,11 @@ button, an upload's button, a control of the page's own. A page whose
 script sends on its own — the moment it opens, say — records nothing as
 yours: the page shows *Tap to send*. muster reads the tap inside the page's
 frame, through browser functions saved before any of the page's script runs,
-so the page cannot fake one. What a page can still do: once you have tapped
-anything on it, its script can send in the next few seconds whatever it
-likes, recorded as yours — "yours" means you were viewing it and tapped, not
-that you chose each value. A browser without `navigator.userActivation`
+and sends each message as one object built at once, so the page's script
+cannot fake a tap by patching JavaScript. What a page can still do:
+once you have tapped anything on it, its script can send in the next few
+seconds whatever it likes, recorded as yours — "yours" means you were
+viewing it and tapped, not that you chose each value. A browser without `navigator.userActivation`
 (older than Safari 16.4) cannot send from your view at all.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every

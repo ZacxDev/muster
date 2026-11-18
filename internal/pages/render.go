@@ -261,6 +261,7 @@ func jsString(s string) string {
 // PAGE'S OWN SCRIPT NEVER HOLDS — submits, uploads, their answers and the
 // scroll reports that hide the shell's header — so the page cannot forge a
 // report, a send, or the tap a send of the owner's needs (ShellScript):
+//
 //   - The page's markup is NOT in the document: it is blocks, a string in this
 //     script (JSON-escaped, so no "</script>" in it ends this one). This
 //     script — the document's only one until then — asks the shell for the
@@ -271,10 +272,12 @@ func jsString(s string) string {
 //     one that replaces the document (document.open erases every listener,
 //     and a page that did it before the port arrived could take the port —
 //     measured, before this order: it did, at 390x844 and 1280x800).
+//
 //   - Every primitive called after the page's script runs is saved first and
 //     called through Reflect.apply: MessagePort.prototype.postMessage, the
 //     scrollTop getter, and navigator.userActivation's isActive getter on the
 //     instance read at start. So patching them later changes nothing sent.
+//
 //   - Each send carries act: whether the CONTENT frame had a real user
 //     activation (a tap, a click, a key) at that moment. A parent's
 //     activation does not pass down to it: measured, a page loaded by a
@@ -282,30 +285,53 @@ func jsString(s string) string {
 //     reads true, and true right after a click inside it. A script cannot
 //     make one. The owner's shell refuses a send without it.
 //
+//   - 🔴 EVERY MESSAGE IS ONE OBJECT LITERAL (mk), and between reading the
+//     tap and postMessage nothing a page can reach runs (post): no field is
+//     ever assigned but act, on the literal's own property; the Promise a
+//     page gets back is the saved one. (Round 1 on #802: a field assigned
+//     after the literal ran a page's Object.prototype setter, with the
+//     message as this, and the setter set act — a forged tap.)
+//
+//   - The page's markup goes in once the document is parsed; its scripts run
+//     then, in order, after which DOMContentLoaded is dispatched to them, and
+//     load when it has already passed — once each. document.readyState is
+//     already "interactive" or "complete" while they run (as for a defer
+//     script), and document.write cannot add to the page (it would replace
+//     it, as after load).
+//
 // What a determined page can still do: send while act is true — a tap on any
 // control of its own, then its own muster.submit within the activation's few
-// seconds; and scroll its own document, which hides the header until the next
-// scroll up. After a document.open of its own it loses the scroll reports and
-// the built-in forms (their listeners are erased) — the header then stays.
+// seconds, with whatever data it likes; and scroll its own document, which
+// hides the header until the next scroll up or until no scroll has been
+// reported for a few seconds (ShellScript). After a document.open of its own
+// it loses the scroll reports and the built-in forms (their listeners are
+// erased) — the header then stays.
 func sdkScript(v Version, blocks string) string {
 	return `(function(){"use strict";
 var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
  PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
- ST=W.setTimeout,gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
- gTop=gd(Element.prototype,"scrollTop"),SE=D.scrollingElement||D.documentElement,
+ DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,SLICE=Array.prototype.slice,MAP=Array.prototype.map,
+ gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
+ gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),gName=gd(W.File&&File.prototype,"name"),
+ SE=D.scrollingElement||D.documentElement,
  UA=W.navigator.userActivation||null,gAct=W.UserActivation?gd(W.UserActivation.prototype,"isActive"):null,
- BLOCKS=` + jsString(blocks) + `,port=null,shown=false,queued=false,seq=0,waiting={},tries=0;
+ BLOCKS=` + jsString(blocks) + `,port=null,shown=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
 function act(){return !!(UA&&gAct&&R(gAct,UA,[])===true);}
+// The page's markup goes in once the port is held AND the document is parsed;
+// then its scripts have run, in order, and DOMContentLoaded (always past by
+// then) and load (when past) are dispatched to them, once each.
 function show(){
  if(shown)return;var m=D.querySelector("main.mp");
- if(!m){R(AEL,D,["DOMContentLoaded",show]);return;}
+ if(!m||R(gRS,D,[])==="loading"){R(AEL,D,["DOMContentLoaded",show]);return;}
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
+ R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
+ if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
 }
 function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}]);}
 function answer(ev){
- var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string"||!waiting[d.id])return;
- var w=waiting[d.id];delete waiting[d.id];
- if(d.ok)w.res(d.result);else w.rej(new Error(d.error||"refused"));
+ var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string")return;
+ var cb=waiting[d.id];if(!cb)return;delete waiting[d.id];
+ if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"refused");
 }
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
@@ -319,23 +345,37 @@ function hello(){
  PARENT.postMessage({muster:1,op:"hello"},"*");R(ST,W,[hello,200]);
 }
 if(PARENT===W)show();else hello();
-function send(op,payload,tapped){
- if(!port)return Promise.reject(new Error("open this page through its link"));
- return new Promise(function(res,rej){
-  var id="m"+(++seq);waiting[id]={res:res,rej:rej};
-  var msg={muster:1,id:id,op:op,act:tapped===undefined?act():tapped===true,component:payload.component};
-  if(op==="upload"){msg.file=payload.file;msg.name=payload.name;}else msg.data=payload.data;
-  R(PM,port,[msg]);
-  R(ST,W,[function(){if(waiting[id]){delete waiting[id];rej(new Error("muster did not answer"));}},120000]);
- });
+// mk is one message, ONE object literal with every field (a literal defines
+// its properties; it runs no setter of Object.prototype's), act false.
+function mk(op,component,value,fname){
+ var id="m"+(++seq);
+ return op==="upload"?{muster:1,id:id,op:op,act:false,component:component,file:value,name:fname}:
+  {muster:1,id:id,op:op,act:false,component:component,data:value};
 }
+// post sends ms (an array of mk's, its own) and calls done(ok, x) once: the
+// first refusal, or every answer's. 🔴 BETWEEN READING THE TAP AND POSTING,
+// NOTHING A PAGE CAN REACH RUNS: act is set on each message's OWN property
+// (an own data property's assignment consults no prototype), each read of ms
+// is an own index, and postMessage is the saved one.
+function post(ms,done){
+ if(!port)return done(false,"open this page through its link");
+ var n=ms.length,left=n,over=false,last=null,i;
+ for(i=0;i<n;i++)waiting[ms[i].id]=function(ok,x){
+  if(over)return;if(!ok){over=true;return done(false,x);}
+  last=x;if(--left===0){over=true;done(true,last);}
+ };
+ var a=act();
+ for(i=0;i<n;i++){ms[i].act=a;R(PM,port,[ms[i]]);}
+ R(ST,W,[function(){if(!over){over=true;done(false,"muster did not answer");}},120000+60000*n]);
+}
+function promise(ms){return new P(function(res,rej){post(ms,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
 W.muster=Object.freeze({
  page:Object.freeze({title:` + jsString(v.Title) + `,version:` + strconv.Itoa(v.Version) + `}),
- submit:function(data,o){return send("submit",{component:name(o),data:data===undefined?null:data});},
+ submit:function(data,o){return promise([mk("submit",name(o),data===undefined?null:data,null)]);},
  upload:function(file,o){
-  if(!(file instanceof Blob))return Promise.reject(new TypeError("muster.upload takes a File"));
-  return send("upload",{component:name(o),file:file,name:(file.name||"file")});
+  if(!(file instanceof Blob))return P.reject(new TypeError("muster.upload takes a File"));
+  return promise([mk("upload",name(o),file,(gName&&file instanceof File?R(gName,file,[]):"")||"file")]);
  }
 });
 function collect(kind,form,submitter){
@@ -352,21 +392,21 @@ R(AEL,D,["submit",function(ev){
  var form=ev.target,sec=form.closest&&form.closest("[data-muster-component]");
  if(!sec)return;
  ev.preventDefault();
- // The tap is read once, at the submit itself: every file of a several-file
- // upload goes with it, however long the earlier ones take.
- var tapped=act();
  var id=sec.getAttribute("data-muster-component"),kind=sec.getAttribute("data-muster-kind");
  var status=form.querySelector("[data-muster-status]"),btns=form.querySelectorAll("button");
  function say(t,bad){if(status){status.textContent=t;status.className="mp-status"+(bad?" mp-bad":" mp-good");}}
- btns.forEach(function(b){b.disabled=true;});say("Sending…");
- var p;
+ var ms;
  if(kind==="upload"){
-  var files=Array.prototype.slice.call(form.elements.file.files||[]);
-  if(!files.length){btns.forEach(function(b){b.disabled=false;});say("Choose a file first.",true);return;}
-  p=files.reduce(function(acc,f){return acc.then(function(){return send("upload",{component:id,file:f,name:(f.name||"file")},tapped);});},Promise.resolve());
- }else p=send("submit",{component:id,data:collect(kind,form,ev.submitter)},tapped);
- p.then(function(){say("Sent. Thank you.");form.reset();},function(e){say(e.message||"It could not be sent.",true);})
-  .then(function(){btns.forEach(function(b){b.disabled=false;});});
+  var files=R(SLICE,form.elements.file.files||[],[]);
+  if(!files.length){say("Choose a file first.",true);return;}
+  // Every file goes at once, with the one tap (the shell sends them in turn).
+  ms=R(MAP,files,[function(f){return mk("upload",id,f,(gName?R(gName,f,[]):"")||"file");}]);
+ }else ms=[mk("submit",id,collect(kind,form,ev.submitter),null)];
+ btns.forEach(function(b){b.disabled=true;});say("Sending…");
+ post(ms,function(ok,x){
+  if(ok){say("Sent. Thank you.");form.reset();}else say(x||"It could not be sent.",true);
+  btns.forEach(function(b){b.disabled=false;});
+ });
 }]);
 })();`
 }
@@ -397,6 +437,9 @@ button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(
 const (
 	shellHeaderPx = "40"
 	contentTopPx  = "56"
+	// revealMs is how long a hidden header waits for the next scroll report
+	// before it comes back on its own (ShellScript).
+	revealMs = "3000"
 )
 
 // ShellView is what the shell draws.
@@ -575,7 +618,11 @@ func Shell(v ShellView) string {
 //   - any report above the last one (a scroll up) shows it;
 //   - only a report below the last one AND past the header's height hides it;
 //   - keyboard focus inside it (CSS :focus-within) and the open version
-//     popover show it whatever the reports say.
+//     popover show it whatever the reports say;
+//   - 🔴 and, needing nothing of the page, it comes back once no report has
+//     arrived for revealMs while it is hidden. A page that scrolls itself
+//     down and then stops its document scrolling (overflow:hidden on <html>)
+//     sends no scroll up ever again: this is what brings the header back.
 //
 // The one op that moves it is "scroll" {y: a finite number >= 0}, and only on
 // the port: a page's script posting one to the shell is ignored, as is one
@@ -584,19 +631,24 @@ func Shell(v ShellView) string {
 func ShellScript(base string, owner bool) string {
 	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
 	if owner {
-		// same-origin: the Origin a same-origin POST carries is muster's only
-		// when the referrer policy lets it (no-referrer would send "null").
+		// same-origin: the request sends a Referer, which requireSameOrigin
+		// reads when a browser sends no Origin; nothing leaves muster's
+		// origin either way.
 		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
 	}
 	return `(function(){"use strict";
 var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,TAP=` + gate + `,port=null;
-var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0;
+var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,quiet=0,queue=Promise.resolve();
 window.__musterHeader=function(show){if(!hdr)return;if(show)hdr.removeAttribute("data-hidden");else hdr.setAttribute("data-hidden","");};
 function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
 function onY(y){
  if(typeof y!=="number"||!isFinite(y)||y<0)return;
  if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);
  lastY=y;
+ // The shell's own rule, which needs nothing of the page: a hidden header
+ // comes back once no report has arrived for REVEAL ms.
+ clearTimeout(quiet);
+ if(hdr&&hdr.hasAttribute("data-hidden"))quiet=setTimeout(function(){window.__musterHeader(true);},` + revealMs + `);
 }
 function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
@@ -608,15 +660,18 @@ function relay(d){
  var opts={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `};
  if(d.op==="submit"){
   var body;try{body=JSON.stringify({component:comp,data:d.data===undefined?null:d.data});}catch(e){return reply(false,"the data is not JSON");}
-  opts.headers={"Content-Type":"application/json"};opts.body=body;req=fetch(base+"/submit",opts);
+  opts.headers={"Content-Type":"application/json"};opts.body=body;
  }else{
   if(!(d.file instanceof Blob))return reply(false,"not a file");
   var fd=new FormData();fd.append("component",comp);fd.append("file",d.file,String(d.name||"file").slice(0,200));
-  opts.body=fd;req=fetch(base+"/upload",opts);
+  opts.body=fd;
  }
- req.then(function(r){return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
-  if(r.ok)reply(true,j);else reply(false,(j&&j.error)||("muster answered "+r.status));});},
-  function(){reply(false,"muster could not be reached");});
+ // One request at a time, in the order sent (a several-file upload posts
+ // every file at once).
+ queue=queue.then(function(){return fetch(base+(d.op==="submit"?"/submit":"/upload"),opts).then(function(r){
+  return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
+   if(r.ok)reply(true,j);else reply(false,(j&&j.error)||("muster answered "+r.status));});},
+  function(){reply(false,"muster could not be reached");});});
 }
 window.addEventListener("message",function(ev){
  if(!f||port||ev.source!==f.contentWindow)return;
