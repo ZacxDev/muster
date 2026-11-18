@@ -251,13 +251,25 @@ and its relay posts to `/pages/{id}/versions/{v}/submit` and `/upload` with
 the owner's session, same-origin (`requireOperatorWrite`) — and **only what
 the owner confirmed in the shell's own "Send as you?" bar** (the operator's
 decision after round 2). The shell checks each send on its own
-structured-clone copy (a fixed field set; plain JSON data, at most 32 levels,
-under the 32 KiB cap; 1–20 `{file: Blob, name}` pairs), shows that copy —
-the component, the fields as text cut at 600 characters, or the files' names
-and sizes — and posts exactly it only on a trusted click of the bar's Send,
-in muster's realm, which the page's script cannot reach (another origin, a
-sandboxed frame). Send is not focused on opening, a press within 500 ms is
-ignored, and one send waits at a time. The row is `by_owner`, with no link;
+structured-clone copy: a fixed field set; the data normalised by a JSON
+round-trip first (round 3: for a link's viewer too, as before the confirm —
+`undefined` dropped, a `Date` its ISO string, `NaN` null), then measured in
+bytes against the 32 KiB cap; 1–20 `{file: Blob, name}` pairs. It shows that
+copy — the component and **every** field, one per line, each name and value
+as JSON with control, invisible and bidi characters escaped (round 3: a
+600-character cut had hidden a later field, and a raw newline or U+202E
+could fake or reorder one), never cut (a summary over 64 KiB is refused, not
+shown in part), or the files' names (escaped) and sizes — and posts exactly
+it only on a trusted click of the bar's Send, in muster's realm, which the
+page's script cannot reach (another origin, a sandboxed frame). Send is not
+focused on opening; a press anywhere on the bar within 500 ms does nothing
+and restarts the 500 ms (round 3: a burst of taps had reached past a fixed
+window), and Send then needs a press that starts on it; one send waits at a
+time; the bar cancels itself after 10 minutes, and the SDK waits 30, so the
+page is never told "muster did not answer" while the bar could still send.
+Escape cancels while the keyboard is in the shell; inside the frame the shell
+cannot see keys, and Cancel is the reliable path. The summary is the bar's
+accessible description. The row is `by_owner`, with no link;
 the caps and rate limits are one link's. A response from `?v=N` answers
 version N. The content document is the same for both, so it has no preview
 mode.
@@ -293,7 +305,16 @@ itself down and set `overflow:hidden` on `<html>` sends no scroll up; round 2:
 a page re-dispatching `scroll`, or scrolling an inner element, re-reported
 the same offset and kept restarting a plain idle timer — now only a report
 with a larger y restarts it, and the SDK reports only the browser's own
-(`isTrusted`) scroll of the document).
+(`isTrusted`) scroll of the document). And it comes back at most 8 seconds
+after it hid, whatever the reports say, and hides again only after a fresh
+scroll down of more than its own height (round 3: a page scrolling itself
+1px every 2.5 s reported "further down" forever).
+
+The saved-function layer that is left (round 3's D1) stays: the saved
+`postMessage` is what keeps a page from patching it and being handed the
+port as `this`, and a page holding the port could post scroll reports that
+re-hide the header the moment the shell shows it — the header's guarantee
+rests on the port being muster's alone.
 
 After the page's scripts run, `DOMContentLoaded` is dispatched to them, and
 `load` when it has already passed, once each; the insertion is a task after
@@ -370,8 +391,8 @@ label. Viewer data is never logged.
 | Direct navigation to `/content` | the sandbox is a header, not the frame's attribute | none |
 | The link leaks | 256 bits, looked up only by its sha256; `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push. A page's **reusable** link (the Share button's) also keeps its token **encrypted** (AES-256-GCM, a key derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY`, bound to the row's owner, page and hash), wiped when it stops being live: a database read alone yields no live link, a database read **plus** that key yields each page's current Share link. Without the key, links are hash-only as before | whoever it was given to; anyone holding both the database and the key |
 | A link outlives intent | revoke on the Pages screen, on the page card's ⋯ (Revoke link, New link), or with `page_link_revoke`; checked on every request | until revoked |
-| Page script keeps the brand header hidden (a share link's trust signal) | scroll reports only on a private port taken before any page script, with captured primitives; the shell accepts only a finite number ≥ 0 there; visible on load, near the top and on any scroll up; focus inside it shows it | a page that scrolls its own document down is really scrolled, and hides the header until the next scroll up or 3 seconds after its last scroll further down (the shell's own rule: a page that stops its own scrolling, or re-reports the same offset, cannot keep it hidden). A page that keeps scrolling itself down without pause keeps it hidden while it does. A page that replaces its own document (`document.open`) after the port is held loses its scroll reports (the header then stays) but never the port |
-| Page script records something as the owner (their view records) | nothing from the owner's view is posted until the owner taps Send in the shell's own "Send as you?" bar, which shows the shell's checked copy of exactly what will be posted; the page's script cannot reach the shell's realm; Send is not autofocused, ignores a press within 500 ms, one send waits at a time; `by_owner` is muster's field, outside the data, handed to the agent as fenced data that authorises nothing | the owner may confirm what they did not read closely: the bar shows the first 600 characters of the fields. A page can keep asking (each Cancel answers it "Not sent", and it may send again) |
+| Page script keeps the brand header hidden (a share link's trust signal) | scroll reports only on a private port taken before any page script, with captured primitives; the shell accepts only a finite number ≥ 0 there; visible on load, near the top and on any scroll up; focus inside it shows it | a page that scrolls its own document down is really scrolled, and hides the header until the next scroll up, 3 seconds after its last scroll further down, or 8 seconds after it hid, whichever is first (the shell's own rules); it hides again only after a fresh scroll down past its own height. A page that keeps jumping itself down by more than the header's height every 8 seconds hides it for most of the time. A page that replaces its own document (`document.open`) after the port is held loses its scroll reports (the header then stays) but never the port |
+| Page script records something as the owner (their view records) | nothing from the owner's view is posted until the owner taps Send in the shell's own "Send as you?" bar, which shows every field of the shell's checked, JSON-normalised copy (escaped; never cut — too long is refused) and posts exactly it; the page's script cannot reach the shell's realm; Send is not autofocused, a press within the 500 ms quiet window restarts it, Send needs a press that starts on it; one send waits at a time; the bar gives up after 10 minutes; `by_owner` is muster's field, outside the data, handed to the agent as fenced data that authorises nothing | the owner may confirm what they did not read closely (the box scrolls; a file is its name and size, not its contents). A page can keep asking (each Cancel answers it "Not sent") |
 | An agent shares without the owner | **Owner not opted in (every user's default):** only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer`. **Owner opted in** (*Let my agents share pages without asking*, that owner's own switch on Account, `notify_preferences.pages_agent_share`): there is **no** owner gate for that owner's pages — the agent's request makes the page's link live at once and hands the agent its address. The controls left: the opt-in is per owner and only the owner flips it (a signed-in, same-origin write of their own row under row-level security; no agent or mirror token reaches the route); it is read for the PAGE's owner, never the caller's or the operator's; only a page the agent itself made, under its owner's row-level security (never another creator's or owner's); the owner is pushed (*Page shared*, its own toggle so muting *Page ready* never hides it), and the chat's page card and the page's screen say who made it live without asking, with Revoke one tap away | Not opted in: the owner approving what they did not preview. Opted in: **anything that owner's agent publishes can be public before the owner looks** — content, a phishing form, a leak of data the agent can read — until the owner revokes it; that owner chose this, for their own pages only |
 | A transcript draws a misleading page card | only muster's own page tools draw one (bare, or `mcp__muster__…`; another MCP server's same-named tool draws none), and only as a page reference: the title, share state and maker are read from the page under the viewer's row-level security, so a forged title is never drawn and a page that is not the viewer's draws no card | none known |
 | A link goes live while its page is being deleted | the delete's first step marks the page (`pages.links_closed_at`) under the row lock every link maker takes; from then on no link — an agent's, the owner's Share — is made on it | a failed delete leaves the page taking no new link until Delete is pressed again |

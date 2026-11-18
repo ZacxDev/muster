@@ -229,6 +229,9 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 		`if(ev.isTrusted!==true||R(gTarget,ev,[])!==D)return;if(port&&!queued){queued=true;R(RAF,W,[report]);}`,
 		`R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);`,
 		`waiting=Object.create(null)`, `P=W.Promise`,
+		// Round 3's 🟢-2: the SDK waits longer than the owner's bar (600000),
+		// so it never says "muster did not answer" while the bar is open.
+		`c(false,"muster did not answer");}},1800000]);`,
 	} {
 		if !strings.Contains(sdk, want) {
 			t.Errorf("the SDK lacks %q", want)
@@ -280,15 +283,21 @@ func TestTheShellChecksASendsOwnCopy(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{
 		`if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");`,
-		`if(!plain(data,0))return reply(false,"the data is not plain JSON");`,
-		`var body=JSON.stringify({component:comp,data:data});
-  if(body.length>MAXBODY)return reply(false,"the data is too large");
+		// Round 3's 🟡-3: normalised by a JSON round-trip FIRST, for a link's
+		// viewer (as before) and the owner alike; then measured in BYTES.
+		`try{var js=JSON.stringify(d.data===undefined?null:d.data);data=js===undefined?null:JSON.parse(js);body=JSON.stringify({component:comp,data:data});}
+  catch(e){return reply(false,"the data is not JSON");}
+  if(bytes(body)>MAXBODY)return reply(false,"the data is too large");
   what="To “"+comp+"”";summary=summarise(data);
   run=function(done){fetchJSON(base+"/submit",opts(body,{"Content-Type":"application/json"}),done);};`,
+		`function bytes(s){return new TextEncoder().encode(s).length;}`,
 		`if(!only(d,["muster","id","op","component","files"])||!Array.isArray(d.files)||d.files.length<1||d.files.length>20)return reply(false,"muster does not take that");`,
 		`if(!x||typeof x!=="object"||!only(x,["file","name"])||!(x.file instanceof Blob)||typeof x.name!=="string")return reply(false,"not a file");`,
-		`var pr=Object.getPrototypeOf(v);if(pr!==Object.prototype&&pr!==null)return false;`,
-		`if(depth>32||typeof v!=="object")return false;`,
+		// Round 3's 🟡-2: EVERY field, each as escaped JSON (controls,
+		// invisible and bidi characters as \u escapes); never cut.
+		`return ks.map(function(k){return show(k)+": "+show(src[k]);}).join("\n");`,
+		`return JSON.stringify(v).replace(/[\u007f-\u009f\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff9-\ufffb]/g,`,
+		`summary=files.map(function(x){return show(x.name)+" ("+size(x.file.size)+")";}).join("\n");`,
 		// A several-file upload stops at the first refusal.
 		`fetchJSON(base+"/upload",opts(fd),function(ok,x){if(!ok)return done(false,x);last=x;next();});`,
 		`MAXBODY=36864`,
@@ -327,12 +336,23 @@ func TestTheOwnersShellPostsOnlyWhatTheyConfirm(t *testing.T) {
 	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`, `OWNER=true`,
 		`if(!OWNER)return run(reply);
  if(!box)return reply(false,"nothing can be sent from here");
+ // Everything, or nothing: a summary too long to show whole is refused,
+ // never shown in part.
+ if(summary.length>65536)return reply(false,"This is too much to show you before sending; nothing was sent.");
  if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
   return reply(false,"Another send is waiting for your answer.");`,
 		`if(asking)return false;`,
-		`box.hidden=false;box.focus();`,
-		`if(yes&&Date.now()-shownAt<500)return;`,
-		`box.querySelector("[data-send-go]").addEventListener("click",function(e){if(e.isTrusted)decide(true);});`,
+		`box.hidden=false;guard();box.focus();`,
+		// Round 3's 🟡-1: every press inside the window restarts it; Send
+		// needs a press that starts on it after a quiet window.
+		`function guard(){openAt=Date.now();armed=false;}
+function settled(){return Date.now()-openAt>=500;}`,
+		`box.addEventListener("pointerdown",function(e){if(e.isTrusted&&asking&&!settled())guard();},true);
+ go.addEventListener("pointerdown",function(e){if(e.isTrusted&&asking&&settled())armed=true;});`,
+		`if(settled())armed=true;else{guard();e.preventDefault();}`,
+		`if(armed&&settled())decide(true);else guard();`,
+		// Round 3's 🟢-2: the bar gives up on its own.
+		`giveUp=setTimeout(function(){decide(false);},600000);`,
 		`if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}`,
 	} {
 		if !strings.Contains(js, want) {
@@ -344,7 +364,8 @@ func TestTheOwnersShellPostsOnlyWhatTheyConfirm(t *testing.T) {
 	}
 	out := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/pages/7/versions/2", Nonce: "N", Owner: &OwnerChrome{Version: 2, DetailHref: "/pages/7"}})
 	for _, want := range []string{
-		`<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what" tabindex="-1" data-send-confirm hidden>`,
+		`<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>`,
+		`<pre class="cs" id="send-confirm-summary" data-send-summary></pre>`,
 		`<p class="ch" id="send-confirm-h">Send as you?</p>`,
 		`<button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button>`,
 	} {
@@ -370,13 +391,18 @@ func TestTheShellHidesItsHeaderOnlyByTheRules(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{
 		`if(typeof y!=="number"||!isFinite(y)||y<0)return;`,
-		`var down=y>lastY;
- if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(down)window.__musterHeader(false);`,
+		`var prev=lastY,down=y>prev;lastY=y;
+ if(y<=H||y<prev||popOpen()){setHidden(false);return;}
+ if(!down)return;
+ if(!hidden()&&y>floorY+H)setHidden(true);`,
+		// Round 3's 🟡-4: hidden at most 8s, whatever the reports; hidden
+		// again only after a fresh scroll down past its height.
+		`if(h){hdr.setAttribute("data-hidden","");cap=setTimeout(reveal,8000);}
+ else{hdr.removeAttribute("data-hidden");floorY=lastY;}`,
 		`if(m.op==="scroll")onY(m.y);`,
 		// Round 1's 🟡-1: the shell's own rule — back after 3s. Round 2: only
 		// a report FURTHER DOWN restarts the wait.
-		`if(!hdr||!hdr.hasAttribute("data-hidden")){clearTimeout(quiet);return;}
- if(down){clearTimeout(quiet);quiet=setTimeout(function(){window.__musterHeader(true);},3000);}`,
+		`if(hidden()){clearTimeout(quiet);quiet=setTimeout(reveal,3000);}`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the header's rules lack %q", want)

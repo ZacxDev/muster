@@ -282,6 +282,9 @@ func jsString(s string) string {
 //     with its own op: a page cannot post a scroll report, whatever it does
 //     to Array or Object prototypes (what it CAN choose — a send's data —
 //     it could send anyway).
+//     Kept on purpose (round 3's D1): the header's guarantee rests on the
+//     port being muster's alone, and a patched postMessage would be handed
+//     it.
 //
 // What the page sends is NOT checked here: in the owner's view the SHELL
 // shows it to the owner and posts it only on their own tap (ShellScript);
@@ -329,7 +332,7 @@ function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
  var id="m"+(++seq);waiting[id]=done;
  R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
- R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},600000]);
+ R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},` + sdkWaitMs + `]);
 }
 function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
@@ -402,9 +405,25 @@ button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(
 const (
 	shellHeaderPx = "40"
 	contentTopPx  = "56"
-	// revealMs is how long a hidden header waits for the next scroll report
-	// before it comes back on its own (ShellScript).
+	// revealMs is how long a hidden header waits for the next report further
+	// down before it comes back on its own (ShellScript).
 	revealMs = "3000"
+	// hideCapMs is the longest the header stays hidden, whatever the reports
+	// say (ShellScript).
+	hideCapMs = "8000"
+	// confirmGuardMs is the owner's confirm's quiet window: a press of the bar
+	// inside it does nothing and starts it again (ShellScript).
+	confirmGuardMs = "500"
+	// confirmWaitMs is how long the owner's confirm waits before it answers
+	// the page "Not sent" on its own; sdkWaitMs, how long the SDK waits for any
+	// answer — longer, so the page is never told "muster did not answer"
+	// while the bar could still be confirmed (and a send it approves has
+	// sdkWaitMs - confirmWaitMs to finish).
+	confirmWaitMs = "600000"
+	sdkWaitMs     = "1800000"
+	// confirmMaxChars bounds the confirm's summary: a send whose summary is
+	// longer is refused, never shown in part.
+	confirmMaxChars = "65536"
 )
 
 // ShellView is what the shell draws.
@@ -498,7 +517,7 @@ padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid 
 @media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}}
 .confirm[hidden]{display:none}.confirm:focus{outline:none}
 .confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:color-mix(in srgb,CanvasText 70%,transparent);font-size:14px}
-.confirm .cs{margin:0 0 10px;max-height:9rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
+.confirm .cs{margin:0 0 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
 padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,transparent)}
 .confirm .cb{display:flex;justify-content:flex-end;gap:8px}
 .confirm button{min-height:44px;min-width:5.5rem;padding:0 16px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;color:inherit;
@@ -556,8 +575,8 @@ func Shell(v ShellView) string {
 		}
 		b.WriteString(`</ul><hr>` + o.ShareButton + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
 <div id="action-toasts" aria-live="polite"></div>
-<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what" tabindex="-1" data-send-confirm hidden>
-<p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" data-send-summary></pre>
+<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
+<p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>
 <div class="cb"><button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button></div></div>
 `)
 		script += "\n" + ownerScript + "\n" + o.ShareScript
@@ -577,8 +596,9 @@ func Shell(v ShellView) string {
 // before any script of the page's runs). Everything else comes on that port
 // or not at all. A send is checked on receipt, in the shell's own realm, on
 // the shell's own structured-clone copy: a fixed field set; a submit's data
-// plain JSON (null, booleans, finite numbers, strings, arrays, plain objects,
-// at most 32 levels deep) under the size cap; an upload's files 1 to 20
+// normalised by a JSON round-trip (undefined dropped, a Date its ISO string,
+// NaN null — what a link's viewer's sends always became) and then measured
+// in BYTES against the server's cap; an upload's files 1 to 20
 // {file: Blob, name} pairs. That one copy is what is shown and what is posted.
 //
 // A link's shell posts it at once, with credentials omitted (the link in base
@@ -587,15 +607,22 @@ func Shell(v ShellView) string {
 // 🔴 THE OWNER'S SHELL (owner) POSTS NOTHING THE OWNER HAS NOT CONFIRMED HERE,
 // in muster's own realm, where the page's script cannot reach (another
 // origin, a sandboxed frame): a send opens the shell's "Send as you?" bar —
-// the component, the fields as text (cut at 600 characters) or the files'
+// the component and EVERY field, one per line, name and value as JSON with
+// control, invisible and direction-changing characters escaped (show), so a
+// newline cannot fake a second field nor U+202E reorder one; never cut (a
+// summary over confirmMaxChars is refused, not shown in part); or the files'
 // names and sizes — and only the owner's tap on its Send posts exactly that
 // copy, with their session, same-origin (the route's own session and Origin
 // checks; the same-origin referrer policy keeps a Referer for
-// requireSameOrigin's fallback). Cancel, Escape, or nothing records nothing.
-// Send is not focused when the bar opens (the bar itself is), a press of it
-// within 500 ms of the bar appearing is ignored, and one send waits at a
-// time: another while the bar is open is answered "Another send is waiting
-// for your answer." and dropped.
+// requireSameOrigin's fallback). Cancel, Escape (while the keyboard is in the
+// shell: inside the frame the shell cannot see keys, and Cancel is the
+// reliable path), or confirmWaitMs of nothing records nothing.
+// Send is not focused when the bar opens (the bar itself is). A press of the
+// bar within confirmGuardMs does nothing and starts the window again, so a
+// burst of taps that opened the bar never reaches Send; Send then takes a
+// press that begins on it after the window. One send waits at a time:
+// another while the bar is open is answered "Another send is waiting for
+// your answer." and dropped.
 //
 // Requests go one at a time, in the order received; a several-file upload's
 // files in turn, stopping at the first one refused.
@@ -606,14 +633,17 @@ func Shell(v ShellView) string {
 //   - it is visible on load (nothing hides it until a report arrives);
 //   - a report at or near the top (y no more than the header's height) shows it;
 //   - any report above the last one (a scroll up) shows it;
-//   - only a report below the last one AND past the header's height hides it;
+//   - only a report below the last one, past the header's height AND more
+//     than the header's height below where it last came back, hides it;
 //   - keyboard focus inside it (CSS :focus-within) and the open version
 //     popover show it whatever the reports say;
-//   - 🔴 and, needing nothing of the page, it comes back once no report
-//     FURTHER DOWN than the last has arrived for revealMs while it is hidden:
-//     only a report with y above the last one restarts that wait, so a page
-//     that stops its own scrolling and then re-reports the same offset (a
-//     dispatched scroll event, an inner scroller's) cannot hold it hidden.
+//   - 🔴 and, needing nothing of the page: it comes back once no report
+//     FURTHER DOWN has arrived for revealMs, and in any case hideCapMs after
+//     it hid, whatever the reports say. So it is never hidden for longer
+//     than hideCapMs at a time, and after that only a fresh scroll down past
+//     its own height hides it again: a page creeping down by script a pixel
+//     at a time, re-dispatching scroll events, or scrolling an inner
+//     element cannot hold it.
 //
 // The one op that moves it is "scroll" {y: a finite number >= 0}, and only on
 // the port: a page's script posting one to the shell is ignored, as is one
@@ -626,36 +656,43 @@ func ShellScript(base string, owner bool) string {
 	}
 	return `(function(){"use strict";
 var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null;
-var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,quiet=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
-window.__musterHeader=function(show){if(!hdr)return;if(show)hdr.removeAttribute("data-hidden");else hdr.setAttribute("data-hidden","");};
+var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,floorY=0,quiet=0,cap=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
+function hidden(){return !!hdr&&hdr.hasAttribute("data-hidden");}
+function setHidden(h){
+ if(!hdr||h===hidden())return;
+ clearTimeout(cap);clearTimeout(quiet);
+ if(h){hdr.setAttribute("data-hidden","");cap=setTimeout(reveal,` + hideCapMs + `);}
+ else{hdr.removeAttribute("data-hidden");floorY=lastY;}
+}
+function reveal(){setHidden(false);}
+window.__musterHeader=function(show){setHidden(!show);};
 function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
 function onY(y){
  if(typeof y!=="number"||!isFinite(y)||y<0)return;
- var down=y>lastY;
- if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(down)window.__musterHeader(false);
- lastY=y;
- if(!hdr||!hdr.hasAttribute("data-hidden")){clearTimeout(quiet);return;}
- if(down){clearTimeout(quiet);quiet=setTimeout(function(){window.__musterHeader(true);},` + revealMs + `);}
+ var prev=lastY,down=y>prev;lastY=y;
+ if(y<=H||y<prev||popOpen()){setHidden(false);return;}
+ if(!down)return;
+ if(!hidden()&&y>floorY+H)setHidden(true);
+ if(hidden()){clearTimeout(quiet);quiet=setTimeout(reveal,` + revealMs + `);}
 }
 function only(o,keys){var ks=Object.keys(o);for(var i=0;i<ks.length;i++)if(keys.indexOf(ks[i])<0)return false;return true;}
-function plain(v,depth){
- if(v===null||typeof v==="boolean"||typeof v==="string")return true;
- if(typeof v==="number")return isFinite(v);
- if(depth>32||typeof v!=="object")return false;
- var i;
- if(Array.isArray(v)){for(i=0;i<v.length;i++)if(!plain(v[i],depth+1))return false;return true;}
- var pr=Object.getPrototypeOf(v);if(pr!==Object.prototype&&pr!==null)return false;
- var ks=Object.keys(v);for(i=0;i<ks.length;i++)if(!plain(v[ks[i]],depth+1))return false;return true;
+// show is a value as the owner reads it: its JSON, with every control,
+// invisible and direction-changing character written as an escape.
+function show(v){
+ return JSON.stringify(v).replace(/[\u007f-\u009f\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff9-\ufffb]/g,
+  function(c){return "\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4);});
 }
-function cut(t){return t.length>600?t.slice(0,600)+"…":t;}
+// summarise is EVERY field of data, one per line, each as show() writes it.
 function summarise(v){
  if(v&&typeof v==="object"&&!Array.isArray(v)){
   var src=v,ks=Object.keys(v);
   if(ks.length===1&&ks[0]==="fields"&&v.fields&&typeof v.fields==="object"&&!Array.isArray(v.fields)){src=v.fields;ks=Object.keys(src);}
-  return cut(ks.map(function(k){return k+": "+(typeof src[k]==="string"?src[k]:JSON.stringify(src[k]));}).join("\n"));
+  if(!ks.length)return "(nothing)";
+  return ks.map(function(k){return show(k)+": "+show(src[k]);}).join("\n");
  }
- return cut(JSON.stringify(v));
+ return show(v);
 }
+function bytes(s){return new TextEncoder().encode(s).length;}
 function size(n){return n<1024?n+" B":n<1048576?Math.round(n/1024)+" KB":(n/1048576).toFixed(1)+" MB";}
 function fetchJSON(path,opts,done){
  queue=queue.then(function(){return fetch(path,opts).then(function(r){
@@ -665,25 +702,40 @@ function fetchJSON(path,opts,done){
 }
 function opts(body,headers){var o={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `,body:body};if(headers)o.headers=headers;return o;}
 // The owner's confirm (owner only: its elements are in the owner's shell).
-var box=document.querySelector("[data-send-confirm]"),asking=null,shownAt=0;
+var box=document.querySelector("[data-send-confirm]"),asking=null,openAt=0,armed=false,giveUp=0;
+// guard (re)starts the window in which a press of the bar does nothing: on
+// opening, and on EVERY press inside it, so a burst of taps never reaches
+// past it; Send then needs a press that STARTS on it after a quiet window.
+function guard(){openAt=Date.now();armed=false;}
+function settled(){return Date.now()-openAt>=` + confirmGuardMs + `;}
 function ask(what,summary,cb){
  if(asking)return false;
- asking=cb;shownAt=Date.now();
+ asking=cb;
  box.querySelector("[data-send-what]").textContent=what;
  box.querySelector("[data-send-summary]").textContent=summary;
- box.hidden=false;box.focus();
+ box.hidden=false;guard();box.focus();
+ giveUp=setTimeout(function(){decide(false);},` + confirmWaitMs + `);
  return true;
 }
 function decide(yes){
  var cb=asking;if(!cb)return;
- if(yes&&Date.now()-shownAt<500)return;
- asking=null;box.hidden=true;if(f)f.focus();cb(yes);
+ asking=null;armed=false;clearTimeout(giveUp);box.hidden=true;if(f)f.focus();cb(yes);
 }
 if(box){
- box.querySelector("[data-send-go]").addEventListener("click",function(e){if(e.isTrusted)decide(true);});
+ var go=box.querySelector("[data-send-go]");
+ box.addEventListener("pointerdown",function(e){if(e.isTrusted&&asking&&!settled())guard();},true);
+ go.addEventListener("pointerdown",function(e){if(e.isTrusted&&asking&&settled())armed=true;});
+ go.addEventListener("keydown",function(e){
+  if(!e.isTrusted||!asking||(e.key!=="Enter"&&e.key!==" "))return;
+  if(settled())armed=true;else{guard();e.preventDefault();}
+ });
+ go.addEventListener("click",function(e){
+  if(!e.isTrusted||!asking)return;
+  if(armed&&settled())decide(true);else guard();
+ });
  box.querySelector("[data-send-cancel]").addEventListener("click",function(e){if(e.isTrusted)decide(false);});
- document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}});
 }
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}},true);
 function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
@@ -691,10 +743,13 @@ function relay(d){
  var comp=typeof d.component==="string"?d.component.slice(0,64):"",what,summary,run,i;
  if(d.op==="submit"){
   if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");
-  var data=d.data===undefined?null:d.data;
-  if(!plain(data,0))return reply(false,"the data is not plain JSON");
-  var body=JSON.stringify({component:comp,data:data});
-  if(body.length>MAXBODY)return reply(false,"the data is too large");
+  // The data as JSON would carry it (undefined dropped, a Date as its ISO
+  // string, NaN as null), for a link's viewer as before and for the owner:
+  // what the owner is shown below IS this, and so is what is posted.
+  var data,body;
+  try{var js=JSON.stringify(d.data===undefined?null:d.data);data=js===undefined?null:JSON.parse(js);body=JSON.stringify({component:comp,data:data});}
+  catch(e){return reply(false,"the data is not JSON");}
+  if(bytes(body)>MAXBODY)return reply(false,"the data is too large");
   what="To “"+comp+"”";summary=summarise(data);
   run=function(done){fetchJSON(base+"/submit",opts(body,{"Content-Type":"application/json"}),done);};
  }else if(d.op==="upload"){
@@ -706,7 +761,7 @@ function relay(d){
    files.push({file:x.file,name:x.name.slice(0,200)||"file"});
   }
   what=(files.length===1?"A file":files.length+" files")+" to “"+comp+"”";
-  summary=cut(files.map(function(x){return x.name+" ("+size(x.file.size)+")";}).join("\n"));
+  summary=files.map(function(x){return show(x.name)+" ("+size(x.file.size)+")";}).join("\n");
   run=function(done){
    var k=0,last=null;
    (function next(){
@@ -718,6 +773,9 @@ function relay(d){
  }else return reply(false,"unknown request");
  if(!OWNER)return run(reply);
  if(!box)return reply(false,"nothing can be sent from here");
+ // Everything, or nothing: a summary too long to show whole is refused,
+ // never shown in part.
+ if(summary.length>` + confirmMaxChars + `)return reply(false,"This is too much to show you before sending; nothing was sent.");
  if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
   return reply(false,"Another send is waiting for your answer.");
 }

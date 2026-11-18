@@ -591,7 +591,7 @@ for (const vp of [
       await expect(frame.locator('[data-muster-component="auto"] [data-muster-status]')).toHaveText('Another send is waiting for your answer.');
       expect((await call('page_responses', { page_id: pageID })).body.count, 'a send waiting for the owner was recorded').toBe(0);
       await shot(page, `owner-${vp.name}-confirm`);
-      await answerConfirm(page, 'auto: true', false);
+      await answerConfirm(page, '"auto": true', false);
       await expect(frame.locator('#auto-out')).toHaveText('refused:Not sent');
       await settle(page);
       expect((await readCls(page)).total, 'the owner\'s view does not shift on load').toBeLessThan(0.01);
@@ -632,11 +632,11 @@ for (const vp of [
       // 4. The owner submits from it, confirms in muster's bar: "Sent",
       // recorded as theirs, at version 1. (The page's send on load asks
       // again first: cancelled.)
-      await answerConfirm(page, 'auto: true', false);
+      await answerConfirm(page, '"auto": true', false);
       const pick = frame.locator('[data-muster-component="pick"]');
       await pick.locator('input[name="answer"]').fill('the ' + vp.name + ' pick');
       await pick.getByRole('button', { name: 'Send pick' }).click();
-      await answerConfirm(page, 'answer: the ' + vp.name + ' pick', true);
+      await answerConfirm(page, '"answer": "the ' + vp.name + ' pick"', true);
       await expect(pick.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
       const read = await call('page_responses', { page_id: pageID });
       expect(read.body.count, JSON.stringify(read.body)).toBe(1);
@@ -649,7 +649,7 @@ for (const vp of [
       // The page's own script's send, confirmed by the owner: recorded.
       await expect(frame.locator('#auto-out')).toHaveText('refused:Not sent');
       await frame.locator('#cj').click();
-      await answerConfirm(page, 'picked: tapped', true);
+      await answerConfirm(page, '"picked": "tapped"', true);
       await expect(frame.locator('#cj-out')).toHaveText(/^saved:\d+$/);
       const tapped = await call('page_responses', { page_id: pageID });
       expect(tapped.body.count, JSON.stringify(tapped.body)).toBe(2);
@@ -660,7 +660,7 @@ for (const vp of [
       // the top; the frame never moves, and nothing shifts.
       await page.goto(origin + `/pages/${pageID}/view`);
       await expect(frame.locator('h1')).toHaveText('version two');
-      await answerConfirm(page, 'auto: true', false);
+      await answerConfirm(page, '"auto": true', false);
       await settle(page);
       const fb = await frameEl.boundingBox();
       await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
@@ -863,13 +863,13 @@ for (const vp of ROUND_VIEWPORTS) {
       // The first send opened the bar; every other one was refused while it
       // waits. None is recorded.
       await expect(confirmBar(page)).toBeVisible();
-      await expect(confirmBar(page).locator('[data-send-summary]')).toHaveText('s: forge');
+      await expect(confirmBar(page).locator('[data-send-summary]')).toHaveText('"s": "forge"');
       for (const f of ['#f-act', '#f-file']) await expect(frame.locator(f)).toHaveText('refused:Another send is waiting for your answer.');
       await expect(frame.locator('[data-muster-component="fq"] [data-muster-status]')).toHaveText('Another send is waiting for your answer.');
       await expect(frame.locator('[data-muster-component="up1"] [data-muster-status]')).toHaveText('Another send is waiting for your answer.');
       await page.waitForTimeout(1000);
       expect(await rowsOf(id), 'a forge recorded a row').toBe(0);
-      await answerConfirm(page, 's: forge', false);
+      await answerConfirm(page, '"s": "forge"', false);
       await expect(frame.locator('#f-data')).toHaveText('refused:Not sent');
       expect(await rowsOf(id), 'Cancel recorded a row').toBe(0);
     });
@@ -891,7 +891,7 @@ for (const vp of ROUND_VIEWPORTS) {
       await page.keyboard.press('Enter');
       await page.waitForTimeout(300);
       expect(await rowsOf(id)).toBe(0);
-      await answerConfirm(page, 'hostile: 1', false);
+      await answerConfirm(page, '"hostile": 1', false);
       await expect(frame.locator('#h-out')).toHaveText('refused:Not sent');
       expect(await rowsOf(id)).toBe(0);
     });
@@ -907,7 +907,7 @@ for (const vp of ROUND_VIEWPORTS) {
       // Cancel: nothing.
       await contact.locator('input[name="email"]').fill('no@example.com');
       await contact.getByRole('button', { name: 'Send details' }).click();
-      await answerConfirm(page, 'email: no@example.com', false);
+      await answerConfirm(page, '"email": "no@example.com"', false);
       await expect(contact.locator('[data-muster-status]')).toHaveText('Not sent');
       expect(await rowsOf(id)).toBe(0);
       // A press of Send in the bar's first half second is ignored.
@@ -920,7 +920,7 @@ for (const vp of ROUND_VIEWPORTS) {
       expect(await rowsOf(id)).toBe(0);
       // Send: exactly what was shown.
       await expect(confirmBar(page).locator('[data-send-what]')).toHaveText('To “contact”');
-      await answerConfirm(page, 'email: me@example.com\ncompany: Example Co', true);
+      await answerConfirm(page, '"email": "me@example.com"\n"company": "Example Co"', true);
       await expect(contact.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
       // Two files, one confirm, names and sizes shown.
       const files = frame.locator('[data-muster-component="files"]');
@@ -930,7 +930,7 @@ for (const vp of ROUND_VIEWPORTS) {
       ]);
       await files.getByRole('button', { name: 'Upload files' }).click();
       await expect(confirmBar(page).locator('[data-send-what]')).toHaveText('2 files to “files”');
-      await answerConfirm(page, 'one.txt (5 B)\ntwo.txt (6 B)', true);
+      await answerConfirm(page, '"one.txt" (5 B)\n"two.txt" (6 B)', true);
       await expect(files.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
       const read = await call('page_responses', { page_id: id });
       expect(read.body.count, JSON.stringify(read.body)).toBe(3);
@@ -1016,4 +1016,164 @@ for (const vp of ROUND_VIEWPORTS) {
       });
     });
   }
+}
+
+// --- ROUND 3 ON #802 ----------------------------------------------------------
+
+// A page whose own button lies under where muster's Send appears: the first
+// tap sends (the bar opens over it), the rest of a burst lands on Send.
+const UNDER_SEND = `<button id="under" type="button" style="position:fixed;left:0;right:0;bottom:0;height:260px;z-index:9;font-size:20px">Press me</button>
+<p id="u-out">-</p><script>
+document.getElementById('under').addEventListener('click',function(){
+  muster.submit({burst:1}).then(function(r){document.getElementById('u-out').textContent='saved:'+r.id;},
+    function(e){document.getElementById('u-out').textContent='refused:'+e.message;});
+});</script>`;
+
+// Fields that tried to hide or fake what the owner reads.
+const TRICKY = `<p id="t-out">-</p><script>
+window.sendIt=function(v){muster.submit(v).then(function(r){document.getElementById('t-out').textContent='saved:'+r.id;},
+  function(e){document.getElementById('t-out').textContent='refused:'+e.message;});};
+</script>`;
+
+// A link viewer's page sending shapes JSON normalises (they were recorded so
+// before the owner's confirm, and must still be).
+const SHAPES = `<p id="s-out">-</p><script>
+Promise.all([muster.submit({a:1,b:undefined}),muster.submit({when:new Date(0)}),muster.submit({x:NaN})])
+  .then(function(){document.getElementById('s-out').textContent='sent';},function(e){document.getElementById('s-out').textContent='refused:'+e.message;});
+</script>`;
+
+// Round 3's a7: a page that scrolls itself down, then 1px every 2.5s,
+// forever — every report "further down".
+const A7_CREEP = `<div style="height:6000px">tall</div><script>
+setTimeout(function(){window.scrollTo(0,800);window.crept=1;setInterval(function(){window.scrollBy(0,1);},2500);},500);
+</script>`;
+
+const pageButton = (p: Page) => p.frameLocator('iframe#page');
+
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, a burst of taps cannot reach past the confirm's quiet window (round 3, 🟡-1)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Burst ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: UNDER_SEND }] });
+      const id = pg.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      await expect(frame.locator('#under')).toBeVisible();
+      // Where Send appears: open the bar once, read it, cancel.
+      await frame.locator('#under').click();
+      const go = confirmBar(page).locator('[data-send-go]');
+      await expect(go).toBeVisible();
+      const b = (await go.boundingBox())!;
+      const x = b.x + b.width / 2, y = b.y + b.height / 2;
+      await answerConfirm(page, /burst/, false);
+      await expect(frame.locator('#u-out')).toHaveText('refused:Not sent');
+      // The burst: the first tap is the page's button (the bar opens over
+      // it), the rest land on Send.
+      const tap = vp.touch ? () => page.touchscreen.tap(x, y) : () => page.mouse.click(x, y);
+      // Taps 250 ms apart on a phone, 183 on a desktop: each lands inside
+      // the window the one before it restarted.
+      const gaps = vp.touch ? [0, 250, 250, 250] : [0, 183, 183, 182];
+      for (const g of gaps) {
+        if (g) await page.waitForTimeout(g);
+        await tap();
+      }
+      await page.waitForTimeout(300);
+      await expect(confirmBar(page), 'a burst answered the bar').toBeVisible();
+      expect(await rowsOf(id), 'a burst recorded the send').toBe(0);
+      // The control: a tap after a quiet half second sends.
+      await page.waitForTimeout(700);
+      await tap();
+      await expect(confirmBar(page)).toBeHidden();
+      await expect(frame.locator('#u-out')).toHaveText(/^saved:\d+$/);
+      expect(await rowsOf(id)).toBe(1);
+    });
+  });
+
+  test(`at ${vp.name}, the confirm shows every field, escaped, or refuses (round 3, 🟡-2)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Tricky ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: TRICKY }] });
+      const id = pg.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      await expect(frame.locator('#t-out')).toHaveText('-');
+      const summary = confirmBar(page).locator('[data-send-summary]');
+      // A long first field does not push the second out of sight.
+      await frame.locator('body').evaluate(() => (window as unknown as { sendIt: (v: unknown) => void }).sendIt({ pad: 'x'.repeat(700), approve_deploy: 'yes' }));
+      await expect(summary, 'a field was cut out of sight').toContainText('approve_deploy');
+      await expect(summary).toContainText('"approve_deploy": "yes"');
+      await expect(summary).toContainText('"pad": "' + 'x'.repeat(700) + '"');
+      await expect(confirmBar(page)).toHaveAccessibleDescription(/"approve_deploy": "yes"/);
+      await answerConfirm(page, /approve_deploy/, false);
+      // A newline cannot fake a second field; a direction override shows as
+      // its escape.
+      await frame.locator('body').evaluate(() => (window as unknown as { sendIt: (v: unknown) => void }).sendIt({ decision: 'reject\nreason: ok', who: '‮evil' }));
+      await expect(summary).toHaveText('"decision": "reject\\nreason: ok"\n"who": "\\u202eevil"');
+      expect(await summary.evaluate((e) => e.textContent!.split('\n').length), 'the newline made a line').toBe(2);
+      await answerConfirm(page, /decision/, false);
+      // Too much to show whole: refused, nothing shown in part.
+      await frame.locator('body').evaluate(() => (window as unknown as { sendIt: (v: unknown) => void }).sendIt({ s: '‮'.repeat(11000) }));
+      await expect(frame.locator('#t-out')).toHaveText('refused:This is too much to show you before sending; nothing was sent.');
+      await expect(confirmBar(page)).toBeHidden();
+      expect(await rowsOf(id)).toBe(0);
+    });
+  });
+
+  test(`at ${vp.name}, a link's viewer still records undefined, a Date and NaN as JSON does (round 3, 🟡-3)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const pg = await call('page_create', { title: 'Shapes ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: SHAPES }] });
+      const id = pg.body.page_id as number;
+      const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+      try {
+        const sp = await stranger.newPage();
+        await sp.goto((await shared.json()).url as string);
+        await expect(sp.frameLocator('iframe#page').locator('#s-out')).toHaveText('sent');
+      } finally {
+        await stranger.close();
+      }
+      const read = await call('page_responses', { page_id: id });
+      expect(read.body.count, JSON.stringify(read.body)).toBe(3);
+      const fenced = read.body.responses as string;
+      expect(fenced).toContain('"data":{"value":{"a":1}}');
+      expect(fenced).toContain('"data":{"value":{"when":"1970-01-01T00:00:00.000Z"}}');
+      expect(fenced).toContain('"data":{"value":{"x":null}}');
+    });
+  });
+
+  test(`at ${vp.name}, a page creeping down by script cannot hold the header hidden (round 3, 🟡-4)`, async ({ browser }) => {
+    test.setTimeout(90_000);
+    await asOwner(browser, vp, async (page) => {
+      const frame = pageButton(page);
+      const header = page.locator('header[data-page-brand]');
+      const pg = await call('page_create', { title: 'Creep ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: A7_CREEP }] });
+      await page.goto(origin + `/pages/${pg.body.page_id as number}/view`);
+      await expect.poll(() => frame.locator('body').evaluate(() => (window as unknown as { crept?: number }).crept)).toBe(1);
+      await expect(header, 'the page hid the header').toHaveAttribute('data-hidden', '');
+      // Back within the 8s cap, whatever the creep reports…
+      await expect(header, 'the header came back within its cap').not.toHaveAttribute('data-hidden', { timeout: 9500 });
+      // …and the creep (1px at a time) does not hide it again.
+      await page.waitForTimeout(6000);
+      await expect(header, 'the creep hid it again').not.toHaveAttribute('data-hidden');
+      // The control: a real scroll down hides it again.
+      await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+      await page.mouse.wheel(0, 900);
+      await expect(header).toHaveAttribute('data-hidden', '');
+    });
+  });
+
+  test(`at ${vp.name}, the confirm gives up on its own before the page's wait does (round 3, 🟢-2)`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      await page.clock.install();
+      const frame = pageButton(page);
+      const pg = await call('page_create', { title: 'Waits ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: TRICKY }] });
+      const id = pg.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      await expect(frame.locator('#t-out')).toHaveText('-');
+      await frame.locator('body').evaluate(() => (window as unknown as { sendIt: (v: unknown) => void }).sendIt({ late: 1 }));
+      await expect(confirmBar(page)).toBeVisible();
+      await page.clock.fastForward('10:01');
+      await expect(confirmBar(page), 'the bar still waits after 10 minutes').toBeHidden();
+      await expect(frame.locator('#t-out')).toHaveText('refused:Not sent');
+      expect(await rowsOf(id)).toBe(0);
+    });
+  });
 }

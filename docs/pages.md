@@ -213,8 +213,10 @@ A link's viewer and you see the same page under the same header: one slim
 row (about 40px) with the instance's logo and name, and the page's title on
 one line, cut short with an ellipsis (the whole title shows on hover). The
 header slides away as the page is scrolled down and comes back on any scroll
-up, whenever the page is near its top, and on its own 3 seconds after the
-page last scrolled further down; it is always there when the page opens. The page cannot hide it on its own: the frame reports its scroll on a
+up, whenever the page is near its top, on its own 3 seconds after the page
+last scrolled further down, and at most 8 seconds after it hid, whatever the
+page does — after which it hides again only on a fresh scroll down of more
+than its own height; it is always there when the page opens. The page cannot hide it on its own: the frame reports its scroll on a
 private channel the page's own script never holds (it is connected before any
 of the page's script runs), and the shell only accepts
 a number there.
@@ -233,15 +235,27 @@ its number. Your own responses do not notify you.
 view — a form, an answer, a file, or something the page's own script sends,
 the moment it opens or later — first shows muster's own **Send as you?** bar
 at the bottom of the screen (a sheet on a phone, a box on a wider screen).
-It says which component it is for and shows what will be sent: the fields
-as text (cut at 600 characters), or each file's name and size. **Send**
-records exactly that; **Cancel** (or Escape) records nothing, and the page
-is told *Not sent*. The bar is muster's, outside the page: the page's script
-cannot reach it, press it or change what it shows. Send is never focused
-when the bar opens, a press of it in its first half second is ignored, and
-one send waits at a time — another, while the bar is open, is refused
-(*Another send is waiting for your answer.*). A viewer through a link sees
-no bar: what they send is recorded as before.
+It says which component it is for and shows what will be sent: **every
+field**, one per line, each name and value written as JSON (`"email":
+"me@example.com"`), so a line break, a control or an invisible or
+direction-changing character shows as its escape (`\n`, `\u202e`) instead of
+faking a second line or reordering the text; the box scrolls. For files, each
+file's name (written the same way) and size. Nothing is ever cut: a send too
+long to show whole is refused (*This is too much to show you before sending;
+nothing was sent.*). The data is shown after muster has turned it into JSON
+— what JSON cannot carry is gone, a date is its ISO text — so **Send**
+records exactly what you read. **Cancel** records nothing, and the page is
+told *Not sent*; so does **Escape** while the keyboard is in muster's part
+of the screen (if it is in the page, muster cannot see the key: tap Cancel).
+Left alone for 10 minutes, the bar cancels itself. The bar is muster's,
+outside the page: the page's script cannot reach it, press it or change
+what it shows. Send is never focused when the bar opens, and a press of the
+bar in its first half second does nothing and starts that half second
+again, so a burst of taps that opened the bar cannot also press Send; Send
+then takes a press that begins on it. One send waits at a time — another,
+while the bar is open, is refused (*Another send is waiting for your
+answer.*). A viewer through a link sees no bar: what they send is recorded
+as before, turned into JSON the same way.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
 version, when it was made and which is current (the one links show); tapping
