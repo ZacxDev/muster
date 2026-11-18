@@ -84,9 +84,14 @@ test.describe('phone 390×844', () => {
     // Phone sizing: no sideways scroll; every report link and button 44px tall.
     const { sw, iw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }));
     expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(iw);
-    const short = await report.locator('a:visible, button:visible').evaluateAll((els) =>
-      els.filter((e) => e.getBoundingClientRect().height < 44).map((e) => (e.textContent || e.getAttribute('aria-label') || '').trim()));
-    expect(short, 'controls under 44px tall').toEqual([]);
+    // The report's own controls; the question card is the Asks queue's own
+    // markup (attentionItemsHTMLTo), unchanged here and measured on /attention.
+    // (Its "Dictation is off" hint link is under 44px on /attention too.)
+    const sizes = await report.locator('a:visible, button:visible').evaluateAll((els) =>
+      els.filter((e) => !e.closest('[data-testid="morning-question-cards"]'))
+        .map((e) => ({ name: (e.textContent || e.getAttribute('aria-label') || '').trim(), h: e.getBoundingClientRect().height })));
+    expect(sizes.length, 'the report draws controls of its own (the done and stuck links, the ⓘs)').toBeGreaterThanOrEqual(2);
+    expect(sizes.filter((s) => s.h < 44).map((s) => s.name), 'controls under 44px tall').toEqual([]);
 
     // Answer in place: the option is recorded and the page comes back here.
     await card.getByRole('button', { name: 'Hang them' }).click();

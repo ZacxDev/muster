@@ -58,6 +58,7 @@ var hostRowConsumers = map[string]string{
 	"internal/api/focus_tools.go:focusSearchHistory":        "skips: the live agents a focus search ranks",
 	"internal/api/sessions_overview.go:liveSessions":        "skips: the chief's live sessions overview",
 	"internal/api/fleet_report.go:collectFleet":             "skips: the fleet report's agents",
+	"internal/api/morning_report.go:morningStuck":           "skips: the morning report's failed agents (ProvisionedOnly)",
 	// READS: lookups that cannot select a host row, or read it harmlessly.
 	"internal/api/agent_outcome.go:outcomeIsChief":        "reads: the chief by name; a host row is named officer-…",
 	"internal/api/agent_outcome.go:outcomeTaskDone":       "reads: agents on a task; a host row has no note",

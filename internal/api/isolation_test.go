@@ -39,6 +39,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -818,6 +819,8 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
+	// The morning report: A's newest report names the canary.
+	"GET /morning",
 	// Host officer spawns (phase 3): A's spawn's host is the canary.
 	"GET /officers/spawns",
 	"GET /ui/nav/agents", "GET /ui/connector-requests", "GET /ui/connectors",
@@ -1356,7 +1359,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
 		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, team: w.aTeam,
-		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID}
+		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID, morningDate: isoMorningDate}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -1368,7 +1371,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
 		page: ghostID, pageLink: ghostID, pageDel: ghostID,
-		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID}
+		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID, morningDate: "1999-01-01"}
+	// The morning report (0152): A's report of isoMorningDate names the canary
+	// in a done line, so A's own page is told from the ghost day's by its body.
+	if _, err := morning.NewPG(pool).Insert(ua, morning.Row{Date: isoMorningDate, Since: time.Date(2001, 2, 2, 14, 0, 0, 0, time.UTC),
+		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTask, Label: w.canary + " morning"}}}}); err != nil {
+		t.Fatalf("A's morning report: %v", err)
+	}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1454,6 +1463,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
+	// The morning report (0152): A's report is a real object B must not reach.
+	ext.MorningReport = &MorningReport{Store: morning.NewPG(pool), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}}
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
 	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
@@ -1689,6 +1700,9 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	// morningDate is a day with a morning report (morning_report.go): A's
+	// carries the canary.
+	morningDate string
 	// The built-in officer store (officer_admin.go): a type key, an officer
 	// id (<type>:a) and an item of it.
 	officerType, officer                      string
@@ -1873,7 +1887,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1",
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
-		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload,
+		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload, "{date}", o.morningDate,
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
@@ -3146,3 +3160,6 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		}
 	}
 }
+
+// isoMorningDate is the day of A's morning report in the isolation walk.
+const isoMorningDate = "2001-02-03"

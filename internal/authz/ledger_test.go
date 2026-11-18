@@ -376,6 +376,11 @@ var (
 		// security confines it to that user's rows. A fixture command, never
 		// linked into a binary, and it refuses any database not ending in _e2e.
 		"e2e/askfix.run",
+		// The morning report's browser fixture (e2e/morningfix): the same, for
+		// one owner's report of a fixed day and one ask. A fixture command,
+		// never linked into a binary, and it refuses any database not ending in
+		// _e2e.
+		"e2e/morningfix.run",
 		// The Asks card feed's browser fixture (e2e/asksfeedfix): the same, for
 		// one owner's queue of every kind. A fixture command, never linked into
 		// a binary, and it refuses any database not ending in _e2e.
