@@ -759,8 +759,9 @@ recorded on the Asks page's Nudges tab, nothing is sent.
 Out-of-process plugins bring another system's messages (an inbox, ClankMail)
 to your chief and send the replies you approve. [plugins.md](plugins.md).
 
-- **Needs a plugin process you run** (this repository has the ClankMail one,
-  `muster-clankmail`), and something to deliver its messages to: the
+- **Needs a plugin process you run** (for ClankMail,
+  [muster-clankmail](https://github.com/ZacxDev/muster-clankmail), extracted
+  from this repository into its own), and something to deliver its messages to: the
   [chief](#chief) through an agent gateway, or an officer the plugin is bound
   to (**Deliver to** `officer:<id>` on `/plugins`), which needs no chief. With
   neither, nothing can deliver: messages queue, and the feature reads

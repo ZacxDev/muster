@@ -2711,7 +2711,7 @@ the chief's route (`routeItem`), made by muster, with no chief decision.
    agent mail, the session's PostToolUse hook (outside muster); for ClankMail,
    whoever sent the thread's first message (the root is the signed message's own
    `m_` id). `muster-clankmail` only replies and has no send command yet, so
-   today that is you, by hand ([clankmail.md](clankmail.md#3-pairing)): `POST /api/plugin-threads {thread,
+   today that is you, by hand ([muster-clankmail, Pairing](https://github.com/ZacxDev/muster-clankmail#pairing)): `POST /api/plugin-threads {thread,
    claude_session}`, with route reply's credential (a personal token or the
    hook token). `201`: bound. `200`: the thread was already bound; **the first
    report wins** and the binding is unchanged. `409`: no online mirrored window
