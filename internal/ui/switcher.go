@@ -186,6 +186,11 @@ type Switcher struct {
 	// dockRecentMax, in visit order: the dock's Recent tab draws them from the
 	// All row's pills (every one of them is one), after the bar's own.
 	RecentMore []string
+	// MenuCount, when set, is the ☰ badge's first count: THE ONE OPEN COUNT
+	// (internal/api asksPendingOf), set wherever the Asks queue is served, so
+	// the badge drawn with the page says what the badge's own route
+	// (NavWaitingPath) says. nil: the Waiting view's length (no queue served).
+	MenuCount *int
 	// pin is the page's own session as the bar's pin toggle posts it; nil
 	// when the page is no session or its session is not among the entries.
 	pin *switcherPin

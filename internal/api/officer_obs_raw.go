@@ -75,11 +75,11 @@ func (s *Server) officerObsRaw(ctx context.Context, a agents.Agent, o officers.O
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	item, err := s.heldItem(ctx, c, a.Name, named, true)
+	item, err := s.heldItem(ctx, c, officerCallerName(ctx, a), named, true)
 	if err != nil {
 		return heldItemRefusal(officers.ToolObsRaw, err)
 	}
-	body, err := officers.ObsRawBody(rest, item, a.Name)
+	body, err := officers.ObsRawBody(rest, item, officerCallerName(ctx, a))
 	if err != nil {
 		return toolErr("%v", err)
 	}
