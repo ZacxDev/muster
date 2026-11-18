@@ -788,6 +788,22 @@ func normalizeSessions(in []string) []string {
 //
 // Registration is in memory only: nothing on this path waits on a database.
 func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *websocket.Conn) error {
+	return h.ServeConnMarking(ctx, owner, host, ws, nil)
+}
+
+// ErrSpawnMarkFailed refuses a host whose hello advertises -agent-spawn when
+// muster could not record that on its token (ServeConnMarking): the host
+// retries its connection, and nothing it lists is admitted meanwhile.
+var ErrSpawnMarkFailed = errors.New("mirror: muster could not record that this host starts agents (its token's mark); it will be retried on the next connection")
+
+// ServeConnMarking is ServeConn with markSpawned: when the hello advertises
+// that the host starts agents for the chief (a non-empty AgentSpawn), it is
+// called — with THIS connection's own context, BEFORE the welcome, so before
+// any other message of the host is read — to persist that on the token the
+// connection authenticated with (Service.markSpawned). 🔴 IT FAILS CLOSED: an
+// error refuses the connection, so a host is never admitted spawning with an
+// unmarked token. nil marks nothing (a hub with no token store).
+func (h *Hub) ServeConnMarking(ctx context.Context, owner int64, host string, ws *websocket.Conn, markSpawned func(context.Context) error) error {
 	ws.SetReadLimit(MaxFrame)
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -858,6 +874,13 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			if r.Sends != nil {
 				hc.gatedSends[r.Name] = r.Sends(hello) && hello.Interactive
 			}
+		}
+	}
+	if len(hc.agentSpawn) > 0 && markSpawned != nil {
+		if err := markSpawned(ctx); err != nil {
+			h.logger.Printf("mirror: host %s (owner %d) advertises -agent-spawn and its token could not be marked: %v; refused", host, owner, err)
+			refuse(ctx, ws, ErrSpawnMarkFailed)
+			return ErrSpawnMarkFailed
 		}
 	}
 	// 🔴 THE WELCOME IS THE FIRST FRAME THE HOST READS, SO hc IS NOT IN h.hosts

@@ -68,7 +68,19 @@ var bareAccessors = map[string]bool{"TaskTitle": true, "askSource": true, "askSo
 // session named "_scratch_" is typed "_scratch_", so plaining it would send
 // the operator to a session that does not exist. Every display of an
 // attention Source and of a where passes the target as keep.
-var apiTitleNames = map[string]bool{"Source": true, "Focus": true, "Where": true}
+var apiTitleNames = map[string]bool{"Source": true, "Focus": true, "Where": true,
+	// A mirrored session's name as muster names it (names.go mirrorLabel):
+	// its human name, else its window's title and host.
+	"mirrorLabel": true}
+
+// apiLabelBuilders are api functions that write no HTML themselves but BUILD
+// a title another package draws escaped and never plains: their result is
+// the plained text. The ledger scans them as it scans api's hand-written HTML.
+//
+//   - pageSessionLink (pages.go): the label of the session that made a page,
+//     drawn by internal/pages Shell (the owner's session button and the
+//     popover's "Made by") and by renderPageDetail.
+var apiLabelBuilders = map[string]bool{"pageSessionLink": true}
 
 // plainingHelpers are ui functions that apply Title to their name arguments at
 // emit. An argument read passed straight to one counts as covered; each is
@@ -132,6 +144,7 @@ var uiExempt = map[string]exemption{
 	"subagent_cards.go subagentCallOf in.Description":    {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":    {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go terminalNames v.DisplayName":            {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
+	"info_sheet.go InfoSheet.trigger s.Label":            {2, "the ⓘ's accessible name and tooltip (aria-label, title): SessionPlaceSheet builds it around a session name its callers already plained (attentionTitle in internal/api, mirrorViewName here), so a Title here would apply the rule twice (\"applied once\"); the other InfoSheets' labels are muster's own words"},
 	"switcher.go mirrorCodeName m.Label":                 {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
 	"agent_actions.go agentRenameFields a.DisplayName":   {1, whyForm},
 	"switcher_pin.go newSwitcherPin e.agent.DisplayName": {1, whyForm},
@@ -193,7 +206,7 @@ var apiExempt = map[string]exemption{
 	"pages.go Server.renderPagesList p.Title":                  {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
 	"pages.go Server.renderPageDetail p.Title":                 {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
 	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
-	"features.go featureRow f.Description":                     {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
+	"features.go featureSheet f.Description":                   {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
 	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
 	"team_connectors.go Server.renderTeamConnectors sg.Source": {1, "a standing grant's credential source, compared with connectors.SourceApp to pick the App's rows; never drawn"},
 	"officer_ask_context.go officerContextHTML c.Source":       {1, "an officer ask's source MESSAGE (attention.ItemContext.Source, a struct), not a title: its fields are sanitised by attention.Clean and escaped where drawn"},
@@ -229,8 +242,23 @@ func TestTheTitleSinkLedger(t *testing.T) {
 				t.Fatalf("positive control FAILED: %s was not derived as a push-body builder (found %v)", must, bodies)
 			}
 		}
+		// 🔴 POSITIVE CONTROL: every label builder still exists, or the
+		// ledger would silently scan nothing for it.
+		for name := range apiLabelBuilders {
+			found := false
+			for _, f := range apiFiles {
+				for _, d := range f.Decls {
+					if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == name && fn.Body != nil {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("positive control FAILED: label builder %s is in no api file", name)
+			}
+		}
 		checkReads(t, "../api", names, func(fn *ast.FuncDecl) bool {
-			return callsSelector(fn.Body, "html", "EscapeString") || bodies[fn.Name.Name]
+			return callsSelector(fn.Body, "html", "EscapeString") || bodies[fn.Name.Name] || apiLabelBuilders[fn.Name.Name]
 		}, apiExempt)
 	})
 	t.Run("plaining helpers", checkPlainingHelpers)
@@ -254,37 +282,53 @@ func TestTheTitleSinkLedger(t *testing.T) {
 // tmux target's own characters ("_scratch_" → "scratch"). See apiTitleNames.
 func checkWhereKept(t *testing.T) {
 	fset, files := parseDir(t, "../api")
-	kept := 0
+	keptIn := map[string]int{}
 	for name, f := range files {
-		ast.Inspect(f, func(n ast.Node) bool {
-			c, ok := n.(*ast.CallExpr)
-			if !ok || len(c.Args) == 0 {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok || len(c.Args) == 0 {
+					return true
+				}
+				sel, ok := c.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "textplain" {
+					return true
+				}
+				if !namesAWindow(c.Args[0]) {
+					return true
+				}
+				switch sel.Sel.Name {
+				case "TitleKeeping":
+					keptIn[fn.Name.Name]++
+				case "Title":
+					var b strings.Builder
+					_ = printer.Fprint(&b, fset, c)
+					t.Errorf("%s: %s plains a value that can name a mirrored window with Title; use textplain.TitleKeeping with its target", name, b.String())
+				}
 				return true
-			}
-			sel, ok := c.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "textplain" {
-				return true
-			}
-			if !namesAWindow(c.Args[0]) {
-				return true
-			}
-			switch sel.Sel.Name {
-			case "TitleKeeping":
-				kept++
-			case "Title":
-				var b strings.Builder
-				_ = printer.Fprint(&b, fset, c)
-				t.Errorf("%s: %s plains a value that can name a mirrored window with Title; use textplain.TitleKeeping with its target", name, b.String())
-			}
-			return true
-		})
+			})
+		}
 	}
-	// 🔴 POSITIVE CONTROL: the sites this exists for are found.
-	if kept < 6 {
-		t.Fatalf("positive control FAILED: only %d TitleKeeping calls over a window-naming value in ../api; the walk is not measuring", kept)
+	// 🔴 POSITIVE CONTROL: the sites this exists for are found — by NAME, as
+	// the push-body control above derives its builders, not by a count. (It
+	// was "at least 6 sites"; #806 routed the Answered card's and the ask
+	// page's lines through attentionTitle, which keeps the target verbatim
+	// itself, so three call sites became one function's — a count would have
+	// read that consolidation as a broken walk.) attentionTitle is THE naming
+	// rule every attention head, delivery line and ask page title goes
+	// through; attentionPushBody and attentionSummaryItemOf name the window
+	// on a push body and the status bar's summary.
+	for _, must := range []string{"attentionTitle", "attentionPushBody", "attentionSummaryItemOf"} {
+		if keptIn[must] == 0 {
+			t.Fatalf("positive control FAILED: no TitleKeeping over a window-naming value found in %s (found %v); the walk is not measuring", must, keptIn)
+		}
 	}
 }
 
@@ -940,6 +984,55 @@ func write(v *View)       { v.Title = "x" }
 	}
 	if len(got) != len(want) {
 		t.Errorf("walk found %v, want %v (the assignment's LHS must not count as a read)", got, want)
+	}
+	for k, v := range want {
+		if c, ok := got[k]; !ok || c != v {
+			t.Errorf("%s: covered=%v (found=%v), want covered=%v", k, c, ok, v)
+		}
+	}
+}
+
+// TestTheLedgerSeesAPageSessionLabelThatSkipsTheRule: the api walk, with a
+// label builder included, finds the session label pageSessionLink returns —
+// raw (uncovered) when it skips textplain.Title, covered when it applies it —
+// and the stored creator label the same way.
+func TestTheLedgerSeesAPageSessionLabelThatSkipsTheRule(t *testing.T) {
+	src := `package api
+func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (string, string) {
+	if p.Creator.AgentID > 0 { return "", p.Creator.Label }
+	return "", s.mirrorLabel(ctx, e)
+}
+func (s *Server) plainedLink(ctx context.Context, p pages.Page) (string, string) {
+	if p.Creator.AgentID > 0 { return "", textplain.Title(p.Creator.Label) }
+	return "", textplain.Title(s.mirrorLabel(ctx, e))
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for k := range titleNames {
+		names[k] = true
+	}
+	for k := range apiTitleNames {
+		names[k] = true
+	}
+	got := map[string]bool{}
+	for _, r := range titleReads(fset, "x.go", f, names, func(fn *ast.FuncDecl) bool {
+		return apiLabelBuilders[fn.Name.Name] || fn.Name.Name == "plainedLink"
+	}) {
+		got[r.key] = r.covered
+	}
+	want := map[string]bool{
+		"x.go Server.pageSessionLink p.Creator.Label": false,
+		"x.go Server.pageSessionLink s.mirrorLabel":   false,
+		"x.go Server.plainedLink p.Creator.Label":     true,
+		"x.go Server.plainedLink s.mirrorLabel":       true,
+	}
+	if len(got) != len(want) {
+		t.Errorf("walk found %v, want %v", got, want)
 	}
 	for k, v := range want {
 		if c, ok := got[k]; !ok || c != v {

@@ -748,6 +748,8 @@ func TestAMalformedGatewayPortIsRefusedAtBootRatherThanInsideADispatch(t *testin
 	load := func(value string) (config, error) {
 		return loadConfig(func(n string) string {
 			switch n {
+			case envHookToken:
+				return fixtureHookToken
 			case envDatabase:
 				return "postgres://unused"
 			case envAgentProvisioner:

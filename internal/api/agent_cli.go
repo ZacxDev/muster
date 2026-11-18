@@ -36,10 +36,9 @@ const defaultAgentCLIPath = "/agent-cli/muster"
 // 🔴 Gated by requireAgentToken, the SAME middleware as /agent/task* — not the
 // plain hook token. Two reasons, and the second is the load-bearing one:
 //   - only a real provisioned agent has any business pulling this, and
-//   - requireHookToken is ENFORCE-WHEN-SET, so an empty MUSTER_HOOK_TOKEN
-//     leaves a hook-token gate wide open, on the LAN NodePort included. The
-//     routes this binary exists to call are on requireAgentToken, which resolves
-//     a real agent every time; gating the binary more weakly than its callers is
+//   - the hook token is one shared secret held by every hook script; the routes
+//     this binary exists to call are on requireAgentToken, which resolves a real
+//     agent every time, and gating the binary more weakly than its callers is
 //     the asymmetry to avoid.
 //
 // It is a READ of a file baked into the image at build time. Nothing user-

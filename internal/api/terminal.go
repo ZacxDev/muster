@@ -178,7 +178,7 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 		mode = terminalModeReadOnly
 	}
 	s.logger.Printf("agents: terminal %s attached (%s)", a.Name, mode)
-	err = bridgeTerminal(ctx, s.logger, c, readOnly, initial, hasInitial,
+	err = bridgeTerminal(ctx, s.logger, c, "", false, readOnly, initial, hasInitial,
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 			// The open ends at the first output (telemetry.OpenDone).
 			return s.ext.Provisioner.AttachTerminal(ctx, a, readOnly, stdin,
@@ -300,7 +300,11 @@ type attachFunc func(ctx context.Context, stdin io.Reader, stdout io.Writer, res
 // running after its stream is gone. Ending it is attach's own job
 // (Provisioner.AttachTerminal releases it before returning), so this function
 // waits for attach to return rather than abandoning it.
-func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Conn, readOnly bool, initial provision.TermSize, hasInitial bool, attach attachFunc) error {
+//
+// host is the mirrored computer a refusal is worded for (mirror.PlainWords),
+// "" for an agent's terminal; setup is whether the viewer is an admin, the
+// only one whose error frame carries the exact error (terminalErrorWords).
+func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Conn, host string, setup, readOnly bool, initial provision.TermSize, hasInitial bool, attach attachFunc) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	// sockCtx is what the SOCKET's own reads and pings run on: ended with the
@@ -416,10 +420,11 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 		if err != nil {
 			// reason is the closed word the page reports a disconnect by
 			// (mirror.Reason; open_trace.go), beside the words it shows.
-			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": terminalErrorText(err), "reason": mirror.Reason(err)})
+			msg, detail := terminalErrorWords(err, host, setup)
+			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg, "detail": detail, "reason": mirror.Reason(err)})
 			_ = c.Close(websocket.StatusInternalError, "terminal refused")
 		} else {
-			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "exit", "message": "the terminal's session client exited"})
+			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "exit", "message": "The terminal closed."})
 			_ = c.Close(websocket.StatusNormalClosure, "terminal exited")
 		}
 	}
@@ -440,6 +445,31 @@ func terminalErrorText(err error) string {
 	}
 	return "the terminal ended with an error: " + err.Error()
 }
+
+// terminalErrorWords is an error frame's two texts: the plain line the page
+// shows, and the exact error behind its ⓘ. A MIRRORED session's (host the
+// window's computer, not "") end is said plainly — a refusal by
+// mirror.PlainWords, anything else as MirrorTerminalEndedPlain — and its
+// exact error is the detail only when setup (an admin: ui.Features.Setup).
+// An agent's terminal (host "") keeps terminalErrorText, its own remedy text,
+// as the line.
+func terminalErrorWords(err error, host string, setup bool) (msg, detail string) {
+	if host == "" {
+		return terminalErrorText(err), ""
+	}
+	msg = MirrorTerminalEndedPlain
+	if mirror.IsAttachRefusal(err) {
+		msg = mirror.PlainWords(err, host)
+	}
+	if setup {
+		detail = err.Error()
+	}
+	return msg, detail
+}
+
+// MirrorTerminalEndedPlain is what a mirrored session's Terminal view that
+// ended on an error it has no words for says; the error itself is its ⓘ.
+const MirrorTerminalEndedPlain = "The terminal stopped unexpectedly. Reconnect to carry on."
 
 // shutdownFrame tells a socket's page that muster is shutting down — an error
 // frame with reason "shutdown" — and closes it as going away. The stream's own

@@ -21,10 +21,16 @@ import { Page } from '@playwright/test';
 
 export type Title = { where: string; name: string; code: string; session?: string; source?: string; nameable: boolean };
 
-// A bare codename title: muster's fallback for a window, its host label (or
-// tmux session) and window index, qualified by host when it repeats
-// (`otter:1`, `otter:1 · laptop`; docs/mirroring.md).
+// A bare codename title, as muster drew its fallback for a window before
+// names dropped tmux's window index: its host label (or tmux session) and
+// window index, qualified by host when it repeats (`otter:1`, `otter:1 ·
+// laptop`; docs/mirroring.md). Today's fallback is the codename WITHOUT the
+// index (`otter`, `otter · window 2`): bareCodenames catches that by state.
 export const CODENAME_TITLE = /^[\w.-]+:\d+(?: · .+)?$/;
+
+// plainCode is a codename as muster names a window by it: without tmux's
+// window index (internal/mirror PlainCode: `otter:1` → `otter`).
+const plainCode = (code: string) => code.replace(/^(.+):\d+$/, '$1');
 
 // Passed to page.evaluate, so it must stay self-contained.
 export function collectSessionTitles(): Title[] {
@@ -55,7 +61,7 @@ export function bareCodenames(titles: Title[]): Title[] {
   return titles.filter((t) =>
     t.nameable
       ? CODENAME_TITLE.test(t.name) ||
-        (t.code !== '' && (t.name === t.code || t.name.startsWith(t.code + ' · '))) ||
+        (t.code !== '' && [t.code, plainCode(t.code)].some((c) => t.name === c || t.name.startsWith(c + ' · '))) ||
         (t.where === 'header' && (!t.source || t.source === 'fallback'))
       : !!t.session && (t.name === t.session || t.name.startsWith(t.session + ':')),
   );
@@ -68,6 +74,8 @@ const FLAGGED: Title[] = [
   { where: 'sidebar', name: 'zz9:1', code: '', nameable: true }, // the words alone
   { where: 'switcher', name: 'Zz nine', code: 'Zz nine', nameable: true }, // the name IS the codename
   { where: 'sidebar', name: 'zz9 · far', code: 'zz9', nameable: true }, // the codename, qualified
+  { where: 'sidebar', name: 'zz9', code: 'zz9:1', nameable: true }, // the codename without its index
+  { where: 'switcher', name: 'zz9 · window 2', code: 'zz9:2', nameable: true }, // the same, told apart by window
   { where: 'header', name: 'Zz the nine', code: '', source: '', nameable: true }, // a header with no name source
   { where: 'sidebar', name: 'zz9:1', code: 'zz9:1', session: 'zz9', nameable: false }, // a shell titled by its raw session
 ];

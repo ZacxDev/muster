@@ -69,7 +69,7 @@ func shape(t *testing.T, h string) string {
 				}
 			}
 			n := attr(count, "data-tool-group-count")
-			if n != fmt.Sprint(len(rows)) || text(count) != n+" tool calls" {
+			if n != fmt.Sprint(len(rows)) || text(count) != n+" steps" {
 				t.Fatalf("a group's summary says %q (%q) over %d rows:\n%s", n, text(count), len(rows), h)
 			}
 			out = append(out, fmt.Sprintf("G%d[%s](%s)", len(rows), attr(c, "data-tool-status"), strings.Join(rows, ",")))
@@ -295,7 +295,7 @@ func TestToolGroupShellIsTheServersMarkup(t *testing.T) {
 		}
 	}
 	// The label the script writes is the server's.
-	if !strings.Contains(js, "' tool calls'") || toolGroupLabel(3) != "3 tool calls" {
+	if !strings.Contains(js, `rows.length + " steps"`) || toolGroupLabel(3) != "3 steps" {
 		t.Error("the script's count label and toolGroupLabel disagree")
 	}
 }

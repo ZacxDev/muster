@@ -120,7 +120,7 @@ func TestTheQueueIsNewestFirstAcrossSources(t *testing.T) {
 		t.Fatalf("the Ask list draws the reply draft: %s", page)
 	}
 	at := -1
-	for _, k := range []string{`id="` + attentionAskKey(newest) + `"`, `data-asks-badge="question"`, `id="` + attentionAskKey(old) + `"`,
+	for _, k := range []string{`id="` + attentionAskKey(newest) + `"`, `id="` + attentionAskKey(old) + `"`,
 		`id="` + sessionKey("ws", "main", "@1") + `"`, `data-asks-badge="waiting"`} {
 		i := strings.Index(page, k)
 		if i <= at {
@@ -167,7 +167,7 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 	}
 	page := f.page(t, "/attention/items")
 	for _, want := range []string{"Bash: npm publish --tag next", `data-attention-detail>Tests pass. Publishing [31mnow [0m.</span>`,
-		`data-attention-focus>Publish the CLI release</span>`, `data-attention-source>tmux main:1 @ ws</span>`} {
+		`data-attention-focus>Publish the CLI release</span>`, `data-attention-source>on ws</span>`, `data-info-code="">tmux main:1 @ ws</code>`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the page lacks %q: %s", want, page)
 		}

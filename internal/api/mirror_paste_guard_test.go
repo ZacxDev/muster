@@ -84,8 +84,8 @@ func TestAHostsGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) {
 		{Why: "Not sent: Hermes runs in this pane. Type it in the terminal.", Refusal: "hermes"},
 	} {
 		fm.v2.pasteErr = pr
-		if code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, cookie, "", form); code != http.StatusBadGateway || body != "mirror: the host refused the message: "+pr.Why {
-			t.Errorf("a refusal that is not the guard's (kind %q): %d %q; want the generic 502 with the host's reason after the prefix", pr.Refusal, code, body)
+		if code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, cookie, "", form); code != http.StatusBadGateway || body != pr.Why {
+			t.Errorf("a refusal that is not the guard's (kind %q): %d %q; want the generic 502 with the host's own reason, no \"mirror:\" prefix", pr.Refusal, code, body)
 		}
 		if loc := nav(); !strings.HasSuffix(loc, "notice=failed") {
 			t.Errorf("a refusal that is not the guard's (kind %q), without script: %q, want notice=failed", pr.Refusal, loc)

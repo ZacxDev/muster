@@ -167,7 +167,7 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 		if status == "" {
 			status = "unknown"
 		}
-		ls := liveSession{sub: focus.MirrorSubject(key), kind: "mirror", name: fi.mirrorName(e).Text,
+		ls := liveSession{sub: focus.MirrorSubject(key), kind: "mirror", name: codeName(fi.mirrorName(e), e),
 			host: e.Host, where: e.Where(), repo: e.Repo, githubRepo: e.GitHubRepo, status: status, activeAt: at}
 		if rt, ok := e.Spec(); ok {
 			ls.runtime = rt.Name
@@ -396,7 +396,7 @@ func matchPRHints(mentions []prroute.Mention, branches []string, rows []plugins.
 			}
 			i = len(out)
 			at[r.ClaudeSession] = i
-			out = append(out, plugins.SessionHint{ID: focus.MirrorSubject(r.ClaudeSession).String(), Name: e.DisplayTitle(),
+			out = append(out, plugins.SessionHint{ID: focus.MirrorSubject(r.ClaudeSession).String(), Name: e.CodeTitle(),
 				Host: e.Host, Where: e.Where(), LastActive: e.ActiveAt()})
 		}
 		if !slices.Contains(out[i].PRs, named) && len(out[i].PRs) < plugins.MaxHintPRs {
@@ -432,7 +432,7 @@ func (s *Server) repoHints(ctx context.Context, text string) []plugins.SessionHi
 	var out []plugins.SessionHint
 	for _, mt := range focus.MatchRepos(text, metas, hintMinTerms, plugins.MaxHintSessions) {
 		e := entries[mt.Subject]
-		out = append(out, plugins.SessionHint{ID: mt.Subject.String(), Name: s.mirrorName(ctx, e).Text, Host: e.Host,
+		out = append(out, plugins.SessionHint{ID: mt.Subject.String(), Name: codeName(s.mirrorName(ctx, e), e), Host: e.Host,
 			Where: e.Where(), Repo: e.Repo, ByRepo: true, LastActive: e.ActiveAt()})
 	}
 	return out

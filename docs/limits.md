@@ -1,5 +1,35 @@
 # Limits, stated plainly
 
+## At a glance
+
+The limits most people meet first. Running one replica and an interactive
+mirror being a shell on its host are under [Deployment](#deployment) and
+[Mirroring](#mirroring).
+
+- **Linux.** No Windows. macOS hosts are experimental: see
+  [Mirroring](#mirroring).
+- **muster assumes sessions run without permission prompts.** Start your own
+  Claude Code sessions in `bypassPermissions` or auto mode. The agents a host
+  starts for your chief start in their normal permission mode unless that
+  host opts in with `-agent-spawn-skip-permissions`
+  ([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)),
+  and owner-authority calls from such a host need your phone
+  ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)).
+  A Claude Code permission prompt that does appear is answered in the Terminal
+  view: the chat view refuses to type into a waiting prompt, and there is no
+  one-tap approve ([sending-and-step-up.md](sending-and-step-up.md)).
+- **Codex and Gemini CLI get no waiting push** and no ask tool: they are
+  terminal views. The message box sends to opencode only on an opted-in host
+  ([mirroring.md](mirroring.md#sending-to-opencode)).
+- **It needs Docker on one machine and tmux on every machine**, and Tailscale
+  for your phone and other machines; what each machine needs is checked by
+  [INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine). muster sees
+  only sessions inside tmux.
+- **It is a PWA, not a native app.** On iOS, install it to the Home Screen
+  before it can receive push.
+- **Agent dispatch is opt-in and only lightly proven.** It needs Kubernetes:
+  the Helm chart in `charts/muster` installs it ([kubernetes.md](kubernetes.md)).
+
 ## Deployment
 
 - **Run one replica.** `internal/db` holds no lease, so the daily retention pass,

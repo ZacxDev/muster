@@ -132,7 +132,6 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /health': 'JSON',
   'GET /readyz': 'JSON',
   'GET /manifest.webmanifest': 'JSON',
-  'GET /metrics': 'Prometheus text',
   'GET /mirror/connect': 'the mirror host tunnel',
   'GET /mirror/host': 'JSON (a machine\'s own connection state, for muster doctor)',
   'GET /mirror/terminal/send': 'a redirect back to the view',
@@ -166,8 +165,9 @@ const NOT_A_PAGE: Record<string, string> = {
   // here has: pages.spec.ts measures them (its own server, the same bar).
   'GET /pages': 'measured in pages.spec.ts (the Pages screen)',
   'GET /pages/{id}': 'measured in pages.spec.ts (one page)',
-  'GET /pages/{id}/preview': 'measured in pages.spec.ts (the owner\'s preview shell)',
-  'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the preview frames',
+  'GET /pages/{id}/view': 'measured in pages.spec.ts (the owner\'s own view: its shell)',
+  'GET /pages/{id}/preview': 'a redirect to /pages/{id}/view, the view\'s former address (no document of its own)',
+  'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the owner\'s view frames',
   'GET /pages/{id}/card': 'a page card fragment the chat\'s live stream fetches and inserts (no document of its own)',
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',
@@ -752,6 +752,7 @@ test.describe('public pages in gotrue mode', () => {
   test.beforeAll(async () => {
     gserver = await startServer(versionA, gport, {
       MUSTER_AUTH_MODE: 'gotrue',
+      MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
       MUSTER_GOTRUE_URL: 'http://127.0.0.1:9',
       MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
       MUSTER_BROWSER_PORT: String(gbrowser),
@@ -806,6 +807,7 @@ test.describe('signed-in pages in gotrue mode', () => {
     execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
     sserver = await startServer(versionA, clsSignedMainPort, {
       MUSTER_AUTH_MODE: 'gotrue',
+      MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
       MUSTER_GOTRUE_URL: signedGotrue,
       MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
       MUSTER_BROWSER_PORT: String(clsSignedBrowserPort),

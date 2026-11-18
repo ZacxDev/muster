@@ -135,7 +135,6 @@ GET /health
 GET /invite
 GET /login
 GET /manifest.webmanifest
-GET /metrics
 GET /mirror/connect
 GET /mirror/host
 GET /mirror/terminal
@@ -162,6 +161,7 @@ GET /pages/{id}
 GET /pages/{id}/card
 GET /pages/{id}/preview
 GET /pages/{id}/versions/{v}/content
+GET /pages/{id}/view
 GET /plugin/v1/drafts/checks
 GET /plugin/v1/pair/{request_id}
 GET /plugin/v1/self
@@ -351,6 +351,8 @@ POST /pages/{id}/rollback
 POST /pages/{id}/share
 POST /pages/{id}/share/revoke
 POST /pages/{id}/share/rotate
+POST /pages/{id}/versions/{v}/submit
+POST /pages/{id}/versions/{v}/upload
 POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check

@@ -193,7 +193,7 @@ test.describe('phone 390×844 touch', () => {
     const dockRecent = await rows(page).evaluateAll((es) => es.map((e) => e.getAttribute('href')));
     expect(dockRecent, "the dock's Recent is the bar's, then the rest").toEqual([...barRecent, ...more]);
     await expect(dock(page).locator('[data-dock-tab="recent"] [data-dock-count]')).toHaveText(String(dockRecent.length));
-    await expect(rows(page).first().locator('[data-dock-label]')).toHaveText(sess(2) + ':1');
+    await expect(rows(page).first().locator('[data-dock-label]')).toHaveText(sess(2));
     await expect(rows(page).first().locator('[data-dock-host]')).toHaveText(rig.host);
     for (const h of await rows(page).evaluateAll((es) => es.map((e) => (e as HTMLElement).offsetHeight))) expect(h, "a row is at least 56px").toBeGreaterThanOrEqual(56);
 
@@ -214,7 +214,7 @@ test.describe('phone 390×844 touch', () => {
     await expect(dock(page).locator('[data-dock-tab="all"]')).toBeFocused();
     await expect(page.locator('#session-switcher')).toHaveAttribute('data-switcher-view', 'all');
     // All draws the page's own window current, not a link.
-    await expect(dock(page).locator('#dock-list span[data-dock-row][aria-current="page"] [data-dock-label]')).toHaveText(OWN + ':1');
+    await expect(dock(page).locator('#dock-list span[data-dock-row][aria-current="page"] [data-dock-label]')).toHaveText(OWN);
     await page.keyboard.press('Home');
     await expect(dock(page).locator('[data-dock-tab="recent"]')).toBeFocused();
 
@@ -377,7 +377,7 @@ test.describe('phone 390×844 touch', () => {
     await toggle(page).tap();
     await expect.poll(() => dockOpen(page)).toBe(true);
     await dock(page).locator('[data-dock-tab="all"]').tap();
-    const row = rows(page).filter({ has: page.locator('[data-dock-label]', { hasText: sess(3) + ':' }) });
+    const row = rows(page).filter({ has: page.locator('[data-dock-label]', { hasText: new RegExp('^' + sess(3) + '$') }) });
     await expect(row).toHaveCount(1);
     await Promise.all([page.waitForURL((u) => u.searchParams.get('session') === sess(3)), row.tap()]);
     expect(await page.evaluate(() => history.length), 'a row tap adds exactly one entry').toBe(n1 + 1);
@@ -472,7 +472,7 @@ test.describe('phone 390×844 touch', () => {
       await fl.locator('#switcher-toggle').tap();
       await expect.poll(() => dockOpen(page)).toBe(true);
       await dock(page).locator('[data-dock-tab="all"]').tap();
-      const row = rows(page).filter({ has: page.locator('[data-dock-label]', { hasText: sess(6) + ':' }) });
+      const row = rows(page).filter({ has: page.locator('[data-dock-label]', { hasText: new RegExp('^' + sess(6) + '$') }) });
       await Promise.all([page.waitForURL((u) => u.searchParams.get('session') === sess(6)), row.tap()]);
       await expect(page.locator('#mv-status')).toHaveText('Live');
       expect(await page.evaluate(() => history.length), `${from}: one entry`).toBe(n0 + 1);
@@ -689,12 +689,12 @@ test.describe('phone 390×844 touch', () => {
     // A NAME.
     await filter(page).tap();
     await page.keyboard.type('dk07');
-    await expect.poll(labels, 'by name').toEqual([sess(7) + ':1']);
+    await expect.poll(labels, 'by name').toEqual([sess(7)]);
     await expect(clearBtn(page)).toBeVisible();
     expect((await counts()).all, 'All counts its matches').toBe(1);
     // A TMUX SESSION, shown by a codename: found by the session alone.
     await filter(page).fill(MAPPED);
-    await expect.poll(labels, 'by tmux session').toEqual([CODENAME + ':1']);
+    await expect.poll(labels, 'by tmux session').toEqual([CODENAME]);
     expect((await labels()).some((l) => l.includes(MAPPED)), 'the label does not spell the session').toBe(false);
     // A DISPLAY NAME: the agent's title, not its codename.
     await filter(page).fill('dock threads');
@@ -706,7 +706,7 @@ test.describe('phone 390×844 touch', () => {
     // …and "cluster" every dispatched agent and no window.
     await filter(page).fill('cluster');
     await expect.poll(async () => (await labels()).includes('Dock threads'), 'by the agents’ host').toBe(true);
-    expect((await labels()).some((l) => /^dk\d\d:1$/.test(l) || l === CODENAME + ':1'), 'no window is on the cluster').toBe(false);
+    expect((await labels()).some((l) => /^dk\d\d$/.test(l) || l === CODENAME), 'no window is on the cluster').toBe(false);
     expect((await counts()).all).toBe(await rows(page).count());
 
     // THE COUNTS, per tab: each tab's count is its own rows under the filter.
@@ -969,7 +969,7 @@ test.describe('phone 390×844 touch, back/forward cache on', () => {
       await fresh();
       await toggle(page).tap();
       await expect.poll(() => dockOpen(page)).toBe(true);
-      const row = rows(page).filter({ has: page.locator('[data-dock-label]', { hasText: sess(2) + ':' }) });
+      const row = rows(page).filter({ has: page.locator('[data-dock-label]', { hasText: new RegExp('^' + sess(2) + '$') }) });
       await Promise.all([page.waitForURL((u) => u.searchParams.get('session') === sess(2)), row.tap()]);
       expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem('dock-at-hide')))!), 'stored in the cache with the dock shut').toEqual({ open: false, persisted: true });
       await page.goBack({ waitUntil: 'commit' });

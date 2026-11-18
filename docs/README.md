@@ -1,8 +1,15 @@
 # muster documentation
 
-Start with the [project README](../README.md) for the pitch and the two ways to install.
-[comparison.md](comparison.md) sets muster beside other ways to reach coding agents from a phone.
-Words muster uses (hub, mirrored session, Rendered view, step-up, chief, officer, …): [glossary.md](glossary.md).
+The [project README](../README.md) is the front door: what muster is, the quick
+start and the install options. This page is the index of everything else.
+
+- New here? [overview.md](overview.md) is the long version of the README: what
+  you get, notifications, the core and the optional features, muster beside
+  Remote Control, and the limits.
+- [comparison.md](comparison.md) sets muster beside other ways to reach coding
+  agents from a phone.
+- The words muster uses (hub, mirrored session, Rendered view, step-up, chief,
+  officer, …): [glossary.md](glossary.md).
 
 ## Set it up: the core first, then one feature at a time
 
@@ -36,11 +43,14 @@ it off. The full list of features, with every `.env` line, is
 
 ## Every document
 
+**Start here**
+
+- [overview.md](overview.md) — the long version of the README: what you get, notifications, core vs optional, muster vs Remote Control, the limits, the name
+
 **Using it**
 
 - [onboarding.md](onboarding.md) — set muster up with one prompt to your coding agent ([INSTALL.md](../INSTALL.md) is the guide it follows)
 - [glossary.md](glossary.md) — the words these documents use, each linked to its page
-
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
@@ -64,7 +74,7 @@ it off. The full list of features, with every `.env` line, is
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
 - [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
 - [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
-- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: keys, handle, peers, the first message, troubleshooting
+- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: what muster needs, and a pointer to the plugin's own repository (setup, pairing, troubleshooting)
 - [officers-builtin.md](officers-builtin.md) — **start here for officers**: standing Claude Code agents with a charter and a queue, made on the Officers page (New officer, templates, Shadow then Live) on muster's own built-in backend; how they work, and the `MUSTER_OFFICERS`, CLI and admin-API reference
 - [officers.md](officers.md) — the officer reference: the HQ backend, and what every officer's instances get (pods, network, runner image, repositories, tools, tiers, the LLM proxy)
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
@@ -82,6 +92,12 @@ it off. The full list of features, with every `.env` line, is
 - [cli.md](cli.md) — the `muster` CLI and the other binaries
 - [schema.md](schema.md) — tables, migrations, row-level security, restore and rollback
 
+**Building on it**
+
+- [ecosystem.md](ecosystem.md) — what you can build on muster (plugins, officers, connectors, the MCP tools, the API), the list of published plugins, and how to add yours
+- [plugins-quickstart.md](plugins-quickstart.md) — build a working plugin in about 15 minutes: turn plugins on, mint or pair a token, post a message, approve the draft, claim it, report the result
+- [officer-plugin-recipe.md](officer-plugin-recipe.md) — a worked example: a support inbox officer extended by a plugin, from its charter to the replies it sends
+
 **Working on it**
 
 - [development.md](development.md) — run muster from source against a throwaway database
@@ -98,10 +114,18 @@ it off. The full list of features, with every `.env` line, is
 - [design/web-server-switcher.md](design/web-server-switcher.md) — implemented: the web app's server switcher (a per-origin list, switching by navigation), and what it can and cannot match of the Android app's
 - [design/managed-network.md](design/managed-network.md) — proposed: a managed muster network as an alternative to Tailscale — a blind SNI relay, the server's own certificate, one name per server, Link device by a code the phone shows and the owner's screen's nonce, one free device and a paid tier
 - [design/managed-network-phase0.md](design/managed-network-phase0.md) — results: the managed network's phase-0 documentation spikes (DNS provider limits and credential scoping, the CT aggregator's terms, the GeoIP database's licence)
+- [design/boxlite-runtime.md](design/boxlite-runtime.md) — proposed: BoxLite microVMs as a runtime — agents started in the user's BoxLite account by a new provisioner driver, or a cloud computer that joins as one of the user's machines (recommended first)
 - [design/team-sharing.md](design/team-sharing.md) — proposed: teams on one server sharing sessions, officers, tasks and a chief, private by default under row-level security
 - [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
 - [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
 - [design/fleet-metrics.md](design/fleet-metrics.md) — saved queries: the baseline metrics for the chief's fleet work (owner wait on a stop, stops resolved without the owner, CI waits, done sessions left idle, the chief's tokens per day), each parameterised on owner and window
-- [../CONTRIBUTING.md](../CONTRIBUTING.md)
+
+**The project**
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — setting up, the tests and gates, the leak gate, pull requests
+- [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) — the Contributor Covenant, and how to report a problem privately
+- [SECURITY.md](../SECURITY.md) — supported versions, and reporting a vulnerability privately
+- [AGENTS.md](../AGENTS.md) — where a coding agent working on this repository finds each subject
+- [LICENSE](../LICENSE) — MIT

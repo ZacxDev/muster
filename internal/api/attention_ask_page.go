@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
-	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -95,14 +94,6 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		return
 	}
 	esc := html.EscapeString
-	source := textplain.TitleKeeping(it.Source, it.target)
-	// A notice (attention.KindNotice) is drawn as one: no options, no answer
-	// box, only its session and Dismiss.
-	notice := a.Kind == attention.KindNotice
-	verb, heading, dismiss := "asks", source+" is asking", "Dismiss without answering"
-	if notice {
-		verb, heading, dismiss = "notice", source+noticePushTitleSuffix, "Dismiss"
-	}
 	// THE SAME CARD AS THE FEED'S, EXPANDED (asks_feed.go, ui/asks_card.go):
 	// its badge and who, the question, the context and media slots, the
 	// controls, and its footer — View in session, the task, Dismiss — at its
@@ -110,6 +101,20 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	slot := []attentionItem{it}
 	s.withFocus(r.Context(), slot)
 	kind, label := askFeedBadge(slot[0])
+	// WHO ASKS is named as the feed's card names it (attentionTitle): the
+	// session's name — never its tmux address, which is the card's ⓘ
+	// (asksCardContextSlot) — and on which computer.
+	source, place, _ := attentionTitle(slot[0])
+	// A notice (attention.KindNotice) is drawn as one: no options, no answer
+	// box, only its session and Dismiss.
+	notice := a.Kind == attention.KindNotice
+	verb, heading, dismiss := "asks", source+" is asking", "Dismiss without answering"
+	if notice {
+		verb, heading, dismiss = "notice", source+noticePushTitleSuffix, "Dismiss"
+	}
+	if place != "" && place != source {
+		verb += " · " + esc(place)
+	}
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
@@ -194,7 +199,10 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		}
 		if a.Status == attention.Answered {
-			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target), it.proposalCard)
+			// The session in words (attentionTitle), as the card's head names
+			// it; its exact target is the card's ⓘ.
+			who, _, _ := attentionTitle(it)
+			text, _ := answerDeliveryText(a, who, it.proposalCard)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery>` + esc(text) + `</p>
 `)
 		}
@@ -280,7 +288,7 @@ const askPageScript = `<script>
 
 // answerMic is an answer box's microphone: the real one (button, for the box
 // input, reporting into note), or — when the server has no dictation — the
-// muted one linking to its Features row, id button+"-off". The ask page and
+// muted one linking to its Features ⓘ sheet, id button+"-off". The ask page and
 // every Asks answer box draw it, so the two cannot differ.
 func answerMic(dictate string, off bool, input, note, button string) string {
 	if dictate == "" && off {

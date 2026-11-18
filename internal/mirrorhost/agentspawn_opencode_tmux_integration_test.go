@@ -135,6 +135,8 @@ func (r *ocRig) windows(t *testing.T) string {
 // id derived from the dispatch; and the fake saw create < bind < prompt.
 func TestTmuxASpawnedOpenCodeRunsItsModelAndGetsThePromptAfterTheBind(t *testing.T) {
 	r := newOCRig(t)
+	// The launcher's argv below ends in --auto: -agent-spawn-skip-permissions (opt-in).
+	r.c.cfg.AgentSpawn.SkipPermissionPrompts = true
 	prompts := []string{" a;b", " tail;", ` \;`, " $(id) `id`", ` 'single' "double"`, "\n-leading dash\n", "\nlead and trail\n\n",
 		" " + strings.Repeat("x", 8<<10-len(mirror.SpawnPreface)-1)}
 	for i, tail := range prompts {

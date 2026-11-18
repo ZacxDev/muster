@@ -176,17 +176,18 @@ for (const vp of [
     // per-window registration this host draws TWO entries (one per session),
     // so the count of four fails there — and the two windows that are not
     // their session's active one have no entry to open at all.
-    test('every window is a row of its own, named <codename>:<index>, most recently active first', async ({ page }) => {
+    test('every window is a row of its own, named <codename> · window <index>, most recently active first', async ({ page }) => {
       await openList(page, 4);
       const eleven = cardOf(page, viewPath(elevenWin));
       const eight = cardOf(page, viewPath(eightWin));
       const shell = cardOf(page, termPath(shellWin));
       const solo = cardOf(page, termPath(soloWin));
 
-      // Named by codename and the window's OWN index (the row's text, and
-      // its title: the whole label); a session with no codename is
-      // <session>:<index>.
-      for (const [c, label] of [[eleven, 'Gold:11'], [eight, 'Gold:8'], [shell, 'Gold:1'], [solo, 'solo:3']] as const) {
+      // Named by codename and, as three windows share it, the window's OWN
+      // index in words ("Gold · window 11": the row's text and its title) —
+      // never tmux's "Gold:11"; a session with no codename is its session's
+      // name.
+      for (const [c, label] of [[eleven, 'Gold · window 11'], [eight, 'Gold · window 8'], [shell, 'Gold · window 1'], [solo, 'solo']] as const) {
         await expect(c).toHaveText(label);
         await expect(c).toHaveAttribute('title', label);
       }
@@ -206,7 +207,7 @@ for (const vp of [
 
       // One flat list, most recently active first — two windows of ONE session
       // sit either side of another session's.
-      expect(await names(page)).toEqual(['Gold:11', 'solo:3', 'Gold:8', 'Gold:1']);
+      expect(await names(page)).toEqual(['Gold · window 11', 'solo', 'Gold · window 8', 'Gold · window 1']);
 
       await noHorizontalScroll(page);
       // ⚠ THE LIST REFRESHES ITSELF UNDER THE TEST (the agents' SSE events,
@@ -235,7 +236,7 @@ for (const vp of [
       // element), and another closes (its row goes).
       const id = await eleven.getAttribute('id');
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin]);
-      await expect(eleven, `the row follows the renumbering (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
+      await expect(eleven, `the row follows the renumbering (log:\n${mirrorLog})`).toHaveText('Gold · window 2', { timeout: 20_000 });
       expect(await eleven.getAttribute('id'), 'a renumbered window is the SAME row: its address is the window id, not the index').toBe(id);
       writeWindows([eightWin, { ...elevenWin, index: 2 }, soloWin]);
       await expect(cards(page)).toHaveCount(3, { timeout: 20_000 });
@@ -249,12 +250,15 @@ for (const vp of [
       await cardOf(page, viewPath(elevenWin)).click();
       await page.waitForURL((u) => u.pathname === '/mirror/view');
       expect(new URL(page.url()).searchParams.get('window'), 'opened by the window id').toBe('@9');
-      await expect(page.locator('header h1')).toContainText('Gold:11');
-      // The raw tmux name is the title's tooltip and in its full-title popover,
-      // no longer drawn beside it (the header's room is the session's tags).
-      await expect(page.locator('header h1 [data-mirror-name]')).toHaveAttribute('title', 'tmux session scratch2');
+      await expect(page.locator('header h1')).toContainText('Gold · window 11');
+      // The raw tmux name is not drawn beside it (the header's room is the
+      // session's tags), nor is it a tooltip (the header's ⓘ holds it).
+      await expect(page.locator('header h1 [data-mirror-name]')).not.toHaveAttribute('title', /tmux session/);
       await expect(page.locator('header [data-mirror-session]')).toHaveCount(0);
-      await expect(page.locator('#mv-title-full')).toContainText('tmux session scratch2');
+      // The full-title popover is the header line in words (no tmux session);
+      // the window's exact target is the header's ⓘ.
+      await expect(page.locator('#mv-title-full')).not.toContainText('tmux');
+      await expect(page.locator('#mv-place [data-info-code]')).toHaveText(/^tmux scratch2:11 @ /);
 
       const log = page.locator('#mv-log');
       await expect(log.locator('[data-bubble="user"]').first()).toContainText('the prompt of window ELEVEN');
@@ -285,7 +289,7 @@ for (const vp of [
       await page.waitForURL((u) => u.pathname === '/mirror/terminal');
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4 mode=rw');
       await expect(page.locator('#term-status')).toHaveText('Connected');
-      await expect(page.locator('header h1')).toContainText('Gold:1');
+      await expect(page.locator('header h1')).toContainText('Gold · window 1');
       await expect(page.locator('#view-rendered'), 'a shell has no rendered view').toHaveCount(0);
 
       await page.locator('#mv-input').fill('ls -la');
@@ -310,14 +314,14 @@ for (const vp of [
       page.on('websocket', (ws) => sockets.push(ws.url()));
       await openList(page, 4);
       const sorted = async () => (await names(page)).sort();
-      expect(await sorted()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      expect(await sorted()).toEqual(['Gold · window 1', 'Gold · window 11', 'Gold · window 8', 'solo']);
       const marked = await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
       expect(marked).toBe(1);
       const twelve: Win = { session: 'scratch2', id: '@12', index: 12, active: false, command: 'zsh', activity: now - 30 };
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin, twelve]);
-      await expect(cardOf(page, viewPath(elevenWin)), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
+      await expect(cardOf(page, viewPath(elevenWin)), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold · window 2', { timeout: 20_000 });
       await expect(cardOf(page, termPath(twelve))).toBeVisible({ timeout: 20_000 });
-      expect(await sorted()).toEqual(['Gold:1', 'Gold:12', 'Gold:2', 'Gold:8', 'solo:3']);
+      expect(await sorted()).toEqual(['Gold · window 1', 'Gold · window 12', 'Gold · window 2', 'Gold · window 8', 'solo']);
       expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
 
       // A hundred rows must not mean a hundred connections: the page opened
@@ -564,7 +568,7 @@ for (const vp of [
         .toContain(`host=${encodeURIComponent(host)}&amp;`);
       await page.goto(origin + '/mirror/view?' + old);
       await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('window') === '@7');
-      await expect(page.locator('header h1')).toContainText('Gold:8');
+      await expect(page.locator('header h1')).toContainText('Gold · window 8');
       await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('the prompt of window EIGHT');
       await page.goto(origin + '/mirror/terminal?' + old);
       await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('window') === '@7');

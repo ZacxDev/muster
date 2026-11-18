@@ -107,11 +107,9 @@ func (s *Server) softDeleteTaskComment(ctx context.Context, taskID, commentID in
 // browser login to get a session cookie. The session-tier twin below
 // (handleNoteCommentDelete) is the human spelling of the same operation.
 //
-// ⚠ requireHookToken is ENFORCE-WHEN-SET (an empty MUSTER_HOOK_TOKEN leaves it
-// open, with a startup warning) — that is the pre-existing, app-wide property of
-// every machine endpoint and is deliberately not special-cased here. So on a
-// server with no hook token this route IS the weaker of the two, which is the
-// opposite of what it was when requireSession authenticated nobody.
+// ⚠ requireHookToken is the shared machine secret: every hook script holds it,
+// and it names no caller. With no MUSTER_HOOK_TOKEN it admits nobody (and the
+// server does not boot).
 //
 // 🔴 STATUS CODES, PINNED (mirroring DELETE /api/tasks/{id}): bad task or comment
 // id → 400; unknown or dismissed task → 404 "task not found"; unknown comment,

@@ -23,7 +23,9 @@ Secrets go in `.env` only.
 
 **Checking a feature is on:** `muster doctor`, and on releases that have it,
 the **Features** page (`/account/features`), list every feature as on, off or
-misconfigured, and say what an off one needs. Many features also log their own
+misconfigured (the page says "Needs setup"); on the page, an admin finds what
+an off one needs — the lines below, to copy — behind its row's ⓘ, and anyone
+else is told to ask their admin. Many features also log their own
 line when muster starts, saying whether they are on and why; each section below
 quotes it where there is one. Read them with
 
@@ -302,8 +304,33 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
      `~/.config/muster-mirror/env` and restart `muster-mirror`. The line is
      yours: install.sh keeps it every time it runs again (INSTALL.md, "Install
-     muster on this machine"). On its first start muster-mirror writes a secret
-     to `~/.config/muster-mirror/mcp-secret` (mode 600).
+     muster on this machine"). How to restart depends on the machine:
+     - **Linux:** `systemctl --user restart muster-mirror`.
+     - **macOS:** run the installer again
+       (`curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh`).
+       A restart is not enough: the launchd service holds a copy of the
+       settings made when the installer last ran, and the installer writes a
+       new one. It also updates muster to the latest release.
+     - **A machine that joined a hub** (macOS, or anywhere you re-run the
+       installer): add `MUSTER_JOIN_URL=<hub>` to the installer's command, as
+       when you installed it (on macOS, `muster doctor` prints the exact
+       command, with the hub's address from this machine's settings). Without it, on a
+       machine with Docker, the installer starts a muster server here at
+       `http://localhost:<port>`; the mirror token it kept from the hub gets
+       a 401 from that new server, so it deletes the token file; it mints a
+       token on the new server; and it rewrites `MUSTER_MIRROR_URL` in
+       `~/.config/muster-mirror/env` to that localhost address. This machine's
+       sessions then show on the new local muster, not on the hub. To go back,
+       mint a new token for this machine on the hub, write it to
+       `~/.config/muster-mirror/token`, and run the installer again with
+       `MUSTER_JOIN_URL`. Without Docker it stops before changing anything.
+     - **Linux without a systemd user session** (WSL, a container): stop the
+       `muster-mirror` you started by hand and start it again the same way
+       (`set -a; . ~/.config/muster-mirror/env; set +a; ~/.local/bin/muster-mirror`).
+
+     On its first start with the endpoint on, muster-mirror writes a secret
+     (mode 600) to a file; [Where the MCP secret is](#where-the-mcp-secret-is),
+     below, says how to find that file.
   2. Register it with Claude Code, for this user:
 
      ```sh
@@ -312,17 +339,51 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
 
      The single quotes matter: Claude Code expands the `${…}` itself, in each
      session.
-  3. Export the secret in the shell tmux starts (`~/.zshrc` or `~/.bashrc`):
+  3. Export the secret in the shell tmux starts (`~/.zshrc` or `~/.bashrc`),
+     with `<path>` the secret's path ([Where the MCP secret is](#where-the-mcp-secret-is)):
 
      ```sh
-     export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret 2>/dev/null)"
+     export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"
      ```
 
-- **Check:** the host's log (`journalctl --user -u muster-mirror` on Linux)
-  says `muster-mirror: MCP endpoint for this host's Claude Code sessions at
-  http://127.0.0.1:47823/mcp`, or `the MCP endpoint is OFF, … <reason>`; in a
-  **new** Claude Code session started in tmux, `/mcp` lists `muster` connected
-  with its tools.
+- **Check:** the host's log (`journalctl --user -u muster-mirror` on Linux,
+  `~/Library/Logs/muster-mirror.log` on macOS) says `muster-mirror: MCP
+  endpoint for this host's Claude Code sessions at http://127.0.0.1:47823/mcp
+  (secret in <path>)`, or `the MCP endpoint is OFF, … <reason>`; in a **new**
+  Claude Code session started in tmux, `/mcp` lists `muster` connected with
+  its tools.
+
+#### Where the MCP secret is
+
+Every call to the endpoint must present muster-mirror's local secret. Its path
+differs by OS, and a settings line can move it, so do not type it: copy it
+from either of these, which both name the file:
+
+- **muster-mirror's start-up log line**, which ends with the path:
+  `muster-mirror: MCP endpoint for this host's Claude Code sessions at
+  http://127.0.0.1:47823/mcp (secret in <path>)`. The log is
+  `journalctl --user -u muster-mirror` on Linux,
+  `~/Library/Logs/muster-mirror.log` on macOS, and the terminal for a
+  `muster-mirror` you started by hand.
+- **`muster doctor`**: its `mcp-endpoint` line ends `(its secret is in
+  <path>)`, and while Claude Code is not registered yet, its
+  `mcp-registration` fix prints the `export` line below with the path
+  already in it.
+
+The log line is the running muster-mirror's own word; the doctor computes the
+same path by the same rule (`MUSTER_MIRROR_MCP_SECRET_FILE` in the settings,
+else muster-mirror's directory under the user config directory).
+
+Then, in the shell tmux starts:
+
+```sh
+export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"
+```
+
+Keep the quotes (the macOS path has a space in it) and add nothing that hides
+an error: a shell that cannot read the file says so each time it starts,
+rather than exporting an empty secret that every session is then refused
+with. opencode's entry names the same file as `{file:<path>}`.
 
 ### Ask cards
 
@@ -574,7 +635,14 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
   MUSTER_GOTRUE_URL=http://<your gotrue>:9999
   MUSTER_GOTRUE_JWT_SECRET=<GoTrue's HS256 secret, 32+ characters>
   MUSTER_BROWSER_PORT=8107
+  MUSTER_DIRECT_CLIENTS=1
   ```
+
+  The last line declares that browsers reach the port directly; this mode
+  refuses to start without a declaration. With `tailscale serve` (below) or
+  another proxy in front, set `MUSTER_TRUSTED_PROXIES` and
+  `MUSTER_CLIENT_IP_HEADER` instead
+  ([configuration.md](configuration.md#client-addresses-behind-a-proxy)).
 
 - **Publish the browser port** with a `docker-compose.override.yml` beside
   `docker-compose.yml`, and point `tailscale serve` at 8107 instead of 8105
@@ -757,10 +825,12 @@ recorded on the Asks page's Nudges tab, nothing is sent.
 ### Plugins
 
 Out-of-process plugins bring another system's messages (an inbox, ClankMail)
-to your chief and send the replies you approve. [plugins.md](plugins.md).
+to your chief and send the replies you approve. [plugins.md](plugins.md); to
+build one, [plugins-quickstart.md](plugins-quickstart.md).
 
-- **Needs a plugin process you run** (this repository has the ClankMail one,
-  `muster-clankmail`), and something to deliver its messages to: the
+- **Needs a plugin process you run** (for ClankMail,
+  [muster-clankmail](https://github.com/ZacxDev/muster-clankmail), extracted
+  from this repository into its own), and something to deliver its messages to: the
   [chief](#chief) through an agent gateway, or an officer the plugin is bound
   to (**Deliver to** `officer:<id>` on `/plugins`), which needs no chief. With
   neither, nothing can deliver: messages queue, and the feature reads
@@ -768,7 +838,10 @@ to your chief and send the replies you approve. [plugins.md](plugins.md).
 - **`.env`:** `MUSTER_PLUGINS=1`. The features below build on it; their
   grammar is in [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `plugins: ENABLED (MUSTER_PLUGINS=1) — …`; `/plugins` (no menu
-  link) mints plugin tokens.
+  link) mints plugin tokens. With no agent gateway the line is instead
+  `plugins: ENABLED (MUSTER_PLUGINS=1) with NO agent gateway (MUSTER_AGENT_GATEWAY): …`:
+  a plugin bound to an officer is delivered, an unbound plugin's messages
+  are stored and stay queued.
 
 ### Plugin viewers
 

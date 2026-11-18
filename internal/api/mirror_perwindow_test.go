@@ -66,10 +66,12 @@ func TestAPerWindowHostsWindowsAreEachACard(t *testing.T) {
 	for _, tc := range []struct {
 		href, title, small, words string
 	}{
-		{ref("scratch2", "@4").TerminalPath(), "Gold:1", "scratch2", "shell scratch2 ws"},
-		{ref("scratch2", "@7").ViewPath(), "Gold:8", "scratch2", "claude code scratch2 ws"},
-		{ref("scratch2", "@9").ViewPath(), "Gold:11", "scratch2", "claude code scratch2 ws"},
-		{ref("solo", "@2").TerminalPath(), "solo:3", "", "opencode solo ws"},
+		// Three windows labelled "Gold:<n>": one plain name, told apart by
+		// their window; an unlabelled window is its session's name.
+		{ref("scratch2", "@4").TerminalPath(), "Gold · window 1", "scratch2", "shell scratch2 ws"},
+		{ref("scratch2", "@7").ViewPath(), "Gold · window 8", "scratch2", "claude code scratch2 ws"},
+		{ref("scratch2", "@9").ViewPath(), "Gold · window 11", "scratch2", "claude code scratch2 ws"},
+		{ref("solo", "@2").TerminalPath(), "solo", "", "opencode solo ws"},
 	} {
 		row := cardFor(t, list, tc.href)
 		if !strings.Contains(row, `title="`+tc.title+`"`) || !strings.Contains(row, `truncate">`+tc.title+`</span>`) {
@@ -161,7 +163,7 @@ func TestAWindowsPagesSocketAndComposerAllNameThatWindow(t *testing.T) {
 	if i := strings.Index(term, "</header>"); i >= 0 {
 		head = term[:i]
 	}
-	if !strings.Contains(head, "Gold:11") || strings.Contains(head, "Gold:8") {
+	if !strings.Contains(head, "window 11") || strings.Contains(head, "window 8") {
 		t.Error("the terminal page is not titled by its own window's label")
 	}
 
@@ -241,7 +243,7 @@ func TestAWindowParameterThatIsNotAWindowIDIsNotFound(t *testing.T) {
 	// Well-formed, not listed: the plugin's refusal, as a 409.
 	fm.v2.pasteErr = mirror.ErrWindowGone
 	code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"scratch2"}, "window": {"@99"}, "text": {"hi"}})
-	if code != http.StatusConflict || !strings.Contains(body, "no longer lists this tmux window") {
+	if code != http.StatusConflict || !strings.Contains(body, "Not sent: ws no longer shows this window. It may have been closed.") {
 		t.Fatalf("a send to a window the host no longer lists: %d %q, want 409 saying so", code, body)
 	}
 }

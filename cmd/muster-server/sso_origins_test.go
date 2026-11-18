@@ -12,6 +12,8 @@ import (
 func loadSSOConfig(origins string) (config, error) {
 	c, err := loadConfig(func(k string) string {
 		switch k {
+		case envHookToken:
+			return fixtureHookToken
 		case envDatabase:
 			return "postgres://x/y"
 		case envStandalone:

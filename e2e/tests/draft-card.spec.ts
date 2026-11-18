@@ -123,7 +123,9 @@ for (const vp of [
       // The data-runes check compares the card's length with the fixture's
       // own, so it shows the whole body arrived but cannot see newlines (a
       // space in place of each would pass it).
-      await expect(card.locator('[data-draft-state]')).toContainText('expires');
+      // The expiry is its own pill, relative ("expires in 1d"), never a UTC stamp.
+      await expect(card.locator('[data-draft-expiry]')).toHaveText(/^expires in \d+[mhd]$/);
+      await expect(card).not.toContainText('UTC');
       const body = card.locator('[data-draft-body]');
       expect((await body.textContent())!.split('\\n').length - 1, 'the reply shows its three newlines').toBe(3);
       await expect(card.locator('[data-draft-text]')).toHaveAttribute('data-runes', String(Array.from(BODY).length));

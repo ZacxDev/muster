@@ -83,7 +83,7 @@ const shapeJS = (root: Element) => {
       const rows = Array.from(body.children).filter((r) => r.hasAttribute('data-tool-row'));
       const count = el.querySelector(':scope > summary [data-tool-group-count]')!;
       const n = count.getAttribute('data-tool-group-count');
-      if (n !== String(rows.length) || count.textContent!.trim() !== `${n} tool calls`) out.push(`BAD-COUNT(${n}/${rows.length})`);
+      if (n !== String(rows.length) || count.textContent!.trim() !== `${n} steps`) out.push(`BAD-COUNT(${n}/${rows.length})`);
       out.push(`G${rows.length}[${el.getAttribute('data-tool-status')}](${rows.map(target).join(',')})`);
     } else if (el.hasAttribute('data-notice-row')) out.push('N');
     else if (el.textContent!.trim()) out.push('T');
@@ -104,7 +104,7 @@ test('history: a run of calls is one row; text and a single call stay where they
   expect(await log.evaluate(shapeJS)).toBe('T ' + WANT);
 
   const g3 = log.locator('[data-tool-group]').first();
-  await expect(g3.locator('summary [data-tool-group-count]')).toHaveText('3 tool calls');
+  await expect(g3.locator('summary [data-tool-group-count]')).toHaveText('3 steps');
   // A closed group hides its rows — and still says one of them failed.
   await expect(g3).not.toHaveAttribute('open', '');
   await expect(g3.locator('[data-tool-row]').first()).toBeHidden();
@@ -371,5 +371,5 @@ test('mirror: a socket that drops and resumes keeps the run in place, with no du
   const rb = log.locator('[data-tool-row]').nth(1);
   await expect(rb.locator('[data-tool-target]')).toHaveText('echo rb');
   await expect(rb).toHaveAttribute('data-tool-status', 'ok');
-  await expect(log.locator('[data-tool-group] > summary [data-tool-group-count]')).toHaveText('3 tool calls');
+  await expect(log.locator('[data-tool-group] > summary [data-tool-group-count]')).toHaveText('3 steps');
 });

@@ -77,7 +77,7 @@ func chatIndexSheet(historyPath, tabsKey string) g.Node {
 // a mirrored host that sends no index, and the chief's page (which no host
 // indexes — it loads the chat's latest messages).
 const (
-	chatIndexPartialMirror = "Only loaded messages shown: this host's muster-mirror does not send the full list."
+	chatIndexPartialMirror = "Only the messages loaded so far are listed: this computer does not send the full list."
 	chatIndexPartialPage   = "Only the messages loaded on this page are listed."
 )
 

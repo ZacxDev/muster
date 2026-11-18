@@ -346,7 +346,7 @@ func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*ht
 	lw := httptest.NewRecorder()
 	st.h.ServeHTTP(lw, login)
 	for _, c := range lw.Result().Cookies() {
-		if c.Value != "" {
+		if c.Value != "" && c.Name == "muster_session" { // not muster_device, the known-device cookie
 			st.cookie = c
 		}
 	}

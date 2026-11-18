@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -335,13 +336,13 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// The host's display label ("mango:1") — or, for a window with none,
 		// "<session>:<index>" — titles the page; the session NAME and the
 		// window ID stay the address (WSPath).
-		DisplayName: e.Title(),
+		DisplayName: e.PlainTitle(),
 		// What tells this entry apart from another host's (or window's) of the
 		// same name — the sidebar row's own qualifier (mirror.Qualified).
 		TitleQualifier: e.Qualifier,
 		RawName:        rawName,
 		BackHref:       ui.HomeLeavingMirrorPath(mirrorRef(e)),
-		Badge:          "Mirrored · " + h.Host,
+		Badge:          ui.MirrorBadgeText(h.Host),
 		BadgeHost:      h.Host,
 		BadgeHostIcon:  s.mirrorHostIcon(r.Context(), h.Host),
 		WSPath:         mirrorRef(e).TerminalWSPath(),
@@ -350,18 +351,20 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// not, regardless.
 		// A team host's: an operator's or a manager's (team sharing 2b.4).
 		ReadOnlyOnly: !h.Interactive || (team && !teamOperatorOn(r)),
-		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
-		// a user can switch to ANY session there, or open a new window — a
-		// shell on the host. The "only listed sessions" rule guards opening an
-		// attach, not what an interactive client does once attached.
-		InteractiveNote: "Live keys type into a tmux client on " + h.Host +
-			": from it you can switch to any tmux session there or open a shell on the host.",
 		// 🔴 STEP-UP: live keys (always on, ui.AgentTerminalPage), and every
 		// send from the composer, need a sign-in from the last stepup.Window.
 		// The page asks to confirm (passkey or password) at the first key once
 		// this has passed; the socket and the send route below refuse a stale
 		// write whatever the page does.
 		StepUp: s.stepUpView(r),
+	}
+	if h.Interactive {
+		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
+		// a user can switch to ANY session there, or open a new window — a
+		// shell on the host. The "only listed sessions" rule guards opening an
+		// attach, not what an interactive client does once attached. Said only
+		// where keys reach the host: a view-only one's are off.
+		v.InteractiveNote = "Typing here goes straight to " + h.Host + ": from here you can reach anything on that computer."
 	}
 	// 🔴 THE COMPOSER TAKES TEXT ONLY ON A HOST THAT ADVERTISED -interactive,
 	// and it does not need the switch above: it is one gated paste per Send into
@@ -372,7 +375,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	// older one, and no Claude Code here).
 	if h.Online {
 		c := ui.ComposerView{SendPath: ui.MirrorTerminalSendPath, Host: h.Host, Session: session, Window: e.Window,
-			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Update muster-mirror to send",
+			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Cannot send here yet",
 			Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 			DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
 			DraftKey: ui.MirrorDraftKey(draftUser(r.Context()), "terminal", h.Host, session, e.Window)}
@@ -390,9 +393,10 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		case team && !teamOperatorOn(r):
 			c.Disabled, c.DisabledPlaceholder = MirrorTeamComposerNote, "Watching a team session"
 		case !h.Interactive:
-			c.Disabled, c.DisabledPlaceholder = ui.MirrorReadOnlyNote, "Read-only host"
+			c.Disabled, c.DisabledPlaceholder, c.DisabledSetting = ui.MirrorReadOnlyNote(h.Host), ui.MirrorReadOnlyPlaceholder, mirror.ViewOnlySetting
 		case !e.CanPaste():
-			c.Disabled = strings.TrimPrefix(mirror.ErrPanePasteUnsupported.Error(), "mirror: ")
+			// Plain words; the host's exact refusal (an upgrade) is the ⓘ's.
+			c.Disabled, c.DisabledDetail = mirror.PlainWords(mirror.ErrPanePasteUnsupported, h.Host), mirror.ErrPanePasteUnsupported.Error()
 		}
 		v.Composer = &c
 	}
@@ -564,7 +568,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		mode = terminalModeReadOnly
 	}
 	s.logger.Printf("mirror: terminal %s/%s%s attached (%s)", host, session, window, mode)
-	err = bridgeTerminal(ctx, s.logger, c, readOnly, initial, hasInitial,
+	err = bridgeTerminal(ctx, s.logger, c, host, authz.IsAdmin(r.Context()), readOnly, initial, hasInitial,
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).

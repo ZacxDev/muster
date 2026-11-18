@@ -207,6 +207,12 @@ type attentionItem struct {
 	// from the same window; the zero Place for none. notifyName adds it after
 	// a human name.
 	at mirror.Place
+	// windowName is the window's plain name as the session lists name it —
+	// mirror.SessionView.DisplayTitle over the whole list (windowDisplayName):
+	// "fern · window 2" when another window of that session also reads
+	// "fern" — set with at; "" for none. attentionTitle heads an unnamed
+	// window's card with it.
+	windowName string
 	// Text is the item's SUBSTANCE in one line or a few: the question; what a
 	// waiting session waits on (its pending action, mirror.Pending.Summary —
 	// sessionWaitingText when its host says nothing); a held AskUserQuestion's
@@ -305,7 +311,7 @@ type attentionItem struct {
 	// built where no server is in reach (a push, attention_list).
 	dictate, sessionLink string
 	// dictateOff: the server has no dictation, so the box draws the muted mic
-	// linking to its Features row (answerMic). Set with dictate.
+	// linking to its Features ⓘ sheet (answerMic). Set with dictate.
 	dictateOff bool
 	// systemAsk: an ask muster raised itself (attention.Asker.System) — a task
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
@@ -463,7 +469,7 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 // is named as no window showing it.
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
 		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
@@ -593,7 +599,7 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 			continue
 		}
 		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.Place(), Text: sessionWaitingText, host: e.Host,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.Place(), windowName: e.DisplayTitle(), Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
@@ -1696,7 +1702,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.
 	b.WriteString(s.draftStepUpHTML(r))
-	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
+	// The Asks page is a page of cards: the wide column on a desktop.
+	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String(), navWide)
 }
 
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
@@ -1873,9 +1880,9 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	dismiss := ""
 	switch it.Kind {
 	case attentionKindAsk:
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		dismiss = askDismissButton(dismissForm, "Dismiss without answering")
 	case attentionKindNotice:
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss" title="Dismiss" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		dismiss = askDismissButton(dismissForm, "Dismiss")
 	}
 	href := ""
 	switch it.Kind {
@@ -1911,7 +1918,15 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
 `)
 	case it.Kind == attentionKindAsk:
-		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss))
+		// THE answer form, the Asks card's own (askAnswerFormHTML): Dismiss
+		// ends its answer row (a session block has no footer).
+		gate := ""
+		if it.stepUpWhy != "" {
+			// A team card answered with a fresh sign-in (teamCardStepUpWhy): it
+			// confirms in place, on the page's dialog (stepUpFormsHTML).
+			gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
+		}
+		b.WriteString(askAnswerFormHTML(it, id, askFormPlace{back: back, attrs: gate + formAttrs, dismiss: dismiss}))
 		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
 	default:
@@ -1923,73 +1938,27 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	return b.String()
 }
 
-// attentionAnswerFormHTML is an ask's answer form.
-//
-// THE COMPACT ANSWER FORM (operator decision: one card must fit a session
-// page's asks block on a phone with no inner scroll). The classes are ui's
-// (the stylesheet scans internal/ui, not this file), drawn here once for both
-// the Asks queue and a session page's block. Tapping an option answers with
-// it, as it always has; the box starts one line and grows as it is typed into
-// (ui.AskFormInputClass, capped), and Answer sends it — nothing typed or
-// dictated is sent before Answer.
-//
-// (The Asks page's card draws its own form: askFeedAnswerFormHTML.)
-func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string) string {
-	esc := html.EscapeString
-	var b strings.Builder
-	gate := ""
-	if it.stepUpWhy != "" {
-		// A team card answered with a fresh sign-in (teamCardStepUpWhy): it
-		// confirms in place, on the page's dialog (stepUpFormsHTML).
-		gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
-	}
-	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + gate + formAttrs + `>
-` + back)
-	if len(it.Options) > 0 {
-		b.WriteString(`<div class="` + ui.AskFormOptionsClass + `">`)
-		for _, o := range it.Options {
-			b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + ui.AskFormOptionClass + `" data-attention-option>` + esc(o) + `</button>`)
-		}
-		b.WriteString("</div>\n")
-	}
-	// 🔴 EVERY ID IS THE ASK'S OWN: the list draws one box per ask, and the
-	// mic finds its box and note by id (ui.DictateControlHTML). The mic's ✓
-	// FILLS the box at the caret; its ↑ fills it and clicks Answer, so Answer
-	// is still the only send (ui/dictate.go). The label is for a
-	// screen reader; the box's placeholder says the same to the eye.
-	// While the mic records, the waveform takes the box's place and the ↑
-	// Answer's (ui.DictateWaveHTML, ui.DictateSendHTML); the ↑ sends by
-	// clicking THIS Answer (its id), never an option's button above it.
-	input := "answer-" + id
-	submit := input + "-submit"
-	box := `<label for="` + input + `" class="sr-only">Your answer</label>
-<div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-		ui.DictateWaveHTML(it.dictate, input+"-dictate") +
-		answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
-` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
-	answer := ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendWide) +
-		`<button type="submit" id="` + submit + `" class="` + ui.AskFormAnswerClass + `">Answer</button>`
-	// Dismiss ends the form's LAST row, beside Answer (attentionItemHTML's
-	// footer rule). It belongs, by form=, to the /cancel form outside this one.
-	b.WriteString(box + `<div class="` + ui.AskFormActionsClass + `">` + answer + dismiss + `</div>
-`)
-	b.WriteString("</form>\n")
-	return b.String()
-}
-
 // attentionHeadHTML is an item card's head: its lines (attentionHeadLines)
 // and, with href, the head is the link to it, ended by a chevron.
+//
+// A head that names a window is followed by its ⓘ (attentionPlaceSheetHTML) —
+// beside the link, never inside it — in one row.
 func attentionHeadHTML(it attentionItem, now time.Time, href string) string {
 	lines := `<span class="` + ui.AsksHeadTextClass + `">` + attentionHeadLines(it, now) + `</span>`
-	if href == "" {
-		return `<div class="` + ui.AsksHeadClass + ` flex-1">` + lines + `</div>`
+	head := `<div class="` + ui.AsksHeadClass + ` flex-1">` + lines + `</div>`
+	if href != "" {
+		head = `<a href="` + html.EscapeString(href) + `" class="` + ui.AsksHeadLinkClass + ` flex-1" data-attention-session>` + lines + ui.AsksChevron + `</a>`
 	}
-	return `<a href="` + html.EscapeString(href) + `" class="` + ui.AsksHeadLinkClass + ` flex-1" data-attention-session>` + lines + ui.AsksChevron + `</a>`
+	if info := attentionPlaceSheetHTML(it, it.Key); info != "" {
+		return `<div class="flex min-w-0 items-center gap-1">` + head + info + `</div>`
+	}
+	return head
 }
 
 // attentionHeadLines is a card head's two lines: the title (attentionTitle) and,
-// muted under it, how long it has waited, the place it is at (the tmux target,
-// small: data-attention-source) and whether its host is offline.
+// muted under it, how long it has waited, where it runs in words ("on atlas":
+// data-attention-source; the tmux target is the card's ⓘ) and whether its
+// host is offline.
 func attentionHeadLines(it attentionItem, now time.Time) string {
 	esc := html.EscapeString
 	title, src, srcIsTitle := attentionTitle(it)
@@ -2022,31 +1991,96 @@ func attentionHeadLines(it attentionItem, now time.Time) string {
 }
 
 // attentionTitle is what an item's head calls it, and the place it shows
-// under that (src, "" for none): the session's HUMAN name when it has one, its
-// place small under it; else a mirrored window's own name (its label, or its
-// tmux address: mirror.Place's Code) with its tmux target and host under it;
-// else its Source itself (an agent, muster, a plugin), and srcIsTitle says the
-// title IS the source.
+// under that (src, "" for none): the session's HUMAN name when it has one,
+// its place under it; else a mirrored window's own name — its codename (its
+// label, or its tmux session: mirror.Place's Code) with tmux's window index
+// dropped (mirror.PlainCode: "fern", never "fern:1") — with its place under
+// it; else its Source itself (an agent, muster, a plugin), and srcIsTitle says
+// the title IS the source.
 //
-// The place is the title rule's (textplain.TitleKeeping: the tmux target kept
-// VERBATIM), cut to start at the target when the window's own label leads it
-// ("Gold:1 · tmux main:1 @ ws" under a title of "Gold:1" is "tmux main:1 @
-// ws"), and keeps anything after the target ("(host offline)").
+// 🔴 A WINDOW'S PLACE IS WORDS, NOT ITS ADDRESS (operator rule:
+// muster's top layer shows no ids). It is "on <host>" (mirror.PlaceWords), and
+// " (host offline)" after it when its host has dropped and only the Source
+// says so; the exact tmux target (it.target) is the card's ⓘ details'
+// (attentionPlaceSheetHTML), never this line's.
+//
+// The title keeps the tmux session's part of a codename VERBATIM
+// (textplain.TitleKeeping): a session named "_scratch_" is typed as
+// "_scratch_", never as the "scratch" a markdown stripper reads.
 func attentionTitle(it attentionItem) (title, src string, srcIsTitle bool) {
-	src = textplain.TitleKeeping(it.Source, it.target)
-	if it.target != "" {
-		if i := strings.Index(src, it.target); i > 0 {
-			src = src[i:]
+	if host := attentionPlaceHost(it); host != "" {
+		src = mirror.PlaceWords(host)
+		if !it.Offline && strings.HasSuffix(it.Source, whereHostOffline) {
+			src += whereHostOffline
 		}
+	} else {
+		src = textplain.TitleKeeping(it.Source, it.target)
 	}
 	switch {
 	case it.Name != "":
 		return it.Name, src, false
 	case it.target != "" && it.at.Code != "":
+		// The list's name for it (windowName: qualified, "fern · window 2"),
+		// else its codename without tmux's window index.
+		name := it.windowName
+		if name == "" {
+			name = mirror.PlainCode(it.at.Code)
+		}
 		addr := strings.TrimSuffix(strings.TrimPrefix(it.target, "tmux "), " @ "+it.at.Host)
-		return textplain.TitleKeeping(it.at.Code, addr), src, false
+		return textplain.TitleKeeping(name, mirror.PlainCode(addr)), src, false
 	}
 	return textplain.TitleKeeping(it.Source, it.target), "", true
+}
+
+// attentionPlaceHost is the computer the window an item names runs on: its
+// Place's host (every producer sets at with target); "" for an item that
+// names no window.
+func attentionPlaceHost(it attentionItem) string {
+	if it.target == "" {
+		return ""
+	}
+	return it.at.Host
+}
+
+// windowDisplayName is the plain name the session lists give the window at
+// (mirror.Ordered's DisplayTitle, qualified over the whole list), found by
+// its host and tmux address; "" when hosts does not list it.
+func windowDisplayName(hosts []mirror.HostView, at mirror.Place) string {
+	if at.Addr == "" {
+		return ""
+	}
+	for _, e := range mirror.Ordered(hosts) {
+		if e.Host == at.Host && e.Address() == at.Addr {
+			return e.DisplayTitle()
+		}
+	}
+	return ""
+}
+
+// attentionPlaceSheetHTML is an item's ⓘ: the exact tmux address of the window
+// it names (ui.SessionPlaceSheet), "" for an item that names none. key makes
+// its id unique in the page (an item's Key; the ask page passes its own).
+func attentionPlaceSheetHTML(it attentionItem, key string) string {
+	if it.target == "" {
+		return ""
+	}
+	name, _, _ := attentionTitle(it)
+	return ui.InfoSheetHTML(ui.SessionPlaceSheet(attentionPlaceSheetID(key), name, attentionPlaceHost(it), it.target))
+}
+
+// attentionPlaceSheetID is the ⓘ sheet's element id for an item keyed key: an
+// id token whatever the key holds.
+func attentionPlaceSheetID(key string) string {
+	var b strings.Builder
+	b.WriteString("place-")
+	for _, c := range key {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			b.WriteRune(c)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // attentionWaitLineHTML is a waiting row's one line: what it waits on, as the

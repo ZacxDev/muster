@@ -599,16 +599,6 @@
 [data-tool-group][open] > summary [data-tool-group-chevron] {
   transform: rotate(90deg);
 }
-/*
- * A tool row's or card's context badge (internal/ui/tool_context.go) takes the
- * line's right-hand end itself (ml-auto), so what follows it — a row's status
- * glyph, a subagent card's status pill, a question card's label — sits beside
- * it rather than splitting the free space with it. A hidden (empty) badge
- * leaves that element's own ml-auto alone.
- */
-[data-tool-ctx]:not([hidden]) + * {
-  margin-left: 0;
-}
 @media (prefers-reduced-motion: reduce) {
   [data-tool-group][open] > [data-tool-group-body] {
     animation: none;
@@ -875,7 +865,7 @@ html:has([data-asks-feed]) {
 .asks-clamp {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
   overflow: hidden;
 }
 .asks-clamp-1 {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
@@ -99,8 +99,48 @@ func NewService(store Store, logger *log.Logger) *Service {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Service{store: store, logger: logger, recheck: TokenRecheck, hub: NewHub(logger),
+	s := &Service{store: store, logger: logger, recheck: TokenRecheck, hub: NewHub(logger),
 		limiter: newFailLimiter(authFailLimit, authFailWindow)}
+	return s
+}
+
+// spawnMarker is the store's half that persists "this token's host has
+// started agents" (PGStore.MarkSpawned, mirror_tokens.spawned_at).
+type spawnMarker interface {
+	MarkSpawned(ctx context.Context, id int64) error
+}
+
+// markSpawnedTries is how many times markSpawned writes the mark before the
+// connection is refused (ServeConnMarking fails closed).
+const markSpawnedTries = 3
+
+// markSpawned marks token id — the one THIS connection authenticated with,
+// passed in by ServeConnect, never looked up by host — as a token whose host
+// starts agents for the chief (PGStore.MarkSpawned). 🔴 THE MARK IS THE
+// TOKEN'S, and nothing but rotating the token clears it (internal/api
+// host_stepup.go): a spawned agent can read the token, so the host stopping
+// to advertise -agent-spawn proves nothing about who holds it. A store with
+// no such half marks nothing (an in-memory test store).
+func (s *Service) markSpawned(ctx context.Context, id int64) error {
+	m, ok := s.store.(spawnMarker)
+	if !ok {
+		return nil
+	}
+	var err error
+	for i := 0; i < markSpawnedTries; i++ {
+		wctx, cancel := context.WithTimeout(authz.System(ctx), 10*time.Second)
+		err = m.MarkSpawned(wctx, id)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(i+1) * 200 * time.Millisecond):
+		}
+	}
+	return err
 }
 
 // SetNotify installs the Agents-view refresh nudge (internal/api's
@@ -181,19 +221,16 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-// clientAddr is the failure counter's key: the TCP peer.
+// clientAddr is the failure counter's key: the request's client address
+// (internal/clientaddr, resolved by muster's handler): the TCP peer unless
+// that peer is a configured trusted proxy.
 //
-// ⚠ NOT X-Forwarded-For, which any client can write. Behind the public path
-// (a proxy chain in front of muster) every client therefore shares ONE
+// ⚠ Behind a proxy that is NOT configured as trusted, every client shares ONE
 // address and one failure count — which is safe ONLY because the count never
 // refuses a VALID token (see ServeConnect): a flood of bad tokens from anyone
 // earns those bad tokens 429s, and a legitimate host's reconnect is unaffected.
 func clientAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return clientaddr.Of(r)
 }
 
 // ServeConnect is GET /mirror/connect: authenticate the host's token, upgrade,
@@ -276,7 +313,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		s.connMu.Unlock()
 	}()
-	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
+	err = s.hub.ServeConnMarking(ctx, tok.OwnerID, tok.Host, ws, func(ctx context.Context) error { return s.markSpawned(ctx, tok.ID) })
 	s.logger.Printf("mirror: host %s connection ended: %v", tok.Host, err)
 }
 

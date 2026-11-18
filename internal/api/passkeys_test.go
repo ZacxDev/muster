@@ -798,7 +798,9 @@ func TestPasskeysOffServesNothing(t *testing.T) {
 }
 
 // TestPasskeySignInIsThrottledPerAddress: failed passkey sign-ins count
-// against the client address (signinLimiter's address side); another address
+// against the client address (signinLimiter's address side): past the limit a
+// FAILED one is answered 429, and a valid passkey from that same address still
+// signs in (the address never refuses a correct credential); another address
 // is not held.
 func TestPasskeySignInIsThrottledPerAddress(t *testing.T) {
 	w := newPasskeyWorld(t)
@@ -810,8 +812,11 @@ func TestPasskeySignInIsThrottledPerAddress(t *testing.T) {
 			t.Fatalf("failure %d: %d", i+1, rec.Code)
 		}
 	}
-	if rec := w.passkeySignIn("cred-rl", gotruetest.FlagUPUV, from); rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("after %d failures from one address: %d, want 429", loginFailureLimit, rec.Code)
+	if rec := w.passkeySignIn("cred-rl", gotruetest.FlagUP, from); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("a failure after %d failures from one address: %d, want 429", loginFailureLimit, rec.Code)
+	}
+	if rec := w.passkeySignIn("cred-rl", gotruetest.FlagUPUV, from); rec.Code != http.StatusOK {
+		t.Fatalf("a VALID passkey from that address after %d failures: %d, want 200", loginFailureLimit, rec.Code)
 	}
 	if rec := w.passkeySignIn("cred-rl", gotruetest.FlagUPUV, fromIP("203.0.113.67")); rec.Code != http.StatusOK {
 		t.Fatalf("CONTROL: another address: %d", rec.Code)

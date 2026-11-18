@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -87,10 +88,18 @@ func asksCardContextSlot(it attentionItem, now time.Time) string {
 	case it.Kind == attentionKindTask:
 		inner = `<span>` + taskToRouteWhy + `</span>`
 	}
-	if inner == "" {
+	// The card's ⓘ: the exact tmux address of the window it names
+	// (attentionPlaceSheetHTML), at the end of this line — the head is the
+	// card's toggle, and a button cannot sit inside it.
+	info := attentionPlaceSheetHTML(it, it.Key)
+	switch {
+	case inner == "" && info == "":
 		return ""
+	case info == "":
+		return `<div class="` + ui.AsksCardContextClass + `" data-asks-context>` + inner + `</div>
+`
 	}
-	return `<div class="` + ui.AsksCardContextClass + `" data-asks-context>` + inner + `</div>
+	return `<div class="flex min-w-0 items-center gap-1" data-asks-place><div class="` + ui.AsksCardContextClass + ` min-w-0 flex-1" data-asks-context>` + inner + `</div>` + info + `</div>
 `
 }
 
@@ -183,9 +192,28 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	// its words (who, how long) its DESCRIPTION: named by its content it read
 	// as a second control saying the card's words — "… just now" — beside the
 	// card's own options (e2e waiting-composer: two buttons matched "no").
-	b.WriteString(`<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + esc(more) + `" aria-label="` + ui.AsksCardToggleLabel +
+	// THE MORE REGION's content, drawn below — known now, so the toggle names
+	// it only when there is one (no empty region, no dangling aria-controls).
+	var m strings.Builder
+	if it.Detail != "" && textplain.Title(it.Focus) != "" || it.Detail != "" && it.Kind == attentionKindAsk {
+		// The second line the context slot did not draw.
+		m.WriteString(`<p class="break-words text-sm text-fg2"><span data-attention-detail>` + itemDetailHTML(it) + `</span></p>`)
+	}
+	m.WriteString(proposalBodyHTML(it.proposal))
+	controls := ""
+	if m.Len() > 0 {
+		controls = ` aria-controls="` + esc(more) + `"`
+	}
+	// The kind badge only where it tells something: a question is the
+	// default card, so it carries none (the design review: "Question" on most
+	// cards was noise).
+	badge := ""
+	if kind != "question" {
+		badge = ui.AsksKindBadge(kind, label)
+	}
+	b.WriteString(`<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false"` + controls + ` aria-label="` + ui.AsksCardToggleLabel +
 		`" aria-describedby="` + esc(it.Key) + `-who" data-asks-toggle>` +
-		ui.AsksKindBadge(kind, label) + `<span id="` + esc(it.Key) + `-who" class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>
+		badge + `<span id="` + esc(it.Key) + `-who" class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>
 `)
 	// THE QUESTION (what a waiting session waits on: its pending call).
 	switch {
@@ -211,46 +239,7 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	}
 	b.WriteString(asksCardContextSlot(it, now))
 	b.WriteString(asksCardMediaSlot(it))
-	// THE CONTROLS.
-	id := strconv.FormatInt(it.AskID, 10)
-	dismissForm := "ask-" + id + "-dismiss"
-	dismiss := ""
-	switch {
-	case it.Kind == attentionKindAsk && it.watchOnly != "":
-		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
-`)
-	case it.Kind == attentionKindAsk:
-		b.WriteString(askFeedAnswerFormHTML(it, id))
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
-	case it.Kind == attentionKindNotice:
-		// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
-		// dismissed, never answered (attention.ErrNotice).
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss" title="Dismiss" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
-	case it.openCode != nil:
-		b.WriteString(`<div data-asks-controls>` + openCodeAskHTML(it) + `</div>
-`)
-	case it.Kind == attentionKindQuestion:
-		// A HELD QUESTION is answered in its session, never here.
-		b.WriteString(attentionHeldCueHTML + "\n")
-	}
-	// THE MORE REGION: shown only expanded.
-	var m strings.Builder
-	if !it.Since.IsZero() {
-		m.WriteString(`<p class="text-xs text-fg2" data-asks-since>Waiting since <time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` +
-			esc(it.Since.UTC().Format("2006-01-02 15:04 UTC")) + `</time></p>`)
-	}
-	if it.Detail != "" && textplain.Title(it.Focus) != "" || it.Detail != "" && it.Kind == attentionKindAsk {
-		// The second line the context slot did not draw.
-		m.WriteString(`<p class="break-words text-sm text-fg2"><span data-attention-detail>` + itemDetailHTML(it) + `</span></p>`)
-	}
-	m.WriteString(proposalBodyHTML(it.proposal))
-	b.WriteString(`<div id="` + esc(more) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` + m.String() + `</div></div>
-`)
-	// The error slot, above the footer: a refused answer or dismissal's
-	// fragment (ui.AsksCardErrorHTML), put here by the feed's script.
-	b.WriteString(`<div data-asks-card-error></div>
-`)
-	// THE FOOTER: View in session, the task, Dismiss at its end.
+	// THE FOOTER's links: View in session, the task.
 	var links []string
 	if href := askFeedSessionHref(it); href != "" {
 		links = append(links, `<a href="`+esc(href)+`" class="`+ui.AsksCardLinkClass+`" data-asks-view-session>`+askViewInSession+`</a>`)
@@ -264,8 +253,63 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		n := strconv.FormatInt(it.taskID, 10)
 		links = append(links, `<a href="`+esc(canonicalTaskPath(it.taskID))+`" class="`+ui.AsksCardLinkClass+`" data-asks-task>Open task #`+n+`</a>`)
 	}
-	if len(links) > 0 || dismiss != "" {
-		b.WriteString(`<div class="` + ui.AsksCardFooterClass + `" data-asks-footer>` + strings.Join(links, "") + `<span class="flex-1"></span>` + dismiss + `</div>
+	// THE CONTROLS.
+	id := strconv.FormatInt(it.AskID, 10)
+	dismissForm := "ask-" + id + "-dismiss"
+	dismiss := ""
+	switch it.Kind {
+	case attentionKindAsk:
+		if it.watchOnly == "" {
+			dismiss = askDismissButton(dismissForm, "Dismiss without answering")
+		}
+	case attentionKindNotice:
+		dismiss = askDismissButton(dismissForm, "Dismiss")
+	}
+	// 🔴 DISMISS ENDS THE FOOTER WHEN THE FOOTER HAS LINKS, ELSE THE ANSWER
+	// ROW — never the head (Round 0 of #620), and never a footer of a lone ✕
+	// (the design review: a 44px band for one icon). A notice with nothing to
+	// link has no answer row: its footer's Dismiss says its word.
+	inRow := len(links) == 0 && it.Kind == attentionKindAsk
+	if len(links) == 0 && it.Kind == attentionKindNotice {
+		dismiss = `<button type="submit" form="` + dismissForm + `" class="` + ui.AsksSecondaryButtonClass + `" data-attention-dismiss>Dismiss</button>`
+	}
+	switch {
+	case it.Kind == attentionKindAsk && it.watchOnly != "":
+		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
+`)
+	case it.Kind == attentionKindAsk:
+		gate := asksCardFormAttrs(it.Key, attentionPath+`/asks/`+id+`/answer`)
+		if it.stepUpWhy != "" {
+			// A team card answered with a fresh sign-in is its confirm
+			// dialog's: a plain (boosted) POST, no hx-post.
+			gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
+		}
+		rowDismiss := ""
+		if inRow {
+			rowDismiss = dismiss
+		}
+		b.WriteString(askAnswerFormHTML(it, id, askFormPlace{attrs: gate, dismiss: rowDismiss, chips: true}))
+	case it.openCode != nil:
+		b.WriteString(`<div data-asks-controls>` + openCodeAskHTML(it) + `</div>
+`)
+	case it.Kind == attentionKindQuestion:
+		// A HELD QUESTION is answered in its session, never here.
+		b.WriteString(attentionHeldCueHTML + "\n")
+	}
+	// THE MORE REGION: shown only expanded, drawn only with something in it.
+	// (Its old first line, "Waiting since <UTC>", said the head's age again.)
+	// The card's error slot is not drawn here: the feed's script adds it when
+	// a post is refused (ui asks_card.go errorSlot).
+	if m.Len() > 0 {
+		b.WriteString(`<div id="` + esc(more) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` + m.String() + `</div></div>
+`)
+	}
+	footDismiss := dismiss
+	if inRow {
+		footDismiss = ""
+	}
+	if len(links) > 0 || footDismiss != "" {
+		b.WriteString(`<div class="` + ui.AsksCardFooterClass + `" data-asks-footer>` + strings.Join(links, "") + `<span class="flex-1"></span>` + footDismiss + `</div>
 `)
 	}
 	if dismiss != "" {
@@ -323,31 +367,74 @@ func askFeedSessionHref(it attentionItem) string {
 	return ""
 }
 
-// askFeedAnswerFormHTML is an ask card's answer form: its options as
-// full-width buttons (a tap answers), its suggested replies as chips (a tap
-// FILLS the box), and the box — one line, growing — with its microphone and
-// Answer. Every answerable card draws the box and the mic, so a and d (the
-// feed's keys) always have something to reach.
-func askFeedAnswerFormHTML(it attentionItem, id string) string {
+// askOptionsShortRunes is the longest option label laid out two to a row:
+// at a phone's width half a card holds about this many characters on one
+// line.
+const askOptionsShortRunes = 18
+
+// askOptionsShort reports whether options are laid out two to a row
+// (ui.AsksOptionsPairClass): two to four of them, each at most
+// askOptionsShortRunes long.
+func askOptionsShort(options []string) bool {
+	if len(options) < 2 || len(options) > 4 {
+		return false
+	}
+	for _, o := range options {
+		if utf8.RuneCountInString(o) > askOptionsShortRunes {
+			return false
+		}
+	}
+	return true
+}
+
+// askDismissButton is an ask card's Dismiss: a small icon button joined by
+// form= to the card's separate /cancel form (so a dismissal never carries the
+// typed answer), named for a screen reader.
+func askDismissButton(form, name string) string {
+	return `<button type="submit" form="` + form + `" aria-label="` + name + `" title="` + name + `" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+}
+
+// askFormPlace is where an ask's answer form is drawn, and what that place
+// adds to it: back (a session page's return field), attrs (the form's own
+// attributes: the Asks card's htmx post or step-up, a session page's
+// hx-boost="false" and step-up), dismiss (Dismiss at the end of the answer
+// row, "" when the card's footer holds it) and chips (the suggested replies:
+// only where the Asks feed's script fills the box from them).
+type askFormPlace struct {
+	back, attrs, dismiss string
+	chips                bool
+}
+
+// askAnswerFormHTML is THE answer form, on the Asks page's card and on a
+// session page's asks block alike (the design review: the two surfaces drew
+// two forms): the asker's options as full-width buttons (a tap answers), the
+// suggested replies as chips (a tap FILLS the box), and the box — one line,
+// growing — with its microphone (only while dictation is on: a disabled mic
+// on every card was noise) and Answer. With options to tap, they are the
+// primary action and Answer is quiet.
+//
+// 🔴 EVERY ID IS THE ASK'S OWN: a page draws one box per ask, and the mic
+// finds its box and note by id (ui.DictateControlHTML). The mic's ✓ FILLS the
+// box at the caret; its ↑ fills it and clicks THIS Answer (its id), so Answer
+// is still the only send (ui/dictate.go).
+func askAnswerFormHTML(it attentionItem, id string, p askFormPlace) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	action := attentionPath + `/asks/` + id + `/answer`
-	// A team card answered with a fresh sign-in is its confirm dialog's:
-	// a plain (boosted) POST, no hx-post.
-	gate := asksCardFormAttrs(it.Key, action)
-	if it.stepUpWhy != "" {
-		gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
-	}
-	b.WriteString(`<form method="POST" action="` + action + `" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + gate + `>
-`)
+	b.WriteString(`<form method="POST" action="` + action + `" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + p.attrs + `>
+` + p.back)
 	if len(it.Options) > 0 {
-		b.WriteString(`<div class="` + ui.AsksOptionsClass + `" role="group" aria-label="The asker's options">`)
+		cls := ui.AsksOptionsClass
+		if askOptionsShort(it.Options) {
+			cls = ui.AsksOptionsPairClass
+		}
+		b.WriteString(`<div class="` + cls + `" role="group" aria-label="The asker's options">`)
 		for _, o := range it.Options {
 			b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionClass + `" data-attention-option>` + esc(o) + `</button>`)
 		}
 		b.WriteString("</div>\n")
 	}
-	if len(it.suggestions) > 0 {
+	if p.chips && len(it.suggestions) > 0 {
 		b.WriteString(`<div class="` + ui.AsksCardChipsClass + `" role="group" aria-label="` + suggestLabel + `" data-asks-suggestions>`)
 		for _, t := range it.suggestions {
 			b.WriteString(`<button type="button" class="` + ui.AsksCardChipClass + `" data-asks-suggestion data-text="` + esc(t) + `" aria-label="AI-suggested reply: ` + esc(t) + `">` + esc(t) + `</button>`)
@@ -356,19 +443,21 @@ func askFeedAnswerFormHTML(it attentionItem, id string) string {
 	}
 	input := "answer-" + id
 	submit := input + "-submit"
-	// With options to tap, they are the card's primary action and Answer is
-	// quiet; with none, Answer is the one primary action.
 	send := ui.AsksCardSendClass
 	if len(it.Options) > 0 {
 		send = ui.AsksCardSendQuietClass
 	}
+	mic, note := "", ""
+	if it.dictate != "" {
+		mic = ui.DictateWaveHTML(it.dictate, input+"-dictate") +
+			ui.DictateControlHTML(it.dictate, input, input+"-dictate-note", input+"-dictate") +
+			ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendPill)
+		note = ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
+	}
 	b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `" data-asks-answer-row><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-		ui.DictateWaveHTML(it.dictate, input+"-dictate") +
-		answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") +
-		ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendPill) +
-		`<button type="submit" id="` + submit + `" class="` + send + `">Answer</button></div>
-` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", ""))
+		mic + `<button type="submit" id="` + submit + `" class="` + send + `">Answer</button>` + p.dismiss + `</div>
+` + note)
 	b.WriteString("</form>\n")
 	return b.String()
 }
@@ -429,10 +518,10 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	esc := html.EscapeString
 	id := strconv.FormatInt(a.ID, 10)
 	who, src, srcIsTitle := attentionTitle(it)
-	// The delivery line keeps naming the window by its exact place (askSource,
-	// what the ask's own page says too): a queued or waiting delivery sends the
-	// owner to that window.
-	text, retry := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target), proposal)
+	// The delivery line names the session as the card's title does (who: in
+	// words, never a tmux target); the exact target — where a queued or
+	// waiting delivery sends the owner — is the card's ⓘ, beside the line.
+	text, retry := answerDeliveryText(a, who, proposal)
 	var sub []string
 	if !a.ResolvedAt.IsZero() {
 		sub = append(sub, `<time datetime="`+a.ResolvedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.ResolvedAt)))+`</time>`)
@@ -450,23 +539,53 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	}
 	key := "answered-" + id
 	var b strings.Builder
+	// THE QUESTION is drawn ONCE, whole, clamped while collapsed (it was a
+	// one-line cut here and the full text again in the more region). WHERE
+	// THE ANSWER WENT is a pill (answerDeliveryPill); the sentence that says
+	// it in full is the expanded card's.
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
 <button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + asksCardMoreID(key) + `" aria-label="` + ui.AsksCardToggleLabel +
-		`" aria-describedby="` + key + `-who" data-asks-toggle>` + ui.AsksKindBadge("answered", "Answered") +
+		`" aria-describedby="` + key + `-who" data-asks-toggle>` +
 		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
-<p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
+<p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(a.Question) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
-<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>
+` + answeredDeliveryRowHTML(it, key, `<div class="`+ui.AsksPillsClass+`"><span class="`+ui.AsksPillClass+`" data-attention-delivery-pill>`+esc(answerDeliveryPill(a, proposal))+`</span></div>`) + `
 `)
 	if retry {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver" data-asks-controls><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
 `)
 	}
-	b.WriteString(`<div id="` + asksCardMoreID(key) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` + answeredViaHTML(a) +
-		`<p class="whitespace-pre-wrap break-words text-sm text-fg2" data-asks-question-full>` + esc(a.Question) + `</p></div></div>
+	b.WriteString(`<div id="` + asksCardMoreID(key) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` +
+		`<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>` + answeredViaHTML(a) + `</div></div>
 </li>
 `)
 	return b.String()
+}
+
+// answerDeliveryPill is where an answer went, in a pill's few words
+// (answerDeliveryText says it in full, in the expanded card).
+func answerDeliveryPill(a attention.Ask, proposal bool) string {
+	if proposal && a.Delivery == attention.DeliveryWaited {
+		return "Recorded"
+	}
+	switch a.Delivery {
+	case attention.DeliveryQueued:
+		return "Queued"
+	case attention.DeliveryDelivering:
+		return "Delivering"
+	case attention.DeliveryDelivered:
+		return "Delivered"
+	case attention.DeliveryWaited:
+		return "Read by the session"
+	case attention.DeliveryUnconfirmed:
+		return "Delivery failed"
+	case attention.DeliveryPull:
+		return "Waiting for the session to read it"
+	}
+	if a.Asker.System {
+		return "Recorded"
+	}
+	return "Not delivered"
 }
 
 // answeredFeedHTML is the Answered tab's feed: one card per recent answer, or
@@ -474,7 +593,7 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 // items[i] is asks[i] as an attention item, named (answeredItems).
 func answeredFeedHTML(asks []attention.Ask, items []attentionItem, now time.Time, proposals map[int64]bool) string {
 	if len(asks) == 0 {
-		return `<li class="px-1 py-6 text-center text-sm text-fg2" data-asks-answered-empty>No answers in the last day.</li>`
+		return ui.AsksEmptyHTML(` data-asks-empty="answered" data-asks-answered-empty`, "", "", "No answers in the last day.", "")
 	}
 	var b strings.Builder
 	for i, a := range asks {
@@ -493,4 +612,15 @@ func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts 
 	}
 	s.withNames(ctx, items)
 	return items
+}
+
+// answeredDeliveryRowHTML is an Answered card's delivery line and, when the
+// ask names a window, its ⓘ (attentionPlaceSheetHTML) beside it — outside the
+// card's toggle, which a button cannot sit inside.
+func answeredDeliveryRowHTML(it attentionItem, key, line string) string {
+	info := attentionPlaceSheetHTML(it, key)
+	if info == "" {
+		return line
+	}
+	return `<div class="flex min-w-0 items-center gap-1" data-asks-place><div class="min-w-0 flex-1">` + line + `</div>` + info + `</div>`
 }

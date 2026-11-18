@@ -215,11 +215,12 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await expect(open).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
   await expect(open).toHaveText('View in session');
   await expect(session.getByText('Open the session')).toHaveCount(0);
-  // The flat page: no intro, no "Back to muster"; each card its kind badge,
-  // the heading the open count.
+  // The flat page: no intro, no "Back to muster"; a card that is not a
+  // question its kind badge (a question, the default card, none), the
+  // heading the open count.
   await expect(page.getByText('Everything waiting on you')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Back to muster' })).toHaveCount(0);
-  await expect(askItem.locator('[data-asks-badge]')).toHaveText('Question');
+  await expect(askItem.locator('[data-asks-badge]')).toHaveCount(0);
   await expect(session.locator('[data-asks-badge]')).toHaveText('Waiting');
   await expect(page.locator('[data-asks-open-count]')).toHaveText('2 open');
   // The answer box is on the card, under its options, a 44px target.
@@ -326,7 +327,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
-  await expect(item.locator('[data-attention-source]')).toContainText('@ ' + host);
+  await expect(item.locator('[data-attention-source]')).toContainText('on ' + host);
   // The other tmux server's call was never forwarded: no item carries its text.
   await expect(page.locator('[data-attention-text]', { hasText: 'other server?' })).toHaveCount(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
@@ -341,7 +342,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const splitId = (JSON.parse(split.result.content[0].text) as { id: number }).id;
   expect(splitId).toBeGreaterThan(0);
   await page.reload();
-  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('@ ' + host);
+  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('on ' + host);
 });
 
 // ANSWERED IN THE SESSION: the mirrored session asks and waits; the operator,

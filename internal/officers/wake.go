@@ -825,6 +825,21 @@ type officerState struct {
 	// cannot be read (BudgetAlert.Unreadable): once per (officer, UTC day)
 	// per process, like budgetAlertDay.
 	budgetUnreadableDay string
+	// lateLogged: this officer was more than its poll interval late — a pass
+	// started that late (notePassLag), or Run saw it due that long without a
+	// free pass slot (noteWaiting) — and that was logged. Cleared by the next
+	// pass that starts on time, so each lag episode is logged once.
+	lateLogged bool
+	// dueSeen is the tick Run first saw this officer due without starting its
+	// pass (zero: not waiting). It dates a wait whose nextAt is zero (a first
+	// pass, or one Due asked for); the officer's pass starting clears it.
+	dueSeen time.Time
+	// dueAfterPass: Due asked for a pass while one of this officer's passes was
+	// running (Reconciler.passing). That pass's end (passEnded) makes the
+	// officer due — Check would otherwise overwrite the request with the next
+	// poll time — so the pass asked for runs after it, its wait dated from the
+	// first tick after it ended, never from before.
+	dueAfterPass bool
 }
 
 // refusedCap is one refused cap escalation the loop remembers.
@@ -879,7 +894,15 @@ type Reconciler struct {
 
 	mu    sync.Mutex
 	state map[string]*officerState
-	done  chan struct{}
+	// passing is the key of every officer whose pass Run started and that
+	// has not ended (guarded by mu): Run never starts a second pass for one
+	// of them, and starts none while maxConcurrentPasses run. It lives on the
+	// Reconciler, not in Run, so a Run restarted after a panic still sees the
+	// passes its predecessor left running.
+	passing map[string]bool
+	// passes counts the passes in passing: Run waits for them on shutdown.
+	passes sync.WaitGroup
+	done   chan struct{}
 	// doneOnce closes done once, on Run's ctx-ended return (see Run).
 	doneOnce sync.Once
 }
@@ -956,7 +979,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 	}
 	return &Reconciler{kickoff: cfg.Kickoff, reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
 		judgement: cfg.Judgement, capHold: cfg.CapHold, budgetAlert: cfg.BudgetAlert, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery, chats: cfg.Chats,
-		state: map[string]*officerState{}, done: make(chan struct{})}, nil
+		state: map[string]*officerState{}, passing: map[string]bool{}, done: make(chan struct{})}, nil
 }
 
 // erroredSlot is how an instance in error is named in the log.
@@ -1012,15 +1035,28 @@ type PassResult struct {
 }
 
 // Due makes the officer keyed key due now: Run passes it on its next tick
-// (RunTick), in Run's own goroutine — so a pass it asks for never runs beside
-// another pass for the same officer. The admin API asks it after a pause or a
-// resume, so the switch acts within a tick rather than a poll interval.
+// (RunTick) — and never while a pass for the same officer is still running
+// (Reconciler.passing), so a pass it asks for never runs beside another pass
+// for that officer. The admin API asks it after a pause or a
+// resume, so the switch acts within a tick rather than a poll interval, and
+// on every "run now" (an already-queued one included).
+// Asked while a pass of the officer is running, it takes effect when that pass
+// ends (officerState.dueAfterPass): one pass follows it. A Due-made officer
+// is due "now", not first: Run orders it by when it was first seen due
+// (passOrder), so asking again and again cannot jump officers that have
+// waited longer.
 func (r *Reconciler) Due(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.state[key]; ok {
-		s.nextAt = time.Time{}
+	s, ok := r.state[key]
+	if !ok {
+		return
 	}
+	if r.passing[key] {
+		s.dueAfterPass = true
+		return
+	}
+	s.nextAt = time.Time{}
 }
 
 // Check runs one pass for the officer keyed key (Officer.Key: an env
@@ -1715,6 +1751,50 @@ var RunTick = time.Second
 // passTimeout bounds one pass.
 const passTimeout = 2 * time.Minute
 
+// maxConcurrentPasses is how many officers' passes Run runs at once. Each due
+// officer's pass runs on its own goroutine, so one officer's slow pass (a
+// slow HQ or fleet read, up to passTimeout) no longer delays every other
+// officer's — and with it the claim of their chat items, which happens at
+// the end of a pass. The cap bounds the HQ and fleet load a loop can put
+// out at once: every pass reads HQ (and may claim, start or stop) and reads
+// the fleet, so an uncapped loop would hit both with one request burst per
+// officer whenever HQ recovers from an outage or muster restarts. Slots go
+// to the due officers that have waited longest (Run), so a cap too small
+// for the roster degrades to round-robin — every officer's passes start
+// later, none never — and the wait is measured
+// (muster_officer_pass_oldest_wait_seconds, muster_officer_pass_start_lag_seconds).
+const maxConcurrentPasses = 4
+
+// passCandidate is a due officer Run has not started a pass for, waiting
+// since since: its nextAt, or — for a zero nextAt (a first pass, or one Due
+// asked for) — the tick Run first saw it due.
+type passCandidate struct {
+	o     Officer
+	since time.Time
+}
+
+// passOrder sorts candidates by how long they have waited: the earliest since
+// first, ties by key. A zero nextAt is not "first": it waits from the tick it
+// was first seen due, like any other wait. What holds: an officer waiting
+// since S is started before every officer whose wait began after S. And an
+// officer started while it waits cannot be ahead of it again during that wait:
+// the pass ends with the next wait beginning at the pass's start plus
+// poll_interval (Check; a backoff after a failure is later still), or — a Due
+// asked for during the pass (dueAfterPass) or after it — at the first tick
+// that sees it due after the pass ended; both are later than S. So each other officer passes a
+// waiting one at most once per wait, however often Due is asked for it (a
+// "run now" tap or a pause/resume). Two waits that began on the same tick go
+// by key. Not covered: a pass that panics before Check sets nextAt leaves its
+// officer's old wait in place.
+func passOrder(c []passCandidate) {
+	sort.Slice(c, func(i, j int) bool {
+		if !c[i].since.Equal(c[j].since) {
+			return c[i].since.Before(c[j].since)
+		}
+		return c[i].o.Key() < c[j].o.Key()
+	})
+}
+
 // Done is closed once Run has returned: the shutdown drain joins the loop on it
 // before waiting for re-prompt sends, so no pass can start one meanwhile.
 func (r *Reconciler) Done() <-chan struct{} { return r.done }
@@ -1737,6 +1817,10 @@ func (r *Reconciler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// The passes still running end with ctx (each pass's context is
+			// derived from it); Run returns — and Done closes — only after
+			// they have, as when passes ran on Run's own goroutine.
+			r.passes.Wait()
 			stopped = true
 			return
 		case <-t.C:
@@ -1747,19 +1831,108 @@ func (r *Reconciler) Run(ctx context.Context) {
 			}
 			list := r.reg.All()
 			r.prune(list)
-			for _, o := range list {
-				r.mu.Lock()
-				due := !now.Before(r.st(o.Key()).nextAt)
-				r.mu.Unlock()
-				if due {
-					r.pass(ctx, o.Key(), false)
-				}
+			for _, c := range r.startDue(list, now) {
+				r.passes.Add(1)
+				go func(c passCandidate) {
+					defer r.passes.Done()
+					defer r.passEnded(c.o.Key())
+					r.pass(ctx, c.o, c.since)
+				}(c)
 			}
 		}
 	}
 }
 
-func (r *Reconciler) pass(ctx context.Context, key string, force bool) {
+// startDue picks, at now, the officers of list whose passes Run starts: every
+// due officer with no pass running is a candidate, and the free slots
+// (maxConcurrentPasses less the passes running) go to the candidates in
+// passOrder — the officer that has waited longest first, so none starves
+// however far demand exceeds the slots. The officers picked are marked
+// passing; the rest wait for a later tick, measured by
+// muster_officer_pass_oldest_wait_seconds and logged by noteWaiting once one
+// has waited past its poll interval.
+func (r *Reconciler) startDue(list []Officer, now time.Time) []passCandidate {
+	r.mu.Lock()
+	var due []passCandidate
+	for _, o := range list {
+		key := o.Key()
+		if r.passing[key] {
+			continue
+		}
+		s := r.st(key)
+		if now.Before(s.nextAt) {
+			// Not due (a pass outside Run — Check — may have moved nextAt
+			// on): no wait to date.
+			s.dueSeen = time.Time{}
+			continue
+		}
+		if s.dueSeen.IsZero() {
+			s.dueSeen = now
+		}
+		since := s.nextAt
+		if since.IsZero() || s.dueSeen.Before(since) {
+			since = s.dueSeen
+		}
+		due = append(due, passCandidate{o: o, since: since})
+	}
+	passOrder(due)
+	n := min(max(maxConcurrentPasses-len(r.passing), 0), len(due))
+	start, waiting := due[:n], due[n:]
+	for _, c := range start {
+		r.passing[c.o.Key()] = true
+		r.st(c.o.Key()).dueSeen = time.Time{}
+	}
+	metrics.OfficerPassesInFlight.Set(float64(len(r.passing)))
+	oldest := time.Duration(0)
+	var late []passCandidate
+	for _, c := range waiting {
+		wait := max(now.Sub(c.since), 0)
+		oldest = max(oldest, wait)
+		if s := r.st(c.o.Key()); c.o.PollInterval > 0 && wait > c.o.PollInterval && !s.lateLogged {
+			s.lateLogged = true
+			late = append(late, c)
+		}
+	}
+	running := len(r.passing)
+	r.mu.Unlock()
+	metrics.OfficerPassOldestWait.Set(oldest.Seconds())
+	for _, c := range late {
+		r.noteWaiting(c.o, now.Sub(c.since), running)
+	}
+	return start
+}
+
+// noteWaiting logs that o has been due for wait — past its poll interval —
+// without a free pass slot (running passes hold them all): once per episode,
+// which shares lateLogged with notePassLag, so the late start that ends the
+// wait is not logged again.
+func (r *Reconciler) noteWaiting(o Officer, wait time.Duration, running int) {
+	r.log.Printf("officers: %s: due %ds ago and still waiting for a pass slot (%d of %d running, poll_interval %s); logged once until a pass starts on time",
+		o.ID, int(wait/time.Second), running, maxConcurrentPasses, o.PollInterval)
+}
+
+// passEnded takes the officer keyed key out of passing: its pass is over.
+// A Due asked for during it makes the officer due now (dueAfterPass).
+func (r *Reconciler) passEnded(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.passing, key)
+	if s, ok := r.state[key]; ok && s.dueAfterPass {
+		// A Due asked for during the pass: due now. Its wait starts at the
+		// first tick that sees it due after this — dueSeen was cleared when
+		// the pass started (startDue) and no tick sets it while the pass runs
+		// — never at a wait from before the pass.
+		s.dueAfterPass = false
+		s.nextAt = time.Time{}
+	}
+	metrics.OfficerPassesInFlight.Set(float64(len(r.passing)))
+}
+
+// pass runs one pass of officer o, due since dueAt (passCandidate.since:
+// never zero), bounded by passTimeout: its start lag and its duration are
+// measured, and a panic in it is logged, not propagated.
+func (r *Reconciler) pass(ctx context.Context, o Officer, dueAt time.Time) {
+	key := o.Key()
 	pctx, cancel := context.WithTimeout(ctx, passTimeout)
 	defer cancel()
 	defer func() {
@@ -1767,7 +1940,31 @@ func (r *Reconciler) pass(ctx context.Context, key string, force bool) {
 			r.log.Printf("officers: PANIC in a pass for %s: %v", key, rec)
 		}
 	}()
-	r.Check(pctx, key, force)
+	began := time.Now()
+	r.notePassLag(o, dueAt, r.now())
+	r.Check(pctx, key, false)
+	metrics.OfficerPassDuration.Observe(time.Since(began).Seconds())
+}
+
+// notePassLag records how late o's pass, due at dueAt, started at now
+// (muster_officer_pass_start_lag_seconds), and logs a start more than o's
+// poll interval late — once per episode: the next pass that starts on time
+// ends it. A first pass, or one Due asked for, is dated from the tick Run
+// first saw it due (passCandidate.since), so it is measured and, started at
+// once, ends an episode like any on-time pass.
+func (r *Reconciler) notePassLag(o Officer, dueAt, now time.Time) {
+	lag := max(now.Sub(dueAt), 0)
+	metrics.OfficerPassStartLag.Observe(lag.Seconds())
+	late := o.PollInterval > 0 && lag > o.PollInterval
+	r.mu.Lock()
+	s := r.st(o.Key())
+	first := late && !s.lateLogged
+	s.lateLogged = late
+	r.mu.Unlock()
+	if first {
+		r.log.Printf("officers: %s: pass started %ds late (poll_interval %s); logged once until a pass starts on time",
+			o.ID, int(lag/time.Second), o.PollInterval)
+	}
 }
 
 // FaultStrikes is how many consecutive passes must see a permanent HQ refusal

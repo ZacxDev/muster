@@ -93,7 +93,7 @@ CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg
 help:
 	@echo "muster:"
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
-	@echo "  make run          the server, against \$$DATABASE_URL (see README)"
+	@echo "  make run          the server, against \$$DATABASE_URL (see docs/development.md)"
 	@echo "  make image        the container image, css-check included"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
@@ -124,8 +124,12 @@ vet:
 
 # Run the server. Every MUSTER_* name is spelled once, in
 # cmd/muster-server/config.go; DATABASE_URL is required and the binary says so.
+# The server does not start without MUSTER_HOOK_TOKEN; unless the environment
+# sets one, scripts/dev-hook-token.sh makes one once into .dev.env (gitignored,
+# mode 600) and reuses it, refusing an empty or short value. Give the same
+# value to a dev muster-mirror or hook: `. ./.dev.env`.
 run:
-	go run ./cmd/muster-server
+	@tok=$$(scripts/dev-hook-token.sh .dev.env) && MUSTER_HOOK_TOKEN=$$tok exec go run ./cmd/muster-server
 
 # 🔴 THE IMAGE BUILD RUNS css-check IN ITS FIRST STAGE, so this target is also
 # the cheapest end-to-end proof that the stylesheet the container would serve is
@@ -379,10 +383,12 @@ install-guide-test:
 
 # docs/features.md's anchors, and deploy/.env.example, the compose file and the
 # server's variables agreeing (tests/features_config_test.py); the guides, their
-# index and docs/features.md agreeing (tests/docs_guides_test.py). Static.
+# index and docs/features.md agreeing (tests/docs_guides_test.py); the README,
+# the docs index and the community files (tests/repo_front_door_test.py). Static.
 features-config-test:
 	python3 tests/features_config_test.py
 	python3 tests/docs_guides_test.py
+	python3 tests/repo_front_door_test.py
 
 check: vet test leakscan css-check verb-ledger install-guide-test features-config-test
 

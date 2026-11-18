@@ -33,7 +33,7 @@ func testAppKeyPEM(t *testing.T) string {
 func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 	keyPEM := testAppKeyPEM(t)
 	load := func(env map[string]string) (config, error) {
-		full := map[string]string{envDatabase: "postgres://unused", envStandalone: "1"}
+		full := map[string]string{envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1"}
 		for k, v := range env {
 			full[k] = v
 		}
@@ -60,7 +60,7 @@ func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		t.Fatalf("control: a coherent App configuration is refused: %v", err)
 	}
 	if cfg.GitHubAppID != 12345 || cfg.GitHubAppKey == nil || githubAppAccountList(cfg.GitHubAppAccounts) != "example-org:4200,second-org:4300" {
-		t.Fatalf("control: loaded %d / key=%v / %q", cfg.GitHubAppID, cfg.GitHubAppKey != nil, cfg.GitHubAppAccounts)
+		t.Fatalf("control: loaded %d / key=%v / %q", cfg.GitHubAppID, cfg.GitHubAppKey != nil, githubAppAccountList(cfg.GitHubAppAccounts))
 	}
 	// A PEM block of the right type holding bytes that are not a key, built at
 	// run time, so no key-shaped literal sits in this public repository.

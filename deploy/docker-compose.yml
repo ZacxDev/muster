@@ -127,7 +127,7 @@ services:
   muster:
     # MUSTER_IMAGE exists so a locally built image can be tested with this
     # exact file; leave it unset to run the published release.
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.246.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.247.0}
     restart: unless-stopped
     depends_on:
       muster-init:
@@ -164,6 +164,13 @@ services:
       # On: the session cookie is Secure, except on this machine's own
       # http://localhost page, which gets it without (docs/configuration.md).
       MUSTER_SECURE_COOKIES: ${MUSTER_SECURE_COOKIES:-1}
+      # Behind a reverse proxy: whose forwarding header names the client.
+      # Empty trusts nothing (the client is the TCP peer). Both or neither.
+      MUSTER_TRUSTED_PROXIES: ${MUSTER_TRUSTED_PROXIES:-}
+      MUSTER_CLIENT_IP_HEADER: ${MUSTER_CLIENT_IP_HEADER:-}
+      # Or, with no proxy in front: 1. In accounts (gotrue) mode one of the two
+      # is required.
+      MUSTER_DIRECT_CLIENTS: ${MUSTER_DIRECT_CLIENTS:-}
 
       # ---- optional: every value below is empty unless .env sets it --------
       # docs/features.md names what each feature needs; .env.example has every
@@ -303,6 +310,11 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      # Prometheus metrics: /metrics is served ONLY on this port, and only when
+      # it is set. Not published to the host: a scraper on this Compose network
+      # reaches muster:<port>; to scrape from the host, add a ports entry bound
+      # to 127.0.0.1 (docs/configuration.md).
+      MUSTER_METRICS_PORT: ${MUSTER_METRICS_PORT:-}
       OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-}
       OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: ${OTEL_EXPORTER_OTLP_TRACES_TIMEOUT:-}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-}
@@ -376,7 +388,7 @@ services:
   # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
   # postgres:16-alpine); no network.
   muster-init:
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.246.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.247.0}
     user: "0:0"
     command:
       - compose-init
@@ -405,7 +417,7 @@ services:
   # --- dictation, GPU (profile stt-cohere) ----------------------------------
   stt-cohere:
     profiles: ["stt-cohere"]
-    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.246.0}
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.247.0}
     restart: unless-stopped
     environment:
       # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
@@ -572,7 +584,7 @@ services:
   # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.246.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.247.0}
     user: "0:0"
     entrypoint:
       - sh
@@ -589,7 +601,7 @@ services:
 
   chief:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.246.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.247.0}
     restart: unless-stopped
     depends_on:
       chief-init:

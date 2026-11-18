@@ -291,6 +291,7 @@ test.beforeAll(async () => {
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   server = await startServer(versionA, docsMainPort, {
     MUSTER_AUTH_MODE: 'gotrue',
+    MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     MUSTER_BROWSER_PORT: String(docsBrowserPort),
@@ -526,15 +527,14 @@ test('mirror-rendered.png — a Claude Code window as a chat, with the message b
   await shoot(page, 'mirror-rendered.png');
 });
 
-test('tool-context.png — each tool call shows the context it added', async ({ page }) => {
+test('tool-context.png — tool calls grouped as steps', async ({ page }) => {
   await signIn(page);
   await openOtter(page);
   const group = page.locator('#mv-log [data-tool-group]').first();
-  await expect(group.locator('summary [data-tool-group-count]')).toHaveText('3 tool calls', { timeout: 15_000 });
+  await expect(group.locator('summary [data-tool-group-count]')).toHaveText('3 steps', { timeout: 15_000 });
   await group.locator(':scope > summary').click();
   const badges = page.locator('#mv-log [data-tool-ctx]');
   await expect(badges).toHaveCount(3);
-  await expect(badges.nth(1)).toHaveText('+4.8k ctx');
   await shoot(page, 'tool-context.png');
 });
 

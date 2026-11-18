@@ -4,6 +4,15 @@ Every muster binary is configured through environment variables. This page lists
 **every variable any Go code in this repository reads**, grouped by the binary
 that reads it.
 
+`muster-clankmail`, the [plugin](plugins.md) for ClankMail, is no longer one of
+them: it lives in its own repository,
+[github.com/ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail),
+whose README is its variable reference (`MUSTER_URL`, `PLUGIN_TOKEN_FILE`,
+`CHIEF_KEY_FILE`, `HUB_URL`, `HUB_NAME`, `CLANKMAIL_PEERS`, `STATE_DIR`,
+`POLL_INTERVAL`, `LISTEN_ADDR`), and it is not in the muster image any more:
+run `ghcr.io/zacxdev/muster-clankmail:<version>`. What muster itself needs for
+it is in [clankmail.md](clankmail.md).
+
 The list is enforced. `TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa`
 (in `internal/modulegate/envdoc_test.go`) parses the module's Go source, collects
 every variable name it reads, and compares that set with the first column of the
@@ -49,8 +58,9 @@ saying whether that feature is on, off or degraded, and why.
 | `DATABASE_URL_FILE` | none | no | A file whose contents are `DATABASE_URL`, read only when `DATABASE_URL` is empty. The Compose stack's `muster-init` writes it from `POSTGRES_PASSWORD` (see [Secrets from files](#secrets-from-files)). |
 | `POSTGRES_PASSWORD` | generated | no | The Compose stack's database password. Read only by `muster-server compose-init` (the stack's `muster-init` one-shot), and only when the stack has no database password yet: set in `.env` then, it is used; unset, one is generated. Either way it is kept on the stack's `secrets` volume (Postgres's password file) and goes into `DATABASE_URL_FILE`. Postgres reads it only when it creates the database, so once kept it is **never** overwritten: a different value in `.env` is refused, naming the way out ([docs/quickstart-local.md](quickstart-local.md#the-database-password)). |
 | `MUSTER_PORT` | `8105` | no | The main listener. |
-| `MUSTER_PUBLIC_URL` | none | for invites and passkeys | The external base URL. It is used to build links (invites, the admin claim), and its host is accepted as muster's own origin. |
-| `MUSTER_STANDALONE` | off | one of this or the router | Declares that there is no permission router. If neither this nor a router is configured, `/readyz` answers 503 and names the missing setting. |
+| `MUSTER_METRICS_PORT` | none (`/metrics` is not served) | no | The only listener that serves `GET /metrics` (Prometheus), and it serves nothing else. `/metrics` is on no other port, so a public route to muster does not reach it. It must differ from every other listener's port. The Compose stack passes it through without publishing it to the host; the Helm chart opens it with `metrics.enabled`. |
+| `MUSTER_PUBLIC_URL` | none | for invites and passkeys | The external base URL. It is used to build links (invites, the admin claim), and its host is accepted as muster's own origin. An `https` URL also turns on the `Secure` session cookie (unless `MUSTER_SECURE_COOKIES=0`) and HSTS. |
+| `MUSTER_STANDALONE` | off | one of this or the router | Declares that there is no permission router. If neither this nor a router is configured, `/readyz` answers 503 and the server log names the missing setting (the `/readyz` body is `{"status": …}` only). |
 | `MUSTER_TASK_REAP_AFTER` | `168h` | no | How long a task can sit idle before the reaper tags it `stale`. The reaper runs every 30 minutes. |
 | `MUSTER_AGENT_REAP_STOPPED_AFTER` | `336h` | no | How long an agent's stored status can stay `stopped` before the [stopped-agent reaper](provisioner.md#reaping-stopped-agents) destroys it (the agent page's Delete teardown). Never the chief, an agent in any other status (`error` included), a pool worker, or an agent saved for later and never started. A Go duration of at least `1h`; `0` or `off` turns the reaper off. Swept every 30 minutes with the idle-task reaper. |
 | `MUSTER_SEND_QUEUE_IDLE` | `30s` | no | How long a mirrored Claude Code session must have been idle (by Claude Code's own `statusUpdatedAt`) before the next queued message is sent to it. Range: `1s`–`1h`; with `MUSTER_SESSION_ROUTING=1`, under `30m`, a [routed message](plugins.md#routing-a-message-to-a-session)'s deadline (it is pasted only after this wait), or it refuses to boot. A route muster makes for a pull-request review (`MUSTER_PR_MAIL_SENDERS`), and a route of your own typed request, has a `4h` deadline instead; both are fixed, not settings. |
@@ -90,15 +100,94 @@ See [auth.md](auth.md).
 | `MUSTER_AUTH_MODE` | `password` | no | `password` means one shared operator password, acting as user 1. `gotrue` means per-user accounts through GoTrue. |
 | `MUSTER_UI_PASSWORD` | none | in password mode | The operator password. If it is unset or shorter than 12 characters, every browser page answers 503. This fails closed. |
 | `MUSTER_UI_PASSWORD_FILE` | none | no | A file whose contents are `MUSTER_UI_PASSWORD`, read only when that is empty. The Compose stack generates it once when `.env` sets no password ([Secrets from files](#secrets-from-files)). |
-| `MUSTER_SECURE_COOKIES` | off (`1` in the Compose stack) | behind TLS | Marks the password-mode session cookie `Secure`. One exception: a sign-in from a page this machine serves itself over plain `http://localhost`, `127.0.0.0/8` or `[::1]` (the request's Host and its Origin both loopback, no TLS, no forwarded https) gets the cookie without `Secure`, because WebKit does not keep a `Secure` cookie there (measured with Playwright's WebKit; Chromium keeps it) and that traffic never leaves the machine. The cookies used in gotrue mode are always `Secure`. |
+| `MUSTER_SECURE_COOKIES` | on when `MUSTER_PUBLIC_URL` is `https`, else off (`1` in the Compose stack) | no | Marks the password-mode session cookie `Secure`. Unset, it follows `MUSTER_PUBLIC_URL`; `1` turns it on and `0` turns it off whatever the URL (the opt-out). One exception: a sign-in from a page this machine serves itself over plain `http://localhost`, `127.0.0.0/8` or `[::1]` (the request's Host and its Origin both loopback, no TLS, no forwarded https) gets the cookie without `Secure`, because WebKit does not keep a `Secure` cookie there (measured with Playwright's WebKit; Chromium keeps it) and that traffic never leaves the machine. The cookies used in gotrue mode are always `Secure`. Separately, with an `https` `MUSTER_PUBLIC_URL` every response carries `Strict-Transport-Security: max-age=31536000`, whatever this is set to. |
 | `MUSTER_GOTRUE_URL` | none | in gotrue mode | The base URL of muster's GoTrue. Set it together with the secret, or set neither. |
 | `MUSTER_GOTRUE_JWT_SECRET` | none | in gotrue mode | The HS256 secret GoTrue signs with. At least 32 characters. |
 | `MUSTER_BROWSER_PORT` | none | in gotrue mode | A second listener, the only one that serves browser sessions in gotrue mode. On that mode's browser listener, the shared tokens below are refused with 403. |
-| `MUSTER_HOOK_TOKEN` | none (machine routes open) | in gotrue mode | A shared machine secret that acts as user 1, the admin. It is enforced only when set. When set, it must be at least 12 characters and not the `.env.example` placeholder `CHANGE-ME`; otherwise muster refuses to boot. |
+| `MUSTER_TRUSTED_PROXIES` | none (trust nothing) | behind a proxy, to tell clients apart | Comma-separated CIDR ranges (a bare address is one host) of the proxies whose `MUSTER_CLIENT_IP_HEADER` names the client. Only a request whose TCP peer is inside one is believed; from any other peer the client address is the peer. Never include a range agent pods connect from: an agent there could choose its own address. Unset, it is the peer on every listener. Set it together with `MUSTER_CLIENT_IP_HEADER`, or set neither: one without the other, a `/0` range, or a range that does not parse refuses to boot. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
+| `MUSTER_CLIENT_IP_HEADER` | none | with `MUSTER_TRUSTED_PROXIES` | The header a trusted proxy names the client in: `CF-Connecting-IP`, `X-Forwarded-For` or `X-Real-IP` (any case). `X-Forwarded-For` is read from the right: the first entry that is not inside `MUSTER_TRUSTED_PROXIES`. A value that does not parse as an IP address is ignored, and the proxy's own address is used. |
+| `MUSTER_DIRECT_CLIENTS` | none | in gotrue mode, unless `MUSTER_TRUSTED_PROXIES` is set | `1` declares that clients connect straight to muster, with no proxy in front, so each client's address is its own TCP peer. In gotrue mode muster refuses to boot unless the topology is declared: either this, or `MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER`. Setting both refuses to boot in any mode, because they contradict each other. Any value other than `1` or unset refuses to boot. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
+| `MUSTER_HOOK_TOKEN` | none | **yes** | A shared machine secret that acts as user 1, the admin; the hosts (`muster-mirror`) and hooks that call muster present it. Generate one with `openssl rand -hex 32`. It must be at least 12 characters and not the `.env.example` placeholder `CHANGE-ME`. **Unset, empty or blank, muster refuses to boot**, in both auth modes (a Secret key holding `""` counts as unset). `make run` generates one for development. The Compose stack and the Helm chart generate one unless you give your own. |
 | `MUSTER_HOOK_TOKEN_FILE` | none | no | A file whose contents are `MUSTER_HOOK_TOKEN`, read only when that is empty. The Compose stack generates it once when `.env` sets no token. |
 | `MUSTER_SERVICE_TOKEN` | none (routes answer 503) | no | A service-to-service secret that acts as user 1. Requests must also send an `X-Muster-Actor` header. At least 32 characters. |
 | `MUSTER_STEPUP_WINDOW` | `12h` | no | How recent a sign-in must be before you can type into a mirrored session. Range: `1m`–`24h`. |
 | `MUSTER_LIVE_HEARTBEAT` | `15s` | no | How often every live socket and event stream sends a heartbeat. A page reconnects a stream that stays silent for about two of them. Range: `250ms`–`5m`. |
+
+### Client addresses behind a proxy
+
+One client address is used for everything that names a client: every
+per-address limit (sign-in, passkeys, invites and resets, step-up, device and
+plugin pairing, share links, mirror connections), audit rows and log lines,
+and the `X-Muster-Client-IP` header muster sends to GoTrue for GoTrue's own
+rate limits. It is decided the same way on every listener (the main port,
+`MUSTER_CONNECT_PORT` and `MUSTER_BROWSER_PORT`):
+
+- If the TCP peer is **not** inside `MUSTER_TRUSTED_PROXIES`, the address is the
+  peer. Every forwarding header is ignored, because a client can type any of
+  them and most proxies pass the ones they do not set through unchanged.
+- If the peer **is** trusted, the address is the client named in
+  `MUSTER_CLIENT_IP_HEADER`. If that header is missing or does not parse, it is
+  the proxy's own address.
+
+With neither variable set (the default), the address is always the peer. Behind
+a proxy, every client then has the proxy's address: the per-address limits
+become one shared bucket, but no client can choose another client's address.
+
+🔴 **In gotrue mode the topology must be declared, or muster refuses to boot.**
+muster sends each request's client address to GoTrue, which keys its own
+per-address limits on it (password sign-in, session refresh, passkey sign-in,
+password-reset links). Behind an undeclared proxy every user would share the
+proxy's address in GoTrue, and anyone could empty that one bucket and have
+GoTrue refuse everyone's correct sign-in. So set one of:
+
+- `MUSTER_TRUSTED_PROXIES` and `MUSTER_CLIENT_IP_HEADER`, for a proxy in front
+  of muster (see below); or
+- `MUSTER_DIRECT_CLIENTS=1`, when clients connect straight to muster with no
+  proxy.
+
+Password mode has no GoTrue and does not require either.
+The boot log names the mode (`client address: STRICT` or
+`client address: TRUSTED PROXIES`). A forwarding header from an untrusted peer,
+and a trusted peer sending no usable header, are each logged at most once a
+minute.
+
+Pick the header your proxy **writes**, never one it only passes on:
+
+- `X-Forwarded-For` only works behind proxies that append to it or replace it:
+  Caddy, Traefik, and nginx with `$proxy_add_x_forwarded_for`. nginx with a
+  bare `proxy_pass` forwards the client's own header untouched. Its right-most
+  entry is then whatever the client typed, and nothing muster does can tell.
+- `CF-Connecting-IP` and `X-Real-IP` are one address each, and are believed
+  only from a proxy that overwrites them. Cloudflare overwrites
+  `CF-Connecting-IP`. Caddy, nginx and Traefik do not: they pass a client's
+  `CF-Connecting-IP` through. Behind Cloudflare and a proxy of your own, trust
+  `CF-Connecting-IP` only if every request reaching that proxy came through
+  Cloudflare, for example with Authenticated Origin Pulls, or a firewall that
+  admits only [Cloudflare's ranges](https://www.cloudflare.com/ips/).
+- List the address muster **sees** as the peer, after any NAT. In Kubernetes, a
+  NodePort or LoadBalancer Service with `externalTrafficPolicy: Cluster`
+  rewrites the source to a node address. Every client that reaches that port
+  then looks like the same peer, the trusted proxy included. Use
+  `externalTrafficPolicy: Local`, or reach muster through an in-cluster
+  ingress and trust the controller's own addresses.
+- 🔴 **Never include an address an agent pod connects from.** Agents reach
+  muster-server directly (the main and connect listeners, for the API, the
+  MCP door and the connectors), and the rule above is the same on every
+  listener. A dispatched agent inside a trusted range could therefore write
+  any address into the header and choose its own: pick a per-address bucket
+  at will, spend another client's, and put a false address into audit rows
+  and logs. In Kubernetes the ingress controller and the agent pods usually
+  draw from the SAME pod network, so do not trust the whole pod range: trust
+  the controller's addresses only (a dedicated node, `hostNetwork`, or
+  addresses your network plugin pins), or leave the variables unset.
+
+| in front of muster | `MUSTER_TRUSTED_PROXIES` | `MUSTER_CLIENT_IP_HEADER` | what the proxy does |
+|---|---|---|---|
+| Caddy on the same machine | `127.0.0.1/32,::1/128` | `X-Forwarded-For` | `reverse_proxy` replaces the client's `X-Forwarded-For` with the address it saw (Caddy's default). |
+| nginx on the same machine | `127.0.0.1/32,::1/128` | `X-Real-IP` | Needs `proxy_set_header X-Real-IP $remote_addr;`, which overwrites the header. Or use `X-Forwarded-For` with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. |
+| Traefik (also as a Kubernetes ingress) | Traefik's own addresses (not the whole pod range: agent pods share it) | `X-Forwarded-For` | Traefik drops the `X-Forwarded-*` headers of a peer outside its entry point's `forwardedHeaders.trustedIPs`, then appends the peer's address. |
+| Cloudflare, straight to muster | [Cloudflare's ranges](https://www.cloudflare.com/ips/) | `CF-Connecting-IP` | Cloudflare overwrites the header with the address that connected to it. |
+| Cloudflare, then your own proxy | that proxy's address | `CF-Connecting-IP` | Only with an origin lock on the proxy (see above). Without one, use the proxy's own row instead. |
 
 ## muster-server: optional features
 
@@ -341,7 +430,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_LABELS_FILE` | none | no | A JSON object `{"<session>": "<codename>"}` of display labels. |
 | `MUSTER_MIRROR_PANE_MAP_DIR` | none | no | A directory of per-pane Claude Code records, kept current by a hook. |
 | `MUSTER_MIRROR_MCP_LISTEN` | none (off) | no | A loopback address with a numeric port (`127.0.0.1:<port>` or `[::1]:<port>`; not port 0 or a service name, so the endpoint is where the address says) on which to serve this host's Claude Code sessions muster's attention and task tools as an MCP endpoint (`http://<addr>/mcp`); any other address is refused. Optional: if it cannot start, the host logs why and mirrors without it. See [attention.md](attention.md#mirrored-claude-code-sessions). |
-| `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
+| `MUSTER_MIRROR_MCP_SECRET_FILE` | `muster-mirror/mcp-secret` under the user config directory (Go's `os.UserConfigDir`; differs by OS: [where it is](features.md#where-the-mcp-secret-is)) | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
 | `MUSTER_MIRROR_ATTEMPT_CODE_FILE` | `$XDG_CONFIG_HOME/muster-mirror/attempt-code` | no | Where this muster-mirror process writes (0600, in a 0700 directory) its **attempt code**: a random code drawn at start and sent on every connect. When a team host's connection is held, a team manager confirms this machine by typing it ([mirroring.md](mirroring.md#team-hosts)); `muster doctor` reads it here (the same setting in muster-mirror's settings file) to show it. Removed at exit. Empty or unset: the default path. To write no file, pass `-attempt-code-file=` on muster-mirror's command line (the log still shows the code once when held). |
 | `MUSTER_MIRROR_MCP_TARGETS_FILE` | none | no | With `MUSTER_MIRROR_MCP_LISTEN`: a JSON list of **other muster instances**, `[{"name": "la", "url": "https://…", "token_file": "/abs/path"}]`, whose admin tools this host's Claude Code sessions may call by passing `instance: "<name>"` ([mirroring.md](mirroring.md#several-muster-instances)). Each `token_file` holds this host's mirror token minted **on that instance**. Checked at start. A failure is logged naming the entry and why, never the token, and the file is **ignored**: MCP then reaches the primary only, and mirroring is unaffected (never fatal). The rules: names match `[a-z0-9-]{1,32}` and are unique (and differ from `MUSTER_MIRROR_MCP_PRIMARY_NAME`); a URL is `https://`, or `http://` to a loopback or private IP literal or `localhost`; a token file is an absolute path (or `~/…`), a regular file (not a symlink) of mode 0600 or tighter, holding an `mmt_…` token. At most 16 targets. MCP only: this host's sessions are mirrored to `MUSTER_MIRROR_URL` alone. |
 | `MUSTER_MIRROR_MCP_PRIMARY_NAME` | `default` | no | The name `MUSTER_MIRROR_URL`'s instance goes by in an `instance` argument (`[a-z0-9-]{1,32}`; anything else is logged and ignored, and no extra target is used). A call naming no instance runs there. |
@@ -365,7 +454,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_AGENT_SPAWN_OFFICER_RATE` | `20/10m,400/24h` | no | This host's own ceiling on every OFFICER spawn together, counted from the audit log; `MUSTER_MIRROR_AGENT_SPAWN_RATE` is the chief's. muster limits each officer below it by its own poll and schedule ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)). |
 | `MUSTER_MIRROR_CLAUDE_PATH` | (the tmux server's PATH) | no | The absolute path of the `claude` a spawned agent runs. Set it when `claude` is somewhere the tmux server's global PATH does not reach (e.g. `~/.local/bin`): the mirror logs "claude is not on the tmux server's PATH" and starts no Claude Code agent otherwise. |
 | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | no | The append-only spawn audit log (JSON lines, 0600): every request before any work starts, and its result. A spawn whose first line cannot be written is refused. Read it with `muster-mirror agent-spawn-log`. |
-| `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | on | no | `-agent-spawn-skip-permissions`: start each agent `-agent-spawn` starts **without permission prompts** — Claude Code with `--permission-mode bypassPermissions`, opencode with `--auto` — so it runs its tools without asking anyone. A false value (`0`, `f`, `F`, `false`, `FALSE`, `False`) starts them in each CLI's normal permission mode, exactly as before the setting existed; a value that is not a bool stops the daemon. A mirror running as root starts claude in normal permission mode whatever this says (Claude Code refuses bypass mode as root); opencode still gets `--auto`. Changes spawns from the next restart; a running agent keeps its mode. See [mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent). |
+| `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | off | no | `-agent-spawn-skip-permissions` (**opt-in**): start each agent `-agent-spawn` starts **without permission prompts** — Claude Code with `--permission-mode bypassPermissions`, opencode with `--auto` — so it runs its tools without asking anyone. Unset or a false value (`0`, `f`, `F`, `false`, `FALSE`, `False`) starts them in each CLI's normal permission mode; a true value (`1`, `t`, `T`, `true`, `TRUE`, `True`) skips the prompts; a value that is not a bool stops the daemon. ⚠ Earlier releases defaulted this to on: a host that relied on that now sees permission prompts until it sets it. A mirror running as root starts claude in normal permission mode whatever this says (Claude Code refuses bypass mode as root); opencode still gets `--auto`. Changes spawns from the next restart; a running agent keeps its mode. See [mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent). |
 | `XDG_DATA_HOME` | `~/.local/share` | no | The base of `MUSTER_MIRROR_AGENT_SPAWN_DIR`'s default. |
 | `XDG_RUNTIME_DIR` | none | with `-agent-spawn` | A spawned agent's prompt is written under `$XDG_RUNTIME_DIR/muster-mirror/prompts` (0600) and removed by the window before claude starts. Unset, every spawn is refused. |
 | `TMUX` | set by tmux | no | tmux's own variable in a pane: `<socket path>,<pid>,<session>`. `muster-mirror ask` compares its socket path with each hook record's to pick the one for this session's tmux server; with none set the question stays in the terminal. |
@@ -552,83 +641,6 @@ Slash commands typed into the pane are not tools and are not removed (a turn's
 prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
 this flag ignores the header and starts the CLI with every tool, and muster
 does not detect it: see [chief nudges, Rolling out](chief-nudges.md#rolling-out).
-
-## muster-clankmail (the ClankMail plugin)
-
-`muster-clankmail` is a [plugin](plugins.md) for ClankMail, a signed-messaging
-protocol for agents (`github.com/ZacxDev/clankmail`, `SPEC.md`). It holds one
-key, your chief's: your offline principal key claims a handle (`@<owner>`),
-grants the chief key the name `chief`, and the chief key enrolls
-(`muster-clankmail identity claim` / `identity grant`), so the chief's address is
-`@<owner>/chief`. It delivers direct messages from **pinned peers** to your
-chief (`sender: <owner>/chief`, `sender_verified: true`, `thread`: the root
-derived by following each message's signed `re`), and sends the replies you
-approve. It does not start conversations; that will come from muster, as
-compose drafts you approve in the browser. A message from anyone else lands in
-the hub's `requests` queue and is **never** posted to muster: `muster-clankmail requests` counts and lists them
-for you. The image ships it as `/muster-clankmail`; run one replica per state
-directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
-
-**What decides delivery is the signer, not the queue.** A pinned peer's message
-can land in `requests` too: one sent before the plugin's allow call reached the
-hub, or while the peer was disabled (and so off the allow list). Such a message
-goes through exactly the checks an inbox message does (the full signature
-verification, the pinned key, the peer's status) and is delivered once that
-peer is verified, exactly once, on the same derived thread. A message from a
-pinned peer that has not been checked yet (a fresh or lost `STATE_DIR`, a
-relabelled peer, a boot while the hub's handle route fails) is **held**, not
-dropped: the plugin keeps its id (never its text), checks its peers once
-before the first poll, and delivers the held message once the peer verifies.
-A held peer holds back only its own later messages (so they keep their
-order), never another peer's. A peer that is **disabled** (its chain did not
-verify, for example a hub serving a forged handle) is held the same way, in
-both queues: its messages are never recorded as final while it is merely
-disabled, a periodic check does not release them, and `peer verify`, when it
-re-enables the peer, releases them to muster in the order they were read, each
-exactly once. `show` and `/health` report the total as `held` and the count per
-peer label as `held_by_peer` (and on each `peers` row), and `peer verify` says
-how many held messages it is releasing and lists their ids and queues (the held
-list keeps no text). A request listed as a stranger's whose key you
-later add to `CLANKMAIL_PEERS` is held from the next start, and delivered once
-that peer verifies; removing a peer turns its held requests back into listed
-ones.
-
-⚠ **The admin socket is as private as the plugin's namespace.** The admin
-subcommands talk to `$STATE_DIR/admin.sock` from inside the plugin's
-container. Agent and chief pods carry no service-account token, so they cannot
-reach it; but anyone who holds `pods/exec` in the plugin's namespace can, and
-can read `CHIEF_KEY_FILE` too. That includes any session holding the
-operator's kubeconfig and, in the default provisioner layout
-([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
-`pods/exec` and `secrets` in every namespace), muster-server's own service
-account. The least-privilege layout removes that standing access (except in
-muster's own namespace, where deploy-key pools have it read Secrets) but not
-muster's ability to bind itself to `muster-agent-namespace` in any namespace,
-so a namespace of its own does not by itself keep the chief key from muster.
-Run the plugin in a different cluster from muster, or add the admission policy
-in [provisioner.md](provisioner.md#kubernetes-rbac) and keep the plugin's
-namespace outside the agent prefix and separate from muster's own namespace; see
-[clankmail.md](clankmail.md#25-configure-and-run).
-
-| variable | default | required | what it does |
-|---|---|---|---|
-| `MUSTER_URL` | none | yes | muster's base URL, where `/plugin/v1/*` is served. |
-| `PLUGIN_TOKEN_FILE` | none | yes | A file holding the `mpl_` plugin token minted on `/plugins`. |
-| `CHIEF_KEY_FILE` | none | yes | The chief's ClankMail key: one line, the base64url of a 32-byte Ed25519 seed (`muster-clankmail keygen --out FILE` writes it, mode `0600`). |
-| `HUB_URL` | none | yes | The ClankMail hub's base URL. |
-| `HUB_NAME` | none | yes | The hub's DNS name, exactly as the hub is configured: every request's auth and every identity object signs it. |
-| `CLANKMAIL_PEERS` | none | no | The peers whose messages reach your chief: `<owner>/<name>=k_…`, comma-separated, each pinning that agent's key (learned out of band). Every 10 minutes the plugin checks that the hub's `@<owner>` handle, grant and enroll still bind the pinned key to `<owner>/<name>`, and the first principal key that verified is remembered: a mismatch, or a different principal, **disables** the peer (its key is removed from the hub's allow list and its messages are not delivered) until you run `muster-clankmail peer verify [--accept-principal] <owner>/<name>`. Verified peers are put on the hub's allow list; a key you remove from this list is removed there too. |
-| `STATE_DIR` | none | yes | A writable directory (a volume): `state.json` (cursors, message records without bodies, the reply ledger), `state.lock`, and the admin socket `admin.sock` the admin subcommands use. |
-| `POLL_INTERVAL` | `15s` | no | How often the hub's inbox and requests queues are read. Range `1s`–`5m`. |
-| `LISTEN_ADDR` | `:8080` | no | Where `GET /health` is served (status, counts, peer states; never message text). |
-
-⚠ **Clocks.** The hub accepts a request's auth only within ±60 s of its own
-clock, and a message within ±300 s. Run the plugin on a host whose clock is
-synchronised (NTP); past 60 s of skew every inbox read fails with `E_AUTH`,
-which `/health` reports.
-
-⚠ **The hub can read direct messages.** ClankMail authenticates every message
-end to end, but does not encrypt it: send nothing secret.
 
 ## muster-preview (the preview gateway)
 

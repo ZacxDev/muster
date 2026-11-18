@@ -11,17 +11,18 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// -agent-spawn-skip-permissions=false (AgentSpawnConfig.KeepPermissionPrompts)
-// against REAL tmux, through the whole spawn: each runtime's process sees
-// EXACTLY the argv it saw before the setting existed — no permission word at
-// all. The default-on half is pinned by the two feature tests
+// The DEFAULT — no -agent-spawn-skip-permissions
+// (AgentSpawnConfig.SkipPermissionPrompts false) — against REAL tmux, through
+// the whole spawn: each runtime's process sees EXACTLY the argv it saw before
+// the setting existed — no permission word at all. The opted-in half is
+// pinned by the two feature tests
 // (TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree and
 // TestTmuxASpawnedOpenCodeRunsItsModelAndGetsThePromptAfterTheBind), whose
-// rigs leave the setting at its default.
+// rigs turn the setting on.
 
 func TestTmuxASpawnWithPermissionPromptsKeptRunsClaudeAsBefore(t *testing.T) {
 	r := newSpawnRig(t)
-	r.c.cfg.AgentSpawn.KeepPermissionPrompts = true
+	// the rig's zero config: the default
 	prompt := mirror.SpawnPreface + " keep the prompts"
 	w, e := r.spawn(t, 41, mirror.AgentSpawnReq{Runtime: "claude", Repo: "acme/widgets", Prompt: prompt, Name: "#9 Fix the typo!"})
 	if e != nil {
@@ -33,32 +34,33 @@ func TestTmuxASpawnWithPermissionPromptsKeptRunsClaudeAsBefore(t *testing.T) {
 }
 
 // TestTmuxTheHelloSaysWhetherSpawnedAgentsSkipPermissionPrompts: a host that
-// spawns says so in its hello by default (what muster tells the agent and the
-// chief), and does not with the setting off — nor as root (Geteuid 0), where
-// its claude keeps its prompts.
+// spawns says so in its hello with the setting on (what muster tells the agent
+// and the chief), and does not by default — nor as root (Geteuid 0), where its
+// claude keeps its prompts.
 func TestTmuxTheHelloSaysWhetherSpawnedAgentsSkipPermissionPrompts(t *testing.T) {
 	r := newOCRig(t)
 	for _, c := range []struct {
-		keep bool
+		skip bool
 		euid int
 		want bool
-	}{{false, 1000, true}, {true, 1000, false}, {false, 0, false}, {true, 0, false}} {
+	}{{true, 1000, true}, {false, 1000, false}, {true, 0, false}, {false, 0, false}} {
 		euid := c.euid
-		r.c.cfg.AgentSpawn.KeepPermissionPrompts = c.keep
+		r.c.cfg.AgentSpawn.SkipPermissionPrompts = c.skip
 		r.c.cfg.AgentSpawn.Geteuid = func() int { return euid }
 		h := r.driven(t, true).of(mirror.TypeHello)[0]
 		if len(h.AgentSpawn) == 0 || h.AgentSpawnSkipPermissions != c.want {
-			t.Fatalf("keep %v euid %d: the hello offers %q with AgentSpawnSkipPermissions=%v; want %v", c.keep, c.euid, h.AgentSpawn, h.AgentSpawnSkipPermissions, c.want)
+			t.Fatalf("skip %v euid %d: the hello offers %q with AgentSpawnSkipPermissions=%v; want %v", c.skip, c.euid, h.AgentSpawn, h.AgentSpawnSkipPermissions, c.want)
 		}
 	}
 }
 
 // TestTmuxARootMirrorRunsClaudeAsWithTheSettingOff: as root (Geteuid 0) with
-// the setting at its default, a spawned claude sees EXACTLY the setting-off
+// the setting ON, a spawned claude sees EXACTLY the setting-off
 // argv (Claude Code refuses bypassPermissions as root), while a spawned
 // opencode still gets --auto.
 func TestTmuxARootMirrorRunsClaudeAsWithTheSettingOff(t *testing.T) {
 	r := newSpawnRig(t)
+	r.c.cfg.AgentSpawn.SkipPermissionPrompts = true
 	r.c.cfg.AgentSpawn.Geteuid = func() int { return 0 }
 	prompt := mirror.SpawnPreface + " as root"
 	w, e := r.spawn(t, 43, mirror.AgentSpawnReq{Runtime: "claude", Repo: "acme/widgets", Prompt: prompt, Name: "#9 Fix the typo!"})
@@ -69,6 +71,7 @@ func TestTmuxARootMirrorRunsClaudeAsWithTheSettingOff(t *testing.T) {
 		t.Fatalf("the stub claude saw %q; want exactly %q (no permission flag as root)", got, want)
 	}
 	o := newOCRig(t)
+	o.c.cfg.AgentSpawn.SkipPermissionPrompts = true
 	o.c.cfg.AgentSpawn.Geteuid = func() int { return 0 }
 	ow, oe := o.spawn(t, 44, ocWidgets(mirror.SpawnPreface+" as root"))
 	if oe != nil {
@@ -82,7 +85,7 @@ func TestTmuxARootMirrorRunsClaudeAsWithTheSettingOff(t *testing.T) {
 
 func TestTmuxASpawnWithPermissionPromptsKeptRunsOpenCodeAsBefore(t *testing.T) {
 	r := newOCRig(t)
-	r.c.cfg.AgentSpawn.KeepPermissionPrompts = true
+	// the rig's zero config: the default
 	w, e := r.spawn(t, 42, ocWidgets(mirror.SpawnPreface+" keep the prompts"))
 	if e != nil {
 		t.Fatalf("refused %+v", e)

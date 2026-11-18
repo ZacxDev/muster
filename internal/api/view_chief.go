@@ -225,7 +225,15 @@ func (s *Server) sessionSubject(ctx context.Context, e mirror.SessionView) chatS
 	if rt, ok := e.Spec(); ok {
 		about.Runtime = rt.Name
 	}
-	about.Title = s.mirrorName(ctx, e).Text
+	// Its name for the owner's cards (End “…”?, continues “…”): the human
+	// name, else its plain title WITHOUT the list's qualifier — the cards'
+	// Where row names the exact window (tmux session and window id), so a
+	// "· window 3" here would only say the same window a second, different
+	// way (an index beside an id).
+	about.Title = e.PlainTitle()
+	if n := s.mirrorName(ctx, e); n.Human() {
+		about.Title = n.Text
+	}
 	if e.Dispatch > 0 {
 		if st := s.hostDispatches(); st != nil {
 			// Read as the principal: a dispatch row of another owner's is not

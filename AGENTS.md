@@ -1,8 +1,10 @@
 # AGENTS.md
 
-For any coding agent that lands in this repository. This file holds links, not
-facts: each one goes to the place that owns its subject, so it cannot go stale
-behind the code.
+Guidance for coding agents working in this repository, following the
+[AGENTS.md](https://agents.md) convention. It is a contributor document like
+[CONTRIBUTING.md](CONTRIBUTING.md), and the same rules apply to an agent's
+change as to anyone's. This file holds links, not facts: each one goes to the
+place that owns its subject, so it cannot go stale behind the code.
 
 ## Installing or running muster
 
@@ -30,3 +32,7 @@ behind the code.
   (CONTRIBUTING.md lists it); while iterating, prefer the tests your change
   touches (a package, a single test, a single script), and treat CI's run on
   the pull request as the full check: read its result there.
+- **This repository is public.** Run `make leakscan` before you push: no
+  credentials, private hostnames or addresses, personal names or dates in code,
+  commits or pull request text ([CONTRIBUTING.md](CONTRIBUTING.md#the-leak-gate)).
+- **Security problems** are reported privately: [SECURITY.md](SECURITY.md).

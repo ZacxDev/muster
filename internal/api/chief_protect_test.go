@@ -1,17 +1,21 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -350,7 +354,8 @@ func deletableOnPage(t *testing.T, s *Server, id int64) bool {
 // 🔴 THE LEDGER CARRIES ITS OWN POSITIVE CONTROLS, IN THE SAME TYPE-CHECK: one
 // control declaration per shape above is added to the checked file set and must
 // be FOUND, or the two real names were matched by an instrument not shown to
-// see the spellings it claims to. (One check: the source importer costs ~12s.)
+// see the spellings it claims to. (One check: its imports come from export
+// data, see exportDataImporter.)
 func TestEveryDestroyCallSiteIsChiefGuarded(t *testing.T) {
 	controls := map[string]bool{
 		"ledgerControlAlias":  true, // through a local variable
@@ -437,7 +442,7 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 		files = append(files, file)
 	}
 	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}}
-	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil)}
+	conf := types.Config{Importer: exportDataImporter(t, fset)}
 	pkg, err := conf.Check("github.com/ZacxDev/muster/internal/api", fset, files, info)
 	if err != nil {
 		t.Fatalf("type-check: %v", err)
@@ -489,6 +494,44 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// exportDataImporter imports this package's dependencies from `go list -export`
+// data (as typedAPI and scanGatewayTurns do), not from source. The package
+// ITSELF is still type-checked from source by the caller, control file
+// included, so what the ledger can see is unchanged; only how its imports are
+// resolved moved. importer.ForCompiler(…, "source") re-type-checked every
+// dependency from source inside the -race test binary: 126-160 s in CI, 74 s
+// locally, against ~2 s now.
+func exportDataImporter(t *testing.T, fset *token.FileSet) types.Importer {
+	t.Helper()
+	// Never replayed from go's test cache: the `go` subprocess reads files the
+	// cache cannot see (see scanGatewayTurns). ci.yml gives this a per-run value.
+	_ = os.Getenv("MUSTER_TEST_NOCACHE")
+	cmd := exec.Command("go", "list", "-export", "-deps", "-json=ImportPath,Export", ".")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list: %v: %s", err, stderr.String())
+	}
+	exports := map[string]string{}
+	for dec := json.NewDecoder(bytes.NewReader(out)); ; {
+		var lp struct{ ImportPath, Export string }
+		if err := dec.Decode(&lp); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		exports[lp.ImportPath] = lp.Export
+	}
+	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		f, ok := exports[path]
+		if !ok || f == "" {
+			return nil, errors.New("no export data for " + path)
+		}
+		return os.Open(f)
+	})
 }
 
 // declName names a top-level declaration: a func by its name, anything else by
