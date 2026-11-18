@@ -93,7 +93,7 @@ CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg
 help:
 	@echo "muster:"
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
-	@echo "  make run          the server, against \$$DATABASE_URL (see README)"
+	@echo "  make run          the server, against \$$DATABASE_URL (see docs/development.md)"
 	@echo "  make image        the container image, css-check included"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
@@ -383,10 +383,12 @@ install-guide-test:
 
 # docs/features.md's anchors, and deploy/.env.example, the compose file and the
 # server's variables agreeing (tests/features_config_test.py); the guides, their
-# index and docs/features.md agreeing (tests/docs_guides_test.py). Static.
+# index and docs/features.md agreeing (tests/docs_guides_test.py); the README,
+# the docs index and the community files (tests/repo_front_door_test.py). Static.
 features-config-test:
 	python3 tests/features_config_test.py
 	python3 tests/docs_guides_test.py
+	python3 tests/repo_front_door_test.py
 
 check: vet test leakscan css-check verb-ledger install-guide-test features-config-test
 

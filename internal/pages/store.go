@@ -106,6 +106,11 @@ type Store interface {
 	// AddResponse records one response through link l at version v.
 	// ErrTooMany past MaxResponsesPerLink, or MaxUploadsPerLink for an upload.
 	AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
+	// AddOwnerResponse records one response the caller — page id's OWNER, from
+	// their own view — sent at version v (ByOwner, no link). The same caps as
+	// a link's, counted over the page's owner responses; ErrNotFound for a
+	// page the caller cannot see, ErrClosing for one being deleted.
+	AddOwnerResponse(ctx context.Context, id int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
 	// Responses is page id's responses with an id above after, oldest first,
 	// at most limit.
 	Responses(ctx context.Context, id, after int64, limit int) ([]Response, error)
@@ -142,11 +147,11 @@ func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 // owner it then acts as. Only the link row is handed on.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, p.creator_label, p.created_at, p.updated_at`
+const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, p.created_at, p.updated_at`
 
 func scanPage(row pgx.Row, extra ...any) (Page, error) {
 	var p Page
-	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.Label,
+	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.Label,
 		&p.CreatedAt, &p.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -209,8 +214,14 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID > 0 {
 			agent = c.AgentID
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, creator_label) VALUES ($1, $2, $3, $4)
-			RETURNING `+pageCols, title, agent, c.MirrorHost, truncate(c.Label, 200))
+		// A mirrored session's page records the session it came from
+		// (0152: NULL when there is none to record — an agent's page).
+		var sess any
+		if c.AgentID <= 0 && c.MirrorSession != "" {
+			sess = truncate(c.MirrorSession, 200)
+		}
+		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, creator_label) VALUES ($1, $2, $3, $4, $5)
+			RETURNING `+pageCols, title, agent, c.MirrorHost, sess, truncate(c.Label, 200))
 		var err error
 		if p, err = scanPage(row); err != nil {
 			return err
@@ -754,12 +765,12 @@ func (s *PGStore) LinkByToken(ctx context.Context, token string) (Link, error) {
 	return l, nil
 }
 
-const responseCols = `id, page_id, link_id, version, component, kind, data, upload_public_id, created_at`
+const responseCols = `id, page_id, coalesce(link_id, 0), by_owner, version, component, kind, data, upload_public_id, created_at`
 
 func scanResponse(row pgx.Row) (Response, error) {
 	var r Response
 	var kind string
-	err := row.Scan(&r.ID, &r.PageID, &r.LinkID, &r.Version, &r.Component, &kind, &r.Data, &r.UploadPublicID, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.PageID, &r.LinkID, &r.ByOwner, &r.Version, &r.Component, &kind, &r.Data, &r.UploadPublicID, &r.CreatedAt)
 	r.Kind = ResponseKind(kind)
 	return r, err
 }
@@ -768,9 +779,6 @@ func scanResponse(row pgx.Row) (Response, error) {
 // link must still be live: a link revoked while the request was in flight
 // records nothing.
 func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
-	if len(data) == 0 {
-		data = []byte("{}")
-	}
 	var out Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var state string
@@ -784,30 +792,75 @@ func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component stri
 		if LinkState(state) != LinkLive {
 			return ErrLinkNotFound
 		}
-		var all, files int
-		if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE kind = 'upload') FROM page_responses WHERE link_id = $1`, l.ID).
-			Scan(&all, &files); err != nil {
-			return err
-		}
-		if all >= MaxResponsesPerLink {
-			return fmt.Errorf("%w: this link has recorded %d responses, the most one link may", ErrTooMany, all)
-		}
-		if kind == KindUpload && files >= MaxUploadsPerLink {
-			return fmt.Errorf("%w: this link has recorded %d files, the most one link may", ErrTooMany, files)
-		}
 		var err error
-		out, err = scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (page_id, link_id, version, component, kind, data, upload_public_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+responseCols, l.PageID, l.ID, v, component, string(kind), data, uploadID))
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE pages SET updated_at = now() WHERE id = $1`, l.PageID)
+		out, err = insertResponse(ctx, tx, l.PageID, l.ID, v, component, kind, data, uploadID)
 		return err
 	})
 	if err != nil {
 		return Response{}, wrap("add response", err)
 	}
 	return out, nil
+}
+
+// AddOwnerResponse records the owner's own response under the page row's lock
+// (lockPage: a page being deleted takes none, as its links take none from
+// CloseLinks on).
+func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
+	var out Response
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := lockPage(ctx, tx, id); err != nil {
+			return err
+		}
+		var err error
+		out, err = insertResponse(ctx, tx, id, 0, v, component, kind, data, uploadID)
+		return err
+	})
+	if err != nil {
+		return Response{}, wrap("add owner response", err)
+	}
+	return out, nil
+}
+
+// insertResponse is THE writer of a response, under its responder's lock
+// (the link row's, or for the owner — linkID 0 — the page row's): the caps,
+// counted over that responder's rows, then the row, then the page's
+// updated_at.
+//
+// 🔴 ONE RESPONDER PER ROW: linkID > 0 is that link's response; 0 is the
+// owner's (by_owner, link_id NULL — 0152's page_responses_one_responder).
+// The owner's caps are a link's caps, so their own view is no bigger a hole.
+func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
+	if len(data) == 0 {
+		data = []byte("{}")
+	}
+	byOwner := linkID == 0
+	var link any
+	who, count := "this link", `SELECT count(*), count(*) FILTER (WHERE kind = 'upload') FROM page_responses WHERE link_id = $1`
+	arg := any(linkID)
+	if byOwner {
+		who, count = "you have", `SELECT count(*), count(*) FILTER (WHERE kind = 'upload') FROM page_responses WHERE page_id = $1 AND by_owner`
+		arg = page
+	} else {
+		link = linkID
+		who += " has"
+	}
+	var all, files int
+	if err := tx.QueryRow(ctx, count, arg).Scan(&all, &files); err != nil {
+		return Response{}, err
+	}
+	if all >= MaxResponsesPerLink {
+		return Response{}, fmt.Errorf("%w: %s recorded %d responses, the most one link may", ErrTooMany, who, all)
+	}
+	if kind == KindUpload && files >= MaxUploadsPerLink {
+		return Response{}, fmt.Errorf("%w: %s recorded %d files, the most one link may", ErrTooMany, who, files)
+	}
+	out, err := scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (page_id, link_id, by_owner, version, component, kind, data, upload_public_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+responseCols, page, link, byOwner, v, component, string(kind), data, uploadID))
+	if err != nil {
+		return Response{}, err
+	}
+	_, err = tx.Exec(ctx, `UPDATE pages SET updated_at = now() WHERE id = $1`, page)
+	return out, err
 }
 
 // Responses reads a page's responses after an id.
