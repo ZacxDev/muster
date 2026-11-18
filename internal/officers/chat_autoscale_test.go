@@ -186,6 +186,13 @@ func TestAnIdleChatInstanceIsStoppedAndAQueueWorkerNever(t *testing.T) {
 		"a live chat claim held as its holder": func(obs *officers.Observation, _ map[int]time.Time) {
 			obs.Claimed = append(obs.Claimed, liveChatClaim(o, 2))
 		},
+		// past max_instances, yet holding a queue claim (max_instances lowered
+		// since it claimed): held work is never stopped under it.
+		"a queue claim of its own": func(obs *officers.Observation, _ map[int]time.Time) {
+			q := queue
+			q.ID, q.ClaimedBy = "q2", o.InstanceName(2)
+			obs.Claimed = append(obs.Claimed, q)
+		},
 	} {
 		obs, prompted := base(), map[int]time.Time{}
 		mut(&obs, prompted)
@@ -268,14 +275,17 @@ func TestAChatWhoseInstanceStoppedIsRehomed(t *testing.T) {
 // TestAChatPastTheCeilingIsRehomedNotHeld replaces chat sessions' v1 rule
 // ("held back while its home is beyond max_instances"): a chat whose lane
 // lives on instance 3 of a pool whose chat ceiling is now 2 is placed on an up
-// instance with a free lane, its lane on 3 set aside.
+// instance with a free lane within the ceiling, its lane on 3 set aside —
+// though instance 3 is up (as a queue instance).
 func TestAChatPastTheCeilingIsRehomedNotHeld(t *testing.T) {
-	r, clk := clockRig(t, 1)
+	// max_instances 3, chat ceiling 2: instance 3 is up, but as a queue
+	// instance past the chat ceiling, so the chat living there is moved.
+	r, clk := clockRig(t, 3)
 	r.o = r.o.WithChatMaxInstances(2)
 	r.hq.AddChat(relID, "c-41", "triage")
 	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "a question")
 	r.lanes.homes["c-41"] = 3
-	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2)}}
+	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2), upInstance(r.o, 3)}}
 	if _, held := r.runner.Want(context.Background(), r.o, obs, clk.Now()); held[officers.ItemID(id)] {
 		t.Fatalf("a chat whose home is past the ceiling is held back; want it re-homed")
 	}
@@ -304,6 +314,11 @@ func TestADownHomeIsStartedOnlyWhenNoLaneIsFree(t *testing.T) {
 	obs.ChatPlan = plan
 	if d := officers.Decide(r.o, obs, time.Time{}, clk.Now(), nil); plan.Need != 1 || fmt.Sprint(plan.Prefer) != "[3]" || fmt.Sprint(d.Start) != "[3]" {
 		t.Fatalf("a down home, no free lane: plan %+v start %v; want Need 1, Prefer [3], start [3]", plan, d.Start)
+	}
+	// A home past the ceiling (4) is never preferred: the chat is re-homed.
+	r.lanes.homes["c-41"] = 7
+	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); plan.Need != 1 || len(plan.Prefer) != 0 {
+		t.Fatalf("a home past the ceiling, no free lane: plan %+v; want Need 1 and no preferred home", plan)
 	}
 }
 
@@ -448,6 +463,7 @@ func TestChatInstancesAreTheJudgementPoolsAndAPodsOnly(t *testing.T) {
 		{"judgement pool", judge, 4, "[2 3 4]"},
 		{"routine pool", routine, 1, "[]"},
 		{"host officer", host, 1, "[]"},
+		{"host officer, HQ backend (a literal: Parse refuses it)", func() officers.Officer { h := host; h.Backend = ""; return h }(), 1, "[]"},
 		{"builtin officer", builtin, 1, "[]"},
 		{"max_instances above the ceiling", wide, 5, "[]"},
 		{"the default ceiling", officers.Officer{ID: relID, MaxInstances: 1}, 3, "[2 3]"},
