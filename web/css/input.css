@@ -858,6 +858,14 @@ html:has([data-asks-feed]) {
   scroll-snap-align: start;
   scroll-margin-top: 4.5rem;
 }
+/*
+ * The Log tab's section headings snap too, so a scroll that settles near a
+ * section lands on its heading ("Asked most often") rather than snapping the
+ * first card under the header and the heading out of sight behind it.
+ */
+[data-testid="asklog-panel"] [data-asks-group-label] {
+  scroll-snap-align: start;
+}
 .asks-card {
   scroll-snap-align: start;
   transition: box-shadow 150ms ease, background-color 150ms ease;

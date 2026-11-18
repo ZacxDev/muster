@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
+	g "maragu.dev/gomponents"
 )
 
 // ---------------------------------------------------------------------------
@@ -213,6 +215,7 @@ func (s *Server) handleAPIAsksLog(w http.ResponseWriter, r *http.Request) {
 // askLogTopRow is one repeated question as the API answers it.
 type askLogTopRow struct {
 	QuestionNorm    string    `json:"question_norm"`
+	Question        string    `json:"question"`
 	Count           int       `json:"count"`
 	AnsweredByOwner int       `json:"answered_by_owner"`
 	MedianSecs      float64   `json:"median_answer_secs"`
@@ -247,7 +250,7 @@ func (s *Server) handleAPIAsksSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	tops := make([]askLogTopRow, 0, len(sum.Top))
 	for _, q := range sum.Top {
-		tops = append(tops, askLogTopRow{QuestionNorm: q.Norm, Count: q.Count, AnsweredByOwner: q.ByOwner, MedianSecs: q.MedianAnswer.Seconds(),
+		tops = append(tops, askLogTopRow{QuestionNorm: q.Norm, Question: q.Question, Count: q.Count, AnsweredByOwner: q.ByOwner, MedianSecs: q.MedianAnswer.Seconds(),
 			TopAnswer: q.TopAnswer, TopAnswerCount: q.TopAnswerCount, LastAskedAt: q.LastAsked.UTC()})
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -317,14 +320,35 @@ var (
 		asklog.KindPlainText: "Question in chat", asklog.KindAskUserQuestion: "Question with choices", asklog.KindAttention: "Agent's question",
 		asklog.KindOpenCodeQuestion: "opencode question", asklog.KindOpenCodePermission: "opencode permission request",
 	}
+	// 🔴 THE LOG NEVER SAYS "Open". The page heading's "N open" is what waits
+	// on you NOW (THE ONE OPEN COUNT, asks_count.go); a log row with no outcome
+	// is history the log never saw end — a phone screenshot read "Asks · 0
+	// open" over the log's "Open 3". So that row is "No answer": what the log
+	// holds for it, in words that cannot be read as "waiting". The stored
+	// value and the filter's URL value stay "open" (asklog.OutcomeOpen).
 	askOutcomeLabels = map[string]string{
-		asklog.OutcomeOpen: "Open", asklog.OutcomeAnswered: "Answered", asklog.OutcomeAnsweredInSession: "Answered in session",
+		asklog.OutcomeOpen: "No answer", asklog.OutcomeAnswered: "Answered", asklog.OutcomeAnsweredInSession: "Answered in session",
 		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Moved on", asklog.OutcomeExpired: "Expired",
 		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Superseded", asklog.OutcomeGone: "Gone",
 		asklog.OutcomeUnknown: "Unknown",
 	}
+	// askOutcomeMeanings is each outcome in a sentence a newcomer gets: the
+	// "How it ended" ⓘ lists them.
+	askOutcomeMeanings = map[string]string{
+		asklog.OutcomeOpen:              "The log never saw it end, and holds no answer. Not the same as waiting on you now.",
+		asklog.OutcomeAnswered:          "It got an answer: from you, your chief or another session.",
+		asklog.OutcomeAnsweredInSession: "You answered it in the session itself, not in muster.",
+		asklog.OutcomeDeclined:          "You declined to answer.",
+		asklog.OutcomeMovedOn:           "The session carried on without an answer.",
+		asklog.OutcomeExpired:           "It timed out before anyone answered.",
+		asklog.OutcomeCancelled:         "The agent withdrew it.",
+		asklog.OutcomeSuperseded:        "A newer question replaced it before an answer.",
+		asklog.OutcomeGone:              "Its session closed before any answer.",
+		asklog.OutcomeUnknown:           "muster restarted before it saw how it ended.",
+	}
 	askByLabels = map[string]string{
-		asklog.ByOwner: "You", asklog.ByChief: "The chief", asklog.ByOther: "Other", asklog.AnsweredByNone: "Nobody",
+		// "Someone else", not "Other": the outcomes' fold is "Other" (askOutcomeRows).
+		asklog.ByOwner: "You", asklog.ByChief: "The chief", asklog.ByOther: "Someone else", asklog.AnsweredByNone: "Nobody",
 	}
 	// askByInline is who answered, inside a sentence ("by you").
 	askByInline      = map[string]string{asklog.ByOwner: "you", asklog.ByChief: "the chief", asklog.ByOther: "someone else"}
@@ -402,9 +426,10 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 		}
 		return b.String()
 	}
-	// 🔴 The By-outcome pills are the LOG's own breakdown — they add up to its
-	// Total — so its "Open" is the log's rows with no outcome yet, not THE ONE
-	// OPEN COUNT (the header, More and the ☰ say that one; audit of #787).
+	// 🔴 "How it ended" is the LOG's own breakdown — it adds up to its Total —
+	// so its "No answer" is the log's rows with no outcome yet, not THE ONE
+	// OPEN COUNT (the header, More and the ☰ say that one; audit of #787), and
+	// it never says "Open" (askOutcomeLabels).
 	b.WriteString(askLogSummaryHTML(sum, s.askLogTextTTL()))
 	rows, next, err := st.Page(ctx, f, before, asklog.DefaultPageSize)
 	if err != nil {
@@ -412,7 +437,8 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 		b.WriteString(problemNode("The ask log could not be read.") + `</div>`)
 		return b.String()
 	}
-	b.WriteString(ui.AsksGroupLabel("asklog-asks", "Asks", sum.Total) + `
+	// No count beside it: the "asks" tile above already says how many.
+	b.WriteString(ui.AsksSectionLabel("asklog-asks", "Every ask, newest first") + `
 <ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asklog-asks" data-testid="asklog-list">`)
 	for _, a := range rows {
 		b.WriteString(askLogCardHTML(a, now, s.askLogTextTTL()))
@@ -535,39 +561,167 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	tile("median", lat(sum.MedianAnswer), "median to answer")
 	tile("p90", lat(sum.P90Answer), "90th percentile")
 	b.WriteString(`</div>`)
-	counts := func(key, label string, order []string, m map[string]int, labels map[string]string) {
-		b.WriteString(`<div class="flex min-w-0 flex-col gap-1" data-asklog-counts="` + key + `"><span class="px-1 text-xs font-semibold text-fg2">` + esc(label) +
-			`</span><div class="` + ui.AsksLogCountsClass + `">`)
-		for _, k := range order {
-			if n := m[k]; n > 0 {
-				b.WriteString(`<span class="` + ui.AsksPillClass + `" data-count="` + esc(k) + `">` + esc(labelOr(labels, k)) + ` ` + strconv.Itoa(n) + `</span>`)
-			}
+	// THE BREAKDOWNS, AS PLAIN STATISTICS: a heading (the page's one heading
+	// style) over "label … N" rows. No pill: nothing here is a control.
+	counts := func(key, label string, rows []askCountRow, info string) {
+		head := ui.AsksSectionLabel("asklog-counts-"+key, label)
+		if info != "" {
+			head = `<div class="` + ui.AsksLogSectionHeadClass + `">` + head + info + `</div>`
 		}
-		b.WriteString(`</div></div>`)
+		b.WriteString(`<div class="flex min-w-0 flex-col gap-1" data-asklog-counts="` + key + `">` + head +
+			`<dl class="` + ui.AsksLogCountsClass + `" aria-labelledby="asklog-counts-` + key + `">`)
+		for _, r := range rows {
+			b.WriteString(`<div class="` + ui.AsksLogCountRowClass + `" data-count="` + esc(r.key) + `"><dt class="` + ui.AsksLogCountLabelClass + `">` + esc(r.label) +
+				`</dt><dd class="` + ui.AsksLogCountValueClass + `">` + strconv.Itoa(r.n) + `</dd></div>`)
+		}
+		b.WriteString(`</dl></div>`)
 	}
-	counts("kind", "By kind", asklog.Kinds, sum.ByKind, askKindLabels)
-	counts("outcome", "By outcome", asklog.FilterOutcomes, sum.ByOutcome, askOutcomeLabels)
-	counts("answered_by", "Answered by", []string{asklog.ByOwner, asklog.ByChief, asklog.ByOther, asklog.AnsweredByNone}, sum.ByAnsweredBy, askByLabels)
-	b.WriteString(`</section>`)
+	outcomes, folded := askOutcomeRows(sum.ByOutcome, sum.Total)
+	b.WriteString(`<div class="` + ui.AsksLogBreakdownsClass + `">`)
+	counts("kind", "Kind of question", askCountRows(asklog.Kinds, sum.ByKind, askKindLabels), "")
+	counts("outcome", "How it ended", outcomes, askOutcomeSheetHTML(sum.ByOutcome, folded))
+	counts("answered_by", "Who answered", askCountRows([]string{asklog.ByOwner, asklog.ByChief, asklog.ByOther, asklog.AnsweredByNone}, sum.ByAnsweredBy, askByLabels), "")
+	b.WriteString(`</div></section>`)
 
-	b.WriteString(ui.AsksGroupLabel("asklog-top", "Asked most often", len(sum.Top)) + `
+	b.WriteString(ui.AsksSectionLabel("asklog-top", "Asked most often") + `
 <ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asklog-top" data-testid="asklog-top">`)
 	if len(sum.Top) == 0 {
 		b.WriteString(ui.AsksEmptyHTML(` data-asks-empty="log-top" data-asklog-top-empty`, "", "", `No question asked twice in the last `+esc(askDuration(ttl))+` (question text is kept that long).`, ""))
 	}
 	for _, t := range sum.Top {
-		facts := []string{strconv.Itoa(t.Count) + " times", "you answered " + strconv.Itoa(t.ByOwner)}
-		if t.TopAnswer != "" {
-			facts = append(facts, `usually “`+t.TopAnswer+`” (`+strconv.Itoa(t.TopAnswerCount)+`)`)
+		// The question as the owner saw it (the newest of its rows), its last
+		// paragraph — what was ASKED, and the part its normal form is made of
+		// (asklog.Normalise), not the report before it. Grouped by the normal
+		// form, which is never shown: lower-cased and stripped of its
+		// punctuation it read as a typo.
+		text := asklog.LastParagraph(t.Question)
+		if text == "" {
+			text = t.Norm
 		}
-		if t.MedianAnswer > 0 {
-			facts = append(facts, "median "+askDuration(t.MedianAnswer))
+		facts := make([]string, 0, 4)
+		for _, f := range askTopFacts(t) {
+			facts = append(facts, `<span class="`+ui.AsksLogFactClass+`">`+esc(f)+`</span>`)
 		}
-		b.WriteString(`<li class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asklog-top-row data-count="` + strconv.Itoa(t.Count) + `"><p class="` + ui.AsksTextClass + `" data-asklog-norm>` +
-			esc(t.Norm) + `</p><p class="` + ui.AsksLogFactsClass + `" data-asklog-top-facts>` + esc(strings.Join(facts, " · ")) + `</p></li>`)
+		b.WriteString(`<li class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asklog-top-row data-count="` + strconv.Itoa(t.Count) +
+			`" data-norm="` + esc(t.Norm) + `"><p class="` + ui.AsksLogClampClass + `" data-asklog-top-question>` +
+			esc(text) + `</p><p class="` + ui.AsksLogFactsClass + `" data-asklog-top-facts>` + strings.Join(facts, " · ") + `</p></li>`)
 	}
 	b.WriteString(`</ul>`)
 	return b.String()
+}
+
+// askTopFacts is a repeated question's facts line, short enough for a phone:
+// how many times; who answered, only when it was not you every time; its
+// usual answer; the median time to one.
+func askTopFacts(t asklog.TopQuestion) []string {
+	facts := []string{strconv.Itoa(t.Count) + " times"}
+	if t.ByOwner < t.Count {
+		facts = append(facts, "you answered "+strconv.Itoa(t.ByOwner))
+	}
+	if t.TopAnswer != "" {
+		switch {
+		case t.TopAnswerCount >= t.Count:
+			facts = append(facts, `always “`+t.TopAnswer+`”`)
+		case 2*t.TopAnswerCount > t.Count:
+			facts = append(facts, `usually “`+t.TopAnswer+`”`)
+		default:
+			facts = append(facts, `most often “`+t.TopAnswer+`”`)
+		}
+	}
+	if t.MedianAnswer > 0 {
+		facts = append(facts, "median "+askDuration(t.MedianAnswer))
+	}
+	return facts
+}
+
+// askCountRow is one row of a breakdown: its key (data-count), label and count.
+type askCountRow struct {
+	key, label string
+	n          int
+}
+
+// askCountRows is m's non-zero counts, in order, labelled.
+func askCountRows(order []string, m map[string]int, labels map[string]string) []askCountRow {
+	var rows []askCountRow
+	for _, k := range order {
+		if n := m[k]; n > 0 {
+			rows = append(rows, askCountRow{k, labelOr(labels, k), n})
+		}
+	}
+	return rows
+}
+
+// askOutcomeOther is the key of the outcomes' fold ("Other").
+const askOutcomeOther = "other"
+
+// askOutcomeShownPercent is the share of the asks an outcome other than Answered and
+// No answer must hold to get a row of its own (one in ten).
+const askOutcomeShownPercent = 10
+
+// askOutcomeRows is "How it ended" at a glance, most first: Answered and No
+// answer always have their own rows; any other outcome has one when it holds
+// at least askOutcomeShownPercent of total, and the rest — the rare and
+// jargony ones (Superseded, Moved on, …) — FOLD INTO ONE "Other" row, last,
+// whose breakdown is in the ⓘ (askOutcomeSheetHTML). folded is the outcomes
+// in it. A fold of one outcome is drawn by that outcome's own name: "Other 1"
+// would hide a word to save none.
+func askOutcomeRows(m map[string]int, total int) (rows []askCountRow, folded []string) {
+	other := 0
+	for _, k := range asklog.FilterOutcomes {
+		n := m[k]
+		if n <= 0 {
+			continue
+		}
+		if k == asklog.OutcomeAnswered || k == asklog.OutcomeOpen || n*100 >= total*askOutcomeShownPercent {
+			rows = append(rows, askCountRow{k, askOutcomeLabels[k], n})
+			continue
+		}
+		folded = append(folded, k)
+		other += n
+	}
+	switch len(folded) {
+	case 0:
+	case 1:
+		rows = append(rows, askCountRow{folded[0], askOutcomeLabels[folded[0]], other})
+		folded = nil
+	}
+	// Most first; ties keep FilterOutcomes' order.
+	slices.SortStableFunc(rows, func(a, b askCountRow) int { return b.n - a.n })
+	if len(folded) > 0 {
+		rows = append(rows, askCountRow{askOutcomeOther, "Other", other})
+	}
+	return rows, folded
+}
+
+// askOutcomeSheetHTML is the "How it ended" ⓘ: what each outcome the log holds
+// means, and which of them "Other" counts.
+func askOutcomeSheetHTML(m map[string]int, folded []string) string {
+	esc := html.EscapeString
+	in := map[string]bool{}
+	for _, k := range folded {
+		in[k] = true
+	}
+	var b strings.Builder
+	b.WriteString(`<dl class="flex flex-col gap-2" data-asklog-outcome-meanings>`)
+	for _, k := range asklog.FilterOutcomes {
+		n := m[k]
+		if n <= 0 {
+			continue
+		}
+		label := askOutcomeLabels[k]
+		if in[k] {
+			label += " (in Other)"
+		}
+		b.WriteString(`<div data-meaning="` + esc(k) + `"`)
+		if in[k] {
+			b.WriteString(` data-folded`)
+		}
+		b.WriteString(`><dt class="flex justify-between gap-3 text-sm font-medium text-fg"><span>` + esc(label) + `</span><span class="tabular-nums">` + strconv.Itoa(n) +
+			`</span></dt><dd class="text-sm text-fg2">` + esc(askOutcomeMeanings[k]) + `</dd></div>`)
+	}
+	b.WriteString(`</dl>`)
+	return ui.InfoSheetHTML(ui.InfoSheet{ID: "asklog-outcome-info", Label: "What these outcomes mean", Heading: "How asks ended",
+		Lead: "Every ask in the log ends one of these ways.", Extra: g.Raw(b.String()), Inline: true})
 }
 
 // askLogWhere is where an ask was asked, as the card's sub line names it.

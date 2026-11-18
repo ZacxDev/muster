@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"os"
 	"regexp"
 	"sort"
@@ -37,21 +38,8 @@ func TestTheOnePromptIsTheSameEverywhere(t *testing.T) {
 	if !strings.Contains(OnboardingPrompt, PromptDownloadFailed) || !strings.HasPrefix(PromptDownloadFailed, "If that download fails, stop") {
 		t.Fatalf("OnboardingPrompt does not say what to do when the download fails: %q", OnboardingPrompt)
 	}
-	spec, err := os.ReadFile("../../e2e/tests/onboarding.spec.ts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	decl := e2ePromptDecl.FindSubmatch(spec)
-	if decl == nil {
-		t.Fatal("e2e/tests/onboarding.spec.ts has no `const PROMPT = …;`")
-	}
-	var got strings.Builder
-	for _, m := range e2eLiteral.FindAllSubmatch(decl[1], -1) {
-		got.Write(m[1])
-		got.Write(m[2])
-	}
-	if got.String() != OnboardingPrompt {
-		t.Errorf("e2e/tests/onboarding.spec.ts's PROMPT differs from ui.OnboardingPrompt:\n spec: %q\n  Go:  %q", got.String(), OnboardingPrompt)
+	if got := specPrompt(t); got != OnboardingPrompt {
+		t.Errorf("e2e/tests/onboarding.spec.ts's PROMPT differs from ui.OnboardingPrompt:\n spec: %q\n  Go:  %q", got, OnboardingPrompt)
 	}
 	for _, path := range []string{"../../INSTALL.md", "../../docs/onboarding.md", "../../README.md"} {
 		b, err := os.ReadFile(path)
@@ -84,19 +72,30 @@ func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 			t.Errorf("%s: the onboarding page is not inside the nav:\n%s", who, html)
 		}
 	}
-	// The admin's: each code inside its own sheet, copied whole.
-	for id, code := range map[string]string{OnboardingPromptSheetID: OnboardingPrompt, OnboardingStartSheetID: TmuxOneLiner} {
+	// The expected texts are LITERALS, not ui's constants: the prompt is the
+	// e2e spec's PROMPT (TestTheOnePromptIsTheSameEverywhere holds it equal to
+	// the four other copies), the command is spelled here.
+	prompt := specPrompt(t)
+	// The admin's: each code inside its own sheet, copied whole. A sheet's Copy
+	// carries no data-copy-text (#823): window.cgCopy copies the sheet's own
+	// <code> as it reads, so that <code> must hold exactly the text.
+	for id, code := range map[string]string{OnboardingPromptSheetID: prompt, OnboardingStartSheetID: "tmux new -A -s work claude"} {
 		sheet := sheetOf(t, admin, id)
-		if !strings.Contains(sheet, `data-info-code="">`+escapeForHTML(code)+`<`) || !strings.Contains(sheet, `data-copy-text="`+escapeForHTML(code)+`"`) {
-			t.Errorf("admin: sheet %q does not hold and copy %q:\n%s", id, code, sheet)
+		if got := sheetCode(t, sheet); got != code {
+			t.Errorf("admin: sheet %q's <code> holds %q, want %q", id, got, code)
+		}
+		copyTag := sheetCopyTag(t, sheet)
+		if strings.Contains(copyTag, "data-copy-text") {
+			t.Errorf("admin: sheet %q's Copy carries data-copy-text, so it would not copy the sheet's <code>: %s", id, copyTag)
 		}
 		if !strings.Contains(admin, `id="`+id+`-open" popovertarget="`+id+`"`) {
 			t.Errorf("admin: no ⓘ trigger for %q", id)
 		}
 	}
-	// The step's own Copy button copies exactly the prompt.
-	if got := tagAttr(t, admin, `id="onboarding-copy-prompt"`, "data-copy-text"); got != escapeForHTML(OnboardingPrompt) {
-		t.Errorf("admin: #onboarding-copy-prompt copies %q, want the prompt %q", got, OnboardingPrompt)
+	// The step's own Copy button copies exactly the prompt (its sheet's
+	// <code>, pinned above, holds the same text).
+	if got := tagAttr(t, admin, `id="onboarding-copy-prompt"`, "data-copy-text"); got != escapeForHTML(prompt) {
+		t.Errorf("admin: #onboarding-copy-prompt copies %q, want the prompt %q", got, prompt)
 	}
 	if !strings.Contains(admin, `href="`+InstallGuideURL+`"`) || strings.Contains(admin, "data-onboarding-ask-admin") {
 		t.Errorf("admin: no install guide link, or told to ask an admin:\n%s", admin)
@@ -198,6 +197,48 @@ func sheetOf(t *testing.T, html, id string) string {
 		sheet = sheet[:len(marker)+j]
 	}
 	return sheet
+}
+
+// specPrompt is the e2e spec's PROMPT literal (e2ePromptDecl).
+func specPrompt(t *testing.T) string {
+	t.Helper()
+	spec, err := os.ReadFile("../../e2e/tests/onboarding.spec.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := e2ePromptDecl.FindSubmatch(spec)
+	if decl == nil {
+		t.Fatal("e2e/tests/onboarding.spec.ts has no `const PROMPT = …;`")
+	}
+	var got strings.Builder
+	for _, m := range e2eLiteral.FindAllSubmatch(decl[1], -1) {
+		got.Write(m[1])
+		got.Write(m[2])
+	}
+	return got.String()
+}
+
+var sheetCodeRe = regexp.MustCompile(`<code [^>]*data-info-code=""[^>]*>([^<]*)</code>`)
+
+// sheetCode is the unescaped text of the sheet's one data-info-code <code>.
+func sheetCode(t *testing.T, sheet string) string {
+	t.Helper()
+	m := sheetCodeRe.FindAllStringSubmatch(sheet, -1)
+	if len(m) != 1 {
+		t.Fatalf("want exactly one data-info-code <code> in the sheet, got %d:\n%s", len(m), sheet)
+	}
+	return html.UnescapeString(m[0][1])
+}
+
+// sheetCopyTag is the opening tag of the sheet's one Copy (data-info-copy).
+func sheetCopyTag(t *testing.T, sheet string) string {
+	t.Helper()
+	if n := strings.Count(sheet, `data-info-copy=""`); n != 1 {
+		t.Fatalf("want exactly one data-info-copy in the sheet, got %d:\n%s", n, sheet)
+	}
+	i := strings.Index(sheet, `data-info-copy=""`)
+	open := strings.LastIndex(sheet[:i], "<")
+	return sheet[open : i+strings.Index(sheet[i:], ">")+1]
 }
 
 // tagAttr is attribute name's value on the tag holding marker.

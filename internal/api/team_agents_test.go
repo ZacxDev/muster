@@ -489,6 +489,8 @@ var agentReadCallers = map[string]string{
 	"Get Server.shareApproval":               "own: the grant is owner-isolated (connector_grants)",
 	"Get Server.stopChiefAgentOnComplete": "own: ChiefStartedAgent reads the start ledger for p.UserID (a member " +
 		"never finds a team's start), and a.OwnerID == n.OwnerID",
+	"Get Server.autostartStopForAnswer": "own: AutostartByAsk reads the auto-start ledger for p.UserID (a person's " +
+		"plugins only), and ag.OwnerID == a.Owner on the ask's own task",
 	"Get Server.awaitChiefRunning":            "own: the chief toolChiefRestart resolved (ownedBy); on the mirror door, refused to a team token (teamHostTools)",
 	"Get Server.replaceChief":                 "own: the owner's reserved slug; hook-token door",
 	"Get Server.deliverAnswer":                "machine: attentionPrincipal (the ask's owner); ag.OwnerID == a.Owner",
