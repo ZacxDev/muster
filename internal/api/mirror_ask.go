@@ -484,19 +484,21 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	att.shape(entry.Questions, choices)
 	res := s.typeAskChoices(r.Context(), h, e, key, entry, choices, answers)
-	if res.err != nil {
+	switch {
+	case res.err != nil:
 		att.failed(res.err)
-	} else {
+		s.writeAskLive(w, res.status, questionCard(h, e, res.entry))
+		return
+	case !res.card && res.status == http.StatusNotFound:
 		att.end(res.kind)
-	}
-	if !res.card {
-		if res.status == http.StatusNotFound {
-			http.NotFound(w, r)
-			return
-		}
+		http.NotFound(w, r)
+		return
+	case !res.card:
+		att.end(res.kind)
 		http.Error(w, res.msg, res.status)
 		return
 	}
+	att.end(res.kind)
 	s.writeAskLive(w, res.status, questionCard(h, e, res.entry))
 }
 

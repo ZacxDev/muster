@@ -1479,7 +1479,8 @@ yet.
 |---|---|
 | `session_instruct {subject, class, text?, reason}` | one message to a stopped session. `class` is `continue`, `handoff` or `stop_note` (muster's fixed texts, below) or `custom` (the chief's own text, at most 4 KiB) |
 | `session_wrap {subject, reason}` | **one** card, "Write handoff, then close": the handoff text; once the session's handoff turn has ended (it worked, then stopped again), muster closes it — a Claude Code window gets `/exit` at an idle prompt, an opencode window is closed, an agent is stopped and removed. It is left open, and the card says why, if it then has an open pull request, a queued message or background work, or if no handoff turn ends within 24 hours |
-| `work_reassign {task_id, from, to, reason}` | **one** card, two steps: the task routed to `to` (a mirrored Claude Code session, as `route_to_session` routes a task), then `from` told the task moved and asked for its handoff |
+| `session_answer {subject, answer_kind, text?, option?, reason}` | an answer to the question a stopped session holds. `continue` (`Yes, continue.`); `merge_when_green` (below); `composed` (the chief's own words, at most 4 KiB); `pick`, for a session showing a picker (AskUserQuestion): `option` must be one of **that picker's own options**, byte for byte, or the call is refused `not_an_option`. On your tap a pick is typed into the picker exactly as your own tap on the picker's card types it |
+| `work_reassign {task_id, from, to \| dispatch, reason}` | **one** card, two steps: the task routed to `to` (a mirrored Claude Code session, as `route_to_session` routes a task) — or, with `dispatch {target, repo?, base?, model?}` in place of `to`, a **new** session started for it as `agent_dispatch` starts one on a task (its own limits, caps and cards; started on the pass after your tap) — then `from` told the task moved and asked for its handoff |
 | `fleet_actions_list {since?, state?, subject?}` | nothing: it reads the action log, so the chief can explain what it proposed. `subject` is one session's fleet id, matched exactly (`agent:4` is agent 4's stops, never agent 42's) |
 
 `subject` is a session's `fleet_list` id. Every write answers `{action_id,
@@ -1499,6 +1500,26 @@ second is refused `already_proposed`.
 | `continue` | `Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task.` |
 | `handoff` | `Your PR #<n> is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop.` (`closed` for a pull request closed unmerged; with no pull request known, only the second sentence) |
 | `stop_note` | `Stop after this step and wait for your owner's next message. Do not start anything new; ask with attention_ask if something cannot wait.` |
+| answer `continue` | `Yes, continue.` |
+| answer `merge_when_green` | `Yes, merge #<n>. CI is green on <sha12>. Merge only that commit: gh pr merge <n> --match-head-commit <sha40>.` |
+| `ci_result` | `CI finished on #<n> at <sha12>: ok=<k> bad=<m> (<failed check names>). Continue.` (no parenthesis when nothing failed) |
+
+**merge_when_green's check**, read when the chief proposes it and again at your
+tap and at the paste: the session's own latest pull request (one muster
+recorded it creating) is open, its head is read through the GitHub App, and its
+CI is **green** on that head — every check finished, none failed, at least one
+passed (a check's verdict is the shipping officer's own, `internal/cichecks`).
+A new head or any check no longer green: nothing is sent (`moved_on`). (The
+design's audit-ladder step is not read in this phase, so the text claims only
+the green CI.)
+
+**Outside your turn.** `route_to_session {text}`, `route_many` and
+`end_session_propose`, called when the message the chief answers is not one you
+typed, used to refuse. With fleet proposals on, they file cards instead: a
+**route** card per session (the chief's text, sent on your tap with muster's
+first line — not a route: no answer is relayed back) and a **close** card
+(nothing typed; the session closed on your tap, unless an open pull request, a
+queued message or background work holds it). Each needs a stopped session.
 
 Every text a card sends starts with a line muster writes,
 `[Chief, approved by <you> at HH:MM UTC]`, never in your voice. muster counts
@@ -1515,6 +1536,13 @@ proposed again. If you approve it and no handoff turn comes within 24 hours,
 its close is offered on its own, as a **Close** card (nothing is typed; the
 window is closed on your tap, unless an open pull request, a queued message or
 background work holds it).
+
+**CI finished (`ci_result`).** For a stopped Claude Code session whose latest
+pull request is open, muster reads its head's CI (the GitHub App, for an owner
+the App admits, reused for two minutes). When every check has finished and at
+least one finished **after** the session stopped — so it stopped while CI ran
+— a `ci_result` card is proposed with the fixed text above: the counts and the
+failed checks' names are facts muster read, no model. Once per stop.
 
 **The chief still judges stops.** Turning proposals on changes nothing about
 how a stop is judged: the chief's stall nudges, a stop's push wait and the

@@ -387,3 +387,28 @@ func TestADispatchReassignStartsTheNewSessionOnThePassThenHandsOff(t *testing.T)
 		t.Fatalf("after the pass: %+v", a)
 	}
 }
+
+// TestTheCIReadIsGatedByTheApp: the CI read (and the head read it pins) asks
+// GitHub only for an owner the App admits (githubAppForOwner): a member is
+// unknown and GitHub is not asked; the admin's read is made. (The merge
+// check's own refusal for a member stops earlier, at the pull request's
+// state, so this reaches the CI read itself.)
+func TestTheCIReadIsGatedByTheApp(t *testing.T) {
+	f := newFleetAnswerFixture(t)
+	f.ci.set("example-org/flange", ansHead, green(time.Now()))
+	f.prs.mu.Lock()
+	f.prs.states["example-org/flange#77"] = githubapp.PRState{State: "open", HeadSHA: ansHead}
+	f.prs.mu.Unlock()
+	if _, ok := f.srv.fleetCIRead(f.as(f.owner), "example-org/flange", ansHead); ok || f.ci.n != 0 {
+		t.Fatalf("a member's CI read: ok %v, %d GitHub reads; want unknown and none", ok, f.ci.n)
+	}
+	if _, ok := f.srv.fleetPRHead(f.as(f.owner), "example-org/flange", 77); ok {
+		t.Fatalf("a member's head read: known")
+	}
+	if sum, ok := f.srv.fleetCIRead(f.asOwner, "example-org/flange", ansHead); !ok || !sum.AllGreen() || f.ci.n != 1 {
+		t.Fatalf("control: the admin's read: ok %v green %v reads %d", ok, sum.AllGreen(), f.ci.n)
+	}
+	if head, ok := f.srv.fleetPRHead(f.asOwner, "example-org/flange", 77); !ok || head != ansHead {
+		t.Fatalf("control: the admin's head read: %q %v", head, ok)
+	}
+}

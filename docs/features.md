@@ -532,7 +532,9 @@ proposal is a card in the fleet digest's **Proposed** group showing exactly
 what will be sent. **Nothing is sent until you tap Approve** (or Edit it and
 send it as your own words). muster also proposes, with no model, "Write
 handoff, then close" for each session whose pull request merged and that
-stopped with nothing in flight ([chief.md](chief.md#fleet-proposals)).
+stopped with nothing in flight, and "CI finished" for a session that stopped
+while its pull request's CI ran (the GitHub App's checks read)
+([chief.md](chief.md#fleet-proposals)).
 
 - **Needs:** the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and
   [session state](#session-state) (`MUSTER_SESSION_STATE=1`) — the server

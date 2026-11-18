@@ -2193,7 +2193,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 	switch {
 	case ext.FleetPropose && ext.Episodes != nil:
-		l.Printf("fleet proposals: ON (%s=propose) — the chief's session_instruct, session_wrap, work_reassign and fleet_actions_list "+
+		l.Printf("fleet proposals: ON (%s=propose) — the chief's session_instruct, session_answer, session_wrap, work_reassign and fleet_actions_list "+
 			"tools, and \"Write handoff, then close\" for each finished session (the session-state pass), become cards in the fleet "+
 			"digest; NOTHING is sent until the owner taps Approve; the chief keeps judging stops (its nudges and the per-stop pushes are "+
 			"unchanged)", envFleetOrchestration)
