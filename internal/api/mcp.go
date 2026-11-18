@@ -167,11 +167,18 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	// The session the call says it comes from (agents.HeaderCCSession): only
 	// an officer CHAT lane's key means anything here (withChatLaneCall,
 	// officer_chat.go) — its ccd starts it with an MCP config that sends it.
-	session := r.Header.Get(agents.HeaderCCSession)
+	session, secret := r.Header.Get(agents.HeaderCCSession), r.Header.Get(agents.HeaderCCLaneSecret)
 	s.serveMCP(w, r, mcpSurface{
 		tools: func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call: func(ctx context.Context, name, args string) string {
-			return s.dispatchAgentTool(withChatLaneCall(ctx, session), a, name, args)
+			// 🔴 A CALL NAMING A CHAT SESSION IS THAT LANE'S ONLY WITH ITS
+			// SECRET (verifyChatLaneCall); without it the call is refused,
+			// never run as the lane nor as the primary.
+			ctx, refusal := s.verifyChatLaneCall(ctx, a, session, secret)
+			if refusal != "" {
+				return refusal
+			}
+			return s.dispatchAgentTool(ctx, a, name, args)
 		},
 		instructions: s.mcpInstructionsFor(r.Context(), a),
 		disabled:     disabled,

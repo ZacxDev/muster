@@ -977,8 +977,35 @@ muster's MCP server with the agent's one token, so muster asks `ccd` (with
 `X-Muster-CC-MCP-Session: 1` on the lane's turns) to start a chat lane's CLI
 with an MCP config of its own: the servers `ccd seed` registered, muster's
 carrying `X-Muster-CC-Session: officer-chat:<chat_id>` on every request
-(`--mcp-config <file> --strict-mcp-config`). A call carrying an officer chat's
-key is that lane's:
+(`--mcp-config <file> --strict-mcp-config`), and its **lane secret**,
+`X-Muster-CC-Lane-Secret`.
+
+**The lane secret.** The first time a chat's lane runs, muster mints a secret
+for it (32 random bytes, hex) and keeps it with the lane's session row
+(migration 0149, `officer_chat_secret`). It sends it to `ccd` on the lane's
+turns, `ccd` writes it into the lane's MCP config (written `0600` before the
+CLI starts — a lane whose config cannot be written is refused, never run
+without its MCP servers — and removed when the lane stops), and the lane's MCP
+calls carry it back. A call naming an officer chat's session is that lane's
+only when its secret is the one muster keeps on the caller's own session of
+that key; any other — no secret, another lane's, another chat's key — is
+**refused outright**, never run as the lane nor as the primary. What it proves,
+and what it does not: the call carries a value muster gave that lane's `ccd`,
+so nothing in the pod can name a chat session it was not given by guessing or
+copying a key. It does not separate processes inside one pod: they run as one
+user, and one that reads the lane's config file can present its secret. The
+pod is one trust domain (it shares one muster token too); the chat claim the
+lane acts on is still checked per item (below).
+
+**Chats run only on a `ccd` that names them.** Before a chat's item is
+claimed, muster reads the instance's `/healthz` for `mcp_session_lanes: true`
+(a `ccd` from this version, which runs lanes). An older `ccd` would start the
+lane on the pod's plain MCP config, where its calls read as the primary's: no
+chat runs there — the item stays unclaimed, a log line says why (once per chat
+and instance), and the chat backs off and keeps nothing up until the instance
+runs a newer image.
+
+A verified call carrying an officer chat's key is that lane's:
 
 - it acts as the chat's holder, `<instance>/chat`: a counted read
   (`officer_kube_read`, `officer_obs_raw`, a judgement instance's
@@ -989,12 +1016,32 @@ key is that lane's:
   `officer_heartbeat`, `officer_complete`, `officer_release`, and the tools
   that end their holder's lease (`officer_ask_person`, `officer_task_ask`,
   `officer_flood_block_propose`, `officer_rollout_promote_propose`) are
-  refused, naming the chat. muster holds and ends the chat's item.
+  refused, naming the chat. muster holds and ends the chat's item;
+- it does not ship: `officer_merge_pr`, `officer_tag_release`,
+  `officer_mark_ready`, `officer_shepherd_mark_ready`,
+  `officer_shepherd_merge_ask` and `officer_public_branch` are bound to the
+  item the primary holds, or write to GitHub on the officer's behalf, and are
+  refused (`officer_rollout_status` and `officer_ci_logs` are reads, and stay);
+- a connector refusal (a pending grant) records the lane's own chat item for
+  [re-running blocked items](#re-running-blocked-items), never the primary's
+  (chat items finish `done`, so an approval re-runs nothing for them), and the
+  lane's refusal never debounces the primary's on the same grant.
 
-A call without the header (the primary's, and a lane on a `ccd` older than
-this version, which ignores the ask) is the instance's own, as before. The
-header is the agent's own word about its own calls, like everything that
-arrives with its token: it can only ever reach that instance's own chat claims.
+A call without the header is the primary's, as before. A connector refusal on
+a path that names no session (the connector proxy: a CLI's `git` or `curl`)
+while one of the instance's chat lanes holds a claim is **ambiguous** — the
+primary or a lane may have made it — and records nothing (logged), rather than
+charging the primary's item for a call it may not have made.
+
+**The LLM proxy meters per instance, not per lane.** On a pool whose model is
+reached through the [LLM proxy](#the-llm-proxy), a chat lane's model requests
+carry the pod's one token and no session, so the proxy counts them as the
+instance's: toward the officer's daily budget (correct: it is the officer's
+spend), and toward the per-item token cap of whatever queue item the instance
+holds at the time. That is accepted for v1: the daily budget, which is what
+bounds the officer's spend, counts every request; what is imprecise is only
+which item's cap a lane's tokens count against. Attributing them to the chat
+would need a per-lane credential in the CLI's own environment.
 
 **One turn**, run by muster-server (`officers.ChatRunner`):
 
@@ -1011,9 +1058,9 @@ arrives with its token: it can only ever reach that instance's own chat claims.
    (@login) wrote:`). The claim is heartbeated every minute while the turn
    runs (a 5-minute lease);
 4. **reply** with the lane's final assistant text
-   (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`; the HQ
-   server caps its length, muster does not; a NUL, which HQ refuses, is
-   removed; a turn that ended with no text
+   (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`; cut to
+   HQ's 64 KiB cap and without NULs, both of which HQ refuses — see below; a
+   turn that ended with no text
    replies "(The officer's turn ended without a text reply.)"). HQ completes
    the item.
 
@@ -1049,6 +1096,43 @@ on its next turn. With `tiers`, chats run in the **judgement** pool only.
 **`fresh_session_per_item` applies to the primary only.** A chat lane is one
 conversation for the chat's whole life: its turns never carry
 `X-Muster-CC-New-Conversation`.
+
+**A chat that cannot be served neither loops nor keeps its pool up.** A
+pending chat is left out of the pool's busy count (it starts nothing and stops
+no scale-down) when it cannot run now:
+
+- the officer's instances run on a **host** (`"runtime": "host"`): a host
+  instance has no `ccd`, so no lane. The HQ server can still create such a
+  chat; muster leaves it unclaimed and says why once in its log;
+- its home instance is beyond `max_instances` (lowered since), or which
+  instance it lives on cannot be read;
+- it is **backing off**: a lane that refused the turn for a reason that does
+  not pass by itself (the runtime unresolved, muster's credential refused, the
+  request rejected, the runtime never reached), a turn, read or reply that
+  failed, or an instance whose `ccd` does not name chat sessions. Each failure
+  doubles the wait from 30 seconds, up to 10 minutes; an answer clears it. A
+  refusal that passes by itself (`409 busy`, `503 not_ready`, `503 capacity`)
+  is no failure: the item is released and the next pass tries again. Every
+  refusal's reason is logged.
+
+**A reply HQ will not take is never retried for ever.** muster cuts a reply
+to HQ's 64 KiB cap (on a character boundary, ending `[reply cut by muster at
+64 KiB]`) and removes NULs before it posts. A reply HQ still refuses for its
+content (`400`, `413`) is final: the turn is marked answered, and muster posts
+a short fallback in its place — "(The officer's reply could not be delivered:
+the HQ server answered 400 invalid.)" — so the member is not left waiting.
+
+**A charter change reaches the lane.** Each turn reads the HQ server's brief
+for the charter version; when it moved since the lane's last turn (kept with
+the lane's marks, `officer_chat_charter`), the turn adds "Your charter changed
+since your last turn here: call officer_brief again and follow the new charter
+before you answer." A brief that cannot be read asks nothing.
+
+**A re-homed chat does not replay its history.** A lane with no marks (a new
+session: the chat's first turn, or a chat whose old instance's session is
+gone) is sent only what came after the officer's last reply. A history too
+large for muster to read in one answer (over its 1 MiB cap) falls back to the
+turn the item names, read on its own.
 
 **What it does not do (v1).** No streaming, attachments, edits or deletes;
 no muster UI of its own; no built-in backend. A muster running more than one

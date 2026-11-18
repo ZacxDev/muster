@@ -133,12 +133,17 @@ func TestAStoppedChatLanesConfigIsRemoved(t *testing.T) {
 // TestHealthzSaysItNamesChatSessions (Y4b): a ccd that runs lanes says
 // mcp_session_lanes on /healthz, and muster's reader of that body sees it.
 func TestHealthzSaysItNamesChatSessions(t *testing.T) {
-	r := newLaneRig(t, 3)
-	w := httptest.NewRecorder()
-	r.s.handleHealthz(w, httptest.NewRequest("GET", "/healthz", nil))
-	ok, err := agentgateway.ParseHealthzMCPSessionLanes(w.Body.Bytes())
+	srv, _ := newScripted(t, cliScript{})
+	url := gatewayServer(t, srv).URL
+	_, body, _ := getHealth(t, url, "/healthz")
+	if ok, err := agentgateway.ParseHealthzMCPSessionLanes([]byte(body)); err != nil || ok {
+		t.Fatalf("a ccd with no lanes: mcp_session_lanes %v (%v); want false (it runs no chat lane)", ok, err)
+	}
+	srv.lanes = testLanes(t, 3)
+	_, body, _ = getHealth(t, url, "/healthz")
+	ok, err := agentgateway.ParseHealthzMCPSessionLanes([]byte(body))
 	if err != nil || !ok {
-		t.Fatalf("/healthz %s: mcp_session_lanes %v (%v); want true", w.Body.String(), ok, err)
+		t.Fatalf("/healthz %s: mcp_session_lanes %v (%v); want true", body, ok, err)
 	}
 	if ok, err := agentgateway.ParseHealthzMCPSessionLanes([]byte(`{"ok":true,"toolless_lanes":true}`)); err != nil || ok {
 		t.Fatalf("an older ccd's body read as mcp_session_lanes %v (%v); want false", ok, err)

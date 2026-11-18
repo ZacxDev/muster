@@ -2,6 +2,8 @@ package agents
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -27,12 +29,24 @@ type OfficerChatStore interface {
 	// exist. ErrSessionKeyElsewhere when the key is another agent's.
 	EnsureClaudeCodeSession(ctx context.Context, agentID int64, sessionKey, title string) (ChatSession, error)
 	// OfficerChatMarks is session sessionID's chat marks.
-	OfficerChatMarks(ctx context.Context, sessionID int64) (seen, answered int64, err error)
+	OfficerChatMarks(ctx context.Context, sessionID int64) (ChatLaneMarks, error)
 	// SetOfficerChatMarks writes session sessionID's chat marks.
-	SetOfficerChatMarks(ctx context.Context, sessionID, seen, answered int64) error
+	SetOfficerChatMarks(ctx context.Context, sessionID int64, m ChatLaneMarks) error
 	// ChatLaneSecret is the secret of agent agentID's chat lane keyed
 	// sessionKey, "" when it has none (or no such session).
 	ChatLaneSecret(ctx context.Context, agentID int64, sessionKey string) (string, error)
+	// EnsureChatLaneSecret is session sessionID's lane secret, minted (32
+	// random bytes, hex) and kept the first time it is asked for, and the
+	// same one every time after.
+	EnsureChatLaneSecret(ctx context.Context, sessionID int64) (string, error)
+}
+
+// ChatLaneMarks is a chat lane's marks (internal/officers ChatMarks): the
+// highest chat seq it has seen, the last one HQ took a reply for, and the
+// charter version it last loaded ("" for none).
+type ChatLaneMarks struct {
+	Seen, Answered int64
+	Charter        string
 }
 
 var _ OfficerChatStore = (*PGStore)(nil)
@@ -70,14 +84,17 @@ func (s *PGStore) EnsureClaudeCodeSession(ctx context.Context, agentID int64, se
 }
 
 // OfficerChatMarks implements OfficerChatStore.
-func (s *PGStore) OfficerChatMarks(ctx context.Context, sessionID int64) (seen, answered int64, err error) {
-	err = s.pool.QueryRow(ctx, `SELECT officer_chat_seen, officer_chat_answered FROM chat_sessions WHERE id = $1`, sessionID).Scan(&seen, &answered)
-	return seen, answered, err
+func (s *PGStore) OfficerChatMarks(ctx context.Context, sessionID int64) (ChatLaneMarks, error) {
+	var m ChatLaneMarks
+	err := s.pool.QueryRow(ctx, `SELECT officer_chat_seen, officer_chat_answered, officer_chat_charter FROM chat_sessions WHERE id = $1`, sessionID).
+		Scan(&m.Seen, &m.Answered, &m.Charter)
+	return m, err
 }
 
 // SetOfficerChatMarks implements OfficerChatStore.
-func (s *PGStore) SetOfficerChatMarks(ctx context.Context, sessionID, seen, answered int64) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE chat_sessions SET officer_chat_seen = $2, officer_chat_answered = $3 WHERE id = $1`, sessionID, seen, answered)
+func (s *PGStore) SetOfficerChatMarks(ctx context.Context, sessionID int64, m ChatLaneMarks) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE chat_sessions SET officer_chat_seen = $2, officer_chat_answered = $3, officer_chat_charter = $4 WHERE id = $1`,
+		sessionID, m.Seen, m.Answered, m.Charter)
 	if err != nil {
 		return err
 	}
@@ -87,7 +104,34 @@ func (s *PGStore) SetOfficerChatMarks(ctx context.Context, sessionID, seen, answ
 	return nil
 }
 
-// ChatLaneSecret implements OfficerChatStore.
+// ChatLaneSecret implements OfficerChatStore. No such session is "", nil:
+// the caller refuses an empty secret either way.
 func (s *PGStore) ChatLaneSecret(ctx context.Context, agentID int64, sessionKey string) (string, error) {
-	return "", nil
+	var secret string
+	err := s.pool.QueryRow(ctx, `SELECT officer_chat_secret FROM chat_sessions WHERE agent_id = $1 AND session_key = $2`, agentID, sessionKey).Scan(&secret)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return secret, err
+}
+
+// EnsureChatLaneSecret implements OfficerChatStore: one UPDATE that writes
+// the fresh secret only where none is kept, then the one kept — so two
+// callers racing keep ONE secret.
+func (s *PGStore) EnsureChatLaneSecret(ctx context.Context, sessionID int64) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE chat_sessions SET officer_chat_secret = $2 WHERE id = $1 AND officer_chat_secret = ''`, sessionID, hex.EncodeToString(b)); err != nil {
+		return "", err
+	}
+	var secret string
+	if err := s.pool.QueryRow(ctx, `SELECT officer_chat_secret FROM chat_sessions WHERE id = $1`, sessionID).Scan(&secret); err != nil {
+		return "", err
+	}
+	if secret == "" {
+		return "", fmt.Errorf("agents: session %d keeps no lane secret", sessionID)
+	}
+	return secret, nil
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,8 +100,8 @@ func (l officerChatLanes) Open(ctx context.Context, o officers.Officer, n int, c
 		return officers.ChatMarks{}, err
 	}
 	st, _ := l.store()
-	seen, answered, err := st.OfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID)
-	return officers.ChatMarks{Seen: seen, Answered: answered}, err
+	m, err := st.OfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID)
+	return officers.ChatMarks{Seen: m.Seen, Answered: m.Answered, Charter: m.Charter}, err
 }
 
 // Mark implements officers.ChatLanes.
@@ -114,12 +115,32 @@ func (l officerChatLanes) Mark(ctx context.Context, o officers.Officer, n int, c
 		return err
 	}
 	st, _ := l.store()
-	return st.SetOfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID, m.Seen, m.Answered)
+	return st.SetOfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID, agents.ChatLaneMarks{Seen: m.Seen, Answered: m.Answered, Charter: m.Charter})
 }
 
-// Supports implements officers.ChatLanes.
+// mcpSessionLaneReader is the agent gateway's read of a ccd's
+// mcp_session_lanes (agentgateway.Gateway.MCPSessionLanes), asserted: a
+// gateway without it runs no chat.
+type mcpSessionLaneReader interface {
+	MCPSessionLanes(ctx context.Context, a agents.Agent) (bool, error)
+}
+
+var _ mcpSessionLaneReader = (*agentgateway.Gateway)(nil)
+
+// Supports implements officers.ChatLanes: instance n's ccd says, on its
+// /healthz, that it starts a chat lane with an MCP config naming the lane
+// (mcp_session_lanes). An older ccd would run the lane on the pod's plain MCP
+// config, where its calls read as the primary's — so it runs no chat.
 func (l officerChatLanes) Supports(ctx context.Context, o officers.Officer, n int) (bool, error) {
-	return true, nil
+	r, ok := l.s.ext.Gateway.(mcpSessionLaneReader)
+	if !ok {
+		return false, nil
+	}
+	a, err := l.instance(ctx, o, n)
+	if err != nil {
+		return false, err
+	}
+	return r.MCPSessionLanes(l.s.officerPrincipal(ctx, o.Owner), a)
 }
 
 // officerChatTurnSlack is added to the kind's turn timeout for a chat turn's
@@ -145,15 +166,27 @@ func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, c
 		return "", err
 	}
 	octx := s.officerPrincipal(ctx, o.Owner)
-	tctx, cancel := context.WithTimeout(officerChatTurnContext(octx, a, sess), agents.KindTurnTimeout(a.Kind)+officerChatTurnSlack)
+	st, _ := l.store()
+	secret, err := st.EnsureChatLaneSecret(octx, sess.ID)
+	if err != nil {
+		return "", fmt.Errorf("officers: chat %s's lane secret: %w", chatID, err)
+	}
+	tctx, cancel := context.WithTimeout(officerChatTurnContext(octx, a, sess, secret), agents.KindTurnTimeout(a.Kind)+officerChatTurnSlack)
 	defer cancel()
 	reply, err := func() (string, error) {
 		// Held open for the outcome watchdog while it runs, as a job's turn.
 		defer s.OutcomeHold(a)()
 		return s.ext.Gateway.Chat(tctx, a, sess.SessionKey, text, nil)
 	}()
-	if unsent := agentgateway.Unsent(err); unsent != "" {
+	switch unsent := agentgateway.Unsent(err); unsent {
+	case "":
+	case agentgateway.UnsentBusy, agentgateway.UnsentNotReady, agentgateway.UnsentCapacity:
+		// Passes by itself: another turn, a CLI starting, every lane busy.
 		return "", fmt.Errorf("%w (%s)", officers.ErrChatLaneUnavailable, unsent)
+	default:
+		// Does not pass by itself (unresolved, unauthorized, rejected, never
+		// connected): a failure the runner backs off from.
+		return "", fmt.Errorf("%w (%s)", officers.ErrChatLaneBroken, unsent)
 	}
 	store := context.WithoutCancel(octx)
 	_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: text})
@@ -169,7 +202,7 @@ func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, c
 // naming its session, so the lane's own tool calls reach dispatchOfficerTool
 // as the chat's (chatLaneCall), never as the primary's. withRoute, the
 // route every other session (the chief's) takes, is unchanged.
-func officerChatTurnContext(ctx context.Context, a agents.Agent, sess agents.ChatSession) context.Context {
+func officerChatTurnContext(ctx context.Context, a agents.Agent, sess agents.ChatSession, secret string) context.Context {
 	ctx = withSessionRoute(ctx, a, sess)
 	r, _ := agents.TurnRouteFrom(ctx)
 	h := r.Header.Clone()
@@ -177,6 +210,7 @@ func officerChatTurnContext(ctx context.Context, a agents.Agent, sess agents.Cha
 		h = http.Header{}
 	}
 	h.Set(agents.HeaderCCMCPSession, "1")
+	h.Set(agents.HeaderCCLaneSecret, secret)
 	r.Header = h
 	return agents.WithTurnRoute(ctx, r)
 }
@@ -194,6 +228,50 @@ func withChatLaneCall(ctx context.Context, sessionKey string) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, chatLaneKey{}, chat)
+}
+
+// chatLaneSecrets is the store's read of a chat lane's secret
+// (agents.OfficerChatStore.ChatLaneSecret), asserted alone so a test store
+// can answer it.
+type chatLaneSecrets interface {
+	ChatLaneSecret(ctx context.Context, agentID int64, sessionKey string) (string, error)
+}
+
+// verifyChatLaneCall is POST /mcp's check of a call naming session key
+// sessionKey with lane secret secret, for agent a:
+//
+//   - no officer chat key: ctx unchanged, no refusal (every other call);
+//   - an officer chat key with the secret muster keeps on a's session of that
+//     key (agents.HeaderCCLaneSecret, minted per lane): ctx marked as that
+//     lane's call (withChatLaneCall);
+//   - an officer chat key without it — no secret, another secret, another
+//     agent's session, no such session, an unreadable one: a refusal.
+//
+// What the secret proves: the call carries a value muster gave that lane's
+// ccd, which wrote it only into that lane's MCP config. Processes in the same
+// pod run as the same user and could read that file: the pod is one trust
+// domain (its token is shared too); the secret keeps a call from NAMING a
+// lane it was not given, and the chat claim the lane acts on is still the
+// instance's own (heldItem checks it per item).
+func (s *Server) verifyChatLaneCall(ctx context.Context, a agents.Agent, sessionKey, secret string) (context.Context, string) {
+	lane := withChatLaneCall(ctx, sessionKey)
+	if _, ok := chatLaneCall(lane); !ok {
+		return ctx, ""
+	}
+	refuse := toolErr("this call names chat session %s, but its lane secret does not match the one muster gave that session: refused", sessionKey)
+	st, ok := s.ext.Agents.(chatLaneSecrets)
+	if !ok || secret == "" {
+		return ctx, refuse
+	}
+	want, err := st.ChatLaneSecret(ctx, a.ID, sessionKey)
+	if err != nil {
+		s.logger.Printf("officers: %s: a call naming chat session %s: its lane secret could not be read: %v; refused", a.Name, sessionKey, err)
+		return ctx, refuse
+	}
+	if want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(secret)) != 1 {
+		return ctx, refuse
+	}
+	return lane, ""
 }
 
 // chatLaneCall is the chat id of the lane ctx's tool call comes from; false
@@ -214,13 +292,14 @@ func officerCallerName(ctx context.Context, a agents.Agent) string {
 	return a.Name
 }
 
-// chatLaneQueueRefusal is the refusal of a queue verb (claim, heartbeat,
-// complete, release) or a verb that ends its holder's lease (an ask) from a
-// chat lane: a chat session works its chat, and muster holds and ends its
+// chatLaneQueueRefusal is the refusal, from a chat lane, of a queue verb
+// (claim, heartbeat, complete, release), a verb that ends its holder's lease
+// (an ask), or a ship action (bound to the primary's item, or a write to
+// GitHub): a chat session works its chat, and muster holds and ends its
 // chat's item.
 func chatLaneQueueRefusal(tool, chat string) string {
 	return toolErr("%s is not offered to a chat session: this session is chat %s, which muster claims, keeps and answers for you. "+
-		"Reply to the team member in plain text; queue work is your instance's primary session's", tool, chat)
+		"Reply to the team member in plain text; queue work and shipping are your instance's primary session's", tool, chat)
 }
 
 // chatItemRefusal is officer_claim's answer when the item it claimed is a chat

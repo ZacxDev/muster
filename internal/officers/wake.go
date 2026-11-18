@@ -436,7 +436,11 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		count(it)
 	}
 	if obs.Chats && o.ChatsPool() {
-		d.ChatPending = len(PendingChats(obs, now))
+		for _, it := range PendingChats(obs, now) {
+			if !obs.ChatHeldBack[it.ID] {
+				d.ChatPending++
+			}
+		}
 	}
 	heldByUp := map[string]bool{}
 	overrun := map[string]bool{}

@@ -718,6 +718,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			ephemeral:  r.Header.Get(headerCCEphemeral) == "1",
 			toolless:   r.Header.Get(headerCCToolless) == "1",
 			mcpSession: r.Header.Get(headerCCMCPSession) == "1",
+			mcpSecret:  r.Header.Get(headerCCLaneSecret),
 			pinned:     r.Header.Get(headerCCPinned) == "1",
 		}
 		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), mode)
@@ -1244,6 +1245,12 @@ type health struct {
 	// conversation its CLI already has. muster does not read it — it reads
 	// the per-turn answer (headerCCNewConversationSession) instead.
 	NewConversation bool `json:"new_conversation,omitempty"`
+	// MCPSessionLanes says this ccd starts a chat lane (X-Muster-CC-MCP-Session
+	// with its lane secret) with an MCP config naming the lane (lanes.go "A
+	// CHAT LANE SAYS WHO IT IS"). muster READS it: an officer's chat runs only
+	// on a ccd that says it (internal/api officerChatLanes.Supports). True
+	// whenever ccd runs lanes.
+	MCPSessionLanes bool `json:"mcp_session_lanes,omitempty"`
 	authSnapshot
 }
 
@@ -1299,6 +1306,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
 		h.ToollessLanes = true
+		h.MCPSessionLanes = true
 	}
 	h.NewConversation = true
 	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))

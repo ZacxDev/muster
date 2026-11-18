@@ -75,8 +75,12 @@ func TestAChatLaneCannotShip(t *testing.T) {
 	for _, tool := range []string{officers.ToolMergePR, officers.ToolTagRelease, officers.ToolMarkReady, officers.ToolShepherdReady,
 		officers.ToolShepherdMergeAsk, officers.ToolPublicBranch} {
 		out, _ := r.s.dispatchOfficerTool(ctx, r.inst, tool, `{"pr":1,"repo":"example-org/example-web","item_id":"7"}`)
-		if !isToolErr(out) || !strings.Contains(out, "chat session") {
-			t.Errorf("a chat lane's %s: %s; want a refusal naming the chat session", tool, out)
+		// The rig's officer ships on the merge stage: the shepherd and draft
+		// tools are not its own and are refused before anything else; the ones
+		// it is served are refused because the call is a chat session's.
+		served := r.s.officerToolServed(r.ship, tool)
+		if !isToolErr(out) || (served && !strings.Contains(out, "chat session")) {
+			t.Errorf("a chat lane's %s (served %v): %s; want a refusal (naming the chat session when served)", tool, served, out)
 		}
 	}
 	if n := len(r.gh.mergedPRs()); n != 0 {

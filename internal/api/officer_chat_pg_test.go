@@ -189,7 +189,8 @@ func TestAChatTurnIsALaneTurnAndNeverAFreshConversation(t *testing.T) {
 	if err != nil || sess.AgentID != c.row.ID || sess.Runtime != agents.SessionRuntimeClaudeCode || sess.IsDefault {
 		t.Fatalf("the chat's session: %+v %v; want a non-default claude-code session of agent %d", sess, err, c.row.ID)
 	}
-	seen, answered, err := c.pg.OfficerChatMarks(c.ctx, sess.ID)
+	m, err := c.pg.OfficerChatMarks(c.ctx, sess.ID)
+	seen, answered := m.Seen, m.Answered
 	if err != nil || seen != msgs[1].Seq || answered != msgs[1].Seq {
 		t.Fatalf("marks %d/%d (%v); want both at the reply's seq %d", seen, answered, err, msgs[1].Seq)
 	}
