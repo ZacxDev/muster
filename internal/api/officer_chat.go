@@ -35,7 +35,7 @@ type officerChatLanes struct{ s *Server }
 
 var _ officers.ChatLanes = officerChatLanes{}
 
-// errNoChatStore is a chat on a deployment whose agents store has no 0148
+// errNoChatStore is a chat on a deployment whose agents store has no 0149
 // half (no database).
 var errNoChatStore = errors.New("officers: this deployment's agents store cannot keep a chat's session (it needs the database)")
 

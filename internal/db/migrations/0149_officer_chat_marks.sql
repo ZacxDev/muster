@@ -1,4 +1,4 @@
--- muster 0148 — AN OFFICER CHAT LANE'S MARKS (internal/officers chat.go,
+-- muster 0149 — AN OFFICER CHAT LANE'S MARKS (internal/officers chat.go,
 -- internal/agents officer_chat.go; docs/officers.md "Chat sessions").
 --
 --   chat_sessions.officer_chat_seen       the highest chat seq the session's
@@ -20,13 +20,13 @@
 -- policy, grant or default and db.RLSOn re-applies nothing. Idempotent: every
 -- statement can run twice.
 --
--- Must apply after its predecessor, 0147_fleet_owner_marks (the
+-- Must apply after its predecessor, 0148_officer_connector_blocks (the
 -- contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them):
 --   ALTER TABLE public.chat_sessions DROP CONSTRAINT IF EXISTS chat_sessions_officer_chat_marks;
 --   ALTER TABLE public.chat_sessions DROP COLUMN IF EXISTS officer_chat_seen, DROP COLUMN IF EXISTS officer_chat_answered;
---   DELETE FROM schema_migrations WHERE version = 148;
+--   DELETE FROM schema_migrations WHERE version = 149;
 
 SET LOCAL lock_timeout = '3s';
 

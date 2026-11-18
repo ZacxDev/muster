@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -43,29 +44,11 @@ func splitItemID(raw []byte) (rest []byte, item officers.ItemID, present bool, e
 // names (which must be among them), or its only one. With required false, an
 // instance holding none gets "" and no error (a read that is no item's).
 func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance string, named officers.ItemID, required bool) (officers.ItemID, error) {
-	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
+	held, err := s.heldItems(ctx, c, instance)
 	if err != nil {
 		return "", err
 	}
-	now := s.officerRT.clock()
-	// A chat lane's call (officer_chat.go) holds exactly its own chat's item:
-	// held as its chat holder (instance, officerCallerName) and naming its
-	// chat — never another chat's item on the same instance, never a queue
-	// item.
-	chat, lane := chatLaneCall(ctx)
-	var held []officers.ItemID
-	for _, it := range claimed {
-		if it.ClaimedBy != instance || !it.LeaseLive(now) {
-			continue
-		}
-		if lane {
-			if id, _, ok := officers.ChatOf(it); !ok || id != chat {
-				continue
-			}
-		}
-		held = append(held, it.ID)
-	}
-	if lane && len(held) == 0 {
+	if chat, lane := chatLaneCall(ctx); lane && len(held) == 0 {
 		return "", fmt.Errorf("your chat's item (chat %s) is not held right now, so this read cannot be counted against it; answer the team member, and the next turn may read", chat)
 	}
 	switch {
@@ -84,6 +67,39 @@ func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance stri
 		return "", errors.New("you hold no claimed item: claim one first (officer_claim) — every read is counted against the item it is for")
 	}
 	return "", fmt.Errorf("you hold %d items: name the one this read is for with item_id", len(held))
+}
+
+// heldItems is THE read of the items instance holds a LIVE claim on in HQ
+// (heldItem's, and the connector-block record's: officer_connector_rerun.go).
+func (s *Server) heldItems(ctx context.Context, c officers.Backend, instance string) ([]officers.ItemID, error) {
+	return heldItemsAt(ctx, c, instance, s.officerRT.clock())
+}
+
+// heldItemsAt is heldItems with the clock read: for background work that
+// holds its own runtime (officer_connector_rerun.go).
+func heldItemsAt(ctx context.Context, c officers.Backend, instance string, now time.Time) ([]officers.ItemID, error) {
+	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return nil, err
+	}
+	// A chat lane's call (officer_chat.go) holds exactly its own chat's item:
+	// held as its chat holder (instance, officerCallerName) and naming its
+	// chat — never another chat's item on the same instance, never a queue
+	// item.
+	chat, lane := chatLaneCall(ctx)
+	var held []officers.ItemID
+	for _, it := range claimed {
+		if it.ClaimedBy != instance || !it.LeaseLive(now) {
+			continue
+		}
+		if lane {
+			if id, _, ok := officers.ChatOf(it); !ok || id != chat {
+				continue
+			}
+		}
+		held = append(held, it.ID)
+	}
+	return held, nil
 }
 
 // heldItemRefusal is tool's answer to a heldItem error: HQ's own refusal or

@@ -884,6 +884,49 @@ An instance in `error` counts as up, so its claim is not released early; it
 lapses with its lease. If the release itself fails (HQ down), the lease lapse
 is the fallback.
 
+### Re-running blocked items
+
+An instance whose connector grant is still pending works its item blind: the
+connector refuses it, and it completes the item `escalated` ("operator:
+approve grant N") or `done`. Approving the grant used to change nothing for
+that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
+`internal/officers/connector_blocks.go`):
+
+- **At the refusal.** Every access check that answers "pending" (the proxy,
+  `postgres_query`, `internal_http_request`, `officer_kube_read`), and an
+  explicit `connector_request` that leaves the grant pending, records each
+  item the instance holds a LIVE claim on in HQ, keyed by the grant's id
+  (`officer_connector_blocks`, migration 0148; in memory without a
+  database). The HQ read runs in the background, never on the refused
+  request, and at most once per (agent, grant) per minute: a refused
+  instance retries in seconds. A repeat refusal writes nothing. The link is
+  the grant id and HQ's claimed list, never an item's summary or a
+  refusal's text.
+- **At the approval.** The operator's decision (`decideConnectorGrant`, the
+  one every door takes; an officer's grant is never approved from a standing
+  grant) reads how each recorded item of THAT grant stands in HQ and re-runs
+  **only the ones that finished `escalated`** (operator 2026-11-17), newest
+  first, through `POST /officers/{id}/items/{item}/rerun` with the officer's
+  token, key `connector-grant:<id>`. An item that finished `done` /
+  `no_action`, or is still open, claimed or waiting, is skipped. HQ enqueues
+  a new item of the same subject, or answers the live / newer item that
+  already carries the work.
+- **Bounded.** Only items recorded within the last **7 days**
+  (`officers.RerunWindow`): an operator approves within a working week, and
+  older blocked work has a newer event of its own. At most **10** re-runs
+  per approval (`officers.RerunMaxPerApproval`), the rest logged and left
+  for a later approval. Every item HQ re-ran, and every one skipped, is
+  settled and never looked at again: a second approval of the same grant
+  re-runs nothing.
+- **Degrades.** An HQ without the route (older than civ-hq #891) answers
+  404: muster logs it and goes on to the next item, and the block stays
+  UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
+  An item HQ does not list in any status stays unsettled too. A builtin
+  officer's backend re-runs nothing (no `rerun` capability); muster logs it.
+
+A different connector's grant, or another agent's, re-runs nothing: the
+record is keyed by the grant id.
+
 ## Chat sessions
 
 A team member can chat with an officer through the HQ server: HQ stores each
@@ -973,7 +1016,7 @@ arrives with its token: it can only ever reach that instance's own chat claims.
    the item.
 
 **Never re-sent, never skipped.** The lane's row keeps two marks (migration
-0148): the highest chat seq the lane has seen, and the last one HQ took a
+0149): the highest chat seq the lane has seen, and the last one HQ took a
 reply for. A message is marked seen *before* it is sent, and the mark is put
 back when `ccd` refuses the turn before typing anything. So a muster that
 restarts mid-turn, or a reply HQ never took, leaves seen past answered: the
@@ -3694,7 +3737,9 @@ uses `POST /officers/{id}/items/{item}/transcript`
 /officers/{id}/usage` ([Claude usage to HQ](#claude-usage-to-hq)) and `PUT
 /officers/{id}/pools` ([Pools to HQ](#pools-to-hq)). `ccd ask-image` uses `POST
 /officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
-`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Every
+`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. An approved
+connector grant uses `POST /officers/{id}/items/{item}/rerun` `{key, reason}`
+([Re-running blocked items](#re-running-blocked-items)). Every
 officer may use `GET /officers/{id}/obs/queries` and `POST
 /officers/{id}/obs/query` ([Observability queries](#observability-queries)). An HQ
 officer's [chat sessions](#chat-sessions) use `GET

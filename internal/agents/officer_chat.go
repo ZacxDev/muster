@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// OFFICER CHAT LANES (migration 0148; internal/officers chat.go). A chat a
+// OFFICER CHAT LANES (migration 0149; internal/officers chat.go). A chat a
 // team member holds with an officer runs in a Claude Code session of its own
 // on one of the officer's instances: a chat_sessions row on that instance's
 // agent, on the claude-code runtime, keyed by the chat (officers.
@@ -17,7 +17,7 @@ import (
 // chat's marks: the highest chat seq the lane has been given (seen) and the
 // last one HQ took a reply for (answered).
 
-// OfficerChatStore is the store's 0148 half, when it has one.
+// OfficerChatStore is the store's 0149 half, when it has one.
 type OfficerChatStore interface {
 	// SessionByKeyAnyAgent is the session keyed sessionKey, whichever agent
 	// (the caller's row scope permitting) it is on. pgx.ErrNoRows when none.
