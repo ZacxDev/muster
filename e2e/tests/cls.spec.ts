@@ -154,6 +154,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /attention/log': 'an HTML fragment (the Asks page\'s Log tab panel, fetched when the tab is opened)',
   'GET /attention/asker': 'an HTML fragment (a session page\'s asks block, re-fetched live)',
   'GET /attention/open/{key}': 'a redirect (a notification\'s tap, resolved to its session or its Asks item)',
+  'GET /notify/open': 'a redirect (an agent\'s notification tap to an allowlisted address, re-checked on every tap; no document of its own)',
   'GET /static/': 'static files',
   'GET /sw.js': 'service worker script',
   'GET /tasks/{id}/attachments/{aid}': 'a file download',
