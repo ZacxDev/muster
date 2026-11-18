@@ -67,16 +67,53 @@ const (
 // Words of the onboarding page's top layer. The page says what to do in plain
 // steps; the exact prompt and command are behind each step's ⓘ.
 const (
-	OnboardingLead         = "Your agents appear here once a computer is connected."
-	OnboardingAskAdminText = "Ask your admin to connect a computer."
+	OnboardingLead          = "Your agents appear here once a computer is connected."
+	OnboardingConnectedLead = "Your computer is connected. Start an agent on it and it shows up here."
+	OnboardingAskAdminText  = "Ask your admin to connect a computer."
+	OnboardingTeamText      = "Your team's agents are in the menu."
 )
 
-// agentsEmptyState is what home shows when there is nothing to open: no
-// dispatched agent and no mirrored window (internal/api handleAgentsHome — the
-// retired Agents list's empty state, now the page /agents draws when home has
-// nowhere to go). On a fresh install that is either no machine connected yet
-// or a connected machine with nothing in tmux, so it says how to fix both —
-// never a blank screen. It offers no dispatch button: the chief starts agents
+// Onboarding states (data-onboarding-state on the page's root): which first
+// step the page leads with.
+const (
+	// OnboardingStateConnect: no computer of the viewer's is connected —
+	// connect one, then start an agent on it.
+	OnboardingStateConnect = "connect"
+	// OnboardingStateStart: a computer of the viewer's is connected but runs
+	// nothing muster shows — start an agent; connecting another is second.
+	OnboardingStateStart = "start"
+	// OnboardingStateAskAdmin: the viewer may not see setup details.
+	OnboardingStateAskAdmin = "ask-admin"
+)
+
+// AgentsHomeState is what the onboarding page needs to know about the viewer
+// beyond Features: what the menu holds that home did not open, and whether
+// one of their own computers is connected.
+type AgentsHomeState struct {
+	// HostConnected: a computer of the viewer's own is connected now (its
+	// muster-mirror is online) but runs nothing muster lists.
+	HostConnected bool
+	// TeamEntries: the menu lists the viewer's teams' agents or sessions.
+	// Home never opens those (it is the viewer's own), so without this the
+	// page would say "no agents" over a menu that has some.
+	TeamEntries bool
+}
+
+// agentsEmptyState is what home shows when there is nothing of the viewer's
+// own to open: no dispatched agent and no mirrored window (internal/api
+// handleAgentsHome — the retired Agents list's empty state, now the page
+// /agents draws when home has nowhere to go). It is never a blank screen, and
+// it says what is true for this viewer:
+//   - the team's agents or sessions are in the menu (st.TeamEntries): it says
+//     so first, with a button that opens the menu;
+//   - an admin with a computer connected but nothing running in tmux
+//     (st.HostConnected) is told to start an agent, and connecting another
+//     computer comes second;
+//   - an admin with no computer connected is told to connect one, then start
+//     an agent on it;
+//   - anyone else is told to ask their admin.
+//
+// It offers no dispatch button: the chief starts agents
 // (docs/design/chief-dispatch.md phase 2 deleted "Dispatch an agent").
 //
 // PLAIN STEPS UP FRONT, THE PROMPT AND THE COMMAND BEHIND AN ⓘ (the operator
@@ -85,17 +122,47 @@ const (
 // may see them (setup: Features.Setup, an admin — usually whoever installed
 // muster) gets the steps; anyone else is told to ask their admin, and the page
 // carries neither the prompt nor the command (absent, not hidden).
-func agentsEmptyState(setup bool) g.Node {
-	head := g.Group{
-		Div(Class("text-4xl"), g.Text("🧩")),
-		H2(Class("text-lg font-medium text-fg2"), g.Text("No agents yet")),
-		P(Class("text-sm text-muted"), g.Text(OnboardingLead)),
+func agentsEmptyState(setup bool, st AgentsHomeState) g.Node {
+	heading, lead := "No agents yet", OnboardingLead
+	state := OnboardingStateConnect
+	switch {
+	case !setup:
+		state = OnboardingStateAskAdmin
+	case st.HostConnected:
+		state, lead = OnboardingStateStart, OnboardingConnectedLead
 	}
-	if !setup {
+	var team g.Node
+	if st.TeamEntries {
+		heading = "No agents of your own yet"
+		team = Div(
+			g.Attr("data-onboarding-team", ""),
+			Class("flex flex-col items-center gap-2"),
+			P(Class("text-sm text-fg2"), g.Text(OnboardingTeamText)),
+			// The menu is the phone's drawer; at lg it is the rail beside this
+			// page, already on screen, so the button is hidden there.
+			Button(
+				Type("button"),
+				ID("onboarding-open-menu"),
+				g.Attr("onclick", "var b=document.getElementById('sidebar-open');if(b)b.click()"),
+				Class("press inline-flex min-h-[44px] items-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus lg:hidden"),
+				g.Text("Open the menu"),
+			),
+		)
+	}
+	root := func(body ...g.Node) g.Node {
 		return Div(
 			ID(HomeEmptyID),
+			g.Attr("data-onboarding-state", state),
 			Class("mx-auto mt-12 flex w-full max-w-xl flex-col items-center gap-3 px-1 text-center"),
-			head,
+			Div(Class("text-4xl"), g.Text("🧩")),
+			H2(Class("text-lg font-medium text-fg2"), g.Text(heading)),
+			g.If(team != nil, team),
+			g.Group(body),
+		)
+	}
+	if !setup {
+		return root(
+			g.If(!st.TeamEntries, P(Class("text-sm text-muted"), g.Text(lead))),
 			P(g.Attr("data-onboarding-ask-admin", ""), Class("text-sm text-fg2"), g.Text(OnboardingAskAdminText)),
 		)
 	}
@@ -106,32 +173,36 @@ func agentsEmptyState(setup bool) g.Node {
 	}
 	start := InfoSheet{
 		ID: OnboardingStartSheetID, Label: "How to start an agent", Heading: "Start an agent",
-		Lead: "In a terminal on that computer, run this. muster shows agents that run inside tmux.",
+		Lead: "In a terminal on a connected computer, run this. muster shows agents that run inside tmux.",
 		Code: TmuxOneLiner,
 	}
-	return Div(
-		ID(HomeEmptyID),
-		Class("mx-auto mt-12 flex w-full max-w-xl flex-col items-center gap-3 px-1 text-center"),
-		head,
-		Ol(
-			Class("flex w-full flex-col gap-2 text-left"),
+	// The step's own action: the prompt is copied without opening anything;
+	// the ⓘ beside it shows it first.
+	copyPrompt := Button(
+		Type("button"),
+		ID("onboarding-copy-prompt"),
+		g.Attr("data-copy-text", OnboardingPrompt),
+		g.Attr("onclick", "window.cgCopy && window.cgCopy(this)"),
+		Class("press mt-2 inline-flex min-h-[44px] items-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+		g.Text("Copy setup instructions"),
+	)
+	var steps g.Node
+	if st.HostConnected {
+		steps = g.Group{
+			onboardingStep(1, "Start an agent on your computer", "It shows up here as soon as it starts.", start, nil),
+			onboardingStep(2, "Connect another computer",
+				"Copy the setup instructions and paste them into the coding agent on it.", prompt, copyPrompt),
+		}
+	} else {
+		steps = g.Group{
 			onboardingStep(1, "Connect your first computer",
-				"Copy the setup instructions and paste them into the coding agent on that computer.",
-				prompt,
-				// The step's own action: the prompt is copied without opening
-				// anything; the ⓘ beside it shows it first.
-				Button(
-					Type("button"),
-					ID("onboarding-copy-prompt"),
-					g.Attr("data-copy-text", OnboardingPrompt),
-					g.Attr("onclick", "window.cgCopy && window.cgCopy(this)"),
-					Class("press mt-2 inline-flex min-h-[44px] items-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
-					g.Text("Copy setup instructions"),
-				),
-			),
-			onboardingStep(2, "Start an agent on that computer",
-				"It shows up here as soon as it starts.", start, nil),
-		),
+				"Copy the setup instructions and paste them into the coding agent on that computer.", prompt, copyPrompt),
+			onboardingStep(2, "Start an agent on that computer", "It shows up here as soon as it starts.", start, nil),
+		}
+	}
+	return root(
+		P(Class("text-sm text-muted"), g.Text(lead)),
+		Ol(Class("flex w-full flex-col gap-2 text-left"), steps),
 		P(Class("text-sm text-muted"),
 			g.Text("Or read the "),
 			A(Href(InstallGuideURL), Target("_blank"), Rel("noopener"), Class("text-accent underline"), g.Text("install guide")),
@@ -161,10 +232,11 @@ func onboardingStep(n int, title, text string, info InfoSheet, action g.Node) g.
 
 // RenderAgentsHome writes the page home draws when it has nothing to open
 // (agentsEmptyState), inside the navigation (NavDocument). feat.Setup decides
-// whether the viewer gets the setup steps or is told to ask their admin.
-func RenderAgentsHome(w io.Writer, feat Features) error {
+// whether the viewer gets the setup steps or is told to ask their admin; st
+// says what the menu holds and whether a computer is connected.
+func RenderAgentsHome(w io.Writer, feat Features, st AgentsHomeState) error {
 	var b strings.Builder
-	if err := agentsEmptyState(feat.Setup).Render(&b); err != nil {
+	if err := agentsEmptyState(feat.Setup, st).Render(&b); err != nil {
 		return err
 	}
 	return RenderNavDocument(w, NavDocumentView{Title: "Agents", Feat: feat, Main: b.String()})

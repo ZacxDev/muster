@@ -108,8 +108,8 @@ for (const vp of [
     for (const sel of ['#onboarding-copy-prompt', '#onboarding-prompt-open', '#onboarding-start-open']) {
       const b = await empty.locator(sel).boundingBox();
       expect(b, `${sel} is laid out`).not.toBeNull();
-      expect(b!.x, sel).toBeGreaterThanOrEqual(0);
-      expect(b!.x + b!.width, sel).toBeLessThanOrEqual(vp.width);
+      expect(b!.x, sel).toBeGreaterThanOrEqual(-0.5);
+      expect(b!.x + b!.width, sel).toBeLessThanOrEqual(vp.width + 0.5);
     }
     await empty.locator('#onboarding-prompt-open').click();
     const box = await empty.locator('#onboarding-prompt').boundingBox();

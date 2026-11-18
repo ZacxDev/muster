@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"html"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -190,4 +194,78 @@ func TestNoTopLayerOfTheTaskBoardsEmptyStateSpellsJargon(t *testing.T) {
 		t.Fatalf("CONTROL: the task page has no <h1>")
 	}
 	assertNoOnboardingJargon(t, "an untitled task's heading", page[i:i+j+len("</h1>")])
+}
+
+// TestTheFirstRunScreenOfAConnectedComputerLeadsWithStartingAnAgent: an admin
+// whose computer is connected (its muster-mirror online) but runs nothing
+// muster lists is told to start an agent first, connecting another computer
+// second — never sent to set up again. CONTROL: the same host offline (the
+// hub still lists it) draws the connect-first page.
+//
+// REGRESSION TEST for #816's review R0-2: red before ownHostConnected, when
+// every admin with nothing to open was told to connect their first computer.
+func TestTheFirstRunScreenOfAConnectedComputerLeadsWithStartingAnAgent(t *testing.T) {
+	for _, c := range []struct {
+		online      bool
+		state       string
+		first, then string
+	}{
+		{true, "start", "Start an agent on your computer", "Connect another computer"},
+		{false, "connect", "Connect your first computer", "Start an agent on that computer"},
+	} {
+		s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
+		// A host with no window at all: nothing for home to open.
+		s.UseExtensions(Extensions{Agents: &homeAgents{}, SessionLiveness: stubLiveness{}, Mirror: &fakeMirror{online: c.online, windows: []mirror.Window{}}})
+		rec := homeGet(s, s.Handler(), "/agents", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("online=%v: GET /agents = %d, want the onboarding page:\n%.400s", c.online, rec.Code, rec.Body.String())
+		}
+		page := mainOf(t, rec.Body.String())
+		assertNoOnboardingJargon(t, "the first-run screen", page)
+		i, j := strings.Index(page, ">"+c.first+"<"), strings.Index(page, ">"+c.then+"<")
+		if !strings.Contains(page, `data-onboarding-state="`+c.state+`"`) || i < 0 || j < i {
+			t.Errorf("online=%v: want state %q, %q before %q:\n%s", c.online, c.state, c.first, c.then, page)
+		}
+	}
+}
+
+// TestTheFirstRunScreenOfAMemberWithTeamAgentsPointsToTheMenu: a member who
+// owns nothing but whose team's agents are listed in the menu (home never
+// opens those: TestHomeWithNoChiefOpensNoTeamAgent) is told the team's agents
+// are in the menu, with a button that opens it — not "No agents yet" and only
+// "ask your admin". CONTROL: with no team agent listed, the page says
+// neither.
+//
+// REGRESSION TEST for #816's review R0-1: red before homeResolve's team bit.
+func TestTheFirstRunScreenOfAMemberWithTeamAgentsPointsToTheMenu(t *testing.T) {
+	u := &tsNamedUsers{tsUsers: newTSUsers(), names: map[int64]string{tsTeam: "Platform"}}
+	store := &tsAgents{rows: []agents.Agent{
+		teamChiefRow(),
+		{ID: 44, Name: "team-wren", DisplayName: "team-wren", OwnerID: tsTeam, Kind: agents.KindClaudeCode},
+	}}
+	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: store, Users: u, ChiefPrefs: chiefSwitchedOn{}})
+	get := func() string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleAgentsHome(rec, httptest.NewRequest(http.MethodGet, "/agents", nil).WithContext(personCtx(u.tsUsers, tsOperator)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /agents = %d (%q), want the onboarding page", rec.Code, rec.Header().Get("Location"))
+		}
+		return mainOf(t, rec.Body.String())
+	}
+	page := get()
+	assertNoOnboardingJargon(t, "a member's first-run screen, team agents listed", page)
+	for _, want := range []string{"data-onboarding-team", html.EscapeString(ui.OnboardingTeamText), `id="onboarding-open-menu"`, `data-onboarding-state="ask-admin"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("team agents listed: the page lacks %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, ">No agents yet<") {
+		t.Errorf("team agents listed: the page says \"No agents yet\"")
+	}
+	store.rows = nil
+	if page := get(); strings.Contains(page, "data-onboarding-team") || !strings.Contains(page, ">No agents yet<") {
+		t.Errorf("CONTROL: nothing listed, yet the page points to the team's agents:\n%s", page)
+	}
 }

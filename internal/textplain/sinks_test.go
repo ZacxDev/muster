@@ -48,15 +48,18 @@ import (
 var titleNames = map[string]bool{
 	"Title": true, "DisplayName": true, "Label": true, "DisplayTitle": true,
 	"TaskTitle": true,
+	// A task's body read as its title (ui.TaskBodyTitle: an untitled task's
+	// heading falls back to it).
+	"TaskBodyTitle": true,
 	// A focus's description is the summary under its title, drawn as one line
 	// of text: the same rule applies.
 	"Description": true,
 }
 
 // bareAccessors are the title accessors called unqualified: package ui's
-// TaskTitle, and package api's askSource / askSourceParts (an ask's source,
+// TaskTitle and TaskBodyTitle, and package api's askSource / askSourceParts (an ask's source,
 // which names a mirrored window — see apiTitleNames).
-var bareAccessors = map[string]bool{"TaskTitle": true, "askSource": true, "askSourceParts": true}
+var bareAccessors = map[string]bool{"TaskTitle": true, "TaskBodyTitle": true, "askSource": true, "askSourceParts": true}
 
 // apiTitleNames adds the attention item's fields, which are titles in api's
 // hand-written attention HTML.

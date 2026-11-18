@@ -2,8 +2,10 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -70,19 +72,13 @@ func TestTheOnePromptIsTheSameEverywhere(t *testing.T) {
 // agents and no mirrored windows: RenderAgentsHome) draws, inside the
 // navigation, the connect steps in plain words for an admin (Features.Setup) —
 // the exact prompt and the tmux one-liner each inside its ⓘ details sheet with
-// a Copy button, and the guide's link — and for anyone else only "ask your
-// admin", the prompt and the command ABSENT from the markup. It offers no
-// dispatch (docs/design/chief-dispatch.md phase 2; TestTheDispatchUIIsGone
-// pins the absence).
+// a Copy button, the step's own Copy button copying the prompt, and the
+// guide's link — and for anyone else only "ask your admin", the prompt and
+// the command ABSENT from the markup. It offers no dispatch
+// (docs/design/chief-dispatch.md phase 2; TestTheDispatchUIIsGone pins the
+// absence).
 func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
-	render := func(setup bool) string {
-		var b bytes.Buffer
-		if err := RenderAgentsHome(&b, Features{Setup: setup}); err != nil {
-			t.Fatal(err)
-		}
-		return b.String()
-	}
-	admin, member := render(true), render(false)
+	admin, member := renderHome(t, true, AgentsHomeState{}), renderHome(t, false, AgentsHomeState{})
 	for who, html := range map[string]string{"admin": admin, "member": member} {
 		if !strings.Contains(html, `id="sidebar-root"`) || !strings.Contains(html, `id="agents-empty"`) {
 			t.Errorf("%s: the onboarding page is not inside the nav:\n%s", who, html)
@@ -90,19 +86,17 @@ func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 	}
 	// The admin's: each code inside its own sheet, copied whole.
 	for id, code := range map[string]string{OnboardingPromptSheetID: OnboardingPrompt, OnboardingStartSheetID: TmuxOneLiner} {
-		i := strings.Index(admin, `id="`+id+`" popover="auto"`)
-		if i < 0 {
-			t.Errorf("admin: no ⓘ sheet %q:\n%s", id, admin)
-			continue
-		}
-		sheet := admin[i:]
-		sheet = sheet[:strings.Index(sheet, "</div></div></div>")]
+		sheet := sheetOf(t, admin, id)
 		if !strings.Contains(sheet, `data-info-code="">`+escapeForHTML(code)+`<`) || !strings.Contains(sheet, `data-copy-text="`+escapeForHTML(code)+`"`) {
 			t.Errorf("admin: sheet %q does not hold and copy %q:\n%s", id, code, sheet)
 		}
 		if !strings.Contains(admin, `id="`+id+`-open" popovertarget="`+id+`"`) {
 			t.Errorf("admin: no ⓘ trigger for %q", id)
 		}
+	}
+	// The step's own Copy button copies exactly the prompt.
+	if got := tagAttr(t, admin, `id="onboarding-copy-prompt"`, "data-copy-text"); got != escapeForHTML(OnboardingPrompt) {
+		t.Errorf("admin: #onboarding-copy-prompt copies %q, want the prompt %q", got, OnboardingPrompt)
 	}
 	if !strings.Contains(admin, `href="`+InstallGuideURL+`"`) || strings.Contains(admin, "data-onboarding-ask-admin") {
 		t.Errorf("admin: no install guide link, or told to ask an admin:\n%s", admin)
@@ -116,6 +110,111 @@ func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 			t.Errorf("member: the page carries %q", absent)
 		}
 	}
+}
+
+// TestTheOnboardingPageLeadsWithWhatIsTrueForTheViewer: the page's first step
+// follows the viewer's state.
+//   - An admin with no computer connected: connect one first, then start an
+//     agent (state "connect").
+//   - An admin with a computer connected but nothing running: start an agent
+//     first, connecting another computer second (state "start") — never sent
+//     to set up again.
+//   - The team's agents in the menu: said first, with a button that opens the
+//     menu, for an admin and a member alike; neither page says "No agents yet".
+func TestTheOnboardingPageLeadsWithWhatIsTrueForTheViewer(t *testing.T) {
+	steps := func(html string) []string {
+		var out []string
+		for _, title := range []string{"Connect your first computer", "Start an agent on that computer", "Start an agent on your computer", "Connect another computer"} {
+			if i := strings.Index(html, ">"+title+"<"); i >= 0 {
+				out = append(out, fmt.Sprintf("%08d %s", i, title))
+			}
+		}
+		sort.Strings(out)
+		for i := range out {
+			out[i] = out[i][9:]
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name  string
+		setup bool
+		st    AgentsHomeState
+		state string
+		steps []string
+		team  bool
+	}{
+		{"admin, nothing connected", true, AgentsHomeState{}, "connect", []string{"Connect your first computer", "Start an agent on that computer"}, false},
+		{"admin, a computer connected", true, AgentsHomeState{HostConnected: true}, "start", []string{"Start an agent on your computer", "Connect another computer"}, false},
+		{"admin, team agents in the menu", true, AgentsHomeState{TeamEntries: true}, "connect", []string{"Connect your first computer", "Start an agent on that computer"}, true},
+		{"member, team agents in the menu", false, AgentsHomeState{TeamEntries: true}, "ask-admin", nil, true},
+		{"member, nothing", false, AgentsHomeState{}, "ask-admin", nil, false},
+	} {
+		html := renderHome(t, c.setup, c.st)
+		if !strings.Contains(html, `data-onboarding-state="`+c.state+`"`) {
+			t.Errorf("%s: not state %q", c.name, c.state)
+		}
+		if got := steps(html); strings.Join(got, "|") != strings.Join(c.steps, "|") {
+			t.Errorf("%s: steps %q, want %q", c.name, got, c.steps)
+		}
+		team := strings.Contains(html, "data-onboarding-team") && strings.Contains(html, ">"+escapeForHTML(OnboardingTeamText)+"<") &&
+			strings.Contains(html, `id="onboarding-open-menu"`)
+		if team != c.team {
+			t.Errorf("%s: says the team's agents are in the menu (with its button) = %v, want %v", c.name, team, c.team)
+		}
+		if c.team && strings.Contains(html, ">No agents yet<") {
+			t.Errorf("%s: says \"No agents yet\" over a menu holding the team's agents", c.name)
+		}
+		if c.setup {
+			if got := tagAttr(t, html, `id="onboarding-copy-prompt"`, "data-copy-text"); got != escapeForHTML(OnboardingPrompt) {
+				t.Errorf("%s: #onboarding-copy-prompt copies %q", c.name, got)
+			}
+		}
+	}
+	// The menu button opens the sidebar the way its own button does.
+	if html := renderHome(t, false, AgentsHomeState{TeamEntries: true}); !strings.Contains(html, `getElementById(&#39;sidebar-open&#39;)`) {
+		t.Errorf("the menu button does not open the sidebar:\n%s", html)
+	}
+}
+
+func renderHome(t *testing.T, setup bool, st AgentsHomeState) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := RenderAgentsHome(&b, Features{Setup: setup}, st); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// sheetOf is the markup of the ⓘ sheet id in html, up to the next sheet.
+func sheetOf(t *testing.T, html, id string) string {
+	t.Helper()
+	marker := `id="` + id + `" popover="auto"`
+	i := strings.Index(html, marker)
+	if i < 0 {
+		t.Fatalf("no ⓘ sheet %q:\n%s", id, html)
+	}
+	sheet := html[i:]
+	if j := strings.Index(sheet[len(marker):], `popover="auto"`); j >= 0 {
+		sheet = sheet[:len(marker)+j]
+	}
+	return sheet
+}
+
+// tagAttr is attribute name's value on the tag holding marker.
+func tagAttr(t *testing.T, html, marker, name string) string {
+	t.Helper()
+	i := strings.Index(html, marker)
+	if i < 0 {
+		t.Fatalf("no %s in:\n%s", marker, html)
+	}
+	open := strings.LastIndex(html[:i], "<")
+	tag := html[open : i+strings.Index(html[i:], ">")]
+	k := strings.Index(tag, " "+name+`="`)
+	if k < 0 {
+		return ""
+	}
+	v := tag[k+len(name)+3:]
+	return v[:strings.Index(v, `"`)]
 }
 
 // escapeForHTML is how gomponents' g.Text writes s.

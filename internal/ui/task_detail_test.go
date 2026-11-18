@@ -162,9 +162,20 @@ func TestTaskDetailPageHeadingFallsBackToTheTasksWordsNotItsNumber(t *testing.T)
 	if got := h1(renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 614, Status: notes.StatusOpen}})); got != "Untitled task" {
 		t.Errorf("an untitled, directory-less, empty task's heading = %q, want %q", got, "Untitled task")
 	}
-	bodied := TaskCardView{Note: notes.Note{ID: 616, Body: "\n  Write the 2.5 release notes\nwith the changelog", Status: notes.StatusOpen}}
-	if got := h1(renderTaskDetail(t, bodied)); got != "Write the 2.5 release notes" {
-		t.Errorf("an untitled task's heading = %q, want its body's first line %q", got, "Write the 2.5 release notes")
+	// Its body, plained WHOLE (so a leading code fence or image does not leave
+	// it empty), then capped at 80 runes with an ellipsis, as a card's snippet.
+	long := strings.Repeat("abcdefghij", 9) // 90 runes
+	for _, c := range []struct{ body, want string }{
+		{"**Fix** the `login` bug", "Fix the login bug"},
+		{"\n  Write the 2.5 release notes", "Write the 2.5 release notes"},
+		{"```go\nx := 1\n```\nFix the login bug", "Fix the login bug"},
+		{"![shot](https://example.test/a.png)\nFix it", "shot Fix it"},
+		{long, long[:80] + "…"},
+	} {
+		v := TaskCardView{Note: notes.Note{ID: 616, Body: c.body, Status: notes.StatusOpen}}
+		if got := h1(renderTaskDetail(t, v)); got != escapeForHTML(c.want) {
+			t.Errorf("an untitled task with body %q: heading %q, want %q", c.body, got, c.want)
+		}
 	}
 	// And the title falls back through TaskTitle to the directory when there is
 	// one — the label every other surface uses, so the page agrees with them.
