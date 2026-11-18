@@ -565,7 +565,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 					return toolErr("host %s lists no one window running opencode session %q that it sends to now; a host acts only as its own sessions",
 						t.Host, mirror.SessionIDOf(agentKey))
 				}
-				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window, mirrorTmuxSession: e.Session}
 			} else {
 				// 🔴 THE CLAUDE HEADER NAMES A CLAUDE SESSION ONLY. mirrorSessionOf
 				// also binds an opencode caller's key, so without this an
@@ -579,7 +579,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 					return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
 						t.Host, sid, mirrorSessionHeader)
 				}
-				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window, mirrorTmuxSession: e.Session}
 			}
 			// 🔴 A HOST OFFICER INSTANCE FIRST (officer_host.go), on every call
 			// while a host officer is declared: a session bound to one runs only

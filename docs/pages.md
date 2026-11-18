@@ -296,11 +296,19 @@ Which session made a page:
 
 - **A dispatched agent's** pages are on its page (`/agents/{name}`): the
   pages its tools made.
-- **A mirrored window's** pages are the ones made from the Claude Code (or
-  opencode) session running in it, on that machine. muster records the
-  session a page came from when the page is made.
+- **A mirrored window's** pages are every page made **in that window** on
+  that machine (its tmux window), whichever Claude Code (or opencode)
+  session made it, so a `/clear`, a restart or a resume in the window keeps
+  them. muster records the session and the window a page came from when the
+  page is made. The window also lists the pages made by the session running
+  in it now, wherever that session made them.
+- A window on another machine is never the same window, even with the same
+  name. A tmux server restart reuses window ids, so a new window can match
+  an old one of the same tmux session name on the same machine.
 - **A page a mirrored session made before muster recorded sessions** has no
-  session to match, so it is listed under no window. It is still on the Pages
+  session or window to match, so it is listed under no window. A page made
+  after muster recorded sessions but before it recorded windows is listed
+  only while its session runs in the window. Both are still on the Pages
   screen.
 - Only your own pages are listed. A team session's window lists none: a
   team's pages are the team's, and its members do not see them.

@@ -123,10 +123,12 @@ func (s *Server) sessionOpenChips(ctx context.Context, vp []plugins.Plugin, h mi
 	return pluginChips(vp, e, on, n, draftUser(ctx))
 }
 
-// windowPagesRef is the session whose pages a mirrored window lists: the
-// window's host and every MCP caller key it runs now
-// (mirror.Window.MCPCallerKeys — the keys a page made from it recorded,
-// pages.Creator.MirrorSession), read from h's report of the window.
+// windowPagesRef is what a mirrored window's pages are listed by: its host,
+// the window itself (its tmux session and window id — the window a page was
+// made in, pages.Creator.MirrorWindow: so a new Claude session in it keeps
+// its earlier pages) and every MCP caller key it runs now
+// (mirror.Window.MCPCallerKeys — pages.Creator.MirrorSession), read from h's
+// report of the window.
 //
 // 🔴 NONE ON A TEAM HOST'S WINDOW (e.Owner != 0): a team window's pages are
 // the TEAM's rows, which row-level security never shows a member (the pages
@@ -140,7 +142,7 @@ func windowPagesRef(h mirror.HostView, e mirror.SessionView) pages.SessionRef {
 	}
 	for _, w := range h.Windows {
 		if w.ID == e.Window && w.Session == e.Session {
-			return pages.SessionRef{MirrorHost: h.Host, MirrorSessions: w.MCPCallerKeys()}
+			return pages.SessionRef{MirrorHost: h.Host, MirrorTmuxSession: w.Session, MirrorWindow: w.ID, MirrorSessions: w.MCPCallerKeys()}
 		}
 	}
 	return pages.SessionRef{}
