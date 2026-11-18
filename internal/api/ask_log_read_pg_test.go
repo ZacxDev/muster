@@ -394,3 +394,36 @@ func TestARowWhoseTextExpiredSaysSo(t *testing.T) {
 		t.Fatalf("the expired card: %s", card)
 	}
 }
+
+// TestARepeatedQuestionShowsWhatWasAskedGroupedByItsNormalForm: two asks
+// whose texts differ only in case and punctuation are ONE repeated question
+// (the grouping is the normal form's, unchanged), and the Log tab shows it as
+// the owner saw it — the newer of the two originals — never the lower-cased
+// normal form. RED at origin/main fcb27a6b: the row read "deploy to staging
+// now".
+func TestARepeatedQuestionShowsWhatWasAskedGroupedByItsNormalForm(t *testing.T) {
+	f := newAskReadFixture(t, true)
+	for i, q := range []string{"Deploy to staging now?", "DEPLOY TO STAGING NOW", "Run the linter?"} {
+		f.ask(t, f.a, asklog.Ask{Kind: asklog.KindPlainText, Runtime: asklog.RuntimeClaudeCode, Host: "alpha", TmuxSession: "s1",
+			Question: q, AskedAt: askT0.Add(time.Duration(i) * time.Hour)}, &asklog.Resolution{Outcome: asklog.OutcomeAnswered, AnsweredBy: asklog.ByOwner, Answer: "yes"}, 7*time.Second)
+	}
+	body := f.session(t, askLogPanelPath, f.a).Body.String()
+	rows := regexp.MustCompile(`(?s)<li [^>]*data-asklog-top-row.*?</li>`).FindAllString(body, -1)
+	if len(rows) != 1 || !strings.Contains(rows[0], `data-count="2"`) {
+		t.Fatalf("want ONE repeated question asked twice, got %d:\n%s", len(rows), strings.Join(rows, "\n"))
+	}
+	text := regexp.MustCompile(`<p class="[^"]*"[^>]*>([^<]*)</p>`).FindStringSubmatch(rows[0])
+	if text == nil || text[1] != "DEPLOY TO STAGING NOW" {
+		t.Errorf("the repeated question reads %q, want the newer original %q:\n%s", text, "DEPLOY TO STAGING NOW", rows[0])
+	}
+	var sum struct {
+		Top []struct {
+			Norm     string `json:"question_norm"`
+			Question string `json:"question"`
+		} `json:"top_questions"`
+	}
+	if w := f.bearer(t, apiAsksSumPath, f.aTok); w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &sum) != nil || len(sum.Top) != 1 ||
+		sum.Top[0].Norm != "deploy to staging now" || sum.Top[0].Question != "DEPLOY TO STAGING NOW" {
+		t.Errorf("the summary API's top question: %d %s", w.Code, w.Body)
+	}
+}
