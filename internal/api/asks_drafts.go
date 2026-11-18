@@ -101,21 +101,32 @@ func asksTab(r *http.Request) string {
 	return asksTabOpen
 }
 
-// askTabItems is items without the reply drafts (the Reply drafts tab's).
+// askTabItems is items without what the Drafts tab lists (draftsTabItem).
 func askTabItems(items []attentionItem) []attentionItem {
 	out := make([]attentionItem, 0, len(items))
 	for _, it := range items {
-		if it.Kind != attentionKindPlugin {
+		if !draftsTabItem(it) {
 			out = append(out, it)
 		}
 	}
 	return out
 }
 
+// draftsTabItem reports whether item it is one the Drafts tab LISTS: a reply
+// or outbound draft (draftKey), an outreach batch (batchKey). 🔴 NOT every
+// item of the plugin kind: a plugin's pairing request (pairKey) is that kind
+// too, and the Drafts tab does not list it — counted as a draft it drew "1
+// draft waits" over a tab that did not show it (audit of #787). It is the Open
+// feed's own card.
+func draftsTabItem(it attentionItem) bool {
+	return it.Kind == attentionKindPlugin && (strings.HasPrefix(it.Key, "draft-") || strings.HasPrefix(it.Key, "outreach-"))
+}
+
 // askGroups is the Open feed's ORDER (askFeedHTML): each group's key, its
 // label (the old group header; a card's badge now says it, askFeedBadge), and
-// the item kinds it holds. A reply draft (attentionKindPlugin) is in none: it
-// is the Drafts tab's (askTabItems strips it first).
+// the item kinds it holds. A draft or outreach batch (attentionKindPlugin) is
+// the Drafts tab's (askTabItems strips it first); the plugin kind's group here
+// holds what is left of it, a pairing request.
 // TestEveryAttentionKindHasAHome pins that every other kind the queue can hold
 // is in one.
 var askGroups = []struct {
@@ -126,6 +137,7 @@ var askGroups = []struct {
 	{"notices", "Notices", []string{attentionKindNotice}},
 	{"waiting", "Waiting", []string{attentionKindSession}},
 	{"tasks", "Tasks to route", []string{attentionKindTask}},
+	{"pairing", "Pairing requests", []string{attentionKindPlugin}},
 }
 
 // splitDraftCards is cards as the two views: awaiting a decision (pending and
@@ -274,7 +286,7 @@ const (
 func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
 	top := asksTabOpen
 	switch {
-	case tab == asksTabLog, tab == asksTabAnswered:
+	case tab == asksTabAnswered, tab == asksTabLog && logPanel != "":
 		top = tab
 	case tab == asksTabNudges && nudges != "":
 		top = asksTabNudges
@@ -293,7 +305,12 @@ func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, ar
 		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Nudges",
 			Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="nudges-panel">` + nudges + `</div>`)})
 	}
-	tabs = append(tabs, ui.Tab{ID: asksTabLog, Label: "Log", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="log-panel">` + logPanel + `</div>`)})
+	// The Log tab only with the ask log on (logPanel ""): off, it was a tab of
+	// setup prose ("set MUSTER_ASK_LOG=1 and restart"), which is the
+	// operator's docs' to say (docs/asks.md), not a tab's.
+	if logPanel != "" {
+		tabs = append(tabs, ui.Tab{ID: asksTabLog, Label: "Log", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="log-panel">` + logPanel + `</div>`)})
+	}
 	t := ui.TabsSelected("asks-tabs", "", "Asks", top, tabs...)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col" data-asks-tabs><div class="flex overflow-x-auto border-b border-line">`)
