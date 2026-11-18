@@ -99,7 +99,7 @@ func TestTheFleetSeamLedger(t *testing.T) {
 		"MoveAction":  "fleetMove",
 		"fleetTarget": "fleetDeliver,fleetFile,fleetProposeCIResults,fleetProposeWraps,fleetStartTurn",
 		// fleetMove is the one door every state change goes through.
-		"fleetMove": "fleetApprove,fleetDeliver,fleetDeliverClose,fleetDeliverPick,fleetExpire,fleetReject,fleetRouteTask,fleetSettle,fleetSettleQueued,fleetStartDispatch,fleetStartTurn,fleetWrapClose,sendQueueFleetGate",
+		"fleetMove": "fleetApprove,fleetDeliver,fleetDeliverClose,fleetDeliverPick,fleetExpire,fleetReject,fleetRouteTask,fleetSettle,fleetSettleQueued,fleetStartTurn,fleetWrapClose,sendQueueFleetGate",
 	}
 	got := map[string]map[string]bool{}
 	fset := token.NewFileSet()

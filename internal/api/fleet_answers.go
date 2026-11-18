@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/cichecks"
@@ -25,13 +26,15 @@ import (
 // end_session_propose filing a card when they are called outside an owner
 // turn. Every one is a PROPOSAL: the owner's tap on its card sends it.
 //
-//   - session_answer {subject, answer_kind, text?, option?, reason}:
-//       continue          the fixed "Yes, continue." (answer_rule);
-//       merge_when_green  "Yes, merge #<n>. CI is green on <sha12>. …
-//                         --match-head-commit <sha40>." — only when the MERGE
-//                         CHECK holds (fleetMergeCheck), and again at the tap
-//                         and the paste (answer_rule);
-//       composed          the chief's own words, at most 4 KiB (answer_composed);
+//   - session_answer {subject, answer_kind, ask_id?, text?, option?, reason},
+//     ALWAYS AN ANSWER TO A QUESTION THE SESSION HOLDS — never a message to a
+//     session that asked nothing (that is session_instruct's):
+//       continue          the fixed "Yes, continue." (answer_rule), and
+//       composed          the chief's own words, at most 4 KiB (answer_composed):
+//                         each to an OPEN plain-text question of the session's
+//                         stop — its ask-log row (internal/asklog), the
+//                         owner's, on that session — re-read at the tap and
+//                         the paste (fleetHeldQuestion, fleetAskStillOpen);
 //       pick              ONE OF THE HELD PICKER'S OWN OPTIONS, else refused
 //                         (not_an_option); typed into the picker through the
 //                         one typing an owner's tap on that picker makes
@@ -39,7 +42,12 @@ import (
 //   - ci_result: the session's latest pull request's head had checks still
 //     running when it stopped, and now every one has finished (cichecks):
 //     §4.2's fixed text, facts muster read itself.
-//   - route / close: the call the owner's turn would have made, as a card.
+//   - outside an owner turn, route_to_session / route_many file `custom`
+//     cards (the chief's text) and end_session_propose a `close` card.
+//
+// merge_when_green is held out of this phase: it returns once muster can read
+// the audit ladder's verdict (ask-autoapproval decision 6: green CI AND no red
+// finding).
 //
 // 🔴 THE CI READ IS THE GITHUB APP'S, GATED AS THE PULL-REQUEST READ IS
 // (githubAppForOwner): an owner the App does not admit has no checks read.
@@ -51,20 +59,19 @@ const sessionAnswerTool = "session_answer"
 const (
 	fleetRefusedNotAnOption = "not_an_option"
 	fleetRefusedNoQuestion  = "no_question"
-	fleetRefusedMergeCheck  = "merge_check"
 )
 
 func sessionAnswerToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionAnswerTool,
 		Description: "PROPOSE an answer to the question one of your owner's stopped sessions is holding. muster puts a card in the " +
 			"fleet digest showing exactly what will be sent; NOTHING is sent until your owner taps Approve. answer_kind: continue (the " +
-			"fixed \"" + fleet.AnswerContinueText + "\"); merge_when_green (\"Yes, merge #<n>. CI is green on <sha>. Merge only that " +
-			"commit …\" — only when the session's own open pull request has green CI on its head, which muster reads itself, and reads " +
-			"again at the tap); composed (your own text, at most 4 KiB); pick (for a session showing a picker — AskUserQuestion — " +
+			"fixed \"" + fleet.AnswerContinueText + "\") or composed (your own text, at most 4 KiB), each ONLY to an open plain-text " +
+			"question the session stopped on (muster's ask log: ask_id, or the session's one open question); pick (for a session showing a picker — AskUserQuestion — " +
 			"option MUST be one of that picker's own options, exactly as written; anything else is refused). Returns {action_id, state, refused?, card?}.",
 		Parameters: objSchema(map[string]any{
 			"subject":     strProp("The session: its fleet id from fleet_list (\"mirror:<key>\" or \"agent:<id>\"), stopped now."),
 			"answer_kind": map[string]any{"type": "string", "enum": fleet.AnswerKinds},
+			"ask_id":      intProp("continue/composed: the held question's ask-log id (left out: the session's one open question).", 1, 1<<62),
 			"text":        strProp("Your answer, ONLY with composed (at most 4 KiB)."),
 			"option":      strProp("The picker option to pick, ONLY with pick: one of the held question's own option labels."),
 			"reason":      strProp("Your one-line reason, shown on the card (at most 300 characters)."),
@@ -75,6 +82,7 @@ func (s *Server) toolSessionAnswer(ctx context.Context, arguments string) string
 	var in struct {
 		Subject    string  `json:"subject"`
 		AnswerKind string  `json:"answer_kind"`
+		AskID      int64   `json:"ask_id"`
 		Text       *string `json:"text"`
 		Option     *string `json:"option"`
 		Reason     string  `json:"reason"`
@@ -92,25 +100,28 @@ func (s *Server) toolSessionAnswer(ctx context.Context, arguments string) string
 		return fleetToolResult(fleet.Action{}, refused, why)
 	}
 	switch in.AnswerKind {
-	case "continue":
-		return s.fleetFile(ctx, sub, s.fleetProposalFor(sub, fleet.ClassAnswerRule, fleet.AnswerContinueText, in.Reason))
-	case "merge_when_green":
-		n, head, why := s.fleetMergeCheck(ctx, sub)
+	case "continue", "composed":
+		class, text := fleet.ClassAnswerRule, fleet.AnswerContinueText
+		if in.AnswerKind == "composed" {
+			t, ok := cleanPrompt(*in.Text)
+			switch {
+			case !ok || len(t) > fleet.MaxCustomBytes:
+				return fleetToolResult(fleet.Action{}, fleetRefusedTooLong, "text is at most 4 KiB")
+			case t == "":
+				return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "text is empty")
+			}
+			class, text = fleet.ClassAnswerComposed, t
+		}
+		// 🔴 AN ANSWER ANSWERS A HELD QUESTION: an open plain-text question of
+		// THIS session's stop, the owner's (round 0 D1). Without one it is a
+		// message, which is session_instruct's.
+		q, why := s.fleetHeldQuestion(ctx, sub, in.AskID)
 		if why != "" {
-			return fleetToolResult(fleet.Action{}, fleetRefusedMergeCheck, why)
+			return fleetToolResult(fleet.Action{}, fleetRefusedNoQuestion, why)
 		}
-		p := s.fleetProposalFor(sub, fleet.ClassAnswerRule, fleet.AnswerMergeText(n, head), in.Reason)
-		p.Evidence.PRHeadFull, p.Evidence.PRHead, p.Evidence.MergeCheck = head, head[:12], true
+		p := s.fleetProposalFor(sub, class, text, in.Reason)
+		p.Evidence.AskLogID = q.ID
 		return s.fleetFile(ctx, sub, p)
-	case "composed":
-		t, ok := cleanPrompt(*in.Text)
-		switch {
-		case !ok || len(t) > fleet.MaxCustomBytes:
-			return fleetToolResult(fleet.Action{}, fleetRefusedTooLong, "text is at most 4 KiB")
-		case t == "":
-			return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "text is empty")
-		}
-		return s.fleetFile(ctx, sub, s.fleetProposalFor(sub, fleet.ClassAnswerComposed, t, in.Reason))
 	case "pick":
 		entry, why := s.fleetHeldPicker(ctx, sub)
 		if why != "" {
@@ -134,57 +145,89 @@ func (s *Server) toolSessionAnswer(ctx context.Context, arguments string) string
 		p.Evidence.AskID, p.Evidence.AskTool, p.Evidence.Option = entry.ID, entry.Key.ToolUseID, option
 		return s.fleetFile(ctx, sub, p)
 	}
-	return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "answer_kind is one of continue, merge_when_green, composed, pick")
+	return fleetToolResult(fleet.Action{}, fleetRefusedBadArgs, "answer_kind is one of continue, composed, pick")
 }
 
-// --- merge when green ---------------------------------------------------------------
+// --- the held plain-text question ------------------------------------------------------
 
-// fleetMergeCheck is the merge check (docs/design/ask-autoapproval.md "Merge
-// when green", steps 1-3): sub is a mirrored session whose latest pull request
-// (one muster recorded it creating) is open, read through the GitHub App for
-// an owner it admits, with its head read here, and CI GREEN on that head
-// (cichecks: every check finished, nothing failed, at least one green). The
-// pull request's number and full head, or why not. ⚠ Step 4 (the audit
-// ladder's verdict check) is not read in this phase: the answer's text says
-// only what muster read.
-func (s *Server) fleetMergeCheck(ctx context.Context, sub fleetSubject) (int64, string, string) {
-	if sub.kind != chiefnudge.KindMirror || len(sub.prs) == 0 {
-		return 0, "", "the session has no pull request muster recorded it creating"
+// fleetAskLister is the ask log's reads (asklog.PG).
+type fleetAskLister interface {
+	Get(ctx context.Context, id int64) (asklog.Ask, bool, error)
+	List(ctx context.Context, limit int) ([]asklog.Ask, error)
+}
+
+// fleetAskScan bounds the newest ask-log rows read for a session's open one.
+const fleetAskScan = 200
+
+// fleetAskOn reports whether ask-log row q is an open plain-text question of
+// sub's stop: the owner's, not answered or ended, asked in sub (its Claude
+// session and window, or its agent conversation), in its open episode when the
+// row names one.
+func fleetAskOn(q asklog.Ask, sub fleetSubject, owner int64) bool {
+	ep := sub.episode
+	if q.Owner != owner || q.Kind != asklog.KindPlainText || q.Outcome != "" || ep == nil {
+		return false
 	}
-	pr := sub.prs[0]
-	if pr.State != fleet.PROpen {
-		return 0, "", "its latest pull request is not open (" + pr.State + ")"
+	if q.EpisodeID != 0 && q.EpisodeID != ep.ID {
+		return false
 	}
-	head, ok := s.fleetPRHead(ctx, pr.Repo, pr.Number)
+	if sub.kind == chiefnudge.KindAgent {
+		return q.AgentID == ep.AgentID && q.ChatSessionID == ep.ChatSessionID
+	}
+	return q.Host == ep.Host && q.Window == ep.Window && q.ClaudeSession == ep.Key
+}
+
+// fleetHeldQuestion is the open plain-text question sub's stop holds: ask-log
+// row id (0: the session's one open question), or why there is none.
+func (s *Server) fleetHeldQuestion(ctx context.Context, sub fleetSubject, id int64) (asklog.Ask, string) {
+	if s.ext.AskLog == nil || s.ext.AskLog.Store == nil {
+		return asklog.Ask{}, "muster's ask log is off on this server (MUSTER_ASK_LOG), so it cannot tell which question the session holds"
+	}
+	st, ok := s.ext.AskLog.Store.(fleetAskLister)
 	if !ok {
-		return 0, "", "its pull request's head could not be read through the GitHub App"
+		return asklog.Ask{}, "the ask log cannot be read here"
 	}
-	sum, ok := s.fleetCIRead(ctx, pr.Repo, head)
-	switch {
-	case !ok:
-		return 0, "", "its CI could not be read through the GitHub App"
-	case !sum.AllGreen():
-		return 0, "", "its CI is not green on " + head[:12] + " (" + strconv.Itoa(sum.Pending) + " pending, " + strconv.Itoa(sum.Failed) + " failed, " +
-			strconv.Itoa(sum.Green) + " green)"
+	owner := requestOwner(ctx)
+	if id > 0 {
+		q, found, err := st.Get(ctx, id)
+		if err != nil || !found || !fleetAskOn(q, sub, owner) {
+			return asklog.Ask{}, "ask_id is not an open question of that session's stop"
+		}
+		return q, ""
 	}
-	return pr.Number, head, ""
+	list, err := st.List(ctx, fleetAskScan)
+	if err != nil {
+		return asklog.Ask{}, "the ask log could not be read"
+	}
+	var open []asklog.Ask
+	for _, q := range list {
+		if fleetAskOn(q, sub, owner) {
+			open = append(open, q)
+		}
+	}
+	switch len(open) {
+	case 0:
+		return asklog.Ask{}, "the session holds no open question (an answer answers one; to tell it something, use session_instruct)"
+	case 1:
+		return open[0], ""
+	}
+	return asklog.Ask{}, "the session holds more than one open question: pass ask_id"
 }
 
-// fleetMergeStillOn re-reads a merge_when_green answer's check: the same head,
-// still green. Unknown when either cannot be read.
-func (s *Server) fleetMergeStillOn(ctx context.Context, a fleet.Action) nudgeState {
-	head, ok := s.fleetPRHead(ctx, a.Evidence.PRRepo, a.Evidence.PRNumber)
+// fleetAskStillOpen re-reads an answer's held question: still open.
+func (s *Server) fleetAskStillOpen(ctx context.Context, a fleet.Action) nudgeState {
+	if s.ext.AskLog == nil || s.ext.AskLog.Store == nil {
+		return nudgeUnknown
+	}
+	st, ok := s.ext.AskLog.Store.(fleetAskLister)
 	if !ok {
 		return nudgeUnknown
 	}
-	if head != a.Evidence.PRHeadFull {
-		return nudgeMovedOn
-	}
-	sum, ok := s.fleetCIRead(ctx, a.Evidence.PRRepo, head)
+	q, found, err := st.Get(ctx, a.Evidence.AskLogID)
 	switch {
-	case !ok:
+	case err != nil:
 		return nudgeUnknown
-	case !sum.AllGreen():
+	case !found || q.Outcome != "":
 		return nudgeMovedOn
 	}
 	return nudgeStalled
@@ -407,7 +450,7 @@ func (s *Server) fleetCardsFor(ctx context.Context, chief agents.Agent) bool {
 	return s.fleetProposeOn() && !s.ownerIsTeam(ctx, agentOwnerID(chief))
 }
 
-// fleetRouteCard files a route card: the chief's text for session subject
+// fleetRouteCard files a custom card: the chief's text for session subject
 // (route_to_session's), which its call outside an owner turn could not route.
 // ok false when no card is filed this way (the call then refuses as before).
 func (s *Server) fleetRouteCard(ctx context.Context, chief agents.Agent, subject focus.Subject, text string) (string, bool) {
@@ -418,10 +461,12 @@ func (s *Server) fleetRouteCard(ctx context.Context, chief agents.Agent, subject
 	if refused != "" {
 		return fleetToolResult(fleet.Action{}, refused, why+" (outside your owner's turn, a route is a card on a stopped session)"), true
 	}
-	return s.fleetFile(ctx, sub, s.fleetProposalFor(sub, fleet.ClassRoute, text, "a request outside your owner's turn")), true
+	// 🔴 A `custom` CARD (round 0 D2): the chief's text, sent on the tap with
+	// muster's line — not a route (no answer is relayed back), so not named one.
+	return s.fleetFile(ctx, sub, s.fleetProposalFor(sub, fleet.ClassCustom, text, "a request outside your owner's turn")), true
 }
 
-// fleetRouteManyCards files a route card per subject of a route_many called
+// fleetRouteManyCards files a custom card per subject of a route_many called
 // outside an owner turn: {proposed: [{subject, action_id, card}], refused:
 // [{subject, refused, error}]}.
 func (s *Server) fleetRouteManyCards(ctx context.Context, chief agents.Agent, subjects []string, text string) (string, bool) {

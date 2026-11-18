@@ -80,6 +80,9 @@ const rig = new MirrorRig(chiefProposePort, 'e2e-cprop', {
   MUSTER_SESSION_STATE: '1',
   MUSTER_FLEET_DIGEST: '1',
   MUSTER_FLEET_ORCHESTRATION: 'propose',
+  // The ask log: a composed answer answers a question the session HOLDS
+  // (its open plain-text ask-log row).
+  MUSTER_ASK_LOG: '1',
   MUSTER_PLUGINS: '1',
   MUSTER_SESSION_ROUTING: '1',
   MUSTER_PR_MAIL_SENDERS: 'e2e-review/pr-check',
@@ -160,6 +163,9 @@ test.beforeAll(async ({ browser }) => {
   // each (its idle streak), which a proposal is filed on.
   const all = [...Object.values(PHONE), ...Object.values(DESK)];
   for (const w of all) fix('episode', '1', w.sid, 'stalled', rig.host, w.win);
+  // The question each answer card answers: an open plain-text ask in the
+  // answer window's stop.
+  for (const set of [PHONE, DESK]) fix('plainask', '1', set.answer.sid, rig.host, set.answer.win, 'Keep the old flag, or drop it now?');
   await expect
     .poll(() => all.filter((w) => fix('episodestreak', '1', w.sid) !== '').length, {
       message: 'the session-state pass observed every stop', timeout: 90_000, intervals: [3_000],
@@ -170,6 +176,7 @@ test.beforeAll(async ({ browser }) => {
 test.afterAll(async () => {
   try {
     fix('rmfleetactions', '1', prefix);
+    fix('rmasks', '1', prefix);
     fix('rmprsessions', '1', prefix);
     fix('rmepisodes', '1', prefix);
     if (chiefMade) fix('rmagent', '1', chiefName);

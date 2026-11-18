@@ -539,7 +539,9 @@ while its pull request's CI ran (the GitHub App's checks read)
 - **Needs:** the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and
   [session state](#session-state) (`MUSTER_SESSION_STATE=1`) — the server
   refuses to boot with proposals on and either off — and the [chief](#chief).
-  Moving a task needs [session routing](#session-routing).
+  Moving a task needs [session routing](#session-routing); answering a
+  session's plain-text question needs the [ask log](#ask-log)
+  (`MUSTER_ASK_LOG=1`), which is how muster knows the question is open.
 - **Turn it on:** `MUSTER_FLEET_ORCHESTRATION=propose` in `.env`. The chief
   keeps judging stopped sessions (its nudges and the per-stop pushes are
   unchanged); the proposals run alongside.

@@ -158,8 +158,8 @@ own, never handed to an agent: a pull request's state (`metadata` and
 commit's CI (`metadata`, `checks` and `statuses` read — the two the table above
 already grants). **No new permission is asked for**: an App registered as this
 table says has both. An App registered without Checks or Commit statuses loses
-only the CI read (every commit's CI is then unknown: no `ci_result`, no
-`merge_when_green` card); the pull-request state read beside it keeps working.
+only the CI read (every commit's CI is then unknown: no `ci_result`
+card); the pull-request state read beside it keeps working.
 
 muster only ever asks for exactly those four repository permissions (Contents
 and Pull requests read and write, Checks and Commit statuses read — or all four

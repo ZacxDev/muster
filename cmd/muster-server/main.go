@@ -482,7 +482,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// The fleet reader's pull-request states (internal/api fleet_read.go):
 			// the App's own server-side read, behind the reader's two-minute cache.
 			ext.FleetPRStates = gapp
-			// The fleet's CI read (ci_result, merge_when_green): the App's own
+			// The fleet's CI read (ci_result): the App's own
 			// checks + statuses read, a token of its own (githubapp
 			// CommitChecks).
 			ext.FleetChecks = gapp

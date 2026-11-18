@@ -339,6 +339,11 @@ type agentTool struct {
 	// dispatchAgentTool, and the tool itself acts only for the caller's own
 	// officer.
 	officerOnly bool
+	// personChiefOnly: offered to, and callable by, a PERSON's chief alone —
+	// never a team's (the fleet tools: "a team's chief gets none of these tools
+	// in v1"). Enforced in the listing (toolsFor) and again at the call
+	// (dispatchFleetTool).
+	personChiefOnly bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -453,7 +458,7 @@ func (s *Server) agentTools() []agentTool {
 	// whole fleet.
 	if s.fleetProposeOn() {
 		for _, d := range fleetWriteToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true, personChiefOnly: true})
 		}
 	}
 	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on,
@@ -555,6 +560,7 @@ func (s *Server) agentTools() []agentTool {
 func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	all := s.agentTools()
 	chief, acting, decided := false, false, false
+	team, teamRead := false, false
 	decide := func() {
 		if !decided {
 			// acting: the chief AND on. A chief its owner turned off keeps
@@ -593,6 +599,16 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 		if t.chiefOnly || t.notChief {
 			decide()
 			if (t.chiefOnly && !acting) || (t.notChief && chief) {
+				continue
+			}
+		}
+		if t.personChiefOnly {
+			// A team's chief is not even shown them (an unreadable account
+			// reads as a team's: ownerIsTeam fails closed).
+			if !teamRead {
+				team, teamRead = s.ownerIsTeam(ctx, agentOwnerID(a)), true
+			}
+			if team {
 				continue
 			}
 		}

@@ -10,21 +10,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cichecks"
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
-	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
 
 // FLEET PROPOSALS, PART 2b (fleet_answers.go) on a real Postgres:
-// session_answer (continue, merge_when_green, composed, pick), muster's
-// ci_result, route / route_many / end_session outside an owner turn, and the
-// dispatch reassign. Every value is invented and pairwise distinct.
+// session_answer (continue, composed — each to a held plain-text question —
+// and pick), muster's ci_result, and route / route_many / end_session outside
+// an owner turn. Every value is invented and pairwise distinct.
 
 // askingMirror is the proposal fixture's mirror whose hosts answer held
 // questions (AskAnswer), recording each typing it is asked for.
@@ -102,7 +101,32 @@ func newFleetAnswerFixture(t *testing.T) *fleetAnswerFixture {
 	f := &fleetAnswerFixture{proposeFixture: newProposeFixture(t), ci: &fakeCI{by: map[string]cichecks.Checks{}}}
 	f.asking = &askingMirror{observedMirror: observedMirror{f.mirror}}
 	f.srv.ext.Mirror, f.srv.ext.FleetChecks = f.asking, f.ci
+	f.srv.ext.AskLog = &AskLog{Store: asklog.NewPG(f.pool)}
 	return f
+}
+
+// held opens a plain-text question in the ask log, as the capture writes one,
+// for owner's window (key, window) in its open stop (episode 0: none named),
+// returning its id.
+func (f *fleetAnswerFixture) held(t *testing.T, owner int64, key, window string, episode int64, question string) int64 {
+	t.Helper()
+	id, ok, err := asklog.NewPG(f.pool).Open(f.as(owner), asklog.Ask{Kind: asklog.KindPlainText, Runtime: asklog.RuntimeClaudeCode,
+		Host: "bench-" + strconv.FormatInt(owner, 10), TmuxSession: "work", Window: window, ClaudeSession: key, EpisodeID: episode,
+		Question: question, AskedAt: fleetT0.Add(time.Minute)})
+	if err != nil || !ok {
+		t.Fatalf("open ask: %v %v", ok, err)
+	}
+	return id
+}
+
+// openEpisode is key's open stop.
+func (f *fleetAnswerFixture) openEpisode(t *testing.T, owner int64, key string) int64 {
+	t.Helper()
+	var id int64
+	if err := f.pool.QueryRow(f.as(owner), `SELECT id FROM session_episodes WHERE session_key = $1 AND ended_at IS NULL`, key).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 // forgetCI drops the fleet's CI cache (a later read is fresh).
@@ -204,12 +228,14 @@ func TestEightTapsOnOnePickTypeItOnce(t *testing.T) {
 	}
 }
 
-// TestTheAnswerTextsByteForByte: continue and composed queue muster's line
-// and the text, byte for byte.
+// TestTheAnswerTextsByteForByte: continue and composed, each to the session's
+// held question, queue muster's line and the text, byte for byte.
 func TestTheAnswerTextsByteForByte(t *testing.T) {
 	f := newFleetAnswerFixture(t)
-	s1, _, _ := f.stopped(t, f.owner)
-	s2, _, _ := f.stopped(t, f.owner)
+	s1, k1, w1 := f.stopped(t, f.owner)
+	s2, k2, w2 := f.stopped(t, f.owner)
+	f.held(t, f.owner, k1, w1, f.openEpisode(t, f.owner, k1), "Shall I go on with the migration?")
+	f.held(t, f.owner, k2, w2, 0, "Which bucket do the fixtures go in?")
 	m1 := f.tool(t, f.asOwner, sessionAnswerTool, `{"subject":`+strconv.Quote(s1)+`,"answer_kind":"continue","reason":"it asked to go on"}`)
 	m2 := f.tool(t, f.asOwner, sessionAnswerTool, `{"subject":`+strconv.Quote(s2)+`,"answer_kind":"composed","text":"Use the staging bucket, not prod.","reason":"it asked which"}`)
 	f.card(t, fresh(f.asOwner), int64(m1["action_id"].(float64)), "approve", nil)
@@ -223,38 +249,72 @@ func TestTheAnswerTextsByteForByte(t *testing.T) {
 	}
 }
 
-// TestMergeWhenGreenNeedsGreenCIOnTheHeadAndReReadsIt: the session's own open
-// pull request, CI read green on its head: the card's text pins the commit
-// (literal). CI pending: refused merge_check. Green at filing, red at the tap:
-// moved on, nothing sent. An owner the App does not admit: refused (the CI
-// read is App-gated), and GitHub is not asked.
-func TestMergeWhenGreenNeedsGreenCIOnTheHeadAndReReadsIt(t *testing.T) {
+// TestAnAnswerNeedsAnOpenHeldQuestion: continue and composed answer an open
+// plain-text question of THAT session's stop, the owner's. Refused
+// no_question, nothing filed: the ask log off; no question; a question of
+// another session; one already answered; one of an earlier stop; two open and
+// no ask_id. Filed (positive controls): the one open question, or ask_id
+// naming one of two, the card carrying its ask-log id. A question answered
+// in the terminal after the card was filed: the tap moves on, nothing pasted.
+func TestAnAnswerNeedsAnOpenHeldQuestion(t *testing.T) {
 	f := newFleetAnswerFixture(t)
-	subject, key, _ := f.stopped(t, f.owner)
-	f.pr(t, f.owner, key, "example-org/gizmo", 640, &githubapp.PRState{State: "open", HeadSHA: ansHead})
-	args := `{"subject":` + strconv.Quote(subject) + `,"answer_kind":"merge_when_green","reason":"it asked to merge"}`
-	f.ci.set("example-org/gizmo", ansHead, cichecks.Checks{Runs: []cichecks.Run{{ID: 3, Name: "unit", Status: "in_progress"}}})
-	if m := f.tool(t, f.asOwner, sessionAnswerTool, args); m["refused"] != fleetRefusedMergeCheck {
-		t.Fatalf("CI pending: %v", m)
+	answer := func(subject, extra string) map[string]any {
+		return f.tool(t, f.asOwner, sessionAnswerTool, `{"subject":`+strconv.Quote(subject)+`,"answer_kind":"continue",`+extra+`"reason":"it asked"}`)
 	}
-	f.forgetCI()
-	f.ci.set("example-org/gizmo", ansHead, green(time.Now()))
-	before := f.ci.n
-	if m := f.tool(t, f.as(f.owner), sessionAnswerTool, args); m["refused"] != fleetRefusedMergeCheck || f.ci.n != before {
-		t.Fatalf("a member the App does not admit: %v (%d reads)", m, f.ci.n-before)
+	refused := func(what string, m map[string]any) {
+		t.Helper()
+		if m["refused"] != fleetRefusedNoQuestion {
+			t.Fatalf("%s: %v; want no_question", what, m)
+		}
 	}
-	m := f.tool(t, f.asOwner, sessionAnswerTool, args)
+	s1, k1, w1 := f.stopped(t, f.owner)
+	_, k2, w2 := f.stopped(t, f.owner)
+
+	f.srv.ext.AskLog = nil
+	refused("the ask log off", answer(s1, ""))
+	f.srv.ext.AskLog = &AskLog{Store: asklog.NewPG(f.pool)}
+	refused("no question", answer(s1, ""))
+	other := f.held(t, f.owner, k2, w2, 0, "Rename the flag to strict?")
+	refused("another session's question", answer(s1, ""))
+	refused("another session's question by id", answer(s1, `"ask_id":`+strconv.FormatInt(other, 10)+`,`))
+	done := f.held(t, f.owner, k1, w1, 0, "Drop the old index too?")
+	if _, _, err := asklog.NewPG(f.pool).Resolve(f.asOwner, done, asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: "yes", AnsweredBy: asklog.ByOwner}); err != nil {
+		t.Fatal(err)
+	}
+	refused("an answered question", answer(s1, ""))
+	ep := f.openEpisode(t, f.owner, k1)
+	f.held(t, f.owner, k1, w1, f.openEpisode(t, f.owner, k2), "Keep the retry loop?") // a stop not k1's open one
+	refused("a question of another stop", answer(s1, ""))
+	if list, _ := f.srv.ext.FleetActions.OpenActions(f.asOwner); len(list) != 0 {
+		t.Fatalf("a refusal filed %+v", list)
+	}
+
+	q1 := f.held(t, f.owner, k1, w1, ep, "Push the branch now?")
+	m := answer(s1, "")
 	if m["state"] != fleet.StateProposed {
-		t.Fatalf("CI green: %v", m)
+		t.Fatalf("the one open question: %v", m)
 	}
 	id := int64(m["action_id"].(float64))
-	if a := f.action(t, id); a.Text != "Yes, merge #640. CI is green on a1b2c3d4e5f6. Merge only that commit: gh pr merge 640 --match-head-commit "+ansHead+"." {
-		t.Fatalf("the merge text: %q", a.Text)
+	if a := f.action(t, id); a.Evidence.AskLogID != q1 {
+		t.Fatalf("the card's question: %d; want %d", a.Evidence.AskLogID, q1)
 	}
-	f.forgetCI()
-	f.ci.set("example-org/gizmo", ansHead, cichecks.Checks{Runs: []cichecks.Run{{ID: 9, Name: "unit", Status: "completed", Conclusion: "failure", CompletedAt: time.Now()}}})
+	f.srv.fleetReject(f.asOwner, id, fleet.ViaWeb)
+	q2 := f.held(t, f.owner, k1, w1, 0, "Tag the release as well?")
+	refused("two open, no ask_id", answer(s1, ""))
+	m = answer(s1, `"ask_id":`+strconv.FormatInt(q2, 10)+`,`)
+	if m["state"] != fleet.StateProposed {
+		t.Fatalf("ask_id naming one of two: %v", m)
+	}
+	id = int64(m["action_id"].(float64))
+	if a := f.action(t, id); a.Evidence.AskLogID != q2 {
+		t.Fatalf("the card's question: %d; want %d", a.Evidence.AskLogID, q2)
+	}
+	// Answered in the terminal before the tap: moved on, nothing pasted.
+	if _, _, err := asklog.NewPG(f.pool).Resolve(f.asOwner, q2, asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: "no", AnsweredBy: asklog.ByOwner}); err != nil {
+		t.Fatal(err)
+	}
 	if rec := f.card(t, fresh(f.asOwner), id, "approve", nil); !strings.Contains(rec.Body.String(), FleetMovedOn) || len(f.rows(t)) != 0 {
-		t.Fatalf("CI red at the tap: %s rows %v", rec.Body.String(), f.rows(t))
+		t.Fatalf("a question answered before the tap: %s rows %v", rec.Body.String(), f.rows(t))
 	}
 }
 
@@ -307,7 +367,7 @@ func TestCIResultIsProposedWhenTheChecksRunningAtTheStopFinish(t *testing.T) {
 
 // TestRoutesAndEndsOutsideAnOwnersTurnFileCards: route_to_session {text},
 // route_many and end_session_propose called with no owner turn file cards
-// (route, route ×2, close) and route nothing; with fleet proposals off each
+// (custom, custom ×2, close) and route nothing; with fleet proposals off each
 // refuses as before (the positive control for the switch).
 func TestRoutesAndEndsOutsideAnOwnersTurnFileCards(t *testing.T) {
 	f := newFleetAnswerFixture(t)
@@ -333,7 +393,7 @@ func TestRoutesAndEndsOutsideAnOwnersTurnFileCards(t *testing.T) {
 	for _, a := range list {
 		classes[a.Class]++
 	}
-	if classes[fleet.ClassRoute] != 3 || classes[fleet.ClassClose] != 1 || len(list) != 4 {
+	if classes[fleet.ClassCustom] != 3 || classes[fleet.ClassClose] != 1 || len(list) != 4 {
 		t.Fatalf("cards %v", classes)
 	}
 	var routes int
@@ -347,52 +407,9 @@ func TestRoutesAndEndsOutsideAnOwnersTurnFileCards(t *testing.T) {
 	}
 }
 
-// TestADispatchReassignStartsTheNewSessionOnThePassThenHandsOff: work_reassign
-// with dispatch in place of to: the tap starts nothing itself; the next pass
-// starts the new session exactly as agent_dispatch would be asked (the task,
-// the target, a request key of the action's), then queues the handoff to the
-// old session.
-func TestADispatchReassignStartsTheNewSessionOnThePassThenHandsOff(t *testing.T) {
-	f := newFleetAnswerFixture(t)
-	f.srv.ext.TaskRouting = &TaskRouting{DispatchOwners: map[int64]bool{f.owner: true}}
-	f.srv.ext.ChiefDispatch = stubChiefDispatch{}
-	var asked []agentDispatchIn
-	f.srv.fleetDispatch = func(_ context.Context, a agents.Agent, in agentDispatchIn) string {
-		asked = append(asked, in)
-		return toolJSON(map[string]any{"started": true, "agent": "fresh-otter"})
-	}
-	from, _, _ := f.stopped(t, f.owner)
-	n, err := f.notes.Create(f.asOwner, notes.Note{Title: "port the importer", Body: "to the new queue", Status: notes.StatusOpen})
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := f.tool(t, f.asOwner, workReassignTool, `{"task_id":`+strconv.FormatInt(n.ID, 10)+`,"from":`+strconv.Quote(from)+`,"dispatch":{"target":"pod"},"reason":"a fresh session"}`)
-	if m["state"] != fleet.StateProposed {
-		t.Fatalf("work_reassign dispatch: %v", m)
-	}
-	id := int64(m["action_id"].(float64))
-	f.card(t, fresh(f.asOwner), id, "approve", nil)
-	if len(asked) != 0 || len(f.rows(t)) != 0 {
-		t.Fatalf("the tap started something: %v rows %v", asked, f.rows(t))
-	}
-	f.pass()
-	if len(asked) != 1 || asked[0].TaskID != n.ID || asked[0].Target != "pod" || asked[0].RequestKey != "fleet-"+strconv.FormatInt(id, 10) {
-		t.Fatalf("dispatch asked %+v", asked)
-	}
-	got := f.rows(t)
-	if len(got) != 1 || !strings.HasSuffix(got[0][0], "Task #"+strconv.FormatInt(n.ID, 10)+" has moved to another session (a new session on pod). Stop work on it. Write your handoff (what is done, what is left, where), then stop.") {
-		t.Fatalf("the handoff to from: %q", got)
-	}
-	if a := f.action(t, id); a.State != fleet.StateQueued {
-		t.Fatalf("after the pass: %+v", a)
-	}
-}
-
 // TestTheCIReadIsGatedByTheApp: the CI read (and the head read it pins) asks
 // GitHub only for an owner the App admits (githubAppForOwner): a member is
-// unknown and GitHub is not asked; the admin's read is made. (The merge
-// check's own refusal for a member stops earlier, at the pull request's
-// state, so this reaches the CI read itself.)
+// unknown and GitHub is not asked; the admin's read is made.
 func TestTheCIReadIsGatedByTheApp(t *testing.T) {
 	f := newFleetAnswerFixture(t)
 	f.ci.set("example-org/flange", ansHead, green(time.Now()))
@@ -410,5 +427,30 @@ func TestTheCIReadIsGatedByTheApp(t *testing.T) {
 	}
 	if head, ok := f.srv.fleetPRHead(f.asOwner, "example-org/flange", 77); !ok || head != ansHead {
 		t.Fatalf("control: the admin's head read: %q %v", head, ok)
+	}
+}
+
+// TestATeamsChiefIsNotShownTheFleetTools: a team's chief is not even SHOWN
+// the fleet tools (the call refuses them too, dispatchFleetTool): listed as
+// a team's acting principal, none of the five; the same principal as a
+// person (the positive control — only Team differs) lists all five.
+func TestATeamsChiefIsNotShownTheFleetTools(t *testing.T) {
+	f := newFleetAnswerFixture(t)
+	names := map[string]bool{sessionInstructTool: true, sessionWrapTool: true, workReassignTool: true, fleetActionsListTool: true, sessionAnswerTool: true}
+	listed := func(team bool) []string {
+		ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Team: team, Via: authz.ViaAgent})
+		var got []string
+		for _, d := range f.srv.MCPToolDefsFor(ctx, f.chief) {
+			if names[d.Name] {
+				got = append(got, d.Name)
+			}
+		}
+		return got
+	}
+	if got := listed(true); len(got) != 0 {
+		t.Fatalf("a team's chief is shown %v", got)
+	}
+	if got := listed(false); len(got) != 5 {
+		t.Fatalf("control: the same principal as a person is shown %v; want all five", got)
 	}
 }

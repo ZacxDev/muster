@@ -49,10 +49,11 @@ const (
 	// to the session it goes to, then the session it leaves asked for its
 	// handoff.
 	ClassReassign = "reassign"
-	// ClassAnswerRule is session_answer continue / merge_when_green: a fixed
-	// text answering a session's held plain-text question.
+	// ClassAnswerRule is session_answer continue: a fixed text answering a
+	// session's held plain-text question (an open ask-log row of its stop).
 	ClassAnswerRule = "answer_rule"
-	// ClassAnswerComposed is session_answer composed: the chief's own words.
+	// ClassAnswerComposed is session_answer composed: the chief's own words,
+	// answering a session's held plain-text question.
 	ClassAnswerComposed = "answer_composed"
 	// ClassAnswerPick is session_answer pick: one of a held picker's own
 	// options, typed into the picker as the owner's tap types it.
@@ -60,8 +61,6 @@ const (
 	// ClassCIResult is muster's own: the CI running when the session stopped
 	// has finished.
 	ClassCIResult = "ci_result"
-	// ClassRoute is route_to_session / route_many outside an owner turn.
-	ClassRoute = "route"
 	// ClassClose is a session closed on the owner's tap: A8's fallback
 	// when a wrap's handoff turn never came within 24 h, and
 	// end_session_propose outside an owner turn.
@@ -69,7 +68,9 @@ const (
 )
 
 // AnswerKinds are session_answer's answer kinds.
-var AnswerKinds = []string{"continue", "merge_when_green", "composed", "pick"}
+// (merge_when_green is held out until muster can read the audit ladder's
+// verdict: ask-autoapproval decision 6.)
+var AnswerKinds = []string{"continue", "composed", "pick"}
 
 // InstructClasses are session_instruct's classes.
 var InstructClasses = []string{ClassContinue, ClassHandoff, ClassStopNote, ClassCustom}
@@ -86,7 +87,6 @@ var ClassVerb = map[string]string{
 	ClassAnswerComposed: "Answer (the chief's words)",
 	ClassAnswerPick:     "Pick an option",
 	ClassCIResult:       "Tell it CI finished",
-	ClassRoute:          "Send the chief's message",
 	ClassClose:          "Close",
 }
 
@@ -205,20 +205,6 @@ func ReassignHandoffText(task int64, to string) string {
 // "continue", after muster's attribution line).
 const AnswerContinueText = "Yes, continue."
 
-// AnswerMergeText is session_answer merge_when_green's text for pull request n
-// at head (40 hex), its CI read green by muster: ask-autoapproval's "merge when
-// green" — WITHOUT its audit-ladder clause, which this phase does not read —
-// pinning the commit, so a push after the check makes the merge fail rather
-// than merge unverified code.
-func AnswerMergeText(n int64, head string) string {
-	short := head
-	if len(short) > 12 {
-		short = short[:12]
-	}
-	num := strconv.FormatInt(n, 10)
-	return "Yes, merge #" + num + ". CI is green on " + short + ". Merge only that commit: gh pr merge " + num + " --match-head-commit " + head + "."
-}
-
 // CIResultText is the ci_result text (§4.2, after muster's attribution line):
 // facts muster read itself, no model text. failed names the failed checks.
 func CIResultText(n int64, head12 string, ok, bad int, failed []string) string {
@@ -294,27 +280,16 @@ type Evidence struct {
 	Label string `json:"label,omitempty"`
 	// Runtime is the session's runtime ("" for Claude Code, "opencode", "pod").
 	Runtime string `json:"runtime,omitempty"`
-	// PRHeadFull is the head a merge_when_green answer pins (40 hex).
+	// PRHeadFull is the full head a ci_result read (40 hex).
 	PRHeadFull string `json:"pr_head_full,omitempty"`
 	// AskID, AskTool and Option are an answer_pick's held picker (its
 	// internal/askq entry and call) and the option it picks.
 	AskID   string `json:"ask_id,omitempty"`
 	AskTool string `json:"ask_tool,omitempty"`
 	Option  string `json:"option,omitempty"`
-	// MergeCheck: an answer_rule merge_when_green, whose merge check is read
-	// again at the tap and the paste.
-	MergeCheck bool `json:"merge_check,omitempty"`
-	// Dispatch is a reassign's NEW session (§5.2's `to` as a dispatch spec),
-	// nil for a reassign to an existing session.
-	Dispatch *DispatchSpec `json:"dispatch,omitempty"`
-}
-
-// DispatchSpec is a reassign's new session, as agent_dispatch takes it.
-type DispatchSpec struct {
-	Target string `json:"target"`
-	Repo   string `json:"repo,omitempty"`
-	Base   string `json:"base,omitempty"`
-	Model  string `json:"model,omitempty"`
+	// AskLogID is an answer_rule / answer_composed's held question: the open
+	// ask-log row (internal/asklog) of the session's stop it answers.
+	AskLogID int64 `json:"ask_log_id,omitempty"`
 }
 
 // Proposal is what Propose writes.
@@ -437,7 +412,7 @@ func collectActions(rows pgx.Rows, err error) ([]Action, error) {
 func validClass(c string) bool {
 	switch c {
 	case ClassContinue, ClassHandoff, ClassStopNote, ClassCustom, ClassWrap, ClassReassign,
-		ClassAnswerRule, ClassAnswerComposed, ClassAnswerPick, ClassCIResult, ClassRoute, ClassClose:
+		ClassAnswerRule, ClassAnswerComposed, ClassAnswerPick, ClassCIResult, ClassClose:
 		return true
 	}
 	return false

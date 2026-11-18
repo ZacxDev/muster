@@ -266,10 +266,7 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 		p := ui.FleetProposalView{ID: a.ID, Subject: a.Evidence.SubjectID, Session: firstNonBlank(a.Evidence.Label, firstNonBlank(a.Evidence.SubjectID, a.SubjectKey)),
 			Verb: fleet.ClassVerb[a.Class], Reason: a.Reason, Text: fleet.Body(owner, now, a.Text), EditText: a.Text,
 			Age: fleetAge(now.Sub(a.CreatedAt)), Editable: fleetEditable(a)}
-		if a.Class == fleet.ClassReassign && a.Evidence.Dispatch != nil {
-			p.Text = "1. Start a new session on " + a.Evidence.Dispatch.Target + " for task #" + strconv.FormatInt(a.TaskID, 10) +
-				" (as agent_dispatch starts one: its own limits apply).\n2. Then send:\n" + p.Text
-		} else if a.Class == fleet.ClassReassign {
+		if a.Class == fleet.ClassReassign {
 			p.Text = "1. Route task #" + strconv.FormatInt(a.TaskID, 10) + " to " + a.ToSubject + " (as route_to_session does).\n2. Then send:\n" + p.Text
 		}
 		if a.Class == fleet.ClassWrap {
