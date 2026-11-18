@@ -549,7 +549,7 @@ func Shell(v ShellView) string {
 // the private port the shell hands the frame on its load (sdkScript), never a
 // window message: a page's script posting one to the shell is ignored, as is
 // one from any other window, and a y that is not such a number.
-// TestTheShellScriptHidesTheHeaderOnlyByTheRules and e2e pages.spec.ts.
+// TestTheShellHidesItsHeaderOnlyByTheRules and e2e pages.spec.ts.
 func ShellScript(base string, owner bool) string {
 	creds, refpol := `"omit"`, `"no-referrer"`
 	if owner {
