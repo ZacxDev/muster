@@ -1290,6 +1290,20 @@ func (d *doctorRun) mcpListen() string {
 	return strings.TrimSpace(vals[envMirrorMCPListen])
 }
 
+// mcpSecretFile is where this machine's muster-mirror keeps its MCP secret, by
+// muster-mirror's own rule: its settings' MUSTER_MIRROR_MCP_SECRET_FILE, else
+// the default it computes itself (internal/mirrorpath, the code muster-mirror
+// calls) — never a guess beside the settings file. The one place both MCP
+// checks read it: the path the endpoint check looks at is the path the
+// registration fix tells the shell to read.
+func (d *doctorRun) mcpSecretFile() string {
+	_, vals := d.mirrorEnvValues()
+	if p := expandHome(strings.TrimSpace(vals[envMirrorMCPSecretFile]), d.a.homeDir); p != "" {
+		return p
+	}
+	return mirrorpath.DefaultMCPSecretFile()
+}
+
 // claudeConfigDir is where Claude Code keeps its user settings: $CLAUDE_CONFIG_DIR,
 // else ~/.claude. Its user-scope MCP servers are in claudeUserConfig.
 func (d *doctorRun) claudeConfigDir() string {
@@ -1331,13 +1345,7 @@ func (d *doctorRun) checkMCPEndpoint() {
 				"see docs/features.md#agent-ask-tool")
 		return
 	}
-	// muster-mirror's own rule: its settings' MUSTER_MIRROR_MCP_SECRET_FILE,
-	// else the default it computes itself (internal/mirrorpath, the code
-	// muster-mirror calls) — never a guess beside the settings file.
-	secret := expandHome(strings.TrimSpace(vals[envMirrorMCPSecretFile]), d.a.homeDir)
-	if secret == "" {
-		secret = mirrorpath.DefaultMCPSecretFile()
-	}
+	secret := d.mcpSecretFile()
 	if fi, err := os.Stat(secret); err != nil || fi.Size() == 0 {
 		d.add(name, statusFail, envMirrorMCPListen+"="+listen+" is set, but the endpoint's secret "+secret+" is missing or empty: "+
 			"muster-mirror has not started with it yet", "restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`), which writes it")
@@ -1454,8 +1462,10 @@ func (d *doctorRun) checkMCPRegistration() {
 		}
 	}
 	unreadable = slices.Compact(unreadable)
-	fix := mcpAddCommand(listen) + "; then export MUSTER_MIRROR_MCP_SECRET=\"$(cat " + mirrorpath.DefaultMCPSecretFile() +
-		" 2>/dev/null)\" in the shell tmux starts (docs/features.md#agent-ask-tool)"
+	// Quoted (macOS's default is under "Application Support"), and with no
+	// 2>/dev/null: a secret the shell cannot read must say so, not export "".
+	fix := mcpAddCommand(listen) + "; then export MUSTER_MIRROR_MCP_SECRET=\"$(cat " + shSingleQuote(d.mcpSecretFile()) +
+		")\" in the shell tmux starts (docs/features.md#where-the-mcp-secret-is)"
 	switch {
 	case len(found) == 0 && len(unreadable) > 0:
 		d.add(name, statusFail, "Claude Code's config could not be read as JSON: "+strings.Join(unreadable, ", "), "check the file; then "+fix)
@@ -1554,10 +1564,15 @@ func (d *doctorRun) checkAskHook() {
 	d.add(name, statusSkip, "ask cards are off on this machine: no PreToolUse hook runs `muster-mirror ask` ("+path+")", fix)
 }
 
-// mirrorRestartHint restarts this machine's muster-mirror service.
+// mirrorRestartHint restarts this machine's muster-mirror service so that it
+// reads its settings file again. On macOS that is the installer, not a
+// launchd kickstart: the service holds a copy of the settings made when the
+// installer last ran (install.sh writes them into the plist), so a kickstart
+// would start the old ones.
 func mirrorRestartHint(goos string) string {
 	if goos == "darwin" {
-		return "launchctl kickstart -k gui/$(id -u)/" + defaultMirrorLabel
+		return "curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh" +
+			" — add MUSTER_JOIN_URL=<hub> before sh if this machine joined a hub"
 	}
 	return "systemctl --user restart " + defaultMirrorUnit
 }
@@ -1605,3 +1620,6 @@ func hookMatcherMatches(matcher, tool string) bool {
 	re, err := regexp.Compile(matcher)
 	return err == nil && re.MatchString(tool)
 }
+
+// shSingleQuote is s as one single-quoted POSIX shell word.
+func shSingleQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

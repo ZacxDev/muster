@@ -86,16 +86,27 @@ does not register, to answer with `route_reply`.
    curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | MUSTER_MIRROR_INTERACTIVE=1 sh
    ```
 
+   If this machine joined a hub, add `MUSTER_JOIN_URL=<hub>` to that command
+   (before `sh`, beside `MUSTER_MIRROR_INTERACTIVE=1`), as when you installed
+   it: without it the installer would set up a muster server here instead
+   (and stops if Docker is missing). On
+   Linux without a systemd user session (WSL, a container), stop the
+   `muster-mirror` you started by hand and start it again the same way.
+
    The log (`~/Library/Logs/muster-mirror.log` on macOS) now says
    `INTERACTIVE (-interactive)` and `MCP endpoint for this host's Claude Code
-   sessions at http://127.0.0.1:47823/mcp`.
+   sessions at http://127.0.0.1:47823/mcp (secret in <path>)`. Copy that
+   `<path>`: the next step needs it, and it differs by OS
+   ([Where the MCP secret is](features.md#where-the-mcp-secret-is); `muster
+   doctor` prints it too).
 3. **Register the endpoint with Claude Code**, for this user, by running the
-   first line below, and add the second line to the shell tmux starts
-   (`~/.zshrc` or `~/.bashrc`), which hands each session the secret:
+   first line below, and add the second line, with `<path>` the secret's path
+   from step 2, to the shell tmux starts (`~/.zshrc` or `~/.bashrc`), which
+   hands each session the secret:
 
    ```sh
    claude mcp add-json --scope user muster '{"type":"http","url":"http://127.0.0.1:47823/mcp","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}","X-Muster-Pane":"${TMUX_PANE:-}","X-Muster-Tmux":"${TMUX:-}"}}'
-   export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret 2>/dev/null)"
+   export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"
    ```
 
    Keep the single quotes: Claude Code expands the `${…}` itself, in each

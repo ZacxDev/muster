@@ -381,6 +381,8 @@ type doctorOpts struct {
 	mcpScope string
 	// askMatcher is the ask hook's matcher ("" = "AskUserQuestion").
 	askMatcher string
+	// mcpSecretFile, when set, is the settings' MUSTER_MIRROR_MCP_SECRET_FILE.
+	mcpSecretFile string
 	// attemptCode, when set, is written where muster-mirror leaves its
 	// attempt code (internal/mirrorpath's default, under XDG_CONFIG_HOME).
 	attemptCode string
@@ -461,6 +463,9 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		envBody := "MUSTER_MIRROR_URL=" + murl + "\nMUSTER_MIRROR_TOKEN_FILE=" + tokPath + "\n"
 		if !o.noMCPListen {
 			envBody += "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823\n"
+		}
+		if o.mcpSecretFile != "" {
+			envBody += "MUSTER_MIRROR_MCP_SECRET_FILE=" + o.mcpSecretFile + "\n"
 		}
 		if err := os.WriteFile(mirrorEnv, []byte(envBody), 0o600); err != nil {
 			t.Fatal(err)
@@ -967,6 +972,13 @@ func TestDoctorChecksThisHostsSessionToolsLocally(t *testing.T) {
 		{"listen but no secret", doctorOpts{noMCPSecret: true}, "mcp-endpoint", statusFail, "has not started with it yet", "restart muster-mirror"},
 		{"listen but not registered", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail, "registers an MCP server at it",
 			`claude mcp add-json --scope user muster '{"type":"http","url":"http://127.0.0.1:47823/mcp"`},
+		// The fix's export reads the secret where muster-mirror keeps it, quoted
+		// (macOS's default has a space in it), and fails loudly when it cannot:
+		// no 2>/dev/null hiding a missing or unreadable file.
+		{"not registered: the export reads the default secret", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `/xdg/muster-mirror/mcp-secret')"`},
+		{"not registered: the export reads the settings' secret file", doctorOpts{noMCPRegistration: true, mcpSecretFile: "/elsewhere/mcp secret"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `export MUSTER_MIRROR_MCP_SECRET="$(cat '/elsewhere/mcp secret')"`},
 		// The secret is where muster-mirror writes it: os.UserConfigDir, which
 		// honours XDG_CONFIG_HOME (internal/mirrorpath) — not beside the settings.
 		{"secret under XDG_CONFIG_HOME", doctorOpts{}, "mcp-endpoint", statusPass, "/xdg/muster-mirror/mcp-secret", ""},
@@ -1316,5 +1328,19 @@ func TestDoctorSignsInWithThePagesOrigin(t *testing.T) {
 	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true})
 	if m.loginOrigin == "" || m.loginOrigin != r.doc.URL {
 		t.Errorf("POST /login carried Origin %q, want %q", m.loginOrigin, r.doc.URL)
+	}
+}
+
+// On macOS the launchd service holds a copy of the settings made when the
+// installer last ran, so a kickstart restarts the OLD settings: a fix that
+// follows a settings edit must re-run the installer (and keep the hub, for a
+// machine that joined one). Linux's unit reads the file on every start.
+func TestDoctorMirrorRestartHintAppliesNewSettings(t *testing.T) {
+	mac := mirrorRestartHint("darwin")
+	if !strings.Contains(mac, "releases/latest/download/install.sh | sh") || !strings.Contains(mac, "MUSTER_JOIN_URL=<hub>") || strings.Contains(mac, "kickstart") {
+		t.Fatalf("macOS hint = %q: want the installer re-run (with MUSTER_JOIN_URL for a joined machine), not a launchd kickstart", mac)
+	}
+	if got := mirrorRestartHint("linux"); got != "systemctl --user restart muster-mirror.service" {
+		t.Fatalf("Linux hint = %q", got)
 	}
 }

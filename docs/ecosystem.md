@@ -36,7 +36,8 @@ on the Officers page, which a plugin's README can carry as a starting point.
   ([`sender_verified`](plugins.md#sender_verified)): a sender you allowlisted
   for a plugin in `MUSTER_ROUTE_RELAY_ALLOW` gets the answer one of your
   sessions wrote straight away ([Routing a message to a session](plugins.md#routing-a-message-to-a-session)),
-  and an agent-mail address in `MUSTER_FLEET_REPORT_SENDERS` gets the report
+  and an agent-mail address in `MUSTER_FLEET_REPORT_SENDERS` (one list for
+  the whole server, not per plugin or account) gets the report
   on your sessions it asked for, which muster writes itself
   ([A fleet-report request](plugins.md#a-fleet-report-request)).
   The plugin collects an approved reply (`POST /plugin/v1/drafts/claim`),

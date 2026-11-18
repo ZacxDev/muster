@@ -302,8 +302,23 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
      `~/.config/muster-mirror/env` and restart `muster-mirror`. The line is
      yours: install.sh keeps it every time it runs again (INSTALL.md, "Install
-     muster on this machine"). On its first start muster-mirror writes a secret
-     to `~/.config/muster-mirror/mcp-secret` (mode 600).
+     muster on this machine"). How to restart depends on the machine:
+     - **Linux:** `systemctl --user restart muster-mirror`.
+     - **macOS:** run the installer again
+       (`curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh`).
+       A restart is not enough: the launchd service holds a copy of the
+       settings made when the installer last ran, and the installer writes a
+       new one. It also updates muster to the latest release.
+     - **A machine that joined a hub** (macOS, or anywhere you re-run the
+       installer): add `MUSTER_JOIN_URL=<hub>` to the installer's command, as
+       when you installed it. Without it the installer would set up a
+       muster server here instead (and stops if Docker is missing).
+     - **Linux without a systemd user session** (WSL, a container): stop the
+       `muster-mirror` you started by hand and start it again the same way
+       (`set -a; . ~/.config/muster-mirror/env; set +a; ~/.local/bin/muster-mirror`).
+
+     On its first start with the endpoint on, muster-mirror writes a secret
+     (mode 600) to the path [below](#where-the-mcp-secret-is) says how to find.
   2. Register it with Claude Code, for this user:
 
      ```sh
@@ -312,17 +327,51 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
 
      The single quotes matter: Claude Code expands the `${…}` itself, in each
      session.
-  3. Export the secret in the shell tmux starts (`~/.zshrc` or `~/.bashrc`):
+  3. Export the secret in the shell tmux starts (`~/.zshrc` or `~/.bashrc`),
+     with `<path>` the secret's path ([Where the MCP secret is](#where-the-mcp-secret-is)):
 
      ```sh
-     export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret 2>/dev/null)"
+     export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"
      ```
 
-- **Check:** the host's log (`journalctl --user -u muster-mirror` on Linux)
-  says `muster-mirror: MCP endpoint for this host's Claude Code sessions at
-  http://127.0.0.1:47823/mcp`, or `the MCP endpoint is OFF, … <reason>`; in a
-  **new** Claude Code session started in tmux, `/mcp` lists `muster` connected
-  with its tools.
+- **Check:** the host's log (`journalctl --user -u muster-mirror` on Linux,
+  `~/Library/Logs/muster-mirror.log` on macOS) says `muster-mirror: MCP
+  endpoint for this host's Claude Code sessions at http://127.0.0.1:47823/mcp
+  (secret in <path>)`, or `the MCP endpoint is OFF, … <reason>`; in a **new**
+  Claude Code session started in tmux, `/mcp` lists `muster` connected with
+  its tools.
+
+#### Where the MCP secret is
+
+Every call to the endpoint must present muster-mirror's local secret. Its path
+differs by OS, and a settings line can move it, so do not type it: copy it
+from either of these, which both name the file:
+
+- **muster-mirror's start-up log line**, which ends with the path:
+  `muster-mirror: MCP endpoint for this host's Claude Code sessions at
+  http://127.0.0.1:47823/mcp (secret in <path>)`. The log is
+  `journalctl --user -u muster-mirror` on Linux,
+  `~/Library/Logs/muster-mirror.log` on macOS, and the terminal for a
+  `muster-mirror` you started by hand.
+- **`muster doctor`**: its `mcp-endpoint` line ends `(its secret is in
+  <path>)`, and while Claude Code is not registered yet, its
+  `mcp-registration` fix prints the `export` line below with the path
+  already in it.
+
+The log line is the running muster-mirror's own word; the doctor computes the
+same path by the same rule (`MUSTER_MIRROR_MCP_SECRET_FILE` in the settings,
+else muster-mirror's directory under the user config directory).
+
+Then, in the shell tmux starts:
+
+```sh
+export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"
+```
+
+Keep the quotes (the macOS path has a space in it) and add nothing that hides
+an error: a shell that cannot read the file says so each time it starts,
+rather than exporting an empty secret that every session is then refused
+with. opencode's entry names the same file as `{file:<path>}`.
 
 ### Ask cards
 

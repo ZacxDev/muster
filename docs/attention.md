@@ -715,7 +715,8 @@ too, through its host's `muster-mirror`:
    serves MCP at `http://127.0.0.1:47823/mcp`. Only a literal loopback address
    is accepted. Every call must carry the host's local secret
    (`Authorization: Bearer <secret>`), kept in `-mcp-secret-file` (default
-   `$XDG_CONFIG_HOME/muster-mirror/mcp-secret`, created 0600 on first start —
+   `muster-mirror/mcp-secret` under the user config directory, which differs
+   by OS: [where it is](features.md#where-the-mcp-secret-is); created 0600 on first start —
    written to a temp file and linked into place, so nobody reads a partial
    one), so another user on the machine cannot use it. A request with an
    `Origin` header is refused. A symlink at the secret's path is refused. The
@@ -890,7 +891,9 @@ example `~/.claude.json`'s `mcpServers`, or a project's `.mcp.json`):
 ```
 
 with `MUSTER_MIRROR_MCP_SECRET` exported from the secret file in the shell that
-starts Claude Code (`export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret)"`).
+starts Claude Code (`export MUSTER_MIRROR_MCP_SECRET="$(cat '<path>')"`, with
+`<path>` copied as [Where the MCP secret is](features.md#where-the-mcp-secret-is)
+says).
 
 The `:-` defaults matter: Claude Code expands `${VAR}` and `${VAR:-default}` in
 an HTTP server's `url` and `headers`, and a `${VAR}` with no value is a
@@ -917,7 +920,8 @@ If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 An opencode TUI in a mirrored window reaches `/mcp` too, through the same
 opencode caller path as the preview tools ([below](#opencode-sessions)): its
 entry, in opencode's config under `mcp`, sends the secret and a static
-`X-Muster-Client: opencode`, never pane headers.
+`X-Muster-Client: opencode`, never pane headers (`<path>` is the secret's
+path: [Where the MCP secret is](features.md#where-the-mcp-secret-is)).
 
 ```json
 "muster": {
@@ -925,7 +929,7 @@ entry, in opencode's config under `mcp`, sends the secret and a static
   "url": "http://127.0.0.1:47823/mcp",
   "oauth": false,
   "headers": {
-    "Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}",
+    "Authorization": "Bearer {file:<path>}",
     "X-Muster-Client": "opencode"
   }
 }
@@ -1021,7 +1025,8 @@ service's pane for every session. What opencode sends per session is the
 calling session's id, in every `tools/call`'s
 `params._meta["ai.opencode/sessionID"]`. So its entry (in opencode's config,
 under `mcp`) sends a static `X-Muster-Client: opencode` instead of the pane
-headers:
+headers (`<path>` is the secret's path:
+[Where the MCP secret is](features.md#where-the-mcp-secret-is)):
 
 ```json
 "preview": {
@@ -1029,7 +1034,7 @@ headers:
   "url": "http://127.0.0.1:47823/preview-mcp",
   "oauth": false,
   "headers": {
-    "Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}",
+    "Authorization": "Bearer {file:<path>}",
     "X-Muster-Client": "opencode"
   }
 }
