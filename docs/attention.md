@@ -652,10 +652,9 @@ typed into the chat reaches muster only as a **Session waiting** item, which
 does not say what is being asked.
 
 Both runtimes' paragraphs then add, for `attention_ask`, the same `context`
-sentence; while attachments are on, Claude Code's also says to show files with `attachments: [paths in
-your working directory]` (its host uploads them; see
-[Attachments and context](#attachments-and-context)). An opencode session's
-attachments are not supported yet.
+sentence; while attachments are on, both also say to show files with
+`attachments: [paths in your working directory]` (their host uploads them; see
+[Attachments and context](#attachments-and-context)).
 
 An [officer](officers.md) instance gets `officerAttentionInstruction` in its
 place (`attentionInstructionFor`): follow its charter, and by default finish
@@ -694,9 +693,28 @@ ask carries the upload's id:
   file — is never sent. If the call fails after some of its files were
   uploaded — a later file refused, or muster refusing the ask — the host takes
   those uploads back (`DELETE /mirror/ask-attachments/<id>`, best effort). An older `muster-mirror` forwards
-  the paths unchanged, and muster refuses them saying to update it. A mirrored
-  opencode session's attachments are **not supported yet** (refused, saying
-  so: it has no pane to read a working directory from); that is a follow-up.
+  the paths unchanged, and muster refuses them saying to update it.
+- **A mirrored opencode session** names files by path the same way, with the
+  same confinement, limits, refusals and take-backs. Its host resolves them
+  against the directory **the host's opencode server records for the
+  session its call is bound to** (the session's `location.directory`, where
+  opencode runs that session's tools, read with the host's pair token). The
+  call is bound as every opencode call is
+  ([below](#mirrored-opencode-sessions)): by the session id it carries, to the
+  one window showing that session, or a subagent's root session. So a
+  subagent's child session gets its root's directory, never its own record.
+  Nothing else in the call is read for the directory, and neither is the
+  TUI's own working directory: a TUI started with a directory argument runs
+  its session there, not where the TUI was started. The uploads and the call
+  name the session by its key (`X-Muster-Agent-Session: opencode:<id>`), as
+  its call does. A host that cannot read that directory (opencode not paired,
+  the server unreachable, a session it records no absolute directory for)
+  refuses the attachments, and no ask is filed. The session id is the
+  caller's own claim, a selector and not a credential: a call that names
+  another of the host's bound opencode sessions acts as that session,
+  directory and all. That is the reach a Claude Code caller already has by
+  naming another pane. A `muster-mirror` older than this support refuses an
+  opencode session's attachments, saying so.
 - **A dispatched claude-code agent** runs `ccd ask-attach <path>` in its pod
   (the same confinement and the same open, against its workspace), which sends
   the file to `POST /agent/ask-attachments` with the agent's own token and
@@ -736,7 +754,9 @@ line; a control, format or bidi character is replaced) and refused past 500
 characters. Without it, muster stores a fallback read when the ask is filed:
 the session's focus title (`Working on: …`) and its last assistant message
 (`Last said: …`, at most 600 characters), with anything shaped like a secret
-redacted as a notification's text is. The two are never mixed: an ask that
+redacted as a notification's text is. A mirrored opencode session's fallback
+is read the same way: its focus title, and its last assistant message from its
+own window's view. The two are never mixed: an ask that
 gives a context stores only it, and the transcript is not read. Both are the
 asker's words: escaped on every page, and data, not instructions, in
 `attention_list`.
@@ -1002,7 +1022,7 @@ path: [Where the MCP secret is](features.md#where-the-mcp-secret-is)).
 
 | Tool | opencode | Why |
 |---|---|---|
-| `attention_ask`, `attention_wait`, `attention_cancel` | **offered** | The ask is the session's, filed under its key (`opencode:<id>`) and shown under its window. Its answer is left for its `attention_wait` (delivery `pull`), as every mirrored session's is: muster never types it into the pane. A message you type into the opencode session does **not** settle its open ask (that is a Claude Code pane's rule), so answer it in the Attention view. |
+| `attention_ask`, `attention_wait`, `attention_cancel` | **offered** | The ask is the session's, filed under its key (`opencode:<id>`) and shown under its window. Its answer is left for its `attention_wait` (delivery `pull`), as every mirrored session's is: muster never types it into the pane. A message you type into the opencode session does **not** settle its open ask (that is a Claude Code pane's rule), so answer it in the Attention view. Its `attachments` are uploaded by its host from the session's directory, and its `context` (or, without one, the fallback) is stored, as a Claude Code session's are ([Attachments and context](#attachments-and-context)). |
 | `tasks_list`, `task_get`, `task_comment`, `task_set_status` | **offered** | Over the tasks that session created (a `created` link, which today only Claude Code's `muster task create` records, so usually none) and the task of its own running host dispatch. `in_progress` **claims nothing**, because a claim ends when its Claude session's window goes, which an opencode session never has. |
 | `attention_answer`, `connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`, `plugin_draft_decide`, `plugin_outbound_batch_get`, `plugin_outbound_batch_decide`, `plugin_messages_list`, `plugin_message_route`, `agent_destroy`, `agents_list`, `chief_restart`, `dispatch_request`, `dispatch_approve` | refused | Each acts **as the operator**. Extending them to another runtime's sessions, often on other models, is a decision for the operator, not a default. |
 | `chief_ask` | refused | It hands the chief the session as a `mirror:` subject, and the chief's tools that act on one are built for Claude Code sessions. |
