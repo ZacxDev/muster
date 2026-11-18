@@ -2661,6 +2661,9 @@ skipped builtin officers, and their model spend was recorded nowhere.
   admin read answers the date as `prices_as_of`). Cache writes are priced at
   the 1-hour rate (2× input): Claude Code writes 1-hour cache entries
   (measured: every cache-creation token of a live officer instance's transcript).
+  A model whose price is tiered by prompt length (`claude-haiku-5-5`, which
+  `CCD_MODEL=haiku` resolves to) is priced at its higher (>100k-token) tier,
+  so a short prompt is over-estimated, never under.
   A model the list does not know is priced at the list's highest rate in
   every column, never as free. Every request booked this way counts in
   `estimated_requests` — on these rows it equals `requests`. A pool on the
