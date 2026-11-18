@@ -513,7 +513,7 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	if refused != "" {
 		return plugins.Route{}, t, refused
 	}
-	// The target's HOST is recorded with it (0150): route_reply answers the
+	// The target's HOST is recorded with it (0151): route_reply answers the
 	// route from that host only, and the step-up carve-out needs both.
 	target := plugins.RouteTarget{Kind: string(sub.Kind), Key: sub.Key, Label: t.label, Host: t.host.Host}
 	var p plugins.Plugin

@@ -165,7 +165,7 @@ func (s *PGStore) ReserveHostDispatch(ctx context.Context, object string, detail
 			return err
 		}
 		// The host's live tokens are now tokens of a host that starts agents
-		// (mirror_tokens.spawned_at, 0149): the owner-authority step-up holds
+		// (mirror_tokens.spawned_at, 0150): the owner-authority step-up holds
 		// for them until they are rotated, whatever the host advertises later.
 		if _, err := tx.Exec(ctx, `UPDATE mirror_tokens SET spawned_at = now()
 			WHERE owner_id = $1 AND host = $2 AND revoked_at IS NULL AND spawned_at IS NULL`, owner, row.Host); err != nil {

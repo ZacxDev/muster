@@ -3155,7 +3155,7 @@ permission mode**, not an isolation boundary:
     its spawned agents have ended — an open dispatch keeps the host gated
     whatever token is used, because the agent can read a new token too.
   - **Three refinements.** A `route_reply` from the session AND host the
-    route was sent to (both recorded on the route, `target_host` since 0150:
+    route was sent to (both recorded on the route, `target_host` since 0151:
     `Route.SentToMirrorSessionOn`) is not carded while no host dispatch on
     that host is open; any other `route_reply`, and every other decision, is.
     A `dispatch_approve` card shows the held start (target, runtime and

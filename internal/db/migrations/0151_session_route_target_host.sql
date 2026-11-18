@@ -1,4 +1,4 @@
--- muster 0150 — A ROUTE RECORDS THE HOST OF THE SESSION IT WAS SENT TO
+-- muster 0151 — A ROUTE RECORDS THE HOST OF THE SESSION IT WAS SENT TO
 -- (internal/plugins routes.go Route.TargetHost; internal/api
 -- route_reply_tool.go and host_stepup.go routeReplyToItsOwnSession).
 --
@@ -16,12 +16,12 @@
 -- Idempotent; not re-applied by db.RLSOn (no new table or policy: 0021's
 -- policy and grants cover the column).
 --
--- Must apply after its predecessor, 0149_mirror_token_spawned (the
+-- Must apply after its predecessor, 0150_mirror_token_spawned (the
 -- contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   ALTER TABLE public.session_routes DROP COLUMN IF EXISTS target_host;
---   DELETE FROM schema_migrations WHERE version = 150;
+--   DELETE FROM schema_migrations WHERE version = 151;
 
 SET LOCAL lock_timeout = '3s';
 

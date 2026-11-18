@@ -4,14 +4,14 @@ import (
 	"testing"
 )
 
-// TestMigration0149BackfillsSpawningHostTokens: 0149 adds
+// TestMigration0150BackfillsSpawningHostTokens: 0150 adds
 // mirror_tokens.spawned_at and marks, at once, every LIVE token whose
 // (owner, host) already has a host dispatch row or an officer host spawn —
 // and nothing else: not a clean host's token, not another owner's token for
 // a host of the same name, not a revoked token.
-func TestMigration0149BackfillsSpawningHostTokens(t *testing.T) {
+func TestMigration0150BackfillsSpawningHostTokens(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0149_token_spawned", 148)
+	pool := freshAt(ctx, t, "ms_0150_token_spawned", 149)
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member') ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestMigration0149BackfillsSpawningHostTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	applyThroughFrom(ctx, t, pool, 149)
+	applyThroughFrom(ctx, t, pool, 150)
 
 	for _, c := range []struct {
 		name string

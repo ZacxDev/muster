@@ -220,7 +220,7 @@ type Route struct {
 	// goes to its chief in the batch's one digest, never by itself.
 	BatchID string
 	// TargetHost is the mirror host the target session ran on when the route
-	// was sent (0150); "" for a route made before it.
+	// was sent (0151); "" for a route made before it.
 	TargetHost string
 }
 
@@ -242,7 +242,7 @@ type RouteTarget struct {
 	Kind, Key, Label string
 	// Host is the mirror host whose window ran the target session when the
 	// route was sent ("" for a target that is no mirrored session):
-	// session_routes.target_host (0150).
+	// session_routes.target_host (0151).
 	Host string
 }
 
@@ -294,14 +294,14 @@ func (r Route) SentToMirrorSession(sid string) bool {
 }
 
 // SentToMirrorSessionOn is SentToMirrorSession AND the route recorded host as
-// its target's host (0150). A route with no recorded host is never sent to a
+// its target's host (0151). A route with no recorded host is never sent to a
 // host by this test: the step-up gate's route_reply carve-out needs both.
 func (r Route) SentToMirrorSessionOn(host, sid string) bool {
 	return host != "" && r.TargetHost == host && r.SentToMirrorSession(sid)
 }
 
 // FromItsHost reports whether a caller on host may answer r: r recorded no
-// host (a route made before 0150), or recorded that one.
+// host (a route made before 0151), or recorded that one.
 func (r Route) FromItsHost(host string) bool {
 	return r.TargetHost == "" || r.TargetHost == host
 }
