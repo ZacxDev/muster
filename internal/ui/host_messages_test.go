@@ -27,7 +27,7 @@ func TestAViewOnlyNotesInfoShowsAnAdminTheSettingAndOthersAskYourAdmin(t *testin
 		`id="mv-readonly-info-open" popovertarget="mv-readonly-info" aria-haspopup="dialog" aria-controls="mv-readonly-info" aria-label="How to turn on typing"`,
 		`<p id="mv-readonly-info-title" class="flex-1 text-sm font-semibold text-fg">Turn on typing</p>`,
 		`data-info-code="">-interactive</code>`,
-		`data-copy-text="-interactive"`,
+		`data-info-copy=""`,
 	} {
 		if !strings.Contains(admin, want) {
 			t.Errorf("an admin's note lacks %s", want)

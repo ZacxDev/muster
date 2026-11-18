@@ -39,7 +39,20 @@ type OfficerChatStore interface {
 	// random bytes, hex) and kept the first time it is asked for, and the
 	// same one every time after.
 	EnsureChatLaneSecret(ctx context.Context, sessionID int64) (string, error)
+	// SetAsideOfficerChat sets agent agentID's session keyed sessionKey aside
+	// when its chat moves to another instance: its key becomes
+	// OfficerChatMovedPrefix + "<session id>:" + sessionKey (so the chat's
+	// key is free for its new session) and its lane secret is cleared (no
+	// call can name it as a lane again); its marks and history stay on the
+	// row. moved is false when the agent has no such session.
+	SetAsideOfficerChat(ctx context.Context, agentID int64, sessionKey string) (moved bool, err error)
 }
+
+// OfficerChatMovedPrefix prefixes a set-aside officer chat session's key
+// (SetAsideOfficerChat). It is not the chat key prefix
+// (officers.ChatSessionKeyPrefix, "officer-chat:"), so no lookup of a chat's
+// session finds it and no MCP call naming it is a chat lane's.
+const OfficerChatMovedPrefix = "officer-chat-moved:"
 
 // ChatLaneMarks is a chat lane's marks (internal/officers ChatMarks): the
 // highest chat seq it has seen, the last one HQ took a reply for, and the
@@ -134,4 +147,15 @@ func (s *PGStore) EnsureChatLaneSecret(ctx context.Context, sessionID int64) (st
 		return "", fmt.Errorf("agents: session %d keeps no lane secret", sessionID)
 	}
 	return secret, nil
+}
+
+// SetAsideOfficerChat implements OfficerChatStore: one UPDATE, so a racing
+// second call finds no row under the old key and moves nothing.
+func (s *PGStore) SetAsideOfficerChat(ctx context.Context, agentID int64, sessionKey string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE chat_sessions SET session_key = $3::text || id::text || ':' || session_key, officer_chat_secret = ''
+		WHERE agent_id = $1 AND session_key = $2`, agentID, sessionKey, OfficerChatMovedPrefix)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }

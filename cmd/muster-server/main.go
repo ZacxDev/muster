@@ -346,6 +346,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	ext := api.Extensions{
 		LegacyProvenanceHeaderPrefix: cfg.LegacyProvenancePrefix,
 		TagAutoDispatch:              cfg.TagAutoDispatch,
+		PluginAutostart:              cfg.PluginAutostart,
 		AgentsIdleAfter:              cfg.AgentsIdleAfter,
 		// Every door that sets an agent's model checks it against OpenRouter's
 		// catalogue (internal/api model_validate.go) — the cache the dispatch
@@ -641,7 +642,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// fleet_list's fleet fields. Off by default; it needs a database.
 		ext.FleetDigest = cfg.FleetDigest
 		// Fleet proposals (MUSTER_FLEET_ORCHESTRATION=propose; migration
-		// 0154): the chief's fleet write tools, the digest's cards and the
+		// 0155): the chief's fleet write tools, the digest's cards and the
 		// fleet's action log. Off by default; it needs the digest (config).
 		ext.FleetPropose = cfg.FleetPropose
 		ext.FleetActions = fleet.NewPG(a.pool)

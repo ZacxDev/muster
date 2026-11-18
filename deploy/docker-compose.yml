@@ -127,7 +127,7 @@ services:
   muster:
     # MUSTER_IMAGE exists so a locally built image can be tested with this
     # exact file; leave it unset to run the published release.
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.247.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.248.0}
     restart: unless-stopped
     depends_on:
       muster-init:
@@ -357,7 +357,8 @@ services:
       # stall nudges, pod officers, the memo relay: MUSTER_AGENT_PROVISIONER,
       # MUSTER_CHIEF_NUDGES, …). Their provisioner uses Kubernetes in-cluster
       # credentials only, so they cannot run in this stack
-      # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH.
+      # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH,
+      # nor MUSTER_PLUGIN_AUTOSTART (plugin auto-start starts agents).
     # The chief's spec volume (read-write here; read-only in the chief
     # container), and the network the chief reaches muster on. muster writes
     # the chief's spec with group 1001 and its files with group 1000, the
@@ -392,7 +393,7 @@ services:
   # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
   # postgres:16-alpine); no network.
   muster-init:
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.247.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.248.0}
     user: "0:0"
     command:
       - compose-init
@@ -421,7 +422,7 @@ services:
   # --- dictation, GPU (profile stt-cohere) ----------------------------------
   stt-cohere:
     profiles: ["stt-cohere"]
-    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.247.0}
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.248.0}
     restart: unless-stopped
     environment:
       # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
@@ -588,7 +589,7 @@ services:
   # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.247.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.248.0}
     user: "0:0"
     entrypoint:
       - sh
@@ -605,7 +606,7 @@ services:
 
   chief:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.247.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.248.0}
     restart: unless-stopped
     depends_on:
       chief-init:

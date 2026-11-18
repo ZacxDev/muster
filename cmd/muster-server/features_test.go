@@ -76,6 +76,7 @@ var featureLedgerExempt = map[string]string{
 	envAgentStuckSilent:       "an outcome-watchdog threshold, on whenever there is a database, announced on its own banner line",
 	envAgentWatchdogInterval:  "the outcome watchdog's sweep interval, announced on its own banner line",
 	envTagAutoDispatch:        "reserved and inert by design (docs/configuration.md): it turns nothing on",
+	envPluginAutostart:        "a deployment kill switch over plugin auto-start, which needs dispatch and task routing (their entries report those); each plugin is still the owner's to opt in",
 	envLiveHeartbeat:          "a transport tuning interval of every live page; no feature is on or off with it",
 	envHostIcons:              "cosmetic: a mirrored host's icon",
 	envLegacyProvenancePrefix: "a compatibility spelling for older installed clients' headers",

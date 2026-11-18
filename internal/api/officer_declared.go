@@ -614,9 +614,12 @@ func noneIfNil(v []string) []string {
 	return v
 }
 
+// instanceNames is every instance slot of o (Officer.Slots, as the fleet
+// listing reads them): chat-only instances past max_instances included, so a
+// running one is not missing from the view.
 func instanceNames(o officers.Officer) []string {
-	out := make([]string, 0, o.MaxInstances)
-	for n := 1; n <= o.MaxInstances; n++ {
+	out := make([]string, 0, o.Slots())
+	for n := 1; n <= o.Slots(); n++ {
 		out = append(out, o.InstanceName(n))
 	}
 	return out

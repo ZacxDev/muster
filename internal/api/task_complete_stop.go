@@ -55,6 +55,9 @@ func (s *Server) stopChiefAgentOnComplete(ctx context.Context, n notes.Note) {
 	if s.ext.ChiefDispatch == nil || s.ext.Provisioner == nil || s.ext.Agents == nil {
 		return
 	}
+	// A completed task's auto-start Stop ask is withdrawn: the stop below is
+	// muster's, and a later tap could only claim one (plugin_autostart.go).
+	s.settleAutostartAsks(ctx, n.ID, 0)
 	agentID, ok, err := s.ext.ChiefDispatch.ChiefStartedAgent(ctx, n.ID)
 	if err != nil {
 		s.logger.Printf("tasks: complete %d: read the chief's start: %v", n.ID, err)

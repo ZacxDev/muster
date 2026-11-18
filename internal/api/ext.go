@@ -139,6 +139,12 @@ type Extensions struct {
 	// converts an unproven feature into an unattended one. While false,
 	// `auto:dispatch` behaves as a descriptive tag.
 	TagAutoDispatch bool
+	// PluginAutostart is the DEPLOYMENT's switch for plugin auto-start
+	// (MUSTER_PLUGIN_AUTOSTART, plugin_autostart.go). False — the default — no
+	// plugin starts anything, whatever its owner set on /plugins, and the card
+	// offers no Turn on; the admin stops every auto-start without touching
+	// chief dispatch. It is read at the card and at every start.
+	PluginAutostart bool
 
 	// Provisioner drives agent instance LIFECYCLE (provision/start/stop/delete,
 	// state, logs). Nil disables the seven lifecycle routes even if Agents is set,
@@ -396,7 +402,7 @@ type Extensions struct {
 	// fleet_actions write. It needs FleetDigest (refused at boot without).
 	FleetPropose bool
 	// FleetActions is the fleet's action log (internal/fleet, migration
-	// 0154). nil (no database): fleet proposals are off whatever FleetPropose.
+	// 0155). nil (no database): fleet proposals are off whatever FleetPropose.
 	FleetActions fleet.Actions
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration

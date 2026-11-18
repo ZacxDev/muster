@@ -112,7 +112,7 @@ func TestNoTopLayerOfTheAsksSurfacesSpellsATmuxAddress(t *testing.T) {
 	feed := attentionItemsHTML(shown, time.Now())
 	assertNoJargon(t, "the Asks feed", feed)
 	for _, target := range []string{"tmux scratch3:5 @ ws", "tmux build:7 @ ws"} {
-		if !strings.Contains(feed, `data-info-code="">`+target+`</code>`) || !strings.Contains(feed, `data-copy-text="`+target+`"`) {
+		if !strings.Contains(feed, `data-info-code="">`+target+`</code>`) || strings.Count(feed, `data-info-copy=""`) < 2 {
 			t.Errorf("the Asks feed has no ⓘ holding %q with a Copy button", target)
 		}
 	}

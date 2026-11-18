@@ -158,22 +158,24 @@ func TestTheSessionButtonOpensTheSessionsCurrentWindow(t *testing.T) {
 	}
 	// Labelled by where it runs NOW (its window's current name), not the
 	// label stored when the page was made.
-	for _, want := range []string{`aria-label="Open the session that made this page: main:3 @ workstation"`, `<span class="sl">main:3 @ workstation</span>`,
-		`<a href="/mirror/view?host=workstation&amp;session=main&amp;window=%403" data-page-made-by>Made by main:3 @ workstation</a>`} {
+	for _, want := range []string{`aria-label="Open the session that made this page: main · window 3 on workstation"`, `<span class="sl">main · window 3 on workstation</span>`,
+		`<a href="/mirror/view?host=workstation&amp;session=main&amp;window=%403" data-page-made-by>Made by main · window 3 on workstation</a>`} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("the owner's view lacks %q", want)
 		}
 	}
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr()).Body.String()
-	if !strings.Contains(detail, `Made by <a href="/mirror/view?host=workstation&amp;session=main&amp;window=%403" class="text-accent underline" data-page-session>main:3 @ workstation</a>.`) {
+	if !strings.Contains(detail, `Made by <a href="/mirror/view?host=workstation&amp;session=main&amp;window=%403" class="text-accent underline" data-page-session>main · window 3 on workstation</a>.`) {
 		t.Errorf("the page's screen lacks the Made by link: %s", pageDetailSection(t, detail))
 	}
 	// The window moved (renumbered, a new tmux id), and another session now
 	// has the first window: the link follows THIS session to @7.
 	m.set(f.owner, sessionWindow("@2", 1, otherSID), sessionWindow("@7", 5, makerSID))
 	href, doc = f.viewSessionHref(t, id)
-	if href != "/mirror/view?host=workstation&amp;session=main&amp;window=%407" || !strings.Contains(doc, `<span class="sl">main:5 @ workstation</span>`) {
-		t.Fatalf("after the window moved: %q (the label: %v)", href, strings.Contains(doc, "main:3 @"))
+	if href != "/mirror/view?host=workstation&amp;session=main&amp;window=%407" || !strings.Contains(doc, `<span class="sl">main · window 5 on workstation</span>`) {
+		// The label is the window as the session lists name it now: its
+		// sibling also reads "main", so "· window 5", never "main:5".
+		t.Fatalf("after the window moved: %q (the label: %v)", href, strings.Contains(doc, "main · window 3"))
 	}
 }
 
@@ -284,7 +286,7 @@ func TestTheSessionIsLookedUpOnItsOwnHost(t *testing.T) {
 func TestTheSessionIsNamedAsMusterNamesIt(t *testing.T) {
 	f, _ := newSessionPageFixture(t)
 	id := mirrorPage(t, f, "Named")
-	if _, doc := f.viewSessionHref(t, id); !strings.Contains(doc, `<span class="sl">main:3 @ workstation</span>`) {
+	if _, doc := f.viewSessionHref(t, id); !strings.Contains(doc, `<span class="sl">main · window 3 on workstation</span>`) {
 		t.Fatal("control: an unnamed session is not its window and host")
 	}
 	f.srv.ext.Focus = &memFocus{rows: map[focus.Subject]focus.Focus{
@@ -318,5 +320,23 @@ func TestAForeignAgentIsNeverLinked(t *testing.T) {
 	}
 	if href, doc := f.viewSessionHref(t, id); href != "" || strings.Contains(doc, f.otherAgent.Name) {
 		t.Errorf("another owner's agent is linked: %q", href)
+	}
+}
+
+// TestTwoWindowsOfOneSessionNameTheirPagesApart: two unnamed windows of ONE
+// tmux session on one host each make a page; each page's screen names its
+// own window as the session lists do ("main · window 3", "main · window 4"
+// on workstation) — never both "main on workstation", never "main:3 @".
+func TestTwoWindowsOfOneSessionNameTheirPagesApart(t *testing.T) {
+	f, _ := newSessionPageFixture(t)
+	first := mirrorPage(t, f, "From window three")
+	out := f.toolAs(t, f.as(f.owner, authz.ViaMirrorHost), mirrorCaller("workstation", otherSID), pageCreateTool,
+		map[string]any{"title": "From window four", "blocks": json.RawMessage(`[{"type":"markdown","text":"hi"}]`)})
+	second := pnum(out["page_id"])
+	for id, want := range map[int64]string{first: "main · window 3 on workstation", second: "main · window 4 on workstation"} {
+		detail := pageDetailSection(t, f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String())
+		if !strings.Contains(detail, `data-page-session>`+want+`</a>.`) || strings.Contains(detail, ":3 @") || strings.Contains(detail, ":4 @") {
+			t.Errorf("page %d's screen does not name its window %q:\n%s", id, want, detail)
+		}
 	}
 }

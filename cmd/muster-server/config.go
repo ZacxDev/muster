@@ -138,6 +138,8 @@ const (
 	envHostIcons = "MUSTER_HOST_ICONS"
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
+	// The deployment's switch for plugin auto-start (docs/plugins.md#auto-start).
+	envPluginAutostart = "MUSTER_PLUGIN_AUTOSTART"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
 	// The stopped-agent reaper (internal/api agent_reap.go): how long an agent
 	// may stay stopped before it is destroyed. A Go duration, 336h when unset,
@@ -812,6 +814,9 @@ type config struct {
 	HostPrefs ui.HostPreferences
 
 	TagAutoDispatch bool
+	// PluginAutostart is MUSTER_PLUGIN_AUTOSTART: plugin auto-start may run at
+	// all (api.Extensions.PluginAutostart). Off by default.
+	PluginAutostart bool
 	TaskReapAfter   time.Duration
 	// AgentReapStoppedAfter is MUSTER_AGENT_REAP_STOPPED_AFTER
 	// (api.DefaultAgentReapStoppedAfter when unset; 0 = the reaper is off).
@@ -1634,6 +1639,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroTracing:          envFlag(getenv, envFaroTracing),
 		FaroUpstream:         strings.TrimSpace(getenv(envFaroUpstream)),
 		TagAutoDispatch:      envFlag(getenv, envTagAutoDispatch),
+		PluginAutostart:      envFlag(getenv, envPluginAutostart),
 		Mirror:               envFlag(getenv, envMirror),
 		Plugins:              envFlag(getenv, envPlugins),
 		PluginTaskNamespaces: splitList(getenv(envPluginTaskNamespaces)),

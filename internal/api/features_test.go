@@ -175,9 +175,10 @@ func TestTheFeaturesPageRendersEachRowWithItsState(t *testing.T) {
 		}
 	}
 	// The .env line is the code of the row's ⓘ sheet (an admin's: the
-	// password operator), and what its Copy button copies.
+	// password operator), and what its Copy button copies (cgCopy copies the
+	// sheet's <code>; the line is not repeated in an attribute).
 	if !strings.Contains(body, `id="dictation-setup" popover="auto"`) || !strings.Contains(body, `data-info-code="">EXAMPLE_STT_TOKEN=&lt;value&gt;</code>`) ||
-		!strings.Contains(body, `data-copy-text="EXAMPLE_STT_TOKEN=&lt;value&gt;"`) {
+		!strings.Contains(body, `data-info-copy=""`) || strings.Contains(body, `data-copy-text="EXAMPLE_STT_TOKEN`) {
 		t.Error("the dictation row's sheet does not hold its .env line")
 	}
 	if !strings.Contains(body, "data-features-counts") {

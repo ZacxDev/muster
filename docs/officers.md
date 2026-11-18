@@ -1123,6 +1123,142 @@ not_ready`, `409 busy` — nothing typed), the item is released and retried on a
 later pass. Neither ever fails or drops a chat. The least recently used idle
 lane is stopped when another needs its slot, and resumed from its transcript
 on its next turn. With `tiers`, chats run in the **judgement** pool only.
+When every lane of every up instance is busy, muster starts another instance
+for the waiting chats, up to `chat_max_instances`, and it stops an instance
+again once it has been idle for `chat_idle_stop`. A chat whose instance was
+stopped has it started again and continues there; it moves to another
+instance only when its own is in error or past the ceiling
+([below](#autoscaling-chat-instances)).
+
+### Autoscaling chat instances
+
+A pool that runs chats (an untiered pod officer of an HQ backend, or a tiered
+officer's judgement pool) adds instances for its chats and removes them again.
+Two settings ([configuration.md](configuration.md), `MUSTER_OFFICERS`) control
+it:
+
+- `chat_max_instances` (1–8, default 3): the **chat ceiling**. It is separate
+  from `max_instances`, which still bounds queue work. At the default
+  `chat_sessions` of 3, that is up to 9 chat turns at once.
+- `chat_idle_stop` (`1m`–`24h`, default `15m`): how long an instance can go
+  without a chat turn, a claim or a prompt before it is stopped.
+
+**Numbering.** Chat instances use the pool's own instance numbers, so instance
+`n` has the same agent, volume and pod whether it serves chats or the queue.
+The pool has `max(max_instances, chat_max_instances)` slots:
+
+- queue work runs on instances 1..`max_instances`;
+- chats run on instances 1..`chat_max_instances`;
+- an instance numbered past `max_instances` is **chat-only**:
+  - its first message tells its primary session there is no queue work and to
+    end its turn;
+  - the wake loop never re-prompts it and never counts it as queue capacity;
+  - `officer_claim` from its primary is refused.
+
+A routine pool, a host officer and a builtin officer have `max_instances`
+slots only. An agent whose name is past the pool's slots is an ordinary agent,
+not an instance. One numbered past `max_instances` but within the slots is an
+instance, and its deletion is refused like any other instance's.
+
+**Scale up.** Each pass, `ChatRunner.Want` plans the pending chats:
+
+1. A chat whose home is up counts against its home's lanes and waits for one
+   there, because its conversation is on that instance's volume. "Up" means
+   running or on its way up, not in error, and within the ceiling.
+2. A chat whose home is **stopped** waits for it too. "Stopped" means not up,
+   not in error, numbered within `chat_max_instances`, and not holding a
+   capped claim. The wake loop starts that home for it, logged as `chat home:
+   a chat waits for the instance its session lives on`. Until the home is up
+   the chat stays unclaimed, even when another instance has a free lane. Then
+   it continues its same session there. A stop for idleness
+   (`chat_idle_stop`, `idle_scale_to_zero_after`) therefore costs the chat a
+   pod start (about a minute or two), never its conversation. The wait is
+   bounded: a home still not up 10 minutes after the first pass that saw a
+   chat waiting for it is re-homed ([below](#autoscaling-chat-instances)).
+3. Any other chat is unplaced: one with no home yet, or one to re-home
+   ([below](#autoscaling-chat-instances)). It goes to the up instance with a
+   free lane that runs the fewest chats.
+4. The unplaced chats left without a lane need `ceil(left / chat_sessions)`
+   more instances. A stopped home started in step 2 gives them its spare
+   lanes first, so no second instance is started where one is coming up. The
+   wake loop starts the rest, up to `chat_max_instances`, at the lowest free
+   numbers. It skips an instance number that holds a capped claim. An instance
+   that queue work starts in the same pass (within the ceiling) counts toward
+   the total.
+
+An instance on its way up counts as up, with free lanes. So the next pass
+starts nothing more, and a chat runs on the new instance once it answers.
+Each start for chats is logged, with the reason first:
+`chat scale-up: N chat(s) wait with every lane busy (chat_sessions …,
+chat_max_instances …)`.
+
+**Scale down.** While the pool is busy, an up instance is stopped once
+`chat_idle_stop` has passed since its last activity, logged as `chat
+scale-down: no chat turn, claim or prompt for <d> (chat_idle_stop)`. Its last
+activity is the latest of:
+
+- a chat turn starting or ending on it;
+- a pass that saw it hold a live claim, its own or its chat holder's;
+- the moment this muster first saw it up;
+- its last start or prompt.
+
+These keep an instance up:
+
+- it is in error, or a prompt is owed to it;
+- it holds a queue claim, a capped claim or a live chat claim;
+- a chat turn is running on it, or a pending chat is homed on it;
+- an unplaced chat is waiting for a lane, for any instance within the ceiling
+  (a chat waiting for its own stopped home keeps only that home);
+- it is numbered within `max_instances` and the queue has any work at all
+  (claimable or held). This way the queue's own instance is never stopped
+  under it.
+
+An instance this muster has never seen active is not stopped, so a restarted
+muster stops nothing on its first pass. The window restarts each time the
+instance comes up. When the whole pool goes idle, `idle_scale_to_zero_after`
+stops every instance, as before.
+
+**Re-homing.** A chat moves off its home **only** when that home cannot serve
+it again soon:
+
+- the home is in error (it holds its slot and is not started);
+- its number is past `chat_max_instances` (the ceiling was lowered);
+- its number holds a capped claim (the wake loop never starts that number);
+- it is stopped and has not come up within 10 minutes of the first pass that
+  saw a chat waiting for it. A start that fails leaves the agent stopped, not
+  in error, so without this bound a chat whose home's every start fails would
+  wait for ever while another instance has a free lane. Ten minutes is five of
+  the slowest normal pod starts (about a minute or two) and several of the
+  wake loop's start retries, so a home that starts normally is always waited
+  for and the chat keeps its session; only a home that is effectively failing
+  moves it. The window is per stop: a pass that sees no chat waiting for that
+  home (it came up, or its chats moved or ended) forgets it, and a restarted
+  muster starts it again.
+
+A merely stopped home that comes up within that bound is never a reason (step
+2 above). A chat to re-home is
+not held back. It runs on an up instance with a free lane, or waits for the
+instance the plan starts. Once its item is claimed there, muster sets its old
+lane session aside (`ChatLanes.Rehome`):
+
+- the key becomes `officer-chat-moved:<session id>:officer-chat:<chat_id>`, so
+  no lookup finds it and no MCP call can name it as a lane;
+- its lane secret is cleared;
+- its turns stay readable on the old instance's agent.
+
+The new instance then opens a new session for the chat. Because the session
+has no marks, it starts after the officer's last reply, like any
+[re-homed chat](#chat-sessions). It keeps the HQ history but loses the old
+lane's working context. Each re-home is logged with its from and to
+instances and the reason: `chat <id> re-homed from instance <n> (in error)
+to instance <m>`, `(past chat_max_instances <k>)`, `(holding a capped
+claim, so it is not started)` or `(home did not come up within 10m)`.
+
+**Gauges.** `muster_officer_chat_instances_up` counts the instances up within
+their chat ceiling, across the pools that run chats.
+`muster_officer_chats_waiting` counts the pending chats with no free lane at
+the last pass. Above zero for more than a pass or two, it means a pool is at
+its chat ceiling.
 
 **`fresh_session_per_item` applies to the primary only.** A chat lane is one
 conversation for the chat's whole life: its turns never carry
@@ -1135,8 +1271,10 @@ no scale-down) when it cannot run now:
 - the officer's instances run on a **host** (`"runtime": "host"`): a host
   instance has no `ccd`, so no lane. The HQ server can still create such a
   chat; muster leaves it unclaimed and says why once in its log;
-- its home instance is beyond `max_instances` (lowered since), or which
-  instance it lives on cannot be read;
+- which instance it lives on cannot be read (a home that is stopped is no
+  reason: it is started for the chat; one in error, past
+  `chat_max_instances` or not up within 10 minutes is no reason either: the
+  chat is [re-homed](#autoscaling-chat-instances));
 - it is **backing off**: a lane that refused the turn for a reason that does
   not pass by itself (the runtime unresolved, muster's credential refused, the
   request rejected, the runtime never reached), a turn, read or reply that
@@ -1169,7 +1307,9 @@ turn the item names, read on its own.
 no muster UI of its own; no built-in backend. A muster running more than one
 replica counts each instance's busy lanes per process: HQ's claim decides
 which replica runs a chat, and `ccd`'s own cap (a `503 capacity`, above) is
-the backstop.
+the backstop. Its chat scale-up and scale-down read the same per-process
+counts, so each replica plans on its own; a live chat claim (HQ's) still
+keeps any replica from stopping its instance.
 
 ## The tools
 

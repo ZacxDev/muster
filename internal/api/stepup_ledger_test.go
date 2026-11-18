@@ -70,6 +70,7 @@ var stepUpChannels = map[string]stepUpChannel{
 
 	// A plugin's chief instructions (0141): the owner approves one exact text.
 	"plugin_chief_instructions.go:handleChiefInstructionsApprove": {how: "form", proof: "TestThePluginsPageChiefInstructionsApproveConfirmsInPlace"},
+	"plugin_autostart.go:handlePluginAutostart":                   {how: "form", proof: "TestThePluginsPageAutostartTurnOnConfirmsInPlace"},
 }
 
 // stepUpGateSites parses internal/api's non-test sources and returns every
