@@ -439,7 +439,7 @@ type Msg struct {
 	AgentSpawn []string `json:"agentSpawn,omitempty"`
 	// AgentSpawnSkipPermissions (hello) is the host saying it starts the
 	// CLAUDE CODE agents it spawns WITHOUT permission prompts
-	// (-agent-spawn-skip-permissions, on by default; never on a root mirror,
+	// (-agent-spawn-skip-permissions, OFF by default; never on a root mirror,
 	// where Claude Code refuses bypassPermissions). It is one bool per host,
 	// not per runtime, because Claude Code's is the only wording muster varies
 	// by it: an opencode spawn is told it does not ask either way. muster only

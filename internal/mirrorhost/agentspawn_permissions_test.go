@@ -8,15 +8,16 @@ import (
 	"testing"
 )
 
-// TestASpawnsArgvSkipsPermissionPromptsByDefaultAndIsUnchangedWhenOff pins the
+// TestASpawnsArgvKeepsPermissionPromptsByDefaultAndSkipsThemWhenOn pins the
 // spawn's argv (spawnArgv) for both runtimes, both ways, as LITERAL words —
 // never derived from the constants under test, so a changed flag spelling
 // fails here: ON adds Claude Code's `--permission-mode bypassPermissions` and
 // the bypass screen's flag-scoped consent (`--settings
 // {"skipDangerousModePermissionPrompt":true}`) before `--`, and opencode's `--auto` after the session; OFF is the argv as it
 // was before the setting existed. And the setting's default: a zero
-// AgentSpawnConfig (no -agent-spawn-skip-permissions=false) is ON.
-func TestASpawnsArgvSkipsPermissionPromptsByDefaultAndIsUnchangedWhenOff(t *testing.T) {
+// AgentSpawnConfig (no -agent-spawn-skip-permissions) is OFF — skipping the
+// prompts is opt-in — so its argv for either runtime is the OFF argv.
+func TestASpawnsArgvKeepsPermissionPromptsByDefaultAndSkipsThemWhenOn(t *testing.T) {
 	const (
 		shell  = "/bin/fixture-sh"
 		prompt = "/run/fixture/muster-mirror/prompts/7"
@@ -47,9 +48,12 @@ func TestASpawnsArgvSkipsPermissionPromptsByDefaultAndIsUnchangedWhenOff(t *test
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
 	}
-	var zero AgentSpawnConfig
-	if zero.KeepPermissionPrompts {
-		t.Fatal("a zero AgentSpawnConfig keeps permission prompts; the default must skip them")
+	zero := AgentSpawnConfig{Geteuid: func() int { return 1000 }}
+	if zero.SkipPermissionPrompts || zero.ClaudeSkipsPermissions() || zero.spawnSkips(true) {
+		t.Fatal("a zero AgentSpawnConfig skips permission prompts; skipping them must be opt-in")
+	}
+	if got := spawnArgv(shell, prompt, claude, sid, false, "", zero.spawnSkips(false)); slices.Contains(got, "bypassPermissions") {
+		t.Fatalf("the default claude argv skips permission prompts: %q", got)
 	}
 }
 
@@ -134,17 +138,17 @@ func TestARootMirrorStartsClaudeWithItsPromptsAndOpenCodeWithout(t *testing.T) {
 	for _, c := range []struct {
 		name             string
 		euid             int
-		keep             bool
+		skip             bool
 		claude, opencode []string
 		hello            bool
 	}{
-		{"root, on", 0, false, claudeOff, ocOn, false},
-		{"root, off", 0, true, claudeOff, ocOff, false},
-		{"not root, on", 1000, false, claudeOn, ocOn, true},
-		{"not root, off", 1000, true, claudeOff, ocOff, false},
+		{"root, on", 0, true, claudeOff, ocOn, false},
+		{"root, off", 0, false, claudeOff, ocOff, false},
+		{"not root, on", 1000, true, claudeOn, ocOn, true},
+		{"not root, off", 1000, false, claudeOff, ocOff, false},
 	} {
 		euid := c.euid
-		sc := AgentSpawnConfig{KeepPermissionPrompts: c.keep, Geteuid: func() int { return euid }}
+		sc := AgentSpawnConfig{SkipPermissionPrompts: c.skip, Geteuid: func() int { return euid }}
 		if got := spawnArgv(shell, prompt, claude, sid, false, "", sc.spawnSkips(false)); !slices.Equal(got, c.claude) {
 			t.Errorf("%s: claude\n got %q\nwant %q", c.name, got, c.claude)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,10 +48,22 @@ import (
 // name the owner's pane and decide as them. So every owner-authority tool from
 // a remote caller files the card, whatever this registry says.
 //
+// 🔴 SO IS A MACHINE THAT STARTS AGENTS FOR THE CHIEF (hostSpawnStepUp): a
+// call whose host token is marked as one whose host has started agents
+// (mirror_tokens.spawned_at — set by the host's first hello advertising
+// -agent-spawn, or a host dispatch reserved on it, and cleared only by
+// rotating the token), or whose host advertises -agent-spawn now. A spawned
+// agent runs as the machine's user too, so it can name the owner's pane,
+// clear its own window's dispatch tag, or read the host's token and call this
+// door directly — from anywhere, with a connection of its own: whichever
+// window a call names, with such a token it proves nothing about who decided.
+// The one carve-out (operator decision): route_reply to the route the chief
+// sent to the calling session itself files no card on such a machine.
+//
 // What is NOT gated: the owner deciding in muster's own web UI (the Reply
 // drafts tab, Connectors, Attention), which is the owner's signed-in browser;
-// any machine with no host officer declared on it and mirrored HERE; the read
-// tools.
+// any machine mirrored HERE with no host officer declared on it that does not
+// start agents for the chief; the read tools.
 // ---------------------------------------------------------------------------
 
 // hostStepUpTools is THE LEDGER of the mirror door's owner-authority tools, by
@@ -85,7 +99,7 @@ var hostStepUpExempt = map[string]string{
 	pluginDraftsListTool:       "a read",
 	pluginOutboundBatchGetTool: "a read",
 	pluginMessagesListTool:     "a read",
-	dispatchRequestTool:        "files a held start; dispatch_approve is the decision",
+	dispatchRequestTool:        "files a held start that starts nothing; dispatch_approve is the decision",
 	pageCreateTool:             "the session's own page; a link needs the owner's tap",
 	pageUpdateTool:             "the session's own page",
 	pageGetTool:                "a read",
@@ -278,22 +292,53 @@ const (
 
 // hostStepUpGate is the mirror door's gate, run on every call after the host
 // instance rule: an owner-authority tool from a machine that runs a host
-// officer files a confirmation card and runs nothing (ok true, the tool's
-// answer is the card); any other call is not the gate's (ok false).
+// officer, from a machine that starts agents for the chief (hostSpawnStepUp),
+// or from a remote caller, files a confirmation card and runs nothing (ok
+// true, the tool's answer is the card); any other call is not the gate's (ok
+// false). Which window the call names plays no part.
 func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, name, args string) (string, bool) {
 	what, gated := hostStepUpTools[name]
 	if !gated {
 		return "", false
 	}
 	p, _ := authz.From(ctx)
-	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
-	if len(ids) == 0 && !c.remote {
-		return "", false
+	// A call the tool itself refuses as a session muster started for the
+	// chief files no card: the owner is never asked to confirm a call that
+	// could only be refused (ownersOwnSession runs again inside the tool).
+	if why := s.ownersOwnSession(ctx, c); why == ownerAuthoritySpawned {
+		return toolErr("%s", why), true
 	}
-	// why is the reason the card gives: this machine's officers, or — a remote
-	// caller — that this muster cannot see its machine at all.
+	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
+	spawn := ""
+	if len(ids) == 0 && !c.remote {
+		if spawn = s.hostSpawnStepUp(ctx, host); spawn == "" {
+			return "", false
+		}
+		// The one carve-out on a machine that only starts agents: a reply to a
+		// route the chief sent to THIS session (operator decision).
+		if name == routeReplyToolName && s.routeReplyToItsOwnSession(ctx, c, args) {
+			return "", false
+		}
+	}
+	// A dispatch_approve card names what it starts, not only the hold's id.
+	held := ""
+	if name == dispatchApproveTool {
+		sum, ok := s.stepUpHoldSummary(ctx, args)
+		if !ok {
+			return toolErr("%s: the held dispatch could not be read, so nothing was asked of your owner; check the hold_id dispatch_request returned", name), true
+		}
+		held = "\n\nThe held start: " + sum
+	}
+	// why is the reason the card gives: this machine's officers, that it
+	// starts agents for the chief, or — a remote caller — that this muster
+	// cannot see its machine at all.
 	why := "This machine runs host officer " + strings.Join(ids, ", ")
-	if len(ids) == 0 {
+	switch {
+	case len(ids) > 0:
+	case spawn != "":
+		why = "This machine " + spawn + "; such an agent runs as the machine's user"
+		ids = []string{"none; it starts agents for the chief"}
+	default:
 		why = "This call came from a host that is mirrored to another muster, so this one cannot tell whether that machine runs a host officer"
 		ids = []string{"unknown: mirrored elsewhere"}
 	}
@@ -302,10 +347,10 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 			"attention store to ask through; decide it in muster's web UI", name, host, strings.ToLower(why[:1])+why[1:]), true
 	}
 	sum := sha256.Sum256([]byte(name + "\x00" + args))
-	question := fmt.Sprintf("A session on %s (%s) asks to %s: %s %s\n\n%s, and its sessions are named by a header "+
+	question := fmt.Sprintf("A session on %s (%s) asks to %s: %s %s%s\n\n%s, and its sessions are named by a header "+
 		"any process there can set — so this needs you. Confirm on your paired phone to let it happen (a signed action; a browser answer is refused), "+
 		"or decide it in muster's web UI instead. [%s]",
-		host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, mirror.OneLine(strings.TrimSpace(args), 600), why, hex.EncodeToString(sum[:6]))
+		host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, mirror.OneLine(strings.TrimSpace(args), 600), held, why, hex.EncodeToString(sum[:6]))
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, p.UserID), attention.New{
 		Asker:    attention.Asker{System: true, Label: hostDecisionLabel},
 		Question: question, Options: []string{hostDecisionConfirm, hostDecisionRefuse},
@@ -316,7 +361,7 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	}
 	s.hostDecisions.put(ask.ID, hostDecision{owner: p.UserID, host: host, caller: c, tool: name, args: args})
 	s.askFiled(ask)
-	s.logger.Printf("step-up: %s from %s/%s waits for card %d (host officer %s on the machine)", name, host, c.asker.MirrorSession, ask.ID, strings.Join(ids, ", "))
+	s.logger.Printf("step-up: %s from %s/%s waits for card %d (host officer %s on the machine; %s)", name, host, c.asker.MirrorSession, ask.ID, strings.Join(ids, ", "), firstNonBlank(spawn, "no agent spawn"))
 	return toolJSON(map[string]any{"status": "awaiting_owner_confirmation", "card": ask.ID,
 		"next": "Nothing was done yet. Your owner confirms or refuses this on their phone; it then runs once, exactly as asked. " +
 			"Do not call it again; read the outcome with the list tools later."}), true
@@ -432,4 +477,138 @@ func hostStepUpToolNames() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// spawnedTokenWhy is hostSpawnStepUp's reason for a host token marked as
+// one whose host has started agents (mirror.Token.SpawnedAt).
+const spawnedTokenWhy = "has started agents for the chief with this host token (it stays marked until the token is rotated)"
+
+// hostSpawnStepUp is why the call's host is gated as a machine that starts
+// agents for the chief — a clause for the card — or "" when it is not one.
+// Every read is the SERVER's, and none is anything a window can set:
+//
+//   - the token the call came with is marked (mirror_tokens.spawned_at,
+//     0150): its host advertised -agent-spawn in a hello, or had a host
+//     dispatch reserved on it, at any time. 🔴 NOTHING BUT ROTATING THE
+//     TOKEN CLEARS IT. A spawned agent runs as the machine's user and can
+//     read the token, so neither a restart of muster, nor the host no longer
+//     advertising -agent-spawn, nor another connection with the same token
+//     says anything about who holds it;
+//   - an agent muster started there for the chief may still be running: a
+//     host dispatch of the owner's on host that is not ended. 🔴 THIS IS WHAT
+//     A ROTATION CANNOT CLEAR: a new token is unmarked, but the agent still
+//     running there can read it, so the host stays gated until its spawned
+//     agents have ended (docs: rotate only after that). An unreadable record
+//     gates (the closed direction);
+//   - the host's hello says it starts agents now (HostView.AgentSpawn).
+func (s *Server) hostSpawnStepUp(ctx context.Context, host string) string {
+	if t, ok := ctx.Value(mirrorHostCtxKey{}).(mirror.Token); ok && t.Host == host && t.SpawnedAt != nil {
+		return spawnedTokenWhy
+	}
+	if st := s.hostDispatches(); st != nil {
+		rows, err := st.OpenHostDispatchesOnHost(ctx, host)
+		switch {
+		case err != nil:
+			s.logger.Printf("step-up: read host %s's open dispatches: %v; its door stays gated", host, err)
+			return "could not be checked for agents muster started there that are still running"
+		case len(rows) > 0:
+			return "has an agent muster started there for the chief that has not ended"
+		}
+	}
+	if s.ext.Mirror != nil {
+		for _, v := range s.ext.Mirror.Hosts(ctx) {
+			if v.Host == host && len(v.AgentSpawn) > 0 {
+				return "starts agents for the chief (-agent-spawn)"
+			}
+		}
+	}
+	return ""
+}
+
+// routeReplyToItsOwnSession reports whether args name a route still known to
+// this owner that was routed to c's own session ON c's own host (the route
+// records both: plugins.Route.SentToMirrorSessionOn; route_reply checks the
+// binding again), and no agent muster started is still running on that host.
+// Such a reply files no card on a machine that starts agents (operator
+// decision); every other owner-authority call from it still does.
+func (s *Server) routeReplyToItsOwnSession(ctx context.Context, c toolCaller, args string) bool {
+	if !routesOn(s.ext) {
+		return false
+	}
+	var in struct {
+		RouteID string `json:"route_id"`
+	}
+	if err := json.Unmarshal([]byte(orEmptyJSON(args)), &in); err != nil || !plugins.ValidRouteID(in.RouteID) {
+		return false
+	}
+	r, err := s.ext.Routes.Route(ctx, in.RouteID)
+	if err != nil || !r.SentToMirrorSessionOn(c.asker.MirrorHost, c.asker.MirrorSession) {
+		return false
+	}
+	// 🔴 NOT WHILE AN AGENT MUSTER STARTED MAY BE RUNNING THERE. The session a
+	// caller names is its claim, and a spawned agent on this very host can
+	// name the routed (owner's) pane: while any host dispatch on it is open,
+	// the reply is carded like every other decision.
+	st := s.hostDispatches()
+	if st == nil {
+		return true
+	}
+	open, err := st.OpenHostDispatchesOnHost(ctx, c.asker.MirrorHost)
+	return err == nil && len(open) == 0
+}
+
+// stepUpHoldSummary is what a dispatch_approve card says it starts: the held
+// request itself (holdSummary, and the Claude account), read from the hold
+// args names — never only its id. "" and false when the hold cannot be read
+// (no card is filed then: the tool would refuse it too).
+func (s *Server) stepUpHoldSummary(ctx context.Context, args string) (string, bool) {
+	if s.ext.ChiefDispatch == nil {
+		return "", false
+	}
+	var in struct {
+		HoldID string `json:"hold_id"`
+	}
+	if err := json.Unmarshal([]byte(orEmptyJSON(args)), &in); err != nil || strings.TrimSpace(in.HoldID) == "" {
+		return "", false
+	}
+	hold, err := s.ext.ChiefDispatch.DispatchHold(ctx, strings.TrimSpace(in.HoldID))
+	if err != nil {
+		return "", false
+	}
+	var h heldDispatch
+	if err := json.Unmarshal(hold.Detail, &h); err != nil || h.Target == "" {
+		return "", false
+	}
+	sum := holdSummary(h)
+	if h.CCAccount == "" {
+		sum += " (muster chooses the Claude account)"
+	}
+	return sum + stepUpPromptBlock(h.Prompt), true
+}
+
+// stepUpPromptShown is how many characters of a held start's instructions a
+// dispatch_approve card shows. The card is an attention question, capped at
+// attention.MaxQuestionRunes (4,000); the rest of the card (the request
+// line, the call's arguments, the reason, the hold's summary) takes up to
+// about 1,500, so 1,500 here keeps the card under the cap. A held prompt may
+// be up to chiefPromptMax (8 KiB), more than any card can carry, so a longer
+// one is shown as an EXCERPT and the card says so.
+const stepUpPromptShown = 1500
+
+// stepUpPromptBlock is the card's instructions block: their length and the
+// SHA-256 of the full text, then the text itself — in full when it fits, or
+// labelled as an excerpt of its first stepUpPromptShown characters, with a
+// plain warning that the rest is not on the card.
+func stepUpPromptBlock(prompt string) string {
+	if prompt == "" {
+		return ""
+	}
+	r := []rune(prompt)
+	head := fmt.Sprintf("%d characters, SHA-256 %s", len(r), promptDigest(prompt))
+	if len(r) <= stepUpPromptShown {
+		return "\n\nThe instructions in full (" + head + "):\n" + prompt
+	}
+	return fmt.Sprintf("\n\nAN EXCERPT of the instructions: the first %d of %s:\n%s…\n\n⚠ The other %d characters are NOT shown on this card. "+
+		"Confirm only if you know what the rest says; otherwise refuse, and read the full text in the session that asked.",
+		stepUpPromptShown, head, string(r[:stepUpPromptShown]), len(r)-stepUpPromptShown)
 }

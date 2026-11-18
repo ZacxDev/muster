@@ -219,6 +219,9 @@ type Route struct {
 	// 0137; route_batches.go), "" for every other route. A member's answer
 	// goes to its chief in the batch's one digest, never by itself.
 	BatchID string
+	// TargetHost is the mirror host the target session ran on when the route
+	// was sent (0151); "" for a route made before it.
+	TargetHost string
 }
 
 // IsPRReview reports whether muster made r for a pull-request review: the one
@@ -237,6 +240,10 @@ func (r Route) AnswersViaHQ() bool { return r.IsPRReview() && r.OneWay }
 // its key (the agent id, the Claude session id) and what it is called.
 type RouteTarget struct {
 	Kind, Key, Label string
+	// Host is the mirror host whose window ran the target session when the
+	// route was sent ("" for a target that is no mirrored session):
+	// session_routes.target_host (0151).
+	Host string
 }
 
 // RouteTargetMirror is RouteTarget.Kind for a mirrored Claude Code session
@@ -284,6 +291,19 @@ const RouteOneWayAnswerOwed = "the session answered the heads-up"
 // session sid: route_reply's binding of an answer to the route's target.
 func (r Route) SentToMirrorSession(sid string) bool {
 	return sid != "" && r.TargetKind == RouteTargetMirror && r.TargetKey == sid
+}
+
+// SentToMirrorSessionOn is SentToMirrorSession AND the route recorded host as
+// its target's host (0151). A route with no recorded host is never sent to a
+// host by this test: the step-up gate's route_reply carve-out needs both.
+func (r Route) SentToMirrorSessionOn(host, sid string) bool {
+	return host != "" && r.TargetHost == host && r.SentToMirrorSession(sid)
+}
+
+// FromItsHost reports whether a caller on host may answer r: r recorded no
+// host (a route made before 0151), or recorded that one.
+func (r Route) FromItsHost(host string) bool {
+	return r.TargetHost == "" || r.TargetHost == host
 }
 
 // The route errors.
@@ -395,14 +415,14 @@ func RouteObject(routeID string) string { return "session_route:" + routeID }
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
 	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
-	coalesce(pr_head_sha, ''), one_way, redraft, coalesce(batch_id, '')`
+	coalesce(pr_head_sha, ''), one_way, redraft, coalesce(batch_id, ''), coalesce(target_host, '')`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
-		&r.PRHeadSHA, &r.OneWay, &r.Redraft, &r.BatchID)
+		&r.PRHeadSHA, &r.OneWay, &r.Redraft, &r.BatchID, &r.TargetHost)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -524,9 +544,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 		text, sess, batch = &req.Text, &req.SessionID, req.BatchID
 	}
 	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
-			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way, batch_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12, nullif($13, '')) RETURNING `+routeCols,
-		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay, batch))
+			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way, batch_id, target_host)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12, nullif($13, ''), nullif($14, '')) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay, batch, target.Host))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" ||
 		pg.ConstraintName == "session_routes_one_open_task" || pg.ConstraintName == "session_routes_one_open_request") {
