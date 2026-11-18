@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,10 +34,13 @@ type slowFleet struct {
 	called  chan struct{}
 	once    sync.Once
 	release chan struct{}
+	// slowCalls counts officer slow's Instances calls: one per pass of it.
+	slowCalls atomic.Int32
 }
 
 func (f *slowFleet) Instances(ctx context.Context, o officers.Officer) ([]officers.InstanceState, error) {
 	if o.ID == f.slow {
+		f.slowCalls.Add(1)
 		f.once.Do(func() { close(f.called) })
 		if f.block {
 			select {
@@ -56,7 +60,8 @@ func (f *slowFleet) Instances(ctx context.Context, o officers.Officer) ([]office
 // member's chat waited minutes with poll_interval 1m. Officer A's fleet read
 // blocks; officer B has an up instance and a chat lane; a chat enqueued for B
 // once A is stuck must be claimed as B's chat holder within two of B's poll
-// intervals. The "control" case is the same with A's read not blocking:
+// intervals — and no second pass of A may start beside its stuck one. The
+// "control" case is the same with A's read not blocking:
 // green whether passes run serially or not, so a red "slow" case is the
 // stuck pass and not the fixture.
 func TestADuePassDoesNotWaitBehindAnotherOfficersSlowPass(t *testing.T) {
@@ -115,6 +120,11 @@ func TestADuePassDoesNotWaitBehindAnotherOfficersSlowPass(t *testing.T) {
 			deadline := time.Now().Add(2 * poll)
 			for {
 				if claimedAs(hq, id) == holder {
+					// One officer never has two passes at once: while A's
+					// pass is stuck, no second pass of A has read its fleet.
+					if n := fleet.slowCalls.Load(); tc.block && n != 1 {
+						t.Fatalf("officer A's fleet was read by %d passes while its first pass was stuck, want 1: a second pass of one officer ran beside its first", n)
+					}
 					return
 				}
 				if time.Now().After(deadline) {
@@ -125,6 +135,72 @@ func TestADuePassDoesNotWaitBehindAnotherOfficersSlowPass(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunClosesDoneOnlyAfterItsPassesEnd: passes run on their own goroutines,
+// so Run's shutdown must wait for them — Done is what the shutdown drain
+// joins on before it waits for re-prompt sends, so no pass may still be
+// running once it closes. A's fleet read here ignores its context and ends
+// only when released: Done must stay open after ctx ends until it is; the
+// control is that it closes once the pass is released. An INVARIANT guard:
+// the serial loop held it by construction (its passes ran on Run's own
+// goroutine); it reddens when Run's wait for its passes is removed.
+func TestRunClosesDoneOnlyAfterItsPassesEnd(t *testing.T) {
+	saved := officers.RunTick
+	officers.RunTick = time.Millisecond
+	t.Cleanup(func() { officers.RunTick = saved })
+	hq := hqtest.New(map[string]string{cadenceSlowTok: cadenceSlowID})
+	t.Cleanup(hq.Close)
+	o := officers.Officer{ID: cadenceSlowID, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(cadenceSlowTok)
+	fleet := &stuckFleet{poolFleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}, called: make(chan struct{}), release: make(chan struct{})}
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry([]officers.Officer{o}), HQ: officers.NewBackends(nil), Fleet: fleet,
+		Logger: log.New(&syncBuffer{}, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go rec.Run(ctx)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(fleet.release)
+		}
+		cancel()
+		<-rec.Done()
+	})
+	select {
+	case <-fleet.called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fixture: the pass never read its fleet")
+	}
+	cancel()
+	select {
+	case <-rec.Done():
+		t.Fatal("Done closed while a pass was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(fleet.release)
+	released = true
+	select {
+	case <-rec.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("control: Done did not close once the pass ended")
+	}
+}
+
+// stuckFleet is a poolFleet whose Instances signals and then holds until
+// release closes, whatever its context says.
+type stuckFleet struct {
+	*poolFleet
+	called  chan struct{}
+	once    sync.Once
+	release chan struct{}
+}
+
+func (f *stuckFleet) Instances(ctx context.Context, o officers.Officer) ([]officers.InstanceState, error) {
+	f.once.Do(func() { close(f.called) })
+	<-f.release
+	return f.poolFleet.Instances(ctx, o)
 }
 
 // countingFleet is a poolFleet that signals each Instances call: one per pass
