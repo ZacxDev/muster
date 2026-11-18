@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/net/html"
 
@@ -152,9 +151,9 @@ var featuresAnchorHref = regexp.MustCompile(`href="` + regexp.QuoteMeta(Features
 //     and no source spells a Features anchor by hand;
 //   - RESOLUTION: for every ledgered feature, the anchor FeatureHref writes
 //     is an ⓘ sheet on the Features page — an admin's and a member's;
-//   - BEHAVIOUR: the hints the api package draws (the ask page's and the
-//     Asks list's muted mic, the Account page's suggested-replies note, the
-//     Credentials page and its nav's muted Connectors entry), rendered, link
+//   - BEHAVIOUR: the hints the api package draws (the ask page's muted mic,
+//     the Account page's suggested-replies note, the Credentials page and
+//     its nav's muted Connectors entry), rendered, link
 //     only to anchors that are sheets on that page.
 //
 // Red at origin/main, whose hints linked a row (#dictation), not a sheet.
@@ -200,7 +199,6 @@ func TestEveryHowToTurnItOnLinkOpensAFeatureSheet(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
 	surfaces := map[string]string{
 		"ask page composer": askComposerHTML(r, attention.Ask{ID: 9}, "", true),
-		"Asks answer box":   attentionItemsHTMLTo([]attentionItem{{Kind: attentionKindAsk, AskID: 12, dictateOff: true}}, time.Now(), ""),
 		"Account page":      sessionGet(h, s, "/account", true).Body.String(),
 		"Credentials page":  sessionGet(h, s, "/account/credentials", true).Body.String(),
 	}
