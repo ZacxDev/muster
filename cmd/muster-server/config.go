@@ -312,10 +312,9 @@ const (
 	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
 
 	// The morning report (internal/morning; docs/features.md#morning-report):
-	// on/off, and the one report time every owner shares — a server setting,
+	// on/off, and the zone its fixed 08:00 is read in — a server setting,
 	// since muster stores no time zone per owner yet.
 	envMorningReport   = "MUSTER_MORNING_REPORT"
-	envMorningReportAt = "MUSTER_MORNING_REPORT_AT"
 	envMorningReportTZ = "MUSTER_MORNING_REPORT_TZ"
 
 	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
@@ -935,9 +934,9 @@ type config struct {
 	FleetDigest            bool
 	ChiefNudgeAskThreshold float64
 	// MorningReport runs the morning report (MUSTER_MORNING_REPORT=1; off by
-	// default) on the schedule MorningReportAt: MUSTER_MORNING_REPORT_AT
-	// (HH:MM, default 08:00) in MUSTER_MORNING_REPORT_TZ (an IANA zone, default
-	// America/Chicago — the operator's decision of 2026-11-18).
+	// default) on the schedule MorningReportAt: 08:00 (morning.ReportHour) in
+	// MUSTER_MORNING_REPORT_TZ (an IANA zone, default America/Chicago — the
+	// operator's decision).
 	MorningReport   bool
 	MorningReportAt morning.Schedule
 
@@ -2024,7 +2023,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.FleetDigest = envFlag(getenv, envFleetDigest)
 	c.MorningReport = envFlag(getenv, envMorningReport)
-	if c.MorningReportAt, err = parseMorningReportAt(getenv(envMorningReportAt), getenv(envMorningReportTZ)); err != nil {
+	if c.MorningReportAt, err = parseMorningReportTZ(getenv(envMorningReportTZ)); err != nil {
 		return config{}, err
 	}
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
@@ -3387,33 +3386,22 @@ func hookTokenRefusal(token string) string {
 	return ""
 }
 
-// The morning report's default time: 08:00 in America/Chicago (operator
-// decision, 2026-11-18).
-const (
-	defaultMorningReportAt = "08:00"
-	defaultMorningReportTZ = "America/Chicago"
-)
+// defaultMorningReportTZ is the morning report's default zone (operator
+// decision).
+const defaultMorningReportTZ = "America/Chicago"
 
-// parseMorningReportAt is the morning report's schedule from
-// MUSTER_MORNING_REPORT_AT ("HH:MM", "" for the default) and
-// MUSTER_MORNING_REPORT_TZ (an IANA zone, "" for the default). Read whether
-// or not the report is on, so a bad value is refused at boot before anyone
-// turns it on.
-func parseMorningReportAt(at, tz string) (morning.Schedule, error) {
-	at, tz = strings.TrimSpace(at), strings.TrimSpace(tz)
-	if at == "" {
-		at = defaultMorningReportAt
-	}
+// parseMorningReportTZ is the morning report's schedule from
+// MUSTER_MORNING_REPORT_TZ (an IANA zone, "" for the default). Read whether or
+// not the report is on, so a bad value is refused at boot before anyone turns
+// it on.
+func parseMorningReportTZ(tz string) (morning.Schedule, error) {
+	tz = strings.TrimSpace(tz)
 	if tz == "" {
 		tz = defaultMorningReportTZ
-	}
-	h, m, err := morning.ParseAt(at)
-	if err != nil {
-		return morning.Schedule{}, fmt.Errorf("invalid %s %q: %v", envMorningReportAt, at, err)
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		return morning.Schedule{}, fmt.Errorf("invalid %s %q: want an IANA time zone such as America/Chicago", envMorningReportTZ, tz)
 	}
-	return morning.Schedule{Hour: h, Minute: m, Loc: loc}, nil
+	return morning.In(loc), nil
 }

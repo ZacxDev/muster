@@ -13,9 +13,14 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// THE MORNING REPORT'S ROWS (migration 0153). Every method runs as ctx's
+// THE MORNING REPORT'S ROWS (migration 0154). Every method runs as ctx's
 // principal: morning_reports is under FORCE row-level security, so an owner
-// reads and writes only its own reports.
+// reads and writes only its own reports — and every read and the push claim
+// ALSO name the principal's owner in SQL (ownerIs), so a policy turned off
+// (rollback/rls_off.sql) still cannot hand one owner another's report.
+
+// ownerIs is the principal's own rows, spelled as the policy spells it.
+const ownerIs = `owner_id = nullif(current_setting('muster.uid', true), '')::bigint`
 
 // Body is what a report's row keeps of it: the lines that were true in its
 // window, as the job read them. The open questions are not kept — the page
@@ -27,13 +32,6 @@ type Body struct {
 	// Gaps are the plain sentences saying what could not be read ("Merged
 	// pull requests could not be checked just now.").
 	Gaps []Gap `json:"gaps,omitempty"`
-}
-
-// Gap is one thing the report could not read: its plain sentence and, for an
-// admin, the setting behind it ("" when it is not a setting).
-type Gap struct {
-	Text    string `json:"text"`
-	Setting string `json:"setting,omitempty"`
 }
 
 // Row is one day's report as stored.
@@ -94,7 +92,7 @@ func (p *PG) Insert(ctx context.Context, r Row) (bool, error) {
 // ClaimPush implements Store.
 func (p *PG) ClaimPush(ctx context.Context, date string, at time.Time) (bool, error) {
 	tag, err := p.pool.Exec(ctx, `UPDATE morning_reports SET pushed_at = $2
-		WHERE day = $1::date AND pushed_at IS NULL AND NOT quiet`, date, at)
+		WHERE `+ownerIs+` AND day = $1::date AND pushed_at IS NULL AND NOT quiet`, date, at)
 	if err != nil {
 		return false, err
 	}
@@ -108,12 +106,12 @@ func (p *PG) Get(ctx context.Context, date string) (Row, bool, error) {
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		return Row{}, false, nil
 	}
-	return scanRow(p.pool.QueryRow(ctx, `SELECT `+rowColumns+` FROM morning_reports WHERE day = $1::date`, date))
+	return scanRow(p.pool.QueryRow(ctx, `SELECT `+rowColumns+` FROM morning_reports WHERE `+ownerIs+` AND day = $1::date`, date))
 }
 
 // Latest implements Store.
 func (p *PG) Latest(ctx context.Context) (Row, bool, error) {
-	return scanRow(p.pool.QueryRow(ctx, `SELECT `+rowColumns+` FROM morning_reports ORDER BY day DESC LIMIT 1`))
+	return scanRow(p.pool.QueryRow(ctx, `SELECT `+rowColumns+` FROM morning_reports WHERE `+ownerIs+` ORDER BY day DESC LIMIT 1`))
 }
 
 // Owners implements Store.

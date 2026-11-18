@@ -743,7 +743,8 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 		if h.Model == "" {
 			p.Model = taskModel
 		}
-		p.NoteText = task.Body + sessionDispatchRules
+		// The task's text through the one rule (task_kickoff.go).
+		p.NoteText = taskKickoffText(task) + sessionDispatchRules
 		if h.Prompt != "" {
 			p.NoteText = renderSessionRelay(h.Prompt, from, true) + "\n" + p.NoteText
 		}

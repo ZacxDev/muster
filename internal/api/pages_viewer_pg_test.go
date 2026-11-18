@@ -109,7 +109,7 @@ func TestTheOwnersSubmitAndUploadFromTheirViewAreRecordedAsTheirs(t *testing.T) 
 	}
 	// The page's screen says they are the owner's.
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr()).Body.String()
-	if n := strings.Count(detail, `data-response-by-owner>`); n != 2 || strings.Count(detail, `<span data-response-by="you">you</span>`) != 2 {
+	if n := strings.Count(detail, `data-response-by-owner>`); n != 2 || strings.Count(detail, `<span data-response-by="you"><time `) != 2 {
 		t.Errorf("the page's screen marks %d response(s) as the owner's, want 2: %s", n, detail)
 	}
 	// page_responses says so, outside the data.
@@ -151,8 +151,19 @@ func TestALinksResponseIsStillTheLinks(t *testing.T) {
 		t.Fatalf("responses: %+v", rs)
 	}
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr()).Body.String()
-	if !strings.Contains(detail, ` · link `+strconv.FormatInt(l.ID, 10)+` · `) || strings.Count(detail, `data-response-by-owner>`) != 1 {
+	// The viewer's is "Sent …", the owner's "Sent by you …"; which link a
+	// viewer's came through is the admin's raw ⓘ, never the top layer.
+	if strings.Contains(detail, ` · link `+strconv.FormatInt(l.ID, 10)+` · `) || strings.Count(detail, `data-response-by-owner>`) != 1 ||
+		strings.Count(detail, `data-plain-when-prefix="Sent "`) != 1 || strings.Count(detail, `data-plain-when-prefix="Sent by you "`) != 1 {
 		t.Errorf("the page's screen: %s", detail)
+	}
+	// An admin's "Show raw" ⓘ still names the link the viewer's came through,
+	// and says the owner sent theirs.
+	aw := httptest.NewRecorder()
+	f.srv.renderPageDetail(aw, httptest.NewRequest("GET", "/pages/"+sid, nil).WithContext(f.pageAs(authz.RoleAdmin)), id, 200, "", "", "")
+	raw := regexp.MustCompile(`data-info-code="">part q1 · version 1 · ([^·]+) · `).FindAllStringSubmatch(aw.Body.String(), -1)
+	if len(raw) != 2 || raw[0][1] != "sent by the owner" || raw[1][1] != "link "+strconv.FormatInt(l.ID, 10) {
+		t.Errorf("an admin's raw ⓘ: %v, want the owner's then link %d", raw, l.ID)
 	}
 	rows := pageResponsesLines(t, f.tool(t, f.agent, pageResponsesTool, map[string]any{"page_id": id}))
 	if len(rows) != 2 || rows[0]["by_owner"] != false || pnum(rows[0]["link_id"]) != l.ID || rows[1]["by_owner"] != true {

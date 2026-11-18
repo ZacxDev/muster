@@ -1,4 +1,4 @@
--- muster 0153 — THE MORNING REPORT (internal/morning; docs/features.md#morning-report,
+-- muster 0154 — THE MORNING REPORT (internal/morning; docs/features.md#morning-report,
 -- docs/schema.md).
 --
 --   morning_reports   one row per owner per local day: the report the
@@ -19,18 +19,17 @@
 -- rollback/rls_off.sql turns it off with the rest, and --rls-on re-applies
 -- this file (db.RLSOn), so every statement is idempotent.
 --
--- body holds muster's own rows only (pull-request refs, task titles, session
+-- body holds muster's own rows only (pull-request titles and refs, task titles, session
 -- names and the plain reason each is listed), never a transcript or a model's
 -- words, and is bounded below.
 --
--- Must apply after its predecessor, 0152_page_owner_view (the
--- contiguity test refuses a gap). 🔴 RENUMBER IT (and
--- db.morningReportsMigrationVersion) at merge if main moved: open PR #796
--- also adds a 0152.
+-- Must apply after its predecessor, 0153_plugin_task_created_by_backfill
+-- (the contiguity test refuses a gap). 🔴 RENUMBER IT (and
+-- db.morningReportsMigrationVersion) at merge if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   DROP TABLE public.morning_reports;
---   DELETE FROM schema_migrations WHERE version = 153;
+--   DELETE FROM schema_migrations WHERE version = 154;
 
 SET LOCAL lock_timeout = '3s';
 

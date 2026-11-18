@@ -73,7 +73,7 @@ var hostRowConsumers = map[string]string{
 	"internal/api/compose_chief.go:reapplyComposeChief":   "reads: the Compose chief only",
 	"internal/api/jobs.go:createPoolJobOnce":              "reads: worker-pool members; a host row has no pool (agents_runs_on_host_check)",
 	"internal/api/machine_agents.go:handleAPIAgentList":   "reads: GET /api/agents shows every row, runsOnHost included, for `muster agent ls`",
-	"internal/api/nav_agents.go:homeTarget":               "reads: the chief by name, then agentsListEntries (which skips)",
+	"internal/api/nav_agents.go:homeResolve":              "reads: the chief by name, then agentsListEntries (which skips)",
 	"internal/api/notes.go:actorIsAgent":                  "reads: an agent by name as a task comment's author",
 	"internal/api/notes.go:apiAgentsByNote":               "reads: agents on a task; a host row has no note",
 	"internal/api/notes.go:dismissTask":                   "reads: agents on a task; a host row has no note",

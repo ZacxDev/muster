@@ -478,6 +478,12 @@ export const askMediaS3Port = port + 432;
 // the blocks above, and of askMediaPort's +430 to +432.
 export const sidebarOfficersPort = port + 440;
 export const sidebarOfficersConnectPort = port + 441;
+// tests/features-member.spec.ts: a member's Features page, on a gotrue-mode
+// server of its own (+442 its machine port, +443 its browser listener) and
+// its own GoTrue (+444).
+export const featuresMemberMainPort = port + 442;
+export const featuresMemberBrowserPort = port + 443;
+export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_MEMBER_GOTRUE_PORT ?? port + 444);
 // tests/morning-report.spec.ts: the morning report's page on a phone — its own
 // server with MUSTER_MORNING_REPORT=1 (+445: clear of the blocks above).
 export const morningReportPort = port + 445;

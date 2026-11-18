@@ -87,19 +87,3 @@ func TestDueOpensAtTheSlotAndClosesAfterTheCatchUp(t *testing.T) {
 		}
 	}
 }
-
-func TestParseAt(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		h, m int
-		ok   bool
-	}{
-		{"08:00", 8, 0, true}, {"23:59", 23, 59, true}, {"00:05", 0, 5, true},
-		{"8:00", 0, 0, false}, {"24:00", 0, 0, false}, {"08:60", 0, 0, false}, {"0800", 0, 0, false}, {"", 0, 0, false},
-	} {
-		h, m, err := ParseAt(tc.in)
-		if (err == nil) != tc.ok || (tc.ok && (h != tc.h || m != tc.m)) {
-			t.Errorf("ParseAt(%q) = %d, %d, %v; want %d, %d, ok=%v", tc.in, h, m, err, tc.h, tc.m, tc.ok)
-		}
-	}
-}

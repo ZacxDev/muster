@@ -32,16 +32,22 @@ type MorningReportView struct {
 	Heading, Window string
 	// Quiet: nothing happened, so no push was sent.
 	Quiet bool
-	// QuestionsHTML is the open questions: the Asks queue's own <li> cards
-	// (internal/api attentionItemsHTMLTo), "" for none; QuestionCount how many.
-	QuestionsHTML string
-	QuestionCount int
-	Done, Stuck   []MorningLine
-	Usage, Gaps   []MorningUsageLine
+	// Questions is the open questions, newest first: each the Asks queue's
+	// own <li> card (internal/api attentionItemHTML) and how long it has left.
+	Questions   []MorningQuestion
+	Done, Stuck []MorningLine
+	Usage, Gaps []MorningUsageLine
 	// Notice is a refused answer's plain line ("" for none).
 	Notice string
 	// Setup: the viewer may see setup details (Features.Setup).
 	Setup bool
+}
+
+// MorningQuestion is one open question: its card, and how long it has left
+// to be answered ("Answer within 3h"; "" when unknown).
+type MorningQuestion struct {
+	CardHTML string
+	Left     string
 }
 
 // MorningLine is one line of Done or Stuck.
@@ -77,7 +83,7 @@ func morningReport(v MorningReportView) g.Node {
 		return Section(Class("flex flex-col gap-3 p-4"), g.Attr("data-testid", "morning-report"),
 			H1(Class("text-base font-semibold text-fg"), g.Text("Morning report")),
 			P(Class("text-sm text-fg2"), g.Attr("data-testid", "morning-missing"),
-				g.Text("There is no report for this day. A report is written each morning when something happened overnight.")),
+				g.Text("There is no report for this day yet. One is written every morning; you are notified only when something happened overnight.")),
 		)
 	}
 	intro := v.Window
@@ -104,11 +110,19 @@ func morningHeading(text string, n int) g.Node {
 
 func morningQuestions(v MorningReportView) g.Node {
 	body := g.Node(P(Class("text-sm text-fg2"), g.Attr("data-testid", "morning-questions-none"), g.Text("Nothing is waiting on you.")))
-	if v.QuestionsHTML != "" {
-		body = Ul(Class(AsksFeedClass), g.Attr("data-asks-feed", ""), g.Attr("data-testid", "morning-question-cards"), g.Raw(v.QuestionsHTML))
+	if len(v.Questions) > 0 {
+		items := make([]g.Node, 0, len(v.Questions))
+		for _, q := range v.Questions {
+			// Each card in a list of its own, so its time left can sit above it
+			// (an <ul> holds only <li>s, and the card is the queue's own <li>).
+			items = append(items, Div(Class("flex flex-col gap-1"),
+				g.If(q.Left != "", P(Class("px-1 text-xs font-medium text-fg2"), g.Attr("data-morning-left", ""), g.Text(q.Left))),
+				Ul(Class(AsksFeedClass), g.Attr("data-asks-feed", ""), g.Raw(q.CardHTML))))
+		}
+		body = Div(Class("flex flex-col gap-3"), g.Attr("data-testid", "morning-question-cards"), g.Group(items))
 	}
 	return Section(Class("flex flex-col gap-2"), g.Attr("data-testid", MorningSectionQuestions), g.Attr("aria-label", "Waiting on you"),
-		morningHeading("Waiting on you", v.QuestionCount), body)
+		morningHeading("Waiting on you", len(v.Questions)), body)
 }
 
 func morningLines(id, heading, none string, lines []MorningLine) g.Node {

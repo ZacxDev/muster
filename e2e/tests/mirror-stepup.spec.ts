@@ -168,9 +168,42 @@ function startMirror(extra: NodeJS.ProcessEnv = {}): ChildProcess {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  p.stdout?.on('data', (d) => (mirrorLog += d));
-  p.stderr?.on('data', (d) => (mirrorLog += d));
+  ownLog.set(p, '');
+  const hear = (d: Buffer) => {
+    mirrorLog += d;
+    ownLog.set(p, ownLog.get(p) + String(d));
+  };
+  p.stdout?.on('data', hear);
+  p.stderr?.on('data', hear);
   return p;
+}
+
+// ownLog is each muster-mirror process's OWN output (mirrorLog is every
+// process's, run after run), so "this process has connected" cannot be read
+// off a line an earlier process wrote.
+const ownLog = new WeakMap<ChildProcess, string>();
+
+// hostOnline waits until the muster-mirror process p is the host muster
+// attaches to: p itself says it connected (it has read the welcome, which the
+// hub writes just before it registers the connection), and the sidebar lists
+// this host's session ONLINE.
+//
+// 🔴 A 200 FROM THE TERMINAL PAGE IS NOT READINESS. The page is drawn for a
+// host that is not connected too (the stopped host's session is still
+// listed, offline), so polling it passed straight after a restart, before the
+// new process had connected. When the terminal's socket then won that race it
+// found no host (mirror.ErrHostOffline: "<host> is not connected to muster
+// right now"), a refusal the page does not retry by itself, and the screen
+// stayed blank for the whole wait. The same class as MirrorRig.waitListed.
+async function hostOnline(page: Page, p: ChildProcess) {
+  await expect
+    .poll(() => (ownLog.get(p) ?? '').includes('muster-mirror: connected to'), { message: `the restarted muster-mirror connected (log:\n${mirrorLog})`, timeout: 20_000 })
+    .toBe(true);
+  await expect
+    .poll(async () => mirroredEntries(await (await page.request.get(browserURL + '/ui/nav/agents')).text()).some((e) => e.state === 'online' && e.markup.includes(`host=${encodeURIComponent(host)}&`)), {
+      message: `the host's session is listed online (log:\n${mirrorLog})`, timeout: 20_000,
+    })
+    .toBe(true);
 }
 
 const termPath = `/mirror/terminal?host=${encodeURIComponent(host)}&session=main`;
@@ -1927,9 +1960,7 @@ for (const size of [
       mirrorProc = startMirror({ MUSTER_MIRROR_E2E_QUERIES: '1' });
       try {
         // The restarted host has connected and listed its session.
-        await expect
-          .poll(async () => (await page.request.get(browserURL + termPath)).status(), { message: `the host's session is listed (log:\n${mirrorLog})`, timeout: 20_000 })
-          .toBe(200);
+        await hostOnline(page, mirrorProc);
         await makeStale(context);
 
         // 1. The terminal page, opened and left alone.

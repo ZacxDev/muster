@@ -9,15 +9,12 @@
 // hold. Its open questions are answered on its page through the Asks queue's
 // own answer route, by the owner's tap, exactly as on /attention.
 //
-// 🔴 THE TIME IS A SERVER SETTING (operator decision, 2026-11-18): muster
+// 🔴 THE TIME IS A SERVER SETTING (an operator decision): muster
 // stores no time zone per owner yet (docs/design/check-ins.md, "Time zones"),
 // so every owner's report is due at the same wall-clock time in one zone.
 package morning
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
 	"time"
 	_ "time/tzdata" // the report's zone is named; the image may carry no zoneinfo
 )
@@ -34,19 +31,12 @@ type Schedule struct {
 	Loc          *time.Location
 }
 
-// ParseAt reads "HH:MM" (24-hour) as an hour and a minute.
-func ParseAt(s string) (hour, minute int, err error) {
-	h, m, ok := strings.Cut(strings.TrimSpace(s), ":")
-	if !ok || len(h) != 2 || len(m) != 2 {
-		return 0, 0, fmt.Errorf("want HH:MM, got %q", s)
-	}
-	hour, err1 := strconv.Atoi(h)
-	minute, err2 := strconv.Atoi(m)
-	if err1 != nil || err2 != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return 0, 0, fmt.Errorf("want HH:MM between 00:00 and 23:59, got %q", s)
-	}
-	return hour, minute, nil
-}
+// ReportHour is the report's time of day, 08:00 (an operator decision).
+// Only its zone is a setting (MUSTER_MORNING_REPORT_TZ).
+const ReportHour = 8
+
+// In is the report's schedule in loc: ReportHour every day.
+func In(loc *time.Location) Schedule { return Schedule{Hour: ReportHour, Loc: loc} }
 
 // Day is one day's report: its local date, the instant it is due, and the
 // window it covers — from the previous local day's report time to this one.

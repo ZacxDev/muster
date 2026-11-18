@@ -87,16 +87,17 @@ func run(args []string) error {
 		five, week := 41.0, 73.0
 		row := morning.Row{Date: day.Date, Since: day.Since, Until: day.Slot, Questions: 1, Body: morning.Body{
 			Done: []morning.Done{
-				{Kind: morning.DoneMerged, Label: "example/festival-site#128", Href: "https://github.com/example/festival-site/pull/128", At: at(3, 12)},
-				{Kind: morning.DoneTask, Label: "Print the volunteer rota", Href: "/tasks/1", At: at(5, 40)},
+				{Kind: morning.DoneMerged, Label: "Add the festival map page", Ref: "example/festival-site#128", Href: "https://github.com/example/festival-site/pull/128", At: at(3, 12)},
+				{Kind: morning.DoneTaskChanged, Label: "Print the volunteer rota", Href: "/tasks/1", At: at(5, 40)},
 			},
 			Stuck: []morning.Stuck{
 				{Kind: morning.StuckError, Name: "Ticket scanner", Why: "stopped on an error", Since: at(2, 5)},
 				{Kind: morning.StuckIdle, Name: "Map tiles", Why: "idle, nothing running", Since: at(6, 30)},
 			},
 			Usage: morning.Usage{
-				Chief: morning.ChiefUsage{Tracked: true, Turns: 14, Busy: 47 * time.Minute, Tokens: 52000},
-				Plan:  morning.PlanUsage{Tracked: true, Accounts: []morning.PlanAccount{{Name: "festival-pool", FiveHour: &five, Week: &week, ReadAt: at(7, 45)}}},
+				Chief: morning.ChiefUsage{Tracked: true, Turns: 14, Busy: 47 * time.Minute},
+				Plan:  morning.PlanUsage{Tracked: true, Accounts: []morning.PlanAccount{{FiveHour: &five, Week: &week, ReadAt: at(7, 45)}}},
+				Cost:  morning.CostUsage{Off: "Cost isn't tracked for Claude plans."},
 			},
 		}}
 		if _, err := morning.NewPG(pool).Insert(as, row); err != nil {

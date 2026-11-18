@@ -6,17 +6,14 @@ import (
 	"log"
 	"maps"
 	"net/http/httptest"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"golang.org/x/net/html"
-
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plainscan"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -30,64 +27,17 @@ import (
 // jargonInTopLayer is what a top-layer text must not hold: a tmux target's
 // "tmux ", a place's " @ " and a window index — ":<digit>" after a name, not
 // after a digit (a clock time, "01:10 UTC", is not one).
-var jargonInTopLayer = regexp.MustCompile(`\btmux |\s@\s|[^\s\d]:[0-9]`)
+var jargonInTopLayer = plainscan.Address
 
-// topLayerTexts is what a person reads on markup without opening anything:
-// every text node and every tooltip, aria-label and placeholder — but not the
-// ⓘ details sheets ([data-info-sheet], the one place the address belongs),
-// nor scripts, styles and templates, nor data-* attributes (never drawn).
+// topLayerTexts is plainscan.TopLayerTexts, failing the test on a parse
+// error.
 func topLayerTexts(t *testing.T, markup string) []string {
 	t.Helper()
-	z := html.NewTokenizer(strings.NewReader(markup))
-	var out []string
-	skip := 0 // depth inside a skipped subtree
-	var stack []bool
-	for {
-		switch z.Next() {
-		case html.ErrorToken:
-			if z.Err() != io.EOF {
-				t.Fatalf("parse: %v", z.Err())
-			}
-			return out
-		case html.TextToken:
-			if skip == 0 {
-				if s := strings.TrimSpace(string(z.Text())); s != "" {
-					out = append(out, s)
-				}
-			}
-		case html.StartTagToken, html.SelfClosingTagToken:
-			tok := z.Token()
-			skipped := slices.Contains([]string{"script", "style", "template"}, tok.Data)
-			for _, a := range tok.Attr {
-				switch a.Key {
-				case "data-info-sheet":
-					skipped = true
-				case "title", "aria-label", "placeholder":
-					if skip == 0 && !skipped {
-						out = append(out, a.Val)
-					}
-				}
-			}
-			if tok.Type == html.SelfClosingTagToken || isVoid(tok.Data) {
-				continue
-			}
-			stack = append(stack, skipped)
-			if skipped {
-				skip++
-			}
-		case html.EndTagToken:
-			if n := len(stack); n > 0 {
-				if stack[n-1] {
-					skip--
-				}
-				stack = stack[:n-1]
-			}
-		}
+	out, err := plainscan.TopLayerTexts(markup)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-}
-
-func isVoid(tag string) bool {
-	return slices.Contains([]string{"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}, tag)
+	return out
 }
 
 // assertNoJargon fails for every top-layer text of markup that spells a tmux
@@ -162,7 +112,7 @@ func TestNoTopLayerOfTheAsksSurfacesSpellsATmuxAddress(t *testing.T) {
 	feed := attentionItemsHTML(shown, time.Now())
 	assertNoJargon(t, "the Asks feed", feed)
 	for _, target := range []string{"tmux scratch3:5 @ ws", "tmux build:7 @ ws"} {
-		if !strings.Contains(feed, `data-info-code="">`+target+`</code>`) || !strings.Contains(feed, `data-copy-text="`+target+`"`) {
+		if !strings.Contains(feed, `data-info-code="">`+target+`</code>`) || strings.Count(feed, `data-info-copy=""`) < 2 {
 			t.Errorf("the Asks feed has no ⓘ holding %q with a Copy button", target)
 		}
 	}

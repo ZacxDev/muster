@@ -75,6 +75,17 @@ const (
 	Pages                = "pages"
 )
 
+// The plain names of the features a "how to turn it on" hint names
+// elsewhere in the app (the muted mic and paperclip, the nav's Connectors
+// entry, the Credentials page): ONE spelling, which the catalog's PlainName
+// and every hint read, so a hint never calls a feature by a name the
+// Features page does not use.
+const (
+	DictationName   = "Voice typing"
+	AttachmentsName = "File attachments"
+	ConnectorsName  = "Connectors"
+)
+
 // DocsPage is the document whose headings are the feature ids.
 const DocsPage = "docs/features.md"
 
@@ -149,6 +160,14 @@ type Feature struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// PlainName and OneLine are what the Features page's TOP LAYER says (the
+	// operator rule: muster is for people who are not engineers): a name a
+	// non-engineer recognises, and one plain sentence of what it does — no
+	// variable, command, profile, flag or product internals. Name and
+	// Description stay what the doctor, the docs and the hints use; they and
+	// every setup line are behind the row's ⓘ, an admin's only.
+	PlainName string `json:"plain_name,omitempty"`
+	OneLine   string `json:"one_line,omitempty"`
 	// Core: part of the documented install (the Compose stack, its Postgres,
 	// muster-mirror and tmux). Everything else is optional.
 	Core bool `json:"core"`
@@ -178,6 +197,22 @@ type Feature struct {
 	// Reason is why the feature is off or misconfigured ("" when on), or, for
 	// a feature that is on, what it still depends on ("" when nothing).
 	Reason string `json:"reason,omitempty"`
+	// Replaced is, for a feature that is off because another one does its
+	// job here, that fact in one plain sentence ("Not used: everyone has
+	// their own account."); "" otherwise. The Features page says it instead
+	// of "ask your admin to turn this on", which would ask for something
+	// nobody should turn on.
+	Replaced string `json:"replaced,omitempty"`
+}
+
+// ShownName is the name the Features page shows: PlainName, or Name for an entry
+// that has none (a test's synthetic catalog; the real one gives every entry
+// one, cmd/muster-server's TestEveryFeatureHasAPlainNameAndOneLine).
+func (f Feature) ShownName() string {
+	if f.PlainName != "" {
+		return f.PlainName
+	}
+	return f.Name
 }
 
 // Docs is the feature's docs reference, e.g. docs/features.md#dictation.
@@ -271,6 +306,8 @@ func joinAnd(xs []string) string {
 type Status struct {
 	State  State
 	Reason string
+	// Replaced: see Feature.Replaced. Only an OFF feature is replaced.
+	Replaced string
 }
 
 // Set is the evaluated registry, in catalog order.
@@ -314,7 +351,10 @@ func Evaluate(catalog []Feature, statuses map[string]Status) (Set, error) {
 		if st.State != On && st.Reason == "" {
 			return Set{}, fmt.Errorf("features: %q is %s with no reason", f.ID, st.State)
 		}
-		f.State, f.Reason = st.State, st.Reason
+		if st.Replaced != "" && st.State != Off {
+			return Set{}, fmt.Errorf("features: %q is %s and replaced; only an off feature is replaced", f.ID, st.State)
+		}
+		f.State, f.Reason, f.Replaced = st.State, st.Reason, st.Replaced
 		s.byID[f.ID] = len(s.list)
 		s.list = append(s.list, f)
 	}

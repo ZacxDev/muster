@@ -23,7 +23,9 @@ Secrets go in `.env` only.
 
 **Checking a feature is on:** `muster doctor`, and on releases that have it,
 the **Features** page (`/account/features`), list every feature as on, off or
-misconfigured, and say what an off one needs. Many features also log their own
+misconfigured (the page says "Needs setup"); on the page, an admin finds what
+an off one needs — the lines below, to copy — behind its row's ⓘ, and anyone
+else is told to ask their admin. Many features also log their own
 line when muster starts, saying whether they are on and why; each section below
 quotes it where there is one. Read them with
 
@@ -522,31 +524,40 @@ model and no chief turn: muster draws it from what it already knows.
 
 ### Morning report
 
-"While you were away": once a day, at one time the server sets (08:00 in
-America/Chicago by default), you get **one** notification — only on a day
+"While you were away": once a day, at 08:00 in one zone the server sets
+(America/Chicago by default), you get **one** notification — only on a day
 something happened overnight — that opens a page with four parts:
 
 1. **Waiting on you**: every question still open for you — the chief's, your
    sessions' and your agents' — as the Asks page's own cards, so you answer
-   one right there. Only your own questions are listed, never a team's.
-2. **Done overnight**: pull requests your sessions created that merged, and
-   tasks that were finished, one line each.
+   one right there, each with how long it has left ("Answer within 3h").
+   Only your own questions are listed, never a team's.
+2. **Done overnight**: pull requests your sessions created that merged, by
+   their titles; and complete tasks that changed overnight, said as exactly
+   that ("Complete task, changed overnight"), since muster keeps no time a
+   task was finished.
 3. **Stuck**: sessions idle with nothing running, or stopped on an error
    (the same rule the chief's stall nudges use), and agents you started that
    failed overnight.
-4. **Usage**: how long your chief worked overnight, and each Claude
-   account's latest usage reading. A part whose source is off says so in
-   plain words ("Usage isn't tracked on this server"); an admin sees the
-   setting behind it in the ⓘ.
+4. **Usage and cost**: how long your chief worked overnight; each Claude
+   plan's latest usage reading ("Claude plan 1: this 5-hour period 37% used");
+   and the chief's OpenRouter cost, counted in whole UTC days, where its
+   OpenRouter sessions are on. A part with no source says so in plain words
+   ("Usage isn't tracked on this server", "Cost isn't tracked for Claude
+   plans"); an admin sees the setting behind it in the ⓘ.
 
 It is **read-only**: it reads muster's own records and never nudges, sends,
 asks or changes a task. No model is called. The notification carries counts
-only (`1 question for you · 3 done · 2 stuck`), never a session's or a task's
-text.
+only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's
+or a question's text.
 
-- **Quiet days:** nothing open, nothing done and nothing newly stuck means no
-  notification (the day's page still exists and says so). A session already
-  stuck before the night is listed but does not, by itself, make a day loud.
+- **Quiet days:** no notification when no question was asked overnight, no
+  pull request merged, nothing got newly stuck, and every pull request was
+  checked. The day's page still exists and says so. Shown but never enough on
+  their own to send it: a question asked before the night (asks wait up to a
+  day), a session stuck since before the night, a task that only changed, and
+  usage. A pull request whose state could not be read, or more recent pull
+  requests than one report checks (30), always sends it, saying so.
 - **Once a day:** each report is recorded per person per day, so a restart
   never sends it twice. A server that was down at the report time sends it up
   to 2 hours late, and skips the day after that.
@@ -554,14 +565,13 @@ text.
   [session routing](#session-routing) and [PR mail routing](#pr-mail-routing)
   for the pull requests your sessions created, and the [GitHub App](#github-app)
   for whether they merged; without them the page says so. Plan usage needs
-  `MUSTER_CC_USAGE_POLL=1`.
-- **Known limits:** muster keeps no time a task was finished, so a task counts
-  as finished overnight when it is complete and last changed overnight. Plan
-  usage is the latest reading, not a sum over the night. Only the chief's
-  working time is recorded; other agents' hours are not.
-- **Turn it on:** `MUSTER_MORNING_REPORT=1` in `.env`; the time is
-  `MUSTER_MORNING_REPORT_AT` (`HH:MM`) in `MUSTER_MORNING_REPORT_TZ` (an IANA
-  zone).
+  `MUSTER_CC_USAGE_POLL=1`; cost needs the chief's OpenRouter sessions.
+- **Known limits:** plan usage is the latest reading, not a sum over the
+  night. Only the chief's working time is recorded; other agents' hours are
+  not. OpenRouter cost is booked per UTC day, so it is shown for the whole UTC
+  days the night touches.
+- **Turn it on:** `MUSTER_MORNING_REPORT=1` in `.env`; the zone of its 08:00
+  is `MUSTER_MORNING_REPORT_TZ` (an IANA zone).
 - **Turning it off:** unset it. No report is written and `/morning` answers 404.
 - **Check:** `morning report: ON (MUSTER_MORNING_REPORT=1) — one push a day at
   08:00 America/Chicago …`; off, the line reads `morning report: OFF —

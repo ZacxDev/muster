@@ -82,6 +82,9 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	// A chief proposal's card: its body (the kickoff) from the proposal row;
 	// one that could not be read offers no accept (no start, no End it).
 	it.proposal = s.proposalKickoffBody(r.Context(), a)
+	if a.OwnerCard {
+		it.pageOpen = s.pageAskOpen(r.Context(), a.ID)
+	}
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}
@@ -288,7 +291,7 @@ const askPageScript = `<script>
 
 // answerMic is an answer box's microphone: the real one (button, for the box
 // input, reporting into note), or — when the server has no dictation — the
-// muted one linking to its Features row, id button+"-off". The ask page and
+// muted one linking to its Features ⓘ sheet, id button+"-off". The ask page and
 // every Asks answer box draw it, so the two cannot differ.
 func answerMic(dictate string, off bool, input, note, button string) string {
 	if dictate == "" && off {

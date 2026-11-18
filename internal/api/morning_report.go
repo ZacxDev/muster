@@ -18,16 +18,17 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/prroute"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
 // THE MORNING REPORT ("while you were away"; docs/features.md#morning-report).
 //
-// Once a day, at the server's report time (MUSTER_MORNING_REPORT_AT in
-// MUSTER_MORNING_REPORT_TZ, 08:00 America/Chicago by default), every enabled
-// person gets one push saying what happened overnight — only on a day when
-// something did (morning.Report.Quiet) — and the push opens the report's page:
+// Once a day, at 08:00 (morning.ReportHour) in MUSTER_MORNING_REPORT_TZ
+// (America/Chicago by default), every enabled person gets one push saying what
+// happened overnight — only on a day when something did (morning.Report.Quiet)
+// — and the push opens the report's page:
 //
 //	GET /morning          the newest report
 //	GET /morning/{date}   the report of a local date (2006-01-02)
@@ -38,7 +39,7 @@ import (
 // draws them with), so the owner answers one in place through the queue's own
 // answer route, and the answer lands as it would on /attention.
 //
-// 🔴 ONE REPORT PER OWNER PER DAY, IN THE DATABASE (morning_reports, 0153):
+// 🔴 ONE REPORT PER OWNER PER DAY, IN THE DATABASE (morning_reports, 0154):
 // the day's row is inserted before anything is pushed, and the push is
 // claimed by one conditional update before it is sent, so a restart, a second
 // tick or a rolling update's second replica sends nothing twice.
@@ -49,16 +50,20 @@ import (
 //
 // WHERE EACH SECTION COMES FROM (no model, no transcript):
 //   - Questions: the Asks queue's open questions (attentionItems: "ask" and
-//     "question" items), read live on the page; the job counts them.
+//     "question" items), read live on the page; the job counts them, and how
+//     many were asked in the window.
 //   - Done: pull requests the owner's sessions created (session_prs) that
-//     GitHub says merged in the window, and tasks that are complete and were
-//     last changed in the window (notes.updated_at).
+//     GitHub says merged in the window, by their titles; and tasks that are
+//     complete and last CHANGED in the window (notes.updated_at — muster keeps
+//     no completion time, so the page says "changed overnight").
 //   - Stuck: the stall facts (stallInputs, the nudge sweep's own read) —
 //     sessions idle past the stall threshold or stopped on an error — and
 //     dispatched agents whose outcome turned "failed" in the window.
-//   - Usage: the chief's turns in the window (chief_turn_usage) and each
+//   - Usage and cost: the chief's turns in the window (chief_turn_usage), each
 //     Claude account's latest reading (cc_account_usage) when the usage poll
-//     is on; otherwise each says plainly that it is not tracked.
+//     is on, and the chief's OpenRouter spend (chief_session_llm_usage, whole
+//     UTC days) when those sessions are on; otherwise each says plainly that
+//     it is not tracked.
 // ---------------------------------------------------------------------------
 
 // MorningReport is the morning report's wiring (MUSTER_MORNING_REPORT=1);
@@ -83,7 +88,8 @@ func morningDatePath(date string) string { return morningPathPrefix + date }
 // Bounds on what one report reads and keeps.
 const (
 	// morningPRsRead bounds the pull requests whose GitHub state one report
-	// reads; morningPRReadsDeadline all of those reads together.
+	// reads; morningPRReadsDeadline all of those reads together. A report that
+	// meets the bound says so and is never quiet (morning.Report.Unchecked).
 	morningPRsRead         = 30
 	morningPRReadsDeadline = 20 * time.Second
 	// morningPRsLookback is how far back a pull request's last report may be
@@ -164,16 +170,17 @@ func (s *Server) morningReportFor(octx context.Context, owner int64, day morning
 		return false, fmt.Errorf("read: %w", err)
 	}
 	if !have {
-		rep, gaps := s.buildMorningReport(octx, day)
-		row = morning.Row{Date: day.Date, Since: day.Since, Until: day.Slot, Quiet: rep.Quiet(), Questions: len(rep.Questions),
-			Body: morning.Body{Done: capLines(rep.Done), Stuck: capLines(rep.Stuck), Usage: rep.Usage, Gaps: gaps}}
+		rep := s.buildMorningReport(octx, day)
+		rep.Done, rep.Stuck = capLines(rep.Done), capLines(rep.Stuck)
+		row = morning.Row{Date: day.Date, Since: day.Since, Until: day.Slot, Quiet: rep.Quiet(), Questions: rep.Questions, Body: rep.Body}
 		inserted, err := st.Insert(octx, row)
 		if err != nil {
 			return false, fmt.Errorf("record: %w", err)
 		}
 		if !inserted {
-			// Another tick or replica recorded it between the read and the
-			// insert: it pushes, not this one.
+			// An OPTIMISATION, not the guard: another tick or replica recorded
+			// the day between the read and the insert, and it pushes. Were this
+			// return missing, ClaimPush below would still refuse the second push.
 			return false, nil
 		}
 	}
@@ -187,7 +194,7 @@ func (s *Server) morningReportFor(octx context.Context, owner int64, day morning
 	s.goNotify(owner, push.EventMorningReport, RouterNotification{
 		Type:  "morning_report",
 		Title: morning.PushTitle,
-		Body:  morning.PushBody(row.Questions, len(row.Body.Done), len(row.Body.Stuck)),
+		Body:  morning.PushBody(row.Questions, row.Body.Merged(), len(row.Body.Stuck)),
 		Tag:   morning.PushTag,
 		Data:  map[string]string{"url": morningDatePath(day.Date)},
 	}, nil)
@@ -202,20 +209,22 @@ func capLines[T any](ls []T) []T {
 	return ls
 }
 
-// buildMorningReport is octx's owner's report of day, and what it could not
-// read.
-func (s *Server) buildMorningReport(octx context.Context, day morning.Day) (morning.Report, []morning.Gap) {
+// buildMorningReport is octx's owner's report of day.
+func (s *Server) buildMorningReport(octx context.Context, day morning.Day) morning.Report {
 	rep := morning.Report{Since: day.Since, Until: day.Slot}
 	for _, it := range s.morningQuestions(octx) {
-		rep.Questions = append(rep.Questions, morning.Question{AskID: it.AskID, Text: it.Text, AskedAt: it.Since})
+		rep.Questions++
+		if !it.Since.Before(day.Since) {
+			rep.NewQuestions++
+		}
 	}
-	var gaps []morning.Gap
-	merged, g := s.morningMerged(octx, day)
-	gaps = append(gaps, g...)
-	rep.Done = append(merged, s.morningTasksDone(octx, day)...)
+	merged, gaps, unchecked := s.morningMerged(octx, day)
+	rep.Unchecked = unchecked
+	rep.Gaps = gaps
+	rep.Done = append(merged, s.morningTasksChanged(octx, day)...)
 	rep.Stuck = s.morningStuck(octx, day)
 	rep.Usage = s.morningUsage(octx, day)
-	return rep, gaps
+	return rep
 }
 
 // morningQuestions is octx's owner's open questions: the Asks queue's "ask"
@@ -250,30 +259,48 @@ type recentPRLister interface {
 	RecentPRs(ctx context.Context, since time.Time, limit int) ([]plugins.PRSession, error)
 }
 
-// The report's gaps, in plain words (the setting is an admin's ⓘ).
+// The report's gaps, in plain words. The setting behind each is named only on
+// the page, for an admin (morningSettingFor), never stored.
 var (
-	gapPRsNotRecorded = morning.Gap{Text: "Merged pull requests aren't tracked on this server.", Setting: "MUSTER_SESSION_ROUTING=1 and MUSTER_PR_MAIL_SENDERS"}
-	gapPRsNoGitHub    = morning.Gap{Text: "Whether pull requests merged can't be checked on this server.", Setting: "the GitHub App (MUSTER_GITHUB_APP_ID)"}
+	gapPRsNotRecorded = morning.Gap{Text: "Merged pull requests aren't tracked on this server."}
+	gapPRsNoGitHub    = morning.Gap{Text: "Whether pull requests merged can't be checked on this server."}
 	gapPRsRead        = morning.Gap{Text: "Some pull requests could not be checked just now."}
-	gapTasksRead      = morning.Gap{Text: "Finished tasks could not be read just now."}
+	gapPRsCap         = morning.Gap{Text: "Only your " + strconv.Itoa(morningPRsRead) + " most recent pull requests were checked."}
 )
+
+// The usage part's plain "not tracked" sentences.
+const (
+	morningChiefUntracked = "Your chief's working time isn't tracked on this server."
+	morningPlanUntracked  = "Usage isn't tracked on this server."
+	morningCostUntracked  = "Cost isn't tracked for Claude plans."
+)
+
+// morningSettingFor is the setting behind an "isn't tracked" sentence, for an
+// admin's ⓘ ("" when it is not a setting).
+var morningSettingFor = map[string]string{
+	gapPRsNotRecorded.Text: "MUSTER_SESSION_ROUTING=1 and MUSTER_PR_MAIL_SENDERS",
+	gapPRsNoGitHub.Text:    "the GitHub App (MUSTER_GITHUB_APP_ID)",
+	morningPlanUntracked:   "MUSTER_CC_USAGE_POLL=1",
+}
 
 // morningMerged is the pull requests octx's owner's sessions created that
 // GitHub says merged in day's window, each read through the fleet's PR-state
-// cache within morningPRsRead reads.
-func (s *Server) morningMerged(octx context.Context, day morning.Day) ([]morning.Done, []morning.Gap) {
+// cache within morningPRsRead reads; the gaps it met; and whether any pull
+// request went unchecked (a state not read, or the read bound met), which
+// keeps the day from being quiet.
+func (s *Server) morningMerged(octx context.Context, day morning.Day) ([]morning.Done, []morning.Gap, bool) {
 	lister, ok := s.ext.PRSessions.(recentPRLister)
 	if !ok {
-		return nil, []morning.Gap{gapPRsNotRecorded}
+		return nil, []morning.Gap{gapPRsNotRecorded}, false
 	}
 	reader := s.fleetPRReader(octx)
 	if reader == nil {
-		return nil, []morning.Gap{gapPRsNoGitHub}
+		return nil, []morning.Gap{gapPRsNoGitHub}, false
 	}
 	prs, err := lister.RecentPRs(octx, day.Since.Add(-morningPRsLookback), morningPRsRead)
 	if err != nil {
 		s.logger.Printf("morning report: recent pull requests: %v", err)
-		return nil, []morning.Gap{gapPRsRead}
+		return nil, []morning.Gap{gapPRsRead}, true
 	}
 	rctx, cancel := context.WithTimeout(withPRReadBudget(octx, morningPRsRead), morningPRReadsDeadline)
 	defer cancel()
@@ -288,22 +315,31 @@ func (s *Server) morningMerged(octx context.Context, day morning.Day) ([]morning
 		if !st.Merged || st.ClosedAt.Before(day.Since) || !st.ClosedAt.Before(day.Slot) {
 			continue
 		}
-		out = append(out, morning.Done{Kind: morning.DoneMerged, Label: p.Repo + "#" + strconv.FormatInt(p.PR, 10),
+		ref := p.Repo + "#" + strconv.FormatInt(p.PR, 10)
+		title := cutRunes(strings.Join(strings.Fields(redact.Secrets(st.Title)), " "), 200)
+		if title == "" {
+			title = "A pull request"
+		}
+		out = append(out, morning.Done{Kind: morning.DoneMerged, Label: title, Ref: ref,
 			Href: "https://github.com/" + p.Repo + "/pull/" + strconv.FormatInt(p.PR, 10), At: st.ClosedAt})
 	}
 	var gaps []morning.Gap
 	if unread > 0 {
 		gaps = append(gaps, gapPRsRead)
 	}
-	return out, gaps
+	capped := len(prs) >= morningPRsRead
+	if capped {
+		gaps = append(gaps, gapPRsCap)
+	}
+	return out, gaps, unread > 0 || capped
 }
 
-// morningTasksDone is octx's owner's own tasks (never a team's) that are
-// complete and were last changed in day's window. ⚠ muster keeps no time a
-// task was completed: updated_at is when it last changed, so a complete task
-// edited overnight is listed again, and one completed overnight and edited
-// after the report time is not.
-func (s *Server) morningTasksDone(octx context.Context, day morning.Day) []morning.Done {
+// morningTasksChanged is octx's owner's own tasks (never a team's) that are
+// complete and were last CHANGED in day's window. ⚠ muster keeps no time a
+// task was completed: updated_at moves on any change (a tag, a synced
+// snapshot), so these lines say "changed overnight" and never make a day loud
+// (morning.Report.Quiet).
+func (s *Server) morningTasksChanged(octx context.Context, day morning.Day) []morning.Done {
 	if s.ext.Notes == nil {
 		return nil
 	}
@@ -318,11 +354,8 @@ func (s *Server) morningTasksDone(octx context.Context, day morning.Day) []morni
 		if n.Status != notes.StatusComplete || n.OwnerID != owner || n.UpdatedAt.Before(day.Since) || !n.UpdatedAt.Before(day.Slot) {
 			continue
 		}
-		title := strings.TrimSpace(n.Title)
-		if title == "" {
-			title = strings.TrimSpace(n.Directory)
-		}
-		out = append(out, morning.Done{Kind: morning.DoneTask, Label: cutRunes(title, 200),
+		title := firstNonBlank(strings.TrimSpace(n.Title), strings.TrimSpace(n.Directory))
+		out = append(out, morning.Done{Kind: morning.DoneTaskChanged, Label: cutRunes(title, 200),
 			Href: "/tasks/" + strconv.FormatInt(n.ID, 10), At: n.UpdatedAt})
 	}
 	return out
@@ -353,7 +386,7 @@ func (s *Server) morningStuck(octx context.Context, day morning.Day) []morning.S
 			if r := strings.TrimSpace(a.OutcomeReason); r != "" {
 				why = "failed: " + cutRunes(r, 160)
 			}
-			out = append(out, morning.Stuck{Kind: morning.StuckFailed, Name: firstNonEmpty(a.DisplayName, a.Name), Why: why,
+			out = append(out, morning.Stuck{Kind: morning.StuckFailed, Name: firstNonBlank(strings.TrimSpace(a.DisplayName), a.Name), Why: why,
 				Href: ui.AgentSessionHref(a.Name, 0), Since: *a.OutcomeAt})
 		}
 	}
@@ -385,20 +418,21 @@ func (s *Server) morningStuck(octx context.Context, day morning.Day) []morning.S
 	return out
 }
 
-// stuckName is a stalled session's name as the report says it: its stable
-// name, else its window's label, else the agent's name.
+// stuckName is a stalled session's name as the report says it: its HUMAN
+// name, else (an agent) the agent's display name or slug, else "A session".
+// 🔴 NEVER A WINDOW'S LABEL: a mirrored window's label is its tmux place
+// ("Gold:2"), which is an address, not a name, and the page's top layer names
+// no address (the ⓘ rule).
 func stuckName(c nudgeCandidate) string {
-	return firstNonEmpty(c.Name, c.Label, c.agent.DisplayName, c.agent.Name, "A session")
-}
-
-// firstNonEmpty is the first of vs that is not blank, trimmed ("" for none).
-func firstNonEmpty(vs ...string) string {
-	for _, v := range vs {
-		if t := strings.TrimSpace(v); t != "" {
-			return t
+	if n := strings.TrimSpace(c.Name); n != "" {
+		return n
+	}
+	if c.Kind == chiefnudge.KindAgent {
+		if n := firstNonBlank(strings.TrimSpace(c.agent.DisplayName), c.agent.Name); n != "" {
+			return n
 		}
 	}
-	return ""
+	return "A session"
 }
 
 // stuckHref is where a stalled session opens.
@@ -415,15 +449,16 @@ type chiefUsageWindower interface {
 	Window(ctx context.Context, since, until time.Time) (chiefusage.Window, error)
 }
 
-// The usage section's plain "not tracked" sentences.
-const (
-	morningChiefUntracked = "Your chief's working time isn't tracked on this server."
-	morningPlanUntracked  = "Usage isn't tracked on this server."
-	morningPlanSetting    = "MUSTER_CC_USAGE_POLL=1"
-)
+// daySpender is the chief OpenRouter sessions' store's per-day spend
+// (chiefusage.PGStore.DaySpent).
+type daySpender interface {
+	DaySpent(ctx context.Context, day time.Time) (float64, error)
+}
 
-// morningUsage is day's usage for octx's owner: the chief's turns in the
-// window, and each Claude account's latest reading when the poll is on.
+// morningUsage is day's usage and cost for octx's owner: the chief's turns in
+// the window, each Claude account's latest reading when the poll is on, and the
+// chief's OpenRouter spend over the UTC days the window touches when those
+// sessions are on.
 func (s *Server) morningUsage(octx context.Context, day morning.Day) morning.Usage {
 	var u morning.Usage
 	if w, ok := s.ext.ChiefUsage.(chiefUsageWindower); ok {
@@ -431,15 +466,16 @@ func (s *Server) morningUsage(octx context.Context, day morning.Day) morning.Usa
 			s.logger.Printf("morning report: chief usage: %v", err)
 			u.Chief.Off = "Your chief's working time could not be read just now."
 		} else {
-			u.Chief = morning.ChiefUsage{Tracked: true, Turns: got.Turns, Busy: got.Busy, Tokens: got.Tokens.Total()}
+			u.Chief = morning.ChiefUsage{Tracked: true, Turns: got.Turns, Busy: got.Busy}
 		}
 	} else {
 		u.Chief.Off = morningChiefUntracked
 	}
+	u.Cost = s.morningCost(octx, day)
 	// 🔴 OFF IS SAID, NEVER A ZERO: with the poll off no reading is taken, so
 	// an account's numbers would be whatever was last read, or none.
 	if s.ext.CCUsage == nil || s.ext.CCUsageInterval == 0 {
-		u.Plan = morning.PlanUsage{Off: morningPlanUntracked, Setting: morningPlanSetting}
+		u.Plan = morning.PlanUsage{Off: morningPlanUntracked}
 		return u
 	}
 	accts, err := s.ccUsageAccounts(octx, requestOwner(octx), s.now())
@@ -450,7 +486,7 @@ func (s *Server) morningUsage(octx context.Context, day morning.Day) morning.Usa
 	}
 	u.Plan.Tracked = true
 	for _, a := range accts {
-		pa := morning.PlanAccount{Name: a.Account}
+		var pa morning.PlanAccount
 		if a.FiveHour != nil {
 			pa.FiveHour = a.FiveHour.Utilization
 		}
@@ -463,6 +499,32 @@ func (s *Server) morningUsage(octx context.Context, day morning.Day) morning.Usa
 		u.Plan.Accounts = append(u.Plan.Accounts, pa)
 	}
 	return u
+}
+
+// morningCost is the chief's OpenRouter spend over the UTC days day's window
+// touches (spend is booked per UTC day, so a neighbouring report can count the
+// same day too, and the page says which days); "not tracked for Claude plans"
+// when those sessions are off.
+func (s *Server) morningCost(octx context.Context, day morning.Day) morning.CostUsage {
+	var sp daySpender
+	if s.chiefSessions != nil {
+		sp, _ = s.chiefSessions.store.(daySpender)
+	}
+	if sp == nil {
+		return morning.CostUsage{Off: morningCostUntracked}
+	}
+	first := time.Date(day.Since.Year(), day.Since.Month(), day.Since.Day(), 0, 0, 0, 0, time.UTC)
+	last := day.Slot.Add(-time.Nanosecond).UTC()
+	c := morning.CostUsage{Tracked: true, FirstDay: first.Format("2006-01-02"), LastDay: last.Format("2006-01-02")}
+	for d := first; !d.After(last); d = d.AddDate(0, 0, 1) {
+		usd, err := sp.DaySpent(octx, d)
+		if err != nil {
+			s.logger.Printf("morning report: chief spend: %v", err)
+			return morning.CostUsage{Off: "Your chief's cost could not be read just now."}
+		}
+		c.USD += usd
+	}
+	return c
 }
 
 // --- the page ------------------------------------------------------------------
@@ -511,26 +573,35 @@ func (s *Server) handleMorningReport(w http.ResponseWriter, r *http.Request) {
 }
 
 // morningReportView is row as its page draws it, in loc, with the owner's
-// open questions as the queue's own cards (their forms return here).
+// open questions as the queue's own cards (their forms return here), each
+// with how long it has left.
 func (s *Server) morningReportView(ctx context.Context, row morning.Row, loc *time.Location, v ui.MorningReportView) ui.MorningReportView {
 	since, until := row.Since.In(loc), row.Until.In(loc)
+	now := s.now()
 	v.Heading = until.Format("Monday, January 2")
 	v.Window = "From " + clockText(since) + " " + since.Format("Monday") + " to " + clockText(until) + " " + until.Format("Monday") + "."
 	v.Quiet = row.Quiet
 	items := s.morningQuestions(ctx)
 	s.withFocus(ctx, items)
 	s.withAskBoxes(ctx, items, true)
-	v.QuestionCount = len(items)
-	if len(items) > 0 {
-		v.QuestionsHTML = attentionItemsHTMLTo(items, s.now(), morningDatePath(row.Date))
+	expires := s.askExpiries(ctx)
+	for _, it := range items {
+		q := ui.MorningQuestion{CardHTML: attentionItemHTML(it, now, morningDatePath(row.Date))}
+		if at, ok := expires[it.AskID]; ok && it.AskID > 0 {
+			q.Left = "Answer within " + askDuration(at.Sub(now).Truncate(time.Minute))
+			if at.Sub(now) < time.Minute {
+				q.Left = "Expires in under a minute"
+			}
+		}
+		v.Questions = append(v.Questions, q)
 	}
 	for _, d := range row.Body.Done {
 		line := ui.MorningLine{Text: d.Label, Href: d.Href, External: d.Kind == morning.DoneMerged}
 		switch d.Kind {
 		case morning.DoneMerged:
 			line.Detail = "Pull request merged at " + clockText(d.At.In(loc))
-		case morning.DoneTask:
-			line.Detail = "Task finished"
+		case morning.DoneTaskChanged:
+			line.Detail = "Complete task, changed overnight"
 		}
 		v.Done = append(v.Done, line)
 	}
@@ -542,25 +613,53 @@ func (s *Server) morningReportView(ctx context.Context, row morning.Row, loc *ti
 		v.Stuck = append(v.Stuck, line)
 	}
 	u := row.Body.Usage
-	if u.Chief.Tracked {
-		v.Usage = append(v.Usage, ui.MorningUsageLine{Text: chiefUsageText(u.Chief)})
-	} else if u.Chief.Off != "" {
-		v.Usage = append(v.Usage, ui.MorningUsageLine{Text: u.Chief.Off, Off: true, Setting: u.Chief.Setting})
+	off := func(text string) ui.MorningUsageLine {
+		return ui.MorningUsageLine{Text: text, Off: true, Setting: morningSettingFor[text]}
 	}
-	if u.Plan.Tracked {
-		if len(u.Plan.Accounts) == 0 {
-			v.Usage = append(v.Usage, ui.MorningUsageLine{Text: "No Claude accounts are set up."})
+	switch {
+	case u.Chief.Tracked:
+		v.Usage = append(v.Usage, ui.MorningUsageLine{Text: chiefUsageText(u.Chief)})
+	case u.Chief.Off != "":
+		v.Usage = append(v.Usage, off(u.Chief.Off))
+	}
+	switch {
+	case u.Plan.Tracked && len(u.Plan.Accounts) == 0:
+		v.Usage = append(v.Usage, ui.MorningUsageLine{Text: "No Claude plans are set up."})
+	case u.Plan.Tracked:
+		for i, a := range u.Plan.Accounts {
+			v.Usage = append(v.Usage, ui.MorningUsageLine{Text: planUsageText(i+1, a, loc)})
 		}
-		for _, a := range u.Plan.Accounts {
-			v.Usage = append(v.Usage, ui.MorningUsageLine{Text: planUsageText(a, loc)})
-		}
-	} else if u.Plan.Off != "" {
-		v.Usage = append(v.Usage, ui.MorningUsageLine{Text: u.Plan.Off, Off: true, Setting: u.Plan.Setting})
+	case u.Plan.Off != "":
+		v.Usage = append(v.Usage, off(u.Plan.Off))
+	}
+	switch {
+	case u.Cost.Tracked:
+		v.Usage = append(v.Usage, ui.MorningUsageLine{Text: costText(u.Cost)})
+	case u.Cost.Off != "":
+		v.Usage = append(v.Usage, off(u.Cost.Off))
 	}
 	for _, g := range row.Body.Gaps {
-		v.Gaps = append(v.Gaps, ui.MorningUsageLine{Text: g.Text, Off: true, Setting: g.Setting})
+		v.Gaps = append(v.Gaps, off(g.Text))
 	}
 	return v
+}
+
+// askExpiries is ctx's principal's open asks' expiry times, by ask id (empty
+// on a read error, logged: the page then shows no time left).
+func (s *Server) askExpiries(ctx context.Context) map[int64]time.Time {
+	out := map[int64]time.Time{}
+	if s.ext.Attention == nil {
+		return out
+	}
+	open, err := s.ext.Attention.Open(ctx)
+	if err != nil {
+		s.logger.Printf("morning report: ask expiries: %v", err)
+		return out
+	}
+	for _, a := range open {
+		out[a.ID] = a.ExpiresAt
+	}
+	return out
 }
 
 // clockText is t's wall-clock time as the report says it ("8:00 AM").
@@ -576,36 +675,32 @@ func chiefUsageText(c morning.ChiefUsage) string {
 	if c.Turns != 1 {
 		turns = strconv.FormatInt(c.Turns, 10) + " turns"
 	}
-	return "Your chief worked " + durationText(c.Busy) + " over " + turns + "."
+	return "Your chief worked " + askDuration(c.Busy) + " over " + turns + "."
 }
 
-// durationText is d in hours and minutes ("1h 12m", "4m", "under a minute").
-func durationText(d time.Duration) string {
-	if d < time.Minute {
-		return "under a minute"
-	}
-	h, m := int(d.Hours()), int(d.Minutes())%60
-	switch {
-	case h == 0:
-		return strconv.Itoa(m) + "m"
-	case m == 0:
-		return strconv.Itoa(h) + "h"
-	}
-	return strconv.Itoa(h) + "h " + strconv.Itoa(m) + "m"
-}
-
-// planUsageText is one account's line: its latest reading and when it was
-// taken — never an overnight figure, which muster does not keep.
-func planUsageText(a morning.PlanAccount, loc *time.Location) string {
+// planUsageText is the n-th Claude plan's line: its latest reading and when it
+// was taken — never an overnight figure, which muster does not keep, and never
+// the account's configured name.
+func planUsageText(n int, a morning.PlanAccount, loc *time.Location) string {
 	pct := func(p *float64) string {
 		if p == nil {
 			return "not read"
 		}
 		return strconv.Itoa(int(*p+0.5)) + "% used"
 	}
-	t := a.Name + ": this 5-hour period " + pct(a.FiveHour) + ", this week " + pct(a.Week)
+	t := "Claude plan " + strconv.Itoa(n) + ": this 5-hour period " + pct(a.FiveHour) + ", this week " + pct(a.Week)
 	if a.ReadAt.IsZero() {
 		return t + " (not read yet)."
 	}
 	return t + " (as of " + clockText(a.ReadAt.In(loc)) + ")."
+}
+
+// costText is the chief's OpenRouter cost line, with the whole UTC days it
+// covers.
+func costText(c morning.CostUsage) string {
+	days := c.FirstDay
+	if c.LastDay != c.FirstDay {
+		days += " to " + c.LastDay
+	}
+	return fmt.Sprintf("Your chief's OpenRouter cost: $%.2f (whole days %s, UTC).", c.USD, days)
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccusage"
@@ -212,15 +213,15 @@ func TestTheMorningReportIsSentOncePerDayAcrossARestart(t *testing.T) {
 func TestARestartBetweenRecordAndPushStillPushesOnce(t *testing.T) {
 	f := newMorningFixture(t)
 	if _, err := f.srv.ext.MorningReport.Store.Insert(f.asOwner, morning.Row{Date: f.day.Date, Since: f.day.Since, Until: f.day.Slot,
-		Questions: 3, Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTask, Label: "Restock the booth"}}}}); err != nil {
+		Questions: 3, Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneMerged, Label: "Restock the booth", Ref: "acme/booth#2"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
 		f.report(t, f.asOwner, f.owner)
 	}
 	got := f.push.to(f.owner)
-	if len(got) != 1 || got[0].Body != "3 questions for you · 1 done" {
-		t.Fatalf("pushes = %d (%v); want one, \"3 questions for you · 1 done\"", len(got), got)
+	if len(got) != 1 || got[0].Body != "3 questions for you · 1 merged" {
+		t.Fatalf("pushes = %d (%v); want one, \"3 questions for you · 1 merged\"", len(got), got)
 	}
 }
 
@@ -279,7 +280,7 @@ func TestEverySectionIsFilledFromItsSource(t *testing.T) {
 	for _, s := range row.Body.Stuck {
 		stuckNames = append(stuckNames, s.Kind+":"+s.Name)
 	}
-	if got, want := strings.Join(doneLabels, ","), "merged:acme/lanterns#41,task:Hang the paper lanterns"; got != want {
+	if got, want := strings.Join(doneLabels, ","), "merged:Hang the lanterns over the gate,task:Hang the paper lanterns"; got != want {
 		t.Errorf("done = %q; want %q", got, want)
 	}
 	if len(row.Body.Done) == 2 && row.Body.Done[1].Href != "/tasks/"+strconv.FormatInt(done.ID, 10) {
@@ -292,31 +293,42 @@ func TestEverySectionIsFilledFromItsSource(t *testing.T) {
 		t.Errorf("the failed agent's reason = %q", row.Body.Stuck[0].Why)
 	}
 	c := row.Body.Usage.Chief
-	if !c.Tracked || c.Turns != 2 || c.Busy != 2*time.Minute || c.Tokens != 200 {
-		t.Errorf("chief usage = %+v; want 2 turns, 2m, 200 tokens", c)
+	if !c.Tracked || c.Turns != 2 || c.Busy != 2*time.Minute {
+		t.Errorf("chief usage = %+v; want 2 turns, 2m", c)
 	}
 	p := row.Body.Usage.Plan
-	if !p.Tracked || len(p.Accounts) != 1 || p.Accounts[0].Name != "lantern-pool" || *p.Accounts[0].FiveHour != 37 || *p.Accounts[0].Week != 62 {
+	if !p.Tracked || len(p.Accounts) != 1 || *p.Accounts[0].FiveHour != 37 || *p.Accounts[0].Week != 62 {
 		t.Errorf("plan usage = %+v", p)
 	}
 	if len(row.Body.Stuck) > 1 && !row.Body.Stuck[1].Since.Equal(in) {
 		t.Errorf("the idle session's since = %v; want %v", row.Body.Stuck[1].Since, in)
 	}
-	if got := f.push.to(f.owner); len(got) != 1 || got[0].Body != "1 question for you · 2 done · 2 stuck" {
+	if got := f.push.to(f.owner); len(got) != 1 || got[0].Body != "1 question for you · 1 merged · 2 stuck" {
 		t.Errorf("the push = %v", got)
 	}
 
+	// How long the question has left, on the page's clock: the ask expires 3h
+	// 30m (and a few seconds) from the moment the page is drawn.
+	pageNow := time.Now()
+	f.srv.now = func() time.Time { return pageNow }
+	if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE attention_asks SET expires_at = $2 WHERE owner_id = $1 AND question = 'Approve the lantern budget?'`,
+		f.owner, pageNow.Add(3*time.Hour+30*time.Minute+30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	page := f.page(t, f.asOwner, f.day.Date)
 	for _, want := range []string{
 		"Approve the lantern budget?", `action="/attention/asks/`, `name="return" value="/morning/` + f.day.Date + `"`,
-		"acme/lanterns#41", "Hang the paper lanterns", "failed: the build broke", "idle, nothing running",
-		"Your chief worked 2m over 2 turns.", "lantern-pool: this 5-hour period 37% used, this week 62% used",
+		"Hang the lanterns over the gate", "Pull request merged at", "Hang the paper lanterns", "Complete task, changed overnight",
+		"failed: the build broke", "idle, nothing running", "Answer within 3h 30m",
+		"Your chief worked 2m over 2 turns.", "Claude plan 1: this 5-hour period 37% used, this week 62% used",
+		"Cost isn&#39;t tracked for Claude plans.",
 	} {
 		if !strings.Contains(page, strings.ReplaceAll(want, `"`, `"`)) {
 			t.Errorf("the page lacks %q", want)
 		}
 	}
-	for _, never := range []string{"acme/old-lanterns", "acme/abandoned", "Order last year", "Sweep the courtyard", "Old failure"} {
+	for _, never := range []string{"acme/old-lanterns", "acme/abandoned", "Order last year", "Sweep the courtyard", "Old failure",
+		"acme/lanterns#41", "lantern-pool", "Older lanterns", "Abandoned lanterns"} {
 		if strings.Contains(page, never) {
 			t.Errorf("the page lists %q, which is outside the window or not done", never)
 		}
@@ -333,9 +345,9 @@ func (f *morningFixture) seedEverySection(t *testing.T) (time.Time, notes.Note) 
 	f.ask(t, f.owner, f.chief.ID, "Approve the lantern budget?")
 	// Pull requests: merged in the window; merged before it; closed unmerged.
 	key, _ := f.window(f.owner, "busy")
-	f.pr(t, f.owner, key, "acme/lanterns", 41, &githubapp.PRState{State: "closed", Merged: true, ClosedAt: in})
-	f.pr(t, f.owner, key, "acme/old-lanterns", 7, &githubapp.PRState{State: "closed", Merged: true, ClosedAt: before})
-	f.pr(t, f.owner, key, "acme/abandoned", 9, &githubapp.PRState{State: "closed", Merged: false, ClosedAt: in})
+	f.pr(t, f.owner, key, "acme/lanterns", 41, &githubapp.PRState{State: "closed", Merged: true, ClosedAt: in, Title: "Hang the lanterns over the gate"})
+	f.pr(t, f.owner, key, "acme/old-lanterns", 7, &githubapp.PRState{State: "closed", Merged: true, ClosedAt: before, Title: "Older lanterns"})
+	f.pr(t, f.owner, key, "acme/abandoned", 9, &githubapp.PRState{State: "closed", Merged: false, ClosedAt: in, Title: "Abandoned lanterns"})
 	// Tasks: complete in the window; complete before it; open in it.
 	done := f.task(t, f.owner, "Hang the paper lanterns", notes.StatusComplete, in)
 	f.task(t, f.owner, "Order last year's lanterns", notes.StatusComplete, before)
@@ -352,6 +364,12 @@ func (f *morningFixture) seedEverySection(t *testing.T) (time.Time, notes.Note) 
 	// A session idle with nothing running since inside the window (the stall
 	// facts).
 	f.window(f.owner, "idle")
+	// The window carries its host's label, "<codename>:<index>": a tmux place,
+	// which the page must never draw as the session's name.
+	f.mirror.mu.Lock()
+	ws := f.mirror.own[f.owner]
+	ws[len(ws)-1].Label = "Gold:2"
+	f.mirror.mu.Unlock()
 	f.srv.ext.Mirror = observedMirror{digestMirror: f.mirror, at: in}
 	// The chief's turns: two in the window (90 s and 30 s), one before it.
 	for _, r := range []struct {
@@ -408,7 +426,9 @@ func TestAMembersReportHoldsOnlyTheirOwnItems(t *testing.T) {
 		attention.New{Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "Team: reprint the banners?"}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = $1`, team) })
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = $1`, team)
+	})
 	withTeams := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin, Via: authz.ViaSession,
 		Teams: authz.Memberships(strconv.FormatInt(team, 10) + ":manager")})
 	queue, _ := f.srv.attentionItems(withTeams)
@@ -498,5 +518,97 @@ func TestTheMorningReportPageHasNoJargonInItsTopLayer(t *testing.T) {
 	leaked := strings.Replace(admin, "Usage isn&#39;t tracked on this server.", "Set MUSTER_CC_USAGE_POLL=1 to track usage.", 1)
 	if leaked == admin || len(scan("negative control", leaked)) == 0 {
 		t.Errorf("NEGATIVE CONTROL: a top-layer line naming the setting passed the scan")
+	}
+}
+
+// TestAPullRequestNotCheckedKeepsTheDayLoud: a pull request whose state
+// GitHub did not answer, on a day with nothing else, is a gap on the page AND
+// keeps the day from being quiet (a merge may hide there) — so it pushes.
+func TestAPullRequestNotCheckedKeepsTheDayLoud(t *testing.T) {
+	f := newMorningFixture(t)
+	key, _ := f.window(f.owner, "busy")
+	f.pr(t, f.owner, key, "acme/unanswered", 5, nil) // GitHub answers nothing for it
+	pushed, row := f.report(t, f.asOwner, f.owner)
+	if row.Quiet || !pushed {
+		t.Fatalf("an unchecked pull request: quiet %v, pushed %v; want loud and pushed", row.Quiet, pushed)
+	}
+	if len(row.Body.Gaps) != 1 || row.Body.Gaps[0].Text != "Some pull requests could not be checked just now." {
+		t.Fatalf("gaps = %+v", row.Body.Gaps)
+	}
+}
+
+// TestTheReadBoundOnPullRequestsIsSaidAndKeepsTheDayLoud: at the bound
+// (morningPRsRead pull requests, every one answered, none merged) the page says
+// only that many were checked and the day is not quiet; one fewer is quiet
+// with no such line (the control).
+func TestTheReadBoundOnPullRequestsIsSaidAndKeepsTheDayLoud(t *testing.T) {
+	for _, tc := range []struct {
+		n     int
+		quiet bool
+	}{{morningPRsRead - 1, true}, {morningPRsRead, false}} {
+		f := newMorningFixture(t)
+		owner := f.newMember(t)
+		// An admin, so the GitHub App reads its pull requests.
+		ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: owner, Role: authz.RoleAdmin, Via: authz.ViaSession})
+		key, _ := f.window(owner, "busy")
+		closed := f.day.Since.Add(-48 * time.Hour)
+		for i := 1; i <= tc.n; i++ {
+			f.pr(t, owner, key, "acme/bound-"+strconv.Itoa(tc.n), int64(i), &githubapp.PRState{State: "closed", Merged: false, ClosedAt: closed, Title: "unmerged"})
+		}
+		_, row := f.report(t, ctx, owner)
+		capped := false
+		for _, g := range row.Body.Gaps {
+			capped = capped || g.Text == "Only your 30 most recent pull requests were checked."
+		}
+		if row.Quiet != tc.quiet || capped == tc.quiet {
+			t.Errorf("%d pull requests: quiet %v (want %v), the bound said %v; gaps %+v", tc.n, row.Quiet, tc.quiet, capped, row.Body.Gaps)
+		}
+	}
+}
+
+// TestAQuestionAskedBeforeTheNightIsListedButKeepsTheDayQuiet: owner asks
+// wait up to 24h, so one asked before the window would make every morning
+// loud. It is listed on the page, counted for the push, and the day is quiet;
+// the same question asked inside the window makes it loud (the control).
+func TestAQuestionAskedBeforeTheNightIsListedButKeepsTheDayQuiet(t *testing.T) {
+	f := newMorningFixture(t)
+	owner := f.newMember(t)
+	ctx := f.as(owner)
+	chief := f.newAgent(t, owner, "ochief-"+strconv.FormatInt(time.Now().UnixNano(), 36), "chief", "o-chief-token-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	a := f.ask(t, owner, chief.ID, "Reprint last week's flyers?")
+	if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE attention_asks SET created_at = $2 WHERE id = $1`, a.ID, f.day.Since.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	pushed, row := f.report(t, ctx, owner)
+	if pushed || !row.Quiet || row.Questions != 1 {
+		t.Fatalf("an old question: pushed %v, quiet %v, %d questions; want quiet, no push, 1 listed", pushed, row.Quiet, row.Questions)
+	}
+	if page := f.page(t, ctx, f.day.Date); !strings.Contains(page, "Reprint last week&#39;s flyers?") {
+		t.Fatalf("the old question is not on the page")
+	}
+	// The control: the next day, a question asked inside its window.
+	next := f.day.Slot.Add(24 * time.Hour).In(f.loc)
+	f.day = f.srv.ext.MorningReport.Schedule.On(next.Year(), next.Month(), next.Day())
+	f.ask(t, owner, chief.ID, "Order new flyers?")
+	if pushed, row := f.report(t, ctx, owner); !pushed || row.Quiet {
+		t.Fatalf("control: a question asked overnight: pushed %v, quiet %v", pushed, row.Quiet)
+	}
+}
+
+// TestAStalledAgentIsNamedByItsNameNeverItsWindow: a dispatched agent whose
+// last turn failed, with no human name, is listed by its own name (the agent
+// fallback of stuckName); a labelled mirrored window with no human name is
+// "A session", never its label (TestTheMorningReportPageHasNoJargonInItsTopLayer).
+func TestAStalledAgentIsNamedByItsNameNeverItsWindow(t *testing.T) {
+	f := newMorningFixture(t)
+	f.chat(t, f.worker, agents.ChatMessage{Role: "user", Kind: "text", Content: "Paint the gate."},
+		agents.ChatMessage{Role: "assistant", Kind: "text", Content: AgentTurnFailedPrefix + "the usage limit was reached"})
+	_, row := f.report(t, f.asOwner, f.owner)
+	var names []string
+	for _, s := range row.Body.Stuck {
+		names = append(names, s.Kind+":"+s.Name)
+	}
+	if len(names) != 1 || names[0] != "error:"+f.worker.Name {
+		t.Fatalf("stuck = %q; want the worker, stopped on an error, by its name", names)
 	}
 }

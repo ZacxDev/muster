@@ -6,51 +6,43 @@ import (
 	"time"
 )
 
-// Report is one owner's morning report: what internal/api read for the
-// window [Since, Until) and, for the open questions and the stuck sessions, as
-// they stand when it is read. Every field is muster's own rows; nothing here
-// is a model's words.
+// Report is one owner's morning report as the job builds it: the window
+// [Since, Until), the open questions counted, and the Body it stores. Every
+// field is muster's own rows; nothing here is a model's words.
 type Report struct {
 	Since, Until time.Time
-	// Questions are the questions still waiting on the owner (the Asks
-	// queue's open questions — the chief's, the owner's sessions' and
-	// agents', and muster's own), newest first.
-	Questions []Question
-	// Done is what got done in the window: pull requests merged and tasks
-	// finished, one line each.
-	Done []Done
-	// Stuck is what is stuck: sessions stopped idle or on an error, and
-	// agents that failed.
-	Stuck []Stuck
-	// Usage is the window's usage, each part saying when it is not tracked.
-	Usage Usage
-}
-
-// Question is one open question.
-type Question struct {
-	// AskID is the attention ask's id; 0 for a question held in a session
-	// (answered in that session).
-	AskID   int64
-	Text    string
-	AskedAt time.Time
+	// Questions is how many questions wait on the owner now (the Asks
+	// queue's open questions); NewQuestions how many of them were asked in
+	// the window. The page lists them live, so only the counts are kept.
+	Questions, NewQuestions int
+	// Unchecked: whether a pull request merged could not be settled — a
+	// state GitHub did not answer, or more recent pull requests than one
+	// report reads. Such a day is never quiet: a merge may be hiding there.
+	Unchecked bool
+	Body
 }
 
 // The kinds of a Done line.
 const (
 	DoneMerged = "merged" // a pull request merged
-	DoneTask   = "task"   // a task finished
+	// DoneTaskChanged: a task that is complete and was last changed in the
+	// window. ⚠ muster keeps no time a task was COMPLETED: any change to a
+	// complete task (a tag, a synced snapshot) moves updated_at, so the page
+	// says "changed overnight", never "finished", and such a line does not by
+	// itself make a day loud.
+	DoneTaskChanged = "task"
 )
 
-// Done is one thing that got done.
+// Done is one thing that got done (or, for a task, changed).
 type Done struct {
 	Kind string
-	// Label is the line's text ("ZacxDev/muster#12", a task's title).
+	// Label is the line's text: a pull request's title, a task's title.
 	Label string
-	// Detail is the line's second part: the session that opened the pull
-	// request, or who finished the task ("" for none).
-	Detail string
-	Href   string
-	At     time.Time
+	// Ref is a pull request's owner/repo#n ("" for a task): kept for the
+	// link, never drawn as the line's text.
+	Ref  string `json:",omitempty"`
+	Href string
+	At   time.Time
 }
 
 // The kinds of a Stuck line.
@@ -64,18 +56,19 @@ const (
 type Stuck struct {
 	Kind string
 	Name string
-	// Why is the plain reason ("stopped 3h ago", "hit an error").
+	// Why is the plain reason ("idle, nothing running", "stopped on an error").
 	Why   string
 	Href  string
 	Since time.Time
 }
 
-// Usage is the window's usage. A part whose source is off says so: Off is
-// the plain sentence and Setting the variable that turns it on, which the
-// page shows only to an admin (an ⓘ).
+// Usage is the window's usage and cost. A part whose source is off says so
+// in Off, a plain sentence; the setting behind it is the page's to name (an
+// admin's ⓘ), never stored.
 type Usage struct {
 	Chief ChiefUsage
 	Plan  PlanUsage
+	Cost  CostUsage
 }
 
 // ChiefUsage is the chief's own work in the window: turns and how long they
@@ -83,10 +76,8 @@ type Usage struct {
 type ChiefUsage struct {
 	Tracked bool
 	Off     string
-	Setting string
 	Turns   int64
 	Busy    time.Duration
-	Tokens  int64
 }
 
 // PlanUsage is the AI plan's usage: each Claude account's latest reading.
@@ -96,41 +87,71 @@ type ChiefUsage struct {
 type PlanUsage struct {
 	Tracked  bool
 	Off      string
-	Setting  string
 	Accounts []PlanAccount
 }
 
-// PlanAccount is one account's reading.
+// PlanAccount is one account's reading. Its configured name is not kept: the
+// page calls it "Claude plan 1", "Claude plan 2", in the accounts' order.
 type PlanAccount struct {
-	Name string
 	// FiveHour and Week are the percent used (nil: not read).
 	FiveHour, Week *float64
 	ReadAt         time.Time
 }
 
-// newlyStuck is how many stuck lines began in the window: a session that was
-// already stuck yesterday is listed again, but does not by itself make a day
-// one on which something happened.
-func (r Report) newlyStuck() int {
-	n := 0
+// CostUsage is what the chief's work cost, where muster knows: its
+// OpenRouter sessions' spend (chief_session_llm_usage), which is booked per
+// UTC DAY — so it covers whole UTC days FirstDay..LastDay, not the window.
+// Claude plans carry no cost.
+type CostUsage struct {
+	Tracked           bool
+	Off               string
+	USD               float64
+	FirstDay, LastDay string
+}
+
+// Gap is one thing the report could not read: its plain sentence. The page
+// names the setting behind it, for an admin.
+type Gap struct {
+	Text string `json:"text"`
+}
+
+// Quiet reports a day on which nothing happened: no question asked in the
+// window still waits, no pull request merged, nothing got stuck in the window,
+// and every pull request was checked. A quiet day sends no push (operator
+// decision: "send it only on days when something happened").
+//
+// 🔴 WHAT NEVER MAKES A DAY LOUD BY ITSELF: usage; a question asked before the
+// window (owner asks wait up to 24 h, so yesterday's would push every
+// morning); a session stuck since before the window (or a session left stopped
+// would push forever); and a complete task that only CHANGED in the window
+// (DoneTaskChanged: a tag or a sync moves it). All of them are still listed
+// on the page.
+func (r Report) Quiet() bool {
+	if r.NewQuestions > 0 || r.Unchecked {
+		return false
+	}
+	for _, d := range r.Done {
+		if d.Kind == DoneMerged {
+			return false
+		}
+	}
 	for _, s := range r.Stuck {
 		if !s.Since.Before(r.Since) {
+			return false
+		}
+	}
+	return true
+}
+
+// Merged is how many pull requests in b merged.
+func (b Body) Merged() int {
+	n := 0
+	for _, d := range b.Done {
+		if d.Kind == DoneMerged {
 			n++
 		}
 	}
 	return n
-}
-
-// Quiet reports a day on which nothing happened: no question waits, nothing
-// got done, and nothing got stuck in the window. A quiet day sends no push
-// (operator decision: "send it only on days when something happened").
-//
-// 🔴 USAGE NEVER MAKES A DAY LOUD: a chief that ran turns but changed nothing
-// the owner can see is not news worth a push. A session stuck since BEFORE the
-// window is shown on the page but does not make the day loud either, or a
-// session left stopped would push every morning forever.
-func (r Report) Quiet() bool {
-	return len(r.Questions) == 0 && len(r.Done) == 0 && r.newlyStuck() == 0
 }
 
 // PushTitle is the push's title.
@@ -141,10 +162,10 @@ const PushTitle = "While you were away"
 const PushTag = "morning-report"
 
 // PushBody is the push's one line for a report with questions open
-// questions, done things done and stuck things stuck: counts only, never a
-// session's, a task's or a question's text ("1 question for you · 3 done · 2
-// stuck"). Zero terms are left out; a loud day always has at least one.
-func PushBody(questions, done, stuck int) string {
+// questions, merged pull requests merged and stuck things stuck: counts only,
+// never a session's, a task's or a question's text ("1 question for you · 3
+// merged · 2 stuck"). Zero terms are left out.
+func PushBody(questions, merged, stuck int) string {
 	var parts []string
 	switch {
 	case questions == 1:
@@ -152,14 +173,14 @@ func PushBody(questions, done, stuck int) string {
 	case questions > 1:
 		parts = append(parts, strconv.Itoa(questions)+" questions for you")
 	}
-	if done > 0 {
-		parts = append(parts, strconv.Itoa(done)+" done")
+	if merged > 0 {
+		parts = append(parts, strconv.Itoa(merged)+" merged")
 	}
 	if stuck > 0 {
 		parts = append(parts, strconv.Itoa(stuck)+" stuck")
 	}
 	if len(parts) == 0 {
-		return "Nothing new"
+		return "See what happened overnight"
 	}
 	return strings.Join(parts, " · ")
 }

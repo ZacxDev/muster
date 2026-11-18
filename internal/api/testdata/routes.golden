@@ -162,6 +162,7 @@ GET /pages
 GET /pages/{id}
 GET /pages/{id}/card
 GET /pages/{id}/preview
+GET /pages/{id}/responses/{rid}/raw
 GET /pages/{id}/versions/{v}/content
 GET /pages/{id}/view
 GET /plugin/v1/drafts/checks

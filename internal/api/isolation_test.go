@@ -800,6 +800,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /pages/{id}/view":                             classParam,
 	"GET /pages/{id}/preview":                          classParam,
 	"GET /pages/{id}/versions/{v}/content":             classParam,
+	"GET /pages/{id}/responses/{rid}/raw":              classParam,
 	"POST /pages/{id}/versions/{v}/submit":             classParam,
 	"POST /pages/{id}/versions/{v}/upload":             classParam,
 	"POST /pages/{id}/links/{link}/revoke":             classParam,
@@ -1287,7 +1288,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a page's second version")
 	aPageLink, err := pgs.CreateLink(ua, aPage.ID, pages.LinkLive, w.a.agent.Name, true)
 	must(err, "a page link")
-	_, err = pgs.AddResponse(ua, aPageLink, 2, "q1", pages.KindSubmit, []byte(`{"answer":"`+w.canary+` answered"}`), "")
+	aPageResp, err := pgs.AddResponse(ua, aPageLink, 2, "q1", pages.KindSubmit, []byte(`{"answer":"`+w.canary+` answered"}`), "")
 	must(err, "a page response")
 	// …and a second page of A's, the one POST /pages/{id}/delete names, so A's
 	// own delete (the control) leaves the first for every other route.
@@ -1358,7 +1359,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
-		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, team: w.aTeam,
+		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, pageResp: aPageResp.ID, team: w.aTeam,
 		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID, morningDate: isoMorningDate}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
@@ -1370,12 +1371,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
-		page: ghostID, pageLink: ghostID, pageDel: ghostID,
+		page: ghostID, pageLink: ghostID, pageDel: ghostID, pageResp: ghostID,
 		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID, morningDate: "1999-01-01"}
-	// The morning report (0153): A's report of isoMorningDate names the canary
+	// The morning report (0154): A's report of isoMorningDate names the canary
 	// in a done line, so A's own page is told from the ghost day's by its body.
 	if _, err := morning.NewPG(pool).Insert(ua, morning.Row{Date: isoMorningDate, Since: time.Date(2001, 2, 2, 14, 0, 0, 0, time.UTC),
-		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTask, Label: w.canary + " morning"}}}}); err != nil {
+		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTaskChanged, Label: w.canary + " morning"}}}}); err != nil {
 		t.Fatalf("A's morning report: %v", err)
 	}
 
@@ -1463,7 +1464,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
-	// The morning report (0153): A's report is a real object B must not reach.
+	// The morning report (0154): A's report is a real object B must not reach.
 	ext.MorningReport = &MorningReport{Store: morning.NewPG(pool), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}}
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
@@ -1741,6 +1742,8 @@ type isoObjs struct {
 	// Shareable pages (0116): a page's id and one of its links', and the
 	// page the delete route names (its own, for ruleDel's reason).
 	page, pageLink, pageDel int64
+	// pageResp is a response of A's page (its raw download's {rid}).
+	pageResp int64
 	// A team (phase 2a): one A manages, whose name carries the canary.
 	team int64
 	// A host officer spawn of A's (0125), its host the canary (phase 3's
@@ -1884,7 +1887,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
 		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
 		"{wid}", strconv.FormatInt(o.refWrite, 10),
-		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1",
+		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1", "{rid}", strconv.FormatInt(o.pageResp, 10),
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
 		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload, "{date}", o.morningDate,

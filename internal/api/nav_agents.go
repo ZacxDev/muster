@@ -138,13 +138,23 @@ func (s *Server) handleNavWaiting(w http.ResponseWriter, r *http.Request) {
 // (offlineShellParam) — still serves the shell, which draws the Tasks tab
 // there (defaultTab).
 func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) {
+	to, _, err := s.homeResolve(r, except)
+	return to, err
+}
+
+// homeResolve is homeTarget, and also whether the entries it read list any
+// TEAM agent or team session (AgentCardView.TeamOwner, MirrorCardView.Owner)
+// — which home never opens, so with nothing of the viewer's own the
+// onboarding page (handleAgentsHome) says they are in the menu rather than
+// "no agents". team is false when home returns before reading the entries.
+func (s *Server) homeResolve(r *http.Request, except homeExcept) (to string, team bool, err error) {
 	ctx := r.Context()
 	if s.ext.Agents == nil || requestOwner(ctx) <= 0 {
-		return "", nil
+		return "", false, nil
 	}
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
-		return "", fmt.Errorf("agent list: %w", err)
+		return "", false, fmt.Errorf("agent list: %w", err)
 	}
 	if chief, ok := primaryChief(ownedBy(list, requestOwner(ctx))); ok && chief.ID != except.agent {
 		// A chief its owner turned off is not home (chief_toggle.go).
@@ -153,12 +163,18 @@ func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) 
 			s.logger.Printf("home: read the chief toggle: %v (opening the last session instead)", err)
 		}
 		if on {
-			return s.agentPageHref(ctx, chief), nil
+			return s.agentPageHref(ctx, chief), false, nil
 		}
 	}
 	cards, mirrors, err := s.agentsListEntries(ctx)
 	if err != nil {
-		return "", fmt.Errorf("entries: %w", err)
+		return "", false, fmt.Errorf("entries: %w", err)
+	}
+	for _, c := range cards {
+		team = team || c.TeamOwner != 0
+	}
+	for _, m := range mirrors {
+		team = team || m.Owner != 0
 	}
 	// Home is the viewer's own: a team agent (team sharing 4.4, its chief
 	// included — AgentCardView.TeamOwner) and a team host's session (2b.3)
@@ -192,7 +208,22 @@ func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) 
 		}
 		mirrors = kept
 	}
-	return ui.HomeHref(cards, mirrors, s.recentRefs(ctx)), nil
+	return ui.HomeHref(cards, mirrors, s.recentRefs(ctx)), team, nil
+}
+
+// ownHostConnected is whether one of the viewer's OWN computers is connected
+// now (mirror.HostView.Online, from the plugin's hub): the onboarding page
+// then leads with starting an agent rather than connecting a computer.
+func (s *Server) ownHostConnected(ctx context.Context) bool {
+	if s.ext.Mirror == nil {
+		return false
+	}
+	for _, h := range s.ext.Mirror.Hosts(ctx) {
+		if h.Online {
+			return true
+		}
+	}
+	return false
 }
 
 // redirectHome answers a request for `/` with homeTarget — or /agents, which
@@ -264,7 +295,7 @@ func (s *Server) redirectTo(w http.ResponseWriter, r *http.Request, to string) {
 // here rather than looping. A failed read is a 500 that says so, never the
 // "No agents yet" page over agents that exist.
 func (s *Server) handleAgentsHome(w http.ResponseWriter, r *http.Request) {
-	to, err := s.homeTarget(r, s.leaving(r))
+	to, team, err := s.homeResolve(r, s.leaving(r))
 	if to != "" {
 		s.redirectTo(w, r, to)
 		return
@@ -276,7 +307,8 @@ func (s *Server) handleAgentsHome(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsHome(w, s.shellFeatures(r.Context())); err != nil {
+	st := ui.AgentsHomeState{TeamEntries: team, HostConnected: s.ownHostConnected(r.Context())}
+	if err := ui.RenderAgentsHome(w, s.shellFeatures(r.Context()), st); err != nil {
 		s.logger.Printf("agents home: render: %v", err)
 	}
 }

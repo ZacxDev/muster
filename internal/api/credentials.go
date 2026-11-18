@@ -169,7 +169,7 @@ func (s *Server) renderCredentials(w http.ResponseWriter, r *http.Request, code 
 	case s.ext.Credentials == nil:
 		b.WriteString(`<p class="text-sm text-fg2" data-credentials-off>This server has no credential store configured, so credentials cannot be added here. ` +
 			`The operator turns it on by setting ` + credentialStoreVariable(s) + ` in .env and restarting muster — ` +
-			`<a href="` + ui.FeatureHref(features.Connectors) + `" class="text-accent underline">Features → Connectors and credentials</a>.</p></section>`)
+			`<a href="` + ui.FeatureHref(features.Connectors) + `" class="text-accent underline">Features → ` + features.ConnectorsName + `</a>.</p></section>`)
 	case s.ext.Credentials.UsesEnvironment(r.Context(), callerID(r.Context())):
 		b.WriteString(`<p class="text-sm text-fg2" data-credentials-environment>Your agents use the credentials this server is configured with (its Claude accounts and OpenRouter key). There is nothing to add here.</p></section>`)
 	default:

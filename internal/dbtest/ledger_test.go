@@ -171,7 +171,7 @@ var pgBackedPackages = []string{
 	// row-level security, and a fake ledger can falsify neither.
 	"internal/memorelay",
 	"internal/mirror",
-	// Added by the morning report (migration 0153). "One report per owner per
+	// Added by the morning report (migration 0154). "One report per owner per
 	// day", "the push is claimed once and never for a quiet day" and "one
 	// owner's reports are invisible to another" are a primary key's, a
 	// conditional UPDATE's and row-level security's claims.

@@ -73,12 +73,17 @@ test.describe('phone 390×844', () => {
     expect(sections).toEqual(['morning-questions', 'morning-done', 'morning-stuck', 'morning-usage']);
 
     // Every part, in plain words.
-    await expect(page.getByTestId('morning-done')).toContainText('example/festival-site#128');
+    await expect(page.getByTestId('morning-done')).toContainText('Add the festival map page');
+    await expect(page.getByTestId('morning-done')).not.toContainText('festival-site#128');
+    await expect(page.getByTestId('morning-done')).toContainText('Complete task, changed overnight');
     await expect(page.getByTestId('morning-done')).toContainText('Print the volunteer rota');
     await expect(page.getByTestId('morning-stuck')).toContainText('Ticket scanner');
     await expect(page.getByTestId('morning-stuck')).toContainText('stopped on an error');
     await expect(page.getByTestId('morning-usage')).toContainText('Your chief worked 47m over 14 turns.');
-    await expect(page.getByTestId('morning-usage')).toContainText('festival-pool: this 5-hour period 41% used, this week 73% used');
+    await expect(page.getByTestId('morning-usage')).toContainText('Claude plan 1: this 5-hour period 41% used, this week 73% used');
+    await expect(page.getByTestId('morning-usage')).toContainText("Cost isn't tracked for Claude plans.");
+    // How long the question has left, above its card (asks wait 24h).
+    await expect(questions.locator('[data-morning-left]')).toContainText(/^Answer within \d+h/);
     await expect(report).not.toContainText('MUSTER_');
 
     // Phone sizing: no sideways scroll; every report link and button 44px tall.

@@ -46,7 +46,7 @@ var (
 
 func loudRow(date string) Row {
 	return Row{Date: date, Since: day1Since, Until: day1Until, Questions: 2,
-		Body: Body{Done: []Done{{Kind: DoneTask, Label: "Rotate the example key", Href: "/tasks/41"}}}}
+		Body: Body{Done: []Done{{Kind: DoneTaskChanged, Label: "Rotate the example key", Href: "/tasks/41"}}}}
 }
 
 // TestOneReportPerOwnerPerDay: the day's second insert writes nothing and
@@ -131,5 +131,30 @@ func TestAnOwnerSeesOnlyItsOwnReports(t *testing.T) {
 	}
 	if ok, err := p.ClaimPush(a, "2000-01-02", day1Until); err != nil || !ok {
 		t.Fatalf("control: A's own claim: %v, %v", ok, err)
+	}
+}
+
+// TestTheReadsNameTheirOwnerBesideRowLevelSecurity: the system scope passes
+// row-level security on every row, so a read or claim made under it reaches
+// rows only if the SQL itself fails to name its owner (ownerIs). It gets none
+// and claims nothing; the owner's own read is the control.
+func TestTheReadsNameTheirOwnerBesideRowLevelSecurity(t *testing.T) {
+	p := pgMorning(t)
+	a := asUser(2)
+	if _, err := p.Insert(a, loudRow("2000-01-02")); err != nil {
+		t.Fatal(err)
+	}
+	sys := authz.System(context.Background())
+	if _, ok, err := p.Get(sys, "2000-01-02"); err != nil || ok {
+		t.Errorf("Get under the system scope: %v, %v; want none", ok, err)
+	}
+	if _, ok, err := p.Latest(sys); err != nil || ok {
+		t.Errorf("Latest under the system scope: %v, %v; want none", ok, err)
+	}
+	if ok, err := p.ClaimPush(sys, "2000-01-02", day1Until); err != nil || ok {
+		t.Errorf("ClaimPush under the system scope: %v, %v; want false", ok, err)
+	}
+	if _, ok, err := p.Get(a, "2000-01-02"); err != nil || !ok {
+		t.Errorf("control: the owner's own Get: %v, %v", ok, err)
 	}
 }

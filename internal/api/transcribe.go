@@ -159,7 +159,7 @@ func (s *Server) dictatePath() string {
 }
 
 // dictateOff reports that this server has no dictation at all, so a message
-// box draws the muted microphone that links to its Features row
+// box draws the muted microphone that links to its Features ⓘ sheet
 // (ui.DictateOffControlHTML) in place of the real one.
 func (s *Server) dictateOff() bool { return s.dictatePath() == "" }
 

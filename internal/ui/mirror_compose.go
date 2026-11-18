@@ -127,7 +127,7 @@ type ComposerView struct {
 	// DictateOff and UploadOff say the server has no dictation / no
 	// attachments (the feature is off, not merely this composer disabled): an
 	// enabled composer then draws a MUTED mic / paperclip in the same place,
-	// linking to that feature's row on the Features page (FeatureHref), so the
+	// linking to that feature's ⓘ sheet on the Features page (FeatureHref), so the
 	// control does not vanish without a word. False draws nothing — the zero
 	// value is the composer as it was.
 	DictateOff, UploadOff bool

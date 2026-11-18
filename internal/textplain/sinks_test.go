@@ -48,15 +48,18 @@ import (
 var titleNames = map[string]bool{
 	"Title": true, "DisplayName": true, "Label": true, "DisplayTitle": true,
 	"TaskTitle": true,
+	// A task's body read as its title (ui.TaskBodyTitle: an untitled task's
+	// heading falls back to it).
+	"TaskBodyTitle": true,
 	// A focus's description is the summary under its title, drawn as one line
 	// of text: the same rule applies.
 	"Description": true,
 }
 
 // bareAccessors are the title accessors called unqualified: package ui's
-// TaskTitle, and package api's askSource / askSourceParts (an ask's source,
+// TaskTitle and TaskBodyTitle, and package api's askSource / askSourceParts (an ask's source,
 // which names a mirrored window — see apiTitleNames).
-var bareAccessors = map[string]bool{"TaskTitle": true, "askSource": true, "askSourceParts": true}
+var bareAccessors = map[string]bool{"TaskTitle": true, "TaskBodyTitle": true, "askSource": true, "askSourceParts": true}
 
 // apiTitleNames adds the attention item's fields, which are titles in api's
 // hand-written attention HTML.
@@ -98,6 +101,7 @@ var plainingHelpers = map[string]bool{
 	"pageCardTitle":   true,
 	"PageShareButton": true,
 	"PageShareMenu":   true,
+	"PageCopyButton":  true,
 }
 
 // helperNameArgs are, per plaining helper, the argument positions that carry a
@@ -113,6 +117,7 @@ var helperNameArgs = map[string][]int{
 	"pageCardTitle":       {0},    // raw
 	"PageShareButton":     {1},    // title (id and the address are not names)
 	"PageShareMenu":       {1},    // title
+	"PageCopyButton":      {1},    // title (id and the address are not names)
 }
 
 type exemption struct {
@@ -201,12 +206,12 @@ var apiExempt = map[string]exemption{
 	"plugins.go Server.renderPluginsPage p.Label":              {1, "a plugin's configured label (its name), not a title"},
 	"plugin_pairing.go Server.pairSectionHTML p.Label":         {1, "a pairing request's label (the plugin's name to be), not a title"},
 	"pages.go Server.renderPagesList p.Creator.Label":          {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
-	"pages.go Server.renderPageDetail l.Label":                 {1, "a share link's label: its creation time and its token hash's first 8 hex digits, computed by pages.Link.Label; never author text"},
 	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
 	"pages.go Server.renderPagesList p.Title":                  {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
-	"pages.go Server.renderPageDetail p.Title":                 {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
+	"pages.go Server.renderPageDetail p.Title":                 {2, "passed RAW to pageShareControls and ui.PageCopyButton, whose ui.PageShareButton / ui.PageShareMenu / ui.PageCopyButton plain it once (pageCardTitle)"},
+	"pages.go pageResponseHTML l.Label":                        {1, "a response's field label: the page's own form field's label (else its name) or muster's fixed words (Answer, Chose, Decision), from pages.DescribeAnswer; not a title"},
 	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
-	"features.go featureRow f.Description":                     {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
+	"features.go featureSheet f.Description":                   {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
 	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
 	"team_connectors.go Server.renderTeamConnectors sg.Source": {1, "a standing grant's credential source, compared with connectors.SourceApp to pick the App's rows; never drawn"},
 	"officer_ask_context.go officerContextHTML c.Source":       {1, "an officer ask's source MESSAGE (attention.ItemContext.Source, a struct), not a title: its fields are sanitised by attention.Clean and escaped where drawn"},

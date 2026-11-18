@@ -641,7 +641,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
 		// fleet_list's fleet fields. Off by default; it needs a database.
 		ext.FleetDigest = cfg.FleetDigest
-		// The morning report (MUSTER_MORNING_REPORT=1, migration 0153): one
+		// The morning report (MUSTER_MORNING_REPORT=1, migration 0154): one
 		// report per owner per day and its push. Off by default; it needs a
 		// database.
 		if cfg.MorningReport {
@@ -2188,8 +2188,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.MorningReport != nil:
 		sc := ext.MorningReport.Schedule
-		l.Printf("morning report: ON (%s=1) — one push a day at %02d:%02d %s (%s, %s), only on a day something happened; "+
-			"plan usage %s", envMorningReport, sc.Hour, sc.Minute, sc.Loc, envMorningReportAt, envMorningReportTZ, morningPlanUsageLine(ext))
+		l.Printf("morning report: ON (%s=1) — one push a day at %02d:%02d %s (%s), only on a day something happened; "+
+			"plan usage %s", envMorningReport, sc.Hour, sc.Minute, sc.Loc, envMorningReportTZ, morningPlanUsageLine(ext))
 	case a.cfg.MorningReport:
 		l.Printf("morning report: INERT — %s=1 but there is no database", envMorningReport)
 	default:

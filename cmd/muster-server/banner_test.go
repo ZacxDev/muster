@@ -492,8 +492,6 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
-	envMorningReportAt: "printed with its value on the `morning report: ON` line; off, the report does not run, and a bad value " +
-		"refuses boot either way",
 	envMorningReportTZ: "printed with its value on the `morning report: ON` line; off, the report does not run, and a bad value " +
 		"refuses boot either way",
 	envDatabaseFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +

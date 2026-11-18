@@ -970,8 +970,11 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	if idx == nil {
 		return nil, errors.New("officers: the provisioner's instances could not be read")
 	}
-	out := make([]officers.InstanceState, 0, o.MaxInstances)
-	for n := 1; n <= o.MaxInstances; n++ {
+	// 🔴 EVERY SLOT, chat-only instances included (Officer.Slots): an
+	// instance the loop started for chats and this list hid would read as
+	// down, and be started again every pass.
+	out := make([]officers.InstanceState, 0, o.Slots())
+	for n := 1; n <= o.Slots(); n++ {
 		name := o.InstanceName(n)
 		a, ok := rows[name]
 		in := officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx),
@@ -1768,7 +1771,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	if !isOfficerTool(name) {
 		return "", false
 	}
-	o, _, ok := s.officerOf(a)
+	o, n, ok := s.officerOf(a)
 	if !ok {
 		return toolErr("%s is available to officer instances only", name), true
 	}
@@ -1814,6 +1817,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			officers.ToolShepherdMergeAsk, officers.ToolPublicBranch:
 			return chatLaneQueueRefusal(name, chat), true
 		}
+	} else if name == officers.ToolClaim && o.ChatOnly(n) {
+		// 🔴 A CHAT-ONLY INSTANCE'S PRIMARY TAKES NO QUEUE WORK: it is numbered
+		// past max_instances, which keeps bounding the queue; muster started
+		// it for chats (officers.Officer.ChatOnly).
+		return toolErr("%s is refused: instance %s serves chat sessions only (it is past max_instances %d, which bounds queue work); end your turn",
+			name, o.InstanceLabel(n), o.MaxInstances), true
 	}
 	if isShipTool(name) {
 		return s.dispatchShipTool(ctx, a, o, name, arguments), true

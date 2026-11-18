@@ -457,6 +457,20 @@ var (
 		Name: "muster_officer_judgement_cap_reached",
 		Help: "Officers whose judgement pool has used its daily session cap while claimable judgement items wait (not woken until 00:00 UTC).",
 	})
+	// OfficerChatInstancesUp counts the instances up (running or on their way
+	// up) in the pools that run chats, within each pool's chat ceiling
+	// (chat_max_instances), across every officer, as of each officer's last
+	// successful pass. OfficerChatsWaiting counts the pending chats no lane
+	// is free for (each officer's last pass): above zero for longer than a
+	// pass or two, the pool is at its chat ceiling.
+	OfficerChatInstancesUp = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_chat_instances_up",
+		Help: "Officer instances up within their pool's chat ceiling (chat_max_instances), in the pools that run chats.",
+	})
+	OfficerChatsWaiting = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_chats_waiting",
+		Help: "Pending officer chats with no free chat lane at the last pass.",
+	})
 	// OfficerTranscriptEvents counts officer transcript events by what became
 	// of them (internal/officers/transcript): posted (HQ answered 2xx),
 	// dropped_buffer (an instance's buffer was full: the oldest went),
@@ -488,6 +502,40 @@ var (
 		Name: "muster_officer_pools_push_total",
 		Help: "Officer declared-pools pushes to HQ, by result (pushed or a failure class).",
 	}, []string{"result"})
+	// OfficerPassDuration is how long one officer's wake-loop pass took (its
+	// HQ and fleet reads, the decision and acting on it), every officer's
+	// passes together. A pass is bounded at 2m; passes running near it hold
+	// one of the loop's concurrent pass slots that long.
+	OfficerPassDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "muster_officer_pass_duration_seconds",
+		Help:    "Duration of one officer wake-loop pass.",
+		Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120},
+	})
+	// OfficerPassStartLag is how late a pass started after the officer was
+	// due (its next-check time): near zero while the loop keeps up. A lag past
+	// the officer's poll_interval is also logged, once per episode, naming it.
+	// Chat items are claimed at the end of a pass, so this is the floor of how
+	// long a chat waits for its turn.
+	OfficerPassStartLag = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "muster_officer_pass_start_lag_seconds",
+		Help:    "How late an officer's wake-loop pass started after it was due.",
+		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800},
+	})
+	// OfficerPassesInFlight is how many officers' passes run at once. At the
+	// loop's cap every slot is busy; whether an officer is waiting for one is
+	// OfficerPassOldestWait.
+	OfficerPassesInFlight = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_passes_in_flight",
+		Help: "Officer wake-loop passes running now (bounded by the loop's concurrency cap).",
+	})
+	// OfficerPassOldestWait is, at the loop's last tick, how long the officer
+	// that has waited longest has been due without its pass starting (every
+	// slot taken); 0 when no due officer is waiting. It sees an officer that
+	// waits before its pass starts — OfficerPassStartLag only once it has.
+	OfficerPassOldestWait = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_pass_oldest_wait_seconds",
+		Help: "Seconds the longest-waiting due officer has waited for a wake-loop pass slot (0: none waiting).",
+	})
 	// CCConsumerUsagePush counts the consumer usage collector's per-instance
 	// attempts (internal/consumerusage, MUSTER_CC_CONSUMER_USAGE), by result:
 	// pushed (HQ answered 2xx), empty (no row to send), ccd_unsupported (the

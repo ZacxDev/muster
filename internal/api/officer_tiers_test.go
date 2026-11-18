@@ -132,15 +132,17 @@ func TestATieredInstanceClaimsWithItsTier(t *testing.T) {
 
 // TestTieredInstancesAreTheOfficersForEveryNameRule: a routine instance is
 // delete-protected and runs its tier's model, like a judgement instance; a
-// `-r<n>` past the routine max, and a `-r<n>` beside an UNTIERED officer, are
-// ordinary agents.
+// `-r<n>` past the routine max, a `-<n>` past the judgement pool's slots
+// (max_instances, or the chat ceiling past it: a chat-only instance is the
+// pool's), and a `-r<n>` beside an UNTIERED officer, are ordinary agents.
 func TestTieredInstancesAreTheOfficersForEveryNameRule(t *testing.T) {
 	r := newTieredOfficerRig(t)
 	r1 := r.addNamed(offTRoutine+"1", 951)
 	r2 := r.addNamed(offTRoutine+"2", 952)
 	r3 := r.addNamed(offTRoutine+"3", 953) // past the routine max of 2
 	j1 := r.addNamed(offTJudge+"1", 954)
-	j2 := r.addNamed(offTJudge+"2", 955)                     // past the judgement max of 1 (routine's 2 must not leak)
+	j2 := r.addNamed(offTJudge+"2", 955)                     // past the judgement max of 1: a chat-only instance (chat ceiling 3)
+	j4 := r.addNamed(offTJudge+"4", 957)                     // past the judgement pool's slots (3)
 	flatR := r.addNamed("officer-release-alpha-web-r1", 956) // A is untiered: no routine pool
 
 	list, _ := r.store.List(context.Background())
@@ -148,7 +150,7 @@ func TestTieredInstancesAreTheOfficersForEveryNameRule(t *testing.T) {
 	for _, tc := range []struct {
 		a    agents.Agent
 		want bool
-	}{{r1, true}, {r2, true}, {r3, false}, {j1, true}, {j2, false}, {flatR, false}} {
+	}{{r1, true}, {r2, true}, {r3, false}, {j1, true}, {j2, true}, {j4, false}, {flatR, false}} {
 		if got := protect(tc.a); got != tc.want {
 			t.Errorf("deleteProtection(%s) = %v, want %v", tc.a.Name, got, tc.want)
 		}
