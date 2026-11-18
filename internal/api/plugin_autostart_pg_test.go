@@ -804,20 +804,20 @@ func TestTheStopAskIsWithdrawnWhenNothingIsLeftToStop(t *testing.T) {
 	}
 }
 
-// TestTheAutostartCapCheckIsTheChiefsDailyCap pins migration 0153's
+// TestTheAutostartCapCheckIsTheChiefsDailyCap pins migration 0154's
 // hardcoded `BETWEEN 1 AND 10` to the Go constants it spells: the per-plugin
 // ceiling IS the chief's own daily cap.
 func TestTheAutostartCapCheckIsTheChiefsDailyCap(t *testing.T) {
 	if plugins.MaxAutostartDailyCap != plugins.MaxChiefDispatchesPerDay {
 		t.Fatalf("MaxAutostartDailyCap %d != MaxChiefDispatchesPerDay %d", plugins.MaxAutostartDailyCap, plugins.MaxChiefDispatchesPerDay)
 	}
-	sql, err := os.ReadFile("../db/migrations/0153_plugin_autostart.sql")
+	sql, err := os.ReadFile("../db/migrations/0154_plugin_autostart.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := "autostart_daily_cap BETWEEN 1 AND " + strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + ")"
 	if !strings.Contains(string(sql), want) {
-		t.Fatalf("the 0153 CHECK no longer reads %q: it and MaxChiefDispatchesPerDay diverged", want)
+		t.Fatalf("the 0154 CHECK no longer reads %q: it and MaxChiefDispatchesPerDay diverged", want)
 	}
 }
 

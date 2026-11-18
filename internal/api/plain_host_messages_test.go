@@ -8,7 +8,6 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plainscan"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -33,7 +33,7 @@ import (
 // raw "mirror:" prefix, the host binary's name, a quoted id the hub appends
 // ("(host "atlas", …)"), a token counter ("~+140 ctx", "+3.3k ctx"), and the
 // tool-call count's own words ("2 tool calls").
-var hostJargon = regexp.MustCompile("(^|[\\s(`\"'“‘])--?[a-z][a-z-]*\\b|\\bmirror: |muster-mirror|\\(host \"|\\bctx\\b|\\btool calls?\\b|\\bdetails have more\\b")
+var hostJargon = plainscan.Host
 
 // assertNoHostJargon fails for every top-layer text of markup (topLayerTexts:
 // text, title, aria-label and placeholder, never an ⓘ sheet, a script or a

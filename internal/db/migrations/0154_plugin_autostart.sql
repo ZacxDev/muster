@@ -1,4 +1,4 @@
--- muster 0153 — AUTO-START: A PLUGIN WHOSE TASKS START AN AGENT WITH NO TAP
+-- muster 0154 — AUTO-START: A PLUGIN WHOSE TASKS START AN AGENT WITH NO TAP
 -- (docs/plugins.md#auto-start; internal/plugins autostart.go; internal/api
 -- plugin_autostart.go).
 --
@@ -28,9 +28,10 @@
 -- No new table or policy: 0015's owner policy and grants on plugins cover the
 -- columns, so db.RLSOn re-applies nothing for it. Idempotent.
 --
--- Must apply after its predecessor, 0152_page_owner_view (the contiguity test
--- refuses a gap). Numbered 0153 at merge: 0152 is the pages owner view's. 🔴 RENUMBER IT if another migration takes
--- 0153 first.
+-- Must apply after its predecessor, 0153_plugin_task_created_by_backfill (the
+-- contiguity test refuses a gap). Numbered 0154 at merge: 0152 is the pages
+-- owner view's, 0153 the plugin task backfill's. 🔴 RENUMBER IT if another migration takes
+-- 0154 first.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them, so
 -- nothing auto-starts once it runs):
@@ -38,7 +39,7 @@
 --   ALTER TABLE public.plugins DROP COLUMN IF EXISTS autostart_at,
 --     DROP COLUMN IF EXISTS autostart_daily_cap, DROP COLUMN IF EXISTS autostart_repo,
 --     DROP COLUMN IF EXISTS autostart_target;
---   DELETE FROM schema_migrations WHERE version = 153;
+--   DELETE FROM schema_migrations WHERE version = 154;
 
 SET LOCAL lock_timeout = '3s';
 

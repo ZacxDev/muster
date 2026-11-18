@@ -112,6 +112,7 @@ func (s *Server) handleAPIAgentCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	noteText := strings.TrimSpace(req.Prompt)
 	var noteID *int64
+	var displayName string
 	if req.NoteID != nil {
 		if s.ext.Notes == nil {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "this server has no task store, so note_id names nothing"})
@@ -130,13 +131,18 @@ func (s *Server) handleAPIAgentCreate(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusConflict, map[string]any{"error": "task is gated (" + reason + ") — remove the gate: tag to dispatch"})
 			return
 		}
-		noteText = n.Body
+		// The task's text through the one rule (task_kickoff.go): a plugin's
+		// title and body arrive fenced. The agent is still named from the
+		// body, as before (createAndDispatchAgent would name it from the
+		// fenced text's first line).
+		noteText = taskKickoffText(n)
 		id := *req.NoteID
 		noteID = &id
+		displayName = dispatchDisplayName(id, n.Body)
 	}
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: strings.TrimSpace(req.Repo), RepoBranch: strings.TrimSpace(req.RepoBranch), Model: strings.TrimSpace(req.Model),
-		NoteID: noteID, NoteText: noteText, Kickoff: start, TrackOutcome: true,
+		NoteID: noteID, NoteText: noteText, DisplayName: displayName, Kickoff: start, TrackOutcome: true,
 		Kind: strings.TrimSpace(req.Kind), CCAccount: strings.TrimSpace(req.CCAccount), CCFailover: req.CCFailover,
 		WorkerPool: strings.TrimSpace(req.WorkerPool),
 	})

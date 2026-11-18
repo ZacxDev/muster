@@ -20,7 +20,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// AUTO-START (docs/plugins.md#auto-start, migration 0153): the owner opts ONE
+// AUTO-START (docs/plugins.md#auto-start, migration 0154): the owner opts ONE
 // plugin in, on its /plugins card behind a fresh sign-in, and a task that
 // plugin files starts an agent on it with no tap.
 //
@@ -48,7 +48,8 @@ import (
 // 🔴 THE TASK CHOOSES NOTHING. The target and repository are the opt-in's;
 // a task naming another repository is refused, never followed; the body is
 // handed to the agent INSIDE the plugin-message fence
-// (plugins.RenderAutostartTask), never as instructions.
+// (taskKickoffText, task_kickoff.go: the one rule every door uses), never as
+// instructions.
 //
 // 🔴 EVERY AUTO-START IS SEEN AND STOPPABLE: a comment on the task, and an ask
 // from muster on the Attention view and the owner's phone — its push is
@@ -219,7 +220,7 @@ func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plu
 		return agents.Agent{}, autostartPrior
 	}
 	dp := dispatchParams{Kind: kind, Repo: cfg.Repo, Model: task.Model, Kickoff: true, TrackOutcome: true,
-		DispatchedBy: s.ownersChiefID(ctx), NoteText: autostartKickoff(p, task), NoteID: &task.ID,
+		DispatchedBy: s.ownersChiefID(ctx), NoteText: autostartKickoff(task), NoteID: &task.ID,
 		DisplayName: dispatchDisplayName(task.ID, task.Body)}
 	if kind == agents.KindClaudeCode {
 		dp.Model = "" // claudeCodeNoModel
@@ -236,14 +237,14 @@ func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plu
 	return st.agent, ""
 }
 
-// autostartKickoff is an auto-started agent's first message: the task the
-// plugin filed, title and body INSIDE the plugin-message fence
-// (plugins.RenderAutostartTask), then muster's rules for a started agent,
+// autostartKickoff is an auto-started agent's first message: the task's text
+// through THE kickoff rule every door uses (taskKickoffText: a plugin's title
+// and body inside the plugin-message fence), then muster's rules for a started agent,
 // LAST, under the auto path's own line (autostartRules: muster started it on
 // the owner's opt-in, never "your owner's chief"). A forward folded into the
 // first turn goes before them (forwardToTaskAgent).
-func autostartKickoff(p plugins.Plugin, n notes.Note) string {
-	return plugins.RenderAutostartTask(p, n.ID, n.Title, n.Body) + autostartRules
+func autostartKickoff(n notes.Note) string {
+	return taskKickoffText(n) + autostartRules
 }
 
 // sameAutostart reports whether the setting read under the lock is still the

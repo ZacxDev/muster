@@ -311,7 +311,7 @@ type attentionItem struct {
 	// built where no server is in reach (a push, attention_list).
 	dictate, sessionLink string
 	// dictateOff: the server has no dictation, so the box draws the muted mic
-	// linking to its Features row (answerMic). Set with dictate.
+	// linking to its Features ⓘ sheet (answerMic). Set with dictate.
 	dictateOff bool
 	// systemAsk: an ask muster raised itself (attention.Asker.System) — a task
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
@@ -1702,7 +1702,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.
 	b.WriteString(s.draftStepUpHTML(r))
-	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
+	// The Asks page is a page of cards: the wide column on a desktop.
+	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String(), navWide)
 }
 
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
@@ -1879,9 +1880,9 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	dismiss := ""
 	switch it.Kind {
 	case attentionKindAsk:
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		dismiss = askDismissButton(dismissForm, "Dismiss without answering")
 	case attentionKindNotice:
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss" title="Dismiss" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		dismiss = askDismissButton(dismissForm, "Dismiss")
 	}
 	href := ""
 	switch it.Kind {
@@ -1917,7 +1918,15 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
 `)
 	case it.Kind == attentionKindAsk:
-		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss))
+		// THE answer form, the Asks card's own (askAnswerFormHTML): Dismiss
+		// ends its answer row (a session block has no footer).
+		gate := ""
+		if it.stepUpWhy != "" {
+			// A team card answered with a fresh sign-in (teamCardStepUpWhy): it
+			// confirms in place, on the page's dialog (stepUpFormsHTML).
+			gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
+		}
+		b.WriteString(askAnswerFormHTML(it, id, askFormPlace{back: back, attrs: gate + formAttrs, dismiss: dismiss}))
 		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
 	default:
@@ -1926,60 +1935,6 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		b.WriteString(openCodeAskHTML(it))
 	}
 	b.WriteString("</li>\n")
-	return b.String()
-}
-
-// attentionAnswerFormHTML is an ask's answer form.
-//
-// THE COMPACT ANSWER FORM (operator decision: one card must fit a session
-// page's asks block on a phone with no inner scroll). The classes are ui's
-// (the stylesheet scans internal/ui, not this file), drawn here once for both
-// the Asks queue and a session page's block. Tapping an option answers with
-// it, as it always has; the box starts one line and grows as it is typed into
-// (ui.AskFormInputClass, capped), and Answer sends it — nothing typed or
-// dictated is sent before Answer.
-//
-// (The Asks page's card draws its own form: askFeedAnswerFormHTML.)
-func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string) string {
-	esc := html.EscapeString
-	var b strings.Builder
-	gate := ""
-	if it.stepUpWhy != "" {
-		// A team card answered with a fresh sign-in (teamCardStepUpWhy): it
-		// confirms in place, on the page's dialog (stepUpFormsHTML).
-		gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
-	}
-	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + gate + formAttrs + `>
-` + back)
-	if len(it.Options) > 0 {
-		b.WriteString(`<div class="` + ui.AskFormOptionsClass + `">`)
-		for _, o := range it.Options {
-			b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + ui.AskFormOptionClass + `" data-attention-option>` + esc(o) + `</button>`)
-		}
-		b.WriteString("</div>\n")
-	}
-	// 🔴 EVERY ID IS THE ASK'S OWN: the list draws one box per ask, and the
-	// mic finds its box and note by id (ui.DictateControlHTML). The mic's ✓
-	// FILLS the box at the caret; its ↑ fills it and clicks Answer, so Answer
-	// is still the only send (ui/dictate.go). The label is for a
-	// screen reader; the box's placeholder says the same to the eye.
-	// While the mic records, the waveform takes the box's place and the ↑
-	// Answer's (ui.DictateWaveHTML, ui.DictateSendHTML); the ↑ sends by
-	// clicking THIS Answer (its id), never an option's button above it.
-	input := "answer-" + id
-	submit := input + "-submit"
-	box := `<label for="` + input + `" class="sr-only">Your answer</label>
-<div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-		ui.DictateWaveHTML(it.dictate, input+"-dictate") +
-		answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
-` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
-	answer := ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendWide) +
-		`<button type="submit" id="` + submit + `" class="` + ui.AskFormAnswerClass + `">Answer</button>`
-	// Dismiss ends the form's LAST row, beside Answer (attentionItemHTML's
-	// footer rule). It belongs, by form=, to the /cancel form outside this one.
-	b.WriteString(box + `<div class="` + ui.AskFormActionsClass + `">` + answer + dismiss + `</div>
-`)
-	b.WriteString("</form>\n")
 	return b.String()
 }
 

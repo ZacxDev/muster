@@ -83,7 +83,7 @@ var usersReads = map[string]string{
 	"internal/users PGStore.ClaimInviteLive":               readByID,
 	"internal/users PGStore.RedeemClaim":                   readByID,
 
-	// Auto-start (0153): users joined by the plugin's OWN owner_id only to
+	// Auto-start (0154): users joined by the plugin's OWN owner_id only to
 	// refuse a team's plugin (u.kind <> 'team'); it returns no new user.
 	"internal/plugins PGStore.SetAutostart": readByID,
 	"internal/plugins PGStore.AutostartOf":  readByID,

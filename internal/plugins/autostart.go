@@ -12,7 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 )
 
-// AUTO-START (migration 0153, docs/plugins.md#auto-start): the owner opts ONE
+// AUTO-START (migration 0154, docs/plugins.md#auto-start): the owner opts ONE
 // plugin in, on its /plugins card behind a fresh sign-in, and a task that
 // plugin then files starts an agent on it with no tap — at a target and in a
 // repository the owner chose at opt-in, at most DailyCap times a day, inside
@@ -39,7 +39,7 @@ const (
 )
 
 // MaxAutostartDailyCap is the highest per-plugin cap an owner may set (the
-// 0153 CHECK): the chief's own daily budget, which caps it anyway.
+// 0154 CHECK): the chief's own daily budget, which caps it anyway.
 const MaxAutostartDailyCap = MaxChiefDispatchesPerDay
 
 // AutostartWindow is the per-plugin cap's window.
@@ -81,7 +81,7 @@ func autostartWriter(ctx context.Context) (int64, error) {
 // ctx's principal — which must be its owner's signed-in browser
 // (ErrAutostartDoor otherwise). ErrNotFound for a plugin that is not live, not
 // the principal's, or a TEAM's (auto-start is a person's). ErrInvalid for a
-// target, repository or cap the 0153 CHECKs would refuse. Setting it again
+// target, repository or cap the 0154 CHECKs would refuse. Setting it again
 // replaces the target, repository and cap and restarts Since.
 //
 // Audited plugin.autostart.on {target, repo, daily_cap}.

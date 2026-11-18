@@ -127,7 +127,7 @@ func TestAStaleRunbookTagRendersAsAPlainTag(t *testing.T) {
 // document carries a positive control first, so an empty render cannot pass.
 func TestTheDispatchUIIsGone(t *testing.T) {
 	var home strings.Builder
-	if err := RenderAgentsHome(&home, featuresAllOn); err != nil {
+	if err := RenderAgentsHome(&home, featuresAllOn, AgentsHomeState{}); err != nil {
 		t.Fatal(err)
 	}
 	docs := map[string]struct{ doc, control string }{

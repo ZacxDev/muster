@@ -106,7 +106,18 @@ type NavDocumentView struct {
 	// App, when set, lays the page out as a phone app screen (NavApp) instead
 	// of the column under the shell's header.
 	App *NavApp
+	// Wide gives the column room on a desktop (NavDocumentWideClass): a page
+	// of cards (the Asks page), not a form. A phone's column is the same.
+	Wide bool
 }
+
+// NavDocumentColumnClass is the bare pages' column; NavDocumentWideClass a
+// Wide page's — the same on a phone, two-thirds of a laptop's content area
+// from md up (the design review: the Asks page was a 384px strip in 1440px).
+const (
+	NavDocumentColumnClass = "mx-auto w-full max-w-sm px-4 pb-[calc(4rem+env(safe-area-inset-bottom))] pt-6"
+	NavDocumentWideClass   = "mx-auto w-full max-w-sm md:max-w-2xl px-4 pb-[calc(4rem+env(safe-area-inset-bottom))] pt-4"
+)
 
 // NavApp is a NavDocument laid out as a PHONE APP SCREEN — the page a
 // notification opens (the ask page, internal/api attention_ask_page.go): a top
@@ -221,7 +232,7 @@ func navColumnBody(v NavDocumentView) g.Node {
 			header(false, v.Feat.Brand),
 			Main(
 				g.Attr("data-nav-document", ""),
-				Class("mx-auto w-full max-w-sm px-4 pb-[calc(4rem+env(safe-area-inset-bottom))] pt-6"),
+				Class(navColumnClass(v.Wide)),
 				g.Raw(v.Main),
 			),
 		),
@@ -231,6 +242,14 @@ func navColumnBody(v NavDocumentView) g.Node {
 		// The worker, update toast and app badge — on every document.
 		pwaChrome(),
 	)
+}
+
+// navColumnClass is the column's class: Wide or not.
+func navColumnClass(wide bool) string {
+	if wide {
+		return NavDocumentWideClass
+	}
+	return NavDocumentColumnClass
 }
 
 // RenderNavDocument writes NavDocument.

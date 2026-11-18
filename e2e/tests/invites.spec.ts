@@ -22,14 +22,16 @@ async function expectAgentPageHome(page: Page, why: string) {
 
 // expectOnboardingHome: `/` for a user with nothing to open (no chief, no
 // agent, no mirrored window) draws the onboarding page at /agents — the
-// retired Agents list's empty state, now home's (ui.agentsEmptyState): it says
-// how to start an agent (the tmux one-liner) and how to connect a machine.
+// retired Agents list's empty state, now home's (ui.agentsEmptyState). The
+// invited member is not an admin, so it says to ask their admin to connect a
+// computer and carries no setup detail: no setup prompt, no tmux command, no ⓘ.
 async function expectOnboardingHome(page: Page, why: string) {
   expect(new URL(page.url()).pathname, why).toBe('/agents');
   const empty = page.locator('#agents-empty');
   await expect(empty.getByText('No agents yet'), `${why}: the empty state is VISIBLE`).toBeVisible();
-  await expect(empty.getByText('tmux new -A -s work claude'), `${why}: the tmux one-liner`).toBeVisible();
-  await expect(page.locator('#onboarding-prompt'), `${why}: the onboarding prompt`).toBeVisible();
+  await expect(empty.getByText('Ask your admin to connect a computer.'), `${why}: told to ask their admin`).toBeVisible();
+  await expect(page.locator('#onboarding-prompt, #onboarding-start, #onboarding-copy-prompt'), `${why}: no setup detail`).toHaveCount(0);
+  expect(await page.content(), `${why}: the page carries no setup command`).not.toContain('tmux new -A -s work claude');
 }
 
 
