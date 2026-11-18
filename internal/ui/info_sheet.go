@@ -54,6 +54,12 @@ type InfoSheet struct {
 	// admin instead, and carries no code at all (not hidden: absent).
 	// A session's own address is never withheld from its owner.
 	Withheld bool
+	// Inline draws the ⓘ for a 16px text line (a header's status row): a
+	// 20px-tall glyph whose 44px thumb target is its ::before, raised above a
+	// title's hit area (z-20) — the Preview button's in-row shape
+	// (plugin_chip.go), so the row does not grow and the title keeps its
+	// width.
+	Inline bool
 }
 
 // InfoSheetWithheldText is what a withheld sheet says instead of its code.
@@ -70,6 +76,10 @@ func (s InfoSheet) Node() g.Node {
 // Trigger is the ⓘ button alone, for a caller that places the sheet apart
 // from it (the sheet can sit anywhere in the document: it is top layer).
 func (s InfoSheet) Trigger() g.Node {
+	icon := infoIcon
+	if s.Inline {
+		icon = strings.Replace(infoIcon, `class="h-5 w-5"`, `class="h-4 w-4"`, 1)
+	}
 	return Button(
 		Type("button"),
 		ID(s.ID+"-open"),
@@ -79,8 +89,10 @@ func (s InfoSheet) Trigger() g.Node {
 		g.Attr("aria-label", s.Label),
 		g.Attr("title", s.Label),
 		g.Attr("data-info-open", s.ID),
-		Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
-		g.Raw(infoIcon),
+		g.If(!s.Inline, Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus")),
+		g.If(s.Inline, Class("press relative z-20 -my-0.5 inline-flex h-5 w-11 shrink-0 items-center justify-center rounded-full text-fg2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+
+			"before:absolute before:-inset-x-1 before:top-1/2 before:h-11 before:-translate-y-1/2 before:content-['']")),
+		g.Raw(icon),
 	)
 }
 

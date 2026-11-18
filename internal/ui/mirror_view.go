@@ -293,6 +293,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							// (mirrorUpdatingChip), taking none of its width.
 							Class("relative flex min-w-0 items-center gap-2"),
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+							mirrorPlaceInfo(v),
 							// The context readout (TakeContext): hidden until a turn
 							// has reported usage, and again after a reset.
 							mirrorContextChip(),
@@ -508,17 +509,28 @@ func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
 // then the viewer's tags on the session (sessionTagsHead) — where the raw tmux
 // session name used to be drawn; that name is in the full-title popover
 // (mirrorViewHeading) and the palette's words now.
-//
-// After the tags, the session's ⓘ (SessionPlaceSheet): its exact tmux target,
-// which the header's words no longer spell — drawn only when the page has it
-// (PlaceAddress: none on a team host's session).
 func mirrorViewTitleRow(v MirrorViewView) g.Node {
 	return Div(
 		Class("flex min-w-0 items-center gap-1.5"),
 		Div(Class("min-w-0 flex-1"), mirrorViewTitle(v)),
 		sessionTagsHeadNode(SessionTagTarget{Host: v.Host, Session: v.Session}, v.Tags),
-		g.If(v.PlaceAddress != "", SessionPlaceSheet(MirrorPlaceSheetID, v.Host, v.PlaceAddress).Node()),
 	)
+}
+
+// mirrorPlaceInfo is the rendered view header's ⓘ (SessionPlaceSheet): the
+// window's exact tmux target, which the header's words no longer spell —
+// drawn only when the page has it (PlaceAddress: none on a team host's
+// session). It sits in the STATUS row, inline (InfoSheet.Inline): in the
+// title row its 44px button cost the title 44px of a phone header and grew
+// the header past its 57px (e2e title-room measured both), and the title
+// button's z-10 hit area spans both rows, so the trigger is raised over it.
+func mirrorPlaceInfo(v MirrorViewView) g.Node {
+	if v.PlaceAddress == "" {
+		return nil
+	}
+	s := SessionPlaceSheet(MirrorPlaceSheetID, v.Host, v.PlaceAddress)
+	s.Inline = true
+	return s.Node()
 }
 
 // MirrorPlaceSheetID is the rendered view header's ⓘ sheet (mirrorViewTitleRow).

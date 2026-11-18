@@ -24,7 +24,7 @@ import { coarse, pickView } from '../lib/switcher';
 //      raw tmux session name and — the retired list's host tabs' successor —
 //      its HOST's name, after every codename and title match (operator:
 //      "Teach the palette repo+kind");
-//   4. a pill shows the whole codename, ":<index>" and all;
+//   4. a pill shows its whole name, unclipped, with no tmux ":<index>";
 //   5. the sidebar's magnifier opens the same palette, on a session page and
 //      on a page with no bar, where it reads the sidebar's rows;
 //   6. the bar's pin toggle pins and unpins the page's own window;
@@ -173,7 +173,7 @@ for (const vp of [
       await expect(row(page, 'all')).toBeVisible();
       const n = await listed(page);
       await expect(row(page, 'all').locator('[data-switcher-entry]')).toHaveCount(n);
-      await expect(row(page, 'all').locator('[data-switcher-current]')).toHaveText('mango:1');
+      await expect(row(page, 'all').locator('[data-switcher-current]')).toHaveText('mango');
       await expect(row(page, 'all').locator('a[data-switcher-entry]', { hasText: AGENT_TITLE })).toHaveCount(1);
       // Pins: nothing pinned.
       await pickView(page, 'pins');
@@ -215,20 +215,20 @@ for (const vp of [
       const labels = () => options(page).evaluateAll((els) => els.map((e) => (e.firstElementChild as HTMLElement).textContent));
       // The tmux session name: the window called "orchid".
       await input(page).fill(SCRATCH);
-      await expect.poll(labels).toEqual(['orchid:1']);
+      await expect.poll(labels).toEqual(['orchid']);
       // The kind.
       await input(page).fill('opencode');
-      await expect.poll(labels).toEqual([`${NIMBUS}:1`]);
+      await expect.poll(labels).toEqual([NIMBUS]);
       // The repository — and a codename match ranks first: "wheat" is the
       // window's codename prefix, and only a word of the agent's repository.
       await input(page).fill('wheatfield');
       await expect.poll(labels).toEqual([AGENT_TITLE]);
       await input(page).fill('wheat');
-      await expect.poll(labels).toEqual(['wheat:1', AGENT_TITLE]);
+      await expect.poll(labels).toEqual(['wheat', AGENT_TITLE]);
       // THE HOST (the host tabs' successor): this host's name finds every one
       // of its windows but the page's own — and no dispatched agent; the
       // cluster's finds the dispatched agents, and none of this host's windows.
-      const windowsHere = WINDOWS.filter(([s]) => s !== 'mango').map(([s]) => `${s}:1`).concat(['orchid:1', `${NIMBUS}:1`]);
+      const windowsHere = WINDOWS.filter(([s]) => s !== 'mango').map(([s]) => s).concat(['orchid', NIMBUS]);
       await input(page).fill(rig.host);
       await expect.poll(async () => (await labels()).slice().sort()).toEqual(windowsHere.slice().sort());
       await input(page).fill('cluster');
@@ -236,20 +236,21 @@ for (const vp of [
       for (const l of await labels()) expect(windowsHere, `"cluster" found ${l}`).not.toContain(l);
       // Enter opens the top one: the codename match.
       await input(page).fill('wheat');
-      await expect.poll(labels).toEqual(['wheat:1', AGENT_TITLE]);
+      await expect.poll(labels).toEqual(['wheat', AGENT_TITLE]);
       await Promise.all([
         page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'wheat'),
         page.keyboard.press('Enter'),
       ]);
     });
 
-    // 🔴 A PILL SHOWS THE WHOLE CODENAME, ":<index>" AND ALL (operator report:
-    // the pills were "missing the number after the colon"). "orchid" is a
-    // codename that is NOT its tmux session (the labels file), alone in every
-    // view — exactly where the bar used to draw it without its index. Read on
-    // a session page's bar, at this size: the label's text, and its box not
-    // clipping it.
-    test('a pill shows the whole codename, ":<index>" and all, unclipped', async ({ page }) => {
+    // 🔴 A PILL SHOWS ITS WHOLE NAME, UNCLIPPED — AND NO TMUX WINDOW INDEX.
+    // (An older operator report asked for "the number after the colon"; the
+    // operator rule of 2026-11-17 — no ids in muster's top layer — replaces
+    // it: a window is "orchid", and two that would read alike are told apart
+    // by "· window N".) "orchid" is a codename that is NOT its tmux session
+    // (the labels file), alone in every view. Read on a session page's bar,
+    // at this size: the label's text, and its box not clipping it.
+    test('a pill shows the whole name, no ":<index>", unclipped', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
       await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
@@ -257,8 +258,8 @@ for (const vp of [
       await expect(row(page, 'all')).toBeVisible();
       const orchid = row(page, 'all').locator(`a[data-switcher-entry][data-switcher-words~="${SCRATCH}"]`);
       await expect(orchid, 'the orchid window\'s pill').toHaveCount(1);
-      await expect(orchid, 'the pill reads the whole codename').toHaveText('orchid:1');
-      await expect(orchid).toHaveAttribute('title', 'orchid:1');
+      await expect(orchid, 'the pill reads the whole name, no tmux index').toHaveText('orchid');
+      await expect(orchid).toHaveAttribute('title', 'orchid');
       // Not clipped: the label's box holds its whole text, and the pill is
       // at least as wide as the label.
       await orchid.scrollIntoViewIfNeeded();
@@ -268,10 +269,10 @@ for (const vp of [
       });
       expect(m.sw, `the label is not clipped (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.cw + 0.5);
       expect(m.pw, `the pill holds the label (${JSON.stringify(m)})`).toBeGreaterThanOrEqual(m.lw);
-      // Every window pill ends in its ":<index>".
+      // No window pill spells a tmux window index.
       const labels = await row(page, 'all').locator('a[data-switcher-entry="mirror"]').evaluateAll((els) => els.map((e) => e.textContent || ''));
       expect(labels.length, 'instrument check: the row holds window pills').toBeGreaterThanOrEqual(WINDOWS.length - 1);
-      for (const l of labels) expect(l, 'a window pill without its index').toMatch(/:\d+$/);
+      for (const l of labels) expect(l, 'a window pill with a tmux index').not.toMatch(/[^\s\d]:\d+$/);
       await expectNoSidewaysScroll(page);
       await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
     });
@@ -392,13 +393,13 @@ for (const vp of [
         // The Pins view and its count, at once, with no reload: the page's own
         // window, drawn current.
         await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('1');
-        await expect(row(page, 'pins').locator('[data-switcher-current]')).toHaveText('tundra:1');
+        await expect(row(page, 'pins').locator('[data-switcher-current]')).toHaveText('tundra');
         await expect(page.locator('[id="switcher-list-pins"]'), 'no nested copy of the row').toHaveCount(1);
         // Kept: a reload draws it pressed, and another session's bar lists it.
         await page.reload();
         await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'true');
         await page.goto(MANGO);
-        await expect(row(page, 'pins').locator('a[data-switcher-entry]')).toHaveText(['tundra:1']);
+        await expect(row(page, 'pins').locator('a[data-switcher-entry]')).toHaveText(['tundra']);
         await expect(page.locator('#switcher-pin'), "mango's own item says Pin").toHaveAttribute('data-pinned', 'false');
         // And unpinned from the same menu.
         await page.goto(view);
@@ -443,7 +444,7 @@ for (const vp of [
       await unpin(page, 'mango', '@1');
       await openView(page);
       await expect(row(page, 'all')).toBeVisible();
-      const marble = row(page, 'all').locator('a[data-switcher-entry]', { hasText: 'marble:1' });
+      const marble = row(page, 'all').locator('a[data-switcher-entry]', { hasText: 'marble' });
       const href = await marble.getAttribute('href');
       const order = () => row(page, 'all').locator('[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href') || 'current'));
       const before = await order();
@@ -496,7 +497,7 @@ test.describe('the Terminal view at 390×844', () => {
     await page.waitForTimeout(500);
 
     // Current: the page's own window, drawn current in All, not in Recent.
-    await expect(row(page, 'all').locator('[data-switcher-current]')).toHaveText('mango:1');
+    await expect(row(page, 'all').locator('[data-switcher-current]')).toHaveText('mango');
     await expect(row(page, 'recent').locator('[data-switcher-current]')).toHaveCount(0);
     await expect(row(page, 'recent').locator('[data-switcher-code="mango:1"]')).toHaveCount(0);
 
@@ -567,7 +568,7 @@ test.describe('the Terminal view at 390×844', () => {
 
     // A tap on an entry opens that session (its Rendered view: wheat is a
     // Claude pane), with a real load.
-    const wheat = row(page, 'all').locator('a[data-switcher-entry]', { hasText: 'wheat:1' });
+    const wheat = row(page, 'all').locator('a[data-switcher-entry]', { hasText: 'wheat' });
     await Promise.all([
       page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'wheat'),
       wheat.tap(),
