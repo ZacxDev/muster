@@ -92,7 +92,6 @@ var unportedCitations = map[string][]string{
 	},
 	"internal/api/auth.go": {
 		"TestEveryBrowserSurfaceRequiresAHumanSession",
-		"TestTheAgentSteeringWriteRefusesAnUnarmedServer",
 	},
 	"internal/api/ext.go": {"TestExtensionsWiringPairsNotesWithALivenessProbe"},
 	"internal/api/login.go": {

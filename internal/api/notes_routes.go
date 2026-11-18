@@ -112,8 +112,7 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// machine (an external producer retracting what it posted) and a machine cannot
 	// complete a browser login to obtain a session cookie. The human spelling of
 	// the same operation is DELETE /tasks/{id}/comments/{cid} below. See
-	// handleAPITaskCommentDelete for the route shape rationale and the
-	// enforce-when-set caveat.
+	// handleAPITaskCommentDelete for the route shape rationale.
 	mux.HandleFunc("DELETE /api/tasks/{id}/comments/{cid}", s.requireHookToken(s.handleAPITaskCommentDelete))
 	// Task threads, REVERSE direction (migration 0023): every live task a Claude
 	// Code session touched, most-recently-touched first. The FORWARD direction has

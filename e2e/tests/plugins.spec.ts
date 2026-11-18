@@ -73,6 +73,7 @@ test.beforeAll(async () => {
   execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
   server = await startServer(versionA, pluginsMainPort, {
     MUSTER_AUTH_MODE: 'gotrue',
+    MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     MUSTER_BROWSER_PORT: String(pluginsBrowserPort),

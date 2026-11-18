@@ -633,7 +633,14 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
   MUSTER_GOTRUE_URL=http://<your gotrue>:9999
   MUSTER_GOTRUE_JWT_SECRET=<GoTrue's HS256 secret, 32+ characters>
   MUSTER_BROWSER_PORT=8107
+  MUSTER_DIRECT_CLIENTS=1
   ```
+
+  The last line declares that browsers reach the port directly; this mode
+  refuses to start without a declaration. With `tailscale serve` (below) or
+  another proxy in front, set `MUSTER_TRUSTED_PROXIES` and
+  `MUSTER_CLIENT_IP_HEADER` instead
+  ([configuration.md](configuration.md#client-addresses-behind-a-proxy)).
 
 - **Publish the browser port** with a `docker-compose.override.yml` beside
   `docker-compose.yml`, and point `tailscale serve` at 8107 instead of 8105

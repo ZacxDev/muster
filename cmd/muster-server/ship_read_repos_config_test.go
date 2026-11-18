@@ -35,7 +35,7 @@ func TestShipReadReposWithoutTheDeploymentAppRefuseToBoot(t *testing.T) {
 			t.Fatal(err)
 		}
 		env := map[string]string{
-			envDatabase: "postgres://unused", envStandalone: "1",
+			envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1",
 			envOfficers: string(raw),
 			"MUSTER_OFFICER_TOKEN_ENGINEERING_EXAMPLE_WEB":            "fixture-officer-token-cfg-3",
 			"MUSTER_OFFICER_GITHUB_APP_KEY_ENGINEERING_EXAMPLE_WEB":   keyPEM,

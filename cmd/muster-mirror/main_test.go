@@ -455,16 +455,17 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 	}
 }
 
-// TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff: with -agent-spawn on,
-// the daemon's startup line says its spawned agents start WITHOUT permission
-// prompts by default; MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=0 (or false),
-// or -agent-spawn-skip-permissions=false, says normal permission mode instead;
-// =1 keeps it on; as root (geteuid 0) claude keeps its prompts and the line
-// says why; and a value that is not a bool stops the daemon (rc 2) naming the
-// variable and the values strconv.ParseBool accepts. The line is worded from
-// the built AgentSpawnConfig, so it also pins the flag-to-config assignment.
-// The daemon's context is ended before it dials.
-func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
+// TestSpawnedAgentsKeepPermissionPromptsUnlessTurnedOn: with -agent-spawn on,
+// the daemon's startup line says its spawned agents start in NORMAL permission
+// mode by default (skipping prompts is opt-in);
+// MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=1 (or true), or
+// -agent-spawn-skip-permissions, says WITHOUT permission prompts instead; =0
+// keeps them; as root (geteuid 0) with the setting on, claude keeps its
+// prompts and the line says why; and a value that is not a bool stops the
+// daemon (rc 2) naming the variable and the values strconv.ParseBool accepts.
+// The line is worded from the built AgentSpawnConfig, so it also pins the
+// flag-to-config assignment. The daemon's context is ended before it dials.
+func TestSpawnedAgentsKeepPermissionPromptsUnlessTurnedOn(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMUX_TMPDIR", tmp) // a private, absent tmux server: nothing to touch
 	t.Setenv("TMUX", "")
@@ -479,7 +480,7 @@ func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
 	t.Cleanup(func() { geteuid = prevE })
 	const (
 		on   = ", WITHOUT permission prompts (-agent-spawn-skip-permissions): they run their tools without asking"
-		off  = ", in normal permission mode (-agent-spawn-skip-permissions=false)"
+		off  = ", in normal permission mode (without -agent-spawn-skip-permissions)"
 		root = ", claude in normal permission mode because this mirror runs as root (effective uid 0) and Claude Code refuses " +
 			"bypassPermissions as root, opencode WITHOUT permission prompts (-agent-spawn-skip-permissions, --auto)"
 	)
@@ -499,17 +500,19 @@ func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
 		euid      int
 		want      string
 	}{
-		{"the default", "", nil, 1000, on},
+		// 🔴 OPT-IN: the default keeps the prompts.
+		{"the default", "", nil, 1000, off},
 		{"env 1", "1", nil, 1000, on},
+		{"env true", "true", nil, 1000, on},
+		{"env T", "T", nil, 1000, on},
 		{"env 0", "0", nil, 1000, off},
-		{"env false", "false", nil, 1000, off},
-		{"env F", "F", nil, 1000, off},
-		{"the flag =false", "", []string{"-agent-spawn-skip-permissions=false"}, 1000, off},
+		{"the flag", "", []string{"-agent-spawn-skip-permissions"}, 1000, on},
 		{"the flag over env 0", "0", []string{"-agent-spawn-skip-permissions=true"}, 1000, on},
+		{"the flag =false over env 1", "1", []string{"-agent-spawn-skip-permissions=false"}, 1000, off},
 		// As root claude keeps its prompts (Claude Code refuses
 		// bypassPermissions as root) and the line says why; off is off.
-		{"root, the default", "", nil, 0, root},
-		{"root, env 0", "0", nil, 0, off},
+		{"root, env 1", "1", nil, 0, root},
+		{"root, the default", "", nil, 0, off},
 	} {
 		geteuid = func() int { return c.euid }
 		rc, _, errs := runWith(t, env(c.env), c.args...)

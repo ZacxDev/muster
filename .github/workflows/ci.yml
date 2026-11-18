@@ -374,6 +374,19 @@ jobs:
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/features_config_test.py
 
+      # `make run`'s development hook token: made without openssl, once, mode
+      # 600, and never an empty or short value written or reused.
+      - name: make run's development hook token is never empty
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/dev_hook_token_test.py
+
+      # Every install and test input still boots: the e2e launcher arms the hook
+      # tier, nothing sets an empty MUSTER_HOOK_TOKEN, nothing scrapes /metrics
+      # from a main listener (kind, e2e and the release dry run skip drafts).
+      - name: every way the repository starts muster-server satisfies its boot rules
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/boot_inputs_test.py
+
       # docs/guides/*.md and docs/README.md's table of them agree, each guide
       # has its five parts and spells no port or model id, and docs/features.md
       # links every feature page and has a Contents row per section.

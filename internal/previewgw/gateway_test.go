@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -109,59 +110,82 @@ func TestThePathIsDecidedByTheListener(t *testing.T) {
 
 // Ten bad tokens a minute from one peer get 401; the 11th gets 429. A valid
 // token from that peer is still accepted, another peer is still 401, and a
-// new minute starts afresh.
+// new minute starts afresh. The peers are real TCP source addresses.
 func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	good := e.mint(t, 1, "alpha")
 	bad := wire.TokenPrefix + strings.Repeat("A", hostTokenLen-len(wire.TokenPrefix))
-	peer := func(ip string) http.Header { return http.Header{"X-Real-Ip": {ip}} }
 	for i := 1; i <= 10; i++ { // literal: 10 a minute is the contract
-		_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
+		_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.11"})
 		if statusOf(resp) != http.StatusUnauthorized {
 			t.Fatalf("bad token #%d: HTTP %d; want 401", i, statusOf(resp))
 		}
 	}
-	_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
+	_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.11"})
 	if statusOf(resp) != http.StatusTooManyRequests {
 		t.Fatalf("bad token #11: HTTP %d; want 429", statusOf(resp))
 	}
 	// A malformed token counts the same.
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: "junk", hostName: "alpha", header: peer("198.51.100.1")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: "junk", hostName: "alpha", from: "127.0.0.11"})
 	if statusOf(resp) != http.StatusTooManyRequests {
 		t.Fatalf("malformed token past the limit: HTTP %d; want 429", statusOf(resp))
 	}
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.2")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.12"})
 	if statusOf(resp) != http.StatusUnauthorized {
 		t.Fatalf("another peer's first bad token: HTTP %d; want 401", statusOf(resp))
 	}
-	e.mustDial(t, dialOpts{listener: "mesh", token: good, hostName: "alpha", header: peer("198.51.100.1")})
+	e.mustDial(t, dialOpts{listener: "mesh", token: good, hostName: "alpha", from: "127.0.0.11"})
 	e.clock.Advance(time.Minute)
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.11"})
 	if statusOf(resp) != http.StatusUnauthorized {
 		t.Fatalf("bad token in the next minute: HTTP %d; want 401", statusOf(resp))
 	}
 }
 
-// The public listener keys the throttle on CF-Connecting-IP: ten bad tokens
-// from one such peer, then 429 on the 11th; a fresh CF-Connecting-IP is still
-// 401. There is no cap across peers (round 0, D1).
-func TestThePublicListenerThrottlesPerCFConnectingIP(t *testing.T) {
+// The public listener throttles per TCP peer too: ten bad tokens from one
+// peer, then 429 on the 11th; another peer is still 401. There is no cap
+// across peers.
+func TestThePublicListenerThrottlesPerPeer(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	bad := wire.TokenPrefix + strings.Repeat("B", hostTokenLen-len(wire.TokenPrefix))
-	cf := func(ip string) http.Header { return http.Header{"Cf-Connecting-Ip": {ip}} }
 	for i := 1; i <= 10; i++ {
-		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.1")})
+		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", from: "127.0.0.21"})
 		if statusOf(resp) != http.StatusUnauthorized {
 			t.Fatalf("public bad token #%d: HTTP %d; want 401", i, statusOf(resp))
 		}
 	}
-	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.1")})
+	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", from: "127.0.0.21"})
 	if statusOf(resp) != http.StatusTooManyRequests {
-		t.Fatalf("public bad token #11 from one CF-Connecting-IP: HTTP %d; want 429", statusOf(resp))
+		t.Fatalf("public bad token #11 from one peer: HTTP %d; want 429", statusOf(resp))
 	}
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.2")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", from: "127.0.0.22"})
 	if statusOf(resp) != http.StatusUnauthorized {
-		t.Fatalf("public bad token from a fresh CF-Connecting-IP: HTTP %d; want 401", statusOf(resp))
+		t.Fatalf("public bad token from another peer: HTTP %d; want 401", statusOf(resp))
+	}
+}
+
+// With no proxy trusted (the default), a peer cannot choose its throttle key:
+// ten bad tokens, each naming a DIFFERENT client in every forwarding header,
+// all count against the TCP peer, so the 11th is 429 — on both listeners.
+func TestAnUntrustedPeerCannotChooseItsThrottleKey(t *testing.T) {
+	for _, listener := range []string{"mesh", "public"} {
+		e := newGW(t, gwOpts{})
+		bad := wire.TokenPrefix + strings.Repeat("C", hostTokenLen-len(wire.TokenPrefix))
+		typed := func(i int) http.Header {
+			ip := "198.51.100." + strconv.Itoa(i)
+			return http.Header{"X-Real-Ip": {ip}, "Cf-Connecting-Ip": {ip}, "X-Forwarded-For": {ip}}
+		}
+		for i := 1; i <= 10; i++ {
+			_, resp, _ := e.dialHost(t, dialOpts{listener: listener, token: bad, hostName: "alpha", header: typed(i)})
+			if statusOf(resp) != http.StatusUnauthorized {
+				t.Fatalf("%s bad token #%d: HTTP %d; want 401", listener, i, statusOf(resp))
+			}
+		}
+		_, resp, _ := e.dialHost(t, dialOpts{listener: listener, token: bad, hostName: "alpha", header: typed(11)})
+		if statusOf(resp) != http.StatusTooManyRequests {
+			t.Fatalf("%s: the 11th bad token from ONE peer, naming an 11th client in every forwarding header: HTTP %d; "+
+				"want 429 (an untrusted peer's headers are not its key)", listener, statusOf(resp))
+		}
 	}
 }
 

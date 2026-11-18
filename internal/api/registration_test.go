@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -98,6 +99,13 @@ func fullyWiredServer(t *testing.T) *Server {
 		AgentWatchdog: agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
 		PublicURL:     "http://example.test",
 		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}},
+		ClientAddr: func() *clientaddr.Policy {
+			p, err := clientaddr.New(clientaddr.Config{TrustedProxies: "192.0.2.0/24", Header: "X-Forwarded-For"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}(),
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this
 		// fixture would claim "fully wired" while exercising the default — which is
