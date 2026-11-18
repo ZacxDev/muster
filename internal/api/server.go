@@ -151,6 +151,15 @@ type Server struct {
 	// inviteLimits throttles invite redemption and the password reset
 	// (accounts PR 5; login_invite.go).
 	inviteLimits inviteLimits
+	// loginRateAddr counts wrong operator passwords per client address;
+	// loginRefusedLog rate-limits the log of refused unknown devices
+	// (known_device.go, passwordGate).
+	loginRateAddr   boundedWindow
+	loginRefusedLog everyMinute
+	// passkeyChallenges is the sign-in challenges muster issued and has not
+	// seen used, one global table capped at passkeyChallengeCap, the oldest
+	// evicted (passkeys.go). Its cap is set in New.
+	passkeyChallenges boundedWindow
 
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
@@ -572,16 +581,40 @@ type RouterNotification struct {
 // window is three fields and no goroutine, and the property that matters — a
 // hard ceiling on attempts per minute — is the same.
 //
-// ⚠ IT IS GLOBAL, NOT PER-CALLER, AND THAT IS THE ORIGINAL BEHAVIOUR KEPT ON
-// PURPOSE. A per-IP bucket sounds better and is worse here: the ceiling exists
-// to bound guessing against ONE shared operator password, and an attacker with
-// more than one source address would get the whole budget per address. The cost
-// is that a guesser can lock a legitimate operator out for up to a window, on a
-// service with one operator.
+// Two uses: allow gates an attempt before it runs (the scroll limiter, keyed
+// per user); fail counts an attempt only after it was judged wrong, and over
+// reads the count without adding to it (the operator-password count,
+// Server.loginRate: passwordGate refuses only an unknown device with it).
 type rateLimiter struct {
 	mu          sync.Mutex
 	windowStart time.Time
 	count       int
+}
+
+// over reports whether the window at now already holds burst or more
+// attempts, without recording one.
+func (l *rateLimiter) over(now time.Time, burst int, window time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.windowStart) >= window {
+		l.windowStart = now
+		l.count = 0
+	}
+	return l.count >= burst
+}
+
+// fail records one FAILED attempt at now and reports whether the window is
+// now past burst (the caller answers that failure 429). It is never consulted
+// for an attempt that succeeded, so it cannot refuse a correct credential.
+func (l *rateLimiter) fail(now time.Time, burst int, window time.Duration) (over bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.windowStart) >= window {
+		l.windowStart = now
+		l.count = 0
+	}
+	l.count++
+	return l.count > burst
 }
 
 // allow reports whether one more attempt may proceed at now, and records it.
@@ -649,6 +682,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		taskReapAfter:           defaultTaskReapAfter,
 		agentReapStoppedAfter:   DefaultAgentReapStoppedAfter,
 		reapInstancesWithin:     defaultAgentReapInstancesWithin,
+		passkeyChallenges:       boundedWindow{cap: passkeyChallengeCap},
 	}
 }
 

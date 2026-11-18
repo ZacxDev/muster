@@ -752,6 +752,7 @@ test.describe('public pages in gotrue mode', () => {
   test.beforeAll(async () => {
     gserver = await startServer(versionA, gport, {
       MUSTER_AUTH_MODE: 'gotrue',
+      MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
       MUSTER_GOTRUE_URL: 'http://127.0.0.1:9',
       MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
       MUSTER_BROWSER_PORT: String(gbrowser),
@@ -806,6 +807,7 @@ test.describe('signed-in pages in gotrue mode', () => {
     execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
     sserver = await startServer(versionA, clsSignedMainPort, {
       MUSTER_AUTH_MODE: 'gotrue',
+      MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
       MUSTER_GOTRUE_URL: signedGotrue,
       MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
       MUSTER_BROWSER_PORT: String(clsSignedBrowserPort),

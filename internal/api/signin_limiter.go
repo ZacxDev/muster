@@ -7,9 +7,21 @@ import (
 )
 
 // signinLimiter is gotrue mode's sign-in throttle: an exponential backoff per
-// ACCOUNT (the real key) and a fixed window per forwarded client address (the
+// ACCOUNT (the real key) and a failure count per client address (the
 // secondary). See the constants' comment in login_gotrue.go for why the key
 // is the account and why there is no process-wide ceiling.
+//
+// 🔴 THE ADDRESS COUNT NEVER REFUSES BEFORE THE CREDENTIAL IS JUDGED. An
+// address is shared (a proxy that is not configured as trusted, a NAT, an
+// office), so a count that refused there would let anyone lock every client
+// at that address out of a sign-in they hold the right credential for (ten
+// junk attempts, then everyone's correct password got 429). The attempt is
+// judged; a FAILED attempt from an address past loginFailureLimit is answered
+// 429 instead of 401 (signinTicket.addrOver), and an attempt at an email that
+// is NOT a muster account is refused there unasked (it could not sign in, so
+// that bounds an address spraying invented emails without refusing anyone);
+// a correct one is admitted
+// whatever the count (TestAShareAddressPastItsFailureLimitStillAdmitsACorrectSignIn).
 //
 // 🔴 RESERVE, THEN CALL GoTrue — NEVER CHECK, CALL, THEN RECORD. reserve
 // counts the attempt as a FAILURE up front, against the account and the
@@ -102,6 +114,10 @@ type signinTicket struct {
 	prevFailures  int
 	prevUntil     time.Time
 	accountCounts bool
+	// addrOver: the address was past loginFailureLimit when this attempt
+	// was reserved. It changes only how a FAILURE is answered (429, not 401);
+	// it is never read before the credential is judged.
+	addrOver bool
 }
 
 // signinOutcome is how an attempt ended.
@@ -141,17 +157,22 @@ func backoffFor(failures int) time.Duration {
 	return accountBackoffMax
 }
 
-// reserve claims one attempt for acct from ip at now. ok is false when it
-// must wait.
+// reserve claims one attempt for acct from ip at now. ok is false when the
+// ACCOUNT must wait (its backoff, or an attempt already in flight); the
+// address never makes it false (see signinLimiter).
 func (l *signinLimiter) reserve(acct signinAccount, ip string, now time.Time) (signinTicket, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.init()
 	ipr := l.ipRecordLocked(ip, now)
-	if ipr.n >= loginFailureLimit {
+	t := signinTicket{acct: acct, ip: ip, addrOver: ipr.n >= loginFailureLimit}
+	// The one refusal the address may make before GoTrue is asked, and the
+	// work bound on one address spraying invented emails: an email that is not
+	// a muster account cannot sign in whatever its password (admitFreshSession
+	// refuses it), so refusing it unasked refuses no correct credential.
+	if t.addrOver && !acct.known && !acct.none() {
 		return signinTicket{}, false
 	}
-	t := signinTicket{acct: acct, ip: ip}
 	if !acct.none() {
 		ar := l.accountRecordLocked(acct, now)
 		if ar.inFlight || now.Before(ar.until) {

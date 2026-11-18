@@ -85,11 +85,12 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    `PREVIEW_DOMAIN`, `STATE_DIR`, `PREVIEW_SIGNING_KEY` (at least 32 bytes),
    `PREVIEW_LISTEN`, and `PREVIEW_MESH_LISTEN` for the mesh endpoint. The
    edge must send `*.<zone>` to the public listener with `Host` intact,
-   WebSocket upgrades passed and responses unbuffered. 🔴 It must also
-   **overwrite** `CF-Connecting-IP` (and the mesh relay `X-Real-IP`) with the
-   real client address: the failed-token throttle counts per that header, so
-   one a client could set itself would let a token guesser dodge the `429`
-   (the token's 256 bits remain the real defence).
+   WebSocket upgrades passed and responses unbuffered. The failed-token
+   throttle counts per TCP peer and reads no forwarding header, so behind
+   the edge and the relay every host shares their address's count. That is
+   deliberate: the throttle runs only after a token check failed and only
+   turns that 401 into a 429 (a valid token is never refused), and the
+   token's 256 bits are the real defence.
 4. **A host token:** `muster-preview host-token create [<owner>] <host>`,
    where `STATE_DIR` is mounted. `<host>` must be the name the host's mirror
    token was minted for. The token is printed once. `<owner>` is a login as
@@ -420,7 +421,7 @@ the gateway's minute-by-minute check ([lifecycle](#lifecycle)).
 | HTTP connection | 10 s for request headers, 5 min idle | gateway | closed |
 | entry codes | 64 unspent per owner, 4096 in all | gateway | `429 too_many_opens` |
 | hand-off codes | 60 a minute per owner | muster | `429` |
-| failed host-token checks | 10 a minute per peer: `X-Real-IP` on the mesh listener, `CF-Connecting-IP` on the public one, else the TCP peer (the edge must overwrite that header) | gateway | `429` instead of `401` (a valid token is never refused) |
+| failed host-token checks | 10 a minute per TCP peer (no forwarding header is read) | gateway | `429` instead of `401` (a valid token is never refused) |
 
 A repeat open of an existing (owner, host, window, port) returns the same id
 and counts nothing.
@@ -533,7 +534,7 @@ fails.
 | side | status | meaning |
 |---|---|---|
 | gateway, host dial | `426` + `X-Muster-Preview-Version-Range: 1-1` | an unknown protocol version |
-| gateway, host dial | `401`, then `429` | a bad host token; the 11th failure a minute from one peer (keyed on `X-Real-IP` on the mesh listener, `CF-Connecting-IP` on the public one, else the TCP peer; `internal/previewgw/throttle.go`) |
+| gateway, host dial | `401`, then `429` | a bad host token; the 11th failure a minute from one peer (keyed on the TCP peer; `internal/previewgw/throttle.go`) |
 | gateway, host dial | `403` | the token registers another host name, or its owner is not served |
 | gateway, host dial | `503` | the host-token file cannot be read |
 | host, `CONNECT` | `403 port_not_allowed`, `403 foreign_listener`, `502 refused`, `429 max_conns` | in `X-Muster-Preview-Reason` (`internal/preview/wire/wire.go`); `max_conns` from the host is a backstop the gateway retries within its wait |

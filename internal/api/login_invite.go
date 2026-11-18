@@ -33,7 +33,8 @@ import (
 //
 // 🔴 TWO KEYS, BECAUSE A GUESSER AND A LINK-HOLDER ARE DIFFERENT ATTACKS. An
 // unknown token has a different hash on every guess, so guessing is limited per
-// client address only (inviteIPLimit per minute, every POST) — and a hash that
+// client address only (inviteIPLimit misses per minute, counted AFTER the
+// lookup so a live link is never refused for its address) — and a hash that
 // names no live invite gets NO per-link record, so a spray of invented tokens
 // creates nothing to hold. A REAL link that keeps failing — a bound email
 // being guessed, GoTrue's "email exists" used to enumerate accounts — is held
@@ -263,20 +264,27 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	now := s.gt.now()
 	lim := &s.inviteLimits
-	if !lim.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
-		s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
-		return
+	// 🔴 ONLY A LINK THAT DOES NOT OPEN COUNTS AGAINST THE ADDRESS, and the
+	// count is taken after the lookup: a live link is never refused for its
+	// address (a shared proxy or NAT address must not lock invitees out). Past
+	// inviteIPLimit an address's misses are answered 429.
+	miss := func() {
+		if !lim.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+			return
+		}
+		s.renderInvalidInvite(w, r)
 	}
 	token := postedLinkToken(r)
 	if token == "" {
-		s.renderInvalidInvite(w, r)
+		miss()
 		return
 	}
 	hash := claimHash(token)
 	inv, err := s.gt.Accounts.OpenInvite(r.Context(), hash)
 	if errors.Is(err, users.ErrInvalidInvite) {
 		// No live invite: no per-link record (only the per-address count).
-		s.renderInvalidInvite(w, r)
+		miss()
 		return
 	}
 	if err != nil {
@@ -476,14 +484,22 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	now := s.gt.now()
-	if !s.inviteLimits.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
-		s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
-		return
+	// As handleInviteSubmit: only a token that does not verify counts against
+	// the address, after it was tried, so a valid reset link is never refused
+	// for its address.
+	miss := func() bool {
+		if !s.inviteLimits.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+			return true
+		}
+		return false
 	}
 	token, pw, pw2 := postedLinkToken(r), r.FormValue("password"), r.FormValue("password2")
 	removePasskeys := r.PostFormValue(resetRemovePasskeysField) != ""
 	if token == "" {
-		s.renderInvalidInvite(w, r)
+		if !miss() {
+			s.renderInvalidInvite(w, r)
+		}
 		return
 	}
 	if len(pw) < gotrue.MinPasswordLength || pw != pw2 {
@@ -498,7 +514,9 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := s.gt.Client.VerifyRecovery(r.Context(), ip, token)
 	if gotrue.IsClientError(err) {
-		s.renderInvalidInvite(w, r)
+		if !miss() {
+			s.renderInvalidInvite(w, r)
+		}
 		return
 	}
 	if err != nil {

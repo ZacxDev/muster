@@ -38,7 +38,7 @@ func TestMusterPublicURLReachesTheSameOriginCheck(t *testing.T) {
 		}
 		resp.Body.Close()
 		for _, c := range resp.Cookies() {
-			if c.Value != "" {
+			if c.Value != "" && c.Name == "muster_session" {
 				session = c
 			}
 		}

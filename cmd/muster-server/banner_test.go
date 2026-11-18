@@ -407,6 +407,9 @@ var bannerLedger = []string{
 	// so an operator chasing a misdirected request must be told which state
 	// this is and which patterns.
 	envPluginOrigins,
+	// The client address: STRICT (both unset) or TRUSTED PROXIES with the
+	// ranges and the header, so an operator can read whose headers are believed.
+	envTrustedProxies, envClientIPHeader, envDirectClients,
 	// 🔴 SESSION ROUTING IS LEDGERED: ON, the chief can put an outside party's
 	// message into the operator's own sessions and relay the answer without
 	// approval to allowlisted senders, so the log must say which state this is
@@ -835,6 +838,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		GoTrueURL:           "http://auth.example.invalid:9999",
 		GoTrueSecret:        strings.Repeat("j", 40),
 		BrowserPort:         18192,
+		ClientAddr:          mustClientAddr(t, "192.0.2.0/24", "X-Forwarded-For"),
+		DirectClients:       true,
 		RouterURL:           "https://router.example.invalid",
 		RouterToken:         "t",
 		RouterActor:         "muster",

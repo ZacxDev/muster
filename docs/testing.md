@@ -138,9 +138,10 @@ In CI the suite runs as parallel legs, each with its own Postgres
 (`e2e/legs.json`). The `e2e` check aggregates them, and refuses a spec that ran
 in no leg or in two.
 
-**Signing in.** Password sign-in is throttled to 10 attempts a minute per
-server, so a spec that fills the sign-in form for every test gets a 429 on a
-fast runner and passes on a slow one. Specs sign in with `signIn(page, origin)`
+**Signing in.** Wrong password sign-ins are counted, 10 a minute per address and
+100 per server; past that, a browser with no known-device cookie and no session
+is refused. A spec that fills the sign-in form for
+every test still costs a server-side sign-in each time, so specs sign in once. Specs sign in with `signIn(page, origin)`
 from `e2e/lib/signin.ts`, which drives the form once per server and worker and
 reuses that session afterwards; the session key comes from the password, so a
 restarted server still accepts it. Pass `{ fresh: true }`

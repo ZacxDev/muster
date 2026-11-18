@@ -608,6 +608,14 @@ fi
 The last `curl` must print `{"status":"ok",…}`: Tailscale's HTTPS reaches
 muster. `MUSTER_URL` is an `https://<machine>.<tailnet>.ts.net` address.
 
+muster believes no forwarding header by default, so behind `tailscale serve`
+every device has the same client address in muster's per-address limits. That
+is the safe default; leave it. If you later put muster behind a reverse proxy
+of your own instead, set `MUSTER_TRUSTED_PROXIES` and `MUSTER_CLIENT_IP_HEADER`
+in `.env` as
+[Client addresses behind a proxy](docs/configuration.md#client-addresses-behind-a-proxy)
+describes, for that proxy.
+
 **If this fails:**
 - `TAILSCALE NOT READY`: Tailscale is not installed, not running, or not
   signed in here (a signed-out Tailscale is `unready` too). This is not

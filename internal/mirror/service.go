@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
@@ -181,19 +181,16 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-// clientAddr is the failure counter's key: the TCP peer.
+// clientAddr is the failure counter's key: the request's client address
+// (internal/clientaddr, resolved by muster's handler): the TCP peer unless
+// that peer is a configured trusted proxy.
 //
-// ⚠ NOT X-Forwarded-For, which any client can write. Behind the public path
-// (a proxy chain in front of muster) every client therefore shares ONE
+// ⚠ Behind a proxy that is NOT configured as trusted, every client shares ONE
 // address and one failure count — which is safe ONLY because the count never
 // refuses a VALID token (see ServeConnect): a flood of bad tokens from anyone
 // earns those bad tokens 429s, and a legitimate host's reconnect is unaffected.
 func clientAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return clientaddr.Of(r)
 }
 
 // ServeConnect is GET /mirror/connect: authenticate the host's token, upgrade,
