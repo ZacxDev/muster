@@ -86,11 +86,15 @@ func TestACardsFormsCarryTheirHtmxPost(t *testing.T) {
 	for _, want := range []string{
 		`<form method="POST" action="/attention/asks/1/answer" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls hx-post="/attention/asks/1/answer" hx-swap="none" hx-headers='{"X-Muster-Asks-Card": "1"}' data-asks-card-form="ask-1">`,
 		`<form id="ask-1-dismiss" method="POST" action="/attention/asks/1/cancel" hidden hx-post="/attention/asks/1/cancel" hx-swap="none" hx-headers='{"X-Muster-Asks-Card": "1"}' data-asks-card-form="ask-1"></form>`,
-		`<div data-asks-card-error></div>`,
 	} {
 		if !strings.Contains(li, want) {
 			t.Errorf("the card lacks %q:\n%s", want, li)
 		}
+	}
+	// No empty error slot drawn (the design review: it was a gap on every
+	// card); the feed's script makes it when a post is refused.
+	if strings.Contains(li, `data-asks-card-error`) {
+		t.Errorf("the card draws an empty error slot:\n%s", li)
 	}
 	items[0].stepUpWhy = "Sign in again"
 	if li := itemLi(t, attentionItemsHTML(items, designNow), "ask-1"); strings.Contains(li, `data-attention-answer data-asks-controls hx-post`) || !strings.Contains(li, `data-step-up-form`) {
