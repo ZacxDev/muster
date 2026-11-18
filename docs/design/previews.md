@@ -177,7 +177,7 @@ this tunnel, and under the plugin shape they do not go to muster at all.
 - Precedent for a plugin binary: `cmd/muster-clankmail`, which was in this
   module when this was written and has since been extracted to its own
   repository, [ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail)
-  ([configuration.md](../configuration.md#muster-clankmail-the-clankmail-plugin)).
+  ([clankmail.md](../clankmail.md)).
 
 ### The MCP doors
 

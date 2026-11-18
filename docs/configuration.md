@@ -4,6 +4,15 @@ Every muster binary is configured through environment variables. This page lists
 **every variable any Go code in this repository reads**, grouped by the binary
 that reads it.
 
+`muster-clankmail`, the [plugin](plugins.md) for ClankMail, is no longer one of
+them: it lives in its own repository,
+[github.com/ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail),
+whose README is its variable reference (`MUSTER_URL`, `PLUGIN_TOKEN_FILE`,
+`CHIEF_KEY_FILE`, `HUB_URL`, `HUB_NAME`, `CLANKMAIL_PEERS`, `STATE_DIR`,
+`POLL_INTERVAL`, `LISTEN_ADDR`), and it is not in the muster image any more:
+run `ghcr.io/zacxdev/muster-clankmail:<version>`. What muster itself needs for
+it is in [clankmail.md](clankmail.md).
+
 The list is enforced. `TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa`
 (in `internal/modulegate/envdoc_test.go`) parses the module's Go source, collects
 every variable name it reads, and compares that set with the first column of the
@@ -552,17 +561,6 @@ Slash commands typed into the pane are not tools and are not removed (a turn's
 prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
 this flag ignores the header and starts the CLI with every tool, and muster
 does not detect it: see [chief nudges, Rolling out](chief-nudges.md#rolling-out).
-
-## muster-clankmail (the ClankMail plugin)
-
-`muster-clankmail`, the [plugin](plugins.md) for ClankMail, was extracted from
-this repository into its own,
-[github.com/ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail),
-whose README is its variable reference (`MUSTER_URL`, `PLUGIN_TOKEN_FILE`,
-`CHIEF_KEY_FILE`, `HUB_URL`, `HUB_NAME`, `CLANKMAIL_PEERS`, `STATE_DIR`,
-`POLL_INTERVAL`, `LISTEN_ADDR`). It is not in the muster image any more: run
-`ghcr.io/zacxdev/muster-clankmail:<version>`. What muster itself needs for it
-is in [clankmail.md](clankmail.md).
 
 ## muster-preview (the preview gateway)
 
