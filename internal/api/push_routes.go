@@ -314,6 +314,7 @@ const (
 	pushDropNoOwner     = "no_owner"     // the notification names no owner
 	pushDropOff         = "push_off"     // neither muster's push nor the router is configured
 	pushDropRouterOnly  = "router_admin_only"
+	pushDropOfficer     = "officer" // an officer's information-only push (officer_push.go)
 )
 
 // logPushDrop is THE log line of a notification that was not delivered:
@@ -331,6 +332,8 @@ func pushDropSentence(reason string) string {
 		return fmt.Sprintf("the owner's cap of %d notifications per %s is reached", pushOwnerBurst, pushOwnerWindow)
 	case pushDropSenderCap:
 		return fmt.Sprintf("the sender's cap of %d notifications per %s is reached", notifySenderBurst, notifySenderWindow)
+	case pushDropOfficer:
+		return "an officer notifies only for a decision: use officer_ask_person to ask your owner something"
 	case pushDropNoDevice:
 		return "no device is subscribed"
 	case pushDropFailed:

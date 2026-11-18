@@ -3402,14 +3402,14 @@ An officer may split its instances into two **pools**, one per HQ item tier
     the lease lapse.
   - While such a refusal holds, the holder's instance number is **withheld**
     from the pool. At the default `max_instances` of 1 that is the whole
-    judgement pool, and every other judgement item waits. This is loud: the
-    officer's owner gets **one** notification per episode (the "needs you"
-    channel, muted with the attention toggle on /account) naming the
-    officer, the item, HQ's refusal and that the pool is waiting, and it is
-    cleared when the escalation lands. The gauge
-    `muster_officer_cap_refusal_withheld` counts the withheld instances,
-    and the log says when one is withheld and when it is not any more. A
-    restarted muster starts a new episode for a refusal still in force.
+    judgement pool, and every other judgement item waits. It is **not
+    pushed**: there is nothing for the owner to decide
+    ([Officer notifications](push.md#officer-notifications-decisions-only)).
+    The gauge `muster_officer_cap_refusal_withheld` counts the withheld
+    instances, and the log says when one is withheld and when it is not any
+    more. A notification sent by an older muster is still withdrawn when the
+    escalation lands. A restarted muster starts a new episode for a refusal
+    still in force.
 
 - **One conversation per item: `tiers.<pool>.fresh_session_per_item`**
   (`true` on either pool, or both; **off by default** — leave it out for one

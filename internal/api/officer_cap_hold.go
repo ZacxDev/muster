@@ -36,6 +36,11 @@ func (s *Server) officerCapHoldNotice(o officers.Officer, h officers.CapHold) {
 		s.goNotify(o.Owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: tag, Tag: tag}, nil)
 		return
 	}
+	if !s.officerPushSends(officerPushCapHold, o.Owner, tag) {
+		// Information only (officer_push.go). The withdrawal above stays: a
+		// notice sent before this rule is still withdrawn when its hold ends.
+		return
+	}
 	s.goNotify(o.Owner, push.EventAttention, RouterNotification{Type: "notify", ID: tag, Tag: tag,
 		Title: fmt.Sprintf("Officer %s: judgement pool withheld", o.ID),
 		Body:  capHoldBody(o, h)}, nil)
@@ -53,6 +58,9 @@ func (s *Server) officerBudgetNotice(o officers.Officer, a officers.BudgetAlert)
 	if a.Unreadable {
 		tag = "officer-budget-unreadable-" + o.ID + "-" + s.officerNow().UTC().Format("2006-01-02")
 		title = fmt.Sprintf("Officer %s: spend unreadable", o.ID)
+	}
+	if !s.officerPushSends(officerPushBudget, o.Owner, tag) {
+		return // information only (officer_push.go): the sidebar row says "held"
 	}
 	s.goNotify(o.Owner, push.EventAttention, RouterNotification{Type: "notify", ID: tag, Tag: tag,
 		Title: title, Body: budgetBody(a)}, nil)

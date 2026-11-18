@@ -422,7 +422,11 @@ func (s *Server) toolNotifyOwner(ctx context.Context, c toolCaller, arguments st
 
 	var status, reason string
 	delivered, devices := 0, 0
-	if !s.notifySenders.allow(notifyBucketNotify+from.key, s.now()) {
+	// An officer pushes only for a decision (officer_push.go): its
+	// notify_owner is answered, audited and logged, and sends nothing.
+	if c.agent != nil && s.agentIsOfficer(ctx, c.agent.ID) && !s.officerPushSends(officerPushNotifyOwner, owner, notifyTag(from)) {
+		status, reason = "suppressed", pushDropOfficer
+	} else if !s.notifySenders.allow(notifyBucketNotify+from.key, s.now()) {
 		s.logPushDrop(notifyTag(from), push.EventAgentNotify, owner, pushDropSenderCap)
 		status, reason = "suppressed", pushDropSenderCap
 	} else {
@@ -549,6 +553,10 @@ func (s *Server) accountNotifyLog(r *http.Request) string {
 // (one tag per page).
 func (s *Server) pageUpdated(c toolCaller, p pageUpdatedRef) {
 	tag := "page-" + strconv.FormatInt(p.id, 10) + "-updated"
+	// An officer's new version pushes nothing (officer_push.go): information.
+	if p.byOfficer && !s.officerPushSends(officerPushPageUpdated, p.owner, tag) {
+		return
+	}
 	if !s.notifySenders.allow(notifyBucketPageUpdate+c.askerKey(), s.now()) {
 		s.logPushDrop(tag, push.EventPageUpdated, p.owner, pushDropSenderCap)
 		return
@@ -568,6 +576,8 @@ type pageUpdatedRef struct {
 	version   int
 	title     string
 	creator   pages.Creator
+	// byOfficer: an officer's instance published it (it pushes nothing).
+	byOfficer bool
 }
 
 // notifyOwnerOn reports whether notify_owner is offered: muster's own push is

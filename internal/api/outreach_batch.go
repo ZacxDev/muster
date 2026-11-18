@@ -377,9 +377,11 @@ func (s *Server) notifyBatchAwaiting(owner int64, d plugins.Draft) {
 		return
 	}
 	id := plugins.BatchID(d.OwnerID, *d.Officer, d.CreatedAt.UTC().Format("2006-01-02"))
-	s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: id, Title: OutreachBatchPushTitle,
-		Body: "Follows and likes by officer " + *d.Officer + " for " + d.CreatedAt.UTC().Format("2006-01-02") + ". Nothing goes out until you tick it.",
-		Tag:  batchTag(id), Data: map[string]string{"url": batchLink(id)}}, nil)
+	if s.officerPushSends(officerPushOutreachBatch, owner, batchTag(id)) {
+		s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: id, Title: OutreachBatchPushTitle,
+			Body: "Follows and likes by officer " + *d.Officer + " for " + d.CreatedAt.UTC().Format("2006-01-02") + ". Nothing goes out until you tick it.",
+			Tag:  batchTag(id), Data: map[string]string{"url": officerDecisionCard(officerPushOutreachBatch, officerCardRef{ID: id})}}, nil)
+	}
 	s.attentionChanged(owner, batchKey(id))
 }
 

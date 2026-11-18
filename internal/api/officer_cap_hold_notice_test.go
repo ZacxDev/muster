@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,17 +14,19 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A REFUSED CAP ESCALATION THAT WITHHOLDS A JUDGEMENT INSTANCE IS LOUD.
+// A REFUSED CAP ESCALATION THAT WITHHOLDS A JUDGEMENT INSTANCE IS COUNTED,
+// NOT PUSHED.
 //
 // When HQ keeps refusing the wall-time cap's escalation, muster keeps the item
 // held as its stopped holder and never starts that instance number again
 // (fail closed: a restart would claim new work and be stopped for the old
 // item's cap). At the default max_instances 1 that is the whole judgement
-// pool: every other judgement item waits. So the officer's owner is told ONCE
-// per episode, through goNotify, naming the officer, the item, HQ's refusal
-// and that the pool is waiting; the notification is cleared when the
-// escalation lands; and muster_officer_cap_refusal_withheld counts the
-// withheld instances meanwhile.
+// pool: every other judgement item waits. muster_officer_cap_refusal_withheld
+// counts the withheld instances meanwhile. 🔴 It is information, not a
+// decision (officer_push.go, officerPushCapHold), so the owner is NOT pushed;
+// it once was (one notification per episode), and a hold that ends still
+// sends its withdrawal on the episode's tag, so a notice sent before that
+// rule is cleared.
 // ---------------------------------------------------------------------------
 
 const capHoldGauge = "muster_officer_cap_refusal_withheld"
@@ -46,14 +47,14 @@ func gaugeValue(t *testing.T, name string) (float64, bool) {
 	return 0, false
 }
 
-// TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce: the
-// judgement pool has the DEFAULT max_instances (1). Its one instance holds
-// item A past the 30-minute cap, item B waits, and HQ refuses the
-// escalation. The owner gets one notification naming the officer, A, HQ's
-// refusal and that the pool is waiting, and no more over four passes; the
-// gauge reads 1. Once HQ takes the escalation, the notification is cleared
-// (one resolved, same tag) and the gauge reads 0.
-func TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce(t *testing.T) {
+// TestARefusedCapEscalationThatWithholdsThePoolIsNotPushed: the judgement
+// pool has the DEFAULT max_instances (1). Its one instance holds item A past
+// the 30-minute cap, item B waits, and HQ refuses the escalation. The gauge
+// reads 1 and the owner gets NO notification, over five passes. Once HQ takes
+// the escalation the gauge reads 0, and the only thing sent is the hold's
+// withdrawal (resolved, its episode's tag) — which proves the harness sees
+// this owner's device: the zero before it is not a pusher wired to nothing.
+func TestARefusedCapEscalationThatWithholdsThePoolIsNotPushed(t *testing.T) {
 	r := newOfficerRigWith(t, map[string]string{offATok: offA, offTTok: offT}, func(hqURL string) []officers.Officer {
 		raw := `[{"id":"` + offA + `","hq_url":"` + hqURL + `","max_instances":1},` +
 			`{"id":"` + offT + `","hq_url":"` + hqURL + `","tiers":{"routine":{"model":"haiku","max_instances":1},` +
@@ -94,22 +95,6 @@ func TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce(t *testin
 	}
 
 	pass()
-	got := pusher.to(ep("cap-hold"))
-	if len(got) != 1 {
-		t.Fatalf("after a refused cap escalation withholds the only judgement instance: %d notification(s) %+v, want exactly 1", len(got), got)
-	}
-	n := got[0]
-	if n.Type == push.TypeResolved || !strings.Contains(n.Title, offT) {
-		t.Errorf("the notification's title %q (type %q) does not name officer %s", n.Title, n.Type, offT)
-	}
-	for _, want := range []string{a, refusal, "waiting"} {
-		if !strings.Contains(n.Body, want) {
-			t.Errorf("the notification's body %q does not contain %q", n.Body, want)
-		}
-	}
-	if n.Tag == "" {
-		t.Error("the notification has no tag, so it cannot be cleared when the escalation lands")
-	}
 	if v, ok := gaugeValue(t, capHoldGauge); !ok || v != 1 {
 		t.Errorf("%s = %v (registered: %v), want 1 while the escalation is refused", capHoldGauge, v, ok)
 	}
@@ -117,8 +102,8 @@ func TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce(t *testin
 		r.advance(5 * time.Minute)
 		pass()
 	}
-	if got := pusher.to(ep("cap-hold")); len(got) != 1 {
-		t.Fatalf("over four more passes of the same refusal: %d notifications %+v, want still 1 (once per episode)", len(got), got)
+	if got := pusher.to(ep("cap-hold")); len(got) != 0 {
+		t.Fatalf("officer cap hold (information only) pushed %d notification(s) %+v, want none", len(got), got)
 	}
 	if st := r.hq.Item(b).Status; st != "open" {
 		t.Fatalf("item B is %s, want open (the pool is withheld: it waits)", st)
@@ -130,9 +115,9 @@ func TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce(t *testin
 	if it := r.hq.Item(a); it.Status != "escalated" {
 		t.Fatalf("once HQ takes the escalation item A is %q, want escalated", it.Status)
 	}
-	got = pusher.to(ep("cap-hold"))
-	if len(got) != 2 || got[1].Type != push.TypeResolved || got[1].Tag != n.Tag {
-		t.Fatalf("after the escalation lands: notifications %+v, want the first and then one resolved with tag %q", got, n.Tag)
+	got := pusher.to(ep("cap-hold"))
+	if want := "officer-cap-hold-" + offT + "-" + a; len(got) != 1 || got[0].Type != push.TypeResolved || got[0].Tag != want {
+		t.Fatalf("after the escalation lands: notifications %+v, want exactly one resolved with tag %q", got, want)
 	}
 	if v, ok := gaugeValue(t, capHoldGauge); !ok || v != 0 {
 		t.Errorf("%s = %v (registered: %v), want 0 once the escalation lands", capHoldGauge, v, ok)
