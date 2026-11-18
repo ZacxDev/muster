@@ -325,7 +325,7 @@ func (s *Server) fleetProposeCIResults(octx context.Context, facts []nudgeCandid
 	for _, sub := range fr.subjects {
 		ep := sub.episode
 		if sub.chief || sub.kind != chiefnudge.KindMirror || ep == nil || sub.state != fleet.StateStalled || busy[ep.Kind+":"+ep.Key] ||
-			len(sub.prs) == 0 || sub.prs[0].State != fleet.PROpen {
+			len(sub.prs) == 0 || sub.prs[0].State != fleet.PROpen || s.fleetSubjectGuarded(octx, sub) {
 			continue
 		}
 		pr := sub.prs[0]
@@ -450,12 +450,19 @@ func (s *Server) fleetCardsFor(ctx context.Context, chief agents.Agent) bool {
 	return s.fleetProposeOn() && !s.ownerIsTeam(ctx, agentOwnerID(chief))
 }
 
+// fleetRouteCardTooLong is why an outside-turn route's text files no card: a
+// card's text is a custom card's, at most 4 KiB (a route itself allows more).
+const fleetRouteCardTooLong = "outside your owner's turn the text is a card's, at most 4 KiB"
+
 // fleetRouteCard files a custom card: the chief's text for session subject
 // (route_to_session's), which its call outside an owner turn could not route.
 // ok false when no card is filed this way (the call then refuses as before).
 func (s *Server) fleetRouteCard(ctx context.Context, chief agents.Agent, subject focus.Subject, text string) (string, bool) {
 	if !s.fleetCardsFor(ctx, chief) {
 		return "", false
+	}
+	if len(text) > fleet.MaxCustomBytes {
+		return fleetToolResult(fleet.Action{}, fleetRefusedTooLong, fleetRouteCardTooLong), true
 	}
 	sub, refused, why := s.fleetStoppedSubject(ctx, subject.String())
 	if refused != "" {
@@ -473,6 +480,7 @@ func (s *Server) fleetRouteManyCards(ctx context.Context, chief agents.Agent, su
 	if !s.fleetCardsFor(ctx, chief) {
 		return "", false
 	}
+	// The 4 KiB cap is fleetRouteCard's, per subject (each refused too_long).
 	proposed, refusedList := []map[string]any{}, []map[string]any{}
 	seen := map[string]bool{}
 	for _, raw := range subjects {

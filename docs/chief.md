@@ -1510,7 +1510,7 @@ audit ladder's verdict, not only the CI
 **Outside your turn.** `route_to_session {text}`, `route_many` and
 `end_session_propose`, called when the message the chief answers is not one you
 typed, used to refuse. With fleet proposals on, they file cards instead: a
-**custom** card per session (the chief's text, sent on your tap with muster's
+**custom** card per session (the chief's text, at most 4 KiB, sent on your tap with muster's
 first line — not a route: no answer is relayed back) and a **close** card
 (nothing typed; the session closed on your tap, unless an open pull request, a
 queued message or background work holds it). Each needs a stopped session.
@@ -1553,8 +1553,8 @@ then close"), the one-line reason, and **exactly what will be sent**, in full.
   (usually free); on a stale one muster asks "Confirm it's you" and taps again.
 - **Edit** opens the text in a box; **Send as mine** sends your text as your
   own message — no chief line — with the same sign-in check. A card that
-  types nothing or routes a task (Close, a task move) and a dispatched agent's
-  card have no Edit.
+  types nothing, routes a task or picks an option (Close, a task move, a
+  pick) and a dispatched agent's card have no Edit.
 - **Reject** sends nothing.
 - **Open session** goes to the session's rendered view.
 - **Approve all** and **Reject all** act on every card the group shows, after a

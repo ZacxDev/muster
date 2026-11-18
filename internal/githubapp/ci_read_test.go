@@ -3,7 +3,9 @@ package githubapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,5 +70,54 @@ func TestCommitChecksRefusesAnythingButARepoAndAFullCommit(t *testing.T) {
 		if _, err := app.CommitChecks(context.Background(), c[0], c[1]); err == nil {
 			t.Errorf("%q %q: read", c[0], c[1])
 		}
+	}
+}
+
+// runsPage is a check-runs page of n green runs, ids from first.
+func runsPage(first, n int) string {
+	var b strings.Builder
+	b.WriteString(`{"check_runs":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"name":"job-%d","status":"completed","conclusion":"success","completed_at":"2000-01-02T03:09:00Z"}`, first+i, first+i)
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+// TestCommitChecksReadsEveryPageAndATruncatedReadIsNeverDone: a commit with
+// 450 check runs (four full pages and a short fifth) is read whole — past the
+// old three-page cap — and is done and green; one whose every page is full (more
+// than the cap can read) is read as TRUNCATED, so it is never done nor green,
+// however green every run read is.
+func TestCommitChecksReadsEveryPageAndATruncatedReadIsNeverDone(t *testing.T) {
+	app, f, _ := newTestApp(t)
+	const many = "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+	f.mu.Lock()
+	f.ci = map[string]string{
+		"example-org/widget/" + ciSHA + "/status":    `{"statuses":[]}`,
+		"example-org/widget/" + many + "/status":     `{"statuses":[]}`,
+		"example-org/widget/" + many + "/check-runs": runsPage(90000, 100),
+	}
+	for p := 1; p <= 4; p++ {
+		f.ci["example-org/widget/"+ciSHA+"/check-runs#"+strconv.Itoa(p)] = runsPage(p*1000, 100)
+	}
+	f.ci["example-org/widget/"+ciSHA+"/check-runs#5"] = runsPage(5000, 50)
+	f.mu.Unlock()
+	got, err := app.CommitChecks(context.Background(), "example-org/widget", ciSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := cichecks.Summarize(got); len(got.Runs) != 450 || got.Truncated || !sum.Done() || !sum.AllGreen() {
+		t.Fatalf("450 runs over five pages: read %d, truncated %v, done %v", len(got.Runs), got.Truncated, sum.Done())
+	}
+	got, err = app.CommitChecks(context.Background(), "example-org/widget", many)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := cichecks.Summarize(got); !got.Truncated || sum.Done() || sum.AllGreen() {
+		t.Fatalf("more runs than the cap reads: truncated %v, done %v, green %v; want truncated, not done", got.Truncated, sum.Done(), sum.AllGreen())
 	}
 }

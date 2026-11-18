@@ -912,8 +912,10 @@ func ciReadMintRequest(name string) map[string]any {
 		"permissions": map[string]string{"metadata": "read", "checks": "read", "statuses": "read"}}
 }
 
-// ciPages bounds CommitChecks' reads: 100 statuses and 100 check runs a page.
-const ciPages = 3
+// ciPages bounds CommitChecks' reads: 100 statuses and 100 check runs a page,
+// so at most 2,000 of each. A commit with more is read as TRUNCATED
+// (cichecks.Checks.Truncated): pending, never done or green.
+const ciPages = 20
 
 // CommitChecks reads commit sha of repo's CI — its commit statuses (the
 // latest per context) and its check runs (every attempt) — with a token
@@ -952,6 +954,9 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 		if len(r.Statuses) < 100 {
 			break
 		}
+		if page == ciPages {
+			out.Truncated = true
+		}
 	}
 	for page := 1; page <= ciPages; page++ {
 		var r struct {
@@ -976,6 +981,9 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 		}
 		if len(r.CheckRuns) < 100 {
 			break
+		}
+		if page == ciPages {
+			out.Truncated = true
 		}
 	}
 	return out, nil

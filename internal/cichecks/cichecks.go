@@ -43,6 +43,9 @@ type Status struct {
 type Checks struct {
 	Statuses map[string]Status
 	Runs     []Run
+	// Truncated: the read stopped at its cap with more left unread, so a
+	// check not read may still be running — the CI is never done (or green).
+	Truncated bool
 }
 
 // The verdicts of one check (Verdict.State).
@@ -139,11 +142,13 @@ type Summary struct {
 	Green, Pending, Failed, Neutral int
 	// LastFinished is when the last check to finish finished.
 	LastFinished time.Time
+	// Truncated: Checks.Truncated (not every check was read).
+	Truncated bool
 }
 
 // Summarize judges every check c holds.
 func Summarize(c Checks) Summary {
-	var s Summary
+	s := Summary{Truncated: c.Truncated}
 	for _, n := range Names(c) {
 		v := Of(c, n)
 		s.Verdicts = append(s.Verdicts, v)
@@ -164,9 +169,10 @@ func Summarize(c Checks) Summary {
 	return s
 }
 
-// Done reports whether every check finished: at least one check, none pending.
-// No checks is not done (there is nothing to have finished).
-func (s Summary) Done() bool { return len(s.Verdicts) > 0 && s.Pending == 0 }
+// Done reports whether every check finished: at least one check, none pending,
+// and every check read (a truncated read is pending, never done). No checks is
+// not done (there is nothing to have finished).
+func (s Summary) Done() bool { return len(s.Verdicts) > 0 && s.Pending == 0 && !s.Truncated }
 
 // AllGreen reports whether CI is green: done, nothing failed, at least one
 // green (a commit whose every check was skipped is not green).

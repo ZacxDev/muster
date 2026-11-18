@@ -227,7 +227,12 @@ func (f *fakeGitHub) serveCI(w http.ResponseWriter, r *http.Request, rest string
 		}
 		granted = in && body.Permissions["checks"] == "read" && body.Permissions["statuses"] == "read"
 	}
-	b, ok := f.ci[full+"/"+sha+"/"+kind]
+	// A page's own body when scripted ("…/check-runs#3"), else the one body
+	// every page answers.
+	b, ok := f.ci[full+"/"+sha+"/"+kind+"#"+r.URL.Query().Get("page")]
+	if !ok {
+		b, ok = f.ci[full+"/"+sha+"/"+kind]
+	}
 	f.mu.Unlock()
 	if !granted || !ok {
 		w.WriteHeader(http.StatusNotFound)

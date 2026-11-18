@@ -205,21 +205,58 @@ func (s *Server) fleetStoppedSubject(ctx context.Context, id string) (fleetSubje
 // never a tag; hostOfficerWindowsOpen's read). A read that fails guards.
 func (s *Server) fleetSubjectGuarded(ctx context.Context, sub fleetSubject) bool {
 	if sub.kind == chiefnudge.KindMirror {
-		st := s.officerHostSpawns()
-		if st == nil || sub.view.Window == "" {
-			return false
-		}
-		rows, err := st.HostSpawnsInWindows(s.officerPrincipal(ctx, requestOwner(ctx)), sub.view.Host, []string{sub.view.Window})
-		return err != nil || len(rows) > 0
+		officer, err := s.fleetHostOfficerWindow(ctx, sub.view.Host, sub.view.Window)
+		return err != nil || officer
 	}
 	if sub.kind != chiefnudge.KindAgent {
 		return false
 	}
-	if _, _, officer := s.officerOf(sub.agent); officer {
-		return true
+	officer, err := s.fleetOfficerAgent(ctx, sub.agent.ID)
+	return err != nil || officer
+}
+
+// fleetHostOfficerWindow reports whether host's window is one the officer
+// runtime spawned (the spawn store's recorded window).
+func (s *Server) fleetHostOfficerWindow(ctx context.Context, host, window string) (bool, error) {
+	st := s.officerHostSpawns()
+	if st == nil || window == "" {
+		return false, nil
 	}
-	_, protected, err := s.agentIsDeleteProtected(ctx, sub.agent.ID)
-	return err != nil || protected
+	rows, err := st.HostSpawnsInWindows(s.officerPrincipal(ctx, requestOwner(ctx)), host, []string{window})
+	return len(rows) > 0, err
+}
+
+// fleetOfficerAgent reports whether agent id is an officer's instance (or
+// another agent the destroy paths protect), read from the agent table.
+func (s *Server) fleetOfficerAgent(ctx context.Context, id int64) (bool, error) {
+	a, protected, err := s.agentIsDeleteProtected(ctx, id)
+	if err != nil || protected {
+		return protected, err
+	}
+	_, _, officer := s.officerOf(a)
+	return officer, nil
+}
+
+// fleetActionGuarded is fleetSubjectGuarded re-read for action a at the tap
+// and the paste (fleetStillOn): an officer's window or instance is never sent
+// to, even when it became one after the card was filed. A read that fails is
+// unknown (retried), never a send.
+func (s *Server) fleetActionGuarded(ctx context.Context, a fleet.Action) nudgeState {
+	var officer bool
+	var err error
+	switch a.SubjectKind {
+	case chiefnudge.KindMirror:
+		officer, err = s.fleetHostOfficerWindow(ctx, a.Host, a.Window)
+	case chiefnudge.KindAgent:
+		officer, err = s.fleetOfficerAgent(ctx, a.AgentID)
+	}
+	switch {
+	case err != nil:
+		return nudgeUnknown
+	case officer:
+		return nudgeMovedAway
+	}
+	return nudgeStalled
 }
 
 // fleetProposalFor is the proposal of class with text on stopped subject sub.
@@ -525,6 +562,9 @@ func fleetMirrorDelivery(h mirror.HostView, e mirror.SessionView) fleetDelivery 
 // "moved on" predicate) and — when one was recorded — the same pull request
 // head. nudgeUnknown when any of it cannot be read: never moved on.
 func (s *Server) fleetStillOn(ctx context.Context, a fleet.Action) nudgeState {
+	if st := s.fleetActionGuarded(ctx, a); st != nudgeStalled {
+		return st
+	}
 	switch {
 	case a.Class == fleet.ClassAnswerPick:
 		// A picker on screen is a WAITING window, not an idle one: the stop
@@ -577,7 +617,7 @@ const (
 // or a close (nothing is typed — an edit would close the session and drop
 // the owner's text). ONE predicate: the card's Edit form and the approve.
 func fleetEditable(a fleet.Action) bool {
-	return a.Class != fleet.ClassReassign && a.Class != fleet.ClassClose && a.SubjectKind != chiefnudge.KindAgent
+	return a.Class != fleet.ClassReassign && a.Class != fleet.ClassClose && a.Class != fleet.ClassAnswerPick && a.SubjectKind != chiefnudge.KindAgent
 }
 
 // fleetApproveResult is one approve: its note, and whether it moved on.
