@@ -47,8 +47,8 @@ func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string
 	b.WriteString(ui.AsksGroupLabel("nudges-decisions", "Decisions", len(list)) + `
 <ul class="` + ui.AsksGroupListClass + `" aria-labelledby="nudges-decisions" data-testid="nudges-list">`)
 	if len(list) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2" data-nudges-empty>No decisions yet. The chief looks at a session once it has been idle for ` +
-			esc(s.chiefNudgeIdle().String()) + `.</li>`)
+		b.WriteString(ui.AsksEmptyHTML(` data-asks-empty="nudges" data-nudges-empty`, "", "",
+			`No decisions yet. The chief looks at a session once it has been idle for `+esc(s.chiefNudgeIdle().String())+`.`, ""))
 	}
 	for _, d := range list {
 		b.WriteString(chiefNudgeCardHTML(d, now))
@@ -95,7 +95,7 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		mode = "Live"
 	}
 	var b strings.Builder
-	b.WriteString(`<li id="nudge-` + id + `" class="` + ui.AsksCardClass + `" data-nudge data-nudge-id="` + id + `" data-decision="` + esc(d.Decision) +
+	b.WriteString(`<li id="nudge-` + id + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-nudge data-nudge-id="` + id + `" data-decision="` + esc(d.Decision) +
 		`" data-outcome="` + esc(d.Outcome) + `" data-mode="` + esc(d.Mode) + `">
 <div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="break-words text-sm font-semibold text-fg" data-nudge-session>` +
 		esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host)) + `</span>
