@@ -259,7 +259,21 @@ for (const vp of [
       test.setTimeout(60_000);
       await rig.login(page);
       await page.goto(rig.origin + '/tasks');
-      await page.evaluate(() => localStorage.setItem('muster.chief.v1.open.chief-panel', '1'));
+      // 🔴 THE STORED OPEN STATE IS SEEDED FOR THE RELOADED DOCUMENT ONLY. Set
+      // in the page BEFORE the reload (as this test once did), the old
+      // document saw it too: restore() runs on every htmx settle and applies
+      // the stored state — the cross-tab restore the panel is built for — so a
+      // settle in the old document between the write and its unload opened
+      // ITS panel and fetched the card, and that fetch was counted here as the
+      // reloaded page's second (measured: the extra request left 15 ms before
+      // the reload's navigation committed, while the reloaded document itself
+      // made exactly one). An init script writes it before the new document's
+      // first script runs, and only once.
+      await page.addInitScript(() => {
+        if (sessionStorage.getItem('e2e-fleet-restore-seeded')) return;
+        sessionStorage.setItem('e2e-fleet-restore-seeded', '1');
+        localStorage.setItem('muster.chief.v1.open.chief-panel', '1');
+      });
       const fetches: string[] = [];
       page.on('request', (r) => {
         const u = new URL(r.url());

@@ -353,6 +353,61 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 	}
 }
 
+// TestTheMCPSecretFileExpandsHome: MUSTER_MIRROR_MCP_SECRET_FILE=~/… (a
+// settings file no shell expanded) is under this user's home, as `muster
+// doctor` reads it — not a directory named "~" under the working directory.
+func TestTheMCPSecretFileExpandsHome(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(work)
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen := free.Addr().String()
+	free.Close()
+	muster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	defer muster.Close()
+	prevB, prevC := newTmuxBackend, runContext
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	type result struct {
+		rc   int
+		errs string
+	}
+	done := make(chan result, 1)
+	go func() {
+		rc, _, errs := runWith(t, map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envAllowHTTP: "1", envMCPListen: listen, envMCPSecret: "~/mm/mcp-secret"})
+		done <- result{rc, errs}
+	}()
+	want := filepath.Join(home, "mm", "mcp-secret")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if fi, err := os.Stat(want); err == nil && fi.Size() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			r := <-done
+			t.Fatalf("no secret at %s after 10s (rc %d); log:\n%s", want, r.rc, r.errs)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	r := <-done
+	if _, err := os.Stat(filepath.Join(work, "~")); err == nil {
+		t.Fatalf("a literal ~ directory was made under the working directory")
+	}
+	if !strings.Contains(r.errs, "(secret in "+want+")") {
+		t.Fatalf("the log does not name the expanded path %s:\n%s", want, r.errs)
+	}
+}
+
 // TestADanglingSymlinkSecretNeverDelaysMirroring: with the MCP secret file a
 // dangling symlink, the host still dials muster at once (the endpoint is off,
 // and says so) — setting MCP up never stands between the host and mirroring.
