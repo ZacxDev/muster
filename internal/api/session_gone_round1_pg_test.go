@@ -55,7 +55,17 @@ func TestAWindowWhoseAgentExitedEndsGone(t *testing.T) {
 			if !f.withdrawn(e.ID) {
 				t.Fatal("the gone stop's notification was not withdrawn")
 			}
-			for i := 0; i < 120; i++ {
+			// An hour of the shell sitting there, in 4*episodeGoneMisses passes
+			// rather than 120 (each a round of Postgres reads and writes: ~50 s
+			// in CI). 2*episodeGoneMisses passes at the interval cover every
+			// pass-COUNT threshold the gone rule has (the largest is
+			// episodeGoneMisses); the clock then jumps to past the hour and the
+			// same again, which covers any TIME threshold up to an hour.
+			for i := 0; i < 2*episodeGoneMisses; i++ {
+				f.nextPass(t)
+			}
+			f.advance(time.Hour)
+			for i := 0; i < 2*episodeGoneMisses; i++ {
 				f.nextPass(t)
 			}
 			if list := f.episodes(t); len(list) != 1 || list[0].Open() {
