@@ -45,6 +45,21 @@ func (f *pageFixture) ownerUpload(t *testing.T, id int64, v int, component, name
 		merge(hdr, map[string]string{"Content-Type": mw.FormDataContentType()}))
 }
 
+// pageContentBlocks is a content document's page markup: the BLOCKS string
+// its SDK puts in the page once it holds the shell's port, decoded.
+func pageContentBlocks(t *testing.T, doc string) string {
+	t.Helper()
+	m := regexp.MustCompile(`BLOCKS=("(?:[^"\\]|\\.)*")`).FindStringSubmatch(doc)
+	if m == nil {
+		t.Fatalf("no BLOCKS in the content: %s", doc)
+	}
+	var out string
+	if err := json.Unmarshal([]byte(m[1]), &out); err != nil {
+		t.Fatalf("BLOCKS is not a JSON string: %v", err)
+	}
+	return out
+}
+
 // pageResponsesLines is page_responses' fenced lines, each decoded.
 func pageResponsesLines(t *testing.T, out map[string]any) []map[string]any {
 	t.Helper()
@@ -295,6 +310,10 @@ func TestNothingTheOwnerSeesSaysPreview(t *testing.T) {
 	created := f.tool(t, f.agent, pageCreateTool, map[string]any{"title": "Wording", "blocks": json.RawMessage(formBlocks)})
 	id := pnum(created["page_id"])
 	sid := strconv.FormatInt(id, 10)
+	// One name for the owner's view (round 0's D2): preview_url, no url.
+	if created["preview_url"] != pagesPublicURL+"/pages/"+sid+"/view" || created["url"] != nil {
+		t.Errorf("page_create's view address: preview_url %v, url %v", created["preview_url"], created["url"])
+	}
 	f.tool(t, f.agent, pageUpdateTool, map[string]any{"page_id": id, "blocks": json.RawMessage(formBlocks)})
 	for name, body := range map[string]string{
 		"the view":           f.get(t, "/pages/"+sid+"/view", f.ownerHdr()).Body.String(),

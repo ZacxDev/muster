@@ -248,17 +248,33 @@ muster.page                        // {title, version}
 **As built (the owner's view):** the owner's view records. Its shell is the
 link's shell with the owner's chrome (a version chip), and its relay posts
 to `/pages/{id}/versions/{v}/submit` and `/upload` with the owner's session,
-same-origin (`requireOperatorWrite`). The row is `by_owner`, with no link; the caps and rate limits are one link's.
+same-origin (`requireOperatorWrite`), and **only a send the page's frame made
+right after a real user activation inside it** (round 0's Q1, the operator's
+decision): the SDK reads `navigator.userActivation.isActive` through a getter
+saved before any page script, and sends it as `act` on the private port; the
+shell answers a send without it `Tap to send` and posts nothing. Measured
+before building it (Chromium, 390×844 touch and 1280×800): in the content
+frame `isActive` is false on load and at `setTimeout(0)` — while the shell,
+whose navigation gave it activation, reads true — and true right after a
+click inside the frame; a parent's activation does not pass down. The row is
+`by_owner`, with no link; the caps and rate limits are one link's.
 A response from `?v=N` answers version N. The content document is the same
 for both, so it has no preview mode.
 
 **As built (the header):** the shell's header is one ~40px row over a
 full-window frame and hides on a scroll down by a transform (the frame never
 moves). The SDK reports the document's scroll offset to the shell on a
-private `MessagePort` the shell hands the frame on its load, taken in a
-capture listener registered before any page script, with every primitive it
-calls captured first — so a page's script posting a scroll op to the shell is
-ignored. The header shows on load, near the top, and on any scroll up, and
+private `MessagePort`, and every send and answer goes on it too. The page's
+markup is not in the document: it is a JSON string in the SDK, put in the
+page (`createContextualFragment`, so its scripts run in order) only once the
+SDK has asked the shell for the port ("hello") and taken it in a capture
+listener — so no script of the page's runs before the port is held, and
+every primitive the SDK calls later is saved first. Round 0's D1, measured:
+when the markup was in the body, a page that called `document.open()` from a
+`setTimeout` (which erases the SDK's listeners) received the port, at both
+sizes; with this order there is no window in which it can. The shell takes
+only the first hello and ignores every other window message, so a page's
+script posting a scroll op or a send to the shell is ignored. The header shows on load, near the top, and on any scroll up, and
 hides only on a scroll down past its own height.
 
 ## Approval flow
@@ -331,8 +347,8 @@ label. Viewer data is never logged.
 | Direct navigation to `/content` | the sandbox is a header, not the frame's attribute | none |
 | The link leaks | 256 bits, looked up only by its sha256; `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push. A page's **reusable** link (the Share button's) also keeps its token **encrypted** (AES-256-GCM, a key derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY`, bound to the row's owner, page and hash), wiped when it stops being live: a database read alone yields no live link, a database read **plus** that key yields each page's current Share link. Without the key, links are hash-only as before | whoever it was given to; anyone holding both the database and the key |
 | A link outlives intent | revoke on the Pages screen, on the page card's ⋯ (Revoke link, New link), or with `page_link_revoke`; checked on every request | until revoked |
-| Page script keeps the brand header hidden (a share link's trust signal) | scroll reports only on a private port taken before any page script, with captured primitives; the shell accepts only a finite number ≥ 0 there; visible on load, near the top and on any scroll up; focus inside it shows it | a page that scrolls its own document down is really scrolled, and hides the header until the next scroll up; a page that replaces its own document before load (`document.open`, which erases the SDK's listeners) can take the port — then it can report what it likes |
-| Page script records something as the owner (their view records) | `by_owner` is muster's field, outside the data, and says only that the owner's session was viewing; `page_responses` hands it over as fenced data that authorises nothing | the page's own script (the agent's) can send while the owner only looks, and it is recorded as the owner's. A tap gate (`navigator.userActivation`) was tried and dropped: a browser-initiated navigation gives the new page transient activation (measured in Chromium under Playwright), so it could not tell a script on load from a tap |
+| Page script keeps the brand header hidden (a share link's trust signal) | scroll reports only on a private port taken before any page script, with captured primitives; the shell accepts only a finite number ≥ 0 there; visible on load, near the top and on any scroll up; focus inside it shows it | a page that scrolls its own document down is really scrolled, and hides the header until the next scroll up. A page that replaces its own document (`document.open`) after the port is held loses its scroll reports (the header then stays) but never the port |
+| Page script records something as the owner (their view records) | an owner send needs `act`: a real user activation inside the CONTENT frame, read by the SDK through a saved getter before any page script, carried on the private port; the shell refuses one without it ("Tap to send"); `by_owner` is muster's field, outside the data, handed to the agent as fenced data that authorises nothing | after the owner taps anything in the page, its script can send whatever it likes for the activation's few seconds, as the owner's. A browser without `navigator.userActivation` cannot send from the owner's view at all |
 | An agent shares without the owner | **Owner not opted in (every user's default):** only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer`. **Owner opted in** (*Let my agents share pages without asking*, that owner's own switch on Account, `notify_preferences.pages_agent_share`): there is **no** owner gate for that owner's pages — the agent's request makes the page's link live at once and hands the agent its address. The controls left: the opt-in is per owner and only the owner flips it (a signed-in, same-origin write of their own row under row-level security; no agent or mirror token reaches the route); it is read for the PAGE's owner, never the caller's or the operator's; only a page the agent itself made, under its owner's row-level security (never another creator's or owner's); the owner is pushed (*Page shared*, its own toggle so muting *Page ready* never hides it), and the chat's page card and the page's screen say who made it live without asking, with Revoke one tap away | Not opted in: the owner approving what they did not preview. Opted in: **anything that owner's agent publishes can be public before the owner looks** — content, a phishing form, a leak of data the agent can read — until the owner revokes it; that owner chose this, for their own pages only |
 | A transcript draws a misleading page card | only muster's own page tools draw one (bare, or `mcp__muster__…`; another MCP server's same-named tool draws none), and only as a page reference: the title, share state and maker are read from the page under the viewer's row-level security, so a forged title is never drawn and a page that is not the viewer's draws no card | none known |
 | A link goes live while its page is being deleted | the delete's first step marks the page (`pages.links_closed_at`) under the row lock every link maker takes; from then on no link — an agent's, the owner's Share — is made on it | a failed delete leaves the page taking no new link until Delete is pressed again |

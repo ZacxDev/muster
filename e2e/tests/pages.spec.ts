@@ -312,7 +312,9 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   const created = await call('page_create', { title: 'Checkout launch ' + stamp, blocks: BLOCKS });
   expect(created.isError, JSON.stringify(created.body)).toBe(false);
   const pageID = created.body.page_id as number;
-  expect(created.body.url).toBe(`${origin}/pages/${pageID}/view`);
+  // One name for the owner's view (round 0's D2): preview_url, kept for
+  // compatibility; no url beside it.
+  expect(created.body.url).toBeUndefined();
   expect(created.body.preview_url).toBe(`${origin}/pages/${pageID}/view`);
 
   // 2. It asks for a link; the owner taps Approve link on the Asks page.
@@ -496,10 +498,33 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
 
 const VIEW_TITLE = 'Quarterly launch plan: ' + 'every milestone, owner and date spelled out in full, '.repeat(3) + stamp;
 const LONG = Array.from({ length: 60 }, (_, i) => `Paragraph ${i + 1}: the plan, in more words than fit on one screen.`).join('\n\n');
+// The page's own script (round 0's Q1): it sends on load, untouched — through
+// muster.submit and by submitting a built-in form itself — and sends again
+// when its own button is tapped. In the owner's view only the tapped one may
+// record; a link's records all of them, as it always has.
+const SELF_SEND = `<p id="auto-out">waiting</p><button id="cj" type="button">Send my pick</button><p id="cj-out"></p>
+<script>
+muster.submit({auto:true}).then(function(r){document.getElementById('auto-out').textContent='saved:'+r.id;},
+  function(e){document.getElementById('auto-out').textContent='refused:'+e.message;});
+document.querySelector('[data-muster-component="auto"] form').requestSubmit();
+document.getElementById('cj').addEventListener('click',function(){
+  muster.submit({picked:'tapped'}).then(function(r){document.getElementById('cj-out').textContent='saved:'+r.id;},
+    function(e){document.getElementById('cj-out').textContent='refused:'+e.message;});
+});
+</script>`;
 const viewBlocks = (v: string) => [
   { type: 'question', id: 'pick', label: 'Your pick (' + v + ')', submit_label: 'Send pick' },
+  { type: 'question', id: 'auto', label: 'Sent by the page itself' },
+  { type: 'html', html: SELF_SEND },
   { type: 'markdown', text: '# ' + v + '\n\n' + LONG },
 ];
+// Round 0's D1: a page that replaces its own document (document.open erases
+// the SDK's listeners) and then listens for the shell's port. Measured before
+// the fix: it got the port, at both sizes. Now the port is held before any
+// script of the page's runs, so it never arrives here.
+const TAKE_PORT = `<p id="x">start</p><script>setTimeout(function(){document.open();document.write('<!doctype html><p id="x">replaced</p>` +
+  `<script>addEventListener("message",function(e){if(e.ports&&e.ports.length){var p=e.ports[0];document.getElementById("x").textContent="got-port";` +
+  `setInterval(function(){p.postMessage({muster:1,op:"scroll",y:9000+Math.random()*900})},50)}},true)<\\/script>');document.close();},0)</script>`;
 // The test's hook on the SDK's port: it runs before the SDK (an init script),
 // so the SDK captures THIS postMessage, and window.__mutate (set by the test)
 // can corrupt what it sends — how a non-numeric y reaches the shell's port.
@@ -545,6 +570,11 @@ for (const vp of [
       expect(t.cut, 'the title is cut short').toBe(true);
       expect(t.overflow).toBe('ellipsis');
       expect(t.height, 'the title is one line').toBeLessThan(24);
+      // The page's own script sent on load, untouched: refused — by
+      // muster.submit, and by submitting a built-in form — and nothing is
+      // recorded (step 4 counts the rows).
+      await expect(frame.locator('#auto-out')).toHaveText('refused:Tap to send');
+      await expect(frame.locator('[data-muster-component="auto"] [data-muster-status]')).toHaveText('Tap to send');
       await settle(page);
       expect((await readCls(page)).total, 'the owner\'s view does not shift on load').toBeLessThan(0.01);
       await shot(page, `owner-${vp.name}-closed`);
@@ -593,6 +623,15 @@ for (const vp of [
       expect(fenced).toContain('"by_owner":true');
       expect(fenced).toContain('"version":1');
       expect(fenced).not.toContain('"link_id"');
+      expect(fenced, 'a send on load was recorded').not.toContain('"auto"');
+      // The page's own script, after a real tap on its own button: recorded.
+      await expect(frame.locator('#auto-out')).toHaveText('refused:Tap to send');
+      await frame.locator('#cj').click();
+      await expect(frame.locator('#cj-out')).toHaveText(/^saved:\d+$/);
+      const tapped = await call('page_responses', { page_id: pageID });
+      expect(tapped.body.count, JSON.stringify(tapped.body)).toBe(2);
+      expect(tapped.body.responses as string).toContain('"picked":"tapped"');
+      expect(tapped.body.responses as string).not.toContain('"auto"');
 
       // 5. The header hides on a scroll down, returns on a scroll up and at
       // the top; the frame never moves, and nothing shifts.
@@ -642,6 +681,9 @@ for (const vp of [
       expect(sh.height).toBeLessThanOrEqual(44);
       await expect(sp.locator('[data-version-chip]')).toHaveCount(0);
       await expect(sp.locator('#page-versions')).toHaveCount(0);
+      // A link's viewer needs no tap: the page's send on load records, as it
+      // always has.
+      await expect(sp.frameLocator('iframe#page').locator('#auto-out')).toHaveText(/^saved:\d+$/);
       await settle(sp);
       expect((await readCls(sp)).total).toBeLessThan(0.01);
       await shot(sp, `link-${vp.name}`);
@@ -653,6 +695,36 @@ for (const vp of [
     } finally {
       await ctx.close();
       await stranger.close();
+    }
+  });
+}
+
+// Round 0's D1, its own test so a regression is named by it: a page that
+// replaces its own document (document.open, which erases the SDK's
+// listeners) and then listens for the shell's port never receives it — the
+// SDK holds the port before any script of the page's runs — so its forged
+// reports never hide the header. Measured before the fix (the markup in the
+// body, the port sent on the frame's load): it received the port, at both
+// sizes.
+for (const vp of [
+  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true },
+  { name: 'desktop', viewport: { width: 1280, height: 800 }, touch: false },
+]) {
+  test(`at ${vp.name}, a page that replaces its own document cannot take the shell's port`, async ({ browser }) => {
+    const taker = await call('page_create', { title: 'Port taker ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: TAKE_PORT }] });
+    expect(taker.isError, JSON.stringify(taker.body)).toBe(false);
+    const ctx = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+    try {
+      const page = await ctx.newPage();
+      await signIn(page, origin);
+      await page.goto(origin + `/pages/${taker.body.page_id as number}/view`);
+      const frame = page.frameLocator('iframe#page');
+      await expect(frame.locator('#x')).toHaveText('replaced');
+      await page.waitForTimeout(1500);
+      await expect(frame.locator('#x'), 'the replaced document received the port').toHaveText('replaced');
+      await expect(page.locator('header[data-page-brand]')).not.toHaveAttribute('data-hidden');
+    } finally {
+      await ctx.close();
     }
   });
 }

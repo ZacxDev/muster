@@ -87,7 +87,14 @@ muster.page                        // {title, version}
 
 `custom` is accepted only from a version with an `html` block, and takes any
 JSON up to 32 KiB (stored as `{"value": …}`). The built-in components use the
-same two calls. In [your own view](#the-owners-view) they record as yours.
+same two calls. In [your own view](#the-owners-view) they record as yours, but
+only right after a tap or key press inside the page; otherwise they are
+answered `Tap to send` and record nothing.
+
+The page's own markup is put in by this script once it is connected to
+muster's shell, so the page's scripts run then, in order, not while the
+document is parsed. Talk to muster only through `muster.submit` and
+`muster.upload`: a message posted to the parent window directly is ignored.
 
 Inside the share page's frame the page has **no network**: `fetch`, images
 from elsewhere and fonts from elsewhere are refused by its policy. Put images
@@ -198,7 +205,8 @@ one line, cut short with an ellipsis (the whole title shows on hover). The
 header slides away as the page is scrolled down and comes back on any scroll
 up, and whenever the page is near its top; it is always there when the page
 opens. The page cannot hide it on its own: the frame reports its scroll on a
-private channel the page's own script never sees, and the shell only accepts
+private channel the page's own script never holds (it is connected before any
+of the page's script runs), and the shell only accepts
 a number there.
 
 ### The owner's view
@@ -209,9 +217,19 @@ answer, a file go through the same checks, size limits and rate limits as a
 link's, and show on the page's screen and in `page_responses` as yours
 (`by_owner`), not a link's. A response from an older version (`?v=N`) answers
 that version: it is checked against version N's components and recorded with
-its number. What the page's own script sends is recorded too, as yours, as
-it would be a viewer's through a link: *yours* says who was viewing, not
-what was tapped. Your own responses do not notify you.
+its number. Your own responses do not notify you.
+
+🔴 **A send from your view needs your tap.** It is recorded only when you
+tapped, clicked or pressed a key inside the page just before it — a form's
+button, an upload's button, a control of the page's own. A page whose
+script sends on its own — the moment it opens, say — records nothing as
+yours: the page shows *Tap to send*. muster reads the tap inside the page's
+frame, through browser functions saved before any of the page's script runs,
+so the page cannot fake one. What a page can still do: once you have tapped
+anything on it, its script can send in the next few seconds whatever it
+likes, recorded as yours — "yours" means you were viewing it and tapped, not
+that you chose each value. A browser without `navigator.userActivation`
+(older than Safari 16.4) cannot send from your view at all.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
 version, when it was made and which is current (the one links show); tapping

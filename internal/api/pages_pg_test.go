@@ -263,7 +263,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	// Private: page_get shows no link; no token serves it.
 	got := f.tool(t, f.agent, pageGetTool, map[string]any{"page_id": id})
 	if links, _ := got["links"].([]any); len(links) != 0 || got["preview_url"] != pagesPublicURL+"/pages/"+strconv.FormatInt(id, 10)+"/view" ||
-		got["url"] != pagesPublicURL+"/pages/"+strconv.FormatInt(id, 10)+"/view" {
+		got["url"] != nil {
 		t.Fatalf("a new page: %v", got)
 	}
 
@@ -340,7 +340,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	// The content: sandboxed by header, whoever asks.
 	w = f.get(t, pages.LinkPath(token)+"/content", nil)
 	assertContentHeaders(t, w, "the link's content")
-	if !strings.Contains(w.Body.String(), `<p id="custom">custom</p>`) || strings.Contains(strings.ToLower(w.Body.String()), "preview") {
+	if !strings.Contains(pageContentBlocks(t, w.Body.String()), `<p id="custom">custom</p>`) || strings.Contains(strings.ToLower(w.Body.String()), "preview") {
 		t.Fatalf("content: %s", w.Body.String())
 	}
 
@@ -427,7 +427,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	if w := f.call(t, http.MethodPost, "/pages/"+strconv.FormatInt(id, 10)+"/rollback", body, merge(f.ownerHdr(), hdr)); w.Code != http.StatusSeeOther {
 		t.Fatalf("rollback: %d %s", w.Code, w.Body.String())
 	}
-	if w := f.get(t, pages.LinkPath(token)+"/content", nil); !strings.Contains(w.Body.String(), `<p id="custom">custom</p>`) {
+	if w := f.get(t, pages.LinkPath(token)+"/content", nil); !strings.Contains(pageContentBlocks(t, w.Body.String()), `<p id="custom">custom</p>`) {
 		t.Fatalf("after rollback the link does not show version 1: %s", w.Body.String())
 	}
 

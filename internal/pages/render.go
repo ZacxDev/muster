@@ -121,13 +121,13 @@ func Content(v Version, o RenderOptions) string {
 	b.WriteString("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 		"<title>" + esc(v.Title) + "</title>\n<style>" + contentCSS + "</style>\n<script>")
-	b.WriteString(sdkScript(v))
-	b.WriteString("</script></head>\n<body><main class=\"mp\">\n")
+	var blocks strings.Builder
 	for _, blk := range v.Blocks {
-		b.WriteString(renderBlock(blk, o))
-		b.WriteString("\n")
+		blocks.WriteString(renderBlock(blk, o))
+		blocks.WriteString("\n")
 	}
-	b.WriteString("</main></body></html>\n")
+	b.WriteString(sdkScript(v, blocks.String()))
+	b.WriteString("</script></head>\n<body><main class=\"mp\"></main></body></html>\n")
 	return b.String()
 }
 
@@ -250,61 +250,87 @@ func jsString(s string) string {
 	return string(b)
 }
 
-// sdkScript is the SDK every content document carries (docs/pages.md#the-sdk):
-// muster.submit and muster.upload post a message to the PARENT window (the
-// shell), which alone talks to muster; and the built-in components' wiring.
+// sdkScript is the SDK every content document carries (docs/pages.md#the-sdk),
+// and the page's blocks (markup, its whole HTML, as one string).
 //
 // 🔴 IT HOLDS NO CREDENTIAL AND MAKES NO REQUEST: the document has no network
 // (ContentCSP), and the token is the shell's, not the SDK's. The parent is
 // muster's shell because only 'self' may frame the document (frame-ancestors).
 //
-// It also reports the document's scroll offset to the shell (rate-limited to
-// one report per animation frame), which hides its header on a scroll down
-// (ShellScript). 🔴 THE REPORT GOES THROUGH A PRIVATE PORT, NOT window
-// MESSAGES, SO THE PAGE'S OWN SCRIPT CANNOT FORGE ONE: the shell hands ONE
-// MessagePort to the frame on its load; this script, which runs before any
-// of the page's (it is the head's first script), takes it in a capture
-// listener on window registered first and stops the event there, so no later
-// listener ever sees the port. Every primitive it calls is captured before
-// the page's script runs (Reflect.apply over the prototypes' own functions
-// and getters), so patching MessagePort.prototype.postMessage, the
-// MessageEvent getters or scrollTop later changes nothing it sends. What the
-// page's script CAN still do is scroll its own document: that is a real
-// scroll, and the shell's rules (visible near the top, back on any scroll up)
-// still hold for it.
-func sdkScript(v Version) string {
+// 🔴 EVERYTHING BETWEEN THE PAGE AND THE SHELL GOES OVER ONE PRIVATE PORT THE
+// PAGE'S OWN SCRIPT NEVER HOLDS — submits, uploads, their answers and the
+// scroll reports that hide the shell's header — so the page cannot forge a
+// report, a send, or the tap a send of the owner's needs (ShellScript):
+//   - The page's markup is NOT in the document: it is blocks, a string in this
+//     script (JSON-escaped, so no "</script>" in it ends this one). This
+//     script — the document's only one until then — asks the shell for the
+//     port ("hello", repeated until it comes), takes it in a capture listener
+//     on window registered first, and only THEN puts the blocks in the page
+//     (createContextualFragment, so the page's own <script>s run, in order).
+//     So no script of the page's runs before the port is held here: not even
+//     one that replaces the document (document.open erases every listener,
+//     and a page that did it before the port arrived could take the port —
+//     measured, before this order: it did, at 390x844 and 1280x800).
+//   - Every primitive called after the page's script runs is saved first and
+//     called through Reflect.apply: MessagePort.prototype.postMessage, the
+//     scrollTop getter, and navigator.userActivation's isActive getter on the
+//     instance read at start. So patching them later changes nothing sent.
+//   - Each send carries act: whether the CONTENT frame had a real user
+//     activation (a tap, a click, a key) at that moment. A parent's
+//     activation does not pass down to it: measured, a page loaded by a
+//     navigation reads false on load and at setTimeout(0) while the shell
+//     reads true, and true right after a click inside it. A script cannot
+//     make one. The owner's shell refuses a send without it.
+//
+// What a determined page can still do: send while act is true — a tap on any
+// control of its own, then its own muster.submit within the activation's few
+// seconds; and scroll its own document, which hides the header until the next
+// scroll up. After a document.open of its own it loses the scroll reports and
+// the built-in forms (their listeners are erased) — the header then stays.
+func sdkScript(v Version, blocks string) string {
 	return `(function(){"use strict";
-var R=Reflect.apply,W=window,PARENT=W.parent,gd=function(p,k){return Object.getOwnPropertyDescriptor(p,k).get;},
+var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
  PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
- gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
- gTop=gd(Element.prototype,"scrollTop"),SE=document.scrollingElement||document.documentElement,port=null,queued=false;
+ ST=W.setTimeout,gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
+ gTop=gd(Element.prototype,"scrollTop"),SE=D.scrollingElement||D.documentElement,
+ UA=W.navigator.userActivation||null,gAct=W.UserActivation?gd(W.UserActivation.prototype,"isActive"):null,
+ BLOCKS=` + jsString(blocks) + `,port=null,shown=false,queued=false,seq=0,waiting={},tries=0;
+function act(){return !!(UA&&gAct&&R(gAct,UA,[])===true);}
+function show(){
+ if(shown)return;var m=D.querySelector("main.mp");
+ if(!m){R(AEL,D,["DOMContentLoaded",show]);return;}
+ shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
+}
 function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}]);}
+function answer(ev){
+ var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string"||!waiting[d.id])return;
+ var w=waiting[d.id];delete waiting[d.id];
+ if(d.ok)w.res(d.result);else w.rej(new Error(d.error||"refused"));
+}
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
  R(SIP,ev,[]);var d=R(gData,ev,[]);
- if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];report();}
+ if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();}
 },true]);
 R(AEL,W,["scroll",function(){if(port&&!queued){queued=true;R(RAF,W,[report]);}},{capture:true,passive:true}]);
-})();
-(function(){"use strict";
-var seq=0,waiting={};
-function send(op,payload){
- if(window.parent===window)return Promise.reject(new Error("open this page through its link"));
+function hello(){
+ if(port)return;
+ if(++tries>50){var m=D.querySelector("main.mp");if(m)m.textContent="This page could not be loaded. Reload it.";return;}
+ PARENT.postMessage({muster:1,op:"hello"},"*");R(ST,W,[hello,200]);
+}
+if(PARENT===W)show();else hello();
+function send(op,payload,tapped){
+ if(!port)return Promise.reject(new Error("open this page through its link"));
  return new Promise(function(res,rej){
   var id="m"+(++seq);waiting[id]={res:res,rej:rej};
-  var msg={muster:1,id:id,op:op};for(var k in payload)msg[k]=payload[k];
-  window.parent.postMessage(msg,"*");
-  setTimeout(function(){if(waiting[id]){delete waiting[id];rej(new Error("muster did not answer"));}},120000);
+  var msg={muster:1,id:id,op:op,act:tapped===undefined?act():tapped===true,component:payload.component};
+  if(op==="upload"){msg.file=payload.file;msg.name=payload.name;}else msg.data=payload.data;
+  R(PM,port,[msg]);
+  R(ST,W,[function(){if(waiting[id]){delete waiting[id];rej(new Error("muster did not answer"));}},120000]);
  });
 }
-window.addEventListener("message",function(ev){
- if(ev.source!==window.parent)return;
- var d=ev.data;if(!d||d.muster!==1||typeof d.id!=="string"||!waiting[d.id])return;
- var w=waiting[d.id];delete waiting[d.id];
- if(d.ok)w.res(d.result);else w.rej(new Error(d.error||"refused"));
-});
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
-window.muster=Object.freeze({
+W.muster=Object.freeze({
  page:Object.freeze({title:` + jsString(v.Title) + `,version:` + strconv.Itoa(v.Version) + `}),
  submit:function(data,o){return send("submit",{component:name(o),data:data===undefined?null:data});},
  upload:function(file,o){
@@ -322,10 +348,13 @@ function collect(kind,form,submitter){
  });
  return {fields:f};
 }
-document.addEventListener("submit",function(ev){
+R(AEL,D,["submit",function(ev){
  var form=ev.target,sec=form.closest&&form.closest("[data-muster-component]");
  if(!sec)return;
  ev.preventDefault();
+ // The tap is read once, at the submit itself: every file of a several-file
+ // upload goes with it, however long the earlier ones take.
+ var tapped=act();
  var id=sec.getAttribute("data-muster-component"),kind=sec.getAttribute("data-muster-kind");
  var status=form.querySelector("[data-muster-status]"),btns=form.querySelectorAll("button");
  function say(t,bad){if(status){status.textContent=t;status.className="mp-status"+(bad?" mp-bad":" mp-good");}}
@@ -334,11 +363,11 @@ document.addEventListener("submit",function(ev){
  if(kind==="upload"){
   var files=Array.prototype.slice.call(form.elements.file.files||[]);
   if(!files.length){btns.forEach(function(b){b.disabled=false;});say("Choose a file first.",true);return;}
-  p=files.reduce(function(acc,f){return acc.then(function(){return window.muster.upload(f,{component:id});});},Promise.resolve());
- }else p=window.muster.submit(collect(kind,form,ev.submitter),{component:id});
+  p=files.reduce(function(acc,f){return acc.then(function(){return send("upload",{component:id,file:f,name:(f.name||"file")},tapped);});},Promise.resolve());
+ }else p=send("submit",{component:id,data:collect(kind,form,ev.submitter)},tapped);
  p.then(function(){say("Sent. Thank you.");form.reset();},function(e){say(e.message||"It could not be sent.",true);})
   .then(function(){btns.forEach(function(b){b.disabled=false;});});
-});
+}]);
 })();`
 }
 
@@ -521,19 +550,22 @@ func Shell(v ShellView) string {
 // ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell)
 // and the header's hide-on-scroll.
 //
-// The relay: a message from the shell's OWN frame asking to submit or upload
-// is sent to base+"/submit" or base+"/upload", and the answer posted back. A
-// link's shell sends it with credentials omitted (the link in base is the
-// credential). The OWNER's (owner) sends their session, same-origin — the
-// route's own session and Origin checks, as every owner write. Either way it
-// relays what the page sends, its own script's included: the owner's view
-// records what a link's would, as the owner's (by_owner says who was
-// viewing, not what they tapped).
-//
 // 🔴 THE SHELL IS THE ONLY CODE ON MUSTER'S ORIGIN A VIEWER RUNS, SO IT TRUSTS
-// NOTHING IT IS SENT: it accepts only its own frame's window, two ops, and
-// sends only the component name, the data as JSON, or a Blob, to two fixed
-// routes.
+// NOTHING IT IS SENT. From window messages it takes ONE thing: its own
+// frame's first "hello", answered with a MessagePort (sdkScript holds it
+// before any script of the page's runs). Everything else comes on that port
+// or not at all: a submit or upload is sent to base+"/submit" or
+// base+"/upload" — only the component name, the data as JSON, or a Blob, to
+// two fixed routes — and the answer posted back on the port. A message on
+// window naming an op, the frame's own included, is ignored.
+//
+// A link's shell sends with credentials omitted (the link in base is the
+// credential). The OWNER's (owner) sends their session, same-origin — the
+// route's own session and Origin checks, as every owner write — and only a
+// send whose act is true: the content frame had a real user activation when
+// it was sent (sdkScript reads it through saved getters). One without is
+// answered "Tap to send", and nothing is posted: a page's script that sends
+// on load records nothing as its owner's.
 //
 // 🔴 THE HEADER IS THE BRAND, THE TRUST SIGNAL OF A SHARE LINK, AND A PAGE'S
 // SCRIPT MUST NEVER BE ABLE TO KEEP IT HIDDEN FOR GOOD. It hides on a scroll
@@ -546,19 +578,18 @@ func Shell(v ShellView) string {
 //     popover show it whatever the reports say.
 //
 // The one op that moves it is "scroll" {y: a finite number >= 0}, and only on
-// the private port the shell hands the frame on its load (sdkScript), never a
-// window message: a page's script posting one to the shell is ignored, as is
-// one from any other window, and a y that is not such a number.
+// the port: a page's script posting one to the shell is ignored, as is one
+// from any other window, and a y that is not such a number.
 // TestTheShellHidesItsHeaderOnlyByTheRules and e2e pages.spec.ts.
 func ShellScript(base string, owner bool) string {
-	creds, refpol := `"omit"`, `"no-referrer"`
+	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
 	if owner {
 		// same-origin: the Origin a same-origin POST carries is muster's only
 		// when the referrer policy lets it (no-referrer would send "null").
-		creds, refpol = `"same-origin"`, `"same-origin"`
+		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
 	}
 	return `(function(){"use strict";
-var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `;
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,TAP=` + gate + `,port=null;
 var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0;
 window.__musterHeader=function(show){if(!hdr)return;if(show)hdr.removeAttribute("data-hidden");else hdr.setAttribute("data-hidden","");};
 function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
@@ -567,18 +598,12 @@ function onY(y){
  if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);
  lastY=y;
 }
-if(f){var sent=false;f.addEventListener("load",function(){
- if(sent)return;sent=true;
- var ch=new MessageChannel();
- ch.port1.onmessage=function(ev){var d=ev.data;if(d&&d.muster===1&&d.op==="scroll")onY(d.y);};
- f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
-});}
-window.addEventListener("message",function(ev){
- if(!f||ev.source!==f.contentWindow)return;
- var d=ev.data;if(!d||d.muster!==1||typeof d.id!=="string"||d.id.length>32)return;
- function reply(ok,x){f.contentWindow.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)},"*");}
+function relay(d){
+ if(typeof d.id!=="string"||d.id.length>32)return;
+ function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
  if(!base)return reply(false,"nothing can be sent from here");
  if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");
+ if(TAP&&d.act!==true)return reply(false,"Tap to send");
  var comp=typeof d.component==="string"?d.component.slice(0,64):"",req;
  var opts={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `};
  if(d.op==="submit"){
@@ -592,6 +617,13 @@ window.addEventListener("message",function(ev){
  req.then(function(r){return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
   if(r.ok)reply(true,j);else reply(false,(j&&j.error)||("muster answered "+r.status));});},
   function(){reply(false,"muster could not be reached");});
+}
+window.addEventListener("message",function(ev){
+ if(!f||port||ev.source!==f.contentWindow)return;
+ var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;
+ var ch=new MessageChannel();port=ch.port1;
+ port.onmessage=function(e){var m=e.data;if(!m||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};
+ f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
 });
 })();`
 }

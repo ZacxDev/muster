@@ -119,8 +119,8 @@ func pageToolDefs() []agents.ToolDef {
 		{Type: "function", Name: pageCreateTool,
 			Description: "Publish a page for your owner — a small web page that can show what you built, or collect answers, choices, form " +
 				"fields, files or an approval from someone you share it with. It is PRIVATE until it has a live share link: " +
-				"your owner is shown it at once (a card in your chat and a notification) and opens it at url, signed in (what they send from it is " +
-				"recorded as theirs: by_owner in page_responses; preview_url is the same address, kept for older callers). " +
+				"your owner is shown it at once (a card in your chat and a notification) and opens it at preview_url, the owner's view, signed in (what they send from it, with a tap, is " +
+				"recorded as theirs: by_owner in page_responses). " +
 				"Returns its id. Revise it with page_update; share it with page_share_request.",
 			Parameters: objSchema(map[string]any{
 				"title":  strProp("The page's title (up to 200 characters)."),
@@ -143,7 +143,7 @@ func pageToolDefs() []agents.ToolDef {
 		{Type: "function", Name: pageShareRequestTool,
 			Description: "Share one of your pages: a link anyone can open without a muster account. How depends on your owner's own " +
 				"setting (whether they let their agents share without asking), and the result's status says which. status \"live\": the link works now — give url to whoever needs it; your owner is told and can " +
-				"revoke it. status \"pending\": your owner is asked (muster's Attention view and their phone), previews the page and approves " +
+				"revoke it. status \"pending\": your owner is asked (muster's Attention view and their phone), looks at the page and approves " +
 				"or declines, and the link is NOT live until they approve; the result has the ask's id — a dispatched agent is told the answer " +
 				"as a new message, a mirrored Claude Code session waits for it with attention_wait{id: ask_id}. Keep url: a pending link's is " +
 				"shown only this once (muster keeps only its hash).",
@@ -312,8 +312,8 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 		return pageToolRefusal("created", 0, err)
 	}
 	s.pagePublished(p)
-	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "url": s.pageViewURL(p.ID),
-		"preview_url": s.pageViewURL(p.ID), "next": s.pageNext(ctx, p)})
+	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
+		"next": s.pageNext(ctx, p)})
 }
 
 func (s *Server) toolPageUpdate(ctx context.Context, c pages.Creator, arguments string) string {
@@ -338,8 +338,8 @@ func (s *Server) toolPageUpdate(ctx context.Context, c pages.Creator, arguments 
 		}
 		return pageToolRefusal("updated", id, err)
 	}
-	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "url": s.pageViewURL(p.ID),
-		"preview_url": s.pageViewURL(p.ID), "note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
+	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
+		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
 }
 
 // pageIDArg reads {page_id}.
@@ -403,8 +403,8 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 		ls = append(ls, s.pageLinkView(l))
 	}
 	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "current_version": p.CurrentVersion, "versions": vs, "links": ls,
-		"responses": len(resps), "url": s.pageViewURL(p.ID), "preview_url": s.pageViewURL(p.ID),
-		"note": "A link's url is never shown here: page_share_request gave it (a pending link's only once; where links go live at once, page_share_request returns the page's reusable link again). A hash-only link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. url (and preview_url, the same address) is your owner's own view, signed in."})
+		"responses": len(resps), "preview_url": s.pageViewURL(p.ID),
+		"note": "A link's url is never shown here: page_share_request gave it (a pending link's only once; where links go live at once, page_share_request returns the page's reusable link again). A hash-only link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. preview_url is the owner's view: your owner's own view of the page, signed in."})
 }
 
 func (s *Server) toolPageList(ctx context.Context, c pages.Creator) string {

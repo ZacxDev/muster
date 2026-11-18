@@ -1,7 +1,9 @@
 package pages
 
 import (
+	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -63,6 +65,21 @@ func TestTheShellHeaders(t *testing.T) {
 	}
 }
 
+// contentBlocks is the page's markup as the content document carries it: the
+// BLOCKS string in its SDK script, decoded.
+func contentBlocks(t *testing.T, out string) string {
+	t.Helper()
+	m := regexp.MustCompile(`BLOCKS=("(?:[^"\\]|\\.)*")`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no BLOCKS in the content: %s", out)
+	}
+	var html string
+	if err := json.Unmarshal([]byte(m[1]), &html); err != nil {
+		t.Fatalf("BLOCKS is not a JSON string: %v", err)
+	}
+	return html
+}
+
 // TestTheContentEscapesEverythingButTheHTMLBlock: every label, option and
 // title an agent wrote is escaped; only an html block is verbatim (it is the
 // page's own script, run in the sandbox).
@@ -78,23 +95,65 @@ func TestTheContentEscapesEverythingButTheHTMLBlock(t *testing.T) {
 		{Type: BlockHTML, HTML: `<b id="mine">raw</b><script>var ok=1</script>`},
 	}}
 	out := Content(v, RenderOptions{Uploads: true})
-	if n := strings.Count(out, evil); n != 0 {
+	blocks := contentBlocks(t, out)
+	if n := strings.Count(out, evil) + strings.Count(blocks, evil); n != 0 {
 		t.Errorf("an agent's markup came through unescaped %d time(s)", n)
 	}
-	if !strings.Contains(out, `<b id="mine">raw</b><script>var ok=1</script>`) {
+	if !strings.Contains(blocks, `<b id="mine">raw</b><script>var ok=1</script>`) {
 		t.Error("the html block is not verbatim")
 	}
 	for _, want := range []string{`data-muster-component="q1" data-muster-kind="question"`, `name="choice" value="o&#34;&lt;img`,
-		`data-muster-field="select"`, `type="file" id="u1-f" name="file" required`, `name="decision" value="approve"`,
-		`page:Object.freeze({title:"T \u003cimg src=x onerror=alert(1)\u003e",version:3})`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("content lacks %q", want)
+		`data-muster-field="select"`, `type="file" id="u1-f" name="file" required`, `name="decision" value="approve"`} {
+		if !strings.Contains(blocks, want) {
+			t.Errorf("the blocks lack %q", want)
 		}
+	}
+	if !strings.Contains(out, `page:Object.freeze({title:"T \u003cimg src=x onerror=alert(1)\u003e",version:3})`) {
+		t.Error("the SDK's page title is not escaped")
 	}
 	// The markdown renderer is the caller's, and its output is used as given.
 	md := Content(Version{Title: "x", Blocks: []Block{{Type: BlockMarkdown, Text: "hello"}}}, RenderOptions{Markdown: func(s string) string { return "<p>R:" + s + "</p>" }})
-	if !strings.Contains(md, "<p>R:hello</p>") {
+	if !strings.Contains(contentBlocks(t, md), "<p>R:hello</p>") {
 		t.Error("the Markdown option's output is not drawn")
+	}
+}
+
+// TestThePagesMarkupIsNotInTheDocument (round 0's D1): the page's blocks are
+// NOT parsed with the document — they are one JSON string in the SDK, put in
+// the page only once the SDK holds the shell's port — so no script of the
+// page's can run before that (and replace the document to take the port: it
+// did, measured, when the blocks were in the body). The document's only
+// <script> is the SDK; its main is empty; a "</script>" in a block cannot
+// end the SDK's script.
+func TestThePagesMarkupIsNotInTheDocument(t *testing.T) {
+	v := Version{Title: "x", Version: 1, Blocks: []Block{{Type: BlockHTML, HTML: `<p id="mine">m</p><script>var mine=1</script></script><script>var escaped=1</script>`}}}
+	out := Content(v, RenderOptions{})
+	if n := strings.Count(out, "<script"); n != 1 {
+		t.Errorf("the document has %d <script> elements, want only the SDK: %s", n, out)
+	}
+	if !strings.Contains(out, "</script></head>\n<body><main class=\"mp\"></main></body></html>\n") {
+		t.Errorf("the body is not an empty main: %s", out)
+	}
+	if strings.Contains(out, `<p id="mine">`) || strings.Count(out, "</script>") != 1 {
+		t.Errorf("the page's markup is in the document: %s", out)
+	}
+	if b := contentBlocks(t, out); !strings.Contains(b, `<p id="mine">m</p><script>var mine=1</script></script><script>var escaped=1</script>`) {
+		t.Errorf("the blocks lost the page's markup: %q", b)
+	}
+	sdk := sdkScript(v, "")
+	for _, want := range []string{
+		// Put in only once the port is held.
+		`if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();}`,
+		`shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));`,
+		// Framed, it asks for the port; it shows nothing until it has it.
+		`if(PARENT===W)show();else hello();`,
+	} {
+		if !strings.Contains(sdk, want) {
+			t.Errorf("the SDK lacks %q", want)
+		}
+	}
+	if strings.Count(sdk, "show();") != 2 {
+		t.Errorf("show() is called from %d places, want 2 (the port, and no parent at all)", strings.Count(sdk, "show();"))
 	}
 }
 
@@ -105,72 +164,99 @@ func TestTheContentEscapesEverythingButTheHTMLBlock(t *testing.T) {
 func TestNoUploadsAndNoPreviewMode(t *testing.T) {
 	v := Version{Title: "x", Version: 1, Blocks: []Block{{Type: BlockUpload, ID: "u1", Label: "file"}}}
 	out := Content(v, RenderOptions{})
+	blocks := contentBlocks(t, out)
 	for _, want := range []string{`name="file" disabled`, "not available on this server"} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(blocks, want) {
 			t.Errorf("content without uploads lacks %q", want)
 		}
 	}
-	if strings.Contains(strings.ToLower(out), "preview") || strings.Contains(out, "not recorded") {
+	if strings.Contains(strings.ToLower(out+blocks), "preview") || strings.Contains(out+blocks, "not recorded") {
 		t.Errorf("the content still has a preview mode: %s", out)
 	}
 }
 
 // TestTheSDKHasNoNetwork: the SDK in the sandboxed document never calls
-// fetch, XMLHttpRequest or a beacon; it only posts to its parent, and reports
-// its scroll only on the port its parent hands it. (The CSP would refuse a
-// request anyway; this keeps the SDK from depending on that.)
+// fetch, XMLHttpRequest or a beacon; to its parent it posts only "hello" —
+// everything else goes on the port. (The CSP would refuse a request anyway;
+// this keeps the SDK from depending on that.)
 func TestTheSDKHasNoNetwork(t *testing.T) {
-	sdk := sdkScript(Version{Title: "x", Version: 1})
+	sdk := sdkScript(Version{Title: "x", Version: 1}, "")
 	for _, banned := range []string{"fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "document.cookie", "localStorage"} {
 		if strings.Contains(sdk, banned) {
 			t.Errorf("the SDK uses %s", banned)
 		}
 	}
-	if !strings.Contains(sdk, `window.parent.postMessage(msg,"*")`) {
-		t.Error("the SDK does not post to its parent")
+	if strings.Count(sdk, "PARENT.postMessage(") != 1 || !strings.Contains(sdk, `PARENT.postMessage({muster:1,op:"hello"},"*")`) ||
+		strings.Contains(sdk, "window.parent.postMessage") {
+		t.Error("the SDK posts to its parent something other than hello")
 	}
 }
 
-// TestTheSDKReportsScrollOnlyOnItsPrivatePort pins, as text, what keeps a
-// page's own script from forging a scroll report (sdkScript's comment): the
-// SDK is the head's first script; it captures the primitives it calls before
-// the page's script can patch them; it takes the shell's port in a CAPTURE
-// listener on window and stops the event there; it reports {op:"scroll", y}
-// only on that port, at most once per animation frame; and it never posts a
-// scroll report as a window message.
-func TestTheSDKReportsScrollOnlyOnItsPrivatePort(t *testing.T) {
-	sdk := sdkScript(Version{Title: "x", Version: 1})
+// TestTheSDKSendsOnlyOnItsPrivatePort pins, as text, what keeps a page's own
+// script from forging a scroll report, a send, or its tap (sdkScript's
+// comment): the SDK captures the primitives it calls before the page's script
+// can patch them — the userActivation getter included; it takes the shell's
+// port in a CAPTURE listener on window and stops the event there; every
+// message it sends goes on that port, a send carrying act, the content
+// frame's activation read through the saved getter (a built-in form's read
+// once, at its submit); a scroll report at most once per animation frame.
+func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
+	sdk := sdkScript(Version{Title: "x", Version: 1}, "")
 	for _, want := range []string{
 		`PM=MessagePort.prototype.postMessage`, `RAF=W.requestAnimationFrame`, `AEL=EventTarget.prototype.addEventListener`,
 		`SIP=Event.prototype.stopImmediatePropagation`, `gSrc=gd(MessageEvent.prototype,"source")`, `gPorts=gd(MessageEvent.prototype,"ports")`,
 		`gTop=gd(Element.prototype,"scrollTop")`,
+		`UA=W.navigator.userActivation||null,gAct=W.UserActivation?gd(W.UserActivation.prototype,"isActive"):null`,
+		`function act(){return !!(UA&&gAct&&R(gAct,UA,[])===true);}`,
 		`R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}])`,
 		`if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
  R(SIP,ev,[]);`,
-		`if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];report();}`,
 		`},true]);`,
 		`if(port&&!queued){queued=true;R(RAF,W,[report]);}`,
+		`var msg={muster:1,id:id,op:op,act:tapped===undefined?act():tapped===true,component:payload.component};`,
+		`R(PM,port,[msg]);`,
+		`var tapped=act();`,
 	} {
 		if !strings.Contains(sdk, want) {
 			t.Errorf("the SDK lacks %q", want)
 		}
 	}
-	if strings.Count(sdk, `op:"scroll"`) != 1 || strings.Contains(sdk, `postMessage({muster:1,op:"scroll"`) {
-		t.Error("the SDK sends a scroll report some other way than its port")
+	if strings.Count(sdk, `op:"scroll"`) != 1 || strings.Count(sdk, "R(PM,port,") != 2 {
+		t.Error("the SDK sends some other way than its port")
 	}
 	// It is the content document's FIRST script, ahead of every block.
-	out := Content(Version{Title: "x", Version: 1, Blocks: []Block{{Type: BlockHTML, HTML: `<script>var mine=1</script>`}}}, RenderOptions{})
-	if first, mine := strings.Index(out, "<script>"), strings.Index(out, "var mine=1"); first < 0 || first > strings.Index(out, "</head>") ||
-		!strings.HasPrefix(out[first:], "<script>"+sdk) || mine < first {
+	out := Content(Version{Title: "x", Version: 1}, RenderOptions{})
+	if first := strings.Index(out, "<script>"); first < 0 || first > strings.Index(out, "</head>") || !strings.HasPrefix(out[first:], "<script>"+sdkScript(Version{Title: "x", Version: 1}, "")) {
 		t.Error("the SDK is not the content document's first script")
 	}
 }
 
+// TestTheShellRelaysOnlyOnItsPort: the shell takes from window messages only
+// its own frame's first hello, answered with the port; a submit or upload is
+// relayed only from the port, and answered there.
+func TestTheShellRelaysOnlyOnItsPort(t *testing.T) {
+	js := ShellScript("/s/TOKEN", false)
+	for _, want := range []string{
+		`if(!f||port||ev.source!==f.contentWindow)return;
+ var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;`,
+		`port.onmessage=function(e){var m=e.data;if(!m||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};`,
+		`function reply(ok,x){port.postMessage(`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the shell lacks %q", want)
+		}
+	}
+	if strings.Count(js, "relay(") != 2 || strings.Count(js, "onY(") != 2 {
+		t.Error("the shell relays or reads scroll from somewhere other than its port")
+	}
+}
+
 // TestTheShellRelayOfALinkOmitsCredentials pins a link's relay's trust rules
-// as text: its frame only, two ops, credentials omitted.
+// as text: two ops, credentials omitted, no tap needed (a stranger's page
+// records what its script sends, as it always has).
 func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
-	for _, want := range []string{`ev.source!==f.contentWindow`, `credentials:"omit"`, `referrerPolicy:"no-referrer"`,
+	for _, want := range []string{`credentials:"omit"`, `referrerPolicy:"no-referrer"`, `TAP=false`,
 		`if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");`, `if(d.op==="submit"){`,
 		`fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`, `base="/s/TOKEN"`} {
 		if !strings.Contains(js, want) {
@@ -185,17 +271,19 @@ func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 	}
 }
 
-// TestTheOwnersRelaySendsTheirSession: the owner's relay sends their session
-// same-origin, with a referrer policy that keeps muster's Origin on the POST
-// (no-referrer would make it "null", which every owner write refuses), to
-// the same two routes under their view's base.
-func TestTheOwnersRelaySendsTheirSession(t *testing.T) {
+// TestTheOwnersRelaySendsTheirSessionOnlyWithATap: the owner's relay sends
+// their session same-origin, with a referrer policy that keeps muster's
+// Origin on the POST (no-referrer would make it "null", which every owner
+// write refuses), and only a send whose act is true; one without is answered
+// "Tap to send", before any request.
+func TestTheOwnersRelaySendsTheirSessionOnlyWithATap(t *testing.T) {
 	js := ShellScript("/pages/7/versions/2", true)
 	if strings.Count(js, "fetch(") != 2 {
 		t.Errorf("the owner's relay makes %d kinds of request, want exactly the two", strings.Count(js, "fetch("))
 	}
-	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`,
-		`fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`} {
+	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`, `TAP=true`,
+		`if(TAP&&d.act!==true)return reply(false,"Tap to send");
+ var comp=`, `fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the owner's relay lacks %q", want)
 		}
@@ -207,19 +295,15 @@ func TestTheOwnersRelaySendsTheirSession(t *testing.T) {
 
 // TestTheShellHidesItsHeaderOnlyByTheRules pins the header's rules as text
 // (ShellScript's comment; their behaviour is e2e pages.spec.ts's): a scroll
-// report is read only from the port the shell hands its frame, never from a
-// window message; y must be a finite number >= 0; near the top, on a scroll
-// up, or with the popover open it shows; it hides only on a scroll down past
-// its own height; focus inside it shows it (CSS).
+// report is read only from the port; y must be a finite number >= 0; near
+// the top, on a scroll up, or with the popover open it shows; it hides only
+// on a scroll down past its own height; focus inside it shows it (CSS).
 func TestTheShellHidesItsHeaderOnlyByTheRules(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{
 		`if(typeof y!=="number"||!isFinite(y)||y<0)return;`,
 		`if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);`,
-		`var ch=new MessageChannel();
- ch.port1.onmessage=function(ev){var d=ev.data;if(d&&d.muster===1&&d.op==="scroll")onY(d.y);};
- f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);`,
-		`if(sent)return;sent=true;`,
+		`if(m.op==="scroll")onY(m.y);`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the header's rules lack %q", want)
