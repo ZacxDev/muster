@@ -1,4 +1,4 @@
--- muster 0152 — THE MORNING REPORT (internal/morning; docs/morning-report.md,
+-- muster 0153 — THE MORNING REPORT (internal/morning; docs/features.md#morning-report,
 -- docs/schema.md).
 --
 --   morning_reports   one row per owner per local day: the report the
@@ -23,14 +23,14 @@
 -- names and the plain reason each is listed), never a transcript or a model's
 -- words, and is bounded below.
 --
--- Must apply after its predecessor, 0151_session_route_target_host (the
+-- Must apply after its predecessor, 0152_page_owner_view (the
 -- contiguity test refuses a gap). 🔴 RENUMBER IT (and
--- db.morningReportsMigrationVersion) at merge if main moved: open PRs #796
--- and #802 also add a 0152.
+-- db.morningReportsMigrationVersion) at merge if main moved: open PR #796
+-- also adds a 0152.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   DROP TABLE public.morning_reports;
---   DELETE FROM schema_migrations WHERE version = 152;
+--   DELETE FROM schema_migrations WHERE version = 153;
 
 SET LOCAL lock_timeout = '3s';
 

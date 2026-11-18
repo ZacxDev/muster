@@ -641,7 +641,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
 		// fleet_list's fleet fields. Off by default; it needs a database.
 		ext.FleetDigest = cfg.FleetDigest
-		// The morning report (MUSTER_MORNING_REPORT=1, migration 0152): one
+		// The morning report (MUSTER_MORNING_REPORT=1, migration 0153): one
 		// report per owner per day and its push. Off by default; it needs a
 		// database.
 		if cfg.MorningReport {

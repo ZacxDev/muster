@@ -35,7 +35,7 @@ the set grows **or** shrinks.
 | shareable pages | `pages`, `page_versions` (immutable), `page_links` (share links and their states), `page_responses` (what viewers sent, and what the owner sent from their own view) ([pages.md](pages.md)) |
 | session state | `session_episodes`: one row per stop of one of the user's sessions — a mirrored window or an agent's conversation that entered `needs_you` or `stalled` — and how it ended ([design](design/session-state.md)) |
 | the fleet | `fleet_owner_marks`: each user's [fleet digest](chief.md#fleet-digest) marks — the "since you last looked" baseline and their Fleet side chat (0147) |
-| the morning report | `morning_reports`: one row per user per local day — the [morning report](features.md#morning-report) the job built: its window, whether it was a quiet day, what got done and what was stuck then (muster's own rows only), how many questions were open, and when its one push was claimed (0152) |
+| the morning report | `morning_reports`: one row per user per local day — the [morning report](features.md#morning-report) the job built: its window, whether it was a quiet day, what got done and what was stuck then (muster's own rows only), how many questions were open, and when its one push was claimed (0153) |
 
 `notes` is the task table. The name is historical. It is kept because every id in
 it is a task number people cite, and renaming it would be a data migration that

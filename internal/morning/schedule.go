@@ -1,6 +1,6 @@
 // Package morning is the morning report: one push a day, at a fixed local
 // time, saying what happened while the owner was away, and the page it opens
-// (docs/morning-report.md). This file is the schedule; report.go is the
+// (docs/features.md#morning-report). This file is the schedule; report.go is the
 // report's shape, its quiet-day rule and its push text; store.go is the one
 // row per owner per day.
 //
