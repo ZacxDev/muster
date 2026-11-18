@@ -40,9 +40,10 @@ or **estimated**. Hostnames are placeholders: muster is
   boxes in the user's own BoxLite account, the way the `kubernetes` driver
   starts pods. Every lifecycle call has a BoxLite counterpart (the
   [mapping](#the-driver-mapped-method-by-method)). Two things are hard: muster
-  must **reach into** each box (turns, exec, terminal) and each box must
+  must **reach into** each box (turns, exec, terminal), and each box must
   **reach muster**, so a self-hosted muster behind Tailscale needs a public
-  path both ways; and muster-server must hold the user's BoxLite API key,
+  path both ways, and BoxLite refuses a tunnel to a private box, so each box
+  must be made public; and muster-server must hold the user's BoxLite API key,
   which BoxLite documents as **fleet-wide with no narrower scope**.
 - **Shape B, a cloud computer.** One box runs Claude Code in tmux plus
   `muster-mirror`, and appears in muster as one more of the user's computers.
@@ -80,29 +81,31 @@ or **estimated**. Hostnames are placeholders: muster is
 | Cloud idle: `auto_stop` 900 s by default, measured from outside the box ("work running inside the box does not count — a long job can be stopped mid-run"); `auto_resume` on; a stopped box keeps its disk but **not process memory** | [box lifecycle](https://docs.boxlite.ai/cloud/box-lifecycle) |
 | Persistence on Cloud: the root disk across stop and start; managed volumes on the Team plan only; host bind mounts "accepted and ignored"; checkpoints (disk and config, no memory) instead of snapshots | [volumes](https://docs.boxlite.ai/cloud/volumes), [checkpoints](https://docs.boxlite.ai/cloud/checkpoints) |
 | Egress: on or off; `allow_net` takes exact hosts or `*.` wildcards, other names resolve to a sinkhole; fixed at creation on Cloud | [network access](https://docs.boxlite.ai/manage-sandbox/network-access), [network policy](https://docs.boxlite.ai/cloud/network-policy) |
-| Ingress on Cloud: private by default; a box can be made public, get per-port preview URLs or signed preview URLs; an SDK `tunnel(port)` carries TCP, one connection per tunnel; "inbound.allow_net is not supported yet" | [network policy](https://docs.boxlite.ai/cloud/network-policy), [tunnels](https://docs.boxlite.ai/cloud/tunnels) |
+| Ingress on Cloud: private by default; a box can be made public, get per-port preview URLs or signed preview URLs; "inbound.allow_net is not supported yet". A tunnel (`tunnel(port)` in the SDK, `POST /v1/boxes/{id}/network/tunnel` over REST) carries any TCP, verified for HTTP and WebSocket; each prepared tunnel carries one connection, and preparing one is cheap; **a tunnel to a private box is refused**, so the box must have inbound enabled, which makes it public (anyone holding a URL to it reaches it without a key) | [network policy](https://docs.boxlite.ai/cloud/network-policy), [tunnels](https://docs.boxlite.ai/cloud/tunnels) |
 | Secrets: a placeholder in the box that the host-side HTTPS proxy replaces with the real value for allowed hosts only ("real values never enter the VM"); "not an authorization boundary" | [secrets and security](https://docs.boxlite.ai/manage-sandbox/secrets-and-security), [cloud secrets](https://docs.boxlite.ai/cloud/secrets) |
-| Images on Cloud: the docs say any image on a public registry boots; the product FAQ says only the aliases `base`, `python`, `node`. **The two disagree** | [images](https://docs.boxlite.ai/cloud/images), the product site's FAQ |
+| Images on Cloud: BoxLite maintains four images, `base`, `python`, `node` and `sandbaseai-hermes`; the docs say any image on a public registry boots, and a private image boots once its registry login is registered; the product FAQ says only the aliases `base`, `python`, `node`, and that a Docker reference is rejected. **The two disagree** | [images](https://docs.boxlite.ai/cloud/images), [private images](https://docs.boxlite.ai/cloud/private-images), the product site's FAQ |
 | Webhooks or events for box state: **none found** | the OpenAPI spec |
 | Regions: **none documented** | — |
 | Plan ceilings per box: pay-as-you-go 1 vCPU / 2 GiB / 10 GiB and 2 running at once; Starter 2 / 4 / 20 and 4; Team 16 / 32 / 100 and 1,000 | [plans](https://docs.boxlite.ai/cloud/plans) |
+| Sizes: presets Small 1 / 1 GiB / 10 GiB, Medium 2 / 4 / 20, Large 4 / 8 / 50, or a custom size: fractional CPU, memory in whole MiB from 128 MiB, chosen independently, within the plan's ceiling | [box sizes](https://docs.boxlite.ai/cloud/box-sizes) |
+| Checkpoints "do not… support boxes with volumes or Secrets" | [cloud vs open source](https://docs.boxlite.ai/cloud/vs-opensource), [checkpoints](https://docs.boxlite.ai/cloud/checkpoints) |
 
 ## 2. What muster assumes today
 
 | fact | where |
 |---|---|
 | The lifecycle switch is `MUSTER_AGENT_PROVISIONER`: `none`, `noop`, `kubernetes` | [provisioner.md:18-26](../provisioner.md) |
-| The driver interface: `Driver`, `Capabilities`, `Create`, `Update`, `Scale`, `Destroy`, `List`, `Get`, `Endpoint`, `StreamLogs`; `Exec`, `ExecContainer`, `ExecTTY` optional and gated by `Capabilities.Exec` | [internal/provision/provision.go:107-301](../../internal/provision/provision.go) |
+| The driver interface, `Provisioner`: `Driver`, `Capabilities`, `Create`, `Update`, `Scale`, `Destroy`, `List`, `Get`, `Endpoint`, `StreamLogs`; `Exec`, `ExecContainer`, `ExecTTY` optional and gated by `Capabilities.Exec` | [internal/provision/provision.go:107-301](../../internal/provision/provision.go) |
 | Four driver rules: a blind driver errors, never returns an empty set; `Destroy` is nil only if the instance is gone; `Create` is idempotent and refuses a divergent spec; capabilities are branched on in one place | [provisioner.md:778-801](../provisioner.md), [internal/provision/provisiontest/contract.go:76](../../internal/provision/provisiontest/contract.go) |
 | Isolation is an ordered enum, `none` < `process` < `container` < `namespace`; nothing reads it yet | [internal/provision/capabilities.go:10-31](../../internal/provision/capabilities.go), [:61-68](../../internal/provision/capabilities.go) |
-| The adapter's lifecycle: `Dispatch` (`Create`), `Start` (`Update` then `Scale` 1), `Stop` (`Scale` 0), `Destroy`, `StreamLogs`, `AttachTerminal` (`ExecTTY`, then a second `Exec` to release the client) | [internal/agentprovision/agentprovision.go:677](../../internal/agentprovision/agentprovision.go), [:784-848](../../internal/agentprovision/agentprovision.go), [:875-896](../../internal/agentprovision/agentprovision.go), [:932-947](../../internal/agentprovision/agentprovision.go), [:1024](../../internal/agentprovision/agentprovision.go), [:1046-1095](../../internal/agentprovision/agentprovision.go) |
+| The adapter's lifecycle: `Dispatch` (`Create`), `Start` (`Update` when the kind runs the pod supervisor or credentials resolve per owner, otherwise `Scale` 1; so for `claude-code` it is `Update` alone), `Stop` (`Scale` 0), `Destroy`, `StreamLogs`, `AttachTerminal` (`ExecTTY`, then a second `Exec` to release the client) | [internal/agentprovision/agentprovision.go:677](../../internal/agentprovision/agentprovision.go), [:784-848](../../internal/agentprovision/agentprovision.go), [:875-896](../../internal/agentprovision/agentprovision.go), [:932-947](../../internal/agentprovision/agentprovision.go), [:1024](../../internal/agentprovision/agentprovision.go), [:1046-1095](../../internal/agentprovision/agentprovision.go) |
 | A `claude-code` agent: `ccd` serves turns on port 18789; the Claude subscription token is `CLAUDE_CODE_OAUTH_TOKEN` in the agent's own Secret; API-key variables are refused | [internal/agentspec/agentspec.go:149](../../internal/agentspec/agentspec.go), [internal/agentspec/claudecode.go:43](../../internal/agentspec/claudecode.go), [images/claude-code-agent/credentials.sh:52](../../images/claude-code-agent/credentials.sh) |
 | Its budget: 250m CPU and 512Mi requested, 3Gi memory limit; a `/data` volume, 10Gi by default | [internal/agentspec/claudecode.go:63](../../internal/agentspec/claudecode.go), [provisioner.md:259-260](../provisioner.md) |
 | Its network on Kubernetes: ingress only from muster; egress to cluster DNS, TCP 443 on public IPv4, and muster's connect port; **no egress by name** | [provisioner.md:259-268](../provisioner.md), [limits.md:34-58](../limits.md), [internal/provision/types.go:337-404](../../internal/provision/types.go) |
 | GitHub credentials never enter the pod: git goes through muster's connector proxy | [provisioner.md:310-314](../provisioner.md) |
 | The compose mode of the agent image: `ccd compose` reads a spec file every 2 s, supervises the CLI as uid 1000, keeps the spec's secrets unreadable by it, and restarts the child with backoff | [provisioner.md:354-427](../provisioner.md) |
-| The silence watchdog and the stopped-agent reaper run in muster and read the driver's `List` | [provisioner.md:600-628](../provisioner.md), [provisioner.md:683-745](../provisioner.md) |
-| A host dials out over one WebSocket; muster holds no address, key or inbound route to it; at most 64 hosts per server | [internal/mirror/wire.go:16-22](../../internal/mirror/wire.go), [internal/mirror/wire.go:125](../../internal/mirror/wire.go) |
+| The silence watchdog and the stopped-agent reaper run in muster and read muster's own agent rows, not the driver's `List`; the reaper destroys only agents whose stored status has been `stopped` for 14 days and never stops a running one | [provisioner.md:600-628](../provisioner.md), [provisioner.md:683-745](../provisioner.md), [internal/api/agent_watchdog.go:79](../../internal/api/agent_watchdog.go), [internal/api/agent_reap.go:101](../../internal/api/agent_reap.go) |
+| A host dials out over one WebSocket; muster holds no address, key or inbound route to it; at most 64 hosts connected to one server at once, counted across all owners when a host connects | [internal/mirror/wire.go:16-22](../../internal/mirror/wire.go), [internal/mirror/wire.go:125](../../internal/mirror/wire.go) |
 | `muster-mirror` refuses plain http to another machine | [internal/mirrorhost/client.go:183-189](../../internal/mirrorhost/client.go) |
 | The chief's dispatch targets are `pod/claude-code` and `host/<host>/<runtime>` | [internal/api/agent_dispatch.go:255](../../internal/api/agent_dispatch.go), [:297](../../internal/api/agent_dispatch.go) |
 
@@ -139,7 +142,7 @@ On the phone, in plain words:
    shows the plan's limits: "Your plan runs up to 2 agents at a time."
 3. From then on, the chief starts agents there: "Start an agent on the
    upload bug" works as before, and the agent's card says **In the cloud**.
-4. The card shows what it costs while it runs ("about 10¢ an hour") and a
+4. The card shows what it costs while it runs ("about 6¢ an hour") and a
    **Stop** button. A stopped agent costs almost nothing and keeps its work.
 
 ### Architecture
@@ -166,11 +169,14 @@ flowchart LR
   files with BoxLite's files API instead of a shared volume, and the box's
   main command is `ccd compose`, which never exits on its own.
 - **muster → box.** Turns go to `ccd` on port 18789; terminal and exec use
-  BoxLite's exec and its WebSocket attach. The box is private by default, so
-  turns need BoxLite's `tunnel(port)` (one TCP connection per tunnel) or a
-  REST equivalent (**UNVERIFIED** that the REST tunnel route serves this).
-  A public preview URL is the fallback and is not recommended: it puts
-  `ccd` on the internet behind only its bearer.
+  BoxLite's exec and its WebSocket attach. Turns need a tunnel to 18789
+  (`POST /v1/boxes/{id}/network/tunnel`, documented to carry HTTP and
+  WebSocket). Each prepared tunnel carries one connection, so the driver
+  prepares one per turn; that is cheap. ⚠ **A tunnel needs the box to have
+  inbound enabled, which makes it public:** anyone holding a URL to the box
+  reaches it without a BoxLite key. So with a tunnel, as with a preview URL,
+  `ccd` is on the internet behind only its bearer. A tunnel to a private box
+  is an [ask](#what-wed-need-from-boxlite).
 - **box → muster.** The agent calls `MUSTER_AGENT_API_URL` and
   `MUSTER_AGENT_CONNECT_URL` (connectors, MCP, approvals). From a public
   cloud these must be public HTTPS names. A tailnet-only server has none, so
@@ -185,7 +191,7 @@ flowchart LR
 | — | `Driver()` | — | `"boxlite"` |
 | — | `Capabilities()` | — | see the next table |
 | Dispatch | `Create` | `get_or_create` by name, then files PUT of `spec.json` | Idempotence by name; the spec's fingerprint must be stored with the box. Whether a box carries labels or metadata to hold it and an ownership mark is **UNVERIFIED**; without them, muster's own row is the record |
-| Start | `Update`, then `Scale(1)` | files PUT (new generation), start | Image, size and egress are fixed at creation, so an `Update` that changes them is a **recreate**, which loses the disk unless a checkpoint carries it |
+| Start | `Update` (for `claude-code` the adapter calls `Update` alone, so `Update` must also start a stopped box); `Scale(1)` for the other kinds | files PUT (new generation), then start if stopped | Image, size and egress are fixed at creation, so an `Update` that changes them is a **recreate**, which loses the disk unless something carries it (see [the disk and the secrets](#the-disk-across-a-recreate-and-the-secrets)) |
 | Stop | `Scale(0)` | stop | Disk kept, memory not: the next start resumes the conversation by id from the transcript, as a restarted pod does |
 | Delete, reaper | `Destroy` | remove (`force`) | Ownership is checked before anything is removed (rule 2): a box under the name that muster did not create is `ErrNotManaged` |
 | status, reaper, agent list | `List`, `Get` | list and get boxes | An unreachable API is `ErrBlind`, never an empty list (rule 1). No webhooks, so state is polled |
@@ -225,15 +231,40 @@ flowchart LR
 - **Persistence between turns:** the box keeps running between turns; across
   a Stop it keeps its disk. The driver must create every box with
   `auto_stop` **off**, because BoxLite's idle clock ignores work inside the
-  box and would stop an agent mid-turn. With `auto_stop` off, a forgotten
-  agent bills until the stopped-agent reaper or the user stops it, so the
-  card must show that it is running and what it costs.
+  box and would stop an agent mid-turn. With `auto_stop` off, **nothing stops
+  a forgotten running box except the user**, or, for an agent the chief
+  started, its task becoming `complete`
+  ([provisioner.md:681](../provisioner.md)). The stopped-agent reaper does not:
+  it destroys agents that have already been stopped for 14 days and never
+  stops a running one ([provisioner.md:685-688](../provisioner.md),
+  `ListReapableStopped` in [agent_reap.go:101](../../internal/api/agent_reap.go)).
+  So the card must show that it is running and what it costs, and muster
+  must push after 24 hours with no session activity
+  ([question 3](#9-open-questions-for-the-operator)).
 - **The silence watchdog** is muster's and does not change. A box BoxLite
   stopped underneath an agent reads as stopped in `List`, its turn fails as a
   connection to a restarting instance (not a failure,
   [provisioner.md:529-538](../provisioner.md)), and the watchdog marks it
   `stuck` after 30 minutes. The driver should report the BoxLite reason in
   `Instance.Reason` so the push says why.
+
+### The disk across a recreate, and the secrets
+
+Two plans in this shape collide. A recreate (a size or egress change) would
+carry the agent's disk by a checkpoint, and slice [A3](#shape-a-after) would
+keep the Claude token out of the VM as a secret placeholder. But BoxLite's
+checkpoints do not support boxes with Secrets (or with volumes)
+([cloud vs open source](https://docs.boxlite.ai/cloud/vs-opensource)), so a
+box can have one or the other, not both.
+
+**Pick the placeholder, drop the checkpoint.** Keeping the token out of the
+VM serves a goal of this design (credentials move further from the agent);
+a checkpoint only saves the user from re-cloning after a resize, which is
+rare. So: a size or egress change on a box with work in it is refused unless
+the user confirms that unpushed work is lost; on the Team plan, `/data` can
+be a managed volume, which outlives a recreate without a checkpoint. If A3
+finds that Claude Code refuses a placeholder, the token stays in the compose
+spec file and checkpoints become available again.
 
 ### Egress
 
@@ -255,7 +286,7 @@ packages needs its registries added, by the user, by name.
 | box crashed | agent `stuck`, then Start | `ccd compose` restarts the CLI; only a crash of `ccd compose` itself stops the box |
 | BoxLite stopped the box (idle, plan) | `stuck` with the reason | `auto_stop` off at create; report the reason |
 | muster unreachable from the box | kickoff never delivered → `failed` after 15 min | the doctor line checks the public URL from outside before the first dispatch |
-| a recreate on `Update` | the agent's files are gone | refuse a size or egress change on a box with work in it unless the user confirms; later, a checkpoint |
+| a recreate on `Update` | the agent's files are gone | refuse a size or egress change on a box with work in it unless the user confirms; on Team, a managed volume for `/data` (below) |
 
 ### What shape A would need changed in muster
 
@@ -273,8 +304,10 @@ packages needs its registries added, by the user, by name.
 
 1. **Computers → Add a computer → A computer in the cloud.** "Get a computer
    that stays on, so your agents keep working while you sleep."
-2. Connect the BoxLite account (as in shape A, once), pick a size ("Small:
-   about $58 a month if it is always on"), tap **Create**.
+2. Connect the BoxLite account (as in shape A, once), pick a size ("Basic:
+   about $41 a month if it is always on"), tap **Create**. (Basic, 0.25 vCPU
+   / 3 GiB / 10 GiB, is this design's name, not one of BoxLite's presets; it
+   needs BoxLite's Starter plan, [§7](#7-cost-model).)
 3. Within a few seconds the computer appears in the list, **online**.
 4. Open it. The first time, it asks you to sign in to Claude, in its
    terminal, the same way as on a laptop.
@@ -354,7 +387,7 @@ agent never holds a GitHub credential, and the UI must not blur the two.
 | server unreachable | offline | the doctor line; nothing is lost in the box |
 | token revoked | offline; the computer stays in BoxLite | the ⋯ menu offers **Reconnect**, which mints a new token and writes it with the files API |
 | BoxLite key revoked | the computer keeps working; Turn on/off and Delete fail | a banner on Account; turning it off in BoxLite's own console still works |
-| 64 hosts per server | Add a computer refused with the reason | the existing ceiling ([wire.go:125](../../internal/mirror/wire.go)) |
+| 64 hosts connected to the server | the box is created but its mirror is refused when it connects, so it shows **offline** with the reason | the existing ceiling, counted across all owners at connect time ([wire.go:125](../../internal/mirror/wire.go)); creation cannot reserve a place, so the ⋯ menu says why and offers **Turn off** |
 
 ## 6. Security, compared with the Kubernetes driver
 
@@ -365,7 +398,7 @@ agent never holds a GitHub credential, and the UI must not blur the two.
 | model token | in the pod's environment | a placeholder, if Claude Code accepts one (**UNVERIFIED**) | in the box, as on a laptop |
 | GitHub | never in the pod | never in the box | in the box, the user's own |
 | muster's credential for the backend | a ServiceAccount, narrowed by RoleBindings | the user's BoxLite key: **whole account** | the same key, used for four calls only |
-| reach into the agent | cluster network, ingress only from muster | a BoxLite tunnel; the box is private | none: the box dials out |
+| reach into the agent | cluster network, ingress only from muster | a BoxLite tunnel, which needs the box public: `ccd`'s bearer is the only guard | none: the box dials out; the box stays private |
 | who else sees traffic | the cluster | BoxLite, for every substituted secret (its proxy terminates TLS for those hosts) | BoxLite only if a placeholder is used; otherwise the tunnel is end to end |
 | prompt-injected agent's reach | any public HTTPS host | the allowlisted names | the allowlisted names, plus anything the user signed in to |
 
@@ -388,13 +421,13 @@ Two points matter most:
 | memory | $0.0144 per GiB-hour | **documented** |
 | disk | $0.00018 per GiB-hour; a stopped box pays disk only | **documented** |
 | network, API calls, boot time | no charge; no minimum duration | **documented** |
-| Small, 1 vCPU / 1 GiB / 10 GiB | $0.0666/h; $47.95 per 30 days on, $1.30 stopped | **documented**, [box costs](https://docs.boxlite.ai/cloud/box-costs) |
-| Medium, 2 / 4 / 20 | $0.1620/h; $116.64 per 30 days on, $2.59 stopped | **documented** |
-| a `claude-code` agent's ceiling today | 3Gi memory limit, 250m CPU requested | read from code ([claudecode.go:63](../../internal/agentspec/claudecode.go)) |
-| one agent, 1 vCPU / 3 GiB / 10 GiB | ~$0.095/h; ~$69 per 30 days always on | **estimated** from the unit rates; **UNVERIFIED** that Cloud accepts a size between the standard ones, and it exceeds pay-as-you-go's 2 GiB ceiling |
+| BoxLite's Small preset, 1 vCPU / 1 GiB / 10 GiB | $0.0666/h; $47.95 per 30 days on, $1.30 stopped | **documented**, [box costs](https://docs.boxlite.ai/cloud/box-costs) |
+| BoxLite's Medium preset, 2 / 4 / 20 | $0.1620/h; $116.64 per 30 days on, $2.59 stopped; needs the Starter plan or above, since pay-as-you-go caps a box at 1 vCPU / 2 GiB / 10 GiB | **documented**, [plans](https://docs.boxlite.ai/cloud/plans) |
+| a `claude-code` agent's budget today | 3Gi memory limit, 250m CPU requested | read from code ([claudecode.go:63](../../internal/agentspec/claudecode.go)) |
+| "Basic": one agent at that budget, 0.25 vCPU / 3 GiB / 10 GiB | $0.0576/h; ~$41 per 30 days always on | **estimated** from the unit rates; custom sizes are **documented** ([box sizes](https://docs.boxlite.ai/cloud/box-sizes): fractional CPU, memory in whole MiB). 3 GiB exceeds pay-as-you-go's 2 GiB, so it needs Starter |
 | one agent, 1 / 2 / 10 (pay-as-you-go's largest) | ~$0.081/h; ~$58 per 30 days always on | **estimated**; whether Claude Code with a repository's tooling fits in 2 GiB is **UNVERIFIED** |
-| one agent working 8 h a day, stopped otherwise | ~$19-23 a month | **estimated**: 240 h at the two rates above, plus disk |
-| a cloud computer, Medium, always on | ~$117 a month | **documented** size, **estimated** usage |
+| one agent working 8 h a day, stopped otherwise | ~$15-20 a month | **estimated**: 240 running hours at the two rates above ($13.82, $19.44), plus the 480 stopped hours' disk (10 GiB, ~$0.86) |
+| a cloud computer, Medium, always on | ~$117 a month | **documented** size (Starter plan), **estimated** usage |
 | model usage | not included | the user's own Claude subscription in both shapes |
 
 ## 8. Phased slices
@@ -459,8 +492,9 @@ Each slice is tested before the next.
 6. **A REST logs endpoint.**
 7. **Images on Cloud:** confirm any public OCI image by digest boots (the docs
    and the FAQ disagree).
-8. **A multi-connection tunnel over REST**, or an inbound allowlist, so
-   muster can reach a private box's port without making it public.
+8. **A tunnel to a private box**, authorized by the API key, or an inbound
+   allowlist, so muster can reach a box's port without making the box
+   public. (The REST tunnel exists; it refuses a private box.)
 9. **Secrets:** state which TLS terminations the proxy does and allow named
    hosts to bypass it.
 10. **Regions and data location.**
@@ -470,16 +504,21 @@ Each slice is tested before the next.
 ## 9. Open questions for the operator
 
 1. **Which shape first?** **Recommendation: B** ([§10](#10-recommendation)).
+   **Decided: B first.**
 2. **Hold the user's BoxLite key in muster, or not?** **Recommendation:
    yes, for B's four lifecycle calls only**, with a plain warning on the
    connect page that the key reaches the whole BoxLite account. Revisit once
    a scoped key exists (ask 1).
-3. **Is `auto_stop` off the default?** **Recommendation: yes**, with the
-   running cost on the card and a push after 24 hours with no session
-   activity. Agents that stop mid-turn are worse than a visible bill.
+3. **Is `auto_stop` off the default?** **Recommendation: yes**, and two
+   things are **required** with it, not optional: the running cost on the
+   card, and a push after 24 hours with no session activity. With `auto_stop`
+   off nothing else stops a forgotten running box (the reaper only destroys
+   boxes already stopped for 14 days). Agents that stop mid-turn are worse
+   than a visible bill.
 4. **Shape B's default size?** **Recommendation: the smallest that runs
    Claude Code with a repository's tooling**, measured in B0; until then
-   1 vCPU / 2 GiB.
+   Basic, a `claude-code` agent's budget today (0.25 vCPU / 3 GiB / 10 GiB,
+   ~$41 for 30 days on, Starter plan), or 1 vCPU / 2 GiB on pay-as-you-go.
 5. **Tailscale inside the box before the managed network ships?**
    **Recommendation: no.** Support public-URL servers in B1-B2 and wait for
    the relay. Tailscale in a box is another credential and an unverified
@@ -499,12 +538,12 @@ Each slice is tested before the next.
 - **It needs almost nothing from BoxLite.** Boxes stay private, there are no
   tunnels, logs or webhooks to depend on, and the BoxLite key is used four
   ways rather than for every turn.
-- **It delivers what users ask for at once:** a computer that stays on,
-  driven from the phone, where the chief can start work.
+- **It meets the goals in [§3](#3-goals-and-non-goals).**
 - **It sits beside the managed network**, as one of its remote machines.
 - **Shape A is better isolation**, and egress by name would close a gap
   muster has today. It comes next, on the driver seam, once the asks that
-  bite it hardest (a scoped key, a restart policy, labels, logs) are answered.
+  bite it hardest (a scoped key, a restart policy, labels, logs, a tunnel to a
+  private box) are answered.
 
 ## Appendix: a local spike
 
