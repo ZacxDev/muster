@@ -89,9 +89,39 @@ type Features struct {
 // feature this server runs or does not, with the line(s) that turn each on.
 const FeaturesPagePath = "/account/features"
 
-// FeatureHref is a feature's row on the Features page — where every hint
-// beside a control that is hidden because its feature is off links to.
-func FeatureHref(id string) string { return FeaturesPagePath + "#" + id }
+// FeatureSheetID is the element id of a feature's ⓘ sheet on the Features
+// page (its row's id is the feature id itself, a docs anchor).
+func FeatureSheetID(id string) string { return id + "-setup" }
+
+// FeatureHref is a feature's ⓘ sheet on the Features page — where every "how
+// to turn it on" hint beside a control that is hidden because its feature is
+// off links to. The page opens the sheet its address names (FeaturesSheetJS):
+// for an admin it holds the setting and a Copy button; anyone else's says to
+// ask their admin.
+func FeatureHref(id string) string { return FeaturesPagePath + "#" + FeatureSheetID(id) }
+
+// FeaturesSheetJS opens the ⓘ sheet the Features page's address names
+// (FeatureHref), on load and when the address changes, with the sheet's row
+// scrolled into view. Only an element that IS a sheet is opened; a malformed
+// address opens nothing; the hashchange listener is added once per document.
+const FeaturesSheetJS = `(function(){
+  function open(){
+    var id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (e) { return; }
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (!el || !el.hasAttribute('data-info-sheet') || !el.showPopover) return;
+    var row = el.closest('[data-feature]');
+    if (row) row.scrollIntoView({block: 'start'});
+    if (!el.matches(':popover-open')) el.showPopover();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', open); else open();
+  // One listener per document, however many times a boosted visit runs this.
+  if (!window.cgFeatureSheetHash) {
+    window.cgFeatureSheetHash = true;
+    window.addEventListener('hashchange', open);
+  }
+})();`
 
 func visibleTabs(f Features) []tab {
 	out := make([]tab, 0, len(musterTabs))

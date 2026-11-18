@@ -288,7 +288,7 @@ const askPageScript = `<script>
 
 // answerMic is an answer box's microphone: the real one (button, for the box
 // input, reporting into note), or — when the server has no dictation — the
-// muted one linking to its Features row, id button+"-off". The ask page and
+// muted one linking to its Features ⓘ sheet, id button+"-off". The ask page and
 // every Asks answer box draw it, so the two cannot differ.
 func answerMic(dictate string, off bool, input, note, button string) string {
 	if dictate == "" && off {
