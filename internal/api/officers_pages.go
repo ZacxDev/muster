@@ -310,6 +310,68 @@ func whereItRuns(v declaredOfficerView) string {
 	return on
 }
 
+// plainWhere is where an officer runs, in a person's words (no runtime
+// names): on a named machine, on muster's own servers, wherever muster can,
+// or nowhere yet. whereItRuns is the technical line, behind the head's ⓘ.
+func plainWhere(v declaredOfficerView) string {
+	on, host := v.RunsOn, v.RunsOnHost
+	if on == "" {
+		on, host = v.Runtime, v.Host
+	}
+	switch on {
+	case officers.RuntimePod:
+		return "on muster's own servers"
+	case officers.RuntimeHost:
+		if host != "" {
+			return "on " + host
+		}
+		return "on one of your machines"
+	}
+	if v.ManagedBy == managedByDef {
+		return "nowhere yet"
+	}
+	return "wherever muster can run it"
+}
+
+// plainNotRunning is why an officer does not run, in a person's words, from
+// where it is declared to run — the server's own reason (v.Reason, which
+// names settings and flags) is behind the head's ⓘ.
+func plainNotRunning(v declaredOfficerView) string {
+	switch {
+	case v.ManagedBy == managedByDef:
+		return "nothing is set up to run it."
+	case v.Runtime == officers.RuntimeHost && v.Host != "":
+		return "it runs on " + v.Host + ", and this server can't start it on that machine right now."
+	case v.Runtime == officers.RuntimeHost:
+		return "it runs on one of your machines, and this server can't start it on any of them right now."
+	case v.Runtime == officers.RuntimePod:
+		return "it runs on muster's own servers, and this server can't start it there."
+	}
+	return "this server has nowhere it can start it right now."
+}
+
+// officerHeadSheet is the officer head's ⓘ: its id, the technical
+// where-it-runs line and, when it does not run, the server's own reason.
+func officerHeadSheet(v declaredOfficerView) ui.InfoSheet {
+	code := "officer " + v.ID + " · runs " + whereItRuns(v)
+	if v.Repo != "" {
+		code += " · in " + v.Repo
+	} else if v.ManagedBy != managedByDef {
+		code += " · in a scratch directory"
+	}
+	switch v.ManagedBy {
+	case officers.ManagedByEnv:
+		code += " · declared by MUSTER_OFFICERS"
+	case managedByDef:
+		code += " · a def in the built-in store only (muster officer create declares where it runs)"
+	}
+	if !v.Running && v.Reason != "" {
+		code += " · not running: " + v.Reason
+	}
+	return ui.InfoSheet{ID: "officer-head-info", Label: "Technical details of this officer", Heading: "Details",
+		Lead: "What muster records for this officer:", Code: code, Inline: true}
+}
+
 // liveItem reports whether an item status is still the officer's to work.
 func liveItem(status string) bool {
 	return status == officers.StatusOpen || status == officers.StatusClaimed || status == officers.StatusWaiting
@@ -478,7 +540,7 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 		b.WriteString(`</section>`)
 	}
 	b.WriteString(s.runtimeAvailability(ctx, p.UserID, "officers-runtimes"))
-	s.writeNavDocument(w, r, http.StatusOK, "Officers", ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+	s.writeNavDocument(w, r, http.StatusOK, "Officers", ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`, navWide)
 }
 
 // officerListNotices are the words the list's ?notice= shows (a closed set).
@@ -520,7 +582,10 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 		if v.ReadOnly {
 			b.WriteString(`<span class="text-xs text-muted" data-read-only>read-only</span>`)
 		}
-		b.WriteString(`</div><span class="text-xs text-fg2">` + html.EscapeString(v.ID) + ` · runs ` + html.EscapeString(whereItRuns(v)) + `</span>`)
+		sheet := officerHeadSheet(v)
+		sheet.ID = "officer-row-" + strconv.FormatInt(sc.Owner, 10) + "-" + strings.NewReplacer(":", "-").Replace(v.ID) + "-info"
+		b.WriteString(`</div><div class="flex items-center gap-1"><span class="min-w-0 flex-1 text-xs text-fg2" data-officer-where>runs ` + html.EscapeString(plainWhere(v)) + `</span>` +
+			ui.InfoSheetHTML(sheet) + `</div>`)
 		// 🔴 NO "LAST PASS" HERE (round 0's D2): the wake loop's memory of its
 		// last pass is per replica and forgotten by a restart, so it is not
 		// drawn until a shared record of passes exists.
@@ -538,7 +603,7 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 		}
 		b.WriteString(`<span class="text-xs text-fg2" data-officer-facts>` + html.EscapeString(strings.Join(facts, " · ")) + `</span>`)
 		if !v.Running && v.Reason != "" {
-			b.WriteString(`<span class="text-xs text-st-error-fg" data-officer-reason>` + html.EscapeString(v.Reason) + `</span>`)
+			b.WriteString(`<span class="text-xs text-st-error-fg" data-officer-reason>Not running: ` + html.EscapeString(plainNotRunning(v)) + `</span>`)
 		}
 		b.WriteString(`</li>`)
 	}
@@ -1894,25 +1959,26 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	b.WriteString(`<section class="` + adminCard + `" id="officer-head" data-officer="` + esc(v.ID) + `" data-managed-by="` + v.ManagedBy + `">
 <p class="text-xs"><a href="` + officersPagePath + `" class="text-fg2 underline-offset-2 hover:underline">← Officers</a></p>
 <div class="flex flex-wrap items-center gap-2"><h1 class="min-w-0 flex-1 break-words text-base font-semibold text-fg">` + esc(name) + `</h1>` + statusChip(status) + `</div>
-<p class="text-xs text-fg2">` + esc(v.ID))
+`)
+	// 🔴 THE TOP LAYER IS PLAIN WORDS (the operator rule): where it runs and,
+	// when it does not, why — in a sentence. Its id, the technical
+	// where-it-runs line and the server's own reason (which names settings)
+	// are behind the ⓘ (officerHeadSheet).
+	plain := ""
 	if sc.Team {
-		b.WriteString(` · ` + esc(sc.Name) + `'s`)
+		plain = sc.Name + "'s · "
 	}
-	b.WriteString(` · runs ` + esc(whereItRuns(v)))
-	if v.Repo != "" {
-		b.WriteString(` · in ` + esc(v.Repo))
-	} else if v.ManagedBy != managedByDef {
-		b.WriteString(` · in a scratch directory`)
-	}
-	b.WriteString(`</p>`)
+	plain += "runs " + plainWhere(v)
+	b.WriteString(`<div class="flex items-center gap-1"><p class="min-w-0 flex-1 text-xs text-fg2" data-officer-where>` + esc(plain) + `</p>` +
+		ui.InfoSheetHTML(officerHeadSheet(v)) + `</div>`)
 	if !v.Running && v.Reason != "" {
-		b.WriteString(`<p class="text-sm text-st-error-fg" id="officer-reason">Not running: ` + esc(v.Reason) + `</p>`)
+		b.WriteString(`<p class="text-sm text-st-error-fg" id="officer-reason">Not running: ` + esc(plainNotRunning(v)) + `</p>`)
 	}
 	switch v.ManagedBy {
 	case officers.ManagedByEnv:
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">MUSTER_OFFICERS declares it, so it is read-only here: change the environment and restart.</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">Its setup comes from this server's own settings, so it is changed there, not here. Its decisions, Run now and Pause still work here.</p>`)
 	case managedByDef:
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">Only a def in the built-in store: declare where it runs with <code>muster officer create</code>, or add it to MUSTER_OFFICERS.</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">It has instructions but nowhere to run yet, so muster does not start it.</p>`)
 	}
 	if v.RunsOn == officers.RuntimeHost || v.Runtime == officers.RuntimeHost {
 		b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" data-host-risk>` + esc(hostRiskLine) + `</p>`)
@@ -1960,10 +2026,17 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	// The instances.
 	b.WriteString(s.officerInstances(ctx, sc, v))
 
-	// The queue.
+	// Schedules.
+	if builtinBackend {
+		b.WriteString(s.officerSchedules(ctx, sc, v, writable))
+	}
+
+	// The raw queue: what What it did says in words, in the store's own terms
+	// — behind a closed Technical details, never in the top layer.
+	b.WriteString(`<details class="` + adminCard + `" id="officer-technical"><summary class="cursor-pointer text-base font-semibold text-fg">Technical details</summary>`)
 	if builtinBackend {
 		items, err := s.officerItems(ctx, sc.Owner, v.ID, 50)
-		b.WriteString(`<section class="` + adminCard + `" id="officer-queue"><h2 class="text-base font-semibold text-fg">Queue</h2>`)
+		b.WriteString(`<section class="flex flex-col gap-3" id="officer-queue"><h2 class="text-sm font-semibold text-fg">Queue</h2>`)
 		switch {
 		case err != nil:
 			s.logger.Printf("officers: read %s's items: %v", v.ID, err)
@@ -1992,13 +2065,9 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 		}
 		b.WriteString(`</section>`)
 	} else {
-		b.WriteString(`<section class="` + adminCard + `" id="officer-queue"><h2 class="text-base font-semibold text-fg">Queue</h2><p class="text-sm text-fg2">Its queue is in its HQ.</p></section>`)
+		b.WriteString(`<section class="flex flex-col gap-3" id="officer-queue"><h2 class="text-sm font-semibold text-fg">Queue</h2><p class="text-sm text-fg2">Its queue is in its HQ.</p></section>`)
 	}
-
-	// Schedules.
-	if builtinBackend {
-		b.WriteString(s.officerSchedules(ctx, sc, v, writable))
-	}
+	b.WriteString(`</details>`)
 
 	// Its spend, where the server books it.
 	if builtinBackend {
@@ -2022,7 +2091,7 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 <input id="officer-delete-confirm" name="confirm" autocomplete="off" class="` + adminInput + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-danger px-3 py-2 text-base font-semibold text-on-danger">Delete officer</button></form></section>`)
 	}
-	s.writeNavDocument(w, r, code, name, ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+	s.writeNavDocument(w, r, code, name, ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`, navWide)
 }
 
 // truncateRunes is v cut to n runes, with an ellipsis when cut.

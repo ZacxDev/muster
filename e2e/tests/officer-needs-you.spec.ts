@@ -88,6 +88,15 @@ for (const vp of [
       await signIn(page, origin);
       await page.goto(`${origin}/officers/${encodeURIComponent(id)}`);
 
+      // The head in plain words: no id, no setting's name (both behind its ⓘ),
+      // and the raw queue folded away in Technical details.
+      const head = page.locator('#officer-head');
+      await expect(head).not.toContainText(id, { useInnerText: true });
+      await expect(head).not.toContainText('MUSTER_', { useInnerText: true });
+      await expect(page.locator('#officer-reason')).toContainText("it runs on e2e-laptop, and this server can't start it on that machine right now.");
+      await expect(page.locator('#officer-technical')).not.toHaveAttribute('open');
+      await expect(page.locator('#officer-queue')).toBeHidden();
+
       const needs = page.locator('#officer-needs-you');
       await expect(needs).toBeVisible();
       // The post, the batch and the refusal wait on the person.

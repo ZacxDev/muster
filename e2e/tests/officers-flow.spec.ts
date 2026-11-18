@@ -193,7 +193,8 @@ for (const size of sizes) {
       expect(s0.map((s) => [s.name, s.cron, s.enabled]), 'the schedule chosen').toEqual([['pass', '0 9 * * *', true]]);
       await expect(page.locator('#officer-actions form[action$="/mode"] input[name=mode]')).toHaveValue('live');
       await expect(page.locator('#officer-schedules [data-schedule="pass"]')).toBeVisible();
-      await expect(page.locator('#officer-queue-empty')).toBeVisible();
+      // The raw queue is in the closed Technical details (attached, not shown).
+      await expect(page.locator('#officer-queue-empty')).toBeAttached();
       await noSidewaysScroll(page);
 
       // 4. Run now: one manual.run item; a second tap while it waits adds none.

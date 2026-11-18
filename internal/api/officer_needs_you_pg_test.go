@@ -594,3 +594,67 @@ func TestRunControlsTakeAnEnvOfficerToo(t *testing.T) {
 		t.Fatalf("after Pause the def is %+v, %v", d, err)
 	}
 }
+
+// section is page from the element with id to the next top-level section
+// (a crude cut, enough to keep one section's text apart from the next).
+func section(page, id, next string) string {
+	i := strings.Index(page, `id="`+id+`"`)
+	if i < 0 {
+		return ""
+	}
+	rest := page[strings.LastIndex(page[:i], "<"):]
+	if j := strings.Index(rest, next); j > 0 {
+		rest = rest[:j]
+	}
+	return rest
+}
+
+// TestTheOfficerHeadAndListArePlainWords is the operator rule on the head and
+// the list: a host officer this server cannot start says WHERE it runs and
+// WHY NOT in a sentence — no officer id, no setting's name, no runtime words
+// in the top layer — and its id, the technical where-it-runs line and the
+// server's own reason (naming MUSTER_MIRROR) are behind the ⓘ. Its raw queue
+// is in a CLOSED Technical details, after Schedules; the page and the list
+// take the wide column.
+func TestTheOfficerHeadAndListArePlainWords(t *testing.T) {
+	r := newPageRig(t, declRigOpts{})
+	rec := r.hook(t, "POST", "/api/officers/declared", `{"id":"`+declID+`","name":"Scout","charter":"Summarise. Never post.","runtime":"host","host":"example-laptop","mode":"shadow"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("declare: %d %s", rec.Code, rec.Body.String())
+	}
+	page := r.page(t, 1, http.MethodGet, "/officers/"+declID, nil).Body.String()
+	head := section(page, "officer-head", `id="officer-needs-you"`)
+	top := visibleText(head)
+	for _, hidden := range []string{declID, "MUSTER_", "Claude Code window", "scratch directory"} {
+		if strings.Contains(top, hidden) {
+			t.Errorf("the head shows %q in its top layer:\n%s", hidden, top)
+		}
+		if !strings.Contains(head, hidden) {
+			t.Errorf("the head has no %q behind its ⓘ", hidden)
+		}
+	}
+	for _, want := range []string{"runs on example-laptop", "Not running: it runs on example-laptop, and this server can&#39;t start it on that machine right now."} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the head does not say %q", want)
+		}
+	}
+	tech := section(page, "officer-technical", "</details>")
+	if !strings.Contains(page, `<details class="`) || strings.Contains(tech, " open") || !strings.Contains(tech, `id="officer-queue"`) ||
+		strings.Index(page, `id="officer-technical"`) < strings.Index(page, `id="officer-schedules"`) {
+		t.Errorf("the queue is not in a closed Technical details after Schedules")
+	}
+	if !strings.Contains(page, "md:max-w-2xl") {
+		t.Errorf("the officer's page does not take the wide column")
+	}
+	list := r.page(t, 1, http.MethodGet, "/officers", nil).Body.String()
+	row := section(list, "officers-mine", `id="officers-runtimes"`)
+	if i := strings.Index(row, `data-officer="`+declID+`"`); i >= 0 {
+		row = row[i+len(`data-officer="`+declID+`"`):]
+	}
+	if top := visibleText(row); strings.Contains(top, declID) || strings.Contains(top, "MUSTER_") {
+		t.Errorf("the list row shows the id or a setting in its top layer:\n%s", top)
+	}
+	if !strings.Contains(row, "officer "+declID) || !strings.Contains(list, "md:max-w-2xl") {
+		t.Errorf("the list row has no id behind its ⓘ, or the list is not wide")
+	}
+}
