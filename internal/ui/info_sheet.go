@@ -163,7 +163,9 @@ func InfoSheetHTML(s InfoSheet) string {
 
 // SessionPlaceSheet is THE ⓘ of a mirrored session's place: id is the sheet's
 // id (unique in its document), name the session's name as the surface shows
-// it (in the ⓘ's accessible name, so a screen reader moving between cards
+// it, ALREADY PLAINED by the caller — never plained again here (the title
+// rule is applied once; internal/textplain's sink ledger) — (in the ⓘ's
+// accessible name, so a screen reader moving between cards
 // hears whose place each one is: "Where Billing migration runs"; "" for "this
 // session"), host the computer it runs on and where its exact tmux target
 // ("tmux fern:1 @ atlas"), copied whole.
