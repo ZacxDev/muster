@@ -18,8 +18,11 @@
   `Secure` as the session cookie is, 400 days). It is signed with a key
   derived from the operator password, so changing the password invalidates
   every device cookie.
-  - A browser that is still signed in (a valid session cookie) counts as a
-    known device too.
+  - At **sign-in**, a browser that is still signed in (a valid session
+    cookie) counts as a known device too. At the **step-up confirm** it does
+    not: step-up exists for the case where the session itself is in the wrong
+    hands, so there only the device cookie counts, and a session without one
+    is refused past the counts like any unknown device.
   - Once its address's count, or the whole server's, is past its limit, a
     request from an **unknown** device is refused with 429 before the password
     is compared, correct or not. So a guesser is held to 10 guesses a minute

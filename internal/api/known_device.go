@@ -18,7 +18,7 @@ import (
 // POSTs a minute); one that only counts lets a guesser run at line rate, since a
 // correct guess is admitted whatever the count. The device cookie separates the
 // two populations: a browser that has signed in correctly before carries a
-// cookie this server signed (or a valid session), and is NEVER refused for the
+// cookie this server signed (or, at sign-in, a valid session), and is NEVER refused for the
 // failure counts with the correct password; any other request is REFUSED once
 // its address's count, or the process-wide one, is past its limit, correct
 // password or not (passwordGate).
@@ -77,8 +77,14 @@ const loginRateGlobalBurst = 100
 
 // passwordGate is the operator-password check behind the failure counts.
 //
-// A request is from a KNOWN device when it carries a valid device cookie or a
-// valid session cookie (that session already proved the current password).
+// A request is from a KNOWN device when it carries a valid device cookie, or —
+// for the SIGN-IN only (sessionIsKnown) — a valid session cookie (that session
+// already proved the current password).
+//
+// 🔴 NEVER A SESSION AT THE STEP-UP CONFIRM. Step-up exists for the case where
+// the session itself is in the wrong hands; a session proving "known device"
+// there would let whoever holds a stolen cookie guess the operator password with
+// no refusal. At the confirm only the signed device cookie counts.
 //   - refused: an UNKNOWN device whose address is past loginRateBurst, or
 //     while the process-wide count is past loginRateGlobalBurst; the password
 //     was not compared (answer 429). Logged at most once a minute.
@@ -91,9 +97,9 @@ const loginRateGlobalBurst = 100
 // every client is the proxy's address, so the per-address count is one count
 // for everyone: a flood refuses every unknown device. Known devices and
 // signed-in browsers are unaffected either way.
-func (s *Server) passwordGate(r *http.Request, password string, now time.Time) (ok, refused, throttled bool) {
+func (s *Server) passwordGate(r *http.Request, password string, now time.Time, sessionIsKnown bool) (ok, refused, throttled bool) {
 	ip := clientIP(r)
-	if !s.knownDevice(r) && !s.hasValidSession(r) {
+	if !s.knownDevice(r) && !(sessionIsKnown && s.hasValidSession(r)) {
 		addrOver := s.loginRateAddr.count(ip, now, loginRateWindow) >= loginRateBurst
 		if addrOver || s.loginRate.over(now, loginRateGlobalBurst, loginRateWindow) {
 			s.loginRefusedLog.do(now, func(suppressed int) {

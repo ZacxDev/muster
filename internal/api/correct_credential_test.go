@@ -133,28 +133,33 @@ func TestAKnownDevicesWrongPasswordStillCounts(t *testing.T) {
 }
 
 // TestThePasswordModeConfirmFollowsTheKnownDeviceRule: the step-up confirm
-// shares the counts and the rule. A confirm always carries a valid session,
-// and a valid session is a known device: past the count the correct password
-// is admitted (with or without a device cookie), a wrong one is 429 (counted,
-// throttled), and a successful confirm issues the device cookie.
+// shares the counts, but its session is NOT a known device (only the signed
+// device cookie is). One below the count, a session-only wrong password is 401
+// and makes the count; then the session-only CORRECT password is refused (429).
+// With a device cookie the correct password is admitted and the confirm issues
+// a device cookie; a device's wrong password past the count is 429.
 func TestThePasswordModeConfirmFollowsTheKnownDeviceRule(t *testing.T) {
 	s, h := pwaServer(t, nil)
 	dev := knownDeviceOf(t, h)
-	flood(h, loginRateBurst)
+	flood(h, loginRateBurst-1)
 	session := auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-time.Hour), sessionTTL)
 	confirm := func(pw string, opts ...reqOpt) *httptest.ResponseRecorder {
 		base := []reqOpt{func(r *http.Request) { r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session}) }, asXHR, arriveFrom(sharedAddress)}
 		return do(h, http.MethodPost, stepUpConfirmPath, url.Values{"password": {pw}}, append(base, opts...)...)
 	}
-	w := confirm(testUIPassword)
+	if w := confirm("not-the-password"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: a session-only wrong confirm one below the count: %d %s, want 401", w.Code, w.Body)
+	}
+	if w := confirm(testUIPassword); w.Code != http.StatusTooManyRequests || errorOf(w) != stepUpThrottled {
+		t.Errorf("a session WITHOUT a device cookie, correct password past the count: %d %s, want 429 %q (a session is not a known device here)",
+			w.Code, w.Body, stepUpThrottled)
+	}
+	w := confirm(testUIPassword, withDevice(dev))
 	if w.Code != http.StatusOK {
-		t.Errorf("confirm from a signed-in browser with no device cookie past the count: %d %s, want 200", w.Code, w.Body)
+		t.Errorf("a session WITH a device cookie, correct password past the count: %d %s, want 200", w.Code, w.Body)
 	}
 	if ck := setCookies(w)[knownDeviceCookieName]; ck == nil || ck.Value == "" {
 		t.Errorf("a successful confirm issued no device cookie")
-	}
-	if w := confirm(testUIPassword, withDevice(dev)); w.Code != http.StatusOK {
-		t.Errorf("confirm from a KNOWN device past the count: %d %s, want 200", w.Code, w.Body)
 	}
 	if w := confirm("not-the-password", withDevice(dev)); w.Code != http.StatusTooManyRequests || errorOf(w) != stepUpThrottled {
 		t.Errorf("a known device's WRONG password confirm past the count: %d %s, want 429 %q", w.Code, w.Body, stepUpThrottled)

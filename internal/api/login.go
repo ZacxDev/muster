@@ -38,7 +38,7 @@ const loginPath = "/login"
 // 🔴 THE COUNTS HOLD FAILURES ONLY, AND THEY REFUSE ONLY UNKNOWN DEVICES
 // (passwordGate, known_device.go). Past loginRateBurst in a window from one
 // client address (or loginRateGlobalBurst across all of them), a request with
-// no valid known-device cookie and no valid session is refused before the
+// no valid known-device cookie (and, at sign-in, no valid session) is refused before the
 // compare, correct password or not, so a guesser is held to loginRateBurst a
 // minute per address; a browser that signed in correctly before is never
 // refused with the correct password, so a junk flood cannot lock the operator
@@ -174,7 +174,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := r.FormValue("next")
-	ok, refused, throttled := s.passwordGate(r, r.FormValue("password"), time.Now())
+	ok, refused, throttled := s.passwordGate(r, r.FormValue("password"), time.Now(), true)
 	if refused || throttled {
 		if !refused {
 			s.logger.Printf("login: rejected a password attempt")

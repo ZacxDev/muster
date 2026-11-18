@@ -429,8 +429,9 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 // again, a new session cookie issued now.
 func (s *Server) confirmOperatorPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	now := time.Now()
-	// The same gate as the sign-in (loginRateBurst's comment, known_device.go).
-	ok, refused, throttled := s.passwordGate(r, password, now)
+	// The same gate as the sign-in, except that the session this confirm carries
+	// is NOT a known device: only the signed device cookie is (passwordGate).
+	ok, refused, throttled := s.passwordGate(r, password, now, false)
 	if refused || throttled {
 		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
 	}
