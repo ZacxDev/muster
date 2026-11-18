@@ -364,8 +364,12 @@ jobs:
       # DIRECTLY: each is in exactly one internal/api shard, so goshard.py hands
       # its `--require` on only to the shard that runs it, and REFUSES (in every
       # api shard) if one is not in internal/api's test list at all — a rename,
-      # deletion or build tag still fails CI by name. The `-race -cover` after
-      # `--` are the run's flags, so `go test -list` reuses the run's build.
+      # deletion or build tag still fails CI by name. The `-race` after `--` is
+      # the run's flags, so `go test -list` reuses the run's build.
+      #
+      # ⚠ NO `-cover` IN CI: nothing reads the percentage (no -coverprofile),
+      # and with -race it forces -covermode=atomic counters on every block.
+      # `make test` keeps -cover for a local read.
       #
       # ⚠ THE OUTPUT FILES ARE WORD-SPLIT BY `$(cat …)` BELOW; goshard.py refuses
       # any token with whitespace or a glob character, so that is safe.
@@ -378,7 +382,7 @@ jobs:
           --require TestNoRouteLetsOneUserReachAnothersData
           --require TestAnotherUsersWritesNeverReachYourEventStream
           --args-out "$RUNNER_TEMP/go-test-args" --verdict-out "$RUNNER_TEMP/verdict-args"
-          -- -race -cover
+          -- -race
 
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
@@ -443,7 +447,7 @@ jobs:
           GODEBUG: gocachetest=1
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+          go test -race -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
 
       # Saved even when a test failed: Go never caches a failing result, and
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
