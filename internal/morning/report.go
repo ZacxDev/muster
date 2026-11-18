@@ -99,14 +99,17 @@ type PlanAccount struct {
 }
 
 // CostUsage is what the chief's work cost, where muster knows: its
-// OpenRouter sessions' spend (chief_session_llm_usage), which is booked per
-// UTC DAY — so it covers whole UTC days FirstDay..LastDay, not the window.
-// Claude plans carry no cost.
+// OpenRouter sessions' spend (chief_session_llm_usage). That spend is booked
+// per UTC DAY, so the report says the spend of Day, the last WHOLE UTC day
+// before its report time: the day the report time falls in is still running
+// (08:00 in Chicago is 13:00 or 14:00 UTC), and the next report counts it, so
+// consecutive reports each count one day, none twice. Claude plans carry no
+// cost.
 type CostUsage struct {
-	Tracked           bool
-	Off               string
-	USD               float64
-	FirstDay, LastDay string
+	Tracked bool
+	Off     string
+	USD     float64
+	Day     string // "2006-01-02", UTC
 }
 
 // Gap is one thing the report could not read: its plain sentence. The page
@@ -136,7 +139,9 @@ func (r Report) Quiet() bool {
 		}
 	}
 	for _, s := range r.Stuck {
-		if !s.Since.Before(r.Since) {
+		// Stuck inside [Since, Until): before it is an old stall, from Until on
+		// it is tomorrow's.
+		if !s.Since.Before(r.Since) && s.Since.Before(r.Until) {
 			return false
 		}
 	}

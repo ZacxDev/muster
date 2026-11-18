@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccusage"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/morning"
@@ -144,6 +145,14 @@ func (f *morningFixture) task(t *testing.T, owner int64, title, status string, a
 	return n
 }
 
+// askedAt moves ask id's creation to at.
+func (f *morningFixture) askedAt(t *testing.T, id int64, at time.Time) {
+	t.Helper()
+	if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE attention_asks SET created_at = $2 WHERE id = $1`, id, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // report builds and records owner's report of the fixture's day, as ctx.
 func (f *morningFixture) report(t *testing.T, ctx context.Context, owner int64) (bool, morning.Row) {
 	t.Helper()
@@ -178,7 +187,8 @@ func (f *morningFixture) page(t *testing.T, ctx context.Context, date string) st
 // The push is counts only and opens the day's page.
 func TestTheMorningReportIsSentOncePerDayAcrossARestart(t *testing.T) {
 	f := newMorningFixture(t)
-	f.ask(t, f.owner, f.chief.ID, "Merge the exhibit-hall migration tonight?")
+	a := f.ask(t, f.owner, f.chief.ID, "Merge the exhibit-hall migration tonight?")
+	f.askedAt(t, a.ID, f.day.Slot.Add(-time.Hour)) // inside the night
 	if pushed, _ := f.report(t, f.asOwner, f.owner); !pushed {
 		t.Fatal("the first run of a loud day sent no push")
 	}
@@ -537,15 +547,15 @@ func TestAPullRequestNotCheckedKeepsTheDayLoud(t *testing.T) {
 	}
 }
 
-// TestTheReadBoundOnPullRequestsIsSaidAndKeepsTheDayLoud: at the bound
-// (morningPRsRead pull requests, every one answered, none merged) the page says
-// only that many were checked and the day is not quiet; one fewer is quiet
-// with no such line (the control).
+// TestTheReadBoundOnPullRequestsIsSaidAndKeepsTheDayLoud: past the bound
+// (morningPRsRead+1 pull requests, every one answered, none merged) the page
+// says only that many were checked and the day is not quiet; exactly the bound
+// is every pull request read, quiet, with no such line (the control).
 func TestTheReadBoundOnPullRequestsIsSaidAndKeepsTheDayLoud(t *testing.T) {
 	for _, tc := range []struct {
 		n     int
 		quiet bool
-	}{{morningPRsRead - 1, true}, {morningPRsRead, false}} {
+	}{{morningPRsRead, true}, {morningPRsRead + 1, false}} {
 		f := newMorningFixture(t)
 		owner := f.newMember(t)
 		// An admin, so the GitHub App reads its pull requests.
@@ -610,5 +620,70 @@ func TestAStalledAgentIsNamedByItsNameNeverItsWindow(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "error:"+f.worker.Name {
 		t.Fatalf("stuck = %q; want the worker, stopped on an error, by its name", names)
+	}
+}
+
+// TestTheNightEndsAtTheReportTime: the window is [Since, Slot). A question
+// asked a minute AFTER the report time, and an agent that failed then, belong
+// to tomorrow's night: today's report lists the question (it is open) but it
+// is not new, the agent is not listed, and the day is quiet. The same
+// question a minute BEFORE the report time makes it loud (the control).
+func TestTheNightEndsAtTheReportTime(t *testing.T) {
+	f := newMorningFixture(t)
+	owner := f.newMember(t)
+	ctx := f.as(owner)
+	chief := f.newAgent(t, owner, "nchief-"+strconv.FormatInt(time.Now().UnixNano(), 36), "chief", "n-chief-token-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	late := f.newAgent(t, owner, "nlate-"+strconv.FormatInt(time.Now().UnixNano(), 36), "Late painter", "n-late-token-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE agents SET outcome = 'failed', outcome_at = $2 WHERE id = $1`, late.ID, f.day.Slot.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	a := f.ask(t, owner, chief.ID, "Open the gates early?")
+	f.askedAt(t, a.ID, f.day.Slot.Add(time.Minute))
+	pushed, row := f.report(t, ctx, owner)
+	if pushed || !row.Quiet || row.Questions != 1 || len(row.Body.Stuck) != 0 {
+		t.Fatalf("after the report time: pushed %v, quiet %v, %d questions, stuck %+v; want quiet, no push, 1 listed, none stuck",
+			pushed, row.Quiet, row.Questions, row.Body.Stuck)
+	}
+	// The control: the next day, the same kind of question a minute before
+	// ITS report time.
+	next := f.day.Slot.Add(24 * time.Hour).In(f.loc)
+	f.day = f.srv.ext.MorningReport.Schedule.On(next.Year(), next.Month(), next.Day())
+	b := f.ask(t, owner, chief.ID, "Close the gates late?")
+	f.askedAt(t, b.ID, f.day.Slot.Add(-time.Minute))
+	if pushed, row := f.report(t, ctx, owner); !pushed || row.Quiet {
+		t.Fatalf("control: a question a minute before the report time: pushed %v, quiet %v", pushed, row.Quiet)
+	}
+}
+
+// fakeDaySpend is the chief OpenRouter sessions' store with a fixed spend per
+// UTC day ("2006-01-02").
+type fakeDaySpend struct {
+	chiefusage.SessionLLMStore
+	usd map[string]float64
+}
+
+func (f fakeDaySpend) DaySpent(_ context.Context, day time.Time) (float64, error) {
+	return f.usd[day.UTC().Format("2006-01-02")], nil
+}
+
+// TestTheChiefsCostIsTheLastWholeUTCDay: with the chief's OpenRouter
+// sessions on, the cost line is the spend of the last COMPLETE UTC day before
+// the report time — the day the report time falls in is still running, and
+// the next report counts it — pinned whole, with distinct amounts on the two
+// days the night touches so a sum or the wrong day changes the text.
+func TestTheChiefsCostIsTheLastWholeUTCDay(t *testing.T) {
+	f := newMorningFixture(t)
+	slotDay := f.day.Slot.UTC()
+	prev := slotDay.AddDate(0, 0, -1).Format("2006-01-02")
+	f.srv.chiefSessions = &chiefSessionsRuntime{store: fakeDaySpend{usd: map[string]float64{
+		prev: 0.11, slotDay.Format("2006-01-02"): 2.30}}}
+	f.ask(t, f.owner, f.chief.ID, "Light the lanterns?")
+	_, row := f.report(t, f.asOwner, f.owner)
+	if c := row.Body.Usage.Cost; !c.Tracked || c.USD != 0.11 {
+		t.Fatalf("cost = %+v; want $0.11 on %s", c, prev)
+	}
+	want := "Your chief&#39;s OpenRouter cost on " + prev + " (UTC, the last whole day): $0.11."
+	if page := f.page(t, f.asOwner, f.day.Date); !strings.Contains(page, want) {
+		t.Fatalf("the page lacks %q", want)
 	}
 }

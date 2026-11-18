@@ -541,7 +541,7 @@ something happened overnight — that opens a page with four parts:
    failed overnight.
 4. **Usage and cost**: how long your chief worked overnight; each Claude
    plan's latest usage reading ("Claude plan 1: this 5-hour period 37% used");
-   and the chief's OpenRouter cost, counted in whole UTC days, where its
+   and the chief's OpenRouter cost on the last whole UTC day, where its
    OpenRouter sessions are on. A part with no source says so in plain words
    ("Usage isn't tracked on this server", "Cost isn't tracked for Claude
    plans"); an admin sees the setting behind it in the ⓘ.
@@ -551,6 +551,10 @@ asks or changes a task. No model is called. The notification carries counts
 only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's
 or a question's text.
 
+- **Overnight** is from one report time to the next: a question asked a
+  minute after 08:00 is tomorrow's news.
+- **The notification's count** of questions is every question still open,
+  old ones included; only a question asked overnight makes a day send it.
 - **Quiet days:** no notification when no question was asked overnight, no
   pull request merged, nothing got newly stuck, and every pull request was
   checked. The day's page still exists and says so. Shown but never enough on
@@ -568,8 +572,9 @@ or a question's text.
   `MUSTER_CC_USAGE_POLL=1`; cost needs the chief's OpenRouter sessions.
 - **Known limits:** plan usage is the latest reading, not a sum over the
   night. Only the chief's working time is recorded; other agents' hours are
-  not. OpenRouter cost is booked per UTC day, so it is shown for the whole UTC
-  days the night touches.
+  not. OpenRouter cost is booked per UTC day, so the report shows the last
+  whole UTC day before 08:00 (the day it falls in is still running, and the
+  next report shows it); each day is counted once.
 - **Turn it on:** `MUSTER_MORNING_REPORT=1` in `.env`; the zone of its 08:00
   is `MUSTER_MORNING_REPORT_TZ` (an IANA zone).
 - **Turning it off:** unset it. No report is written and `/morning` answers 404.

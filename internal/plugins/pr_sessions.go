@@ -171,14 +171,16 @@ func (s *PGStore) ListPRSessions(ctx context.Context, repo string, pr int64) ([]
 // RecentPRs is the principal's pull requests that its sessions CREATED
 // (gh-pr-create rows with a number) last reported at or after since, inside
 // PRSessionRetention: each repository and number once, the most recently seen
-// first, at most limit. The morning report reads GitHub's state for each to
+// first, at most limit — the principal's own rows by its SQL as well as by
+// row-level security. The morning report reads GitHub's state for each to
 // find the ones that merged overnight (internal/api morning_report.go).
 func (s *PGStore) RecentPRs(ctx context.Context, since time.Time, limit int) ([]PRSession, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT repo, pr, max(last_seen) AS last FROM session_prs
-		WHERE kind = 'gh-pr-create' AND pr IS NOT NULL AND last_seen >= $1 AND last_seen > now() - make_interval(secs => $2)
+		WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+			AND kind = 'gh-pr-create' AND pr IS NOT NULL AND last_seen >= $1 AND last_seen > now() - make_interval(secs => $2)
 		GROUP BY repo, pr ORDER BY last DESC, repo, pr DESC LIMIT $3`, since, PRSessionRetention.Seconds(), limit)
 	if err != nil {
 		return nil, err

@@ -214,7 +214,9 @@ func (s *Server) buildMorningReport(octx context.Context, day morning.Day) morni
 	rep := morning.Report{Since: day.Since, Until: day.Slot}
 	for _, it := range s.morningQuestions(octx) {
 		rep.Questions++
-		if !it.Since.Before(day.Since) {
+		// The night is [Since, Slot): a question asked after the report time
+		// is tomorrow's news, never today's too.
+		if !it.Since.Before(day.Since) && it.Since.Before(day.Slot) {
 			rep.NewQuestions++
 		}
 	}
@@ -297,10 +299,16 @@ func (s *Server) morningMerged(octx context.Context, day morning.Day) ([]morning
 	if reader == nil {
 		return nil, []morning.Gap{gapPRsNoGitHub}, false
 	}
-	prs, err := lister.RecentPRs(octx, day.Since.Add(-morningPRsLookback), morningPRsRead)
+	// One more than the bound is read, so "more than the bound" is known,
+	// never guessed from exactly the bound.
+	prs, err := lister.RecentPRs(octx, day.Since.Add(-morningPRsLookback), morningPRsRead+1)
 	if err != nil {
 		s.logger.Printf("morning report: recent pull requests: %v", err)
 		return nil, []morning.Gap{gapPRsRead}, true
+	}
+	capped := len(prs) > morningPRsRead
+	if capped {
+		prs = prs[:morningPRsRead]
 	}
 	rctx, cancel := context.WithTimeout(withPRReadBudget(octx, morningPRsRead), morningPRReadsDeadline)
 	defer cancel()
@@ -327,7 +335,6 @@ func (s *Server) morningMerged(octx context.Context, day morning.Day) ([]morning
 	if unread > 0 {
 		gaps = append(gaps, gapPRsRead)
 	}
-	capped := len(prs) >= morningPRsRead
 	if capped {
 		gaps = append(gaps, gapPRsCap)
 	}
@@ -378,7 +385,7 @@ func (s *Server) morningStuck(octx context.Context, day morning.Day) []morning.S
 			s.logger.Printf("morning report: agents: %v", err)
 		}
 		for _, a := range ownedBy(agents.ProvisionedOnly(list), owner) {
-			if a.Outcome != agentoutcome.Failed || a.OutcomeAt == nil || a.OutcomeAt.Before(day.Since) {
+			if a.Outcome != agentoutcome.Failed || a.OutcomeAt == nil || a.OutcomeAt.Before(day.Since) || !a.OutcomeAt.Before(day.Slot) {
 				continue
 			}
 			failed[a.ID] = true
@@ -501,10 +508,9 @@ func (s *Server) morningUsage(octx context.Context, day morning.Day) morning.Usa
 	return u
 }
 
-// morningCost is the chief's OpenRouter spend over the UTC days day's window
-// touches (spend is booked per UTC day, so a neighbouring report can count the
-// same day too, and the page says which days); "not tracked for Claude plans"
-// when those sessions are off.
+// morningCost is the chief's OpenRouter spend on the last whole UTC day
+// before day's report time (morning.CostUsage); "not tracked for Claude
+// plans" when those sessions are off.
 func (s *Server) morningCost(octx context.Context, day morning.Day) morning.CostUsage {
 	var sp daySpender
 	if s.chiefSessions != nil {
@@ -513,18 +519,14 @@ func (s *Server) morningCost(octx context.Context, day morning.Day) morning.Cost
 	if sp == nil {
 		return morning.CostUsage{Off: morningCostUntracked}
 	}
-	first := time.Date(day.Since.Year(), day.Since.Month(), day.Since.Day(), 0, 0, 0, 0, time.UTC)
-	last := day.Slot.Add(-time.Nanosecond).UTC()
-	c := morning.CostUsage{Tracked: true, FirstDay: first.Format("2006-01-02"), LastDay: last.Format("2006-01-02")}
-	for d := first; !d.After(last); d = d.AddDate(0, 0, 1) {
-		usd, err := sp.DaySpent(octx, d)
-		if err != nil {
-			s.logger.Printf("morning report: chief spend: %v", err)
-			return morning.CostUsage{Off: "Your chief's cost could not be read just now."}
-		}
-		c.USD += usd
+	slot := day.Slot.UTC()
+	whole := time.Date(slot.Year(), slot.Month(), slot.Day()-1, 0, 0, 0, 0, time.UTC)
+	usd, err := sp.DaySpent(octx, whole)
+	if err != nil {
+		s.logger.Printf("morning report: chief spend: %v", err)
+		return morning.CostUsage{Off: "Your chief's cost could not be read just now."}
 	}
-	return c
+	return morning.CostUsage{Tracked: true, USD: usd, Day: whole.Format("2006-01-02")}
 }
 
 // --- the page ------------------------------------------------------------------
@@ -695,12 +697,8 @@ func planUsageText(n int, a morning.PlanAccount, loc *time.Location) string {
 	return t + " (as of " + clockText(a.ReadAt.In(loc)) + ")."
 }
 
-// costText is the chief's OpenRouter cost line, with the whole UTC days it
-// covers.
+// costText is the chief's OpenRouter cost line: the last whole UTC day's
+// spend, and which day that is.
 func costText(c morning.CostUsage) string {
-	days := c.FirstDay
-	if c.LastDay != c.FirstDay {
-		days += " to " + c.LastDay
-	}
-	return fmt.Sprintf("Your chief's OpenRouter cost: $%.2f (whole days %s, UTC).", c.USD, days)
+	return fmt.Sprintf("Your chief's OpenRouter cost on %s (UTC, the last whole day): $%.2f.", c.Day, c.USD)
 }

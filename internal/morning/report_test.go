@@ -30,6 +30,8 @@ func TestQuietIsNothingNewOvernight(t *testing.T) {
 		{"stuck since inside the night", Report{Body: Body{Stuck: []Stuck{{Kind: StuckIdle, Name: "kiosk", Since: nightSince.Add(time.Hour)}}}}, false},
 		{"stuck since exactly the night's start", Report{Body: Body{Stuck: []Stuck{{Kind: StuckError, Name: "kiosk", Since: nightSince}}}}, false},
 		{"stuck since before the night", Report{Body: Body{Stuck: []Stuck{{Kind: StuckIdle, Name: "kiosk", Since: nightSince.Add(-time.Minute)}}}}, true},
+		{"stuck since after the night ended (tomorrow's)", Report{Body: Body{Stuck: []Stuck{{Kind: StuckIdle, Name: "kiosk", Since: nightUntil.Add(time.Minute)}}}}, true},
+		{"stuck since exactly the night's end (tomorrow's)", Report{Body: Body{Stuck: []Stuck{{Kind: StuckIdle, Name: "kiosk", Since: nightUntil}}}}, true},
 		{"usage alone", Report{Body: Body{Usage: Usage{Chief: ChiefUsage{Tracked: true, Turns: 7, Busy: time.Hour}}}}, true},
 	} {
 		tc.r.Since, tc.r.Until = nightSince, nightUntil
