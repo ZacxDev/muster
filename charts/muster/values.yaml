@@ -122,7 +122,16 @@ service:
   # MUSTER_BROWSER_PORT, opened in gotrue mode: the only listener that serves
   # browser sessions there.
   browserPort: 8107
+  # MUSTER_METRICS_PORT, opened with metrics.enabled: the only listener that
+  # serves /metrics. Neither the ingress nor the HTTPRoute routes it.
+  metricsPort: 8108
   annotations: {}
+
+# Prometheus metrics. Off: /metrics is served on no port. On: served only on
+# service.metricsPort (named `metrics` on the Service and the pod), for an
+# in-cluster scraper; it is never on the public route. DOCS/configuration.md
+metrics:
+  enabled: false
 
 serviceAccount:
   # The agent plane's RBAC binds this ServiceAccount.

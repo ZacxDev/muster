@@ -53,8 +53,8 @@ const (
 	// ViaSession is the human browser tier: requireSession (and
 	// requireOperatorWrite, which wraps it).
 	ViaSession Via = "session"
-	// ViaHook is the shared machine hook token: requireHookToken,
-	// requireArmedHookToken, and the hook branch of requireHookOrServiceToken.
+	// ViaHook is the shared machine hook token: requireHookToken (which
+	// requireArmedHookToken is), and the hook branch of requireHookOrServiceToken.
 	ViaHook Via = "hook"
 	// ViaService is MUSTER_SERVICE_TOKEN plus an asserted X-Muster-Actor:
 	// requireServiceToken and the service branch of requireHookOrServiceToken.

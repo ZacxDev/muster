@@ -9,6 +9,10 @@ names the value that switches it on.
 {{- $v := .Values -}}
 - name: MUSTER_PORT
   value: {{ $v.service.port | quote }}
+{{- if $v.metrics.enabled }}
+- name: MUSTER_METRICS_PORT
+  value: {{ $v.service.metricsPort | quote }}
+{{- end }}
 {{- if $v.postgres.enabled }}
 {{ include "muster.secretEnv" (dict "name" "DATABASE_URL" "existing" $v.postgres.existingSecret "ctx" .) }}
 {{- else }}

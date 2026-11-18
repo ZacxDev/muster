@@ -231,8 +231,8 @@ has to fit.
 | Session cookies are host-only (no `Domain`), named `muster_session` (gotrue: `muster_at`, `muster_rt`) | [internal/api/login.go:200-211](../../internal/api/login.go), [internal/api/auth.go:20](../../internal/api/auth.go), [internal/api/accounts.go:63-64](../../internal/api/accounts.go) |
 | Allowed origins for writes and WebSockets: the request's `Host`, plus `MUSTER_PUBLIC_URL`'s host | [internal/api/agents.go:2321-2333](../../internal/api/agents.go) |
 | In gotrue mode the browser never talks to GoTrue, and browser sessions are served only on `MUSTER_BROWSER_PORT` | [auth.md:26-30](../auth.md) |
-| `MUSTER_HOOK_TOKEN` is enforced only when set; while unset the hook routes are open | [auth.md:420](../auth.md) |
-| `GET /metrics` is unauthenticated | [architecture.md:54-55](../architecture.md) |
+| `MUSTER_HOOK_TOKEN` is required: muster does not boot without it | [configuration.md](../configuration.md#muster-server-sign-in-and-machine-credentials) |
+| `GET /metrics` is unauthenticated, and served only on `MUSTER_METRICS_PORT` | [architecture.md](../architecture.md#listeners) |
 | Absolute links are built from `MUSTER_PUBLIC_URL` in the background: uploads refuse to start without it, reset and invite links, the attention summary, Pages share links | [cmd/muster-server/uploads.go:69-70](../../cmd/muster-server/uploads.go), [internal/api/admin.go:398](../../internal/api/admin.go), [internal/api/admin.go:504](../../internal/api/admin.go), [internal/api/attention_summary.go:131](../../internal/api/attention_summary.go), [internal/api/pages.go:500](../../internal/api/pages.go) |
 | Pages share links are `<MUSTER_PUBLIC_URL>/s/<token>`, open to anyone with the link | [pages.md:93-97](../pages.md) |
 | Push: muster POSTs to the push services itself; browser subscriptions only on FCM, Mozilla, Apple, WNS | [push.md:5](../push.md), [push.md:158-170](../push.md) |
@@ -290,11 +290,7 @@ at `http://localhost:8105` on the hub machine.
    free tier stated: "your machines free, one phone or browser free, more
    with a subscription", and the operator named: "run by Innovation Upstream
    Inc.", with its terms and privacy policy linked.
-2. The owner presses **Turn on muster network**. It is **refused** while
-   `MUSTER_HOOK_TOKEN` is unset (the hook routes are open then,
-   [auth.md:420](../auth.md); they are never served on the tunnel anyway, but
-   an unset token means the server was configured for a private network), and
-   in password mode while `MUSTER_UI_PASSWORD` is shorter than 16 characters
+2. The owner presses **Turn on muster network**. It is **refused** in password mode while `MUSTER_UI_PASSWORD` is shorter than 16 characters
    ([password mode](#password-mode-on-the-network)). Each refusal says which
    variable to set.
 3. muster-server generates an **Ed25519 server key** and an **ACME account

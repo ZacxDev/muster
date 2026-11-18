@@ -132,7 +132,6 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /health': 'JSON',
   'GET /readyz': 'JSON',
   'GET /manifest.webmanifest': 'JSON',
-  'GET /metrics': 'Prometheus text',
   'GET /mirror/connect': 'the mirror host tunnel',
   'GET /mirror/host': 'JSON (a machine\'s own connection state, for muster doctor)',
   'GET /mirror/terminal/send': 'a redirect back to the view',

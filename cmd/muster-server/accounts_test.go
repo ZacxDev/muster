@@ -80,6 +80,8 @@ func TestGoTrueModeRefusesToBootUnlessEveryPreconditionHolds(t *testing.T) {
 	// arms the admin claim.
 	pw := validGoTrueConfig()
 	pw.AuthMode, pw.GoTrueURL, pw.GoTrueSecret, pw.HookToken, pw.BrowserPort = "password", "", "", "", 0
+	// The hook token is required in every mode (validateListeners).
+	pw.HookToken = fixtureHookToken
 	if err := pw.validate(); err != nil {
 		t.Fatalf("password mode with nothing gotrue set: %v", err)
 	}

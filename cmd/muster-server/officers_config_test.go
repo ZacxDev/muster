@@ -13,7 +13,7 @@ import (
 // Control: the same officers with the connector door configured load.
 func TestOfficersWithoutTheConnectorDoorRefuseToBoot(t *testing.T) {
 	officersEnv := map[string]string{
-		envDatabase: "postgres://unused", envStandalone: "1",
+		envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1",
 		envOfficers: `[{"id":"release:example-web","hq_url":"https://hq.example.invalid/api/v1"}]`,
 		"MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB": "fixture-officer-token-cfg-1",
 	}
@@ -51,7 +51,7 @@ func TestOfficersWithoutTheConnectorDoorRefuseToBoot(t *testing.T) {
 func TestAnLLMOfficerBootsNowThePodRoutesToTheProxy(t *testing.T) {
 	load := func(officer string, withKey bool) error {
 		env := map[string]string{
-			envDatabase: "postgres://unused", envStandalone: "1",
+			envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1",
 			envOfficers: "[" + officer + "]",
 			"MUSTER_OFFICER_TOKEN_TRIAGE_EXAMPLE_WEB": "fixture-officer-token-cfg-2",
 			envConnectorEncKey:                        connectorKey(2), envConnectPort: "18191",

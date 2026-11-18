@@ -369,9 +369,8 @@ type chatSessionJSON struct {
 // reason, because the set of routes on this wrapper is the thing that must never
 // grow quietly.
 //
-// ⚠ WHAT THAT TIER COSTS, STATED THE WAY transcripts.go STATES IT: the wrapper is
-// ENFORCE-WHEN-SET. On a server with no MUSTER_HOOK_TOKEN it serves this to anyone
-// who can reach the LAN NodePort. The deployed server sets one.
+// ⚠ WHAT THAT TIER COSTS: the shared secret, held by every hook script. With no
+// MUSTER_HOOK_TOKEN the wrapper admits nobody (and the server does not boot).
 //
 // 🔴 THERE IS NO AGENT HALF, AND THE SENTENCE THAT USED TO SIT HERE CLAIMING ONE
 // WAS UNARMED IS THE REASON. It read "the agent half is unarmed in production (no
@@ -588,8 +587,7 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // TestTheMachineAgentMessageWriteSteersIntoTheSessionTheReadReturns posts here and
 // reads it back over the GET.
 //
-// 🔴 requireArmedHookToken — THE SHARED SECRET, NOT THE AGENT TIER, AND FAIL-CLOSED
-// RATHER THAN ENFORCE-WHEN-SET. The credential choice is the reason the READ is on
+// 🔴 requireArmedHookToken — THE SHARED SECRET, NOT THE AGENT TIER, AND FAIL-CLOSED. The credential choice is the reason the READ is on
 // it: the handler keys on an arbitrary {name} with NO self-scoping, so on the wider
 // tier one admitted pod could steer EVERY other agent. A write is strictly worse
 // than the read that argument was made about. The caller this exists for is
@@ -597,11 +595,10 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // already.
 //
 // ⚠ THE ARMING HALF IS A SEPARATE CLAIM AND IT IS THE ONE THE ROUND-1 AUDIT FORCED.
-// Every other requireHookToken route serves OPEN when MUSTER_HOOK_TOKEN is unset;
-// this one answers 503. The route it re-homed off (requireOperatorToken) demanded a
-// bearer unconditionally, so inheriting the open default would have turned a
-// fail-CLOSED agent-steering write into a fail-OPEN one as a side effect of moving
-// it. It also concedes what the tier comparison above does not: the credential to
+// When this route moved, the rest of the hook tier still served an unconfigured
+// server open; this one was made to refuse, because the route it re-homed off
+// (requireOperatorToken) demanded a bearer unconditionally. The whole tier is
+// fail-closed now (requireHookToken). It also concedes what the tier comparison above does not: the credential to
 // steer an agent went from the reserved operator's in-cluster uuid — held by one pod
 // — to a shared secret that names no caller and travels in cleartext to the LAN
 // NodePort many times a day. Full argument at the registration site

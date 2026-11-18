@@ -83,7 +83,7 @@ func runHealthcheck(ctx context.Context, getenv func(string) string, stdout, std
 		return 1
 	}
 	if code != http.StatusOK {
-		fmt.Fprintf(stderr, "healthcheck: %s/readyz answered %d: %s\n", base, code, body)
+		fmt.Fprintf(stderr, "healthcheck: %s/readyz answered %d: %s (the server log's \"readyz: not ready\" line has the reason)\n", base, code, body)
 		return 1
 	}
 	code, _, err = get("/login")

@@ -76,6 +76,9 @@ const defaultPort = 8105
 const (
 	envPort     = "MUSTER_PORT"
 	envDatabase = "DATABASE_URL"
+	// The /metrics listener's port (api.MetricsHandler): unset means /metrics
+	// is not served at all. Never the main, browser or connect port.
+	envMetricsPort = "MUSTER_METRICS_PORT"
 
 	envUIPassword    = "MUSTER_UI_PASSWORD"
 	envHookToken     = "MUSTER_HOOK_TOKEN"
@@ -744,6 +747,9 @@ var headerName = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
 type config struct {
 	Port     int
 	Database string
+	// MetricsPort, when non-zero, binds the metrics listener: the only one that
+	// serves /metrics (api.MetricsHandler), and nothing else.
+	MetricsPort int
 
 	UIPassword    string
 	HookToken     string
@@ -1610,7 +1616,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		UIPassword:           getenv(envUIPassword),
 		HookToken:            getenv(envHookToken),
 		ServiceToken:         getenv(envServiceToken),
-		SecureCookies:        envFlag(getenv, envSecureCookies),
+		SecureCookies:        secureCookies(getenv(envSecureCookies), getenv(envPublicURL)),
 		AuthMode:             strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
 		GoTrueURL:            strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
 		GoTrueSecret:         strings.TrimSpace(getenv(envGoTrueSecret)),
@@ -1774,6 +1780,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535", envPort, v)
 		}
 		c.Port = p
+	}
+	if v := strings.TrimSpace(getenv(envMetricsPort)); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535, or unset to serve no /metrics", envMetricsPort, v)
+		}
+		c.MetricsPort = p
 	}
 
 	// 🔴 PARSED HERE, AND REFUSED HERE, FOR THE REASON EVERY OTHER AGENT-SPEC
@@ -2186,11 +2199,7 @@ func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSe
 //
 //   - MUSTER_GOTRUE_URL and MUSTER_GOTRUE_JWT_SECRET (≥32 characters): without
 //     them no session can be minted or verified.
-//   - an ARMED hook tier (MUSTER_HOOK_TOKEN set). The hook tier is
-//     enforce-when-set: unset, every hook route admits ANYONE as the machine
-//     user, user 1 — the admin. In password mode that is the documented
-//     back-compat debt; once other people have accounts it is an anonymous
-//     admin door beside a per-user login, so gotrue mode will not boot with it.
+//   - (MUSTER_HOOK_TOKEN is required too, as in every mode: validateListeners.)
 //   - MUSTER_BROWSER_PORT, distinct from the main and connect ports: the only
 //     listener a browser session is served on.
 //
@@ -2228,11 +2237,6 @@ func (c config) validateAuthMode() error {
 	if !c.goTrueConfigured() {
 		return fmt.Errorf("%s=gotrue needs %s and %s: without them no session can be minted or verified",
 			envAuthMode, envGoTrueURL, envGoTrueSecret)
-	}
-	if c.HookToken == "" {
-		return fmt.Errorf("%s=gotrue refuses to boot with %s unset: the hook tier is enforce-when-set, so "+
-			"unset it admits ANYONE as the machine user — user 1, the admin. With per-user logins that is an "+
-			"anonymous admin door. Set %s", envAuthMode, envHookToken, envHookToken)
 	}
 	if c.BrowserPort == 0 {
 		return fmt.Errorf("%s=gotrue needs %s: browser sessions are served only on that listener, and the "+
@@ -2685,7 +2689,53 @@ func (c config) validate() error {
 	if err := c.validateOfficerEgress(); err != nil {
 		return err
 	}
-	return c.validateProvisioner()
+	if err := c.validateProvisioner(); err != nil {
+		return err
+	}
+	return c.validateListeners()
+}
+
+// validateListeners refuses a configuration this server must not boot with: a
+// metrics port that collides with another listener, and no MUSTER_HOOK_TOKEN.
+//
+// 🔴 THE HOOK TOKEN IS REQUIRED IN BOTH AUTH MODES, ON EVERY LAYOUT. It is the
+// machine tier's credential and acts as user 1, the admin. The tier used to be
+// "enforce-when-set", so a server started without it served every machine route
+// to anyone who could reach it. No listener layout makes that safe to infer:
+// a loopback bind behind a proxy on the same host is reachable from anywhere,
+// and the request looks exactly like a local one. So the token is simply
+// required, and the API fails closed without it too (api.requireHookToken).
+//
+// An EMPTY or blank value is unset: a Secret whose key holds "" arms nothing.
+func (c config) validateListeners() error {
+	if c.MetricsPort != 0 && (c.MetricsPort == c.Port || c.MetricsPort == c.BrowserPort || c.MetricsPort == c.ConnectPort) {
+		return fmt.Errorf("%s=%d collides with another listener's port: /metrics gets a listener of its own", envMetricsPort, c.MetricsPort)
+	}
+	if strings.TrimSpace(c.HookToken) == "" {
+		return fmt.Errorf("%s is not set: it is the credential of every machine route, and muster does not "+
+			"start without one. Set it to a secret, e.g. %s=$(openssl rand -hex 32), and give the same value "+
+			"to the hosts and hooks that call muster", envHookToken, envHookToken)
+	}
+	return nil
+}
+
+// secureCookies resolves MUSTER_SECURE_COOKIES: an explicit value wins (an
+// affirmative is on, anything else — 0, false, off — is the opt-out), and
+// UNSET follows the public URL, on when it is https. A deployment reached over
+// TLS therefore gets a Secure cookie without having to know the variable
+// exists; a plain-http LAN port, where a Secure cookie would never be sent,
+// keeps working.
+func secureCookies(v, publicURL string) bool {
+	if strings.TrimSpace(v) != "" {
+		return envFlag(func(string) string { return v }, envSecureCookies)
+	}
+	return httpsURL(publicURL)
+}
+
+// httpsURL reports whether raw is an https URL with a host.
+func httpsURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != ""
 }
 
 // faroSettings is the page's Faro configuration: with a relay upstream the
@@ -3302,8 +3352,8 @@ const hookTokenPlaceholder = "CHANGE-ME"
 // web tier fails closed); this is the same rule for the machine tier, applied
 // at boot because a machine credential has no page on which to explain itself.
 //
-// UNSET is not refused here: the hook tier is enforce-when-set, and the gotrue
-// mode check (validateAuthMode) refuses unset where that is an open door.
+// UNSET is refused too, in every mode, by validateListeners (one refusal for
+// both modes, which says how to make a value).
 func hookTokenRefusal(token string) string {
 	switch {
 	case token == "":

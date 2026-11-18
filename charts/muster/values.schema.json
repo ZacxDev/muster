@@ -153,8 +153,20 @@
         "browserPort": {
           "type": "integer"
         },
+        "metricsPort": {
+          "type": "integer"
+        },
         "annotations": {
           "type": "object"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
         }
       }
     },

@@ -67,6 +67,7 @@ var featureLedgerExempt = map[string]string{
 	envDatabase:               "the database is required (config.validate refuses a boot without it), so it can never be off: not a feature (#441 round 0, D2)",
 	envHookToken:              "the machine token is core and `muster doctor`'s hook-token check owns its state (#441 round 0, D2)",
 	envPort:                   "the listen port: no feature is on or off with it",
+	envMetricsPort:            "the /metrics listener's port: an operational endpoint for a scraper, not a product feature; announced on its own banner line, ON or OFF",
 	envStandalone:             "a deployment declaration (no permission router), set by the Compose stack; the approval-router entry reports the router side",
 	envTaskReapAfter:          "a housekeeping interval of the task board, which is always on",
 	envAgentReapStoppedAfter:  "a housekeeping interval; the dispatch entry is what makes agents exist at all",

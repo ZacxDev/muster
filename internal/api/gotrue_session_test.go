@@ -647,27 +647,38 @@ func TestPasswordModeIgnoresGoTrueCookies(t *testing.T) {
 	}
 }
 
-// TestGoTrueModeClosesAnUnarmedHookTier: the enforce-when-set opening admits
-// anyone as user 1; in gotrue mode it answers 503 instead (the boot refusal in
-// cmd/muster-server is the first wall, this the second).
+// TestGoTrueModeClosesAnUnarmedHookTier: with no hook token, the hook tier
+// admits nobody in EITHER mode — from this machine or any other — and answers
+// the armed server's 401. (cmd/muster-server refuses to boot that way; this is
+// the second wall.) The control: armed, the same request with the token is
+// admitted.
 func TestGoTrueModeClosesAnUnarmedHookTier(t *testing.T) {
-	probe := func(cfg AuthConfig) (int, bool) {
+	probe := func(cfg AuthConfig, remote, bearer string) (int, bool) {
 		s := New(nil, cfg, log.New(io.Discard, "", 0))
 		admitted := false
 		s.principalProbe = func(*http.Request) { admitted = true; panic(errProbeAbort) }
 		w := httptest.NewRecorder()
 		func() {
 			defer func() { _ = recover() }()
-			s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/tags", nil))
+			r := httptest.NewRequest("GET", "/api/tags", nil)
+			r.RemoteAddr = remote
+			if bearer != "" {
+				r.Header.Set("Authorization", "Bearer "+bearer)
+			}
+			s.Handler().ServeHTTP(w, r)
 		}()
 		return w.Code, admitted
 	}
-	if code, admitted := probe(AuthConfig{Mode: AuthModeGoTrue}); admitted || code != http.StatusServiceUnavailable {
-		t.Fatalf("gotrue mode, no hook token: admitted=%v code=%d, want refused 503", admitted, code)
+	for _, cfg := range []AuthConfig{{Mode: AuthModeGoTrue}, {UIPassword: strings.Repeat("p", 20)}} {
+		for _, remote := range []string{"127.0.0.1:1234", "[::1]:1234", "192.0.2.1:1234"} {
+			if code, admitted := probe(cfg, remote, ""); admitted || code != http.StatusUnauthorized {
+				t.Fatalf("mode %q, no hook token, caller %s: admitted=%v code=%d, want refused 401", cfg.Mode, remote, admitted, code)
+			}
+		}
 	}
-	// Control: password mode keeps the documented back-compat opening.
-	if _, admitted := probe(AuthConfig{UIPassword: strings.Repeat("p", 20)}); !admitted {
-		t.Fatal("control: password mode with no hook token no longer admits (back-compat changed)")
+	armed := AuthConfig{UIPassword: strings.Repeat("p", 20), HookToken: strings.Repeat("h", 40)}
+	if _, admitted := probe(armed, "192.0.2.1:1234", armed.HookToken); !admitted {
+		t.Fatal("control: an armed server does not admit its own hook token")
 	}
 }
 

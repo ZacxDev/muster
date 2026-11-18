@@ -23,9 +23,9 @@ const DoctorPath = "/api/doctor"
 //
 // ⚠ IT CARRIES NO SECRET AND NO PER-USER CONTENT: booleans and
 // the viewing principal's own host names. The route is still behind the armed
-// hook token (or a personal token), so an unarmed server answers 503 with
-// HookUnarmedField — which is itself what the doctor reports as "hook token:
-// FAIL", read from the server rather than guessed by the client.
+// hook token (or a personal token). An unarmed server cannot boot
+// (cmd/muster-server), and one built without that check answers this route
+// the armed server's 401, like every hook-tier route.
 type DoctorReport struct {
 	// AuthMode is "password" or "gotrue".
 	AuthMode string `json:"auth_mode"`
