@@ -34,7 +34,7 @@ func TestTheSidebarPartialDrawsThePlaceOnlyForANamedWindow(t *testing.T) {
 
 	off := rows()
 	named, plain := cardFor(t, off, ref("main", "@1").ViewPath()), cardFor(t, off, ref("main", "@2").ViewPath())
-	if !strings.Contains(named, `data-switcher-name="Billing migration"`) || !strings.Contains(plain, `data-switcher-name="kiwi:1"`) {
+	if !strings.Contains(named, `data-switcher-name="Billing migration"`) || !strings.Contains(plain, `data-switcher-name="kiwi"`) {
 		t.Fatalf("fixture: the rows are not named as the test needs:\n%s\n%s", named, plain)
 	}
 	if strings.Contains(off, "data-switcher-tmux") || strings.Contains(off, "data-nav-tmux") {

@@ -291,7 +291,7 @@ for (const vp of [
       const head = page.locator('header #session-tags-head');
       await expect(head).toHaveAttribute('data-session-tags-head', '0');
       // The raw tmux session name is not drawn beside the label any more.
-      await expect(page.locator('header [data-mirror-label]')).toHaveText('walnut:1');
+      await expect(page.locator('header [data-mirror-label]')).toHaveText('walnut');
       await expect(page.locator('[data-mirror-session]')).toHaveCount(0);
       await expect(page.locator('header [data-mirror-name]')).toHaveAttribute('title', 'tmux session tagx');
 

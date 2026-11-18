@@ -53,7 +53,8 @@ const UNPINNED: [string, string][] = [
   ['subscription-renewal-reminder-job', '@8'],
 ];
 const ALL_WINDOWS = [...WINDOWS, ...UNPINNED];
-const titleOf = (s: string) => s + ':1';
+// A window's title: its session's name, without tmux's window index.
+const titleOf = (s: string) => s;
 // The window whose rendered view the header tests open: its title is 42
 // characters, clipped in the header at both sizes.
 const LONG = 'warehouse-inventory-sync-backfill-job-v2';
