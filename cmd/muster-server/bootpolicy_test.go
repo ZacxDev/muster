@@ -49,6 +49,9 @@ func TestTheHookTierBootPolicy(t *testing.T) {
 			envGoTrueURL:    "http://auth.example.invalid:9999",
 			envGoTrueSecret: accountsSecret,
 			envBrowserPort:  "18106",
+			// gotrue mode also refuses to boot without a declared client
+			// topology; declare one so the hook-token rule is what is tested.
+			envDirectClients: "1",
 		},
 	}
 	for mode, modeEnv := range modes {

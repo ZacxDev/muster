@@ -34,6 +34,8 @@ func validGoTrueConfig() config {
 		BrowserPort:  8106,
 		Standalone:   true,
 		RouterActor:  defaultRouterActor,
+		// The client topology is declared (validateClientTopology).
+		DirectClients: true,
 	}
 }
 
@@ -57,6 +59,7 @@ func TestGoTrueModeRefusesToBootUnlessEveryPreconditionHolds(t *testing.T) {
 		{"non-http URL", func(c *config) { c.GoTrueURL = "ftp://auth" }, envGoTrueURL},
 		{"unarmed hook tier", func(c *config) { c.HookToken = "" }, envHookToken},
 		{"no browser listener", func(c *config) { c.BrowserPort = 0 }, envBrowserPort},
+		{"no client topology declared", func(c *config) { c.DirectClients = false }, envDirectClients},
 		{"browser port = main port", func(c *config) { c.BrowserPort = c.Port }, envBrowserPort},
 		{"unknown mode", func(c *config) { c.AuthMode = "oauth" }, envAuthMode},
 	} {
@@ -105,6 +108,7 @@ func TestOnlyTheBrowserListenerServesGoTrueSignIn(t *testing.T) {
 	cfg.GoTrueSecret = accountsSecret
 	cfg.HookToken = strings.Repeat("h", 40)
 	cfg.BrowserPort = freePort(t)
+	cfg.DirectClients = true
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("fixture config refused: %v", err)
 	}

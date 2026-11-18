@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -270,8 +271,12 @@ func withCookies(at, rt string) reqOpt {
 
 func asNavigation(r *http.Request) { r.Header.Set("Sec-Fetch-Dest", "document") }
 func asXHR(r *http.Request)        { r.Header.Set("HX-Request", "true") }
+// fromIP makes the request arrive from ip: its TCP peer, which is the client
+// address under the default policy (internal/clientaddr). It used to set
+// CF-Connecting-IP, which no longer names the client unless the peer is a
+// configured trusted proxy.
 func fromIP(ip string) reqOpt {
-	return func(r *http.Request) { r.Header.Set("CF-Connecting-IP", ip) }
+	return func(r *http.Request) { r.RemoteAddr = net.JoinHostPort(ip, "40000") }
 }
 
 func do(h http.Handler, method, target string, body url.Values, opts ...reqOpt) *httptest.ResponseRecorder {
@@ -612,35 +617,6 @@ func TestGoTrueSessionsAreRefusedOffTheBrowserListener(t *testing.T) {
 	// Positive control: the same cookies on the browser listener are admitted.
 	if w := do(f.edge, "GET", "/account", nil, withCookies(at, rt)); w.Code != http.StatusOK {
 		t.Fatalf("positive control: browser listener refused the session: %d", w.Code)
-	}
-}
-
-func TestClientIPIsTrustedFromHeadersOnlyOnTheBrowserListener(t *testing.T) {
-	mk := func(edge bool, hdr map[string]string) *http.Request {
-		r := httptest.NewRequest("GET", "/", nil)
-		r.RemoteAddr = "192.0.2.10:5555"
-		for k, v := range hdr {
-			r.Header.Set(k, v)
-		}
-		if edge {
-			r = r.WithContext(context.WithValue(r.Context(), browserListenerKey{}, true))
-		}
-		return r
-	}
-	for _, tc := range []struct {
-		edge bool
-		hdr  map[string]string
-		want string
-	}{
-		{false, map[string]string{"CF-Connecting-IP": "198.51.100.1", "X-Forwarded-For": "198.51.100.2"}, "192.0.2.10"},
-		{true, map[string]string{"CF-Connecting-IP": "198.51.100.1", "X-Forwarded-For": "198.51.100.2"}, "198.51.100.1"},
-		{true, map[string]string{"X-Forwarded-For": "198.51.100.2, 203.0.113.9"}, "198.51.100.2"},
-		{true, map[string]string{"CF-Connecting-IP": "not-an-ip", "X-Forwarded-For": "also bad"}, "192.0.2.10"},
-		{true, nil, "192.0.2.10"},
-	} {
-		if got := clientIP(mk(tc.edge, tc.hdr)); got != tc.want {
-			t.Errorf("edge=%v %v: clientIP = %s, want %s", tc.edge, tc.hdr, got, tc.want)
-		}
 	}
 }
 

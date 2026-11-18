@@ -26,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
@@ -92,6 +93,15 @@ const (
 	envBrowserPort  = "MUSTER_BROWSER_PORT"
 
 	envPublicURL = "MUSTER_PUBLIC_URL"
+
+	// Whose forwarding header names a request's client (internal/clientaddr):
+	// both or neither. Unset, the TCP peer on every listener.
+	envTrustedProxies = "MUSTER_TRUSTED_PROXIES"
+	envClientIPHeader = "MUSTER_CLIENT_IP_HEADER"
+	// envDirectClients declares the other topology: clients connect straight to
+	// muster, with no proxy in front. In gotrue mode one of the two is required
+	// (validateClientTopology).
+	envDirectClients = "MUSTER_DIRECT_CLIENTS"
 
 	// The GitHub App (internal/githubapp): muster's GitHub identity (for
 	// admins), and the only one. The ID and the key are a pair, and the account allowlist is REQUIRED with
@@ -853,6 +863,11 @@ type config struct {
 	PluginTaskNamespaces []string
 	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed (nil when unset).
 	PluginOrigins []plugins.OriginPattern
+	// ClientAddr is MUSTER_TRUSTED_PROXIES with MUSTER_CLIENT_IP_HEADER,
+	// parsed; never nil after loadConfig (an unset pair is the strict policy).
+	ClientAddr *clientaddr.Policy
+	// DirectClients is MUSTER_DIRECT_CLIENTS=1: no proxy in front of muster.
+	DirectClients bool
 	// SessionRouting is MUSTER_SESSION_ROUTING=1; RouteRelayAllow is
 	// MUSTER_ROUTE_RELAY_ALLOW, parsed (validate refuses one that does not parse).
 	SessionRouting     bool
@@ -1812,6 +1827,20 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	c.PluginOrigins = origins
 
+	if c.ClientAddr, err = clientaddr.New(clientaddr.Config{
+		TrustedProxies: getenv(envTrustedProxies), Header: getenv(envClientIPHeader),
+		TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader,
+	}); err != nil {
+		return config{}, fmt.Errorf("invalid client address settings: %w", err)
+	}
+	switch v := strings.TrimSpace(getenv(envDirectClients)); v {
+	case "", "0":
+	case "1":
+		c.DirectClients = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want 1 (clients connect straight to muster) or unset", envDirectClients, v)
+	}
+
 	w, err := stepup.ParseWindow(getenv(envStepUpWindow))
 	if err != nil {
 		return config{}, fmt.Errorf("invalid %s: %w", envStepUpWindow, err)
@@ -2203,7 +2232,7 @@ func (c config) validateAuthMode() error {
 		return fmt.Errorf("%s=%d collides with another listener's port", envBrowserPort, c.BrowserPort)
 	}
 	if api.AuthMode(c.AuthMode) != api.AuthModeGoTrue {
-		return nil
+		return c.validateClientTopology()
 	}
 	if !c.goTrueConfigured() {
 		return fmt.Errorf("%s=gotrue needs %s and %s: without them no session can be minted or verified",
@@ -2212,6 +2241,36 @@ func (c config) validateAuthMode() error {
 	if c.BrowserPort == 0 {
 		return fmt.Errorf("%s=gotrue needs %s: browser sessions are served only on that listener, and the "+
 			"main port serves machine tokens only. Route the public edge to it", envAuthMode, envBrowserPort)
+	}
+	return c.validateClientTopology()
+}
+
+// validateClientTopology: gotrue mode must declare how clients reach muster.
+//
+// 🔴 WHY GoTrue MODE REFUSES AN UNDECLARED TOPOLOGY. muster forwards each
+// request's client address to GoTrue (X-Muster-Client-IP), and GoTrue keys its
+// own per-address limits on it — password sign-in and session refresh, passkey
+// sign-in, password-reset links. Behind a proxy that is not declared trusted,
+// that address is the PROXY's for every user, so every user shares one GoTrue
+// bucket, and anyone can empty it and have GoTrue refuse everyone's correct
+// sign-in. There is no safe guess: the operator must say either "these are my
+// proxies" (MUSTER_TRUSTED_PROXIES) or "there is no proxy"
+// (MUSTER_DIRECT_CLIENTS=1). Both at once contradict each other. Password mode
+// has no GoTrue and is not held to this.
+func (c config) validateClientTopology() error {
+	trusted := c.ClientAddr.Header() != ""
+	switch {
+	case trusted && c.DirectClients:
+		return fmt.Errorf("%s and %s=1 are both set: one says a proxy is in front of muster, the other that there is "+
+			"none. Keep the one that is true", envTrustedProxies, envDirectClients)
+	case api.AuthMode(c.AuthMode) != api.AuthModeGoTrue:
+		return nil
+	case !trusted && !c.DirectClients:
+		return fmt.Errorf("%s=gotrue needs the client topology declared: set %s and %s to the proxy in front of "+
+			"muster, or %s=1 if clients connect straight to muster with no proxy. Without either, every user behind "+
+			"a proxy has the proxy's address, so GoTrue's per-address limits become one bucket anyone can empty "+
+			"(docs/configuration.md#client-addresses-behind-a-proxy)",
+			envAuthMode, envTrustedProxies, envClientIPHeader, envDirectClients)
 	}
 	return nil
 }

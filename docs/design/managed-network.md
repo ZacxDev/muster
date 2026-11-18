@@ -220,11 +220,11 @@ has to fit.
 | The hub pings each host every 25 s; the host re-reads its windows every 5 s and polls an open rendered view every 300 ms | [internal/mirror/hub.go:54](../../internal/mirror/hub.go), [internal/mirrorhost/client.go:270-275](../../internal/mirrorhost/client.go) |
 | A host reconnects with jittered backoff, 1 s to 60 s | [internal/mirrorhost/client.go:312-347](../../internal/mirrorhost/client.go) |
 | Run **one replica**: the mirror tunnel keeps state in memory | [README.md:215-216](../../README.md) |
-| Password mode: one shared `MUSTER_UI_PASSWORD` acting as user 1, at least 12 characters, `POST /login` limited to 10 a minute, a 30-day cookie | [auth.md:7-17](../auth.md) |
-| The login bucket is **process-wide**, on purpose (a per-IP bucket is keyed on what the caller picks) | [internal/api/login.go:35-47](../../internal/api/login.go) |
+| Password mode: one shared `MUSTER_UI_PASSWORD` acting as user 1, at least 12 characters, `POST /login` counts wrong passwords (10 a minute); past that only a browser with a known-device cookie may still sign in, a 30-day cookie | [auth.md:7-17](../auth.md) |
+| The login failure count is **process-wide** and counts failures only; past it, unknown devices are refused and known devices (a signed device cookie) are not ([auth.md](../auth.md)) | [internal/api/login.go:35-47](../../internal/api/login.go) |
 | Password mode's session is a stateless cookie: no Sign out everywhere | [auth.md:527-530](../auth.md) |
 | Pairing code: `mdp_…`, single use, 60 s, minted by `POST /account/devices/pair` from any valid signed-in session (no recent-sign-in window, an operator decision), redeemed at `POST /api/device/pair` for an `mdv_…` credential confined to `/api/device/*`; only its sha256 stored; a machine token cannot mint one | [auth.md:515-536](../auth.md), [internal/devices/devices.go:81-91](../../internal/devices/devices.go), [internal/devices/devices.go:401](../../internal/devices/devices.go), [internal/api/devices.go:111](../../internal/api/devices.go), [internal/api/devices.go:206-236](../../internal/api/devices.go) |
-| Pairing is throttled at 10 a minute per client address, taken from `CF-Connecting-IP` / `X-Forwarded-For` on the browser listener | [auth.md:578-586](../auth.md) |
+| Pairing is throttled at 10 a minute per client address: the TCP peer, or the client a proxy in `MUSTER_TRUSTED_PROXIES` names ([configuration.md](../configuration.md#client-addresses-behind-a-proxy)) | [auth.md:578-586](../auth.md) |
 | At most 20 paired phones per user | [internal/devices/devices.go:91](../../internal/devices/devices.go) |
 | Step-up: a sign-in is fresh for 12 h by default; adding a credential needs one within 5 min | [internal/stepup/stepup.go:48](../../internal/stepup/stepup.go), [internal/stepup/stepup.go:64](../../internal/stepup/stepup.go) |
 | `SameSite=Lax` is **not** a CSRF defence against a sibling subdomain; writes are checked by `Origin` | [internal/api/auth.go:313-318](../../internal/api/auth.go) |
@@ -559,7 +559,7 @@ a new stream on that server's tunnel.
   the link confirm ([flow (b)](#flow-b-link-a-device) step 6); a VPN or a
   carrier's gateway can make it wrong, and the confirm says "approximate".
   muster-server reads the header **only on the tunnel listener**, and uses
-  the address where it uses `CF-Connecting-IP` today
+  the address where it uses the client address today
   ([auth.md:578-586](../auth.md)), so the throttles keep working per visitor
   rather than per relay. 🔴 **This is safe only because the tunnel listener
   has no network socket:** it is an in-process `net.Listener` whose

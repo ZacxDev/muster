@@ -127,6 +127,7 @@ services_leg() {
   local svc=(--timeout 20m -f "$CHART/ci/minimal.yaml"
     --set publicUrl="$PUBLIC" --set secureCookies=false
     --set auth.mode=gotrue --set gotrue.enabled=true
+    --set clientAddress.directClients=true # the test reaches the pod by port-forward: no proxy
     --set attachments.enabled=true
     --set dictation.enabled=true --set stt.model=Systran/faster-whisper-base.en)
   local on=(--set push.enabled=true --set push.subject=mailto:ci@example.com --set connectors.enabled=true)

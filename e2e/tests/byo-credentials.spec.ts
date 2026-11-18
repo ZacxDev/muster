@@ -58,6 +58,7 @@ test.beforeAll(async () => {
   execFileSync('docker', ['compose', '-f', compose, 'up', '-d', '--wait'], { env: composeEnv, stdio: 'inherit' });
   server = await startServer(versionA, mainPort, {
     MUSTER_AUTH_MODE: 'gotrue',
+    MUSTER_DIRECT_CLIENTS: '1', // the browser reaches muster directly
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     MUSTER_BROWSER_PORT: String(browserPort),

@@ -104,11 +104,90 @@ See [auth.md](auth.md).
 | `MUSTER_GOTRUE_URL` | none | in gotrue mode | The base URL of muster's GoTrue. Set it together with the secret, or set neither. |
 | `MUSTER_GOTRUE_JWT_SECRET` | none | in gotrue mode | The HS256 secret GoTrue signs with. At least 32 characters. |
 | `MUSTER_BROWSER_PORT` | none | in gotrue mode | A second listener, the only one that serves browser sessions in gotrue mode. On that mode's browser listener, the shared tokens below are refused with 403. |
+| `MUSTER_TRUSTED_PROXIES` | none (trust nothing) | behind a proxy, to tell clients apart | Comma-separated CIDR ranges (a bare address is one host) of the proxies whose `MUSTER_CLIENT_IP_HEADER` names the client. Only a request whose TCP peer is inside one is believed; from any other peer the client address is the peer. Never include a range agent pods connect from: an agent there could choose its own address. Unset, it is the peer on every listener. Set it together with `MUSTER_CLIENT_IP_HEADER`, or set neither: one without the other, a `/0` range, or a range that does not parse refuses to boot. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
+| `MUSTER_CLIENT_IP_HEADER` | none | with `MUSTER_TRUSTED_PROXIES` | The header a trusted proxy names the client in: `CF-Connecting-IP`, `X-Forwarded-For` or `X-Real-IP` (any case). `X-Forwarded-For` is read from the right: the first entry that is not inside `MUSTER_TRUSTED_PROXIES`. A value that does not parse as an IP address is ignored, and the proxy's own address is used. |
+| `MUSTER_DIRECT_CLIENTS` | none | in gotrue mode, unless `MUSTER_TRUSTED_PROXIES` is set | `1` declares that clients connect straight to muster, with no proxy in front, so each client's address is its own TCP peer. In gotrue mode muster refuses to boot unless the topology is declared: either this, or `MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER`. Setting both refuses to boot in any mode, because they contradict each other. Any value other than `1` or unset refuses to boot. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
 | `MUSTER_HOOK_TOKEN` | none | **yes** | A shared machine secret that acts as user 1, the admin; the hosts (`muster-mirror`) and hooks that call muster present it. Generate one with `openssl rand -hex 32`. It must be at least 12 characters and not the `.env.example` placeholder `CHANGE-ME`. **Unset, empty or blank, muster refuses to boot**, in both auth modes (a Secret key holding `""` counts as unset). `make run` generates one for development. The Compose stack and the Helm chart generate one unless you give your own. |
 | `MUSTER_HOOK_TOKEN_FILE` | none | no | A file whose contents are `MUSTER_HOOK_TOKEN`, read only when that is empty. The Compose stack generates it once when `.env` sets no token. |
 | `MUSTER_SERVICE_TOKEN` | none (routes answer 503) | no | A service-to-service secret that acts as user 1. Requests must also send an `X-Muster-Actor` header. At least 32 characters. |
 | `MUSTER_STEPUP_WINDOW` | `12h` | no | How recent a sign-in must be before you can type into a mirrored session. Range: `1m`–`24h`. |
 | `MUSTER_LIVE_HEARTBEAT` | `15s` | no | How often every live socket and event stream sends a heartbeat. A page reconnects a stream that stays silent for about two of them. Range: `250ms`–`5m`. |
+
+### Client addresses behind a proxy
+
+One client address is used for everything that names a client: every
+per-address limit (sign-in, passkeys, invites and resets, step-up, device and
+plugin pairing, share links, mirror connections), audit rows and log lines,
+and the `X-Muster-Client-IP` header muster sends to GoTrue for GoTrue's own
+rate limits. It is decided the same way on every listener (the main port,
+`MUSTER_CONNECT_PORT` and `MUSTER_BROWSER_PORT`):
+
+- If the TCP peer is **not** inside `MUSTER_TRUSTED_PROXIES`, the address is the
+  peer. Every forwarding header is ignored, because a client can type any of
+  them and most proxies pass the ones they do not set through unchanged.
+- If the peer **is** trusted, the address is the client named in
+  `MUSTER_CLIENT_IP_HEADER`. If that header is missing or does not parse, it is
+  the proxy's own address.
+
+With neither variable set (the default), the address is always the peer. Behind
+a proxy, every client then has the proxy's address: the per-address limits
+become one shared bucket, but no client can choose another client's address.
+
+🔴 **In gotrue mode the topology must be declared, or muster refuses to boot.**
+muster sends each request's client address to GoTrue, which keys its own
+per-address limits on it (password sign-in, session refresh, passkey sign-in,
+password-reset links). Behind an undeclared proxy every user would share the
+proxy's address in GoTrue, and anyone could empty that one bucket and have
+GoTrue refuse everyone's correct sign-in. So set one of:
+
+- `MUSTER_TRUSTED_PROXIES` and `MUSTER_CLIENT_IP_HEADER`, for a proxy in front
+  of muster (see below); or
+- `MUSTER_DIRECT_CLIENTS=1`, when clients connect straight to muster with no
+  proxy.
+
+Password mode has no GoTrue and does not require either.
+The boot log names the mode (`client address: STRICT` or
+`client address: TRUSTED PROXIES`). A forwarding header from an untrusted peer,
+and a trusted peer sending no usable header, are each logged at most once a
+minute.
+
+Pick the header your proxy **writes**, never one it only passes on:
+
+- `X-Forwarded-For` only works behind proxies that append to it or replace it:
+  Caddy, Traefik, and nginx with `$proxy_add_x_forwarded_for`. nginx with a
+  bare `proxy_pass` forwards the client's own header untouched. Its right-most
+  entry is then whatever the client typed, and nothing muster does can tell.
+- `CF-Connecting-IP` and `X-Real-IP` are one address each, and are believed
+  only from a proxy that overwrites them. Cloudflare overwrites
+  `CF-Connecting-IP`. Caddy, nginx and Traefik do not: they pass a client's
+  `CF-Connecting-IP` through. Behind Cloudflare and a proxy of your own, trust
+  `CF-Connecting-IP` only if every request reaching that proxy came through
+  Cloudflare, for example with Authenticated Origin Pulls, or a firewall that
+  admits only [Cloudflare's ranges](https://www.cloudflare.com/ips/).
+- List the address muster **sees** as the peer, after any NAT. In Kubernetes, a
+  NodePort or LoadBalancer Service with `externalTrafficPolicy: Cluster`
+  rewrites the source to a node address. Every client that reaches that port
+  then looks like the same peer, the trusted proxy included. Use
+  `externalTrafficPolicy: Local`, or reach muster through an in-cluster
+  ingress and trust the controller's own addresses.
+- 🔴 **Never include an address an agent pod connects from.** Agents reach
+  muster-server directly (the main and connect listeners, for the API, the
+  MCP door and the connectors), and the rule above is the same on every
+  listener. A dispatched agent inside a trusted range could therefore write
+  any address into the header and choose its own: pick a per-address bucket
+  at will, spend another client's, and put a false address into audit rows
+  and logs. In Kubernetes the ingress controller and the agent pods usually
+  draw from the SAME pod network, so do not trust the whole pod range: trust
+  the controller's addresses only (a dedicated node, `hostNetwork`, or
+  addresses your network plugin pins), or leave the variables unset.
+
+| in front of muster | `MUSTER_TRUSTED_PROXIES` | `MUSTER_CLIENT_IP_HEADER` | what the proxy does |
+|---|---|---|---|
+| Caddy on the same machine | `127.0.0.1/32,::1/128` | `X-Forwarded-For` | `reverse_proxy` replaces the client's `X-Forwarded-For` with the address it saw (Caddy's default). |
+| nginx on the same machine | `127.0.0.1/32,::1/128` | `X-Real-IP` | Needs `proxy_set_header X-Real-IP $remote_addr;`, which overwrites the header. Or use `X-Forwarded-For` with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. |
+| Traefik (also as a Kubernetes ingress) | Traefik's own addresses (not the whole pod range: agent pods share it) | `X-Forwarded-For` | Traefik drops the `X-Forwarded-*` headers of a peer outside its entry point's `forwardedHeaders.trustedIPs`, then appends the peer's address. |
+| Cloudflare, straight to muster | [Cloudflare's ranges](https://www.cloudflare.com/ips/) | `CF-Connecting-IP` | Cloudflare overwrites the header with the address that connected to it. |
+| Cloudflare, then your own proxy | that proxy's address | `CF-Connecting-IP` | Only with an origin lock on the proxy (see above). Without one, use the proxy's own row instead. |
 
 ## muster-server: optional features
 

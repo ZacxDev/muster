@@ -10,8 +10,36 @@
   admin.
 - If it is unset or shorter than 12 characters, every browser page answers 503
   and `/login` says which variable is missing. It fails closed.
-- `POST /login` compares in constant time and is limited to 10 attempts a
-  minute.
+- `POST /login` compares in constant time. Wrong passwords are counted per
+  client address (10 a minute) and for the whole server (100 a minute). The
+  step-up confirm shares the counts.
+- **Known devices.** A browser that has signed in correctly gets a
+  long-lived **device cookie** (`muster_device`: HttpOnly, `SameSite=Lax`,
+  `Secure` as the session cookie is, 400 days). It is signed with a key
+  derived from the operator password, so changing the password invalidates
+  every device cookie.
+  - At **sign-in**, a browser that is still signed in (a valid session
+    cookie) counts as a known device too. At the **step-up confirm** it does
+    not: step-up exists for the case where the session itself is in the wrong
+    hands, so there only the device cookie counts, and a session without one
+    is refused past the counts like any unknown device.
+  - Once its address's count, or the whole server's, is past its limit, a
+    request from an **unknown** device is refused with 429 before the password
+    is compared, correct or not. So a guesser is held to 10 guesses a minute
+    from one address, and 100 across all of them. Each refusal is logged (at
+    most one line a minute) so a flood is visible.
+  - A request from a **known** device is never refused for the counts when it
+    carries the correct password. So a flood of junk sign-ins cannot lock the
+    operator out of a browser they have used before.
+  - A wrong password from a known device still counts.
+  - The device cookie is not a credential: it admits nothing on its own.
+  - A browser that has never signed in (or whose cookies were cleared, or that
+    signed in before the password was changed) waits for the window to pass
+    while a flood from its own address is running.
+  - ⚠ Behind a reverse proxy that is not declared trusted
+    (`MUSTER_TRUSTED_PROXIES`), every client has the proxy's address, so one
+    address's flood refuses every unknown device. Declare the proxy to keep
+    the counts per client.
 - The session cookie lasts 30 days. Set `MUSTER_SECURE_COOKIES=1` when muster
   is served over TLS.
 
@@ -28,8 +56,24 @@ Supabase auth server.
 - **Two listeners.** `MUSTER_BROWSER_PORT` is the only listener that serves
   browser sessions. The main port then serves machine tokens only. On the browser
   listener, the shared hook and service secrets are refused with 403.
+- **The client topology must be declared.** muster refuses to boot in this
+  mode unless `MUSTER_TRUSTED_PROXIES` (with `MUSTER_CLIENT_IP_HEADER`) names
+  the proxy in front of it, or `MUSTER_DIRECT_CLIENTS=1` says there is none.
+  GoTrue keys its own per-address limits on the client address muster sends it
+  (`X-Muster-Client-IP`), and behind an undeclared proxy every user would share
+  one ([configuration.md](configuration.md#client-addresses-behind-a-proxy)).
 - **Throttling** is per account: 3 free failures, then a backoff that doubles up
-  to 5 minutes. There is also a limit per client address.
+  to 5 minutes. Failures are also counted per client address (10 in 10
+  minutes). That count never refuses a correct password or passkey: past it,
+  a wrong attempt is answered 429, and an attempt at an email that is not a
+  muster account is refused without asking GoTrue. The admin claim's failures
+  count the same way (429 past it). Passkey sign-in challenges are never
+  refused per address (the sign-in page fetches one on every load, and a
+  shared address must not lose passkey sign-in). GoTrue's own per-address
+  limit bounds how many one client can mint. muster remembers the challenges
+  it issued in one table of at most 8192, oldest dropped, and a passkey
+  verify naming a challenge it does not hold is refused without asking
+  GoTrue.
 
 ### Setting up the first admin
 
@@ -136,7 +180,15 @@ MUSTER_GOTRUE_JWT_SECRET=<48 random hex characters>   # env_secret MUSTER_GOTRUE
 GOTRUE_DB_PASSWORD=<random>                           # env_secret GOTRUE_DB_PASSWORD 24
 MUSTER_BROWSER_PORT=8107
 MUSTER_PUBLIC_URL=http://localhost:8107
+MUSTER_DIRECT_CLIENTS=1   # browsers reach 8107 directly; see below for a proxy
 ```
+
+The last line declares that nothing sits between the browsers and muster. This
+mode refuses to start without a declaration. If you put `tailscale serve` or
+another reverse proxy in front instead, remove it and set
+`MUSTER_TRUSTED_PROXIES` to the address muster sees the proxy connect from,
+and `MUSTER_CLIENT_IP_HEADER=X-Forwarded-For`
+([Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 `MUSTER_PUBLIC_URL` is the address a browser opens: the browser listener. With
 Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
@@ -147,7 +199,7 @@ Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
 
 **Turn it off:** delete `docker-compose.override.yml` **and** the `.env` lines
 above (`MUSTER_AUTH_MODE`, `MUSTER_GOTRUE_*`, `GOTRUE_*`,
-`MUSTER_BROWSER_PORT`), set `MUSTER_PUBLIC_URL` back to the main port's
+`MUSTER_BROWSER_PORT`, `MUSTER_DIRECT_CLIENTS`), set `MUSTER_PUBLIC_URL` back to the main port's
 address (`http://localhost:8105`, or the `https://` one with `tailscale serve`
 pointed at 8105 again), then `mi_dc up -d --wait --remove-orphans` (which
 stops the GoTrue containers). Both halves: an override left behind without its
@@ -714,15 +766,17 @@ with nothing cached: a phone whose pairing sign-in is at or before the account's
 session cutoff or latest Sign out everywhere, or whose account is disabled, is
 refused, and is not sent notifications, even if its row somehow survived.
 
-**Throttles.** Pairing is limited to 10 attempts a minute per client address.
+**Throttles.** Failed pairing attempts are limited to 10 a minute per client
+address. The code is checked first, so a valid code is redeemed whatever the
+address's count.
 A device route request with a valid credential is charged only to its phone:
 60 a minute. A refused request (no, a malformed, or an unknown or revoked
 credential) is charged to its address: 120 a minute, then 429. So junk sent
 from an address a phone shares cannot lock that phone out. Registering push,
 which makes muster send a test push, is limited to 5 a minute per phone. The
-address is the one the edge reports: on the browser listener that is
-`CF-Connecting-IP` (or the first `X-Forwarded-For` entry), which only an edge in
-front of muster can be trusted to set.
+address is the TCP peer, or the client a trusted proxy names
+(`MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER`; see
+[Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 **Account → Devices** (on `/account`) lists each phone: its name, app version,
 when it was paired, when it was last seen, whether push is registered, and its

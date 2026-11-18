@@ -60,6 +60,24 @@ mirror: true
 # on behind TLS (the ingress). DOCS/auth.md
 secureCookies: true
 
+# MUSTER_TRUSTED_PROXIES / MUSTER_CLIENT_IP_HEADER: whose forwarding header
+# names a client. Empty (the default) trusts nothing: every client address is
+# the TCP peer, so behind the ingress every client shares the ingress pods'
+# address in the per-address limits. To tell clients apart, list the ingress
+# controller's OWN addresses and the header it WRITES (Traefik and
+# ingress-nginx: X-Forwarded-For). Never the whole pod range: agent pods
+# connect from it and could then choose their own address. Both or neither.
+# DOCS/configuration.md#client-addresses-behind-a-proxy
+# In auth.mode=gotrue one of trustedProxies (with header) or directClients is
+# REQUIRED (the chart refuses to render otherwise; the server refuses to boot):
+# GoTrue keys its per-address limits on the client address muster forwards.
+clientAddress:
+  trustedProxies: []   # e.g. [<the controller's addresses>]
+  # MUSTER_DIRECT_CLIENTS: true only when clients reach muster with NO proxy in
+  # front (no ingress, no load balancer that rewrites the source).
+  directClients: false
+  header: ""           # CF-Connecting-IP | X-Forwarded-For | X-Real-IP
+
 # Sign-in. DOCS/auth.md
 auth:
   # MUSTER_AUTH_MODE: `password` (one shared operator password) or `gotrue`
