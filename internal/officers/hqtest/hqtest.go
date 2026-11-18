@@ -175,6 +175,10 @@ type Ask struct {
 type Server struct {
 	*httptest.Server
 
+	// ChatPageSize bounds a chat messages page (0: every message); a page
+	// that leaves messages out says more: true (chats.go).
+	ChatPageSize int
+
 	mu       sync.Mutex
 	tokens   map[string]string // token -> officer id
 	items    map[string]*Item

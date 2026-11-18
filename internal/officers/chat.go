@@ -576,9 +576,12 @@ const (
 	ChatLaneBusy    ChatOutcome = "lane_unavailable"
 	ChatTurnFailed  ChatOutcome = "turn_failed"
 	ChatReplyFailed ChatOutcome = "reply_failed"
-	ChatNothingNew  ChatOutcome = "nothing_new"
-	ChatReadFailed  ChatOutcome = "read_failed"
-	ChatNotServed   ChatOutcome = "not_served"
+	// ChatReplyDropped: HQ refused the reply for good (409 chat_closed or
+	// stale_turn): the turn is dropped, never retried.
+	ChatReplyDropped ChatOutcome = "reply_dropped"
+	ChatNothingNew   ChatOutcome = "nothing_new"
+	ChatReadFailed   ChatOutcome = "read_failed"
+	ChatNotServed    ChatOutcome = "not_served"
 )
 
 // Run is one chat turn of item it on instance n of pool o, start to end

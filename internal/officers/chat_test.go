@@ -628,3 +628,97 @@ func TestChatOfReadsThePayloadThenTheSubject(t *testing.T) {
 		t.Fatal("a non-chat item read as a chat")
 	}
 }
+
+// THE HQ SERVER'S REPLY REFUSALS (its chat routes): 409 chat_closed and 409
+// stale_turn are final for that turn — muster drops it (marks it answered, so
+// no later claim asks the lane again) and never retries the post; a reply
+// with a NUL (HQ's 400) is cleaned, not refused; and a messages page that says
+// more: true is read to its end.
+
+// TestAChatClosedMidTurnIsDroppedNotRetried: the member closes the chat while
+// the lane answers. The reply's 409 chat_closed ends the turn: no reply, the
+// marks answered (no "your reply was lost" later), the item left to HQ.
+func TestAChatClosedMidTurnIsDroppedNotRetried(t *testing.T) {
+	r := newChatRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "Is web healthy?")
+	r.lanes.reply = func(chat, _ string) (string, error) { r.hq.CloseChat(chat); return "yes", nil }
+	if got := r.runner.Run(context.Background(), r.o, 1, r.item(t, id)); got != officers.ChatReplyDropped {
+		t.Fatalf("Run = %s, want %s; log:\n%s", got, officers.ChatReplyDropped, r.logs)
+	}
+	if m := r.lanes.marksOf("c-41"); m.Seen == 0 || m.Answered != m.Seen {
+		t.Fatalf("marks after a closed chat %+v; want answered = seen (the turn dropped, never re-asked)", m)
+	}
+	if n := len(r.officerReplies("c-41")); n != 0 {
+		t.Fatalf("%d replies on a closed chat", n)
+	}
+}
+
+// TestAStaleTurnIsDroppedAndTheNewTurnAnswered: a newer member turn landed
+// while the lane answered the older one; HQ answers the old reply 409
+// stale_turn. That turn is dropped and the item released (it carries the new
+// turn); the next run sends only the new message — no lost-reply prompt.
+func TestAStaleTurnIsDroppedAndTheNewTurnAnswered(t *testing.T) {
+	r := newChatRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "first question")
+	var seq2 int64
+	r.lanes.reply = func(chat, _ string) (string, error) {
+		seq2, _ = r.hq.MemberSays(chat, "member1", "Member One", "second question")
+		return "answer to the first", nil
+	}
+	if got := r.runner.Run(context.Background(), r.o, 1, r.item(t, id)); got != officers.ChatReplyDropped {
+		t.Fatalf("Run = %s, want %s; log:\n%s", got, officers.ChatReplyDropped, r.logs)
+	}
+	if it := r.hq.Item(id); it.Status != "open" {
+		t.Fatalf("after a stale turn the item is %s by %q; want open again (it carries the new turn)", it.Status, it.ClaimedBy)
+	}
+	r.lanes.reply = nil
+	if got := r.runner.Run(context.Background(), r.o, 1, r.item(t, id)); got != officers.ChatReplied {
+		t.Fatalf("the new turn: Run = %s, want %s; log:\n%s", got, officers.ChatReplied, r.logs)
+	}
+	turns := r.lanes.sent()
+	last := turns[len(turns)-1].text
+	if !strings.Contains(last, "second question") || strings.Contains(last, "first question") || strings.Contains(last, "did not reach") {
+		t.Fatalf("the new turn sent %q; want only the second question", last)
+	}
+	if rs := r.officerReplies("c-41"); len(rs) != 1 || rs[0].InReplyTo != seq2 {
+		t.Fatalf("replies %+v; want one, to %d", rs, seq2)
+	}
+}
+
+// TestAReplyWithANulIsCleanedNotRefused: HQ refuses a NUL (400); the lane's
+// text is posted without it.
+func TestAReplyWithANulIsCleanedNotRefused(t *testing.T) {
+	r := newChatRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "q")
+	r.lanes.reply = func(string, string) (string, error) { return "ok\x00 done", nil }
+	if got := r.runner.Run(context.Background(), r.o, 1, r.item(t, id)); got != officers.ChatReplied {
+		t.Fatalf("Run = %s, want %s; log:\n%s", got, officers.ChatReplied, r.logs)
+	}
+	if rs := r.officerReplies("c-41"); len(rs) != 1 || rs[0].Text != "ok done" {
+		t.Fatalf("replies %+v; want one, %q", rs, "ok done")
+	}
+}
+
+// TestAMessagesPageThatSaysMoreIsReadToItsEnd: two member messages wait and
+// HQ pages one at a time (more: true); the lane is sent both, and the reply
+// answers the later.
+func TestAMessagesPageThatSaysMoreIsReadToItsEnd(t *testing.T) {
+	r := newChatRig(t, 1)
+	r.hq.ChatPageSize = 1
+	r.hq.AddChat(relID, "c-41", "triage")
+	r.hq.MemberSays("c-41", "member1", "Member One", "part one")
+	seq2, id := r.hq.MemberSays("c-41", "member1", "Member One", "part two")
+	if got := r.runner.Run(context.Background(), r.o, 1, r.item(t, id)); got != officers.ChatReplied {
+		t.Fatalf("Run = %s, want %s; log:\n%s", got, officers.ChatReplied, r.logs)
+	}
+	turns := r.lanes.sent()
+	if len(turns) != 1 || !strings.Contains(turns[0].text, "part one") || !strings.Contains(turns[0].text, "part two") {
+		t.Fatalf("the lane got %+v; want one turn with both messages", turns)
+	}
+	if rs := r.officerReplies("c-41"); len(rs) != 1 || rs[0].InReplyTo != seq2 {
+		t.Fatalf("replies %+v; want one, to %d", rs, seq2)
+	}
+}

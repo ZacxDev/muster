@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,19 @@ type fakeChat struct {
 	officer, name string
 	msgs          []ChatMessage
 	item          string
+	closed        bool
+}
+
+// CloseChat closes chat id as HQ does: its live item ends done, and a reply
+// to it is 409 chat_closed.
+func (s *Server) CloseChat(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.chats[id]
+	c.closed = true
+	if it := s.items[c.item]; it != nil && (it.Status == "open" || it.Status == "claimed") {
+		it.Status, it.Outcome, it.ClaimedBy, it.LeaseExpiresAt = "done", "no_action", "", nil
+	}
 }
 
 // AddChat opens chat id of officer, named name, with no message yet.
@@ -83,14 +97,26 @@ func (s *Server) chatRoute(w http.ResponseWriter, officer, chat, verb, method, a
 	}
 	switch {
 	case verb == "messages" && method == http.MethodGet:
+		// HQ's view: {chat, messages[seq > after], more, state}; more is true
+		// when the page (ChatPageSize, 0 = all) left later messages out.
 		n, _ := strconv.ParseInt(after, 10, 64)
 		out := []ChatMessage{}
+		more := false
 		for _, m := range c.msgs {
-			if m.Seq > n {
-				out = append(out, m)
+			if m.Seq <= n {
+				continue
 			}
+			if s.ChatPageSize > 0 && len(out) == s.ChatPageSize {
+				more = true
+				break
+			}
+			out = append(out, m)
 		}
-		s.write(w, http.StatusOK, map[string]any{"chat": map[string]any{"id": chat, "name": c.name}, "messages": out})
+		state := "idle"
+		if c.closed {
+			state = "closed"
+		}
+		s.write(w, http.StatusOK, map[string]any{"chat": map[string]any{"id": chat, "name": c.name, "state": state}, "messages": out, "more": more, "state": state})
 	case verb == "reply" && method == http.MethodPost:
 		for k := range body {
 			if k != "text" && k != "in_reply_to" {
@@ -101,8 +127,8 @@ func (s *Server) chatRoute(w http.ResponseWriter, officer, chat, verb, method, a
 		text, _ := body["text"].(string)
 		f, _ := body["in_reply_to"].(float64)
 		inReplyTo := int64(f)
-		if text == "" || inReplyTo < 1 {
-			s.write(w, http.StatusBadRequest, map[string]any{"error": "text and in_reply_to are required", "code": "invalid"})
+		if text == "" || inReplyTo < 1 || strings.ContainsRune(text, 0) {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "text (no NUL) and in_reply_to are required", "code": "invalid"})
 			return
 		}
 		it := s.items[c.item]
@@ -113,12 +139,26 @@ func (s *Server) chatRoute(w http.ResponseWriter, officer, chat, verb, method, a
 				if it != nil && it.Status == "claimed" {
 					it.Status, it.Outcome, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "done", "done", "", nil, now
 				}
-				s.write(w, http.StatusOK, map[string]any{"seq": m.Seq})
+				s.write(w, http.StatusOK, map[string]any{"seq": m.Seq, "replayed": true})
 				return
 			}
 		}
+		if c.closed {
+			s.write(w, http.StatusConflict, map[string]any{"error": "the chat is closed", "code": "chat_closed"})
+			return
+		}
+		var latest int64
+		for _, m := range c.msgs {
+			if m.Role == "member" && m.Seq > latest {
+				latest = m.Seq
+			}
+		}
+		if inReplyTo != latest {
+			s.write(w, http.StatusConflict, map[string]any{"error": "not the latest member turn", "code": "stale_turn"})
+			return
+		}
 		if it == nil || it.Status != "claimed" || it.LeaseExpiresAt == nil || !it.LeaseExpiresAt.After(now) {
-			s.write(w, http.StatusConflict, map[string]any{"error": "the chat's item is not claimed", "code": "lease_lost"})
+			s.write(w, http.StatusConflict, map[string]any{"error": "the chat's item is not claimed", "code": "not_claimed"})
 			return
 		}
 		seq := int64(len(c.msgs) + 1)
