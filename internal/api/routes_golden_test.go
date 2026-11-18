@@ -49,8 +49,9 @@ import (
 // live upstream — a machine bearer token that is enforce-when-set (unset means
 // OPEN), a browser session, a terminal token, an agent-resolved token and a
 // browser-terminal tier — and specifies a SIXTH, fail-closed service-to-service
-// door for exactly this split. Six tiers, one of which fails OPEN when its
-// secret is missing, and a gate that cannot tell any of them apart. The plan
+// door for exactly this split. Six tiers, one of which then failed OPEN when its
+// secret was missing (muster's hook tier has since been made fail-closed), and
+// a gate that cannot tell any of them apart. The plan
 // names getting a route's tier wrong as one of the two most likely ways the
 // carve ships broken.
 //

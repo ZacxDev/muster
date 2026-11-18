@@ -267,10 +267,10 @@ func (c *client) do(ctx context.Context, req request) ([]byte, error) {
 		httpReq.Header.Set(k, v)
 	}
 	// 🔴 THE CREDENTIAL IS CHOSEN HERE AND NOWHERE ELSE, so a verb cannot pick a
-	// secret by writing a header. A missing token is NOT an error: most of the
-	// hook tier is enforce-when-set, so an unconfigured pair still works, and the
-	// one fail-closed route answers 503 with its own marker (exit 9) rather than
-	// a credential complaint.
+	// secret by writing a header. A missing token is not an error HERE: the
+	// request goes out without one and the server's own 401 (exit 3, "fix your
+	// token") says so — or, on a route that also takes a personal token, it is
+	// that token's job.
 	if req.cred == credHook && c.cfg.token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.token)
 	}
@@ -394,9 +394,9 @@ func classify(req request, resp *http.Response, body []byte, envFile string) ([]
 
 	case resp.StatusCode == http.StatusServiceUnavailable && unarmedHookSurface(body):
 		// 🔴 MOST 503s ON THE HOOK TIER ARE OUTAGES; THIS ONE IS NOT, AND THE
-		// DISCRIMINATOR IS THE MARKER, NOT THE STATUS. Nearly every hook-tier route
-		// is enforce-when-set, so an unconfigured server SERVES them and a 503 there
-		// really is a sick backend (exitServerError below is right for that).
+		// DISCRIMINATOR IS THE MARKER, NOT THE STATUS. A hook-tier route never
+		// answers 503 for configuration (an unconfigured hook tier answers 401), so
+		// an unmarked 503 there really is a sick backend (exitServerError below).
 		// A fail-closed surface that marks its refusal with api.HookUnarmedField
 		// (the service tier, the approval relay, the connector store) is the
 		// exception: its refusal is a CONFIGURATION fact with a different remedy —

@@ -347,6 +347,12 @@ jobs:
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/features_config_test.py
 
+      # `make run`'s development hook token: made without openssl, once, mode
+      # 600, and never an empty or short value written or reused.
+      - name: make run's development hook token is never empty
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/dev_hook_token_test.py
+
       # docs/guides/*.md and docs/README.md's table of them agree, each guide
       # has its five parts and spells no port or model id, and docs/features.md
       # links every feature page and has a Contents row per section.

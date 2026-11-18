@@ -82,10 +82,8 @@ func TestTheHookTierBootPolicy(t *testing.T) {
 					if !strings.Contains(err.Error(), envHookToken) {
 						t.Fatalf("the refusal does not name %s: %v", envHookToken, err)
 					}
-					// The refusal says how to make a value. (A blank value of 16
-					// spaces passes the length floor, so it reaches the same check
-					// as unset; gotrue mode's unset refusal is validateAuthMode's.)
-					if (mode == "password" || tok.name == "blank") && !strings.Contains(err.Error(), "openssl rand -hex 32") {
+					// The refusal says how to make a value, in both modes.
+					if !strings.Contains(err.Error(), "openssl rand -hex 32") {
 						t.Fatalf("the refusal does not say how to generate a value: %v", err)
 					}
 				})

@@ -2170,11 +2170,7 @@ func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSe
 //
 //   - MUSTER_GOTRUE_URL and MUSTER_GOTRUE_JWT_SECRET (≥32 characters): without
 //     them no session can be minted or verified.
-//   - an ARMED hook tier (MUSTER_HOOK_TOKEN set). The hook tier is
-//     enforce-when-set: unset, every hook route admits ANYONE as the machine
-//     user, user 1 — the admin. In password mode that is the documented
-//     back-compat debt; once other people have accounts it is an anonymous
-//     admin door beside a per-user login, so gotrue mode will not boot with it.
+//   - (MUSTER_HOOK_TOKEN is required too, as in every mode: validateListeners.)
 //   - MUSTER_BROWSER_PORT, distinct from the main and connect ports: the only
 //     listener a browser session is served on.
 //
@@ -2212,11 +2208,6 @@ func (c config) validateAuthMode() error {
 	if !c.goTrueConfigured() {
 		return fmt.Errorf("%s=gotrue needs %s and %s: without them no session can be minted or verified",
 			envAuthMode, envGoTrueURL, envGoTrueSecret)
-	}
-	if c.HookToken == "" {
-		return fmt.Errorf("%s=gotrue refuses to boot with %s unset: the hook tier is enforce-when-set, so "+
-			"unset it admits ANYONE as the machine user — user 1, the admin. With per-user logins that is an "+
-			"anonymous admin door. Set %s", envAuthMode, envHookToken, envHookToken)
 	}
 	if c.BrowserPort == 0 {
 		return fmt.Errorf("%s=gotrue needs %s: browser sessions are served only on that listener, and the "+
@@ -3302,8 +3293,8 @@ const hookTokenPlaceholder = "CHANGE-ME"
 // web tier fails closed); this is the same rule for the machine tier, applied
 // at boot because a machine credential has no page on which to explain itself.
 //
-// UNSET is not refused here: the hook tier is enforce-when-set, and the gotrue
-// mode check (validateAuthMode) refuses unset where that is an open door.
+// UNSET is refused too, in every mode, by validateListeners (one refusal for
+// both modes, which says how to make a value).
 func hookTokenRefusal(token string) string {
 	switch {
 	case token == "":

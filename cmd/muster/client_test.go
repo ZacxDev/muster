@@ -31,8 +31,8 @@ func TestExitCodeMapping(t *testing.T) {
 		},
 		{
 			// 🔴 A BARE 503 ON THE HOOK TIER IS AN OUTAGE, NOT AN ARMING PROBLEM.
-			// This is the negative control for the exit-9 branch below: most of the
-			// tier is enforce-when-set, so an unmarked 503 must stay exitServerError.
+			// This is the negative control for the exit-9 branch below: an unmarked
+			// 503 must stay exitServerError.
 			name: "503 with no marker -> server error, NOT unarmed",
 			args: []string{"task", "ls"},
 			set: func(h *harness) {

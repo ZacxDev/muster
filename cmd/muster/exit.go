@@ -32,8 +32,8 @@ const (
 	// retrying, the third by fixing a token.
 	//
 	// 🔴 THE 503 IT MAPS FROM IS NOT AN OUTAGE, AND THE DISCRIMINATOR IS THE
-	// BODY RATHER THAN THE STATUS. Nearly every hook-tier route is
-	// enforce-when-set, so a 503 there really is a sick backend and stays
+	// BODY RATHER THAN THE STATUS. A hook-tier route never answers 503 for
+	// configuration, so an unmarked 503 there is a sick backend and stays
 	// exitServerError. A fail-CLOSED surface (the service tier, the approval
 	// relay, the connector store) is the exception: it marks its refusal with
 	// api.HookUnarmedField. Folding that

@@ -46,23 +46,20 @@ const sessionTTL = 30 * 24 * time.Hour
 // (TestTheTerminalSocketRefusesTheHookToken).
 //
 // HookToken protects the machine-called surface via a bearer token. It is
-// enforce-when-set: an empty HookToken leaves those endpoints open, a
-// back-compat debt to callers that predate the token.
+// FAIL-CLOSED: an empty HookToken admits nobody on those endpoints (every
+// compare against it fails), and cmd/muster-server refuses to boot without one.
 //
-// UIPassword is the HUMAN tier, and it is FAIL-CLOSED — the opposite polarity
-// to HookToken, and that difference is the entire control. See
+// UIPassword is the HUMAN tier, and it is FAIL-CLOSED too. See
 // BrowserAuthRefusal.
 type AuthConfig struct {
-	// HookToken, when non-empty, is required (Bearer or X-Muster-Token) on the
-	// machine-called endpoints.
+	// HookToken is required (Bearer or X-Muster-Token) on the machine-called
+	// endpoints; empty, they admit no shared-secret caller at all.
 	HookToken string
 	// ServiceToken gates the SERVICE-TO-SERVICE door: the credential a NAMED
 	// sibling process presents, together with an X-Muster-Actor header naming
 	// the caller it is acting for.
 	//
-	// 🔴 IT IS FAIL-CLOSED. The hook tier's enforce-when-set shape is a
-	// back-compat debt to callers that predate the token; a door with no legacy
-	// caller is owed none, so unset means 503 here. See ServiceWriteRefusal for
+	// 🔴 IT IS FAIL-CLOSED: unset means 503 here. See ServiceWriteRefusal for
 	// each refusal and the reason it exists, and requireServiceToken for the
 	// trust this door widens.
 	ServiceToken string
@@ -109,10 +106,8 @@ const minServiceTokenLen = 32
 // ServiceWriteRefusal returns a human-readable reason this server will NOT serve
 // the service-to-service tier, or "" when it will.
 //
-// 🔴 IT IS THE ChiefWriteRefusal SHAPE WITH TWO MORE CASES, AND IT IS FAIL-CLOSED
-// FOR THE REASON HookArmingRefusal GIVES: "enforce-when-set" is a back-compat
-// promise to callers that predate the token, and a door that has never shipped has
-// no such caller. Inheriting the open default would give away a gate for nothing.
+// 🔴 IT IS THE ChiefWriteRefusal SHAPE WITH TWO MORE CASES, AND IT IS FAIL-CLOSED,
+// like every other door in this file, the hook tier included.
 //
 // The four refusals, in order:
 //
@@ -452,8 +447,8 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A PERSONAL token (mst_…) is its own door, decided before anything about
 		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
-		// a bad one is refused rather than falling through to the open
-		// enforce-when-set case (api_tokens.go).
+		// a bad one is refused rather than falling through to the shared-secret
+		// compare (api_tokens.go).
 		if tok, ok := s.personalTokenFor(r); ok {
 			s.admitAPIToken(w, r, next, tok)
 			return
@@ -776,11 +771,10 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // agent would be rejected by the earlier comparison and this branch would never
 // execute.
 //
-// ⚠ ENFORCE-WHEN-SET IS INHERITED FROM requireHookToken, NOT INTRODUCED, and it is
-// kept EXACTLY as it was: with no hook token configured this serves everyone, so
-// every fail-closed claim here is scoped to a server that has one — production's
-// state. Changing that polarity is a separate decision with its own blast radius
-// (see requireHookToken's header for what "open" means on the LAN NodePort).
+// 🔴 WITH NO HOOK TOKEN CONFIGURED IT ADMITS NO SHARED-SECRET CALLER, like
+// requireHookToken: the hook compare against an empty secret always fails, so
+// such a request falls through to the service branch and its refusals.
+// cmd/muster-server refuses to boot without the token in any case.
 //
 // 🔴 THE EMPTY-TOKEN GUARD IS LOAD-BEARING TWICE OVER. The store resolves
 // `WHERE hooks_token=$1` (agents/pgstore.go), so one row with an empty hooks_token
@@ -801,8 +795,8 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A PERSONAL token (mst_…) is its own door, decided before anything about
 		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
-		// a bad one is refused rather than falling through to the open
-		// enforce-when-set case (api_tokens.go).
+		// a bad one is refused rather than falling through to the shared-secret
+		// compare (api_tokens.go).
 		if tok, ok := s.personalTokenFor(r); ok {
 			s.admitAPIToken(w, r, next, tok)
 			return

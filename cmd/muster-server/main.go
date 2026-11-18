@@ -1988,10 +1988,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"idea the owner typed in its chat (route_to_session's text, on a turn the owner typed: owner_asked) or one of the "+
 			"owner's tasks; a plugin message is never routed (%s is off); a route unanswered after %s (%s for the owner's "+
 			"request) goes back to the chief", envSessionRouting, envPlugins, api.RouteTimeout, api.RequestRouteTimeout)
-		if a.cfg.HookToken == "" {
-			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
-				"ONLY with a personal API token or its muster MCP server's route_reply", envHookToken)
-		}
 	case ext.Routing != nil:
 		l.Printf("session routing: ON (%s=1) — the chief may hand one of its owner's sessions a plugin message, a task or an "+
 			"idea the owner typed in its chat (route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
@@ -2001,11 +1997,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"reports a reply sent directly, stamped with that message, first (POST /plugin/v1/messages/{id}/owner-answered)",
 			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, api.RouteTimeout, api.PRRouteTimeout, envPRMailSenders,
 			api.ConversationRouteTimeout)
-		if a.cfg.HookToken == "" {
-			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
-				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
-				"out back to the chief", envHookToken)
-		}
 	case a.cfg.SessionRouting:
 		l.Printf("session routing: INERT — %s=1 but there is no database, so nothing is routed", envSessionRouting)
 	default:

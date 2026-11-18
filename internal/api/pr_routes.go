@@ -258,10 +258,9 @@ type prSessionRow struct {
 // on a missing or malformed repo or pr; 404 when the server keeps no
 // authorship store.
 //
-// 🔴 THE SAME DOOR AS THE REPORT (requireArmedHookToken), NOT THE OPEN
-// enforce-when-set ONE. A row names a Claude session id — a `claude --resume`
-// handle — and the host it ran on; reading that on an unarmed server would be
-// a disclosure to anyone who can reach the machine port.
+// 🔴 THE SAME DOOR AS THE REPORT (requireArmedHookToken, which is
+// requireHookToken: fail-closed). A row names a Claude session id — a `claude
+// --resume` handle — and the host it ran on.
 //
 // ⚠ IT IS SERVED ONLY WHERE PULL-REQUEST ROUTING IS CONFIGURED. The handler
 // checks only for the store, but cmd/muster-server wires ext.PRSessions only

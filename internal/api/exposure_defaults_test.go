@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -117,5 +119,27 @@ func TestHSTSIsSentWhenThePublicURLIsHTTPS(t *testing.T) {
 	}
 	if hstsMaxAge != "max-age=31536000" {
 		t.Fatalf("hstsMaxAge = %q; want max-age=31536000 (one year)", hstsMaxAge)
+	}
+}
+
+// TestReadyzWithAnUnreachableDatabaseAnswersTheStatusOnly: the not-ready body
+// for a failed dependency check is exactly {"status":"not ready"} — the
+// error, which can name a host, a port or a database user, goes to the log.
+// The control: the log does carry it.
+func TestReadyzWithAnUnreachableDatabaseAnswersTheStatusOnly(t *testing.T) {
+	var logged strings.Builder
+	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&logged, "", 0))
+	const secretish = "dial tcp 192.0.2.44:5432: connect: connection refused (user=muster_app)"
+	s.SetReadyCheck(func(context.Context) error { return errors.New(secretish) })
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz with the database down = %d; want 503", w.Code)
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != `{"status":"not ready"}` {
+		t.Fatalf("GET /readyz body with the database down = %s; want exactly {\"status\":\"not ready\"}", got)
+	}
+	if !strings.Contains(logged.String(), secretish) {
+		t.Fatalf("control: the reason is not in the log either:\n%s", logged.String())
 	}
 }
