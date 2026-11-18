@@ -402,7 +402,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// anyone who reached the grid by clicking rather than by URL. Its body
 				// is lazy, so the cost of always rendering it is the shut aside and
 				// nothing else.
-				ChiefPanel(),
+				ChiefPanel(feat.FleetDigest),
 				extra,
 			),
 		),

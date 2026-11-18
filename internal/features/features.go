@@ -54,6 +54,7 @@ const (
 	ChiefNudges          = "chief-nudges"
 	SessionState         = "session-state"
 	AskLog               = "ask-log"
+	FleetDigest          = "fleet-digest"
 	Plugins              = "plugins"
 	PluginTasks          = "plugin-tasks"
 	PluginViewers        = "plugin-viewers"

@@ -102,6 +102,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO officer_judgement_sessions (officer, day, items) VALUES ('triage:example-' || lower($1), '2000-01-01', '{a}')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_pr_loops (officer, repo, pr, state) VALUES ('draft:example-' || lower($1), 'example-org/example-web', 1, 'pending')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_public_branches (officer, repo, item, branch) VALUES ('draft:example-' || lower($1), 'example-org/example-web', 1, 'officer/fix/raise-limit-abcdefghijkl')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_connector_blocks (officer, grant_id, item) VALUES ('draft:example-' || lower($1), 1, '1')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_host_spawns (officer, instance, host) VALUES ('marketing:example-' || lower($1), 'officer-marketing-example-1', 'host-a')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_pair_requests (public_id, name, label, data_scope, capabilities, code_hash, poll_secret_hash, expires_at)
 			VALUES (left(md5($1) || md5($1), 22), 'example-pair', 'Pair', 'example', '{messages}', repeat('a', 64), repeat('b', 64), now() + interval '10 minutes')`, func() []any { return []any{tag} }, nil},
@@ -119,6 +120,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chief_turn_usage (chief_agent, trigger, outcome, input_tokens) VALUES ($1, 'plugin', 'settled', 12)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO chief_session_llm_usage (session_id, day, model, requests, cost_usd) VALUES ($1, '2000-01-01', 'openrouter/example/model', 1, 0.01)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO chief_session_llm_reservations (session_id, amount_usd, expires_at) VALUES ($1, 0.01, now() + interval '1 minute')`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO fleet_owner_marks (looked_at) VALUES (now())`, func() []any { return nil }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},

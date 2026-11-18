@@ -174,7 +174,7 @@ func chiefTools(t *testing.T, g *gatedFixture) []string {
 func TestFocusOffKeepsTheChiefsReadOnlyTools(t *testing.T) {
 	g := newGatedFixture(t)
 	base := chiefTools(t, g)
-	for _, name := range []string{focusToolDefs()[0].Name, sessionsOverviewToolDef().Name, fleetReportToolDef().Name} {
+	for _, name := range []string{focusToolDefs(false)[0].Name, sessionsOverviewToolDef().Name, fleetReportToolDef().Name} {
 		if !slices.Contains(base, name) {
 			t.Fatalf("positive control: %s is not on the base list %v", name, base)
 		}

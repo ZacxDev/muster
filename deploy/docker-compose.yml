@@ -127,7 +127,7 @@ services:
   muster:
     # MUSTER_IMAGE exists so a locally built image can be tested with this
     # exact file; leave it unset to run the published release.
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.242.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.246.0}
     restart: unless-stopped
     depends_on:
       muster-init:
@@ -252,6 +252,11 @@ services:
       MUSTER_ASK_LOG_TEXT_TTL: ${MUSTER_ASK_LOG_TEXT_TTL:-}
       MUSTER_ASK_LOG_CLASSIFY: ${MUSTER_ASK_LOG_CLASSIFY:-}
 
+      # The fleet digest: the chief panel's card over all your sessions, and
+      # fleet_list's fleet fields (docs/chief.md#fleet-digest). Off by
+      # default; its states come from session state, above.
+      MUSTER_FLEET_DIGEST: ${MUSTER_FLEET_DIGEST:-}
+
       # Shareable pages: agents publish pages and ask before a share link goes
       # live (docs/features.md#pages). Off by default; needs only the database.
       MUSTER_PAGES: ${MUSTER_PAGES:-}
@@ -371,7 +376,7 @@ services:
   # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
   # postgres:16-alpine); no network.
   muster-init:
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.242.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.246.0}
     user: "0:0"
     command:
       - compose-init
@@ -400,7 +405,7 @@ services:
   # --- dictation, GPU (profile stt-cohere) ----------------------------------
   stt-cohere:
     profiles: ["stt-cohere"]
-    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.242.0}
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.246.0}
     restart: unless-stopped
     environment:
       # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
@@ -567,7 +572,7 @@ services:
   # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.242.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.246.0}
     user: "0:0"
     entrypoint:
       - sh
@@ -584,7 +589,7 @@ services:
 
   chief:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.242.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.246.0}
     restart: unless-stopped
     depends_on:
       chief-init:
