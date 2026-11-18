@@ -33,7 +33,10 @@ var wantVerdictPipes = map[string]string{
 	// The shard's packages / `-run` and its `--require` names come from the
 	// plan step (tests/goshard.py); the required names are pinned there, in
 	// the same job, by TestCIRequiresTheIsolationWalkInTheShardPlan below.
-	"test":     `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
+	// The `tee` keeps the SAME stream verdict.py reads (one run, no second
+	// execution) for the `test-times-` artifact; TestCIUploadsTheVerdictStreamAsTestTimes
+	// pins the upload.
+	"test":     `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
 	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all" +
 		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches" +
@@ -76,6 +79,71 @@ func TestCIGoSuitesPipeIntoTheVerdictUnderPipefail(t *testing.T) {
 				"`set -o pipefail`; without pipefail a `go test` that exits non-zero over "+
 				"a clean stream is reported green.", job)
 		}
+	}
+}
+
+// TestCIUploadsTheVerdictStreamAsTestTimes pins the per-test timing artifact:
+// the `test` job uploads the file its verdict pipe tees (so the timings are of
+// the run that set the job's status, not a re-run), under a `test-times-`
+// name per shard, even when the suite went red (a red run's timings are the
+// ones a flake count needs). An external weekly timing report reads
+// `test-times-*`; nothing in this repo downloads it.
+func TestCIUploadsTheVerdictStreamAsTestTimes(t *testing.T) {
+	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := jobLines(string(b), "test")
+	if len(lines) == 0 {
+		t.Fatalf("positive control FAILED: no `test:` job in %s", path)
+	}
+	name := -1
+	for i, l := range lines {
+		if l == "name: test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}" {
+			name = i
+		}
+	}
+	if name < 2 {
+		t.Fatalf("the `test` job uploads no `test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}` artifact")
+	}
+	// The step: `- name:`/`if:`/`uses:`/`with:` above the artifact name, its
+	// `path:` and the rest below, up to the next step.
+	var step []string
+	start := name
+	for start > 0 && !strings.HasPrefix(lines[start], "- ") {
+		start--
+	}
+	for _, l := range lines[start:] {
+		if len(step) > 0 && strings.HasPrefix(l, "- ") {
+			break
+		}
+		step = append(step, l)
+	}
+	for _, want := range []string{
+		"if: ${{ !cancelled() }}",
+		"uses: actions/upload-artifact@v4",
+		`path: ${{ runner.temp }}/go-test.json`,
+	} {
+		found := false
+		for _, l := range step {
+			if l == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the test-times upload step lacks %q; step is:\n  %s", want, strings.Join(step, "\n  "))
+		}
+	}
+	// The uploaded file is the one the verdict pipe tees.
+	tee := 0
+	for _, l := range lines {
+		if strings.Contains(l, `| tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py`) && !strings.HasPrefix(l, "#") {
+			tee++
+		}
+	}
+	if tee != 1 {
+		t.Errorf("%d verdict pipe(s) tee $RUNNER_TEMP/go-test.json, want exactly 1", tee)
 	}
 }
 
