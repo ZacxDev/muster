@@ -293,6 +293,87 @@ func TestResponsesNeedALiveLinkAndStopAtTheCaps(t *testing.T) {
 	}
 }
 
+// TestTheOwnersOwnResponses: the owner's own response (AddOwnerResponse) is
+// recorded with no link and by_owner; its caps are a link's, counted over the
+// owner's rows only (a link's rows do not use them up, nor the other way);
+// another owner's page reads as missing and records nothing; a page whose
+// delete has begun takes none; and a link's response beside it still names
+// its link and is not the owner's.
+func TestTheOwnersOwnResponses(t *testing.T) {
+	s, pool := pgStore(t)
+	two, three := asUser(2), asUser(3)
+	b, n := blocksOf(t, qBlocks)
+	p, _, _ := s.Create(two, agentA, "Mine", b, n)
+	l, _ := s.CreateLink(two, p.ID, LinkLive, "you", false)
+	defer func(a, f int) { MaxResponsesPerLink, MaxUploadsPerLink = a, f }(MaxResponsesPerLink, MaxUploadsPerLink)
+	MaxResponsesPerLink, MaxUploadsPerLink = 2, 1
+
+	viewer, err := s.AddResponse(two, l, 1, "q1", KindSubmit, []byte(`{"answer":"theirs"}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := s.AddOwnerResponse(two, p.ID, 1, "q1", KindSubmit, []byte(`{"answer":"mine"}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := s.AddOwnerResponse(two, p.ID, 1, "u1", KindUpload, nil, "owner-file-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mine.ByOwner || mine.LinkID != 0 || mine.Version != 1 || !file.ByOwner || file.UploadPublicID != "owner-file-1" ||
+		viewer.ByOwner || viewer.LinkID != l.ID {
+		t.Fatalf("recorded: viewer %+v, mine %+v, file %+v", viewer, mine, file)
+	}
+	// The row as stored: link_id NULL, by_owner true.
+	var nullLink, byOwner bool
+	if err := pool.QueryRow(authz.System(context.Background()), `SELECT link_id IS NULL, by_owner FROM page_responses WHERE id = $1`, mine.ID).
+		Scan(&nullLink, &byOwner); err != nil || !nullLink || !byOwner {
+		t.Fatalf("the stored row: link_id NULL %v, by_owner %v (%v)", nullLink, byOwner, err)
+	}
+	// The owner's caps: 2 responses, 1 file, of their own.
+	if _, err := s.AddOwnerResponse(two, p.ID, 1, "u1", KindUpload, nil, "owner-file-2"); !errors.Is(err, ErrTooMany) {
+		t.Errorf("a second owner file past MaxUploadsPerLink: %v", err)
+	}
+	if _, err := s.AddOwnerResponse(two, p.ID, 1, "q1", KindSubmit, []byte(`{"answer":"x"}`), ""); !errors.Is(err, ErrTooMany) {
+		t.Errorf("a third owner response past MaxResponsesPerLink: %v", err)
+	}
+	// …which are not the link's: it still has room for its second.
+	if _, err := s.AddResponse(two, l, 1, "q1", KindSubmit, []byte(`{"answer":"x"}`), ""); err != nil {
+		t.Errorf("the link's own second response: %v", err)
+	}
+	rs, err := s.Responses(two, p.ID, 0, 10)
+	if err != nil || len(rs) != 4 {
+		t.Fatalf("responses: %+v %v", rs, err)
+	}
+	owners := 0
+	for _, r := range rs {
+		if r.ByOwner != (r.LinkID == 0) {
+			t.Errorf("a response is neither or both: %+v", r)
+		}
+		if r.ByOwner {
+			owners++
+		}
+	}
+	if owners != 2 {
+		t.Errorf("%d owner responses, want 2", owners)
+	}
+	// Another owner: missing, nothing recorded.
+	if _, err := s.AddOwnerResponse(three, p.ID, 1, "q1", KindSubmit, []byte(`{"answer":"x"}`), ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another owner's response: %v", err)
+	}
+	if rs, _ := s.Responses(three, p.ID, 0, 10); len(rs) != 0 {
+		t.Errorf("another owner reads the responses: %+v", rs)
+	}
+	// A page being deleted takes no response of its owner's.
+	q, _, _ := s.Create(two, agentA, "Going", b, n)
+	if _, err := s.CloseLinks(two, q.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddOwnerResponse(two, q.ID, 1, "q1", KindSubmit, []byte(`{"answer":"x"}`), ""); !errors.Is(err, ErrClosing) {
+		t.Errorf("an owner response to a page being deleted: %v", err)
+	}
+}
+
 func TestTheOpenLinkAndPageCaps(t *testing.T) {
 	s, _ := pgStore(t)
 	two := asUser(2)
