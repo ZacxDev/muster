@@ -184,7 +184,7 @@ type AgentDetailView struct {
 	// (TranscribePath), or "" for none. See dictate.go.
 	Dictate string
 	// DictateOff: the server has no dictation, so the chat form draws the
-	// muted mic linking to its Features row (dictateOffControl) instead.
+	// muted mic linking to its Features ⓘ sheet (dictateOffControl) instead.
 	DictateOff bool
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.

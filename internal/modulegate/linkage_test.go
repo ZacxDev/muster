@@ -53,6 +53,9 @@ const modulePath = "github.com/ZacxDev/muster"
 // linking that was documented as unreachable, and the reason below is now a
 // lie a reader would trust.
 var notLinkedLedger = map[string]string{
+	"internal/plainscan": "the plain-UI guards' shared scans (top-layer text, setup and address " +
+		"jargon). Imported only by _test.go files in internal/api and cmd/muster-server, so one " +
+		"definition serves both; no binary needs it.",
 	"internal/dbtest": "the Postgres test harness. It is imported only by _test.go files " +
 		"BY DESIGN — a test fixture that linked into the server binary would ship " +
 		"CREATE DATABASE privileges into production.",

@@ -56,16 +56,23 @@ type InfoSheet struct {
 	// are the setup ⓘs (HostSettingSheet, HostDetailSheet), for a viewer who
 	// is not an admin (Features.Setup).
 	Withheld bool
+	// WithheldText is what a withheld sheet says instead of its code; ""
+	// is InfoSheetWithheldText.
+	WithheldText string
+	// Multiline keeps Code's line breaks (several .env lines, a whole
+	// message muster handed an agent): drawn as written, in a scroller
+	// bounded to half the screen so the sheet's Copy stays on it, and copied
+	// as written.
+	Multiline bool
+	// Extra is more of the technical detail, drawn under the code: absent,
+	// like the code, when the sheet is withheld.
+	Extra g.Node
 	// Inline draws the ⓘ for a 16px text line (a header's status row): a
 	// 20px-tall glyph whose 44px thumb target is its ::before, raised above a
 	// title's hit area (z-20) — the Preview button's in-row shape
 	// (plugin_chip.go), so the row does not grow and the title keeps its
 	// width.
 	Inline bool
-	// Multiline keeps Code's line breaks (a whole message muster handed an
-	// agent): drawn as written, in a scroller bounded to half the screen so
-	// the sheet's Copy stays on it, and copied as written.
-	Multiline bool
 }
 
 // InfoSheetWithheldText is what a withheld sheet says instead of its code.
@@ -111,11 +118,15 @@ func (s InfoSheet) sheet() g.Node {
 	var code g.Node
 	switch {
 	case s.Withheld:
-		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(InfoSheetWithheldText))
+		text := s.WithheldText
+		if text == "" {
+			text = InfoSheetWithheldText
+		}
+		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(text))
 	case s.Code != "":
 		codeClass, rowClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
 		if s.Multiline {
-			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs text-fg"
+			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-fg"
 			rowClass = "flex items-start gap-2 rounded-lg bg-s2 px-3 py-2"
 		}
 		code = Div(
@@ -139,7 +150,7 @@ func (s InfoSheet) sheet() g.Node {
 		g.Attr("data-info-sheet", ""),
 		g.Attr("data-asks-controls", ""),
 		g.Attr("data-own-swipe", ""),
-		Class("hidden [&:popover-open]:flex mx-auto mb-0 mt-auto w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-s1 p-0 text-left text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60 sm:m-auto sm:rounded-2xl"),
+		Class("hidden [&:popover-open]:flex mx-auto mb-0 mt-auto max-h-[90dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-s1 p-0 text-left text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60 sm:m-auto sm:rounded-2xl"),
 		Div(
 			Class("flex items-center gap-2 border-b border-line px-4 py-2"),
 			// Not a heading element: the sheet sits inside cards and lists
@@ -156,9 +167,10 @@ func (s InfoSheet) sheet() g.Node {
 			),
 		),
 		Div(
-			Class("flex flex-col gap-3 px-4 py-3"),
+			Class("flex min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3"),
 			g.If(s.Lead != "", P(Class("text-sm text-fg2"), g.Text(s.Lead))),
 			code,
+			g.If(!s.Withheld && s.Extra != nil, s.Extra),
 		),
 	)
 }

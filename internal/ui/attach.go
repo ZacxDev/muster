@@ -64,7 +64,7 @@ const attachButtonClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 
 
 // attachControlOrOff is the paperclip of the composer's button row:
 // attachControl, or — when attachments are off on this server (path "" and
-// off) — a MUTED paperclip in its place, linking to the feature's row on the
+// off) — a MUTED paperclip in its place, linking to the feature's ⓘ sheet on the
 // Features page. Nothing for neither.
 func attachControlOrOff(path string, off bool) g.Node {
 	if path == "" && off {
@@ -74,7 +74,7 @@ func attachControlOrOff(path string, off bool) g.Node {
 }
 
 // AttachOffLabel is the muted paperclip's accessible name.
-const AttachOffLabel = "File attachments are off on this server — how to turn them on"
+const AttachOffLabel = features.AttachmentsName + " are off on this server — how to turn them on"
 
 // attachOffControl is the muted paperclip: a link, not a button.
 func attachOffControl() g.Node {

@@ -13,8 +13,8 @@ import (
 func TestTheComposerShowsMutedHintsWhenDictationAndAttachmentsAreOff(t *testing.T) {
 	off := renderString(t, mirrorComposer(ComposerView{SendPath: "/mirror/view/send", Aria: "Message", DictateOff: true, UploadOff: true}))
 	for _, want := range []string{
-		`id="mv-dictate-off" href="/account/features#dictation"`,
-		`id="mv-attach-off" href="/account/features#attachments"`,
+		`id="mv-dictate-off" href="/account/features#dictation-setup"`,
+		`id="mv-attach-off" href="/account/features#attachments-setup"`,
 		`aria-label="` + DictateOffLabel + `"`,
 		`aria-label="` + AttachOffLabel + `"`,
 	} {
@@ -55,7 +55,7 @@ func TestTheNavShowsConnectorsAsOff(t *testing.T) {
 		return sidebarPanel(t, documentSource(t, NavDocument(NavDocumentView{Title: "x", Entry: NavAccount, Feat: f, Main: "<h1>x</h1>"})))
 	}
 	off := doc(Features{Setup: true})
-	if !strings.Contains(off, `id="sidebar-connectors-off" href="/account/features#connectors"`) {
+	if !strings.Contains(off, `id="sidebar-connectors-off" href="/account/features#connectors-setup"`) {
 		t.Error("connectors off: no muted Connectors entry linking to its Features row")
 	}
 	// Not an admin's: no entry sending them to the server's settings (the
@@ -80,7 +80,7 @@ func TestTheNavShowsConnectorsAsOff(t *testing.T) {
 // server has no dictation, and the real one when it does.
 func TestTheAgentChatShowsTheMutedMicWhenDictationIsOff(t *testing.T) {
 	off := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1, DictateOff: true}))
-	if !strings.Contains(off, `id="chat-dictate-off" href="/account/features#dictation"`) || strings.Contains(off, `id="chat-dictate"`) {
+	if !strings.Contains(off, `id="chat-dictate-off" href="/account/features#dictation-setup"`) || strings.Contains(off, `id="chat-dictate"`) {
 		t.Error("dictation off: no muted mic in the agent chat")
 	}
 	on := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1, Dictate: TranscribePath}))
