@@ -199,7 +199,7 @@ type toolCaller struct {
 	mirrorWindow string
 	// mirrorTmuxSession is that window's tmux session name, as listed with
 	// it ("" with no window): with mirrorWindow, the window a page is made
-	// in (pages.Creator.MirrorWindow, 0156).
+	// in (pages.Creator.MirrorWindow, 0157).
 	mirrorTmuxSession string
 	// remote: a REMOTE caller (mirror_mcp.go's remoteMirrorCaller) — a
 	// session mirrored to another muster, whose host this one cannot see.
