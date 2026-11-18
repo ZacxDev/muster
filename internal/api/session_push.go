@@ -29,9 +29,10 @@ import (
 // (sessionstate.Store.ClaimPush), so the waiting hook, the state pass and two
 // replicas can never both send it, and it survives a restart: an open episode
 // that pushed never pushes again, and one that never pushed is pushed by the
-// next pass. Its notification is closed when the episode ends (a pass clears
-// any ended episode whose push is still shown, so a stop that ended while
-// muster was down is closed too).
+// next pass. Its notification is closed the moment the episode ends
+// (endEpisode), and a pass clears any ended episode whose push is still shown
+// (the backstop: a stop that ended while muster was down is closed too). The
+// clear is claimed on cleared_at (MarkCleared), so it too is sent once.
 //
 // A STOP BACK FROM 'gone' ON THE SAME STREAK IS NOT PUSHED AGAIN: its new
 // episode opens already carrying the ended one's pushed_at, and the chief's
@@ -591,21 +592,31 @@ func episodeBody(state string, idle time.Duration) string {
 }
 
 // clearEpisode closes ended episode ep's notification when it was shown, and
-// records that it was.
+// records that it was. 🔴 ONE WITHDRAWAL PER EPISODE: the clear is claimed
+// (sessionstate.PG.MarkCleared) BEFORE the resolved push is sent, and only the
+// claimer sends it — endEpisode (the waiting hook, a view, a pass) and the
+// pass's clearEndedEpisodes backstop can reach one episode concurrently. A
+// failed claim is still sent (and left uncleared, so the backstop retries it):
+// a repeated withdrawal of a closed notification, never one left shown. The
+// send is goNotify's own goroutine: no lock or transaction is held across it.
 func (s *Server) clearEpisode(octx context.Context, ep sessionstate.Episode) {
 	if ep.PushedAt.IsZero() || !ep.ClearedAt.IsZero() {
 		return
 	}
-	s.attentionClear(ep.Owner, episodeKey(ep.ID))
-	if err := s.ext.Episodes.MarkCleared(octx, ep.ID, s.now()); err != nil {
+	claimed, err := s.ext.Episodes.MarkCleared(octx, ep.ID, s.now())
+	if err != nil {
 		s.logger.Printf("session state: episode %d: cleared: %v", ep.ID, err)
+	} else if !claimed {
+		return // cleared already, by whoever claimed it
 	}
+	s.attentionClear(ep.Owner, episodeKey(ep.ID))
 	s.attentionChanged(ep.Owner, episodeKey(ep.ID))
 }
 
 // clearEndedEpisodes closes every ended episode of octx's owner whose push is
-// still shown: the restart rule (a stop that ended while muster was down, or
-// one ended in a pass that read it before it pushed).
+// still shown: the BACKSTOP behind endEpisode's own clear — a stop that ended
+// while muster was down, one whose clear failed, or one ended on a read taken
+// before it pushed (so endEpisode saw it unpushed).
 func (s *Server) clearEndedEpisodes(octx context.Context, owner int64) {
 	eps, err := s.ext.Episodes.Uncleared(octx)
 	if err != nil {
@@ -691,7 +702,9 @@ func (s *Server) episodeHandedOver(octx context.Context, items []attentionItem, 
 // waiting, under the same episode key: its prompt was answered
 // (sessionstate.OwnerActed's waiting rule, the pass's own, applied at the
 // nudge instead of up to a pass later). Its notification, if it was pushed, is
-// closed by the next pass (clearEndedEpisodes). A window not listed, or listed
+// withdrawn at once, by endEpisode — not on the next pass, up to 30 s later,
+// which kept a prompt answered at the terminal on the phone (5-35 s measured).
+// A window not listed, or listed
 // with no status, is left to the pass (its gone and unknown-state rules).
 func (s *Server) episodeWaitsAnswered(octx context.Context, hs []mirror.HostView, left []coveredWait) {
 	for _, cw := range left {
