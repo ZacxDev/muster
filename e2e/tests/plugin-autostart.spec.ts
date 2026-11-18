@@ -7,8 +7,8 @@ import { startServer, Running } from '../lib/server';
 
 // A PLUGIN'S AUTO-START, TURNED ON AND OFF ON ITS /plugins CARD (docs/plugins.md
 // #auto-start; internal/api plugin_autostart.go), at 390px, against a real
-// muster-server that can start agents for the operator: the noop agent driver,
-// task routing on with the operator in MUSTER_CHIEF_DISPATCH_OWNERS, and a fake
+// muster-server that can start agents for the operator: the noop agent driver
+// behind an agent gateway, task routing on with the operator in MUSTER_CHIEF_DISPATCH_OWNERS, and a fake
 // GitHub App (the e2eterm build's MUSTER_E2E_GITHUB_API) listing two invented
 // repositories. Synthetic data only.
 //
@@ -53,6 +53,12 @@ test.beforeAll(async () => {
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
+    // An agent gateway: without one no first turn can be delivered, and
+    // auto-start (agent_dispatch's deployment check) is rightly unavailable.
+    MUSTER_AGENT_GATEWAY: 'hooks-sha256',
+    MUSTER_AGENT_GATEWAY_MODEL: 'e2e-sentinel',
+    MUSTER_AGENT_RUNTIME_CONFIG: '{}',
+    MUSTER_AGENT_RUNTIME_INSTALL: 'exec true',
     MUSTER_AGENT_OPENROUTER_KEY: 'sk-or-e2e-autostart-not-a-real-key',
     MUSTER_GITHUB_APP_ID: APP_ID,
     MUSTER_GITHUB_APP_PRIVATE_KEY: APP_KEY,
