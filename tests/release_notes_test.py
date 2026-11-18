@@ -256,6 +256,18 @@ class RepositoryChangelog(unittest.TestCase):
         self.assertEqual(keys, sorted(keys, reverse=True), "CHANGELOG.md is not newest first")
         self.assertEqual(len(keys), len(set(keys)), "a release is listed twice")
 
+    def test_checked_in_changelog_lists_the_release_the_compose_file_defaults_to(self):
+        # The version source: deploy/docker-compose.yml's default, which the
+        # release flow's bump pull request moves to each new release — the
+        # same pull request that runs scripts/changelog-bump.sh.
+        cur = subprocess.run([str(ROOT / "scripts" / "stamp-compose-version.sh"), "--current"],
+                             stdin=open(ROOT / "deploy" / "docker-compose.yml"), check=True,
+                             capture_output=True, text=True).stdout.strip()
+        self.assertRegex(cur, r"^\d+\.\d+\.\d+$")
+        headings = [l for l in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").splitlines() if l.startswith("## ")]
+        self.assertIn(f"## v{cur}", headings,
+                      f"CHANGELOG.md has no v{cur}, the release deploy/docker-compose.yml defaults to: run scripts/changelog-bump.sh")
+
 
 class Collect(unittest.TestCase):
     """`collect` on a scratch repository: which tag is the previous one, and

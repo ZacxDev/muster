@@ -111,7 +111,7 @@ help:
 	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
 	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
 	@echo "  make release-tooling-test  release notes, manifests, asset docs, action pins, install.sh platforms (no network)"
-	@echo "  make changelog        rewrite CHANGELOG.md from every release tag (needs gh)"
+	@echo "  make changelog        rewrite CHANGELOG.md from every release tag (needs gh; the release flow's bump PR runs it)"
 	@echo "  make compose-check    deploy/docker-compose.yml is valid, every profile, every healthcheck"
 	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it,"
 	@echo "                        then the s3 and stt profiles (COMPOSE_UP_PROFILES; stt needs espeak-ng)"
@@ -411,14 +411,14 @@ release-tooling-test:
 	python3 tests/release_platforms_test.py
 	tests/install-platform-test.sh
 	tests/ghcr-push-output-test.sh
+	tests/publish-packages-test.sh
+	tests/changelog-bump-test.sh
 
 # CHANGELOG.md from every vX.Y.Z tag (needs the tags fetched and `gh`): the
 # same data and grouping as each release's notes (scripts/release-notes.py).
+# The release flow's post-release pull request runs the same script.
 changelog:
-	@d=$$(mktemp -d) && \
-	  python3 scripts/release-notes.py collect --repo ZacxDev/muster --all > $$d/data.json && \
-	  python3 scripts/release-notes.py changelog --data $$d/data.json > $$d/CHANGELOG.md && \
-	  mv $$d/CHANGELOG.md CHANGELOG.md; rc=$$?; rm -rf $$d; exit $$rc
+	scripts/changelog-bump.sh
 
 # deploy/docker-compose.yml: `docker compose config` for every profile, plus the
 # shape the install guide relies on. Pulls nothing, starts nothing.

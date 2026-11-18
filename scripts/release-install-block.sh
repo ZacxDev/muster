@@ -19,11 +19,11 @@ dl="https://github.com/$repo/releases/download/$tag"
 cat <<EOF
 ## Install
 
-- **This machine, in one line** (Linux, macOS): \`curl -fsSL $dl/install.sh | sh\` — the server in Docker, and \`muster-mirror\` and the \`muster\` CLI (as a .deb/.rpm package where it can, else into \`~/.local/bin\`). [docs/quickstart-local.md](https://github.com/$repo/blob/$tag/docs/quickstart-local.md)
+- **This machine, in one line** (Linux, macOS): \`curl -fsSL $dl/install.sh | sh\` — the server in Docker, and \`muster-mirror\` and the \`muster\` CLI into \`~/.local/bin\` (\`MUSTER_PACKAGE=deb\` or \`rpm\`: the system packages instead). [docs/quickstart-local.md](https://github.com/$repo/blob/$tag/docs/quickstart-local.md)
 - **Server by hand:** download \`docker-compose.yml\` and run \`docker compose up -d --wait\` (no \`.env\` needed: the secrets are generated; \`env.example\`, saved as \`.env\`, sets your own). Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64), \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64).
 - **Each machine:** \`muster-mirror_<os>_<arch>.tar.gz\` and \`muster_<os>_<arch>.tar.gz\` (linux, darwin; amd64, arm64), or the \`.deb\` / \`.rpm\` packages (linux).
 - **Windows:** the CLI only (\`muster-mirror\` needs tmux): \`scoop install $dl/muster.json\`, or \`muster_windows_amd64.zip\` / \`muster_windows_arm64.zip\`.
-- **Homebrew:** \`muster.rb\` and \`muster-mirror.rb\` (no tap yet: [docs/releases.md](https://github.com/$repo/blob/$tag/docs/releases.md#homebrew-and-scoop)).
+- **Homebrew:** \`brew install zacxdev/muster/muster zacxdev/muster/muster-mirror\` (the tap gets this release's \`muster.rb\` / \`muster-mirror.rb\`; [docs/releases.md](https://github.com/$repo/blob/$tag/docs/releases.md#homebrew-and-scoop)).
 - **Kubernetes:** \`helm install muster $dl/muster-$v.tgz\` (its default image is this release). [docs/kubernetes.md](https://github.com/$repo/blob/$tag/docs/kubernetes.md)
 
 ## Verify

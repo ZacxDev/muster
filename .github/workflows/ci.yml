@@ -383,6 +383,8 @@ jobs:
           python3 tests/release_platforms_test.py
           tests/install-platform-test.sh
           tests/ghcr-push-output-test.sh
+          tests/publish-packages-test.sh
+          tests/changelog-bump-test.sh
 
       # 🔴 THE REQUIRED TESTS ARE GIVEN TO THE PLANNER, NOT TO verdict.py
       # DIRECTLY: each is in exactly one internal/api shard, so goshard.py hands
@@ -2146,7 +2148,7 @@ jobs:
   # the previous vX.Y.Z tag, grouped (Security, Features, Fixes, Docs,
   # Internal, Other) by label, else by title prefix, each linking its PR —
   # above the install and verify block. CHANGELOG.md is the same data for
-  # every tag (`make changelog`). `--verify-tag` refuses to create a tag that
+  # every tag, rewritten by the release flow's post-release PR (scripts/changelog-bump.sh). `--verify-tag` refuses to create a tag that
   # was not pushed.
   #
   # ATTESTATIONS: every asset in dist/, and every program as built (the files
@@ -2218,3 +2220,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: .github/scripts/release-publish.sh "$GITHUB_REF_NAME" dist "$RUNNER_TEMP/notes.md"
+
+      # The Homebrew tap (ZacxDev/homebrew-muster, Formula/) and the Scoop
+      # bucket (ZacxDev/scoop-muster, bucket/) get this release's formulas and
+      # manifest, one commit each — AFTER the release exists, since they name
+      # its assets. MUSTER_PACKAGES_TOKEN is a fine-grained PAT for those two
+      # repositories, Contents: read and write (the job's GITHUB_TOKEN cannot
+      # write another repository); unset, the step says it skipped and passes.
+      # Idempotent, never moves a repository back to an older version
+      # (.github/scripts/publish-packages.sh; tests/publish-packages-test.sh).
+      # 🔴 continue-on-error: the release is already out; a tap that refused
+      # a push must not turn the tag's run red, which would block the release
+      # tool from taking this sha. A failure shows as this step's annotation.
+      - name: publish the formulas and the manifest to the tap and the bucket (needs MUSTER_PACKAGES_TOKEN)
+        continue-on-error: true
+        env:
+          MUSTER_PACKAGES_TOKEN: ${{ secrets.MUSTER_PACKAGES_TOKEN }}
+        run: .github/scripts/publish-packages.sh "${GITHUB_REF_NAME#v}" dist

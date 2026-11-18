@@ -14,13 +14,17 @@
 #   * Windows, end to end: refused before anything runs or changes, naming
 #     the release's Windows zip and Scoop manifest; NEGATIVE CONTROL, the same
 #     run as Linux gets past that point (so the refusal is Windows's own);
-#   * install_method(): dpkg (else rpm) as root or with `sudo -n` -> a package;
-#     sudo needing a password, macOS, MUSTER_BIN set, MUSTER_PACKAGE=tarball,
-#     no package manager, or a release without packages -> the archives;
-#     MUSTER_PACKAGE=deb on a release without one, or a bogus value -> refused;
+#   * install_method(): the DEFAULT is the archives whatever the machine has
+#     (dpkg, rpm, root, passwordless sudo); MUSTER_PACKAGE=deb|rpm opts in —
+#     root without a question, else sudo only after a "y" on the terminal
+#     (MUSTER_TTY) or MUSTER_PACKAGE_SUDO=yes; refused on "n", no terminal,
+#     no sudo, no dpkg/rpm, macOS, a release without packages, a bogus value;
+#   * a package OLDER than the installed one is refused unless
+#     MUSTER_PACKAGE_DOWNGRADE=1 (then rpm gets --oldpackage);
 #   * a joining machine end to end (fake curl serves fixture assets): the
-#     archives into MUSTER_BIN; a .deb through `sudo dpkg -i` when dpkg and
-#     passwordless sudo are there; and a CHECKSUM MISMATCH (archive or
+#     archives into MUSTER_BIN, and into ~/.local/bin by default even with dpkg
+#     and passwordless sudo; a .deb through `sudo dpkg -i` with
+#     MUSTER_PACKAGE=deb; and a CHECKSUM MISMATCH (archive or
 #     package) refused with nothing installed and no dpkg run.
 #
 # Exit 0 all pass; 1 a case failed; 2 harness error.
@@ -33,7 +37,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 
 # --- a PATH with only the real tools install.sh uses, plus fakes -------------
 real="$work/real"; mkdir -p "$real"
-for t in sh tar gzip sed grep sha256sum mktemp rm mkdir cp chmod mv cat cut dirname date sleep sort head tr env ls wc printf; do
+for t in sh tar gzip sed grep sha256sum mktemp rm mkdir cp chmod mv cat cut dirname date sleep sort head tail tr env ls wc printf; do
   p="$(command -v "$t" 2>/dev/null)" || { echo "harness: $t is not on PATH" >&2; exit 2; }
   case "$p" in /*) ln -s "$p" "$real/$t" ;; esac
 done
@@ -71,7 +75,14 @@ mkopt() { printf '#!/bin/sh\n%s\n' "$2" > "$opt/$1"; chmod +x "$opt/$1"; }
 # dpkg -i <file>: "installs" by copying the fixture program into $MUSTER_PACKAGE_BIN.
 mkopt dpkg 'echo "dpkg $*" >> "$FAKE_LOG"; [ "$1" = -i ] || exit 0
 n=${2##*/}; n=${n%%_*}; cp "$FAKE_SRC/$n" "$MUSTER_PACKAGE_BIN/$n"'
-mkopt rpm 'echo "rpm $*" >> "$FAKE_LOG"'
+# rpm -q: $FAKE_INSTALLED or not installed; rpm -U ... <file>: "installs" like dpkg.
+mkopt rpm 'echo "rpm $*" >> "$FAKE_LOG"
+case "$1" in
+  -q) [ -n "${FAKE_INSTALLED:-}" ] && { printf %s "$FAKE_INSTALLED"; exit 0; }; exit 1 ;;
+  -U) eval "f=\${$#}"; n=${f##*/}; n=${n%%_*}; cp "$FAKE_SRC/$n" "$MUSTER_PACKAGE_BIN/$n" ;;
+esac'
+# dpkg-query -W: the installed version, $FAKE_INSTALLED ("2.0.0-1"), or not installed.
+mkopt dpkg-query '[ -n "${FAKE_INSTALLED:-}" ] && { printf %s "$FAKE_INSTALLED"; exit 0; }; exit 1'
 mkopt sudo-ok 'echo "sudo $*" >> "$FAKE_LOG"; [ "$1" = -n ] && shift; "$@"'
 mkopt sudo-pw 'echo "sudo $*" >> "$FAKE_LOG"; [ "$1" = -n ] && { echo "sudo: a password is required" >&2; exit 1; }; exit 1'
 
@@ -80,7 +91,11 @@ casebin=""
 with() {
   casebin="$work/case-$RANDOM$RANDOM"; mkdir -p "$casebin"
   while [ $# -gt 0 ] && [ "$1" != -- ]; do
-    case "$1" in sudo-ok|sudo-pw) ln -s "$opt/$1" "$casebin/sudo" ;; *) ln -s "$opt/$1" "$casebin/$1" ;; esac
+    case "$1" in
+      sudo-ok|sudo-pw) ln -s "$opt/$1" "$casebin/sudo" ;;
+      dpkg) ln -s "$opt/dpkg" "$casebin/dpkg"; ln -s "$opt/dpkg-query" "$casebin/dpkg-query" ;;
+      *) ln -s "$opt/$1" "$casebin/$1" ;;
+    esac
     shift
   done
 }
@@ -109,6 +124,8 @@ sed '$d' "$INSTALL" > "$work/lib.sh"
 for fn in platform install_method; do
   grep -q "^$fn() {" "$work/lib.sh" || { bad "harness" "install.sh has no $fn()"; }
 done
+
+printf 'y\n' > "$work/tty-yes"; printf 'n\n' > "$work/tty-no"
 
 # --- 1. platform(): the uname matrix -----------------------------------------
 detect() { # <uname -s> <uname -m> -> "OS/ARCH"
@@ -168,7 +185,7 @@ method() {
   with "$@"; while [ "$1" != -- ]; do shift; done; shift
   : > "$work/log"
   env -i HOME="$work" PATH="$casebin:$fake:$real" FAKE_LOG="$work/log" "$@" \
-    sh -c ". '$work/lib.sh'; OS=\${T_OS:-linux}; ARCH=amd64; RELEASE=1.2.3; BIN=\$HOME/.local/bin; install_method '$r/checksums.txt'" \
+    sh -c ". '$work/lib.sh'; OS=\${T_OS:-linux}; ARCH=amd64; RELEASE=1.2.3; BIN=\$HOME/.local/bin; PKG_BIN=/usr/bin; install_method '$r/checksums.txt'" \
     2>"$work/err" || echo refused
 }
 mcase() { # <description> <want> <release dir> <tools...> -- [VAR=value...]
@@ -178,20 +195,29 @@ mcase() { # <description> <want> <release dir> <tools...> -- [VAR=value...]
   if [ "$want" = refused ] && ! grep -q 'MUSTER_PACKAGE=' "$work/err"; then got="refused without naming MUSTER_PACKAGE"; fi
   if [ "$got" = "$want" ]; then ok "install_method: $d -> $want"; else bad "install_method: $d" "got '$got', want '$want' ($(cat "$work/err"))"; fi
 }
-mcase "dpkg, root" deb "$rel" dpkg -- FAKE_UID=0
-mcase "dpkg, sudo without a password" deb "$rel" dpkg sudo-ok --
-mcase "rpm only, sudo without a password" rpm "$rel" rpm sudo-ok --
-mcase "dpkg and rpm: dpkg wins" deb "$rel" dpkg rpm sudo-ok --
-mcase "dpkg, sudo needs a password" tarball "$rel" dpkg sudo-pw --
-mcase "dpkg, no sudo at all" tarball "$rel" dpkg --
-mcase "no package manager" tarball "$rel" sudo-ok --
-mcase "macOS" tarball "$rel" dpkg sudo-ok -- T_OS=darwin
-mcase "MUSTER_BIN set" tarball "$rel" dpkg sudo-ok -- MUSTER_BIN=/somewhere
+# 🔴 THE DEFAULT IS THE ARCHIVES, whatever the machine offers (packages are
+# opt-in): these rows were deb/rpm at the first head of this change.
+mcase "default, dpkg, root" tarball "$rel" dpkg -- FAKE_UID=0
+mcase "default, dpkg, sudo without a password" tarball "$rel" dpkg sudo-ok --
+mcase "default, rpm, sudo without a password" tarball "$rel" rpm sudo-ok --
+mcase "default, no package manager" tarball "$rel" sudo-ok --
+mcase "default, macOS" tarball "$rel" dpkg sudo-ok -- T_OS=darwin
 mcase "MUSTER_PACKAGE=tarball" tarball "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=tarball
-mcase "a release with no packages" tarball "$relold" dpkg sudo-ok --
-mcase "MUSTER_PACKAGE=rpm without rpm's sudo -n (asked as given)" rpm "$rel" -- MUSTER_PACKAGE=rpm
-mcase "MUSTER_PACKAGE=deb, a release with no packages" refused "$relold" dpkg sudo-ok -- MUSTER_PACKAGE=deb
-mcase "MUSTER_PACKAGE=deb on macOS" refused "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=deb T_OS=darwin
+# Opt-in: root needs no question; anyone else is asked, or answers with
+# MUSTER_PACKAGE_SUDO; with no terminal and no answer it refuses.
+mcase "MUSTER_PACKAGE=deb as root (no question)" deb "$rel" dpkg -- MUSTER_PACKAGE=deb FAKE_UID=0 MUSTER_TTY=/nonexistent
+mcase "MUSTER_PACKAGE=rpm, MUSTER_PACKAGE_SUDO=yes" rpm "$rel" rpm sudo-ok -- MUSTER_PACKAGE=rpm MUSTER_PACKAGE_SUDO=yes
+mcase "MUSTER_PACKAGE=deb, asked, answers y" deb "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=deb MUSTER_TTY="$work/tty-yes"
+mcase "MUSTER_PACKAGE=deb, asked, answers n" refused "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=deb MUSTER_TTY="$work/tty-no"
+mcase "MUSTER_PACKAGE=deb, MUSTER_PACKAGE_SUDO=no" refused "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=no MUSTER_TTY="$work/tty-yes"
+mcase "MUSTER_PACKAGE=deb, no terminal, no answer" refused "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=deb MUSTER_TTY=/nonexistent
+mcase "MUSTER_PACKAGE=deb, no sudo, not root" refused "$rel" dpkg -- MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes
+mcase "MUSTER_PACKAGE=deb without dpkg" refused "$rel" sudo-ok -- MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes
+mcase "MUSTER_PACKAGE=deb, a release with no packages" refused "$relold" dpkg sudo-ok -- MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes
+mcase "MUSTER_PACKAGE=deb on macOS" refused "$rel" dpkg sudo-ok -- MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes T_OS=darwin
+# The question was really asked on the terminal it was given.
+if grep -q 'use sudo to install them' "$work/tty-yes"; then ok "the sudo question is asked on the terminal"
+else bad "the sudo question" "not written to MUSTER_TTY"; fi
 # A bogus MUSTER_PACKAGE is refused by main's preflight, before anything runs.
 with dpkg sudo-ok --
 run_install Linux x86_64 "$rel" MUSTER_PACKAGE=snap
@@ -206,14 +232,47 @@ if [ "$rc" -eq 0 ] && [ -x "$mb/muster" ] && [ -x "$mb/muster-mirror" ] && grep 
    ! grep -qE '^(dpkg|sudo) ' "$work/log"; then ok "archives: both programs in MUSTER_BIN, its doctor run"
 else bad "archives into MUSTER_BIN" "rc=$rc; calls: $(tr '\n' ';' < "$work/log")"; fi
 
+# The default on a machine with dpkg and passwordless sudo: the archives,
+# no sudo, no dpkg (at the first head of this change: both .deb via sudo).
 with dpkg sudo-ok --
 run_install Linux aarch64 "$rel"
+if [ "$rc" -eq 0 ] && [ -x "$home/.local/bin/muster" ] && ! grep -qE '^(sudo|dpkg) ' "$work/log"; then
+  ok "default with dpkg + passwordless sudo: archives into ~/.local/bin, no sudo, no dpkg"
+else bad "default with dpkg + sudo" "rc=$rc; calls: $(tr '\n' ';' < "$work/log")"; fi
+
+with dpkg sudo-ok --
+run_install Linux aarch64 "$rel" MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes
 if [ "$rc" -eq 0 ] && grep -q '^sudo dpkg -i .*/muster-mirror_linux_arm64\.deb$' "$work/log" &&
    grep -q '^sudo dpkg -i .*/muster_linux_arm64\.deb$' "$work/log" &&
    grep -q "^muster doctor " "$work/log" && [ ! -e "$home/.local/bin/muster" ] &&
    grep -q "PATH=.*$home/pkgbin" "$home/.config/muster-mirror/env"; then
-  ok "packages: dpkg + passwordless sudo installs both .deb files, and the doctor is the package's"
+  ok "MUSTER_PACKAGE=deb: both .deb files through sudo dpkg, and the doctor is the package's"
 else bad "packages via sudo dpkg" "rc=$rc; calls: $(tr '\n' ';' < "$work/log")"; fi
+
+# DOWNGRADE: an installed package newer than the release is refused, nothing
+# installed; MUSTER_PACKAGE_DOWNGRADE=1 installs it (rpm: with --oldpackage).
+with dpkg sudo-ok --
+run_install Linux x86_64 "$rel" MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes FAKE_INSTALLED=2.0.0-1
+if [ "$rc" -ne 0 ] && grep -q 'package is 2.0.0, newer than this release (1.2.3)' "$work/out" && ! grep -q 'dpkg -i' "$work/log"; then
+  ok "a .deb older than the installed one is refused, nothing installed"
+else bad "deb downgrade refused" "rc=$rc; calls: $(tr '\n' ';' < "$work/log")"; fi
+run_install Linux x86_64 "$rel" MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes FAKE_INSTALLED=1.0.0-1
+if [ "$rc" -eq 0 ] && grep -q 'dpkg -i' "$work/log"; then ok "CONTROL: an older installed .deb is upgraded"
+else bad "deb upgrade" "rc=$rc; $(tail -3 "$work/out")"; fi
+with rpm sudo-ok --
+run_install Linux x86_64 "$rel" MUSTER_PACKAGE=rpm MUSTER_PACKAGE_SUDO=yes FAKE_INSTALLED=2.0.0
+if [ "$rc" -ne 0 ] && grep -q 'MUSTER_PACKAGE_DOWNGRADE=1' "$work/out" && ! grep -q '^rpm -U' "$work/log"; then
+  ok "an .rpm older than the installed one is refused"
+else bad "rpm downgrade refused" "rc=$rc"; fi
+run_install Linux x86_64 "$rel" MUSTER_PACKAGE=rpm MUSTER_PACKAGE_SUDO=yes FAKE_INSTALLED=2.0.0 MUSTER_PACKAGE_DOWNGRADE=1
+if grep -q '^rpm -U --replacepkgs --oldpackage .*muster_linux_amd64\.rpm$' "$work/log"; then
+  ok "MUSTER_PACKAGE_DOWNGRADE=1: the .rpm goes in with --oldpackage"
+else bad "rpm forced downgrade" "rc=$rc; calls: $(tr '\n' ';' < "$work/log")"; fi
+with rpm sudo-ok --
+run_install Linux x86_64 "$rel" MUSTER_PACKAGE=rpm MUSTER_PACKAGE_SUDO=yes
+if grep -q '^rpm -U --replacepkgs .*muster_linux_amd64\.rpm$' "$work/log" && ! grep -q -- '--oldpackage' "$work/log"; then
+  ok "no downgrade asked: no --oldpackage"
+else bad "rpm without --oldpackage" "calls: $(tr '\n' ';' < "$work/log")"; fi
 
 # CHECKSUM MISMATCH: a tampered asset is refused, nothing installed. (For the
 # archive this is an INVARIANT guard: install.sh refused it before packages
@@ -226,10 +285,10 @@ if [ "$rc" -ne 0 ] && grep -q 'muster_linux_amd64.tar.gz does not match the rele
 else bad "tampered archive" "rc=$rc; $(ls "$work/tbin" 2>&1)"; fi
 cp -R "$rel/." "$tam/"; echo tampered > "$tam/muster_linux_amd64.deb"
 with dpkg sudo-ok --
-run_install Linux x86_64 "$tam"
+run_install Linux x86_64 "$tam" MUSTER_PACKAGE=deb MUSTER_PACKAGE_SUDO=yes
 if [ "$rc" -ne 0 ] && grep -q 'muster_linux_amd64.deb does not match' "$work/out" && ! grep -q 'dpkg -i' "$work/log"; then
   ok "a tampered package is refused before ANY package is installed"
 else bad "tampered package" "rc=$rc; calls: $(tr '\n' ';' < "$work/log")"; fi
 
 echo "install-platform-test: $passes passed, $fails failed"
-[ "$fails" -eq 0 ] && [ "$passes" -ge 30 ]
+[ "$fails" -eq 0 ] && [ "$passes" -ge 43 ]

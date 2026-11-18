@@ -918,7 +918,10 @@ again.
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`mi_dc exec -T muster /muster-server mirror
-  token ls`, then `… revoke <id>`).
+  token ls`, then `… revoke <id>`). If the programs were installed as system
+  packages (`MUSTER_PACKAGE=deb|rpm`; this guide never does), also
+  `sudo apt remove muster muster-mirror` or `sudo dnf remove muster muster-mirror`
+  (ask first: it removes them for every user of the machine).
 - **Remove muster's HTTPS mapping**, and only it: `tailscale serve --https=443
   off` when `mi_serve_state` says `ours`. Never `tailscale serve reset`: it
   removes everything else this machine serves too.

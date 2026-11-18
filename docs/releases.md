@@ -48,26 +48,46 @@ The server itself ships as images, not as a binary:
 
 - **Linux or macOS, the whole thing:** `curl -fsSL
   https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh`
-  ([quickstart-local.md](quickstart-local.md)). On Linux it installs the
-  `.deb` or `.rpm` packages (`/usr/bin`) when the machine has dpkg or rpm and
-  you are root or have sudo without a password; otherwise the archives into
-  `~/.local/bin`. `MUSTER_PACKAGE=tarball` always takes the archives;
-  `MUSTER_PACKAGE=deb` (or `rpm`) always takes the package, asking sudo for a
-  password if it needs one. Setting `MUSTER_BIN` means "install into that
-  directory", so it never installs a package.
-- **A package by hand** (Debian/Ubuntu, Fedora/RHEL/openSUSE):
+  ([quickstart-local.md](quickstart-local.md)). It installs the programs from
+  the archives into `~/.local/bin` (or `MUSTER_BIN`), for you alone, and never
+  touches system packages unless asked.
+- **The installer, with packages** (Linux, opt-in): `MUSTER_PACKAGE=deb` (or
+  `rpm`) installs the release's packages into `/usr/bin` instead, for every
+  user of the machine. Unless you are root it asks before it uses sudo
+  (`MUSTER_PACKAGE_SUDO=yes` answers for a script; with no terminal and no
+  answer it refuses). It refuses a package older than the one installed,
+  since every user's `muster-mirror` runs that one copy, unless
+  `MUSTER_PACKAGE_DOWNGRADE=1`. Programs left in `~/.local/bin` by an earlier
+  install come first on most `PATH`s: it names them; remove them.
+- **A package by hand, Debian/Ubuntu (apt):**
 
   ```sh
   v=X.Y.Z; a=amd64    # or arm64
   base=https://github.com/ZacxDev/muster/releases/download/v$v
   curl -fsSLO "$base/checksums.txt" -O "$base/muster_linux_$a.deb" -O "$base/muster-mirror_linux_$a.deb"
   sha256sum --check --ignore-missing checksums.txt
-  sudo dpkg -i muster_linux_$a.deb muster-mirror_linux_$a.deb     # or: sudo rpm -U *.rpm
+  sudo apt install ./muster_linux_$a.deb ./muster-mirror_linux_$a.deb   # also installs tmux, which muster-mirror recommends
+  # uninstall:
+  sudo apt remove muster muster-mirror
+  ```
+
+- **A package by hand, Fedora/RHEL (dnf):**
+
+  ```sh
+  v=X.Y.Z; a=amd64    # or arm64
+  base=https://github.com/ZacxDev/muster/releases/download/v$v
+  curl -fsSLO "$base/checksums.txt" -O "$base/muster_linux_$a.rpm" -O "$base/muster-mirror_linux_$a.rpm"
+  sha256sum --check --ignore-missing checksums.txt
+  sudo dnf install ./muster_linux_$a.rpm ./muster-mirror_linux_$a.rpm
+  # uninstall:
+  sudo dnf remove muster muster-mirror
   ```
 
   The packages install `/usr/bin/muster` and `/usr/bin/muster-mirror` and
-  nothing else: no service, no settings. `muster-mirror` recommends `tmux`
-  (`dpkg -i` and `rpm -U` install without it; install tmux yourself).
+  nothing else: no service, no settings (the installer, or
+  [mirroring.md](mirroring.md), sets those up). Removing them leaves each
+  user's `~/.config/muster-mirror` and service unit; see INSTALL.md,
+  "Remove a machine".
 - **Homebrew** (macOS, Linux): see [Homebrew and Scoop](#homebrew-and-scoop).
 - **Windows:** the CLI only. With [Scoop](https://scoop.sh):
   `scoop install https://github.com/ZacxDev/muster/releases/latest/download/muster.json`.
@@ -124,50 +144,44 @@ conventional-commit type, else it is "Other changes":
 A scope is kept and a type is dropped: `fix(mirror): reconnect` reads
 **mirror:** reconnect, under Fixes. A title such as `officers: …` names a part
 of muster, not a type, so it is "Other changes" until the pull request is
-labelled. Refresh CHANGELOG.md after a release with `make changelog`
-(needs `gh`).
+labelled. CHANGELOG.md is rewritten by the release flow's post-release pull
+request, the one that moves the compose default to the new version
+("compose: default to vX.Y.Z"): it runs `scripts/changelog-bump.sh` beside
+`scripts/check-compose-default.sh --bump`. `tests/release_notes_test.py`
+fails while CHANGELOG.md lacks the release the compose file defaults to.
 
 ## Homebrew and Scoop
 
 Each release attaches a Homebrew formula per program and a Scoop manifest for
 the CLI, generated from its own `checksums.txt`
-(`scripts/release-manifests.py`). Nothing publishes them to a tap or a bucket
-yet: that needs a repository of its own, which is a decision for the
-maintainers. Until then:
+(`scripts/release-manifests.py`), and the `release` job then commits them to
+the tap and the bucket (`.github/scripts/publish-packages.sh`): one commit
+each, "muster X.Y.Z", after the release is published.
 
-- **Homebrew**, from the release's formula in a local tap (Homebrew installs
-  formulas only from a tap):
+- **Homebrew** (macOS, Linux):
 
   ```sh
-  brew tap-new --no-git "$USER/muster"
-  t="$(brew --repository "$USER/muster")/Formula"
-  curl -fsSL -o "$t/muster.rb" https://github.com/ZacxDev/muster/releases/latest/download/muster.rb
-  curl -fsSL -o "$t/muster-mirror.rb" https://github.com/ZacxDev/muster/releases/latest/download/muster-mirror.rb
-  brew install "$USER/muster/muster" "$USER/muster/muster-mirror"
+  brew install zacxdev/muster/muster zacxdev/muster/muster-mirror     # the tap ZacxDev/homebrew-muster
+  brew upgrade muster muster-mirror
   ```
 
-- **Scoop**: `scoop install <the release's muster.json URL>` (above) needs no bucket.
+- **Scoop** (Windows, the CLI only):
 
-**To publish them (maintainers).** Create the two repositories once, then copy
-each release's files into them; both tools then update with their usual
-commands (`brew upgrade`, `scoop update`):
+  ```sh
+  scoop bucket add muster https://github.com/ZacxDev/scoop-muster
+  scoop install muster
+  scoop update muster
+  ```
 
-```sh
-# once: an empty public tap and bucket
-gh repo create ZacxDev/homebrew-muster --public --description "Homebrew tap for muster"
-gh repo create ZacxDev/scoop-muster --public --description "Scoop bucket for muster"
+  `scoop install <a release's muster.json URL>` (above) works without the bucket.
 
-# per release vX.Y.Z
-v=X.Y.Z
-gh release download "v$v" -R ZacxDev/muster -p muster.rb -p muster-mirror.rb -p muster.json -D "/tmp/muster-$v"
-git clone git@github.com:ZacxDev/homebrew-muster.git /tmp/tap && mkdir -p /tmp/tap/Formula
-cp "/tmp/muster-$v"/*.rb /tmp/tap/Formula/ && git -C /tmp/tap add Formula && git -C /tmp/tap commit -m "muster $v" && git -C /tmp/tap push
-git clone git@github.com:ZacxDev/scoop-muster.git /tmp/bucket && mkdir -p /tmp/bucket/bucket
-cp "/tmp/muster-$v/muster.json" /tmp/bucket/bucket/ && git -C /tmp/bucket add bucket && git -C /tmp/bucket commit -m "muster $v" && git -C /tmp/bucket push
-```
-
-People then run `brew install zacxdev/muster/muster` and `scoop bucket add muster
-https://github.com/ZacxDev/scoop-muster && scoop install muster`. Automating the
-per-release copy from the `release` job needs a token that can push to those
-repositories (a fine-grained token or a deploy key as a repository secret):
-the job's own `GITHUB_TOKEN` cannot write to another repository.
+**The token (maintainers).** The job's own `GITHUB_TOKEN` cannot write to
+another repository, so the step needs the repository secret
+`MUSTER_PACKAGES_TOKEN`: a **fine-grained personal access token** with
+*Repository access: only* `ZacxDev/homebrew-muster` and `ZacxDev/scoop-muster`,
+and *Repository permissions: Contents: Read and write* (nothing else; Metadata
+read-only comes with it). Set it with `gh secret set MUSTER_PACKAGES_TOKEN -R
+ZacxDev/muster` (it reads the value from stdin), and note its expiry: when it
+lapses the step fails as a warning and the release itself is unaffected.
+Without the secret the step says it skipped. It never moves either
+repository back to an older version, and a re-run commits nothing.

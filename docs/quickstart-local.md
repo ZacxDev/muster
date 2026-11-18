@@ -19,9 +19,9 @@ curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh
 ```
 
 It starts the server in Docker (in `~/muster`), installs `muster-mirror` and
-the `muster` CLI (on Linux as the release's `.deb` or `.rpm` package when you
-are root or have sudo without a password, else in `~/.local/bin`;
-`MUSTER_PACKAGE=tarball` always takes `~/.local/bin`), runs `muster-mirror` as a user service so
+the `muster` CLI in `~/.local/bin` (on Linux, `MUSTER_PACKAGE=deb` or `rpm`
+installs the release's system packages instead, asking before it uses sudo:
+[releases.md](releases.md#installing-by-platform)), runs `muster-mirror` as a user service so
 this machine's tmux windows show up, and finishes with `muster doctor`. It
 prints the address and the sign-in password at the end.
 

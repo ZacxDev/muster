@@ -16,11 +16,10 @@
 #      MUSTER_PUBLIC_URL=http://localhost:<port>, and an update never writes
 #      it); a Compose override beside it that this release and .env cannot
 #      run is refused before anything changes;
-#   4. installs muster-mirror and the muster CLI (checksum-verified): as the
-#      release's .deb or .rpm package (/usr/bin) when this is a Linux machine
-#      with dpkg or rpm and this user is root or has sudo without a password
-#      (`sudo -n`), else from the release's archives into ~/.local/bin (see
-#      MUSTER_PACKAGE below); mints this machine's mirror token, and runs muster-mirror
+#   4. installs muster-mirror and the muster CLI (checksum-verified) into
+#      ~/.local/bin — or, only when asked (MUSTER_PACKAGE=deb|rpm, Linux), as
+#      the release's system packages in /usr/bin, asking before it uses sudo;
+#      mints this machine's mirror token, and runs muster-mirror
 #      as a user service (systemd on Linux, launchd on macOS) against
 #      http://localhost:<port>; on Linux it turns on linger for this user
 #      (`loginctl enable-linger`, asking before it uses sudo) so the mirror
@@ -48,11 +47,12 @@
 # and the port is whatever that release's docker-compose.yml publishes.
 #
 # Settings (environment): MUSTER_DIR (default ~/muster), MUSTER_PROJECT
-# (compose project, default muster), MUSTER_BIN (default ~/.local/bin; setting
-# it means "install the archives there", never a package),
-# MUSTER_PACKAGE (auto, the default: a package when step 4 above allows one;
-# deb or rpm: that package, with sudo, which may ask for a password; tarball:
-# the archives into MUSTER_BIN),
+# (compose project, default muster), MUSTER_BIN (default ~/.local/bin),
+# MUSTER_PACKAGE (tarball, the default: the archives into MUSTER_BIN; deb or
+# rpm: the release's package instead, for every user of this machine — as
+# root, or with sudo after asking first; MUSTER_PACKAGE_SUDO=yes/no answers
+# that without asking; a package OLDER than the one installed is refused
+# unless MUSTER_PACKAGE_DOWNGRADE=1),
 # MUSTER_MIRROR_HOST (default this machine's short hostname), MUSTER_LINGER
 # (yes/no: answer the linger question without asking), MUSTER_JOIN_URL (join
 # that hub instead of starting a server here), MUSTER_MIRROR_INTERACTIVE (0/1:
@@ -62,7 +62,8 @@
 # the command that shows the sign-in password, not the password: for an agent,
 # whose output is read by its provider). For testing only: MUSTER_RELEASE_BASE
 # (where the assets are), MUSTER_IMAGE (a local image), MUSTER_PACKAGE_BIN
-# (where an installed package puts its programs, default /usr/bin).
+# (where an installed package puts its programs, default /usr/bin), MUSTER_TTY
+# (the terminal the sudo question for a package is asked on, default /dev/tty).
 #
 # The capabilities line at the top names the settings above a guide may rely
 # on (join: MUSTER_JOIN_URL; adopt: MUSTER_MIRROR_ADOPT): INSTALL.md's
@@ -89,7 +90,8 @@ case "${MUSTER_MIRROR_INTERACTIVE:-}" in ""|0|1) ;; *) die "MUSTER_MIRROR_INTERA
 
 # --- 1. preflight -------------------------------------------------------------
 for t in curl tar uname sed grep; do have "$t" || die "this needs $t; install it and run again"; done
-case "${MUSTER_PACKAGE:-auto}" in auto|deb|rpm|tarball) ;; *) die "MUSTER_PACKAGE must be auto, deb, rpm or tarball" ;; esac
+case "${MUSTER_PACKAGE:-tarball}" in deb|rpm|tarball) ;; *) die "MUSTER_PACKAGE must be tarball (the default), deb or rpm" ;; esac
+case "${MUSTER_PACKAGE_SUDO:-}" in ""|yes|no) ;; *) die "MUSTER_PACKAGE_SUDO must be yes or no" ;; esac
 # The platform first: on Windows nothing below applies, so nothing below runs.
 platform
 case "$OS" in
@@ -211,11 +213,13 @@ fi
 how=$(install_method "$tmp/checksums.txt") || exit 1
 case "$how" in
   deb|rpm)
-    # Every package is downloaded and verified before the first is installed.
+    # Every package is downloaded and verified, and the versions checked,
+    # before the first is installed.
     for name in muster-mirror muster; do fetch "${name}_${OS}_${ARCH}.$how"; verify "${name}_${OS}_${ARCH}.$how"; done
+    pkg_downgrade_check "$how"
     for name in muster-mirror muster; do
       asset="${name}_${OS}_${ARCH}.$how"
-      pkg_install "$how" "$tmp/$asset" || die "could not install $asset; run again with MUSTER_PACKAGE=tarball to install into $BIN instead"
+      pkg_install "$how" "$tmp/$asset" || die "could not install $asset; run again without MUSTER_PACKAGE to install into $BIN instead"
       [ -x "$PKG_BIN/$name" ] || die "$asset is installed but $PKG_BIN/$name is not there"
     done
     for name in muster-mirror muster; do
@@ -434,43 +438,73 @@ windows_note() {
   printf '%s\n' "To show this machine's sessions in muster, run this installer inside WSL (Linux), where tmux runs. Nothing was changed."
 }
 
-# install_method <checksums.txt>: how step 4 installs the programs — deb, rpm
-# or tarball. MUSTER_PACKAGE=deb|rpm|tarball is followed as given (a package
-# this release does not publish is refused). auto: a package only on Linux,
-# without MUSTER_BIN (a directory asked for is a directory to install into),
-# with dpkg (else rpm) on PATH, when this release publishes it, and when this
-# user can install one without being asked for a password: root, or `sudo -n`.
-# Anything else is the archives into MUSTER_BIN. Notes go to stderr.
+# install_method <checksums.txt>: how step 4 installs the programs — tarball
+# (the default: the archives into MUSTER_BIN), or deb/rpm, ONLY when
+# MUSTER_PACKAGE asks for it. A package is refused on anything but Linux, when
+# this release publishes none, without dpkg/rpm, and — not being root — when
+# this user declines sudo (pkg_consent), so a `curl | sh` never changes system
+# packages it was not asked to.
 install_method() {
-  im="${MUSTER_PACKAGE:-auto}"
-  case "$im" in
-    deb|rpm)
-      [ "$OS" = linux ] || die "MUSTER_PACKAGE=$im: packages are for Linux; this is $OS"
-      grep -q "  muster_${OS}_${ARCH}\.$im\$" "$1" || die "MUSTER_PACKAGE=$im: release $RELEASE publishes no .$im packages (run again with MUSTER_PACKAGE=tarball)"
-      echo "$im"; return 0 ;;
-    tarball) echo tarball; return 0 ;;
-  esac
-  if [ "$OS" != linux ] || [ -n "${MUSTER_BIN:-}" ]; then echo tarball; return 0; fi
-  if have dpkg; then im=deb; elif have rpm; then im=rpm; else echo tarball; return 0; fi
-  if ! grep -q "  muster_${OS}_${ARCH}\.$im\$" "$1"; then
-    say "note: release $RELEASE publishes no .$im packages; installing into ${BIN}" >&2
-    echo tarball; return 0
-  fi
-  if [ "$(id -u)" = 0 ] || { have sudo && sudo -n true </dev/null >/dev/null 2>&1; }; then
-    echo "$im"; return 0
-  fi
-  say "note: installing into ${BIN}, not as a .$im package: that needs root or sudo without a password (MUSTER_PACKAGE=$im asks sudo for one)" >&2
-  echo tarball
+  im="${MUSTER_PACKAGE:-tarball}"
+  [ "$im" != tarball ] || { echo tarball; return 0; }
+  [ "$OS" = linux ] || die "MUSTER_PACKAGE=$im: packages are for Linux; this is $OS"
+  grep -q "  muster_${OS}_${ARCH}\.$im\$" "$1" || die "MUSTER_PACKAGE=$im: release $RELEASE publishes no .$im packages (run again without MUSTER_PACKAGE)"
+  case "$im" in deb) have dpkg ;; rpm) have rpm ;; esac || die "MUSTER_PACKAGE=$im: there is no $([ "$im" = deb ] && echo dpkg || echo rpm) on this machine"
+  pkg_consent "$im" || exit 1
+  echo "$im"
 }
 
-# pkg_install deb|rpm <file>: install a package, as root (sudo when this user
-# is not; it may ask for a password, on the terminal). An older version than
-# the installed one is installed too: a joining machine takes its hub's.
+# pkg_consent deb|rpm: may this run use sudo to install the packages? Root
+# needs no sudo. Else MUSTER_PACKAGE_SUDO=yes/no answers; else it asks on the
+# terminal, as linger() does; with no terminal to ask on it refuses.
+pkg_consent() {
+  [ "$(id -u)" != 0 ] || return 0
+  have sudo || { say "MUSTER_PACKAGE=$1 needs root or sudo, and there is no sudo: run as root, or without MUSTER_PACKAGE" >&2; return 1; }
+  ans="${MUSTER_PACKAGE_SUDO:-}"; t="${MUSTER_TTY:-/dev/tty}"
+  if [ -z "$ans" ] && (: <"$t") 2>/dev/null; then
+    say "MUSTER_PACKAGE=$1 installs the muster and muster-mirror .$1 packages in $PKG_BIN for every user of this machine. That takes sudo." >>"$t"
+    printf 'muster-install: use sudo to install them (sudo may ask for your password)? [y/N] ' >>"$t"
+    read -r ans <"$t" || ans=
+  fi
+  case "$ans" in
+    y|Y|yes|YES) return 0 ;;
+    "") say "MUSTER_PACKAGE=$1 needs sudo, and there is no terminal to ask on: set MUSTER_PACKAGE_SUDO=yes to allow it, or run without MUSTER_PACKAGE. Nothing was changed." >&2; return 1 ;;
+    *) say "MUSTER_PACKAGE=$1: sudo declined, nothing was installed. Run without MUSTER_PACKAGE to install into $BIN instead." >&2; return 1 ;;
+  esac
+}
+
+# pkg_installed deb|rpm <name>: the installed package's version (X.Y.Z), or nothing.
+pkg_installed() {
+  case "$1" in
+    deb) v=$(dpkg-query -W -f='${Version}' "$2" 2>/dev/null) || v="" ;;
+    rpm) v=$(rpm -q --qf '%{VERSION}' "$2" 2>/dev/null) || v="" ;;
+  esac
+  v="${v%%-*}"
+  case "$v" in [0-9]*.[0-9]*.[0-9]*) echo "$v" ;; esac
+}
+
+# pkg_downgrade_check deb|rpm: refuse a package OLDER than the installed one
+# (one copy in /usr/bin serves every user of this machine, and each one's
+# muster-mirror service) unless MUSTER_PACKAGE_DOWNGRADE=1.
+pkg_downgrade_check() {
+  for n in muster-mirror muster; do
+    cur=$(pkg_installed "$1" "$n")
+    [ -n "$cur" ] && [ "$cur" != "$RELEASE" ] || continue
+    [ "$(printf '%s\n%s\n' "$cur" "$RELEASE" | sort -V | tail -n 1)" = "$cur" ] || continue
+    [ "${MUSTER_PACKAGE_DOWNGRADE:-}" = 1 ] ||
+      die "the installed $n package is $cur, newer than this release ($RELEASE); it serves every user of this machine. Nothing was changed. To install $RELEASE anyway: MUSTER_PACKAGE_DOWNGRADE=1"
+    say "downgrading the $n package from $cur to $RELEASE (MUSTER_PACKAGE_DOWNGRADE=1)"
+  done
+}
+
+# pkg_install deb|rpm <file>: install a package, as root (sudo, already agreed
+# to, when this user is not). A downgrade only after pkg_downgrade_check.
 pkg_install() {
   as=""; [ "$(id -u)" = 0 ] || as=sudo
+  old=""; [ "${MUSTER_PACKAGE_DOWNGRADE:-}" = 1 ] && old=--oldpackage
   case "$1" in
     deb) $as dpkg -i "$2" </dev/null ;;
-    rpm) $as rpm -U --replacepkgs --oldpackage "$2" </dev/null ;;
+    rpm) $as rpm -U --replacepkgs $old "$2" </dev/null ;;
   esac
 }
 
