@@ -350,12 +350,10 @@ func (s *Server) lastAssistantWords(ctx context.Context, c toolCaller) string {
 		if !ok {
 			return ""
 		}
-		// An opencode session's backfill is read as its runtime's (Runtime):
-		// nudgeTranscript then names the window's agent session, not a Claude one.
-		cand.Session = chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: c.asker.MirrorSession, Host: e.Host, TmuxSession: e.Session, Window: e.Window}
-		if c.openCodeSession() {
-			cand.Session.Runtime = mirror.RuntimeOpenCode
-		}
+		// The window's own runtime ("" for Claude Code): an opencode session's
+		// backfill is then read as its agent session's, not a Claude one's
+		// (nudgeTranscript).
+		cand.Session = chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: c.asker.MirrorSession, Runtime: e.Runtime, Host: e.Host, TmuxSession: e.Session, Window: e.Window}
 	}
 	read, err := s.nudgeTranscript(rctx, cand)
 	if err != nil && len(read.Msgs) == 0 {
