@@ -71,6 +71,12 @@ const MIN_LOG = 120;
 const OPTIONS = ['agent_dispatch on pod/gateway: start a new agent on it', 'agent_dispatch on pod/claude-code: start a new agent on it'];
 // The chief: a claude-code agent displayed as "chief".
 const CHIEF = `e2e-ccm-chief-${stamp}`;
+// A TEAM the operator manages, and its chief: the team's one shared room,
+// with two chats (e2e/mkteam, e2e/mkchat's MUSTER_E2E_TEAM).
+const TEAM_CHIEF = `e2e-ccm-team-chief-${stamp}`;
+let teamId = '';
+const mkchat = (env: Record<string, string>, input = '') =>
+  execFileSync('go', ['run', './e2e/mkchat'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn, ...env }, input });
 
 let server: Running | undefined;
 
@@ -96,12 +102,21 @@ test.beforeAll(async () => {
   // The CHIEF (a claude-code agent whose display name is "chief"): its page's
   // sheet, header and layout (the describes at the end of this file).
   go('./e2e/ccfix', 'agent', OWNER, CHIEF, 'beta', `e2e-ccm-chief-token-${stamp}`, 'chief');
+  teamId = go('./e2e/mkteam', 'create', `e2e chief chips ${stamp}`);
+  mkchat({ MUSTER_E2E_AGENT: TEAM_CHIEF, MUSTER_E2E_DISPLAY_NAME: 'chief', MUSTER_E2E_TEAM: teamId, MUSTER_E2E_THREADS: '1' }, JSON.stringify([
+    { title: 'Team main line', hoursAgo: 2, messages: [{ role: 'user', content: 'team main line' }] },
+    { title: 'Team side line', hoursAgo: 1, messages: [{ role: 'user', content: 'team side line' }] },
+  ]));
 });
 
 test.afterAll(async () => {
   try {
     go('./e2e/ccfix', 'rmagent', OWNER, NAME);
     go('./e2e/ccfix', 'rmagent', OWNER, CHIEF);
+    if (teamId) {
+      mkchat({ MUSTER_E2E_AGENT: TEAM_CHIEF, MUSTER_E2E_TEAM: teamId, MUSTER_E2E_DELETE: '1' });
+      go('./e2e/mkteam', 'remove', teamId);
+    }
   } finally {
     await server?.stop();
   }
@@ -473,21 +488,19 @@ for (const vp of [
   test.describe(`the chief's chats on a ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    test('one list icon opens Chats | Your messages | Focus history: switch, create and archive a chat', async ({ page }) => {
+    // The chats are a strip of chips under the header, not a sheet (operator:
+    // "a simpler ui/ux to manage sidechats, no modal"). The header keeps its
+    // one row and its one list icon, whose sheet is Your messages and Focus
+    // history only. (e2e chief-ux drives the strip's +, chips and ⋯ menus.)
+    test('the strip is one row under the one-row header, every target 44px, and the sheet holds no chats', async ({ page }) => {
       test.setTimeout(120_000);
       setChiefAsks(0);
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + CHIEF);
       await expect(page.locator('#chat-form')).toBeVisible();
-      const sheet = page.locator('#chat-index');
-      const chats = sheet.locator('[data-chief-chats]');
-      const open = async () => {
-        await page.locator('header #chat-index-open').click();
-        await expect(sheet).toBeVisible();
-        await sheet.locator('[role="tab"][data-tab="chats"]').click();
-        await expect(chats).toBeVisible();
-      };
-      const sessionOf = (u: string) => new URL(u).searchParams.get('session');
+      const strip = page.locator('[data-chief-chat-strip]');
+      await expect(strip).toHaveCount(1);
+      await expect(strip).toHaveAttribute('data-chief-chat-kind', 'primary');
 
       // The header: the one list icon, no ＋ / clock / target; the context
       // row under the title; no chat bar over the transcript.
@@ -498,97 +511,63 @@ for (const vp of [
       await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
       expect.soft((await page.locator('header').boundingBox())!.height, 'the header is the one row (+1px border)').toBeLessThanOrEqual(57);
 
-      // The sheet: three tabs, in order.
-      await open();
-      await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'Focus history']);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
-      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'Fresh primary on the primary').toBeVisible();
-      // Fresh primary keeps its confirm: the confirm is asked, and dismissed,
-      // nothing happens.
-      const here0 = page.url();
-      const asked: string[] = [];
-      page.once('dialog', (d) => { asked.push(d.type()); void d.dismiss(); });
-      await chats.getByRole('button', { name: 'Fresh primary' }).click();
-      await expect.poll(() => asked, { message: 'Fresh primary asks its confirm' }).toEqual(['confirm']);
-      await page.waitForTimeout(300);
-      expect(page.url(), 'a dismissed confirm leaves the page where it was').toBe(here0);
+      // The strip: under the header, one 52px row, the ★ Primary chip current
+      // with its ⋯, then "+"; every target 44px.
+      const hb = (await page.locator('header').boundingBox())!;
+      const sb = (await strip.boundingBox())!;
+      expect.soft(sb.y, 'the strip starts under the header').toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
+      expect.soft(sb.height, 'the strip is one row').toBeLessThanOrEqual(52.5);
+      await expect(strip.locator('[aria-current="true"]')).toContainText('★Primary');
+      const targets = await strip
+        .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat]')
+        .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { top: r.top, h: r.height, w: r.width }; }));
+      expect(targets.length, 'the primary\'s link, its ⋯, and +').toBe(3);
+      for (const t of targets) {
+        expect.soft(t.h, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect.soft(t.w, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect.soft(Math.abs(t.top - targets[0].top), 'on one row').toBeLessThanOrEqual(1);
+      }
       await noSideScroll(page);
+      await shot(page, `chief-chips-${vp.name}.png`);
 
-      // Create side chat A, then give it a line so the next New side chat is
-      // a new chat (an empty newest side chat is reused).
-      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
-      await page.waitForURL((u) => u.toString() !== here0);
-      const sideA = sessionOf(page.url())!;
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-      appendToLatest(CHIEF, `side A's line (${vp.name})`);
-      await page.reload();
-      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
-      await open();
-      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'no Fresh primary off the primary').toHaveCount(0);
-      const rowA = chats.locator(`[data-chief-chat-row="${sideA}"]`);
-      await expect(rowA).toHaveAttribute('aria-current', 'page');
-      await expect(rowA.locator('[data-chief-chat-current]')).toHaveText('Current');
-
-      // Create side chat B.
-      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
-      await page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
-      const sideB = sessionOf(page.url())!;
-      expect(sideB, 'B is a new chat').not.toBe(sideA);
-
-      // Switch to A from its row.
-      await open();
-      await chats.locator(`[data-chief-chat-row="${sideA}"]`).click();
-      await page.waitForURL((u) => sessionOf(u.toString()) === sideA);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-
-      // Escape: the open ⋯ menu closes, the sheet stays; again: the sheet goes.
-      await open();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
-      const menuB = page.locator(`#chief-chat-menu-${sideB}`);
-      await expect(menuB).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(menuB).toBeHidden();
-      await expect(sheet, 'Escape on the menu leaves the sheet open').toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(sheet).toBeHidden();
-
-      // ON A, archive B from its row's ⋯ menu: B moves into the collapsed
-      // Archived group, and the page STAYS ON A (it used to jump to the primary).
-      await open();
-      const archivedBefore = await chats.locator('[data-chief-archived] [data-chief-chat-row]').count();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
-      await expect(menuB).toBeVisible();
-      // The answer is HX-Redirect to A — this page — so htmx loads it again.
-      const reloaded = page.waitForEvent('load');
-      await menuB.getByRole('menuitem', { name: 'Archive' }).click();
-      await reloaded;
-      expect(sessionOf(page.url()), 'archiving another chat stays on the open one').toBe(sideA);
-      await expect(page.locator(`#chat-index [data-chief-archived] [data-chief-chat-row="${sideB}"]`)).toHaveCount(1);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
-      await open();
-      const group = chats.locator('[data-chief-archived]');
-      await expect(group).not.toHaveAttribute('open', '');
-      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeHidden();
-      await group.locator('summary').click();
-      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeVisible();
-      expect(await chats.locator('[data-chief-archived] [data-chief-chat-row]').count()).toBe(archivedBefore + 1);
-
-      // Archiving the OPEN chat (A, from its own row) lands on the primary.
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideA}"]`).click();
-      const toPrimary = page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
-      await page.locator(`#chief-chat-menu-${sideA}`).getByRole('menuitem', { name: 'Archive' }).click();
-      await toPrimary;
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
-      await open();
-
-      // The other two tabs are the mirrored session's.
-      await sheet.locator('[role="tab"][data-tab="messages"]').click();
-      await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeVisible();
+      // The sheet: two tabs, in order, and nothing chat-related.
+      await page.locator('header #chat-index-open').click();
+      const sheet = page.locator('#chat-index');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('[role="tab"]')).toHaveText(['Your messages', 'Focus history']);
+      await expect(sheet.locator('[data-chief-chats], [data-chief-side-chat], [data-chief-chat-row]')).toHaveCount(0);
       await sheet.locator('[role="tab"][data-tab="focus"]').click();
       await expect(sheet.locator('#chat-index-tabs-panel-focus [data-focus-history-list]')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(sheet).toBeHidden();
+    });
+
+    // 7. A team's shared room: a member (the operator manages the team) gets
+    // the chips to switch with, and no "+" and no ⋯ — the server refuses
+    // them every chat action (internal/api teamAgentRoutes). Red at main: no
+    // chips at all.
+    test('a team\'s shared room: the chips switch, and there is no + and no ⋯', async ({ page }) => {
+      test.setTimeout(60_000);
+      await signIn(page, origin);
+      await page.goto(origin + '/agents/' + TEAM_CHIEF);
+      await expect(page.locator('#chat-form')).toBeVisible();
+      const strip = page.locator('[data-chief-chat-strip]');
+      await expect(strip.locator('[data-chief-chip]')).toHaveCount(2);
+      await expect(strip.locator('button[data-chief-side-chat]'), 'no +').toHaveCount(0);
+      await expect(strip.locator('button[aria-haspopup="menu"], [data-chief-chat-menu]'), 'no ⋯').toHaveCount(0);
+      await expect(strip.locator('form, [hx-post]'), 'no action at all').toHaveCount(0);
+      const sessionOf = (u: string) => new URL(u).searchParams.get('session');
+      const current = (await strip.locator('[aria-current="true"]').getAttribute('data-chief-chat-row'))!;
+      const other = (await strip.locator('[data-chief-chat-row]:not([aria-current])').getAttribute('data-chief-chat-row'))!;
+      expect(other).not.toBe(current);
+      await (vp.use.hasTouch ? strip.locator(`[data-chief-chat-row="${other}"]`).tap() : strip.locator(`[data-chief-chat-row="${other}"]`).click());
+      await page.waitForURL((u) => sessionOf(u.toString()) === other);
+      await expect(strip.locator(`[data-chief-chat-row="${other}"]`)).toHaveAttribute('aria-current', 'true');
+      await expect(strip.locator('[aria-current="true"]')).toHaveCount(1);
+      const title = (await strip.locator(`[data-chief-chat-row="${other}"]`).getAttribute('title'))!;
+      await expect(page.locator('#chat-log'), 'the transcript is the chat switched to').toContainText(title.toLowerCase());
+      await noSideScroll(page);
+      await shot(page, `chief-chips-team-${vp.name}.png`);
     });
   });
 }

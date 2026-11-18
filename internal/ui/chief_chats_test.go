@@ -38,10 +38,9 @@ var chiefKinds = []struct {
 
 // TestTheChiefChatHasNoChatBar: the chat bar that sat over a chief's transcript
 // — its kind, its context chip and its three labelled buttons — is gone from
-// the chat pane on BOTH surfaces (the page manages chats in the header sheet's
-// Chats tab, the panel under its thread list; the chip is in the header / the
-// panel's title bar). Nor does a chief's page draw the session drawer: nothing
-// opens it there.
+// the chat pane on BOTH surfaces (both manage chats on the strip of chips,
+// drawn outside the pane; the chip is in the header / the panel's title bar).
+// Nor does a chief's page draw the session drawer: nothing opens it there.
 //
 // Replaces TestTheChiefChatBarSaysWhichChatAndOffersItsActions, which pinned the
 // bar (operator decision: one consolidated view, not three buttons).
@@ -66,35 +65,63 @@ func TestTheChiefChatHasNoChatBar(t *testing.T) {
 	}
 }
 
-// TestTheChiefPanelOffersItsChatActionsUnderItsList: the chief PANEL keeps
-// every action the bar had — "New side chat" with visible text on every chat,
-// and the open chat's own one — under its thread list, each answered into the
-// panel body; and its title bar carries the context chip for the panel's chat.
-func TestTheChiefPanelOffersItsChatActionsUnderItsList(t *testing.T) {
+// TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody: the chief PANEL draws the
+// page's strip of chips over its transcript — a chip switches with an hx-get
+// of the panel body (never a navigation), the "+" and every ⋯ action post with
+// ?surface=chief-panel into #chief-panel-body — and its thread list keeps no
+// chat action but "Continue in a new session"; its title bar carries the
+// context chip for the panel's chat.
+func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 	for _, c := range chiefKinds {
-		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, []SessionView{{ID: c.bar.SessionID, Active: true}})
+		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, chiefSheetSessions(c.bar.SessionID))
 		p := ChiefPanelView{Configured: true, Chat: chat}
-		html := renderString(t, chiefThreadList(p))
-		if !strings.Contains(html, chiefChatKindAttr+`="`+c.kind+`"`) {
-			t.Errorf("%s: the panel's actions do not name the chat's kind", c.kind)
+		body := renderString(t, chiefPanelBody(p))
+		strip := regexp.MustCompile(`(?s)<nav ` + chiefChatStripAttr + `="".*?</nav>`).FindString(body)
+		if strip == "" {
+			t.Fatalf("%s: the panel body has no chip strip", c.kind)
 		}
-		side := regexp.MustCompile(`<button type="submit" ` + chiefSideChatAttr + `="" class="[^"]*"><span aria-hidden="true">\+</span>New side chat</button>`)
-		if !side.MatchString(html) {
-			t.Errorf("%s: no New side chat button with visible text", c.kind)
+		if !strings.Contains(strip, chiefChatKindAttr+`="`+c.kind+`"`) {
+			t.Errorf("%s: the strip does not name the chat's kind", c.kind)
 		}
-		if !strings.Contains(html, `hx-post="/agents/42/sessions/side?surface=chief-panel"`) || !strings.Contains(html, `hx-target="#`+chiefPanelBodyID+`"`) {
-			t.Errorf("%s: New side chat is not answered into the panel body", c.kind)
+		if strings.Contains(strip, "<a ") || strings.Contains(strip, "href=") {
+			t.Errorf("%s: a panel chip navigates", c.kind)
 		}
-		if !strings.Contains(html, c.act+`=""`) {
-			t.Errorf("%s: no %s action", c.kind, c.act)
-		}
-		for _, n := range c.notActions {
-			if strings.Contains(html, n+`=""`) {
-				t.Errorf("%s: carries %s", c.kind, n)
+		for _, id := range []string{"5", "6", "7", "8"} {
+			if !regexp.MustCompile(`<button type="button" ` + chiefChatRowAttr + `="` + id + `"[^>]*hx-get="/ui/chief/panel\?session=` + id + `" hx-target="#` + chiefPanelBodyID + `" hx-swap="innerHTML"`).MatchString(strip) {
+				t.Errorf("%s: chip %s does not switch the panel body", c.kind, id)
 			}
 		}
-		if (c.kind == ChiefChatKindPrimary) != strings.Contains(html, `hx-confirm="`) {
-			t.Errorf("%s: a confirm on the wrong chat (only Fresh primary asks)", c.kind)
+		if !strings.Contains(strip, `<form hx-post="/agents/42/sessions/side?surface=chief-panel" hx-target="#`+chiefPanelBodyID+`" hx-swap="innerHTML" class="contents"><button type="submit" `+chiefSideChatAttr+`=""`) {
+			t.Errorf("%s: the panel's + is not answered into the panel body:\n%s", c.kind, strip)
+		}
+		cur := "&amp;current=" + strconv.FormatInt(c.bar.SessionID, 10)
+		for _, want := range []string{
+			`hx-post="/agents/42/sessions/fresh-primary?surface=chief-panel` + cur + `" hx-target="#chief-panel-body"`,
+			`hx-post="/agents/42/sessions/6/default?surface=chief-panel` + cur + `" hx-target="#chief-panel-body"`,
+			`hx-post="/agents/42/sessions/6/archive?surface=chief-panel` + cur + `" hx-target="#chief-panel-body"`,
+			`hx-post="/agents/42/sessions/7/unarchive?surface=chief-panel` + cur + `" hx-target="#chief-panel-body"`,
+		} {
+			if !strings.Contains(strip, want) {
+				t.Errorf("%s: the panel strip lacks %s", c.kind, want)
+			}
+		}
+		if strings.Contains(strip, `hx-swap="none"`) {
+			t.Errorf("%s: a panel action answers with a redirect (hx-swap none)", c.kind)
+		}
+		if !strings.Contains(strip, `popovertarget="chief-panel-chat-menu-6"`) || strings.Contains(strip, `"chief-chat-menu-`) {
+			t.Errorf("%s: the panel's menus are not its own ids", c.kind)
+		}
+		// The menus are placed: the shell the panel lives in has no
+		// floatingMenuScript of its own.
+		if !strings.Contains(strip, "__musterFloatingMenu") {
+			t.Errorf("%s: the panel strip does not bring floatingMenuScript", c.kind)
+		}
+		// The thread list: no chat action but Continue.
+		list := renderString(t, chiefThreadList(p))
+		for _, banned := range []string{chiefSideChatAttr, chiefFreshPrimaryAttr, chiefArchiveAttr + `=""`, chiefUnarchiveAttr, chiefChatsAttr} {
+			if strings.Contains(list, banned) {
+				t.Errorf("%s: the thread list still carries %s", c.kind, banned)
+			}
 		}
 		bar := renderString(t, chiefPanelActions(p))
 		if !strings.Contains(bar, `hx-get="`+ChiefContextPath("chiefy", c.bar.SessionID)+`"`) {
@@ -131,8 +158,8 @@ func TestTheChiefHeaderHasTheChatIndexButtonOnly(t *testing.T) {
 		if !strings.Contains(html, `id="chat-index-open"`) || !strings.Contains(html, `data-chat-index-log="chat-log"`) {
 			t.Errorf("compact=%v: the chief's header has no chat index button onto #chat-log:\n%s", compact, html)
 		}
-		if !strings.Contains(html, `aria-label="`+chatIndexChatsLabel+`"`) {
-			t.Errorf("compact=%v: the chat index button does not name its Chats tab", compact)
+		if !strings.Contains(html, `aria-label="`+chatIndexLabel+`"`) {
+			t.Errorf("compact=%v: the chat index button is not the mirrored session's", compact)
 		}
 		for _, banned := range []string{`aria-label="New chat session"`, `aria-label="Chat history"`, `id="focus-history-open"`, `for="` + sessionDrawerID + `"`} {
 			if strings.Contains(html, banned) {
@@ -184,10 +211,14 @@ func chiefSheetSessions(active int64) []SessionView {
 	return s
 }
 
-// TestTheChiefSheetHasChatsMessagesAndFocusHistory: the chief's page draws the
-// mirrored session's sheet with three tabs IN THIS ORDER — Chats, Your
-// messages, Focus history — and not the agent page's separate focus dialog.
-func TestTheChiefSheetHasChatsMessagesAndFocusHistory(t *testing.T) {
+// TestTheChiefSheetHasNoChatsTab: the chief's page draws the mirrored
+// session's sheet with its two tabs IN THIS ORDER — Your messages, Focus
+// history — and no Chats tab: the chats are the strip under the header, drawn
+// once, outside the sheet. Not the agent page's separate focus dialog either.
+//
+// Replaces TestTheChiefSheetHasChatsMessagesAndFocusHistory (operator
+// decision: no modal for the chats).
+func TestTheChiefSheetHasNoChatsTab(t *testing.T) {
 	for _, kind := range []string{"claude-code", "gateway"} {
 		html := chiefPage(t, kind, ChiefChatBar{SessionID: 5, Primary: true}, chiefSheetSessions(5))
 		i := strings.Index(html, `<div id="chat-index"`)
@@ -200,16 +231,21 @@ func TestTheChiefSheetHasChatsMessagesAndFocusHistory(t *testing.T) {
 		for _, m := range tabs {
 			got = append(got, m[1])
 		}
-		if strings.Join(got, ",") != "chats,messages,focus" {
-			t.Errorf("%s: the sheet's tabs are %v, want chats, messages, focus", kind, got)
+		if strings.Join(got, ",") != "messages,focus" {
+			t.Errorf("%s: the sheet's tabs are %v, want messages, focus", kind, got)
 		}
-		for _, label := range []string{">Chats</button>", ">Your messages</button>", ">Focus history</button>"} {
-			if !strings.Contains(sheet, label) {
-				t.Errorf("%s: no %s tab", kind, label)
-			}
+		if strings.Contains(sheet, chiefChatsAttr) || strings.Contains(sheet, ">Chats</button>") || strings.Contains(sheet, chiefSideChatAttr) {
+			t.Errorf("%s: the sheet still holds the chats", kind)
 		}
-		if !strings.Contains(sheet, `id="chat-index-tabs-panel-chats"`) || !strings.Contains(sheet, chiefChatsAttr) {
-			t.Errorf("%s: the Chats tab has no chats", kind)
+		// The strip: once, before the sheet, under the header.
+		if n := strings.Count(html, `<nav `+chiefChatStripAttr+`=""`); n != 1 {
+			t.Errorf("%s: %d chip strips on the page, want 1", kind, n)
+		}
+		head := strings.Index(html, "</header>")
+		strip := strings.Index(html, `<nav `+chiefChatStripAttr)
+		log := strings.Index(html, `id="chat-log"`)
+		if !(head >= 0 && head < strip && strip < log) {
+			t.Errorf("%s: the strip is not between the header and the transcript (header end %d, strip %d, log %d)", kind, head, strip, log)
 		}
 		if strings.Contains(html, `id="focus-history"`) || strings.Contains(html, `id="focus-history-open"`) {
 			t.Errorf("%s: the chief's page still draws the separate focus history dialog or its button", kind)
@@ -218,79 +254,91 @@ func TestTheChiefSheetHasChatsMessagesAndFocusHistory(t *testing.T) {
 			t.Errorf("%s: the messages tab's note speaks of a mirrored host", kind)
 		}
 	}
-	// The control: a worker's page keeps the focus dialog and has no sheet.
+	// The control: a worker's page keeps the focus dialog and has no sheet and
+	// no strip.
 	w := renderString(t, AgentDetailPage(AgentDetailView{ID: 3, Name: "w", Kind: "claude-code", FocusHistory: "/ui/focus/history?agent=3"}, Features{}))
-	if !strings.Contains(w, `id="focus-history"`) || strings.Contains(w, `<div id="chat-index"`) {
-		t.Error("a worker's page changed: it should keep its focus dialog and have no chat index sheet")
+	if !strings.Contains(w, `id="focus-history"`) || strings.Contains(w, `<div id="chat-index"`) || strings.Contains(w, chiefChatStripAttr) {
+		t.Error("a worker's page changed: it should keep its focus dialog and have no chat index sheet and no chip strip")
 	}
 }
 
-// TestTheChatsTabListsSwitchesAndManagesChats: the Chats tab's rows and
-// actions, on the page surface (HX-Redirect answers, no ?surface=):
-//   - every chat, a link to it, the open one marked current (aria-current and
-//     "Current"), with the Primary badge and the unread dot;
-//   - the archived chats in a collapsed <details>;
-//   - a ⋯ menu on every row but the primary's: Make primary (when offered) and
-//     Archive on a side chat, Unarchive on an archived one, each posting to its
-//     route;
-//   - "+ New side chat" on every chat; "Fresh primary", with its confirm, ONLY
-//     on the primary.
-func TestTheChatsTabListsSwitchesAndManagesChats(t *testing.T) {
+// chipIDs is the chat ids of html's chips, in document order.
+func chipIDs(html string) []string {
+	var out []string
+	for _, m := range regexp.MustCompile(`<li `+chiefChipAttr+`="(\d+)"`).FindAllStringSubmatch(html, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// TestTheStripSwitchesAndManagesChats: the page's strip, on each kind of chat
+// (HX-Redirect answers, no ?surface=):
+//   - a chip per chat, in the order given, each a link to its chat, the open
+//     one aria-current="true" and no other; the ★ on the primary alone; the
+//     unread dot on the unread side chat alone;
+//   - the archived chats behind "Archived (n)" (hidden until it expands),
+//     unless the archived chat is the one open;
+//   - a ⋯ menu on EVERY chip: Fresh primary (with its confirm) on the
+//     primary; Make primary (when offered) and Archive on a side chat;
+//     Unarchive on an archived one — each naming the open chat (?current=);
+//   - "+" posting to the side chat route, after the chips' scroller.
+func TestTheStripSwitchesAndManagesChats(t *testing.T) {
 	for _, c := range chiefKinds {
-		html := renderString(t, chiefChatsPanel(chiefChatView(ChatSurfacePage, c.bar, chiefSheetSessions(c.bar.SessionID))))
+		html := renderString(t, chiefChatStrip(chiefChatView(ChatSurfacePage, c.bar, nil).ChiefChat, "chiefy", chiefSheetSessions(c.bar.SessionID), ChatSurfacePage))
 		if !strings.Contains(html, chiefChatKindAttr+`="`+c.kind+`"`) {
-			t.Errorf("%s: the Chats tab does not name the open chat's kind", c.kind)
+			t.Errorf("%s: the strip does not name the open chat's kind", c.kind)
+		}
+		if got := strings.Join(chipIDs(html), ","); got != "5,6,8,7" {
+			t.Errorf("%s: chips %s, want 5,6,8,7 (the order given, archived last)", c.kind, got)
 		}
 		for _, id := range []int64{5, 6, 7, 8} {
 			sid := strconv.FormatInt(id, 10)
-			row := regexp.MustCompile(`<a href="` + regexp.QuoteMeta(AgentSessionHref("chiefy", id)) + `" ` + chiefChatRowAttr + `="` + sid + `"( aria-current="page")?`).FindStringSubmatch(html)
+			row := regexp.MustCompile(`<a href="` + regexp.QuoteMeta(AgentSessionHref("chiefy", id)) + `" ` + chiefChatRowAttr + `="` + sid + `"[^>]*?( aria-current="true")?( class=)`).FindStringSubmatch(html)
 			if row == nil {
-				t.Errorf("%s: no row linking to chat %d", c.kind, id)
+				t.Errorf("%s: no chip linking to chat %d", c.kind, id)
 				continue
 			}
 			if (row[1] != "") != (id == c.bar.SessionID) {
 				t.Errorf("%s: chat %d current=%v, want %v", c.kind, id, row[1] != "", id == c.bar.SessionID)
 			}
 		}
-		if n := strings.Count(html, chiefChatCurrentAttr+`=""`); n != 1 {
-			t.Errorf("%s: %d chats marked Current, want 1", c.kind, n)
+		if n := strings.Count(html, `aria-current="true" class=`); n != 1 {
+			t.Errorf("%s: %d chips current, want 1", c.kind, n)
 		}
 		if n := strings.Count(html, sessionDefaultAttr+`=""`); n != 1 {
-			t.Errorf("%s: %d Primary badges, want 1", c.kind, n)
+			t.Errorf("%s: %d ★, want 1", c.kind, n)
 		}
+		if !regexp.MustCompile(`(?s)<li ` + chiefChipAttr + `="5" ` + chiefChipKindAttr + `="primary".*?★.*?Primary</span>`).MatchString(html) {
+			t.Errorf("%s: the primary chip is not ★ Primary", c.kind)
+		}
+		// The unread dot: chat 6's chip and no other (unread is cleared on the
+		// open chat by the server, not here).
 		if n := strings.Count(html, chiefUnreadAttr+`=""`); n != 1 {
 			t.Errorf("%s: %d unread dots, want 1", c.kind, n)
 		}
-		// The archived group: collapsed, and holding the archived chat unless
-		// it is the one open.
-		d := strings.Index(html, `<details `+chiefArchivedAttr)
-		put := strings.Index(html, `>Put away<`)
-		if c.bar.Archived {
-			if d >= 0 {
-				t.Errorf("%s: the open archived chat is hidden in the collapsed group", c.kind)
-			}
-		} else if d < 0 || put < d || strings.Contains(html[d:d+80], " open") {
-			t.Errorf("%s: the archived chat is not in a collapsed Archived group (details %d, row %d)", c.kind, d, put)
+		if !strings.Contains(regexp.MustCompile(`(?s)<li `+chiefChipAttr+`="6".*?</li>`).FindString(html), chiefUnreadAttr) {
+			t.Errorf("%s: the unread dot is not on chat 6's chip", c.kind)
 		}
-		// The row menus: none on the primary; Make primary and Archive on side
-		// chat 6, Archive alone on side chat 8 (no default path), Unarchive on 7.
-		// Each names the open chat (?current=), so acting on another chat
-		// leaves the operator on theirs.
+		// The archived chip: hidden behind its toggle unless open.
+		archived := regexp.MustCompile(`<li ` + chiefChipAttr + `="7" ` + chiefChipKindAttr + `="archived"( ` + chiefArchivedChipAttr + `="" hidden)?`).FindStringSubmatch(html)
+		toggle := strings.Contains(html, `<button type="button" `+chiefArchivedAttr+`="" aria-expanded="false"`)
+		if c.bar.Archived {
+			if archived == nil || archived[1] != "" || toggle {
+				t.Errorf("%s: the open archived chat is hidden behind Archived (toggle %v)", c.kind, toggle)
+			}
+		} else if archived == nil || archived[1] == "" || !toggle {
+			t.Errorf("%s: the archived chat is not hidden behind a collapsed Archived (n) (chip %v, toggle %v)", c.kind, archived, toggle)
+		}
+		// The menus.
 		cur := "?current=" + strconv.FormatInt(c.bar.SessionID, 10)
 		menus := map[string][]string{
-			"5": nil,
+			"5": {`hx-post="/agents/42/sessions/fresh-primary` + cur + `" hx-swap="none" hx-confirm="` + FreshPrimaryConfirm + `"`},
 			"6": {`hx-post="/agents/42/sessions/6/default` + cur + `" hx-swap="none"`, `hx-post="/agents/42/sessions/6/archive` + cur + `" hx-swap="none"`},
 			"8": {`hx-post="/agents/42/sessions/8/archive` + cur + `" hx-swap="none"`},
 			"7": {`hx-post="/agents/42/sessions/7/unarchive` + cur + `" hx-swap="none"`},
 		}
 		for sid, want := range menus {
 			m := regexp.MustCompile(`(?s)<div id="chief-chat-menu-` + sid + `".*?</div>`).FindString(html)
-			if want == nil {
-				if m != "" || strings.Contains(html, `popovertarget="chief-chat-menu-`+sid+`"`) {
-					t.Errorf("%s: the primary has a ⋯ menu", c.kind)
-				}
-				continue
-			}
 			if m == "" || !strings.Contains(html, `popovertarget="chief-chat-menu-`+sid+`"`) {
 				t.Errorf("%s: chat %s has no ⋯ menu", c.kind, sid)
 				continue
@@ -304,25 +352,77 @@ func TestTheChatsTabListsSwitchesAndManagesChats(t *testing.T) {
 				}
 			}
 		}
+		if n := strings.Count(html, chiefFreshPrimaryAttr+`=""`); n != 1 {
+			t.Errorf("%s: %d Fresh primary actions, want 1 (the primary's menu)", c.kind, n)
+		}
 		if strings.Contains(html, "surface=chief-panel") {
 			t.Errorf("%s: a page action asks for the panel's answer", c.kind)
 		}
-		// The footer.
-		side := regexp.MustCompile(`<form hx-post="/agents/42/sessions/side" hx-swap="none" class="contents"><button type="submit" ` + chiefSideChatAttr + `="" class="[^"]*"><span aria-hidden="true">\+</span>New side chat</button>`)
-		if !side.MatchString(html) {
-			t.Errorf("%s: no + New side chat posting to the side chat route", c.kind)
-		}
-		fresh := regexp.MustCompile(`<form hx-post="/agents/42/sessions/fresh-primary" hx-swap="none" hx-confirm="[^"]+" class="contents"><button type="submit" ` + chiefFreshPrimaryAttr + `=""`)
-		if (c.kind == ChiefChatKindPrimary) != fresh.MatchString(html) {
-			t.Errorf("%s: Fresh primary (with its confirm) shown=%v, want only on the primary", c.kind, fresh.MatchString(html))
-		}
-		if c.kind != ChiefChatKindPrimary && strings.Contains(html, chiefFreshPrimaryAttr) {
-			t.Errorf("%s: Fresh primary offered off the primary", c.kind)
+		// The "+", after the scroller.
+		plus := regexp.MustCompile(`</ul><form hx-post="/agents/42/sessions/side" hx-swap="none" class="contents"><button type="submit" ` + chiefSideChatAttr + `="" aria-label="New side chat"`)
+		if !plus.MatchString(html) {
+			t.Errorf("%s: no + posting to the side chat route at the strip's end", c.kind)
 		}
 	}
-	// Not a chief's chat: no Chats tab content at all.
-	if chiefChatsPanel(AgentDetailView{ID: 1, Name: "w"}) != nil {
-		t.Error("a worker's chat has a Chats tab")
+	// Not a chief's chat: no strip.
+	if chiefChatStrip(nil, "w", nil, ChatSurfacePage) != nil || chiefPageStrip(AgentDetailView{ID: 1, Name: "w"}) != nil {
+		t.Error("a worker's chat has a chip strip")
+	}
+}
+
+// TestTheArchivedChipCountsItsChats: "Archived (n)" with the literal count
+// of the archived chats behind it — 1, 2, 3 — and no such chip with none.
+// The open archived chat is not behind it, so it is not counted.
+func TestTheArchivedChipCountsItsChats(t *testing.T) {
+	bar := &ChiefChatBar{AgentID: 42, AgentName: "chiefy", SessionID: 1, Primary: true}
+	sessions := []SessionView{{ID: 1, IsDefault: true, Active: true}}
+	toggle := regexp.MustCompile(`<button type="button" ` + chiefArchivedAttr + `="" aria-expanded="false"[^>]*>([^<]*)<svg`)
+	for _, want := range []string{"Archived (1)", "Archived (2)", "Archived (3)"} {
+		sessions = append(sessions, SessionView{ID: int64(len(sessions) + 10), Title: "old " + want, Archived: true})
+		m := toggle.FindStringSubmatch(renderString(t, chiefChatStrip(bar, "chiefy", sessions, ChatSurfacePage)))
+		if m == nil || m[1] != want {
+			t.Errorf("the archived chip reads %v, want %q", m, want)
+		}
+	}
+	// The open archived chat is with the others, not counted.
+	open := append([]SessionView{}, sessions...)
+	open[1].Active, open[0].Active = true, false
+	m := toggle.FindStringSubmatch(renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: open[1].ID, Archived: true}, "chiefy", open, ChatSurfacePage)))
+	if m == nil || m[1] != "Archived (2)" {
+		t.Errorf("with one archived chat open, the chip reads %v, want \"Archived (2)\"", m)
+	}
+	if html := renderString(t, chiefChatStrip(bar, "chiefy", sessions[:1], ChatSurfacePage)); strings.Contains(html, chiefArchivedAttr+`=""`) {
+		t.Error("an Archived chip with no archived chat")
+	}
+}
+
+// TestASharedRoomsStripOnlySwitches: a member on a team's chief
+// (ChiefChatBar.SharedRoom) gets the chips — every chat, switching, the
+// current one marked, Archived (n) to expand — and no "+", no ⋯ and no action
+// at all (the server refuses every one: internal/api teamAgentRoutes). The
+// owner's strip, the same chats, has them (the control).
+func TestASharedRoomsStripOnlySwitches(t *testing.T) {
+	sessions := chiefSheetSessions(5)
+	shared := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true, SharedRoom: true}, "chiefy", sessions, ChatSurfacePage))
+	owner := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", sessions, ChatSurfacePage))
+	for name, html := range map[string]string{"shared": shared, "owner": owner} {
+		if got := strings.Join(chipIDs(html), ","); got != "5,6,8,7" {
+			t.Errorf("%s: chips %s, want 5,6,8,7", name, got)
+		}
+		if n := strings.Count(html, `aria-current="true" class=`); n != 1 {
+			t.Errorf("%s: %d current chips, want 1", name, n)
+		}
+		if !strings.Contains(html, `>Archived (1)<`) {
+			t.Errorf("%s: no Archived (1) chip", name)
+		}
+	}
+	for _, attr := range []string{chiefSideChatAttr + `=""`, chiefFreshPrimaryAttr + `=""`, chiefMakePrimaryAttr + `=""`, chiefArchiveAttr + `=""`, chiefUnarchiveAttr + `=""`, chiefChatMenuAttr + `=""`, "popovertarget=", "hx-post="} {
+		if strings.Contains(shared, attr) {
+			t.Errorf("the shared room's strip carries %s", attr)
+		}
+		if !strings.Contains(owner, attr) {
+			t.Errorf("control: the owner's strip lacks %s", attr)
+		}
 	}
 }
 
@@ -363,20 +463,19 @@ func TestTheChiefContextChipIsInTheHeader(t *testing.T) {
 }
 
 // TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots: both lists (the
-// page's Chats tab and the panel's thread list) draw the rows in the order given —
-// the server's agents.SwitcherOrder — with the Primary badge on the primary,
-// an unread dot only on an unread chat, and the archived ones under Archived.
+// strip and the panel's thread list) draw the chats in the order given — the
+// server's agents.SwitcherOrder — with the primary marked on the primary, an
+// unread dot only on an unread chat, and the archived ones last.
 func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 	now := time.Now()
 	sessions := []SessionView{
-		{ID: 9, Title: "Main line", IsDefault: true, LastActive: now.Add(-time.Hour)},
+		{ID: 9, Title: "Main line", IsDefault: true, Active: true, LastActive: now.Add(-time.Hour)},
 		{ID: 2, Title: "Newest side", Unread: true, LastActive: now.Add(-time.Minute)},
 		{ID: 4, Title: "Older side", LastActive: now.Add(-30 * time.Minute)},
 		{ID: 7, Title: "Put away", Archived: true, LastActive: now.Add(-2 * time.Hour)},
 	}
 	pos := func(html, s string) int { return strings.Index(html, s) }
-	check := func(name, html string) {
-		order := []string{"Main line", "Newest side", "Older side", chiefArchivedLabel, "Put away"}
+	check := func(name, html, primary string, order []string) {
 		last := -1
 		for _, s := range order {
 			p := pos(html, s)
@@ -392,34 +491,35 @@ func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 		if dot < pos(html, "Newest side") || dot > pos(html, "Older side") {
 			t.Errorf("%s: the unread dot is not on the unread chat", name)
 		}
-		if p := pos(html, `>Primary<`); p < 0 || p > pos(html, "Newest side") {
-			t.Errorf("%s: the Primary badge is not on the primary row", name)
+		if p := pos(html, primary); p < 0 || p > pos(html, "Newest side") {
+			t.Errorf("%s: the primary mark is not on the primary", name)
 		}
 	}
-	v := chiefChatView(ChatSurfacePage, ChiefChatBar{SessionID: 9, Primary: true}, sessions)
+	strip := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 9, Primary: true}, "chiefy", sessions, ChatSurfacePage))
+	check("page strip", strip, "★", []string{"Primary", "Newest side", "Older side", "Archived (1)", "Put away"})
 	var b bytes.Buffer
-	if err := chiefChatsPanel(v).Render(&b); err != nil {
-		t.Fatal(err)
-	}
-	check("page Chats tab", b.String())
-	b.Reset()
 	if err := chiefThreadRows(ChiefThreadsView{Threads: sessions}).Render(&b); err != nil {
 		t.Fatal(err)
 	}
-	check("panel list", b.String())
+	check("panel list", b.String(), ">Primary<", []string{"Main line", "Newest side", "Older side", chiefArchivedLabel, "Put away"})
 }
 
-// TestEscapeOnARowMenuClosesOnlyTheMenu: the sheet's Escape handler steps aside
-// while a popover inside the sheet (a Chats row's ⋯ menu) is open — the browser
-// closes that menu, and the sheet stays. e2e chief-mobile drives the keys.
-func TestEscapeOnARowMenuClosesOnlyTheMenu(t *testing.T) {
-	js := renderString(t, chatIndexScript())
+// TestTheStripScriptLandsPlusInTheMessageBox: the strip's script marks a "+"
+// request as it starts (by the + button's attribute, read off the posting
+// form), takes the mark on arrival — the page after HX-Redirect's navigation,
+// the panel after its swap — and focuses #chat-input; a failed request drops
+// it. e2e chief-chips drives it on both surfaces.
+func TestTheStripScriptLandsPlusInTheMessageBox(t *testing.T) {
+	js := renderString(t, chiefChipsScript())
 	for _, want := range []string{
-		`if (e.key !== 'Escape') return;`,
-		`if (s && s.querySelector(':popover-open')) return;`,
+		`var KEY = '` + chiefFocusKey + `';`,
+		`if (el && el.querySelector && el.querySelector('[` + chiefSideChatAttr + `]')) {`,
+		`document.addEventListener('htmx:responseError', clear);`,
+		`input.focus({ preventScroll: true });`,
+		`if (window.__musterChiefChips) { settle(); return; }`,
 	} {
 		if !strings.Contains(js, want) {
-			t.Errorf("chatIndexScript lacks %q", want)
+			t.Errorf("chiefChipsScript lacks %q", want)
 		}
 	}
 }

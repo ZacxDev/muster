@@ -339,7 +339,7 @@ func TestASideChatIsAClaudeSessionOfItsOwn(t *testing.T) {
 	}
 }
 
-// TestARowActionOnAnotherChatStaysOnTheOpenOne: the Chats tab's row menu acts
+// TestARowActionOnAnotherChatStaysOnTheOpenOne: a chat chip's ⋯ menu acts
 // on a chat that may not be the one on screen. Archive, Unarchive and Make
 // primary of ANOTHER chat (?current= names the open one) answer with the open
 // chat — on the page (HX-Redirect) and in the panel (its body re-rendered on

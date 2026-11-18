@@ -16,22 +16,31 @@ import (
 // docs/chief.md#primary-and-side-chats), as the chief page and the chief panel
 // draw them.
 //
-// 🔴 ONE PLACE TO MANAGE THEM, NOT A BAR OF BUTTONS (an operator ask: move the
-// side chat and primary chat management into one consolidated view instead of
-// three buttons). The chief PAGE has no chat bar over its transcript. Its header
-// carries the same single list-icon control a mirrored session's does
-// (chatIndexButton), opening the same sheet with a Chats tab first
-// (chiefChatsPanel): every chat — the primary first, then the side chats
-// (agents.SwitcherOrder decides the order; the renderers only place it), the
-// archived ones in a collapsed group — each row switching to its chat on a tap,
-// with the Primary badge, the unread dot and a ⋯ menu (Archive / Unarchive,
-// Make primary); under the list "+ New side chat" and, on the primary, "Fresh
-// primary". The context chip is in the header, under the title
-// (chiefContextSlot), where a mirrored session's is.
+// 🔴 A STRIP OF CHIPS UNDER THE HEADER, NOT A SHEET (an operator ask: "a
+// simpler ui/ux to manage sidechats, no modal"). Both surfaces draw the same
+// strip (chiefChatStrip) over the transcript:
 //
-// The chief PANEL (the slide-out over the grid) keeps its own thread list
-// (chiefThreadList) as its sheet, with the same actions under the list
-// (chiefPanelChatActions) and the context chip in its title bar.
+//	[★ Primary] [side chats, most recent first…] [Archived (n)] … [+]
+//
+// The order is agents.SwitcherOrder's (the server's chiefChatViews hands the
+// sessions over in it); the renderer only places them. A tap on a chip switches
+// to its chat; the chip of the chat on screen is aria-current="true". A side
+// chat's chip carries its unread dot. The archived chats are behind the last
+// chip, "Archived (n)", which expands INLINE into their chips (no dialog). The
+// "+" sits at the strip's end, outside the chips' scroller, so it is on screen
+// however many chats there are. Each chip's actions are in its ⋯ menu (a
+// popover, floatingMenuScript): Fresh primary (with its confirm) on the
+// primary; Make primary and Archive on a side chat; Unarchive on an archived
+// one. A member in a team's shared room (ChiefChatBar.SharedRoom) gets the
+// chips to switch with, and nothing else.
+//
+// 🔴 "+" MUST VISIBLY LAND (the operator's "New side chat doesn't work": the
+// server opened the chat and the page moved to it, but nothing on screen said
+// so). The strip is drawn with the page, so the chat "+" lands on is a chip,
+// current, from the first paint; and the composer is focused on arrival
+// (chiefChipsScript), on the new chat or on the empty one the server reused.
+//
+// The context chip stays in the header (chiefContextSlot).
 //
 // 🔴 THE SAME ROUTES ON BOTH SURFACES, ANSWERED THE WAY EACH SURFACE NEEDS:
 // on the page an action's answer is HX-Redirect to the chat it leaves you on;
@@ -39,8 +48,8 @@ import (
 // chief-panel), so the operator never leaves the grid.
 
 // ChiefChatBar is the chief chat a page or panel is on: set on a chief's chat
-// only. (Named for the bar it used to draw; it now feeds the Chats tab, the
-// header's context chip and the panel's chat actions.)
+// only. (Named for the bar it used to draw; it now feeds the chip strip, the
+// header's context chip and the panel's Continue picker.)
 type ChiefChatBar struct {
 	AgentID   int64
 	AgentName string
@@ -53,23 +62,29 @@ type ChiefChatBar struct {
 	// shared conversation (internal/api memberOnTeamAgent). The server refuses
 	// a member every chat-making and chat-managing route on it (New side chat,
 	// Fresh primary, Make primary, Archive, Unarchive: internal/api
-	// teamAgentRoutes), so the chief PAGE's Chats tab draws none of them: the
-	// chats are listed to switch between, and that is all. (The chief PANEL
-	// never opens a team's chief: it is the viewer's own, chiefAgent.)
+	// teamAgentRoutes), so the chief PAGE's strip draws none of them: no "+",
+	// no ⋯; the chips switch, and that is all. (The chief PANEL never opens a
+	// team's chief: it is the viewer's own, chiefAgent.)
 	SharedRoom bool
 }
 
 // The chats' data attributes: what both test tiers read.
 const (
-	// chiefChatsAttr marks the Chats tab's content (the page) and the panel's
-	// chat actions; chiefChatKindAttr on it names the chat the view is on.
-	chiefChatsAttr        = "data-chief-chats"
-	chiefChatKindAttr     = "data-chief-chat-kind"
-	chiefChatRowAttr      = "data-chief-chat-row"
-	chiefChatCurrentAttr  = "data-chief-chat-current"
-	chiefChatMenuAttr     = "data-chief-chat-menu"
-	chiefMakePrimaryAttr  = "data-chief-make-primary"
+	// chiefChatsAttr marks the strip; chiefChatKindAttr on it names the chat
+	// the view is on.
+	chiefChatsAttr       = "data-chief-chats"
+	chiefChatKindAttr    = "data-chief-chat-kind"
+	chiefChatStripAttr   = "data-chief-chat-strip"
+	chiefChipScrollAttr  = "data-chief-chip-scroller"
+	chiefChipAttr        = "data-chief-chip"
+	chiefChipKindAttr    = "data-chief-chip-kind"
+	chiefChatRowAttr     = "data-chief-chat-row"
+	chiefChatMenuAttr    = "data-chief-chat-menu"
+	chiefMakePrimaryAttr = "data-chief-make-primary"
+	// chiefArchivedAttr marks the "Archived (n)" chip (a toggle);
+	// chiefArchivedChipAttr each archived chat's chip behind it.
 	chiefArchivedAttr     = "data-chief-archived"
+	chiefArchivedChipAttr = "data-chief-archived-chip"
 	chiefSideChatAttr     = "data-chief-side-chat"
 	chiefFreshPrimaryAttr = "data-chief-fresh-primary"
 	chiefArchiveAttr      = "data-chief-archive"
@@ -106,7 +121,7 @@ func ChiefArchivePath(agentID, sid int64, archived bool) string {
 	return agentSessionsPath(agentID) + "/" + strconv.FormatInt(sid, 10) + verb
 }
 
-// ChiefCurrentParam names the chat the operator is ON when a row's action
+// ChiefCurrentParam names the chat the operator is ON when a chip's action
 // (archive, unarchive, make primary) acts on another one: the answer leaves
 // them on it (internal/api stayOnCurrent) instead of moving them.
 const ChiefCurrentParam = "current"
@@ -141,168 +156,212 @@ func chiefChatKind(b ChiefChatBar) (kind, label string) {
 	return ChiefChatKindSide, "Side chat"
 }
 
-// chiefChatAction is one chat action: a labelled button in a form posting to
-// path, answered per surface (see the file's header).
-func chiefChatAction(surface ChatSurface, path, attr, label, confirm string, primary bool, lead ...g.Node) g.Node {
-	cls := "press inline-flex min-h-[36px] shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "
-	if primary {
-		cls += "bg-accent/15 text-fg ring-accent/50 hover:bg-accent/25"
-	} else {
-		cls += "bg-s1 text-fg2 ring-line hover:bg-s2 hover:text-fg"
-	}
-	var answer g.Node = g.Group{hx("hx-post", path), hx("hx-swap", "none")}
+// chiefChatPost is how a chat action posts to path on surface: on the page
+// hx-swap none (the answer is HX-Redirect, which htmx follows); in the panel the
+// panel body re-rendered (?surface=chief-panel), so the grid stays.
+func chiefChatPost(surface ChatSurface, path string) g.Node {
 	if surface == ChatSurfaceChiefPanel {
-		answer = g.Group{
-			hx("hx-post", path+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
+		return g.Group{
+			hx("hx-post", path),
 			hx("hx-target", "#"+chiefPanelBodyID),
 			hx("hx-swap", "innerHTML"),
 		}
 	}
-	return Form(
-		answer,
-		g.If(confirm != "", hx("hx-confirm", confirm)),
-		Class("contents"),
-		Button(Type("submit"), g.Attr(attr, ""), Class(cls), g.Group(lead), g.Text(label)),
-	)
+	return g.Group{hx("hx-post", path), hx("hx-swap", "none")}
 }
 
-// ChiefSideChatButton is the labelled "New side chat" control on a chief's
-// chat, for surface. 🔴 VISIBLE TEXT, NOT AN ICON: the icon-only ＋ it replaced
-// on the chief page carried its name only in aria-label, and the operator could
-// not find it.
-func ChiefSideChatButton(agentID int64, surface ChatSurface) g.Node {
-	// The ＋ is drawn, not named: the button's name is "New side chat".
-	return chiefChatAction(surface, ChiefSideChatPath(agentID), chiefSideChatAttr, "New side chat", "", true,
-		Span(g.Attr("aria-hidden", "true"), g.Text("+")))
+// onSurface is path asking for surface's answer: ?surface=chief-panel in the
+// panel, path itself on the page.
+func onSurface(surface ChatSurface, path string) string {
+	if surface != ChatSurfaceChiefPanel {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + ChatSurfaceQueryParam + "=" + string(ChatSurfaceChiefPanel)
 }
 
-// chiefFreshPrimaryButton is "Fresh primary", with its confirmation: offered on
-// the primary only (a fresh primary replaces the primary).
-func chiefFreshPrimaryButton(agentID int64, surface ChatSurface) g.Node {
-	return chiefChatAction(surface, ChiefFreshPrimaryPath(agentID), chiefFreshPrimaryAttr, "Fresh primary", FreshPrimaryConfirm, false)
+// ChiefNewChatLabel is a chat's chip label until its first line titles it.
+const ChiefNewChatLabel = "New chat"
+
+// chiefArchivedChipText is the "Archived (n)" chip's text for n archived chats.
+func chiefArchivedChipText(n int) string {
+	return chiefArchivedLabel + " (" + strconv.Itoa(n) + ")"
 }
 
-// chiefChatsPanel is the chief page's Chats tab (chatIndexSheet's first tab):
-// the chats, then the actions that make one. Nothing for a chat that is not a
-// chief's.
+// chiefChatStrip is the chief's chats as a strip of chips (see the file's
+// header), for surface: name is the chief's agent name, sessions its chats in
+// agents.SwitcherOrder (primary, side chats by activity, archived), b the chat
+// the view is on. Nothing off a chief's chat.
 //
-// 🔴 THE LIST SCROLLS AND THE ACTIONS DO NOT: the actions are the content's last
-// row, outside the list's scroller, so "+ New side chat" is on screen however
-// many chats there are.
-func chiefChatsPanel(v AgentDetailView) g.Node {
-	b := v.ChiefChat
+// 🔴 ONE ROW, A FIXED HEIGHT: the chips scroll sideways inside it (never wrap),
+// and the row is its final height from its opening tag, so nothing under it
+// moves when a chip is added or the archived ones expand.
+func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surface ChatSurface) g.Node {
 	if b == nil {
 		return nil
 	}
 	kind, _ := chiefChatKind(*b)
-	var live, archived []g.Node
-	for _, sess := range v.Sessions {
-		row := chiefChatRow(v.Name, b.AgentID, b.SessionID, sess, b.SharedRoom)
-		// The chat on screen is never hidden in the collapsed group, archived
-		// or not (chiefChatViews lists an open archived chat with the side ones).
+	var chips, archived []g.Node
+	for _, sess := range sessions {
+		// The chat on screen is never hidden behind "Archived (n)", archived or
+		// not (chiefChatViews lists an open archived chat with the side ones).
 		if sess.Archived && !sess.Active {
-			archived = append(archived, row)
+			archived = append(archived, chiefChip(name, b, sess, surface, true))
 			continue
 		}
-		live = append(live, row)
+		chips = append(chips, chiefChip(name, b, sess, surface, false))
 	}
-	return Div(
+	if len(archived) > 0 {
+		chips = append(chips, Li(
+			Class("flex shrink-0 items-center"),
+			Button(
+				Type("button"),
+				g.Attr(chiefArchivedAttr, ""),
+				g.Attr("aria-expanded", "false"),
+				Class("group press inline-flex h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-xs font-medium text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg aria-expanded:bg-s2 aria-expanded:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+				g.Text(chiefArchivedChipText(len(archived))),
+				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition group-aria-expanded:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
+			),
+		))
+		chips = append(chips, archived...)
+	}
+	pad := "px-2 sm:px-4"
+	if surface == ChatSurfaceChiefPanel {
+		pad = ""
+	}
+	return Nav(
+		g.Attr(chiefChatStripAttr, ""),
 		g.Attr(chiefChatsAttr, ""),
 		g.Attr(chiefChatKindAttr, kind),
-		Class("flex min-h-0 flex-1 flex-col"),
-		Div(
-			Class("flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-3"),
-			Ul(g.Attr("aria-label", "Chats"), Class("flex flex-col gap-2"), g.Group(live)),
-			// The archived chats, put away: a collapsed group (a native <details>,
-			// so it opens without script).
-			g.If(len(archived) > 0, g.El("details",
-				g.Attr(chiefArchivedAttr, ""),
-				Class("group mt-1"),
-				g.El("summary",
-					Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-2 rounded-lg px-1 text-[11px] font-semibold uppercase tracking-wide text-muted transition hover:text-fg [&::-webkit-details-marker]:hidden"),
-					g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
-					g.Text(chiefArchivedLabel+" ("+strconv.Itoa(len(archived))+")"),
-				),
-				Ul(g.Attr("aria-label", "Archived chats"), Class("mt-1 flex flex-col gap-2"), g.Group(archived)),
-			)),
+		g.Attr("aria-label", "Chats"),
+		Class("flex h-[3.25rem] min-w-0 flex-none items-center gap-1.5 "+pad),
+		Ul(
+			g.Attr(chiefChipScrollAttr, ""),
+			Class("flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
+			g.Group(chips),
 		),
-		g.If(!b.SharedRoom, Div(
-			Class("flex flex-none flex-wrap items-center gap-2 border-t border-line px-3 py-2"),
-			ChiefSideChatButton(b.AgentID, ChatSurfacePage),
-			g.If(kind == ChiefChatKindPrimary, chiefFreshPrimaryButton(b.AgentID, ChatSurfacePage)),
-		)),
+		g.If(!b.SharedRoom, chiefNewChatChip(b.AgentID, surface)),
+		chiefChipsScript(),
+		// The ⋯ menus are placed by floatingMenuScript: the chief page carries
+		// it already; the shell the panel lives in does not (it is bound once
+		// per document, so a second copy is a no-op).
+		g.If(surface == ChatSurfaceChiefPanel && !b.SharedRoom, floatingMenuScript()),
 	)
 }
 
-// chiefChatRow is one chat in the Chats tab: a link to it (a boosted
-// navigation, as the switcher's rows are), marked "Current" when it is the chat
-// on screen, with the Primary badge and the unread dot — and, when the chat has
-// any, its ⋯ menu BESIDE the link, never inside it: a form in a link is not
-// valid HTML, and a tap meant to open the chat must not archive it.
-//
-// shared (ChiefChatBar.SharedRoom): no ⋯ menu, whose every action the server
-// refuses a member on a team's chief.
-func chiefChatRow(name string, agentID, current int64, sess SessionView, shared bool) g.Node {
+// chiefChip is one chat's chip: a tap switches to it (a boosted link on the
+// page, an hx-get of the panel body in the panel), current when it is the chat
+// on screen, with the ★ on the primary and the unread dot — and, unless the
+// viewer is in a team's shared room, its ⋯ menu BESIDE the link, never inside
+// it: a form in a link is not valid HTML, and a tap meant to open the chat
+// must not archive it. hidden: an archived chat's chip, behind "Archived (n)".
+func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurface, hidden bool) g.Node {
 	title := textplain.Title(sess.Title)
 	if title == "" {
-		title = "New chat"
+		title = ChiefNewChatLabel
 	}
-	cls := "press flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition ring-1 ring-inset "
-	if sess.Active {
-		cls += "bg-accent/15 text-fg ring-accent/50"
+	kind := ChiefChatKindSide
+	switch {
+	case sess.IsDefault:
+		kind = ChiefChatKindPrimary
+	case sess.Archived:
+		kind = ChiefChatKindArchived
+	}
+	label := title
+	if kind == ChiefChatKindPrimary {
+		label = "Primary"
+	}
+	id := strconv.FormatInt(sess.ID, 10)
+	cls := "press inline-flex h-11 min-w-0 max-w-[11rem] items-center gap-1.5 whitespace-nowrap rounded-full pl-3.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "
+	if b.SharedRoom {
+		cls += "pr-3.5 "
 	} else {
-		cls += "bg-s1 text-fg2 ring-line hover:bg-s2"
+		cls += "pr-1 "
+	}
+	if sess.Active {
+		cls += "font-semibold text-fg"
+	} else {
+		cls += "text-fg2 hover:text-fg"
+	}
+	inner := g.Group{
+		g.If(kind == ChiefChatKindPrimary, Span(g.Attr(sessionDefaultAttr, ""), g.Attr("aria-hidden", "true"), Class("shrink-0 text-accent"), g.Text("★"))),
+		Span(Class("min-w-0 truncate"), g.Text(label)),
+		g.If(sess.Unread, Span(
+			g.Attr(chiefUnreadAttr, ""),
+			g.Attr("role", "img"),
+			g.Attr("aria-label", "Unread reply"),
+			Class("h-2 w-2 shrink-0 rounded-full bg-accent"),
+		)),
+	}
+	common := g.Group{
+		g.Attr(chiefChatRowAttr, id),
+		g.Attr("title", title),
+		g.If(sess.Active, g.Attr("aria-current", "true")),
+		Class(cls),
+	}
+	var link g.Node
+	if surface == ChatSurfaceChiefPanel {
+		// A row of the panel's: an hx-get into the panel body, never a
+		// navigation (chiefThreadRows says why).
+		link = Button(Type("button"), common,
+			hx("hx-get", "/ui/chief/panel?session="+id),
+			hx("hx-target", "#"+chiefPanelBodyID),
+			hx("hx-swap", "innerHTML"),
+			inner)
+	} else {
+		link = A(Href(AgentSessionHref(name, sess.ID)), common, inner)
+	}
+	ring := "bg-s1 ring-line hover:bg-s2"
+	if sess.Active {
+		ring = "bg-accent/15 ring-accent/60"
 	}
 	return Li(
-		Class("flex items-center gap-1"),
-		A(
-			Href(AgentSessionHref(name, sess.ID)),
-			g.Attr(chiefChatRowAttr, strconv.FormatInt(sess.ID, 10)),
-			g.If(sess.Active, g.Attr("aria-current", "page")),
-			Class(cls),
-			Span(Class("mr-auto min-w-0 truncate"), g.Text(title)),
-			g.If(sess.Active, Span(g.Attr(chiefChatCurrentAttr, ""), Class("shrink-0 text-[11px] font-medium text-accent"), g.Text("Current"))),
-			chiefChatRowExtras(sess),
-			g.If(!sess.LastActive.IsZero(),
-				Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
-			),
-		),
-		g.If(!shared, chiefChatRowMenu(agentID, current, sess)),
+		g.Attr(chiefChipAttr, id),
+		g.Attr(chiefChipKindAttr, kind),
+		g.If(hidden, g.Attr(chiefArchivedChipAttr, "")),
+		g.If(hidden, g.Attr("hidden", "")),
+		Class("flex h-11 shrink-0 items-center rounded-full ring-1 ring-inset transition "+ring),
+		link,
+		g.If(!b.SharedRoom, chiefChipMenu(b, sess, kind, surface)),
 	)
 }
 
-// chiefChatRowMenu is a chat row's ⋯ menu: Unarchive on an archived chat; Make
-// primary (where the deployment offers it) and Archive on a side chat. Nothing
-// for the primary: it cannot be archived, and it is already the primary.
-//
-// A popover in the top layer, placed by floatingMenuScript, so the sheet's
-// scrolling list never clips it. Its actions answer HX-Redirect (the page
-// surface), which htmx follows.
-func chiefChatRowMenu(agentID, current int64, sess SessionView) g.Node {
-	if sess.IsDefault {
-		return nil
+// chiefChipMenu is a chip's ⋯ menu: Fresh primary (with its confirm) on the
+// primary; Make primary (where the deployment offers it) and Archive on a side
+// chat; Unarchive on an archived one. Every action names the chat on screen
+// (ChiefCurrentParam), so acting on another chat leaves the operator where they
+// are. A popover in the top layer, placed by floatingMenuScript, so the strip's
+// scroller never clips it; Escape and a tap outside close it (the browser's).
+func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind string, surface ChatSurface) g.Node {
+	prefix := "chief-chat-menu-"
+	if surface == ChatSurfaceChiefPanel {
+		prefix = "chief-panel-chat-menu-"
 	}
-	id := "chief-chat-menu-" + strconv.FormatInt(sess.ID, 10)
-	// Every action names the chat on screen (ChiefCurrentParam), so acting on
-	// another chat leaves the operator where they are.
-	action := func(path, attr, label string) g.Node {
+	id := prefix + strconv.FormatInt(sess.ID, 10)
+	action := func(path, attr, label, confirm string) g.Node {
 		return Form(
-			hx("hx-post", withCurrent(path, current)),
-			hx("hx-swap", "none"),
+			chiefChatPost(surface, withCurrent(onSurface(surface, path), b.SessionID)),
+			g.If(confirm != "", hx("hx-confirm", confirm)),
 			Class("contents"),
 			Button(Type("submit"), g.Attr(attr, ""), g.Attr("role", "menuitem"),
-				Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-medium text-fg transition hover:bg-s2"),
+				Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-medium text-fg transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 				g.Text(label)),
 		)
 	}
 	var items []g.Node
-	if sess.Archived {
-		items = append(items, action(ChiefArchivePath(agentID, sess.ID, false), chiefUnarchiveAttr, "Unarchive"))
-	} else {
+	switch kind {
+	case ChiefChatKindPrimary:
+		items = append(items, action(ChiefFreshPrimaryPath(b.AgentID), chiefFreshPrimaryAttr, "Fresh primary", FreshPrimaryConfirm))
+	case ChiefChatKindArchived:
+		items = append(items, action(ChiefArchivePath(b.AgentID, sess.ID, false), chiefUnarchiveAttr, "Unarchive", ""))
+	default:
 		if sess.DefaultPath != "" {
-			items = append(items, action(sess.DefaultPath, chiefMakePrimaryAttr, "Make primary"))
+			items = append(items, action(sess.DefaultPath, chiefMakePrimaryAttr, "Make primary", ""))
 		}
-		items = append(items, action(ChiefArchivePath(agentID, sess.ID, true), chiefArchiveAttr, "Archive"))
+		items = append(items, action(ChiefArchivePath(b.AgentID, sess.ID, true), chiefArchiveAttr, "Archive", ""))
 	}
 	return g.Group{
 		Button(
@@ -312,8 +371,8 @@ func chiefChatRowMenu(agentID, current int64, sess SessionView) g.Node {
 			g.Attr("aria-expanded", "false"),
 			g.Attr("aria-label", "Chat actions"),
 			g.Attr("title", "Chat actions"),
-			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
-			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>`),
+			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>`),
 		),
 		Div(
 			ID(id),
@@ -328,35 +387,134 @@ func chiefChatRowMenu(agentID, current int64, sess SessionView) g.Node {
 	}
 }
 
-// chiefPanelChatActions is the chief PANEL's chat actions, under its thread list
-// (chiefThreadList): "+ New side chat", and the open chat's own — "Fresh
-// primary" on the primary, "Archive this chat" and "Continue in a new session"
+// chiefNewChatChip is the strip's "+": a new side chat (or the newest one,
+// reused while it is still empty: internal/api openSideChat). Its answer moves
+// the view to that chat — and chiefChipsScript then puts the cursor in its
+// message box.
+func chiefNewChatChip(agentID int64, surface ChatSurface) g.Node {
+	return Form(
+		chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(agentID))),
+		Class("contents"),
+		Button(
+			Type("submit"),
+			g.Attr(chiefSideChatAttr, ""),
+			g.Attr("aria-label", "New side chat"),
+			g.Attr("title", "New side chat"),
+			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+			Span(g.Attr("aria-hidden", "true"), g.Text("+")),
+		),
+	)
+}
+
+// chiefFocusKey is the sessionStorage key "+" leaves for the view it lands on.
+const chiefFocusKey = "muster.chief-focus-composer"
+
+// chiefChipsScript is the strip's behaviour, bound once per document (htmx
+// re-executes it on every swap that brings a strip; the guard leaves only the
+// settle step to run again):
+//
+//   - THE CURRENT CHIP IS SCROLLED INTO VIEW on arrival (a phone shows two or
+//     three chips), inside the strip's own scroller — never the page's.
+//   - "Archived (n)" toggles its chats' chips inline (aria-expanded).
+//   - "+" LANDS IN THE MESSAGE BOX: as its request starts it leaves a mark in
+//     sessionStorage (it survives the page's HX-Redirect navigation), and the
+//     view it lands on — the page after the navigation, the panel after its
+//     swap — takes the mark and focuses #chat-input. A failed request drops the
+//     mark; a mark older than 15s is ignored, so a later visit never jumps.
+func chiefChipsScript() g.Node {
+	return Script(g.Raw(`
+(function () {
+  var KEY = '` + chiefFocusKey + `';
+  function clear() { try { sessionStorage.removeItem(KEY); } catch (e) {} }
+  function focusComposer() {
+    var t = 0;
+    try { t = +(sessionStorage.getItem(KEY) || 0); } catch (e) { return; }
+    if (!t) return;
+    if (Date.now() - t > 15000) { clear(); return; }
+    var input = document.getElementById('chat-input');
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    // Taken only once it held: a composer not yet shown is tried again on load.
+    if (document.activeElement === input) clear();
+  }
+  function reveal() {
+    var ss = document.querySelectorAll('[` + chiefChipScrollAttr + `]');
+    for (var i = 0; i < ss.length; i++) {
+      var sc = ss[i], cur = sc.querySelector('[aria-current="true"]');
+      if (!cur) continue;
+      var chip = cur.closest('[` + chiefChipAttr + `]') || cur;
+      var sr = sc.getBoundingClientRect(), cr = chip.getBoundingClientRect();
+      if (cr.left < sr.left) sc.scrollLeft += cr.left - sr.left - 8;
+      else if (cr.right > sr.right) sc.scrollLeft += cr.right - sr.right + 8;
+    }
+  }
+  function settle() { reveal(); focusComposer(); }
+  if (window.__musterChiefChips) { settle(); return; }
+  window.__musterChiefChips = true;
+  document.addEventListener('htmx:beforeRequest', function (e) {
+    var el = e.detail && e.detail.elt;
+    if (el && el.querySelector && el.querySelector('[` + chiefSideChatAttr + `]')) {
+      try { sessionStorage.setItem(KEY, String(Date.now())); } catch (err) {}
+    }
+  });
+  document.addEventListener('htmx:responseError', clear);
+  document.addEventListener('htmx:sendError', clear);
+  // Only a swap that brought a strip (the panel body) settles it again: the
+  // page's other swaps (the context chip, the transcript) must not scroll the
+  // strip back under the operator's thumb.
+  document.addEventListener('htmx:afterSettle', function (e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.querySelector && t.querySelector('[` + chiefChatStripAttr + `]')) settle();
+  });
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest && e.target.closest('button[` + chiefArchivedAttr + `]');
+    if (!b) return;
+    var strip = b.closest('[` + chiefChatStripAttr + `]');
+    if (!strip) return;
+    var open = b.getAttribute('aria-expanded') !== 'true';
+    b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    var cs = strip.querySelectorAll('[` + chiefArchivedChipAttr + `]');
+    for (var i = 0; i < cs.length; i++) cs[i].hidden = !open;
+    if (open && cs.length) {
+      var sc = b.closest('[` + chiefChipScrollAttr + `]');
+      var sr = sc.getBoundingClientRect(), last = cs[cs.length - 1].getBoundingClientRect();
+      if (last.right > sr.right) sc.scrollLeft += Math.min(last.right - sr.right + 8, b.getBoundingClientRect().left - sr.left);
+    }
+  });
+  window.addEventListener('load', focusComposer);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', settle);
+  else settle();
+})();
+`))
+}
+
+// chiefPageStrip is the chief PAGE's strip: a row of its own under the header,
+// in the chat column's width. Nothing off a chief's chat.
+func chiefPageStrip(v AgentDetailView) g.Node {
+	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
+		return nil
+	}
+	return Div(
+		g.Attr("data-chief-strip-row", ""),
+		Class("flex-none border-b border-line bg-bg lg:pl-72"),
+		Div(Class(contentMaxW()), chiefChatStrip(v.ChiefChat, v.Name, v.Sessions, ChatSurfacePage)),
+	)
+}
+
+// chiefPanelContinue is the chief PANEL's "Continue in a new session", under
+// its thread list (chiefThreadList), for the side chat the panel is on
 // (chiefContinuePicker, where the New session picker is offered: runtimes,
-// claudeModels) on a side chat, "Unarchive this chat" on an archived one — each
-// answered with the panel body re-rendered (ChatSurfaceChiefPanel). Nothing for
-// a panel not on a chief's chat.
-func chiefPanelChatActions(b *ChiefChatBar, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
+// claudeModels). Every other chat action is on the strip's chips.
+func chiefPanelContinue(b *ChiefChatBar, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
 	if b == nil {
 		return nil
 	}
-	kind, _ := chiefChatKind(*b)
-	var own, cont g.Node
-	switch kind {
-	case ChiefChatKindPrimary:
-		own = chiefFreshPrimaryButton(b.AgentID, ChatSurfaceChiefPanel)
-	case ChiefChatKindSide:
-		own = chiefChatAction(ChatSurfaceChiefPanel, ChiefArchivePath(b.AgentID, b.SessionID, true), chiefArchiveAttr, "Archive this chat", "", false)
-		cont = chiefContinuePicker(b.AgentID, b.SessionID, runtimes, claudeModels)
-	case ChiefChatKindArchived:
-		own = chiefChatAction(ChatSurfaceChiefPanel, ChiefArchivePath(b.AgentID, b.SessionID, false), chiefUnarchiveAttr, "Unarchive this chat", "", false)
+	if kind, _ := chiefChatKind(*b); kind != ChiefChatKindSide {
+		return nil
 	}
 	return Div(
-		g.Attr(chiefChatsAttr, ""),
-		g.Attr(chiefChatKindAttr, kind),
 		Class("flex flex-none flex-wrap items-center gap-2 border-t border-line pt-2"),
-		ChiefSideChatButton(b.AgentID, ChatSurfaceChiefPanel),
-		own,
-		cont,
+		chiefContinuePicker(b.AgentID, b.SessionID, runtimes, claudeModels),
 	)
 }
 

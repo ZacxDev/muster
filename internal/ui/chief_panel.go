@@ -397,6 +397,9 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// peer-checked:* utilities on the two later siblings select off the checkbox.
 			// The chat pane below carries no peer-checked class, so it is untouched.
 			chiefThreadList(v),
+			// The chief's chats as a strip of chips over the transcript — the
+			// page's strip, answered into this body (chief_chats.go).
+			chiefChatStrip(v.Chat.ChiefChat, v.Chat.Name, v.Chat.Sessions, ChatSurfaceChiefPanel),
 			// The EXISTING chat pane, unmodified: #chat-log fed by
 			// /ui/agents/{name}/chat-log on sse:chat.reply, plus #chat-form's WebSocket.
 			agentChatPane(v.Chat),
@@ -441,8 +444,8 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex min-w-0 items-center gap-0.5"),
 		// A chief chat's context chip (chief_chats.go), where the page draws it
-		// in its header. Its new chat is "New side chat" under the thread list
-		// (chiefPanelChatActions); the title bar keeps the thread list.
+		// in its header. Its new chat is the "+" on the chip strip over the
+		// transcript (chiefChatStrip); the title bar keeps the thread list.
 		g.If(v.Configured, chiefPanelContext(v.Chat.ChiefChat)),
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
@@ -848,10 +851,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				// this one got that rule wrong for a truncated read, and the next call site
 				// would have had the same chance to.
 				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
-				// The chief's chat actions — "+ New side chat", and Fresh primary /
-				// Archive / Unarchive for the chat the panel is on — under the list
-				// (chief_chats.go): what the chat bar over the transcript held.
-				chiefPanelChatActions(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
+				// "Continue in a new session" for the side chat the panel is on
+				// (chief_chats.go). Every other chat action — "+", Fresh primary,
+				// Archive, Unarchive, Make primary — is on the chip strip.
+				chiefPanelContinue(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
 			),
 		),
 	}
