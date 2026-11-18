@@ -838,6 +838,23 @@ ready) and starts it. **Stopping** scales it to zero; its agent and volume stay.
 no webhook receiver (a one-minute poll is fast enough for release work, and it
 keeps a public route and an HQ→muster network path out of the design).
 
+**Concurrent passes.** Each due officer's pass runs on its own goroutine, at
+most 4 at once (`maxConcurrentPasses` in `internal/officers/wake.go`), and
+never two for one officer: a pass is bounded at 2 minutes, and when the loop
+ran every officer's pass in turn, one slow pass (a slow HQ or fleet read)
+delayed every other officer's by as long — and with it the claim of their
+[chat](#chat-sessions) items, which happens at the end of a pass. An officer
+due while every slot is taken waits for the next tick. A pass that starts more
+than `poll_interval` after its officer was due is logged once per episode
+(`officers: <id>: pass started <N>s late (poll_interval <d>)`; the next pass
+that starts on time ends the episode). The loop's cadence is measured by
+`muster_officer_pass_start_lag_seconds` (how late each pass started),
+`muster_officer_pass_duration_seconds` and `muster_officer_passes_in_flight`
+(at 4, officers are waiting for a slot) — unlabelled, like the other officer
+gauges; the log line names the officer. On shutdown the loop waits for the
+passes still running (each ends with the shutdown's context) before it reports
+stopped.
+
 **HQ down.** A pass whose HQ read fails with a transport error or a 5xx
 changes nothing — no start, no stop, no release — and the officer's next pass
 waits `poll_interval` doubled per consecutive failure, capped at 10 minutes.
@@ -933,7 +950,9 @@ A team member can chat with an officer through the HQ server: HQ stores each
 chat and its messages, and every member turn enqueues (or re-opens) **one**
 item of kind `chat` for the officer — subject `chat:<chat_id>`, payload
 `{chat_id, seq}`, priority `high`. muster picks those items up on the wake
-loop's poll, as it picks up every item; HQ never calls muster. v1 is for HQ
+loop's poll, as it picks up every item — at the end of the officer's pass, so
+a chat waits at least as long as that pass starts late
+([Concurrent passes](#waking-and-scaling)); HQ never calls muster. v1 is for HQ
 officers only: the built-in backend serves no chat routes, and on it an item
 of kind `chat` is queue work as before.
 
