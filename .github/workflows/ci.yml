@@ -1801,7 +1801,7 @@ jobs:
   # The ONLY job that can write issues, and it can do nothing else.
   main-red:
     name: main red? (open or close the main-red issue)
-    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind, docshots]
+    needs: [main-verdict, build, test, leakscan, govulncheck, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind, docshots]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
