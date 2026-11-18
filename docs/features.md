@@ -311,14 +311,24 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
        new one. It also updates muster to the latest release.
      - **A machine that joined a hub** (macOS, or anywhere you re-run the
        installer): add `MUSTER_JOIN_URL=<hub>` to the installer's command, as
-       when you installed it. Without it the installer would set up a
-       muster server here instead (and stops if Docker is missing).
+       when you installed it (on macOS, `muster doctor` prints the exact
+       command, with the hub's address from this machine's settings). Without it, on a
+       machine with Docker, the installer starts a muster server here at
+       `http://localhost:<port>`; the mirror token it kept from the hub gets
+       a 401 from that new server, so it deletes the token file; it mints a
+       token on the new server; and it rewrites `MUSTER_MIRROR_URL` in
+       `~/.config/muster-mirror/env` to that localhost address. This machine's
+       sessions then show on the new local muster, not on the hub. To go back,
+       mint a new token for this machine on the hub, write it to
+       `~/.config/muster-mirror/token`, and run the installer again with
+       `MUSTER_JOIN_URL`. Without Docker it stops before changing anything.
      - **Linux without a systemd user session** (WSL, a container): stop the
        `muster-mirror` you started by hand and start it again the same way
        (`set -a; . ~/.config/muster-mirror/env; set +a; ~/.local/bin/muster-mirror`).
 
      On its first start with the endpoint on, muster-mirror writes a secret
-     (mode 600) to the path [below](#where-the-mcp-secret-is) says how to find.
+     (mode 600) to a file; [Where the MCP secret is](#where-the-mcp-secret-is),
+     below, says how to find that file.
   2. Register it with Claude Code, for this user:
 
      ```sh

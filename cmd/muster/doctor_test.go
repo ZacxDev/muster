@@ -381,7 +381,10 @@ type doctorOpts struct {
 	mcpScope string
 	// askMatcher is the ask hook's matcher ("" = "AskUserQuestion").
 	askMatcher string
-	// mcpSecretFile, when set, is the settings' MUSTER_MIRROR_MCP_SECRET_FILE.
+	// mcpSecretFile, when set, is the settings' MUSTER_MIRROR_MCP_SECRET_FILE,
+	// and the secret is written there instead of at the default path. A
+	// leading "@/" is the test's own directory (an absolute path that exists);
+	// "~/" is left for the doctor to expand (the test's directory is the home).
 	mcpSecretFile string
 	// attemptCode, when set, is written where muster-mirror leaves its
 	// attempt code (internal/mirrorpath's default, under XDG_CONFIG_HOME).
@@ -465,14 +468,27 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 			envBody += "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823\n"
 		}
 		if o.mcpSecretFile != "" {
-			envBody += "MUSTER_MIRROR_MCP_SECRET_FILE=" + o.mcpSecretFile + "\n"
+			envBody += "MUSTER_MIRROR_MCP_SECRET_FILE=" + strings.Replace(o.mcpSecretFile, "@/", dir+"/", 1) + "\n"
 		}
 		if err := os.WriteFile(mirrorEnv, []byte(envBody), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if !o.noMCPSecret {
-			_ = os.MkdirAll(filepath.Join(dir, "xdg", "muster-mirror"), 0o700)
-			_ = os.WriteFile(filepath.Join(dir, "xdg", "muster-mirror", "mcp-secret"), []byte("a-synthetic-mcp-secret\n"), 0o600)
+			// muster-mirror writes its secret at ONE path: the settings' file
+			// when they name one (then the default path stays absent), else
+			// the default under XDG_CONFIG_HOME.
+			secret := filepath.Join(dir, "xdg", "muster-mirror", "mcp-secret")
+			if o.mcpSecretFile != "" {
+				secret = o.mcpSecretFile
+				if rest, ok := strings.CutPrefix(secret, "~/"); ok {
+					secret = filepath.Join(dir, rest) // dir is the home
+				}
+				if rest, ok := strings.CutPrefix(secret, "@/"); ok {
+					secret = filepath.Join(dir, rest)
+				}
+			}
+			_ = os.MkdirAll(filepath.Dir(secret), 0o700)
+			_ = os.WriteFile(secret, []byte("a-synthetic-mcp-secret\n"), 0o600)
 		}
 		if !o.noMCPRegistration {
 			u := o.mcpRegisteredURL
@@ -979,6 +995,20 @@ func TestDoctorChecksThisHostsSessionToolsLocally(t *testing.T) {
 			"registers an MCP server at it", `/xdg/muster-mirror/mcp-secret')"`},
 		{"not registered: the export reads the settings' secret file", doctorOpts{noMCPRegistration: true, mcpSecretFile: "/elsewhere/mcp secret"}, "mcp-registration", statusFail,
 			"registers an MCP server at it", `export MUSTER_MIRROR_MCP_SECRET="$(cat '/elsewhere/mcp secret')"`},
+		// A ' in the path closes the quote, adds an escaped one, and reopens it.
+		{"not registered: a ' in the secret's path stays one shell word", doctorOpts{noMCPRegistration: true, mcpSecretFile: "/elsewhere/it's mcp secret"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `export MUSTER_MIRROR_MCP_SECRET="$(cat '/elsewhere/it'\''s mcp secret')"`},
+		// The endpoint looks where the settings say, not at the default: here
+		// the default path holds no secret, so a check that ignored the
+		// settings' line would FAIL.
+		{"secret at the settings' path, none at the default", doctorOpts{mcpSecretFile: "@/settings-secret/mcp-secret"}, "mcp-endpoint", statusPass,
+			"/settings-secret/mcp-secret)", ""},
+		// "~/" in the settings is this user's home, as muster-mirror reads it:
+		// the check finds the file there, and the export names the expanded
+		// path (a '~' inside single quotes would never expand).
+		{"~/ in the settings' secret file is the home", doctorOpts{mcpSecretFile: "~/mm/mcp-secret"}, "mcp-endpoint", statusPass, "/mm/mcp-secret)", ""},
+		{"not registered: the export reads ~/ expanded", doctorOpts{noMCPRegistration: true, mcpSecretFile: "~/mm/mcp-secret"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", `/mm/mcp-secret')"`},
 		// The secret is where muster-mirror writes it: os.UserConfigDir, which
 		// honours XDG_CONFIG_HOME (internal/mirrorpath) — not beside the settings.
 		{"secret under XDG_CONFIG_HOME", doctorOpts{}, "mcp-endpoint", statusPass, "/xdg/muster-mirror/mcp-secret", ""},
@@ -1002,6 +1032,9 @@ func TestDoctorChecksThisHostsSessionToolsLocally(t *testing.T) {
 			got := r.check(c.check)
 			if got.Status != c.status || !strings.Contains(got.Detail, c.detail) || !strings.Contains(got.Fix, c.fix) {
 				t.Fatalf("%s = %+v, want %s with %q / fix %q", c.check, got, c.status, c.detail, c.fix)
+			}
+			if strings.HasPrefix(c.o.mcpSecretFile, "~/") && strings.Contains(got.Detail+got.Fix, "~/") {
+				t.Fatalf("%s = %+v: the secret's path must be shown expanded, not as ~/", c.check, got)
 			}
 			if strings.Contains(r.stderr+r.stdout, "a-synthetic-mcp-secret") {
 				t.Fatal("the MCP secret's content reached the output")
@@ -1333,14 +1366,55 @@ func TestDoctorSignsInWithThePagesOrigin(t *testing.T) {
 
 // On macOS the launchd service holds a copy of the settings made when the
 // installer last ran, so a kickstart restarts the OLD settings: a fix that
-// follows a settings edit must re-run the installer (and keep the hub, for a
-// machine that joined one). Linux's unit reads the file on every start.
+// follows a settings edit must re-run the installer. The command is exact and
+// pasteable: a Mac whose MUSTER_MIRROR_URL is another machine (it joined a
+// hub) gets MUSTER_JOIN_URL=<that url>, else re-running would start a server
+// here and repoint the mirror at it; a Mac whose mirror talks to its own
+// server gets the plain installer, and is told it upgrades that server. The
+// prose is outside the backticks. Linux's unit reads the file on every start.
 func TestDoctorMirrorRestartHintAppliesNewSettings(t *testing.T) {
-	mac := mirrorRestartHint("darwin")
-	if !strings.Contains(mac, "releases/latest/download/install.sh | sh") || !strings.Contains(mac, "MUSTER_JOIN_URL=<hub>") || strings.Contains(mac, "kickstart") {
-		t.Fatalf("macOS hint = %q: want the installer re-run (with MUSTER_JOIN_URL for a joined machine), not a launchd kickstart", mac)
+	const installer = "curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | "
+	for _, c := range []struct{ url, cmd, note string }{
+		{"https://hub.example.test", installer + "MUSTER_JOIN_URL='https://hub.example.test' sh", "for the hub this Mac joined"},
+		{"https://hub.example.test/", installer + "MUSTER_JOIN_URL='https://hub.example.test' sh", "for the hub this Mac joined"},
+		{"http://localhost:8105", installer + "sh", "upgrades the muster server this Mac runs"},
+		{"http://127.0.0.1:8105", installer + "sh", "upgrades the muster server this Mac runs"},
+		{"http://[::1]:8105", installer + "sh", "upgrades the muster server this Mac runs"},
+	} {
+		got := mirrorRestartHint("darwin", c.url)
+		if !strings.HasPrefix(got, "`"+c.cmd+"`, ") || !strings.Contains(got[len(c.cmd)+2:], c.note) || strings.Contains(got, "kickstart") || strings.Contains(got, "<hub>") {
+			t.Errorf("macOS hint for %s = %q: want `%s` then the note %q outside the backticks", c.url, got, c.cmd, c.note)
+		}
 	}
-	if got := mirrorRestartHint("linux"); got != "systemctl --user restart muster-mirror.service" {
+	if got := mirrorRestartHint("linux", "https://hub.example.test"); got != "`systemctl --user restart muster-mirror.service`" {
 		t.Fatalf("Linux hint = %q", got)
+	}
+}
+
+// TestDoctorMacFixesCarryTheJoinURL: the two mcp-endpoint fixes that restart
+// muster-mirror name the exact installer command for THIS Mac's settings —
+// the hub's URL on a joined Mac, the plain installer on one running its own
+// server.
+func TestDoctorMacFixesCarryTheJoinURL(t *testing.T) {
+	const join = "install.sh | MUSTER_JOIN_URL='https://hub.example.test' sh`"
+	for _, c := range []struct {
+		name, mirrorURL, want, notWant string
+		o                              doctorOpts
+	}{
+		{"joined, no secret", "https://hub.example.test", join, "", doctorOpts{noMCPSecret: true}},
+		{"joined, no listen line", "https://hub.example.test", join, "", doctorOpts{noMCPListen: true}},
+		{"own server, no secret", "http://localhost:8105", "install.sh | sh`, which re-runs the installer; it also upgrades", "MUSTER_JOIN_URL", doctorOpts{noMCPSecret: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sys := healthySystem()
+			sys.goos = "darwin"
+			o := c.o
+			o.mirrorURL = c.mirrorURL
+			r := runDoctorAgainst(t, healthyMuster(), sys, o)
+			got := r.check("mcp-endpoint")
+			if !strings.Contains(got.Fix, c.want) || (c.notWant != "" && strings.Contains(got.Fix, c.notWant)) {
+				t.Fatalf("mcp-endpoint fix = %q, want %q", got.Fix, c.want)
+			}
+		})
 	}
 }

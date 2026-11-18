@@ -69,6 +69,7 @@ yours, see [below](#add-your-plugin).
 | plugin | what it connects | author | repository | status |
 |---|---|---|---|---|
 | muster-social | posts an officer's approved drafts to social sites (X, LinkedIn) from your own signed-in browser | ZacxDev | [ZacxDev/muster-social](https://github.com/ZacxDev/muster-social) | early: tested against fixture pages, not yet against the live sites |
+| muster-clankmail | signed agent-to-agent mail between musters (ClankMail) | ZacxDev | [ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail) | v0.1.0 |
 | muster-plugin-template | nothing real: an echo round-trip to copy and turn into your own plugin | ZacxDev | [ZacxDev/muster-plugin-template](https://github.com/ZacxDev/muster-plugin-template) | template |
 <!-- MORE PLUGINS GO HERE: one row each, in the columns above. Rows for the
      maintainer's other plugins are added here once each repository is public. -->

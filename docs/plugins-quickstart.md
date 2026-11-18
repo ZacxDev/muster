@@ -88,8 +88,13 @@ does not register, to answer with `route_reply`.
 
    If this machine joined a hub, add `MUSTER_JOIN_URL=<hub>` to that command
    (before `sh`, beside `MUSTER_MIRROR_INTERACTIVE=1`), as when you installed
-   it: without it the installer would set up a muster server here instead
-   (and stops if Docker is missing). On
+   it. Without it, on a Mac with Docker, the installer starts a muster server
+   on this Mac; the mirror token it kept from the hub gets a 401 from that new
+   server, so it deletes the token file; it mints a token on the new server;
+   and it rewrites `MUSTER_MIRROR_URL` in `~/.config/muster-mirror/env` to
+   `http://localhost:<port>`, so this Mac's sessions leave the hub. Going back
+   takes a new token minted on the hub ([Agent ask tool](features.md#agent-ask-tool)). Without
+   Docker it stops before changing anything. On
    Linux without a systemd user session (WSL, a container), stop the
    `muster-mirror` you started by hand and start it again the same way.
 

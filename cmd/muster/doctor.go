@@ -1341,14 +1341,14 @@ func (d *doctorRun) checkMCPEndpoint() {
 	listen := strings.TrimSpace(vals[envMirrorMCPListen])
 	if listen == "" {
 		d.add(name, statusSkip, "the agent ask tool is off on this machine: "+envMirrorMCPListen+" is not set in "+d.mirrorEnv,
-			"add "+envMirrorMCPListen+"="+defaultMCPListen+" to "+d.mirrorEnv+" and restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`); "+
+			"add "+envMirrorMCPListen+"="+defaultMCPListen+" to "+d.mirrorEnv+" and restart muster-mirror with "+mirrorRestartHint(d.sys.goos, vals["MUSTER_MIRROR_URL"])+"; "+
 				"see docs/features.md#agent-ask-tool")
 		return
 	}
 	secret := d.mcpSecretFile()
 	if fi, err := os.Stat(secret); err != nil || fi.Size() == 0 {
 		d.add(name, statusFail, envMirrorMCPListen+"="+listen+" is set, but the endpoint's secret "+secret+" is missing or empty: "+
-			"muster-mirror has not started with it yet", "restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`), which writes it")
+			"muster-mirror has not started with it yet", "restart muster-mirror (it writes the secret as it starts) with "+mirrorRestartHint(d.sys.goos, vals["MUSTER_MIRROR_URL"]))
 		return
 	}
 	d.add(name, statusPass, "muster-mirror serves its MCP endpoint at http://"+listen+"/mcp (its secret is in "+secret+")", "")
@@ -1564,17 +1564,27 @@ func (d *doctorRun) checkAskHook() {
 	d.add(name, statusSkip, "ask cards are off on this machine: no PreToolUse hook runs `muster-mirror ask` ("+path+")", fix)
 }
 
-// mirrorRestartHint restarts this machine's muster-mirror service so that it
-// reads its settings file again. On macOS that is the installer, not a
-// launchd kickstart: the service holds a copy of the settings made when the
-// installer last ran (install.sh writes them into the plist), so a kickstart
-// would start the old ones.
-func mirrorRestartHint(goos string) string {
-	if goos == "darwin" {
-		return "curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh" +
-			" — add MUSTER_JOIN_URL=<hub> before sh if this machine joined a hub"
+// mirrorRestartHint is the command, in backticks, that restarts this
+// machine's muster-mirror service so that it reads its settings file again,
+// followed by what the command also does (outside the backticks, so the part
+// in them pastes as it is). mirrorURL is the settings' MUSTER_MIRROR_URL.
+//
+// On macOS that is the installer, not a launchd kickstart: the service holds
+// a copy of the settings made when the installer last ran (install.sh writes
+// them into the plist), so a kickstart would start the old ones. A machine
+// whose MUSTER_MIRROR_URL is not this machine joined a hub, and its command
+// carries MUSTER_JOIN_URL=<that url>: without it the installer starts a muster
+// server here and repoints the mirror at it (docs/features.md#agent-ask-tool).
+func mirrorRestartHint(goos, mirrorURL string) string {
+	if goos != "darwin" {
+		return "`systemctl --user restart " + defaultMirrorUnit + "`"
 	}
-	return "systemctl --user restart " + defaultMirrorUnit
+	const installer = "curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | "
+	hub := strings.TrimSuffix(strings.TrimSpace(mirrorURL), "/")
+	if u, err := url.Parse(hub); hub != "" && err == nil && u.Host != "" && !loopback.Host(u.Host) {
+		return "`" + installer + "MUSTER_JOIN_URL=" + shSingleQuote(hub) + " sh`, which re-runs the installer for the hub this Mac joined"
+	}
+	return "`" + installer + "sh`, which re-runs the installer; it also upgrades the muster server this Mac runs to the latest release"
 }
 
 // reportFeature is the server's registry entry ID, when it reported one.
