@@ -291,7 +291,7 @@ func pageStoreRefusal(err error) (int, string, string) {
 }
 
 // pageResponder is who a response is recorded as: a share link's viewer, or
-// the page's signed-in owner from their own view (migration 0150). Both go
+// the page's signed-in owner from their own view (migration 0152). Both go
 // through the SAME submit and upload code (pageSubmit, pageUpload), with the
 // same checks, rate limits, caps and size bounds; only the identity, the
 // version and the store call differ.
@@ -917,7 +917,7 @@ func prettyJSON(raw []byte) string {
 // ledger scans this function (apiLabelBuilders) for exactly that.
 //
 // 🔴 "" — no link, never a guess — when it cannot be resolved: no session
-// recorded (a mirrored window's page made before 0150), the session no longer
+// recorded (a mirrored window's page made before 0152), the session no longer
 // running on any of the owner's windows, the host offline, or an agent that
 // is not the page owner's. Another owner's hosts are never searched (Hosts
 // is the principal's own), so their session is never resolved.

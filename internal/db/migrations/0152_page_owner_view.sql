@@ -1,4 +1,4 @@
--- muster 0150 — THE OWNER'S VIEW OF A PAGE: their own responses, and the
+-- muster 0152 — THE OWNER'S VIEW OF A PAGE: their own responses, and the
 -- session that made it (internal/pages; docs/pages.md "The owner's view").
 --
 --   pages.mirror_session   the mirrored session that made the page: the
@@ -30,7 +30,7 @@
 -- so it must find no owner row; and THIS image reads and writes by_owner, so
 -- the column stays until it is gone. Hence the order below.
 --
--- Must apply after its predecessor, 0149_officer_chat_marks (the contiguity
+-- Must apply after its predecessor, 0151_session_route_target_host (the contiguity
 -- test refuses a gap). 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK, in this order (pages.mirror_session: an older image reads none
@@ -43,7 +43,7 @@
 --      ALTER TABLE public.page_responses DROP COLUMN IF EXISTS by_owner;
 --      ALTER TABLE public.page_responses ALTER COLUMN link_id SET NOT NULL;
 --      ALTER TABLE public.pages DROP COLUMN IF EXISTS mirror_session;
---      DELETE FROM schema_migrations WHERE version = 150;
+--      DELETE FROM schema_migrations WHERE version = 152;
 -- (An owner's upload row deleted above leaves its file under pages/<id>/,
 -- which the page's own Delete still removes: it lists the prefix.)
 

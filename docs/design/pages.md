@@ -107,7 +107,7 @@ All four tables are owned, under forced row-level security, with
 | `pages` | `title` (≤ 200), `current_version`, creator: `agent_id` **or** `mirror_host` (+ `creator_label`), `created_at`, `updated_at` |
 | `page_versions` | `page_id`, `version` (1, 2, …; unique per page), `title`, `blocks` JSONB, `size_bytes`, `created_by` label, `created_at`. Immutable: no `UPDATE` path |
 | `page_links` | `page_id`, `token_sha256` (unique, the lookup), `state` ∈ `pending`, `live`, `denied`, `revoked`; `ask_id` (the approval), `requested_by`, `created_at`, `decided_at` |
-| `page_responses` | `page_id`, `link_id` (NULL for the owner's own), `by_owner` (0150), `version`, `component`, `kind` ∈ `submit`, `upload`; `data` JSONB (≤ 32 KiB), `upload_public_id`, `created_at` |
+| `page_responses` | `page_id`, `link_id` (NULL for the owner's own), `by_owner` (0152), `version`, `component`, `kind` ∈ `submit`, `upload`; `data` JSONB (≤ 32 KiB), `upload_public_id`, `created_at` |
 
 - **Only the token's sha256 is stored** (operator decision, round 0). A link
   is shown once — to the agent in `page_share_request`'s result, or to the
@@ -283,7 +283,7 @@ the built-in upload's message list a page-built Proxy. Two bypasses of one
 check in the page's own realm: the gate was removed, and the decision moved
 to the shell.
 
-**As built (the session that made it):** `pages.mirror_session` (0150,
+**As built (the session that made it):** `pages.mirror_session` (0152,
 nullable) records the Claude Code session id a mirrored session's
 `page_create` came from — the id its MCP request bound to — beside
 `mirror_host`; an agent's page keeps `agent_id`. The owner's view resolves it

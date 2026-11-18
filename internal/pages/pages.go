@@ -105,7 +105,7 @@ type Creator struct {
 	MirrorHost string
 	// MirrorSession is the mirrored session the page was made from — the
 	// caller's Claude Code session id (or opencode key), what the mirror
-	// MCP request bound to — recorded at create (0150) so the owner can open
+	// MCP request bound to — recorded at create (0152) so the owner can open
 	// that session from the page. "" for an agent's page, and for a page
 	// made before it was recorded. It identifies; it never scopes: a tool
 	// acts on its HOST's pages (creatorClause), as before.
@@ -219,7 +219,7 @@ type Response struct {
 	// LinkID is the link it came through; 0 for the owner's (ByOwner).
 	LinkID int64
 	// ByOwner: the page's owner sent it from their own view of the page,
-	// signed in (migration 0150), not a viewer through a link.
+	// signed in (migration 0152), not a viewer through a link.
 	ByOwner        bool
 	Version        int
 	Component      string
