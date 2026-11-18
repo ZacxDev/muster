@@ -227,6 +227,23 @@ func TestPlainCodeDropsOnlyATrailingWindowIndex(t *testing.T) {
 	}
 }
 
+// A HOST'S GROUP IS SAID ONE WAY. Three windows labelled "Gold" on one host,
+// two of them window 1 of different sessions: the indexes cannot tell the
+// group apart, so ALL three are told apart by their tmux address — never two
+// addresses beside a "window 2" that names no session. (Pins the group rule in
+// qualifiers: a per-entry "is my index unique" check reads the third
+// "Gold · window 2".)
+func TestAGroupWhoseIndexesClashIsToldApartByAddressWhole(t *testing.T) {
+	hosts := []mirror.HostView{
+		perWindow("laptop", win("scratch3", "@2", 1, "Gold:1"), win("scratch4", "@6", 1, "Gold:1"), win("scratch5", "@8", 2, "Gold:2")),
+	}
+	assertTitles(t, hosts, map[string]string{
+		"laptop/scratch3/@2": "Gold · scratch3:1",
+		"laptop/scratch4/@6": "Gold · scratch4:1",
+		"laptop/scratch5/@8": "Gold · scratch5:2",
+	})
+}
+
 // CodeTitle keeps the TECHNICAL name the chief's labels carry: the codename
 // with its index, qualified as it always was — while DisplayTitle, over the
 // same list, is the plain name.

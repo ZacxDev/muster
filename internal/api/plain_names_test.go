@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"io"
+	"log"
+	"maps"
 	"net/http/httptest"
 	"regexp"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -219,13 +222,41 @@ func TestNoTopLayerOfASessionsPagesSpellsATmuxAddress(t *testing.T) {
 	}
 }
 
+// TestTwoWindowsOfOneSessionAreTwoNamesOnTheirCards: two unnamed windows of
+// ONE tmux session waiting at once are told apart on their Asks cards exactly
+// as the session lists tell them apart ("fern · window 1", "fern · window 2":
+// the list's qualifier, mirror.Ordered) — never both "fern · on ws". The
+// ⓘ of each holds its own target.
+func TestTwoWindowsOfOneSessionAreTwoNamesOnTheirCards(t *testing.T) {
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	fm := &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: []mirror.Window{
+		{Session: "fern", ID: "@4", Index: 1, Active: true, Claude: true, ClaudeSession: "5a1b2c3d-4444-4444-8444-000000000001", Status: mirror.StatusWaiting, StatusSince: attnSince},
+		{Session: "fern", ID: "@9", Index: 2, Claude: true, ClaudeSession: "5a1b2c3d-4444-4444-8444-000000000002", Status: mirror.StatusWaiting, StatusSince: attnSince},
+	}}
+	s.UseExtensions(Extensions{Users: stubUsers{}, Mirror: fm})
+	items := s.waitingSessions(s.attentionPrincipal(context.Background(), 1))
+	got := map[string]string{}
+	for _, it := range items {
+		title, src, _ := attentionTitle(it)
+		got[it.target] = title + " | " + src
+	}
+	want := map[string]string{
+		"tmux fern:1 @ ws": "fern · window 1 | on ws",
+		"tmux fern:2 @ ws": "fern · window 2 | on ws",
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("cards: %v\nwant %v", got, want)
+	}
+}
+
 // TestAnAskCardsPlaceSheetIsTheOneComponent: the ⓘ an ask's card draws is
 // ui.SessionPlaceSheet's, byte for byte, keyed by the card — one component on
 // every surface.
 func TestAnAskCardsPlaceSheetIsTheOneComponent(t *testing.T) {
-	it := attentionItem{Key: "ask-7", Kind: attentionKindAsk, AskID: 7, target: "tmux fern:1 @ atlas", Source: "tmux fern:1 @ atlas"}
+	it := attentionItem{Key: "ask-7", Kind: attentionKindAsk, AskID: 7, target: "tmux fern:1 @ atlas", Source: "tmux fern:1 @ atlas",
+		at: mirror.Place{Code: "fern:1", Host: "atlas", Addr: "fern:1"}, Name: "Billing migration"}
 	got := attentionPlaceSheetHTML(it, it.Key)
-	want := ui.InfoSheetHTML(ui.SessionPlaceSheet("place-ask-7", "atlas", "tmux fern:1 @ atlas"))
+	want := ui.InfoSheetHTML(ui.SessionPlaceSheet("place-ask-7", "Billing migration", "atlas", "tmux fern:1 @ atlas"))
 	if got != want {
 		t.Fatalf("the card's ⓘ:\n%s\nwant\n%s", got, want)
 	}

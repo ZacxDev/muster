@@ -84,7 +84,7 @@ func TestAnAttentionItemAndItsPushCallTheSessionByItsName(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
 	s, _ := focusMirrorServer(t, fm, namedFocusStore(), nil)
 	items := []attentionItem{{Key: "ask-1", Kind: attentionKindAsk, Source: "mango:1 · tmux main:1 @ ws", target: "tmux main:1 @ ws",
-		subject: focus.MirrorSubject(focusSID), claudeSession: focusSID}}
+		at: mirror.Place{Code: "mango:1", Host: "ws", Addr: "main:1"}, subject: focus.MirrorSubject(focusSID), claudeSession: focusSID}}
 	s.withFocus(operatorCtx(), items)
 	it := items[0]
 	if it.Name != "Billing migration" {

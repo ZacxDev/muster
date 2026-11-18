@@ -207,6 +207,12 @@ type attentionItem struct {
 	// from the same window; the zero Place for none. notifyName adds it after
 	// a human name.
 	at mirror.Place
+	// windowName is the window's plain name as the session lists name it —
+	// mirror.SessionView.DisplayTitle over the whole list (windowDisplayName):
+	// "fern · window 2" when another window of that session also reads
+	// "fern" — set with at; "" for none. attentionTitle heads an unnamed
+	// window's card with it.
+	windowName string
 	// Text is the item's SUBSTANCE in one line or a few: the question; what a
 	// waiting session waits on (its pending action, mirror.Pending.Summary —
 	// sessionWaitingText when its host says nothing); a held AskUserQuestion's
@@ -463,7 +469,7 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 // is named as no window showing it.
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, windowName: windowDisplayName(hosts, at), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
 		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
@@ -593,7 +599,7 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 			continue
 		}
 		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.Place(), Text: sessionWaitingText, host: e.Host,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.Place(), windowName: e.DisplayTitle(), Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
@@ -1987,8 +1993,9 @@ func attentionHeadHTML(it attentionItem, now time.Time, href string) string {
 }
 
 // attentionHeadLines is a card head's two lines: the title (attentionTitle) and,
-// muted under it, how long it has waited, the place it is at (the tmux target,
-// small: data-attention-source) and whether its host is offline.
+// muted under it, how long it has waited, where it runs in words ("on atlas":
+// data-attention-source; the tmux target is the card's ⓘ) and whether its
+// host is offline.
 func attentionHeadLines(it attentionItem, now time.Time) string {
 	esc := html.EscapeString
 	title, src, srcIsTitle := attentionTitle(it)
@@ -2050,24 +2057,39 @@ func attentionTitle(it attentionItem) (title, src string, srcIsTitle bool) {
 	case it.Name != "":
 		return it.Name, src, false
 	case it.target != "" && it.at.Code != "":
+		// The list's name for it (windowName: qualified, "fern · window 2"),
+		// else its codename without tmux's window index.
+		name := it.windowName
+		if name == "" {
+			name = mirror.PlainCode(it.at.Code)
+		}
 		addr := strings.TrimSuffix(strings.TrimPrefix(it.target, "tmux "), " @ "+it.at.Host)
-		return textplain.TitleKeeping(mirror.PlainCode(it.at.Code), mirror.PlainCode(addr)), src, false
+		return textplain.TitleKeeping(name, mirror.PlainCode(addr)), src, false
 	}
 	return textplain.TitleKeeping(it.Source, it.target), "", true
 }
 
 // attentionPlaceHost is the computer the window an item names runs on: its
-// Place's host, else the host its tmux target ends with ("tmux main:1 @ ws");
-// "" for an item that names no window.
+// Place's host (every producer sets at with target); "" for an item that
+// names no window.
 func attentionPlaceHost(it attentionItem) string {
 	if it.target == "" {
 		return ""
 	}
-	if it.at.Host != "" {
-		return it.at.Host
+	return it.at.Host
+}
+
+// windowDisplayName is the plain name the session lists give the window at
+// (mirror.Ordered's DisplayTitle, qualified over the whole list), found by
+// its host and tmux address; "" when hosts does not list it.
+func windowDisplayName(hosts []mirror.HostView, at mirror.Place) string {
+	if at.Addr == "" {
+		return ""
 	}
-	if i := strings.LastIndex(it.target, " @ "); i >= 0 {
-		return it.target[i+len(" @ "):]
+	for _, e := range mirror.Ordered(hosts) {
+		if e.Host == at.Host && e.Address() == at.Addr {
+			return e.DisplayTitle()
+		}
 	}
 	return ""
 }
@@ -2079,7 +2101,8 @@ func attentionPlaceSheetHTML(it attentionItem, key string) string {
 	if it.target == "" {
 		return ""
 	}
-	return ui.InfoSheetHTML(ui.SessionPlaceSheet(attentionPlaceSheetID(key), attentionPlaceHost(it), it.target))
+	name, _, _ := attentionTitle(it)
+	return ui.InfoSheetHTML(ui.SessionPlaceSheet(attentionPlaceSheetID(key), name, attentionPlaceHost(it), it.target))
 }
 
 // attentionPlaceSheetID is the ⓘ sheet's element id for an item keyed key: an

@@ -11,9 +11,9 @@ import (
 // exact text verbatim and a Copy button carrying exactly that text, and closes
 // from its own Close button. Pinned literally.
 func TestTheInfoSheetIsAKeyboardReachableNamedDialogWithCopy(t *testing.T) {
-	out := renderString(t, SessionPlaceSheet("place-ask-7", "atlas", "tmux fern:1 @ atlas").Node())
+	out := renderString(t, SessionPlaceSheet("place-ask-7", "Billing migration", "atlas", "tmux fern:1 @ atlas").Node())
 	for _, want := range []string{
-		`<button type="button" id="place-ask-7-open" popovertarget="place-ask-7" aria-haspopup="dialog" aria-controls="place-ask-7" aria-label="Where this session runs" title="Where this session runs" data-info-open="place-ask-7"`,
+		`<button type="button" id="place-ask-7-open" popovertarget="place-ask-7" aria-haspopup="dialog" aria-controls="place-ask-7" aria-label="Where Billing migration runs" title="Where Billing migration runs" data-info-open="place-ask-7"`,
 		`<div id="place-ask-7" popover="auto" role="dialog" aria-labelledby="place-ask-7-title" data-info-sheet=""`,
 		`<p id="place-ask-7-title" class="flex-1 text-sm font-semibold text-fg">Where it runs</p>`,
 		`<p class="text-sm text-fg2">This session runs in a tmux window on atlas. To open it in a terminal on that computer, use this address:</p>`,
@@ -30,7 +30,7 @@ func TestTheInfoSheetIsAKeyboardReachableNamedDialogWithCopy(t *testing.T) {
 		t.Errorf("the trigger does not come before its sheet:\n%s", out)
 	}
 	// Its text is escaped.
-	esc := renderString(t, SessionPlaceSheet("p", "a<b", `tmux x"y:1 @ a<b`).Node())
+	esc := renderString(t, SessionPlaceSheet("p", "", "a<b", `tmux x"y:1 @ a<b`).Node())
 	if strings.Contains(esc, "a<b") || !strings.Contains(esc, `data-copy-text="tmux x&#34;y:1 @ a&lt;b"`) {
 		t.Errorf("the sheet's text is not escaped:\n%s", esc)
 	}

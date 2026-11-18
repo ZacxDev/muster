@@ -563,7 +563,7 @@ test.describe('phone 390×844 touch: plain session names', () => {
     await expect(card.locator('[data-attention-source]')).toHaveText(`on ${host}`);
     expect(await card.innerText(), 'nothing visible on the card spells a tmux address').not.toMatch(jargon);
     const info = card.locator('[data-info-open]');
-    await expect(info).toHaveAccessibleName('Where this session runs');
+    await expect(info).toHaveAccessibleName(`Where ${names.phone} runs`);
     const ib = (await info.boundingBox())!;
     expect(ib.height, 'a 44px target').toBeGreaterThanOrEqual(44);
     expect(ib.x + ib.width, 'the ⓘ is on screen').toBeLessThanOrEqual(390.5);
@@ -597,7 +597,7 @@ test.describe('phone 390×844 touch: plain session names', () => {
     await shot(page, 'session-header');
     expect(await header.innerText(), 'nothing visible in the header spells a tmux address').not.toMatch(jargon);
     const hinfo = page.locator('#mv-place-open');
-    await expect(hinfo).toHaveAccessibleName('Where this session runs');
+    await expect(hinfo).toHaveAccessibleName(`Where ${names.phone} runs`);
     await hinfo.tap();
     const hsheet = page.locator('#mv-place');
     await expect(hsheet).toBeVisible();

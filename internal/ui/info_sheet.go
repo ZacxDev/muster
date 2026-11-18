@@ -52,7 +52,9 @@ type InfoSheet struct {
 	// Withheld: the code is a SETUP detail (an environment variable, a
 	// command) and the viewer is not an admin — the sheet says to ask their
 	// admin instead, and carries no code at all (not hidden: absent).
-	// A session's own address is never withheld from its owner.
+	// A session's own address is never withheld from its owner. No caller
+	// sets it yet: the jargon audit's settings and features themes (the next
+	// PRs) move setup details behind an ⓘ, admin-only, and are its callers.
 	Withheld bool
 	// Inline draws the ⓘ for a 16px text line (a header's status row): a
 	// 20px-tall glyph whose 44px thumb target is its ::before, raised above a
@@ -70,12 +72,11 @@ const infoIcon = `<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="c
 
 // Node is the ⓘ trigger and its sheet, in that order.
 func (s InfoSheet) Node() g.Node {
-	return g.Group{s.Trigger(), s.Sheet()}
+	return g.Group{s.trigger(), s.sheet()}
 }
 
-// Trigger is the ⓘ button alone, for a caller that places the sheet apart
-// from it (the sheet can sit anywhere in the document: it is top layer).
-func (s InfoSheet) Trigger() g.Node {
+// trigger is the ⓘ button.
+func (s InfoSheet) trigger() g.Node {
 	icon := infoIcon
 	if s.Inline {
 		icon = strings.Replace(infoIcon, `class="h-5 w-5"`, `class="h-4 w-4"`, 1)
@@ -96,12 +97,12 @@ func (s InfoSheet) Trigger() g.Node {
 	)
 }
 
-// Sheet is the popover the trigger opens.
+// sheet is the popover the trigger opens.
 //
 // data-asks-controls: inside an Asks card a tap on the sheet's text is the
 // sheet's, never the card's expand toggle (ui/asks_card.go's CONTROLS);
 // data-own-swipe likewise keeps a drag on it from swiping the card.
-func (s InfoSheet) Sheet() g.Node {
+func (s InfoSheet) sheet() g.Node {
 	heading := s.ID + "-title"
 	var code g.Node
 	switch {
@@ -161,16 +162,23 @@ func InfoSheetHTML(s InfoSheet) string {
 }
 
 // SessionPlaceSheet is THE ⓘ of a mirrored session's place: id is the sheet's
-// id (unique in its document), host the computer it runs on and where its
-// exact tmux address (mirror.Where: "tmux fern:1 @ atlas"), copied whole.
+// id (unique in its document), name the session's name as the surface shows
+// it (in the ⓘ's accessible name, so a screen reader moving between cards
+// hears whose place each one is: "Where Billing migration runs"; "" for "this
+// session"), host the computer it runs on and where its exact tmux target
+// ("tmux fern:1 @ atlas"), copied whole.
 // Callers draw it only when they hold an address.
 //
 // Never withheld: a session's own address is its owner's to see.
-func SessionPlaceSheet(id, host, where string) InfoSheet {
+func SessionPlaceSheet(id, name, host, where string) InfoSheet {
 	lead := "This session runs in a tmux window"
 	if host != "" {
 		lead += " on " + host
 	}
 	lead += ". To open it in a terminal on that computer, use this address:"
-	return InfoSheet{ID: id, Label: "Where this session runs", Heading: "Where it runs", Lead: lead, Code: where}
+	label := "Where this session runs"
+	if name != "" {
+		label = "Where " + name + " runs"
+	}
+	return InfoSheet{ID: id, Label: label, Heading: "Where it runs", Lead: lead, Code: where}
 }

@@ -528,7 +528,7 @@ func mirrorPlaceInfo(v MirrorViewView) g.Node {
 	if v.PlaceAddress == "" {
 		return nil
 	}
-	s := SessionPlaceSheet(MirrorPlaceSheetID, v.Host, v.PlaceAddress)
+	s := SessionPlaceSheet(MirrorPlaceSheetID, mirrorViewName(v), v.Host, v.PlaceAddress)
 	s.Inline = true
 	return s.Node()
 }

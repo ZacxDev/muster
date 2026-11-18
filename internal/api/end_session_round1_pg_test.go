@@ -54,9 +54,9 @@ func TestTheEndCardNamesExactlyWhichWindow(t *testing.T) {
 		t.Fatalf("%d cards; want 2", len(cs))
 	}
 	want := []string{
-		"End “main · window 3”?\nhost-echo · tmux session main · window @3\nmuster closes its window at once (opencode is not asked to exit: " +
+		"End “main”?\nhost-echo · tmux session main · window @3\nmuster closes its window at once (opencode is not asked to exit: " +
 			"muster types nothing into it).",
-		"End “main · window 1”?\nhost-echo · tmux session main · window @1\nmuster types /exit into Claude Code if it is at an idle prompt " +
+		"End “main”?\nhost-echo · tmux session main · window @1\nmuster types /exit into Claude Code if it is at an idle prompt " +
 			"with an empty box, then closes its window (within 30 s); if it is waiting on you or holds a draft, nothing is typed and " +
 			"its window is closed at once.",
 	}

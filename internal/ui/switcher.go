@@ -329,8 +329,8 @@ func entryName(e listEntry) sessionname.Name {
 // sessionSwitcherLabels is what each entry of one view says, in the entries'
 // order: its whole name (switcherName), and when that is shared with another
 // entry of the view (one label on two hosts) the name with the window's
-// qualifier ("mango:2 · laptop"), the minimal difference the list already
-// decided (mirror.SessionView.Qualifier).
+// qualifier ("mango · laptop", "mango · window 2"), the minimal difference
+// the list already decided (mirror.SessionView.Qualifier).
 //
 // The pill also draws its host's icon (switcherEntry), but the label does NOT
 // lean on it: the text is disambiguated exactly as it would be without the
@@ -371,8 +371,8 @@ func sessionSwitcherLabels(es []listEntry) (labels, bare []string) {
 // labelNamesHost is whether a window's label already spells its host: the
 // label carries the window's qualifier (sessionSwitcherLabels appended it) and
 // the qualifier leads with the host — the cross-host form, mirror.qualify's
-// first part ("mango:1 · hosta", "Gold:1 · hosta · scratch3:1"). A one-host
-// qualifier ("Gold:1 · scratch3:1") names no host. Then the pill's host icon is
+// first part ("mango · hosta", "Gold · hosta · window 2"). A one-host
+// qualifier ("Gold · window 2", "Gold · scratch3:1") names no host. Then the pill's host icon is
 // decorative: a screen reader would hear the host twice.
 func labelNamesHost(m MirrorCardView, label string) bool {
 	if m.Qualifier == "" || !strings.HasSuffix(label, mirrorQualifierSep+m.Qualifier) {

@@ -294,82 +294,72 @@ func (s SessionView) WhereTarget() string {
 //     1). Address is unique per host, so every listed entry ends up with a
 //     distinct DisplayTitle.
 func qualify(list []SessionView) {
-	qualifyCodes(list)
+	plain := qualifiers(list, SessionView.PlainTitle, true)
+	code := qualifiers(list, SessionView.Title, false)
+	for i := range list {
+		list[i].Qualifier, list[i].CodeQualifier = plain[i], code[i]
+	}
+}
+
+// qualifiers is THE qualifying rule (qualify), over the names title gives:
+// for each entry of list, what tells it apart from every other entry whose
+// title is the same — its host when the title is shared across hosts, and,
+// when it is shared within one host, its window. words says how a window is
+// said: "window <index>" (the plain names a person reads) when EVERY entry of
+// that host sharing the title is a window and their indexes all differ — else
+// (and always without words: the chief's code names) its tmux Address, unique
+// per host. A group is said one way or the other as a whole: "Gold ·
+// scratch3:1", "Gold · scratch4:1" beside a "Gold · window 2" would leave
+// "window 2" naming no session.
+func qualifiers(list []SessionView, title func(SessionView) string, words bool) []string {
 	type hostTitle struct{ host, title string }
 	byTitle := map[string]int{}
 	hostsOf := map[string]map[string]bool{}
-	byHostTitle := map[hostTitle]int{}
-	indexes := map[hostTitle]map[int]int{}
-	for _, s := range list {
-		t := s.PlainTitle()
+	group := map[hostTitle][]int{}
+	for i, s := range list {
+		t := title(s)
 		byTitle[t]++
 		if hostsOf[t] == nil {
 			hostsOf[t] = map[string]bool{}
 		}
 		hostsOf[t][s.Host] = true
 		ht := hostTitle{s.Host, t}
-		byHostTitle[ht]++
-		if indexes[ht] == nil {
-			indexes[ht] = map[int]int{}
-		}
-		if s.Window != "" {
-			indexes[ht][s.Index]++
-		}
+		group[ht] = append(group[ht], i)
 	}
-	for i := range list {
-		t := list[i].PlainTitle()
-		list[i].Qualifier = ""
+	inWords := map[hostTitle]bool{}
+	for ht, members := range group {
+		seen := map[int]bool{}
+		ok := words
+		for _, i := range members {
+			if list[i].Window == "" || seen[list[i].Index] {
+				ok = false
+				break
+			}
+			seen[list[i].Index] = true
+		}
+		inWords[ht] = ok
+	}
+	out := make([]string, len(list))
+	for i, s := range list {
+		t := title(s)
 		if byTitle[t] < 2 {
 			continue
 		}
 		var parts []string
 		if len(hostsOf[t]) > 1 {
-			parts = append(parts, list[i].Host)
+			parts = append(parts, s.Host)
 		}
-		ht := hostTitle{list[i].Host, t}
-		if byHostTitle[ht] > 1 {
-			if list[i].Window != "" && indexes[ht][list[i].Index] == 1 && len(indexes[ht]) == byHostTitle[ht] {
-				parts = append(parts, "window "+strconv.Itoa(list[i].Index))
+		ht := hostTitle{s.Host, t}
+		if len(group[ht]) > 1 {
+			if inWords[ht] {
+				parts = append(parts, "window "+strconv.Itoa(s.Index))
 			} else {
-				parts = append(parts, list[i].Address())
+				parts = append(parts, s.Address())
 			}
 		}
-		list[i].Qualifier = strings.Join(parts, QualifierSep)
+		out[i] = strings.Join(parts, QualifierSep)
 	}
-}
-
-// qualifyCodes sets every entry's CodeQualifier: qualify's rule as it was
-// over the codename (Title) — its host when the codename is shared across
-// hosts, its tmux Address when it is shared within one.
-func qualifyCodes(list []SessionView) {
-	type hostTitle struct{ host, title string }
-	byTitle := map[string]int{}
-	hostsOf := map[string]map[string]bool{}
-	byHostTitle := map[hostTitle]int{}
-	for _, s := range list {
-		t := s.Title()
-		byTitle[t]++
-		if hostsOf[t] == nil {
-			hostsOf[t] = map[string]bool{}
-		}
-		hostsOf[t][s.Host] = true
-		byHostTitle[hostTitle{s.Host, t}]++
-	}
-	for i := range list {
-		t := list[i].Title()
-		list[i].CodeQualifier = ""
-		if byTitle[t] < 2 {
-			continue
-		}
-		var parts []string
-		if len(hostsOf[t]) > 1 {
-			parts = append(parts, list[i].Host)
-		}
-		if byHostTitle[hostTitle{list[i].Host, t}] > 1 {
-			parts = append(parts, list[i].Address())
-		}
-		list[i].CodeQualifier = strings.Join(parts, QualifierSep)
-	}
+	return out
 }
 
 // Qualified is e with the Qualifier Ordered(hosts) gives the same entry (host,
