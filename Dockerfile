@@ -120,13 +120,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w" -o /muster-migrate ./cmd/muster-migrate
 
-# The ClankMail plugin (docs/configuration.md, "muster-clankmail"): a separate
-# process on muster's plugin contract, run from this same image with the
-# container command `/muster-clankmail` (and its admin subcommands through
-# `kubectl exec`/`docker exec`). It never runs inside muster-server.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
-    -ldflags="-s -w" -o /muster-clankmail ./cmd/muster-clankmail
-
 # The preview gateway (docs/configuration.md, "muster-preview"): a separate
 # process, run from this same image with the container command
 # `/muster-preview` (and its host-token subcommands through `kubectl exec`/
@@ -139,7 +132,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpat
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /muster-server /muster-server
 COPY --from=build /muster-migrate /muster-migrate
-COPY --from=build /muster-clankmail /muster-clankmail
 COPY --from=build /muster-preview /muster-preview
 # 🔴 THE PATH IS api.defaultAgentCLIPath, AND THE CONSTANT'S COMMENT SAYS THE
 # LAYOUT IS SET "IN THE SAME REPO AS THIS CONSTANT". This line is what makes

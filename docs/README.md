@@ -64,7 +64,7 @@ it off. The full list of features, with every `.env` line, is
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
 - [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
 - [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
-- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: keys, handle, peers, the first message, troubleshooting
+- [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: what muster needs, and a pointer to the plugin's own repository (setup, pairing, troubleshooting)
 - [officers-builtin.md](officers-builtin.md) — **start here for officers**: standing Claude Code agents with a charter and a queue, made on the Officers page (New officer, templates, Shadow then Live) on muster's own built-in backend; how they work, and the `MUSTER_OFFICERS`, CLI and admin-API reference
 - [officers.md](officers.md) — the officer reference: the HQ backend, and what every officer's instances get (pods, network, runner image, repositories, tools, tiers, the LLM proxy)
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
@@ -82,6 +82,12 @@ it off. The full list of features, with every `.env` line, is
 - [cli.md](cli.md) — the `muster` CLI and the other binaries
 - [schema.md](schema.md) — tables, migrations, row-level security, restore and rollback
 
+**Building on it**
+
+- [ecosystem.md](ecosystem.md) — what you can build on muster (plugins, officers, connectors, the MCP tools, the API), the list of published plugins, and how to add yours
+- [plugins-quickstart.md](plugins-quickstart.md) — build a working plugin in about 15 minutes: turn plugins on, mint or pair a token, post a message, approve the draft, claim it, report the result
+- [officer-plugin-recipe.md](officer-plugin-recipe.md) — a worked example: a support inbox officer extended by a plugin, from its charter to the replies it sends
+
 **Working on it**
 
 - [development.md](development.md) — run muster from source against a throwaway database
@@ -98,6 +104,7 @@ it off. The full list of features, with every `.env` line, is
 - [design/web-server-switcher.md](design/web-server-switcher.md) — implemented: the web app's server switcher (a per-origin list, switching by navigation), and what it can and cannot match of the Android app's
 - [design/managed-network.md](design/managed-network.md) — proposed: a managed muster network as an alternative to Tailscale — a blind SNI relay, the server's own certificate, one name per server, Link device by a code the phone shows and the owner's screen's nonce, one free device and a paid tier
 - [design/managed-network-phase0.md](design/managed-network-phase0.md) — results: the managed network's phase-0 documentation spikes (DNS provider limits and credential scoping, the CT aggregator's terms, the GeoIP database's licence)
+- [design/boxlite-runtime.md](design/boxlite-runtime.md) — proposed: BoxLite microVMs as a runtime — agents started in the user's BoxLite account by a new provisioner driver, or a cloud computer that joins as one of the user's machines (recommended first)
 - [design/team-sharing.md](design/team-sharing.md) — proposed: teams on one server sharing sessions, officers, tasks and a chief, private by default under row-level security
 - [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"

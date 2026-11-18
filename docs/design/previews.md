@@ -174,8 +174,10 @@ this tunnel, and under the plugin shape they do not go to muster at all.
 - **"Plugins pull; muster never calls out"**
   ([decisions.md](../decisions.md#plugins-pull-muster-never-calls-out)):
   muster holds no address or credential for anything outside it.
-- In-repo precedent for a plugin binary: `cmd/muster-clankmail`
-  ([configuration.md](../configuration.md#muster-clankmail-the-clankmail-plugin)).
+- Precedent for a plugin binary: `cmd/muster-clankmail`, which was in this
+  module when this was written and has since been extracted to its own
+  repository, [ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail)
+  ([clankmail.md](../clankmail.md)).
 
 ### The MCP doors
 
@@ -290,7 +292,7 @@ not true, and is corrected here. Previews ship code in four places:
 | `muster-server` | seams (a) and (b), the plugin capability and origin columns, `MUSTER_PLUGIN_ORIGINS` and its 421 refusal; seam (d)'s provisioner configuration (`MUSTER_AGENT_PLUGIN_INGRESS`, `MUSTER_AGENT_PREVIEW_PORTS`) and the `agent_targets` read | 1; (d) in 2 |
 | `muster-mirror` | `-preview`: `previews.json`, the tunnel to the gateway, the loopback dial and its checks, listener reports, and the three `preview_*` tools answered in its MCP proxy | 1 |
 | `ccd` (agent image) | the preview gate on its own declared port, and a stdio preview MCP server registered by `ccd seed` | 2 |
-| `muster-preview` | the gateway itself, a new binary in this module, as `muster-clankmail` is | 1 |
+| `muster-preview` | the gateway itself, a new binary in this module, as `muster-clankmail` was before it was extracted to its own repository | 1 |
 
 **Why that is acceptable.** Decision 2 puts the bound on the machine: only the
 side that owns the machine can dial its loopback, check who owns a listening
@@ -1231,7 +1233,8 @@ Following [limits.md](../limits.md#mirroring):
 
 Every variable below gets a row in [configuration.md](../configuration.md)
 when code reads it, or `TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa`
-fails (the gateway is in this module, as `cmd/muster-clankmail` is).
+fails (the gateway is in this module, as `cmd/muster-clankmail` was until it
+was extracted to [its own repository](https://github.com/ZacxDev/muster-clankmail)).
 
 | variable | binary | default | what it does |
 |---|---|---|---|
@@ -1240,7 +1243,7 @@ fails (the gateway is in this module, as `cmd/muster-clankmail` is).
 | `MUSTER_AGENT_PREVIEW_PORTS` | muster-server | empty | Seam (d), phase 2: passed to agents as `CCD_PREVIEW_PORTS`. |
 | `MUSTER_MIRROR_PREVIEW`, `MUSTER_MIRROR_PREVIEW_URLS`, `MUSTER_MIRROR_PREVIEW_TOKEN_FILE`, `MUSTER_MIRROR_PREVIEW_FILE` | muster-mirror | off / none / none / `~/.config/muster-mirror/previews.json` | [Host configuration](#host-configuration-previewsjson). |
 | `CCD_PREVIEW_LISTEN`, `CCD_PREVIEW_PORTS`, `CCD_PREVIEW_BEARER` | ccd | off | Phase 2: the pod gate and its MCP server; set by muster. |
-| `MUSTER_URL` | muster-preview | none | muster's API base URL, for its `/plugin/v1/*` calls; may be an in-cluster address (the name `muster-clankmail` already reads, `cmd/muster-clankmail/main_test.go:81`). |
+| `MUSTER_URL` | muster-preview | none | muster's API base URL, for its `/plugin/v1/*` calls; may be an in-cluster address (the name `muster-clankmail` read too, when it was in this module). |
 | `MUSTER_PUBLIC_URL` | muster-preview | none | muster's **public** URL, as browsers see it (the same meaning the server's variable has): the origin in `frame-ancestors` on `p-` and `w.`, and the base of links back to muster (`/plugin-handoffs/confirm`, "open from muster"). Required; it is not derived from `MUSTER_URL`. |
 | `PLUGIN_TOKENS_FILE` | muster-preview | none | The owners' `mpl_` tokens, one per line. |
 | `PREVIEW_DOMAIN` | muster-preview | none | `musterchief.com`. |

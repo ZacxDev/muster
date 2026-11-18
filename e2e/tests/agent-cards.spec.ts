@@ -148,7 +148,11 @@ async function reportWork(body: object, token = agentToken): Promise<number> {
 }
 
 type P = import('@playwright/test').Page;
-const row = (page: P, title: string) => page.locator(`#sidebar-agents-list a[data-nav-agent][title="${title}"]`);
+// row is a sidebar row by its title — or, for a mirrored window, by its
+// codename (data-switcher-code: "fleet:5"), which its drawn name no longer
+// spells (no tmux window index in a name).
+const row = (page: P, title: string) =>
+  page.locator(`#sidebar-agents-list a[data-nav-agent]:is([title="${title}"], [data-nav-agent="mirror"][data-switcher-code="${title}"])`);
 const agentRow = (page: P) => page.locator(`#sidebar-agents-list a#nav-agent-${agentID}`);
 
 // openSidebar shows the sidebar's list (the drawer, on this phone).
@@ -202,13 +206,15 @@ test("a mirrored window's row carries its repo, and the palette finds it by it",
   await openSidebar(page);
   await expect(row(page, 'fleet:5'), mirrorLog).toBeVisible({ timeout: 30_000 });
   await expect.poll(() => words(page, 'fleet:5'), { timeout: 30_000 }).toContain(repoName.toLowerCase());
-  // The row's name is unchanged: its window, not its repo.
-  await expect(row(page, 'fleet:5')).toContainText('fleet:5');
+  // The row's name is unchanged: its window, not its repo — in words, with
+  // no tmux window index.
+  await expect(row(page, 'fleet:5')).toContainText('fleet');
+  await expect(row(page, 'fleet:5')).not.toContainText('fleet:5');
   // The palette, from the sidebar's magnifier, finds it by the repo alone.
   await page.locator('#sidebar-search').click();
   await page.locator('#switcher-search-input').fill(repoName);
   await expect(page.locator('#switcher-search-results [role="option"]')).toHaveCount(1);
-  await expect(page.locator('#switcher-search-results [role="option"]').first()).toContainText('fleet:5');
+  await expect(page.locator('#switcher-search-results [role="option"]').first()).toContainText('fleet');
 });
 
 test('a plain shell window carries its repo and its kind too', async ({ page }) => {

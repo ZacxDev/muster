@@ -155,9 +155,13 @@ for (const vp of [
       const seen = watch(page);
 
       // The server in view: one entry, current, labelled by its own name
-      // (server-rendered, same origin) or its host.
+      // (server-rendered, same origin) or — unnamed — "This server", never
+      // its host:port (no address in the top layer). Another server keeps
+      // its host as its label until the person names it (below).
       const self = await (await page.request.get(A + '/api/instance')).json();
-      await expect(page.locator('#server-switcher-toggle [data-server-label]')).toHaveText(self.name ?? hostOf(A));
+      const selfLabel = self.name || 'This server';
+      await expect(page.locator('#server-switcher-toggle [data-server-label]')).toHaveText(selfLabel);
+      await expect(page.locator('#server-switcher-toggle [data-server-label]')).not.toHaveText(hostOf(A));
       await openSwitcher(page);
       await expect(items(page)).toHaveCount(1);
       await expect(item(page, A)).toHaveAttribute('aria-current', 'true');

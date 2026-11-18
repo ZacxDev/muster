@@ -180,8 +180,14 @@ func switcherRenameDialog(p *switcherPin) g.Node { return renamePopover(switcher
 
 // switcherRenameFields is switcherRenameDialog's content.
 func switcherRenameFields(p *switcherPin) renameDialog {
+	// A mirrored session's note names no tmux address (its page's ⓘ has it);
+	// an agent's still says its slug.
+	tech := p.name.Technical
+	if p.name.Place != "" {
+		tech = ""
+	}
 	d := renameDialog{id: SessionRenameID, heading: "Rename session", current: p.name.Text,
-		note: renameNote(p.name.Technical)}
+		note: renameNote(tech)}
 	if p.rawManual != "" {
 		// A manual name is edited as it was TYPED, not as it draws (the
 		// agent page's own dialog does the same).
@@ -217,7 +223,10 @@ func sessionNameTitle(n sessionname.Name, class string) g.Node {
 		g.If(class != "", Class(class)),
 		g.Attr("data-mirror-name", ""),
 		g.Attr("data-session-name", string(n.Source)),
-		g.If(n.Technical != "", g.Attr("title", n.Technical)),
+		// The tooltip: a mirrored session's place in words ("on atlas"), its
+		// tmux address being the header's ⓘ; an agent's slug.
+		g.If(n.Place != "", g.Attr("title", n.Place)),
+		g.If(n.Place == "" && n.Technical != "", g.Attr("title", n.Technical)),
 		g.Text(n.Text),
 	)
 }

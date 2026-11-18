@@ -4,6 +4,15 @@ Every muster binary is configured through environment variables. This page lists
 **every variable any Go code in this repository reads**, grouped by the binary
 that reads it.
 
+`muster-clankmail`, the [plugin](plugins.md) for ClankMail, is no longer one of
+them: it lives in its own repository,
+[github.com/ZacxDev/muster-clankmail](https://github.com/ZacxDev/muster-clankmail),
+whose README is its variable reference (`MUSTER_URL`, `PLUGIN_TOKEN_FILE`,
+`CHIEF_KEY_FILE`, `HUB_URL`, `HUB_NAME`, `CLANKMAIL_PEERS`, `STATE_DIR`,
+`POLL_INTERVAL`, `LISTEN_ADDR`), and it is not in the muster image any more:
+run `ghcr.io/zacxdev/muster-clankmail:<version>`. What muster itself needs for
+it is in [clankmail.md](clankmail.md).
+
 The list is enforced. `TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa`
 (in `internal/modulegate/envdoc_test.go`) parses the module's Go source, collects
 every variable name it reads, and compares that set with the first column of the
@@ -341,7 +350,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_LABELS_FILE` | none | no | A JSON object `{"<session>": "<codename>"}` of display labels. |
 | `MUSTER_MIRROR_PANE_MAP_DIR` | none | no | A directory of per-pane Claude Code records, kept current by a hook. |
 | `MUSTER_MIRROR_MCP_LISTEN` | none (off) | no | A loopback address with a numeric port (`127.0.0.1:<port>` or `[::1]:<port>`; not port 0 or a service name, so the endpoint is where the address says) on which to serve this host's Claude Code sessions muster's attention and task tools as an MCP endpoint (`http://<addr>/mcp`); any other address is refused. Optional: if it cannot start, the host logs why and mirrors without it. See [attention.md](attention.md#mirrored-claude-code-sessions). |
-| `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
+| `MUSTER_MIRROR_MCP_SECRET_FILE` | `muster-mirror/mcp-secret` under the user config directory (Go's `os.UserConfigDir`; differs by OS: [where it is](features.md#where-the-mcp-secret-is)) | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
 | `MUSTER_MIRROR_ATTEMPT_CODE_FILE` | `$XDG_CONFIG_HOME/muster-mirror/attempt-code` | no | Where this muster-mirror process writes (0600, in a 0700 directory) its **attempt code**: a random code drawn at start and sent on every connect. When a team host's connection is held, a team manager confirms this machine by typing it ([mirroring.md](mirroring.md#team-hosts)); `muster doctor` reads it here (the same setting in muster-mirror's settings file) to show it. Removed at exit. Empty or unset: the default path. To write no file, pass `-attempt-code-file=` on muster-mirror's command line (the log still shows the code once when held). |
 | `MUSTER_MIRROR_MCP_TARGETS_FILE` | none | no | With `MUSTER_MIRROR_MCP_LISTEN`: a JSON list of **other muster instances**, `[{"name": "la", "url": "https://…", "token_file": "/abs/path"}]`, whose admin tools this host's Claude Code sessions may call by passing `instance: "<name>"` ([mirroring.md](mirroring.md#several-muster-instances)). Each `token_file` holds this host's mirror token minted **on that instance**. Checked at start. A failure is logged naming the entry and why, never the token, and the file is **ignored**: MCP then reaches the primary only, and mirroring is unaffected (never fatal). The rules: names match `[a-z0-9-]{1,32}` and are unique (and differ from `MUSTER_MIRROR_MCP_PRIMARY_NAME`); a URL is `https://`, or `http://` to a loopback or private IP literal or `localhost`; a token file is an absolute path (or `~/…`), a regular file (not a symlink) of mode 0600 or tighter, holding an `mmt_…` token. At most 16 targets. MCP only: this host's sessions are mirrored to `MUSTER_MIRROR_URL` alone. |
 | `MUSTER_MIRROR_MCP_PRIMARY_NAME` | `default` | no | The name `MUSTER_MIRROR_URL`'s instance goes by in an `instance` argument (`[a-z0-9-]{1,32}`; anything else is logged and ignored, and no extra target is used). A call naming no instance runs there. |
@@ -552,83 +561,6 @@ Slash commands typed into the pane are not tools and are not removed (a turn's
 prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
 this flag ignores the header and starts the CLI with every tool, and muster
 does not detect it: see [chief nudges, Rolling out](chief-nudges.md#rolling-out).
-
-## muster-clankmail (the ClankMail plugin)
-
-`muster-clankmail` is a [plugin](plugins.md) for ClankMail, a signed-messaging
-protocol for agents (`github.com/ZacxDev/clankmail`, `SPEC.md`). It holds one
-key, your chief's: your offline principal key claims a handle (`@<owner>`),
-grants the chief key the name `chief`, and the chief key enrolls
-(`muster-clankmail identity claim` / `identity grant`), so the chief's address is
-`@<owner>/chief`. It delivers direct messages from **pinned peers** to your
-chief (`sender: <owner>/chief`, `sender_verified: true`, `thread`: the root
-derived by following each message's signed `re`), and sends the replies you
-approve. It does not start conversations; that will come from muster, as
-compose drafts you approve in the browser. A message from anyone else lands in
-the hub's `requests` queue and is **never** posted to muster: `muster-clankmail requests` counts and lists them
-for you. The image ships it as `/muster-clankmail`; run one replica per state
-directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
-
-**What decides delivery is the signer, not the queue.** A pinned peer's message
-can land in `requests` too: one sent before the plugin's allow call reached the
-hub, or while the peer was disabled (and so off the allow list). Such a message
-goes through exactly the checks an inbox message does (the full signature
-verification, the pinned key, the peer's status) and is delivered once that
-peer is verified, exactly once, on the same derived thread. A message from a
-pinned peer that has not been checked yet (a fresh or lost `STATE_DIR`, a
-relabelled peer, a boot while the hub's handle route fails) is **held**, not
-dropped: the plugin keeps its id (never its text), checks its peers once
-before the first poll, and delivers the held message once the peer verifies.
-A held peer holds back only its own later messages (so they keep their
-order), never another peer's. A peer that is **disabled** (its chain did not
-verify, for example a hub serving a forged handle) is held the same way, in
-both queues: its messages are never recorded as final while it is merely
-disabled, a periodic check does not release them, and `peer verify`, when it
-re-enables the peer, releases them to muster in the order they were read, each
-exactly once. `show` and `/health` report the total as `held` and the count per
-peer label as `held_by_peer` (and on each `peers` row), and `peer verify` says
-how many held messages it is releasing and lists their ids and queues (the held
-list keeps no text). A request listed as a stranger's whose key you
-later add to `CLANKMAIL_PEERS` is held from the next start, and delivered once
-that peer verifies; removing a peer turns its held requests back into listed
-ones.
-
-⚠ **The admin socket is as private as the plugin's namespace.** The admin
-subcommands talk to `$STATE_DIR/admin.sock` from inside the plugin's
-container. Agent and chief pods carry no service-account token, so they cannot
-reach it; but anyone who holds `pods/exec` in the plugin's namespace can, and
-can read `CHIEF_KEY_FILE` too. That includes any session holding the
-operator's kubeconfig and, in the default provisioner layout
-([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
-`pods/exec` and `secrets` in every namespace), muster-server's own service
-account. The least-privilege layout removes that standing access (except in
-muster's own namespace, where deploy-key pools have it read Secrets) but not
-muster's ability to bind itself to `muster-agent-namespace` in any namespace,
-so a namespace of its own does not by itself keep the chief key from muster.
-Run the plugin in a different cluster from muster, or add the admission policy
-in [provisioner.md](provisioner.md#kubernetes-rbac) and keep the plugin's
-namespace outside the agent prefix and separate from muster's own namespace; see
-[clankmail.md](clankmail.md#25-configure-and-run).
-
-| variable | default | required | what it does |
-|---|---|---|---|
-| `MUSTER_URL` | none | yes | muster's base URL, where `/plugin/v1/*` is served. |
-| `PLUGIN_TOKEN_FILE` | none | yes | A file holding the `mpl_` plugin token minted on `/plugins`. |
-| `CHIEF_KEY_FILE` | none | yes | The chief's ClankMail key: one line, the base64url of a 32-byte Ed25519 seed (`muster-clankmail keygen --out FILE` writes it, mode `0600`). |
-| `HUB_URL` | none | yes | The ClankMail hub's base URL. |
-| `HUB_NAME` | none | yes | The hub's DNS name, exactly as the hub is configured: every request's auth and every identity object signs it. |
-| `CLANKMAIL_PEERS` | none | no | The peers whose messages reach your chief: `<owner>/<name>=k_…`, comma-separated, each pinning that agent's key (learned out of band). Every 10 minutes the plugin checks that the hub's `@<owner>` handle, grant and enroll still bind the pinned key to `<owner>/<name>`, and the first principal key that verified is remembered: a mismatch, or a different principal, **disables** the peer (its key is removed from the hub's allow list and its messages are not delivered) until you run `muster-clankmail peer verify [--accept-principal] <owner>/<name>`. Verified peers are put on the hub's allow list; a key you remove from this list is removed there too. |
-| `STATE_DIR` | none | yes | A writable directory (a volume): `state.json` (cursors, message records without bodies, the reply ledger), `state.lock`, and the admin socket `admin.sock` the admin subcommands use. |
-| `POLL_INTERVAL` | `15s` | no | How often the hub's inbox and requests queues are read. Range `1s`–`5m`. |
-| `LISTEN_ADDR` | `:8080` | no | Where `GET /health` is served (status, counts, peer states; never message text). |
-
-⚠ **Clocks.** The hub accepts a request's auth only within ±60 s of its own
-clock, and a message within ±300 s. Run the plugin on a host whose clock is
-synchronised (NTP); past 60 s of skew every inbox read fails with `E_AUTH`,
-which `/health` reports.
-
-⚠ **The hub can read direct messages.** ClankMail authenticates every message
-end to end, but does not encrypt it: send nothing secret.
 
 ## muster-preview (the preview gateway)
 
