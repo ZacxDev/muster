@@ -141,3 +141,35 @@ func TestAnOfficerSessionDisablesAutoMemoryAndNoOtherAgentsDoes(t *testing.T) {
 		}
 	}
 }
+
+// TestAnOfficersChatSessionsReachTheBuiltSpecAsCcdsLaneCap: a session source
+// answering MaxSessions (an officer's declared chat_sessions) puts
+// CCD_MAX_SESSIONS=<n> in THAT agent's built spec — what its pod's ccd reads
+// for its lane cap — and a session answering 0 (none declared) carries no such
+// variable, so its spec is the one it had.
+func TestAnOfficersChatSessionsReachTheBuiltSpecAsCcdsLaneCap(t *testing.T) {
+	declared := ccRow("officer-triage-example-web-1")
+	plain := ccRow("officer-triage-example-api-1")
+	a := adapterWith(t, ccSpecConfig(), declared)
+	a.UseClaudeCodeSession(func(ag agents.Agent) (agentspec.ClaudeCodeSession, bool) {
+		sess := agentspec.ClaudeCodeSession{AllowMCPTools: []string{"officer_brief"}, BypassPermissions: true}
+		if ag.Name == declared.Name {
+			sess.MaxSessions = 2
+		}
+		return sess, true
+	})
+	spec, err := a.buildSpec(context.Background(), declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := envVal(spec, "CCD_MAX_SESSIONS"); !ok || v != "2" {
+		t.Fatalf("declared chat_sessions 2: CCD_MAX_SESSIONS = %q (present %v), want 2", v, ok)
+	}
+	pspec, err := a.buildSpec(context.Background(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := envVal(pspec, "CCD_MAX_SESSIONS"); ok {
+		t.Fatalf("no chat_sessions declared: the spec carries CCD_MAX_SESSIONS=%q; want none (ccd's default)", v)
+	}
+}

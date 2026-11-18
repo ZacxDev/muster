@@ -21,7 +21,9 @@ import (
 // with no home fails (as "is in no group"), and so does a group holding a
 // kind no constant declares.
 func TestEveryAttentionKindHasAHome(t *testing.T) {
-	held := map[string]string{attentionKindPlugin: "the Reply drafts tab"}
+	// The plugin kind's drafts and batches are the Drafts tab's
+	// (draftsTabItem); its group here holds a pairing request.
+	held := map[string]string{}
 	for _, g := range askGroups {
 		for _, k := range g.kinds {
 			if prev, dup := held[k]; dup {
