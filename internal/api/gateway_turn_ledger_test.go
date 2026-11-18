@@ -84,6 +84,7 @@ var gatewayTurnLedger = map[string]gatewayTurnSite{
 	"internal/agentkickoff.(*Deliverer).firstTurnSender → agentkickoff.Gateway.Send": {1, turnToollessNoTool},
 	"internal/api.(*Server).runJobTurn → api.Gateway.Chat":                           {1, turnToollessCC}, // namedJobAgent and the pool chooser refuse every other kind
 	"internal/api.officerFleet.Reprompt → api.Gateway.Chat":                          {1, turnToollessCC}, // an officer's instances are created claude-code (officerFleet.Start)
+	"internal/api.officerChatLanes.Turn → api.Gateway.Chat":                          {1, turnToollessCC}, // a chat lane is an officer instance's ccd lane (officer_chat.go)
 	"internal/memorelay.(*Relay).send → memorelay.Gateway.Send":                      {1, turnToollessCC}, // Relay.classify counts any other kind ResultKindUnsupported
 	"internal/api.(*Server).askChiefForNudge → api.Gateway.Chat":                     {1, turnToollessNudge},
 	"cmd/ccd/livecheck.main → *agentgateway.Gateway.Chat":                            {1, turnLivecheck},

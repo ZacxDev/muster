@@ -13,6 +13,7 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE SESSION SWITCHER: a bar BELOW the message input of a session's page — a
@@ -186,6 +187,11 @@ type Switcher struct {
 	// dockRecentMax, in visit order: the dock's Recent tab draws them from the
 	// All row's pills (every one of them is one), after the bar's own.
 	RecentMore []string
+	// MenuCount, when set, is the ☰ badge's first count: THE ONE OPEN COUNT
+	// (internal/api asksPendingOf), set wherever the Asks queue is served, so
+	// the badge drawn with the page says what the badge's own route
+	// (NavWaitingPath) says. nil: the Waiting view's length (no queue served).
+	MenuCount *int
 	// pin is the page's own session as the bar's pin toggle posts it; nil
 	// when the page is no session or its session is not among the entries.
 	pin *switcherPin
@@ -278,7 +284,8 @@ func switcherName(e listEntry) string {
 	if m.SessionName.Human() {
 		return m.SessionName.Text
 	}
-	return mirrorCodeName(*m)
+	// Its codename as a person reads it: no tmux window index (mirror.PlainCode).
+	return mirror.PlainCode(mirrorCodeName(*m))
 }
 
 // mirrorCodeName is a window's technical name: its codename (Label, unless it
@@ -294,8 +301,18 @@ func mirrorCodeName(m MirrorCardView) string {
 
 // entryTip is e's tooltip (SwitcherItem.Tip): label, then the technical id a
 // human name hides, when it is one and says something label does not.
+//
+// A mirrored session's technical id (its tmux address) is NOT a tooltip's: the
+// tip says where it runs in words (sessionname.Name.Place, "on atlas"), and the
+// address is its page's ⓘ (the operator rule).
 func entryTip(e listEntry, label string) string {
 	n := entryName(e)
+	if n.Place != "" {
+		if n.Human() {
+			return label + " · " + n.Place
+		}
+		return label
+	}
 	if n.Human() && n.Technical != "" && n.Technical != label {
 		return label + " · " + n.Technical
 	}
@@ -317,8 +334,8 @@ func entryName(e listEntry) sessionname.Name {
 // sessionSwitcherLabels is what each entry of one view says, in the entries'
 // order: its whole name (switcherName), and when that is shared with another
 // entry of the view (one label on two hosts) the name with the window's
-// qualifier ("mango:2 · laptop"), the minimal difference the list already
-// decided (mirror.SessionView.Qualifier).
+// qualifier ("mango · laptop", "mango · window 2"), the minimal difference
+// the list already decided (mirror.SessionView.Qualifier).
 //
 // The pill also draws its host's icon (switcherEntry), but the label does NOT
 // lean on it: the text is disambiguated exactly as it would be without the
@@ -359,8 +376,8 @@ func sessionSwitcherLabels(es []listEntry) (labels, bare []string) {
 // labelNamesHost is whether a window's label already spells its host: the
 // label carries the window's qualifier (sessionSwitcherLabels appended it) and
 // the qualifier leads with the host — the cross-host form, mirror.qualify's
-// first part ("mango:1 · hosta", "Gold:1 · hosta · scratch3:1"). A one-host
-// qualifier ("Gold:1 · scratch3:1") names no host. Then the pill's host icon is
+// first part ("mango · hosta", "Gold · hosta · window 2"). A one-host
+// qualifier ("Gold · window 2", "Gold · scratch3:1") names no host. Then the pill's host icon is
 // decorative: a screen reader would hear the host twice.
 func labelNamesHost(m MirrorCardView, label string) bool {
 	if m.Qualifier == "" || !strings.HasSuffix(label, mirrorQualifierSep+m.Qualifier) {

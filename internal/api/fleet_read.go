@@ -166,7 +166,7 @@ func (s *Server) readFleet(ctx context.Context, f fleetListFilter) (fleetReadRes
 		if !f.keep(e.ActiveAt(), now) {
 			continue
 		}
-		r := fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,
+		r := fleetListRow{ID: sub.String(), Kind: "mirror", Name: codeName(fi.mirrorName(e), e), Host: e.Host,
 			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem(),
 			TaskLink: focus.TaskLink{Keys: tasks.Keys, None: tasks.None, Note: tasks.Note}}
 		if at := e.ActiveAt(); !at.IsZero() {

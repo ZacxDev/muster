@@ -1192,6 +1192,12 @@ A turn for a `claude-code` session runs in a CLI of its own (tmux session
 runtime runs in the original CLI, as before. At most `CCD_MAX_SESSIONS` (3) such
 CLIs run at once. `ccd` on port 18789 is still the only port the pod exposes.
 
+The runtime **picker** is the chief's only, but a `ccd` lane is not: a job's
+session and an officer's [chat sessions](officers.md#chat-sessions) run in
+lanes of their own agent's pod the same way, on the same
+`X-Muster-CC-Session` route. Nothing about the chief's lanes changes with
+them.
+
 **The retired `gateway` runtime.** A `gateway` entry (an OpenRouter model on
 the gateway runtime, run as a second container beside `ccd` in a
 `claude-code` chief's pod, with a memory request of 512 MiB) used to be

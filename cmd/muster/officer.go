@@ -101,7 +101,9 @@ func newOfficerDeclaredCmds(a *app) []*cobra.Command {
 def and where it runs, in one write. It runs on the built-in backend at once —
 no MUSTER_OFFICERS entry, no restart. --runtime auto (the default) runs it in
 a pod when this muster can, else on the first of your hosts that qualifies
-(see the answer's runs_on and reason). A host officer needs --repo.`,
+(see the answer's runs_on and reason). A host officer may leave --repo
+empty when its host's muster-mirror is current (it starts the officer in a
+scratch directory); an older muster-mirror needs --repo.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{"id": args[0], "name": name, "runtime": runtime, "host": host, "repo": repo,
@@ -122,7 +124,7 @@ a pod when this muster can, else on the first of your hosts that qualifies
 	f.StringVar(&charterFile, "charter-file", "", "read the charter from this file, or - for stdin (never from argv)")
 	f.StringVar(&runtime, "runtime", "auto", "pod, host or auto")
 	f.StringVar(&host, "host", "", "the mirror host of a --runtime host officer")
-	f.StringVar(&repo, "repo", "", "its repository, owner/name (a host officer needs one)")
+	f.StringVar(&repo, "repo", "", "its repository, owner/name (optional for a host officer on a current muster-mirror)")
 	f.StringSliceVar(&connectors, "connector", nil, "a connector its instances may request (repeatable)")
 	f.StringSliceVar(&readRepos, "read-repo", nil, "a public repository it reads with no approval (repeatable; pods only)")
 	f.IntVar(&maxInstances, "max-instances", 0, "how many instances may run at once (default 1)")

@@ -98,32 +98,56 @@ func openCodeTokenNotice(health string) cctranscript.Event {
 		Text: cctranscript.Cap(health, cctranscript.MaxTarget*4), Output: health}
 }
 
-// openCodeMatchedNotice is the first line of every opencode view: how the
-// session was found, which the person must be able to see — and, on a host
-// that sends to opencode (sends), that a verified title match is sent to.
+// openCodeMatchedNotice is the first line of every opencode view: which
+// session it shows and how it was found, which the person must be able to see
+// — and, on a host that sends to opencode (sends), whether muster sends to it.
+//
+// Its summary is plain (the operator rule: no "matched by title", no session
+// id, no binary name in the top layer): the session's own title, or that
+// muster started it. How it was found is its detail, one tap down
+// (OpenCodeFoundVerified, OpenCodeFoundReadOnly).
 func openCodeMatchedNotice(p AgentPane, sends bool) cctranscript.Event {
 	if p.Source == SourceLauncher {
 		// Bound by its launcher record (opencode_launch.go): muster sends to it.
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
-			Text: cctranscript.Cap("started by muster-mirror opencode: "+p.Gen, cctranscript.MaxTarget*4),
-			Output: "muster knows this pane's session from its launcher, and sends to it through opencode's API, never as keys."}
+			Text: OpenCodeStartedText, Output: OpenCodeStartedDetail}
 	}
 	title := ""
 	if p.OpenCode != nil {
 		title = p.OpenCode.Match.Title
 	}
+	// The session's own title; a session with none is named in words, never
+	// as an empty "Showing “”".
+	text := "Showing this opencode session"
+	if title != "" {
+		text = cctranscript.Cap("Showing “"+title+"”", cctranscript.MaxTarget*4)
+	}
 	if p.Bind == mirror.AgentBindVerified && sends {
 		// A hand-opened pane whose title match was verified (opencode_bind.go).
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
-			Text: cctranscript.Cap("matched by title, verified: "+title, cctranscript.MaxTarget*4),
-			Output: "muster found this session by the pane's title and checked it with opencode's API. It sends to it " +
-				"through that API, never as keys, and only while the pane still shows this session."}
+			Text: text, Output: OpenCodeFoundVerified}
 	}
 	return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
-		Text: cctranscript.Cap("matched by title: "+title, cctranscript.MaxTarget*4),
-		Output: "muster found this session by the pane's title, so it shows it read-only. " +
-			"Type into opencode in the terminal."}
+		Text: text, Output: OpenCodeFoundReadOnly}
 }
+
+// The opencode view's first line, in words.
+const (
+	// OpenCodeStartedText: a session muster-mirror's launcher started.
+	OpenCodeStartedText = "muster started this opencode session"
+	// OpenCodeStartedDetail is its row's detail: no session id and no binary
+	// name. The row is drawn for every viewer (it is not an admin's ⓘ), and
+	// the id names nothing a person acts on — the view already shows that
+	// session.
+	OpenCodeStartedDetail = "muster started this session and sends your messages to it through opencode, never as keystrokes."
+	// OpenCodeFoundVerified: a hand-opened pane's session, found by its title
+	// and checked with opencode's API: muster sends to it.
+	OpenCodeFoundVerified = "muster found this opencode session by its title and checked it with opencode. It sends your " +
+		"messages to it, never as keystrokes, and only while this window still shows this session."
+	// OpenCodeFoundReadOnly: found by its title alone: shown, never typed into.
+	OpenCodeFoundReadOnly = "muster found this opencode session by its title. It can show it here but not type into it: " +
+		"use the terminal to type."
+)
 
 // openCodeTail serves one watch of an opencode window until ctx ends (nil) or
 // the view cannot continue.

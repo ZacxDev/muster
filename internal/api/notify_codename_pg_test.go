@@ -276,7 +276,7 @@ func TestAFiledAsksPushStartsWithTheCodenameWhileTheAsksRowKeepsItsOwn(t *testin
 				t.Fatalf("the ask's push titles %q, want one %q", titles, want)
 			}
 			row := `data-attention-title data-attention-name>` + name + `</span>`
-			if page := f.page(t, "/attention"); !strings.Contains(page, row) || !strings.Contains(page, `data-attention-source>tmux main:1 @ ws</span>`) {
+			if page := f.page(t, "/attention"); !strings.Contains(page, row) || !strings.Contains(page, `data-attention-source>on ws</span>`) {
 				i := strings.Index(page, "data-attention-source")
 				t.Fatalf("the Asks row is not %q:\n%s", name, page[max(0, i-100):min(len(page), max(0, i)+300)])
 			}

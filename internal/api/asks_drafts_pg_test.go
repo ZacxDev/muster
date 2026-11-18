@@ -213,8 +213,8 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 }
 
 // TestAsksWithPluginsOffHasNoDraftsTab: no plugins served, no Reply drafts
-// tab: the page's tabs are Ask and Log only (the Log tab is drawn whatever is
-// served, ask_log_read.go), still "Asks".
+// tab: the page's tabs are Open and Answered only (no ask log either, so no
+// Log tab), still "Asks".
 func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	f := newAttnFixture(t)
 	askID := f.ask(t, f.opTok, "Ship it?")
@@ -236,8 +236,8 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	if strings.Contains(page, "Reply drafts") || strings.Contains(page, `id="asks-drafts-archived-toggle"`) {
 		t.Fatal("with plugins off the page offers a Reply drafts tab")
 	}
-	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 3 || got[0][1] != "open" || got[1][1] != "answered" || got[2][1] != "log" {
-		t.Fatalf("with plugins off the page's tabs are %v; want open, answered and log", got)
+	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 2 || got[0][1] != "open" || got[1][1] != "answered" {
+		t.Fatalf("with plugins off the page's tabs are %v; want open and answered", got)
 	}
 }
 
@@ -523,9 +523,10 @@ func TestTheDraftsFragmentAndThePluginsMovesAreLive(t *testing.T) {
 }
 
 // TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere: with nothing
-// but a pending reply draft, the Ask tab's list is its empty line ALONE — no
-// "1 reply draft awaits" line contradicting it (the count is the Reply
-// drafts tab's label) — and the draft is under Awaiting decision.
+// but a pending reply draft, the Open tab's list is the drafts' empty state
+// ALONE — "Nothing else is open", the draft counted, a link to the Drafts tab
+// — and NOT "All clear" (the Asks design review: All clear only when nothing
+// is pending, drafts included); the draft is under Awaiting decision.
 func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
 	d := newDraftSeam(t)
 	tok := d.mint(d.a)
@@ -538,7 +539,7 @@ func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
 	}
 	page := d.do("GET", "/attention", "", d.session(d.a, false, true)).Body.String()
 	want := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` +
-		ui.AsksAllClearHTML + `</ul>`
+		ui.AsksDraftsWaitHTML(1) + ui.AsksDraftsMarkerHTML(1) + `</ul>`
 	if got := askList(page); got != want {
 		t.Fatalf("the Ask tab's list:\n%s\nwant exactly:\n%s", got, want)
 	}

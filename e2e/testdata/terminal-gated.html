@@ -280,16 +280,28 @@
   // statusFor is the status line of a ready attach in mode m.
   function statusFor(m) {
     if (m === 'rw') return "Connected";
-    if (keysOff) return "Connected · this host takes no keys";
+    if (keysOff) return "Connected · typing is off";
     if (confirmPath && !fresh()) return "Connected · confirm it's you to type";
     return "Connected";
   }
-  function showError(msg, canReconnect) {
+  var errInfo = document.getElementById('term-error-info');
+  function setDetail(slot, detail) {
+    if (!slot) return;
+    if (!detail) { slot.hidden = true; return; }
+    var code = slot.querySelector('[data-info-code]');
+    if (code) code.textContent = detail;
+    var copy = slot.querySelector('[data-info-copy]');
+    if (copy) copy.setAttribute('data-copy-text', detail);
+    slot.hidden = false;
+  }
+
+  function showError(msg, canReconnect, detail) {
     errText.textContent = msg;
+    setDetail(errInfo, detail || '');
     reconnectBtn.hidden = !canReconnect;
     errEl.hidden = false;
   }
-  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; }
+  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; setDetail(errInfo, ''); }
   // applyMode: the keys are on wherever the host takes keys (live keys are
   // always on) and there is a terminal to type into; what an attach without
   // them does with a key is send()'s.
@@ -397,7 +409,7 @@
           // "muster is restarting": not a refusal — it comes back by itself.
           if (m.reason !== 'shutdown') refused = true;
           caughtUp();
-          showError(m.message, refused);
+          showError(m.message, refused, m.detail);
         } else if (m.type === 'exit') {
           endReason = 'exited';
           refused = true;

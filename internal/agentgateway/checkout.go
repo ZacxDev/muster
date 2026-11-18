@@ -29,14 +29,39 @@ const checkoutReadTimeout = 5 * time.Second
 // unhealthy (a CLI in crash_loop), and its body still carries `repo`; the probe
 // is a liveness signal, not this read's.
 func (g *Gateway) Checkout(ctx context.Context, t Target) (agents.CheckoutStatus, error) {
+	body, err := g.healthz(ctx, t)
+	if err != nil {
+		return agents.CheckoutStatus{}, fmt.Errorf("read checkout: %w", err)
+	}
+	return ParseHealthzCheckout(body)
+}
+
+// MCPSessionLanes reads whether agent a's ccd starts a chat lane with an MCP
+// config naming its session (`mcp_session_lanes` on /healthz): what muster
+// asks before it runs an officer's chat there (internal/api
+// officerChatLanes.Supports). It contacts the runtime but sends it no turn.
+func (g *Gateway) MCPSessionLanes(ctx context.Context, a agents.Agent) (bool, error) {
+	t, err := g.Resolve(ctx, a)
+	if err != nil {
+		return false, err
+	}
+	body, err := g.healthz(ctx, t)
+	if err != nil {
+		return false, fmt.Errorf("read mcp_session_lanes: %w", err)
+	}
+	return ParseHealthzMCPSessionLanes(body)
+}
+
+// healthz is t's /healthz body, a 200 or a 503 (see Checkout).
+func (g *Gateway) healthz(ctx context.Context, t Target) ([]byte, error) {
 	if t.ep.IsZero() {
-		return agents.CheckoutStatus{}, fmt.Errorf("read checkout: the target has no address")
+		return nil, fmt.Errorf("the target has no address")
 	}
 	ctx, cancel := context.WithTimeout(ctx, checkoutReadTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(t.ep.URL(), "/")+"/healthz", nil)
 	if err != nil {
-		return agents.CheckoutStatus{}, err
+		return nil, err
 	}
 	// 🔴 A REDIRECT IS NOT FOLLOWED. /healthz is the agent's own; a 3xx is not
 	// it, and following one would read another host's body as this agent's
@@ -46,17 +71,13 @@ func (g *Gateway) Checkout(ctx context.Context, t Target) (agents.CheckoutStatus
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return agents.CheckoutStatus{}, fmt.Errorf("read checkout: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
-		return agents.CheckoutStatus{}, fmt.Errorf("read checkout: /healthz answered %d", resp.StatusCode)
+		return nil, fmt.Errorf("/healthz answered %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if err != nil {
-		return agents.CheckoutStatus{}, fmt.Errorf("read checkout: %w", err)
-	}
-	return ParseHealthzCheckout(body)
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 }
 
 // ParseHealthzCheckout extracts `repo` from a ccd /healthz body. Exported so
@@ -73,4 +94,18 @@ func ParseHealthzCheckout(body []byte) (agents.CheckoutStatus, error) {
 		return agents.CheckoutStatus{}, nil
 	}
 	return *h.Repo, nil
+}
+
+// ParseHealthzMCPSessionLanes reads `mcp_session_lanes` from a ccd /healthz
+// body: true when the ccd starts a chat lane's CLI with an MCP config naming
+// its session (cmd/ccd lanes.go "A CHAT LANE SAYS WHO IT IS"); absent (an
+// older ccd) is false.
+func ParseHealthzMCPSessionLanes(body []byte) (bool, error) {
+	var h struct {
+		MCPSessionLanes bool `json:"mcp_session_lanes"`
+	}
+	if err := json.Unmarshal(body, &h); err != nil {
+		return false, fmt.Errorf("/healthz body: %w", err)
+	}
+	return h.MCPSessionLanes, nil
 }

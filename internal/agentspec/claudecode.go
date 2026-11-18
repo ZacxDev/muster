@@ -6,6 +6,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -220,6 +221,11 @@ func claudeCodeResourcesFor(cfg Config) provision.Resources {
 // which it does not) are separate switches. Neither is needed for the pod to
 // work: the first succeeds, the second fails closed.
 const EnvClaudeDisableNonessentialTraffic = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+
+// EnvCCDMaxSessions is ccd's lane cap (cmd/ccd main.go, CCD_MAX_SESSIONS):
+// how many session CLIs it runs beside the primary. Set from
+// ClaudeCodeSession.MaxSessions only.
+const EnvCCDMaxSessions = "CCD_MAX_SESSIONS"
 
 // EnvClaudeDisableAutoMemory is the Claude Code CLI's switch for its
 // auto-memory (ClaudeCodeSession.DisableAutoMemory). Read from the CLI's own
@@ -691,6 +697,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if opts.ClaudeCodeSession.DisableAutoMemory {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableAutoMemory, Value: "1"},
 			provision.EnvVar{Name: EnvClaudeDisableOrgMemory, Value: "1"})
+	}
+	if n := opts.ClaudeCodeSession.MaxSessions; n > 0 {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvCCDMaxSessions, Value: strconv.Itoa(n)})
 	}
 	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
 		// An egress-locked pool's worker too: the CLI's optional hosts

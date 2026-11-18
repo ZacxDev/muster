@@ -188,13 +188,13 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
 
   // The queue is called "Asks" (operator decision "Rename to Asks"), at the
   // same /attention, so every existing /attention#<key> link still lands.
-  // This server serves no plugins, so there is no Drafts tab: its tabs are
-  // Open, Answered and Log (the Log tab is drawn whatever is served).
+  // This server serves no plugins and no ask log, so there is no Drafts tab
+  // and no Log tab: its tabs are Open and Answered.
   await expect(page.locator('#sidebar-attention')).toContainText('Asks');
   await page.goto(origin + '/attention');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
   await expect(page).toHaveTitle('Asks · muster');
-  await expect(page.getByRole('tab'), 'no plugins: Open, Answered and Log only').toHaveText(['Open', 'Answered', 'Log']);
+  await expect(page.getByRole('tab'), 'no plugins, no ask log: Open and Answered only').toHaveText(['Open', 'Answered']);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');
@@ -326,7 +326,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
-  await expect(item.locator('[data-attention-source]')).toContainText('@ ' + host);
+  await expect(item.locator('[data-attention-source]')).toContainText('on ' + host);
   // The other tmux server's call was never forwarded: no item carries its text.
   await expect(page.locator('[data-attention-text]', { hasText: 'other server?' })).toHaveCount(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
@@ -341,7 +341,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const splitId = (JSON.parse(split.result.content[0].text) as { id: number }).id;
   expect(splitId).toBeGreaterThan(0);
   await page.reload();
-  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('@ ' + host);
+  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('on ' + host);
 });
 
 // ANSWERED IN THE SESSION: the mirrored session asks and waits; the operator,

@@ -48,6 +48,9 @@ func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance stri
 	if err != nil {
 		return "", err
 	}
+	if chat, lane := chatLaneCall(ctx); lane && len(held) == 0 {
+		return "", fmt.Errorf("your chat's item (chat %s) is not held right now, so this read cannot be counted against it; answer the team member, and the next turn may read", chat)
+	}
 	switch {
 	case named != "":
 		for _, id := range held {
@@ -79,11 +82,22 @@ func heldItemsAt(ctx context.Context, c officers.Backend, instance string, now t
 	if err != nil {
 		return nil, err
 	}
+	// A chat lane's call (officer_chat.go) holds exactly its own chat's item:
+	// held as its chat holder (instance, officerCallerName) and naming its
+	// chat — never another chat's item on the same instance, never a queue
+	// item.
+	chat, lane := chatLaneCall(ctx)
 	var held []officers.ItemID
 	for _, it := range claimed {
-		if it.ClaimedBy == instance && it.LeaseLive(now) {
-			held = append(held, it.ID)
+		if it.ClaimedBy != instance || !it.LeaseLive(now) {
+			continue
 		}
+		if lane {
+			if id, _, ok := officers.ChatOf(it); !ok || id != chat {
+				continue
+			}
+		}
+		held = append(held, it.ID)
 	}
 	return held, nil
 }

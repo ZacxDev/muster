@@ -535,7 +535,7 @@ test.describe('phone 412×915 touch', () => {
     await expect(dlg).toBeHidden();
     await c.getByRole('button', { name: 'Cancel question' }).tap();
     await expect(dlg).toBeVisible();
-    await expect(dlg).toHaveText(/Send Esc to work:0\? The question is dismissed\./);
+    await expect(dlg).toHaveText(/Send Esc to work\? The question is dismissed\./);
     const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     expect(sw, 'no horizontal scroll with the dialog open').toBeLessThanOrEqual(cw);
     expect(fs.existsSync(tr + '.picker.keys'), 'nothing is sent before the confirm').toBe(false);
