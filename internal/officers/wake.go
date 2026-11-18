@@ -460,8 +460,10 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	// chat claim — a turn is running for it somewhere.
 	chatHeldBy := map[string]bool{}
 	overrun := map[string]bool{}
-	// capHolder: the instance numbers holding a capped claim. Never started.
-	capHolder := map[int]bool{}
+	// capHolder: the instance numbers holding a capped claim (cappedHolders,
+	// the one place that set is computed: the chat runner reads it too).
+	// Never started.
+	capHolder := cappedHolders(o, obs, now)
 	limit := o.ItemCap()
 	for _, it := range obs.Claimed {
 		if chatItem(it) {
@@ -487,7 +489,6 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		if cappedClaim(limit, it, now) {
 			d.Overrun = append(d.Overrun, Overrun{Item: it, N: in.N, Up: in.Up, Held: now.Sub(*it.ClaimedAt)})
 			overrun[in.Name] = true
-			capHolder[in.N] = true
 			continue
 		}
 		d.Held++
@@ -541,8 +542,8 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		queueStarts := len(d.Start)
 		// 🔴 CHAT SCALE-UP: first every stopped home a waiting chat needs
 		// (ChatPlan.Homes: the chat continues its session there, never moved
-		// for a stop), then the instances the unplaced chats need beyond them
-		// (ChatPlan.Need), the lowest free numbers — never past
+		// for a stop that comes up within chatHomeUpWithin), then the
+		// instances the unplaced chats need beyond them (ChatPlan.Need), the lowest free numbers — never past
 		// chat_max_instances, never a capped holder. An instance the queue
 		// starts this pass gives the chats lanes too, so it counts — a home
 		// among them only once (Want already counted its free lanes).

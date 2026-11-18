@@ -1141,7 +1141,9 @@ instance, and its deletion is refused like any other instance's.
    the chat stays unclaimed, even when another instance has a free lane. Then
    it continues its same session there. A stop for idleness
    (`chat_idle_stop`, `idle_scale_to_zero_after`) therefore costs the chat a
-   pod start (about a minute or two), never its conversation.
+   pod start (about a minute or two), never its conversation. The wait is
+   bounded: a home still not up 10 minutes after the first pass that saw a
+   chat waiting for it is re-homed ([below](#autoscaling-chat-instances)).
 3. Any other chat is unplaced: one with no home yet, or one to re-home
    ([below](#autoscaling-chat-instances)). It goes to the up instance with a
    free lane that runs the fewest chats.
@@ -1190,9 +1192,20 @@ it again soon:
 
 - the home is in error (it holds its slot and is not started);
 - its number is past `chat_max_instances` (the ceiling was lowered);
-- its number holds a capped claim (the wake loop never starts that number).
+- its number holds a capped claim (the wake loop never starts that number);
+- it is stopped and has not come up within 10 minutes of the first pass that
+  saw a chat waiting for it. A start that fails leaves the agent stopped, not
+  in error, so without this bound a chat whose home's every start fails would
+  wait for ever while another instance has a free lane. Ten minutes is five of
+  the slowest normal pod starts (about a minute or two) and several of the
+  wake loop's start retries, so a home that starts normally is always waited
+  for and the chat keeps its session; only a home that is effectively failing
+  moves it. The window is per stop: a pass that sees no chat waiting for that
+  home (it came up, or its chats moved or ended) forgets it, and a restarted
+  muster starts it again.
 
-A merely stopped home is never a reason (step 2 above). A chat to re-home is
+A merely stopped home that comes up within that bound is never a reason (step
+2 above). A chat to re-home is
 not held back. It runs on an up instance with a free lane, or waits for the
 instance the plan starts. Once its item is claimed there, muster sets its old
 lane session aside (`ChatLanes.Rehome`):
@@ -1207,8 +1220,8 @@ has no marks, it starts after the officer's last reply, like any
 [re-homed chat](#chat-sessions). It keeps the HQ history but loses the old
 lane's working context. Each re-home is logged with its from and to
 instances and the reason: `chat <id> re-homed from instance <n> (in error)
-to instance <m>`, `(past chat_max_instances <k>)` or `(holding a capped
-claim, so it is not started)`.
+to instance <m>`, `(past chat_max_instances <k>)`, `(holding a capped
+claim, so it is not started)` or `(home did not come up within 10m)`.
 
 **Gauges.** `muster_officer_chat_instances_up` counts the instances up within
 their chat ceiling, across the pools that run chats.
@@ -1228,9 +1241,9 @@ no scale-down) when it cannot run now:
   instance has no `ccd`, so no lane. The HQ server can still create such a
   chat; muster leaves it unclaimed and says why once in its log;
 - which instance it lives on cannot be read (a home that is stopped is no
-  reason: it is started for the chat; one in error or past
-  `chat_max_instances` is no reason either: the chat is
-  [re-homed](#autoscaling-chat-instances));
+  reason: it is started for the chat; one in error, past
+  `chat_max_instances` or not up within 10 minutes is no reason either: the
+  chat is [re-homed](#autoscaling-chat-instances));
 - it is **backing off**: a lane that refused the turn for a reason that does
   not pass by itself (the runtime unresolved, muster's credential refused, the
   request rejected, the runtime never reached), a turn, read or reply that

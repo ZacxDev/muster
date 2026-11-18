@@ -452,7 +452,8 @@ type ChatLanes interface {
 	// (the ceiling lowered since). A lane's conversation is on its
 	// instance's volume, so a chat stays there: a stopped home is started
 	// for it, and it moves (Rehome) only when its home is in error, past the
-	// ceiling or holds a capped claim (rehomeWhy).
+	// ceiling, holds a capped claim or is not up within chatHomeUpWithin
+	// (rehomeWhy).
 	Home(ctx context.Context, o Officer, chatID string) (int, error)
 	// Open finds or makes chatID's lane session on instance n and answers its
 	// marks.
@@ -467,7 +468,8 @@ type ChatLanes interface {
 	// when the lane refused it before anything was typed.
 	Turn(ctx context.Context, o Officer, n int, chatID, text string) (string, error)
 	// Rehome sets aside chatID's lane session on instance from (in error,
-	// past the chat ceiling or holding a capped claim: rehomeWhy), so its next Open on another instance
+	// past the chat ceiling, holding a capped claim or not up within
+	// chatHomeUpWithin: rehomeWhy), so its next Open on another instance
 	// makes a new session there: one with no marks, which starts after the
 	// officer's last reply. Its history stays readable where it was. Nothing
 	// to set aside is no error.
@@ -511,6 +513,16 @@ const (
 	chatHeartbeatEvery = time.Minute
 )
 
+// chatHomeUpWithin bounds how long a pending chat waits for its STOPPED home
+// (rehomeWhy): measured from the first pass that saw a chat waiting for that
+// home (ChatRunner.homeWait), once it has passed with the home still not up
+// the chat is re-homed. A normal pod start takes about a minute or two, so 10
+// minutes is five of the slowest normal starts and several of the wake loop's
+// start retries: a home that is not up by then is failing (a start that errors
+// leaves the agent stopped, not in error, so nothing else would ever move the
+// chat), and the member has waited long enough that a new session beats none.
+const chatHomeUpWithin = 10 * time.Minute
+
 // ChatRunner runs officers' chat turns (the package comment above). One per
 // muster-server.
 type ChatRunner struct {
@@ -542,8 +554,14 @@ type ChatRunner struct {
 	// holder's (Want), or — first — when Want first saw it up. Forgotten when
 	// Want sees it down, so an instance seen up again starts a new window.
 	active map[string]time.Time
-	now    func() time.Time
-	wg     sync.WaitGroup
+	// homeWait is when a pass first saw a pending chat waiting for each
+	// stopped home (by agent name): chatHomeUpWithin is measured from it.
+	// Forgotten by the first Want that sees no pending chat waiting for that
+	// home (it came up, or its chats moved or ended), so a later stop starts a
+	// new window. A restarted muster starts every window again.
+	homeWait map[string]time.Time
+	now      func() time.Time
+	wg       sync.WaitGroup
 }
 
 // chatBackoff is one failing chat's wait: its consecutive failures, and when
@@ -649,7 +667,7 @@ func NewChatRunner(cfg ChatRunnerConfig) (*ChatRunner, error) {
 	}
 	return &ChatRunner{lanes: cfg.Lanes, backend: cfg.Backend, log: cfg.Logger, base: cfg.Context, heartbeatEvery: cfg.HeartbeatEvery,
 		replyRetries: cfg.ReplyRetries, running: map[string]string{}, lanesBusy: map[string]int{}, backoff: map[string]chatBackoff{},
-		logged: map[string]bool{}, active: map[string]time.Time{}, now: cfg.Now}, nil
+		logged: map[string]bool{}, active: map[string]time.Time{}, homeWait: map[string]time.Time{}, now: cfg.Now}, nil
 }
 
 // Wait blocks until every turn this runner started has ended.
@@ -717,9 +735,11 @@ func PendingChats(obs Observation, now time.Time) []Item {
 //   - 🔴 A pending chat whose home is STOPPED — not in error, within the chat
 //     ceiling, holding no capped claim (rehomeWhy "") — waits for it: its
 //     home is in Homes, which Decide starts, and the chat continues its
-//     same session there once it is up. It is never moved for a stop.
+//     same session there once it is up. It is never moved for a stop that
+//     comes up within chatHomeUpWithin.
 //   - Every other pending chat — no home yet, or a home in error, past
-//     chat_max_instances or holding a capped claim — is UNPLACED: Dispatch
+//     chat_max_instances, holding a capped claim or not up within
+//     chatHomeUpWithin — is UNPLACED: Dispatch
 //     puts it on an up instance with a free lane (re-homing it when it had a
 //     home).
 //   - The unplaced chats no free lane takes, less the lanes Homes leave free,
@@ -754,7 +774,9 @@ func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now t
 	}
 	held := map[ItemID]bool{}
 	capped := cappedHolders(o, obs, now)
-	homed := map[int]int{} // the chats waiting for their stopped home, by its number
+	homed := map[int]int{}        // the chats waiting for their stopped home, by its number
+	waitedOn := map[string]bool{} // the homes a chat waits for this pass, re-homed or not (homeWait)
+	defer r.forgetHomeWaits(o, waitedOn)
 	for _, it := range pending {
 		chat, _, _ := ChatOf(it)
 		if r.backingOff(chatRunKey(o, chat), now) {
@@ -767,11 +789,16 @@ func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now t
 			r.log.Printf("officers: %s: chat %s: reading which instance runs it: %v (it waits for a later pass)", o.label(), chat, err)
 			continue
 		}
+		var waited time.Duration
+		if h >= 1 && !up[h] {
+			waitedOn[o.InstanceName(h)] = true
+			waited = r.homeWaited(o, h, now)
+		}
 		switch {
 		case up[h]:
 			plan.PendingOn[h]++
 			free[h]--
-		case h >= 1 && rehomeWhy(o, obs, h, capped) == "":
+		case h >= 1 && rehomeWhy(o, obs, h, capped, waited) == "":
 			// Its home is stopped: started for it, as its conversation is
 			// there.
 			plan.Waiting++
@@ -826,15 +853,19 @@ func chatUp(o Officer, obs Observation) map[int]bool {
 // rehomeWhy is why a pending chat whose home h (1 or more) is not up for
 // chats (chatUp) is moved to another instance, "" when it waits for h
 // instead (h is stopped: Decide starts it, and the chat continues its same
-// session there). capped is cappedHolders. Want and Dispatch both ask it, so
-// the plan and the placement agree.
+// session there). capped is cappedHolders; waited is how long a chat has
+// waited for h (homeWaited). Want and Dispatch both ask it, so the plan and
+// the placement agree.
 //
 // 🔴 ONLY A HOME THAT CANNOT SERVE IT AGAIN SOON MOVES THE CHAT: in error
 // (it holds its slot and is not started), numbered past chat_max_instances,
-// or holding a capped claim (Decide never starts that number). A routine stop
-// (chat_idle_stop, idle_scale_to_zero_after) is no reason: a moved chat loses
-// its lane's conversation.
-func rehomeWhy(o Officer, obs Observation, h int, capped map[int]bool) string {
+// holding a capped claim (Decide never starts that number), or not up
+// within chatHomeUpWithin of a chat waiting for it (its start keeps failing:
+// a failed start leaves it stopped, not in error). A routine stop
+// (chat_idle_stop, idle_scale_to_zero_after) is no reason: the start it
+// waits for is a pod start, well inside the bound, and a moved chat loses its
+// lane's conversation.
+func rehomeWhy(o Officer, obs Observation, h int, capped map[int]bool, waited time.Duration) string {
 	if h > o.ChatMaxInstances() {
 		return fmt.Sprintf("past chat_max_instances %d", o.ChatMaxInstances())
 	}
@@ -846,7 +877,37 @@ func rehomeWhy(o Officer, obs Observation, h int, capped map[int]bool) string {
 	if capped[h] {
 		return "holding a capped claim, so it is not started"
 	}
+	if waited >= chatHomeUpWithin {
+		return fmt.Sprintf("home did not come up within %s", strings.TrimSuffix(chatHomeUpWithin.String(), "0s"))
+	}
 	return ""
+}
+
+// homeWaited is how long a pending chat has waited for pool o's stopped home
+// h at now: since the first pass that saw one waiting for it (homeWait),
+// recorded now when none had.
+func (r *ChatRunner) homeWaited(o Officer, h int, now time.Time) time.Duration {
+	name := o.InstanceName(h)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	since, ok := r.homeWait[name]
+	if !ok {
+		r.homeWait[name] = now
+		return 0
+	}
+	return now.Sub(since)
+}
+
+// forgetHomeWaits forgets every wait (homeWait) for an instance of pool o
+// that no pending chat waits for this pass (waitedOn, by agent name).
+func (r *ChatRunner) forgetHomeWaits(o Officer, waitedOn map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name := range r.homeWait {
+		if p, _, ok := forAgentName([]Officer{o}, name); ok && p.Tier == o.Tier && !waitedOn[name] {
+			delete(r.homeWait, name)
+		}
+	}
 }
 
 // track updates when each of pool o's instances was last active
@@ -923,15 +984,15 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 			r.log.Printf("officers: %s: chat %s: reading which instance runs it: %v (it waits for a later pass)", o.label(), chat, err)
 			continue
 		}
-		// 🔴 A STOPPED HOME IS WAITED FOR, NEVER LEFT: the chat stays
-		// unclaimed until Want's start of it is up, and continues its same
-		// session there. Only a home that cannot serve it again soon (in
-		// error, past chat_max_instances, holding a capped claim: rehomeWhy)
-		// re-homes it onto an up instance with a free lane, its old lane set
-		// aside (Rehome).
+		// 🔴 A STOPPED HOME IS WAITED FOR, NOT LEFT, FOR chatHomeUpWithin: the
+		// chat stays unclaimed until Want's start of it is up, and continues
+		// its same session there. Only a home that cannot serve it again soon (in
+		// error, past chat_max_instances, holding a capped claim, not up
+		// within chatHomeUpWithin: rehomeWhy) re-homes it onto an up instance
+		// with a free lane, its old lane set aside (Rehome).
 		n, from, why := home, 0, ""
 		if home > 0 && !up[home] {
-			if why = rehomeWhy(o, obs, home, capped); why == "" {
+			if why = rehomeWhy(o, obs, home, capped, r.homeWaited(o, home, now)); why == "" {
 				continue // its home is stopped: Want has it started
 			}
 			n, from = 0, home
@@ -1027,9 +1088,9 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 }
 
 // run is Run; oldHome, when not 0, is the chat's old home, moved from for
-// moveWhy (rehomeWhy: in error, past the chat ceiling or holding a capped
-// claim): once the item is claimed, its lane there is set
-// aside (ChatLanes.Rehome), so the turn opens a new session on n — one with
+// moveWhy (rehomeWhy: in error, past the chat ceiling, holding a capped
+// claim or not up within chatHomeUpWithin): once the item is claimed, its
+// lane there is set aside (ChatLanes.Rehome), so the turn opens a new session on n — one with
 // no marks, which starts after the officer's last reply.
 func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome int, moveWhy string) ChatOutcome {
 	b, cb, ok := r.serves(o)

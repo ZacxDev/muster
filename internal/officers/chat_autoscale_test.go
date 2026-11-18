@@ -20,9 +20,9 @@ import (
 // max_instances, up to chat_max_instances, when every lane of every up
 // instance is busy; an instance with no chat turn, claim or prompt for
 // chat_idle_stop is stopped, never one doing queue work; a chat whose instance
-// is stopped waits for it to be started again (its conversation is there);
-// one whose instance is in error or past the ceiling is re-homed onto a
-// running one.
+// is stopped waits for it to be started again (its conversation is there),
+// for at most chatHomeUpWithin; one whose instance is in error, past the
+// ceiling or not up by then is re-homed onto a running one.
 
 var autoNow = time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -307,6 +307,88 @@ func TestAChatWhoseHomeStoppedWaitsForItAndKeepsItsSession(t *testing.T) {
 	}
 	if st := r.hq.Item(id).Status; st != "done" {
 		t.Fatalf("item %s, want done", st)
+	}
+}
+
+// TestAChatWhoseHomeNeverComesUpIsRehomedAfterTheDeadline (audit round 2):
+// chat c-41's home, instance 2, is stopped and every start of it fails — a
+// failed start leaves the agent stopped, not in error, so it stays down pass
+// after pass. Instance 1 has a free lane. Under chatHomeUpWithin (10m) of the
+// chat first waiting, every pass still starts instance 2 for it and leaves it
+// unclaimed (passes each minute to 9m, then 9m50s); past it (10m10s) the chat
+// is re-homed onto instance 1 and the log names why.
+func TestAChatWhoseHomeNeverComesUpIsRehomedAfterTheDeadline(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "old question")
+	if got := r.runner.Run(context.Background(), r.o, 2, r.item(t, id)); got != officers.ChatReplied {
+		t.Fatalf("the first turn, on instance 2: %s; log:\n%s", got, r.logs)
+	}
+	_, id = r.hq.MemberSays("c-41", "member1", "Member One", "new question")
+	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2)}}
+	pass := func() (officers.ChatPlan, officers.Decision) {
+		plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now())
+		o := obs
+		o.ChatPlan = plan
+		d := officers.Decide(r.o, o, time.Time{}, clk.Now(), nil)
+		r.runner.Dispatch(context.Background(), r.o, obs, clk.Now())
+		r.runner.Wait()
+		return plan, d
+	}
+	start := clk.Now()
+	for _, at := range []time.Duration{0, time.Minute, 2 * time.Minute, 3 * time.Minute, 4 * time.Minute, 5 * time.Minute,
+		6 * time.Minute, 7 * time.Minute, 8 * time.Minute, 9 * time.Minute, 9*time.Minute + 50*time.Second} {
+		clk.Advance(start.Add(at).Sub(clk.Now()))
+		plan, d := pass()
+		if turns := r.lanes.sent(); len(turns) != 1 || len(r.lanes.rehomes) != 0 || fmt.Sprint(plan.Homes) != "[2]" || fmt.Sprint(d.Start) != "[2]" {
+			t.Fatalf("still waiting %s after the chat first waited (under the 10m deadline): turns %+v rehomes %v plan %+v start %v; want no new turn, no re-home, instance 2 started for it; log:\n%s",
+				at, turns, r.lanes.rehomes, plan, d.Start, r.logs)
+		}
+		if st := r.hq.Item(id).Status; st != "open" {
+			t.Fatalf("at %s the waiting chat's item is %s, want open", at, st)
+		}
+	}
+	clk.Advance(start.Add(10*time.Minute + 10*time.Second).Sub(clk.Now()))
+	plan, _ := pass()
+	if len(plan.Homes) != 0 || plan.Unplaced != 1 {
+		t.Fatalf("past the deadline: plan %+v; want the chat unplaced and instance 2 no longer started for it", plan)
+	}
+	turns := r.lanes.sent()
+	if len(turns) != 2 || turns[1].n != 1 || fmt.Sprint(r.lanes.rehomes) != "[c-41:2]" {
+		t.Fatalf("10m10s after the chat first waited for a home that never came up: turns %+v rehomes %v; want the new turn on instance 1 and c-41 re-homed from 2; log:\n%s",
+			turns, r.lanes.rehomes, r.logs)
+	}
+	if !strings.Contains(r.logs.String(), "re-homed from instance 2 (home did not come up within 10m) to instance 1") {
+		t.Fatalf("no log line names the re-home and its reason:\n%s", r.logs)
+	}
+	if st := r.hq.Item(id).Status; st != "done" {
+		t.Fatalf("item %s, want done", st)
+	}
+}
+
+// TestAHomeThatCameUpStartsANewWaitWhenStoppedAgain: the deadline is measured
+// per stop. Chat c-41 waits 9m for its stopped home 2, which then comes up for
+// a pass (the chat is not dispatched, so it stays pending) and stops again.
+// 2m later — 11m after the FIRST wait began, 2m into the second — the chat
+// still waits for instance 2, not re-homed by the first stop's clock.
+func TestAHomeThatCameUpStartsANewWaitWhenStoppedAgain(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "a question")
+	r.lanes.homes["c-41"] = 2
+	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2)}}
+	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); fmt.Sprint(plan.Homes) != "[2]" {
+		t.Fatalf("home 2 stopped: plan %+v, want Homes [2]", plan)
+	}
+	clk.Advance(9 * time.Minute)
+	obs.Instances[1] = upInstance(r.o, 2)
+	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); plan.PendingOn[2] != 1 {
+		t.Fatalf("home 2 up: plan %+v, want the chat pending on it", plan)
+	}
+	obs.Instances[1] = downInstance(r.o, 2)
+	clk.Advance(2 * time.Minute)
+	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); fmt.Sprint(plan.Homes) != "[2]" || plan.Unplaced != 0 {
+		t.Fatalf("home 2 stopped again 2m ago (11m after the first wait began): plan %+v; want it still waited for (Homes [2], nothing unplaced)", plan)
 	}
 }
 
