@@ -26,9 +26,11 @@ func visibleText(t *testing.T, markup string) string {
 // and a search term.
 
 func TestTheMirrorTerminalPageIsTitledByTheLabelWithTheRawName(t *testing.T) {
-	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", DisplayName: "Gold:8", RawName: "scratch2",
+	// DisplayName is what internal/api sends: the window's PlainTitle (the
+	// label "Gold:8" without tmux's window index).
+	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", DisplayName: "Gold", RawName: "scratch2",
 		Badge: "Mirrored · laptop", BackHref: "/agents", WSPath: MirrorTerminalWSPath("laptop", "scratch2")}))
-	for _, want := range []string{"<title>Terminal · Gold:8 · muster</title>", `>Gold:8`, `title="tmux session scratch2"`} {
+	for _, want := range []string{"<title>Terminal · Gold · muster</title>", `>Gold<`, `title="tmux session scratch2"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("terminal page lacks %q", want)
 		}
@@ -47,8 +49,8 @@ func TestTheMirrorTerminalPageIsTitledByTheLabelWithTheRawName(t *testing.T) {
 
 func TestTheRenderedViewIsTitledByTheLabelAndAddressedByTheSession(t *testing.T) {
 	html := renderNode(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "scratch13", Label: "mango:1"}))
-	for _, want := range []string{"<title>mango:1 · Mirrored · muster</title>", `<span data-mirror-label="">mango:1</span>`,
-		`title="tmux session scratch13"`, `mango:1 · Mirrored · laptop · tmux session scratch13</span>`,
+	for _, want := range []string{"<title>mango · Mirrored · muster</title>", `<span data-mirror-label="">mango</span>`,
+		`title="tmux session scratch13"`, `>mango · Mirrored · laptop</span>`,
 		`data-ws="` + strings.ReplaceAll(MirrorViewWSPath("laptop", "scratch13"), "&", "&amp;") + `"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("rendered view lacks %q", want)

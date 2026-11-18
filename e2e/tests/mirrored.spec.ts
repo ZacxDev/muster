@@ -191,10 +191,11 @@ test('a labelled session shows its pretty name, follows the active window, and s
     await waitForCards(page, true);
     await openSidebar(page);
     const main = card(page, 'main');
-    // The row draws the label, whole (its title), and no raw session name
-    // beside it (its pages do, below).
-    await expect(main).toHaveAttribute('title', 'Mango:1');
-    await expect(main).toHaveText('Mango:1');
+    // The row draws the label (its title) without tmux's window index, and
+    // no raw session name beside it; its codename keeps the index.
+    await expect(main).toHaveAttribute('title', 'Mango');
+    await expect(main).toHaveText('Mango');
+    await expect(main).toHaveAttribute('data-switcher-code', 'Mango:1');
     // No codename: the raw name, and nothing else.
     const scratch = card(page, 'scratch');
     await expect(scratch).toHaveAttribute('title', 'scratch');
@@ -203,20 +204,21 @@ test('a labelled session shows its pretty name, follows the active window, and s
     // The operator moves main to window 3; the session SET is unchanged. The
     // open sidebar follows without a reload.
     writeFileAtomic(activeFile, 'main=3\nscratch=4\n');
-    await expect(main, `the row follows the window (muster-mirror log:\n${rig.log})`).toHaveAttribute('title', 'Mango:3', { timeout: 20_000 });
-    await expect(main).toHaveText('Mango:3');
+    await expect(main, `the row follows the window (muster-mirror log:\n${rig.log})`).toHaveAttribute('data-switcher-code', 'Mango:3', { timeout: 20_000 });
+    await expect(main, 'its name is still the label, no index').toHaveText('Mango');
     await noHorizontalScroll(page);
 
     await main.tap();
     await page.waitForURL((u) => u.pathname === '/mirror/terminal');
     expect(new URL(page.url()).searchParams.get('session'), 'opened by the tmux name, not the label').toBe('main');
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
-    await expect(page.locator('header h1')).toContainText('Mango:3');
+    await expect(page.locator('header h1')).toContainText('Mango');
+    await expect(page.locator('header h1')).not.toContainText('Mango:3');
     // The raw tmux name is the title's tooltip, no longer drawn beside it (the
     // header's room is the session's tags: session_tags.go).
     await expect(page.locator('header h1 [data-mirror-name]')).toHaveAttribute('title', 'tmux session main');
     await expect(page.locator('header [data-mirror-session]')).toHaveCount(0);
-    await expect(page).toHaveTitle(/Mango:3/);
+    await expect(page).toHaveTitle(/Mango/);
     await noHorizontalScroll(page);
   } finally {
     await stopMirror();

@@ -92,19 +92,19 @@ func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
 	if pop == nil {
 		t.Fatal("no full-title popover")
 	}
-	// The raw tmux session is in it too: the header no longer draws it beside a
-	// label (mirrorViewHeading).
-	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly:1 · tower · Mirrored · host-a · tmux session scratch2</span>` {
+	// The header line in words: no tmux session, no window index — the address
+	// is the header's ⓘ (mirrorViewHeading).
+	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly · tower · Mirrored · host-a</span>` {
 		t.Errorf("the popover is not exactly the whole title:\n%s", pop[1])
 	}
-	if !strings.Contains(page, "<title>billing-reconcile-nightly:1 · tower · Mirrored · muster</title>") {
+	if !strings.Contains(page, "<title>billing-reconcile-nightly · tower · Mirrored · muster</title>") {
 		t.Error("the <title> is not the header's name")
 	}
 	if !strings.Contains(page, "window.__musterFloatingMenu") || !strings.Contains(page, "window.__musterAgentTitleFit") || !strings.Contains(page, "data-title-fit') === 'disable'") {
 		t.Error("the page does not carry the popover's placement script and the shared fit script")
 	}
 	plain := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@1", Title: "main:1", Interactive: true}))
-	if !strings.Contains(plain, `<span class="[overflow-wrap:anywhere] text-sm font-semibold">main:1 · Mirrored · host-a</span></div>`) {
+	if !strings.Contains(plain, `<span class="[overflow-wrap:anywhere] text-sm font-semibold">main · Mirrored · host-a</span></div>`) {
 		t.Error("an unlabelled window's popover is not its header line")
 	}
 }

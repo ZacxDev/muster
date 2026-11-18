@@ -32,7 +32,7 @@
 FROM scratch AS hq
 COPY images/claude-code-agent/hq-absent /hq-absent
 
-FROM golang:1.25-alpine AS build
+FROM golang:1.26.11-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

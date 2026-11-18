@@ -74,14 +74,11 @@ for a failure that actually happened.
 | `make check` | All of the above. |
 | `make e2e` | The Playwright suite (see below). |
 
-Two documentation gates run inside `go test ./internal/modulegate/`:
+One documentation gate runs inside `go test ./internal/modulegate/`:
 
 - `TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa` checks that the
   variables the code reads (collected by parsing the source) match the table in
   [configuration.md](configuration.md), in both directions.
-- `TestEveryRelativeDocLinkResolves` checks that every relative link and image in
-  `README.md`, `CONTRIBUTING.md` and `docs/` points at a file that exists, and
-  that every `#anchor` points at a heading.
 
 ## The browser suite (`e2e/`)
 

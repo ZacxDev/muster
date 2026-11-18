@@ -1,0 +1,12 @@
+# Advisories the `govulncheck` CI job accepts while they are reachable.
+# Read by .github/scripts/vulngate.py; its rules are in CONTRIBUTING.md.
+#
+# One entry per line:   GO-YYYY-NNNN  YYYY-MM-DD  reason
+#
+# The date is the LAST day the entry is honoured (UTC). After it the job
+# FAILS and names the entry, whether or not the advisory is still reported:
+# remove it, or re-date it with a fresh reason. Use an entry only when no
+# fixed release exists yet (or the fix cannot land yet); otherwise make the
+# bump govulncheck names. Keep dates short: weeks, not months.
+#
+# (no entries)

@@ -173,7 +173,7 @@ func TestAWaitingSessionsListRowAndSummaryAddTheTmuxAddressWhenAsked(t *testing.
 	}{{false, "Ledger cleanup"}, {true, "Ledger cleanup · main:1 @ ws"}} {
 		f.tmuxPref(t, c.on)
 		page := f.page(t, "/attention")
-		if !strings.Contains(page, `data-attention-title data-attention-name>`+c.want+`</span>`) || !strings.Contains(page, `data-attention-source>tmux main:1 @ ws</span>`) {
+		if !strings.Contains(page, `data-attention-title data-attention-name>`+c.want+`</span>`) || !strings.Contains(page, `data-attention-source>on ws</span>`) {
 			i := strings.Index(page, "data-attention-source")
 			t.Fatalf("on=%v: the Asks list does not name the session %q:\n%s", c.on, c.want, page[max(0, i-200):min(len(page), max(0, i)+400)])
 		}
@@ -234,7 +234,7 @@ func TestAMirroredAsksPushAndRowAreTitledByTheSessionsName(t *testing.T) {
 			}
 			page := f.page(t, "/attention")
 			row := `data-attention-title data-attention-name>` + c.want + `</span>`
-			if !strings.Contains(page, row) || !strings.Contains(page, `data-attention-source>tmux main:1 @ ws</span>`) {
+			if !strings.Contains(page, row) || !strings.Contains(page, `data-attention-source>on ws</span>`) {
 				i := strings.Index(page, "data-attention-source")
 				t.Fatalf("the Asks list does not title the ask %q:\n%s", c.want, page[max(0, i-100):min(len(page), max(0, i)+300)])
 			}

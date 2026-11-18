@@ -154,8 +154,10 @@ func TestBothViewsDrawTagsInTheHeaderAndNotTheRawSession(t *testing.T) {
 			t.Errorf("%s: the title lost its tmux-session tooltip", name)
 		}
 	}
-	if !strings.Contains(view, `mango:1 · Mirrored · tower · tmux session scratch4</span>`) {
-		t.Error("the Rendered view's full-title popover does not name the tmux session")
+	// The full-title popover is the header line in words: no tmux session,
+	// no window index (the address is the header's ⓘ, when the page knows it).
+	if !strings.Contains(view, `>mango · Mirrored · tower</span>`) || strings.Contains(view, `tower · tmux session`) {
+		t.Error("the Rendered view's full-title popover is not the header line in words")
 	}
 }
 

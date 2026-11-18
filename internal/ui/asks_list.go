@@ -41,8 +41,10 @@ const (
 	AsksTitleClass = "truncate text-sm font-semibold text-fg"
 	// AsksSubClass is the head's muted second line: host, age.
 	AsksSubClass = "truncate text-xs text-fg2"
-	// AsksTargetClass is the tmux target inside the sub line, small.
-	AsksTargetClass = "font-mono text-[11px] text-muted"
+	// AsksTargetClass is the place inside the sub line ("on atlas"): words,
+	// not an address — the tmux target is behind the card's ⓘ
+	// (ui.SessionPlaceSheet), so it is drawn as text, not as code.
+	AsksTargetClass = "text-fg2"
 	// AsksWaitLineClass is a waiting row's one line: what it waits on (its
 	// pending call, a question's first line).
 	AsksWaitLineClass = "truncate font-mono text-xs text-fg"

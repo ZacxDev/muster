@@ -292,11 +292,15 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 // else its title, else its session. entryTitle draws it; the rendered view's
 // <title> and its full-title popover (mirrorViewTitle) spell it from here too,
 // so the three cannot drift apart.
+//
+// The name is a person's (mirror.PlainCode): tmux's window index is dropped —
+// "mango", never "mango:1" — and comes back only as the list's qualifier
+// ("window 2") where two entries would otherwise read alike.
 func mirrorDisplayName(label, title, session string) (name string, labelled bool) {
 	if label == "" || label == session {
-		return plainOr(title, session), false
+		return mirror.PlainCode(plainOr(title, session)), false
 	}
-	return plainOr(label, session), true
+	return mirror.PlainCode(plainOr(label, session)), true
 }
 
 // mirrorQualifierSep joins a mirrored entry's name and its qualifier — the

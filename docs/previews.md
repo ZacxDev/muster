@@ -119,7 +119,8 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    instructions to the model, so neither needs more.
    **opencode** takes a different entry, in opencode's config under `mcp`:
    `"type": "remote"`, the same URL, `"oauth": false`, and two headers, the
-   secret (`"Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}"`)
+   secret (`"Authorization": "Bearer {file:<path>}"`, with `<path>` the
+   secret's path: [Where the MCP secret is](features.md#where-the-mcp-secret-is))
    and the static `"X-Muster-Client": "opencode"`. It sends no pane headers.
    Each call is bound to the window showing the opencode session the call
    names, and fails with `no_window` when no window shows it
