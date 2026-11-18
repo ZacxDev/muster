@@ -375,12 +375,12 @@ const fleetOwnerMarksMigrationVersion = 147
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerConnectorBlocksMigrationVersion = 148
 
-// fleetActionsMigrationVersion is 0153: fleet_actions (the fleet's action log,
+// fleetActionsMigrationVersion is 0154: fleet_actions (the fleet's action log,
 // internal/fleet), owned and under the same row-level security; same
 // treatment again. Its body is idempotent (the append-only trigger and the
 // send queue's one-origin rule are re-created).
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const fleetActionsMigrationVersion = 153
+const fleetActionsMigrationVersion = 154
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

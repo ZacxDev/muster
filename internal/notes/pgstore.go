@@ -442,7 +442,8 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // that grew three joins are separate regressions, each earned once already.
 func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, directory, title, body, status, model, repo, repo_branch, tags, updated_at, owner_id
+		SELECT id, directory, title, body, status, model, repo, repo_branch, tags, updated_at, owner_id,
+		       created_by, coalesce(ext_key, '')
 		FROM notes WHERE `+liveOnly+` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -451,7 +452,8 @@ func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	out := make([]Note, 0)
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID); err != nil {
+		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID,
+			&n.CreatedBy, &n.summaryRefKey); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
