@@ -226,7 +226,7 @@ type Route struct {
 	// session (RoutedPasteSHA256; migration 0153), set with SendQueueID; ""
 	// for a route that pasted nothing or was made before 0153. A mirrored
 	// view draws a prompt as this route's "From …" card only when the prompt
-	// hashes to it (internal/api routed_prompt_cards.go).
+	// hashes to it (internal/api route_answer_cards.go routedPasteOnRecord).
 	PasteSHA256 string
 }
 

@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -90,24 +92,29 @@ func (s *Server) routeAnswerCardsFor(ctx context.Context, agentID int64, lines [
 // So the view (ui.MirrorTranscript.RoutedPasteOnRecord) asks here, and the
 // card is drawn only when the route the block names exists for the viewer,
 // targets the Claude session this window shows now (and the host it ran on,
-// when recorded), and recorded the SHA-256 of exactly this text when it was
-// queued (Route.PasteSHA256, migration 0153). Anything else is the bubble.
+// when recorded), recorded the SHA-256 of exactly this text when it was queued
+// (Route.PasteSHA256, migration 0153), and was DELIVERED: its send-queue row
+// sent, the prompt no earlier than the delivery. The view asks only for the
+// FIRST prompt naming a route (ui.MirrorTranscript), so a replay of the same
+// block is a bubble too. Anything else is the bubble.
 
 // routedPasteOnRecord is that check for the window host/session/window as r's
-// viewer sees it.
-func (s *Server) routedPasteOnRecord(r *http.Request, host, session, window, routeID, text string) bool {
-	if s.ext.Routes == nil {
+// viewer sees it: text is the prompt as muster pasted it
+// (plugins.RoutedPromptText), recorded at at.
+func (s *Server) routedPasteOnRecord(r *http.Request, host, session, window, routeID, text string, at time.Time) bool {
+	if s.ext.Routes == nil || s.ext.SendQueue == nil {
 		return false
 	}
 	rt, err := s.ext.Routes.Route(r.Context(), routeID)
-	if err != nil {
+	if err != nil || rt.SendQueueID == nil {
 		return false
 	}
 	h, e, _, _, ok := s.mirrorEntry(r, host, session, window)
-	if !ok {
+	if !ok || !routedPasteMatches(rt, h.Host, e.ClaudeSession, text) {
 		return false
 	}
-	return routedPasteMatches(rt, h.Host, e.ClaudeSession, text)
+	it, err := s.ext.SendQueue.Get(r.Context(), *rt.SendQueueID)
+	return err == nil && routedPasteDelivered(it, at)
 }
 
 // routedPasteMatches is the record's half of the check: route rt was pasted
@@ -116,4 +123,19 @@ func routedPasteMatches(rt plugins.Route, host, sid, text string) bool {
 	return rt.TargetKind == string(focus.KindMirror) && sid != "" && rt.TargetKey == sid &&
 		(rt.TargetHost == "" || rt.TargetHost == host) &&
 		rt.PasteSHA256 != "" && rt.PasteSHA256 == plugins.RoutedPasteSHA256(text)
+}
+
+// routedPasteClockSkew is how far a prompt's time (the host's clock, as the
+// CLI wrote it) may fall before its send-queue row's claim (Postgres's clock)
+// and still be that delivery: the paste follows the claim, so only the two
+// clocks' difference can put it earlier.
+const routedPasteClockSkew = time.Minute
+
+// routedPasteDelivered is the delivery's half: the route's send-queue row it
+// was SENT (not queued, cancelled or failed — a paste never delivered has no
+// prompt to be), and the prompt was recorded no earlier than the row's
+// delivery began (its claim), within routedPasteClockSkew. A prompt with no
+// time is not taken for a delivery.
+func routedPasteDelivered(it sendqueue.Item, at time.Time) bool {
+	return it.State == sendqueue.Sent && !at.IsZero() && !it.ClaimedAt.IsZero() && !at.Before(it.ClaimedAt.Add(-routedPasteClockSkew))
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -718,12 +719,18 @@ type MirrorTranscript struct {
 	// (forget).
 	ledger cctranscript.ToolContext
 	costs  map[string]cctranscript.ToolCost
-	// RoutedPasteOnRecord reports whether text is the very block muster pasted
-	// into THIS session for route routeID (internal/api routedPasteOnRecord:
-	// the route exists, targets this session, and its recorded SHA-256 is
+	// RoutedPasteOnRecord reports whether text — a prompt as muster pasted it
+	// (plugins.RoutedPromptText) — is the very block muster DELIVERED into
+	// THIS session for route routeID, recorded at at (internal/api
+	// routedPasteOnRecord: the route exists, targets this session, its
+	// send-queue row was sent no later than at, and its recorded SHA-256 is
 	// text's). Only then is a routed prompt drawn as its "From …" card
 	// (routed_card.go); nil draws every prompt as the person's bubble.
-	RoutedPasteOnRecord func(routeID, text string) bool
+	RoutedPasteOnRecord func(routeID, text string, at time.Time) bool
+	// routedSeen is the routes this transcript has drawn a card for: only the
+	// FIRST prompt matching a route is its card — the same block typed again
+	// later (a replay) is the person's bubble. Cleared by Reset.
+	routedSeen map[string]bool
 	// queued is the Claude Code queued messages drawn last (cc_queued.go),
 	// and queuedDrawn whether any list has been drawn by this socket.
 	queued      []string
@@ -769,6 +776,7 @@ func (t *MirrorTranscript) Reset() {
 	t.usage, t.fresh, t.agentCtx = nil, false, nil
 	t.ledger, t.costs = cctranscript.ToolContext{}, nil
 	t.queued, t.queuedDrawn = nil, false
+	t.routedSeen = nil
 }
 
 // endRun records that something other than a tool row was drawn: the next
@@ -1105,17 +1113,26 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// can type a block of this shape. The card is drawn only when the
 			// server finds the paste on record (RoutedPasteOnRecord); with no
 			// such check, every prompt is the person's bubble.
-			if rb, ok := plugins.ParseRoutedBlock(ev.Text); ok && t.RoutedPasteOnRecord != nil && t.RoutedPasteOnRecord(rb.RouteID, ev.Text) {
-				id := ""
-				if ev.Line > 0 {
-					id = MirrorPromptID(ev.Line)
+			// 🔴 READ AS MUSTER PASTED IT: the CLI records a long paste inside
+			// its own <pasted_content> wrapper (every routed paste, measured),
+			// which neither parses nor hashes as the block (RoutedPromptText).
+			if rt := plugins.RoutedPromptText(ev.Text); t.RoutedPasteOnRecord != nil && ev.PromptAt > 0 {
+				if rb, ok := plugins.ParseRoutedBlock(rt); ok && !t.routedSeen[rb.RouteID] && t.RoutedPasteOnRecord(rb.RouteID, rt, time.UnixMilli(ev.PromptAt)) {
+					if t.routedSeen == nil {
+						t.routedSeen = map[string]bool{}
+					}
+					t.routedSeen[rb.RouteID] = true
+					id := ""
+					if ev.Line > 0 {
+						id = MirrorPromptID(ev.Line)
+					}
+					sheet := "rp-" + toolRowID(ev.Text)[3:]
+					if id != "" {
+						sheet = id + "-rp"
+					}
+					ops = append(ops, MirrorOp{Op: "append", HTML: render(routedPromptCard(rb, rt, id, sheet))})
+					continue
 				}
-				sheet := "rp-" + toolRowID(ev.Text)[3:]
-				if id != "" {
-					sheet = id + "-rp"
-				}
-				ops = append(ops, MirrorOp{Op: "append", HTML: render(routedPromptCard(rb, ev.Text, id, sheet))})
-				continue
 			}
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
 				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""),

@@ -299,8 +299,8 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	drawn.Resumed = gen != "" && offset > 0
 	// A routed paste is drawn as its "From …" card only when muster has it on
 	// record for this very window's session (route_answer_cards.go).
-	drawn.RoutedPasteOnRecord = func(routeID, text string) bool {
-		return s.routedPasteOnRecord(r.WithContext(live), host, session, window, routeID, text)
+	drawn.RoutedPasteOnRecord = func(routeID, text string, at time.Time) bool {
+		return s.routedPasteOnRecord(r.WithContext(live), host, session, window, routeID, text, at)
 	}
 	// The tool-context ledger resumes from the checkpoint the socket before
 	// this one left at this very place (mirror_ledger.go), so a call still

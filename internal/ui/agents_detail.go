@@ -2061,6 +2061,10 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 // chip the live stream shows: ONE line — 🔧 name, its target (the file, the
 // command), a ✓/✗/… status — expanding to the args and result. call carries the
 // args (Content), result (may be nil) the output + ok.
+//
+// bare is true here: chatToolChip draws the chief's and an agent's own chat,
+// where a gateway agent calls muster's tools by their bare names (a mirrored
+// session's rows come through toolChip with bare false).
 func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "", true) }
 
 // toolChip is chatToolChip with an element id (the mirrored view replaces a
@@ -2090,7 +2094,7 @@ func toolChip(call ChatLine, result *ChatLine, id string, bare bool, extra ...g.
 	// One of muster's own tools is drawn by its plain label (tool_labels.go),
 	// and its raw name is in the row's ⓘ — inside the row's body, since an ⓘ
 	// is never a child of a toggle (info_sheet.go) and the summary is one.
-	label, mine := MusterToolLabel(name, call.Content, bare)
+	label, mine := MusterToolLabel(name, call.Content, bare, toolChipState(result))
 	if sheet, ok := toolNameSheet(call.ToolID, id, name); mine && ok {
 		body = append(body, sheet)
 	}

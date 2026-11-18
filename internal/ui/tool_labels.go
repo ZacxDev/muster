@@ -174,36 +174,66 @@ func MusterToolBase(name string, bare bool) (string, bool) {
 // musterToolDecisions are the labels of the tools that decide something, by
 // the decision their arguments carry: what the call DID ("Approved access to
 // a service"), never whose decision it was — the server checks only that the
-// call came from the owner's own session, not that the owner made it. A call
-// whose decision cannot be read keeps the table's neutral label.
-var musterToolDecisions = map[string]map[string]string{
-	"connector_request_decide": {"approve": "Approved access to a service", "deny": "Denied access to a service"},
-	"plugin_draft_decide":      {"approve": "Approved a reply", "reject": "Rejected a reply"},
-	"plugin_request_decide":    {"approve": "Approved a connection", "deny": "Denied a connection"},
+// call came from the owner's own session, not that the owner made it. Each is
+// {done, tried}: done for a call whose result came back ok, tried for one that
+// failed. A call still running, or whose decision cannot be read, keeps the
+// table's neutral label.
+var musterToolDecisions = map[string]map[string][2]string{
+	"connector_request_decide": {
+		"approve": {"Approved access to a service", "Tried to approve access to a service"},
+		"deny":    {"Denied access to a service", "Tried to deny access to a service"},
+	},
+	"plugin_draft_decide": {
+		"approve": {"Approved a reply", "Tried to approve a reply"},
+		"reject":  {"Rejected a reply", "Tried to reject a reply"},
+	},
+	"plugin_request_decide": {
+		"approve": {"Approved a connection", "Tried to approve a connection"},
+		"deny":    {"Denied a connection", "Tried to deny a connection"},
+	},
+	// Read from approve_ids: "none" for an empty list, "some" otherwise.
+	"plugin_outbound_batch_decide": {
+		"none": {"Turned down planned follows and likes", "Tried to turn down planned follows and likes"},
+		"some": {"Approved planned follows and likes", "Tried to approve planned follows and likes"},
+	},
 }
 
+// The outcomes a tool row's label is read for (toolChipState's states).
+const (
+	ToolRunning = toolStateRunning
+	ToolOK      = toolStateOK
+	ToolFailed  = toolStateError
+)
+
 // MusterToolLabel is the plain label of muster's tool name (MusterToolBase,
-// bare as there), read with the call's arguments args where the label depends
-// on them (musterToolDecisions; plugin_outbound_batch_decide by whether any
-// draft was approved); ok false for any other tool.
-func MusterToolLabel(name, args string, bare bool) (string, bool) {
+// bare as there) for a call with arguments args whose outcome is state
+// (ToolRunning, ToolOK or ToolFailed): a deciding tool says what it did only
+// once its result is ok, and what it tried when it failed
+// (musterToolDecisions); ok false for any other tool.
+func MusterToolLabel(name, args string, bare bool, state string) (string, bool) {
 	base, ok := MusterToolBase(name, bare)
 	if !ok {
 		return "", false
 	}
-	var in struct {
-		Decision   string   `json:"decision"`
-		ApproveIDs *[]int64 `json:"approve_ids"`
-	}
-	if json.Unmarshal([]byte(strings.TrimSpace(args)), &in) == nil {
-		if l, ok := musterToolDecisions[base][in.Decision]; ok {
-			return l, true
+	if by, ok := musterToolDecisions[base]; ok && state != ToolRunning {
+		var in struct {
+			Decision   string   `json:"decision"`
+			ApproveIDs *[]int64 `json:"approve_ids"`
 		}
-		if base == "plugin_outbound_batch_decide" && in.ApproveIDs != nil {
-			if len(*in.ApproveIDs) == 0 {
-				return "Turned down planned follows and likes", true
+		if json.Unmarshal([]byte(strings.TrimSpace(args)), &in) == nil {
+			d := in.Decision
+			if in.ApproveIDs != nil {
+				d = "some"
+				if len(*in.ApproveIDs) == 0 {
+					d = "none"
+				}
 			}
-			return "Approved planned follows and likes", true
+			if l, ok := by[d]; ok {
+				if state == ToolOK {
+					return l[0], true
+				}
+				return l[1], true
+			}
 		}
 	}
 	return musterToolLabels[base], true
@@ -247,11 +277,11 @@ func ToolRowTarget(name, args, host string, bare bool) string {
 
 // ToolRowLabel is the chief chat's label for a call of tool name with args:
 // MusterToolLabel with bare names allowed, "" for a tool that is not muster's.
-// The live stream sends it with each call (internal/api chat_stream.go), so a
-// streamed row reads the decision its arguments carry exactly as the stored
-// row will.
+// The live stream sends it with each call (internal/api chat_stream.go),
+// while the call runs: a deciding tool's neutral label, until the stored row
+// (drawn with its result) says what it did.
 func ToolRowLabel(name, args string) string {
-	l, _ := MusterToolLabel(name, args, true)
+	l, _ := MusterToolLabel(name, args, true, ToolRunning)
 	return l
 }
 

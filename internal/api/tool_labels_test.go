@@ -184,7 +184,7 @@ func TestEveryMusterToolHasAPlainLabel(t *testing.T) {
 	}
 	for _, n := range names {
 		for _, as := range []string{n, "mcp__muster__" + n, "muster_" + n} {
-			if l, ok := ui.MusterToolLabel(as, "", as == n); !ok || strings.TrimSpace(l) == "" {
+			if l, ok := ui.MusterToolLabel(as, "", as == n, ui.ToolOK); !ok || strings.TrimSpace(l) == "" {
 				t.Errorf("muster tool %s has no plain label (as %q): add it to ui's musterToolLabels", n, as)
 			}
 		}
@@ -212,10 +212,10 @@ func TestEveryDecisionAToolCanTakeHasItsOwnLabel(t *testing.T) {
 					continue
 				}
 				seen++
-				neutral, _ := ui.MusterToolLabel(d.Name, "", true)
+				neutral, _ := ui.MusterToolLabel(d.Name, "", true, ui.ToolOK)
 				labels := map[string]string{}
 				for _, v := range enum {
-					l, _ := ui.MusterToolLabel(d.Name, `{"decision":"`+v+`"}`, true)
+					l, _ := ui.MusterToolLabel(d.Name, `{"decision":"`+v+`"}`, true, ui.ToolOK)
 					if l == neutral || labels[l] != "" {
 						t.Errorf("%s: decision %q is labelled %q, not by what it did", d.Name, v, l)
 					}

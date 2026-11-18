@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/fence"
 )
 
@@ -147,11 +148,34 @@ func ParseRoutedBlock(text string) (RoutedBlock, bool) {
 	return out, true
 }
 
+// RoutedPromptText is a mirrored session's prompt as muster pasted it, for
+// reading a routed block back: the Claude Code CLI records a long paste
+// wrapped in its own `<pasted_content id="…">` tags (measured on 2.1.289 on
+// every routed paste), so a wrapped prompt is unwrapped first
+// (cctranscript.UnwrapPastedContent, ccd's reading); and the CLI escapes any
+// `<pasted_content` the text itself holds, so that is undone
+// (cctranscript.UnescapePastedContentTag). A prompt that is not exactly one
+// wrapper is taken as it stands.
+//
+// 🔴 USE IT BEFORE BOTH THE PARSE AND THE HASH: a routed block read from the
+// wrapped record parses into nothing, and its hash matches nothing.
+func RoutedPromptText(prompt string) string {
+	if body, ok := cctranscript.UnwrapPastedContent(prompt); ok {
+		prompt = body
+	}
+	return cctranscript.UnescapePastedContentTag(prompt)
+}
+
 // RoutedPasteSHA256 is the hash a route records of the block it pasted
-// (Route.PasteSHA256) and a view compares a prompt against: SHA-256 of text
-// with CRLF folded and trailing white space trimmed (a transcript may keep or
-// drop the paste's final newline), lower-case hex.
+// (Route.PasteSHA256) and a view compares a prompt against: SHA-256, lower-case
+// hex, of text with CRLF and lone CR folded to LF (as mirror.SanitizePaste
+// pastes it), the CLI's `<pasted_content` escaping undone (as RoutedPromptText
+// reads it back, so a backslash the text really held cancels out on both
+// sides — ccd's turnKey rule), and trailing white space trimmed (a transcript
+// may keep or drop the paste's final newline).
 func RoutedPasteSHA256(text string) string {
-	sum := sha256.Sum256([]byte(strings.TrimRight(strings.ReplaceAll(text, "\r\n", "\n"), " \t\n")))
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	text = cctranscript.UnescapePastedContentTag(text)
+	sum := sha256.Sum256([]byte(strings.TrimRight(text, " \t\n")))
 	return hex.EncodeToString(sum[:])
 }

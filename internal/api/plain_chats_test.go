@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -188,35 +190,67 @@ func mirrorChatHTML(events []cctranscript.Event) string {
 	return mirrorChatHTMLWith(nil, events)
 }
 
-// mirrorChatHTMLWith is mirrorChatHTML with the view's record check.
-func mirrorChatHTMLWith(onRecord func(routeID, text string) bool, events []cctranscript.Event) string {
+// mirrorChatHTMLWith is mirrorChatHTML with the view's record check. A
+// prompt with no time of its own is given fixturePromptAt — after every
+// fixture delivery, as a real paste's is.
+func mirrorChatHTMLWith(onRecord func(routeID, text string, at time.Time) bool, events []cctranscript.Event) string {
 	var b strings.Builder
+	for i := range events {
+		if events[i].Kind == cctranscript.KindPrompt && events[i].PromptAt == 0 {
+			events[i].PromptAt = fixturePromptAt.UnixMilli()
+		}
+	}
 	for _, op := range (&ui.MirrorTranscript{RoutedPasteOnRecord: onRecord}).Ops(events) {
 		b.WriteString(op.HTML)
 	}
 	return b.String()
 }
 
-// The session the fixture's routes were pasted into, and its host.
+// The session the fixture's routes were pasted into, its host, when each
+// fixture paste's delivery began (its send-queue row's claim) and when the
+// session recorded it.
 const (
 	fixtureSID  = "cs-heron-1"
 	fixtureHost = "atlas"
 )
 
-// pastedRoutes is a route store holding each of texts' routes as muster
-// records it once the paste is queued (Route.PasteSHA256 of the text), and the
-// view's check over it — routedPasteMatches against this window, the very
-// function the server's check ends in.
-func pastedRoutes(texts map[string]plugins.Route) (multiRouteStore, func(routeID, text string) bool) {
-	store := multiRouteStore{}
+var (
+	fixtureClaimed  = time.Date(2000, 1, 2, 3, 5, 0, 0, time.UTC)
+	fixturePromptAt = fixtureClaimed.Add(2 * time.Second)
+)
+
+// pasted is a route store holding routes as muster records them once their
+// paste is queued and sent (Route.PasteSHA256 of the text, a send-queue row
+// in state sent, claimed at fixtureClaimed), and the view's check over them
+// — routedPasteMatches and routedPasteDelivered against this window, the very
+// functions the server's check ends in. items may be changed by a test.
+type pasted struct {
+	store multiRouteStore
+	items map[int64]*sendqueue.Item
+}
+
+func (p pasted) onRecord(routeID, text string, at time.Time) bool {
+	r, err := p.store.Route(context.Background(), routeID)
+	if err != nil || r.SendQueueID == nil || p.items[*r.SendQueueID] == nil {
+		return false
+	}
+	return routedPasteMatches(r, fixtureHost, fixtureSID, text) && routedPasteDelivered(*p.items[*r.SendQueueID], at)
+}
+
+func pastedRoutesOf(texts map[string]plugins.Route) pasted {
+	p := pasted{store: multiRouteStore{}, items: map[int64]*sendqueue.Item{}}
 	for text, r := range texts {
-		r.PasteSHA256 = plugins.RoutedPasteSHA256(text)
-		store[r.RouteID] = r
+		id := int64(len(p.items) + 1)
+		r.PasteSHA256, r.SendQueueID = plugins.RoutedPasteSHA256(text), &id
+		p.store[r.RouteID] = r
+		p.items[id] = &sendqueue.Item{ID: id, State: sendqueue.Sent, ClaimedAt: fixtureClaimed, FinishedAt: fixtureClaimed.Add(time.Second)}
 	}
-	return store, func(routeID, text string) bool {
-		r, err := store.Route(context.Background(), routeID)
-		return err == nil && routedPasteMatches(r, fixtureHost, fixtureSID, text)
-	}
+	return p
+}
+
+func pastedRoutes(texts map[string]plugins.Route) (multiRouteStore, func(routeID, text string, at time.Time) bool) {
+	p := pastedRoutesOf(texts)
+	return p.store, p.onRecord
 }
 
 // multiRouteStore is routes by id, read as plugins.RouteStore.Route reads
@@ -526,5 +560,122 @@ func TestARequestCardShowsWhatTheOwnerTypedAndWhatTheChiefRelayed(t *testing.T) 
 	}
 	if strings.Index(page, `>ask heron to log each retry<`) > strings.Index(page, `>Please also log each retry.<`) {
 		t.Error("the owner's own words are not first")
+	}
+}
+
+// wrapLikeTheCLI is the Claude Code CLI's paste wrapper as it records a long
+// paste (2.1.289 wraps every routed paste; cmd/ccd/pastewrap_test.go's shape),
+// with its escaping of `<pasted_content` inside the body — built from
+// literals, not from the code under test.
+func wrapLikeTheCLI(id, block string) string {
+	block = strings.ReplaceAll(block, "<pasted_content", `<\pasted_content`)
+	block = strings.ReplaceAll(block, "</pasted_content", `<\/pasted_content`)
+	return "\n\n<pasted_content id=\"" + id + "\">\n" + block + "\n</pasted_content id=\"" + id + "\">\n"
+}
+
+// transcriptLine is one prompt record as the CLI writes it to its JSONL
+// transcript (synthetic), at at.
+func transcriptLine(t *testing.T, content string, at time.Time) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"type": "user", "timestamp": at.UTC().Format(time.RFC3339Nano), "promptId": "p",
+		"origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": content}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// throughTheTranscript draws lines as the view does: each decoded
+// (cctranscript.DecodeLine), turned into events (cctranscript.Events) and
+// drawn with the view's record check.
+func throughTheTranscript(t *testing.T, onRecord func(routeID, text string, at time.Time) bool, lines ...[]byte) string {
+	t.Helper()
+	var events []cctranscript.Event
+	for i, l := range lines {
+		r, ok := cctranscript.DecodeLine(l)
+		if !ok {
+			t.Fatalf("line %d does not decode: %s", i, l)
+		}
+		for _, ev := range cctranscript.Events(r) {
+			ev.Line = int64(i + 1)
+			events = append(events, ev)
+		}
+	}
+	var b strings.Builder
+	for _, op := range (&ui.MirrorTranscript{RoutedPasteOnRecord: onRecord}).Ops(events) {
+		b.WriteString(op.HTML)
+	}
+	return b.String()
+}
+
+// TestARoutedPasteRecordedInTheCLIsWrapperIsItsCard: what Claude Code really
+// records for a routed paste — the block inside its <pasted_content> wrapper,
+// a `<pasted_content` in the message body escaped — read through the
+// transcript pipeline, is the route's card; a real route pasted into ANOTHER
+// session, wrapped the same way, is a bubble.
+//
+// REGRESSION TEST (audit round 2, 🔴): red at a7f3ebbcc, which parsed and
+// hashed the wrapped text as it stood, so no real routed paste ever drew a
+// card (the audit: 0 of 837 real routed pastes on its host).
+func TestARoutedPasteRecordedInTheCLIsWrapperIsItsCard(t *testing.T) {
+	_, msg, p, m, _, _ := chatFixtureRoute()
+	// The body names the wrapper's tag (which the CLI escapes) and holds a
+	// backslash after a `<` already (which it leaves; RoutedPasteSHA256 undoes
+	// the escaping on both sides, so the real backslash cancels out — ccd's
+	// turnKey rule).
+	m.Body = "Could you log each retry?\nThe old <pasted_content id=\"abcd\"> wrapper broke it, and <\\pasted_content too.\nThanks"
+	elsewhere := msg
+	elsewhere.RouteID, elsewhere.TargetKey = "rt_8f51ffceb101b6c0faaf3b9e", "cs-other-9"
+	real := renderRoutedMessageBy(routedByChief, msg, p, m, "0123456789abcdef")
+	toElsewhere := renderRoutedMessageBy(routedByChief, elsewhere, p, m, "0123456789abcdef")
+	_, onRecord := pastedRoutes(map[string]plugins.Route{real: msg, toElsewhere: elsewhere})
+	wrapped := wrapLikeTheCLI("1c0d", real)
+	if !strings.Contains(wrapped, `<\pasted_content id="abcd">`) || plugins.RoutedPasteSHA256(wrapped) == plugins.RoutedPasteSHA256(real) {
+		t.Fatal("CONTROL: the wrapped record is not what the CLI writes")
+	}
+	page := throughTheTranscript(t, onRecord, transcriptLine(t, wrapped, fixturePromptAt))
+	if !strings.Contains(page, `data-routed-card="prompt"`) || !strings.Contains(page, `The old &lt;pasted_content id=&#34;abcd&#34;&gt; wrapper broke it`) {
+		t.Errorf("the CLI-wrapped routed paste is not its card, with its body unescaped:\n%s", page)
+	}
+	if strings.Contains(page, "pasted_content id=&#34;1c0d") || !strings.Contains(page, "&lt;&lt;&lt;routed-message untrusted") {
+		t.Errorf("the card's ⓘ does not hold the block as muster pasted it")
+	}
+	page = throughTheTranscript(t, onRecord, transcriptLine(t, wrapLikeTheCLI("24f3", toElsewhere), fixturePromptAt))
+	if strings.Contains(page, `data-routed-card`) || !strings.Contains(page, `data-bubble="user"`) {
+		t.Errorf("a real route pasted into another session, wrapped, is drawn as a card")
+	}
+}
+
+// TestOnlyTheFirstDeliveredPasteOfARouteIsItsCard: the same block recorded
+// again later (a replay) is a bubble; a route whose send-queue row was never
+// sent (queued, cancelled, failed) draws no card; nor does a prompt recorded
+// before its delivery began.
+func TestOnlyTheFirstDeliveredPasteOfARouteIsItsCard(t *testing.T) {
+	_, msg, p, m, _, _ := chatFixtureRoute()
+	real := renderRoutedMessageBy(routedByChief, msg, p, m, "0123456789abcdef")
+	pr := pastedRoutesOf(map[string]plugins.Route{real: msg})
+	cards := func(lines ...[]byte) int {
+		return strings.Count(throughTheTranscript(t, pr.onRecord, lines...), `data-routed-card="prompt"`)
+	}
+	once := transcriptLine(t, wrapLikeTheCLI("1c0d", real), fixturePromptAt)
+	if n := cards(once); n != 1 {
+		t.Fatalf("CONTROL: the delivered paste draws %d cards, want 1", n)
+	}
+	if n := cards(once, transcriptLine(t, wrapLikeTheCLI("9e2a", real), fixturePromptAt.Add(time.Hour)), transcriptLine(t, real, fixturePromptAt.Add(2*time.Hour))); n != 1 {
+		t.Errorf("a replayed block draws %d cards, want 1 (the first)", n)
+	}
+	if n := cards(transcriptLine(t, real, fixtureClaimed.Add(-routedPasteClockSkew-time.Second))); n != 0 {
+		t.Errorf("a prompt recorded before its delivery began draws a card")
+	}
+	if n := cards(transcriptLine(t, real, fixtureClaimed.Add(-routedPasteClockSkew+time.Second))); n != 1 {
+		t.Errorf("a prompt within the clock skew of its delivery draws no card")
+	}
+	for _, st := range []sendqueue.State{sendqueue.Queued, sendqueue.Cancelled, sendqueue.Failed} {
+		for _, it := range pr.items {
+			it.State = st
+		}
+		if n := cards(once); n != 0 {
+			t.Errorf("a route whose paste is %s draws a card", st)
+		}
 	}
 }

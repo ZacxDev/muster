@@ -13,15 +13,15 @@ func TestAMusterToolIsLabelledUnderEachOfItsNames(t *testing.T) {
 		name string
 		bare bool
 	}{{"page_create", true}, {"mcp__muster__page_create", false}, {"muster_page_create", false}, {"mcp__muster__page_create", true}} {
-		if l, ok := MusterToolLabel(c.name, "", c.bare); !ok || l != "Made a page" {
+		if l, ok := MusterToolLabel(c.name, "", c.bare, ToolOK); !ok || l != "Made a page" {
 			t.Errorf("MusterToolLabel(%q, bare %v) = %q, %v; want Made a page", c.name, c.bare, l, ok)
 		}
 	}
-	if l, ok := MusterToolLabel("muster_muster_help", "", false); !ok || l != "Looked up how a tool works" {
+	if l, ok := MusterToolLabel("muster_muster_help", "", false, ToolOK); !ok || l != "Looked up how a tool works" {
 		t.Errorf("opencode's muster_help = %q, %v", l, ok)
 	}
 	for _, n := range []string{"mcp__hq__task_get", "Bash", "bash", "mcp__muster__", "muster_", "mcp__other__page_create", "hq_task_get"} {
-		if l, ok := MusterToolLabel(n, "", true); ok {
+		if l, ok := MusterToolLabel(n, "", true, ToolOK); ok {
 			t.Errorf("MusterToolLabel(%q) = %q: not muster's tool", n, l)
 		}
 	}
@@ -29,7 +29,7 @@ func TestAMusterToolIsLabelledUnderEachOfItsNames(t *testing.T) {
 	// session a bare page_create or task_get is a built-in or another
 	// server's tool, and keeps its own name.
 	for _, n := range []string{"page_create", "task_get", "muster_help"} {
-		if l, ok := MusterToolLabel(n, "", false); ok {
+		if l, ok := MusterToolLabel(n, "", false, ToolOK); ok {
 			t.Errorf("MusterToolLabel(%q, bare false) = %q: a bare name in a mirrored session is not muster's", n, l)
 		}
 	}
@@ -37,32 +37,55 @@ func TestAMusterToolIsLabelledUnderEachOfItsNames(t *testing.T) {
 
 // TestADecidingToolIsLabelledByWhatItDid: a call that decides something is
 // labelled by the decision its arguments carry — never as "your decision" —
-// and one whose arguments say nothing keeps the neutral label.
+// and only once its result is ok: a failed call says what it TRIED, a running
+// one (and one whose arguments say nothing) keeps the neutral label.
 func TestADecidingToolIsLabelledByWhatItDid(t *testing.T) {
-	for _, c := range []struct{ name, args, want string }{
-		{"mcp__muster__connector_request_decide", `{"id":3,"decision":"approve"}`, "Approved access to a service"},
-		{"mcp__muster__connector_request_decide", `{"id":3,"decision":"deny"}`, "Denied access to a service"},
-		{"mcp__muster__connector_request_decide", `{"id":3}`, "Decided on an access request"},
-		{"mcp__muster__plugin_draft_decide", `{"id":3,"decision":"reject"}`, "Rejected a reply"},
-		{"mcp__muster__plugin_draft_decide", `{"id":3,"decision":"approve"}`, "Approved a reply"},
-		{"mcp__muster__plugin_request_decide", `{"id":3,"decision":"deny"}`, "Denied a connection"},
-		{"mcp__muster__plugin_outbound_batch_decide", `{"batch_id":"b","approve_ids":[]}`, "Turned down planned follows and likes"},
-		{"mcp__muster__plugin_outbound_batch_decide", `{"batch_id":"b","approve_ids":[4,5]}`, "Approved planned follows and likes"},
-		{"mcp__muster__plugin_outbound_batch_decide", `not json`, "Decided on planned follows and likes"},
-		{"mcp__muster__dispatch_approve", `{"hold_id":"h"}`, "Started an agent that was waiting"},
-		{"mcp__muster__attention_answer", `{"id":1,"answer":"yes"}`, "Answered an open question"},
-		{"mcp__muster__page_share_request", `{"page_id":1}`, "Asked to share a page"},
-		{"mcp__muster__agent_destroy", `{"name":"x"}`, "Removed an agent"},
+	for _, c := range []struct{ name, args, state, want string }{
+		{"mcp__muster__connector_request_decide", `{"id":3,"decision":"approve"}`, ToolOK, "Approved access to a service"},
+		{"mcp__muster__connector_request_decide", `{"id":3,"decision":"deny"}`, ToolOK, "Denied access to a service"},
+		{"mcp__muster__connector_request_decide", `{"id":3,"decision":"approve"}`, ToolFailed, "Tried to approve access to a service"},
+		{"mcp__muster__connector_request_decide", `{"id":3,"decision":"approve"}`, ToolRunning, "Decided on an access request"},
+		{"mcp__muster__connector_request_decide", `{"id":3}`, ToolOK, "Decided on an access request"},
+		{"mcp__muster__plugin_draft_decide", `{"id":3,"decision":"reject"}`, ToolOK, "Rejected a reply"},
+		{"mcp__muster__plugin_draft_decide", `{"id":3,"decision":"reject"}`, ToolFailed, "Tried to reject a reply"},
+		{"mcp__muster__plugin_draft_decide", `{"id":3,"decision":"approve"}`, ToolOK, "Approved a reply"},
+		{"mcp__muster__plugin_request_decide", `{"id":3,"decision":"deny"}`, ToolOK, "Denied a connection"},
+		{"mcp__muster__plugin_outbound_batch_decide", `{"batch_id":"b","approve_ids":[]}`, ToolOK, "Turned down planned follows and likes"},
+		{"mcp__muster__plugin_outbound_batch_decide", `{"batch_id":"b","approve_ids":[4,5]}`, ToolOK, "Approved planned follows and likes"},
+		{"mcp__muster__plugin_outbound_batch_decide", `{"batch_id":"b","approve_ids":[4,5]}`, ToolFailed, "Tried to approve planned follows and likes"},
+		{"mcp__muster__plugin_outbound_batch_decide", `not json`, ToolOK, "Decided on planned follows and likes"},
+		{"mcp__muster__dispatch_approve", `{"hold_id":"h"}`, ToolOK, "Started an agent that was waiting"},
+		{"mcp__muster__attention_answer", `{"id":1,"answer":"yes"}`, ToolOK, "Answered an open question"},
+		{"mcp__muster__page_share_request", `{"page_id":1}`, ToolOK, "Asked to share a page"},
+		{"mcp__muster__agent_destroy", `{"name":"x"}`, ToolOK, "Removed an agent"},
 	} {
-		if got, _ := MusterToolLabel(c.name, c.args, false); got != c.want {
-			t.Errorf("MusterToolLabel(%s, %s) = %q, want %q", c.name, c.args, got, c.want)
+		if got, _ := MusterToolLabel(c.name, c.args, false, c.state); got != c.want {
+			t.Errorf("MusterToolLabel(%s, %s, %s) = %q, want %q", c.name, c.args, c.state, got, c.want)
 		}
 	}
 	for tool, by := range musterToolDecisions {
-		for _, l := range append([]string{musterToolLabels[tool]}, mapValues(by)...) {
+		ls := []string{musterToolLabels[tool]}
+		for _, l := range by {
+			ls = append(ls, l[0], l[1])
+		}
+		for _, l := range ls {
 			if strings.Contains(strings.ToLower(l), "your decision") || strings.Contains(strings.ToLower(l), "passed on") {
 				t.Errorf("%s's label %q claims the owner decided", tool, l)
 			}
+		}
+	}
+}
+
+// TestAFailedDecidingRowSaysWhatItTried: the drawn row of a failed decide
+// call reads "Tried to …", an ok one what it did.
+func TestAFailedDecidingRowSaysWhatItTried(t *testing.T) {
+	call := ChatLine{Kind: "tool_call", ToolID: "d1", ToolName: "mcp__muster__connector_request_decide", Content: `{"id":3,"decision":"approve"}`}
+	failed := render(chatToolChip(call, &ChatLine{Kind: "tool_result", ToolID: "d1", ToolOK: false, Content: "no such request"}))
+	done := render(chatToolChip(call, &ChatLine{Kind: "tool_result", ToolID: "d1", ToolOK: true, Content: "{}"}))
+	running := render(chatToolChip(call, nil))
+	for _, c := range []struct{ row, want string }{{failed, ">Tried to approve access to a service<"}, {done, ">Approved access to a service<"}, {running, ">Decided on an access request<"}} {
+		if !strings.Contains(c.row, c.want) {
+			t.Errorf("row lacks %s:\n%s", c.want, c.row)
 		}
 	}
 }

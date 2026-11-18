@@ -92,9 +92,10 @@ func TestTheChatStreamRendersEachBubbleWithTheGoRenderer(t *testing.T) {
 }
 
 // TestAStreamedMusterToolCallCarriesItsPlainLabel: the live stream's message
-// for one of muster's own tools carries the label the stored row will draw —
-// read from the call's arguments ("Denied access to a service") — and a
-// target of words, never the subject id the generic rule would pick.
+// for one of muster's own tools carries its plain label — a deciding tool's
+// NEUTRAL one while the call runs (what it did is known only from its result,
+// which the stored row is drawn with) — and a target of words, never the
+// subject id the generic rule would pick.
 func TestAStreamedMusterToolCallCarriesItsPlainLabel(t *testing.T) {
 	withHTMLEvery(t, 0)
 	r := &recorder{}
@@ -103,7 +104,7 @@ func TestAStreamedMusterToolCallCarriesItsPlainLabel(t *testing.T) {
 	st.emit(agents.StreamEvent{Kind: "tool_call", ToolID: "c2", ToolName: "mcp__muster__route_to_session", ToolArgs: `{"subject":"mirror:cs-1","text":"log retries"}`})
 	st.end()
 	sameMsgs(t, r.all(), []string{
-		jsonOf(map[string]any{"type": "tool_call", "id": "c1", "name": "connector_request_decide", "args": `{"id":4,"decision":"deny"}`, "target": "", "label": "Denied access to a service"}),
+		jsonOf(map[string]any{"type": "tool_call", "id": "c1", "name": "connector_request_decide", "args": `{"id":4,"decision":"deny"}`, "target": "", "label": "Decided on an access request"}),
 		jsonOf(map[string]any{"type": "tool_call", "id": "c2", "name": "mcp__muster__route_to_session", "args": `{"subject":"mirror:cs-1","text":"log retries"}`, "target": "log retries", "label": "Sent something to a session"}),
 	})
 }
