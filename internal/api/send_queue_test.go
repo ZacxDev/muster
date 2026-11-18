@@ -291,11 +291,11 @@ func TestQueueingForAMirrorIsGatedLikeASendAndFailsClosed(t *testing.T) {
 	for _, c := range []tc{
 		{"stale sign-in", queueMirror, true, mirrorQueueForm("main", "@1", "hi"), http.StatusForbidden, stepup.ErrStale.Error()},
 		{"an offline host", func() *fakeMirror { f := queueMirror(); f.online = false; return f }, false,
-			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "offline"},
+			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "is not connected to muster"},
 		{"read-only host", func() *fakeMirror { f := queueMirror(); f.interactive = false; return f }, false,
 			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "read-only"},
 		{"an older muster-mirror", func() *fakeMirror { f := queueMirror(); f.statusReport = false; return f }, false,
-			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "does not report whether Claude Code is busy"},
+			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "needs a muster update before messages can wait"},
 		{"a shell window", queueMirror, false, mirrorQueueForm("chief", "@2", "hi"), http.StatusConflict, SendQueueNotClaude},
 		{"a window not listed", queueMirror, false, mirrorQueueForm("main", "@9", "hi"), http.StatusConflict, "no longer lists this tmux window"},
 		{"a control character", queueMirror, false, mirrorQueueForm("main", "@1", "a\x1bb"), http.StatusBadRequest, "control character"},
@@ -556,7 +556,7 @@ func TestTheComposersDrawQueueOnlyWhereItCanWork(t *testing.T) {
 		disabled string
 	}{
 		{"a reporting host", queueMirror(), &memQueue{}, true, ""},
-		{"an older muster-mirror", func() *fakeMirror { f := queueMirror(); f.statusReport = false; return f }(), &memQueue{}, true, "does not report"},
+		{"an older muster-mirror", func() *fakeMirror { f := queueMirror(); f.statusReport = false; return f }(), &memQueue{}, true, "needs a muster update before messages can wait"},
 		{"no queue store", queueMirror(), nil, false, ""},
 		// A disabled composer (a read-only host) draws no Queue at all.
 		{"a read-only host", func() *fakeMirror { f := queueMirror(); f.interactive = false; return f }(), &memQueue{}, false, ""},

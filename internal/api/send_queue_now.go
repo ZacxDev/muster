@@ -141,7 +141,7 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 	// A Send's gates, in mirrorSend's order.
 	switch {
 	case !q.h.Online:
-		refuse(http.StatusConflict, unprefixed(mirror.ErrHostOffline), noticeOffline)
+		refuse(http.StatusConflict, notSent(mirror.ErrHostOffline), noticeOffline)
 		return
 	case !q.h.Interactive:
 		refuse(http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)

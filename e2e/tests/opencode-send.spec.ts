@@ -151,7 +151,7 @@ async function openBound(page: Page) {
   await rig.login(page);
   await page.goto(rig.origin + viewOf('@2'));
   await expect(page.locator('#mv-log [data-notice-row="opencode"]').first(), `the bound notice (mirror log:\n${rig.log})`).toContainText(
-    'started by muster-mirror opencode: ' + bound,
+    'this session (' + bound + ')',
     { timeout: 20_000 },
   );
   await revealBox(page);
@@ -239,7 +239,7 @@ test('each refusal says why: a slash command, a hand-opened pane a subagent shar
 
   await page.goto(rig.origin + viewOf('@2', offHost, 'off'));
   await expect(page.locator('#mv-input')).toBeDisabled({ timeout: 20_000 });
-  await expect(page.locator('#mv-readonly')).toContainText('does not send to opencode (it needs -interactive and -opencode-send)');
+  await expect(page.locator('#mv-readonly')).toContainText('replying to opencode from muster is not turned on for this computer');
 });
 
 test('a send that needs a fresh sign-in is not delivered until it is confirmed, then lands once', async ({ page }) => {
@@ -312,9 +312,11 @@ for (const vp of viewports) {
     await rig.login(page);
     await page.goto(rig.origin + viewOf('@3'));
     await expect(page.locator('#mv-log [data-notice-row="opencode"]').first(), `the verified notice (mirror log:\n${rig.log})`).toContainText(
-      'matched by title, verified: Title-matched fixture session',
+      'Showing “Title-matched fixture session”',
       { timeout: 20_000 },
     );
+    // Verified, one tap down: its detail says muster checked it and sends to it.
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('checked it with opencode');
     await revealBox(page);
     await expect(page.locator('#mv-input')).toBeEnabled();
     await expect(page.locator('#mv-readonly')).toHaveCount(0);
@@ -323,7 +325,7 @@ for (const vp of viewports) {
     await expect(rowsOf(page, text), 'the row in the session the pane shows').toHaveCount(1, { timeout: 20_000 });
     // And in no other session: the launcher-bound one's view never shows it.
     await page.goto(rig.origin + viewOf('@2'));
-    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('started by muster-mirror opencode', { timeout: 20_000 });
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('muster started this opencode session', { timeout: 20_000 });
     await expect(rowsOf(page, text)).toHaveCount(0);
   });
 
@@ -331,7 +333,7 @@ for (const vp of viewports) {
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await rig.login(page);
     await page.goto(rig.origin + viewOf('@4'));
-    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('matched by title: A long hand-opened', {
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('Showing “A long hand-opened', {
       timeout: 20_000,
     });
     await expect(page.locator('#mv-input')).toBeDisabled();
@@ -459,7 +461,7 @@ test('a message queued for a hand-opened pane is refused, not delivered, after t
   await page.setViewportSize({ width: 390, height: 844 });
   await rig.login(page);
   await page.goto(rig.origin + viewOf('@3'));
-  await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('matched by title, verified: Title-matched fixture session', {
+  await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('Showing “Title-matched fixture session”', {
     timeout: 20_000,
   });
   op({ op: 'status', session: titled, status: 'busy' });
@@ -509,7 +511,7 @@ for (const vp of viewports) {
       await rig.login(page);
       await page.goto(rig.origin + viewOf('@3'));
       const notice = page.locator('#mv-log [data-notice-row="opencode"]').first();
-      await expect(notice).toContainText('matched by title, verified: Title-matched fixture session', { timeout: 20_000 });
+      await expect(notice).toContainText('Showing “Title-matched fixture session”', { timeout: 20_000 });
       // The server's stale answer for the first post, as the step-up case
       // above: the message waits on the confirm.
       const route = kind === 'send' ? '/mirror/view/send' : '/send-queue';
@@ -539,7 +541,7 @@ for (const vp of viewports) {
       // The pane switches; the view starts over on the other session.
       writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
       try {
-        await expect(notice).toContainText('matched by title, verified: Switched fixture session', { timeout: 30_000 });
+        await expect(notice).toContainText('Showing “Switched fixture session”', { timeout: 30_000 });
         await expect(page.locator(`input[name="agent_session"]`)).toHaveValue(switched);
         await page.locator('#term-confirm-password').fill(password);
         await page.locator('#term-confirm-submit').click();
@@ -590,7 +592,7 @@ for (const vp of viewports) {
     await rig.login(page);
     await page.goto(rig.origin + viewOf('@3'));
     const notice = page.locator('#mv-log [data-notice-row="opencode"]').first();
-    await expect(notice).toContainText('matched by title, verified: Title-matched fixture session', { timeout: 20_000 });
+    await expect(notice).toContainText('Showing “Title-matched fixture session”', { timeout: 20_000 });
     // The first post is refused (nothing delivered): the bubble fails, with Retry.
     const posted: (string | null)[] = [];
     await page.route(
@@ -610,7 +612,7 @@ for (const vp of viewports) {
     await expect(p).toContainText('fixture: not now');
     writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
     try {
-      await expect(notice).toContainText('matched by title, verified: Switched fixture session', { timeout: 30_000 });
+      await expect(notice).toContainText('Showing “Switched fixture session”', { timeout: 30_000 });
       await expect(page.locator(`input[name="agent_session"]`)).toHaveValue(switched);
       await p.locator('[data-pending-retry]').click();
       await expect.poll(() => posted.length, { timeout: 20_000 }).toBe(2);
@@ -630,7 +632,7 @@ for (const vp of viewports) {
     await rig.login(page);
     await page.goto(rig.origin + viewOf('@3'));
     const notice = page.locator('#mv-log [data-notice-row="opencode"]').first();
-    await expect(notice).toContainText('matched by title, verified: Title-matched fixture session', { timeout: 20_000 });
+    await expect(notice).toContainText('Showing “Title-matched fixture session”', { timeout: 20_000 });
     // The page's own post is held, then fails as a network error would: the
     // composer hands the message to the browser's own form submit.
     const posted: { session: string | null; xhr: boolean }[] = [];
@@ -655,7 +657,7 @@ for (const vp of viewports) {
     await expect.poll(() => posted.length, { timeout: 20_000 }).toBe(1);
     writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
     try {
-      await expect(notice).toContainText('matched by title, verified: Switched fixture session', { timeout: 30_000 });
+      await expect(notice).toContainText('Showing “Switched fixture session”', { timeout: 30_000 });
       await expect(page.locator(`input[name="agent_session"]`)).toHaveValue(switched);
       release();
       await expect.poll(() => posted.length, { timeout: 20_000 }).toBe(2);

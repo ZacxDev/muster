@@ -471,7 +471,7 @@ func TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout(t *testing.T) {
 	start := time.Now()
 	done := make(chan error, 1)
 	go func() {
-		done <- bridgeTerminal(context.Background(), log.New(io.Discard, "", 0), c, true, provision.TermSize{}, false, attach)
+		done <- bridgeTerminal(context.Background(), log.New(io.Discard, "", 0), c, "", true, provision.TermSize{}, false, attach)
 	}()
 	select {
 	case <-done:

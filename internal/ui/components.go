@@ -810,11 +810,16 @@ func cardTime(t time.Time) g.Node {
 	}
 	return g.El("time",
 		g.Attr("data-ts", strconv.FormatInt(t.UnixMilli(), 10)),
-		g.Attr("title", t.Format(time.RFC3339)),
+		// A date a person reads ("17 Nov 2026, 5:05 pm"), never ISO 8601
+		// (the operator rule); the exact instant is data-ts.
+		g.Attr("title", CardTimeTitle(t)),
 		Class("shrink-0 self-center text-xs tabular-nums text-muted"),
 		g.Text(relTimeString(t)),
 	)
 }
+
+// CardTimeTitle is a card time's tooltip: the date and time in words.
+func CardTimeTitle(t time.Time) string { return t.Format("2 Jan 2006, 3:04 pm") }
 
 // relTimeString is the compact relative-age string mirrored by relTimeScript.
 func relTimeString(t time.Time) string {
@@ -1007,8 +1012,11 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				}),
 				// The Connectors tab, when its feature is off: not dropped
 				// silently, but a muted entry saying so, linking to its row on
-				// the Features page.
-				g.If(!feat.Connectors, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
+				// the Features page — for an ADMIN, who can turn it on. Anyone
+				// else is never sent to a page of server settings (the operator
+				// rule: how-to-enable details are an admin's), so theirs is
+				// simply not drawn.
+				g.If(!feat.Connectors && feat.Admin, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
 				// The shareable pages (page_card.go): a standalone screen too.

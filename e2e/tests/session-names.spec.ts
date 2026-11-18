@@ -268,7 +268,7 @@ for (const vp of [
       await dialog.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(dialog).toBeHidden();
       await expect(page.locator('header [data-session-name="manual"]')).toHaveText(`Payments ${vp.key}`);
-      await expect(page).toHaveTitle(`Payments ${vp.key} · Mirrored · muster`);
+      await expect(page).toHaveTitle(`Payments ${vp.key} · On ${host} · muster`);
       await expectSamePage(page, navs, 'the dialog Save');
       await expect.poll(() => focusedId(page), 'focus is on the title').toBe('mv-heading');
       page.removeAllListeners('framenavigated');
@@ -387,7 +387,7 @@ for (const vp of [
       await expect(banner).toHaveCount(0);
       await expectNoReload(page, navs, `draft renamed ${vp.key}`, 'Rename');
       await expect(page.locator('header [data-session-name="manual"]')).toHaveText(longOffer);
-      await expect(page).toHaveTitle(`${longOffer} · Mirrored · muster`);
+      await expect(page).toHaveTitle(`${longOffer} · On ${host} · muster`);
       await expect(page.locator('#mv-title-full'), 'the full title follows').toContainText(longOffer);
       await expect(status, 'the change is announced').toHaveText(`Renamed to “${longOffer}”.`);
       await expect.poll(() => focusedId(page), 'Rename: focus is on the title, not <body>').toBe('mv-heading');
@@ -427,11 +427,11 @@ for (const vp of [
       // Armed once the frame is open: the switch itself moves the address
       // (history.replaceState), which Playwright counts as a navigation.
       let navs = await markPage(page);
-      await expect(page, 'control: the top tab shows the frame').toHaveTitle('Billing migration · Mirrored · muster');
+      await expect(page, 'control: the top tab shows the frame').toHaveTitle(`Billing migration · On ${host} · muster`);
       await framed.locator('[data-session-drift-accept]').click();
       await expect(framed.locator('#session-drift')).toHaveCount(0);
       await expect(framed.locator('header [data-session-name="manual"]')).toHaveText('Fixing the Stripe webhook retry');
-      await expect(page, 'the top tab follows the framed rename').toHaveTitle('Fixing the Stripe webhook retry · Mirrored · muster');
+      await expect(page, 'the top tab follows the framed rename').toHaveTitle(`Fixing the Stripe webhook retry · On ${host} · muster`);
       await expectSamePage(page, navs, 'the framed Rename');
       page.removeAllListeners('framenavigated');
 

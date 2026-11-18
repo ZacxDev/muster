@@ -88,6 +88,14 @@ type ComposerView struct {
 	Disabled string
 	// DisabledPlaceholder is the input's placeholder while Disabled.
 	DisabledPlaceholder string
+	// DisabledSetting is the host setting (a muster-mirror flag) that would
+	// let a Disabled composer send, and DisabledDetail the exact refusal a
+	// host or the hub gave: each draws an ⓘ beside the note (HostSettingSheet,
+	// HostDetailSheet), which itself never spells either (the operator rule).
+	// "" draws none. Admin: the viewer may see setup details; anyone else's
+	// ⓘ says to ask their admin. The page sets it from its navigation.
+	DisabledSetting, DisabledDetail string
+	Admin                           bool
 	// Notice, when set, is drawn in the status line when the page loads: the
 	// outcome of a send the BROWSER submitted (no script), which came back here
 	// as a redirect. NoticeOK says it is good news (it is styled as such).
@@ -284,6 +292,25 @@ func sendIcon() g.Node {
 const sendKeepsFocusJS = `function (b) {
     if (b) b.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
   }`
+
+// disabledNote is a disabled composer's note: why it cannot send, and — with
+// a DisabledSetting or DisabledDetail — the ⓘ beside it (a sibling of the
+// note, never inside a control).
+func disabledNote(v ComposerView) g.Node {
+	var info g.Node
+	switch {
+	case v.DisabledSetting != "":
+		info = HostSettingSheet("mv-readonly-info", v.DisabledSetting, v.Admin).Node()
+	case v.DisabledDetail != "":
+		info = HostDetailSheet("mv-readonly-info", v.DisabledDetail, v.Admin).Node()
+	default:
+		return P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))
+	}
+	return Div(Class("flex items-center gap-1 px-3 pb-2"),
+		P(ID("mv-readonly"), Class("min-w-0 text-[11px] text-muted"), g.Text(v.Disabled)),
+		info,
+	)
+}
 
 // mirrorComposer is the composer's markup: a status line, then the box's own
 // row above the button row (the Rendered view) or one row with both (a
@@ -482,7 +509,7 @@ func mirrorComposer(v ComposerView) g.Node {
 				g.If(moreInRow, switcherMoreButtonIn(v.Switcher, composerMoreClass)),
 			),
 		),
-		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
+		g.If(off, disabledNote(v)),
 		// 🔴 EVERY SCRIPT OF THE COMPOSER IS AFTER ITS FORM. One inside it lets
 		// the browser paint the composer half-parsed, and the height it then
 		// grows by is a layout shift (measured: 0.006–0.014 at 390×844 with the

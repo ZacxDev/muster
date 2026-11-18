@@ -439,7 +439,7 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.Interactive {
 		att.end("read-only")
-		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
+		http.Error(w, mirror.PlainViewOnly, http.StatusConflict)
 		return
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
@@ -603,7 +603,7 @@ func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.Interactive {
 		att.end("read-only")
-		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
+		http.Error(w, mirror.PlainViewOnly, http.StatusConflict)
 		return
 	}
 	if !toolUseIDPattern.MatchString(tool) {

@@ -368,8 +368,8 @@ func TestAMirroredSessionIsACardOfItsOwnNotAnAgent(t *testing.T) {
 			t.Errorf("online=%v: the row's offline mark drawn = %v", online, got)
 		}
 		_, page := mirrorGet(t, s, ts, mainPage)
-		if !strings.Contains(page, "data-term-badge") || !strings.Contains(page, "Mirrored · ws") {
-			t.Errorf("online=%v: the page has no Mirrored · ws badge", online)
+		if !strings.Contains(page, "data-term-badge") || !strings.Contains(page, "On ws") {
+			t.Errorf("online=%v: the page has no On ws badge", online)
 		}
 		if got := strings.Contains(page, "data-mirror-offline"); got == online {
 			t.Errorf("online=%v: the page's offline note drawn = %v", online, got)
@@ -404,7 +404,7 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 		if keysOff == interactive {
 			t.Errorf("host interactive=%v: the terminal's keys are off = %v (%s)", interactive, keysOff, term)
 		}
-		const note = `Live keys type into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host.`
+		const note = `Typing here goes straight to ws: from here you can reach anything on that computer.`
 		for _, id := range []string{"term-status", "term-keys"} {
 			if tag := tagOf(page, id); !strings.Contains(tag, `title="`+note+`"`) {
 				t.Errorf("#%s does not say that live keys are a shell on the host: %s", id, tag)
@@ -493,8 +493,10 @@ func TestAnOfflineHostAnswersItsOwnReason(t *testing.T) {
 		if m["type"] != "error" {
 			continue
 		}
-		if m["message"] != fm.refuse.Error() {
-			t.Fatalf("the browser was told %q, want the plugin's own %q", m["message"], fm.refuse.Error())
+		// Plain words on the line; the plugin's own text is the ⓘ's detail.
+		if m["message"] != mirror.PlainWords(fm.refuse, "ws") || m["detail"] != fm.refuse.Error() {
+			t.Fatalf("the browser was told %q / %q, want %q with the plugin's own %q as the detail", m["message"], m["detail"],
+				mirror.PlainWords(fm.refuse, "ws"), fm.refuse.Error())
 		}
 		return
 	}

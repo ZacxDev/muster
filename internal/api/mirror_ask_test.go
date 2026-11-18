@@ -716,8 +716,8 @@ func TestAnAnswerPassesEveryGate(t *testing.T) {
 	am.fakeMirror.mu.Lock()
 	am.fakeMirror.interactive = false
 	am.fakeMirror.mu.Unlock()
-	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.ErrInteractiveRefused.Error()) {
-		t.Fatalf("a read-only host: %d %q, want 409 saying it is read-only", resp.StatusCode, body)
+	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.PlainViewOnly) {
+		t.Fatalf("a read-only host: %d %q, want 409 saying it is view-only", resp.StatusCode, body)
 	}
 }
 

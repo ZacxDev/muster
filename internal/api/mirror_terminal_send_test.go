@@ -163,7 +163,7 @@ func TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy(t *testing.T) {
 	if !disabledAttr.MatchString(input) || !disabledAttr.MatchString(send) {
 		t.Errorf("a read-only host's composer is not disabled: %s / %s", input, send)
 	}
-	if !strings.Contains(input, `placeholder="Read-only host"`) {
+	if !strings.Contains(input, `placeholder="`+ui.MirrorReadOnlyPlaceholder+`"`) {
 		t.Errorf("the disabled input's placeholder: %s", input)
 	}
 	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {

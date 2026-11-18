@@ -286,7 +286,7 @@ func (s *Server) answerMirrorRenamed(w http.ResponseWriter, r *http.Request, h m
 			rawName = e.Session
 		}
 		s.answerRenamed(w, ui.TerminalRenamed(ui.AgentTerminalView{Name: e.Session, SessionName: n, DisplayName: e.PlainTitle(),
-			TitleQualifier: e.Qualifier, RawName: rawName, Badge: "Mirrored · " + h.Host, BadgeHost: h.Host, BadgeHostIcon: icon,
+			TitleQualifier: e.Qualifier, RawName: rawName, Badge: ui.MirrorBadgeText(h.Host), BadgeHost: h.Host, BadgeHostIcon: icon,
 			Switcher: s.switcher(ctx, ui.SwitcherCurrent{Mirror: ref, Back: mirrorRef(e).TerminalPath()})}))
 		return
 	}

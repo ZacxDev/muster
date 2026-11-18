@@ -106,8 +106,8 @@ func TestANoticeIsACodeThePageTranslatesNeverTextFromTheLink(t *testing.T) {
 	for code, want := range map[string]string{
 		noticeSent:     "Sent.",
 		noticeAgain:    ComposerNoticeAgain,
-		noticeOffline:  "The host is offline",
-		noticeReadOnly: "This host is read-only",
+		noticeOffline:  "Not sent: this computer is not connected to muster right now.",
+		noticeReadOnly: "Not sent: this computer is view-only, so you cannot type into it from here.",
 	} {
 		if got := note(base + "&notice=" + code); strings.Contains(got, ` hidden=""`) || !strings.Contains(got, want) {
 			t.Errorf("notice=%s drew %q, want it visible and saying %q", code, got, want)

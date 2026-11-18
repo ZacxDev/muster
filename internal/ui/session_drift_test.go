@@ -159,7 +159,7 @@ func TestARenamedMirrorIsRedrawnInPlace(t *testing.T) {
 		v := MirrorViewView{Host: "atlas", Session: "main", Window: "@1", Label: "mango:1", Title: "mango:1", SessionName: n, HostIcon: "server",
 			Switcher: NewSwitcher(nil, mirrors, nil, SwitcherCurrent{Mirror: ref})}
 		want := mirrorViewName(v)
-		body := expectRenamed(t, MirrorViewRenamed(v), renderRaw(t, mirrorViewTitleButton(v)), want+" · Mirrored · muster", MirrorHeadingID, MirrorTitleID)
+		body := expectRenamed(t, MirrorViewRenamed(v), renderRaw(t, mirrorViewTitleButton(v)), want+" · On atlas · muster", MirrorHeadingID, MirrorTitleID)
 		for _, part := range []string{
 			`<div id="session-drift" hx-swap-oob="delete"></div>`,
 			`<p id="session-drift-status" hx-swap-oob="innerHTML">Renamed to “` + want + `”.</p>`,
@@ -226,8 +226,8 @@ func TestARenamedTerminalIsRedrawnInPlace(t *testing.T) {
 	for name, v := range map[string]AgentTerminalView{
 		"agent":          {Name: "agent-7", DisplayName: renamedName, SessionName: named},
 		// DisplayName is the window's PlainTitle, as internal/api sends it.
-		"mirror":         {Name: "main", DisplayName: "mango", RawName: "main", SessionName: named, Badge: "Mirrored · atlas", BadgeHost: "atlas"},
-		"mirror cleared": {Name: "main", DisplayName: "mango", RawName: "main", Badge: "Mirrored · atlas", BadgeHost: "atlas"},
+		"mirror":         {Name: "main", DisplayName: "mango", RawName: "main", SessionName: named, Badge: MirrorBadgeText("atlas"), BadgeHost: "atlas"},
+		"mirror cleared": {Name: "main", DisplayName: "mango", RawName: "main", Badge: MirrorBadgeText("atlas"), BadgeHost: "atlas"},
 	} {
 		page := renderRaw(t, AgentTerminalPage(v))
 		head := renderRaw(t, terminalTitle(v))
@@ -255,7 +255,7 @@ func TestARenamedTerminalIsRedrawnInPlace(t *testing.T) {
 func TestTheTitleIsTheNameExactly(t *testing.T) {
 	n := sessionname.Name{Text: "R&amp;D sync", Source: sessionname.SourceManual}
 	rn := MirrorViewRenamed(MirrorViewView{Host: "atlas", Session: "main", Window: "@1", SessionName: n})
-	if rn.Title != "R&amp;D sync · Mirrored · muster" {
+	if rn.Title != "R&amp;D sync · On atlas · muster" {
 		t.Fatalf("title %q", rn.Title)
 	}
 	if body := renderRaw(t, rn.Body); strings.Contains(body, "<title") {

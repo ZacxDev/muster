@@ -160,12 +160,12 @@ var composerNotices = map[string]struct {
 	noticeSent:              {"Sent.", true},
 	noticeEmpty:             {ui.MirrorComposeEmpty, false},
 	noticeAgain:             {ComposerNoticeAgain, false},
-	noticeOffline:           {unprefixed(mirror.ErrHostOffline), false},
-	noticeGone:              {unprefixed(mirror.ErrSessionGone), false},
-	noticeWindowGone:        {unprefixed(mirror.ErrWindowGone), false},
-	noticeReadOnly:          {unprefixed(mirror.ErrInteractiveRefused), false},
-	noticeNotClaude:         {unprefixed(mirror.ErrNotClaude), false},
-	noticeUpgrade:           {unprefixed(mirror.ErrPanePasteUnsupported), false},
+	noticeOffline:           {notSent(mirror.ErrHostOffline), false},
+	noticeGone:              {notSent(mirror.ErrSessionGone), false},
+	noticeWindowGone:        {notSent(mirror.ErrWindowGone), false},
+	noticeReadOnly:          {notSent(mirror.ErrInteractiveRefused), false},
+	noticeNotClaude:         {notSent(mirror.ErrNotClaude), false},
+	noticeUpgrade:           {notSent(mirror.ErrPanePasteUnsupported), false},
 	noticeBadText:           {"Not sent: a message is plain text (newlines and tabs only), up to 16 KiB.", false},
 	noticeFailed:            {"Not sent: the message could not be delivered.", false},
 	noticeNotRunning:        {AgentNotRunningNotice, false},
@@ -244,6 +244,13 @@ func SendQueueCancelledAnsweredText(asker string) string {
 		whose = asker + "'s question"
 	}
 	return "Cancelled — but this message had already answered " + whose + ", and that answer was delivered: it can't be un-sent."
+}
+
+// notSent is a send's refusal by err in plain words (mirror.PlainWords; the
+// operator rule: no raw error, flag or "mirror:" in the top layer).
+func notSent(err error) string {
+	w := mirror.PlainWords(err, "")
+	return "Not sent: " + strings.ToLower(w[:1]) + w[1:]
 }
 
 func unprefixed(err error) string {

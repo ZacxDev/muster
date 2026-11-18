@@ -58,7 +58,9 @@ func TestAnOlderMirrorDrawsTheComposerDisabledWhereItCannotPaste(t *testing.T) {
 	if !disabledAttr.MatchString(input) || !disabledAttr.MatchString(send) {
 		t.Fatalf("an older mirror's non-Claude session: the composer is not disabled: %s / %s", input, send)
 	}
-	if !strings.Contains(chief, "upgrade it to send into this session") || !strings.Contains(input, `placeholder="Update muster-mirror to send"`) {
+	// Plain words and an ⓘ (the exact refusal is its detail, for an admin).
+	if !strings.Contains(chief, "ws needs a muster update for this. Use the terminal for now.") ||
+		!strings.Contains(input, `placeholder="Cannot send here yet"`) || !strings.Contains(chief, `id="mv-readonly-info-open"`) {
 		t.Error("the disabled composer does not say why")
 	}
 	_, main := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
@@ -68,8 +70,8 @@ func TestAnOlderMirrorDrawsTheComposerDisabledWhereItCannotPaste(t *testing.T) {
 
 	fm.v2.pasteErr = mirror.ErrPanePasteUnsupported
 	code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"chief"}, "text": {"ls"}})
-	if code != http.StatusConflict || !strings.Contains(body, "upgrade") {
-		t.Fatalf("the plugin's own refusal: %d %q, want 409 naming the upgrade", code, body)
+	if code != http.StatusConflict || !strings.Contains(body, "needs a muster update") {
+		t.Fatalf("the plugin's own refusal: %d %q, want 409 naming the update", code, body)
 	}
 }
 

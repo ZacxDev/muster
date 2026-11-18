@@ -105,12 +105,17 @@ func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
 		}
 		title += ". " + strings.ToUpper(why[:1]) + why[1:]
 	}
+	// 🔴 NOT DRAWN (the operator rule: no token counters in the top layer —
+	// "~+140 ctx" means nothing to someone who is not an engineer). The slot
+	// stays, hidden, carrying the measurement as data a test or a later
+	// opt-in view reads: its kind, its tokens, the short count (text) and how
+	// it was reached (why) — never a text node or a tooltip.
 	return Span(ID(id),
 		g.Attr("data-tool-ctx", c.Kind),
 		g.Attr("data-tool-ctx-tokens", strconv.FormatInt(c.Tokens, 10)),
-		g.Attr("title", title),
-		Class("ml-auto shrink-0 whitespace-nowrap font-mono text-[10px] tabular-nums text-muted"),
-		g.Text(text))
+		g.Attr("data-tool-ctx-text", text),
+		g.Attr("data-tool-ctx-why", title),
+		g.Attr("hidden", ""))
 }
 
 // ctxCount is a badge's token count, short and precise enough to compare

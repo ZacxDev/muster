@@ -141,7 +141,7 @@ func TestTheLiveCardSaysHowItWent(t *testing.T) {
 		form, linked bool
 	}{
 		{MirrorAskLiveView{State: AskStatePending}, []string{"whichever is answered first counts"}, true, false},
-		{MirrorAskLiveView{State: AskStatePending, Unanswerable: MirrorReadOnlyNote}, []string{"read-only", "The terminal shows this question too."}, false, true},
+		{MirrorAskLiveView{State: AskStatePending, Unanswerable: MirrorReadOnlyNote}, []string{"view-only", "The terminal shows this question too."}, false, true},
 		{MirrorAskLiveView{State: AskStateTyping, Answers: red}, []string{"Typing your answer into the terminal", "Answer: </span>Red"}, false, false},
 		{MirrorAskLiveView{State: AskStateFailed, Note: "Someone has started answering it in the terminal — finish it there."}, []string{"Someone has started answering"}, false, true},
 		{MirrorAskLiveView{State: AskStateAnswered, Answers: red}, []string{"Answered here", "Answer: </span>Red"}, false, false},
