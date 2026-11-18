@@ -200,7 +200,7 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{},
 			wantLine: `permission router: NONE, UNDECLARED — ` + envRouterURL + ` is unset ` +
 				`and ` + envStandalone + ` is not 1. This server will NOT report ready while ` +
-				`a notes store is wired, on purpose: see /readyz for the reason`,
+				`a notes store is wired, on purpose: /readyz answers 503 and logs the reason (a "readyz: not ready" line)`,
 			mustContain: []string{envRouterURL, "UNDECLARED"},
 			mustNotSay:  []string{envRouterToken + " is unset"},
 		},
