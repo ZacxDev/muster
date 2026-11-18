@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/cctranscript"
 )
 
 // THE PLAIN LABEL OF EACH OF MUSTER'S OWN TOOLS (the operator rule: muster's
@@ -164,6 +166,42 @@ func MusterToolLabel(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// musterTargetKeys are the argument fields a muster tool row's one-line target
+// may come from: words the agent wrote (a page's title, a question, a search,
+// a message). Never an id or a subject ("mirror:<id>", a route id, a task
+// number), which the generic rule (cctranscript.ToolTarget) would pick up as
+// "the first string field".
+var musterTargetKeys = []string{"title", "question", "query", "text", "body", "summary", "description"}
+
+// ToolRowTarget is the one-line target a tool row draws beside its name: for
+// one of muster's own tools (MusterToolLabel), only from musterTargetKeys; for
+// any other tool, cctranscript.ToolTarget's reading. host is a target the
+// mirrored session's host already computed ("" for none): kept for other
+// tools, and never used for muster's (an older host computes it the generic
+// way). One rule for the persisted rows, the mirrored view and the live
+// stream (internal/api chat_stream.go).
+func ToolRowTarget(name, args, host string) string {
+	if _, mine := MusterToolLabel(name); !mine {
+		if host != "" {
+			return host
+		}
+		return cctranscript.ToolTarget(name, args)
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(strings.TrimSpace(args)), &m) != nil {
+		return ""
+	}
+	for _, k := range musterTargetKeys {
+		var s string
+		if raw, ok := m[k]; ok && json.Unmarshal(raw, &s) == nil {
+			if t := cctranscript.OneLine(s); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
 }
 
 // toolSheetPlaceholder stands for a row's id in toolLabelsJS's template.

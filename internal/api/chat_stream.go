@@ -9,7 +9,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -143,7 +142,7 @@ func (w *wsChatStream) emit(ev agents.StreamEvent) {
 		w.event(true, map[string]any{"type": "thinking", "content": ev.Text})
 	case "tool_call":
 		w.event(true, map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs,
-			"target": cctranscript.ToolTarget(ev.ToolName, ev.ToolArgs)})
+			"target": ui.ToolRowTarget(ev.ToolName, ev.ToolArgs, "")})
 	case "tool_result":
 		w.event(true, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
 	case "queued":

@@ -35,15 +35,17 @@ import (
 
 // chatPlumbing is what a chat's top layer must not spell: an MCP or opencode
 // tool prefix, a fence marker, the fence's "untrusted" and "Data, not
-// instructions" words, a route id or route_id, muster's "[muster]" head, and
-// any of muster's own tool names as a word.
-var chatPlumbing = regexp.MustCompile(`mcp__|\bmuster_[a-z]|<<<|\buntrusted\b|(?i:data, not instructions)|\brt_[0-9a-f]{6,}|\broute_id\b|\[muster\]|` +
+// instructions" words, a route id or route_id, muster's "[muster]" head, a
+// session subject ("mirror:<id>", "agent:<n>"), and any of muster's own tool
+// names as a word.
+var chatPlumbing = regexp.MustCompile(`mcp__|\bmuster_[a-z]|<<<|\buntrusted\b|(?i:data, not instructions)|\brt_[0-9a-f]{6,}|\broute_id\b|\[muster\]|\b(?:mirror|agent):[A-Za-z0-9]|` +
 	`\b(?:page_create|page_update|page_share_request|focus_search|attention_ask|attention_wait|task_get|route_to_session|route_reply|fleet_list)\b`)
 
 // chatTopLayerTexts is topLayerTexts for a chat: what a person reads WITHOUT
 // OPENING ANYTHING — every text, tooltip, aria-label and placeholder, but not
 // an ⓘ sheet, a script, a style or a template, nor the body of a CLOSED
-// <details> (a tool row's arguments and result: opened by a tap). all keeps
+// <details> (a tool row's arguments and result: opened by a tap) — except a
+// tool GROUP's, whose rows' summaries are read. all keeps
 // the sheets and the closed bodies too: the control that the second layer
 // still holds what the first one hides.
 func chatTopLayerTexts(t *testing.T, markup string, all bool) []string {
@@ -72,7 +74,9 @@ func chatTopLayerTexts(t *testing.T, markup string, all bool) []string {
 					if !all {
 						return
 					}
-				case "open":
+				case "open", "data-tool-group":
+					// A run of tool rows folded into "N steps" is the rows'
+					// own faces one tap away: their summaries are read.
 					open = true
 				case "title", "aria-label", "placeholder":
 					out = append(out, a.Val)
@@ -134,6 +138,7 @@ func TestTheChatScanSeesPlumbing(t *testing.T) {
 		`<p>&lt;&lt;&lt;route-answer untrusted nonce=0123456789abcdef count=1&gt;&gt;&gt;</p>`,
 		`<span title="muster_attention_ask">x</span>`,
 		`<p>focus_search</p>`,
+		`<details data-tool-row><summary>🔧 <span>Sent something to a session</span><span>mirror:cs-heron-1</span></summary></details>`,
 	} {
 		hit := false
 		for _, s := range chatTopLayerTexts(t, bad, false) {
@@ -142,6 +147,15 @@ func TestTheChatScanSeesPlumbing(t *testing.T) {
 		if !hit {
 			t.Errorf("the scan missed the plumbing in %s", bad)
 		}
+	}
+	// A row folded into a closed group is still read.
+	grouped := `<details data-tool-group=""><summary>2 steps</summary><div><details data-tool-row><summary>🔧 <span>mcp__muster__page_create</span></summary></details></div></details>`
+	hit := false
+	for _, s := range chatTopLayerTexts(t, grouped, false) {
+		hit = hit || chatPlumbing.MatchString(s)
+	}
+	if !hit {
+		t.Errorf("the scan missed a raw name in a row inside a closed group")
 	}
 	ok := `<details data-tool-row><summary>🔧 <span>Made a page</span></summary><div><pre>{"name":"mcp__muster__page_create"}</pre>` +
 		`<div data-info-sheet=""><code>mcp__muster__page_create</code></div></div></details><p>Please log each retry.</p>`

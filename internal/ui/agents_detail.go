@@ -18,7 +18,6 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/web"
@@ -2075,10 +2074,8 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 	if name == "" {
 		name = "tool"
 	}
-	target := call.ToolTarget
-	if target == "" {
-		target = cctranscript.ToolTarget(name, call.Content)
-	}
+	// One of muster's own tools never draws an id as its target (ToolRowTarget).
+	target := ToolRowTarget(name, call.Content, call.ToolTarget)
 	state := toolChipState(result)
 	status, statusClass := "…", "ml-auto shrink-0 text-muted"
 	switch state {
