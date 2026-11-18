@@ -179,7 +179,7 @@ func scanTaskTextReaders(t *testing.T, extra map[string]string) (readers, caller
 		files = append(files, file)
 	}
 	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Uses: map[*ast.Ident]types.Object{}}
-	conf := types.Config{Importer: exportDataImporter(t, fset)}
+	conf := types.Config{Importer: taskKickoffExportImporter(t, fset)}
 	if _, err := conf.Check("github.com/ZacxDev/muster/internal/api", fset, files, info); err != nil {
 		t.Fatalf("type-check: %v", err)
 	}
@@ -220,10 +220,10 @@ func scanTaskTextReaders(t *testing.T, extra map[string]string) (readers, caller
 	return readers, callers
 }
 
-// exportDataImporter imports this package's dependencies from the compiler's
+// taskKickoffExportImporter imports this package's dependencies from the compiler's
 // export data (`go list -export`, the build cache), not from source: a source
 // import type-checks every dependency again and took minutes here.
-func exportDataImporter(t *testing.T, fset *token.FileSet) types.Importer {
+func taskKickoffExportImporter(t *testing.T, fset *token.FileSet) types.Importer {
 	t.Helper()
 	// 🔴 NEVER REPLAYED FROM GO'S TEST CACHE (scanGatewayTurns has the why).
 	_ = os.Getenv("MUSTER_TEST_NOCACHE")
