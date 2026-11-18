@@ -1527,6 +1527,10 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 		// the sidebar (agent.changed) and the attention queue, which lost
 		// the agent's asks with its row (attention_queue.changed).
 		s.releaseChiefStart(opCtx, a)
+		// An auto-start's Stop ask has nothing left to stop (plugin_autostart.go).
+		if a.NoteID != nil {
+			s.settleAutostartAsks(opCtx, *a.NoteID, a.ID)
+		}
 		if a.ID != 0 {
 			s.broadcastTo(a.OwnerID, EventAgentChanged, a.Name)
 			s.attentionChanged(a.OwnerID, "agent-destroyed-"+strconv.FormatInt(a.ID, 10))

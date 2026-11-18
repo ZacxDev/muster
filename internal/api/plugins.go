@@ -101,6 +101,11 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// (chief_extension), and the owner's toggle and approval.
 	s.registerPluginChiefInstructionRoutes(mux)
 
+	// A plugin's auto-start (plugin_autostart.go): the owner's card only — a
+	// fresh sign-in to turn it on, checked in the handler. 🔴 No /plugin/v1/*
+	// route reads or writes it: a plugin cannot opt itself in.
+	mux.HandleFunc("POST "+pluginsPath+"/{id}/autostart", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginAutostart)))
+
 	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS
 	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
 	// is its ledger: a route added, dropped or moved to another capability turns
@@ -603,7 +608,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	if len(list) == 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No plugins yet.</li>`)
 	}
-	chiefGated := false
+	chiefGated, autostartGated := false, false
 	for _, p := range list {
 		seen := "never seen"
 		if p.LastSeenAt != nil {
@@ -628,6 +633,9 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 				chiefGated = chiefGated || gated
 			}
 			b.WriteString(s.pluginDeliverToFormHTML(p))
+			auto, gated := s.pluginAutostartHTML(r, p)
+			b.WriteString(auto)
+			autostartGated = autostartGated || gated
 			b.WriteString(`<form method="POST" action="` + pluginsPath + `/` + id + `/revoke">
 <button type="submit" class="` + flowsQuietButton + `">Revoke</button></form>`)
 		}
@@ -640,13 +648,19 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	// instructions Approve (handleChiefInstructionsApprove) are step-up gated,
 	// their forms marked data-step-up-form: the ONE dialog they ask with,
 	// saying each gate the page draws.
-	switch {
-	case pairs != "" && chiefGated:
-		b.WriteString(s.stepUpFormsHTML(r, PairStepUpWhy()+" "+ChiefInstructionsStepUpWhy()))
-	case pairs != "":
-		b.WriteString(s.stepUpFormsHTML(r, PairStepUpWhy()))
-	case chiefGated:
-		b.WriteString(s.stepUpFormsHTML(r, ChiefInstructionsStepUpWhy()))
+	// An auto-start's Turn on (handlePluginAutostart) is a third.
+	var whys []string
+	if pairs != "" {
+		whys = append(whys, PairStepUpWhy())
+	}
+	if chiefGated {
+		whys = append(whys, ChiefInstructionsStepUpWhy())
+	}
+	if autostartGated {
+		whys = append(whys, AutostartStepUpWhy())
+	}
+	if len(whys) > 0 {
+		b.WriteString(s.stepUpFormsHTML(r, strings.Join(whys, " ")))
 	}
 	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
