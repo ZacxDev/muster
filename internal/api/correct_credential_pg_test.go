@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 )
 
 // TestALiveLinkWorksFromAnAddressPastItsMissLimit: inviteIPLimit junk invite
@@ -51,5 +52,41 @@ func TestALiveLinkWorksFromAnAddressPastItsMissLimit(t *testing.T) {
 	if r := do(w.edge, http.MethodPost, ResetPath, url.Values{"token": {m[1]}, "password": {newPW}, "password2": {newPW}},
 		arriveFrom(sharedAddress)); r.Code != http.StatusSeeOther {
 		t.Fatalf("a LIVE reset link used from the address past its miss limit: %d, want 303", r.Code)
+	}
+}
+
+// TestPasskeySignInOptionsAreLimitedPerAddress: passkeyOptionsPerAddr unused
+// sign-in challenges from one address, then the next is 429 without asking
+// GoTrue; another address is unaffected; and a passkey sign-in from the address
+// clears its count (failure-only: a signed-in browser is never held).
+func TestPasskeySignInOptionsAreLimitedPerAddress(t *testing.T) {
+	w := newPasskeyWorld(t)
+	_, sub, _, _ := w.joinMember("pk-opts@invite.test")
+	w.fake.AddPasskey(sub, "cred-opts")
+	for i := 0; i < passkeyOptionsPerAddr; i++ {
+		if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(sharedAddress)); rec.Code != http.StatusOK {
+			t.Fatalf("options %d: %d", i, rec.Code)
+		}
+	}
+	calls := w.fake.CountCalls(http.MethodPost, "/passkeys/authentication/options")
+	if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(sharedAddress)); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("options past the limit: %d, want 429", rec.Code)
+	}
+	if n := w.fake.CountCalls(http.MethodPost, "/passkeys/authentication/options"); n != calls {
+		t.Fatalf("options past the limit still asked GoTrue (%d calls, was %d)", n, calls)
+	}
+	if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom("198.51.100.150")); rec.Code != http.StatusOK {
+		t.Fatalf("CONTROL: another address: %d", rec.Code)
+	}
+	// Clearing: a sign-in from a fresh address that had used challenges.
+	const other = "198.51.100.151"
+	for i := 0; i < passkeyOptionsPerAddr-1; i++ {
+		postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(other))
+	}
+	if rec := w.passkeySignIn("cred-opts", gotruetest.FlagUPUV, arriveFrom(other)); rec.Code != http.StatusOK {
+		t.Fatalf("a passkey sign-in on the last challenge: %d", rec.Code)
+	}
+	if rec := postJSON(w.edge, passkeySignInOptionsPath, map[string]any{}, arriveFrom(other)); rec.Code != http.StatusOK {
+		t.Fatalf("options after a passkey sign-in from that address: %d, want 200 (the sign-in cleared the count)", rec.Code)
 	}
 }

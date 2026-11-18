@@ -35,15 +35,14 @@ const loginPath = "/login"
 
 // loginRateBurst / loginRateWindow count wrong operator passwords, process-wide.
 //
-// 🔴 THE PASSWORD IS COMPARED FIRST, AND THE CORRECT ONE IS ALWAYS ADMITTED.
-// The count holds FAILURES only (rateLimiter.fail): past loginRateBurst in a
-// window a wrong password is answered 429 instead of 401. It used to be taken
-// before the compare, so ten junk POSTs a minute from anyone kept the
-// operator's correct password at 429 for as long as they kept sending
-// (TestAJunkFloodDoesNotLockTheOperatorOut). The cost, stated: the count no
-// longer slows a guesser down (a correct guess is admitted whatever the
-// count), so the operator password's strength is the guessing defence — the
-// Compose install generates it, and configuration.md asks for a long one.
+// 🔴 THE COUNT HOLDS FAILURES ONLY, AND IT REFUSES ONLY UNKNOWN DEVICES
+// (passwordGate, known_device.go). Past loginRateBurst in a window, a request
+// with no valid known-device cookie is refused before the compare, correct
+// password or not, so a guesser is held to loginRateBurst a minute; a browser
+// that signed in correctly before is never refused for the count with the
+// correct password, so a junk flood cannot lock the operator out of a browser
+// they use (TestAJunkFloodDoesNotLockAKnownDeviceOut). A wrong password from a
+// known device still counts.
 const (
 	loginRateBurst  = 10
 	loginRateWindow = time.Minute
@@ -174,19 +173,24 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := r.FormValue("next")
-	if !auth.ConstantTimeEqual(r.FormValue("password"), s.auth.UIPassword) {
-		s.logger.Printf("login: rejected a password attempt")
-		if s.loginRate.fail(time.Now(), loginRateBurst, loginRateWindow) {
-			s.renderLoginPage(w, http.StatusTooManyRequests, next,
-				"Too many attempts. Wait a minute and try again.")
-			return
+	ok, refused, throttled := s.passwordGate(r, r.FormValue("password"), time.Now())
+	if refused || throttled {
+		if !refused {
+			s.logger.Printf("login: rejected a password attempt")
 		}
+		s.renderLoginPage(w, http.StatusTooManyRequests, next,
+			"Too many attempts. Wait a minute and try again.")
+		return
+	}
+	if !ok {
+		s.logger.Printf("login: rejected a password attempt")
 		s.renderLoginPage(w, http.StatusUnauthorized, next, "That password is not right.")
 		return
 	}
 
 	clearSiteCaches(w)
 	s.setPasswordSessionCookie(w, r)
+	s.setKnownDeviceCookie(w, r)
 	s.logger.Printf("login: a browser session was issued")
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
 }

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -430,15 +429,17 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 // again, a new session cookie issued now.
 func (s *Server) confirmOperatorPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	now := time.Now()
-	// Compared first; only a wrong password counts (loginRateBurst's comment).
-	if password == "" || !auth.ConstantTimeEqual(password, s.auth.UIPassword) {
+	// The same gate as the sign-in (loginRateBurst's comment, known_device.go).
+	ok, refused, throttled := s.passwordGate(r, password, now)
+	if refused || throttled {
+		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
+	}
+	if !ok {
 		s.logger.Printf("stepup: rejected an operator-password confirm")
-		if s.loginRate.fail(now, loginRateBurst, loginRateWindow) {
-			return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
-		}
 		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
 	s.setPasswordSessionCookie(w, r)
+	s.setKnownDeviceCookie(w, r)
 	// SignSession stamps whole seconds; report what the cookie will read as.
 	issued := time.Unix(now.Unix(), 0)
 	return stepUpOutcome{Status: http.StatusOK, At: issued, FreshFor: issued.Add(stepup.Window()).Sub(now).Milliseconds()}

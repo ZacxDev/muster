@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -122,4 +123,64 @@ func mustClientAddr(t *testing.T, trusted, header string) *clientaddr.Policy {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TestGoTrueModeNeedsTheClientTopologyDeclared is the boot table: gotrue and
+// password mode, each with MUSTER_TRUSTED_PROXIES set or unset and
+// MUSTER_DIRECT_CLIENTS set or unset. gotrue boots with exactly one; both are
+// refused in either mode; password mode needs neither.
+func TestGoTrueModeNeedsTheClientTopologyDeclared(t *testing.T) {
+	for _, mode := range []string{"gotrue", "password"} {
+		for _, trusted := range []bool{false, true} {
+			for _, direct := range []bool{false, true} {
+				c := validGoTrueConfig()
+				if mode == "password" {
+					c.AuthMode = "password"
+					c.UIPassword = strings.Repeat("p", 40)
+				}
+				c.DirectClients = direct
+				c.ClientAddr = nil
+				if trusted {
+					c.ClientAddr = mustClientAddr(t, "192.0.2.0/24", "X-Forwarded-For")
+				}
+				err := c.validate()
+				name := fmt.Sprintf("%s, trusted proxies %v, direct clients %v", mode, trusted, direct)
+				switch {
+				case trusted && direct:
+					if err == nil || !strings.Contains(err.Error(), envTrustedProxies) || !strings.Contains(err.Error(), envDirectClients) {
+						t.Errorf("%s: %v, want a refusal naming both", name, err)
+					}
+				case mode == "gotrue" && !trusted && !direct:
+					if err == nil || !strings.Contains(err.Error(), envTrustedProxies) || !strings.Contains(err.Error(), envDirectClients) {
+						t.Errorf("%s: %v, want a refusal naming both options", name, err)
+					}
+				default:
+					if err != nil {
+						t.Errorf("%s: refused: %v, want it to boot", name, err)
+					}
+				}
+			}
+		}
+	}
+	for v, want := range map[string]bool{"": false, "0": false, "1": true} {
+		c, err := loadConfig(func(k string) string {
+			if k == envDirectClients {
+				return v
+			}
+			return ""
+		})
+		if err != nil || c.DirectClients != want {
+			t.Errorf("%s=%q: DirectClients %v err %v, want %v", envDirectClients, v, c.DirectClients, err, want)
+		}
+	}
+	for _, v := range []string{"yes", "true", "2"} {
+		if _, err := loadConfig(func(k string) string {
+			if k == envDirectClients {
+				return v
+			}
+			return ""
+		}); err == nil || !strings.Contains(err.Error(), envDirectClients) {
+			t.Errorf("%s=%q: %v, want a refusal naming it", envDirectClients, v, err)
+		}
+	}
 }

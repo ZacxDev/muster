@@ -27,43 +27,126 @@ import (
 // sharedAddress is every client's address behind an untrusted proxy.
 const sharedAddress = "192.0.2.5"
 
-// TestAJunkFloodDoesNotLockTheOperatorOut: password mode. loginRateBurst wrong
-// passwords, then the operator's correct one — from the same address and from
-// another — signs in. A wrong one past the burst is 429 (failures still count).
-func TestAJunkFloodDoesNotLockTheOperatorOut(t *testing.T) {
-	_, h := pwaServer(t, nil)
-	post := func(ip, pw string) int {
-		return do(h, http.MethodPost, "/login", url.Values{"password": {pw}, "next": {"/"}}, arriveFrom(ip)).Code
+// passwordLogin posts the operator-password form with opts (a peer, cookies).
+func passwordLogin(h http.Handler, pw string, opts ...reqOpt) *httptest.ResponseRecorder {
+	return do(h, http.MethodPost, "/login", url.Values{"password": {pw}, "next": {"/"}}, opts...)
+}
+
+// withDevice presents a known-device cookie value.
+func withDevice(v string) reqOpt {
+	return func(r *http.Request) { r.AddCookie(&http.Cookie{Name: knownDeviceCookieName, Value: v}) }
+}
+
+// knownDeviceOf signs in correctly on h and returns the device cookie issued.
+func knownDeviceOf(t *testing.T, h http.Handler) string {
+	t.Helper()
+	w := passwordLogin(h, testUIPassword, arriveFrom("198.51.100.7"))
+	ck := setCookies(w)[knownDeviceCookieName]
+	if w.Code != http.StatusSeeOther || ck == nil || ck.Value == "" || !ck.HttpOnly {
+		t.Fatalf("CONTROL: a correct sign-in did not issue an HttpOnly device cookie: %d %v", w.Code, ck)
 	}
-	for i := 0; i < loginRateBurst; i++ {
-		if c := post(sharedAddress, "not-the-password-at-all"); c != http.StatusUnauthorized {
-			t.Fatalf("junk %d: %d, want 401", i, c)
-		}
-	}
-	if c := post(sharedAddress, testUIPassword); c != http.StatusSeeOther {
-		t.Errorf("the operator's CORRECT password after %d junk attempts from the shared address: %d, want 303", loginRateBurst, c)
-	}
-	if c := post("198.51.100.7", testUIPassword); c != http.StatusSeeOther {
-		t.Errorf("the operator's CORRECT password from another address after the flood: %d, want 303", c)
-	}
-	if c := post(sharedAddress, "still-not-the-password"); c != http.StatusTooManyRequests {
-		t.Errorf("CONTROL: a wrong password past the burst: %d, want 429 (failures are still counted)", c)
+	return ck.Value
+}
+
+// flood sends n wrong operator passwords from the shared address.
+func flood(h http.Handler, n int) {
+	for i := 0; i < n; i++ {
+		passwordLogin(h, "not-the-password-at-all", arriveFrom(sharedAddress))
 	}
 }
 
-// TestAJunkFloodDoesNotBlockThePasswordModeConfirm: the step-up confirm shares
-// the operator-password count, so the same flood must not refuse the correct
-// password there either.
-func TestAJunkFloodDoesNotBlockThePasswordModeConfirm(t *testing.T) {
-	s, h := pwaServer(t, nil)
-	for i := 0; i < loginRateBurst; i++ {
-		do(h, http.MethodPost, "/login", url.Values{"password": {"not-the-password-at-all"}}, arriveFrom(sharedAddress))
+// TestAJunkFloodDoesNotLockAKnownDeviceOut: password mode, the known-device
+// rule. Past loginRateBurst failures, the correct password from a browser with
+// no valid device cookie is REFUSED (a guesser is held to the burst), and from a
+// known device it is ADMITTED (the flood cannot lock the operator out).
+func TestAJunkFloodDoesNotLockAKnownDeviceOut(t *testing.T) {
+	_, h := pwaServer(t, nil)
+	dev := knownDeviceOf(t, h)
+	flood(h, loginRateBurst)
+	if c := passwordLogin(h, testUIPassword, arriveFrom(sharedAddress)).Code; c != http.StatusTooManyRequests {
+		t.Errorf("an UNKNOWN device with the correct password past the failure count: %d, want 429", c)
 	}
-	cookie := auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-time.Hour), sessionTTL)
-	w := do(h, http.MethodPost, stepUpConfirmPath, url.Values{"password": {testUIPassword}},
-		func(r *http.Request) { r.Header.Set("Cookie", sessionCookieName+"="+cookie) }, asXHR, arriveFrom(sharedAddress))
-	if w.Code != http.StatusOK {
-		t.Fatalf("a step-up confirm with the CORRECT password after %d junk sign-ins: %d %s, want 200", loginRateBurst, w.Code, w.Body)
+	if c := passwordLogin(h, testUIPassword, arriveFrom(sharedAddress), withDevice(dev)).Code; c != http.StatusSeeOther {
+		t.Errorf("a KNOWN device with the correct password past the failure count: %d, want 303", c)
+	}
+	if c := passwordLogin(h, "still-not-the-password", arriveFrom(sharedAddress), withDevice(dev)).Code; c != http.StatusTooManyRequests {
+		t.Errorf("a known device with a WRONG password past the count: %d, want 429", c)
+	}
+}
+
+// TestAnInvalidDeviceCookieIsAnUnknownDevice: a forged value, an expired one,
+// one signed under another key, and a session cookie's value presented as a
+// device cookie are all an unknown device past the count (429 with the correct
+// password); the genuine one is admitted (the positive control).
+func TestAnInvalidDeviceCookieIsAnUnknownDevice(t *testing.T) {
+	s, h := pwaServer(t, nil)
+	dev := knownDeviceOf(t, h)
+	other := AuthConfig{UIPassword: testUIPassword + "-another"}
+	for name, v := range map[string]string{
+		"forged":          "1|99999999999|" + strings.Repeat("ab", 32),
+		"expired":         auth.SignSession(s.auth.deviceSecret(), time.Now().Add(-knownDeviceTTL-time.Hour), knownDeviceTTL),
+		"another key":     auth.SignSession(other.deviceSecret(), time.Now(), knownDeviceTTL),
+		"a session value": auth.SignSession(s.auth.uiSessionSecret(), time.Now(), knownDeviceTTL),
+	} {
+		_, h := pwaServer(t, nil)
+		flood(h, loginRateBurst)
+		if c := passwordLogin(h, testUIPassword, arriveFrom(sharedAddress), withDevice(v)).Code; c != http.StatusTooManyRequests {
+			t.Errorf("%s device cookie, correct password past the count: %d, want 429 (an unknown device)", name, c)
+		}
+	}
+	_, h2 := pwaServer(t, nil)
+	flood(h2, loginRateBurst)
+	if c := passwordLogin(h2, testUIPassword, arriveFrom(sharedAddress), withDevice(dev)).Code; c != http.StatusSeeOther {
+		t.Fatalf("CONTROL: the genuine device cookie on another server with the same password: %d, want 303", c)
+	}
+}
+
+// TestRotatingThePasswordForgetsEveryDevice: a device cookie issued under one
+// operator password is an unknown device once the password changes.
+func TestRotatingThePasswordForgetsEveryDevice(t *testing.T) {
+	_, h := pwaServer(t, nil)
+	dev := knownDeviceOf(t, h)
+	const rotated = "a-completely-new-operator-password"
+	s2 := New(nil, AuthConfig{UIPassword: rotated}, log.New(io.Discard, "", 0))
+	h2 := s2.Handler()
+	flood(h2, loginRateBurst)
+	if c := passwordLogin(h2, rotated, arriveFrom(sharedAddress), withDevice(dev)).Code; c != http.StatusTooManyRequests {
+		t.Fatalf("a device cookie from before the rotation, past the count: %d, want 429 (unknown)", c)
+	}
+}
+
+// TestAKnownDevicesWrongPasswordStillCounts: loginRateBurst-1 failures from
+// unknown devices plus ONE from a known device reach the count, so an unknown
+// device's correct password is then refused.
+func TestAKnownDevicesWrongPasswordStillCounts(t *testing.T) {
+	_, h := pwaServer(t, nil)
+	dev := knownDeviceOf(t, h)
+	flood(h, loginRateBurst-1)
+	if c := passwordLogin(h, testUIPassword, arriveFrom(sharedAddress)).Code; c != http.StatusSeeOther {
+		t.Fatalf("CONTROL: one below the count, an unknown device's correct password: %d, want 303", c)
+	}
+	passwordLogin(h, "wrong-from-a-known-device", arriveFrom(sharedAddress), withDevice(dev))
+	if c := passwordLogin(h, testUIPassword, arriveFrom(sharedAddress)).Code; c != http.StatusTooManyRequests {
+		t.Fatalf("after the known device's wrong password made the count: %d, want 429", c)
+	}
+}
+
+// TestThePasswordModeConfirmFollowsTheKnownDeviceRule: the step-up confirm
+// shares the count and the rule.
+func TestThePasswordModeConfirmFollowsTheKnownDeviceRule(t *testing.T) {
+	s, h := pwaServer(t, nil)
+	dev := knownDeviceOf(t, h)
+	flood(h, loginRateBurst)
+	session := auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-time.Hour), sessionTTL)
+	confirm := func(opts ...reqOpt) *httptest.ResponseRecorder {
+		base := []reqOpt{func(r *http.Request) { r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session}) }, asXHR, arriveFrom(sharedAddress)}
+		return do(h, http.MethodPost, stepUpConfirmPath, url.Values{"password": {testUIPassword}}, append(base, opts...)...)
+	}
+	if w := confirm(); w.Code != http.StatusTooManyRequests {
+		t.Errorf("confirm from an UNKNOWN device past the count: %d %s, want 429", w.Code, w.Body)
+	}
+	if w := confirm(withDevice(dev)); w.Code != http.StatusOK {
+		t.Errorf("confirm from a KNOWN device past the count: %d %s, want 200", w.Code, w.Body)
 	}
 }
 

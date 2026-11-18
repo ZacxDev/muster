@@ -168,6 +168,9 @@ services:
       # Empty trusts nothing (the client is the TCP peer). Both or neither.
       MUSTER_TRUSTED_PROXIES: ${MUSTER_TRUSTED_PROXIES:-}
       MUSTER_CLIENT_IP_HEADER: ${MUSTER_CLIENT_IP_HEADER:-}
+      # Or, with no proxy in front: 1. In accounts (gotrue) mode one of the two
+      # is required.
+      MUSTER_DIRECT_CLIENTS: ${MUSTER_DIRECT_CLIENTS:-}
 
       # ---- optional: every value below is empty unless .env sets it --------
       # docs/features.md names what each feature needs; .env.example has every

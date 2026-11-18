@@ -604,12 +604,22 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome := outcomeUnjudged
 	defer func() { s.gt.signin.settle(ticket, outcome) }()
+	// invalid answers a claim that failed: the uniform invalid page, or 429
+	// once this address is past its failure count (signinTicket.addrOver).
+	// A valid claim token is never refused for its address.
+	invalid := func() {
+		outcome = outcomeFailed
+		if ticket.addrOver {
+			s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
+			return
+		}
+		s.renderInvalidClaim(w, r)
+	}
 	token := postedLinkToken(r)
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
-		outcome = outcomeFailed
-		s.renderInvalidClaim(w, r)
+		invalid()
 		return
 	}
 	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
@@ -631,8 +641,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	createErr := *createErrp
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
-		outcome = outcomeFailed
-		s.renderInvalidClaim(w, r)
+		invalid()
 		return
 	case err != nil && createErr != nil:
 		var ae *gotrue.APIError

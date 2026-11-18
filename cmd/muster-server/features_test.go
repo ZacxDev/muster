@@ -80,6 +80,7 @@ var featureLedgerExempt = map[string]string{
 	envLegacyProvenancePrefix: "a compatibility spelling for older installed clients' headers",
 	envTrustedProxies:         "a hardening posture over every per-address limit, not a feature: nothing turns on or off with it, and it is announced on its own banner line",
 	envClientIPHeader:         "the header MUSTER_TRUSTED_PROXIES's proxies are believed in; announced on the same banner line",
+	envDirectClients:          "a declaration of the deployment's topology (no proxy in front), not a feature; announced on the client-address banner line",
 	envDialDenyPrivate:        "a hardening posture over existing features (postgres connectors), not a feature: nothing turns on or off with it, and it is announced on its own banner line",
 }
 
@@ -756,7 +757,7 @@ func TestAKeylessAccountPageSaysSuggestedRepliesAreOff(t *testing.T) {
 	h.ServeHTTP(lw, login)
 	var cookie *http.Cookie
 	for _, c := range lw.Result().Cookies() {
-		if c.Value != "" {
+		if c.Value != "" && c.Name == "muster_session" {
 			cookie = c
 		}
 	}

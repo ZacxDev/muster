@@ -68,12 +68,11 @@
           }
         },
         "header": {
-          "enum": [
-            "",
-            "CF-Connecting-IP",
-            "X-Forwarded-For",
-            "X-Real-IP"
-          ]
+          "type": "string",
+          "pattern": "^((?i)cf-connecting-ip|x-forwarded-for|x-real-ip)?$"
+        },
+        "directClients": {
+          "type": "boolean"
         }
       }
     },

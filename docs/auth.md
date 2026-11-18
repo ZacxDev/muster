@@ -10,11 +10,24 @@
   admin.
 - If it is unset or shorter than 12 characters, every browser page answers 503
   and `/login` says which variable is missing. It fails closed.
-- `POST /login` compares in constant time first. The correct password is
-  always admitted. Wrong ones are counted, 10 a minute for the whole server,
-  and past that a wrong one is answered 429. The step-up confirm shares the
-  count. Because a correct guess is admitted whatever the count, the count
-  does not slow a guesser down: use a long, generated password.
+- `POST /login` compares in constant time. Wrong passwords are counted for the
+  whole server, 10 a minute. The step-up confirm shares the count.
+- **Known devices.** A browser that has signed in correctly gets a
+  long-lived **device cookie** (`muster_device`: HttpOnly, `SameSite=Lax`,
+  `Secure` as the session cookie is, 400 days). It is signed with a key
+  derived from the operator password, so changing the password invalidates
+  every device cookie.
+  - Past the count, a request **without** a valid device cookie is refused
+    with 429 before the password is compared, correct or not. So a guesser is
+    held to 10 guesses a minute.
+  - A request **with** one is never refused for the count when it carries the
+    correct password. So a flood of junk sign-ins cannot lock the operator
+    out of a browser they have used before.
+  - A wrong password from a known device still counts.
+  - The device cookie is not a credential: it admits nothing on its own.
+  - A browser that has never signed in (or whose cookie was cleared, or that
+    signed in before the password was changed) waits for the window to pass
+    while a flood is running.
 - The session cookie lasts 30 days. Set `MUSTER_SECURE_COOKIES=1` when muster
   is served over TLS.
 
@@ -31,11 +44,20 @@ Supabase auth server.
 - **Two listeners.** `MUSTER_BROWSER_PORT` is the only listener that serves
   browser sessions. The main port then serves machine tokens only. On the browser
   listener, the shared hook and service secrets are refused with 403.
+- **The client topology must be declared.** muster refuses to boot in this
+  mode unless `MUSTER_TRUSTED_PROXIES` (with `MUSTER_CLIENT_IP_HEADER`) names
+  the proxy in front of it, or `MUSTER_DIRECT_CLIENTS=1` says there is none.
+  GoTrue keys its own per-address limits on the client address muster sends it
+  (`X-Muster-Client-IP`), and behind an undeclared proxy every user would share
+  one ([configuration.md](configuration.md#client-addresses-behind-a-proxy)).
 - **Throttling** is per account: 3 free failures, then a backoff that doubles up
   to 5 minutes. Failures are also counted per client address (10 in 10
   minutes). That count never refuses a correct password or passkey: past it,
   a wrong attempt is answered 429, and an attempt at an email that is not a
-  muster account is refused without asking GoTrue.
+  muster account is refused without asking GoTrue. The admin claim's failures
+  count the same way (429 past it). Passkey sign-in challenges are limited to
+  30 per 10 minutes per address, and a passkey sign-in clears its address's
+  count.
 
 ### Setting up the first admin
 
@@ -142,7 +164,15 @@ MUSTER_GOTRUE_JWT_SECRET=<48 random hex characters>   # env_secret MUSTER_GOTRUE
 GOTRUE_DB_PASSWORD=<random>                           # env_secret GOTRUE_DB_PASSWORD 24
 MUSTER_BROWSER_PORT=8107
 MUSTER_PUBLIC_URL=http://localhost:8107
+MUSTER_DIRECT_CLIENTS=1   # browsers reach 8107 directly; see below for a proxy
 ```
+
+The last line declares that nothing sits between the browsers and muster. This
+mode refuses to start without a declaration. If you put `tailscale serve` or
+another reverse proxy in front instead, remove it and set
+`MUSTER_TRUSTED_PROXIES` to the address muster sees the proxy connect from,
+and `MUSTER_CLIENT_IP_HEADER=X-Forwarded-For`
+([Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 `MUSTER_PUBLIC_URL` is the address a browser opens: the browser listener. With
 Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
@@ -153,7 +183,7 @@ Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
 
 **Turn it off:** delete `docker-compose.override.yml` **and** the `.env` lines
 above (`MUSTER_AUTH_MODE`, `MUSTER_GOTRUE_*`, `GOTRUE_*`,
-`MUSTER_BROWSER_PORT`), set `MUSTER_PUBLIC_URL` back to the main port's
+`MUSTER_BROWSER_PORT`, `MUSTER_DIRECT_CLIENTS`), set `MUSTER_PUBLIC_URL` back to the main port's
 address (`http://localhost:8105`, or the `https://` one with `tailscale serve`
 pointed at 8105 again), then `mi_dc up -d --wait --remove-orphans` (which
 stops the GoTrue containers). Both halves: an override left behind without its

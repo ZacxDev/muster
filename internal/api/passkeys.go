@@ -163,8 +163,27 @@ func (s *Server) writeGoTrueRefusal(w http.ResponseWriter, what string, err erro
 	}
 }
 
+// passkeyOptionsPerAddr / passkeyOptionsWindow bound the sign-in challenges
+// one client address may have GoTrue mint without signing in.
+//
+// 🔴 MUSTER'S OWN LIMIT IN FRONT OF A GoTrue-LIMITED ROUTE. Every options call
+// costs a GoTrue call and spends GoTrue's own per-address bucket; with no limit
+// here, looping this anonymous route was the cheap way to empty GoTrue's
+// bucket for an address. A challenge counts until a passkey sign-in from the
+// same address succeeds, which clears the count (failure-only: a signed-in
+// browser is never held). Options carry no credential, so refusing them past
+// the limit refuses no correct credential.
+const (
+	passkeyOptionsPerAddr = 30
+	passkeyOptionsWindow  = 10 * time.Minute
+)
+
 func (s *Server) handlePasskeySignInOptions(w http.ResponseWriter, r *http.Request) {
 	if s.passkeySignInRefusal(w, r) {
+		return
+	}
+	if !s.passkeyOptions.take(clientIP(r), s.gt.now(), passkeyOptionsWindow, passkeyOptionsPerAddr) {
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
 		return
 	}
 	o, err := s.gt.Client.PasskeySignInOptions(r.Context(), clientIP(r))
@@ -262,6 +281,7 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	outcome = outcomeSucceeded
+	s.passkeyOptions.forget(ip)
 	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	s.backfillCredentialID(r.Context(), ip, u.GotrueSub, credID)

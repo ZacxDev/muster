@@ -2185,7 +2185,11 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if addrPolicy == nil { // a config not from loadConfig: the strict default, named
 		addrPolicy, _ = clientaddr.New(clientaddr.Config{TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader})
 	}
-	l.Printf("%s", addrPolicy.Describe())
+	direct := envDirectClients + " unset (no declaration that clients connect straight to muster)"
+	if a.cfg.DirectClients {
+		direct = envDirectClients + "=1 (declared: clients connect straight to muster, no proxy in front)"
+	}
+	l.Printf("%s; %s", addrPolicy.Describe(), direct)
 
 	// The agent door to browser flows. The deployment's own names are
 	// configuration, and their ABSENCE is a state an operator must be told

@@ -151,6 +151,9 @@ type Server struct {
 	// inviteLimits throttles invite redemption and the password reset
 	// (accounts PR 5; login_invite.go).
 	inviteLimits inviteLimits
+	// passkeyOptions counts unused passkey sign-in challenges per client
+	// address (passkeys.go, passkeyOptionsPerAddr).
+	passkeyOptions boundedWindow
 
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
@@ -573,13 +576,25 @@ type RouterNotification struct {
 // hard ceiling on attempts per minute — is the same.
 //
 // Two uses: allow gates an attempt before it runs (the scroll limiter, keyed
-// per user); fail counts an attempt only after it was judged wrong (the
-// operator-password count, Server.loginRate, which must never refuse the
-// correct password — loginRateBurst's comment).
+// per user); fail counts an attempt only after it was judged wrong, and over
+// reads the count without adding to it (the operator-password count,
+// Server.loginRate: passwordGate refuses only an unknown device with it).
 type rateLimiter struct {
 	mu          sync.Mutex
 	windowStart time.Time
 	count       int
+}
+
+// over reports whether the window at now already holds burst or more
+// attempts, without recording one.
+func (l *rateLimiter) over(now time.Time, burst int, window time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.windowStart) >= window {
+		l.windowStart = now
+		l.count = 0
+	}
+	return l.count >= burst
 }
 
 // fail records one FAILED attempt at now and reports whether the window is

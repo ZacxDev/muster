@@ -96,6 +96,7 @@ See [auth.md](auth.md).
 | `MUSTER_BROWSER_PORT` | none | in gotrue mode | A second listener, the only one that serves browser sessions in gotrue mode. On that mode's browser listener, the shared tokens below are refused with 403. |
 | `MUSTER_TRUSTED_PROXIES` | none (trust nothing) | behind a proxy, to tell clients apart | Comma-separated CIDR ranges (a bare address is one host) of the proxies whose `MUSTER_CLIENT_IP_HEADER` names the client. Only a request whose TCP peer is inside one is believed; from any other peer the client address is the peer. Never include a range agent pods connect from: an agent there could choose its own address. Unset, it is the peer on every listener. Set it together with `MUSTER_CLIENT_IP_HEADER`, or set neither: one without the other, a `/0` range, or a range that does not parse refuses to boot. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
 | `MUSTER_CLIENT_IP_HEADER` | none | with `MUSTER_TRUSTED_PROXIES` | The header a trusted proxy names the client in: `CF-Connecting-IP`, `X-Forwarded-For` or `X-Real-IP` (any case). `X-Forwarded-For` is read from the right: the first entry that is not inside `MUSTER_TRUSTED_PROXIES`. A value that does not parse as an IP address is ignored, and the proxy's own address is used. |
+| `MUSTER_DIRECT_CLIENTS` | none | in gotrue mode, unless `MUSTER_TRUSTED_PROXIES` is set | `1` declares that clients connect straight to muster, with no proxy in front, so each client's address is its own TCP peer. In gotrue mode muster refuses to boot unless the topology is declared: either this, or `MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER`. Setting both refuses to boot in any mode, because they contradict each other. Any value other than `1` or unset refuses to boot. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
 | `MUSTER_HOOK_TOKEN` | none (machine routes open) | in gotrue mode | A shared machine secret that acts as user 1, the admin. It is enforced only when set. When set, it must be at least 12 characters and not the `.env.example` placeholder `CHANGE-ME`; otherwise muster refuses to boot. |
 | `MUSTER_HOOK_TOKEN_FILE` | none | no | A file whose contents are `MUSTER_HOOK_TOKEN`, read only when that is empty. The Compose stack generates it once when `.env` sets no token. |
 | `MUSTER_SERVICE_TOKEN` | none (routes answer 503) | no | A service-to-service secret that acts as user 1. Requests must also send an `X-Muster-Actor` header. At least 32 characters. |
@@ -121,6 +122,20 @@ rate limits. It is decided the same way on every listener (the main port,
 With neither variable set (the default), the address is always the peer. Behind
 a proxy, every client then has the proxy's address: the per-address limits
 become one shared bucket, but no client can choose another client's address.
+
+🔴 **In gotrue mode the topology must be declared, or muster refuses to boot.**
+muster sends each request's client address to GoTrue, which keys its own
+per-address limits on it (password sign-in, session refresh, passkey sign-in,
+password-reset links). Behind an undeclared proxy every user would share the
+proxy's address in GoTrue, and anyone could empty that one bucket and have
+GoTrue refuse everyone's correct sign-in. So set one of:
+
+- `MUSTER_TRUSTED_PROXIES` and `MUSTER_CLIENT_IP_HEADER`, for a proxy in front
+  of muster (see below); or
+- `MUSTER_DIRECT_CLIENTS=1`, when clients connect straight to muster with no
+  proxy.
+
+Password mode has no GoTrue and does not require either.
 The boot log names the mode (`client address: STRICT` or
 `client address: TRUSTED PROXIES`). A forwarding header from an untrusted peer,
 and a trusted peer sending no usable header, are each logged at most once a
