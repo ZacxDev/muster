@@ -1016,7 +1016,7 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				// else is never sent to a page of server settings (the operator
 				// rule: how-to-enable details are an admin's), so theirs is
 				// simply not drawn.
-				g.If(!feat.Connectors && feat.Admin, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
+				g.If(!feat.Connectors && feat.Setup, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
 				// The shareable pages (page_card.go): a standalone screen too.

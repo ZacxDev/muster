@@ -380,7 +380,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					Class("border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words"),
 					Span(ID("term-error-text"), g.Text(v.Unavailable)),
 					// The exact words of a refusal, behind an ⓘ (hostDetailSlot).
-					g.If(v.BadgeHost != "", hostDetailSlot("term-error-info", v.Nav.Feat.Admin)),
+					g.If(v.BadgeHost != "", hostDetailSlot("term-error-info", v.Nav.Feat.Setup)),
 					Button(
 						ID("term-reconnect"),
 						Type("button"),
@@ -439,7 +439,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				// pushes it up — measured as a 0.01259 shift of #term-keys
 				// opening the terminal in its frame at 390px (cls.spec).
 				// TestTheViewPagesPaintWholeBeforeAnyScript pins the order.
-				terminalComposer(v.Composer, v.Switcher, v.Nav.Feat.Admin),
+				terminalComposer(v.Composer, v.Switcher, v.Nav.Feat.Setup),
 				// No composer (an offline host): the bar is the column's foot on
 				// its own.
 				g.If(v.Composer == nil, terminalSwitcher(v.Switcher)),

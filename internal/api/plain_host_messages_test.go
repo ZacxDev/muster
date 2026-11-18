@@ -116,8 +116,7 @@ func sessionBody(t *testing.T, page string) string {
 // view, and its opencode window's Rendered view on a computer that does not
 // send to opencode — say so in plain words, every banner, status row,
 // composer note, placeholder and tooltip of their <body>: no flag, no
-// "mirror:", no binary name. The flag is in the composer's ⓘ (here withheld:
-// the viewer is not an admin, so it says to ask the admin).
+// "mirror:", no binary name. The flag is in the composer's ⓘ.
 //
 // REGRESSION TEST for the jargon audit's F006/F012/F014/F015/F016/U-08/U-09/
 // U-10/U-11: red at origin/main ("This host is read-only — its muster-mirror
@@ -136,14 +135,15 @@ func TestNoTopLayerOfASessionPageSpellsAHostMessage(t *testing.T) {
 		}
 		body := sessionBody(t, page)
 		assertNoHostJargon(t, name, body)
-		// It says why, in words, and the ⓘ beside it is there — withheld.
+		// It says why, in words, and the ⓘ beside it holds the setting: the
+		// viewer is the password operator, an admin (a member's is withheld:
+		// ui's TestAViewOnlyNotesInfoShowsAnAdminTheSettingAndOthersAskYourAdmin).
 		if !strings.Contains(body, html.EscapeString(ui.MirrorReadOnlyNote)) {
 			t.Errorf("%s: the composer does not say the computer is view-only", name)
 		}
 		note := body[strings.Index(body, `id="mv-readonly"`):]
-		if !strings.Contains(note, `id="mv-readonly-info-open"`) || !strings.Contains(note, `data-info-withheld=""`) ||
-			strings.Contains(note, `data-info-code="">-interactive<`) {
-			t.Errorf("%s: no withheld ⓘ beside the view-only note:\n%.2000s", name, note)
+		if !strings.Contains(note, `id="mv-readonly-info-open"`) || !strings.Contains(note, `data-info-code="">-interactive<`) {
+			t.Errorf("%s: no ⓘ holding the setting beside the view-only note:\n%.2000s", name, note)
 		}
 	}
 	// An opencode window on an -interactive computer that does not send to

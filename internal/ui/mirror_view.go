@@ -198,7 +198,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// room by default, the ⋯ beside the message controls).
 		Collapsible: true, MoreInRow: true}
 	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
-	composer.Admin = v.Nav.Feat.Admin
+	composer.Admin = v.Nav.Feat.Setup
 	// The session the view shows rides every message written here (a gated
 	// runtime's window): the script keeps it the one the stream draws.
 	if v.AgentSession != "" {
@@ -330,7 +330,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Span(ID("mv-error-text")),
 					// The exact words the host or the hub sent, behind an ⓘ
 					// (hostDetailSlot): the line above is plain.
-					hostDetailSlot("mv-error-info", v.Nav.Feat.Admin),
+					hostDetailSlot("mv-error-info", v.Nav.Feat.Setup),
 				),
 				Main(
 					ID("mv-log"),

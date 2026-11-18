@@ -54,7 +54,7 @@ func TestTheNavShowsConnectorsAsOff(t *testing.T) {
 	doc := func(f Features) string {
 		return sidebarPanel(t, documentSource(t, NavDocument(NavDocumentView{Title: "x", Entry: NavAccount, Feat: f, Main: "<h1>x</h1>"})))
 	}
-	off := doc(Features{Admin: true})
+	off := doc(Features{Setup: true})
 	if !strings.Contains(off, `id="sidebar-connectors-off" href="/account/features#connectors"`) {
 		t.Error("connectors off: no muted Connectors entry linking to its Features row")
 	}

@@ -979,7 +979,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	// Connectors and Push also read the feature registry: it can
 	// only take a control away (featureOff), never draw one over nothing.
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Setup: p.Role == authz.RoleAdmin, Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
 		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest}
 }

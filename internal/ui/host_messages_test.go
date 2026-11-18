@@ -13,7 +13,7 @@ import (
 func TestAViewOnlyNotesInfoShowsAnAdminTheSettingAndOthersAskYourAdmin(t *testing.T) {
 	page := func(admin bool) string {
 		v := MirrorViewView{Host: "atlas", Session: "main", Window: "@1", Interactive: false}
-		v.Nav.Feat.Admin = admin
+		v.Nav.Feat.Setup = admin
 		out := renderString(t, MirrorViewPage(v))
 		i := strings.Index(out, `id="mv-readonly"`)
 		if i < 0 {

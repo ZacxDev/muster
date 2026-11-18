@@ -280,7 +280,7 @@
   // statusFor is the status line of a ready attach in mode m.
   function statusFor(m) {
     if (m === 'rw') return "Connected";
-    if (keysOff) return "Connected · view only";
+    if (keysOff) return "Connected · typing is off";
     if (confirmPath && !fresh()) return "Connected · confirm it's you to type";
     return "Connected";
   }
