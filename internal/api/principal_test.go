@@ -154,6 +154,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages",
 		"GET /pages/{id}",
 		"GET /pages/{id}/preview",
+		// notify_owner's tap target (notify_owner.go).
+		"GET /notify/open",
 		"GET /pages/{id}/versions/{v}/content",
 		"POST /pages/{id}/links/{link}/revoke",
 		"POST /pages/{id}/share",

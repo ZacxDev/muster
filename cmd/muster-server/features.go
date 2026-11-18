@@ -56,7 +56,7 @@ func featureCatalog() []features.Feature {
 			Description: "Phone and desktop notifications through Web Push.",
 			Enable: []features.Var{v(envVAPIDPublicKey, "from muster-server vapid generate"), v(envVAPIDPrivateKey, "from muster-server vapid generate"),
 				v(envVAPIDSubject, "mailto: or https: contact")},
-			Settings: []string{envPushExtraHosts}},
+			Settings: []string{envPushExtraHosts, envNotifyLinkHosts}},
 		{ID: features.Dictation, Name: "Dictation",
 			Description: "A microphone on every message box; speech is transcribed into the box.",
 			// The documented install: the bundled `stt` profile, whose URL the

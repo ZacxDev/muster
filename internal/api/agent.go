@@ -511,6 +511,11 @@ func (s *Server) agentTools() []agentTool {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
+	// notify_owner (notify_owner.go): every agent — the chief included — may
+	// push its owner, labelled as itself, with muster's own push on.
+	if s.notifyOwnerOn() {
+		tools = append(tools, agentTool{def: notifyOwnerToolDef(), mcp: true})
+	}
 	// The officer runtime (officers.go), present when officers are declared:
 	// an officer's instances reach their HQ queue through muster, which holds
 	// the officer's token. On MCP (officer instances are claude-code agents);

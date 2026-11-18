@@ -94,11 +94,12 @@ func fullyWiredServer(t *testing.T) *Server {
 		Kinds:   stubKinds{},
 		// The outcome tracker and the model catalogue: registration must not
 		// branch on them.
-		ModelCatalog:  stubModelCatalog{},
-		Outcomes:      agentoutcome.NewPG(nil),
-		AgentWatchdog: agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
-		PublicURL:     "http://example.test",
-		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}},
+		ModelCatalog:    stubModelCatalog{},
+		Outcomes:        agentoutcome.NewPG(nil),
+		AgentWatchdog:   agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
+		PublicURL:       "http://example.test",
+		NotifyLinkHosts: []string{"docs.example.com"},
+		PluginOrigins:   []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}},
 		ClientAddr: func() *clientaddr.Policy {
 			p, err := clientaddr.New(clientaddr.Config{TrustedProxies: "192.0.2.0/24", Header: "X-Forwarded-For"})
 			if err != nil {

@@ -29,7 +29,7 @@ Off, no page tool is offered, the Pages screen answers the typed
 
 Offered to every dispatched agent (on its gateway turns and over `POST /mcp`)
 and to every mirrored Claude Code session (`POST /mirror/mcp`). A mirrored
-opencode session is not offered them: its set is the attention and task tools
+opencode session is not offered them: its set is the attention and task tools and `notify_owner`
 ([attention.md](attention.md#mirrored-opencode-sessions)). A tool acts
 only on pages its caller made: a dispatched agent on its own pages, a mirrored
 session on the pages made from its **host** (the host is what the mirror token
@@ -37,8 +37,8 @@ proves). Any other page reads as `no such page`.
 
 | tool | what it does |
 |---|---|
-| `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `preview_url`, which only you can open, signed in. |
-| `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
+| `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `preview_url`, which only you can open, signed in. You are notified: *Page ready: <title>*, opening its preview, under the `page_published` toggle. |
+| `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. You are notified of each version: *Page updated: <title> (v<N>)*, opening that version's preview, under its own toggle `page_updated` — at most 6 per 10 minutes from one agent or session, the newer replacing the older on your device ([push.md](push.md#an-agent-notifies-you)). |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
 | `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
@@ -377,3 +377,12 @@ updated as well as the server.
   you are pushed.
 - **Require the viewer's email** per link.
 - **Page assets** uploaded once and referenced; today images are `data:` URIs.
+
+## If a page's notification did not arrive
+
+Each page notification that reaches nobody is logged where it is dropped:
+`push: dropped tag=page-<id>-ready …` (or `-updated`), with the reason — the
+event muted in Account → Notifications, a cap reached, no device subscribed
+([push.md](push.md#every-dropped-notification-is-logged)). A delivered one
+logs `push: delivered tag=page-<id>-ready owner=<id> to N/M device(s)`, which
+means a push service accepted it, not that the device showed it.

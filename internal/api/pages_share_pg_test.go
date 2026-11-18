@@ -409,7 +409,8 @@ func TestShareWithoutAKeyMakesANewLinkEachTime(t *testing.T) {
 }
 
 // TestPublishPushesTheOwnerOnce: page_create pushes its OWNER (only) "Page
-// ready: <title>", opening the preview; page_update pushes nothing more.
+// ready: <title>", opening the preview; page_update sends no second "ready"
+// (its own "Page updated" push is TestEveryPageVersionPushesItsOwnerUnderTheSendersCap's).
 func TestPublishPushesTheOwnerOnce(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Fresh page", `[{"type":"markdown","text":"v1"}]`)
