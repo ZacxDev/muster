@@ -589,7 +589,7 @@ type SessionPage struct {
 	Version int
 	// Shared: it has a live link (someone without an account can open it).
 	Shared bool
-	// Made is when it was made, in words.
+	// Made is when it was made, in words ("today", ui.PlainWhen).
 	Made string
 }
 

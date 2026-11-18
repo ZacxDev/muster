@@ -487,6 +487,12 @@ export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_M
 // The session view's Open button and its Previews | Pages panel
 // (session-open.spec.ts): its own mirror server (plugins and pages on).
 export const sessionOpenPort = port + 445;
+// tests/plugin-autostart.spec.ts: a plugin's auto-start on its /plugins card —
+// its own e2eterm server over the noop driver, its connect listener, and the
+// fake GitHub App it plays (+450 to +452: clear of the blocks above).
+export const pluginAutostartPort = port + 450;
+export const pluginAutostartConnectPort = port + 451;
+export const pluginAutostartFakePort = port + 452;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

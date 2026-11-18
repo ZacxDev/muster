@@ -12,8 +12,12 @@ import { startServer, Running } from '../lib/server';
 //   - the owner opens /attention and TAPS the Log tab — the panel is fetched
 //     then (the page's own render reads nothing from the log) — and sees the
 //     summary (7 asks, 5 answered by you, median 30s, 90th percentile 2m),
-//     the question asked three times with its usual answer, and the list,
-//     where the row whose text the retention sweep cleared says so;
+//     the breakdowns as plain "label N" rows under the page's one heading
+//     style (no pill: nothing there is a control), the log's unended ask as
+//     "No answer" (never "Open", the header's word for what waits on you
+//     now), the question asked three times AS IT WAS ASKED with its usual
+//     answer, and the list, where the row whose text the retention sweep
+//     cleared says so;
 //   - the Kind filter, applied, reloads the page on the Log tab with the
 //     filter in the address and only that kind listed;
 //   - nothing scrolls sideways.
@@ -81,10 +85,40 @@ for (const vp of [
       await expect(stat('median')).toHaveText('30s');
       await expect(stat('p90')).toHaveText('2m');
 
+      // THE BREAKDOWNS: plain statistics under the Asks page's one heading
+      // style, never pills. askfix's 7: 5 answered, 1 declined and 1 never
+      // ended — "No answer" (a tie keeps the outcomes' own order), never the
+      // header's "N open".
+      const counts = (k: string) =>
+        panel.locator(`[data-asklog-counts="${k}"] [data-count]`).evaluateAll((els) =>
+          els.map((e) => `${e.querySelector('dt')!.textContent!.trim()} ${e.querySelector('dd')!.textContent!.trim()}`));
+      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'opencode permission request 1']);
+      expect(await counts('outcome')).toEqual(['Answered 5', 'No answer 1', 'Declined 1']);
+      expect(await counts('answered_by')).toEqual(['You 5', 'The chief 1', 'Nobody 1']);
+      await expect(page.locator('[data-asks-open-count]')).toHaveText(/^\d+ open$/);
+      await expect(panel.getByText(/\bopen\b/i), 'the log never says "open"').toHaveCount(0);
+      await expect(panel.locator('[data-asklog-summary] [data-count].rounded-full, [data-asklog-summary] span.rounded-full'), 'no count is drawn as a pill').toHaveCount(0);
+      const heads = panel.locator('h2[data-asks-group-label]');
+      await expect(heads).toHaveText(['Kind of question', 'How it ended', 'Who answered', 'Asked most often', 'Every ask, newest first']);
+      const headClass = await heads.first().getAttribute('class');
+      for (const c of await heads.evaluateAll((els) => els.map((e) => e.getAttribute('class')))) expect(c, 'one heading class').toBe(headClass);
+      // The ⓘ explains every outcome the log holds.
+      await panel.locator('#asklog-outcome-info-open').click();
+      const sheet = page.locator('#asklog-outcome-info');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('[data-meaning]')).toHaveCount(3);
+      await expect(sheet.locator('[data-meaning="open"]')).toContainText('Not the same as waiting on you now.');
+      await sheet.getByRole('button', { name: 'Close' }).click();
+      await expect(sheet).toBeHidden();
+
+      // Grouped by its normal form, shown as the owner saw it (the newest
+      // ask's own text, its last paragraph: what was asked), on one short
+      // facts line.
       const top = panel.locator('[data-asklog-top-row]');
       await expect(top).toHaveCount(1);
-      await expect(top.locator('[data-asklog-norm]')).toHaveText('shall i continue with the next step');
-      await expect(top.locator('[data-asklog-top-facts]')).toHaveText('3 times · you answered 2 · usually “yes” (2) · median 20s');
+      await expect(top).toHaveAttribute('data-norm', 'shall i continue with the next step');
+      await expect(top.locator('[data-asklog-top-question]')).toHaveText('Shall I continue with the next step?');
+      await expect(top.locator('[data-asklog-top-facts]')).toHaveText('3 times · you answered 2 · usually “yes” · median 20s');
 
       const rows = panel.locator('[data-asklog-row]');
       await expect(rows).toHaveCount(7);
@@ -97,6 +131,28 @@ for (const vp of [
       const shot = testInfo.outputPath(`asks-log-${vp.key}.png`);
       await page.screenshot({ path: shot, fullPage: true });
       await testInfo.attach(`asks-log-${vp.key}.png`, { path: shot, contentType: 'image/png' });
+      // The viewport, at the top and scrolled to "Asked most often" (under the
+      // sticky header, which is opaque: nothing scrolled shows through it).
+      await page.evaluate(() => {
+        document.documentElement.style.scrollBehavior = 'auto';
+        window.scrollTo(0, 0);
+      });
+      const atTop = testInfo.outputPath(`asks-log-${vp.key}-top.png`);
+      await page.screenshot({ path: atTop });
+      await testInfo.attach(`asks-log-${vp.key}-top.png`, { path: atTop, contentType: 'image/png' });
+      await panel.locator('#asklog-top').evaluate((e) => {
+        const below = document.querySelector('header')!.getBoundingClientRect().bottom;
+        window.scrollTo({ top: window.scrollY + e.getBoundingClientRect().top - below - 4, behavior: 'instant' });
+      });
+      // The heading sits just under the header, not behind it.
+      await expect
+        .poll(() => panel.locator('#asklog-top').evaluate((e) => e.getBoundingClientRect().top - document.querySelector('header')!.getBoundingClientRect().bottom))
+        .toBeGreaterThanOrEqual(0);
+      const bg = await page.locator('header').first().evaluate((e) => getComputedStyle(e).backgroundColor);
+      expect(bg, 'the sticky header is opaque').not.toMatch(/rgba\([^)]*,\s*0?\.\d+\)/);
+      const scrolled = testInfo.outputPath(`asks-log-${vp.key}-scrolled.png`);
+      await page.screenshot({ path: scrolled });
+      await testInfo.attach(`asks-log-${vp.key}-scrolled.png`, { path: scrolled, contentType: 'image/png' });
 
       // THE FILTERS ARE BEHIND ONE "Filters" TOGGLE, SHUT (the design review):
       // the tab's first screen is the summary, not eight fields. RED at

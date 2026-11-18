@@ -406,7 +406,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
-		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur lg:pl-72"),
+		Class(StickyHeaderClass+" lg:pl-72"),
 		Div(
 			// contentWidth() — the SAME helper the <main> below it uses, so the
 			// header's left edge and the chat column's left edge cannot drift apart.

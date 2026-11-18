@@ -311,7 +311,7 @@ func TestCardTextIsEscapedEverywhere(t *testing.T) {
 		// The place is words ("on <host>"); the exact target is the ⓘ's.
 		"place":    `data-attention-source>on atlas ` + placeWant + `</span>`,
 		"address":  `data-info-code="">tmux fern:1 @ atlas ` + placeWant + `</code>`,
-		"copy":     `data-copy-text="tmux fern:1 @ atlas ` + placeWant + `"`,
+		"copy":     `data-info-copy=""`,
 		"question": `data-attention-text>q? ` + want + `</p>`,
 		"option":   `data-attention-option>opt ` + want + `</button>`,
 		"chip":     `>chip ` + want + `</button>`,

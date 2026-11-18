@@ -155,14 +155,17 @@ one-off live link, so a press or a tab-through would leave links nobody holds
 there the tap alone makes the link. If the tap still beats the fetch, the link is copied in the same
 tap and the sheet is tried when it arrives; if the browser refuses it, the
 toast says the link is copied, and the next tap shares at once. The Pages
-screens draw the address on the button already.
+screens draw the address on the button already. A server without the key says
+so on the page's screen in words (*Sharing isn't set up on this server*); the
+setting it needs is in the ⓘ beside that line, for an admin only (anyone else
+is told to ask their admin).
 
 **Older links** — every link made before reusable links existed, an agent's
 link you approved on Asks, and every link made on a server without the key —
 are **hash-only**: muster stores only the token's sha256, so such a link was
 shown once, to whoever made it, and cannot be shown again. They keep working
-and can be revoked; the page's screen labels them *an older link: its address
-cannot be shown again*. Share does not reuse them — it makes the page's
+and can be revoked; the page's screen labels them *an earlier link, which can't
+be copied again*. Share does not reuse them — it makes the page's
 reusable link beside them. ⚠ An agent's link **is** in that agent's
 transcript, and so with its model provider: `page_share_request`'s result
 carries it. Treat a link an agent shared as shared with whatever sees that
@@ -191,10 +194,12 @@ no agent or session token reaches it). It is not a server setting.
 While it is off:
 
 - **An agent asks** with `page_share_request`. That files a **pending** link
-  and a question for you on the Asks page and your phone: *“<agent> asks to
-  share your page …”*, saying the link always shows the page's latest
-  published version — a version the agent publishes after you approve is
-  shown with no new approval — with the address of your view of it and **Approve link** /
+  and a question for you on the Asks page and your phone: *Share the page
+  “<title>”? <agent> asks to let anyone who has its link open it.*, saying the
+  link always shows the page's latest version — a version the agent publishes
+  after you approve is shown with no new approval — with **Open the page**
+  ([your own view](#the-owners-view) of it, one tap away; the question holds no
+  address) and **Approve link** /
   **Not now**. Approve link makes the link live; Not now declines it for good.
   Only you can decide it, in muster or on your paired phone: a mirrored
   session's `attention_answer` is refused, and so is any answer that is not one
@@ -319,23 +324,39 @@ Which session made a page:
 activity first, with their counts, each with **Share** and **⋯**. A page's
 screen (`/pages/{id}`) has:
 
-- **Share**: the page's reusable link (when it has one) in a box to read, with
-  Share and ⋯.
+- **Share**: **Share** and ⋯ — and on a phone, where Share opens the share
+  sheet, **Copy link** (the same link, always to the clipboard; elsewhere
+  Share itself copies). The page's reusable link (when it has one) is in the
+  ⓘ beside them, with its own Copy; it appears there on the first Share and
+  goes on Revoke — the screen never spells an address.
 
 - **Open the page**: [your own view](#the-owners-view) of it.
-- **Links**: each link's state, who asked, and a short label — when it was
-  made and the first 8 hex digits of its token's hash (`created 2026-11-11
-  14:02 UTC · 3fa9c2e1`), which tells links apart and opens nothing; who made
-  it, and whether it is the page's Share link or an older hash-only one;
-  Revoke. (There is no separate "make a link" button: Share and ⋯ → New link
+- **Links**: each link's state, who asked, when it was made in words
+  (*Made today at 9:14*, in your own time zone), whether it is the page's
+  Share link or an earlier one, and Revoke. Its ⓘ holds its exact label —
+  when it was made (UTC) and the first 8 hex digits of its token's hash
+  (`created 2026-11-11 14:02 UTC · 3fa9c2e1`), which tells links apart and
+  opens nothing. (There is no separate "make a link" button: Share and ⋯ → New link
   make every link.)
-- **Versions**: each version, **View** (your view of it), and **Show this version** (a
-  rollback: the version becomes current, every link shows it, nothing is
-  deleted).
-- **Responses**: everything viewers sent (each naming its link) and you sent
-  from your view (marked *you*), newest first, as JSON, and each file
-  as **Download the file** (`/uploads/{id}/file`: an attachment, never shown
-  inline as a page).
+- **Versions**: each version, when it was made, **View** (your view of it),
+  and **Show this version** (a rollback: the version becomes current, every
+  link shows it, nothing is deleted). Its ⓘ holds its exact time and size.
+- **Responses**: everything viewers sent and you sent from your view (marked
+  *Sent by you*), newest first, each as labelled fields named by the page's
+  own form (the version it was sent through): a form's field labels, a
+  question's *Answer*, a choice's *Chose*, an approval's *Decision* and
+  *Comment*; what a page's own script sent, by its keys (followed four levels
+  deep, deeper is *(nested data)*; each label and value is cut at 200 and
+  2000 characters, and one response draws at most about 4,000 characters,
+  the rest *N more not shown here*). A response to a version that no longer
+  exists is *A response to an older version*. They are shown 50 at a time,
+  newest first, with **Show more** for the older ones. Each file is
+  **Download the file** (`/uploads/{id}/file`: an attachment, never shown
+  inline as a page). An admin also has a **Show raw** ⓘ on each: the part's
+  id, the version, the link it came through and the data as stored — its
+  first 2,000 characters, with **Download the full response**
+  (`/pages/{id}/responses/{rid}/raw`, a JSON attachment) when it is longer. A
+  response too large to keep is refused with a 413 in plain words.
 
 - **Delete this page**: deletes the page, every version, link and response,
   and every file sent through it. It cannot be undone. From its first step
@@ -457,7 +478,8 @@ choice.
 
 A response pushes you **A viewer sent something through one of your pages'
 links** (its own toggle on Account → Notifications), naming the page and the
-component, never what was sent; at most one a minute per page.
+part by its label (*Through “Your details”*), never what was sent; at most
+one a minute per page.
 
 ## Limits
 

@@ -346,6 +346,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	ext := api.Extensions{
 		LegacyProvenanceHeaderPrefix: cfg.LegacyProvenancePrefix,
 		TagAutoDispatch:              cfg.TagAutoDispatch,
+		PluginAutostart:              cfg.PluginAutostart,
 		AgentsIdleAfter:              cfg.AgentsIdleAfter,
 		// Every door that sets an agent's model checks it against OpenRouter's
 		// catalogue (internal/api model_validate.go) — the cache the dispatch

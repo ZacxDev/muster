@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -102,6 +103,8 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	// The view's former address, still in older notifications and cards.
 	mux.HandleFunc("GET "+pagesPath+"/{id}/preview", s.requireSession(s.handlePagePreview))
 	mux.HandleFunc("GET "+pagesPath+"/{id}/versions/{v}/content", s.requireSession(s.handlePageVersionContent))
+	// An admin's download of one response's stored form (its raw ⓘ, cut).
+	mux.HandleFunc("GET "+pagesPath+"/{id}/responses/{rid}/raw", s.requireSession(s.handlePageResponseRaw))
 	// The owner's own responses from their view: their session and muster's
 	// own Origin (requireOperatorWrite), never a link's token.
 	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}/submit", s.requireOperatorWrite(s.handleOwnerPageSubmit))
@@ -289,6 +292,8 @@ func pageStoreRefusal(err error) (int, string, string) {
 		return http.StatusBadRequest, strings.TrimPrefix(err.Error(), pages.ErrInvalid.Error()+": "), "invalid"
 	case errors.Is(err, pages.ErrTooMany):
 		return http.StatusConflict, "This page is not taking any more responses.", "full"
+	case errors.Is(err, pages.ErrResponseTooLarge):
+		return http.StatusRequestEntityTooLarge, "That is too much to send at once. Send less.", "invalid"
 	case errors.Is(err, pages.ErrLinkNotFound), errors.Is(err, pages.ErrNotFound), errors.Is(err, pages.ErrClosing):
 		return http.StatusNotFound, strings.TrimSpace(pageLinkGone), "not_found"
 	}
@@ -608,10 +613,24 @@ func (s *Server) pageResponded(ctx context.Context, p pageResponder, v pages.Ver
 	s.pushTask(p.link.OwnerID, pushEventPage, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page “" + truncate(v.Title, 60) + "” got " + what,
-		Body:  "Through " + r.Component + ". Open the page in muster to see it.",
+		Body:  pageResponsePushBody(v.Blocks, r),
 		Tag:   "page-" + strconv.FormatInt(p.page, 10) + "-response",
 		Data:  map[string]string{"url": pagePath(p.page)},
 	})
+}
+
+// pageResponsePushBody is a response's push body: the part it came through
+// by the page's own label (pages.DescribeAnswer's heading, UploadHeading for
+// a file) — never the part's id, never the viewer's words.
+func pageResponsePushBody(blocks []pages.Block, r pages.Response) string {
+	if r.Component == pages.CustomComponent {
+		return "From the page's own script. Open the page in muster to see it."
+	}
+	part := pages.UploadHeading(blocks, r.Component)
+	if r.Kind != pages.KindUpload {
+		part = pages.DescribeAnswer(blocks, r.Component, nil).Heading
+	}
+	return "Through “" + truncate(part, 60) + "”. Open the page in muster to see it."
 }
 
 // pagePath is the owner's page of id.
@@ -660,6 +679,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 		s.logger.Printf("pages: list: share links: %v", serr)
 	}
 	esc := html.EscapeString
+	now := s.now()
 	how := "An agent asks you before a link goes live (you can let your agents share without asking, on <a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
 	if s.pageAgentShareOn(r.Context(), requestOwner(r.Context())) {
 		how = "You let your agents share without asking: an agent's link goes live at once; you are told, and can revoke it (<a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
@@ -667,7 +687,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="pages-page">
 <h1 class="text-balance text-base font-semibold text-fg">Pages</h1>
-<p class="text-sm text-fg2">Pages your agents made. Only you can see one until it has a live link; anyone with a live link can open it, without a muster account. ` + how + ` Share gives you the page's link to send.</p>
+<p class="text-sm text-fg2">Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. ` + how + ` Share gives you the page's link to send.</p>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<ul class="flex flex-col gap-2" data-testid="pages">
@@ -679,9 +699,9 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 		id := strconv.FormatInt(p.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-page-id="` + id + `">
 <a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(textplain.Title(p.Title)) + `</a>
-<span class="text-xs text-fg2">by ` + esc(p.Creator.Label) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
-			` · ` + strconv.Itoa(p.LiveLinks) + ` live link(s), ` + strconv.Itoa(p.Pending) + ` waiting for you · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
-			strconv.Itoa(p.Responses) + ` response(s)</span> · updated ` + esc(ruleTime(p.UpdatedAt)) + `</span>
+<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
+			` · ` + pageLinksWords(p.LiveLinks, p.Pending) + ` · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
+			pageCount(p.Responses, "response", "responses") + `</span> · ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `</span>
 <div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID]) + `</div>
 </li>
 `)
@@ -737,7 +757,16 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	}
 	versions, verr := s.ext.Pages.Versions(ctx, id)
 	links, lerr := s.ext.Pages.Links(ctx, id)
-	resps, rerr := s.ext.Pages.Responses(ctx, id, 0, 500)
+	// The responses, a screen at a time, newest first: ?responses_before=<id>
+	// is the next (older) screen. One more than a screen is read to know
+	// whether there is one.
+	before, _ := strconv.ParseInt(r.URL.Query().Get("responses_before"), 10, 64)
+	resps, rerr := s.ext.Pages.ResponsesBefore(ctx, id, before, pageResponsesPerScreen+1)
+	olderFrom := int64(0)
+	if len(resps) > pageResponsesPerScreen {
+		resps = resps[:pageResponsesPerScreen]
+		olderFrom = resps[len(resps)-1].ID
+	}
 	if err := errors.Join(verr, lerr, rerr); err != nil {
 		s.logger.Printf("pages: page %d: %v", id, err)
 		problem = "Part of this page could not be read."
@@ -745,20 +774,28 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	esc := html.EscapeString
 	pid := strconv.FormatInt(id, 10)
 	base := pagePath(id)
+	now := s.now()
+	// Setup details (the setting that turns reusable links on, a response's
+	// stored form) are an admin's (ui.Features.Setup's predicate).
+	admin := authz.IsAdmin(ctx)
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
 <h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
-<p class="text-sm text-fg2">` + pageMadeBy(esc(p.Creator.Label), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
+<p class="text-sm text-fg2">` + pageMadeBy(esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
 `)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
 		b.WriteString(`<p class="text-sm text-fg" role="status" data-page-notice>` + esc(notice) + `</p>`)
 	}
 	if shown != "" {
+		// 🔴 THE ADDRESS IS IN THE ⓘ AND ON THE COPY BUTTON, NEVER DRAWN in the
+		// top layer: this answer is still the only place the owner sees it.
 		b.WriteString(`<div class="` + flowsCardClass + `" data-link-new>
-<span class="text-sm font-semibold text-fg">Your new link — copy it now. It is shown only this once; if you lose it, make a new one and revoke this one.</span>
-<input type="text" readonly value="` + esc(shown) + `" class="w-full rounded-md bg-bg px-3 py-2 font-mono text-xs text-fg ring-1 ring-inset ring-edge" data-link-url aria-label="The new link">
+<span class="text-sm font-semibold text-fg">Your new link is ready — copy it now. It is shown only this once; if you lose it, make a new one and revoke this one.</span>
+<div class="flex flex-wrap items-center gap-2"><button type="button" class="` + pageQuietButton + `" data-copy-text="` + esc(shown) + `" onclick="window.cgCopy &amp;&amp; window.cgCopy(this)" data-link-copy>Copy link</button>` +
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "page-link-new", Label: "The new link", Heading: "Your new link",
+				Lead: "Anyone with this link can open the page. Copy it now:", Code: shown}) + `</div>
 </div>
 `)
 	}
@@ -771,19 +808,36 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	b.WriteString(`<section id="share" class="flex flex-col gap-2" data-page-share-box data-page-id="` + pid + `">
 <h2 class="text-sm font-semibold text-fg">Share</h2>
 `)
+	curURL := ""
+	if cur.Token != "" {
+		curURL = s.pageLinkURL(cur)
+	}
 	switch {
 	case cur.Token != "":
-		b.WriteString(`<p class="text-sm text-fg2">Anyone with this link can open the page. Share gives you the same link every time; New link (⋯) replaces it, and the old one stops working.</p>
-<input type="text" readonly value="` + esc(s.pageLinkURL(cur)) + `" class="w-full rounded-md bg-bg px-3 py-2 font-mono text-xs text-fg ring-1 ring-inset ring-edge" data-share-url-field data-page-id="` + pid + `" aria-label="This page's link">
+		b.WriteString(`<p class="text-sm text-fg2">Anyone with its link can open the page. Share gives you the same link every time; New link (⋯) replaces it, and the old one stops working.</p>
 `)
 	case s.ext.Pages.LinksReusable():
 		b.WriteString(`<p class="text-sm text-fg2">No link yet. Share makes the page's link — the same one every time after — and hands it to your phone's share sheet, or copies it.</p>
 `)
 	default:
-		b.WriteString(`<p class="text-sm text-fg2">Share makes a new one-off link and copies it. This server keeps no reusable links (MUSTER_CONNECTOR_ENCRYPTION_KEY is unset), so each address is shown only when it is made; revoke the ones you no longer need below.</p>
+		// The ⓘ is the paragraph's sibling: a popover sheet is not phrasing
+		// content, so it may not sit inside the <p>.
+		b.WriteString(`<div class="flex items-start gap-1"><p class="min-w-0 flex-1 text-sm text-fg2" data-page-share-setup>Sharing isn't set up on this server, so the page has no lasting link. Share makes a new one-off link and copies it; you can copy each one only when it is made. Revoke the ones you no longer need below.</p>` +
+			ui.InfoSheetHTML(pageShareSetupSheet(admin)) + `</div>
 `)
 	}
-	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur) + `</div>
+	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur))
+	// With a link key: Copy link (shown by the page script only where the
+	// browser has a share sheet — elsewhere Share itself copies) and the
+	// link's ⓘ, drawn hidden while the page has no link so the script can
+	// fill it on the first Share and hide it again on Revoke.
+	if s.ext.Pages.LinksReusable() {
+		var c strings.Builder
+		_ = ui.PageCopyButton(id, p.Title, curURL, true).Render(&c)
+		_ = ui.PageLinkSheet(id, curURL).Render(&c)
+		b.WriteString(c.String())
+	}
+	b.WriteString(`</div>
 </section>
 `)
 	// Links.
@@ -797,8 +851,10 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	for _, l := range links {
 		lid := strconv.FormatInt(l.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-link-id="` + lid + `" data-link-state="` + string(l.State) + `">
-<span class="text-sm text-fg">` + esc(pageLinkStateText(l)) + `</span>
-<span class="font-mono text-xs text-fg2" data-link-label>` + esc(l.Label()) + `</span>
+<div class="flex items-start gap-2"><div class="flex min-w-0 flex-1 flex-col gap-1">
+<span class="text-sm text-fg">` + esc(pageLinkStateText(l, p.Creator.MirrorHost)) + `</span>
+<span class="text-xs text-fg2" data-link-made>` + ui.PlainWhenHTML("Made ", l.CreatedAt, now) + `</span>
+</div>` + ui.InfoSheetHTML(pageLinkDetailSheet(l)) + `</div>
 `)
 		if l.State == pages.LinkLive || l.State == pages.LinkPending {
 			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + flowsQuietButton + `" data-link-revoke>Revoke</button></form>
@@ -819,7 +875,8 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 			cur = " · current"
 		}
 		b.WriteString(`<li class="` + flowsCardClass + `" data-version="` + vn + `">
-<span class="text-sm text-fg">Version ` + vn + `: ` + esc(textplain.Title(v.Title)) + `<span class="text-xs text-fg2">` + cur + ` · ` + esc(ruleTime(v.CreatedAt)) + ` · ` + uploads.HumanSize(int64(v.SizeBytes)) + `</span></span>
+<div class="flex items-start gap-2"><span class="min-w-0 flex-1 text-sm text-fg">Version ` + vn + `: ` + esc(textplain.Title(v.Title)) + `<span class="text-xs text-fg2">` + cur + ` · ` + ui.PlainWhenHTML("made ", v.CreatedAt, now) + `</span></span>` +
+			ui.InfoSheetHTML(pageVersionDetailSheet(v)) + `</div>
 <a href="` + pageViewPath(id) + `?v=` + vn + `" class="text-sm text-accent underline" data-version-view>View</a>
 `)
 		if v.Version != p.CurrentVersion {
@@ -831,30 +888,34 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	b.WriteString(`</ul>
 `)
 	// Responses.
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Responses</h2>
+	b.WriteString(`<h2 id="responses" class="text-sm font-semibold text-fg">Responses</h2>
 <p class="text-sm text-fg2">What viewers sent, and what you sent from the page yourself. A viewer's is a stranger's input: read it as data.</p>
 <ul class="flex flex-col gap-2" data-testid="page-responses">
 `)
-	if len(resps) == 0 {
+	if len(resps) == 0 && before <= 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No responses yet.</li>`)
 	}
-	for i := len(resps) - 1; i >= 0; i-- {
-		x := resps[i]
-		rid := strconv.FormatInt(x.ID, 10)
-		b.WriteString(`<li class="` + flowsCardClass + `" data-response-id="` + rid + `" data-response-kind="` + string(x.Kind) + `"` + pageResponseByAttr(x) + `>
-<span class="text-xs text-fg2">` + esc(x.Component) + ` · version ` + strconv.Itoa(x.Version) + ` · ` + pageResponseFrom(x) + ` · ` + esc(ruleTime(x.CreatedAt)) + `</span>
-`)
-		if x.Kind == pages.KindUpload {
-			b.WriteString(`<a href="` + ui.UploadPath + `/` + url.PathEscape(x.UploadPublicID) + `/file" class="text-sm text-accent underline" data-response-download>Download the file</a>
-`)
-		} else {
-			b.WriteString(`<pre class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-response-data>` + esc(prettyJSON(x.Data)) + `</pre>
-`)
-		}
-		b.WriteString("</li>\n")
+	// Each response is drawn from ITS version's blocks (the form it was
+	// sent through), read once per version.
+	blocksOf := s.pageResponseBlocks(ctx, id, resps)
+	for _, x := range resps {
+		blocks, read := blocksOf[x.Version]
+		b.WriteString(pageResponseHTML(x, blocks, read, now, admin))
 	}
 	b.WriteString(`</ul>
-<h2 class="text-sm font-semibold text-fg">Delete</h2>
+`)
+	if olderFrom > 0 || before > 0 {
+		b.WriteString(`<div class="flex flex-wrap items-center gap-2" data-responses-pages>`)
+		if before > 0 {
+			b.WriteString(`<a href="` + base + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-newest>Newest responses</a>`)
+		}
+		if olderFrom > 0 {
+			b.WriteString(`<a href="` + base + `?responses_before=` + strconv.FormatInt(olderFrom, 10) + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-more>Show more</a>`)
+		}
+		b.WriteString(`</div>
+`)
+	}
+	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Delete</h2>
 <p class="text-sm text-fg2">Deletes the page, every version, link and response, and every file sent through it. It cannot be undone.</p>
 <form method="POST" action="` + base + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-page-delete>Delete this page</button></form>
 <a href="` + pagesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
@@ -866,22 +927,22 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 
 // pageLinkStateText is a link's state in words: who made it (an agent that
 // made it live WITHOUT asking — its owner opted in — says so), and
-// what kind it is (the page's reusable Share link, or an older hash-only one
-// whose address cannot be shown again).
-func pageLinkStateText(l pages.Link) string {
+// what kind it is (the page's reusable Share link, or an earlier one whose
+// address was shown once, when it was made).
+func pageLinkStateText(l pages.Link, host string) string {
 	by := ""
 	if l.RequestedBy != "" {
-		by = " — asked for by " + l.RequestedBy
+		by = " — asked for by " + pageMakerName(l.RequestedBy, host)
 	}
 	if l.ByAgent && l.AskID == 0 && l.State != pages.LinkPending && l.RequestedBy != "" {
-		by = " — made live by " + l.RequestedBy + " without asking you"
+		by = " — made live by " + pageMakerName(l.RequestedBy, host) + " without asking you"
 	}
 	kind := ""
 	switch {
 	case l.Reusable && l.State == pages.LinkLive:
 		kind = " · the page's Share link"
 	case l.State == pages.LinkLive:
-		kind = " · an older link: its address cannot be shown again"
+		kind = " · an earlier link, which can't be copied again"
 	}
 	switch l.State {
 	case pages.LinkPending:
@@ -894,17 +955,223 @@ func pageLinkStateText(l pages.Link) string {
 	return "Revoked" + by
 }
 
-// prettyJSON is raw indented, or as it is.
-func prettyJSON(raw []byte) string {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return string(raw)
+// --- the page screen's plain words (the operator rule: no address, id,
+// hash, timestamp, JSON or setting name in the top layer; what is needed is
+// behind an ⓘ, and a setup detail is an admin's) ------------------------------
+
+// pageMakerName is who made a page or asked for a link, as the owner reads
+// it: an agent's name as it is; a mirrored session's stored label through
+// mirror.PlainStoredLabel ("work:1 @ atlas" is "work on atlas"), host being
+// the page's creator host. The stored label is unchanged (the agents' tools
+// give it).
+func pageMakerName(label, host string) string { return mirror.PlainStoredLabel(label, host) }
+
+// pageCount is n things in words: "1 response", "3 responses".
+func pageCount(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return string(raw)
+	return strconv.Itoa(n) + " " + many
+}
+
+// pageLinksWords is a list row's sharing state: "not shared", "shared", "2
+// live links", and how many links wait for the owner's approval.
+func pageLinksWords(live, pending int) string {
+	w := "not shared"
+	switch {
+	case live == 1:
+		w = "shared"
+	case live > 1:
+		w = pageCount(live, "live link", "live links")
 	}
-	return string(b)
+	if pending > 0 {
+		w += " · " + strconv.Itoa(pending) + " waiting for you"
+	}
+	return w
+}
+
+// pageShareSetupKey is the setting that gives each page one reusable link.
+const pageShareSetupKey = "MUSTER_CONNECTOR_ENCRYPTION_KEY"
+
+// pageShareSetupSheet is the ⓘ beside "Sharing isn't set up on this server":
+// the setting, for an admin; anyone else is told to ask theirs
+// (ui.InfoSheet.Withheld: the code is absent, not hidden).
+func pageShareSetupSheet(admin bool) ui.InfoSheet {
+	s := ui.InfoSheet{ID: "page-share-setup", Label: "How to set up sharing", Heading: "Set up sharing", Inline: true,
+		Lead: "To keep one lasting link per page, set this on the server (it also turns on Connectors):", Code: pageShareSetupKey}
+	if !admin {
+		s.Lead, s.Withheld = "Sharing links that last is not set up on this server.", true
+	}
+	return s
+}
+
+// pageLinkDetailSheet is a link row's ⓘ: its exact label (when it was made, in
+// UTC, and its token hash's first 8 hex digits — pages.Link.Label, which
+// tells two links apart and opens nothing).
+func pageLinkDetailSheet(l pages.Link) ui.InfoSheet {
+	return ui.InfoSheet{ID: "page-link-detail-" + strconv.FormatInt(l.ID, 10), Label: "Details of this link", Heading: "This link",
+		Lead: "What tells this link apart from the page's others:", Code: l.Label()}
+}
+
+// pageVersionDetailSheet is a version row's ⓘ: its exact time and its size.
+func pageVersionDetailSheet(v pages.Version) ui.InfoSheet {
+	vn := strconv.Itoa(v.Version)
+	return ui.InfoSheet{ID: "page-version-detail-" + vn, Label: "Details of version " + vn, Heading: "Version " + vn,
+		Lead: "When it was made, and its size:", Code: ruleTime(v.CreatedAt) + " · " + uploads.HumanSize(int64(v.SizeBytes))}
+}
+
+// pageResponseBlocks is the blocks of each version resps were sent through
+// (a submit's form, an upload's label), read once per version; a version
+// that does not exist is nil, and its responses are "A response to an older
+// version" (pages.DescribeAnswer, UploadHeading); one that could not be read
+// for another reason is absent.
+func (s *Server) pageResponseBlocks(ctx context.Context, id int64, resps []pages.Response) map[int][]pages.Block {
+	out := map[int][]pages.Block{}
+	for _, x := range resps {
+		if _, ok := out[x.Version]; ok {
+			continue
+		}
+		v, err := s.ext.Pages.Version(ctx, id, x.Version)
+		switch {
+		case errors.Is(err, pages.ErrNotFound):
+			out[x.Version] = nil
+			continue
+		case err != nil:
+			// Not read now (a database error): absent, so its responses are
+			// drawn from their data, never called an older version's.
+			s.logger.Printf("pages: page %d: version %d for its responses: %v", id, x.Version, err)
+			continue
+		}
+		out[x.Version] = v.Blocks
+	}
+	return out
+}
+
+// pageRawRunes bounds a response's raw ⓘ: past it, the rest is the full
+// response's download (handlePageResponseRaw), never drawn — a stranger's
+// 32 KiB submit, hundreds of them, would otherwise be the screen's bulk.
+const pageRawRunes = 2048
+
+// pageResponsesPerScreen is how many responses the page's screen draws at a
+// time; "Show more" is the next, older screen.
+const pageResponsesPerScreen = 50
+
+// pageResponseRawSheet is a response's "Show raw" ⓘ, an ADMIN's only: the
+// part's id, the version, the link and the exact time it came through, and
+// the data as stored — at most pageRawRunes of it; cut says it was cut (the
+// caller then offers the whole as a download).
+func pageResponseRawSheet(x pages.Response) (sheet ui.InfoSheet, cut bool) {
+	from := "link " + strconv.FormatInt(x.LinkID, 10)
+	if x.ByOwner {
+		from = "sent by the owner"
+	}
+	code := "part " + x.Component + " · version " + strconv.Itoa(x.Version) + " · " + from + " · " + ruleTime(x.CreatedAt)
+	if x.Kind == pages.KindUpload {
+		code += " · file " + x.UploadPublicID
+	} else {
+		code += " · " + string(x.Data)
+	}
+	lead := "Exactly what was stored, for troubleshooting:"
+	if short := pages.CutRunes(code, pageRawRunes); short != code {
+		code, cut, lead = short, true, "The start of what was stored, for troubleshooting (the whole of it is the download beside this):"
+	}
+	return ui.InfoSheet{ID: "page-response-raw-" + strconv.FormatInt(x.ID, 10), Label: "Show raw", Heading: "Raw response",
+		Lead: lead, Code: code}, cut
+}
+
+// handlePageResponseRaw is GET /pages/{id}/responses/{rid}/raw: one
+// response's stored form, whole, as a download — what an admin's raw ⓘ
+// offers when it is too long to draw. It is the OWNER's own data, so the
+// door is the owner's session, as the page's screen (row-level security:
+// another owner's response is the one 404); only the LINK to it is an
+// admin's, with the ⓘ it belongs to (the top-layer rule, not a boundary).
+func (s *Server) handlePageResponseRaw(w http.ResponseWriter, r *http.Request) {
+	id, ok := pageIDParam(r)
+	rid, err := strconv.ParseInt(r.PathValue("rid"), 10, 64)
+	if !s.pagesOn() || !ok || err != nil || rid <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	got, err := s.ext.Pages.Responses(r.Context(), id, rid-1, 1)
+	if err != nil || len(got) != 1 || got[0].ID != rid {
+		http.NotFound(w, r)
+		return
+	}
+	x := got[0]
+	body, _ := json.Marshal(map[string]any{"response_id": x.ID, "page_id": x.PageID, "link_id": x.LinkID, "by_owner": x.ByOwner,
+		"version": x.Version, "part": x.Component, "kind": x.Kind, "file": x.UploadPublicID,
+		"created_at": x.CreatedAt.UTC().Format(time.RFC3339), "data": json.RawMessage(orJSONNull(x.Data))})
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Disposition", `attachment; filename="response-`+strconv.FormatInt(x.ID, 10)+`.json"`)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	h.Set("Cache-Control", "no-store")
+	_, _ = w.Write(body)
+}
+
+// orJSONNull is raw, or JSON null when it is empty.
+func orJSONNull(raw []byte) []byte {
+	if len(raw) == 0 {
+		return []byte("null")
+	}
+	return raw
+}
+
+// pageResponseHTML is one response as its owner reads it: the part it came
+// through (by its label), when, and its fields labelled from the version's
+// own form (pages.DescribeAnswer); a file is a download. Every value is a
+// stranger's words, escaped here. The stored form is an admin's ⓘ.
+//
+// read is false when its version could not be read now (pageResponseBlocks):
+// it is then drawn from its data alone, under a plain "A response" / "A file".
+func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now time.Time, admin bool) string {
+	esc := html.EscapeString
+	rid := strconv.FormatInt(x.ID, 10)
+	var a pages.Answer
+	if x.Kind == pages.KindUpload {
+		a.Heading = pages.UploadHeading(blocks, x.Component)
+		if !read {
+			a.Heading = "A file"
+		}
+	} else {
+		a = pages.DescribeAnswer(blocks, x.Component, x.Data)
+		if !read {
+			a.Heading = "A response"
+		}
+	}
+	var b strings.Builder
+	// Who sent it: a viewer, through a link (which one is the raw ⓘ's), or
+	// the owner from their own view of the page.
+	when := ui.PlainWhenHTML("Sent ", x.CreatedAt, now)
+	if x.ByOwner {
+		when = `<span data-response-by="you">` + ui.PlainWhenHTML("Sent by you ", x.CreatedAt, now) + `</span>`
+	}
+	b.WriteString(`<li class="` + flowsCardClass + `" data-response-id="` + rid + `" data-response-kind="` + string(x.Kind) + `"` + pageResponseByAttr(x) + `>
+<div class="flex items-start gap-2"><div class="flex min-w-0 flex-1 flex-col gap-1">
+<span class="break-words text-sm font-semibold text-fg" data-response-heading>` + esc(a.Heading) + `</span>
+<span class="text-xs text-fg2">` + when + `</span>
+</div>`)
+	if admin {
+		sheet, cut := pageResponseRawSheet(x)
+		b.WriteString(ui.InfoSheetHTML(sheet))
+		if cut {
+			b.WriteString(`<a href="` + pagePath(x.PageID) + `/responses/` + rid + `/raw" class="inline-flex min-h-[44px] shrink-0 items-center text-xs text-accent underline" data-response-raw-download>Download the full response</a>`)
+		}
+	}
+	b.WriteString("</div>\n")
+	if x.Kind == pages.KindUpload {
+		b.WriteString(`<a href="` + ui.UploadPath + `/` + url.PathEscape(x.UploadPublicID) + `/file" class="text-sm text-accent underline" data-response-download>Download the file</a>
+`)
+	} else {
+		b.WriteString(`<dl class="flex flex-col gap-1" data-response-fields>`)
+		for _, l := range a.Lines {
+			b.WriteString(`<div><dt class="text-xs text-fg2">` + esc(l.Label) + `</dt><dd class="whitespace-pre-wrap break-words text-sm text-fg" data-response-value>` + esc(l.Value) + `</dd></div>`)
+		}
+		b.WriteString("</dl>\n")
+	}
+	b.WriteString("</li>\n")
+	return b.String()
 }
 
 // pageSessionLink is where the session that made page p is NOW, for the
@@ -943,7 +1210,8 @@ func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label
 		}
 		// claudeSessionEntry: claudeSessionWindow's own lookup, the window
 		// the session runs in NOW.
-		e, ok := claudeSessionEntry(s.ext.Mirror.Hosts(ctx), p.Creator.MirrorHost, p.Creator.MirrorSession)
+		hosts := s.ext.Mirror.Hosts(ctx)
+		e, ok := claudeSessionEntry(hosts, p.Creator.MirrorHost, p.Creator.MirrorSession)
 		if !ok {
 			return "", ""
 		}
@@ -953,8 +1221,17 @@ func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label
 		// entry is the window's, which does not carry it — and plained.
 		// Nothing resolved: the name stored when the page was made.
 		e.Claude, e.ClaudeSession = true, p.Creator.MirrorSession
-		if label = textplain.Title(s.mirrorLabel(ctx, e)); label == "" {
-			label = textplain.Title(p.Creator.Label)
+		// Its human name, else the window as the session lists name it NOW
+		// (windowDisplayName over every window: "main · window 3" when a
+		// sibling would read the same) and where ("on workstation") — the
+		// top layer's words, never its tmux address.
+		if n := s.mirrorName(ctx, e); n.Human() {
+			label = textplain.Title(n.Text)
+		} else if d := windowDisplayName(hosts, mirror.Place{Host: e.Host, Addr: e.Address()}); d != "" {
+			label = textplain.Title(d) + " " + mirror.PlaceWords(e.Host)
+		}
+		if label == "" {
+			label = textplain.Title(pageMakerName(p.Creator.Label, p.Creator.MirrorHost))
 		}
 		return href, label
 	}
@@ -969,15 +1246,6 @@ func pageMadeBy(creator, href, label string) string {
 		return "Made by " + creator + "."
 	}
 	return `Made by <a href="` + html.EscapeString(href) + `" class="text-accent underline" data-page-session>` + label + `</a>.`
-}
-
-// pageResponseFrom is who sent response x, in words: "you" for the owner's
-// own, else the link it came through.
-func pageResponseFrom(x pages.Response) string {
-	if x.ByOwner {
-		return `<span data-response-by="you">you</span>`
-	}
-	return "link " + strconv.FormatInt(x.LinkID, 10)
 }
 
 // pageResponseByAttr marks the owner's own response's row.

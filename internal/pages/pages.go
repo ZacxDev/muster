@@ -94,6 +94,9 @@ var (
 	// ErrClosing is a new link asked of a page whose delete has begun
 	// (CloseLinks ran): it gets none — press Delete again to finish it.
 	ErrClosing = errors.New("pages: this page is being deleted; it takes no new link")
+	// ErrResponseTooLarge is a response its stored form is too large to keep
+	// (the data column's CHECK), whatever its JSON text's size.
+	ErrResponseTooLarge = errors.New("pages: response too large")
 )
 
 // Creator is who made a page, and so who a tool may act on it as: a

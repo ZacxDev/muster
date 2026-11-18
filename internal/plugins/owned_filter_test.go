@@ -130,6 +130,12 @@ var pluginRowReads = map[string]string{
 	"PGStore.SetChiefSession":          "the plugin door's chief binding of the token's own plugin",
 	"PGStore.pairMintable":             "a name's uniqueness among the pairing owner's own (owner_id = $1)",
 	"PGStore.FileOutbound":             "an officer's draft names its owner's plugin (owner_id = $1)",
+
+	// 0154: a plugin's auto-start, written only by its owner's session
+	// (autostartWriter) and read by the owner and the plugin's own door.
+	"PGStore.SetAutostart":   "own",
+	"PGStore.ClearAutostart": "own",
+	"PGStore.AutostartOf":    "own",
 	// O-B round 0: the feature registry's boolean, at boot under System
 	// (cmd/muster-server pluginsBoundAtBoot), deployment-wide by design: it
 	// answers EXISTS and hands on no row.

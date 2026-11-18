@@ -43,8 +43,10 @@ import (
 // whereas a 400 says the same bytes will never be accepted.
 //
 // The task is created UNGATED and with no `auto:` tag: nothing dispatches it on
-// its own (there is no per-owner dispatch policy to apply), and the owner — who
-// gets the usual "New task" push — dispatches it by hand.
+// its own, and the owner — who gets the usual "New task" push — dispatches it
+// by hand. The one exception is a plugin its OWNER opted into auto-start on
+// /plugins (plugin_autostart.go): a new task of that plugin starts an agent
+// under agent_dispatch's own checks, or falls back to the one-tap ask.
 
 const pluginTasksPath = pluginAPIPrefix + "/tasks"
 
@@ -235,6 +237,11 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if created {
+			// AUTO-START (plugin_autostart.go): a NEW task of a plugin its owner
+			// opted in starts an agent now, or falls back to the one-tap ask
+			// with its reason recorded. Nothing at all for any other plugin.
+			s.autostartPluginTask(ctx, p, n, autostartRequest{
+				routesAssigned: in.RouteToChief && in.Notice == noticeAssigned})
 			answer(http.StatusCreated, &n.ID, true, commented)
 			return
 		}

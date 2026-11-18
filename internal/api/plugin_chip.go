@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -164,12 +165,15 @@ func (s *Server) sessionPages(ctx context.Context, x pages.SessionRef) []pages.S
 }
 
 // sessionPagesView is list as the Pages tab draws it: each page's current
-// version, when it was made, and whether it is shared — a live link of any
-// kind (pages.Summary.LiveLinks), so someone without an account can open it.
+// version, when it was made — its day in words (ui.PlainWhen, the Pages
+// screens' rule: no timestamp in the top layer) — and whether it is shared,
+// a live link of any kind (pages.Summary.LiveLinks), so someone without an
+// account can open it.
 func sessionPagesView(list []pages.Summary) []ui.SessionPage {
+	now := time.Now()
 	out := make([]ui.SessionPage, 0, len(list))
 	for _, p := range list {
-		out = append(out, ui.SessionPage{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Shared: p.LiveLinks > 0, Made: ruleTime(p.CreatedAt)})
+		out = append(out, ui.SessionPage{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Shared: p.LiveLinks > 0, Made: ui.PlainWhen(p.CreatedAt, now)})
 	}
 	return out
 }
