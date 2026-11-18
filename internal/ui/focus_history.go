@@ -242,6 +242,13 @@ func focusHistoryScript() g.Node {
     if (!d || !d.matches || !d.matches('[data-focus-history-dialog]')) return;
     var bs = document.querySelectorAll('[data-focus-history-open="' + d.id + '"]');
     for (var i = 0; i < bs.length; i++) bs[i].setAttribute('aria-expanded', 'false');
+    // The dialog gave focus back to its opener; one in a closed ⋯ menu cannot
+    // hold it (focus fell to <body>): its menu's trigger takes it.
+    var a = document.activeElement;
+    if ((!a || a === document.body) && bs.length && window.__musterFocusBack) {
+      var f = window.__musterFocusBack(bs[0]);
+      if (f && f !== bs[0]) f.focus({ preventScroll: true });
+    }
   }, true);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { scan(); });
   else scan();

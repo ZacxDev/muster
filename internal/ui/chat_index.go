@@ -267,7 +267,13 @@ func chatIndexScript() g.Node {
     if (watch) { watch.disconnect(); watch = null; }
     if (!s || s.hidden) return;
     s.hidden = true;
-    if (b) { b.setAttribute('aria-expanded', 'false'); b.focus({ preventScroll: true }); }
+    if (b) {
+      b.setAttribute('aria-expanded', 'false');
+      // An opener in a closed ⋯ menu cannot take focus: its trigger does
+      // (floatingMenuScript's __musterFocusBack).
+      var f = window.__musterFocusBack ? window.__musterFocusBack(b) : b;
+      if (f) f.focus({ preventScroll: true });
+    }
   }
 
   function jump(id) {

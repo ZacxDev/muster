@@ -512,6 +512,9 @@ for (const vp of [
       await expect(page.locator('#chat-index')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(page.locator('#chat-index')).toBeHidden();
+      // Focus goes back to the ⋯ trigger: the item that opened the sheet is
+      // in the closed menu and cannot hold it (it fell to <body>).
+      await expect(trigger, 'focus returns to the ⋯ trigger when the sheet closes').toBeFocused();
       // A NEW COUNT MOVES NOTHING: 7 → 9.
       const shift = await cls(page, async () => {
         playPreviews('@1 4 1\n');
@@ -560,21 +563,7 @@ for (const vp of [
       // Chat history moved to the ⋯ menu (New chat stays in the row).
       await expect(page.locator('header [data-header-tools] button[aria-label="New chat session"]')).toBeVisible();
       await expect(page.locator('header [data-header-tools] label[aria-label="Chat history"]')).toHaveCount(0);
-      const trigger = page.locator('#agent-actions-open');
-      const menu = page.locator('#agent-actions');
-      await trigger.focus();
-      await page.keyboard.press('Enter');
-      await expect(menu).toBeVisible();
-      await expect(menu.locator('[data-chat-history]')).toHaveText('Chat history');
-      await page.keyboard.press('Tab');
-      expect(await page.evaluate(() => !!document.activeElement?.closest('#agent-actions')), 'Tab moves into the menu').toBe(true);
-      await page.keyboard.press('Escape');
-      await expect(menu).toBeHidden();
-      // Its Chat history opens the drawer, and closes the menu.
-      await trigger.click();
-      await menu.locator('[data-chat-history]').click();
-      await expect(menu).toBeHidden();
-      await expect(page.locator('#session-drawer')).toBeChecked();
+      await chatHistoryByKeyboard(page);
     });
 
     test('a gateway agent’s two-row header: its first row one line, no overlap, 44px targets, with its Open button', async ({ page }) => {
@@ -598,8 +587,30 @@ for (const vp of [
         expect(c.x >= m.t.x + m.t.w - 0.5 || c.x + c.w <= m.t.x + 0.5, `the title collides with ${c.what}`).toBe(true);
       }
       expect(m.t.w, 'the title keeps some room').toBeGreaterThan(40);
+      await chatHistoryByKeyboard(page);
     });
   });
+}
+
+// chatHistoryByKeyboard opens an agent page's ⋯ menu from its trigger with
+// Enter, Tabs to its Chat history item and activates it with Enter: the
+// session drawer opens, and the menu closes.
+async function chatHistoryByKeyboard(page: Page): Promise<void> {
+  const trigger = page.locator('#agent-actions-open');
+  const menu = page.locator('#agent-actions');
+  const item = menu.locator('[data-chat-history]');
+  await expect(page.locator('#session-drawer')).not.toBeChecked();
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(menu).toBeVisible();
+  await expect(item).toHaveText('Chat history');
+  // Tab through the menu until Chat history has focus (a menu's first
+  // focusable items may come before it).
+  for (let i = 0; i < 6 && !(await item.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('Tab');
+  await expect(item, 'Tab reaches Chat history').toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#session-drawer'), 'Enter on Chat history opens the drawer').toBeChecked();
+  await expect(menu).toBeHidden();
 }
 
 // page_ makes a page for session sid on the rig's host, now.
