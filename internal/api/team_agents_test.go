@@ -368,6 +368,7 @@ var agentsListCallers = map[string]string{
 	"Server.liveSessions":           "machine: sessions_overview, an agent's tool",
 	"Server.consumerUsageInstances": "machine: consumer usage principal",
 	"Server.readFleet":              "own with MUSTER_FLEET_DIGEST on (ownedBy); off, fleet_list's agent set is as before the digest (every listed agent)",
+	"Server.morningStuck":           "own: the morning report's failed agents (ownedBy)",
 	"Server.focusSearchHistory":     "machine: an agent's tool",
 	"Server.toolAgentsList":         "machine: an agent's tool; on the mirror door, refused to a team token (teamHostTools: an estate read)",
 	"officerFleet.byName":           "machine: an officer's door",
