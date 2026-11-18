@@ -23,7 +23,11 @@ The whole loop:
 2. muster hands it to your chief as a fenced turn.
 3. The chief may file a gated task (`task_create_gated`), draft a reply
    (`reply_draft`), [route it to a session](#routing-a-message-to-a-session)
-   (`route_to_session`, when routing is on), or do nothing.
+   (`route_to_session`, when routing is on), or do nothing. That is the
+   **Kubernetes** chief. The **Docker Compose** chief is offered neither
+   `task_create_gated` nor `reply_draft`: it can only route the message to a
+   session, which writes the reply, and only with routing on
+   ([chief.md](chief.md#on-the-docker-compose-install)).
 4. You approve or reject each draft on the **Asks** page's **Drafts** tab
    (`/attention?tab=drafts`; see [attention.md](attention.md#the-reply-drafts-tab)).
 5. The plugin claims an approved draft (`POST /plugin/v1/drafts/claim`), sends
@@ -625,7 +629,8 @@ example `officer:example:main` (an officer id is `<type>:<area>`). Set it:
   `muster plugins deliver-to <plugin id> officer:example:main` (`--clear`).
 
 Every door refuses a binding unless the officer is **defined in the built-in
-store for the plugin's owner** (`muster officer def put`), and the built-in
+store for the plugin's owner** (`muster officer create`, or **New officer**
+on the Officers page), and the built-in
 store is on (whenever muster has a database). One owner's plugin can never name another
 owner's officer: the officer is read under the owner's row-level security, so
 another owner's officer reads as missing. Each change writes a
@@ -1202,7 +1207,7 @@ only the SHA-256 of the code and of the poll secret.
 | answer | meaning |
 |---|---|
 | `200 {"status": "pending", "expires_at"}` | not decided yet: poll again in a few seconds |
-| `200 {"status": "approved", "token": "mpl_…", "plugin_id", "plugin_name", "capabilities", "deliver_to"}` | the plugin is minted now and this is its token. **This answer is given once**: store the token (0600) before anything else |
+| `200 {"status": "approved", "token": "mpl_…", "plugin_id", "plugin_name", "capabilities", "deliver_to"}` | the plugin is minted now and this is its token. `deliver_to` is there only when the plugin is bound to an officer: an unbound plugin's answer omits it. **This answer is given once**: store the token (0600) before anything else |
 | `200 {"status": "redeemed"}` | the token was already handed out. If you lost it, revoke the plugin and pair again |
 | `200 {"status": "denied"}` / `{"status": "expired"}` | nothing was minted |
 | `404 {"error"}` | no such request, or the poll secret is missing or wrong (the same answer for all three) |
@@ -2165,8 +2170,11 @@ descriptions and the preface on each message.
 
 ## Replying: drafts you approve
 
-The chief answers a message with `reply_draft`. It is offered only to your
-chief, on the agent gateway and over `/mcp`, and only while plugins are on.
+The Kubernetes chief answers a message with `reply_draft`. It is offered only
+to your chief, on the agent gateway and over `/mcp`, and only while plugins are
+on. The Docker Compose chief is not offered it
+([chief.md](chief.md#on-the-docker-compose-install)): there, a reply draft is
+written by a session the chief [routed the message to](#routing-a-message-to-a-session).
 
 ```json
 {"message_id": 42, "body": "Thanks, noon works."}

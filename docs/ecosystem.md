@@ -2,7 +2,7 @@
 
 muster is meant to be extended. Out of the box it lists every coding agent on
 your machines and asks you when one needs you. What you add decides what else
-reaches it, and what it can do for you. This page is the map: the five ways to
+reaches it, and what it can do for you. This page is the map: the six ways to
 extend muster, and the list of plugins people have published.
 
 New to it? Build a plugin first: [plugins-quickstart.md](plugins-quickstart.md)
@@ -30,8 +30,13 @@ on the Officers page, which a plugin's README can carry as a starting point.
   (`POST /plugin/v1/messages`). muster hands it to your chief, or to the
   officer the plugin is bound to, fenced as untrusted data.
 - **Replies out, approved.** Nothing a plugin sends was not approved by you,
-  on its exact text. The plugin collects an approved reply
-  (`POST /plugin/v1/drafts/claim`), sends it, and reports what happened.
+  on its exact text, unless you chose to let muster answer someone you trust
+  without asking: a sender you allowlisted for that plugin, whose identity the
+  plugin verified, gets the answer one of your sessions wrote straight away
+  (`MUSTER_ROUTE_RELAY_ALLOW`; [Routing a message to a session](plugins.md#routing-a-message-to-a-session),
+  [`sender_verified`](plugins.md#sender_verified)). The plugin collects an
+  approved reply (`POST /plugin/v1/drafts/claim`), sends it, and reports what
+  happened.
 - **Its own rules.** A plugin with `draft_checks` checks each reply before you
   can approve it, so your upstream's limits (a length, no Markdown) are
   enforced in one place, the plugin.
@@ -77,7 +82,8 @@ The minimum bar, checked when the row is reviewed:
 - **A public repository with an open-source licence** (MIT, Apache-2.0 or
   similar), in a `LICENSE` file.
 - **A README** that says what the plugin connects, how to run it against a
-  muster, and what it sends where.
+  muster, what it sends where, and **the muster version you tested it
+  against**.
 - **A stated token scope.** Which [capabilities](plugins.md#capabilities) it
   needs (`messages`, `draft_checks`, `viewer`, `chief_extension`) and why each
   one, and whether it is meant to be [bound to an officer](plugins.md#a-plugin-bound-to-an-officer).

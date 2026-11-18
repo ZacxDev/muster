@@ -101,7 +101,9 @@ func newOfficerDeclaredCmds(a *app) []*cobra.Command {
 def and where it runs, in one write. It runs on the built-in backend at once —
 no MUSTER_OFFICERS entry, no restart. --runtime auto (the default) runs it in
 a pod when this muster can, else on the first of your hosts that qualifies
-(see the answer's runs_on and reason). A host officer needs --repo.`,
+(see the answer's runs_on and reason). A host officer may leave --repo
+empty when its host's muster-mirror is current (it starts the officer in a
+scratch directory); an older muster-mirror needs --repo.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := map[string]any{"id": args[0], "name": name, "runtime": runtime, "host": host, "repo": repo,

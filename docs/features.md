@@ -769,7 +769,10 @@ build one, [plugins-quickstart.md](plugins-quickstart.md).
 - **`.env`:** `MUSTER_PLUGINS=1`. The features below build on it; their
   grammar is in [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `plugins: ENABLED (MUSTER_PLUGINS=1) — …`; `/plugins` (no menu
-  link) mints plugin tokens.
+  link) mints plugin tokens. With no agent gateway the line is instead
+  `plugins: ENABLED (MUSTER_PLUGINS=1) with NO agent gateway (MUSTER_AGENT_GATEWAY): …`:
+  a plugin bound to an officer is delivered, an unbound plugin's messages
+  are stored and stay queued.
 
 ### Plugin viewers
 

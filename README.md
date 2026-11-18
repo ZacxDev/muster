@@ -146,7 +146,8 @@ muster grows with what you plug into it.
 
 - **Plugins** bring your other inboxes to muster: email, a chat, a forum, a
   support desk. Your agents read what arrives and draft the answers, and
-  nothing is sent until you approve the exact words.
+  nothing is sent until you approve the exact words, unless you choose to
+  let muster answer someone you trust automatically.
 - **Officers** are agents with one standing job, such as answering support,
   writing release notes or testing each change. Each works on its own and
   asks you before anything leaves.
@@ -155,9 +156,10 @@ muster grows with what you plug into it.
   sends only the replies you approve.
 
 Anyone can build one and share it. See what exists and how to list yours in
-[docs/ecosystem.md](docs/ecosystem.md), build your first plugin in about 15
-minutes with [docs/plugins-quickstart.md](docs/plugins-quickstart.md), and
-give it an officer with [docs/officer-plugin-recipe.md](docs/officer-plugin-recipe.md).
+[Building on muster](docs/ecosystem.md), build your first plugin with
+[Build a plugin in 15 minutes](docs/plugins-quickstart.md), and give it an
+officer with
+[Recipe: a specialised officer with its own plugin](docs/officer-plugin-recipe.md).
 
 <!-- MEDIA SLOT (ecosystem): the film goes here, then 2-3 stills in a row
      (a message arriving, the draft on the Asks page, the reply sent).

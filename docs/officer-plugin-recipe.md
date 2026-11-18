@@ -43,8 +43,11 @@ Reference: [A plugin bound to an officer](plugins.md#a-plugin-bound-to-an-office
 On the **Officers** page, **New officer**:
 
 1. **Start from:** *Blank officer*.
-2. **Name and instructions:** name it *Support inbox*, type `support:inbox`
-   as its id, and paste the charter below.
+2. **Name and instructions:** name it *Support inbox*. Then open **Its id
+   (made from the name)**, a collapsed section under the name, and type
+   `support:inbox` in its **Id** field: left closed, muster makes the id from
+   the name, and the [binding](#2-the-plugin-bound-to-the-officer) names
+   this one. Paste the charter below into **Instructions**.
 3. **Where it runs:** *Let muster choose*.
 4. **When it works:** *Only when I give it work*. The plugin's messages wake
    it.
@@ -195,44 +198,42 @@ until the draft ends.
 
 **Venue rules.** muster refuses, when the draft is filed, a body that a venue
 it knows cannot take, naming the part, its length and the limit, so the
-officer fixes it in the same turn. It knows `x` and `reddit` only. For any
-other venue, `example.support` included, muster guesses no limit: your
-plugin's check is where your venue's rules live.
+officer fixes it in the same turn. The venues it knows, and their limits, are
+listed in [Venue rules](plugins.md#venue-rules). For any other venue,
+`example.support` included, muster guesses no limit: your plugin's check is
+where your venue's rules live.
 
 **The plugin checks it.** Beside its claim loop, the plugin lists the drafts
 waiting for its verdict and answers each one:
 
 ```sh
 curl -s "$MUSTER/plugin/v1/drafts/checks" -H "Authorization: Bearer $TOKEN"
-# {"drafts": [{"draft_id": 18, "kind": "outbound", "message_external_id": "", "body": "…",
-#   "created_at": "…", "venue": "example.support",
-#   "target": {"kind": "reply", "ref": "ticket-4711"}, "media": []}]}
 
 curl -s -X POST "$MUSTER/plugin/v1/drafts/18/check" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"sendable": false, "detail": "line 3 starts with \"- \": the support inbox shows Markdown as text"}'
 ```
 
+The list names each draft's `draft_id`, `kind` (`outbound` here), `body`,
+`venue` and `target`; the full answer is in
+[`GET /plugin/v1/drafts/checks` for an outbound draft](plugins.md#get-pluginv1draftschecks-for-an-outbound-draft).
+
 `sendable: true` lets you decide it. `sendable: false` needs a `detail`, which
 is what the officer is told: the draft is rejected and the officer gets a
 `draft.refused` item to write a better one. An outbound draft's check never
 lapses, so a plugin that stops checking leaves its drafts unapprovable until
-they expire (7 days).
+they expire ([Outbound drafts](plugins.md#outbound-drafts-officer_post_draft)
+says when).
 
 **You approve it** on the Asks page's **Drafts** tab: the venue, the target
 with the customer's message that has that `thread`, and the exact body.
 Approval binds the body's SHA-256. Reject it with a reason, and the officer is
 told the reason as the `draft.refused` item's `detail`.
 
-**The plugin claims and sends it.** The claim says it is outbound and names
-its target:
-
-```json
-{"draft_id": 18, "kind": "outbound", "message_external_id": "",
- "body": "…", "body_sha256": "…", "approved_at": "…",
- "venue": "example.support", "target": {"kind": "reply", "ref": "ticket-4711"},
- "media": []}
-```
+**The plugin claims and sends it.** The claim says it is outbound (`"kind":
+"outbound"`) and names its `venue` and `target`, here
+`{"kind": "reply", "ref": "ticket-4711"}`; the full answer is in
+[`POST /plugin/v1/drafts/claim` for an outbound draft](plugins.md#post-pluginv1draftsclaim-for-an-outbound-draft).
 
 Post `body` as a reply on ticket `target.ref`, read it back, then report:
 

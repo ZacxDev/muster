@@ -25,13 +25,17 @@ your plugin --POST /plugin/v1/drafts/{id}/result--> muster
 - muster running on this machine (the one-line install:
   [quickstart-local.md](quickstart-local.md)). This page uses its address,
   `http://localhost:8105`; put yours in `MUSTER` below.
-- **A chief**, to read the message: the `chief` profile on the Compose install
+- **A chief**, to read the message, **with a credential**: a Claude
+  subscription token (`claude setup-token`) or an OpenRouter key. On the
+  Compose install that is the `chief` profile
   ([features.md](features.md#chief)). Without one, messages wait in a queue
   and nothing drafts a reply.
-- On the Compose install, **one mirrored Claude Code session** with muster's
-  tools ([attention.md](attention.md#mirrored-claude-code-sessions)). The
-  Compose chief cannot write a reply itself; it hands the message to one of
-  your sessions, and the session writes the reply
+- **An agent runtime to write the reply.** The loop cannot finish without
+  one: something has to write the text you approve. On the Compose install
+  that is **one mirrored Claude Code session** with muster's tools
+  ([attention.md](attention.md#mirrored-claude-code-sessions)): the Compose
+  chief cannot write a reply itself, so it hands the message to one of your
+  sessions, and the session writes the reply
   ([chief.md](chief.md#on-the-docker-compose-install)). On Kubernetes the chief
   writes the reply itself, and you can skip this.
 - `curl`, and `jq` for the examples that read an answer.
@@ -99,17 +103,32 @@ curl -s -X POST "$MUSTER/plugin/v1/pair" -H 'Content-Type: application/json' \
 ```
 
 Open `$MUSTER/plugins`, type the `code` into the pending request's **Code the
-plugin printed** field, and press **Approve**. Then poll, and the answer
-carries the token **once**:
+plugin printed** field, and press **Approve**. Approving needs a recent
+sign-in, as approving a draft does ([step 5](#5-approve-the-draft)); an
+older one asks you to confirm it is you first.
+
+No pending request on `/plugins`? Check the `owner` you sent. An `owner` muster
+does not know gets the same answer as a real one (a code and a poll secret,
+so the route does not reveal who has an account here), but no request is
+made, and its poll says `pending` until it expires.
+
+Then poll. The answer carries the token **once**: the next poll says
+`redeemed`. So write it straight to a file only you can read, as it arrives:
 
 ```sh
-curl -s "$MUSTER/plugin/v1/pair/$(jq -r .request_id /tmp/pair.json)" \
-  -H "Authorization: Bearer $(jq -r .poll_secret /tmp/pair.json)"
-# {"status": "approved", "token": "mpl_…", "plugin_id": 1, "plugin_name": "echo-inbox", …}
+( umask 077
+  curl -s "$MUSTER/plugin/v1/pair/$(jq -r .request_id /tmp/pair.json)" \
+    -H "Authorization: Bearer $(jq -r .poll_secret /tmp/pair.json)" \
+    | jq -r '.token // empty' > ~/.echo-inbox-token )
+TOKEN=$(cat ~/.echo-inbox-token)
+# the answer was {"status": "approved", "token": "mpl_…", "plugin_id": 1, "plugin_name": "echo-inbox", …}
 ```
 
-Until you approve it says `{"status": "pending", …}`; the request expires
-after 10 minutes. Reference:
+An empty file means the answer carried no token. Most often you polled before
+approving (`{"status": "pending", …}`): approve, then run it again. After
+`redeemed` (the token went to an earlier poll), `denied` or `expired`, revoke
+any plugin it minted and pair again. A request expires after 10 minutes.
+Reference:
 [Pairing a plugin without handling its token](plugins.md#pairing-a-plugin-without-handling-its-token).
 
 **Check the token.** `GET /plugin/v1/self` says who it is:
@@ -171,8 +190,10 @@ Reference: [Delivery to your chief](plugins.md#delivery-to-your-chief),
 Open the Asks page's **Drafts** tab, `$MUSTER/attention?tab=drafts`. The card
 quotes the message, and shows the reply **exactly as it will be sent**, every
 character that is not plain ASCII spelled out. Press **Approve and send**. It
-needs a sign-in from the last 12 hours; an older one asks you to confirm it is
-you first. **Reject** needs none.
+needs a recent sign-in: from the last 12 hours by default, a window the
+server's `MUSTER_STEPUP_WINDOW` can change
+([configuration.md](configuration.md#muster-server-sign-in-and-machine-credentials)). An
+older one asks you to confirm it is you first. **Reject** needs none.
 
 From one of your own mirrored Claude Code sessions you can decide it instead,
 with `plugin_drafts_list` and `plugin_draft_decide`.
