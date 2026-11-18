@@ -16,7 +16,7 @@ func TestThePageLinkSheetIsDrawnForTheScriptToFill(t *testing.T) {
 	_ = PageLinkSheet(7, "").Render(&b)
 	empty := b.String()
 	if !strings.HasPrefix(empty, `<span data-page-link-sheet="" data-page-id="7" hidden="">`) ||
-		!strings.Contains(empty, `data-info-code=""></code>`) || !strings.Contains(empty, `data-copy-text=""`) {
+		!strings.Contains(empty, `data-info-code=""></code>`) || !strings.Contains(empty, `data-info-copy=""`) {
 		t.Errorf("no link yet: %s", empty)
 	}
 	b.Reset()

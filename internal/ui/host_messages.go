@@ -75,15 +75,14 @@ func hostDetailSlot(id string, admin bool) g.Node {
 }
 
 // hostDetailJS defines setDetail(slot, detail) for a page's error banner
-// (hostDetailSlot). Text only: textContent and an attribute, never markup.
+// (hostDetailSlot). Text only: textContent, never markup (the sheet's Copy
+// copies its code as it reads).
 const hostDetailJS = `
   function setDetail(slot, detail) {
     if (!slot) return;
     if (!detail) { slot.hidden = true; return; }
     var code = slot.querySelector('[data-info-code]');
     if (code) code.textContent = detail;
-    var copy = slot.querySelector('[data-info-copy]');
-    if (copy) copy.setAttribute('data-copy-text', detail);
     slot.hidden = false;
   }
 `

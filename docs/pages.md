@@ -311,11 +311,16 @@ screen (`/pages/{id}`) has:
   question's *Answer*, a choice's *Chose*, an approval's *Decision* and
   *Comment*; what a page's own script sent, by its keys (followed four levels
   deep, deeper is *(nested data)*; each label and value is cut at 200 and
-  2000 characters). A response to a version that cannot be read is *A
-  response to an older version*. Each file is
+  2000 characters, and one response draws at most about 4,000 characters,
+  the rest *N more not shown here*). A response to a version that no longer
+  exists is *A response to an older version*. They are shown 50 at a time,
+  newest first, with **Show more** for the older ones. Each file is
   **Download the file** (`/uploads/{id}/file`: an attachment, never shown
   inline as a page). An admin also has a **Show raw** ⓘ on each: the part's
-  id, the version, the link it came through and the data as stored.
+  id, the version, the link it came through and the data as stored — its
+  first 2,000 characters, with **Download the full response**
+  (`/pages/{id}/responses/{rid}/raw`, a JSON attachment) when it is longer. A
+  response too large to keep is refused with a 413 in plain words.
 
 - **Delete this page**: deletes the page, every version, link and response,
   and every file sent through it. It cannot be undone. From its first step

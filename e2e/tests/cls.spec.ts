@@ -169,6 +169,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /pages/{id}/preview': 'a redirect to /pages/{id}/view, the view\'s former address (no document of its own)',
   'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the owner\'s view frames',
   'GET /pages/{id}/card': 'a page card fragment the chat\'s live stream fetches and inserts (no document of its own)',
+  'GET /pages/{id}/responses/{rid}/raw': 'a file download (one response\'s stored form, an admin\'s raw ⓘ)',
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',
 };

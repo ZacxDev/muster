@@ -112,7 +112,7 @@ func TestAnAnswersDeliveryLineNamesTheExactTmuxTarget(t *testing.T) {
 			if strings.Contains(c, "data-info-code") {
 				t.Errorf("answer %d: an ⓘ on an ask no window shows", id)
 			}
-		} else if !strings.Contains(c, `data-info-code="">`+target+`</code>`) || !strings.Contains(c, `data-copy-text="`+target+`"`) {
+		} else if !strings.Contains(c, `data-info-code="">`+target+`</code>`) || !strings.Contains(c, `data-info-copy=""`) {
 			t.Errorf("answer %d: the ⓘ does not hold %q", id, target)
 		}
 	}

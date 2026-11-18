@@ -422,11 +422,11 @@ const pageShareJS = `
         b._ensure = null;
         if (url) b.setAttribute('data-share-url', url); else b.removeAttribute('data-share-url');
       });
-      // The page's link ⓘ (PageLinkSheet) holds the address, and copies it;
+      // The page's link ⓘ (PageLinkSheet) holds the address (its Copy copies
+      // the code);
       // shown while the page has a link, hidden once it has none.
       document.querySelectorAll('[data-page-link-sheet][data-page-id="' + id + '"]').forEach(function (s) {
         s.querySelectorAll('[data-info-code]').forEach(function (c) { c.textContent = url || ''; });
-        s.querySelectorAll('[data-info-copy]').forEach(function (c) { c.setAttribute('data-copy-text', url || ''); });
         s.hidden = !url;
       });
     };

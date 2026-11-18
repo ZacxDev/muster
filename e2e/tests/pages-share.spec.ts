@@ -319,7 +319,12 @@ test('phone: the page screen’s Copy link copies the exact link, and its ⓘ sh
     await info.tap();
     await expect(sheet).toBeVisible();
     await expect(sheet.locator('[data-info-code]')).toHaveText(copied);
-    await expect(sheet.locator('[data-info-copy]')).toHaveAttribute('data-copy-text', copied);
+    // Its Copy copies the code as it reads (no second copy in an attribute).
+    await page.evaluate(() => navigator.clipboard.writeText('cleared'));
+    const copy = sheet.locator('[data-info-copy]');
+    await copy.tap();
+    await expect(copy).toHaveText('Copied');
+    expect(await page.evaluate(() => navigator.clipboard.readText()), 'the ⓘ copies the link').toBe(copied);
     await strangerSees(browser, copied);
     sharedURL = copied;
   } finally {

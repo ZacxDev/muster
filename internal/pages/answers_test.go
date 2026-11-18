@@ -1,10 +1,11 @@
 package pages
 
 import (
+	"encoding/json"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -70,54 +71,52 @@ func TestAResponseIsDescribedByItsPagesOwnForm(t *testing.T) {
 
 // TestADeeplyNestedResponseIsDescribedFastAndBounded: a stranger's custom
 // submit nested thousands deep (lists, objects, and both with a sibling at
-// every level), stored as CheckSubmit stores it, is described in linear time
-// and as bounded output. REGRESSION TEST: at depth 4500 the earlier
-// DescribeData re-encoded the whole subtree at every level and joined the
-// label at every level — measured ~1 s of CPU per response, per load of the
-// owner's page screen.
+// every level), stored as CheckSubmit stores it, is described as exactly the
+// few lines its first four levels hold — the rest one "(nested data)" — and
+// with work linear in its size: the bytes allocated describing depth 4500
+// are under 20 times those at depth 450 (ten times the data). Bytes
+// allocated, not wall time: deterministic on a loaded machine. REGRESSION
+// TEST: the earlier DescribeData re-encoded the whole subtree at every level
+// and joined the label at every level — ~1 s of CPU per response at depth
+// 4500, per load of the owner's page screen.
 func TestADeeplyNestedResponseIsDescribedFastAndBounded(t *testing.T) {
 	blocks, _, err := Parse([]byte(`[{"type":"html","html":"<p>x</p>"}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const depth = 4500
-	nest := func(open, close string) string {
-		return strings.Repeat(open, depth) + `"leaf"` + strings.Repeat(close, depth)
+	type shape struct {
+		open, close string
+		max         int // as deep as the 32 KiB submit bound allows
+		want        []AnswerLine
 	}
-	for name, payload := range map[string]string{
-		"lists":              nest(`[`, `]`),
-		"objects":            nest(`{"a":`, `}`),
-		"lists with sibling": nest(`["x",`, `]`),
-		// 12 bytes a level: as deep as the 32 KiB submit bound allows.
-		"objects with sibling": strings.Repeat(`{"s":0,"a":`, 2500) + `"leaf"` + strings.Repeat(`}`, 2500),
+	n := nestedData
+	for name, c := range map[string]shape{
+		"lists":   {`[`, `]`, 4500, []AnswerLine{{"1 · 1 · 1 · 1", n}}},
+		"objects": {`{"a":`, `}`, 4500, []AnswerLine{{"a · a · a · a", n}}},
+		"lists with sibling": {`["x",`, `]`, 4500, []AnswerLine{{"1", "x"}, {"2 · 1", "x"}, {"2 · 2 · 1", "x"},
+			{"2 · 2 · 2 · 1", "x"}, {"2 · 2 · 2 · 2", n}}},
+		"objects with sibling": {`{"s":0,"a":`, `}`, 2500, []AnswerLine{{"a · a · a · a", n}, {"a · a · a · s", "0"},
+			{"a · a · s", "0"}, {"a · s", "0"}, {"s", "0"}}},
 	} {
-		data, err := CheckSubmit(blocks, CustomComponent, []byte(payload))
-		if err != nil {
-			t.Fatalf("%s: the submit is refused (%v), so this would test nothing", name, err)
-		}
-		// The fastest of three: a loaded machine slows a run, never speeds it.
-		best := time.Hour
-		var a Answer
-		for i := 0; i < 3; i++ {
-			start := time.Now()
-			a = DescribeAnswer(blocks, CustomComponent, data)
-			if d := time.Since(start); d < best {
-				best = d
+		describe := func(depth int) (Answer, uint64) {
+			payload := strings.Repeat(c.open, depth) + `"leaf"` + strings.Repeat(c.close, depth)
+			data, err := CheckSubmit(blocks, CustomComponent, []byte(payload))
+			if err != nil {
+				t.Fatalf("%s at %d: the submit is refused (%v), so this would test nothing", name, depth, err)
 			}
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			a := DescribeAnswer(blocks, CustomComponent, data)
+			runtime.ReadMemStats(&after)
+			return a, after.TotalAlloc - before.TotalAlloc
 		}
-		if best > 50*time.Millisecond {
-			t.Errorf("%s: described in %v, want well under 50ms (linear in the data)", name, best)
+		deep, big := describe(c.max)
+		_, small := describe(c.max / 10)
+		if !reflect.DeepEqual(deep.Lines, c.want) {
+			t.Errorf("%s: %d lines %q, want exactly %q", name, len(deep.Lines), deep.Lines, c.want)
 		}
-		size, nested := 0, false
-		for _, l := range a.Lines {
-			size += len(l.Label) + len(l.Value)
-			nested = nested || l.Value == nestedData
-			if utf8.RuneCountInString(l.Label) > maxAnswerLabelRunes || utf8.RuneCountInString(l.Value) > maxAnswerValueRunes {
-				t.Errorf("%s: a line past its bound: %d / %d runes", name, utf8.RuneCountInString(l.Label), utf8.RuneCountInString(l.Value))
-			}
-		}
-		if len(a.Lines) > maxAnswerLines+1 || size > 4096 || !nested {
-			t.Errorf("%s: %d lines, %d bytes, nested-data line %v; want a few short lines ending the nesting", name, len(a.Lines), size, nested)
+		if small == 0 || big > 20*small {
+			t.Errorf("%s: %d bytes allocated at depth %d against %d at depth %d — not linear in the data", name, big, c.max, small, c.max/10)
 		}
 	}
 }
@@ -143,5 +142,42 @@ func TestALongLabelOrValueIsCut(t *testing.T) {
 	}
 	if got := DescribeAnswer(nil, "pick", []byte(`{"choices":["a"]}`)); got.Heading != "A response to an older version" {
 		t.Errorf("an unread version's response is headed %q", got.Heading)
+	}
+}
+
+// TestAResponseDrawsAtMostItsBudget: one response draws at most
+// maxAnswerBudget runes of labels and values; the lines past it, with those
+// the 40-line cap already left out, are one "N more not shown here" line.
+func TestAResponseDrawsAtMostItsBudget(t *testing.T) {
+	blocks, _, _ := Parse([]byte(`[{"type":"html","html":"<p>x</p>"}]`))
+	describe := func(keys, valueRunes int) Answer {
+		t.Helper()
+		m := map[string]string{}
+		for i := 0; i < keys; i++ {
+			m[strings.Repeat("k", 197)+string(rune('A'+i/26))+string(rune('a'+i%26))] = strings.Repeat("v", valueRunes)
+		}
+		raw, _ := json.Marshal(m)
+		data, err := CheckSubmit(blocks, CustomComponent, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return DescribeAnswer(blocks, CustomComponent, data)
+	}
+	// 17 keys of 199 runes, values of 1700: two lines fit (3798 runes).
+	a := describe(17, 1700)
+	if len(a.Lines) != 3 || a.Lines[2] != (AnswerLine{"More", "15 more not shown here"}) {
+		t.Errorf("17 large lines: %d lines, last %q", len(a.Lines), a.Lines[len(a.Lines)-1])
+	}
+	// 50 lines of 200 runes: 20 fit; the other 20 drawn and the 10 the
+	// 40-line cap left out are "30 more".
+	if a := describe(50, 1); len(a.Lines) != 21 || a.Lines[20] != (AnswerLine{"More", "30 more not shown here"}) {
+		t.Errorf("50 small lines: %d lines, last %q", len(a.Lines), a.Lines[len(a.Lines)-1])
+	}
+	used := 0
+	for _, l := range a.Lines {
+		used += utf8.RuneCountInString(l.Label) + utf8.RuneCountInString(l.Value)
+	}
+	if used > maxAnswerBudget+64 {
+		t.Errorf("a response draws %d runes, past its budget of %d", used, maxAnswerBudget)
 	}
 }

@@ -1581,7 +1581,14 @@ var appScriptSrc = staticJS("app", `
 `+cgCopyTextJS+`
   window.cgCopy = function (btn) {
     if (!btn) return;
-    var text = btn.getAttribute('data-copy-text') || '';
+    // A button's data-copy-text; an ⓘ sheet's Copy (data-info-copy) carries
+    // none and copies its sheet's <code> as it reads now.
+    var text = btn.getAttribute('data-copy-text');
+    if (text === null) {
+      var sheet = btn.closest('[data-info-sheet]');
+      var code = sheet && sheet.querySelector('[data-info-code]');
+      text = code ? code.textContent : '';
+    }
     window.cgCopyText(text).then(function () {
       var prev = btn.textContent;
       btn.textContent = 'Copied';

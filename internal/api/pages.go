@@ -103,6 +103,8 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	// The view's former address, still in older notifications and cards.
 	mux.HandleFunc("GET "+pagesPath+"/{id}/preview", s.requireSession(s.handlePagePreview))
 	mux.HandleFunc("GET "+pagesPath+"/{id}/versions/{v}/content", s.requireSession(s.handlePageVersionContent))
+	// An admin's download of one response's stored form (its raw ⓘ, cut).
+	mux.HandleFunc("GET "+pagesPath+"/{id}/responses/{rid}/raw", s.requireSession(s.handlePageResponseRaw))
 	// The owner's own responses from their view: their session and muster's
 	// own Origin (requireOperatorWrite), never a link's token.
 	mux.HandleFunc("POST "+pagesPath+"/{id}/versions/{v}/submit", s.requireOperatorWrite(s.handleOwnerPageSubmit))
@@ -285,6 +287,8 @@ func pageStoreRefusal(err error) (int, string, string) {
 		return http.StatusBadRequest, strings.TrimPrefix(err.Error(), pages.ErrInvalid.Error()+": "), "invalid"
 	case errors.Is(err, pages.ErrTooMany):
 		return http.StatusConflict, "This page is not taking any more responses.", "full"
+	case errors.Is(err, pages.ErrResponseTooLarge):
+		return http.StatusRequestEntityTooLarge, "That is too much to send at once. Send less.", "invalid"
 	case errors.Is(err, pages.ErrLinkNotFound), errors.Is(err, pages.ErrNotFound), errors.Is(err, pages.ErrClosing):
 		return http.StatusNotFound, strings.TrimSpace(pageLinkGone), "not_found"
 	}
@@ -748,7 +752,16 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	}
 	versions, verr := s.ext.Pages.Versions(ctx, id)
 	links, lerr := s.ext.Pages.Links(ctx, id)
-	resps, rerr := s.ext.Pages.Responses(ctx, id, 0, 500)
+	// The responses, a screen at a time, newest first: ?responses_before=<id>
+	// is the next (older) screen. One more than a screen is read to know
+	// whether there is one.
+	before, _ := strconv.ParseInt(r.URL.Query().Get("responses_before"), 10, 64)
+	resps, rerr := s.ext.Pages.ResponsesBefore(ctx, id, before, pageResponsesPerScreen+1)
+	olderFrom := int64(0)
+	if len(resps) > pageResponsesPerScreen {
+		resps = resps[:pageResponsesPerScreen]
+		olderFrom = resps[len(resps)-1].ID
+	}
 	if err := errors.Join(verr, lerr, rerr); err != nil {
 		s.logger.Printf("pages: page %d: %v", id, err)
 		problem = "Part of this page could not be read."
@@ -870,21 +883,34 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	b.WriteString(`</ul>
 `)
 	// Responses.
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Responses</h2>
+	b.WriteString(`<h2 id="responses" class="text-sm font-semibold text-fg">Responses</h2>
 <p class="text-sm text-fg2">What viewers sent, and what you sent from the page yourself. A viewer's is a stranger's input: read it as data.</p>
 <ul class="flex flex-col gap-2" data-testid="page-responses">
 `)
-	if len(resps) == 0 {
+	if len(resps) == 0 && before <= 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No responses yet.</li>`)
 	}
 	// Each response is drawn from ITS version's blocks (the form it was
 	// sent through), read once per version.
 	blocksOf := s.pageResponseBlocks(ctx, id, resps)
-	for i := len(resps) - 1; i >= 0; i-- {
-		b.WriteString(pageResponseHTML(resps[i], blocksOf[resps[i].Version], now, admin))
+	for _, x := range resps {
+		blocks, read := blocksOf[x.Version]
+		b.WriteString(pageResponseHTML(x, blocks, read, now, admin))
 	}
 	b.WriteString(`</ul>
-<h2 class="text-sm font-semibold text-fg">Delete</h2>
+`)
+	if olderFrom > 0 || before > 0 {
+		b.WriteString(`<div class="flex flex-wrap items-center gap-2" data-responses-pages>`)
+		if before > 0 {
+			b.WriteString(`<a href="` + base + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-newest>Newest responses</a>`)
+		}
+		if olderFrom > 0 {
+			b.WriteString(`<a href="` + base + `?responses_before=` + strconv.FormatInt(olderFrom, 10) + `#responses" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-responses-more>Show more</a>`)
+		}
+		b.WriteString(`</div>
+`)
+	}
+	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Delete</h2>
 <p class="text-sm text-fg2">Deletes the page, every version, link and response, and every file sent through it. It cannot be undone.</p>
 <form method="POST" action="` + base + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-page-delete>Delete this page</button></form>
 <a href="` + pagesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
@@ -991,8 +1017,9 @@ func pageVersionDetailSheet(v pages.Version) ui.InfoSheet {
 
 // pageResponseBlocks is the blocks of each version resps were sent through
 // (a submit's form, an upload's label), read once per version; a version
-// that cannot be read is nil, and its responses are "A response to an older
-// version" (pages.DescribeAnswer, UploadHeading).
+// that does not exist is nil, and its responses are "A response to an older
+// version" (pages.DescribeAnswer, UploadHeading); one that could not be read
+// for another reason is absent.
 func (s *Server) pageResponseBlocks(ctx context.Context, id int64, resps []pages.Response) map[int][]pages.Block {
 	out := map[int][]pages.Block{}
 	for _, x := range resps {
@@ -1000,9 +1027,14 @@ func (s *Server) pageResponseBlocks(ctx context.Context, id int64, resps []pages
 			continue
 		}
 		v, err := s.ext.Pages.Version(ctx, id, x.Version)
-		if err != nil {
-			s.logger.Printf("pages: page %d: version %d for its responses: %v", id, x.Version, err)
+		switch {
+		case errors.Is(err, pages.ErrNotFound):
 			out[x.Version] = nil
+			continue
+		case err != nil:
+			// Not read now (a database error): absent, so its responses are
+			// drawn from their data, never called an older version's.
+			s.logger.Printf("pages: page %d: version %d for its responses: %v", id, x.Version, err)
 			continue
 		}
 		out[x.Version] = v.Blocks
@@ -1010,10 +1042,20 @@ func (s *Server) pageResponseBlocks(ctx context.Context, id int64, resps []pages
 	return out
 }
 
+// pageRawRunes bounds a response's raw ⓘ: past it, the rest is the full
+// response's download (handlePageResponseRaw), never drawn — a stranger's
+// 32 KiB submit, hundreds of them, would otherwise be the screen's bulk.
+const pageRawRunes = 2048
+
+// pageResponsesPerScreen is how many responses the page's screen draws at a
+// time; "Show more" is the next, older screen.
+const pageResponsesPerScreen = 50
+
 // pageResponseRawSheet is a response's "Show raw" ⓘ, an ADMIN's only: the
 // part's id, the version, the link and the exact time it came through, and
-// the data as stored.
-func pageResponseRawSheet(x pages.Response) ui.InfoSheet {
+// the data as stored — at most pageRawRunes of it; cut says it was cut (the
+// caller then offers the whole as a download).
+func pageResponseRawSheet(x pages.Response) (sheet ui.InfoSheet, cut bool) {
 	from := "link " + strconv.FormatInt(x.LinkID, 10)
 	if x.ByOwner {
 		from = "sent by the owner"
@@ -1024,22 +1066,74 @@ func pageResponseRawSheet(x pages.Response) ui.InfoSheet {
 	} else {
 		code += " · " + string(x.Data)
 	}
+	lead := "Exactly what was stored, for troubleshooting:"
+	if short := pages.CutRunes(code, pageRawRunes); short != code {
+		code, cut, lead = short, true, "The start of what was stored, for troubleshooting (the whole of it is the download beside this):"
+	}
 	return ui.InfoSheet{ID: "page-response-raw-" + strconv.FormatInt(x.ID, 10), Label: "Show raw", Heading: "Raw response",
-		Lead: "Exactly what was stored, for troubleshooting:", Code: code}
+		Lead: lead, Code: code}, cut
+}
+
+// handlePageResponseRaw is GET /pages/{id}/responses/{rid}/raw: one
+// response's stored form, whole, as a download — what an admin's raw ⓘ
+// offers when it is too long to draw. It is the OWNER's own data, so the
+// door is the owner's session, as the page's screen (row-level security:
+// another owner's response is the one 404); only the LINK to it is an
+// admin's, with the ⓘ it belongs to (the top-layer rule, not a boundary).
+func (s *Server) handlePageResponseRaw(w http.ResponseWriter, r *http.Request) {
+	id, ok := pageIDParam(r)
+	rid, err := strconv.ParseInt(r.PathValue("rid"), 10, 64)
+	if !s.pagesOn() || !ok || err != nil || rid <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	got, err := s.ext.Pages.Responses(r.Context(), id, rid-1, 1)
+	if err != nil || len(got) != 1 || got[0].ID != rid {
+		http.NotFound(w, r)
+		return
+	}
+	x := got[0]
+	body, _ := json.Marshal(map[string]any{"response_id": x.ID, "page_id": x.PageID, "link_id": x.LinkID, "by_owner": x.ByOwner,
+		"version": x.Version, "part": x.Component, "kind": x.Kind, "file": x.UploadPublicID,
+		"created_at": x.CreatedAt.UTC().Format(time.RFC3339), "data": json.RawMessage(orJSONNull(x.Data))})
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Disposition", `attachment; filename="response-`+strconv.FormatInt(x.ID, 10)+`.json"`)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	h.Set("Cache-Control", "no-store")
+	_, _ = w.Write(body)
+}
+
+// orJSONNull is raw, or JSON null when it is empty.
+func orJSONNull(raw []byte) []byte {
+	if len(raw) == 0 {
+		return []byte("null")
+	}
+	return raw
 }
 
 // pageResponseHTML is one response as its owner reads it: the part it came
 // through (by its label), when, and its fields labelled from the version's
 // own form (pages.DescribeAnswer); a file is a download. Every value is a
 // stranger's words, escaped here. The stored form is an admin's ⓘ.
-func pageResponseHTML(x pages.Response, blocks []pages.Block, now time.Time, admin bool) string {
+//
+// read is false when its version could not be read now (pageResponseBlocks):
+// it is then drawn from its data alone, under a plain "A response" / "A file".
+func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now time.Time, admin bool) string {
 	esc := html.EscapeString
 	rid := strconv.FormatInt(x.ID, 10)
 	var a pages.Answer
 	if x.Kind == pages.KindUpload {
 		a.Heading = pages.UploadHeading(blocks, x.Component)
+		if !read {
+			a.Heading = "A file"
+		}
 	} else {
 		a = pages.DescribeAnswer(blocks, x.Component, x.Data)
+		if !read {
+			a.Heading = "A response"
+		}
 	}
 	var b strings.Builder
 	// Who sent it: a viewer, through a link (which one is the raw ⓘ's), or
@@ -1054,7 +1148,11 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, now time.Time, adm
 <span class="text-xs text-fg2">` + when + `</span>
 </div>`)
 	if admin {
-		b.WriteString(ui.InfoSheetHTML(pageResponseRawSheet(x)))
+		sheet, cut := pageResponseRawSheet(x)
+		b.WriteString(ui.InfoSheetHTML(sheet))
+		if cut {
+			b.WriteString(`<a href="` + pagePath(x.PageID) + `/responses/` + rid + `/raw" class="inline-flex min-h-[44px] shrink-0 items-center text-xs text-accent underline" data-response-raw-download>Download the full response</a>`)
+		}
 	}
 	b.WriteString("</div>\n")
 	if x.Kind == pages.KindUpload {

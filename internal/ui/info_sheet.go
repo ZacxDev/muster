@@ -28,7 +28,9 @@ import (
 //     scroller or clipped header cuts it off. On a phone it is a bottom sheet
 //     the width of the screen; from `sm` up it is centred — the focus history
 //     dialog's own look.
-//   - Copy calls window.cgCopy (the app script's), which falls back to
+//   - Copy calls window.cgCopy (the app script's), which copies the sheet's
+//     own <code> text (never a second copy of it in an attribute: a long
+//     code would be drawn twice) and falls back to
 //     execCommand where the async clipboard is unavailable; the text is also
 //     selectable in place.
 //
@@ -117,7 +119,6 @@ func (s InfoSheet) sheet() g.Node {
 			Code(Class("min-w-0 flex-1 break-all font-mono text-sm text-fg"), g.Attr("data-info-code", ""), g.Text(s.Code)),
 			Button(
 				Type("button"),
-				g.Attr("data-copy-text", s.Code),
 				g.Attr("data-info-copy", ""),
 				g.Attr("onclick", "window.cgCopy && window.cgCopy(this)"),
 				Class("press inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-4 text-sm font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),

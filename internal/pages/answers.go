@@ -183,11 +183,7 @@ func DescribeData(v any) []AnswerLine {
 			more++
 			return
 		}
-		label := "Value"
-		if len(path) > 0 {
-			label = strings.Join(path, " · ")
-		}
-		out = append(out, AnswerLine{Label: label, Value: orEmpty(value)})
+		out = append(out, AnswerLine{Label: pathLabel(path), Value: orEmpty(value)})
 	}
 	var walk func(path []string, v any)
 	walk = func(path []string, v any) {
@@ -207,7 +203,9 @@ func DescribeData(v any) []AnswerLine {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				walk(append(path[:len(path):len(path)], k), x[k])
+				// A key is cut before it joins the path: a 4000-rune key is
+				// never carried, joined or drawn whole.
+				walk(append(path[:len(path):len(path)], cutRunes(k, maxAnswerLabelRunes)), x[k])
 			}
 		case []any:
 			if len(path) >= maxAnswerDepth {
@@ -240,27 +238,95 @@ func DescribeData(v any) []AnswerLine {
 	}
 	walk(nil, v)
 	if more > 0 {
-		out = append(out, AnswerLine{Label: "More", Value: strconv.Itoa(more) + " more not shown here"})
+		out = append(out, moreLine(more))
 	}
 	return out
 }
 
-// bounded is lines with each label and value cut to its bound (cutRunes).
+// pathLabel is a line's label: its path's keys joined with " · " ("Value"
+// for none), joining no further once it is past maxAnswerLabelRunes (each
+// key is already cut to that).
+func pathLabel(path []string) string {
+	if len(path) == 0 {
+		return "Value"
+	}
+	var b strings.Builder
+	runes := 0
+	for i, k := range path {
+		if i > 0 {
+			b.WriteString(" · ")
+			runes += 3
+		}
+		b.WriteString(k)
+		if runes += utf8.RuneCountInString(k); runes > maxAnswerLabelRunes {
+			break
+		}
+	}
+	return b.String()
+}
+
+// The line that says how many more lines a response has than are drawn.
+const (
+	moreLabel  = "More"
+	moreSuffix = " more not shown here"
+)
+
+func moreLine(n int) AnswerLine {
+	return AnswerLine{Label: moreLabel, Value: strconv.Itoa(n) + moreSuffix}
+}
+
+// maxAnswerBudget is what one response may draw in all — its labels and
+// values, in runes — before the rest is one "N more not shown here" line:
+// with maxAnswerLines alone, 40 lines of 200 + 2000 runes could still be 88K
+// runes a response, on a screen that lists hundreds.
+const maxAnswerBudget = 4096
+
+// bounded is lines with each label and value cut to its bound (cutRunes),
+// and no more lines than fit maxAnswerBudget: the rest — with any the
+// trailing "More" line already counted — become one "More" line.
 func bounded(lines []AnswerLine) []AnswerLine {
+	already := 0
+	if n := len(lines); n > 0 && lines[n-1].Label == moreLabel && strings.HasSuffix(lines[n-1].Value, moreSuffix) {
+		if c, err := strconv.Atoi(strings.TrimSuffix(lines[n-1].Value, moreSuffix)); err == nil {
+			already, lines = c, lines[:n-1]
+		}
+	}
+	used := 0
 	for i := range lines {
 		lines[i].Label = cutRunes(lines[i].Label, maxAnswerLabelRunes)
 		lines[i].Value = cutRunes(lines[i].Value, maxAnswerValueRunes)
+		cost := utf8.RuneCountInString(lines[i].Label) + utf8.RuneCountInString(lines[i].Value)
+		if used+cost > maxAnswerBudget && i > 0 {
+			return append(lines[:i:i], moreLine(len(lines)-i+already))
+		}
+		used += cost
+	}
+	if already > 0 {
+		lines = append(lines, moreLine(already))
 	}
 	return lines
 }
 
-// cutRunes is s cut to n runes, with an ellipsis when cut.
+// CutRunes is cutRunes, for a caller outside the package (a page screen's
+// raw ⓘ).
+func CutRunes(s string, n int) string { return cutRunes(s, n) }
+
+// cutRunes is s cut to n runes, with an ellipsis when cut; it walks s only as
+// far as it needs to (never converting the whole of a long string).
 func cutRunes(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
+	cut, count := 0, 0
+	for i := 0; i < len(s); {
+		_, w := utf8.DecodeRuneInString(s[i:])
+		if count == n-1 {
+			cut = i
+		}
+		count++
+		if count > n {
+			return s[:cut] + "…"
+		}
+		i += w
 	}
-	r := []rune(s)
-	return string(r[:n-1]) + "…"
+	return s
 }
 
 // scalarText is a JSON scalar in words.
