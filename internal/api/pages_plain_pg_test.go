@@ -251,11 +251,6 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			}
 			card := feed[at:]
 			card = card[:strings.Index(card, "</li>\n")+len("</li>")]
-			// ⚠ NOT THIS PR'S: every Asks card's expanded region still says
-			// "Waiting since <date> UTC" (asks_feed.go's data-asks-since line,
-			// which the open Asks redesign removes). Cut out by its element,
-			// and only it, so the rest of the card is still scanned.
-			card = regexp.MustCompile(`<p class="[^"]*" data-asks-since>.*?</p>`).ReplaceAllString(card, "")
 			assertPagePlain(t, "the Asks feed's share card", card)
 			// A mirrored session's: named in words ("work on atlas").
 			ma, err := f.srv.ext.Attention.Get(ctx, mask)
