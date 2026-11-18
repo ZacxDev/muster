@@ -135,11 +135,12 @@ func seed(ctx context.Context, conn *pgx.Conn, owner int64, officer, plugin stri
 	}
 	out := map[string]any{}
 	// The instance that filed them: an agent row of the owner's (a draft names
-	// its agent, and the owner must own it).
+	// its agent, and the owner must own it). It holds no credential: the
+	// fixture never names one (internal/agents secrets_ledger_test.go).
 	agentName := "e2e-officer-" + plugin
 	var agent int64
-	if err := tx.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off)
-		VALUES ($1, $2, $3, $2, 'stopped', $4, true) RETURNING id`, owner, agentName, "devpod-"+agentName, "e2e-officer-token-"+plugin).Scan(&agent); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, kicked_off)
+		VALUES ($1, $2, $3, $2, 'stopped', true) RETURNING id`, owner, agentName, "devpod-"+agentName).Scan(&agent); err != nil {
 		return nil, fmt.Errorf("agent: %w", err)
 	}
 	// The pending post, checked sendable.
