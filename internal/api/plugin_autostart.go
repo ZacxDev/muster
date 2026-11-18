@@ -20,7 +20,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// AUTO-START (docs/plugins.md#auto-start, migration 0152): the owner opts ONE
+// AUTO-START (docs/plugins.md#auto-start, migration 0153): the owner opts ONE
 // plugin in, on its /plugins card behind a fresh sign-in, and a task that
 // plugin files starts an agent on it with no tap.
 //
@@ -83,6 +83,8 @@ const (
 	autostartBusy      = "another start held your allowance too long; nothing was spent"
 	autostartTeam      = "auto-start is for a person's plugins, not a team's"
 	autostartReadError = "muster could not read what it needed to start one"
+	autostartChanged   = "auto-start for this plugin was turned off or changed while the task was being filed"
+	autostartServerOff = "auto-start is turned off on this server (MUSTER_PLUGIN_AUTOSTART)"
 	autostartNoStart   = "the agent could not be started"
 )
 
@@ -131,6 +133,11 @@ func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plu
 	if p.OwnerTeam || owner != p.OwnerID {
 		return agents.Agent{}, autostartTeam
 	}
+	// The deployment's own kill switch (MUSTER_PLUGIN_AUTOSTART), before
+	// anything else: off, no plugin starts anything, whatever its owner set.
+	if !s.ext.PluginAutostart {
+		return agents.Agent{}, autostartServerOff
+	}
 	// The opt-in and the deployment: agent_dispatch's own first refusal.
 	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
 		return agents.Agent{}, why
@@ -156,6 +163,16 @@ func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plu
 	// open, claimed, a live agent), and the plugin's own cap — each a refusal
 	// that reserves nothing.
 	check := func() error {
+		// 🔴 THE OWNER'S SETTING RE-READ UNDER THE LOCK: turned off, changed, or
+		// the plugin revoked since the first read (autostartPluginTask) refuses
+		// here, so a request in flight never starts on a setting that is gone.
+		now, err := store.AutostartOf(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if !sameAutostart(now, cfg) {
+			return errTaskDispatch(autostartChanged)
+		}
 		cur, err := s.ext.Notes.Get(ctx, n.ID)
 		if err != nil {
 			return err
@@ -180,6 +197,9 @@ func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plu
 		}
 		task = cur
 		return nil
+	}
+	if autostartBeforeReserve != nil {
+		autostartBeforeReserve()
 	}
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, plugins.NoteObject(n.ID), detail, check)
 	var refusal errTaskDispatch
@@ -219,11 +239,25 @@ func (s *Server) autostartStart(ctx context.Context, store autostartStore, p plu
 // autostartKickoff is an auto-started agent's first message: the task the
 // plugin filed, title and body INSIDE the plugin-message fence
 // (plugins.RenderAutostartTask), then muster's rules for a started agent,
-// LAST (chiefDispatchRules: a forward folded into the first turn goes before
-// them, forwardToTaskAgent).
+// LAST, under the auto path's own line (autostartRules: muster started it on
+// the owner's opt-in, never "your owner's chief"). A forward folded into the
+// first turn goes before them (forwardToTaskAgent).
 func autostartKickoff(p plugins.Plugin, n notes.Note) string {
-	return plugins.RenderAutostartTask(p, n.ID, n.Title, n.Body) + chiefDispatchRules
+	return plugins.RenderAutostartTask(p, n.ID, n.Title, n.Body) + autostartRules
 }
+
+// sameAutostart reports whether the setting read under the lock is still the
+// one the start was decided on: on, the same target, repository, cap and Since
+// (a re-enable restarts Since, so off-then-on in between is a change too).
+func sameAutostart(now, was plugins.Autostart) bool {
+	return now.On && was.On && now.Target == was.Target && strings.EqualFold(now.Repo, was.Repo) &&
+		now.DailyCap == was.DailyCap && now.Since.Equal(was.Since)
+}
+
+// autostartBeforeReserve, when set (tests only), runs between the first read
+// of the setting and the reservation's lock: where an owner's opt-out races a
+// request in flight.
+var autostartBeforeReserve func()
 
 // autostartStarted makes a start seen and stoppable: in progress, a comment on
 // the task, and muster's ask — pushed as "Started an agent on #N … from
@@ -247,7 +281,10 @@ func (s *Server) autostartStarted(ctx context.Context, store autostartStore, p p
 			s.logger.Printf("auto-start: task %d: file the stop ask: %v", n.ID, err)
 		} else {
 			askID = ask.ID
-			s.askFiled(ask) // the push
+			// askFiled without the suggested replies: the push (with its one
+			// chip) and the queue's redraw. A fixed-option ask needs none.
+			s.attentionNotify(ask.Owner, s.askPushItem(s.attentionPrincipal(context.Background(), ask.Owner), ask))
+			s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
 		}
 	}
 	if err := store.RecordAutostartStarted(ctx, plugins.AutostartRun{PluginID: p.ID, TaskID: n.ID, AgentID: rec.ID, AskID: askID}); err != nil {
@@ -353,14 +390,16 @@ func (s *Server) autostartStopForAnswer(ctx context.Context, id int64, answer st
 	if err != nil || ag.OwnerID != a.Owner || ag.NoteID == nil || *ag.NoteID != run.TaskID {
 		return errReleaseRefused(autostartStopGone)
 	}
-	if agentLive(ag.Status) {
-		if err := s.ext.Provisioner.Stop(context.WithoutCancel(ctx), ag.ID); err != nil {
-			s.logger.Printf("auto-start: ask %d: stop agent %d (%s): %v", id, ag.ID, ag.Name, err)
-			return errReleaseRefused(autostartStopFailed)
-		}
-		s.clearAgentWork(ag.ID)
-		s.agentChangedFor(ag.OwnerID, ag.Name)
+	if !agentLive(ag.Status) {
+		// Already stopped or ended: nothing to stop, and nothing is claimed.
+		return nil
 	}
+	if err := s.ext.Provisioner.Stop(context.WithoutCancel(ctx), ag.ID); err != nil {
+		s.logger.Printf("auto-start: ask %d: stop agent %d (%s): %v", id, ag.ID, ag.Name, err)
+		return errReleaseRefused(autostartStopFailed)
+	}
+	s.clearAgentWork(ag.ID)
+	s.agentChangedFor(ag.OwnerID, ag.Name)
 	if _, _, err := s.addTaskComment(ctx, commentByMuster, notes.Comment{NoteID: run.TaskID, Author: ownerReleaseAuthor,
 		Body: "Auto-start: you stopped the agent (" + ag.Name + ") muster had started on this task. Start it again from its page if you change your mind."}); err != nil {
 		s.logger.Printf("auto-start: task %d: comment the stop: %v", run.TaskID, err)
@@ -384,6 +423,9 @@ const autostartDefaultCap = 3
 // can: agent_dispatch's deployment refusal for the owner (the same
 // predicate the start runs, so the card and the start cannot disagree).
 func (s *Server) autostartUnavailable(ctx context.Context) string {
+	if !s.ext.PluginAutostart {
+		return autostartServerOff
+	}
 	p, _ := authz.From(ctx)
 	return s.chiefDispatchDeploymentRefusal(p.UserID)
 }
@@ -406,7 +448,7 @@ func (s *Server) pluginAutostartHTML(r *http.Request, p plugins.Plugin) (string,
 	if cfg.On {
 		return `<div class="flex flex-col gap-1" data-plugin-autostart="on">
 <span class="text-xs text-fg2">Auto-start is on: each task this plugin files starts an agent right away (` + esc(autostartTargetWords(cfg.Target)) +
-			`, in ` + esc(cfg.Repo) + `), at most ` + strconv.Itoa(cfg.DailyCap) + ` a day and within your chief's allowance. You are told each time, and can stop it.</span>
+			`, in ` + esc(cfg.Repo) + `), at most ` + strconv.Itoa(cfg.DailyCap) + ` in 24 hours and within your chief's allowance. You are told each time, and can stop it.</span>
 <form method="POST" action="` + pluginsPath + `/` + id + `/autostart" data-plugin-autostart-off><input type="hidden" name="on" value="0"><button type="submit" class="` + flowsQuietButton + `">Turn off auto-start</button></form>
 </div>
 `, false
@@ -414,7 +456,7 @@ func (s *Server) pluginAutostartHTML(r *http.Request, p plugins.Plugin) (string,
 	if why := s.autostartUnavailable(ctx); why != "" {
 		sheet := ui.InfoSheet{ID: "plugin-autostart-setup-" + id, Label: "Why auto-start is not available", Heading: "Auto-start",
 			Lead:     "Auto-start needs muster on Kubernetes, with your chief allowed to start agents for you (" + why + ").",
-			Code:     "MUSTER_AGENT_PROVISIONER=kubernetes\nMUSTER_TASK_ROUTING=1\nMUSTER_CHIEF_DISPATCH_OWNERS=<your user id>",
+			Code:     "MUSTER_PLUGIN_AUTOSTART=1\nMUSTER_AGENT_PROVISIONER=kubernetes\nMUSTER_TASK_ROUTING=1\nMUSTER_CHIEF_DISPATCH_OWNERS=<your user id>",
 			Withheld: !s.shellFeatures(ctx).Setup, Inline: true}
 		return `<div class="flex items-center gap-1" data-plugin-autostart="unavailable"><span class="text-xs text-fg2">Auto-start is not available on this server.</span>` +
 			ui.InfoSheetHTML(sheet) + `</div>
@@ -444,7 +486,7 @@ func (s *Server) pluginAutostartHTML(r *http.Request, p plugins.Plugin) (string,
 		b.WriteString(`<option value="` + esc(rp.FullName) + `">` + esc(rp.FullName) + `</option>`)
 	}
 	b.WriteString(`</select>
-<label for="plugin-autostart-cap-` + id + `" class="text-sm font-medium text-fg">At most this many a day</label>
+<label for="plugin-autostart-cap-` + id + `" class="text-sm font-medium text-fg">At most this many in 24 hours</label>
 <input id="plugin-autostart-cap-` + id + `" name="daily_cap" type="number" inputmode="numeric" min="1" max="` + strconv.Itoa(plugins.MaxAutostartDailyCap) +
 		`" value="` + strconv.Itoa(autostartDefaultCap) + `" class="` + flowsInputClass + `">
 <button type="submit" class="` + flowsButtonClass + `">Turn on auto-start</button>
@@ -508,7 +550,7 @@ func (s *Server) handlePluginAutostart(w http.ResponseWriter, r *http.Request) {
 	}
 	dailyCap, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("daily_cap")))
 	if err != nil || dailyCap < 1 || dailyCap > plugins.MaxAutostartDailyCap {
-		s.renderPluginsPage(w, r, http.StatusBadRequest, "", "The daily limit must be 1 to "+strconv.Itoa(plugins.MaxAutostartDailyCap)+".")
+		s.renderPluginsPage(w, r, http.StatusBadRequest, "", "The limit must be 1 to "+strconv.Itoa(plugins.MaxAutostartDailyCap)+" in 24 hours.")
 		return
 	}
 	_, err = store.SetAutostart(ctx, id, target, repo, dailyCap)
@@ -536,4 +578,33 @@ func (s *Server) autostartWriteOK(w http.ResponseWriter, r *http.Request, err er
 		s.renderPluginsPage(w, r, http.StatusInternalServerError, "", "Auto-start could not be changed.")
 	}
 	return false
+}
+
+// settleAutostartAsks withdraws the open Stop ask of task taskID's auto-start
+// — only one whose recorded agent is agentID, or any when agentID is 0 — once
+// there is nothing for it to stop: the agent was destroyed, or the task
+// completed (which stops it). A Stop answer after that could only claim a
+// stop that never happened. ctx acts as the task's owner.
+func (s *Server) settleAutostartAsks(ctx context.Context, taskID, agentID int64) {
+	store := s.autostarts()
+	if store == nil || s.ext.Attention == nil || taskID <= 0 {
+		return
+	}
+	asks, err := s.ext.Attention.OpenForTask(ctx, taskID)
+	if err != nil {
+		s.logger.Printf("auto-start: task %d: read its open asks: %v", taskID, err)
+		return
+	}
+	for _, a := range asks {
+		if !a.Asker.System || len(a.Options) != 1 || sameWords(a.Options[0]) != autostartStopLabel {
+			continue
+		}
+		run, ok, err := store.AutostartByAsk(ctx, a.ID)
+		if err != nil || !ok || run.TaskID != taskID || (agentID > 0 && run.AgentID != agentID) {
+			continue
+		}
+		if _, err := s.cancelAsk(ctx, a.ID); err != nil {
+			s.logger.Printf("auto-start: task %d: withdraw the stop ask %d: %v", taskID, a.ID, err)
+		}
+	}
 }

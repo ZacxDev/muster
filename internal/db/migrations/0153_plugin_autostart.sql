@@ -1,4 +1,4 @@
--- muster 0152 — AUTO-START: A PLUGIN WHOSE TASKS START AN AGENT WITH NO TAP
+-- muster 0153 — AUTO-START: A PLUGIN WHOSE TASKS START AN AGENT WITH NO TAP
 -- (docs/plugins.md#auto-start; internal/plugins autostart.go; internal/api
 -- plugin_autostart.go).
 --
@@ -7,6 +7,10 @@
 --   plugins.autostart_repo       the repository it works in, owner/name.
 --   plugins.autostart_daily_cap  at most this many auto-starts of this plugin's
 --       tasks in any 24 hours (1..10), ON TOP OF the chief's dispatch budget.
+--       🔴 10 IS plugins.MaxChiefDispatchesPerDay (the chief's own daily cap,
+--       which bounds it anyway) spelled in SQL, and plugins.MaxAutostartDailyCap
+--       is defined as it: TestTheAutostartCapCheckIsTheChiefsDailyCap fails if
+--       this CHECK and the Go constant diverge.
 --   plugins.autostart_at         when the owner turned it on.
 --
 -- 🔴 ALL FOUR OR NONE (plugins_autostart_whole): a row is either off (every
@@ -24,9 +28,9 @@
 -- No new table or policy: 0015's owner policy and grants on plugins cover the
 -- columns, so db.RLSOn re-applies nothing for it. Idempotent.
 --
--- Must apply after its predecessor, 0151_session_route_target_host (the
--- contiguity test refuses a gap). 🔴 RENUMBER IT if another migration takes
--- 0152 first.
+-- Must apply after its predecessor, 0152_page_owner_view (the contiguity test
+-- refuses a gap). Numbered 0153 at merge: 0152 is the pages owner view's. 🔴 RENUMBER IT if another migration takes
+-- 0153 first.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them, so
 -- nothing auto-starts once it runs):
@@ -34,7 +38,7 @@
 --   ALTER TABLE public.plugins DROP COLUMN IF EXISTS autostart_at,
 --     DROP COLUMN IF EXISTS autostart_daily_cap, DROP COLUMN IF EXISTS autostart_repo,
 --     DROP COLUMN IF EXISTS autostart_target;
---   DELETE FROM schema_migrations WHERE version = 152;
+--   DELETE FROM schema_migrations WHERE version = 153;
 
 SET LOCAL lock_timeout = '3s';
 

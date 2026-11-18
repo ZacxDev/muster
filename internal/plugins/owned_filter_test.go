@@ -131,7 +131,7 @@ var pluginRowReads = map[string]string{
 	"PGStore.pairMintable":             "a name's uniqueness among the pairing owner's own (owner_id = $1)",
 	"PGStore.FileOutbound":             "an officer's draft names its owner's plugin (owner_id = $1)",
 
-	// 0152: a plugin's auto-start, written only by its owner's session
+	// 0153: a plugin's auto-start, written only by its owner's session
 	// (autostartWriter) and read by the owner and the plugin's own door.
 	"PGStore.SetAutostart":   "own",
 	"PGStore.ClearAutostart": "own",

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,6 +78,7 @@ func newAutostartFixture(t *testing.T, extra ...func(ext *Extensions)) *autostar
 	a.taskRouteFixture = newTaskRouteFixture(t, true, true, append([]func(ext *Extensions){func(ext *Extensions) {
 		ext.Provisioner = a.sp
 		ext.Push = autoPush{a.cp}
+		ext.PluginAutostart = true // the server's switch (MUSTER_PLUGIN_AUTOSTART)
 	}}, extra...)...)
 	a.prov = a.sp.recordingProvisioner
 	// Roles read from the database, so the plugin's door acts as the admin
@@ -169,12 +171,44 @@ func TestAPluginCannotOptItselfIntoAutostart(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Errorf("a task carrying autostart: %d %v; want 400", code, out)
 	}
-	// The owner's card route, with the plugin's token: not the owner's door.
+	// The owner's card route with the plugin's token, SAME-ORIGIN, so the
+	// session door is the one guard under test: the control below sends the
+	// identical request with a signed-in session and is accepted.
+	form := url.Values{"on": {"1"}, "target": {a.target()}, "repo": {autoRepo}, "daily_cap": {"3"}}.Encode()
+	sameOrigin := map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://example.com",
+		"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"}
+	withHdr := func(extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range sameOrigin {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
 	w := a.connFixture.call(t, http.MethodPost, pluginsPath+"/"+strconv.FormatInt(p.ID, 10)+"/autostart",
-		strings.NewReader(url.Values{"on": {"1"}, "target": {a.target()}, "repo": {autoRepo}, "daily_cap": {"3"}}.Encode()),
-		map[string]string{"Authorization": "Bearer " + tok, "Content-Type": "application/x-www-form-urlencoded", "Origin": "http://example.com"})
-	if w.Code == http.StatusSeeOther || w.Code == http.StatusOK {
-		t.Errorf("the plugin's token on the owner's card route: %d; want a refusal", w.Code)
+		strings.NewReader(form), withHdr(map[string]string{"Authorization": "Bearer " + tok}))
+	// The session door's refusal of a navigation: to the sign-in page, never
+	// on to /plugins (the handler's success).
+	if loc := w.Header().Get("Location"); w.Code != http.StatusSeeOther || !strings.HasPrefix(loc, loginPath) {
+		t.Errorf("the plugin's token, same-origin, on the owner's card route: %d Location %q; want the session door's redirect to %s", w.Code, loc, loginPath)
+	}
+	// Control: the same same-origin form from the operator's signed-in session,
+	// on the operator's own plugin, is accepted and stored.
+	a.tr.DispatchOwners[1] = true
+	op := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	_, opP, err := a.plugins.Create(op, "example-self-op", "Example self op", "example-self-op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = a.pool.Exec(authz.System(context.Background()), `DELETE FROM plugins WHERE id = $1`, opP.ID)
+	})
+	cw := a.connFixture.call(t, http.MethodPost, pluginsPath+"/"+strconv.FormatInt(opP.ID, 10)+"/autostart",
+		strings.NewReader(form), withHdr(map[string]string{"Cookie": sessionCookieFor(a.srv)}))
+	if cfg, _ := a.plugins.AutostartOf(op, opP.ID); cw.Code != http.StatusSeeOther || cw.Header().Get("Location") != pluginsPath || !cfg.On {
+		t.Fatalf("control: the operator's same-origin session: %d, on=%v; want 303 and stored", cw.Code, cfg.On)
 	}
 	if cfg, err := a.plugins.AutostartOf(a.asOwner, p.ID); err != nil || cfg.On {
 		t.Fatalf("after the plugin's attempts auto-start is %+v (%v); want off", cfg, err)
@@ -346,10 +380,10 @@ func TestTheAutostartKickoffFencesTheTask(t *testing.T) {
 		t.Fatalf("agents: %+v", on)
 	}
 	k := on[0].PendingNote
-	if !strings.HasSuffix(k, chiefDispatchRules) {
+	if !strings.HasSuffix(k, autostartRules) {
 		t.Fatalf("muster's rules are not last:\n%s", k)
 	}
-	fenced := strings.TrimSuffix(k, chiefDispatchRules)
+	fenced := strings.TrimSuffix(k, autostartRules)
 	lines := strings.Split(fenced, "\n")
 	open, closeAt := -1, -1
 	for i, l := range lines {
@@ -602,7 +636,9 @@ func TestThePluginsPageAutostartTurnOnConfirmsInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = a.pool.Exec(authz.System(context.Background()), `DELETE FROM plugins WHERE id = $1`, p.ID) })
+	t.Cleanup(func() {
+		_, _ = a.pool.Exec(authz.System(context.Background()), `DELETE FROM plugins WHERE id = $1`, p.ID)
+	})
 	w := a.connFixture.call(t, http.MethodGet, pluginsPath, nil, map[string]string{"Cookie": sessionCookieFor(a.srv)})
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /plugins: %d", w.Code)
@@ -642,4 +678,172 @@ func autostartForm(ctx context.Context, id int64, form url.Values) *http.Request
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.SetPathValue("id", strconv.FormatInt(id, 10))
 	return r
+}
+
+// --- the review round's fixes ----------------------------------------------------
+
+// TestAnOptOutMidFlightStartsNothing: the owner turns auto-start off — or
+// revokes the plugin — between the first read of the setting and the
+// reservation's lock. The re-read under the lock refuses: no agent, and the
+// reason is recorded.
+func TestAnOptOutMidFlightStartsNothing(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		do   func(a *autostartFixture, p plugins.Plugin) error
+	}{
+		{"turned off", func(a *autostartFixture, p plugins.Plugin) error {
+			_, err := a.plugins.ClearAutostart(a.asOwner, p.ID)
+			return err
+		}},
+		{"changed", func(a *autostartFixture, p plugins.Plugin) error {
+			_, err := a.plugins.SetAutostart(a.asOwner, p.ID, a.target(), otherRepo, 5)
+			return err
+		}},
+		// Off and on again with the SAME target, repository and cap: only Since
+		// moved — still a new opt-in, so the in-flight request does not start.
+		{"off and on again", func(a *autostartFixture, p plugins.Plugin) error {
+			if _, err := a.plugins.ClearAutostart(a.asOwner, p.ID); err != nil {
+				return err
+			}
+			_, err := a.plugins.SetAutostart(a.asOwner, p.ID, a.target(), autoRepo, 5)
+			return err
+		}},
+		{"revoked", func(a *autostartFixture, p plugins.Plugin) error {
+			_, err := a.plugins.Revoke(a.asOwner, p.ID)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := newAutostartFixture(t)
+			_, p := a.optedIn(t, "example-midflight", 5)
+			n := a.task(t, "mid-flight "+c.name)
+			autostartBeforeReserve = func() {
+				if err := c.do(a, p); err != nil {
+					t.Error(err)
+				}
+			}
+			t.Cleanup(func() { autostartBeforeReserve = nil })
+			if a.srv.autostartPluginTask(a.asPlugin(), p, n, autostartRequest{routesAssigned: true}) {
+				t.Fatal("started on a setting the owner turned off mid-flight")
+			}
+			if on := a.agentsOn(t, n.ID); len(on) != 0 || a.reservations(t, n.ID) != 0 {
+				t.Fatalf("%d agents, %d reservations", len(on), a.reservations(t, n.ID))
+			}
+			if s := a.skips(t, n.ID); len(s) != 1 || s[0] != autostartChanged {
+				t.Fatalf("skip reasons %q; want %q", s, autostartChanged)
+			}
+		})
+	}
+}
+
+// TestTheServerSwitchStopsEveryAutostart: with MUSTER_PLUGIN_AUTOSTART off, a
+// plugin its owner opted in starts nothing (the reason recorded), the card
+// offers no Turn on, and a Turn on is refused — while chief dispatch itself
+// is untouched (the control: agent_dispatch still starts on a task).
+func TestTheServerSwitchStopsEveryAutostart(t *testing.T) {
+	a := newAutostartFixture(t, func(ext *Extensions) { ext.PluginAutostart = false })
+	a.srv.ext.PluginAutostart = false
+	tok, p := a.optedIn(t, "example-switch", 5)
+	id := a.file(t, tok, "Switch off", "nothing should start")
+	if on := a.agentsOn(t, id); len(on) != 0 {
+		t.Fatalf("auto-started with the server switch off: %+v", on)
+	}
+	if s := a.skips(t, id); len(s) != 1 || s[0] != autostartServerOff {
+		t.Fatalf("skip reasons %q; want %q", s, autostartServerOff)
+	}
+	if why := a.srv.autostartUnavailable(a.asOwner); why != autostartServerOff {
+		t.Fatalf("the card's availability: %q; want %q", why, autostartServerOff)
+	}
+	r := autostartForm(stepup.WithAuthTime(a.asOwner, time.Now()), p.ID, url.Values{"on": {"1"}, "target": {a.target()}, "repo": {autoRepo}, "daily_cap": {"3"}})
+	rec := httptest.NewRecorder()
+	a.srv.handlePluginAutostart(rec, r)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("Turn on with the switch off: %d; want 409", rec.Code)
+	}
+	// Control: chief dispatch is not this switch.
+	n := a.task(t, "chief still starts")
+	a.startedOne(t, a.call(a.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "owner_asked": false}), n.ID)
+	// And the switch on: the same plugin starts.
+	a.srv.ext.PluginAutostart = true
+	if id2 := a.file(t, tok, "Switch on", "now it starts"); len(a.agentsOn(t, id2)) != 1 {
+		t.Fatalf("control: with the switch on nothing started (%q)", a.skips(t, id2))
+	}
+}
+
+// TestTheStopAskIsWithdrawnWhenNothingIsLeftToStop: destroying the agent, or
+// completing the task, withdraws the auto-start's open Stop ask, so a later
+// answer cannot claim a stop that never happened.
+func TestTheStopAskIsWithdrawnWhenNothingIsLeftToStop(t *testing.T) {
+	a := newAutostartFixture(t)
+	tok, _ := a.optedIn(t, "example-withdraw", 5)
+	// Destroyed.
+	id := a.file(t, tok, "Destroy me", "to be destroyed")
+	on := a.agentsOn(t, id)
+	if len(on) != 1 || len(a.asksOn(t, id)) != 1 {
+		t.Fatalf("control: agents %+v asks %+v", on, a.asksOn(t, id))
+	}
+	if _, err := a.srv.destroyAgent(a.asOwner, on[0].ID, func(context.Context, int64) error { return nil }, destroyHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	a.srv.destroyInFlight.Wait()
+	if asks := a.asksOn(t, id); len(asks) != 0 {
+		t.Fatalf("after the destroy the Stop ask is still open: %+v", asks)
+	}
+	// Completed.
+	id2 := a.file(t, tok, "Complete me", "to be completed")
+	if len(a.asksOn(t, id2)) != 1 {
+		t.Fatal("control: no Stop ask on the second task")
+	}
+	n2, err := a.notes.SetStatus(a.asOwner, id2, notes.StatusComplete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.srv.stopChiefAgentOnComplete(a.asOwner, n2)
+	if asks := a.asksOn(t, id2); len(asks) != 0 {
+		t.Fatalf("after completing the task the Stop ask is still open: %+v", asks)
+	}
+}
+
+// TestTheAutostartCapCheckIsTheChiefsDailyCap pins migration 0153's
+// hardcoded `BETWEEN 1 AND 10` to the Go constants it spells: the per-plugin
+// ceiling IS the chief's own daily cap.
+func TestTheAutostartCapCheckIsTheChiefsDailyCap(t *testing.T) {
+	if plugins.MaxAutostartDailyCap != plugins.MaxChiefDispatchesPerDay {
+		t.Fatalf("MaxAutostartDailyCap %d != MaxChiefDispatchesPerDay %d", plugins.MaxAutostartDailyCap, plugins.MaxChiefDispatchesPerDay)
+	}
+	sql, err := os.ReadFile("../db/migrations/0153_plugin_autostart.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "autostart_daily_cap BETWEEN 1 AND " + strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + ")"
+	if !strings.Contains(string(sql), want) {
+		t.Fatalf("the 0153 CHECK no longer reads %q: it and MaxChiefDispatchesPerDay diverged", want)
+	}
+}
+
+// TestAnAutostartedAgentIsToldMusterStartedIt: the kickoff's closing line names
+// muster and the owner's opt-in, never "your owner's chief", and a forward
+// folded into the owed first turn still lands BEFORE the rules.
+func TestAnAutostartedAgentIsToldMusterStartedIt(t *testing.T) {
+	a := newAutostartFixture(t)
+	tok, _ := a.optedIn(t, "example-words", 5)
+	id := a.file(t, tok, "Words", "who started me")
+	on := a.agentsOn(t, id)
+	if len(on) != 1 {
+		t.Fatalf("agents %+v", on)
+	}
+	k := on[0].PendingNote
+	if !strings.HasSuffix(k, autostartRules) || strings.Contains(k, "your owner's chief started you") {
+		t.Fatalf("kickoff does not close with the auto path's own line:\n%s", k)
+	}
+	if _, err := a.srv.forwardToTaskAgent(a.asOwner, on[0], "FORWARDED-NOTE"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := agents.NewPG(a.pool).Get(a.asOwner, on[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(after.PendingNote, autostartRules) || !strings.Contains(after.PendingNote, "FORWARDED-NOTE") {
+		t.Fatalf("the forward did not fold in before the rules:\n%s", after.PendingNote)
+	}
 }

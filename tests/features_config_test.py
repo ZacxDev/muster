@@ -110,6 +110,7 @@ NOT_FORWARDED = {
         "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD", "MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS",
     ]},
     "MUSTER_TAG_AUTODISPATCH": "reserved: logs and counts eligible tasks, dispatches nothing",
+    "MUSTER_PLUGIN_AUTOSTART": "plugin auto-start starts agents, which needs in-cluster dispatch (docs/features.md#plugin-auto-start)",
     "DATABASE_URL": "the Compose file hands muster DATABASE_URL_FILE instead, which muster-init writes from Postgres's "
     "password (kept from the stack's first start: POSTGRES_PASSWORD in .env then, or one it generated)",
     "POSTGRES_PASSWORD": "read by muster-init (muster-server compose-init) only, which writes it to Postgres's password "

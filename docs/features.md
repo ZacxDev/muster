@@ -893,7 +893,9 @@ can stop it from.
 - **Needs** [dispatch](#dispatch) on **Kubernetes**, [plugin tasks](#plugin-tasks),
   [task routing](#task-routing) with your user id in
   `MUSTER_CHIEF_DISPATCH_OWNERS`, and a [GitHub App](#github-app) that sees the
-  repository. No setting of its own.
+  repository.
+- **`.env`:** `MUSTER_PLUGIN_AUTOSTART=1`, the server's own switch, **off by
+  default**. Off stops every auto-start at once, and leaves chief dispatch alone.
 - **Not in the Compose stack:** its chief cannot start agents, so the card
   says auto-start is not available there and refuses to turn it on.
 - **Check:** the plugin's card says *Auto-start is on*. A task it files then

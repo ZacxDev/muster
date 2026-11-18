@@ -71,6 +71,8 @@ test.beforeAll(async () => {
     MUSTER_PLUGIN_TASK_NAMESPACES: 'tracker',
     MUSTER_TASK_ROUTING: '1',
     MUSTER_CHIEF_DISPATCH_OWNERS: '1',
+    // The server's own switch (off by default): without it the card offers no Turn on.
+    MUSTER_PLUGIN_AUTOSTART: '1',
   });
 });
 
@@ -104,7 +106,7 @@ test("the owner turns a plugin's auto-start on and off on its card (390px)", asy
   const on = card.locator('[data-plugin-autostart="on"]');
   await expect(on).toBeVisible();
   await expect(on).toContainText('example-org/other');
-  await expect(on).toContainText('at most 2 a day');
+  await expect(on).toContainText('at most 2 in 24 hours');
   await on.getByRole('button', { name: 'Turn off auto-start' }).click();
   await expect(card.locator('[data-plugin-autostart="off"]')).toBeVisible();
   await expect(card.locator('[data-plugin-autostart="on"]')).toHaveCount(0);
