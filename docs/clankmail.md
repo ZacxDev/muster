@@ -10,7 +10,7 @@ troubleshooting. Its image is `ghcr.io/zacxdev/muster-clankmail:<version>` (entr
 plugin itself). The protocol is [ZacxDev/clankmail](https://github.com/ZacxDev/clankmail)
 (`SPEC.md`).
 
-🔴 **The muster image no longer ships `/muster-clankmail`.** Releases up to the one that removed it
+🔴 **The muster image no longer ships `/muster-clankmail`.** v0.246.0 and earlier
 carried the plugin inside `ghcr.io/zacxdev/muster` (run with `--entrypoint /muster-clankmail`);
 later ones do not. If you run it that way, switch to the plugin's own image before you upgrade
 muster. Its configuration and `STATE_DIR` are unchanged, and it runs as the same non-root user

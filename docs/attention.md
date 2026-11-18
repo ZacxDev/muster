@@ -495,9 +495,9 @@ from the question and its options, grounded in them by the same filter:
   moment it is filed; the suggestions are generated in the background and,
   when there are any, the notification is **pushed again under the same tag**
   carrying them, marked `update` in payload v2 so an app can replace it without
-  alerting again. ⚠ The Android app as shipped (muster-android `43d9b90`)
-  ignores `update` and alerts again on the re-push — accepted by the operator
-  until the app reads it. A browser replaces it silently (same tag, no
+  alerting again. The Android app reads it (muster-android #16, `7af3250b7`,
+  first in v0.1.5; still so at v0.4.0): the re-push replaces the notification
+  without alerting again (`onlyAlertOnce(p) = p.update`). A browser replaces it silently (same tag, no
   `renotify`) and shows no chips; its lines are the same.
 - **The same switches.** `MUSTER_SUGGEST=off`, your own toggle on Account (and
   its auto-pause), and no OpenRouter key for you each mean no call and no chips,
