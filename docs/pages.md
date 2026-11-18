@@ -427,15 +427,21 @@ serves every upload: to the owner, as an attachment (images inline), under a
 ## Notifications
 
 - **Page ready: <title>** when an agent publishes a NEW page (`page_create`),
-  opening your view of it. Not on `page_update`: an agent iterating publishes many
-  versions in minutes, and the card in the chat already shows each.
+  opening your view of it.
+- **Page updated: <title> (v<N>)** when an agent publishes a new VERSION
+  (`page_update`), opening that version (`/pages/{id}/view?v=<N>`). An agent
+  iterating publishes many versions in minutes, so this one is capped: at most
+  6 per 10 minutes from one agent or session, and each replaces the page's last
+  one on your device ([push.md](push.md#an-agent-notifies-you)).
 - **Page shared: <title>** EVERY time an agent hands a page's link on without
   asking (you opted in) — a new link, or the one you had already shared (the
   push says which) — opening the page's screen, where Revoke is.
 
-They are two toggles on Account → Notifications: **An agent published a page
-for you** and **An agent shared one of your pages without asking**. 🔴 The
-second is its own on purpose: it is the one notice that a page went public
+They are three toggles on Account → Notifications: **An agent published a page
+for you**, **An agent published a new version of one of your pages** (its own,
+so you can mute an iterating agent's revisions and still hear of a new page)
+and **An agent shared one of your pages without asking**. 🔴 The
+last is its own on purpose: it is the one notice that a page went public
 with nobody approving it, so muting "a page is ready" must never also mute it.
 It is on by default, like every notification; muting it is its own, explicit
 choice.
@@ -444,6 +450,15 @@ A response pushes you **A viewer sent something through one of your pages'
 links** (its own toggle on Account → Notifications), naming the page and the
 part by its label (*Through “Your details”*), never what was sent; at most
 one a minute per page.
+
+### If a page's notification did not arrive
+
+Each page notification that reaches nobody is logged where it is dropped:
+`push: dropped tag=page-<id>-ready …` (or `-updated`), with the reason — the
+event muted in Account → Notifications, a cap reached, no device subscribed
+([push.md](push.md#every-dropped-notification-is-logged)). A delivered one
+logs `push: delivered tag=page-<id>-ready owner=<id> to N/M device(s)`, which
+means a push service accepted it, not that the device showed it.
 
 ## Limits
 
@@ -491,12 +506,3 @@ updated as well as the server.
   you are pushed.
 - **Require the viewer's email** per link.
 - **Page assets** uploaded once and referenced; today images are `data:` URIs.
-
-## If a page's notification did not arrive
-
-Each page notification that reaches nobody is logged where it is dropped:
-`push: dropped tag=page-<id>-ready …` (or `-updated`), with the reason — the
-event muted in Account → Notifications, a cap reached, no device subscribed
-([push.md](push.md#every-dropped-notification-is-logged)). A delivered one
-logs `push: delivered tag=page-<id>-ready owner=<id> to N/M device(s)`, which
-means a push service accepted it, not that the device showed it.
