@@ -354,6 +354,14 @@ jobs:
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/docs_guides_test.py
 
+      # The front door: the community files exist, the issue templates parse,
+      # no internal notes are tracked or linked, the README's and the docs
+      # index's links and images resolve, its badges, and its install table
+      # matching the asset set scripts/release-build.sh builds.
+      - name: the README, the docs index and the community files
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/repo_front_door_test.py
+
       # The Claude Code plugin marketplace: names, source path, skill
       # frontmatter, and the setup skill pointing at INSTALL.md's URL.
       - name: the Claude Code plugin is what the README installs

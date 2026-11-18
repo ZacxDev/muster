@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""The repository's front door: the community files, the README and the docs
+index, and internal notes kept out of the public tree.
+
+    python3 tests/repo_front_door_test.py
+
+Static. What it pins:
+
+* COMMUNITY FILES. Every file in COMMUNITY_FILES exists and is not empty.
+* ISSUE TEMPLATES PARSE. Every .github/ISSUE_TEMPLATE/*.yml is a YAML mapping.
+  config.yml's `blank_issues_enabled` is a boolean, and one of its contact
+  links is the private vulnerability report form (ADVISORY_URL), the route
+  SECURITY.md names too. Every other template is an issue form: a name, a
+  description and a non-empty `body` list.
+* NO INTERNAL NOTES. No tracked path is under claudedocs/, no tracked file
+  names a note that moved out (MOVED_NOTES), and no Markdown link points into
+  claudedocs/. (`claudedocs/**` also appears in the officers' docs-only gate,
+  its docs and tests, as an example of ANOTHER repository's paths; those are
+  globs in prose and code, never links, so they are not references to this
+  tree.)
+* LINKS AND IMAGES RESOLVE in README.md and docs/README.md: every relative
+  Markdown link and anchor (tests/features_config_test.py's broken_links, the
+  one link rule), plus every `![alt](path)`, `<img src="path">` and
+  `<a href="path">`, which that rule does not read.
+* THE README's BADGES: CI status, latest release, licence and Go version.
+* THE INSTALL TABLE IS WHAT A RELEASE SHIPS. Every release asset the README's
+  "Install options" section names (with `<os>`, `<arch>` and `<X.Y.Z>`
+  expanded) is in scripts/release-build.sh's literal asset contract, and
+  every asset of that contract except the two that are not an install option
+  (NOT_AN_INSTALL_OPTION) is named there. A seam, so it fails when either
+  side moves: a platform the README offers that no release builds, or an
+  asset a release builds that the README does not offer.
+
+Each check also runs, through the same function, on planted input it must
+fail, so a check that cannot fail is reported rather than passed.
+"""
+
+from __future__ import annotations
+
+import itertools
+import re
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from features_config_test import broken_links, strip_code  # noqa: E402  (one link rule, not two)
+
+ROOT = Path(__file__).resolve().parent.parent
+README = "README.md"
+DOCS_INDEX = "docs/README.md"
+TEMPLATES = ROOT / ".github/ISSUE_TEMPLATE"
+RELEASE_BUILD = ROOT / "scripts/release-build.sh"
+
+ADVISORY_URL = "https://github.com/ZacxDev/muster/security/advisories/new"
+
+COMMUNITY_FILES = [
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    ".github/pull_request_template.md",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+]
+
+# Internal handoff notes that moved to the maintainers' private notes. A file
+# that names one now points at nothing a reader of this repository can open.
+MOVED_NOTES = ["handoff-chief-routing-gaps"]
+
+# Assets every release builds that are not a way to install muster.
+NOT_AN_INSTALL_OPTION = {
+    "INSTALL.md": "the guide the one prompt downloads; the quick start names it",
+    "checksums.txt": "the sha256 of the other assets",
+}
+
+BADGES = {
+    "CI status": "https://github.com/ZacxDev/muster/actions/workflows/ci.yml/badge.svg",
+    "latest release": "https://img.shields.io/github/v/release/ZacxDev/muster",
+    "licence": "https://img.shields.io/github/license/ZacxDev/muster",
+    "Go version": "https://img.shields.io/github/go-mod/go-version/ZacxDev/muster",
+}
+
+PLACEHOLDERS = {"<os>": ["linux", "darwin"], "<arch>": ["amd64", "arm64"]}
+ASSET_TOKEN = re.compile(r"`([\w<>.-]+\.(?:tar\.gz|tgz|yml|sh)|env\.example)`")
+MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+IMG_SRC = re.compile(r"<img[^>]*\ssrc=\"([^\"]+)\"")
+A_HREF = re.compile(r"<a[^>]*\shref=\"([^\"]+)\"")
+CLAUDEDOCS_LINK = re.compile(r"\]\((?:\./|(?:\.\./)+)?claudedocs(?:/|\))")
+
+
+def tracked() -> list[str]:
+    out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, check=True).stdout
+    return [p for p in out.split("\0") if p]
+
+
+def text_of(path: str) -> str | None:
+    try:
+        return (ROOT / path).read_text()
+    except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+        return None
+
+
+def missing_community_files(root: Path) -> list[str]:
+    return [f for f in COMMUNITY_FILES if not (root / f).is_file() or not (root / f).read_text().strip()]
+
+
+def template_problems(files: dict[str, str]) -> list[str]:
+    """What is wrong with the issue templates FILES ({name: YAML text})."""
+    errs = []
+    if "config.yml" not in files:
+        errs.append("config.yml is missing")
+    for name, text in sorted(files.items()):
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            errs.append(f"{name} does not parse as YAML: {e}")
+            continue
+        if not isinstance(doc, dict):
+            errs.append(f"{name} is not a YAML mapping")
+            continue
+        if name == "config.yml":
+            if not isinstance(doc.get("blank_issues_enabled"), bool):
+                errs.append("config.yml: blank_issues_enabled is not a boolean")
+            urls = [c.get("url") for c in doc.get("contact_links") or [] if isinstance(c, dict)]
+            if ADVISORY_URL not in urls:
+                errs.append(f"config.yml: no contact link is the private vulnerability report form {ADVISORY_URL}")
+        else:
+            for key in ("name", "description"):
+                if not isinstance(doc.get(key), str) or not doc[key].strip():
+                    errs.append(f"{name}: no {key}")
+            if not isinstance(doc.get("body"), list) or not doc["body"]:
+                errs.append(f"{name}: no body (an issue form needs at least one field)")
+    return errs
+
+
+def internal_note_refs(files: dict[str, str | None]) -> list[str]:
+    """Tracked paths under claudedocs/, and files that name a moved note or link into claudedocs/."""
+    errs = [f"{p} is tracked under claudedocs/" for p in files if p.startswith("claudedocs/")]
+    for path, text in sorted(files.items()):
+        if text is None or path == "tests/repo_front_door_test.py":
+            continue
+        errs += [f"{path} names the moved note {n}" for n in MOVED_NOTES if n in text]
+        if path.endswith(".md") and CLAUDEDOCS_LINK.search(strip_code(text)):
+            errs.append(f"{path} links into claudedocs/")
+    return errs
+
+
+def broken_html_refs(files: dict[str, str]) -> list[str]:
+    """Images (Markdown and HTML) and HTML links whose relative target file is missing."""
+    errs = []
+    for path, text in files.items():
+        prose = strip_code(text)
+        for kind, target in ([("image", t) for t in MD_IMAGE.findall(prose) + IMG_SRC.findall(prose)] +
+                             [("link", t) for t in A_HREF.findall(prose)]):
+            if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("//"):
+                continue
+            rel = (Path(path).parent / target.split("#", 1)[0]).as_posix()
+            if not (ROOT / rel).is_file():
+                errs.append(f"{path}: {kind} {target} -> {rel} does not exist")
+    return errs
+
+
+def missing_badges(readme: str) -> list[str]:
+    return [name for name, url in BADGES.items() if url not in readme]
+
+
+def release_contract() -> set[str]:
+    """scripts/release-build.sh's `expected=( … )`, with $VERSION as <X.Y.Z>."""
+    m = re.search(r"(?ms)^expected=\((.*?)^\)", RELEASE_BUILD.read_text())
+    assert m, "scripts/release-build.sh has no expected=( … ) asset contract"
+    return {t.strip('"').replace("$VERSION", "<X.Y.Z>") for t in m.group(1).split()}
+
+
+def install_section(readme: str) -> str:
+    m = re.search(r"(?ms)^## Install options\n(.*?)(?=^## |\Z)", readme)
+    return m.group(1) if m else ""
+
+
+def expand(token: str) -> set[str]:
+    names = [k for k in PLACEHOLDERS if k in token]
+    out = set()
+    for combo in itertools.product(*(PLACEHOLDERS[k] for k in names)):
+        t = token
+        for k, v in zip(names, combo):
+            t = t.replace(k, v)
+        out.add(t)
+    return out
+
+
+def install_table_drift(section: str, contract: set[str]) -> list[str]:
+    named = set().union(*(expand(t) for t in ASSET_TOKEN.findall(section))) if section else set()
+    errs = [f"the README offers {a}, which no release builds" for a in sorted(named - contract)]
+    errs += [f"a release builds {a}, which the README's install options do not name"
+             for a in sorted(contract - named - set(NOT_AN_INSTALL_OPTION))]
+    if not section:
+        errs.insert(0, "README.md has no '## Install options' section")
+    return errs
+
+
+class FrontDoor(unittest.TestCase):
+    def test_community_files_exist(self) -> None:
+        self.assertEqual(missing_community_files(ROOT), [])
+        # Negative control: a root without them reports every one.
+        self.assertEqual(missing_community_files(ROOT / "no-such-dir"), COMMUNITY_FILES)
+
+    def test_issue_templates_parse(self) -> None:
+        files = {p.name: p.read_text() for p in TEMPLATES.glob("*.yml")} if TEMPLATES.is_dir() else {}
+        self.assertGreaterEqual(len(files), 3, "positive control: found almost no issue templates")
+        self.assertEqual(template_problems(files), [])
+        self.assertIn(ADVISORY_URL, (ROOT / "SECURITY.md").read_text(), "SECURITY.md names another route")
+        # Negative controls: bad YAML, a string where a boolean belongs, no
+        # advisory link, and a form with no fields are each reported.
+        planted = dict(files)
+        planted["config.yml"] = "blank_issues_enabled: 'no'\ncontact_links: []\n"
+        planted["broken.yml"] = "name: [unclosed\n"
+        planted["empty.yml"] = "name: x\ndescription: y\nbody: []\n"
+        errs = template_problems(planted)
+        self.assertEqual([e for e in errs if not e.startswith("broken.yml")], [
+            "config.yml: blank_issues_enabled is not a boolean",
+            f"config.yml: no contact link is the private vulnerability report form {ADVISORY_URL}",
+            "empty.yml: no body (an issue form needs at least one field)",
+        ])
+        self.assertEqual(len([e for e in errs if e.startswith("broken.yml does not parse as YAML")]), 1, errs)
+
+    def test_no_internal_notes_in_the_tree(self) -> None:
+        files = {p: text_of(p) for p in tracked()}
+        self.assertGreater(len(files), 1000, "positive control: git ls-files found almost nothing")
+        self.assertEqual(internal_note_refs(files), [])
+        # Negative controls: a tracked note, a file naming a moved note, and a
+        # link into claudedocs/ are each reported; a glob in prose is not.
+        planted = {
+            "claudedocs/x.md": "# x\n",
+            "docs/a.md": f"see {MOVED_NOTES[0]}.md\n",
+            "docs/b.md": "[notes](../claudedocs/plan.md)\n",
+            "docs/c.md": "allowed paths: `claudedocs/**`, claudedocs/notes.sh\n",
+        }
+        self.assertEqual(internal_note_refs(planted), [
+            "claudedocs/x.md is tracked under claudedocs/",
+            f"docs/a.md names the moved note {MOVED_NOTES[0]}",
+            "docs/b.md links into claudedocs/",
+        ])
+
+    def test_readme_and_docs_index_links_and_images_resolve(self) -> None:
+        files = {p: (ROOT / p).read_text() for p in (README, DOCS_INDEX)}
+        links = sum(len(re.findall(r"\]\((?!https?://)", strip_code(t))) for t in files.values())
+        self.assertGreater(links, 40, "positive control: the link pattern found almost nothing")
+        self.assertEqual(broken_links(files), [])
+        self.assertEqual(broken_html_refs(files), [])
+        # Negative controls: a missing page, a missing anchor and a missing
+        # image are each reported, in either file; a fenced one is not.
+        planted = {README: files[README] + "\n[a](docs/nope.md) [b](docs/README.md#nowhere) "
+                                           "<img src=\"docs/img/nope.png\"> ![c](docs/img/nope2.png) "
+                                           "<a href=\"docs/nope3.md\">x</a>\n"
+                                           "```\n[d](fenced-nope.md)\n```\n",
+                   DOCS_INDEX: files[DOCS_INDEX] + "\n[e](nope.md)\n"}
+        self.assertEqual(sorted(broken_links(planted)), sorted([
+            "README.md: docs/nope.md -> docs/nope.md does not exist",
+            "README.md: docs/README.md#nowhere -> #nowhere is not a heading of docs/README.md",
+            "docs/README.md: nope.md -> docs/nope.md does not exist",
+        ]))
+        self.assertEqual(broken_html_refs(planted), [
+            "README.md: image docs/img/nope2.png -> docs/img/nope2.png does not exist",
+            "README.md: image docs/img/nope.png -> docs/img/nope.png does not exist",
+            "README.md: link docs/nope3.md -> docs/nope3.md does not exist",
+        ])
+
+    def test_readme_badges(self) -> None:
+        readme = (ROOT / README).read_text()
+        self.assertEqual(missing_badges(readme), [])
+        self.assertEqual(missing_badges(""), list(BADGES), "control: an empty README went unseen")
+
+    def test_install_options_are_what_a_release_ships(self) -> None:
+        contract = release_contract()
+        self.assertIn("muster-<X.Y.Z>.tgz", contract, "positive control: the contract parse found no chart")
+        self.assertGreaterEqual(len(contract), 14, "positive control: the contract parse found almost nothing")
+        section = install_section((ROOT / README).read_text())
+        self.assertEqual(install_table_drift(section, contract), [])
+        # Negative controls: a platform no release builds, and an asset the
+        # section drops, are each reported.
+        self.assertEqual(install_table_drift(section.replace("`muster-<X.Y.Z>.tgz`", "") +
+                                             "\n`muster_<os>_<arch>.zip.tar.gz`\n", contract), [
+            "the README offers muster_darwin_amd64.zip.tar.gz, which no release builds",
+            "the README offers muster_darwin_arm64.zip.tar.gz, which no release builds",
+            "the README offers muster_linux_amd64.zip.tar.gz, which no release builds",
+            "the README offers muster_linux_arm64.zip.tar.gz, which no release builds",
+            "a release builds muster-<X.Y.Z>.tgz, which the README's install options do not name",
+        ])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

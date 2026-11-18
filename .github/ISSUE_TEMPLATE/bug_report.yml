@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in muster does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A security problem does not belong here: report it privately (see SECURITY.md).
+        Before you paste output, remove tokens, passwords, hostnames and addresses you do not want public.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`muster --version`, `muster-mirror -version`, or the version the server's /health reports."
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How muster is installed
+      options:
+        - Docker Compose (install.sh or the release's docker-compose.yml)
+        - Kubernetes (the Helm chart)
+        - From source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Machines
+      description: The OS of the server machine and of the mirrored machines, and the tmux version (`tmux -V`).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: muster doctor
+      description: The output of `muster doctor`, if you can run it.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant server or muster-mirror log lines.
+      render: text
