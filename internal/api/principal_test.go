@@ -149,12 +149,16 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/outreach-batches/{id}/decide",
 		"POST /plugins/messages/{id}/retry",
-		// Shareable pages (pages.go): the owner's Pages screen, preview and
-		// writes.
+		// Shareable pages (pages.go): the owner's Pages screen, their own view
+		// of a page (and its former address), and writes — their own
+		// responses from that view included.
 		"GET /pages",
 		"GET /pages/{id}",
+		"GET /pages/{id}/view",
 		"GET /pages/{id}/preview",
 		"GET /pages/{id}/versions/{v}/content",
+		"POST /pages/{id}/versions/{v}/submit",
+		"POST /pages/{id}/versions/{v}/upload",
 		"POST /pages/{id}/links/{link}/revoke",
 		"POST /pages/{id}/share",
 		"POST /pages/{id}/share/rotate",
