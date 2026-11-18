@@ -838,7 +838,9 @@ check the draft on the fields you will act on:
  "created_at": "2000-01-02T03:04:05Z", "venue": "example.social",
  "target": {"kind": "follow", "ref": "", "handle": "someone"},
  "because_ref": "c_123", "media": []}
-``` `media` is in the order the officer gave, at most 4
+```
+
+`media` is in the order the officer gave, at most 4
 (a post or a reply only); each `ref` is `<angle>/<id>`, which the plugin
 resolves on its own machine.
 
