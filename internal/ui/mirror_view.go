@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -738,6 +739,29 @@ type MirrorTranscript struct {
 }
 
 const maxDrawnCalls = 2048
+
+// RoutedSeen is the routes this transcript has drawn a "From …" card for,
+// sorted: what a resuming socket restores (RestoreRoutedSeen) so a replayed
+// paste after the resume point is still a bubble.
+func (t *MirrorTranscript) RoutedSeen() []string {
+	out := make([]string, 0, len(t.routedSeen))
+	for id := range t.routedSeen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RestoreRoutedSeen resumes the set from a checkpoint (RoutedSeen) taken at the
+// very place this socket resumes from.
+func (t *MirrorTranscript) RestoreRoutedSeen(ids []string) {
+	for _, id := range ids {
+		if t.routedSeen == nil {
+			t.routedSeen = map[string]bool{}
+		}
+		t.routedSeen[id] = true
+	}
+}
 
 // MirrorPromptID is a mirrored prompt's element id, from its Event.Line: the
 // ONE spelling both its bubble (Ops) and its prompt-index entry

@@ -311,10 +311,10 @@ func TestRouteToSessionInjectsTheStoredMessageOnBothSurfaces(t *testing.T) {
 		if len(r.PasteSHA256) != 64 || r.PasteSHA256 != plugins.RoutedPasteSHA256(body) {
 			t.Errorf("%s: route records paste %q, want the SHA-256 of its queued block", surface, r.PasteSHA256)
 		}
-		if !routedPasteMatches(r, r.TargetHost, routeSID, body) {
+		if !routedPasteMatches(r, r.TargetHost, routeSID, plugins.RoutedPromptText(body)) {
 			t.Errorf("%s: the view's check refuses the queued block itself", surface)
 		}
-		if routedPasteMatches(r, r.TargetHost, routeSID, strings.Replace(body, "please do a thing", "please do another thing", 1)) {
+		if routedPasteMatches(r, r.TargetHost, routeSID, plugins.RoutedPromptText(strings.Replace(body, "please do a thing", "please do another thing", 1))) {
 			t.Errorf("%s: the view's check accepts an altered block", surface)
 		}
 	}

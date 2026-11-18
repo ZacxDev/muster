@@ -307,8 +307,9 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// running across the reconnect is attributed when its next turn arrives.
 	lkey := ledgerKey{windowOwner(r.Context()), host, session, window}
 	if drawn.Resumed {
-		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
+		if l, routed, ok := s.ledgers.take(lkey, gen, offset); ok {
 			drawn.RestoreLedger(l)
+			drawn.RestoreRoutedSeen(routed)
 		}
 	}
 	curGen := gen
@@ -379,7 +380,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.Gen != "" {
 			curGen = m.Gen
 		}
-		s.ledgers.put(lkey, curGen, m.Offset, drawn.Ledger())
+		s.ledgers.put(lkey, curGen, m.Offset, drawn.Ledger(), drawn.RoutedSeen())
 		if m.PromptIndex {
 			refs, dropped := mirror.BoundPrompts(m.Prompts)
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)

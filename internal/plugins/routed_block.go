@@ -157,8 +157,9 @@ func ParseRoutedBlock(text string) (RoutedBlock, bool) {
 // (cctranscript.UnescapePastedContentTag). A prompt that is not exactly one
 // wrapper is taken as it stands.
 //
-// 🔴 USE IT BEFORE BOTH THE PARSE AND THE HASH: a routed block read from the
-// wrapped record parses into nothing, and its hash matches nothing.
+// 🔴 USE IT BEFORE BOTH THE PARSE AND THE HASH (RoutedReadSHA256, which does
+// not unescape again): a routed block read from the wrapped record parses into
+// nothing, and its hash matches nothing.
 func RoutedPromptText(prompt string) string {
 	if body, ok := cctranscript.UnwrapPastedContent(prompt); ok {
 		prompt = body
@@ -166,16 +167,27 @@ func RoutedPromptText(prompt string) string {
 	return cctranscript.UnescapePastedContentTag(prompt)
 }
 
-// RoutedPasteSHA256 is the hash a route records of the block it pasted
-// (Route.PasteSHA256) and a view compares a prompt against: SHA-256, lower-case
-// hex, of text with CRLF and lone CR folded to LF (as mirror.SanitizePaste
-// pastes it), the CLI's `<pasted_content` escaping undone (as RoutedPromptText
-// reads it back, so a backslash the text really held cancels out on both
-// sides — ccd's turnKey rule), and trailing white space trimmed (a transcript
-// may keep or drop the paste's final newline).
-func RoutedPasteSHA256(text string) string {
-	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
-	text = cctranscript.UnescapePastedContentTag(text)
-	sum := sha256.Sum256([]byte(strings.TrimRight(text, " \t\n")))
+// RoutedPasteSHA256 is the hash a route records of the block it QUEUED
+// (Route.PasteSHA256): routedDigest of the block as RoutedPromptText will read
+// it back — the CLI's `<pasted_content` escaping undone once, which is what
+// the view's reading does to what the CLI recorded. (A `<` the text already
+// follows with a backslash is left by the CLI and loses that one backslash on
+// both sides alike: each side undoes the escaping exactly ONCE.)
+func RoutedPasteSHA256(queued string) string {
+	return routedDigest(cctranscript.UnescapePastedContentTag(foldCR(queued)))
+}
+
+// RoutedReadSHA256 is the hash the VIEW compares with Route.PasteSHA256: of a
+// prompt already read by RoutedPromptText (unwrapped and unescaped — never
+// unescaped again here).
+func RoutedReadSHA256(read string) string { return routedDigest(foldCR(read)) }
+
+// foldCR folds CRLF and lone CR to LF, as mirror.SanitizePaste pastes it.
+func foldCR(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n") }
+
+// routedDigest is SHA-256, lower-case hex, of s with trailing white space
+// trimmed (a transcript may keep or drop the paste's final newline).
+func routedDigest(s string) string {
+	sum := sha256.Sum256([]byte(strings.TrimRight(s, " \t\n")))
 	return hex.EncodeToString(sum[:])
 }

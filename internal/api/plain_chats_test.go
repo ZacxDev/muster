@@ -646,6 +646,33 @@ func TestARoutedPasteRecordedInTheCLIsWrapperIsItsCard(t *testing.T) {
 	}
 }
 
+// TestTheTwoSidesHashARoutedPasteAlike: whatever run of backslashes follows a
+// `<` before `pasted_content` in a routed message — none (the CLI escapes it),
+// one or two (the CLI leaves them) — the hash muster records when it queues
+// the paste and the hash the view computes from what the CLI recorded agree,
+// wrapped or not, so the paste is its card. Each side undoes the CLI's escaping
+// exactly ONCE.
+//
+// REGRESSION TEST (audit round 3): red at 916d05f3a for two backslashes — the
+// view undid the escaping twice (RoutedPromptText, then RoutedPasteSHA256).
+func TestTheTwoSidesHashARoutedPasteAlike(t *testing.T) {
+	_, msg, p, m, _, _ := chatFixtureRoute()
+	for _, n := range []int{0, 1, 2, 3} {
+		m.Body = "Mind the <" + strings.Repeat(`\`, n) + `pasted_content id="abcd"> tag.`
+		real := renderRoutedMessageBy(routedByChief, msg, p, m, "0123456789abcdef")
+		_, onRecord := pastedRoutes(map[string]plugins.Route{real: msg})
+		for _, rec := range []struct{ name, text string }{
+			{"wrapped", wrapLikeTheCLI("1c0d", real)},
+			{"not wrapped", strings.ReplaceAll(real, "<pasted_content", `<\pasted_content`)},
+		} {
+			page := throughTheTranscript(t, onRecord, transcriptLine(t, rec.text, fixturePromptAt))
+			if !strings.Contains(page, `data-routed-card="prompt"`) {
+				t.Errorf("%d backslash(es), %s: the two sides' hashes disagree — drawn as a bubble", n, rec.name)
+			}
+		}
+	}
+}
+
 // TestOnlyTheFirstDeliveredPasteOfARouteIsItsCard: the same block recorded
 // again later (a replay) is a bubble; a route whose send-queue row was never
 // sent (queued, cancelled, failed) draws no card; nor does a prompt recorded
@@ -670,6 +697,19 @@ func TestOnlyTheFirstDeliveredPasteOfARouteIsItsCard(t *testing.T) {
 	if n := cards(transcriptLine(t, real, fixtureClaimed.Add(-routedPasteClockSkew+time.Second))); n != 1 {
 		t.Errorf("a prompt within the clock skew of its delivery draws no card")
 	}
+	// A LIVE view decides when the prompt arrives, and the row may still be
+	// SENDING then (the audit, on 404 real pastes: 275 flipped to sent after
+	// the prompt's time, p50 12 ms, max 32 s). A sending row whose claim is no
+	// later than the prompt is that delivery; one claimed after it is not.
+	for _, it := range pr.items {
+		it.State = sendqueue.Sending
+	}
+	if n := cards(once); n != 1 {
+		t.Errorf("a paste whose row is still sending, claimed before the prompt, draws %d cards, want 1", n)
+	}
+	if n := cards(transcriptLine(t, real, fixtureClaimed.Add(-time.Millisecond))); n != 0 {
+		t.Errorf("a prompt recorded before its still-sending row was claimed draws a card")
+	}
 	for _, st := range []sendqueue.State{sendqueue.Queued, sendqueue.Cancelled, sendqueue.Failed} {
 		for _, it := range pr.items {
 			it.State = st
@@ -678,4 +718,42 @@ func TestOnlyTheFirstDeliveredPasteOfARouteIsItsCard(t *testing.T) {
 			t.Errorf("a route whose paste is %s draws a card", st)
 		}
 	}
+}
+
+// TestAResumedViewStillDrawsAReplayAsABubble: the routes a socket drew cards
+// for ride in its resume checkpoint (ledgerCheckpoints), so a socket that
+// resumes from that very place draws a later replay of the paste as a bubble —
+// and, the control, one that resumes with nothing restored would draw a card.
+func TestAResumedViewStillDrawsAReplayAsABubble(t *testing.T) {
+	_, msg, p, m, _, _ := chatFixtureRoute()
+	real := renderRoutedMessageBy(routedByChief, msg, p, m, "0123456789abcdef")
+	_, onRecord := pastedRoutes(map[string]plugins.Route{real: msg})
+	draw := func(tr *ui.MirrorTranscript, at time.Time) string {
+		var b strings.Builder
+		for _, op := range tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindPrompt, Line: 7, Text: wrapLikeTheCLI("1c0d", real), PromptAt: at.UnixMilli()}}) {
+			b.WriteString(op.HTML)
+		}
+		return b.String()
+	}
+	first := &ui.MirrorTranscript{RoutedPasteOnRecord: onRecord}
+	if !strings.Contains(draw(first, fixturePromptAt), `data-routed-card="prompt"`) {
+		t.Fatal("CONTROL: the first socket does not draw the paste as its card")
+	}
+	var cps ledgerCheckpoints
+	k := ledgerKey{owner: 1, host: fixtureHost, session: "work", window: "@1"}
+	cps.put(k, "gen-1", 900, first.Ledger(), first.RoutedSeen())
+	_, routed, ok := cps.take(k, "gen-1", 900)
+	if !ok || len(routed) != 1 || routed[0] != msg.RouteID {
+		t.Fatalf("the checkpoint carries routes %v (%v), want [%s]", routed, ok, msg.RouteID)
+	}
+	resumed := &ui.MirrorTranscript{RoutedPasteOnRecord: onRecord, Resumed: true}
+	resumed.RestoreRoutedSeen(routed)
+	if page := draw(resumed, fixturePromptAt.Add(time.Hour)); strings.Contains(page, `data-routed-card`) {
+		t.Errorf("a replay after a resume is drawn as a card:\n%s", page)
+	}
+	bare := &ui.MirrorTranscript{RoutedPasteOnRecord: onRecord, Resumed: true}
+	if !strings.Contains(draw(bare, fixturePromptAt.Add(time.Hour)), `data-routed-card="prompt"`) {
+		t.Error("CONTROL: with nothing restored the replay is not a card — the test cannot see the checkpoint")
+	}
+	assertCallers(t, ".", "RestoreRoutedSeen", []string{"mirror_view.go:handleMirrorViewWS"})
 }

@@ -118,11 +118,12 @@ func (s *Server) routedPasteOnRecord(r *http.Request, host, session, window, rou
 }
 
 // routedPasteMatches is the record's half of the check: route rt was pasted
-// into Claude session sid on host, as text.
+// into Claude session sid on host, as text — the prompt as the view READ it
+// (plugins.RoutedPromptText), hashed with RoutedReadSHA256.
 func routedPasteMatches(rt plugins.Route, host, sid, text string) bool {
 	return rt.TargetKind == string(focus.KindMirror) && sid != "" && rt.TargetKey == sid &&
 		(rt.TargetHost == "" || rt.TargetHost == host) &&
-		rt.PasteSHA256 != "" && rt.PasteSHA256 == plugins.RoutedPasteSHA256(text)
+		rt.PasteSHA256 != "" && rt.PasteSHA256 == plugins.RoutedReadSHA256(text)
 }
 
 // routedPasteClockSkew is how far a prompt's time (the host's clock, as the
@@ -131,11 +132,27 @@ func routedPasteMatches(rt plugins.Route, host, sid, text string) bool {
 // clocks' difference can put it earlier.
 const routedPasteClockSkew = time.Minute
 
-// routedPasteDelivered is the delivery's half: the route's send-queue row it
-// was SENT (not queued, cancelled or failed — a paste never delivered has no
-// prompt to be), and the prompt was recorded no earlier than the row's
-// delivery began (its claim), within routedPasteClockSkew. A prompt with no
-// time is not taken for a delivery.
+// routedPasteDelivered is the delivery's half: the route's send-queue row
+//   - was SENT, and the prompt was recorded no earlier than the row's delivery
+//     began (its claim), within routedPasteClockSkew; or
+//   - is still SENDING, claimed no later than the prompt: a LIVE view decides
+//     when the prompt arrives, and the host confirms the paste after the CLI
+//     has recorded it (measured on 404 real pastes: 275 rows flipped to sent
+//     after the prompt's time, p50 12 ms, max 32 s). The hash still binds the
+//     card to the exact text.
+//
+// Queued, cancelled or failed is no delivery (a failed one fails closed: the
+// paste may have landed, but muster does not say so). A prompt with no time is
+// not taken for a delivery.
 func routedPasteDelivered(it sendqueue.Item, at time.Time) bool {
-	return it.State == sendqueue.Sent && !at.IsZero() && !it.ClaimedAt.IsZero() && !at.Before(it.ClaimedAt.Add(-routedPasteClockSkew))
+	if at.IsZero() || it.ClaimedAt.IsZero() {
+		return false
+	}
+	switch it.State {
+	case sendqueue.Sent:
+		return !at.Before(it.ClaimedAt.Add(-routedPasteClockSkew))
+	case sendqueue.Sending:
+		return !at.Before(it.ClaimedAt)
+	}
+	return false
 }
