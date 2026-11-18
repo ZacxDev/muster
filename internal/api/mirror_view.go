@@ -97,6 +97,9 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx),
 		LiveCopy: e.LiveCopyWarning(),
+		// The header's ⓘ: the window's exact tmux target, its owner's (none
+		// on a team host's session, as no name is).
+		PlaceAddress: placeAddressUnlessTeam(team, e),
 		// What the retired list's card said: "offline", and the host's note.
 		Offline: !h.Online, Note: e.AgentNote}
 	// 🔴 A WINDOW OF A RUNTIME MUSTER ONLY VIEWS (Caps.Send off) has its
@@ -940,4 +943,14 @@ func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, tex
 		finish(nonceFailed)
 	}
 	return false, err
+}
+
+// placeAddressUnlessTeam is the tmux target (mirror.WhereTarget: "tmux
+// fern:1 @ atlas") the Rendered view header's ⓘ holds, "" on a team host's
+// session.
+func placeAddressUnlessTeam(team bool, e mirror.SessionView) string {
+	if team {
+		return ""
+	}
+	return e.WhereTarget()
 }

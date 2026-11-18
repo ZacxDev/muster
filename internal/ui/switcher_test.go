@@ -21,8 +21,10 @@ func switcherFixture() ([]AgentCardView, []MirrorCardView) {
 		{ID: 4, Name: "ag-four", Status: "stopped", LastActiveAt: now.Add(-4 * time.Minute)},
 	}
 	mirrors := []MirrorCardView{
-		{Host: "tower", Session: "w", Window: "@1", Label: "mango:1", Online: true, Claude: true, ActiveAt: now.Add(-2 * time.Minute)},
-		{Host: "tower", Session: "w", Window: "@2", Label: "mango:2", Online: true, Pinned: true, ActiveAt: now.Add(-8 * time.Minute)},
+		// The qualifiers are mirror.Ordered's for these two: one host, one
+		// plain name ("mango"), told apart by their window.
+		{Host: "tower", Session: "w", Window: "@1", Label: "mango:1", Qualifier: "window 1", Online: true, Claude: true, ActiveAt: now.Add(-2 * time.Minute)},
+		{Host: "tower", Session: "w", Window: "@2", Label: "mango:2", Qualifier: "window 2", Online: true, Pinned: true, ActiveAt: now.Add(-8 * time.Minute)},
 	}
 	return list, mirrors
 }
@@ -60,8 +62,8 @@ func switcherRowEntries(t *testing.T, page, key string) []string {
 // left out — capped at switcherRecentMax; Waiting is the entries waiting on
 // the viewer in the list's order; Pins is the pinned entries in the list's
 // order; All is every entry in the list's order with the page's own drawn as
-// current. Labels are sessionSwitcherLabels' (a codename WITH its index,
-// whatever else its view holds).
+// current. Labels are sessionSwitcherLabels' (a codename WITHOUT tmux's
+// index, with its list qualifier where its view holds another of that name).
 func TestTheSwitcherResolvesEachView(t *testing.T) {
 	list, mirrors := switcherFixture()
 	w := func(id string) RecentRef {
@@ -74,23 +76,25 @@ func TestTheSwitcherResolvesEachView(t *testing.T) {
 	view := MirrorRef{Host: "tower", Session: "w", Window: "@1"}.ViewPath()
 	term := MirrorRef{Host: "tower", Session: "w", Window: "@2"}.TerminalPath()
 	for key, want := range map[string][]string{
-		SwitcherRecent: {"mango:2 " + amp(term), "ag-three /agents/ag-three", "Two /agents/ag-two", "mango:1 " + amp(view)},
+		SwitcherRecent: {"mango · window 2 " + amp(term), "ag-three /agents/ag-three", "Two /agents/ag-two", "mango · window 1 " + amp(view)},
 		// ag-three has an ask: the one entry waiting on the viewer.
 		SwitcherWaiting: {"ag-three /agents/ag-three"},
-		// Alone in its view, the same window still reads "mango:2".
-		SwitcherPins: {"mango:2 " + amp(term), "Two /agents/ag-two"},
-		SwitcherAll: {"mango:2 " + amp(term), "Two /agents/ag-two", "ag-one (current)", "mango:1 " + amp(view),
+		// Alone in its view, the same window reads "mango": nothing beside it
+		// shares the name, and tmux's index is not a name.
+		SwitcherPins: {"mango " + amp(term), "Two /agents/ag-two"},
+		SwitcherAll: {"mango · window 2 " + amp(term), "Two /agents/ag-two", "ag-one (current)", "mango · window 1 " + amp(view),
 			"ag-three /agents/ag-three", "ag-four /agents/ag-four"},
 	} {
 		if got := switcherRowEntries(t, page, key); strings.Join(got, " | ") != strings.Join(want, " | ") {
 			t.Errorf("%s =\n%v\nwant\n%v", key, got, want)
 		}
 	}
-	// A codename alone in its view keeps its index: Pins with only one window
-	// pinned (it used to read "mango").
+	// A codename alone in its view is its plain name: Pins with only one
+	// window pinned reads "mango" — no tmux index (operator rule, 2026-11-17:
+	// no ids in the top layer), no qualifier (nothing there to tell it from).
 	solo := renderString(t, switcherBar(NewSwitcher(list[:1], mirrors[1:], nil, SwitcherCurrent{}), false))
-	if got := switcherRowEntries(t, solo, SwitcherPins); len(got) != 1 || !strings.HasPrefix(got[0], "mango:2 ") {
-		t.Errorf("a lone codename lost its index: %v", got)
+	if got := switcherRowEntries(t, solo, SwitcherPins); len(got) != 1 || !strings.HasPrefix(got[0], "mango /") {
+		t.Errorf("a lone codename is not its plain name: %v", got)
 	}
 	// A link to a window's Rendered view is a snapshot warming source
 	// (a[data-snap-warm]); a terminal link and an agent's are not.
@@ -412,8 +416,8 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	}
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
 	for _, want := range []string{
-		`data-switcher-entry="mirror" title="mango:1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
-		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w tower" data-switcher-host="tower" class=`,
+		`data-switcher-entry="mirror" title="mango · window 1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
+		`data-switcher-entry="mirror" title="mango · window 2" data-switcher-code="mango:2" data-switcher-words="w tower" data-switcher-host="tower" class=`,
 		`data-switcher-entry="agent" title="Release tidy" data-switcher-code="ag-three" data-switcher-title="Release tidy · Tidy the release notes"`,
 		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard cluster" data-switcher-host="cluster" class=`,
 	} {

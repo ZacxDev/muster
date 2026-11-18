@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,23 +168,47 @@ func TestAMirroredSessionsAskNamesTheWindowRunningItNow(t *testing.T) {
 	}
 }
 
-var askPageSource = regexp.MustCompile(`data-ask-source>([^<]*)</span> asks`)
+var askPageSource = regexp.MustCompile(`data-ask-source>([^<]*)</span> asks([^<]*)<time`)
 
-// TestTheAskPageHeaderNamesTheExactTmuxTarget: "<source> asks" on an ask's
-// own page.
-func TestTheAskPageHeaderNamesTheExactTmuxTarget(t *testing.T) {
+// askPageWho is what an ask's own page says asks, and where, by ask: the
+// session's name in words — its codename without tmux's window index, never
+// its tmux target (operator rule, 2026-11-17) — and "on <host>"; an asker
+// that names no window keeps its source and says no place.
+var askPageWho = map[int64][2]string{
+	91: {"mango", " · on ws · "},
+	92: {"build", " · on ws · "},
+	93: {"pear:2 @ ws (not shown in any mirrored window now)", " · "},
+	94: {"Worker Seven", " · "},
+}
+
+// TestTheAskPageHeaderNamesTheSessionAndItsInfoTheExactTmuxTarget: "<name>
+// asks · on <host>" on an ask's own page, and the card's ⓘ holds the exact
+// tmux target (whereAskSources' target) for the windows it names.
+//
+// REGRESSION TEST for the jargon audit's F121/F122: red at origin/main,
+// whose header was "tmux build:7 @ ws asks".
+func TestTheAskPageHeaderNamesTheSessionAndItsInfoTheExactTmuxTarget(t *testing.T) {
 	asks := whereAsks()
 	s := whereServer(t, asks...)
+	targets := map[int64]string{91: "tmux scratch3:5 @ ws", 92: "tmux build:7 @ ws"}
 	for _, a := range asks {
 		rec := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", askPagePath(a.ID), nil).WithContext(s.attentionPrincipal(context.Background(), 1))
 		s.renderAskPage(rec, r, a)
-		m := askPageSource.FindStringSubmatch(rec.Body.String())
+		body := rec.Body.String()
+		m := askPageSource.FindStringSubmatch(body)
 		if m == nil {
-			t.Fatalf("ask %d: no header on the page:\n%s", a.ID, rec.Body.String())
+			t.Fatalf("ask %d: no header on the page:\n%s", a.ID, body)
 		}
-		if got, want := html.UnescapeString(m[1]), whereAskSources[a.ID]; got != want {
-			t.Errorf("ask %d: header %q asks, want %q asks", a.ID, got, want)
+		if got, want := [2]string{html.UnescapeString(m[1]), html.UnescapeString(m[2])}, askPageWho[a.ID]; got != want {
+			t.Errorf("ask %d: header %q asks%q, want %q asks%q", a.ID, got[0], got[1], want[0], want[1])
+		}
+		target, names := targets[a.ID]
+		if got := strings.Contains(body, `data-info-code="">`+target+`</code>`); got != names {
+			t.Errorf("ask %d: the ⓘ holds the target %q: %v, want %v", a.ID, target, got, names)
+		}
+		if names && strings.Contains(m[0], "tmux ") {
+			t.Errorf("ask %d: the header still spells the tmux target: %s", a.ID, m[0])
 		}
 	}
 }

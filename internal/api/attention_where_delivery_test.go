@@ -109,11 +109,12 @@ func TestTheChiefsFleetListCarriesEachWindowsWhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	// name is the session's stable name (internal/sessionname): with no
-	// human one, its codename or tmux address — no longer with " @ <host>",
-	// which is `host` (and `where`).
+	// human one, its codename or tmux session without tmux's window index
+	// (mirror.PlainCode) — no longer with " @ <host>", which is `host`; the
+	// exact target is `where`.
 	want := map[string][3]string{
-		"mirror:" + whereLabelledSID:   {"mango:1", "ws", "mango:1 · tmux scratch3:5 @ ws"},
-		"mirror:" + whereUnlabelledSID: {"build:7", "ws", "tmux build:7 @ ws"},
+		"mirror:" + whereLabelledSID:   {"mango", "ws", "mango:1 · tmux scratch3:5 @ ws"},
+		"mirror:" + whereUnlabelledSID: {"build", "ws", "tmux build:7 @ ws"},
 	}
 	if len(got.Sessions) != len(want) {
 		t.Fatalf("%d rows, want %d: %+v", len(got.Sessions), len(want), got.Sessions)

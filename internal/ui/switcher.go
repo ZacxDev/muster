@@ -13,6 +13,7 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE SESSION SWITCHER: a bar BELOW the message input of a session's page — a
@@ -278,7 +279,8 @@ func switcherName(e listEntry) string {
 	if m.SessionName.Human() {
 		return m.SessionName.Text
 	}
-	return mirrorCodeName(*m)
+	// Its codename as a person reads it: no tmux window index (mirror.PlainCode).
+	return mirror.PlainCode(mirrorCodeName(*m))
 }
 
 // mirrorCodeName is a window's technical name: its codename (Label, unless it
@@ -294,8 +296,18 @@ func mirrorCodeName(m MirrorCardView) string {
 
 // entryTip is e's tooltip (SwitcherItem.Tip): label, then the technical id a
 // human name hides, when it is one and says something label does not.
+//
+// A mirrored session's technical id (its tmux address) is NOT a tooltip's: the
+// tip says where it runs in words (sessionname.Name.Place, "on atlas"), and the
+// address is its page's ⓘ (operator rule, 2026-11-17).
 func entryTip(e listEntry, label string) string {
 	n := entryName(e)
+	if n.Place != "" {
+		if n.Human() {
+			return label + " · " + n.Place
+		}
+		return label
+	}
 	if n.Human() && n.Technical != "" && n.Technical != label {
 		return label + " · " + n.Technical
 	}

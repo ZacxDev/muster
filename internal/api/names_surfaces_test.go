@@ -94,10 +94,10 @@ func TestAnAttentionItemAndItsPushCallTheSessionByItsName(t *testing.T) {
 	if n.Title != "Billing migration is asking" || n.TitleKeep != "Billing migration" {
 		t.Fatalf("push title %q keep %q", n.Title, n.TitleKeep)
 	}
-	// The Asks card's head: the name as its title, the place (its tmux target,
-	// the window's label cut off) small under it.
+	// The Asks card's head: the name as its title, where it runs in words
+	// under it — never the tmux target, which is the card's ⓘ.
 	head := attentionHeadLines(it, time.Now())
-	if !strings.Contains(head, `data-attention-name>Billing migration</span>`) || !strings.Contains(head, `data-attention-source>tmux main:1 @ ws</span>`) {
+	if !strings.Contains(head, `data-attention-name>Billing migration</span>`) || !strings.Contains(head, `data-attention-source>on ws</span>`) || strings.Contains(head, "tmux ") {
 		t.Fatalf("Asks row who = %s", head)
 	}
 	// The status bar's summary titles the item as its push does.

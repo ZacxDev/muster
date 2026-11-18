@@ -102,17 +102,56 @@ type SessionView struct {
 	StatusSince int64
 }
 
-// QualifierSep joins a Title and its Qualifier: "mango:1 · laptop".
+// QualifierSep joins a Title and its Qualifier: "mango · laptop".
 const QualifierSep = " · "
 
 // DisplayTitle is the entry's name as every surface shows it — the card, the
-// rendered view's and the terminal's header and <title>: its Title, then its
-// Qualifier when it has one.
+// rendered view's and the terminal's header and <title>: its PlainTitle, then
+// its Qualifier when it has one.
 func (s SessionView) DisplayTitle() string {
 	if s.Qualifier == "" {
-		return s.Title()
+		return s.PlainTitle()
 	}
-	return s.Title() + QualifierSep + s.Qualifier
+	return s.PlainTitle() + QualifierSep + s.Qualifier
+}
+
+// PlainTitle is the entry's Title as a person reads it: the codename with
+// tmux's window index dropped (PlainCode) — "mango", not "mango:1". The index
+// is how tmux numbers a window, not a name; it stays in the entry's Address,
+// its Where and its Place (what "Show tmux sessions" and the ⓘ details show),
+// and comes back as a qualifier ("window 2") only when two listed entries of
+// one host would otherwise read the same (qualify).
+func (s SessionView) PlainTitle() string { return PlainCode(s.Title()) }
+
+// PlainCode is code without a trailing tmux window index: "mango:1" is
+// "mango", "retry-test:12" is "retry-test"; a code with no index ("mango",
+// "a:b") — or one that IS only an index (":1") — is returned unchanged.
+//
+// 🔴 ONE RULE, ONE PLACE: every surface that names a window by its codename
+// for a person (DisplayTitle, the ui's card and switcher names, an attention
+// card's title) drops the index here, so no two of them disagree about
+// whether "mango:1" and "mango" are the same window.
+func PlainCode(code string) string {
+	i := strings.LastIndexByte(code, ':')
+	if i <= 0 || i == len(code)-1 {
+		return code
+	}
+	for _, c := range code[i+1:] {
+		if c < '0' || c > '9' {
+			return code
+		}
+	}
+	return code[:i]
+}
+
+// PlaceWords is where a window runs, as the top layer of every surface says
+// it: "on <host>". The exact tmux address (Where) is behind the surface's ⓘ
+// details, never in its words.
+func PlaceWords(host string) string {
+	if host == "" {
+		return ""
+	}
+	return "on " + host
 }
 
 // Address is the entry's tmux address on its host, as an operator types it:
@@ -219,35 +258,48 @@ func (s SessionView) WhereTarget() string {
 //
 // 🔴 ONE RULE, ONE PLACE. The sidebar's row, the switcher's pill and the pages
 // they open (their header and their <title>) all take an entry's name from here, so they cannot
-// disagree about whether "mango:1" needs its host. It is decided over the list
+// disagree about whether "mango" needs its host. It is decided over the list
 // as it is NOW, so a host connecting with a clashing label — or the one it
 // clashed with going away — changes the answer on the next render; the hub
 // re-renders on exactly those changes (a connect, a drop, a list change).
 //
-// The rule, over entries whose Title is identical (exact bytes):
-//   - a Title no other entry has: no qualifier — the name is unchanged;
-//   - a Title shared ACROSS hosts: each entry gets its host ("mango:1 · laptop");
-//   - a Title shared by two entries of ONE host (two sessions whose label is
-//     the same, say): each of those gets its tmux Address too, after the host
-//     when the Title is also shared across hosts ("Gold:1 · laptop · scratch3:1"),
-//     alone when it is not ("Gold:1 · scratch3:1"). Address is unique per host,
-//     so every listed entry ends up with a distinct DisplayTitle.
+// The rule, over entries whose PlainTitle is identical (exact bytes) — the
+// name a person reads, with tmux's window index dropped:
+//   - a PlainTitle no other entry has: no qualifier — the name is unchanged;
+//   - a PlainTitle shared ACROSS hosts: each entry gets its host ("mango · laptop");
+//   - a PlainTitle shared by two entries of ONE host (two windows of one tmux
+//     session, "mango:1" and "mango:2"; or two sessions whose label is the
+//     same): each of those gets its window, after the host when the title is
+//     also shared across hosts ("mango · laptop · window 2"), alone when it is
+//     not ("mango · window 2"). The window is said by its index ("window 2")
+//     when the indexes tell that host's entries apart, else by its tmux
+//     Address ("Gold · scratch3:1": two sessions labelled alike, both window
+//     1). Address is unique per host, so every listed entry ends up with a
+//     distinct DisplayTitle.
 func qualify(list []SessionView) {
 	type hostTitle struct{ host, title string }
 	byTitle := map[string]int{}
 	hostsOf := map[string]map[string]bool{}
 	byHostTitle := map[hostTitle]int{}
+	indexes := map[hostTitle]map[int]int{}
 	for _, s := range list {
-		t := s.Title()
+		t := s.PlainTitle()
 		byTitle[t]++
 		if hostsOf[t] == nil {
 			hostsOf[t] = map[string]bool{}
 		}
 		hostsOf[t][s.Host] = true
-		byHostTitle[hostTitle{s.Host, t}]++
+		ht := hostTitle{s.Host, t}
+		byHostTitle[ht]++
+		if indexes[ht] == nil {
+			indexes[ht] = map[int]int{}
+		}
+		if s.Window != "" {
+			indexes[ht][s.Index]++
+		}
 	}
 	for i := range list {
-		t := list[i].Title()
+		t := list[i].PlainTitle()
 		list[i].Qualifier = ""
 		if byTitle[t] < 2 {
 			continue
@@ -256,8 +308,13 @@ func qualify(list []SessionView) {
 		if len(hostsOf[t]) > 1 {
 			parts = append(parts, list[i].Host)
 		}
-		if byHostTitle[hostTitle{list[i].Host, t}] > 1 {
-			parts = append(parts, list[i].Address())
+		ht := hostTitle{list[i].Host, t}
+		if byHostTitle[ht] > 1 {
+			if list[i].Window != "" && indexes[ht][list[i].Index] == 1 && len(indexes[ht]) == byHostTitle[ht] {
+				parts = append(parts, "window "+strconv.Itoa(list[i].Index))
+			} else {
+				parts = append(parts, list[i].Address())
+			}
 		}
 		list[i].Qualifier = strings.Join(parts, QualifierSep)
 	}

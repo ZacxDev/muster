@@ -1971,12 +1971,19 @@ func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss stri
 
 // attentionHeadHTML is an item card's head: its lines (attentionHeadLines)
 // and, with href, the head is the link to it, ended by a chevron.
+//
+// A head that names a window is followed by its ⓘ (attentionPlaceSheetHTML) —
+// beside the link, never inside it — in one row.
 func attentionHeadHTML(it attentionItem, now time.Time, href string) string {
 	lines := `<span class="` + ui.AsksHeadTextClass + `">` + attentionHeadLines(it, now) + `</span>`
-	if href == "" {
-		return `<div class="` + ui.AsksHeadClass + ` flex-1">` + lines + `</div>`
+	head := `<div class="` + ui.AsksHeadClass + ` flex-1">` + lines + `</div>`
+	if href != "" {
+		head = `<a href="` + html.EscapeString(href) + `" class="` + ui.AsksHeadLinkClass + ` flex-1" data-attention-session>` + lines + ui.AsksChevron + `</a>`
 	}
-	return `<a href="` + html.EscapeString(href) + `" class="` + ui.AsksHeadLinkClass + ` flex-1" data-attention-session>` + lines + ui.AsksChevron + `</a>`
+	if info := attentionPlaceSheetHTML(it, it.Key); info != "" {
+		return `<div class="flex min-w-0 items-center gap-1">` + head + info + `</div>`
+	}
+	return head
 }
 
 // attentionHeadLines is a card head's two lines: the title (attentionTitle) and,
@@ -2014,31 +2021,80 @@ func attentionHeadLines(it attentionItem, now time.Time) string {
 }
 
 // attentionTitle is what an item's head calls it, and the place it shows
-// under that (src, "" for none): the session's HUMAN name when it has one, its
-// place small under it; else a mirrored window's own name (its label, or its
-// tmux address: mirror.Place's Code) with its tmux target and host under it;
-// else its Source itself (an agent, muster, a plugin), and srcIsTitle says the
-// title IS the source.
+// under that (src, "" for none): the session's HUMAN name when it has one,
+// its place under it; else a mirrored window's own name — its codename (its
+// label, or its tmux session: mirror.Place's Code) with tmux's window index
+// dropped (mirror.PlainCode: "fern", never "fern:1") — with its place under
+// it; else its Source itself (an agent, muster, a plugin), and srcIsTitle says
+// the title IS the source.
 //
-// The place is the title rule's (textplain.TitleKeeping: the tmux target kept
-// VERBATIM), cut to start at the target when the window's own label leads it
-// ("Gold:1 · tmux main:1 @ ws" under a title of "Gold:1" is "tmux main:1 @
-// ws"), and keeps anything after the target ("(host offline)").
+// 🔴 A WINDOW'S PLACE IS WORDS, NOT ITS ADDRESS (operator rule, 2026-11-17:
+// muster's top layer shows no ids). It is "on <host>" (mirror.PlaceWords), and
+// " (host offline)" after it when its host has dropped and only the Source
+// says so; the exact tmux target (it.target) is the card's ⓘ details'
+// (attentionPlaceSheetHTML), never this line's.
+//
+// The title keeps the tmux session's part of a codename VERBATIM
+// (textplain.TitleKeeping): a session named "_scratch_" is typed as
+// "_scratch_", never as the "scratch" a markdown stripper reads.
 func attentionTitle(it attentionItem) (title, src string, srcIsTitle bool) {
-	src = textplain.TitleKeeping(it.Source, it.target)
-	if it.target != "" {
-		if i := strings.Index(src, it.target); i > 0 {
-			src = src[i:]
+	if host := attentionPlaceHost(it); host != "" {
+		src = mirror.PlaceWords(host)
+		if !it.Offline && strings.HasSuffix(it.Source, whereHostOffline) {
+			src += whereHostOffline
 		}
+	} else {
+		src = textplain.TitleKeeping(it.Source, it.target)
 	}
 	switch {
 	case it.Name != "":
 		return it.Name, src, false
 	case it.target != "" && it.at.Code != "":
 		addr := strings.TrimSuffix(strings.TrimPrefix(it.target, "tmux "), " @ "+it.at.Host)
-		return textplain.TitleKeeping(it.at.Code, addr), src, false
+		return textplain.TitleKeeping(mirror.PlainCode(it.at.Code), mirror.PlainCode(addr)), src, false
 	}
 	return textplain.TitleKeeping(it.Source, it.target), "", true
+}
+
+// attentionPlaceHost is the computer the window an item names runs on: its
+// Place's host, else the host its tmux target ends with ("tmux main:1 @ ws");
+// "" for an item that names no window.
+func attentionPlaceHost(it attentionItem) string {
+	if it.target == "" {
+		return ""
+	}
+	if it.at.Host != "" {
+		return it.at.Host
+	}
+	if i := strings.LastIndex(it.target, " @ "); i >= 0 {
+		return it.target[i+len(" @ "):]
+	}
+	return ""
+}
+
+// attentionPlaceSheetHTML is an item's ⓘ: the exact tmux address of the window
+// it names (ui.SessionPlaceSheet), "" for an item that names none. key makes
+// its id unique in the page (an item's Key; the ask page passes its own).
+func attentionPlaceSheetHTML(it attentionItem, key string) string {
+	if it.target == "" {
+		return ""
+	}
+	return ui.InfoSheetHTML(ui.SessionPlaceSheet(attentionPlaceSheetID(key), attentionPlaceHost(it), it.target))
+}
+
+// attentionPlaceSheetID is the ⓘ sheet's element id for an item keyed key: an
+// id token whatever the key holds.
+func attentionPlaceSheetID(key string) string {
+	var b strings.Builder
+	b.WriteString("place-")
+	for _, c := range key {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			b.WriteRune(c)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // attentionWaitLineHTML is a waiting row's one line: what it waits on, as the

@@ -326,7 +326,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
-  await expect(item.locator('[data-attention-source]')).toContainText('@ ' + host);
+  await expect(item.locator('[data-attention-source]')).toContainText('on ' + host);
   // The other tmux server's call was never forwarded: no item carries its text.
   await expect(page.locator('[data-attention-text]', { hasText: 'other server?' })).toHaveCount(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
@@ -341,7 +341,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const splitId = (JSON.parse(split.result.content[0].text) as { id: number }).id;
   expect(splitId).toBeGreaterThan(0);
   await page.reload();
-  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('@ ' + host);
+  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('on ' + host);
 });
 
 // ANSWERED IN THE SESSION: the mirrored session asks and waits; the operator,

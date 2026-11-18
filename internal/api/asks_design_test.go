@@ -281,8 +281,8 @@ func TestCardTextIsEscapedEverywhere(t *testing.T) {
 	const want = `&lt;img src=x onerror=alert(1)&gt;&#34;&amp;`
 	const placeEvil, placeWant = `1 < 2 & "x" >`, `1 &lt; 2 &amp; &#34;x&#34; &gt;`
 	items := []attentionItem{
-		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, Name: "Name " + evil, Source: "tmux fern:1 @ atlas " + placeEvil, target: "tmux fern:1 @ atlas",
-			at: mirror.Place{Code: "fern:1", Host: "atlas"}, Text: "q? " + evil, Options: []string{"opt " + evil}, suggestions: []string{"chip " + evil}, Since: designNow},
+		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, Name: "Name " + evil, Source: "tmux fern:1 @ atlas " + placeEvil, target: "tmux fern:1 @ atlas " + placeEvil,
+			at: mirror.Place{Code: "fern:1", Host: "atlas " + placeEvil}, Text: "q? " + evil, Options: []string{"opt " + evil}, suggestions: []string{"chip " + evil}, Since: designNow},
 		{Key: "session-cccccccccccccccc", Kind: attentionKindSession, Source: "tmux fern:2 @ atlas", target: "tmux fern:2 @ atlas",
 			at: mirror.Place{Code: "fern:2", Host: "atlas"}, Text: "Bash: ls", Detail: "detail " + evil, Link: "/mirror/view", Since: designNow},
 	}
@@ -292,7 +292,10 @@ func TestCardTextIsEscapedEverywhere(t *testing.T) {
 	}
 	for name, frag := range map[string]string{
 		"title":    `data-attention-name>Name ` + want + `</span>`,
-		"place":    `data-attention-source>tmux fern:1 @ atlas ` + placeWant + `</span>`,
+		// The place is words ("on <host>"); the exact target is the ⓘ's.
+		"place":    `data-attention-source>on atlas ` + placeWant + `</span>`,
+		"address":  `data-info-code="">tmux fern:1 @ atlas ` + placeWant + `</code>`,
+		"copy":     `data-copy-text="tmux fern:1 @ atlas ` + placeWant + `"`,
 		"question": `data-attention-text>q? ` + want + `</p>`,
 		"option":   `data-attention-option>opt ` + want + `</button>`,
 		"chip":     `>chip ` + want + `</button>`,
