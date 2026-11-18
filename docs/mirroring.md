@@ -309,26 +309,17 @@ meant to be where you do everything; the Terminal view is the fallback for
 anything it does not show. A window that has no Rendered view says why at the top of
 its Terminal view ([below](#why-a-window-opens-in-the-terminal)).
 
-Each tool row also shows how much conversation context the call and its result
-added, such as `+3.3k ctx`. So do a subagent's card and a question card. The
-number is measured from the transcript's own token usage: the context of the
-turn after the call, minus the context of the turn that made it. That
-difference also includes any text the calling turn wrote, and the few small
-attachments Claude Code adds before most requests that are judged negligible
-(see below). When one turn made several calls, the measured total is split
-between them by the size of each call and result. Each share is marked `~`, and
-the row's tooltip gives the total. When nothing can be measured, the number is
-an estimate, also marked `~`. That happens when the runtime records no usage
-(opencode), when something else entered the context before the next turn, or when
-the context shrank. Something else means a prompt, a notice, or context Claude
-Code injected that is not negligible, such as a message typed while the tool
-ran or a diagnostics report. The tooltip says which case it was. An image is
-sized by its pixels: about width × height / 750 tokens, at most about 1600. A
-call whose next turn has not started yet shows no number. opencode rows show
-none either: their badges read neither usage nor output (the header's readout
-does read opencode's usage, [below](#opencode-windows)).
+muster measures how much conversation context each tool call and its result
+added, but **does not draw the number**: a token count means nothing to most
+people. The row, a subagent's card and a question card keep only the
+measurement's kind and size on a hidden slot (`data-tool-ctx`: `measured`,
+`split` or `estimate`; `data-tool-ctx-tokens`). The number is the context of the
+turn after the call, minus the context of the turn that made it; several calls
+in one turn split that growth by size; and where nothing can be measured
+(opencode, which records no usage, or something else entered the context, or it
+shrank) it is an estimate. A run of calls is one row, "3 steps".
 
-![A Claude Code session's tool calls, each with the context it added](img/tool-context.png)
+![A Claude Code session's tool calls, grouped as steps](img/tool-context.png)
 
 A **background** subagent's card counts only its launch: the call's result is
 the acknowledgement that it started. Its report reaches the conversation later,
@@ -751,11 +742,13 @@ with `--standalone` or `--server` runs on another server and is never matched.
 The window opens a **rendered view**: the session's prompts,
 the agent's replies, and each tool call by its name and target (the command,
 the file). It never shows a tool's input or output, nor the model's reasoning.
-The view opens with a row saying how the session was found: "started by
-muster-mirror opencode" for a pane the launcher bound, "matched by title,
-verified" for a pane muster also sends to ([hand-opened
-panes](#hand-opened-opencode-panes)), or "matched by title" (a heuristic: a
-renamed session, or a TUI that switched sessions, moves it). Text appears once
+The view opens with a row naming the session in plain words: "muster started
+this opencode session" for a pane the launcher bound, or "Showing “<its
+title>”" for a pane found by its title. Opening the row says how it was found:
+by its launcher, by its title and checked with opencode (a pane muster also
+sends to: [hand-opened panes](#hand-opened-opencode-panes)), or by its title
+alone (a heuristic: a renamed session, or a TUI that switched sessions, moves
+it). Text appears once
 it is final (a reply streams in place upstream), and the view starts over when
 something it drew changes. The busy marker comes from the server's event
 stream (`session.status`). While that stream is down the status is unknown, and

@@ -35,8 +35,9 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	}
 
 	_, term := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
-	if !strings.Contains(term, "<title>Terminal · mango · muster</title>") || !strings.Contains(term, `title="tmux session main"`) {
-		t.Error("the terminal page is not titled by the label with the raw name")
+	// Titled by the label; the tmux session is in no tooltip (F012).
+	if !strings.Contains(term, "<title>Terminal · mango · muster</title>") || strings.Contains(term, `title="tmux session`) {
+		t.Error("the terminal page is not titled by the label alone")
 	}
 	if !strings.Contains(term, amp(ui.MirrorTerminalWSPath("ws", "main"))) {
 		t.Error("the terminal's socket does not address the session by name")
@@ -47,7 +48,7 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	}
 
 	_, view := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main"))
-	if !strings.Contains(view, "<title>mango · Mirrored · muster</title>") {
+	if !strings.Contains(view, "<title>mango · On ws · muster</title>") {
 		t.Error("the rendered view is not titled by the label")
 	}
 
@@ -94,7 +95,7 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 		}
 	}
 	_, view := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main"))
-	for _, want := range []string{"<title>mango · ws · Mirrored · muster</title>",
+	for _, want := range []string{"<title>mango · ws · On ws · muster</title>",
 		`<span data-mirror-label="">mango</span><span data-mirror-qualifier=""> · ws</span>`} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the rendered view lacks %q", want)

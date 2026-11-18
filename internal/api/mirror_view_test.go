@@ -417,8 +417,10 @@ func TestTheViewSocketPassesTheRefusalThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.CloseNow()
-	if m := readBatch(t, c); m["type"] != "error" || m["message"] != refusal.Error() {
-		t.Fatalf("got %v, want the plugin's own refusal", m)
+	// Plain words on the banner's line; the plugin's own refusal, exactly, is
+	// its ⓘ's detail.
+	if m := readBatch(t, c); m["type"] != "error" || m["message"] != "There is no Claude Code conversation in this window." || m["detail"] != refusal.Error() {
+		t.Fatalf("got %v, want plain words with the plugin's own refusal as the detail", m)
 	}
 }
 

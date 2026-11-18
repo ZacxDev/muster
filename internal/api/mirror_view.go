@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -113,7 +114,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 			// 🔴 A GATED SEND THAT CANNOT GO (opencode: the host did not opt in,
 			// or the pane is not launcher-bound) is drawn disabled, saying why,
 			// with no queue; the hub and the host refuse it again.
-			v.ViewOnly, v.ViewOnlyWhy = rt.Kind, why
+			v.ViewOnly, v.ViewOnlyWhy, v.ViewOnlySetting = rt.Kind, why, mirror.SendOffSetting(h, e)
 		default:
 			v.Agent = rt.Kind
 		}
@@ -412,17 +413,37 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	if ctx.Err() != nil {
 		return
 	}
-	msg := "the rendered view ended"
-	switch {
-	case err != nil && mirror.IsAttachRefusal(err):
-		msg = err.Error()
-	case err != nil:
-		msg = "the rendered view ended with an error: " + err.Error()
+	if err != nil && !mirror.IsAttachRefusal(err) {
 		s.logger.Printf("mirror: view %s/%s: %v", host, session, err)
 	}
-	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg, "reason": reason})
+	// The exact error is an admin's (setup); anyone else's frame carries none.
+	msg, detail := viewErrorWords(err, host, authz.IsAdmin(r.Context()))
+	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg, "detail": detail, "reason": reason})
 	_ = c.Close(websocket.StatusNormalClosure, "view ended")
 }
+
+// viewErrorWords is a Rendered view's error frame's two texts: the plain line
+// the page shows (mirror.PlainWords, host the window's computer) and the exact
+// error behind its ⓘ — only when setup (the viewer is an admin:
+// ui.Features.Setup), "" otherwise. The page never shows err's own text.
+func viewErrorWords(err error, host string, setup bool) (msg, detail string) {
+	switch {
+	case err == nil:
+		return "The view ended.", ""
+	case mirror.IsAttachRefusal(err):
+		msg = mirror.PlainWords(err, host)
+	default:
+		msg = MirrorViewEndedPlain
+	}
+	if setup {
+		detail = err.Error()
+	}
+	return msg, detail
+}
+
+// MirrorViewEndedPlain is what a Rendered view that ended on an error it has
+// no words for says; the error itself is its ⓘ.
+const MirrorViewEndedPlain = "The view stopped unexpectedly. Reconnect to carry on."
 
 // refuseStale answers a send whose sign-in is not fresh: 403, the gate's own
 // text, and a header the page reads to ask "Confirm it's you" and retry.
@@ -612,7 +633,7 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 		return
 	}
 	if !h.Interactive {
-		s.mirrorRefuse(w, r, p, http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		s.mirrorRefuse(w, r, p, http.StatusConflict, noticeText(noticeReadOnly, h.Host), noticeReadOnly)
 		return
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
@@ -667,7 +688,7 @@ func (s *Server) handleMirrorConfirmSend(w http.ResponseWriter, r *http.Request)
 	// The page is only ever the browser's: its result is a page or a redirect.
 	p.nav = true
 	if !h.Interactive {
-		s.mirrorRefuse(w, r, p, http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		s.mirrorRefuse(w, r, p, http.StatusConflict, noticeText(noticeReadOnly, h.Host), noticeReadOnly)
 		return
 	}
 	// PostForm, never Form: a password in the URL would be in the access log.
@@ -740,7 +761,10 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			s.heldRefusal(r.Context(), w, true, ownerQuery(mirrorSendPath(p.target), p.e.Owner), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
 			return
 		}
-		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
+		// msg is what the composer's script shows inline: a case's own words,
+		// else its notice's (plain: the operator rule; the exact error is in
+		// the log line below, never on the page).
+		status, notice, msg := http.StatusBadGateway, noticeFailed, ""
 		var pr *mirror.PasteRefusedError
 		// 🔴 A send that MAY have landed offers "Send again" (a new nonce): the
 		// same nonce is never delivered again (claim's nonceUnconfirmed).
@@ -766,7 +790,14 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			status, notice, msg = http.StatusConflict, pasteGuardNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrOpenCodeNotIdle):
 			// The hub's idle gate for opencode: its own words.
-			status, notice, msg = http.StatusConflict, noticeOpenCodeNotIdle, err.Error()
+			// Its own words (busy, or waiting on the person) when it is the
+			// hub's *OpenCodeNotIdleError — plain text, never the wrapped
+			// error's; else the notice's.
+			status, notice = http.StatusConflict, noticeOpenCodeNotIdle
+			var ni *mirror.OpenCodeNotIdleError
+			if errors.As(err, &ni) {
+				msg = ni.Error()
+			}
 		case errors.Is(err, mirror.ErrBadPaste):
 			status, notice = http.StatusBadRequest, noticeBadText
 		case errors.Is(err, mirror.ErrInteractiveRefused):
@@ -781,6 +812,15 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			status, notice = http.StatusConflict, noticeUpgrade
 		case errors.Is(err, mirror.ErrHostOffline):
 			status, notice = http.StatusServiceUnavailable, noticeOffline
+		}
+		if msg == "" && notice == noticeFailed && errors.As(err, &pr) && pr.Why != "" {
+			// A host's refusal muster has no code for: the host's own words
+			// for the person, without this side's "mirror: the host refused
+			// the message:" in front.
+			msg = pr.Why
+		}
+		if msg == "" {
+			msg = noticeText(notice, host)
 		}
 		s.logger.Printf("mirror: send to %s/%s%s refused: %v", host, session, p.window, err)
 		s.mirrorRefuse(w, r, p, status, msg, notice)

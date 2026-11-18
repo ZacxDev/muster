@@ -29,18 +29,22 @@ func TestTheMirrorTerminalPageIsTitledByTheLabelWithTheRawName(t *testing.T) {
 	// DisplayName is what internal/api sends: the window's PlainTitle (the
 	// label "Gold:8" without tmux's window index).
 	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", DisplayName: "Gold", RawName: "scratch2",
-		Badge: "Mirrored · laptop", BackHref: "/agents", WSPath: MirrorTerminalWSPath("laptop", "scratch2")}))
-	for _, want := range []string{"<title>Terminal · Gold · muster</title>", `>Gold<`, `title="tmux session scratch2"`} {
+		Badge: MirrorBadgeText("laptop"), BackHref: "/agents", WSPath: MirrorTerminalWSPath("laptop", "scratch2")}))
+	for _, want := range []string{"<title>Terminal · Gold · muster</title>", `>Gold<`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("terminal page lacks %q", want)
 		}
 	}
-	// The raw name is not drawn beside the label (the tooltip above keeps it).
+	// No tooltip spells the tmux session (the jargon audit's F012: the ⓘ
+	// holds the exact address), and the raw name is not drawn beside the label.
+	if strings.Contains(html, `title="tmux session`) {
+		t.Errorf("the terminal page's title still has a tmux-session tooltip")
+	}
 	if strings.Contains(html, "data-mirror-session") || strings.Contains(html, `">scratch2</span>`) {
 		t.Errorf("the terminal page still draws the raw session name beside the label")
 	}
 	// Control: without a label (DisplayName/RawName empty) it is the raw name only.
-	plain := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", Badge: "Mirrored · laptop", BackHref: "/agents",
+	plain := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", Badge: MirrorBadgeText("laptop"), BackHref: "/agents",
 		WSPath: MirrorTerminalWSPath("laptop", "scratch2")}))
 	if !strings.Contains(plain, "<title>Terminal · scratch2 · muster</title>") || strings.Contains(plain, "data-mirror-session") {
 		t.Errorf("an unlabelled terminal page is not titled by its raw name alone")
@@ -49,20 +53,22 @@ func TestTheMirrorTerminalPageIsTitledByTheLabelWithTheRawName(t *testing.T) {
 
 func TestTheRenderedViewIsTitledByTheLabelAndAddressedByTheSession(t *testing.T) {
 	html := renderNode(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "scratch13", Label: "mango:1"}))
-	for _, want := range []string{"<title>mango · Mirrored · muster</title>", `<span data-mirror-label="">mango</span>`,
-		`title="tmux session scratch13"`, `>mango · Mirrored · laptop</span>`,
+	for _, want := range []string{"<title>mango · On laptop · muster</title>", `<span data-mirror-label="">mango</span>`,
+		`>mango · On laptop</span>`,
 		`data-ws="` + strings.ReplaceAll(MirrorViewWSPath("laptop", "scratch13"), "&", "&amp;") + `"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("rendered view lacks %q", want)
 		}
 	}
-	// The raw name is not drawn beside the label: the tooltip and the full-title
-	// popover above keep it.
+	// The raw name is not drawn beside the label, nor in a tooltip (F012).
+	if strings.Contains(html, `title="tmux session`) {
+		t.Errorf("the rendered view's title still has a tmux-session tooltip")
+	}
 	if strings.Contains(html, "data-mirror-session") || strings.Contains(html, `">scratch13</span>`) {
 		t.Errorf("the rendered view still draws the raw session name beside the label")
 	}
 	plain := renderNode(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "scratch13"}))
-	if !strings.Contains(plain, "<title>scratch13 · Mirrored · muster</title>") || strings.Contains(plain, "data-mirror-label") {
+	if !strings.Contains(plain, "<title>scratch13 · On laptop · muster</title>") || strings.Contains(plain, "data-mirror-label") {
 		t.Errorf("an unlabelled rendered view is not titled by its raw name alone")
 	}
 }
@@ -87,9 +93,9 @@ func TestTheMirroredHostBadgeIsDistinctFromTheGenericChip(t *testing.T) {
 	}
 	for name, got := range map[string]string{
 		"view": badge(renderNode(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "s"})), "data-term-badge"),
-		"term": badge(renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "s", Badge: "Mirrored · tower", BackHref: "/agents"})), "data-term-badge"),
+		"term": badge(renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "s", Badge: MirrorBadgeText("tower"), BackHref: "/agents"})), "data-term-badge"),
 	} {
-		for _, want := range []string{tint, "font-semibold", "<svg", "Mirrored · tower"} {
+		for _, want := range []string{tint, "font-semibold", "<svg", "On tower"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s badge lacks %q: %s", name, want, got)
 			}
@@ -106,7 +112,7 @@ func TestTheMirroredHostBadgeIsDistinctFromTheGenericChip(t *testing.T) {
 // if a reason was set. Red at origin/main: the page had no line at all.
 func TestTheTerminalViewSaysWhyItIsTerminalOnly(t *testing.T) {
 	const why = "muster found no Claude Code conversation in <this> window."
-	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "work", Badge: "Mirrored · laptop", BackHref: "/agents",
+	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "work", Badge: MirrorBadgeText("laptop"), BackHref: "/agents",
 		WSPath: MirrorTerminalWSPath("laptop", "work"), TerminalOnly: why}))
 	want := `<p id="term-only" data-terminal-only="" class="border-b border-line bg-s1 px-3 py-1.5 text-xs text-fg2 break-words"><span class="font-semibold text-fg">Terminal only.</span> <span data-terminal-only-reason="">muster found no Claude Code conversation in &lt;this&gt; window.</span></p>`
 	if !strings.Contains(html, want) {
@@ -115,7 +121,7 @@ func TestTheTerminalViewSaysWhyItIsTerminalOnly(t *testing.T) {
 	if strings.Count(html, `data-terminal-only=""`) != 1 {
 		t.Errorf("want exactly one terminal-only line")
 	}
-	both := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "work", Badge: "Mirrored · laptop", BackHref: "/agents",
+	both := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "work", Badge: MirrorBadgeText("laptop"), BackHref: "/agents",
 		WSPath: MirrorTerminalWSPath("laptop", "work"), RenderedHref: MirrorViewPath("laptop", "work"), TerminalOnly: why}))
 	if strings.Contains(both, "data-terminal-only") || !strings.Contains(both, `id="view-rendered"`) {
 		t.Errorf("a window with a rendered view must draw the switch and no terminal-only line")
