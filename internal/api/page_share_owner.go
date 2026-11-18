@@ -222,7 +222,7 @@ func (s *Server) pageCardView(ctx context.Context, ref ui.PageToolRef) (ui.PageC
 			// The maker named is the REUSABLE link's (the page's one link),
 			// not whoever made the newest live link of any kind.
 			if l.Reusable {
-				v.SharedBy = pageLinkMaker(l)
+				v.SharedBy = pageLinkMaker(l, p.Creator.MirrorHost)
 			}
 		}
 	}

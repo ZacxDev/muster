@@ -288,24 +288,35 @@ test('phone: the page screen’s Copy link copies the exact link, and its ⓘ sh
       permissions: ['clipboard-read', 'clipboard-write'],
       baseURL: origin,
     });
+    // A phone's share sheet (stubbed: Copy link is drawn only where one exists).
+    await ctx.addInitScript(() => {
+      Object.defineProperty(Navigator.prototype, 'share', { configurable: true, value: () => Promise.resolve() });
+    });
     const page = await ctx.newPage();
     await signIn(page, origin);
+    // The page starts with NO link: its ⓘ is hidden until a tap makes one.
+    const revoked = await page.request.post(origin + `/pages/${pageID}/share/revoke`, { headers: { Origin: origin, Accept: 'application/json' } });
+    expect(revoked.status()).toBe(200);
     await page.goto(origin + `/pages/${pageID}`);
     const box = page.locator('[data-page-share-box]');
     await expect(box).toBeVisible();
+    const info = page.getByRole('button', { name: "This page's link" });
+    await expect(info).toBeHidden();
     // The top layer spells no address: the only place it is is the ⓘ.
     await expect(box.locator('input')).toHaveCount(0);
-    await expect(page.locator('[data-testid="page-detail"]')).not.toContainText('/s/', { useInnerText: true });
     await page.evaluate(() => navigator.clipboard.writeText('cleared'));
     await page.getByRole('button', { name: `Copy the link to “${TITLE}”` }).tap();
     await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
     const copied = await page.evaluate(() => navigator.clipboard.readText());
     expect(copied).toMatch(linkRE);
-    if (sharedURL) expect(copied, 'the same link Share hands out').toBe(sharedURL);
-    // The ⓘ shows exactly that link.
+    // The page's one link, as Share's own request answers it now.
+    const share = await page.request.post(origin + `/pages/${pageID}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+    expect((await share.json()).url, 'the same link Share hands out').toBe(copied);
+    await expect(page.locator('[data-testid="page-detail"]')).not.toContainText('/s/', { useInnerText: true });
+    // The ⓘ appeared with that link, with no reload, and shows exactly it.
     const sheet = page.locator(`#page-link-${pageID}`);
     await expect(sheet).toBeHidden();
-    await page.getByRole('button', { name: "This page's link" }).tap();
+    await info.tap();
     await expect(sheet).toBeVisible();
     await expect(sheet.locator('[data-info-code]')).toHaveText(copied);
     await expect(sheet.locator('[data-info-copy]')).toHaveAttribute('data-copy-text', copied);

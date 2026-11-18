@@ -109,7 +109,7 @@ func pageShareQuestion(asker string, p pages.Page, reason string) string {
 	// 🔴 THE APPROVAL IS FOR THE PAGE, NOT FOR ONE VERSION (operator
 	// decision, round 1): a live link shows whatever is published last, and a
 	// republish needs no new approval — so the card must not say otherwise.
-	q := "Share the page “" + truncate(textplain.Title(p.Title), 120) + "”? " + pageMakerName(asker) + " asks to let anyone who has its link open it."
+	q := "Share the page “" + truncate(textplain.Title(p.Title), 120) + "”? " + pageMakerName(asker, p.Creator.MirrorHost) + " asks to let anyone who has its link open it."
 	if reason = strings.TrimSpace(reason); reason != "" {
 		q += " Its reason: " + truncate(reason, 300)
 	}

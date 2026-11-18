@@ -604,10 +604,24 @@ func (s *Server) pageResponded(ctx context.Context, p pageResponder, v pages.Ver
 	s.pushTask(p.link.OwnerID, pushEventPage, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page “" + truncate(v.Title, 60) + "” got " + what,
-		Body:  "Through " + r.Component + ". Open the page in muster to see it.",
+		Body:  pageResponsePushBody(v.Blocks, r),
 		Tag:   "page-" + strconv.FormatInt(p.page, 10) + "-response",
 		Data:  map[string]string{"url": pagePath(p.page)},
 	})
+}
+
+// pageResponsePushBody is a response's push body: the part it came through
+// by the page's own label (pages.DescribeAnswer's heading, UploadHeading for
+// a file) — never the part's id, never the viewer's words.
+func pageResponsePushBody(blocks []pages.Block, r pages.Response) string {
+	if r.Component == pages.CustomComponent {
+		return "From the page's own script. Open the page in muster to see it."
+	}
+	part := pages.UploadHeading(blocks, r.Component)
+	if r.Kind != pages.KindUpload {
+		part = pages.DescribeAnswer(blocks, r.Component, nil).Heading
+	}
+	return "Through “" + truncate(part, 60) + "”. Open the page in muster to see it."
 }
 
 // pagePath is the owner's page of id.
@@ -676,7 +690,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 		id := strconv.FormatInt(p.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-page-id="` + id + `">
 <a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(textplain.Title(p.Title)) + `</a>
-<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
+<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
 			` · ` + pageLinksWords(p.LiveLinks, p.Pending) + ` · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
 			pageCount(p.Responses, "response", "responses") + `</span> · ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `</span>
 <div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID]) + `</div>
@@ -750,7 +764,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
 <h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
-<p class="text-sm text-fg2">` + pageMadeBy(esc(pageMakerName(p.Creator.Label)), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
+<p class="text-sm text-fg2">` + pageMadeBy(esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
 `)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
@@ -782,24 +796,26 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	}
 	switch {
 	case cur.Token != "":
-		b.WriteString(`<p class="text-sm text-fg2">Anyone with its link can open the page. Share and Copy link give you the same link every time; New link (⋯) replaces it, and the old one stops working.</p>
+		b.WriteString(`<p class="text-sm text-fg2">Anyone with its link can open the page. Share gives you the same link every time; New link (⋯) replaces it, and the old one stops working.</p>
 `)
 	case s.ext.Pages.LinksReusable():
 		b.WriteString(`<p class="text-sm text-fg2">No link yet. Share makes the page's link — the same one every time after — and hands it to your phone's share sheet, or copies it.</p>
 `)
 	default:
-		b.WriteString(`<p class="text-sm text-fg2" data-page-share-setup>Sharing isn't set up on this server, so the page has no lasting link. Share makes a new one-off link and copies it; you can copy each one only when it is made. Revoke the ones you no longer need below.` +
-			ui.InfoSheetHTML(pageShareSetupSheet(admin)) + `</p>
+		// The ⓘ is the paragraph's sibling: a popover sheet is not phrasing
+		// content, so it may not sit inside the <p>.
+		b.WriteString(`<div class="flex items-start gap-1"><p class="min-w-0 flex-1 text-sm text-fg2" data-page-share-setup>Sharing isn't set up on this server, so the page has no lasting link. Share makes a new one-off link and copies it; you can copy each one only when it is made. Revoke the ones you no longer need below.</p>` +
+			ui.InfoSheetHTML(pageShareSetupSheet(admin)) + `</div>
 `)
 	}
 	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur))
+	// With a link key: Copy link (shown by the page script only where the
+	// browser has a share sheet — elsewhere Share itself copies) and the
+	// link's ⓘ, drawn hidden while the page has no link so the script can
+	// fill it on the first Share and hide it again on Revoke.
 	if s.ext.Pages.LinksReusable() {
 		var c strings.Builder
 		_ = ui.PageCopyButton(id, p.Title, curURL, true).Render(&c)
-		b.WriteString(c.String())
-	}
-	if curURL != "" {
-		var c strings.Builder
 		_ = ui.PageLinkSheet(id, curURL).Render(&c)
 		b.WriteString(c.String())
 	}
@@ -818,7 +834,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		lid := strconv.FormatInt(l.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-link-id="` + lid + `" data-link-state="` + string(l.State) + `">
 <div class="flex items-start gap-2"><div class="flex min-w-0 flex-1 flex-col gap-1">
-<span class="text-sm text-fg">` + esc(pageLinkStateText(l)) + `</span>
+<span class="text-sm text-fg">` + esc(pageLinkStateText(l, p.Creator.MirrorHost)) + `</span>
 <span class="text-xs text-fg2" data-link-made>` + ui.PlainWhenHTML("Made ", l.CreatedAt, now) + `</span>
 </div>` + ui.InfoSheetHTML(pageLinkDetailSheet(l)) + `</div>
 `)
@@ -882,13 +898,13 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 // made it live WITHOUT asking — its owner opted in — says so), and
 // what kind it is (the page's reusable Share link, or an earlier one whose
 // address was shown once, when it was made).
-func pageLinkStateText(l pages.Link) string {
+func pageLinkStateText(l pages.Link, host string) string {
 	by := ""
 	if l.RequestedBy != "" {
-		by = " — asked for by " + pageMakerName(l.RequestedBy)
+		by = " — asked for by " + pageMakerName(l.RequestedBy, host)
 	}
 	if l.ByAgent && l.AskID == 0 && l.State != pages.LinkPending && l.RequestedBy != "" {
-		by = " — made live by " + pageMakerName(l.RequestedBy) + " without asking you"
+		by = " — made live by " + pageMakerName(l.RequestedBy, host) + " without asking you"
 	}
 	kind := ""
 	switch {
@@ -913,23 +929,11 @@ func pageLinkStateText(l pages.Link) string {
 // behind an ⓘ, and a setup detail is an admin's) ------------------------------
 
 // pageMakerName is who made a page or asked for a link, as the owner reads
-// it: an agent's name as it is; a mirrored session that had no human name is
-// stored as its window's code and host ("work:1 @ atlas", mirrorLabel), and is
-// said "work on atlas" — the window index dropped (mirror.PlainCode), the
-// host in words. The stored label is unchanged (the agents' tools give it).
-func pageMakerName(label string) string {
-	i := strings.LastIndex(label, " @ ")
-	if i <= 0 || i+3 >= len(label) {
-		return label
-	}
-	code, host := label[:i], label[i+3:]
-	if j := strings.Index(code, mirror.QualifierSep); j > 0 {
-		code = mirror.PlainCode(code[:j]) + code[j:]
-	} else {
-		code = mirror.PlainCode(code)
-	}
-	return code + " on " + host
-}
+// it: an agent's name as it is; a mirrored session's stored label through
+// mirror.PlainStoredLabel ("work:1 @ atlas" is "work on atlas"), host being
+// the page's creator host. The stored label is unchanged (the agents' tools
+// give it).
+func pageMakerName(label, host string) string { return mirror.PlainStoredLabel(label, host) }
 
 // pageCount is n things in words: "1 response", "3 responses".
 func pageCount(n int, one, many string) string {
@@ -985,13 +989,14 @@ func pageVersionDetailSheet(v pages.Version) ui.InfoSheet {
 		Lead: "When it was made, and its size:", Code: ruleTime(v.CreatedAt) + " · " + uploads.HumanSize(int64(v.SizeBytes))}
 }
 
-// pageResponseBlocks is the blocks of each version resps were sent through,
-// read once per version; a version that cannot be read is absent (its
-// responses are described from their data alone).
+// pageResponseBlocks is the blocks of each version resps were sent through
+// (a submit's form, an upload's label), read once per version; a version
+// that cannot be read is nil, and its responses are "A response to an older
+// version" (pages.DescribeAnswer, UploadHeading).
 func (s *Server) pageResponseBlocks(ctx context.Context, id int64, resps []pages.Response) map[int][]pages.Block {
 	out := map[int][]pages.Block{}
 	for _, x := range resps {
-		if _, ok := out[x.Version]; ok || x.Kind != pages.KindSubmit {
+		if _, ok := out[x.Version]; ok {
 			continue
 		}
 		v, err := s.ext.Pages.Version(ctx, id, x.Version)
@@ -1102,7 +1107,8 @@ func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label
 		}
 		// claudeSessionEntry: claudeSessionWindow's own lookup, the window
 		// the session runs in NOW.
-		e, ok := claudeSessionEntry(s.ext.Mirror.Hosts(ctx), p.Creator.MirrorHost, p.Creator.MirrorSession)
+		hosts := s.ext.Mirror.Hosts(ctx)
+		e, ok := claudeSessionEntry(hosts, p.Creator.MirrorHost, p.Creator.MirrorSession)
 		if !ok {
 			return "", ""
 		}
@@ -1112,12 +1118,19 @@ func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label
 		// entry is the window's, which does not carry it — and plained.
 		// Nothing resolved: the name stored when the page was made.
 		e.Claude, e.ClaudeSession = true, p.Creator.MirrorSession
-		if label = textplain.Title(s.mirrorLabel(ctx, e)); label == "" {
-			label = textplain.Title(p.Creator.Label)
+		// Its human name, else the window as the session lists name it NOW
+		// (windowDisplayName over every window: "main · window 3" when a
+		// sibling would read the same) and where ("on workstation") — the
+		// top layer's words, never its tmux address.
+		if n := s.mirrorName(ctx, e); n.Human() {
+			label = textplain.Title(n.Text)
+		} else if d := windowDisplayName(hosts, mirror.Place{Host: e.Host, Addr: e.Address()}); d != "" {
+			label = textplain.Title(d) + " " + mirror.PlaceWords(e.Host)
 		}
-		// A window with no human name is labelled by its code and host;
-		// said in words ("main on workstation"), never its tmux address.
-		return href, pageMakerName(label)
+		if label == "" {
+			label = textplain.Title(pageMakerName(p.Creator.Label, p.Creator.MirrorHost))
+		}
+		return href, label
 	}
 	return "", ""
 }

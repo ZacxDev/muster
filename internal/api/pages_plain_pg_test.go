@@ -352,7 +352,7 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			}), "page-detail")
 			assertPagePlain(t, "the page screen with a reusable link", keyed)
 			for _, want := range []string{
-				`data-page-copy="" data-page-id="` + sid + `" data-share-title="Pick a subject line" data-share-url="` + link + `"`,
+				`data-page-copy="" hidden="" data-page-id="` + sid + `" data-share-title="Pick a subject line" data-share-url="` + link + `"`,
 				`data-page-share="" data-page-id="` + sid + `" data-share-title="Pick a subject line" data-share-url="` + link + `"`,
 				`data-info-code="">` + link + `</code>`,
 			} {
@@ -384,5 +384,84 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 				t.Errorf("the list row does not count its responses in words:\n%s", list)
 			}
 		})
+	}
+}
+
+// TestAResponsesMarkupIsDrawnAsText: a stranger's answer, a page script's key
+// and value, and the agent's part label that hold markup — a script tag, an
+// attribute break-out into an <img onerror> — are drawn on the owner's page
+// screen as text, escaped, never as elements.
+func TestAResponsesMarkupIsDrawnAsText(t *testing.T) {
+	f := newPageFixture(t)
+	const evil = `<script>alert(1)</script>"><img src=x onerror=alert(2)>`
+	id := f.create(t, f.agent, "Markup", `[
+ {"type":"question","id":"q","label":"<b onmouseover=alert(3)>Ask</b>"},
+ {"type":"html","html":"<p>x</p>"}
+]`)
+	l := f.liveLink(t, f.owner, id)
+	for comp, data := range map[string]string{
+		"q":      `{"answer":` + strconv.Quote(evil) + `}`,
+		"custom": `{` + strconv.Quote("<i>"+evil) + `:` + strconv.Quote(evil) + `}`,
+	} {
+		if w := f.submit(t, l.Token, comp, data); w.Code != 200 {
+			t.Fatalf("submit %s: %d %s", comp, w.Code, w.Body.String())
+		}
+	}
+	for _, role := range []authz.Role{authz.RoleAdmin, authz.RoleMember} {
+		w := httptest.NewRecorder()
+		f.srv.renderPageDetail(w, httptest.NewRequest("GET", "/pages/"+strconv.FormatInt(id, 10), nil).WithContext(f.pageAs(role)), id, 200, "", "", "")
+		detail := pageSection(t, w.Body.String(), "page-detail")
+		for _, raw := range []string{"<script>alert(1)", "<img src=x", "<b onmouseover", "<i>"} {
+			if strings.Contains(detail, raw) {
+				t.Errorf("%s: the page screen draws %q as markup", role, raw)
+			}
+		}
+		esc := `&lt;script&gt;alert(1)&lt;/script&gt;&#34;&gt;&lt;img src=x onerror=alert(2)&gt;`
+		if n := strings.Count(detail, `data-response-value>`+esc+`</dd>`); n != 2 {
+			t.Errorf("%s: %d escaped values, want the answer's and the script's", role, n)
+		}
+		if !strings.Contains(detail, `data-response-heading>&lt;b onmouseover=alert(3)&gt;Ask&lt;/b&gt;</span>`) ||
+			!strings.Contains(detail, `<dt class="text-xs text-fg2">&lt;i&gt;`+esc+`</dt>`) {
+			t.Errorf("%s: the heading or the script's key is not drawn escaped", role)
+		}
+	}
+}
+
+// TestAResponsesPushNamesThePartByItsLabel: the "got a response" push names
+// the part a viewer answered by the page's own label — a form's, an upload's
+// — and the page's own script as such; never the part's id, never what the
+// viewer sent.
+func TestAResponsesPushNamesThePartByItsLabel(t *testing.T) {
+	f := newPageFixture(t)
+	blocks := `[{"type":"form","id":"contact","label":"Your details","fields":[{"name":"email","type":"email"}]},
+ {"type":"upload","id":"logo","label":"Your logo"},{"type":"html","html":"<p>x</p>"}]`
+	want := map[string]string{}
+	for comp, w := range map[string]string{
+		"contact": "Through “Your details”. Open the page in muster to see it.",
+		"logo":    "Through “Your logo”. Open the page in muster to see it.",
+		"custom":  "From the page's own script. Open the page in muster to see it.",
+	} {
+		// One page per part: the push is at most one a minute per page.
+		id := f.create(t, f.agent, "Push "+comp, blocks)
+		l := f.liveLink(t, f.owner, id)
+		var rec *httptest.ResponseRecorder
+		switch comp {
+		case "logo":
+			rec = f.upload(t, l.Token, comp, "logo.txt", []byte("client-secret-words"))
+		case "custom":
+			rec = f.submit(t, l.Token, comp, `{"secret":"client-secret-words"}`)
+		default:
+			rec = f.submit(t, l.Token, comp, `{"fields":{"email":"client-secret-words@example.com"}}`)
+		}
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", comp, rec.Code, rec.Body.String())
+		}
+		want["page-"+strconv.FormatInt(id, 10)+"-response"] = w
+	}
+	for tag, body := range want {
+		sent, _ := f.pagePushesTagged(tag)
+		if len(sent) != 1 || sent[0].Body != body || strings.Contains(sent[0].Body, "client-secret") {
+			t.Errorf("%s: %+v, want one push saying %q", tag, sent, body)
+		}
 	}
 }

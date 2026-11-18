@@ -249,11 +249,16 @@ func PageShareButton(id int64, title, shareURL string, reusable bool) g.Node {
 // form, the same POST PageSharePath and the same address (pageShareJS), so
 // a copy and a share hand out one link. shareURL and reusable are
 // PageShareButton's.
+//
+// It is drawn HIDDEN and shown by pageShareJS only where the browser has a
+// share sheet (a phone): there Share opens the sheet, and Copy link is the one
+// tap that copies. Elsewhere Share itself copies, so a second button doing
+// the same would only be noise.
 func PageCopyButton(id int64, title, shareURL string, reusable bool) g.Node {
 	t := pageCardTitle(title)
 	pid := strconv.FormatInt(id, 10)
 	return Form(Method("POST"), Action(PageSharePath(id)), Class("contents"),
-		Button(Type("submit"), g.Attr("data-page-copy", ""), g.Attr("data-page-id", pid), g.Attr("data-share-title", t),
+		Button(Type("submit"), g.Attr("data-page-copy", ""), g.Attr("hidden", ""), g.Attr("data-page-id", pid), g.Attr("data-share-title", t),
 			g.If(shareURL != "", g.Attr("data-share-url", shareURL)),
 			g.If(reusable, g.Attr("data-share-reusable", "")),
 			g.Attr("aria-label", "Copy the link to “"+t+"”"), Class(pageButtonQuiet), g.Text("Copy link")))
@@ -263,13 +268,16 @@ func PageCopyButton(id int64, title, shareURL string, reusable bool) g.Node {
 func PageLinkSheetID(id int64) string { return "page-link-" + strconv.FormatInt(id, 10) }
 
 // PageLinkSheet is THE ⓘ holding page id's link address (shareURL), with
-// Copy: the page's screen says "Copy link" / "Share" and never spells the
-// address in its top layer. pageShareJS keeps its text current when the
-// link changes (New link, Revoke). Never withheld: the link is the owner's.
+// Copy: the page's screen says "Share" (and "Copy link") and never spells the
+// address in its top layer. It is drawn hidden while the page has no link
+// (shareURL ""), and pageShareJS fills it, shows it and hides it as the link
+// changes (the first Share, New link, Revoke). Never withheld: the link is
+// the owner's. A plain <span> carries hidden: a display utility on it would
+// win over the attribute.
 func PageLinkSheet(id int64, shareURL string) g.Node {
-	return Div(Class("contents"), g.Attr("data-page-link-sheet", ""), g.Attr("data-page-id", strconv.FormatInt(id, 10)),
+	return Span(g.Attr("data-page-link-sheet", ""), g.Attr("data-page-id", strconv.FormatInt(id, 10)), g.If(shareURL == "", g.Attr("hidden", "")),
 		InfoSheet{ID: PageLinkSheetID(id), Label: "This page's link", Heading: "The page's link",
-			Lead: "Anyone with this link can open the page. Copy it to send it yourself:", Code: shareURL}.Node())
+			Lead: "Anyone with this link can open the page. Copy it to send it yourself:", Code: shareURL, Live: true}.Node())
 }
 
 // PageShareMenu is page id's ⋯ menu: Revoke link, New link (the old one stops
@@ -414,10 +422,12 @@ const pageShareJS = `
         b._ensure = null;
         if (url) b.setAttribute('data-share-url', url); else b.removeAttribute('data-share-url');
       });
-      // The page's link ⓘ (PageLinkSheet) holds the address, and copies it.
+      // The page's link ⓘ (PageLinkSheet) holds the address, and copies it;
+      // shown while the page has a link, hidden once it has none.
       document.querySelectorAll('[data-page-link-sheet][data-page-id="' + id + '"]').forEach(function (s) {
         s.querySelectorAll('[data-info-code]').forEach(function (c) { c.textContent = url || ''; });
         s.querySelectorAll('[data-info-copy]').forEach(function (c) { c.setAttribute('data-copy-text', url || ''); });
+        s.hidden = !url;
       });
     };
     var postJSON = function (src) {
@@ -518,8 +528,14 @@ const pageShareJS = `
         }).catch(function () { ph.remove(); });
       });
     };
+    // Copy link (PageCopyButton) only where Share opens a share sheet.
+    var showCopy = function () {
+      if (!navigator.share) return;
+      document.querySelectorAll('[data-page-copy][hidden]').forEach(function (b) { b.hidden = false; });
+    };
     fillCards();
-    new MutationObserver(function () { fillCards(); }).observe(document.documentElement, { childList: true, subtree: true });
+    showCopy();
+    new MutationObserver(function () { fillCards(); showCopy(); }).observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('pointerdown', early, true);
     document.addEventListener('focusin', early, true);
     document.addEventListener('click', function (e) {

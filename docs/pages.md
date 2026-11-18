@@ -288,9 +288,11 @@ viewer never does.
 activity first, with their counts, each with **Share** and **⋯**. A page's
 screen (`/pages/{id}`) has:
 
-- **Share**: **Share**, **Copy link** (the same link, always to the
-  clipboard) and ⋯; the page's reusable link itself (when it has one) is in
-  the ⓘ beside them, with its own Copy — the screen never spells an address.
+- **Share**: **Share** and ⋯ — and on a phone, where Share opens the share
+  sheet, **Copy link** (the same link, always to the clipboard; elsewhere
+  Share itself copies). The page's reusable link (when it has one) is in the
+  ⓘ beside them, with its own Copy; it appears there on the first Share and
+  goes on Revoke — the screen never spells an address.
 
 - **Open the page**: [your own view](#the-owners-view) of it.
 - **Links**: each link's state, who asked, when it was made in words
@@ -307,7 +309,10 @@ screen (`/pages/{id}`) has:
   *Sent by you*), newest first, each as labelled fields named by the page's
   own form (the version it was sent through): a form's field labels, a
   question's *Answer*, a choice's *Chose*, an approval's *Decision* and
-  *Comment*; what a page's own script sent, by its keys. Each file is
+  *Comment*; what a page's own script sent, by its keys (followed four levels
+  deep, deeper is *(nested data)*; each label and value is cut at 200 and
+  2000 characters). A response to a version that cannot be read is *A
+  response to an older version*. Each file is
   **Download the file** (`/uploads/{id}/file`: an attachment, never shown
   inline as a page). An admin also has a **Show raw** ⓘ on each: the part's
   id, the version, the link it came through and the data as stored.
@@ -432,7 +437,8 @@ choice.
 
 A response pushes you **A viewer sent something through one of your pages'
 links** (its own toggle on Account → Notifications), naming the page and the
-component, never what was sent; at most one a minute per page.
+part by its label (*Through “Your details”*), never what was sent; at most
+one a minute per page.
 
 ## Limits
 

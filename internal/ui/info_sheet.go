@@ -56,6 +56,9 @@ type InfoSheet struct {
 	// are the setup ⓘs (HostSettingSheet, HostDetailSheet), for a viewer who
 	// is not an admin (Features.Setup).
 	Withheld bool
+	// Live: the code is filled in by a page script (a link the page's Share
+	// makes later), so its row and Copy are drawn even while Code is "".
+	Live bool
 	// Inline draws the ⓘ for a 16px text line (a header's status row): a
 	// 20px-tall glyph whose 44px thumb target is its ::before, raised above a
 	// title's hit area (z-20) — the Preview button's in-row shape
@@ -108,7 +111,7 @@ func (s InfoSheet) sheet() g.Node {
 	switch {
 	case s.Withheld:
 		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(InfoSheetWithheldText))
-	case s.Code != "":
+	case s.Code != "" || s.Live:
 		code = Div(
 			Class("flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"),
 			Code(Class("min-w-0 flex-1 break-all font-mono text-sm text-fg"), g.Attr("data-info-code", ""), g.Text(s.Code)),
