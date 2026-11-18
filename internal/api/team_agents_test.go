@@ -346,7 +346,7 @@ var agentsListCallers = map[string]string{
 	"Server.chiefOnFor":             "own: chiefOn reads ownedBy(list, owner)",
 	"Server.accountChiefSection":    "own: chiefToggleAvailable / primaryChief over ownedBy(list, owner)",
 	"Server.handleAccountChief":     "own: primaryChief(ownedBy(list, owner))",
-	"Server.homeTarget":             "own: primaryChief(ownedBy(list, requestOwner(ctx)))",
+	"Server.homeResolve":            "own: primaryChief(ownedBy(list, requestOwner(ctx))); its team entries only set the onboarding page's team bit",
 	"Server.toolChiefRestart":       "own: resolveChief(ownedBy(list, owner)); on the mirror door, refused to a team token (teamHostTools)",
 	"Server.reapplyComposeChief":    "own: ownedBy(list, owner)",
 	"Server.liveOnTask":             "own: x.OwnerID == owner",
