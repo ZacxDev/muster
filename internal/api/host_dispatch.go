@@ -1145,10 +1145,9 @@ func spawnPromptFor(runtime, host, repo, prompt string, task notes.Note, onTask,
 			taskCut = "\n[cut: the rest of the task did not fit; ask your owner for it in your reply]"
 		}
 		// The task's text through the one rule (task_kickoff.go), cut to what
-		// is left BEFORE a plugin's text is fenced, so its fence always closes.
-		if text, ok := taskKickoffTextWithin(task, room-len(relay)-len(taskHead), taskCut); ok {
-			body = taskHead + text
-		}
+		// is left: an owner's exactly as before, a plugin's BEFORE it is
+		// fenced, so its fence always closes.
+		body = taskKickoffTextWithin(task, taskHead, room-len(relay), taskCut)
 	}
 	return head + "\n\n" + relay + body + rules
 }

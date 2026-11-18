@@ -1,6 +1,7 @@
 package api
 
 import (
+	"math"
 	"regexp"
 	"strings"
 	"testing"
@@ -30,8 +31,8 @@ func TestOnlyAPluginsTaskTextIsFenced(t *testing.T) {
 		if got := taskKickoffText(n); got != kickoffOwnerBody {
 			t.Errorf("created_by %v: %q, want the body unchanged", deref(by), got)
 		}
-		if got, ok := taskKickoffTextWithin(n, len(kickoffOwnerBody), "[cut]"); !ok || got != kickoffOwnerBody {
-			t.Errorf("created_by %v, exactly fitting: %q %v, want the body unchanged", deref(by), got, ok)
+		if got := taskKickoffTextWithin(n, "", len(kickoffOwnerBody), "[cut]"); got != kickoffOwnerBody {
+			t.Errorf("created_by %v, exactly fitting: %q, want the body unchanged", deref(by), got)
 		}
 	}
 }
@@ -83,30 +84,43 @@ func TestThePluginTaskBlockIsPinned(t *testing.T) {
 }
 
 // TestAPluginTaskIsCutBeforeItIsFenced: under a budget the block still closes,
-// fits, and the cut note follows it; with no room for even an empty block the
-// answer is ("", false). An owner's body is cut as before: the cut note last.
+// fits, follows the head and is followed by the cut note; with no room for the
+// head and an empty block the answer is "". An owner's text is cut exactly as
+// the host spawn cut it before the rule: head and body together, then the cut
+// note — byte-identical at every budget, the head's own window included.
 func TestAPluginTaskIsCutBeforeItIsFenced(t *testing.T) {
 	n := pluginTaskNote(7)
 	n.Body = kickoffPluginBody + "\n" + strings.Repeat("history ", 2000)
-	full := taskKickoffText(n)
+	const head = "Task #7:\n\n"
+	full := taskKickoffTextWithin(n, head, math.MaxInt, "")
 	const note = "\n[cut: the rest]"
 	for _, limit := range []int{len(full) - 1, len(full) / 2, 1500} {
-		got, ok := taskKickoffTextWithin(n, limit, note)
-		if !ok || len(got) > limit || !strings.HasSuffix(got, ">>>\n"+note) {
-			t.Errorf("limit %d: ok=%v len=%d, want a closed block that fits, the cut note after it:\n%.400s…", limit, ok, len(got), got)
+		got := taskKickoffTextWithin(n, head, limit, note)
+		if got == "" || len(got) > limit || !strings.HasPrefix(got, head+plugins.TaskPreface) || !strings.HasSuffix(got, ">>>\n"+note) {
+			t.Errorf("limit %d: len=%d, want the head, a closed block that fits, the cut note after it:\n%.400s…", limit, len(got), got)
 			continue
 		}
 		assertPluginTextOnlyInsideTheFence(t, "cut", got)
 	}
-	if got, ok := taskKickoffTextWithin(n, 200, note); ok || got != "" {
-		t.Errorf("no room: %q %v, want \"\", false", got, ok)
+	if got := taskKickoffTextWithin(n, head, 200, note); got != "" {
+		t.Errorf("no room: %q, want \"\"", got)
 	}
 	own := notes.Note{ID: 7, Body: "0123456789abcdef"}
-	if got, ok := taskKickoffTextWithin(own, 10, "[c]"); !ok || got != "0123456[c]" {
-		t.Errorf("an owner's body under a budget: %q %v, want \"0123456[c]\"", got, ok)
-	}
-	if got, ok := taskKickoffTextWithin(own, 3, "[c]"); ok || got != "" {
-		t.Errorf("an owner's body with no room: %q %v, want \"\", false", got, ok)
+	for _, c := range []struct {
+		limit int
+		want  string
+	}{
+		{100, "H:\n\n0123456789abcdef"},
+		{20, "H:\n\n0123456789abcdef"},
+		{19, "H:\n\n0123456789ab[c]"},
+		{10, "H:\n\n012[c]"},
+		{5, "H:[c]"}, // inside the head's own window: the head is cut, as it always was
+		{4, "H[c]"},
+		{3, ""},
+	} {
+		if got := taskKickoffTextWithin(own, "H:\n\n", c.limit, "[c]"); got != c.want {
+			t.Errorf("an owner's text at limit %d: %q, want %q", c.limit, got, c.want)
+		}
 	}
 }
 

@@ -108,13 +108,28 @@ mirror being a shell on its host are under [Deployment](#deployment) and
   (a pull request from a fork) away from it until workers get execution
   isolation, such as an egress policy. Pool workers serve public repositories
   only. See [jobs.md](jobs.md).
-- **A plugin's task text is fenced in an agent's first message, not in a
-  tool's answer.** Every door that starts an agent on a task hands it a
-  plugin-filed title and body only inside the untrusted fence
+- **A plugin's task text is fenced where muster hands it to an agent, with
+  these gaps.** Every door that starts an agent on a task, and every task
+  tool that answers with one (`task_get`, `tasks_list`, `task_set_status`,
+  `agent_get_task`, `agent_set_task_status`, `GET /agent/task`), hands over
+  a plugin's title, body and comments only inside the untrusted fence
   ([plugins.md](plugins.md#post-pluginv1tasks-one-task-per-upstream-record)).
-  An agent that then calls `task_get` (or reads `GET /api/tasks`) gets the
-  task as stored, title, body and comments included, as JSON in the tool's
-  result, with no fence around it.
+  What it does not cover:
+  - **`GET /api/tasks`** (the CLI and producers) answers the task as stored,
+    unfenced. A session that runs `muster task …` reads it that way.
+  - **The agent's name** is taken from the first line of the task's body, a
+    plugin's included (`#42 · <first line>`). It is shown on muster's pages
+    and is never sent to the agent as a message; a host window is named from
+    the title the same way.
+  - **A task the chief files from a plugin's text is the chief's.** When the
+    chief reads a plugin message (fenced) and files a task from it with
+    `task_create_gated`, the task is stamped `chief`, so its text is passed on
+    unfenced: muster cannot tell the chief's own words from words it copied.
+    This is accepted (operator decision); the gate on such a task is what
+    holds it for the owner.
+  - **A plugin task filed before `0083` that left no trace of its plugin**
+    (no relay comment, no routed notice) cannot be attributed by `0153` and
+    is still read as the owner's ([schema](schema.md)).
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
   eligible tasks. The one automatic start is the chief's `agent_dispatch`
   ([task routing](plugins.md#agent_dispatch-the-guards)), off by default.

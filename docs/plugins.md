@@ -1321,9 +1321,14 @@ so the block always closes. A task your user, their chief or an agent filed
 is passed on unchanged. The same holds for a [task reference](#task-references),
 whose title and body are your snapshot.
 
-The fence covers the agent's **first message**. An agent that reads the task
-later through a tool (`task_get`, `GET /api/tasks`) gets the stored text as
-that tool's result, unfenced ([limits](limits.md)).
+The same fence covers the task tools an agent reads a task with. `task_get`,
+`task_set_status`, `agent_get_task` and `agent_set_task_status` answer with
+your title, body and comments (any comment written as your plugin) taken out
+of the task's JSON and handed over fenced in front of it, those fields left
+empty in the JSON; `tasks_list` does the same with your titles, and
+`GET /agent/task` keeps its answer JSON, with the fenced text in one more
+field, `untrusted_plugin_text`. `GET /api/tasks` is not covered
+([limits](limits.md)).
 
 ### Task references
 
