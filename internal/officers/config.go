@@ -191,6 +191,12 @@ type Officer struct {
 	// many chat lanes each instance runs at once. Read it through
 	// ChatSessions (chat.go).
 	chatSessions int
+	// chatMaxInstances is the declared `chat_max_instances` (0: none
+	// declared) and chatIdleStop the declared `chat_idle_stop` (0: none):
+	// the chat ceiling and the chat-idle stop (chat.go). Read them through
+	// ChatMaxInstances and ChatIdleStop.
+	chatMaxInstances int
+	chatIdleStop     time.Duration
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.

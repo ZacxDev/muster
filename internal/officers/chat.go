@@ -145,6 +145,59 @@ func (o Officer) DeclaredChatSessions() int { return o.chatSessions }
 // outside Parse).
 func (o Officer) WithChatSessions(n int) Officer { o.chatSessions = n; return o }
 
+// Chat-instance autoscaling (`chat_max_instances`, `chat_idle_stop`).
+const (
+	// DefaultChatMaxInstances is how many instances a pool may run for its
+	// chats when the officer declares no `chat_max_instances`.
+	DefaultChatMaxInstances = 3
+	// MaxChatMaxInstances bounds `chat_max_instances`: an instance number is
+	// never above MaxInstancesCap, whichever setting asks for it.
+	MaxChatMaxInstances = MaxInstancesCap
+	// DefaultChatIdleStop is how long an instance with no chat turn, no
+	// claim and no prompt stays up before it is stopped (`chat_idle_stop`).
+	DefaultChatIdleStop = 15 * time.Minute
+	// MinChatIdleStop and MaxChatIdleStop bound `chat_idle_stop`.
+	MinChatIdleStop = time.Minute
+	MaxChatIdleStop = 24 * time.Hour
+)
+
+// ChatMaxInstances is the chat ceiling of pool o: chats run on its instances
+// 1..ChatMaxInstances — its declared `chat_max_instances`, or
+// DefaultChatMaxInstances.
+func (o Officer) ChatMaxInstances() int {
+	if o.chatMaxInstances > 0 {
+		return o.chatMaxInstances
+	}
+	return DefaultChatMaxInstances
+}
+
+// WithChatMaxInstances returns o declaring a chat ceiling of n (tests, and
+// wiring outside Parse).
+func (o Officer) WithChatMaxInstances(n int) Officer { o.chatMaxInstances = n; return o }
+
+// ChatIdleStop is how long an instance of o may go with no chat turn, claim
+// or prompt before it is stopped: its declared `chat_idle_stop`, or
+// DefaultChatIdleStop.
+func (o Officer) ChatIdleStop() time.Duration {
+	if o.chatIdleStop > 0 {
+		return o.chatIdleStop
+	}
+	return DefaultChatIdleStop
+}
+
+// WithChatIdleStop returns o declaring a chat-idle stop of d (tests, and
+// wiring outside Parse).
+func (o Officer) WithChatIdleStop(d time.Duration) Officer { o.chatIdleStop = d; return o }
+
+// Slots is how many instance numbers pool o has: 1..Slots. Queue work uses
+// 1..MaxInstances of them.
+func (o Officer) Slots() int { return o.MaxInstances }
+
+// ChatOnly reports whether instance n of pool o serves chats only: numbered
+// past max_instances, within the chat ceiling. Its primary takes no queue
+// work (officer_claim refuses it).
+func (o Officer) ChatOnly(n int) bool { return n > o.MaxInstances && n <= o.Slots() }
+
 // ChatsPool reports whether pool o runs its officer's chats: an untiered
 // officer, or a tiered officer's judgement pool. A routine pool never does —
 // a chat has the officer's whole charter and access.
@@ -395,6 +448,38 @@ type ChatLanes interface {
 	// answers the lane's final assistant text. ErrChatLaneUnavailable (wrapped)
 	// when the lane refused it before anything was typed.
 	Turn(ctx context.Context, o Officer, n int, chatID, text string) (string, error)
+	// Rehome sets aside chatID's lane session on instance from (stopped, in
+	// error or past the chat ceiling), so its next Open on another instance
+	// makes a new session there: one with no marks, which starts after the
+	// officer's last reply. Its history stays readable where it was. Nothing
+	// to set aside is no error.
+	Rehome(ctx context.Context, o Officer, chatID string, from int) error
+}
+
+// ChatPlan is what pool o's chats need of its instances at one pass
+// (ChatRunner.Want; Observation.ChatPlan). Decide reads it, purely.
+type ChatPlan struct {
+	// Need is how many more instances the waiting chats need: the chats no
+	// up instance has a free lane for, ChatSessions to an instance, rounded
+	// up. 0 while a lane is free.
+	Need int
+	// Prefer is the down instances to start first for Need: the homes of
+	// chats whose instance is down (its conversation is on that instance's
+	// volume), in the order the chats came.
+	Prefer []int
+	// Waiting is how many pending chats have no free lane now.
+	Waiting int
+	// Unplaced is how many pending chats have no up home: each goes to an
+	// up instance with a free lane, or waits for one Need starts.
+	Unplaced int
+	// Busy is the chat turns running on each instance, by number.
+	Busy map[int]int
+	// PendingOn is the pending chats whose home is up, by its number.
+	PendingOn map[int]int
+	// ActiveAt is when each up instance was last seen active (a chat turn
+	// started or ended on it, a live claim of its own or its chat holder's,
+	// or first seen up by this process), by number.
+	ActiveAt map[int]time.Time
 }
 
 // chatLeaseSeconds is a chat claim's lease; chatHeartbeatEvery renews it while
@@ -601,7 +686,12 @@ func PendingChats(obs Observation, now time.Time) []Item {
 // keep nothing up: every chat of a pool that runs none here (cannotRun), a
 // chat whose home cannot be read or is beyond max_instances, and a chat
 // waiting out a backoff. Nothing for a pool that runs no chats.
-func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now time.Time) ([]int, map[ItemID]bool) {
+func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now time.Time) (ChatPlan, map[ItemID]bool) {
+	want, held := r.want(ctx, o, obs, now)
+	return ChatPlan{Prefer: want, Need: len(want)}, held
+}
+
+func (r *ChatRunner) want(ctx context.Context, o Officer, obs Observation, now time.Time) ([]int, map[ItemID]bool) {
 	if !r.On(o) || !o.ChatsPool() {
 		return nil, nil
 	}

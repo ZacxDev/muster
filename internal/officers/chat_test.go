@@ -31,6 +31,8 @@ type fakeLanes struct {
 	// unsupported is the instances whose runtime does not name a chat
 	// session's calls (Supports).
 	unsupported map[int]bool
+	// rehomes is each Rehome, as "<chat>:<from>".
+	rehomes []string
 }
 
 type fakeTurn struct {
@@ -79,6 +81,19 @@ func (l *fakeLanes) Turn(_ context.Context, _ officers.Officer, n int, chat, tex
 		return reply(chat, text)
 	}
 	return "reply to " + chat, nil
+}
+
+// Rehome implements officers.ChatLanes: the chat's lane on instance from is
+// set aside (its home and marks forgotten), and recorded.
+func (l *fakeLanes) Rehome(_ context.Context, _ officers.Officer, chat string, from int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rehomes = append(l.rehomes, fmt.Sprintf("%s:%d", chat, from))
+	if l.homes[chat] == from {
+		delete(l.homes, chat)
+		delete(l.marks, chat)
+	}
+	return nil
 }
 
 func (l *fakeLanes) sent() []fakeTurn {
@@ -182,13 +197,13 @@ func TestAPendingChatStartsTheInstanceItNeeds(t *testing.T) {
 	now := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
 	o := officers.Officer{ID: relID, MaxInstances: 3, IdleAfter: time.Minute}
 	down := []officers.InstanceState{{N: 1, Name: o.InstanceName(1)}, {N: 2, Name: o.InstanceName(2)}, {N: 3, Name: o.InstanceName(3)}}
-	obs := officers.Observation{Chats: true, Open: []officers.Item{chatItem("7", "c-1", 1)}, Instances: down, ChatWant: []int{2}}
+	obs := officers.Observation{Chats: true, Open: []officers.Item{chatItem("7", "c-1", 1)}, Instances: down, ChatPlan: officers.ChatPlan{Need: 1, Prefer: []int{2}}}
 	d := officers.Decide(o, obs, time.Time{}, now, nil)
 	if fmt.Sprint(d.Start) != "[2]" {
 		t.Fatalf("a chat whose lane lives on instance 2: start %v, want [2]", d.Start)
 	}
 	// A want beyond max_instances (an old home) starts nothing.
-	obs.ChatWant = []int{4}
+	obs.ChatPlan = officers.ChatPlan{Need: 1, Prefer: []int{4}}
 	if d := officers.Decide(o, obs, time.Time{}, now, nil); len(d.Start) != 0 {
 		t.Fatalf("a want beyond max_instances: start %v, want none", d.Start)
 	}

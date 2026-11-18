@@ -118,6 +118,11 @@ func (l officerChatLanes) Mark(ctx context.Context, o officers.Officer, n int, c
 	return st.SetOfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID, agents.ChatLaneMarks{Seen: m.Seen, Answered: m.Answered, Charter: m.Charter})
 }
 
+// Rehome implements officers.ChatLanes.
+func (l officerChatLanes) Rehome(ctx context.Context, o officers.Officer, chatID string, from int) error {
+	return errors.New("officers: re-homing a chat is not served yet")
+}
+
 // mcpSessionLaneReader is the agent gateway's read of a ccd's
 // mcp_session_lanes (agentgateway.Gateway.MCPSessionLanes), asserted: a
 // gateway without it runs no chat.

@@ -284,10 +284,9 @@ type Observation struct {
 	// (ChatRunner.On). Only then is a chat item set apart from queue work; a
 	// muster that runs no chats sees every item as before.
 	Chats bool
-	// ChatWant is the instance numbers the pool's pending chats need up
-	// (ChatRunner.Want): each chat's home instance, or instance 1 for a chat
-	// with no home while nothing is up. Empty for a pool that runs no chats.
-	ChatWant []int
+	// ChatPlan is what the pool's chats need of its instances
+	// (ChatRunner.Want). Zero for a pool that runs no chats.
+	ChatPlan ChatPlan
 	// ChatHeldBack is the pending chats the pool cannot serve now
 	// (ChatRunner.Want): not counted in ChatPending, so a chat that cannot
 	// run never keeps the pool up.
@@ -511,7 +510,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		// The instances the pending chats need (a chat's lane lives on one
 		// instance): started when down, beside any queue work wants.
 		if d.ChatPending > 0 {
-			for _, n := range obs.ChatWant {
+			for _, n := range obs.ChatPlan.Prefer {
 				_, down := downWhy[n]
 				if !down || capHolder[n] || n < 1 || n > o.MaxInstances || slices.Contains(d.Start, n) {
 					continue
@@ -1286,7 +1285,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used,
 			OverBudget: over, BudgetRead: read, Spent: spent, SpendUnreadable: unreadable}
 		out[i].Chats = r.chats.On(p)
-		out[i].ChatWant, out[i].ChatHeldBack = r.chats.Want(ctx, p, out[i], r.now())
+		out[i].ChatPlan, out[i].ChatHeldBack = r.chats.Want(ctx, p, out[i], r.now())
 	}
 	return out, nil
 }
