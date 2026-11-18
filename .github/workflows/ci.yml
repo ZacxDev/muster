@@ -2104,5 +2104,9 @@ jobs:
             echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
             echo "Kubernetes: the Helm chart \`muster-$v.tgz\` (its default image is this release): \`helm install muster https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/muster-$v.tgz\` (docs/kubernetes.md)."
             echo
+            # Transition notice for the ClankMail plugin's move out of the image:
+            # remove this line (and the blank echo after it) once v0.250.0 ships.
+            echo "ClankMail plugin: the muster image no longer ships \`/muster-clankmail\` (earlier releases did). Use its own image, \`ghcr.io/$owner/muster-clankmail\` (https://github.com/ZacxDev/muster-clankmail; docs/clankmail.md)."
+            echo
           } > "$RUNNER_TEMP/notes-header.md"
           .github/scripts/release-publish.sh "$tag" dist "$RUNNER_TEMP/notes-header.md"

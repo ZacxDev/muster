@@ -425,7 +425,7 @@ Each line is folded to one line, anything shaped like a secret is redacted, and
 the body is cut to 200 characters on a character boundary with a visible `…`
 (the options line keeps its room, at most 100; the question is cut first). 200
 is the Android app's own cut, so the browser and a paired phone are sent the
-same lines and the phone cuts nothing more. What the phone shows of them: the Android app as of muster-android `43d9b90` reads only `title`, `body` and `url`: it cuts the body at 200 characters (`PayloadV2.MAX_BODY`), sets it as the notification's one-line content text (so a collapsed notification shows the question's first line and the system's ellipsis; the options line is the second line), ignores `ask`, `actions` and `update`, and posts with `setOnlyAlertOnce(false)` — so the suggestions' re-push ALERTS AGAIN on it (operator-accepted until the app reads `update`). A reply draft's notification is unchanged (who and where only, below).
+same lines and the phone cuts nothing more. What the phone shows of them: since muster-android #16 (`7af3250b7`, v0.1.5), and still at v0.4.0, the Android app cuts the body at 200 characters (`PayloadV2.MAX_BODY`) and shows it in full as expanded text (`BigTextStyle`); it reads `ask` and `actions` and draws the ask's **options as notification buttons**, plus Dismiss, at most three in all (`AndroidNotifier.kt:104-110`, `AskPush.kt` `buttons()`; a suggested reply never becomes a button); and it reads `update`, so the suggestions' re-push replaces the notification without alerting again (`setOnlyAlertOnce(update)`). A reply draft's notification is unchanged (who and where only, below).
 Each item has one tag, so a notification is replaced, never stacked.
 
 **A tap opens the question's own page** (`/attention/asks/<id>`, below) while
@@ -495,9 +495,9 @@ from the question and its options, grounded in them by the same filter:
   moment it is filed; the suggestions are generated in the background and,
   when there are any, the notification is **pushed again under the same tag**
   carrying them, marked `update` in payload v2 so an app can replace it without
-  alerting again. ⚠ The Android app as shipped (muster-android `43d9b90`)
-  ignores `update` and alerts again on the re-push — accepted by the operator
-  until the app reads it. A browser replaces it silently (same tag, no
+  alerting again. The Android app reads it (muster-android #16, `7af3250b7`,
+  first in v0.1.5; still so at v0.4.0): the re-push replaces the notification
+  without alerting again (`onlyAlertOnce(p) = p.update`). A browser replaces it silently (same tag, no
   `renotify`) and shows no chips; its lines are the same.
 - **The same switches.** `MUSTER_SUGGEST=off`, your own toggle on Account (and
   its auto-pause), and no OpenRouter key for you each mean no call and no chips,

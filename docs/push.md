@@ -212,8 +212,10 @@ as **payload v2**:
   each whole (one longer than 140 characters is left out, never cut). When the
   suggested replies arrive after the first push, the same tag is pushed again
   with `"update": true`: replace the notification without alerting again. The
-  app as shipped (muster-android `43d9b90`) reads neither `ask` nor `update`,
-  so it alerts again on that re-push (operator-accepted until it does). A chip
+  app reads both (muster-android #16, `7af3250b7`, first in v0.1.5; still so
+  at v0.4.0): it draws the options as buttons plus Dismiss, at most three in
+  all, never a suggestion (`AskPush.buttons()`, `MAX_BUTTONS = 3`), and the
+  re-push does not alert again (`onlyAlertOnce(p) = p.update`). A chip
   a secret scan would redact is left out, never sent redacted. A payload that
   would not fit drops the suggestions, then the options, never the question.
 - An ask also carries `actions`, the notification's buttons: an `ask_answer`
