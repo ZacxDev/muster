@@ -38,7 +38,7 @@ type ClaudePrice struct {
 }
 
 // claudePricesAsOf is the price list's date (SOURCE above).
-const claudePricesAsOf = "2026-09-25"
+const claudePricesAsOf = "2026-11-18"
 
 // ClaudePricesAsOf is the date of the price list EstimateClaudeUSD reads.
 func ClaudePricesAsOf() string { return claudePricesAsOf }
@@ -62,7 +62,13 @@ var claudePrices = map[string]ClaudePrice{
 	"claude-sonnet-5-5": price(2, 10, 0.20),
 	"claude-sonnet-5":   price(2, 10, 0.20),
 	"claude-sonnet-4-6": price(3, 15, 0.30),
-	"claude-haiku-4-5":  price(1, 5, 0.10),
+	// claude-haiku-5-5 is TIERED by prompt length (prompts over 100,000
+	// tokens, cache reads and writes included, pay 5× the ≤100k rates of
+	// 0.10/0.50/0.01, 1h write 0.20). A row is flat, so it is priced at the
+	// >100k tier, whose 1h write is 1.00 = 2× input: a short prompt is
+	// over-estimated, never under. CCD_MODEL=haiku resolves to this id.
+	"claude-haiku-5-5": price(0.50, 2.50, 0.05),
+	"claude-haiku-4-5": price(1, 5, 0.10),
 }
 
 // claudePessimistic is what a model the table does not know is priced at:
