@@ -75,6 +75,10 @@ spec:
             - name: browser
               containerPort: {{ .Values.service.browserPort }}
             {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+            {{- end }}
           env:
             {{- toYaml $env | nindent 12 }}
             {{- with .Values.server.extraEnv }}

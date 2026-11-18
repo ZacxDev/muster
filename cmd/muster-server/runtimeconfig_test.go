@@ -144,7 +144,7 @@ func TestABundleWithNoNamedRuntimeIsRefusedAtBoot(t *testing.T) {
 // error in any log.
 func TestAWhitespaceOnlyBundleKeyReadsAsUnset(t *testing.T) {
 	env := map[string]string{
-		envDatabase:            "postgres://unused",
+		envDatabase: "postgres://unused", envHookToken: fixtureHookToken,
 		envAgentProvisioner:    provisionerNoop,
 		envAgentImageRepo:      "registry.example.test/muster/agent-runtime",
 		envAgentAPIURL:         "http://muster.example.test:8105",

@@ -249,6 +249,8 @@ export const bfcacheAwayPort = port + 152;
 // plugin on) with tracing and the Faro relay pointed at the spec's own fake
 // receivers, which listen on ports the OS picks.
 export const telemetryPort = port + 210;
+// …and its metrics listener (MUSTER_METRICS_PORT): /metrics is on no other port.
+export const telemetryMetricsPort = port + 211;
 // How long opening a mirrored view takes in the browser (open-perf.spec.ts):
 // its own server (the e2eterm binary, mirror plugin on, Faro relayed to the
 // spec's own fake receiver) and one mirrored host with a long transcript.

@@ -85,7 +85,7 @@ type AgentTerminalView struct {
 	// mirrored session has no agent page — its terminal is its page — so it goes
 	// back to the list.
 	BackHref string
-	// Badge is a short label beside the title ("Mirrored · <host>"); "" = none.
+	// Badge is a short label beside the title ("On <host>", MirrorBadgeText); "" = none.
 	Badge string
 	// BadgeHost and BadgeHostIcon are the mirrored host the badge names and its
 	// icon key (HostIconFor): the badge leads with the icon its cards draw.
@@ -220,9 +220,10 @@ const (
 	// sign-in: nothing is attached until it is confirmed.
 	TerminalConfirmToOpen = "Opening this terminal needs a recent sign-in: tap Reconnect, then confirm it's you."
 	// StatusNoKeys is a host that takes no keys (it did not advertise
-	// -interactive). It never says "read-only": what the composer can send is
-	// its own note.
-	StatusNoKeys = "Connected · this host takes no keys"
+	// -interactive), in plain words: no flag, no "host" (the operator rule).
+	// It never says "read-only" or "view-only": that explanation is the
+	// composer's own note (MirrorReadOnlyNote), said once.
+	StatusNoKeys = "Connected · typing is off"
 	// StatusReconnecting is a socket that closed and is coming back by itself.
 	StatusReconnecting = "Disconnected · reconnecting…"
 	// liveKeysTitle is the key bar's tooltip where no InteractiveNote says more.
@@ -378,6 +379,8 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					g.If(v.Unavailable == "", g.Attr("hidden", "")),
 					Class("border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words"),
 					Span(ID("term-error-text"), g.Text(v.Unavailable)),
+					// The exact words of a refusal, behind an ⓘ (hostDetailSlot).
+					g.If(v.BadgeHost != "", hostDetailSlot("term-error-info", v.Nav.Feat.Setup)),
 					Button(
 						ID("term-reconnect"),
 						Type("button"),
@@ -436,7 +439,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				// pushes it up — measured as a 0.01259 shift of #term-keys
 				// opening the terminal in its frame at 390px (cls.spec).
 				// TestTheViewPagesPaintWholeBeforeAnyScript pins the order.
-				terminalComposer(v.Composer, v.Switcher),
+				terminalComposer(v.Composer, v.Switcher, v.Nav.Feat.Setup),
 				// No composer (an offline host): the bar is the column's foot on
 				// its own.
 				g.If(v.Composer == nil, terminalSwitcher(v.Switcher)),
@@ -471,13 +474,14 @@ func terminalOnlyLine(reason string) g.Node {
 
 // terminalComposer is the page's composer with the session switcher as its
 // last row (s may be nil: none), as the Rendered view's composer draws it —
-// in flow here, not Pinned; nothing for nil.
-func terminalComposer(c *MirrorComposerView, s *Switcher) g.Node {
+// in flow here, not Pinned; nothing for nil. admin is the viewer's
+// (ComposerView.Admin).
+func terminalComposer(c *MirrorComposerView, s *Switcher, admin bool) g.Node {
 	if c == nil {
 		return nil
 	}
 	v := *c
-	v.Switcher = s
+	v.Switcher, v.Admin = s, admin
 	return mirrorComposer(v)
 }
 
@@ -905,12 +909,14 @@ func agentTerminalScript() g.Node {
     if (confirmPath && !fresh()) return ` + strconv.Quote(StatusConfirmToType) + `;
     return ` + strconv.Quote(StatusConnected) + `;
   }
-  function showError(msg, canReconnect) {
+  var errInfo = document.getElementById('term-error-info');` + hostDetailJS + `
+  function showError(msg, canReconnect, detail) {
     errText.textContent = msg;
+    setDetail(errInfo, detail || '');
     reconnectBtn.hidden = !canReconnect;
     errEl.hidden = false;
   }
-  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; }
+  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; setDetail(errInfo, ''); }
   // applyMode: the keys are on wherever the host takes keys (live keys are
   // always on) and there is a terminal to type into; what an attach without
   // them does with a key is send()'s.
@@ -1018,7 +1024,7 @@ func agentTerminalScript() g.Node {
           // "muster is restarting": not a refusal — it comes back by itself.
           if (m.reason !== 'shutdown') refused = true;
           caughtUp();
-          showError(m.message, refused);
+          showError(m.message, refused, m.detail);
         } else if (m.type === 'exit') {
           endReason = 'exited';
           refused = true;

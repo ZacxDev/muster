@@ -197,11 +197,11 @@ func TestATeamsEntriesAreNamedForTheirTeam(t *testing.T) {
 		t.Errorf("the team's chief's palette name is %q, want \"chief · Platform\"", got)
 	}
 	teamWin := row("nav-" + mirrorCardID(mirrors[0]))
-	if got, _ := ccAttr(teamWin, "data-switcher-name"); got != "build:1 · Platform" {
-		t.Errorf("the team's clashing window is named %q, want \"build:1 · Platform\"", got)
+	if got, _ := ccAttr(teamWin, "data-switcher-name"); got != "build · Platform" {
+		t.Errorf("the team's clashing window is named %q, want \"build · Platform\"", got)
 	}
-	if got, _ := ccAttr(row("nav-"+mirrorCardID(own)), "data-switcher-name"); got != "build:1" {
-		t.Errorf("the viewer's own clashing window is named %q, want \"build:1\"", got)
+	if got, _ := ccAttr(row("nav-"+mirrorCardID(own)), "data-switcher-name"); got != "build" {
+		t.Errorf("the viewer's own clashing window is named %q, want \"build\"", got)
 	}
 	words, _ := ccAttr(teamWin, "data-switcher-words")
 	if !slices.Contains(strings.Fields(words), "platform") {

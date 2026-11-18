@@ -91,8 +91,9 @@ test.afterAll(async () => {
   await rig.stop();
 });
 
-// row is a mirrored window's sidebar row, by its label.
-const row = (page: Page, title: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][title="${title}"]`);
+// row is a mirrored window's sidebar row, by its codename (data-switcher-code:
+// "fleet:5"; its drawn name has no tmux window index).
+const row = (page: Page, title: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][data-switcher-code="${title}"]`);
 const work = (page: Page, title: string) => row(page, title).locator('[data-nav-work]');
 
 // variant is a style attribute's custom property ("R G B") as a computed rgb().

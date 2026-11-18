@@ -21,12 +21,15 @@ func TestAPlaceholderOrShortHookTokenRefusesToBoot(t *testing.T) {
 			t.Errorf("HookToken %q: validate() = %v, want a refusal naming %s", tok, err, envHookToken)
 		}
 	}
-	// The boundary: exactly 12 characters boots, and so does unset.
-	for _, tok := range []string{"twelve-chars", ""} {
-		c := memoBase()
-		c.HookToken = tok
-		if err := c.validate(); err != nil {
-			t.Errorf("HookToken %q (len %d): refused: %v", tok, len(tok), err)
-		}
+	// The boundary: exactly 12 characters boots. Unset never does
+	// (validateListeners; TestTheHookTierBootPolicy has the whole table).
+	c := memoBase()
+	c.HookToken = "twelve-chars"
+	if err := c.validate(); err != nil {
+		t.Errorf("HookToken %q (len %d): refused: %v", c.HookToken, len(c.HookToken), err)
+	}
+	c.HookToken = ""
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), envHookToken) {
+		t.Errorf("HookToken unset: validate() = %v, want a refusal naming %s", err, envHookToken)
 	}
 }

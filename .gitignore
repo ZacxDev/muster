@@ -7,6 +7,9 @@
 /muster
 /muster-migrate
 
+# `make run`'s generated development token (MUSTER_HOOK_TOKEN).
+/.dev.env
+
 # Release assets, built by scripts/release-build.sh.
 /dist/
 

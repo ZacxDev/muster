@@ -29,7 +29,13 @@ security. [Teams](../features.md#teams) build on it. [auth.md](../auth.md).
 ## Turn it on
 
 1. In the hub's `.env`: `MUSTER_AUTH_MODE=gotrue`, `MUSTER_GOTRUE_URL`,
-   `MUSTER_GOTRUE_JWT_SECRET` and `MUSTER_BROWSER_PORT`
+   `MUSTER_GOTRUE_JWT_SECRET`, `MUSTER_BROWSER_PORT`, and the client topology:
+   `MUSTER_DIRECT_CLIENTS=1` when browsers reach the port directly, or
+   `MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER` for a proxy in front
+   (muster refuses to start without one; [auth.md](../auth.md#gotrue)).
+   With `tailscale serve` in front (as below), it is the proxy: muster's log
+   line `client address: ignored … from <address>` names the address to trust
+   and the headers that arrived.
    ([features.md](../features.md#accounts) has the lines;
    [configuration.md](../configuration.md#muster-server-sign-in-and-machine-credentials)
    what each requires).

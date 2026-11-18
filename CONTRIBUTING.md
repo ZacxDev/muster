@@ -74,9 +74,44 @@ python3 tests/leakscan.py                             # the tree is clean
 MUSTER_TEST_REQUIRE_DB=1 go test -race -cover ./...   # the suite
 make css-check                                        # the committed stylesheet is current
 make verb-ledger                                      # the built CLI has exactly its verbs
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > govulncheck.json \
+  && python3 .github/scripts/vulngate.py --allowlist .github/govulncheck-allowlist.txt < govulncheck.json
+                                                      # no REACHABLE known vulnerability
 ```
 
-or `make check`, which runs all of them. The browser suite is `make e2e`; see
+or `make check`, which runs all but the last (govulncheck fetches the
+vulnerability database over the network, so it is CI's `govulncheck` job and a
+command you run by hand).
+
+🔴 **The Go toolchain is pinned by `go.mod`'s `go` directive**, which carries the
+patch (e.g. `go 1.26.11`), so an older toolchain refuses to build the module. Three
+other places must name the same Go minor: every Dockerfile's `FROM golang:<version>`,
+`flake.nix`'s `buildGo1NNModule`/`go_1_NN` (with `flake.lock` new enough to carry
+the directive's patch), and CI's `setup-go`, which follows `go.mod` through
+`go-version-file`. Move them together: `internal/modulegate/gotoolchain_test.go`
+fails when one disagrees. When `govulncheck` reports a standard-library advisory,
+the fix is to raise the directive (and the others with it) to the release it names.
+
+### The govulncheck gate and its allowlist
+
+CI's `govulncheck` job fails when muster's code **calls** a symbol with a known
+advisory (imported-but-not-called does not count). Its verdict is
+`.github/scripts/vulngate.py`, tested by `tests/vulngate_test.py`.
+
+The fix is almost always the bump govulncheck names. Only when an advisory has
+**no fixed release yet** (or the fix cannot land yet) add it to
+`.github/govulncheck-allowlist.txt`, one line per advisory:
+
+```
+GO-YYYY-NNNN  YYYY-MM-DD  why it is accepted, and what we are waiting for
+```
+
+The date is the last day the entry is honoured (UTC); keep it to weeks. After
+it, the job **fails and names the entry**, whether or not the advisory is still
+reported: remove it, or re-date it with a fresh reason. A malformed line (bad ID,
+bad date, no reason, a duplicate) fails the job too, as does a scan that produced
+no output. An entry whose advisory is no longer reachable is reported as a note:
+delete it. The browser suite is `make e2e`; see
 [docs/testing.md](docs/testing.md) for what it needs.
 
 `nix develop` gives you the pinned Go toolchain, `psql`/`pg_dump`, Python and the
@@ -137,14 +172,15 @@ then set `DENIED_COUNT` in `tests/leakscan.py` to the count it prints.
 ## Documentation
 
 The README is for newcomers; everything else lives in [`docs/`](docs/README.md).
-Two tests in `internal/modulegate` keep the docs honest, and both run in
-`go test ./...`:
+Two tests keep the docs honest:
 
 - **A new environment variable needs a row in
-  [`docs/configuration.md`](docs/configuration.md).** The test parses the Go
-  source for every variable it reads, and fails on a variable with no row and on
-  a row nothing reads.
-- **Relative links and images must resolve,** including `#anchors`.
+  [`docs/configuration.md`](docs/configuration.md).** A test in
+  `internal/modulegate` (run by `go test ./...`) parses the Go source for every
+  variable it reads, and fails on a variable with no row and on a row nothing
+  reads.
+- **Relative links and images must resolve,** including `#anchors`, in every
+  tracked `*.md` (`tests/features_config_test.py`).
 
 Screenshots in `docs/img/` are generated: `make screenshots` (see
 [docs/testing.md](docs/testing.md#screenshots)). Re-run it when a pictured view

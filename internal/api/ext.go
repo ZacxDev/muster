@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/fleet"
@@ -192,6 +193,11 @@ type Extensions struct {
 	// under one is refused 421 before anything else runs
 	// (refusePluginOriginHosts). nil (unset): no host is refused.
 	PluginOrigins []plugins.OriginPattern
+	// ClientAddr is MUSTER_TRUSTED_PROXIES with MUSTER_CLIENT_IP_HEADER,
+	// parsed: whose forwarding header, if anyone's, names a request's client
+	// (internal/clientaddr). Handler resolves it once per request, on every
+	// listener; nil is the strict default (the TCP peer, every header ignored).
+	ClientAddr *clientaddr.Policy
 	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp):
 	// every connected-repository check lists the App's installation
 	// repositories (github_source.go). The same App backs the `github`
@@ -390,7 +396,7 @@ type Extensions struct {
 	// fleet_actions write. It needs FleetDigest (refused at boot without).
 	FleetPropose bool
 	// FleetActions is the fleet's action log (internal/fleet, migration
-	// 0150). nil (no database): fleet proposals are off whatever FleetPropose.
+	// 0152). nil (no database): fleet proposals are off whatever FleetPropose.
 	FleetActions fleet.Actions
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration

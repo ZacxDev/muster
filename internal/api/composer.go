@@ -160,12 +160,12 @@ var composerNotices = map[string]struct {
 	noticeSent:              {"Sent.", true},
 	noticeEmpty:             {ui.MirrorComposeEmpty, false},
 	noticeAgain:             {ComposerNoticeAgain, false},
-	noticeOffline:           {unprefixed(mirror.ErrHostOffline), false},
-	noticeGone:              {unprefixed(mirror.ErrSessionGone), false},
-	noticeWindowGone:        {unprefixed(mirror.ErrWindowGone), false},
-	noticeReadOnly:          {unprefixed(mirror.ErrInteractiveRefused), false},
-	noticeNotClaude:         {unprefixed(mirror.ErrNotClaude), false},
-	noticeUpgrade:           {unprefixed(mirror.ErrPanePasteUnsupported), false},
+	noticeOffline:           {notSent(mirror.ErrHostOffline, ""), false},
+	noticeGone:              {notSent(mirror.ErrSessionGone, ""), false},
+	noticeWindowGone:        {notSent(mirror.ErrWindowGone, ""), false},
+	noticeReadOnly:          {notSent(mirror.ErrInteractiveRefused, ""), false},
+	noticeNotClaude:         {notSent(mirror.ErrNotClaude, ""), false},
+	noticeUpgrade:           {notSent(mirror.ErrPanePasteUnsupported, ""), false},
 	noticeBadText:           {"Not sent: a message is plain text (newlines and tabs only), up to 16 KiB.", false},
 	noticeFailed:            {"Not sent: the message could not be delivered.", false},
 	noticeNotRunning:        {AgentNotRunningNotice, false},
@@ -246,6 +246,33 @@ func SendQueueCancelledAnsweredText(asker string) string {
 	return "Cancelled — but this message had already answered " + whose + ", and that answer was delivered: it can't be un-sent."
 }
 
+// notSent is a send's refusal by err in plain words (mirror.PlainWords; the
+// operator rule: no raw error, flag or "mirror:" in the top layer), naming
+// host ("" = "this computer").
+func notSent(err error, host string) string {
+	w := mirror.PlainWords(err, host)
+	if host == "" {
+		w = strings.ToLower(w[:1]) + w[1:]
+	}
+	return "Not sent: " + w
+}
+
+// hostNotices are the notices about a computer: each is said naming its host
+// (noticeText), the map's own text being the host-less fallback.
+var hostNotices = map[string]error{
+	noticeOffline: mirror.ErrHostOffline, noticeGone: mirror.ErrSessionGone, noticeWindowGone: mirror.ErrWindowGone,
+	noticeReadOnly: mirror.ErrInteractiveRefused, noticeNotClaude: mirror.ErrNotClaude, noticeUpgrade: mirror.ErrPanePasteUnsupported,
+}
+
+// noticeText is code's notice as a page shows it for a window on host: a
+// notice about the computer names it, any other is composerNotices' text.
+func noticeText(code, host string) string {
+	if err, ok := hostNotices[code]; ok {
+		return notSent(err, host)
+	}
+	return composerNotices[code].text
+}
+
 func unprefixed(err error) string {
 	msg := strings.TrimPrefix(err.Error(), "mirror: ")
 	return strings.ToUpper(msg[:1]) + msg[1:] + "."
@@ -254,11 +281,14 @@ func unprefixed(err error) string {
 // composerNotice is the notice a page was redirected to with: its text and
 // whether it is good news. An unknown code is no notice.
 func composerNotice(r *http.Request) (text string, ok bool) {
-	n, known := composerNotices[r.URL.Query().Get("notice")]
+	code := r.URL.Query().Get("notice")
+	n, known := composerNotices[code]
 	if !known {
 		return "", false
 	}
-	return n.text, n.ok
+	// The page's own host (its address carries it): a notice about the
+	// computer names it.
+	return noticeText(code, r.URL.Query().Get("host")), n.ok
 }
 
 // keepNotice is path with the request's own notice carried over: a view that

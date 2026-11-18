@@ -810,11 +810,16 @@ func cardTime(t time.Time) g.Node {
 	}
 	return g.El("time",
 		g.Attr("data-ts", strconv.FormatInt(t.UnixMilli(), 10)),
-		g.Attr("title", t.Format(time.RFC3339)),
+		// A date a person reads ("17 Nov 2026, 5:05 pm"), never ISO 8601
+		// (the operator rule); the exact instant is data-ts.
+		g.Attr("title", CardTimeTitle(t)),
 		Class("shrink-0 self-center text-xs tabular-nums text-muted"),
 		g.Text(relTimeString(t)),
 	)
 }
+
+// CardTimeTitle is a card time's tooltip: the date and time in words.
+func CardTimeTitle(t time.Time) string { return t.Format("2 Jan 2006, 3:04 pm") }
 
 // relTimeString is the compact relative-age string mirrored by relTimeScript.
 func relTimeString(t time.Time) string {
@@ -1007,8 +1012,11 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				}),
 				// The Connectors tab, when its feature is off: not dropped
 				// silently, but a muted entry saying so, linking to its row on
-				// the Features page.
-				g.If(!feat.Connectors, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
+				// the Features page — for an ADMIN, who can turn it on. Anyone
+				// else is never sent to a page of server settings (the operator
+				// rule: how-to-enable details are an admin's), so theirs is
+				// simply not drawn.
+				g.If(!feat.Connectors && feat.Setup, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
 				// The shareable pages (page_card.go): a standalone screen too.
@@ -1971,14 +1979,23 @@ var appScriptSrc = staticJS("app", `
       .slice(0, 40)               // ignore long varying tails
       .toLowerCase();
   }
-  window.toast = function (msg) {
+  // opts.tone 'info' is a confirmation, not an error (the Asks feed's "Sent
+  // to <session>"): the neutral surface, no error glyph, role=status. Coalesced
+  // and capped like every other toast; an info toast never merges with an
+  // error one (the tone is part of the key).
+  window.toast = function (msg, opts) {
+    var info = !!(opts && opts.tone === 'info');
     var host = document.getElementById('action-toasts');
     if (!host) { try { alert(msg); } catch (e) {} return; }
     // Dedupe/coalesce: a network blip fails every in-flight request at once, each
     // firing an (often near-identical) error toast. Collapse same-FAMILY messages
     // (by normalized key) into ONE toast with a ×N counter so a burst can never
     // flood the screen.
-    var key = toastKey(msg);
+    // 🔴 AN INFO TOAST IS KEYED ON ITS EXACT WORDS: toastKey is digit-blind
+    // and cut at 40 characters (an error burst's family), and a merged toast
+    // keeps its FIRST message — so "Sent to … fern:1" then "… fern:2" read
+    // "Sent to … fern:1 (×2)" (audit of #787). Only the same words merge.
+    var key = info ? 'info:' + msg : toastKey(msg);
     var nodes = host.querySelectorAll('[data-toast-key]');
     for (var i = 0; i < nodes.length; i++) {
       if (nodes[i].getAttribute('data-toast-key') === key) {
@@ -2001,13 +2018,19 @@ var appScriptSrc = staticJS("app", `
     // danger / on-danger: the pair the palette tests at 4.5:1. The old
     // translucent rose over the page measured 4.02:1, under AA for 14px text.
     // The glyph is the error SHAPE, so the toast does not rely on colour alone.
-    t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
-    t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
-    t.setAttribute('role', 'alert');
+    if (info) {
+      t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-s2 px-3 py-2 text-sm font-medium text-fg shadow-lg shadow-black/30 ring-1 ring-line';
+      t.setAttribute('role', 'status');
+      t.setAttribute('data-toast-tone', 'info');
+    } else {
+      t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
+      t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
+      t.setAttribute('role', 'alert');
+      t.innerHTML = TOAST_GLYPH;
+    }
     t.setAttribute('data-toast-msg', msg);
     t.setAttribute('data-toast-key', key);
     t.setAttribute('data-toast-count', '1');
-    t.innerHTML = TOAST_GLYPH;
     var tx = document.createElement('span');
     tx.setAttribute('data-toast-text', '');
     tx.textContent = msg;

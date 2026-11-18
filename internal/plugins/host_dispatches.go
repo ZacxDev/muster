@@ -161,8 +161,18 @@ func (s *PGStore) ReserveHostDispatch(ctx context.Context, object string, detail
 		hd, err = scanHostDispatch(tx.QueryRow(ctx, `INSERT INTO host_dispatches (owner_id, host, runtime, model, held_id, repo, base, task_id, reservation_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+hostDispatchCols,
 			owner, row.Host, row.Runtime, model, held, row.Repo, row.Base, task, reservationID))
-		if err != nil || row.Succession <= 0 {
+		if err != nil {
 			return err
+		}
+		// The host's live tokens are now tokens of a host that starts agents
+		// (mirror_tokens.spawned_at, 0150): the owner-authority step-up holds
+		// for them until they are rotated, whatever the host advertises later.
+		if _, err := tx.Exec(ctx, `UPDATE mirror_tokens SET spawned_at = now()
+			WHERE owner_id = $1 AND host = $2 AND revoked_at IS NULL AND spawned_at IS NULL`, owner, row.Host); err != nil {
+			return err
+		}
+		if row.Succession <= 0 {
+			return nil
 		}
 		// The succession's link, in this transaction: a row already decided
 		// rolls the whole reservation back, so a second tap inserts nothing.
@@ -212,6 +222,19 @@ func (s *PGStore) HostDispatchesForHost(ctx context.Context, host string) ([]Hos
 		return nil, err
 	}
 	return s.hostDispatches(ctx, `owner_id = $1 AND host = $2 AND (status <> 'ended' OR ended_at > now() - interval '7 days') ORDER BY id DESC LIMIT 200`, owner, host)
+}
+
+// OpenHostDispatchesOnHost is EVERY one of the principal's rows for host that
+// is not ended — no limit: the owner-authority checks (internal/api
+// spawnedByRecord's window clause, hostSpawnStepUp's open-dispatch trigger)
+// must see an old open row however many rows the host has. Open rows are
+// bounded by the chief's live cap.
+func (s *PGStore) OpenHostDispatchesOnHost(ctx context.Context, host string) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND host = $2 AND status <> 'ended' ORDER BY id`, owner, host)
 }
 
 // StaleHostDispatches is the principal's open rows whose host was last seen

@@ -476,12 +476,15 @@ asks you which with an `ask_owner` card. It never picks one for you.
 
 **Mirrored dispatch.** Say "mirrored" and the agent starts in a new window of
 the tmux session `agents` on one of your hosts, in a fresh git worktree, running
-Claude Code or opencode. By default the host starts it **without permission
-prompts**, so it runs its tools without asking you; a host with
-`-agent-spawn-skip-permissions=false` starts Claude Code in its normal
-permission mode instead, so its asks reach you on muster
-([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). A spawn
-without prompts passes Claude Code its bypass-mode consent for that process
+Claude Code or opencode. By default the host starts Claude Code in its
+**normal permission mode**, so its asks reach you on muster; a host that opts
+in with `-agent-spawn-skip-permissions` starts it **without permission
+prompts**, so it runs its tools without asking you
+([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). Either
+way, an owner-authority call from a host that starts agents is a confirmation
+card on your phone
+([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)). A
+spawn without prompts passes Claude Code its bypass-mode consent for that process
 alone, so it does not stop at the one-time "Bypass Permissions mode" screen,
 and your own Claude Code settings are not changed. The dispatch follows its
 window by tmux window id: while the window is open the agent card stays live,

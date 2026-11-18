@@ -73,7 +73,7 @@ func TestAnOpenCodeComposerSaysWhyItCannotSend(t *testing.T) {
 		window string
 		want   string
 	}{
-		{"the host did not opt in", false, "@1", "Not sent: this host's muster-mirror does not send to opencode (it needs -interactive and -opencode-send). Type it in the terminal."},
+		{"the host did not opt in", false, "@1", "Not sent: replying to opencode from muster is not turned on for this computer. Type it in the terminal."},
 		{"not launcher-bound", true, "@2", "Not sent: muster can't be sure which session this opencode shows, because it wasn't started with `muster-mirror opencode`. Type it in the terminal, or restart it that way."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -137,6 +137,9 @@ func TestAnOpenCodeRefusalSaysItsOwnWords(t *testing.T) {
 		want string
 	}{
 		{&mirror.OpenCodeNotIdleError{Status: mirror.StatusBusy}, mirror.PasteRefusedOpenCodeBusyText},
+		// Wrapped with the hub's context: still its own plain words, never the
+		// wrapped text (the jargon audit's "no raw error on the line").
+		{fmt.Errorf("%w (host %q, window %q)", &mirror.OpenCodeNotIdleError{Status: mirror.StatusWaiting}, "ws", "@1"), mirror.PasteRefusedOpenCodeWaitingText},
 		{&mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeSlashText, Refusal: mirror.PasteRefusalOpenCodeSlash}, mirror.PasteRefusedOpenCodeSlashText},
 		{&mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeUnboundText, Refusal: mirror.PasteRefusalOpenCodeUnbound, Cause: mirror.ErrOpenCodeUnbound}, mirror.PasteRefusedOpenCodeUnboundText},
 		{&mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeGoneText, Refusal: mirror.PasteRefusalOpenCodeGone}, mirror.PasteRefusedOpenCodeGoneText},

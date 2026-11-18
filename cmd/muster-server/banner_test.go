@@ -200,7 +200,7 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{},
 			wantLine: `permission router: NONE, UNDECLARED — ` + envRouterURL + ` is unset ` +
 				`and ` + envStandalone + ` is not 1. This server will NOT report ready while ` +
-				`a notes store is wired, on purpose: see /readyz for the reason`,
+				`a notes store is wired, on purpose: /readyz answers 503 and logs the reason (a "readyz: not ready" line)`,
 			mustContain: []string{envRouterURL, "UNDECLARED"},
 			mustNotSay:  []string{envRouterToken + " is unset"},
 		},
@@ -294,6 +294,8 @@ var bannerLedger = []string{
 	envBrowserPort,
 	envSecureCookies,
 	envHookToken,
+	// The metrics listener: one line, both directions.
+	envMetricsPort,
 	envServiceToken,
 	envRouterURL,
 	// The approval relay's own gate: its off-state is "every claude-code prompt
@@ -407,6 +409,9 @@ var bannerLedger = []string{
 	// so an operator chasing a misdirected request must be told which state
 	// this is and which patterns.
 	envPluginOrigins,
+	// The client address: STRICT (both unset) or TRUSTED PROXIES with the
+	// ranges and the header, so an operator can read whose headers are believed.
+	envTrustedProxies, envClientIPHeader, envDirectClients,
 	// 🔴 SESSION ROUTING IS LEDGERED: ON, the chief can put an outside party's
 	// message into the operator's own sessions and relay the answer without
 	// approval to allowlisted senders, so the log must say which state this is
@@ -833,6 +838,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Database:            "postgres://x/y",
 		UIPassword:          strings.Repeat("p", 40),
 		SecureCookies:       true,
+		MetricsPort:         18193,
 		AndroidAllowPINKeys: true,
 		HookToken:           "hook",
 		ServiceToken:        strings.Repeat("s", 40),
@@ -840,6 +846,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		GoTrueURL:           "http://auth.example.invalid:9999",
 		GoTrueSecret:        strings.Repeat("j", 40),
 		BrowserPort:         18192,
+		ClientAddr:          mustClientAddr(t, "192.0.2.0/24", "X-Forwarded-For"),
+		DirectClients:       true,
 		RouterURL:           "https://router.example.invalid",
 		RouterToken:         "t",
 		RouterActor:         "muster",
@@ -1043,21 +1051,6 @@ func bannerAllowlist(t *testing.T) plugins.RelayAllowlist {
 		t.Fatal(err)
 	}
 	return l
-}
-
-// 🟢 Routing ON with no MUSTER_HOOK_TOKEN: a session answering on the shared
-// hook credential is refused (503), so its routes time out — a loud line.
-// With the token set (the control), no warning.
-func TestTheBannerWarnsWhenRoutingIsOnWithoutAHookToken(t *testing.T) {
-	ext := api.Extensions{Plugins: bannerStubPlugins{}, PluginGateway: bannerStubPluginGateway{},
-		Routes: bannerStubRoutes{}, Routing: &api.Routing{Allow: bannerAllowlist(t)}}
-	const warn = "WARNING — session routing: " + envHookToken + " is unset"
-	if out := renderBanner(t, config{SessionRouting: true, Plugins: true}, ext); !strings.Contains(out, warn) {
-		t.Errorf("routing on, no hook token: no warning.\nbanner:\n%s", out)
-	}
-	if out := renderBanner(t, config{SessionRouting: true, Plugins: true, HookToken: "hook"}, ext); strings.Contains(out, warn) {
-		t.Errorf("routing on WITH a hook token still warns.\nbanner:\n%s", out)
-	}
 }
 
 // bannerStubPlugins and bannerStubPluginGateway are present-but-inert: the

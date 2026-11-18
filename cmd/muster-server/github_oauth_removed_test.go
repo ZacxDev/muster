@@ -15,7 +15,7 @@ import (
 func TestTheRemovedGitHubOAuthVariablesDoNotStopBoot(t *testing.T) {
 	load := func(env map[string]string) {
 		t.Helper()
-		full := map[string]string{envDatabase: "postgres://unused", envStandalone: "1"}
+		full := map[string]string{envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1"}
 		for k, v := range env {
 			full[k] = v
 		}

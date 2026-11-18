@@ -117,6 +117,38 @@ const AsksAllClearHTML = `<li class="flex flex-col items-center gap-2 rounded-2x
 	`<svg class="h-8 w-8 text-st-complete-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>` +
 	`<p class="text-base font-semibold text-fg">All clear</p><p class="text-sm text-fg2">Nothing is waiting on you.</p></li>`
 
+// AsksDraftsWaitHTML is the Open feed's empty state while reply drafts wait
+// (n > 0): NOT "All clear" — something is still pending, on the Drafts tab.
+// Same calm layout as AsksAllClearHTML, no check mark, and a link to the tab.
+// Its count is its own element (data-asks-drafts-n), so the feed's script can
+// draw it from its template (asks-drafts-wait-tpl) with the live number.
+func AsksDraftsWaitHTML(n int) string {
+	return `<li class="flex flex-col items-center gap-2 rounded-2xl px-4 py-10 text-center" data-asks-empty="drafts">` +
+		`<p class="text-base font-semibold text-fg">Nothing else is open</p>` +
+		`<p class="text-sm text-fg2" data-asks-drafts-wait>` + AsksDraftsWaitWords(n) + `</p>` +
+		`<a href="/attention?tab=drafts" class="` + AsksCardLinkClass + `" data-asks-drafts-link>Review drafts</a></li>`
+}
+
+// AsksDraftsWaitWords is the drafts empty state's sentence for n drafts.
+func AsksDraftsWaitWords(n int) string {
+	// "drafts", not "reply drafts": an officer's outbound post is one too.
+	if n == 1 {
+		return `<span data-asks-drafts-n>1</span> draft waits for your decision.`
+	}
+	return `<span data-asks-drafts-n>` + strconv.Itoa(n) + `</span> drafts wait for your decision.`
+}
+
+// AsksDraftsMarkerHTML is the Open feed's hidden note of how many reply drafts
+// wait (asksPendingOf counts them; they are drawn on the Drafts tab): the
+// feed's script adds it to the cards it counts, so the header's "N open"
+// after a leave or a live refresh is the server's own total. "" for none.
+func AsksDraftsMarkerHTML(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return `<li hidden aria-hidden="true" data-asks-drafts="` + strconv.Itoa(n) + `"></li>`
+}
+
 // AsksCardErrorHTML is the small fragment a refused card answer or dismissal
 // answers with (internal/api asksCardFailed), put in the card's error slot
 // ([data-asks-card-error]) by the feed's script. role=alert: a screen reader
@@ -153,6 +185,23 @@ const (
 	AsksSwipeMaxScale = 1.01
 )
 
+// AsksLeaveFallbackMs is how long a leaving card waits for its collapse's
+// transitionend before it counts the collapse as played (a transition the
+// browser skipped, a card a refresh detached). Above .asks-leave's 240ms.
+const AsksLeaveFallbackMs = 400
+
+// AsksCollapsingAttr marks a feed card whose leave collapse is playing; the
+// Open feed's live refresh (AttentionLiveScript) is held while one is, and
+// runs on AsksCollapsedEvent, which the card's feed hears when it ends.
+const (
+	AsksCollapsingAttr = "data-asks-collapsing"
+	AsksCollapsedEvent = "asks:collapsed"
+)
+
+// AsksSentToastPrefix leads the toast an accepted answer shows: "Sent to
+// <the session's name>" (the card's data-asks-who).
+const AsksSentToastPrefix = "Sent to "
+
 // A card post's refusal when the server's own fragment is not what came back
 // (the feed's script: refusal), and the feed notice's lead when the card is
 // gone meanwhile (refused).
@@ -181,7 +230,9 @@ const AsksFeedNoticeHTML = `<p id="asks-feed-notice" role="alert" class="` + Ask
 //     queue's own routes, hx-swap none; internal/api asksCardRequest answers
 //     them 204 on success, or their status with a small error fragment,
 //     ui.AsksCardErrorHTML). The card starts collapsing at once; on success it
-//     is removed and the next card takes focus; on a refusal it comes back with
+//     is removed once the collapse has played (afterLeave), the next card
+//     takes focus, and an answer says "Sent to <session>" in a toast
+//     (window.toast, the info tone); on a refusal it comes back with
 //     the fragment in its error slot. An empty answer is not sent. A step-up
 //     form (data-step-up-form) has no hx-post: it is its confirm dialog's.
 //   - 🔴 A CARD THAT IS LEAVING OR WAS JUST SETTLED IS NOT REDRAWN by the live
@@ -226,18 +277,35 @@ var asksFeedJS = `(function () {
     if (t) t.setAttribute('aria-expanded', on ? 'true' : 'false');
     if (card.id) { if (on) expanded[card.id] = true; else delete expanded[card.id]; }
   }
+  // count: THE ONE OPEN COUNT (internal/api asksPendingOf), as the page has
+  // it now — the Open feed's cards and stalled rows that wait on the reader
+  // (not leaving; a watched team ask, data-asks-uncounted, is not counted),
+  // plus the reply drafts the feed's marker says wait (data-asks-drafts).
   function count() {
     var list = feed();
     if (!list) return;
-    var n = allCards(list).length, el = document.querySelector('[data-asks-open-count]');
-    if (el) el.textContent = n + ' open';
-    var empty = list.querySelector('[data-asks-empty]');
-    // All clear only when the Open feed truly holds nothing (a card on its
-    // way out still counts as there until its post lands).
-    if (n === 0 && !empty && !list.querySelector(CARD + ', [data-attention-episode]')) {
-      var tpl = document.getElementById('asks-empty-tpl');
-      if (tpl) list.appendChild(tpl.content.cloneNode(true));
-    } else if (n > 0 && empty) empty.remove();
+    var n = allCards(list).filter(function (c) { return !c.hasAttribute('data-asks-uncounted'); }).length;
+    var m = list.querySelector('[data-asks-drafts]'), d = m ? (parseInt(m.getAttribute('data-asks-drafts'), 10) || 0) : 0;
+    var el = document.querySelector('[data-asks-open-count]');
+    if (el) el.textContent = (n + d) + ' open';
+    // The FEED's own empty state, a direct child: a nested empty line (the
+    // stalled rows' "could not be read") is not it.
+    var empty = list.querySelector(':scope > [data-asks-empty]');
+    // The empty state only when the Open feed truly holds nothing (a card on
+    // its way out still counts as there until its post lands): All clear with
+    // nothing pending at all, the drafts' state while drafts wait.
+    if (!list.querySelector(CARD + ', [data-attention-episode]')) {
+      var want = d > 0 ? 'drafts' : '';
+      if (empty && (empty.getAttribute('data-asks-empty') || '') !== want) { empty.remove(); empty = null; }
+      if (!empty) {
+        var tpl = document.getElementById(d > 0 ? 'asks-drafts-wait-tpl' : 'asks-empty-tpl');
+        if (tpl) {
+          var node = tpl.content.cloneNode(true), dn = node.querySelector('[data-asks-drafts-wait]');
+          if (dn) dn.innerHTML = d === 1 ? '` + AsksDraftsWaitWords(1) + `' : '` + AsksDraftsWaitWords(0) + `'.replace('>0<', '>' + d + '<');
+          list.insertBefore(node, m);
+        }
+      }
+    } else if (empty) empty.remove();
   }
   function focusCard(c) {
     if (!c) return;
@@ -249,6 +317,8 @@ var asksFeedJS = `(function () {
   // before the POST landed still lists them). Both by id.
   var leaving = {}, settled = {};
   // leave: the card collapses out (height, then hidden), the next one moves up.
+  // card.__asksLeft is the collapse's end: done once it has played (or at
+  // once under reduced motion), with what waits for it (settle's removal).
   function leave(card) {
     var cards = cardsOf(card.parentElement), i = cards.indexOf(card);
     var next = cards[i + 1] || cards[i - 1] || null;
@@ -259,26 +329,60 @@ var asksFeedJS = `(function () {
     // a refresh replaced the feed meanwhile; refreshed / listed: whether a
     // refresh has run since, and whether it still listed the card.
     if (card.id) leaving[card.id] = { node: card, next: next && next.id, focus: focused, question: q ? q.textContent : '', refreshed: false, listed: false };
-    if (reduced()) { card.style.display = 'none'; count(); return; }
+    var left = card.__asksLeft = { done: false, waits: [] };
+    var finish = function () {
+      if (left.done) return;
+      left.done = true;
+      // The live refresh held back while it collapsed may run now.
+      var host = card.parentElement;
+      card.removeAttribute('` + AsksCollapsingAttr + `');
+      if (host) try { host.dispatchEvent(new Event('` + AsksCollapsedEvent + `', { bubbles: true })); } catch (e) {}
+      var w = left.waits; left.waits = [];
+      w.forEach(function (f) { f(); });
+    };
+    // The count drops as the card starts to leave (allCards skips a leaving
+    // card), not once its collapse has played.
+    count();
+    if (reduced()) { card.style.display = 'none'; count(); finish(); return; }
+    // 🔴 A LIVE REFRESH WAITS FOR THE COLLAPSE (AttentionLiveScript holds
+    // while the feed has a card carrying this attribute): it replaces the
+    // feed's innerHTML, and a node detached and put back mid-transition jumps
+    // to its end state — the collapse cut off again, by the refresh the answer
+    // itself causes.
+    card.setAttribute('` + AsksCollapsingAttr + `', '');
     card.style.height = card.offsetHeight + 'px';
     void card.offsetHeight;
     card.classList.add('asks-leave');
-    var done = false, end = function () {
-      if (done || !card.hasAttribute('data-asks-leaving')) return;
-      done = true; card.style.display = 'none'; count();
+    var end = function () {
+      if (left.done || card.__asksLeft !== left) return;
+      if (card.hasAttribute('data-asks-leaving')) { card.style.display = 'none'; count(); }
+      finish();
     };
     card.addEventListener('transitionend', function (e) { if (e.target === card && e.propertyName === 'height') end(); });
-    setTimeout(end, 400);
+    setTimeout(end, ` + strconv.Itoa(AsksLeaveFallbackMs) + `);
+  }
+  // afterLeave: run f once card's collapse has played out — at once when it
+  // is not collapsing (reduced motion, a card a refresh drew, one already
+  // collapsed).
+  function afterLeave(card, f) {
+    var left = card && card.__asksLeft;
+    if (left && !left.done) left.waits.push(f); else f();
   }
   // settle: the server took it — gone for good, focus to the next card.
+  // 🔴 THE CARD IS REMOVED ONLY ONCE ITS COLLAPSE HAS PLAYED: the post lands
+  // in tens of milliseconds, well inside the transition, and removing it then
+  // cut the collapse off so the card simply vanished.
   function settle(id) {
     var l = leaving[id]; delete leaving[id];
     settled[id] = Date.now();
-    var c = document.getElementById(id);
-    if (c) c.remove();
-    count();
-    var a = document.activeElement;
-    if (l && l.next && (l.focus || !a || a === document.body)) focusCard(document.getElementById(l.next));
+    var c = document.getElementById(id) || (l && l.node);
+    if (l && l.who && window.toast) window.toast('` + AsksSentToastPrefix + `' + l.who, { tone: 'info' });
+    afterLeave(c, function () {
+      if (c) c.remove();
+      count();
+      var a = document.activeElement;
+      if (l && l.next && (l.focus || !a || a === document.body)) focusCard(document.getElementById(l.next));
+    });
   }
   // refusal: what a failed post says, as a node for the card's error slot.
   // Only the server's own card fragment (asksCardFailed: text/html carrying
@@ -324,6 +428,13 @@ var asksFeedJS = `(function () {
       count();
       return;
     }
+    // Back on the page: its collapse is over and nothing waits on it.
+    c.__asksLeft = null;
+    c.removeAttribute('` + AsksCollapsingAttr + `');
+    // Its collapse ends here, not at its transition (refused() cut it short,
+    // and the transition's own end now stands down): release a live refresh
+    // the collapse held (AttentionLiveScript waits for this event).
+    try { list.dispatchEvent(new Event('` + AsksCollapsedEvent + `', { bubbles: true })); } catch (e) {}
     c.removeAttribute('data-asks-leaving');
     c.classList.remove('asks-leave');
     c.style.height = ''; c.style.display = '';
@@ -354,6 +465,9 @@ var asksFeedJS = `(function () {
     // a detached element never bubbles to the document — a document listener
     // would never hear the post land (or fail).
     var id = form.getAttribute('data-asks-card-form');
+    // An ANSWER (never a dismissal) says where it went once it is taken:
+    // the card's session name (data-asks-who, the card head's own title).
+    if (leaving[id] && form.hasAttribute('data-attention-answer')) leaving[id].who = card.getAttribute('data-asks-who') || '';
     form.addEventListener('htmx:afterRequest', function (ev) {
       if (ev.target !== form || !leaving[id]) return;
       var x = ev.detail && ev.detail.xhr;

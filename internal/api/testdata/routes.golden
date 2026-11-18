@@ -135,7 +135,6 @@ GET /health
 GET /invite
 GET /login
 GET /manifest.webmanifest
-GET /metrics
 GET /mirror/connect
 GET /mirror/host
 GET /mirror/terminal

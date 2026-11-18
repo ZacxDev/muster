@@ -101,12 +101,15 @@ test.afterAll(async () => {
   mkchat({ MUSTER_E2E_DELETE: '1', MUSTER_E2E_FOCUS: JSON.stringify(Object.values(sids).map((s) => ({ subject: 'mirror:' + s, title: 'x' }))) });
 });
 
+// askCard is the Asks list's card of the waiting window w: the card whose ⓘ
+// details sheet holds w's tmux target (the card's own words say only "on
+// <host>": the address is behind the ⓘ).
+const askCard = (page: Page, w: number) =>
+  page.locator('[data-attention-item][data-kind="session"]', { has: page.locator('[data-info-code]', { hasText: `tmux tnotify:${w} @` }) });
+
 // askRow is the Asks list's name of the waiting window w: its card's title
-// (<span data-attention-name>), in the card whose place under it names w.
-const askRow = (page: Page, w: number) =>
-  page
-    .locator('[data-attention-item][data-kind="session"]', { has: page.locator('[data-attention-source]', { hasText: `tnotify:${w} @` }) })
-    .locator('[data-attention-name]');
+// (<span data-attention-name>).
+const askRow = (page: Page, w: number) => askCard(page, w).locator('[data-attention-name]');
 
 async function setSwitch(page: Page, on: boolean) {
   await page.goto(origin + '/account');
@@ -459,7 +462,7 @@ for (const vp of [
       // marked row is replaced: the refresh happened), and the named row is
       // still "<name> · <codename> @ <host>" — the refresh renders as its owner.
       const extra = path.join(rig.dir, `ntmux-plain-${unnamedWaiting}-${stamp}.jsonl.waiting`);
-      const extraRow = page.locator('[data-attention-item][data-kind="session"]', { hasText: `tnotify:${unnamedWaiting} @` });
+      const extraRow = askCard(page, unnamedWaiting);
       await expect(extraRow).toHaveCount(0);
       await askRow(page, w).evaluate((el) => { el.setAttribute('data-stale-mark', '1'); });
       try {
@@ -524,3 +527,83 @@ for (const vp of [
     });
   });
 }
+
+// SESSION NAMES FIRST, THE TMUX ADDRESS BEHIND AN ⓘ (operator rule:
+// no address, id or code in muster's top layer), on a phone: the
+// Asks card of a named waiting window and its Rendered view's header call it
+// by its name and "on <host>" — nothing visible spells "tmux", " @ " or a
+// window index — and each has an ⓘ (a 44px button, named for a screen
+// reader, reachable by keyboard) whose sheet holds the exact tmux target and
+// copies it. Switch "Show tmux sessions" is off (its default).
+//
+// 🔴 REGRESSION TEST for the jargon audit's F001/F002/F005: red at
+// origin/main, whose card said "tmux tnotify:1 @ <host>" under the name and
+// had no ⓘ. With MUSTER_E2E_SHOTS_DIR set it saves the phone screenshots
+// there (never in CI).
+test.describe('phone 390×844 touch: plain session names', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
+  const shots = process.env.MUSTER_E2E_SHOTS_DIR ?? '';
+  const shot = async (page: Page, name: string) => {
+    if (shots) await page.screenshot({ path: path.join(shots, name + '.png') });
+  };
+  const jargon = /\btmux |\s@\s|[^\s\d]:\d/;
+  const target = `tmux tnotify:${windows.phone} @ ${host}`;
+
+  test('an Asks card and a session header name the session in words, the tmux target behind an ⓘ with Copy', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+    await signIn(page, origin);
+    await rig.waitListed(page, `cobalt:${windows.phone}`);
+
+    // THE ASKS CARD.
+    await page.goto(origin + '/attention');
+    const card = page.locator('[data-attention-item][data-kind="session"]', { has: page.locator('[data-attention-name]', { hasText: names.phone }) });
+    await expect(card).toBeVisible();
+    await shot(page, 'asks-card');
+    await expect(card.locator('[data-attention-source]')).toHaveText(`on ${host}`);
+    expect(await card.innerText(), 'nothing visible on the card spells a tmux address').not.toMatch(jargon);
+    const info = card.locator('[data-info-open]');
+    await expect(info).toHaveAccessibleName(`Where ${names.phone} runs`);
+    const ib = (await info.boundingBox())!;
+    expect(ib.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+    expect(ib.x + ib.width, 'the ⓘ is on screen').toBeLessThanOrEqual(390.5);
+    await info.tap();
+    const sheet = page.locator('#' + (await info.getAttribute('popovertarget')));
+    await expect(sheet).toBeVisible();
+    await expect(sheet).toHaveAttribute('role', 'dialog');
+    await expect(sheet).toHaveAccessibleName('Where it runs');
+    await expect(sheet.locator('[data-info-code]')).toHaveText(target);
+    const sb = (await sheet.boundingBox())!;
+    expect(sb.x >= -0.5 && sb.x + sb.width <= 390.5, 'the sheet fits the phone').toBe(true);
+    await shot(page, 'asks-card-info');
+    const copy = sheet.locator('[data-info-copy]');
+    await copy.tap();
+    await expect(copy).toHaveText('Copied');
+    expect(await page.evaluate(() => navigator.clipboard.readText()), 'Copy puts the exact target on the clipboard').toBe(target);
+    await page.keyboard.press('Escape');
+    await expect(sheet).toBeHidden();
+    // By keyboard: the ⓘ is a button — Enter opens it, Escape closes it.
+    await info.focus();
+    await page.keyboard.press('Enter');
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(sheet).toBeHidden();
+    await expect(card, 'the card did not toggle open from the sheet').toHaveAttribute('data-expanded', 'false');
+
+    // THE SESSION HEADER.
+    await page.goto(origin + `/mirror/view?host=${host}&session=tnotify&window=%40${windows.phone}`);
+    const header = page.locator('header').first();
+    await expect(page.locator('#mv-title')).toContainText(names.phone);
+    await shot(page, 'session-header');
+    expect(await header.innerText(), 'nothing visible in the header spells a tmux address').not.toMatch(jargon);
+    const hinfo = page.locator('#mv-place-open');
+    await expect(hinfo).toHaveAccessibleName(`Where ${names.phone} runs`);
+    await hinfo.tap();
+    const hsheet = page.locator('#mv-place');
+    await expect(hsheet).toBeVisible();
+    await expect(hsheet.locator('[data-info-code]')).toHaveText(target);
+    await shot(page, 'session-header-info');
+    await page.keyboard.press('Escape');
+    await expect(hsheet).toBeHidden();
+  });
+});

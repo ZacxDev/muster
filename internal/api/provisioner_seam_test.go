@@ -665,7 +665,7 @@ type routeRegistration struct {
 // "unchecked", they are outside the seam. A handler that closes over s does not
 // belong here; give it a name on *Server instead.
 var unnameableRouteAllowlist = map[string]string{
-	"GET /metrics": "promhttp.Handler() — built by the Prometheus client over the default registry; takes no Server",
+	"GET /metrics": "promhttp.Handler() inside MetricsHandler, the metrics listener's own mux — built by the Prometheus client over the default registry; takes no Server",
 	"GET /static/": "staticHandler() — a zero-argument constructor over the embedded web FS; takes no Server",
 }
 

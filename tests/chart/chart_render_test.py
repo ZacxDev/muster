@@ -120,11 +120,43 @@ class BundledServiceSwitches(unittest.TestCase):
         self.assertNotIn("t-muster-stt", names)
 
 
+class ClientTopology(unittest.TestCase):
+    """clientAddress: gotrue mode must declare the topology (trusted proxies
+    with a header, or directClients); the two contradict each other; the header
+    is accepted in any case, as the server accepts it."""
+
+    gotrue = ["auth.mode=gotrue", "publicUrl=https://muster.example.com", "gotrue.enabled=true"]
+    proxy = ["clientAddress.trustedProxies[0]=192.0.2.0/24", "clientAddress.header=x-forwarded-for"]
+
+    def test_gotrue_without_a_topology_is_refused(self):
+        refused(self, "client topology declared", sets=self.gotrue)
+
+    def test_gotrue_with_either_renders(self):
+        env = server_env(render(self, sets=self.gotrue + ["clientAddress.directClients=true"]))
+        self.assertEqual(env["MUSTER_DIRECT_CLIENTS"]["value"], "1")
+        self.assertNotIn("MUSTER_TRUSTED_PROXIES", env)
+        env = server_env(render(self, sets=self.gotrue + self.proxy))
+        self.assertEqual(env["MUSTER_TRUSTED_PROXIES"]["value"], "192.0.2.0/24")
+        self.assertEqual(env["MUSTER_CLIENT_IP_HEADER"]["value"], "x-forwarded-for")
+        self.assertNotIn("MUSTER_DIRECT_CLIENTS", env)
+
+    def test_both_are_refused_in_any_mode(self):
+        refused(self, "keep the one that is true", sets=self.proxy + ["clientAddress.directClients=true"])
+
+    def test_password_mode_needs_neither(self):
+        env = server_env(render(self))
+        self.assertNotIn("MUSTER_DIRECT_CLIENTS", env)
+        self.assertNotIn("MUSTER_TRUSTED_PROXIES", env)
+
+    def test_an_unknown_header_is_refused(self):
+        refused(self, "does not match pattern", sets=["clientAddress.trustedProxies[0]=192.0.2.0/24", "clientAddress.header=Forwarded"])
+
+
 class GoTrueOfYourOwn(unittest.TestCase):
     """auth.mode=gotrue without the bundled GoTrue must name a GoTrue and its
     JWT secret; otherwise the server would point at a GoTrue that does not run."""
 
-    base = ["auth.mode=gotrue", "publicUrl=https://muster.example.com"]
+    base = ["auth.mode=gotrue", "publicUrl=https://muster.example.com", "clientAddress.directClients=true"]
 
     def test_no_url_is_refused(self):
         refused(self, "gotrue.url", sets=self.base)

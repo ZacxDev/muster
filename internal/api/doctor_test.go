@@ -56,14 +56,15 @@ func getDoctor(t *testing.T, ts *httptest.Server, token string) (int, map[string
 }
 
 // TestDoctorRefusesAnUnarmedServerByTheField: with no hook token the route
-// answers 503 carrying HookUnarmedField — the discriminator the CLI reports
-// "hook token: FAIL" from. The armed server is the control: the SAME request
-// shape answers 200.
+// answers the armed server's 401 and no HookUnarmedField — nothing tells a
+// caller how the server is configured (an unarmed server does not boot in the
+// first place). The armed server is the control: the SAME request shape
+// answers 200.
 func TestDoctorRefusesAnUnarmedServerByTheField(t *testing.T) {
 	unarmed := doctorServer(t, AuthConfig{UIPassword: testUIPassword}, Extensions{})
 	code, raw, _ := getDoctor(t, unarmed, "anything")
-	if code != http.StatusServiceUnavailable || raw[HookUnarmedField] != true {
-		t.Fatalf("unarmed: %d %v, want 503 with %s=true", code, raw, HookUnarmedField)
+	if _, marked := raw[HookUnarmedField]; code != http.StatusUnauthorized || marked {
+		t.Fatalf("unarmed: %d %v, want 401 without %s", code, raw, HookUnarmedField)
 	}
 
 	armed := doctorServer(t, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, Extensions{})
