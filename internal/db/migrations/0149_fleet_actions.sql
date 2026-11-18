@@ -41,7 +41,15 @@
 -- test refuses a gap). 🔴 RENUMBER IT (and db.fleetActionsMigrationVersion) at
 -- merge if main moved.
 --
--- ROLLBACK (after rolling the image back; an older image never reads them):
+-- ROLLBACK. 🔴 DRAIN THE FLEET'S QUEUED ROWS FIRST: an older image's queue
+-- worker does not know send_queue.fleet_action_id, so it would paste a queued
+-- fleet row (the chief's line and text) as if a person had queued it, with no
+-- gate on the action. Before the older image starts, cancel them (a row
+-- already 'sending' is past cancelling; let it finish):
+--   UPDATE public.send_queue SET state = 'cancelled', finished_at = now(),
+--       detail = 'cancelled: fleet proposals rolled back', held_until = NULL, hold_token = NULL
+--     WHERE fleet_action_id IS NOT NULL AND state = 'queued';
+-- Then, after rolling the image back (an older image reads none of the rest):
 --   ALTER TABLE public.send_queue DROP CONSTRAINT IF EXISTS send_queue_one_origin;
 --   ALTER TABLE public.send_queue ADD CONSTRAINT send_queue_one_origin
 --       CHECK (num_nonnulls(route_id, chief_nudge_id, chief_forward_dispatch) <= 1);

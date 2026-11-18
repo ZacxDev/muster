@@ -275,7 +275,8 @@ func (s *Server) sessionStateOwner(octx context.Context, o sessionstate.Owner, b
 	// read through the nudges' own candidate rule. Persons only.
 	if !team {
 		s.feedSessionMinder(octx, owner, read.sessions)
-		// The fleet's step (fleet_actions.go), for an owner the fleet judges.
+		// The fleet's step (fleet_actions.go), alongside the stop judge — whoever
+		// judges (fleetPass asks no judge): with fleet proposals on and a chief.
 		s.fleetPass(octx, owner, read.sessions)
 	}
 	for k, ep := range byKey {

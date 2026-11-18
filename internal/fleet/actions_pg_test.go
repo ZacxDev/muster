@@ -208,3 +208,57 @@ func TestTheBatchedPushIsClaimedAtMostEveryThirtyMinutesAndOnlyForNewProposals(t
 		t.Fatalf("proposals newer than the last push, 30 min on: %d %v %v; want 3, due", n, due, err)
 	}
 }
+
+// TestTheSubjectFilterIsExactAndBeforeTheLimit: "agent:4" is agent 4's stops
+// (keys "4:<conversation>"), never agent 42's; "mirror:<key>" is that key,
+// never a longer one; and the filter is the read's, so a limit smaller than
+// the newer rows of other sessions still returns the subject's.
+func TestTheSubjectFilterIsExactAndBeforeTheLimit(t *testing.T) {
+	p := pgActions(t)
+	ctx := asUser(2)
+	agentProp := func(key string, class string) Proposal {
+		pr := proposal(key, 9100, class, ContinueText)
+		pr.SubjectKind, pr.Host, pr.TmuxSession, pr.Window = "agent", "", "", ""
+		pr.Evidence = Evidence{SubjectID: "agent:" + strings.Split(key, ":")[0]}
+		return pr
+	}
+	var want4 []int64
+	for _, pr := range []Proposal{agentProp("4:701", ClassContinue), agentProp("4:702", ClassStopNote)} {
+		a, err := p.Propose(ctx, pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want4 = append(want4, a.ID)
+	}
+	m, err := p.Propose(ctx, proposal("a11ce5e5-0040", 9101, ClassContinue, ContinueText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Newer rows of other sessions: agent 42, agent 14, two longer mirror keys.
+	for _, pr := range []Proposal{agentProp("42:703", ClassContinue), agentProp("14:704", ClassContinue),
+		proposal("a11ce5e5-00401", 9102, ClassContinue, ContinueText), proposal("a11ce5e5-00402", 9103, ClassContinue, ContinueText)} {
+		if _, err := p.Propose(ctx, pr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(subject string, limit int) []int64 {
+		list, err := p.ListActions(ctx, ListFilter{Since: time.Now().Add(-time.Hour), Subject: subject, Limit: limit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, a := range list {
+			out = append(out, a.ID)
+		}
+		return out
+	}
+	if got := ids("agent:4", 2); len(got) != 2 || got[0] != want4[1] || got[1] != want4[0] {
+		t.Fatalf("agent:4 = %v; want %v newest first (and not agent 42's or 14's)", got, want4)
+	}
+	if got := ids("mirror:a11ce5e5-0040", 1); len(got) != 1 || got[0] != m.ID {
+		t.Fatalf("mirror:a11ce5e5-0040 = %v; want [%d] (not the longer keys)", got, m.ID)
+	}
+	if got := ids("", 50); len(got) != 7 {
+		t.Fatalf("control: no filter lists %d; want all 7", len(got))
+	}
+}

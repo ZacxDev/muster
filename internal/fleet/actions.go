@@ -286,7 +286,10 @@ type Move struct {
 type ListFilter struct {
 	Since   time.Time
 	State   string
-	Subject string // "<kind>:<key>" or the fleet id
+	// Subject is one session, matched EXACTLY and before Limit: "mirror:<key>"
+	// its key; "agent:<id>" every stop of that agent (its keys are
+	// "<id>:<conversation>") — never another id that starts with it.
+	Subject string
 	Limit   int
 }
 
@@ -418,7 +421,8 @@ func (p *PG) ListActions(ctx context.Context, f ListFilter) ([]Action, error) {
 	}
 	kind, key, _ := strings.Cut(f.Subject, ":")
 	return collectActions(p.pool.Query(ctx, `SELECT `+actionCols+` FROM fleet_actions
-		WHERE created_at >= $1 AND ($2 = '' OR state = $2) AND ($3 = '' OR (subject_kind = $3 AND subject_key = $4))
+		WHERE created_at >= $1 AND ($2 = '' OR state = $2)
+		  AND ($3 = '' OR (subject_kind = $3 AND CASE WHEN $3 = 'agent' THEN split_part(subject_key, ':', 1) = $4 ELSE subject_key = $4 END))
 		ORDER BY created_at DESC, id DESC LIMIT $5`, f.Since, f.State, kind, key, limit))
 }
 

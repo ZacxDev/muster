@@ -57,6 +57,36 @@ func TestTheFleetDoesNotJudgeStopsInThisPhase(t *testing.T) {
 	}
 }
 
+// TestTheChiefJudgesLiveStopsWithTheFleetOnOrOff: the chief stays the judge
+// BEHAVIOURALLY, at both of the judge's readers — not only at stopJudgeOf —
+// over fleet proposals off and on (session state on, the owner's nudges live):
+// episodeChiefJudges answers true (a stop's push waits for the chief), and the
+// chief's sweep records a decision for the stalled window. A gate on the flag
+// at either reader (`s.fleetProposeOn() || …`) turns the "on" row red.
+func TestTheChiefJudgesLiveStopsWithTheFleetOnOrOff(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		// A subtest each: the fixture's rows are cleaned up between the rows.
+		t.Run(map[bool]string{false: "fleet off", true: "fleet on"}[on], func(t *testing.T) {
+			f := newStateFixture(t, true)
+			f.live()
+			if on {
+				f.srv.ext.FleetPropose, f.srv.ext.FleetDigest, f.srv.ext.FleetActions = true, true, fleet.NewPG(f.pool)
+			}
+			if f.srv.fleetProposeOn() != on {
+				t.Fatalf("fixture: fleet proposals on = %v; want %v", f.srv.fleetProposeOn(), on)
+			}
+			octx := f.srv.attentionPrincipal(context.Background(), authz.OperatorUserID)
+			if !f.srv.episodeChiefJudges(octx, authz.OperatorUserID) {
+				t.Fatalf("fleet proposals on=%v: episodeChiefJudges is false; the chief judges live stops", on)
+			}
+			f.statePass(t) // opens the window's stop
+			if n := f.pass(t); n != 1 {
+				t.Fatalf("fleet proposals on=%v: the chief's sweep decided %d; want 1", on, n)
+			}
+		})
+	}
+}
+
 // TestAnActionInFlightSettlesWhateverTheJudge: an approved card's queued row
 // that was sent settles the action on the next pass while the CHIEF judges
 // the owner's stops (round 0's lead: it settled only while the fleet judged).
@@ -116,7 +146,7 @@ func TestTheFinishedSessionsCardIsWriteHandoffThenClose(t *testing.T) {
 	if len(list) != 1 || list[0].Class != fleet.ClassClose || list[0].SubjectKey != key {
 		t.Fatalf("the fallback: %+v; want one close card on the session", list)
 	}
-	if len(closes) != 0 {
+	if len(closesOf(&closes)) != 0 {
 		t.Fatalf("closed before any tap: %v", closes)
 	}
 	f.at = time.Now()
@@ -128,7 +158,7 @@ func TestTheFinishedSessionsCardIsWriteHandoffThenClose(t *testing.T) {
 	for f.action(t, list[0].ID).FinishedAt.IsZero() && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if c := f.action(t, list[0].ID); !strings.HasPrefix(c.Outcome, "closed") || len(closes) != 1 || closes[0].Window != window {
+	if c := f.action(t, list[0].ID); !strings.HasPrefix(c.Outcome, "closed") || len(closesOf(&closes)) != 1 || closesOf(&closes)[0].Window != window {
 		t.Fatalf("the close card: %+v, closes %+v", c, closes)
 	}
 }

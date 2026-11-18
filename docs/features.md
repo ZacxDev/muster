@@ -481,7 +481,8 @@ stopped with nothing in flight ([chief.md](chief.md#fleet-proposals)).
   unchanged); the proposals run alongside.
 - **Turning it off:** unset it (or `off`). The chief's fleet tools are not
   listed, the digest has no Proposed group, nothing is written to the action
-  log, and a message already queued from a card is not sent.
+  log, a message already queued from a card is not sent, and the "N proposals
+  waiting" Attention item is withdrawn on the next session-state pass.
 - **Check:** `fleet proposals: ON (MUSTER_FLEET_ORCHESTRATION=propose) — …`;
   off, the line reads `fleet proposals: OFF — MUSTER_FLEET_ORCHESTRATION is not
   propose`.

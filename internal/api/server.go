@@ -123,6 +123,9 @@ type Server struct {
 	// (fleet_read.go): its own, two minutes long, beside the closed-review
 	// settle's (pr_closed.go).
 	fleetPRs prStateCache
+	// fleetWrapClosing holds the wraps whose close runs in the background now
+	// (fleetWrapClose): one close per wrap in flight.
+	fleetWrapClosing sync.Map
 	// fleetOwners is fleet_list's cache of each stopped session's owner facts
 	// (last_owner_message_at, chief_texts_since_owner), per episode and streak
 	// (fleet_read.go).
@@ -250,15 +253,15 @@ type Server struct {
 	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
 	// outcome-write attempts (zero: jobFinishRetryPause). jobDrains is each
 	// agent's queue runner in this process (jobs_queue.go).
-	jobLanes         jobLanes
-	ownJobs          ownJobs
-	jobDrains        jobDrains
+	jobLanes  jobLanes
+	ownJobs   ownJobs
+	jobDrains jobDrains
 	// jobsStopping is set by StopJobs at the start of a graceful shutdown:
 	// this process takes no more jobs from the table (jobs_queue.go).
 	jobsStopping atomic.Bool
 	// poolFailovers serialises a pool submission's account failover per
 	// (owner, pool) (jobs.go createPoolJob).
-	poolFailovers keyedLocks
+	poolFailovers    keyedLocks
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
@@ -981,7 +984,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
+		SnapUser: p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

@@ -485,7 +485,33 @@ func (m closingMirror) Hosts(ctx context.Context) []mirror.HostView {
 	return hs
 }
 
+// closingMu guards every closingMirror's closes: the closes run in the
+// background (fleetDeliverClose, fleetWrapClose).
+var closingMu sync.Mutex
+
+// closesOf is a copy of *p, read under closingMu.
+func closesOf(p *[]mirror.AgentCloseReq) []mirror.AgentCloseReq {
+	closingMu.Lock()
+	defer closingMu.Unlock()
+	return append([]mirror.AgentCloseReq(nil), (*p)...)
+}
+
+// waitFinished waits (at most 5 s) for action id to finish — a close runs in
+// the background — and returns it.
+func (f *proposeFixture) waitFinished(t *testing.T, id int64) fleet.Action {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	a := f.action(t, id)
+	for a.FinishedAt.IsZero() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		a = f.action(t, id)
+	}
+	return a
+}
+
 func (m closingMirror) CloseAgent(_ context.Context, _ string, req mirror.AgentCloseReq) (mirror.AgentCloseResult, error) {
+	closingMu.Lock()
+	defer closingMu.Unlock()
 	*m.closes = append(*m.closes, req)
 	return mirror.AgentCloseResult{Graceful: true, Reason: "the agent exited"}, nil
 }
@@ -534,16 +560,16 @@ func TestAWrapClosesTheSessionOnlyAfterItsHandoffTurn(t *testing.T) {
 		t.Fatalf("after the paste: %+v; want sent, open, waiting on its streak", a)
 	}
 	f.pass()
-	if len(closes) != 0 {
+	if len(closesOf(&closes)) != 0 {
 		t.Fatalf("closed on the streak the handoff was sent on: %v", closes)
 	}
 	f.setStatus(f.owner, window, mirror.StatusIdle, 1700000777000)
 	f.pass()
-	if len(closes) != 1 || closes[0].Key != key || closes[0].Window != window || closes[0].Session != "work" {
-		t.Fatalf("closes %+v; want exactly the card's window", closes)
-	}
-	if a = f.action(t, id); a.FinishedAt.IsZero() || !strings.HasPrefix(a.Outcome, "closed") {
+	if a = f.waitFinished(t, id); a.FinishedAt.IsZero() || !strings.HasPrefix(a.Outcome, "closed") {
 		t.Fatalf("after the close: %+v", a)
+	}
+	if c := closesOf(&closes); len(c) != 1 || c[0].Key != key || c[0].Window != window || c[0].Session != "work" {
+		t.Fatalf("closes %+v; want exactly the card's window", c)
 	}
 
 	// The refusal: an open pull request leaves the session open.
@@ -559,8 +585,8 @@ func TestAWrapClosesTheSessionOnlyAfterItsHandoffTurn(t *testing.T) {
 	f.pass()
 	f.setStatus(f.owner, window2, mirror.StatusIdle, 1700000888000)
 	f.pass()
-	if a2 = f.action(t, id2); a2.FinishedAt.IsZero() || a2.Outcome != "not closed: it has an open pull request" || len(closes) != 1 {
-		t.Fatalf("the open pull request's wrap: %+v, closes %d", a2, len(closes))
+	if a2 = f.action(t, id2); a2.FinishedAt.IsZero() || a2.Outcome != "not closed: it has an open pull request" || len(closesOf(&closes)) != 1 {
+		t.Fatalf("the open pull request's wrap: %+v, closes %d", a2, len(closesOf(&closes)))
 	}
 }
 
@@ -597,12 +623,17 @@ func TestAReassignRoutesTheTaskThenAsksTheOldSessionForItsHandoff(t *testing.T) 
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM session_routes WHERE route_id = $1 AND task_id = $2`, a.RouteID, n.ID).Scan(&routes); err != nil || routes != 1 {
 		t.Fatalf("the task's route: %d %v", routes, err)
 	}
-	want := f.header() + "\nTask #" + strconv.FormatInt(n.ID, 10) + " has moved to another session (" + a.ToSubject + "). Stop work on it. Write your handoff (what is done, what is left, where), then stop."
+	// Literal: muster's attribution line, then the text naming `to` by its
+	// name (the second window of tmux session "work") — never its fleet id.
+	want := f.header() + "\nTask #" + strconv.FormatInt(n.ID, 10) + " has moved to another session (work:2). Stop work on it. Write your handoff (what is done, what is left, where), then stop."
+	if !strings.HasPrefix(f.header(), "[Chief, approved by ") || a.ToSubject == "work:2" {
+		t.Fatalf("instrument: header %q, to %q", f.header(), a.ToSubject)
+	}
 	var fleetRows int
 	for _, r := range f.rows(t) {
 		if r[1] == strconv.FormatInt(id, 10) {
 			fleetRows++
-			if r[0] != want && !strings.HasSuffix(r[0], "). Stop work on it. Write your handoff (what is done, what is left, where), then stop.") {
+			if r[0] != want {
 				t.Errorf("the from session's row: %q", r[0])
 			}
 		}

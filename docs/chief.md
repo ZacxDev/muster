@@ -1471,12 +1471,13 @@ yet.
 | `session_instruct {subject, class, text?, reason}` | one message to a stopped session. `class` is `continue`, `handoff` or `stop_note` (muster's fixed texts, below) or `custom` (the chief's own text, at most 4 KiB) |
 | `session_wrap {subject, reason}` | **one** card, "Write handoff, then close": the handoff text; once the session's handoff turn has ended (it worked, then stopped again), muster closes it — a Claude Code window gets `/exit` at an idle prompt, an opencode window is closed, an agent is stopped and removed. It is left open, and the card says why, if it then has an open pull request, a queued message or background work, or if no handoff turn ends within 24 hours |
 | `work_reassign {task_id, from, to, reason}` | **one** card, two steps: the task routed to `to` (a mirrored Claude Code session, as `route_to_session` routes a task), then `from` told the task moved and asked for its handoff |
-| `fleet_actions_list {since?, state?, subject?}` | nothing: it reads the action log, so the chief can explain what it proposed |
+| `fleet_actions_list {since?, state?, subject?}` | nothing: it reads the action log, so the chief can explain what it proposed. `subject` is one session's fleet id, matched exactly (`agent:4` is agent 4's stops, never agent 42's) |
 
 `subject` is a session's `fleet_list` id. Every write answers `{action_id,
 state, refused?, card?}`. A proposal is filed only on a **stop**: a session
 that is working is refused `not_stopped`. Another owner's session, a team's
-window, the chief and an officer's instance are all refused `not_found`, the
+window, the chief and an officer's instance (a dispatched one, or a window
+the officer runtime spawned on your host) are all refused `not_found`, the
 same answer for each. A session muster can only watch (an opencode pane its
 host does not send to, or a read-only host) is refused `view_only`, and no
 card is filed. There is at most one open proposal per session and class; a
@@ -1520,7 +1521,9 @@ then close"), the one-line reason, and **exactly what will be sent**, in full.
 - **Approve** sends it. It needs a sign-in from the last `MUSTER_STEPUP_WINDOW`
   (usually free); on a stale one muster asks "Confirm it's you" and taps again.
 - **Edit** opens the text in a box; **Send as mine** sends your text as your
-  own message — no chief line — with the same sign-in check.
+  own message — no chief line — with the same sign-in check. A card that
+  types nothing or routes a task (Close, a task move) and a dispatched agent's
+  card have no Edit.
 - **Reject** sends nothing.
 - **Open session** goes to the session's rendered view.
 - **Approve all** and **Reject all** act on every card the group shows, after a

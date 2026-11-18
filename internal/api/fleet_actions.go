@@ -195,8 +195,19 @@ func (s *Server) fleetStoppedSubject(ctx context.Context, id string) (fleetSubje
 }
 
 // fleetSubjectGuarded reports whether sub is never a fleet subject: an
-// officer's instance (an agent the destroy paths protect).
+// officer's instance — a dispatched one (an agent the destroy paths protect)
+// or a HOST-SPAWNED one, which the fleet sees as a mirrored window: a window
+// the officers' spawn store recorded (its id from the host's own spawn reply,
+// never a tag; hostOfficerWindowsOpen's read). A read that fails guards.
 func (s *Server) fleetSubjectGuarded(ctx context.Context, sub fleetSubject) bool {
+	if sub.kind == chiefnudge.KindMirror {
+		st := s.officerHostSpawns()
+		if st == nil || sub.view.Window == "" {
+			return false
+		}
+		rows, err := st.HostSpawnsInWindows(s.officerPrincipal(ctx, requestOwner(ctx)), sub.view.Host, []string{sub.view.Window})
+		return err != nil || len(rows) > 0
+	}
 	if sub.kind != chiefnudge.KindAgent {
 		return false
 	}
@@ -376,13 +387,17 @@ func (s *Server) toolFleetActionsList(ctx context.Context, arguments string) str
 		}
 		since = t
 	}
+	// 🔴 THE SUBJECT IS MATCHED IN THE READ, EXACTLY, BEFORE ITS LIMIT
+	// (fleet.ListFilter.Subject): a fleet id "mirror:<key>" or "agent:<id>"
+	// is the log's own kind and key, and agent:4 is never agent:42.
 	subject := strings.TrimSpace(in.Subject)
-	if k, key, ok := strings.Cut(subject, ":"); ok && k == string(focus.KindAgent) {
-		// A fleet id names an agent by its id; the log keys its stops
-		// "<id>:<conversation>" — matched by prefix below.
-		subject = chiefnudge.KindAgent + ":" + key
+	if subject != "" {
+		k, key, ok := strings.Cut(subject, ":")
+		if !ok || key == "" || (k != chiefnudge.KindMirror && k != chiefnudge.KindAgent) {
+			return toolErr("subject is a fleet id: mirror:<key> or agent:<id>")
+		}
 	}
-	list, err := s.ext.FleetActions.ListActions(ctx, fleet.ListFilter{Since: since, State: strings.TrimSpace(in.State), Limit: 100})
+	list, err := s.ext.FleetActions.ListActions(ctx, fleet.ListFilter{Since: since, State: strings.TrimSpace(in.State), Subject: subject, Limit: 100})
 	if err != nil {
 		return toolErr("the fleet's action log could not be read")
 	}
@@ -403,9 +418,6 @@ func (s *Server) toolFleetActionsList(ctx context.Context, arguments string) str
 	out := []row{}
 	for _, a := range list {
 		id := firstNonBlank(a.Evidence.SubjectID, a.SubjectKind+":"+a.SubjectKey)
-		if subject != "" && id != subject && !strings.HasPrefix(a.SubjectKind+":"+a.SubjectKey, subject) {
-			continue
-		}
 		r := row{ID: a.ID, Class: a.Class, Subject: id, Label: a.Evidence.Label, State: a.State, Outcome: a.Outcome, Reason: a.Reason,
 			Text: a.Text, TaskID: a.TaskID, To: a.ToSubject, CreatedAt: a.CreatedAt.UTC().Format(time.RFC3339)}
 		if !a.DecidedAt.IsZero() {
@@ -542,7 +554,16 @@ const (
 	FleetExpiredNote    = "Not sent: this proposal expired."
 	FleetUnreadable     = "Not sent: muster could not read the session's state just now. Try again."
 	FleetNotDeliverable = "Not sent: "
+	FleetNotEditable    = "Not sent: this proposal is approved or rejected, not edited."
 )
+
+// fleetEditable reports whether a's card may be sent as the owner's own
+// edited text: never a reassign (its route is the point), an agent's turn,
+// or a close (nothing is typed — an edit would close the session and drop
+// the owner's text). ONE predicate: the card's Edit form and the approve.
+func fleetEditable(a fleet.Action) bool {
+	return a.Class != fleet.ClassReassign && a.Class != fleet.ClassClose && a.SubjectKind != chiefnudge.KindAgent
+}
 
 // fleetApproveResult is one approve: its note, and whether it moved on.
 type fleetApproveResult struct {
@@ -565,6 +586,9 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 	}
 	if a.State != fleet.StateProposed {
 		return fleetApproveResult{note: FleetDecided}
+	}
+	if edited != nil && !fleetEditable(a) {
+		return fleetApproveResult{note: FleetNotEditable}
 	}
 	if s.now().Sub(a.CreatedAt) >= fleet.ProposalTTL {
 		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateExpired, Outcome: "12 h passed", Finish: true})
@@ -781,6 +805,10 @@ func (s *Server) sendQueueFleetGate(ctx context.Context, it sendqueue.Item) stri
 // proposals (the cards are the chief's panel's).
 func (s *Server) fleetPass(octx context.Context, owner int64, facts []nudgeCandidate) {
 	if !s.fleetProposeOn() {
+		// 🔴 TURNED OFF, ITS NOTICE GOES TOO: an "N proposals waiting" item
+		// filed while it was on would point at a Proposed group that is no
+		// longer drawn.
+		s.fleetNoticeWithdraw(octx)
 		return
 	}
 	if _, err := s.chiefAgent(octx); err != nil {
@@ -804,6 +832,17 @@ func (s *Server) fleetSettle(octx context.Context, facts []nudgeCandidate) {
 		case fleet.StateProposed:
 			s.fleetExpire(octx, a)
 		case fleet.StateQueued:
+			if a.Class == fleet.ClassClose {
+				// 🔴 A CLOSE IS QUEUED WHILE fleetDeliverClose's BACKGROUND CLOSE
+				// RUNS ("closing", no queue row): never an agent turn (that would
+				// send the close's text, mark it sent and lose the close's
+				// result), never the queue's settle. One the close never
+				// finished (a restart mid-close) is repaired as an approved one is.
+				if now.Sub(a.DecidedAt) > fleetCloseRepairAfter {
+					s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: "its close was interrupted: the session may still be open", Finish: true})
+				}
+				continue
+			}
 			if a.SubjectKind == chiefnudge.KindAgent && a.SendQueueID == 0 {
 				s.fleetStartTurn(octx, a)
 				continue
@@ -879,6 +918,10 @@ func (s *Server) fleetSettleQueued(octx context.Context, a fleet.Action) {
 	}
 }
 
+// fleetCloseRepairAfter is how long a close stays queued ("closing") before
+// the pass calls it interrupted: well past the close's own bound.
+const fleetCloseRepairAfter = chiefnudge.QueueRepairAfter
+
 // fleetWrapCloseWait bounds how long a wrap waits for its handoff turn.
 const fleetWrapCloseWait = 24 * time.Hour
 
@@ -913,8 +956,19 @@ func (s *Server) fleetWrapClose(octx context.Context, a fleet.Action, facts []nu
 		s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Outcome: "not closed: " + why, Finish: true})
 		return
 	}
-	outcome := s.fleetCloseSession(octx, a)
-	s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Outcome: outcome, Finish: true})
+	// 🔴 IN THE BACKGROUND, as fleetDeliverClose's: a close can take up to a
+	// minute, and the session-state pass is every owner's pushes and nudges.
+	// One close per wrap in flight (fleetWrapClosing); its finish is the
+	// conditional sent → sent move, so a second pass after it finds it done.
+	if _, busy := s.fleetWrapClosing.LoadOrStore(a.ID, struct{}{}); busy {
+		return
+	}
+	bctx := context.WithoutCancel(octx)
+	safeGo(s.logger, "fleet wrap close", func() {
+		defer s.fleetWrapClosing.Delete(a.ID)
+		outcome := s.fleetCloseSession(bctx, a)
+		s.fleetMove(bctx, a, fleet.Move{State: fleet.StateSent, Outcome: outcome, Finish: true})
+	})
 }
 
 // fleetProposeClose files the close card a wrap with no handoff turn falls
@@ -1128,19 +1182,9 @@ func fleetNoticeText(n int) string {
 // relayed, never counted toward the open-ask cap; filed without a push of its
 // own (the batched push is the push).
 func (s *Server) fleetNoticeSync(octx context.Context, due bool, n int) {
-	if s.ext.Attention == nil {
+	mine, ok := s.fleetNotices(octx)
+	if !ok {
 		return
-	}
-	open, err := s.ext.Attention.Open(octx)
-	if err != nil {
-		s.logger.Printf("fleet: the proposals notice: %v", err)
-		return
-	}
-	var mine []attention.Ask
-	for _, a := range open {
-		if a.Kind == attention.KindNotice && a.Asker.System && a.Asker.Label == fleetNoticeLabel {
-			mine = append(mine, a)
-		}
 	}
 	waiting := n
 	if !due {
@@ -1159,11 +1203,7 @@ func (s *Server) fleetNoticeSync(octx context.Context, due bool, n int) {
 	if !due && waiting > 0 {
 		return
 	}
-	for _, a := range mine {
-		if _, err := s.cancelAsk(octx, a.ID); err != nil {
-			s.logger.Printf("fleet: withdraw the proposals notice %d: %v", a.ID, err)
-		}
-	}
+	s.fleetNoticesCancel(octx, mine)
 	if waiting == 0 {
 		return
 	}
@@ -1174,6 +1214,43 @@ func (s *Server) fleetNoticeSync(octx context.Context, due bool, n int) {
 		return
 	}
 	s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
+}
+
+// fleetNotices is octx's owner's open "N proposals waiting" items; ok false
+// when there is no Attention store or it could not be read.
+func (s *Server) fleetNotices(octx context.Context) ([]attention.Ask, bool) {
+	if s.ext.Attention == nil {
+		return nil, false
+	}
+	open, err := s.ext.Attention.Open(octx)
+	if err != nil {
+		s.logger.Printf("fleet: the proposals notice: %v", err)
+		return nil, false
+	}
+	var mine []attention.Ask
+	for _, a := range open {
+		if a.Kind == attention.KindNotice && a.Asker.System && a.Asker.Label == fleetNoticeLabel {
+			mine = append(mine, a)
+		}
+	}
+	return mine, true
+}
+
+// fleetNoticesCancel withdraws the notices mine.
+func (s *Server) fleetNoticesCancel(octx context.Context, mine []attention.Ask) {
+	for _, a := range mine {
+		if _, err := s.cancelAsk(octx, a.ID); err != nil {
+			s.logger.Printf("fleet: withdraw the proposals notice %d: %v", a.ID, err)
+		}
+	}
+}
+
+// fleetNoticeWithdraw withdraws octx's owner's "N proposals waiting" item,
+// if one is open (fleet proposals turned off).
+func (s *Server) fleetNoticeWithdraw(octx context.Context) {
+	if mine, ok := s.fleetNotices(octx); ok {
+		s.fleetNoticesCancel(octx, mine)
+	}
 }
 
 // fleetPushNotification is the batched push for n waiting proposals: muster's
