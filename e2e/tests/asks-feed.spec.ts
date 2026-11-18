@@ -171,28 +171,25 @@ for (const vp of [
       await openFeed(page);
       const card = page.locator(`#ask-${ids.deploy}`);
       const toggle = card.locator('[data-asks-toggle]');
-      const since = card.locator('[data-asks-since]');
+      const question = card.locator('[data-attention-text]');
       await expect(card).toHaveAttribute('data-expanded', 'false');
       await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-      await expect(since, 'the more region is shut').toBeHidden();
       // A tap on the question (not a control) opens it.
-      await card.locator('[data-attention-text]').tap();
+      await question.tap();
       await expect(card).toHaveAttribute('data-expanded', 'true');
       await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-      await expect(since).toBeVisible();
       // View in session: the asking agent's page, the card's last row.
       const view = card.locator('[data-asks-view-session]');
       await expect(view).toHaveText('View in session');
       await expect(view).toHaveAttribute('href', `/agents/${agent}`);
-      const cardBox = (await card.boundingBox())!, viewBox = (await view.boundingBox())!, sinceBox = (await since.boundingBox())!;
-      expect(viewBox.y, 'View in session sits below the expanded context').toBeGreaterThan(sinceBox.y);
+      const cardBox = (await card.boundingBox())!, viewBox = (await view.boundingBox())!, qBox = (await question.boundingBox())!;
+      expect(viewBox.y, 'View in session sits below the question').toBeGreaterThan(qBox.y + qBox.height);
       expect(cardBox.y + cardBox.height - (viewBox.y + viewBox.height), 'and at the card’s bottom').toBeLessThan(24);
       // The task link sits beside it.
       await expect(card.locator('[data-asks-task]')).toHaveAttribute('href', `/tasks/${ids.task}`);
       // A tap on the head collapses it again.
       await toggle.tap();
       await expect(card).toHaveAttribute('data-expanded', 'false');
-      await expect(since).toBeHidden();
       // A tap on an option does NOT expand (it answers): covered below; the
       // link goes where it says.
       await view.tap();
@@ -373,6 +370,50 @@ for (const vp of [
       await expect.poll(three, { timeout: 15_000 }).toEqual([n0 - 1, n0 - 1, n0 - 1]);
     });
 
+    // DENSITY (the design review, 8): with the fixture's fleet of asks open,
+    // a phone shows at least 2.5 cards above the fold (each card's visible
+    // fraction of its own height, summed, at the page's top) — no footer of a
+    // lone ✕, no empty slot, no "Question" badge. RED at origin/main (about 2
+    // cards: a ✕-only footer band, two empty slots and a badge on every card).
+    if (vp.use.isMobile) {
+      test('a phone shows at least 2.5 cards above the fold', async ({ page }) => {
+        // Suggested replies OFF, their default (suggest.DefaultDisabled) and the
+        // review's fleet: another spec on this leg's database may have turned
+        // them on for this user, which adds the chip row to the first card.
+        await signIn(page, origin);
+        const off = await page.request.post(origin + '/account/suggest', { form: { on: '0' }, headers: { Origin: origin }, maxRedirects: 0 });
+        expect(off.status(), await off.text()).toBe(204);
+        await openFeed(page);
+        await expect(page.locator('#attention-items [data-asks-suggestions]'), 'no chip row').toHaveCount(0);
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+        await page.waitForTimeout(300);
+        const m = await page.evaluate(() => {
+          const vh = window.innerHeight;
+          let sum = 0;
+          const cards = [...document.querySelectorAll('#attention-items > [data-asks-card]')];
+          for (const c of cards) {
+            const r = c.getBoundingClientRect();
+            sum += r.height ? Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) / r.height : 0;
+          }
+          return {
+            sum: Math.round(sum * 100) / 100,
+            cards: cards.length,
+            tops: cards.map((c) => { const r = c.getBoundingClientRect(); return `${c.id}@${Math.round(r.top)}+${Math.round(r.height)}`; }).join(' '),
+            // A footer whose one control is the icon-only ✕ (no words of its own).
+            loneX: cards.filter((c) => { const f = c.querySelector('[data-asks-footer]'); return f && !f.querySelector('a') && [...f.querySelectorAll('button')].every((b) => !b.textContent!.trim()); }).length,
+            emptySlots: cards.filter((c) => { const e = c.querySelector('[data-asks-card-error]'); return e && !e.textContent!.trim(); }).length,
+            questionBadges: document.querySelectorAll('#attention-items [data-asks-badge="question"]').length,
+          };
+        });
+        console.log(`asks density at 390×844: ${JSON.stringify(m)}`);
+        expect(m.cards, 'the fixture\u2019s cards are on the feed').toBeGreaterThanOrEqual(5);
+        expect(m.loneX, 'a footer holding only ✕').toBe(0);
+        expect(m.emptySlots, 'an empty error slot').toBe(0);
+        expect(m.questionBadges, 'a "Question" badge').toBe(0);
+        expect(m.sum, `cards above the fold at 390×844: ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(2.5);
+      });
+    }
+
     test('every answerable card carries the dictation mic', async ({ page }) => {
       await openFeed(page);
       // The fixture agent's question cards (another spec's may be open too).
@@ -470,7 +511,9 @@ for (const vp of [
     test('reduced motion turns the card transitions off', async ({ page }) => {
       const durations = () =>
         page.evaluate(() => {
-          const card = document.querySelector('[data-asks-card]')!, more = card.querySelector('.asks-more')!;
+          // A card with a more region (an Answered card always has one; an
+          // Open card only when there is something to show expanded).
+          const more = document.querySelector('[data-asks-card] .asks-more')!, card = more.closest('[data-asks-card]')!;
           return [getComputedStyle(card).transitionDuration, getComputedStyle(more).transitionDuration];
         });
       // Positive control: with motion allowed the card and its more region move.

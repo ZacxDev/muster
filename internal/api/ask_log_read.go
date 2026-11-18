@@ -312,8 +312,10 @@ func askLogLazyHTML(q url.Values) string {
 // The labels the tab draws.
 var (
 	askKindLabels = map[string]string{
-		asklog.KindPlainText: "Question", asklog.KindAskUserQuestion: "Picker", asklog.KindAttention: "Attention ask",
-		asklog.KindOpenCodeQuestion: "opencode question", asklog.KindOpenCodePermission: "opencode permission",
+		// Plain words (the design review: "Picker" and "Attention ask" were
+		// muster's own names for its kinds, not the reader's).
+		asklog.KindPlainText: "Question in chat", asklog.KindAskUserQuestion: "Question with choices", asklog.KindAttention: "Agent's question",
+		asklog.KindOpenCodeQuestion: "opencode question", asklog.KindOpenCodePermission: "opencode permission request",
 	}
 	askOutcomeLabels = map[string]string{
 		asklog.OutcomeOpen: "Open", asklog.OutcomeAnswered: "Answered", asklog.OutcomeAnsweredInSession: "Answered in session",
@@ -416,7 +418,7 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 		b.WriteString(askLogCardHTML(a, now, s.askLogTextTTL()))
 	}
 	if len(rows) == 0 {
-		b.WriteString(`<li class="px-1 text-sm text-fg2" data-asklog-empty="page">No older asks.</li>`)
+		b.WriteString(ui.AsksEmptyHTML(` data-asks-empty="log-page" data-asklog-empty="page"`, "", "", "No older asks.", ""))
 	}
 	b.WriteString(`</ul>`)
 	var pager []string
@@ -477,22 +479,28 @@ func askLogFormHTML(q url.Values) string {
 		return `<label class="` + ui.AsksLogFieldClass + `">` + esc(label) + `<input type="text" name="` + name + `" value="` + esc(strings.TrimSpace(q.Get(name))) +
 			`" placeholder="` + esc(ph) + `" autocomplete="off" autocapitalize="off" spellcheck="false" class="` + ui.AsksLogInputClass + `" data-asklog-filter="` + name + `"></label>`
 	}
-	more := ""
-	for _, k := range []string{"runtime", "host", "repo", "session"} {
+	// 🔴 EVERY FILTER IS BEHIND ONE "Filters" TOGGLE, SHUT (the design review:
+	// eight fields filled the tab's first screen). The toggle says how many
+	// are set, so a filtered log never reads as the whole log.
+	set := 0
+	for _, k := range askLogFilterParams {
 		if strings.TrimSpace(q.Get(k)) != "" {
-			more = " open"
+			set++
 		}
 	}
-	return `<form method="get" action="` + attentionPath + `" class="flex flex-col gap-2" data-asklog-form aria-label="Filter the ask log">
+	label := "Filters"
+	if set > 0 {
+		label += " (" + strconv.Itoa(set) + ")"
+	}
+	return `<details class="` + ui.AsksDetailsClass + `" data-asklog-filters><summary class="` + ui.AsksSecondaryButtonClass + ` cursor-pointer list-none [&::-webkit-details-marker]:hidden" data-asklog-filters-toggle>` + esc(label) + `</summary>
+<form method="get" action="` + attentionPath + `" class="flex flex-col gap-2 pt-2" data-asklog-form aria-label="Filter the ask log">
 <input type="hidden" name="` + asksTabParam + `" value="` + asksTabLog + `">
 <div class="` + ui.AsksLogFormClass + `">` + sel("kind", "Kind", kinds) + sel("outcome", "Outcome", outcomes) + sel("answered_by", "Answered by", bys) +
-		sel("since", "When", since) + `</div>
-<details class="` + ui.AsksDetailsClass + `"` + more + `><summary class="` + ui.AsksDetailsSummaryClass + `">More filters</summary>
-<div class="` + ui.AsksLogFormClass + ` pt-1">` + sel("runtime", "Runtime", runtimes) + text("host", "Host", "any") + text("repo", "Repository", "owner/name") +
-		text("session", "Session", "tmux or session id") + `</div></details>
+		sel("since", "When", since) + sel("runtime", "Runtime", runtimes) + text("host", "Host", "any") + text("repo", "Repository", "owner/name") +
+		text("session", "Session", "tmux or session id") + `</div>
 <div class="` + ui.AsksActionsClass + `"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `">Apply</button>` +
 		`<a class="` + ui.AsksSecondaryButtonClass + `" href="` + esc(askLogHref(url.Values{})) + `">Clear</a></div>
-</form>`
+</form></details>`
 }
 
 // labelOrSince is the picker's label for a since value it offers, "" for one
@@ -545,7 +553,7 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	b.WriteString(ui.AsksGroupLabel("asklog-top", "Asked most often", len(sum.Top)) + `
 <ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asklog-top" data-testid="asklog-top">`)
 	if len(sum.Top) == 0 {
-		b.WriteString(`<li class="px-1 text-sm text-fg2" data-asklog-top-empty>No question asked twice in the last ` + esc(askDuration(ttl)) + ` (question text is kept that long).</li>`)
+		b.WriteString(ui.AsksEmptyHTML(` data-asks-empty="log-top" data-asklog-top-empty`, "", "", `No question asked twice in the last `+esc(askDuration(ttl))+` (question text is kept that long).`, ""))
 	}
 	for _, t := range sum.Top {
 		facts := []string{strconv.Itoa(t.Count) + " times", "you answered " + strconv.Itoa(t.ByOwner)}
@@ -555,7 +563,7 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 		if t.MedianAnswer > 0 {
 			facts = append(facts, "median "+askDuration(t.MedianAnswer))
 		}
-		b.WriteString(`<li class="` + ui.AsksCardClass + `" data-asklog-top-row data-count="` + strconv.Itoa(t.Count) + `"><p class="` + ui.AsksTextClass + `" data-asklog-norm>` +
+		b.WriteString(`<li class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asklog-top-row data-count="` + strconv.Itoa(t.Count) + `"><p class="` + ui.AsksTextClass + `" data-asklog-norm>` +
 			esc(t.Norm) + `</p><p class="` + ui.AsksLogFactsClass + `" data-asklog-top-facts>` + esc(strings.Join(facts, " · ")) + `</p></li>`)
 	}
 	b.WriteString(`</ul>`)
@@ -587,7 +595,7 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	row := askLogRowOf(a)
 	id := strconv.FormatInt(a.ID, 10)
 	var b strings.Builder
-	b.WriteString(`<li id="asklog-` + id + `" class="` + ui.AsksCardClass + `" data-asklog-row data-ask-id="` + id + `" data-kind="` + esc(row.Kind) +
+	b.WriteString(`<li id="asklog-` + id + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asklog-row data-ask-id="` + id + `" data-kind="` + esc(row.Kind) +
 		`" data-outcome="` + esc(row.Outcome) + `" data-answered-by="` + esc(row.AnsweredBy) + `"`)
 	if row.TextExpired {
 		b.WriteString(` data-text-expired`)

@@ -10,6 +10,7 @@ import (
 
 	g "maragu.dev/gomponents"
 
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -166,7 +167,7 @@ func splitDraftCards(cards []plugins.DraftCard, now time.Time) (pending, archive
 // draftListHTML is one view's <li>s, or its empty line.
 func draftListHTML(cards []plugins.DraftCard, empty string) string {
 	if len(cards) == 0 {
-		return `<li class="text-sm text-fg2" data-drafts-empty>` + empty + `</li>`
+		return ui.AsksEmptyHTML(` data-asks-empty="drafts-list" data-drafts-empty`, "", "", empty, "")
 	}
 	// A pending follow or like is an entry of its outreach batch's ONE card,
 	// drawn where the batch's first entry falls (outreach_batch.go).
@@ -210,6 +211,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		return nil, nil, false
 	}
 	now := time.Now()
+	s.withDraftAgentNames(ctx, cards)
 	pending, archived = splitDraftCards(cards, now)
 	pending = s.withBatches(ctx, pending)
 	if focus <= 0 {
@@ -231,6 +233,30 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 		return append([]plugins.DraftCard{c}, pending...), archived, true
 	}
 	return pending, append([]plugins.DraftCard{c}, archived...), true
+}
+
+// withDraftAgentNames sets each card's AgentDisplay: the drafting agent's
+// session name by the one naming rule (subjectName over one focus index read,
+// what the sidebar names that agent), once per agent. A card whose agent is
+// gone, or a read that fails, keeps drawing its stored AgentName.
+func (s *Server) withDraftAgentNames(ctx context.Context, cards []plugins.DraftCard) {
+	if s.ext.Agents == nil || len(cards) == 0 {
+		return
+	}
+	fi := s.focusIndex(ctx)
+	names := map[int64]string{}
+	for i := range cards {
+		a := cards[i].Draft.AgentID
+		if a == nil || *a <= 0 {
+			continue
+		}
+		n, ok := names[*a]
+		if !ok {
+			n = s.subjectName(ctx, fi, focus.AgentSubject(*a))
+			names[*a] = n
+		}
+		cards[i].AgentDisplay = n
+	}
 }
 
 // draftIDs is cards' ids, comma-joined in order: the Awaiting decision list's
@@ -293,7 +319,7 @@ func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, ar
 	case (tab == asksTabDrafts || tab == asksTabArchived) && drafts:
 		top = asksTabDrafts
 	}
-	panel := func(inner string) g.Node { return g.Raw(`<div class="flex flex-col gap-2 pt-3">` + inner + `</div>`) }
+	panel := func(inner string) g.Node { return g.Raw(`<div class="flex flex-col gap-2 pt-2">` + inner + `</div>`) }
 	tabs := []ui.Tab{
 		{ID: asksTabOpen, Label: "Open", Panel: panel(askList)},
 		{ID: asksTabAnswered, Label: "Answered", Panel: panel(answered)},
