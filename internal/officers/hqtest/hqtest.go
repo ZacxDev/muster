@@ -178,6 +178,9 @@ type Server struct {
 	// ChatPageSize bounds a chat messages page (0: every message); a page
 	// that leaves messages out says more: true (chats.go).
 	ChatPageSize int
+	// replyRefusal and charterVersions: RefuseReplies, SetCharterVersion.
+	replyRefusal    *chatRefusal
+	charterVersions map[string]int
 
 	mu       sync.Mutex
 	tokens   map[string]string // token -> officer id
@@ -1436,7 +1439,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 2 && parts[1] == "brief" && r.Method == http.MethodGet:
 		s.write(w, http.StatusOK, map[string]any{
 			"officer":    map[string]any{"id": officer},
-			"type":       map[string]any{"key": strings.SplitN(officer, ":", 2)[0], "charter": s.Charters[officer], "charter_version": 1},
+			"type":       map[string]any{"key": strings.SplitN(officer, ":", 2)[0], "charter": s.Charters[officer], "charter_version": s.charterVersion(officer)},
 			"open_items": s.list(officer, "open", now), "recent_items": []any{}, "cairn": map[string]any{"scopes": []any{}},
 			"generated_at": now,
 		})
@@ -2240,4 +2243,13 @@ func DecodeMergeAsk(raw []byte) (MergeAskRequest, error) {
 		return MergeAskRequest{}, errors.New("more than one JSON value")
 	}
 	return r, nil
+}
+
+// charterVersion is the charter_version officer's brief answers: 1 unless
+// SetCharterVersion said otherwise. Called with s.mu held.
+func (s *Server) charterVersion(officer string) int {
+	if v, ok := s.charterVersions[officer]; ok {
+		return v
+	}
+	return 1
 }

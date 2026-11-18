@@ -246,6 +246,14 @@ func (c *Client) ChatReply(ctx context.Context, chat, text string, inReplyTo int
 
 // --- the turn ---------------------------------------------------------------
 
+// MaxChatReplyBytes is the HQ server's cap on an officer reply; muster cuts a
+// longer one to it, ending with ChatReplyCutMarker, rather than have it
+// refused.
+const MaxChatReplyBytes = 64 << 10
+
+// ChatReplyCutMarker ends a reply cut to MaxChatReplyBytes.
+const ChatReplyCutMarker = "\n\n[reply cut by muster at 64 KiB]"
+
 // ChatNoTextReply is the reply posted for a lane turn that ended with no text.
 // Any other reply is posted as the lane wrote it: the HQ server caps it.
 const ChatNoTextReply = "(The officer's turn ended without a text reply.)"
@@ -298,7 +306,17 @@ type ChatMarks struct {
 	// Answered is the seq of the lane's last reply HQ took; Seen > Answered
 	// is a turn whose reply never reached HQ.
 	Answered int64
+	// Charter is the officer's charter version as the lane last loaded it
+	// ("" before its first turn): a different one on HQ's brief adds the
+	// reload line to the lane's next turn.
+	Charter string
 }
+
+// ErrChatLaneBroken is a chat turn refused before anything was typed for a
+// reason that will not pass by itself (the runtime could not be resolved,
+// refused muster's credential or the request, or was never reached): a
+// failure, retried only after a backoff.
+var ErrChatLaneBroken = errors.New("officers: the chat's lane cannot take a turn")
 
 // ErrChatLaneUnavailable is a chat turn the lane refused before anything was
 // typed (ccd's 409 busy, 503 not_ready or capacity): not a failure — the item
@@ -318,6 +336,9 @@ type ChatLanes interface {
 	Open(ctx context.Context, o Officer, n int, chatID string) (ChatMarks, error)
 	// Mark persists the marks of chatID's lane on instance n.
 	Mark(ctx context.Context, o Officer, n int, chatID string, m ChatMarks) error
+	// Supports reports whether instance n's runtime names a chat session's
+	// MCP calls (its ccd advertises it): a chat runs on no other.
+	Supports(ctx context.Context, o Officer, n int) (bool, error)
 	// Turn sends text as one user turn to chatID's lane on instance n and
 	// answers the lane's final assistant text. ErrChatLaneUnavailable (wrapped)
 	// when the lane refused it before anything was typed.
@@ -366,6 +387,8 @@ type ChatRunnerConfig struct {
 	// HeartbeatEvery and ReplyRetries replace the defaults (tests).
 	HeartbeatEvery time.Duration
 	ReplyRetries   []time.Duration
+	// Now is the clock a chat's backoff is read on; nil is time.Now.
+	Now func() time.Time
 }
 
 // NewChatRunner returns a runner over cfg.
@@ -447,13 +470,13 @@ func PendingChats(obs Observation, now time.Time) []Item {
 // with no home yet while no instance of o is up — instance 1. Nothing for a
 // pool that runs no chats. A home that cannot be read is logged and wants
 // nothing this pass (the chat waits; nothing is started on a guess).
-func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now time.Time) []int {
+func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now time.Time) ([]int, map[ItemID]bool) {
 	if _, _, ok := r.serves(o); !ok {
-		return nil
+		return nil, nil
 	}
 	pending := PendingChats(obs, now)
 	if len(pending) == 0 {
-		return nil
+		return nil, nil
 	}
 	anyUp := false
 	for _, in := range obs.Instances {
@@ -479,7 +502,7 @@ func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now t
 		out = append(out, n)
 	}
 	sort.Ints(out)
-	return out
+	return out, nil
 }
 
 func chatRunKey(o Officer, chat string) string { return o.Key() + "\x00" + chat }
@@ -585,9 +608,15 @@ const (
 	// ChatReplyDropped: HQ refused the reply for good (409 chat_closed or
 	// stale_turn): the turn is dropped, never retried.
 	ChatReplyDropped ChatOutcome = "reply_dropped"
-	ChatNothingNew   ChatOutcome = "nothing_new"
-	ChatReadFailed   ChatOutcome = "read_failed"
-	ChatNotServed    ChatOutcome = "not_served"
+	// ChatLaneBroken: the lane refused the turn for a reason that does not
+	// pass (ErrChatLaneBroken): released, and the chat backs off.
+	ChatLaneBroken ChatOutcome = "lane_broken"
+	// ChatUnsupported: the instance's runtime does not say it names a chat
+	// session's MCP calls (ChatLanes.Supports): nothing claimed.
+	ChatUnsupported ChatOutcome = "unsupported"
+	ChatNothingNew  ChatOutcome = "nothing_new"
+	ChatReadFailed  ChatOutcome = "read_failed"
+	ChatNotServed   ChatOutcome = "not_served"
 )
 
 // Run is one chat turn of item it on instance n of pool o, start to end

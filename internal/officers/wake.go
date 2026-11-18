@@ -288,6 +288,10 @@ type Observation struct {
 	// (ChatRunner.Want): each chat's home instance, or instance 1 for a chat
 	// with no home while nothing is up. Empty for a pool that runs no chats.
 	ChatWant []int
+	// ChatHeldBack is the pending chats the pool cannot serve now
+	// (ChatRunner.Want): not counted in ChatPending, so a chat that cannot
+	// run never keeps the pool up.
+	ChatHeldBack map[ItemID]bool
 }
 
 // Overrun is a live claim past its pool's wall-time cap (Officer.ItemCap).
@@ -1278,7 +1282,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used,
 			OverBudget: over, BudgetRead: read, Spent: spent, SpendUnreadable: unreadable}
 		out[i].Chats = r.chats.On(p)
-		out[i].ChatWant = r.chats.Want(ctx, p, out[i], r.now())
+		out[i].ChatWant, out[i].ChatHeldBack = r.chats.Want(ctx, p, out[i], r.now())
 	}
 	return out, nil
 }

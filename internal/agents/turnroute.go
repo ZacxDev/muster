@@ -62,6 +62,13 @@ const (
 	// ccd that predates it ignores it, and the lane's calls then read as the
 	// primary's (no session).
 	HeaderCCMCPSession = "X-Muster-CC-MCP-Session"
+	// HeaderCCLaneSecret is a chat lane's secret, minted by muster and kept
+	// with its session row: muster sends it to ccd on the lane's turns
+	// (beside HeaderCCMCPSession), ccd puts it in the lane's MCP config, and
+	// the lane's MCP calls carry it back — so a call naming a chat session
+	// (HeaderCCSession) is that lane's only with it. Fixed for the lane's
+	// life.
+	HeaderCCLaneSecret = "X-Muster-CC-Lane-Secret"
 	// HeaderCCPinned, "1", marks an explicit session (HeaderCCSession) as the
 	// chief's PRIMARY chat (internal/api withRoute, chief_chats.go): ccd never
 	// stops its CLI to make room for another session, and does not count it

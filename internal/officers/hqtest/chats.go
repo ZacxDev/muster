@@ -124,7 +124,16 @@ func (s *Server) chatRoute(w http.ResponseWriter, officer, chat, verb, method, a
 				return
 			}
 		}
+		if rf := s.replyRefusal; rf != nil && rf.n > 0 {
+			rf.n--
+			s.write(w, rf.status, map[string]any{"error": "refused by the fake", "code": rf.code})
+			return
+		}
 		text, _ := body["text"].(string)
+		if len(text) > 64<<10 {
+			s.write(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "an officer reply is at most 64 KiB", "code": "too_large"})
+			return
+		}
 		f, _ := body["in_reply_to"].(float64)
 		inReplyTo := int64(f)
 		if text == "" || inReplyTo < 1 || strings.ContainsRune(text, 0) {
@@ -168,4 +177,29 @@ func (s *Server) chatRoute(w http.ResponseWriter, officer, chat, verb, method, a
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route"})
 	}
+}
+
+// RefuseReplies makes the next n reply posts answer status with code, as a
+// refusing HQ would (nothing written).
+func (s *Server) RefuseReplies(status int, code string, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replyRefusal = &chatRefusal{status: status, code: code, n: n}
+}
+
+type chatRefusal struct {
+	status int
+	code   string
+	n      int
+}
+
+// SetCharterVersion sets the charter_version officer's brief answers (1 by
+// default).
+func (s *Server) SetCharterVersion(officer string, v int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.charterVersions == nil {
+		s.charterVersions = map[string]int{}
+	}
+	s.charterVersions[officer] = v
 }

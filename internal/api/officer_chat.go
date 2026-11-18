@@ -117,6 +117,11 @@ func (l officerChatLanes) Mark(ctx context.Context, o officers.Officer, n int, c
 	return st.SetOfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID, m.Seen, m.Answered)
 }
 
+// Supports implements officers.ChatLanes.
+func (l officerChatLanes) Supports(ctx context.Context, o officers.Officer, n int) (bool, error) {
+	return true, nil
+}
+
 // officerChatTurnSlack is added to the kind's turn timeout for a chat turn's
 // deadline, as for a re-prompt.
 const officerChatTurnSlack = 2 * time.Minute

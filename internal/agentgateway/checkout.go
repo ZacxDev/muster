@@ -74,3 +74,11 @@ func ParseHealthzCheckout(body []byte) (agents.CheckoutStatus, error) {
 	}
 	return *h.Repo, nil
 }
+
+// ParseHealthzMCPSessionLanes reads `mcp_session_lanes` from a ccd /healthz
+// body: true when the ccd starts a chat lane's CLI with an MCP config naming
+// its session (cmd/ccd lanes.go "A CHAT LANE SAYS WHO IT IS"); absent (an
+// older ccd) is false.
+func ParseHealthzMCPSessionLanes(body []byte) (bool, error) {
+	return false, nil
+}

@@ -26,12 +26,22 @@ import (
 // the X-Muster-CC-Session the request carries. It answers the tool's text.
 func laneMCPCall(t *testing.T, r *officerRig, a agents.Agent, session, tool, args string) string {
 	t.Helper()
+	return laneMCPCallWith(t, r, a, session, laneSecretOf(r, a, session), tool, args)
+}
+
+// laneMCPCallWith is laneMCPCall with secret as the call's
+// X-Muster-CC-Lane-Secret ("" sends none).
+func laneMCPCallWith(t *testing.T, r *officerRig, a agents.Agent, session, secret, tool, args string) string {
+	t.Helper()
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, tool, args)
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if session != "" {
 		req.Header.Set(agents.HeaderCCSession, session)
+	}
+	if secret != "" {
+		req.Header.Set(agents.HeaderCCLaneSecret, secret)
 	}
 	req = req.WithContext(context.WithValue(req.Context(), agentCtxKey{}, a))
 	w := httptest.NewRecorder()
@@ -61,6 +71,7 @@ func laneRig(t *testing.T) (*officerRig, agents.Agent, string) {
 	chat := r.hq.AddTieredItem(offK, officers.ItemKindChat, "chat:c-41", officers.TierJudgement)
 	r.hq.SetPayload(chat, `{"chat_id":"c-41","seq":1}`)
 	r.hq.SetClaim(chat, officers.ChatHolder(judge.Name), time.Now().Add(10*time.Minute))
+	setLaneSecret(r, judge, officers.ChatSessionKey("c-41"), "fixture-lane-secret-c41-7d2e")
 	return r, judge, chat
 }
 

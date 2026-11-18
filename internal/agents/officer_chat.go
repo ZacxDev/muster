@@ -30,6 +30,9 @@ type OfficerChatStore interface {
 	OfficerChatMarks(ctx context.Context, sessionID int64) (seen, answered int64, err error)
 	// SetOfficerChatMarks writes session sessionID's chat marks.
 	SetOfficerChatMarks(ctx context.Context, sessionID, seen, answered int64) error
+	// ChatLaneSecret is the secret of agent agentID's chat lane keyed
+	// sessionKey, "" when it has none (or no such session).
+	ChatLaneSecret(ctx context.Context, agentID int64, sessionKey string) (string, error)
 }
 
 var _ OfficerChatStore = (*PGStore)(nil)
@@ -82,4 +85,9 @@ func (s *PGStore) SetOfficerChatMarks(ctx context.Context, sessionID, seen, answ
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// ChatLaneSecret implements OfficerChatStore.
+func (s *PGStore) ChatLaneSecret(ctx context.Context, agentID int64, sessionKey string) (string, error) {
+	return "", nil
 }

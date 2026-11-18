@@ -28,6 +28,9 @@ type fakeLanes struct {
 	block chan struct{}
 	// started is signalled once per turn as it starts (buffered by the test).
 	started chan string
+	// unsupported is the instances whose runtime does not name a chat
+	// session's calls (Supports).
+	unsupported map[int]bool
 }
 
 type fakeTurn struct {

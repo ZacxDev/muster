@@ -45,6 +45,7 @@ func TestAChatLaneStartsWithAnMCPConfigNamingItsSession(t *testing.T) {
 		req.Header.Set(headerCCSession, key)
 		if tag != "" {
 			req.Header.Set("X-Muster-CC-MCP-Session", tag)
+			req.Header.Set("X-Muster-CC-Lane-Secret", "fixture-lane-secret-0a1b2c3d4e5f60718293a4b5c6d7e8f9")
 		}
 		w := httptest.NewRecorder()
 		r.s.gatewayHandler().ServeHTTP(w, req)

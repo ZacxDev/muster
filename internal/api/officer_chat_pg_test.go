@@ -25,6 +25,16 @@ type laneChat struct {
 	turns []laneTurn
 	// reply answers each turn (nil: "lane reply").
 	reply func() (string, error)
+	// noMCPSession plays a ccd that does not advertise naming a chat
+	// session's calls (MCPSessionLanes false).
+	noMCPSession bool
+}
+
+// MCPSessionLanes is the gateway's read of a ccd's mcp_session_lanes.
+func (g *laneChat) MCPSessionLanes(context.Context, agents.Agent) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return !g.noMCPSession, nil
 }
 
 type laneTurn struct {
@@ -35,6 +45,8 @@ type laneTurn struct {
 	// mcpSession is the route's X-Muster-CC-MCP-Session: "1" asks ccd to
 	// start the lane with an MCP config naming its session.
 	mcpSession string
+	// laneSecret is the route's X-Muster-CC-Lane-Secret.
+	laneSecret string
 }
 
 func (g *laneChat) Chat(ctx context.Context, a agents.Agent, sessionKey, message string, _ func(string)) (string, error) {
@@ -44,6 +56,7 @@ func (g *laneChat) Chat(ctx context.Context, a agents.Agent, sessionKey, message
 		t.ephemeral, t.toolless = rt.Header.Get(agents.HeaderCCEphemeral), rt.Header.Get(agents.HeaderCCToolless)
 		t.newConversation = rt.Header.Get(agents.HeaderCCNewConversation)
 		t.mcpSession = rt.Header.Get("X-Muster-CC-MCP-Session")
+		t.laneSecret = rt.Header.Get("X-Muster-CC-Lane-Secret")
 	}
 	g.mu.Lock()
 	g.turns = append(g.turns, t)
@@ -156,6 +169,12 @@ func TestAChatTurnIsALaneTurnAndNeverAFreshConversation(t *testing.T) {
 	if tr.mcpSession != "1" {
 		t.Fatalf("the chat lane's route carried X-Muster-CC-MCP-Session %q; want 1, so its MCP calls name its session", tr.mcpSession)
 	}
+	if len(tr.laneSecret) < 32 {
+		t.Fatalf("the chat lane's route carried lane secret %q; want one minted for the lane (at least 32 characters)", tr.laneSecret)
+	}
+	if got, err := c.pg.ChatLaneSecret(c.ctx, c.row.ID, "officer-chat:c-41"); err != nil || got != tr.laneSecret {
+		t.Fatalf("the secret kept with the lane's session is %q (%v); want the one sent to ccd", got, err)
+	}
 	if !strings.Contains(tr.text, "Member One (@member1) wrote:\nIs the API healthy?") {
 		t.Fatalf("the lane's turn: %q", tr.text)
 	}
@@ -241,5 +260,24 @@ func TestThePrimaryNeverClaimsAChatItem(t *testing.T) {
 	out, _ = c.s.dispatchOfficerTool(c.ctx, a, officers.ToolClaim, `{"item_id":"`+q+`"}`)
 	if it := c.hq.Item(q); it.Status != "claimed" || it.ClaimedBy != c.row.Name {
 		t.Fatalf("control: a queue item claimed by id is %s by %q (%s); want claimed by %s", it.Status, it.ClaimedBy, out, c.row.Name)
+	}
+}
+
+// TestAChatNeverRunsOnACcdThatCannotNameItsSession (Y4b, the seam): the
+// instance's ccd does not advertise mcp_session_lanes — the chat's item is
+// never claimed and no turn is sent; once it does, the chat runs.
+func TestAChatNeverRunsOnACcdThatCannotNameItsSession(t *testing.T) {
+	c := newChatPG(t)
+	c.chat.mu.Lock()
+	c.chat.noMCPSession = true
+	c.chat.mu.Unlock()
+	c.hq.AddChat(offB, "c-41", "triage")
+	_, id := c.hq.MemberSays("c-41", "member1", "Member One", "Is the API healthy?")
+	c.pass(t)
+	if it := c.hq.Item(id); it.Status != "open" || it.ClaimedBy != "" {
+		t.Fatalf("on a ccd without mcp_session_lanes the item is %s by %q; want never claimed", it.Status, it.ClaimedBy)
+	}
+	if n := len(c.chat.sent()); n != 0 {
+		t.Fatalf("%d turns sent to a ccd that cannot name a chat session", n)
 	}
 }

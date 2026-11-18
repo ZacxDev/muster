@@ -29,6 +29,11 @@ func TestMigration0149KeepsAChatLanesMarks(t *testing.T) {
 	if s, a, err := read(); err != nil || s != 0 || a != 0 {
 		t.Fatalf("an existing session after 0149: seen %d, answered %d, %v; want 0, 0", s, a, err)
 	}
+	// The lane's charter mark and its secret (round 1): '' until written.
+	var charter, secret string
+	if err := pool.QueryRow(ctx, `SELECT officer_chat_charter, officer_chat_secret FROM chat_sessions WHERE id = $1`, sess).Scan(&charter, &secret); err != nil || charter != "" || secret != "" {
+		t.Fatalf("an existing session's charter mark and lane secret after 0149: %q, %q, %v; want '' and ''", charter, secret, err)
+	}
 	set := func(seen, answered int64) error {
 		_, err := pool.Exec(ctx, `UPDATE chat_sessions SET officer_chat_seen = $2, officer_chat_answered = $3 WHERE id = $1`, sess, seen, answered)
 		return err
