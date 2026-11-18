@@ -88,6 +88,7 @@ var notOfficerRouted = map[string]string{
 	"task_routing.go Server.askOwnerAboutTask -> askFiled":                "not officer-reachable: the chief's task_route_attention",
 	"team_dispatch.go Server.pushTeamDispatch -> pushTask":                "not officer-reachable: the chief's team dispatch",
 	"unrouted.go Server.raiseUnroutedAsk -> askFiled":                     "not officer-reachable: muster's own ask about a plugin message nothing routed",
+	"plugin_autostart.go Server.autostartStarted -> attentionNotify":      "not officer-reachable: muster's own stop ask for an agent it auto-started on a plugin's task (the owner's per-plugin opt-in); the plugin door files the task, never an officer",
 	"plugin_pairing.go Server.pairRequested -> goNotify":                  "not officer-reachable: an unauthenticated plugin process asks to pair",
 	"pages.go Server.pageResponded -> pushTask":                           "not an officer's push: an outside viewer responded through a page's link",
 	"push_task.go Server.flushCreatedTasks -> pushTask":                   "not officer-reachable: the machine routes' task creation (the CLI, the hook token)",
