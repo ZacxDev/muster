@@ -31,7 +31,7 @@ var nonceInText = regexp.MustCompile(`nonce=[0-9a-f]{16}`)
 // one synthetic fixture.
 func routedAgentSide(t *testing.T) string {
 	t.Helper()
-	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	at := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
 	r := plugins.Route{RouteID: "rt_0a1b2c3d4e5f60718293a4b5", TimeoutAt: at, MessageID: 42, TargetKind: "mirror", TargetKey: "cs-fixture-1",
 		ReplyBody: "Done: each retry is logged now.\nSee the second line."}
 	req := r

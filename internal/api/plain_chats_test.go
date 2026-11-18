@@ -154,7 +154,7 @@ func TestTheChatScanSeesPlumbing(t *testing.T) {
 
 // chatFixtureRoute is the synthetic route every chat below names.
 func chatFixtureRoute() (req, msg plugins.Route, p plugins.Plugin, m plugins.Message, n notes.Note, owner agents.ChatMessage) {
-	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	at := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
 	chief := int64(77)
 	msg = plugins.Route{RouteID: "rt_8f51ffceb101b6c0faaf3b9b", TimeoutAt: at, MessageID: 42, AgentID: &chief, TargetKind: "mirror",
 		TargetKey: "cs-heron-1", ReplyBody: "Done: each retry is logged now."}
