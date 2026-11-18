@@ -296,7 +296,7 @@ func TestNeedsYouAnswersTheOfficersAsk(t *testing.T) {
 // a second choice on either is refused.
 func TestARefusalIsRefiledAtItsTimeOrDropped(t *testing.T) {
 	w := newOutboundWorld(t, true)
-	const why = "cadence: 1 days since 2026-11-17 -> next on 2026-11-18"
+	const why = "cadence: 1 days since 2000-01-01 -> next on 2000-01-02"
 	_, r1 := w.refusedDraft("First cadence post.", why)
 	_, r2 := w.refusedDraft("Second cadence post.", why)
 	nd := needsYou(w.officerPage())
@@ -350,7 +350,7 @@ func TestARefusalIsRefiledAtItsTimeOrDropped(t *testing.T) {
 // and the note; the closed one records it.
 func TestARefusalTheOfficerClosedIsRefiledAsNewWork(t *testing.T) {
 	w := newOutboundWorld(t, true)
-	draft, r := w.refusedDraft("A cadence post.", "cadence: next on 2026-11-18")
+	draft, r := w.refusedDraft("A cadence post.", "cadence: next on 2000-01-02")
 	sr := strconv.FormatInt(r, 10)
 	if out := w.call(officers.ToolClaim, `{"item_id":"`+sr+`"}`); isToolErr(out) {
 		t.Fatalf("claim: %s", out)
