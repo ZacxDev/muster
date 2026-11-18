@@ -251,9 +251,9 @@ for (const vp of [
       await page.waitForURL((u) => u.pathname === '/mirror/view');
       expect(new URL(page.url()).searchParams.get('window'), 'opened by the window id').toBe('@9');
       await expect(page.locator('header h1')).toContainText('Gold · window 11');
-      // The raw tmux name is the title's tooltip and in its full-title popover,
-      // no longer drawn beside it (the header's room is the session's tags).
-      await expect(page.locator('header h1 [data-mirror-name]')).toHaveAttribute('title', 'tmux session scratch2');
+      // The raw tmux name is not drawn beside it (the header's room is the
+      // session's tags), nor is it a tooltip (the header's ⓘ holds it).
+      await expect(page.locator('header h1 [data-mirror-name]')).not.toHaveAttribute('title', /tmux session/);
       await expect(page.locator('header [data-mirror-session]')).toHaveCount(0);
       // The full-title popover is the header line in words (no tmux session);
       // the window's exact target is the header's ⓘ.
