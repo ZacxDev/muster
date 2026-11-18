@@ -478,6 +478,12 @@ export const askMediaS3Port = port + 432;
 // the blocks above, and of askMediaPort's +430 to +432.
 export const sidebarOfficersPort = port + 440;
 export const sidebarOfficersConnectPort = port + 441;
+// tests/plugin-autostart.spec.ts: a plugin's auto-start on its /plugins card —
+// its own e2eterm server over the noop driver, its connect listener, and the
+// fake GitHub App it plays (+450 to +452: clear of the blocks above).
+export const pluginAutostartPort = port + 450;
+export const pluginAutostartConnectPort = port + 451;
+export const pluginAutostartFakePort = port + 452;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

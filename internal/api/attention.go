@@ -2203,6 +2203,11 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	if err != nil {
 		return a, err
 	}
+	// An auto-start's Stop ask (plugin_autostart.go): the agent is stopped
+	// before the answer is recorded; a stop that failed leaves the ask open.
+	if err := s.autostartStopForAnswer(ctx, id, answer); err != nil {
+		return a, err
+	}
 	// A chief proposal's card (chief_proposal.go): the owner's tap DOES what
 	// was proposed here, before the answer is recorded; an accept refused
 	// before it did anything leaves the card open, with its sentence.
