@@ -208,7 +208,7 @@ var apiExempt = map[string]exemption{
 	"pages.go Server.renderPageDetail p.Title":                 {2, "passed RAW to pageShareControls and ui.PageCopyButton, whose ui.PageShareButton / ui.PageShareMenu / ui.PageCopyButton plain it once (pageCardTitle)"},
 	"pages.go pageResponseHTML l.Label":                        {1, "a response's field label: the page's own form field's label (else its name) or muster's fixed words (Answer, Chose, Decision), from pages.DescribeAnswer; not a title"},
 	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
-	"features.go featureRow f.Description":                     {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
+	"features.go featureSheet f.Description":                   {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
 	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
 	"team_connectors.go Server.renderTeamConnectors sg.Source": {1, "a standing grant's credential source, compared with connectors.SourceApp to pick the App's rows; never drawn"},
 	"officer_ask_context.go officerContextHTML c.Source":       {1, "an officer ask's source MESSAGE (attention.ItemContext.Source, a struct), not a title: its fields are sanitised by attention.Clean and escaped where drawn"},

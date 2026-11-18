@@ -478,6 +478,12 @@ export const askMediaS3Port = port + 432;
 // the blocks above, and of askMediaPort's +430 to +432.
 export const sidebarOfficersPort = port + 440;
 export const sidebarOfficersConnectPort = port + 441;
+// tests/features-member.spec.ts: a member's Features page, on a gotrue-mode
+// server of its own (+442 its machine port, +443 its browser listener) and
+// its own GoTrue (+444).
+export const featuresMemberMainPort = port + 442;
+export const featuresMemberBrowserPort = port + 443;
+export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_MEMBER_GOTRUE_PORT ?? port + 444);
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

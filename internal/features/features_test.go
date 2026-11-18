@@ -108,3 +108,25 @@ func TestTheHintAndTheDisabledMessageArePinned(t *testing.T) {
 		t.Errorf("NotOn = %d, want 3", len(off))
 	}
 }
+
+// TestOnlyAnOffFeatureIsReplaced: Evaluate carries Replaced onto an OFF
+// feature and refuses it on one that is on or misconfigured (a replaced
+// feature that runs would be a contradiction the page would print).
+func TestOnlyAnOffFeatureIsReplaced(t *testing.T) {
+	st := func(s State) map[string]Status {
+		return map[string]Status{Dictation: {State: s, Reason: "r", Replaced: "Not used: something else does it."},
+			Plugins: {State: On}, AgentAskTool: {State: On}}
+	}
+	set, err := Evaluate(testCatalog(), st(Off))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := set.Get(Dictation); f.Replaced != "Not used: something else does it." {
+		t.Fatalf("off and replaced: Replaced %q", f.Replaced)
+	}
+	for _, s := range []State{On, Misconfigured} {
+		if _, err := Evaluate(testCatalog(), st(s)); err == nil || !strings.Contains(err.Error(), "only an off feature is replaced") {
+			t.Errorf("%s and replaced: %v, want refused", s, err)
+		}
+	}
+}

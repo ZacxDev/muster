@@ -316,7 +316,7 @@ type attentionItem struct {
 	// the ask page, for the pages that draw cards; not serialised.
 	pageOpen string
 	// dictateOff: the server has no dictation, so the box draws the muted mic
-	// linking to its Features row (answerMic). Set with dictate.
+	// linking to its Features ⓘ sheet (answerMic). Set with dictate.
 	dictateOff bool
 	// systemAsk: an ask muster raised itself (attention.Asker.System) — a task
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
