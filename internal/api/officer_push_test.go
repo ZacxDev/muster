@@ -247,9 +247,14 @@ func TestAnOfficersConnectorRequestPushesItsCard(t *testing.T) {
 	inst := r.addInstance(r.a, 1, 811)
 	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleMember, Via: authz.ViaConnect})
 	for id, want := range map[int64]bool{inst.ID: true, officerOrdinaryID: false, officerChiefID: false, 0: false} {
-		if got := r.s.agentIsOfficer(ctx, id); got != want {
-			t.Errorf("agentIsOfficer(%d) = %v, want %v", id, got, want)
+		if got := r.s.agentIsOfficer(ctx, id, 1); got != want {
+			t.Errorf("agentIsOfficer(%d, owner 1) = %v, want %v", id, got, want)
 		}
+	}
+	// The same officer instance, asked about for ANOTHER owner (a member who
+	// can read a team's agent, say): not that owner's officer.
+	if r.s.agentIsOfficer(ctx, inst.ID, 2) {
+		t.Errorf("agentIsOfficer(%d, owner 2) = true: an instance of owner 1's officer decided owner 2's push", inst.ID)
 	}
 	r.s.onConnectorRequested(ctx, connectors.Grant{ID: 6421, AgentID: inst.ID, AgentName: inst.Name, Connector: "github"})
 	got := r.sent(p)

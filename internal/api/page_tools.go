@@ -321,7 +321,7 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 		}
 		return pageToolRefusal("created", 0, err)
 	}
-	s.pagePublished(p, s.agentIsOfficer(ctx, c.AgentID))
+	s.pagePublished(p, s.agentIsOfficer(ctx, c.AgentID, p.OwnerID))
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"next": s.pageNext(ctx, p)})
 }
@@ -567,7 +567,7 @@ func (s *Server) pageShareAuto(ctx context.Context, creator pages.Creator, p pag
 	body := "Anyone with its link can open it. Tap to see the link or revoke it."
 	// An officer's unasked share pushes nothing (officer_push.go): the owner
 	// opted in to those, and the page lists its live links.
-	quiet := s.agentIsOfficer(ctx, creator.AgentID) &&
+	quiet := s.agentIsOfficer(ctx, creator.AgentID, p.OwnerID) &&
 		!s.officerPushSends(officerPushPageShared, p.OwnerID, "page-"+strconv.FormatInt(p.ID, 10)+"-shared")
 	if reason = strings.TrimSpace(reason); reason != "" {
 		body = "Why: " + truncate(reason, 120) + " — anyone with its link can open it. Tap to revoke it."

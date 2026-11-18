@@ -194,21 +194,28 @@ func (s *Server) officerAskFiled(k officerPush, a attention.Ask) {
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 }
 
-// connectorRequestByOfficer reports whether grant g was requested by an
-// officer's instance (agentIsOfficer).
+// connectorRequestByOfficer reports whether grant g, requested under ctx, was
+// requested by an officer's instance of the request's owner (agentIsOfficer).
 func (s *Server) connectorRequestByOfficer(ctx context.Context, g connectors.Grant) bool {
-	return s.agentIsOfficer(ctx, g.AgentID)
+	return s.agentIsOfficer(ctx, g.AgentID, requestOwner(ctx))
 }
 
-// agentIsOfficer reports whether agent id is an officer's instance (officerOf,
-// the one binding rule), read from its row. No agent (0: a mirrored
-// session), no officers, or a row that cannot be read: not an officer's.
-func (s *Server) agentIsOfficer(ctx context.Context, id int64) bool {
-	if id <= 0 || s.officerRT == nil || s.ext.Agents == nil {
+// agentIsOfficer reports whether agent id is an instance of one of OWNER's
+// officers (officerOf, the one binding rule), read from its row: owner is the
+// one the push it decides goes to. No agent (0: a mirrored session), no
+// officers, a row that cannot be read, or a row that is not owner's: false.
+//
+// 🔴 THE ROW MUST BE owner's (agentReadCallers "own"). Since 0131 Agents.Get
+// can return a member's TEAM agent; this read only decides whether owner's
+// push is routed through officerPushes, and it never acts on the row — but a
+// row of anyone else's is answered "not an officer's" outright, so a team
+// officer's row can never change how a member's own push is sent.
+func (s *Server) agentIsOfficer(ctx context.Context, id, owner int64) bool {
+	if id <= 0 || owner <= 0 || s.officerRT == nil || s.ext.Agents == nil {
 		return false
 	}
 	a, err := s.ext.Agents.Get(ctx, id)
-	if err != nil {
+	if err != nil || a.OwnerID != owner {
 		return false
 	}
 	_, _, ok := s.officerOf(a)
