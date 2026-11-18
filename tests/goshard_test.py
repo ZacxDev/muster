@@ -59,6 +59,46 @@ class Partition(unittest.TestCase):
                     self.assertEqual(sorted(seen), TESTS)
                     self.assertEqual(sorted(required), sorted(REQ))
 
+    def test_every_test_runs_in_exactly_one_process_of_one_shard(self):
+        # The multi-process plan: each api shard's share dealt again over
+        # `procs` processes. Over every (shard, process) pair each listed test
+        # runs exactly once and each required test is required exactly once.
+        for of in (2, 3, 4):
+            for procs in (1, 2, 3):
+                with self.subTest(of=of, procs=procs):
+                    seen: list[str] = []
+                    required: list[str] = []
+                    if (of - 1) * procs > len(TESTS):  # more parts than tests
+                        self.assertRaisesRegex(Refused, "got no tests", lambda: [
+                            plan(k, of, [], SPLIT, NAMES, REQ, procs, p)
+                            for k in range(1, of) for p in range(1, procs + 1)])
+                        continue
+                    for k in range(1, of):
+                        for p in range(1, procs + 1):
+                            args, vargs = plan(k, of, [], SPLIT, NAMES, REQ, procs, p)
+                            got = ran(args, TESTS)
+                            seen += got
+                            required += vargs[1::2]
+                            self.assertTrue(set(vargs[1::2]) <= set(got))
+                    self.assertEqual(sorted(seen), TESTS)
+                    self.assertEqual(sorted(required), sorted(REQ))
+
+    def test_procs_one_is_the_one_process_plan(self):
+        for of in (2, 3, 4):
+            for k in range(1, of):
+                with self.subTest(of=of, shard=k):
+                    self.assertEqual(plan(k, of, [], SPLIT, NAMES, REQ, 1, 1),
+                                     plan(k, of, [], SPLIT, NAMES, REQ))
+
+    def test_two_shards_of_three_processes_split_by_literal_name(self):
+        # Literal expectation, not derived from plan(): 8 sorted names dealt
+        # round-robin over 6 parts (shard 1 = parts 0-2, shard 2 = parts 3-5).
+        self.assertEqual(TESTS, ["ExampleE", "FuzzF", "TestA", "TestAB", "TestB", "TestC", "TestM", "TestZ"])
+        got = [ran(plan(k, 3, [], SPLIT, NAMES, [], 3, p)[0], TESTS)
+               for k in (1, 2) for p in (1, 2, 3)]
+        self.assertEqual(got, [["ExampleE", "TestM"], ["FuzzF", "TestZ"], ["TestA"],
+                               ["TestAB"], ["TestB"], ["TestC"]])
+
     def test_shard_zero_is_every_package_but_the_split(self):
         args, vargs = plan(0, 4, PKGS, SPLIT, [], REQ)
         self.assertEqual(args, ["example.test/m", "example.test/m/internal/db", "example.test/m/cmd/x"])
@@ -88,6 +128,12 @@ class Refusals(unittest.TestCase):
 
     def test_more_shards_than_tests(self):
         self.refuses("got no tests", len(TESTS) + 1, len(TESTS) + 2, [], SPLIT, NAMES, [])
+
+    def test_process_out_of_range(self):
+        self.refuses("process 4 is not in 1..3", 1, 3, [], SPLIT, NAMES, [], 3, 4)
+
+    def test_shard_zero_is_one_process(self):
+        self.refuses("shard 0 runs as one process", 0, 3, PKGS, SPLIT, [], [], 3, 2)
 
     def test_unsafe_token(self):
         self.refuses("would word-split or glob", 0, 2, ["example.test/m dir", SPLIT], SPLIT, [], [])
