@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -486,7 +485,7 @@ const spawnedTokenWhy = "has started agents for the chief with this host token (
 
 // hostSpawnStepUp is why the call's host is gated as a machine that starts
 // agents for the chief — a clause for the card — or "" when it is not one.
-// Both reads are the SERVER's, and neither is anything a window can set:
+// Every read is the SERVER's, and none is anything a window can set:
 //
 //   - the token the call came with is marked (mirror_tokens.spawned_at,
 //     0149): its host advertised -agent-spawn in a hello, or had a host
@@ -495,11 +494,26 @@ const spawnedTokenWhy = "has started agents for the chief with this host token (
 //     read the token, so neither a restart of muster, nor the host no longer
 //     advertising -agent-spawn, nor another connection with the same token
 //     says anything about who holds it;
-//   - the host's hello says it starts agents now (HostView.AgentSpawn), for
-//     the moment between a hello and its mark being written.
+//   - an agent muster started there for the chief may still be running: a
+//     host dispatch of the owner's on host that is not ended. 🔴 THIS IS WHAT
+//     A ROTATION CANNOT CLEAR: a new token is unmarked, but the agent still
+//     running there can read it, so the host stays gated until its spawned
+//     agents have ended (docs: rotate only after that). An unreadable record
+//     gates (the closed direction);
+//   - the host's hello says it starts agents now (HostView.AgentSpawn).
 func (s *Server) hostSpawnStepUp(ctx context.Context, host string) string {
 	if t, ok := ctx.Value(mirrorHostCtxKey{}).(mirror.Token); ok && t.Host == host && t.SpawnedAt != nil {
 		return spawnedTokenWhy
+	}
+	if st := s.hostDispatches(); st != nil {
+		rows, err := st.OpenHostDispatchesOnHost(ctx, host)
+		switch {
+		case err != nil:
+			s.logger.Printf("step-up: read host %s's open dispatches: %v; its door stays gated", host, err)
+			return "could not be checked for agents muster started there that are still running"
+		case len(rows) > 0:
+			return "has an agent muster started there for the chief that has not ended"
+		}
 	}
 	if s.ext.Mirror != nil {
 		for _, v := range s.ext.Mirror.Hosts(ctx) {
@@ -512,10 +526,11 @@ func (s *Server) hostSpawnStepUp(ctx context.Context, host string) string {
 }
 
 // routeReplyToItsOwnSession reports whether args name a route still known to
-// this owner that was routed to c's own session (the server-side binding
-// route_reply checks again: plugins.Route.SentToMirrorSession). On a machine
-// that starts agents, such a reply files no card (operator decision); every
-// other owner-authority call from it still does.
+// this owner that was routed to c's own session ON c's own host (the route
+// records both: plugins.Route.SentToMirrorSessionOn; route_reply checks the
+// binding again), and no agent muster started is still running on that host.
+// Such a reply files no card on a machine that starts agents (operator
+// decision); every other owner-authority call from it still does.
 func (s *Server) routeReplyToItsOwnSession(ctx context.Context, c toolCaller, args string) bool {
 	if !routesOn(s.ext) {
 		return false
@@ -527,7 +542,19 @@ func (s *Server) routeReplyToItsOwnSession(ctx context.Context, c toolCaller, ar
 		return false
 	}
 	r, err := s.ext.Routes.Route(ctx, in.RouteID)
-	return err == nil && r.SentToMirrorSession(c.asker.MirrorSession)
+	if err != nil || !r.SentToMirrorSessionOn(c.asker.MirrorHost, c.asker.MirrorSession) {
+		return false
+	}
+	// 🔴 NOT WHILE AN AGENT MUSTER STARTED MAY BE RUNNING THERE. The session a
+	// caller names is its claim, and a spawned agent on this very host can
+	// name the routed (owner's) pane: while any host dispatch on it is open,
+	// the reply is carded like every other decision.
+	st := s.hostDispatches()
+	if st == nil {
+		return true
+	}
+	open, err := st.OpenHostDispatchesOnHost(ctx, c.asker.MirrorHost)
+	return err == nil && len(open) == 0
 }
 
 // stepUpHoldSummary is what a dispatch_approve card says it starts: the held
@@ -556,8 +583,32 @@ func (s *Server) stepUpHoldSummary(ctx context.Context, args string) (string, bo
 	if h.CCAccount == "" {
 		sum += " (muster chooses the Claude account)"
 	}
-	if r := []rune(h.Prompt); len(r) > 160 {
-		sum += "\n\nThe full instructions (" + strconv.Itoa(h.PromptBytes) + " bytes), as held:\n" + mirror.OneLine(h.Prompt, 1200)
+	return sum + stepUpPromptBlock(h.Prompt), true
+}
+
+// stepUpPromptShown is how many characters of a held start's instructions a
+// dispatch_approve card shows. The card is an attention question, capped at
+// attention.MaxQuestionRunes (4,000); the rest of the card (the request
+// line, the call's arguments, the reason, the hold's summary) takes up to
+// about 1,500, so 1,500 here keeps the card under the cap. A held prompt may
+// be up to chiefPromptMax (8 KiB), more than any card can carry, so a longer
+// one is shown as an EXCERPT and the card says so.
+const stepUpPromptShown = 1500
+
+// stepUpPromptBlock is the card's instructions block: their length and the
+// SHA-256 of the full text, then the text itself — in full when it fits, or
+// labelled as an excerpt of its first stepUpPromptShown characters, with a
+// plain warning that the rest is not on the card.
+func stepUpPromptBlock(prompt string) string {
+	if prompt == "" {
+		return ""
 	}
-	return sum, true
+	r := []rune(prompt)
+	head := fmt.Sprintf("%d characters, SHA-256 %s", len(r), promptDigest(prompt))
+	if len(r) <= stepUpPromptShown {
+		return "\n\nThe instructions in full (" + head + "):\n" + prompt
+	}
+	return fmt.Sprintf("\n\nAN EXCERPT of the instructions: the first %d of %s:\n%s…\n\n⚠ The other %d characters are NOT shown on this card. "+
+		"Confirm only if you know what the rest says; otherwise refuse, and read the full text in the session that asked.",
+		stepUpPromptShown, head, string(r[:stepUpPromptShown]), len(r)-stepUpPromptShown)
 }

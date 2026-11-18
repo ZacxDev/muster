@@ -229,10 +229,6 @@ type Hub struct {
 	// inputs (agentspawn.go).
 	spawnReplyNotify func(owner int64, host string, m Msg)
 	listingNotify    func(owner int64, host string, windows []Window)
-	// spawnedNotify is called (on its own goroutine) with the owner and host
-	// of a connection whose hello advertises -agent-spawn (SetSpawnedNotify):
-	// Service marks the connection's token (Service.markSpawned).
-	spawnedNotify func(owner int64, host string)
 	// outcomesNotify is the host-dispatch outcome reconciler's input
 	// (outcomes.go).
 	outcomesNotify func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)
@@ -792,6 +788,22 @@ func normalizeSessions(in []string) []string {
 //
 // Registration is in memory only: nothing on this path waits on a database.
 func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *websocket.Conn) error {
+	return h.ServeConnMarking(ctx, owner, host, ws, nil)
+}
+
+// ErrSpawnMarkFailed refuses a host whose hello advertises -agent-spawn when
+// muster could not record that on its token (ServeConnMarking): the host
+// retries its connection, and nothing it lists is admitted meanwhile.
+var ErrSpawnMarkFailed = errors.New("mirror: muster could not record that this host starts agents (its token's mark); it will be retried on the next connection")
+
+// ServeConnMarking is ServeConn with markSpawned: when the hello advertises
+// that the host starts agents for the chief (a non-empty AgentSpawn), it is
+// called — with THIS connection's own context, BEFORE the welcome, so before
+// any other message of the host is read — to persist that on the token the
+// connection authenticated with (Service.markSpawned). 🔴 IT FAILS CLOSED: an
+// error refuses the connection, so a host is never admitted spawning with an
+// unmarked token. nil marks nothing (a hub with no token store).
+func (h *Hub) ServeConnMarking(ctx context.Context, owner int64, host string, ws *websocket.Conn, markSpawned func(context.Context) error) error {
 	ws.SetReadLimit(MaxFrame)
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -864,6 +876,13 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			}
 		}
 	}
+	if len(hc.agentSpawn) > 0 && markSpawned != nil {
+		if err := markSpawned(ctx); err != nil {
+			h.logger.Printf("mirror: host %s (owner %d) advertises -agent-spawn and its token could not be marked: %v; refused", host, owner, err)
+			refuse(ctx, ws, ErrSpawnMarkFailed)
+			return ErrSpawnMarkFailed
+		}
+	}
 	// 🔴 THE WELCOME IS THE FIRST FRAME THE HOST READS, SO hc IS NOT IN h.hosts
 	// UNTIL IT HAS BEEN WRITTEN. Everything that sends a host a request (an
 	// open, a watch, a paste…) finds it in h.hosts and writes on this same
@@ -931,9 +950,6 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s) (per session: its muster-mirror predates per-window registration)", host, owner, mode, hc.version, len(hc.sessions))
 	}
 	h.changed(owner)
-	if len(hc.agentSpawn) > 0 {
-		h.spawnAdvertised(owner, host)
-	}
 	// The hello's listing is the reconciler's first input from this host.
 	h.listingApplied(hc)
 	h.outcomesApplied(hc)
@@ -1599,24 +1615,5 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 				return fmt.Errorf("mirror: resize: %w", err)
 			}
 		}
-	}
-}
-
-// SetSpawnedNotify installs the hook called (on its own goroutine) with the
-// owner and host of every connection whose hello advertises that it starts
-// agents for the chief (a non-empty AgentSpawn): the persisted mark on the
-// connection's token (Service.markSpawned).
-func (h *Hub) SetSpawnedNotify(fn func(owner int64, host string)) {
-	h.mu.Lock()
-	h.spawnedNotify = fn
-	h.mu.Unlock()
-}
-
-func (h *Hub) spawnAdvertised(owner int64, host string) {
-	h.mu.Lock()
-	fn := h.spawnedNotify
-	h.mu.Unlock()
-	if fn != nil {
-		go fn(owner, host)
 	}
 }

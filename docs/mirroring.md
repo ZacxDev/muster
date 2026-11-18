@@ -1683,28 +1683,47 @@ such a machine when:
 
 - the **host token** it came with is marked as a spawning host's: muster marks
   a token, in its database, the first time its host's mirror advertises
-  `-agent-spawn`, or a host dispatch is started on that host; or
+  `-agent-spawn` (before it admits that connection: if the mark cannot be
+  written, the connection is refused and retried), or a host dispatch is
+  started on that host; or
+- an agent muster started on that host for the chief has not ended yet (an
+  open host dispatch), whatever token the call came with; or
 - the host's mirror advertises `-agent-spawn` now.
 
 🔴 **The mark belongs to the token and is cleared only by rotating it.** A
 spawned agent runs as your user and can read that token, so neither a muster
 restart, nor the host no longer advertising `-agent-spawn`, nor a new
 connection made with the same token clears it. **When you turn `-agent-spawn`
-off on a machine, rotate its host token** (mint a new one for the host, put it
-in the mirror's config, revoke the old one): the new token is unmarked, and the
-old one opens nothing.
+off on a machine, rotate its host token — but only after the agents it
+started have ended** (their dispatches show ended): mint a new one for the
+host, put it in the mirror's config, revoke the old one. The new token is
+unmarked, and the old one opens nothing. While a spawned agent is still
+running there, the host stays gated whatever token a call uses, because that
+agent can read the new token too.
 
-Neither trigger is anything a window can set, so an agent that names your
-pane, clears its own window's tag, or calls muster with this host's token
-directly — from that machine or from anywhere — is gated all the same.
+None of these triggers is anything a window can set, so an agent that names
+your pane, clears its own window's tag, or calls muster with this host's token
+directly — from that machine or from anywhere — is gated, with ONE exception,
+below: the reply to a routed message.
 
-- **Replies to routed messages are not carded.** `route_reply` from the very
-  session the chief routed a message to (muster's own record of the route)
-  runs at once. A reply naming a route sent to another session is carded.
+- **Replies to routed messages are not carded — while no spawned agent runs
+  there.** `route_reply` runs at once when it comes from the very session the
+  chief routed the message to, on the very host it was routed to (muster
+  records both on the route), and no agent muster started on that host is
+  still running. ⚠ A session id is the caller's claim: an agent running on
+  that host that names your routed pane would match, which is why the reply
+  is carded while any agent muster started there is running. A reply naming a
+  route sent to another session, or to the same session on another host, is
+  carded (and then refused).
 - **A held start's card shows the start.** `dispatch_approve`'s card names
-  the target, the runtime and model, the task, the pool, the Claude account
-  and the instructions the hold carries, not only its id; a hold that cannot
-  be read files no card.
+  the target, the runtime and model, the task, the pool and the Claude
+  account, then the instructions with their length and the SHA-256 of the
+  full text: in full when they fit (up to 1,500 characters), otherwise
+  **labelled as an excerpt** of their first 1,500 characters, with a plain
+  warning of how many characters the card does not show. A card is capped at
+  4,000 characters and a held prompt may be 8 KiB, so a long one cannot be
+  shown whole; refuse a start whose rest you have not read. A hold that
+  cannot be read files no card.
 - **Reads are not carded.** The owner-authority reads (`agents_list`,
   `connector_requests_list`, `plugin_drafts_list`, `plugin_messages_list`,
   `plugin_requests_list`, `plugin_outbound_batch_get`) answer your own

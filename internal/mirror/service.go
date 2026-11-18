@@ -101,7 +101,6 @@ func NewService(store Store, logger *log.Logger) *Service {
 	}
 	s := &Service{store: store, logger: logger, recheck: TokenRecheck, hub: NewHub(logger),
 		limiter: newFailLimiter(authFailLimit, authFailWindow)}
-	s.hub.SetSpawnedNotify(s.markSpawned)
 	return s
 }
 
@@ -111,28 +110,37 @@ type spawnMarker interface {
 	MarkSpawned(ctx context.Context, id int64) error
 }
 
-// markSpawned marks the token the (owner, host) connection was made with
-// (connTok) as one whose host starts agents for the chief: the hub's hook
-// for a hello that advertises -agent-spawn. 🔴 THE MARK IS THE TOKEN'S, and
-// nothing but rotating the token clears it (internal/api host_stepup.go):
-// a spawned agent can read the token, so the host stopping to advertise
-// -agent-spawn proves nothing about who holds it.
-func (s *Service) markSpawned(owner int64, host string) {
+// markSpawnedTries is how many times markSpawned writes the mark before the
+// connection is refused (ServeConnMarking fails closed).
+const markSpawnedTries = 3
+
+// markSpawned marks token id — the one THIS connection authenticated with,
+// passed in by ServeConnect, never looked up by host — as a token whose host
+// starts agents for the chief (PGStore.MarkSpawned). 🔴 THE MARK IS THE
+// TOKEN'S, and nothing but rotating the token clears it (internal/api
+// host_stepup.go): a spawned agent can read the token, so the host stopping
+// to advertise -agent-spawn proves nothing about who holds it. A store with
+// no such half marks nothing (an in-memory test store).
+func (s *Service) markSpawned(ctx context.Context, id int64) error {
 	m, ok := s.store.(spawnMarker)
 	if !ok {
-		return
+		return nil
 	}
-	s.connMu.Lock()
-	c, ok := s.connTok[hostKey{owner, host}]
-	s.connMu.Unlock()
-	if !ok {
-		return
+	var err error
+	for i := 0; i < markSpawnedTries; i++ {
+		wctx, cancel := context.WithTimeout(authz.System(ctx), 10*time.Second)
+		err = m.MarkSpawned(wctx, id)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(i+1) * 200 * time.Millisecond):
+		}
 	}
-	ctx, cancel := context.WithTimeout(authz.System(context.Background()), 30*time.Second)
-	defer cancel()
-	if err := m.MarkSpawned(ctx, c.id); err != nil {
-		s.logger.Printf("mirror: mark host %s's token %d as one that starts agents: %v", host, c.id, err)
-	}
+	return err
 }
 
 // SetNotify installs the Agents-view refresh nudge (internal/api's
@@ -308,7 +316,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		s.connMu.Unlock()
 	}()
-	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
+	err = s.hub.ServeConnMarking(ctx, tok.OwnerID, tok.Host, ws, func(ctx context.Context) error { return s.markSpawned(ctx, tok.ID) })
 	s.logger.Printf("mirror: host %s connection ended: %v", tok.Host, err)
 }
 

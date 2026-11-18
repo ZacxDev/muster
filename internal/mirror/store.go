@@ -251,7 +251,7 @@ func (s *PGStore) RevokeToken(ctx context.Context, id int64) (bool, error) {
 // MarkSpawned records that live token id's host has started agents
 // (mirror_tokens.spawned_at, 0149): once, keeping the first time. A revoked
 // token is left alone. Service calls it under authz.System when the host's
-// hello advertises -agent-spawn (Service.markSpawned).
+// hello advertises -agent-spawn, before the welcome (Service.markSpawned).
 func (s *PGStore) MarkSpawned(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE mirror_tokens SET spawned_at = now() WHERE id = $1 AND revoked_at IS NULL AND spawned_at IS NULL`, id)
 	return err

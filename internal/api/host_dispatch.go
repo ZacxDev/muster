@@ -58,6 +58,7 @@ type hostDispatchStore interface {
 	ReserveHostDispatch(ctx context.Context, object string, detail map[string]any, check func() error, row plugins.HostDispatchNew) (plugins.ChiefDispatch, plugins.HostDispatch, error)
 	HostDispatchByID(ctx context.Context, id int64) (plugins.HostDispatch, error)
 	HostDispatchesForHost(ctx context.Context, host string) ([]plugins.HostDispatch, error)
+	OpenHostDispatchesOnHost(ctx context.Context, host string) ([]plugins.HostDispatch, error)
 	RunningHostDispatchesForTask(ctx context.Context, taskID int64) ([]plugins.HostDispatch, error)
 	StaleHostDispatches(ctx context.Context, olderThan time.Duration) ([]plugins.HostDispatch, error)
 	HostDispatchOwners(ctx context.Context) ([]int64, error)

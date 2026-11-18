@@ -224,6 +224,19 @@ func (s *PGStore) HostDispatchesForHost(ctx context.Context, host string) ([]Hos
 	return s.hostDispatches(ctx, `owner_id = $1 AND host = $2 AND (status <> 'ended' OR ended_at > now() - interval '7 days') ORDER BY id DESC LIMIT 200`, owner, host)
 }
 
+// OpenHostDispatchesOnHost is EVERY one of the principal's rows for host that
+// is not ended — no limit: the owner-authority checks (internal/api
+// spawnedByRecord's window clause, hostSpawnStepUp's open-dispatch trigger)
+// must see an old open row however many rows the host has. Open rows are
+// bounded by the chief's live cap.
+func (s *PGStore) OpenHostDispatchesOnHost(ctx context.Context, host string) ([]HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "host dispatches")
+	if err != nil {
+		return nil, err
+	}
+	return s.hostDispatches(ctx, `owner_id = $1 AND host = $2 AND status <> 'ended' ORDER BY id`, owner, host)
+}
+
 // StaleHostDispatches is the principal's open rows whose host was last seen
 // before cutoff (the 24-hour sweep's input).
 func (s *PGStore) StaleHostDispatches(ctx context.Context, olderThan time.Duration) ([]HostDispatch, error) {

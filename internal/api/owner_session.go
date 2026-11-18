@@ -122,7 +122,7 @@ func (s *Server) spawnedByRecord(ctx context.Context, c toolCaller) string {
 	if c.mirrorWindow == "" {
 		return ""
 	}
-	rows, err := st.HostDispatchesForHost(ctx, host)
+	rows, err := st.OpenHostDispatchesOnHost(ctx, host)
 	if err != nil {
 		s.logger.Printf("owner authority: read host %s's dispatches: %v; refused", host, err)
 		return ownerAuthorityRecordUnknown

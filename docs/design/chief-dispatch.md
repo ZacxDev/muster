@@ -3140,7 +3140,8 @@ permission mode**, not an isolation boundary:
     machine already is (`hostStepUpGate`): every owner-authority decision —
     the step-up ledger `hostStepUpTools`, pinned together with every caller
     of `ownersOwnSession` by a test — called with a **host token marked as a
-    spawning host's**, or from a host that advertises `-agent-spawn` now, is
+    spawning host's**, from a host with a host dispatch not yet ended, or
+    from a host that advertises `-agent-spawn` now, is
     a confirmation card that runs only when the owner confirms it from their
     paired phone, **whichever pane or session the call names**.
   - **The mark is the TOKEN's, persisted, and cleared only by rotating it**
@@ -3150,13 +3151,19 @@ permission mode**, not an isolation boundary:
     tainted: a muster restart, the host no longer advertising
     `-agent-spawn`, and a new connection with the same token (naming a
     fresh, untagged window and session) are all still gated. Turning
-    `-agent-spawn` off is not enough: rotate the host's token.
-  - **Three refinements.** A `route_reply` from the session the route was
-    sent to (`Route.SentToMirrorSession`, the server-side binding) is not
-    carded; any other `route_reply`, and every other decision, is. A
-    `dispatch_approve` card shows the held start (target, runtime and model,
-    task, pool, Claude account, instructions), not only its id, and a hold
-    that cannot be read files no card. The owner-authority **reads** — the
+    `-agent-spawn` off is not enough: rotate the host's token, and only after
+    its spawned agents have ended — an open dispatch keeps the host gated
+    whatever token is used, because the agent can read a new token too.
+  - **Three refinements.** A `route_reply` from the session AND host the
+    route was sent to (both recorded on the route, `target_host` since 0150:
+    `Route.SentToMirrorSessionOn`) is not carded while no host dispatch on
+    that host is open; any other `route_reply`, and every other decision, is.
+    A `dispatch_approve` card shows the held start (target, runtime and
+    model, task, pool, Claude account) and the instructions with their
+    length and SHA-256 — in full up to 1,500 characters, otherwise labelled
+    as an excerpt with how much is not shown (a card is capped at 4,000
+    characters; a held prompt may be 8 KiB) — and a hold that cannot be read
+    files no card. The owner-authority **reads** — the
     lists that return outside parties' message text and the owner's estate
     (`plugin_drafts_list`, `plugin_messages_list`, `plugin_outbound_batch_get`,
     `plugin_requests_list`, `connector_requests_list`, `agents_list`) — are
@@ -3167,8 +3174,9 @@ permission mode**, not an isolation boundary:
     on its host: a spawned agent still runs as the machine's user and can do
     on that machine what the user can (with prompts skipped, without asking).
     A spawned agent that names the OWNER's pane can still read those lists
-    (the server cannot tell it from the owner there) and can answer a route
-    sent to that pane's session. The cost is that the owner's own sessions
+    (the server cannot tell it from the owner there); it cannot answer a
+    route sent there without a card while it runs (an open dispatch ends the
+    carve-out), but an agent that is not muster's own spawn could. The cost is that the owner's own sessions
     on such a machine get a card for each other owner-authority decision;
     deciding in muster's web UI is never gated. `dispatch_request` stays
     ungated: it files a hold that starts nothing, and `dispatch_approve`,

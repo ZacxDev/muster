@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -20,6 +21,15 @@ import (
 // welcome arrives, and the connection stays open until the test ends.
 func helloWith(t *testing.T, srv *httptest.Server, token string, hello Msg) {
 	t.Helper()
+	if refused := helloAnswer(t, srv, token, hello); refused != "" {
+		t.Fatalf("the hello was refused: %s", refused)
+	}
+}
+
+// helloAnswer is helloWith's connect, returning the refusal muster answered
+// the hello with ("" for a welcome).
+func helloAnswer(t *testing.T, srv *httptest.Server, token string, hello Msg) string {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	hdr := http.Header{}
@@ -33,8 +43,58 @@ func helloWith(t *testing.T, srv *httptest.Server, token string, hello Msg) {
 	if err := ws.Write(ctx, websocket.MessageText, b); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ws.Read(ctx); err != nil {
+	_, data, err := ws.Read(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	var m Msg
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Type == TypeWelcome && m.Error == "" {
+		return ""
+	}
+	if m.Error != "" {
+		return m.Error
+	}
+	return string(data)
+}
+
+// failingMarks is the real store whose MarkSpawned always fails.
+type failingMarks struct{ *PGStore }
+
+func (failingMarks) MarkSpawned(context.Context, int64) error { return errors.New("the database is unreachable") }
+
+// TestAHostThatCannotBeMarkedIsRefused: when the mark cannot be written, a
+// hello advertising -agent-spawn is REFUSED (fail closed) — never admitted
+// with an unmarked token — while a host that does not advertise spawning is
+// welcomed by the same muster.
+func TestAHostThatCannotBeMarkedIsRefused(t *testing.T) {
+	s, _, _ := pgStore(t)
+	svc := NewService(failingMarks{s}, log.New(io.Discard, "", 0))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+ConnectPath, svc.ServeConnect)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	spawnTok, _, err := s.CreateToken(user(1), "spawn-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainTok, _, err := s.CreateToken(user(1), "plain-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := Msg{Type: TypeHello, Version: ProtocolVersion, Host: "spawn-two", Sessions: []string{"shell"}, Interactive: true, AgentSpawn: []string{SpawnRuntimeClaude}}
+	if got := helloAnswer(t, srv, spawnTok, h); !strings.Contains(got, "could not record that this host starts agents") {
+		t.Fatalf("a spawning host whose mark failed: %q, want refused", got)
+	}
+	for _, v := range svc.Hosts(user(1)) {
+		if v.Host == "spawn-two" && v.Online {
+			t.Fatal("the refused host is listed online")
+		}
+	}
+	if got := helloAnswer(t, srv, plainTok, Msg{Type: TypeHello, Version: ProtocolVersion, Host: "plain-two", Sessions: []string{"shell"}, Interactive: true}); got != "" {
+		t.Fatalf("a host that does not advertise spawning: refused %q", got)
 	}
 }
 
@@ -83,12 +143,10 @@ func TestAHostTokenThatAdvertisedSpawningStaysMarkedUntilRotated(t *testing.T) {
 	}
 	helloWith(t, srv, plainTok, hello("plain-one", false))
 	helloWith(t, srv, spawnTok, hello("spawn-one", true))
-	deadline := time.Now().Add(5 * time.Second)
-	for spawnedAt(t, s, spawnTok) == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("the token of a host whose hello advertises -agent-spawn was never marked")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Read at once, with no wait: the mark is written BEFORE the welcome the
+	// connect above already received.
+	if spawnedAt(t, s, spawnTok) == nil {
+		t.Fatal("the token of a host whose hello advertises -agent-spawn was not marked by the time it was welcomed")
 	}
 	if got := spawnedAt(t, s, plainTok); got != nil {
 		t.Fatalf("a host that does not advertise -agent-spawn had its token marked at %v", got)
