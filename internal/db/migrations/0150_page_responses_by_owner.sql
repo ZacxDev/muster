@@ -1,4 +1,4 @@
--- muster 0149 — THE OWNER'S OWN RESPONSES TO A PAGE (internal/pages;
+-- muster 0150 — THE OWNER'S OWN RESPONSES TO A PAGE (internal/pages;
 -- docs/pages.md "The owner's view").
 --
 --   page_responses.by_owner   the page's OWNER sent it, from their own view
@@ -21,7 +21,7 @@
 -- so it must find no owner row; and THIS image reads and writes by_owner, so
 -- the column stays until it is gone. Hence the order below.
 --
--- Must apply after its predecessor, 0148_officer_connector_blocks (the contiguity
+-- Must apply after its predecessor, 0149_officer_chat_marks (the contiguity
 -- test refuses a gap). 🔴 RENUMBER IT at merge if main moved.
 --
 -- ROLLBACK, in this order:
@@ -32,7 +32,7 @@
 --   4. ALTER TABLE public.page_responses DROP CONSTRAINT IF EXISTS page_responses_one_responder;
 --      ALTER TABLE public.page_responses DROP COLUMN IF EXISTS by_owner;
 --      ALTER TABLE public.page_responses ALTER COLUMN link_id SET NOT NULL;
---      DELETE FROM schema_migrations WHERE version = 149;
+--      DELETE FROM schema_migrations WHERE version = 150;
 -- (An owner's upload row deleted above leaves its file under pages/<id>/,
 -- which the page's own Delete still removes: it lists the prefix.)
 

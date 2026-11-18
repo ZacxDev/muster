@@ -258,71 +258,47 @@ func jsString(s string) string {
 // muster's shell because only 'self' may frame the document (frame-ancestors).
 //
 // 🔴 EVERYTHING BETWEEN THE PAGE AND THE SHELL GOES OVER ONE PRIVATE PORT THE
-// PAGE'S OWN SCRIPT NEVER HOLDS — submits, uploads, their answers and the
-// scroll reports that hide the shell's header — so the page cannot forge a
-// report, a send, or the tap a send of the owner's needs (ShellScript):
-//
+// PAGE'S OWN SCRIPT NEVER HOLDS — sends, their answers, and the scroll
+// reports that hide the shell's header:
 //   - The page's markup is NOT in the document: it is blocks, a string in this
 //     script (JSON-escaped, so no "</script>" in it ends this one). This
 //     script — the document's only one until then — asks the shell for the
 //     port ("hello", repeated until it comes), takes it in a capture listener
-//     on window registered first, and only THEN puts the blocks in the page
-//     (createContextualFragment, so the page's own <script>s run, in order).
-//     So no script of the page's runs before the port is held here: not even
-//     one that replaces the document (document.open erases every listener,
-//     and a page that did it before the port arrived could take the port —
-//     measured, before this order: it did, at 390x844 and 1280x800).
+//     on window registered first, and only THEN, once the document is parsed,
+//     puts the blocks in the page (createContextualFragment, so the page's own
+//     <script>s run, in order). So no script of the page's runs before the
+//     port is held here: not even one that replaces the document
+//     (document.open erases every listener; before this order a page that
+//     did it took the port — measured, at 390x844 and 1280x800).
+//   - After those scripts run, DOMContentLoaded is dispatched to document
+//     (and on to window), and load to window when it has already passed —
+//     once each. The insertion is a task AFTER the real DOMContentLoaded, so
+//     a window listener the page adds never sees both. A type="module"
+//     script runs later still, after both: it should not wait for either.
+//   - The functions the port's safety rests on are saved before any page
+//     script and called through Reflect.apply — postMessage (a patched one
+//     would be handed the port as this), the message-event getters, the
+//     scroll offset — and every message is an object literal the SDK builds,
+//     with its own op: a page cannot post a scroll report, whatever it does
+//     to Array or Object prototypes (what it CAN choose — a send's data —
+//     it could send anyway).
 //
-//   - Every primitive called after the page's script runs is saved first and
-//     called through Reflect.apply: MessagePort.prototype.postMessage, the
-//     scrollTop getter, and navigator.userActivation's isActive getter on the
-//     instance read at start. So patching them later changes nothing sent.
-//
-//   - Each send carries act: whether the CONTENT frame had a real user
-//     activation (a tap, a click, a key) at that moment. A parent's
-//     activation does not pass down to it: measured, a page loaded by a
-//     navigation reads false on load and at setTimeout(0) while the shell
-//     reads true, and true right after a click inside it. A script cannot
-//     make one. The owner's shell refuses a send without it.
-//
-//   - 🔴 EVERY MESSAGE IS ONE OBJECT LITERAL (mk), and between reading the
-//     tap and postMessage nothing a page can reach runs (post): no field is
-//     ever assigned but act, on the literal's own property; the Promise a
-//     page gets back is the saved one. (Round 1 on #802: a field assigned
-//     after the literal ran a page's Object.prototype setter, with the
-//     message as this, and the setter set act — a forged tap.)
-//
-//   - The page's markup goes in once the document is parsed; its scripts run
-//     then, in order, after which DOMContentLoaded is dispatched to them, and
-//     load when it has already passed — once each. document.readyState is
-//     already "interactive" or "complete" while they run (as for a defer
-//     script), and document.write cannot add to the page (it would replace
-//     it, as after load).
-//
-// What a determined page can still do: send while act is true — a tap on any
-// control of its own, then its own muster.submit within the activation's few
-// seconds, with whatever data it likes; and scroll its own document, which
-// hides the header until the next scroll up or until no scroll has been
-// reported for a few seconds (ShellScript). After a document.open of its own
-// it loses the scroll reports and the built-in forms (their listeners are
-// erased) — the header then stays.
+// What the page sends is NOT checked here: in the owner's view the SHELL
+// shows it to the owner and posts it only on their own tap (ShellScript);
+// through a link it is recorded, as it always was.
 func sdkScript(v Version, blocks string) string {
 	return `(function(){"use strict";
 var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
  PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
- DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,SLICE=Array.prototype.slice,MAP=Array.prototype.map,
+ DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,
  gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
- gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),gName=gd(W.File&&File.prototype,"name"),
+ gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
- UA=W.navigator.userActivation||null,gAct=W.UserActivation?gd(W.UserActivation.prototype,"isActive"):null,
- BLOCKS=` + jsString(blocks) + `,port=null,shown=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
-function act(){return !!(UA&&gAct&&R(gAct,UA,[])===true);}
-// The page's markup goes in once the port is held AND the document is parsed;
-// then its scripts have run, in order, and DOMContentLoaded (always past by
-// then) and load (when past) are dispatched to them, once each.
+ BLOCKS=` + jsString(blocks) + `,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
+function later(){R(ST,W,[show,0]);}
 function show(){
  if(shown)return;var m=D.querySelector("main.mp");
- if(!m||R(gRS,D,[])==="loading"){R(AEL,D,["DOMContentLoaded",show]);return;}
+ if(!m||R(gRS,D,[])==="loading"){if(!waitedDCL){waitedDCL=true;R(AEL,D,["DOMContentLoaded",later]);}return;}
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
  R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
@@ -338,44 +314,31 @@ R(AEL,W,["message",function(ev){
  R(SIP,ev,[]);var d=R(gData,ev,[]);
  if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();}
 },true]);
-R(AEL,W,["scroll",function(){if(port&&!queued){queued=true;R(RAF,W,[report]);}},{capture:true,passive:true}]);
+// Only the browser's own scroll of the document reports: not a dispatched
+// "scroll" (isTrusted is unforgeable), not an inner element's.
+R(AEL,W,["scroll",function(ev){if(ev.isTrusted!==true||R(gTarget,ev,[])!==D)return;if(port&&!queued){queued=true;R(RAF,W,[report]);}},{capture:true,passive:true}]);
 function hello(){
  if(port)return;
  if(++tries>50){var m=D.querySelector("main.mp");if(m)m.textContent="This page could not be loaded. Reload it.";return;}
  PARENT.postMessage({muster:1,op:"hello"},"*");R(ST,W,[hello,200]);
 }
 if(PARENT===W)show();else hello();
-// mk is one message, ONE object literal with every field (a literal defines
-// its properties; it runs no setter of Object.prototype's), act false.
-function mk(op,component,value,fname){
- var id="m"+(++seq);
- return op==="upload"?{muster:1,id:id,op:op,act:false,component:component,file:value,name:fname}:
-  {muster:1,id:id,op:op,act:false,component:component,data:value};
-}
-// post sends ms (an array of mk's, its own) and calls done(ok, x) once: the
-// first refusal, or every answer's. 🔴 BETWEEN READING THE TAP AND POSTING,
-// NOTHING A PAGE CAN REACH RUNS: act is set on each message's OWN property
-// (an own data property's assignment consults no prototype), each read of ms
-// is an own index, and postMessage is the saved one.
-function post(ms,done){
+// send posts one message, an object literal with its own op, and calls
+// done(ok, x) with the shell's answer.
+function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
- var n=ms.length,left=n,over=false,last=null,i;
- for(i=0;i<n;i++)waiting[ms[i].id]=function(ok,x){
-  if(over)return;if(!ok){over=true;return done(false,x);}
-  last=x;if(--left===0){over=true;done(true,last);}
- };
- var a=act();
- for(i=0;i<n;i++){ms[i].act=a;R(PM,port,[ms[i]]);}
- R(ST,W,[function(){if(!over){over=true;done(false,"muster did not answer");}},120000+60000*n]);
+ var id="m"+(++seq);waiting[id]=done;
+ R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
+ R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},600000]);
 }
-function promise(ms){return new P(function(res,rej){post(ms,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
+function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
 W.muster=Object.freeze({
  page:Object.freeze({title:` + jsString(v.Title) + `,version:` + strconv.Itoa(v.Version) + `}),
- submit:function(data,o){return promise([mk("submit",name(o),data===undefined?null:data,null)]);},
+ submit:function(data,o){return promise("submit",name(o),data===undefined?null:data);},
  upload:function(file,o){
   if(!(file instanceof Blob))return P.reject(new TypeError("muster.upload takes a File"));
-  return promise([mk("upload",name(o),file,(gName&&file instanceof File?R(gName,file,[]):"")||"file")]);
+  return promise("upload",name(o),[{file:file,name:String(file.name||"file")}]);
  }
 });
 function collect(kind,form,submitter){
@@ -395,15 +358,17 @@ R(AEL,D,["submit",function(ev){
  var id=sec.getAttribute("data-muster-component"),kind=sec.getAttribute("data-muster-kind");
  var status=form.querySelector("[data-muster-status]"),btns=form.querySelectorAll("button");
  function say(t,bad){if(status){status.textContent=t;status.className="mp-status"+(bad?" mp-bad":" mp-good");}}
- var ms;
+ var value;
  if(kind==="upload"){
-  var files=R(SLICE,form.elements.file.files||[],[]);
+  var fl=form.elements.file.files,files=[],i;
+  for(i=0;fl&&i<fl.length;i++)files.push({file:fl[i],name:String(fl[i].name||"file")});
   if(!files.length){say("Choose a file first.",true);return;}
-  // Every file goes at once, with the one tap (the shell sends them in turn).
-  ms=R(MAP,files,[function(f){return mk("upload",id,f,(gName?R(gName,f,[]):"")||"file");}]);
- }else ms=[mk("submit",id,collect(kind,form,ev.submitter),null)];
+  value=files;
+ }else value=collect(kind,form,ev.submitter);
  btns.forEach(function(b){b.disabled=true;});say("Sending…");
- post(ms,function(ok,x){
+ // Every file goes in one send (the owner confirms them together; the shell
+ // sends them in turn and stops at the first refusal).
+ send(kind==="upload"?"upload":"submit",id,value,function(ok,x){
   if(ok){say("Sent. Thank you.");form.reset();}else say(x||"It could not be sent.",true);
   btns.forEach(function(b){b.disabled=false;});
  });
@@ -528,6 +493,16 @@ background:transparent;color:inherit;font:inherit;text-align:left;text-decoratio
 .pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
 .pop hr{border:0;border-top:1px solid color-mix(in srgb,CanvasText 15%,transparent);margin:6px 4px}
 #action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
+.confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:Canvas;
+padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid color-mix(in srgb,CanvasText 20%,transparent);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
+@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}}
+.confirm[hidden]{display:none}.confirm:focus{outline:none}
+.confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:color-mix(in srgb,CanvasText 70%,transparent);font-size:14px}
+.confirm .cs{margin:0 0 10px;max-height:9rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
+padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,transparent)}
+.confirm .cb{display:flex;justify-content:flex-end;gap:8px}
+.confirm button{min-height:44px;min-width:5.5rem;padding:0 16px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;color:inherit;
+background:transparent;border:1px solid color-mix(in srgb,CanvasText 25%,transparent)}.confirm button.go{background:#2f6fde;border-color:#2f6fde;color:#fff}
 #action-toasts>*{padding:8px 12px;border-radius:8px;background:CanvasText;color:Canvas;font-size:14px;overflow-wrap:anywhere}`
 
 // Shell is the shell document: the instance branding and the title in one
@@ -581,6 +556,9 @@ func Shell(v ShellView) string {
 		}
 		b.WriteString(`</ul><hr>` + o.ShareButton + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
 <div id="action-toasts" aria-live="polite"></div>
+<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what" tabindex="-1" data-send-confirm hidden>
+<p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" data-send-summary></pre>
+<div class="cb"><button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button></div></div>
 `)
 		script += "\n" + ownerScript + "\n" + o.ShareScript
 	}
@@ -590,25 +568,37 @@ func Shell(v ShellView) string {
 	return b.String()
 }
 
-// ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell)
-// and the header's hide-on-scroll.
+// ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell),
+// the owner's confirm, and the header's hide-on-scroll.
 //
 // 🔴 THE SHELL IS THE ONLY CODE ON MUSTER'S ORIGIN A VIEWER RUNS, SO IT TRUSTS
 // NOTHING IT IS SENT. From window messages it takes ONE thing: its own
 // frame's first "hello", answered with a MessagePort (sdkScript holds it
 // before any script of the page's runs). Everything else comes on that port
-// or not at all: a submit or upload is sent to base+"/submit" or
-// base+"/upload" — only the component name, the data as JSON, or a Blob, to
-// two fixed routes — and the answer posted back on the port. A message on
-// window naming an op, the frame's own included, is ignored.
+// or not at all. A send is checked on receipt, in the shell's own realm, on
+// the shell's own structured-clone copy: a fixed field set; a submit's data
+// plain JSON (null, booleans, finite numbers, strings, arrays, plain objects,
+// at most 32 levels deep) under the size cap; an upload's files 1 to 20
+// {file: Blob, name} pairs. That one copy is what is shown and what is posted.
 //
-// A link's shell sends with credentials omitted (the link in base is the
-// credential). The OWNER's (owner) sends their session, same-origin — the
-// route's own session and Origin checks, as every owner write — and only a
-// send whose act is true: the content frame had a real user activation when
-// it was sent (sdkScript reads it through saved getters). One without is
-// answered "Tap to send", and nothing is posted: a page's script that sends
-// on load records nothing as its owner's.
+// A link's shell posts it at once, with credentials omitted (the link in base
+// is the credential), as it always has.
+//
+// 🔴 THE OWNER'S SHELL (owner) POSTS NOTHING THE OWNER HAS NOT CONFIRMED HERE,
+// in muster's own realm, where the page's script cannot reach (another
+// origin, a sandboxed frame): a send opens the shell's "Send as you?" bar —
+// the component, the fields as text (cut at 600 characters) or the files'
+// names and sizes — and only the owner's tap on its Send posts exactly that
+// copy, with their session, same-origin (the route's own session and Origin
+// checks; the same-origin referrer policy keeps a Referer for
+// requireSameOrigin's fallback). Cancel, Escape, or nothing records nothing.
+// Send is not focused when the bar opens (the bar itself is), a press of it
+// within 500 ms of the bar appearing is ignored, and one send waits at a
+// time: another while the bar is open is answered "Another send is waiting
+// for your answer." and dropped.
+//
+// Requests go one at a time, in the order received; a several-file upload's
+// files in turn, stopping at the first one refused.
 //
 // 🔴 THE HEADER IS THE BRAND, THE TRUST SIGNAL OF A SHARE LINK, AND A PAGE'S
 // SCRIPT MUST NEVER BE ABLE TO KEEP IT HIDDEN FOR GOOD. It hides on a scroll
@@ -619,10 +609,11 @@ func Shell(v ShellView) string {
 //   - only a report below the last one AND past the header's height hides it;
 //   - keyboard focus inside it (CSS :focus-within) and the open version
 //     popover show it whatever the reports say;
-//   - 🔴 and, needing nothing of the page, it comes back once no report has
-//     arrived for revealMs while it is hidden. A page that scrolls itself
-//     down and then stops its document scrolling (overflow:hidden on <html>)
-//     sends no scroll up ever again: this is what brings the header back.
+//   - 🔴 and, needing nothing of the page, it comes back once no report
+//     FURTHER DOWN than the last has arrived for revealMs while it is hidden:
+//     only a report with y above the last one restarts that wait, so a page
+//     that stops its own scrolling and then re-reports the same offset (a
+//     dispatched scroll event, an inner scroller's) cannot hold it hidden.
 //
 // The one op that moves it is "scroll" {y: a finite number >= 0}, and only on
 // the port: a page's script posting one to the shell is ignored, as is one
@@ -631,53 +622,110 @@ func Shell(v ShellView) string {
 func ShellScript(base string, owner bool) string {
 	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
 	if owner {
-		// same-origin: the request sends a Referer, which requireSameOrigin
-		// reads when a browser sends no Origin; nothing leaves muster's
-		// origin either way.
 		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
 	}
 	return `(function(){"use strict";
-var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,TAP=` + gate + `,port=null;
-var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,quiet=0,queue=Promise.resolve();
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null;
+var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,quiet=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
 window.__musterHeader=function(show){if(!hdr)return;if(show)hdr.removeAttribute("data-hidden");else hdr.setAttribute("data-hidden","");};
 function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
 function onY(y){
  if(typeof y!=="number"||!isFinite(y)||y<0)return;
- if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);
+ var down=y>lastY;
+ if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(down)window.__musterHeader(false);
  lastY=y;
- // The shell's own rule, which needs nothing of the page: a hidden header
- // comes back once no report has arrived for REVEAL ms.
- clearTimeout(quiet);
- if(hdr&&hdr.hasAttribute("data-hidden"))quiet=setTimeout(function(){window.__musterHeader(true);},` + revealMs + `);
+ if(!hdr||!hdr.hasAttribute("data-hidden")){clearTimeout(quiet);return;}
+ if(down){clearTimeout(quiet);quiet=setTimeout(function(){window.__musterHeader(true);},` + revealMs + `);}
+}
+function only(o,keys){var ks=Object.keys(o);for(var i=0;i<ks.length;i++)if(keys.indexOf(ks[i])<0)return false;return true;}
+function plain(v,depth){
+ if(v===null||typeof v==="boolean"||typeof v==="string")return true;
+ if(typeof v==="number")return isFinite(v);
+ if(depth>32||typeof v!=="object")return false;
+ var i;
+ if(Array.isArray(v)){for(i=0;i<v.length;i++)if(!plain(v[i],depth+1))return false;return true;}
+ var pr=Object.getPrototypeOf(v);if(pr!==Object.prototype&&pr!==null)return false;
+ var ks=Object.keys(v);for(i=0;i<ks.length;i++)if(!plain(v[ks[i]],depth+1))return false;return true;
+}
+function cut(t){return t.length>600?t.slice(0,600)+"…":t;}
+function summarise(v){
+ if(v&&typeof v==="object"&&!Array.isArray(v)){
+  var src=v,ks=Object.keys(v);
+  if(ks.length===1&&ks[0]==="fields"&&v.fields&&typeof v.fields==="object"&&!Array.isArray(v.fields)){src=v.fields;ks=Object.keys(src);}
+  return cut(ks.map(function(k){return k+": "+(typeof src[k]==="string"?src[k]:JSON.stringify(src[k]));}).join("\n"));
+ }
+ return cut(JSON.stringify(v));
+}
+function size(n){return n<1024?n+" B":n<1048576?Math.round(n/1024)+" KB":(n/1048576).toFixed(1)+" MB";}
+function fetchJSON(path,opts,done){
+ queue=queue.then(function(){return fetch(path,opts).then(function(r){
+  return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
+   if(r.ok)done(true,j);else done(false,(j&&j.error)||("muster answered "+r.status));});},
+  function(){done(false,"muster could not be reached");});});
+}
+function opts(body,headers){var o={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `,body:body};if(headers)o.headers=headers;return o;}
+// The owner's confirm (owner only: its elements are in the owner's shell).
+var box=document.querySelector("[data-send-confirm]"),asking=null,shownAt=0;
+function ask(what,summary,cb){
+ if(asking)return false;
+ asking=cb;shownAt=Date.now();
+ box.querySelector("[data-send-what]").textContent=what;
+ box.querySelector("[data-send-summary]").textContent=summary;
+ box.hidden=false;box.focus();
+ return true;
+}
+function decide(yes){
+ var cb=asking;if(!cb)return;
+ if(yes&&Date.now()-shownAt<500)return;
+ asking=null;box.hidden=true;if(f)f.focus();cb(yes);
+}
+if(box){
+ box.querySelector("[data-send-go]").addEventListener("click",function(e){if(e.isTrusted)decide(true);});
+ box.querySelector("[data-send-cancel]").addEventListener("click",function(e){if(e.isTrusted)decide(false);});
+ document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}});
 }
 function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
  if(!base)return reply(false,"nothing can be sent from here");
- if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");
- if(TAP&&d.act!==true)return reply(false,"Tap to send");
- var comp=typeof d.component==="string"?d.component.slice(0,64):"",req;
- var opts={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `};
+ var comp=typeof d.component==="string"?d.component.slice(0,64):"",what,summary,run,i;
  if(d.op==="submit"){
-  var body;try{body=JSON.stringify({component:comp,data:d.data===undefined?null:d.data});}catch(e){return reply(false,"the data is not JSON");}
-  opts.headers={"Content-Type":"application/json"};opts.body=body;
- }else{
-  if(!(d.file instanceof Blob))return reply(false,"not a file");
-  var fd=new FormData();fd.append("component",comp);fd.append("file",d.file,String(d.name||"file").slice(0,200));
-  opts.body=fd;
- }
- // One request at a time, in the order sent (a several-file upload posts
- // every file at once).
- queue=queue.then(function(){return fetch(base+(d.op==="submit"?"/submit":"/upload"),opts).then(function(r){
-  return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
-   if(r.ok)reply(true,j);else reply(false,(j&&j.error)||("muster answered "+r.status));});},
-  function(){reply(false,"muster could not be reached");});});
+  if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");
+  var data=d.data===undefined?null:d.data;
+  if(!plain(data,0))return reply(false,"the data is not plain JSON");
+  var body=JSON.stringify({component:comp,data:data});
+  if(body.length>MAXBODY)return reply(false,"the data is too large");
+  what="To “"+comp+"”";summary=summarise(data);
+  run=function(done){fetchJSON(base+"/submit",opts(body,{"Content-Type":"application/json"}),done);};
+ }else if(d.op==="upload"){
+  if(!only(d,["muster","id","op","component","files"])||!Array.isArray(d.files)||d.files.length<1||d.files.length>20)return reply(false,"muster does not take that");
+  var files=[];
+  for(i=0;i<d.files.length;i++){
+   var x=d.files[i];
+   if(!x||typeof x!=="object"||!only(x,["file","name"])||!(x.file instanceof Blob)||typeof x.name!=="string")return reply(false,"not a file");
+   files.push({file:x.file,name:x.name.slice(0,200)||"file"});
+  }
+  what=(files.length===1?"A file":files.length+" files")+" to “"+comp+"”";
+  summary=cut(files.map(function(x){return x.name+" ("+size(x.file.size)+")";}).join("\n"));
+  run=function(done){
+   var k=0,last=null;
+   (function next(){
+    if(k>=files.length)return done(true,last);
+    var fd=new FormData();fd.append("component",comp);fd.append("file",files[k].file,files[k].name);k++;
+    fetchJSON(base+"/upload",opts(fd),function(ok,x){if(!ok)return done(false,x);last=x;next();});
+   })();
+  };
+ }else return reply(false,"unknown request");
+ if(!OWNER)return run(reply);
+ if(!box)return reply(false,"nothing can be sent from here");
+ if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
+  return reply(false,"Another send is waiting for your answer.");
 }
 window.addEventListener("message",function(ev){
  if(!f||port||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;
  var ch=new MessageChannel();port=ch.port1;
- port.onmessage=function(e){var m=e.data;if(!m||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};
+ port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};
  f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
 });
 })();`

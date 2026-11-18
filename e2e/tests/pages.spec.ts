@@ -498,10 +498,11 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
 
 const VIEW_TITLE = 'Quarterly launch plan: ' + 'every milestone, owner and date spelled out in full, '.repeat(3) + stamp;
 const LONG = Array.from({ length: 60 }, (_, i) => `Paragraph ${i + 1}: the plan, in more words than fit on one screen.`).join('\n\n');
-// The page's own script (round 0's Q1): it sends on load, untouched — through
-// muster.submit and by submitting a built-in form itself — and sends again
-// when its own button is tapped. In the owner's view only the tapped one may
-// record; a link's records all of them, as it always has.
+// The page's own script: it sends on load, untouched — through muster.submit
+// and by submitting a built-in form itself — and sends again when its own
+// button is tapped. In the owner's view each waits for the owner's Send in
+// muster's own "Send as you?" bar (one at a time); a link's records all of
+// them, as it always has.
 const SELF_SEND = `<p id="auto-out">waiting</p><button id="cj" type="button">Send my pick</button><p id="cj-out"></p>
 <script>
 muster.submit({auto:true}).then(function(r){document.getElementById('auto-out').textContent='saved:'+r.id;},
@@ -512,6 +513,18 @@ document.getElementById('cj').addEventListener('click',function(){
     function(e){document.getElementById('cj-out').textContent='refused:'+e.message;});
 });
 </script>`;
+// The owner's confirm: muster's "Send as you?" bar in the shell.
+const confirmBar = (p: Page) => p.locator('[data-send-confirm]');
+// answerConfirm waits for the bar to show want, then — past the half second
+// in which a press is ignored — taps Send (go) or Cancel.
+async function answerConfirm(p: Page, want: string | RegExp, go: boolean) {
+  const bar = confirmBar(p);
+  await expect(bar).toBeVisible();
+  await expect(bar.locator('[data-send-summary]')).toHaveText(want);
+  await p.waitForTimeout(600);
+  await bar.locator(go ? '[data-send-go]' : '[data-send-cancel]').click();
+  await expect(bar).toBeHidden();
+}
 const viewBlocks = (v: string) => [
   { type: 'question', id: 'pick', label: 'Your pick (' + v + ')', submit_label: 'Send pick' },
   { type: 'question', id: 'auto', label: 'Sent by the page itself' },
@@ -570,11 +583,16 @@ for (const vp of [
       expect(t.cut, 'the title is cut short').toBe(true);
       expect(t.overflow).toBe('ellipsis');
       expect(t.height, 'the title is one line').toBeLessThan(24);
-      // The page's own script sent on load, untouched: refused — by
-      // muster.submit, and by submitting a built-in form — and nothing is
-      // recorded (step 4 counts the rows).
-      await expect(frame.locator('#auto-out')).toHaveText('refused:Tap to send');
-      await expect(frame.locator('[data-muster-component="auto"] [data-muster-status]')).toHaveText('Tap to send');
+      // The page's own script sent on load, untouched: muster's bar asks the
+      // owner (the second send, while it waits, is refused), and nothing is
+      // recorded; Cancel answers the page "Not sent".
+      await expect(confirmBar(page)).toBeVisible();
+      await expect(confirmBar(page).locator('[data-send-what]')).toHaveText('To “custom”');
+      await expect(frame.locator('[data-muster-component="auto"] [data-muster-status]')).toHaveText('Another send is waiting for your answer.');
+      expect((await call('page_responses', { page_id: pageID })).body.count, 'a send waiting for the owner was recorded').toBe(0);
+      await shot(page, `owner-${vp.name}-confirm`);
+      await answerConfirm(page, 'auto: true', false);
+      await expect(frame.locator('#auto-out')).toHaveText('refused:Not sent');
       await settle(page);
       expect((await readCls(page)).total, 'the owner\'s view does not shift on load').toBeLessThan(0.01);
       await shot(page, `owner-${vp.name}-closed`);
@@ -611,10 +629,14 @@ for (const vp of [
       await expect(frame.locator('h1')).toHaveText('version one');
       await expect(chip).toHaveText('v1 ▾');
 
-      // 4. The owner submits from it: "Sent", recorded as theirs, at version 1.
+      // 4. The owner submits from it, confirms in muster's bar: "Sent",
+      // recorded as theirs, at version 1. (The page's send on load asks
+      // again first: cancelled.)
+      await answerConfirm(page, 'auto: true', false);
       const pick = frame.locator('[data-muster-component="pick"]');
       await pick.locator('input[name="answer"]').fill('the ' + vp.name + ' pick');
       await pick.getByRole('button', { name: 'Send pick' }).click();
+      await answerConfirm(page, 'answer: the ' + vp.name + ' pick', true);
       await expect(pick.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
       const read = await call('page_responses', { page_id: pageID });
       expect(read.body.count, JSON.stringify(read.body)).toBe(1);
@@ -624,9 +646,10 @@ for (const vp of [
       expect(fenced).toContain('"version":1');
       expect(fenced).not.toContain('"link_id"');
       expect(fenced, 'a send on load was recorded').not.toContain('"auto"');
-      // The page's own script, after a real tap on its own button: recorded.
-      await expect(frame.locator('#auto-out')).toHaveText('refused:Tap to send');
+      // The page's own script's send, confirmed by the owner: recorded.
+      await expect(frame.locator('#auto-out')).toHaveText('refused:Not sent');
       await frame.locator('#cj').click();
+      await answerConfirm(page, 'picked: tapped', true);
       await expect(frame.locator('#cj-out')).toHaveText(/^saved:\d+$/);
       const tapped = await call('page_responses', { page_id: pageID });
       expect(tapped.body.count, JSON.stringify(tapped.body)).toBe(2);
@@ -637,6 +660,7 @@ for (const vp of [
       // the top; the frame never moves, and nothing shifts.
       await page.goto(origin + `/pages/${pageID}/view`);
       await expect(frame.locator('h1')).toHaveText('version two');
+      await answerConfirm(page, 'auto: true', false);
       await settle(page);
       const fb = await frameEl.boundingBox();
       await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
@@ -729,63 +753,93 @@ for (const vp of [
   });
 }
 
-// --- ROUND 1 ON #802 ----------------------------------------------------------
+// --- ROUNDS 1 AND 2 ON #802: THE OWNER'S CONFIRM ------------------------------
 //
-// 🔴-1: the page's own script forging the owner's tap through Object.prototype:
-// a setter on a field the SDK used to ASSIGN after building a message ran with
-// the message as `this` and set act. Each attempt below runs on load, with no
-// tap, and must leave no row (the owner's view records nothing untapped).
-// Measured on 6e619e6: the first recorded one POST as the owner.
+// After round 2 (the operator's decision) nothing from the owner's view is
+// recorded until the owner taps Send in muster's own "Send as you?" bar, in
+// the shell, which the page's script cannot reach. Every forge of rounds 1 and
+// 2 — which beat the earlier tap check in the page — now only opens the bar
+// (or is refused while it waits), and leaves no row.
+
+// Round 1's forges: setters on Object.prototype, a getter on act, a scripted
+// requestSubmit() of a built-in form — all on load, untouched.
 const FORGE = `<p id="f-data">-</p><p id="f-act">-</p><p id="f-file">-</p><p id="f-req">-</p>
 <script>
 function said(id){return function(r){document.getElementById(id).textContent='saved:'+r.id;};}
 function no(id){return function(e){document.getElementById(id).textContent='refused:'+e.message;};}
 function setter(k){Object.defineProperty(Object.prototype,k,{configurable:true,set:function(v){
   Object.defineProperty(this,k,{value:v,enumerable:true,writable:true,configurable:true});this.act=true;}});}
-// a. round 1's exact payload: a setter on data.
 setter('data');
 muster.submit({s:'forge'}).then(said('f-data'),no('f-data'));
 delete Object.prototype.data;
-// b. a getter and setter on act itself.
 Object.defineProperty(Object.prototype,'act',{configurable:true,get:function(){return true;},set:function(){}});
 muster.submit({s:'forge-act'}).then(said('f-act'),no('f-act'));
 delete Object.prototype.act;
-// c. setters on file and name, through an upload.
 setter('file');setter('name');
 muster.upload(new File(['forged'],'forged.txt',{type:'text/plain'}),{component:'fu'}).then(said('f-file'),no('f-file'));
 delete Object.prototype.file;delete Object.prototype.name;
-// d. a scripted requestSubmit() of a built-in form, the data setter on.
 setter('data');
 document.querySelector('[data-muster-component="fq"] form').requestSubmit();
 delete Object.prototype.data;
 document.getElementById('f-req').textContent='done';
 </script>`;
+// Round 2's p2, verbatim: Array species makes the built-in upload's list a
+// page-built Proxy that answers act = true.
+const P2_SPECIES = "<p>p2</p><script>\nsetTimeout(()=>{\n const inp=document.querySelector('[data-muster-component=up1] input[type=file]');\n const dt=new DataTransfer(); dt.items.add(new File(['hello'],'evil-p2.txt')); inp.files=dt.files;\n class C { constructor(n){ const t=[]; return new Proxy(t,{get(o,k){ if(typeof k==='string'&&/^\\d+$/.test(k)&&o[k]){ const r=o[k]; const f={}; for(const kk of Object.keys(r)) f[kk]=r[kk]; Object.defineProperty(f,'act',{get(){return true},set(){},enumerable:true}); return f;} return Reflect.get(o,k);} }); } }\n C[Symbol.species]=C;\n Object.defineProperty(Array.prototype,'constructor',{get(){return C},configurable:true});\n inp.form.requestSubmit();\n window.p2done=1;\n},300);\n</script>\n";
 const FORGE_BLOCKS = [
   { type: 'question', id: 'fq', label: 'Forged question' },
   { type: 'upload', id: 'fu', label: 'Forged file' },
+  { type: 'upload', id: 'up1', label: 'Species upload' },
   { type: 'html', html: FORGE },
+  { type: 'html', html: P2_SPECIES },
 ];
 
-// 🔴-2: a page that sets itself up on DOMContentLoaded and on window.onload
-// (both had already passed when the markup went in, on 6e619e6). Each counts
-// how often it ran: exactly once.
-const READY = `<p id="dcl">0</p><p id="onl">0</p><script>
-document.addEventListener('DOMContentLoaded',function(){var e=document.getElementById('dcl');e.textContent=String(+e.textContent+1);});
-window.onload=function(){var e=document.getElementById('onl');e.textContent=String(+e.textContent+1);};
+// A page that, while the owner's bar is open, dispatches clicks, Enter and
+// Space, and focuses its parent and itself, every 50 ms.
+const HOSTILE = `<p id="h-out">-</p><button id="hb" type="button">x</button><script>
+muster.submit({hostile:1}).then(function(r){document.getElementById('h-out').textContent='saved:'+r.id;},function(e){document.getElementById('h-out').textContent='refused:'+e.message;});
+setInterval(function(){
+  document.getElementById('hb').click();
+  document.body.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  ['Enter',' '].forEach(function(k){document.dispatchEvent(new KeyboardEvent('keydown',{key:k,bubbles:true}));document.dispatchEvent(new KeyboardEvent('keyup',{key:k,bubbles:true}));});
+  try{window.parent.focus();}catch(e){}
+  window.focus();
+},50);
 </script>`;
 
-// 🟡-1: a page that scrolls itself down, then stops its own scrolling, so no
-// scroll up can ever be reported. Measured on 6e619e6: the header stayed
-// hidden through wheel-ups and PageUp.
+// What the owner confirms is exactly what is recorded: a form and a two-file
+// upload, through the built-in components.
+const EXACT_BLOCKS = [
+  { type: 'form', id: 'contact', label: 'Your details', fields: [
+    { name: 'email', label: 'Email', type: 'email', required: true },
+    { name: 'company', label: 'Company', type: 'text' },
+  ], submit_label: 'Send details' },
+  { type: 'upload', id: 'files', label: 'Your files', multiple: true, submit_label: 'Upload files' },
+];
+
+// A page that sets itself up on DOMContentLoaded (document and window) and on
+// window.onload: each must run exactly once.
+const READY = `<p id="dcl">0</p><p id="dclw">0</p><p id="onl">0</p><script>
+function bump(id){var e=document.getElementById(id);e.textContent=String(+e.textContent+1);}
+document.addEventListener('DOMContentLoaded',function(){bump('dcl');});
+window.addEventListener('DOMContentLoaded',function(){bump('dclw');});
+window.onload=function(){bump('onl');};
+</script>`;
+
+// Pages that try to keep the header hidden: round 1's (scroll down, then stop
+// their own scrolling), and round 2's p6 (then re-dispatch scroll events) and
+// p8 (then scroll an invisible inner element), verbatim.
 const STUCK = `<div style="height:4000px">tall</div><script>setTimeout(function(){window.scrollTo(0,800);
 setTimeout(function(){document.documentElement.style.overflow='hidden';},300);},300);</script>`;
+const P6_REDISPATCH = "<div style=\"height:5000px\">tall</div><script>\nsetTimeout(()=>{document.scrollingElement.scrollTop=800;setTimeout(()=>{document.documentElement.style.overflow='hidden';window.locked=1;\n setInterval(()=>window.dispatchEvent(new Event('scroll')),1000);},300);},500);\n</script>\n";
+const P8_INNER = "<div style=\"height:5000px\">tall<div id=\"x\" style=\"height:10px;overflow:auto;opacity:0\"><div style=\"height:100px\"></div></div></div><script>\nsetTimeout(()=>{document.scrollingElement.scrollTop=800;setTimeout(()=>{document.documentElement.style.overflow=\"hidden\";let t=0;setInterval(()=>{document.getElementById(\"x\").scrollTop=(t^=1)*50},1000);},300);},500);\n</script>";
 
-const ROUND1_VIEWPORTS = [
+const ROUND_VIEWPORTS = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true },
   { name: 'desktop', viewport: { width: 1280, height: 800 }, touch: false },
 ];
-// owner opens a signed-in context at vp, runs fn with its page, and closes it.
-async function asOwner(browser: Browser, vp: (typeof ROUND1_VIEWPORTS)[number], fn: (page: Page) => Promise<void>) {
+// asOwner opens a signed-in context at vp, runs fn with its page, and closes it.
+async function asOwner(browser: Browser, vp: (typeof ROUND_VIEWPORTS)[number], fn: (page: Page) => Promise<void>) {
   const ctx = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
   try {
     const page = await ctx.newPage();
@@ -795,73 +849,171 @@ async function asOwner(browser: Browser, vp: (typeof ROUND1_VIEWPORTS)[number], 
     await ctx.close();
   }
 }
+const rowsOf = async (id: number) => (await call('page_responses', { page_id: id })).body.count as number;
 
-for (const vp of ROUND1_VIEWPORTS) {
-  test(`at ${vp.name}, a page's script cannot forge the owner's tap through Object.prototype (round 1, 🔴-1)`, async ({ browser }) => {
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, no forge of rounds 1 and 2 records anything as the owner: each only opens muster's confirm`, async ({ browser }) => {
     await asOwner(browser, vp, async (page) => {
       const frame = page.frameLocator('iframe#page');
       const forged = await call('page_create', { title: 'Forge ' + vp.name + ' ' + stamp, blocks: FORGE_BLOCKS });
-      const forgedID = forged.body.page_id as number;
-      await page.goto(origin + `/pages/${forgedID}/view`);
+      const id = forged.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
       await expect(frame.locator('#f-req')).toHaveText('done');
-      for (const id of ['#f-data', '#f-act', '#f-file']) {
-        await expect(frame.locator(id), `${id} forged a tap`).toHaveText('refused:Tap to send');
-      }
-      await expect(frame.locator('[data-muster-component="fq"] [data-muster-status]')).toHaveText('Tap to send');
+      await expect.poll(() => frame.locator('body').evaluate(() => (window as unknown as { p2done?: number }).p2done)).toBe(1);
+      // The first send opened the bar; every other one was refused while it
+      // waits. None is recorded.
+      await expect(confirmBar(page)).toBeVisible();
+      await expect(confirmBar(page).locator('[data-send-summary]')).toHaveText('s: forge');
+      for (const f of ['#f-act', '#f-file']) await expect(frame.locator(f)).toHaveText('refused:Another send is waiting for your answer.');
+      await expect(frame.locator('[data-muster-component="fq"] [data-muster-status]')).toHaveText('Another send is waiting for your answer.');
+      await expect(frame.locator('[data-muster-component="up1"] [data-muster-status]')).toHaveText('Another send is waiting for your answer.');
       await page.waitForTimeout(1000);
-      const rows = await call('page_responses', { page_id: forgedID });
-      expect(rows.body.count, 'a forged tap recorded a row: ' + JSON.stringify(rows.body)).toBe(0);
+      expect(await rowsOf(id), 'a forge recorded a row').toBe(0);
+      await answerConfirm(page, 's: forge', false);
+      await expect(frame.locator('#f-data')).toHaveText('refused:Not sent');
+      expect(await rowsOf(id), 'Cancel recorded a row').toBe(0);
     });
   });
 
-  test(`at ${vp.name}, a page's DOMContentLoaded and load handlers run once, for the owner and a link's viewer (round 1, 🔴-2)`, async ({ browser }) => {
+  test(`at ${vp.name}, a page's script dispatching clicks, keys and focus cannot answer muster's confirm`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = page.frameLocator('iframe#page');
+      const h = await call('page_create', { title: 'Hostile ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: HOSTILE }] });
+      const id = h.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      await expect(confirmBar(page)).toBeVisible();
+      await page.waitForTimeout(2500);
+      await expect(confirmBar(page), 'the page answered the bar').toBeVisible();
+      await expect(frame.locator('#h-out')).toHaveText('-');
+      expect(await rowsOf(id), 'the page confirmed its own send').toBe(0);
+      // An Enter of the owner's own does not send either (Send is never
+      // focused; the page keeps taking focus back anyway), and Cancel does not.
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(300);
+      expect(await rowsOf(id)).toBe(0);
+      await answerConfirm(page, 'hostile: 1', false);
+      await expect(frame.locator('#h-out')).toHaveText('refused:Not sent');
+      expect(await rowsOf(id)).toBe(0);
+    });
+  });
+
+  test(`at ${vp.name}, the owner's Send records exactly what muster showed, Cancel nothing, and a link's viewer needs no confirm`, async ({ browser }) => {
+    await asOwner(browser, vp, async (page) => {
+      const frame = page.frameLocator('iframe#page');
+      const ex = await call('page_create', { title: 'Exact ' + vp.name + ' ' + stamp, blocks: EXACT_BLOCKS });
+      const id = ex.body.page_id as number;
+      await page.goto(origin + `/pages/${id}/view`);
+      const contact = frame.locator('[data-muster-component="contact"]');
+      // Cancel: nothing.
+      await contact.locator('input[name="email"]').fill('no@example.com');
+      await contact.getByRole('button', { name: 'Send details' }).click();
+      await answerConfirm(page, 'email: no@example.com', false);
+      await expect(contact.locator('[data-muster-status]')).toHaveText('Not sent');
+      expect(await rowsOf(id)).toBe(0);
+      // A press of Send in the bar's first half second is ignored.
+      await contact.locator('input[name="email"]').fill('me@example.com');
+      await contact.locator('input[name="company"]').fill('Example Co');
+      await contact.getByRole('button', { name: 'Send details' }).click();
+      await expect(confirmBar(page)).toBeVisible();
+      await confirmBar(page).locator('[data-send-go]').click();
+      await expect(confirmBar(page), 'a press in the first 500 ms sent').toBeVisible();
+      expect(await rowsOf(id)).toBe(0);
+      // Send: exactly what was shown.
+      await expect(confirmBar(page).locator('[data-send-what]')).toHaveText('To “contact”');
+      await answerConfirm(page, 'email: me@example.com\ncompany: Example Co', true);
+      await expect(contact.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      // Two files, one confirm, names and sizes shown.
+      const files = frame.locator('[data-muster-component="files"]');
+      await files.locator('input[type="file"]').setInputFiles([
+        { name: 'one.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') },
+        { name: 'two.txt', mimeType: 'text/plain', buffer: Buffer.from('second') },
+      ]);
+      await files.getByRole('button', { name: 'Upload files' }).click();
+      await expect(confirmBar(page).locator('[data-send-what]')).toHaveText('2 files to “files”');
+      await answerConfirm(page, 'one.txt (5 B)\ntwo.txt (6 B)', true);
+      await expect(files.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      const read = await call('page_responses', { page_id: id });
+      expect(read.body.count, JSON.stringify(read.body)).toBe(3);
+      const fenced = read.body.responses as string;
+      expect(fenced).toContain('"email":"me@example.com"');
+      expect(fenced).toContain('"company":"Example Co"');
+      expect(fenced).toContain('"name":"one.txt"');
+      expect(fenced).toContain('"name":"two.txt"');
+      // (The preface names "by_owner":true too: count the rows' own.)
+      expect(fenced.match(/"by_owner":true,"component"/g)?.length).toBe(3);
+      // A link's viewer: no confirm, recorded at once.
+      const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+      try {
+        const sp = await stranger.newPage();
+        await sp.goto((await shared.json()).url as string);
+        const sc = sp.frameLocator('iframe#page').locator('[data-muster-component="contact"]');
+        await sc.locator('input[name="email"]').fill('viewer@example.com');
+        await sc.getByRole('button', { name: 'Send details' }).click();
+        await expect(sc.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+        await expect(confirmBar(sp)).toHaveCount(0);
+      } finally {
+        await stranger.close();
+      }
+      expect(await rowsOf(id)).toBe(4);
+    });
+  });
+
+  test(`at ${vp.name}, a page's DOMContentLoaded and load handlers run once, for the owner and a link's viewer`, async ({ browser }) => {
     await asOwner(browser, vp, async (page) => {
       const frame = page.frameLocator('iframe#page');
       const ready = await call('page_create', { title: 'Ready ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: READY }] });
       const readyID = ready.body.page_id as number;
       await page.goto(origin + `/pages/${readyID}/view`);
-      await expect(frame.locator('#dcl'), 'the owner: DOMContentLoaded').toHaveText('1');
-      await expect(frame.locator('#onl'), 'the owner: window.onload').toHaveText('1');
+      for (const [sel, what] of [['#dcl', 'document DOMContentLoaded'], ['#dclw', 'window DOMContentLoaded'], ['#onl', 'window.onload']]) {
+        await expect(frame.locator(sel), 'the owner: ' + what).toHaveText('1');
+      }
       const shared = await page.request.post(origin + `/pages/${readyID}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
       const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
       try {
         const sp = await stranger.newPage();
         await sp.goto((await shared.json()).url as string);
         const sf = sp.frameLocator('iframe#page');
-        await expect(sf.locator('#dcl'), 'a link viewer: DOMContentLoaded').toHaveText('1');
-        await expect(sf.locator('#onl'), 'a link viewer: window.onload').toHaveText('1');
+        for (const [sel, what] of [['#dcl', 'document DOMContentLoaded'], ['#dclw', 'window DOMContentLoaded'], ['#onl', 'window.onload']]) {
+          await expect(sf.locator(sel), 'a link viewer: ' + what).toHaveText('1');
+        }
       } finally {
         await stranger.close();
       }
       await page.waitForTimeout(800);
-      await expect(frame.locator('#dcl'), 'DOMContentLoaded ran more than once').toHaveText('1');
-      await expect(frame.locator('#onl'), 'load ran more than once').toHaveText('1');
+      for (const sel of ['#dcl', '#dclw', '#onl']) await expect(frame.locator(sel), sel + ' ran more than once').toHaveText('1');
     });
   });
 
-  test(`at ${vp.name}, a page that stops its own scrolling cannot keep the header hidden (round 1, 🟡-1)`, async ({ browser }) => {
-    await asOwner(browser, vp, async (page) => {
-      const frame = page.frameLocator('iframe#page');
-      const header = page.locator('header[data-page-brand]');
-      const stuck = await call('page_create', { title: 'Stuck ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html: STUCK }] });
-      await page.goto(origin + `/pages/${stuck.body.page_id as number}/view`);
-      // Only once the page has stopped its own scrolling: a scroll up before
-      // that is a real one, and reports itself.
-      await expect.poll(() => frame.locator('body').evaluate(() => document.documentElement.style.overflow)).toBe('hidden');
-      await expect(header, 'the page hid the header').toHaveAttribute('data-hidden', '');
-      await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
-      await page.mouse.wheel(0, -400);
-      await page.keyboard.press('PageUp');
-      await expect(header, 'the header came back on its own').not.toHaveAttribute('data-hidden', { timeout: 5000 });
-      // The control: an ordinary scroll down hides it, and it comes back by
-      // the same rule once the scrolling stops.
-      const long = await call('page_create', { title: 'Long ' + vp.name + ' ' + stamp, blocks: [{ type: 'markdown', text: LONG }] });
-      await page.goto(origin + `/pages/${long.body.page_id as number}/view`);
-      await expect(frame.locator('p').first()).toBeVisible();
-      await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
-      await page.mouse.wheel(0, 900);
-      await expect(header).toHaveAttribute('data-hidden', '');
-      await expect(header, 'control: back once the scrolling stops').not.toHaveAttribute('data-hidden', { timeout: 5000 });
+  for (const [label, html, locked] of [
+    ['round 1: stops its own scrolling', STUCK, `document.documentElement.style.overflow==='hidden'`],
+    ['round 2 p6: re-dispatches scroll', P6_REDISPATCH, `window.locked===1`],
+    ['round 2 p8: scrolls an inner element', P8_INNER, `document.documentElement.style.overflow==='hidden'`],
+  ] as const) {
+    test(`at ${vp.name}, a page cannot keep the header hidden (${label})`, async ({ browser }) => {
+      await asOwner(browser, vp, async (page) => {
+        const frame = page.frameLocator('iframe#page');
+        const header = page.locator('header[data-page-brand]');
+        const stuck = await call('page_create', { title: 'Stuck ' + vp.name + ' ' + stamp, blocks: [{ type: 'html', html }] });
+        await page.goto(origin + `/pages/${stuck.body.page_id as number}/view`);
+        // Only once the page has stopped its own scrolling: a scroll up
+        // before that is a real one, and reports itself.
+        await expect.poll(() => frame.locator('body').evaluate((_, c) => new Function('return ' + c)() as boolean, locked)).toBe(true);
+        await expect(header, 'the page hid the header').toHaveAttribute('data-hidden', '');
+        await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+        await page.mouse.wheel(0, -400);
+        await page.keyboard.press('PageUp');
+        await expect(header, 'the header came back on its own').not.toHaveAttribute('data-hidden', { timeout: 5000 });
+        // The control: an ordinary scroll down hides it, and it comes back by
+        // the same rule once the scrolling stops.
+        const long = await call('page_create', { title: 'Long ' + vp.name + ' ' + stamp, blocks: [{ type: 'markdown', text: LONG }] });
+        await page.goto(origin + `/pages/${long.body.page_id as number}/view`);
+        await expect(frame.locator('p').first()).toBeVisible();
+        await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+        await page.mouse.wheel(0, 900);
+        await expect(header).toHaveAttribute('data-hidden', '');
+        await expect(header, 'control: back once the scrolling stops').not.toHaveAttribute('data-hidden', { timeout: 5000 });
+      });
     });
-  });
+  }
 }

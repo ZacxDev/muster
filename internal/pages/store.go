@@ -821,7 +821,7 @@ func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, compone
 // updated_at.
 //
 // 🔴 ONE RESPONDER PER ROW: linkID > 0 is that link's response; 0 is the
-// owner's (by_owner, link_id NULL — 0149's page_responses_one_responder).
+// owner's (by_owner, link_id NULL — 0150's page_responses_one_responder).
 // The owner's caps are a link's caps, so their own view is no bigger a hole.
 func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	if len(data) == 0 {

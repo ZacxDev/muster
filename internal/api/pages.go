@@ -291,7 +291,7 @@ func pageStoreRefusal(err error) (int, string, string) {
 }
 
 // pageResponder is who a response is recorded as: a share link's viewer, or
-// the page's signed-in owner from their own view (migration 0149). Both go
+// the page's signed-in owner from their own view (migration 0150). Both go
 // through the SAME submit and upload code (pageSubmit, pageUpload), with the
 // same checks, rate limits, caps and size bounds; only the identity, the
 // version and the store call differ.

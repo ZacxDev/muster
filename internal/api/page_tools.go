@@ -119,9 +119,9 @@ func pageToolDefs() []agents.ToolDef {
 		{Type: "function", Name: pageCreateTool,
 			Description: "Publish a page for your owner — a small web page that can show what you built, or collect answers, choices, form " +
 				"fields, files or an approval from someone you share it with. It is PRIVATE until it has a live share link: " +
-				"your owner is shown it at once (a card in your chat and a notification) and opens it at preview_url, the owner's view, signed in. What is sent from there within a few seconds of their " +
-				"tap or key press inside the page is recorded as theirs (by_owner in page_responses) — your page's own script's sends " +
-				"included, in that window; anything else from there is refused. " +
+				"your owner is shown it at once (a card in your chat and a notification) and opens it at preview_url, the owner's view, signed in. Every send from there — your page's own script's included — " +
+				"first shows them muster's \"Send as you?\" bar with what will be sent, and is recorded as theirs (by_owner in " +
+				"page_responses) only if they tap Send; Cancel answers your page \"Not sent\". " +
 				"Returns its id. Revise it with page_update; share it with page_share_request.",
 			Parameters: objSchema(map[string]any{
 				"title":  strProp("The page's title (up to 200 characters)."),

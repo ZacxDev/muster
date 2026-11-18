@@ -87,9 +87,12 @@ muster.page                        // {title, version}
 
 `custom` is accepted only from a version with an `html` block, and takes any
 JSON up to 32 KiB (stored as `{"value": …}`). The built-in components use the
-same two calls. In [your own view](#the-owners-view) they record as yours, but
-only right after a tap or key press inside the page; otherwise they are
-answered `Tap to send` and record nothing.
+same two calls. In [your own view](#the-owners-view) muster first asks you
+(*Send as you?*): the call resolves once you tap **Send**, and rejects with
+`Not sent` if you cancel, or `Another send is waiting for your answer.` if
+one already is. Data must be plain JSON (objects, arrays, strings, finite
+numbers, booleans, null), at most 32 levels deep; `muster.upload` takes a
+`File` or `Blob`.
 
 The page's own markup is put in by this script once it is connected to
 muster's shell and the document is parsed, so the page's scripts run then,
@@ -98,8 +101,9 @@ run, `DOMContentLoaded` is dispatched to `document`, and `load` to `window`
 when the window has already loaded (otherwise the real one follows), once
 each, so code waiting for either works. What differs from a plain page:
 `document.readyState` is already `interactive` or `complete` while your
-scripts run, and `document.write` cannot add to the page (it replaces it, as
-after load). Talk to muster only through `muster.submit` and
+scripts run; `document.write` cannot add to the page (it replaces it, as
+after load); and a `<script type="module">` runs after both events have been
+dispatched, so it must not wait for either (put its setup at its top level). Talk to muster only through `muster.submit` and
 `muster.upload`: a message posted to the parent window directly is ignored.
 
 Inside the share page's frame the page has **no network**: `fetch`, images
@@ -209,8 +213,8 @@ A link's viewer and you see the same page under the same header: one slim
 row (about 40px) with the instance's logo and name, and the page's title on
 one line, cut short with an ellipsis (the whole title shows on hover). The
 header slides away as the page is scrolled down and comes back on any scroll
-up, whenever the page is near its top, and on its own once the page has not
-scrolled for 3 seconds; it is always there when the page opens. The page cannot hide it on its own: the frame reports its scroll on a
+up, whenever the page is near its top, and on its own 3 seconds after the
+page last scrolled further down; it is always there when the page opens. The page cannot hide it on its own: the frame reports its scroll on a
 private channel the page's own script never holds (it is connected before any
 of the page's script runs), and the shell only accepts
 a number there.
@@ -225,18 +229,19 @@ link's, and show on the page's screen and in `page_responses` as yours
 that version: it is checked against version N's components and recorded with
 its number. Your own responses do not notify you.
 
-🔴 **A send from your view needs your tap.** It is recorded only when you
-tapped, clicked or pressed a key inside the page just before it — a form's
-button, an upload's button, a control of the page's own. A page whose
-script sends on its own — the moment it opens, say — records nothing as
-yours: the page shows *Tap to send*. muster reads the tap inside the page's
-frame, through browser functions saved before any of the page's script runs,
-and sends each message as one object built at once, so the page's script
-cannot fake a tap by patching JavaScript. What a page can still do:
-once you have tapped anything on it, its script can send in the next few
-seconds whatever it likes, recorded as yours — "yours" means you were
-viewing it and tapped, not that you chose each value. A browser without `navigator.userActivation`
-(older than Safari 16.4) cannot send from your view at all.
+🔴 **Nothing is sent as you until you confirm it.** Every send from your
+view — a form, an answer, a file, or something the page's own script sends,
+the moment it opens or later — first shows muster's own **Send as you?** bar
+at the bottom of the screen (a sheet on a phone, a box on a wider screen).
+It says which component it is for and shows what will be sent: the fields
+as text (cut at 600 characters), or each file's name and size. **Send**
+records exactly that; **Cancel** (or Escape) records nothing, and the page
+is told *Not sent*. The bar is muster's, outside the page: the page's script
+cannot reach it, press it or change what it shows. Send is never focused
+when the bar opens, a press of it in its first half second is ignored, and
+one send waits at a time — another, while the bar is open, is refused
+(*Another send is waiting for your answer.*). A viewer through a link sees
+no bar: what they send is recorded as before.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
 version, when it was made and which is current (the one links show); tapping

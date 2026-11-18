@@ -155,7 +155,10 @@ func TestThePagesMarkupIsNotInTheDocument(t *testing.T) {
 	for _, want := range []string{
 		// Round 1's 🔴-2: in once the document is parsed; DOMContentLoaded
 		// dispatched to the page's scripts after they run, load too when past.
-		`if(!m||R(gRS,D,[])==="loading"){R(AEL,D,["DOMContentLoaded",show]);return;}`,
+		// Round 2: the insertion is a task AFTER the real DOMContentLoaded
+		// (later), so a window listener the page adds never sees both.
+		`if(!m||R(gRS,D,[])==="loading"){if(!waitedDCL){waitedDCL=true;R(AEL,D,["DOMContentLoaded",later]);}return;}`,
+		`function later(){R(ST,W,[show,0]);}`,
 		`R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);`,
 	} {
@@ -204,30 +207,27 @@ func TestTheSDKHasNoNetwork(t *testing.T) {
 }
 
 // TestTheSDKSendsOnlyOnItsPrivatePort pins, as text, what keeps a page's own
-// script from forging a scroll report, a send, or its tap (sdkScript's
-// comment): the SDK captures the primitives it calls before the page's script
-// can patch them — the userActivation getter included; it takes the shell's
-// port in a CAPTURE listener on window and stops the event there; every
-// message it sends goes on that port, a send carrying act, the content
-// frame's activation read through the saved getter (a built-in form's read
-// once, at its submit); a scroll report at most once per animation frame.
+// script off the port and the scroll channel (sdkScript's comment): the
+// functions they rest on are saved before the page's script runs; the port
+// is taken in a CAPTURE listener on window and the event stopped there;
+// every message is an object literal the SDK builds, with its own op (a page
+// cannot post a scroll report through it, whatever it does to prototypes);
+// a scroll is reported only for the browser's own scroll of the document, at
+// most once per animation frame. Round 2: there is no tap gate in the page
+// any more — the owner's shell confirms — so nothing reads userActivation and
+// no message carries act.
 func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 	sdk := sdkScript(Version{Title: "x", Version: 1}, "")
 	for _, want := range []string{
 		`PM=MessagePort.prototype.postMessage`, `RAF=W.requestAnimationFrame`, `AEL=EventTarget.prototype.addEventListener`,
 		`SIP=Event.prototype.stopImmediatePropagation`, `gSrc=gd(MessageEvent.prototype,"source")`, `gPorts=gd(MessageEvent.prototype,"ports")`,
-		`gTop=gd(Element.prototype,"scrollTop")`,
-		`UA=W.navigator.userActivation||null,gAct=W.UserActivation?gd(W.UserActivation.prototype,"isActive"):null`,
-		`function act(){return !!(UA&&gAct&&R(gAct,UA,[])===true);}`,
+		`gTarget=gd(Event.prototype,"target")`, `gTop=gd(Element.prototype,"scrollTop")`,
 		`R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}])`,
 		`if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
  R(SIP,ev,[]);`,
 		`},true]);`,
-		`if(port&&!queued){queued=true;R(RAF,W,[report]);}`,
-		`return op==="upload"?{muster:1,id:id,op:op,act:false,component:component,file:value,name:fname}:
-  {muster:1,id:id,op:op,act:false,component:component,data:value};`,
-		`var a=act();
- for(i=0;i<n;i++){ms[i].act=a;R(PM,port,[ms[i]]);}`,
+		`if(ev.isTrusted!==true||R(gTarget,ev,[])!==D)return;if(port&&!queued){queued=true;R(RAF,W,[report]);}`,
+		`R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);`,
 		`waiting=Object.create(null)`, `P=W.Promise`,
 	} {
 		if !strings.Contains(sdk, want) {
@@ -235,14 +235,12 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 		}
 	}
 	if strings.Count(sdk, `op:"scroll"`) != 1 || strings.Count(sdk, "R(PM,port,") != 2 {
-		t.Error("the SDK sends some other way than its port")
+		t.Error("the SDK sends some other way than its port, or posts a scroll report from elsewhere")
 	}
-	// Round 1's 🔴-1: a field of a message is never ASSIGNED where it is not
-	// already the message's own (a page's Object.prototype setter would run,
-	// with the message as this, and could set act). The one assignment is
-	// act, on the literal's own property, right after the tap is read.
-	if got := regexp.MustCompile(`[\w\]\)]\.(act|data|file|name|component|op|id)=[^=]`).FindAllString(sdk, -1); len(got) != 1 || got[0] != "].act=a" {
-		t.Errorf("the SDK assigns a message field outside its literal: %q", got)
+	for _, gone := range []string{"userActivation", "isActive", "act:", ".act", ".map(", "SLICE", "MAP"} {
+		if strings.Contains(sdk, gone) {
+			t.Errorf("the SDK still has %q (the page-realm tap gate is gone; species-built arrays never carry a message)", gone)
+		}
 	}
 	if strings.Contains(sdk, "new Promise") || strings.Contains(sdk, ".then(") {
 		t.Error("the SDK uses the page's Promise or its then")
@@ -255,14 +253,14 @@ func TestTheSDKSendsOnlyOnItsPrivatePort(t *testing.T) {
 }
 
 // TestTheShellRelaysOnlyOnItsPort: the shell takes from window messages only
-// its own frame's first hello, answered with the port; a submit or upload is
-// relayed only from the port, and answered there.
+// its own frame's first hello, answered with the port; a send is relayed
+// only from the port, and answered there.
 func TestTheShellRelaysOnlyOnItsPort(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{
 		`if(!f||port||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;`,
-		`port.onmessage=function(e){var m=e.data;if(!m||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};`,
+		`port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};`,
 		`function reply(ok,x){port.postMessage(`,
 	} {
 		if !strings.Contains(js, want) {
@@ -274,45 +272,92 @@ func TestTheShellRelaysOnlyOnItsPort(t *testing.T) {
 	}
 }
 
-// TestTheShellRelayOfALinkOmitsCredentials pins a link's relay's trust rules
-// as text: two ops, credentials omitted, no tap needed (a stranger's page
-// records what its script sends, as it always has).
-func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
+// TestTheShellChecksASendsOwnCopy: a send is checked in the shell on its own
+// received copy — a fixed field set, plain JSON data under the size cap, 1 to
+// 20 {file: Blob, name} pairs — and that ONE copy is what is summarised and
+// what is posted (the submit's body is stringified once, before the confirm).
+func TestTheShellChecksASendsOwnCopy(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
-	for _, want := range []string{`credentials:"omit"`, `referrerPolicy:"no-referrer"`, `TAP=false`,
-		`if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");`, `if(d.op==="submit"){`,
-		`fetch(base+(d.op==="submit"?"/submit":"/upload"),opts)`, `queue=queue.then(function(){return fetch(`, `base="/s/TOKEN"`} {
+	for _, want := range []string{
+		`if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");`,
+		`if(!plain(data,0))return reply(false,"the data is not plain JSON");`,
+		`var body=JSON.stringify({component:comp,data:data});
+  if(body.length>MAXBODY)return reply(false,"the data is too large");
+  what="To “"+comp+"”";summary=summarise(data);
+  run=function(done){fetchJSON(base+"/submit",opts(body,{"Content-Type":"application/json"}),done);};`,
+		`if(!only(d,["muster","id","op","component","files"])||!Array.isArray(d.files)||d.files.length<1||d.files.length>20)return reply(false,"muster does not take that");`,
+		`if(!x||typeof x!=="object"||!only(x,["file","name"])||!(x.file instanceof Blob)||typeof x.name!=="string")return reply(false,"not a file");`,
+		`var pr=Object.getPrototypeOf(v);if(pr!==Object.prototype&&pr!==null)return false;`,
+		`if(depth>32||typeof v!=="object")return false;`,
+		// A several-file upload stops at the first refusal.
+		`fetchJSON(base+"/upload",opts(fd),function(ok,x){if(!ok)return done(false,x);last=x;next();});`,
+		`MAXBODY=36864`,
+	} {
 		if !strings.Contains(js, want) {
-			t.Errorf("the relay lacks %q", want)
+			t.Errorf("the shell lacks %q", want)
 		}
 	}
 	if strings.Count(js, "fetch(") != 1 {
-		t.Errorf("the relay fetches in %d places, want the one, to the two routes", strings.Count(js, "fetch("))
+		t.Errorf("the shell fetches in %d places, want the one", strings.Count(js, "fetch("))
+	}
+}
+
+// TestTheShellRelayOfALinkOmitsCredentials: a link's shell posts at once,
+// with credentials omitted — no confirm (it has none to show).
+func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
+	js := ShellScript("/s/TOKEN", false)
+	for _, want := range []string{`credentials:"omit"`, `referrerPolicy:"no-referrer"`, `OWNER=false`, `if(!OWNER)return run(reply);`, `base="/s/TOKEN"`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the relay lacks %q", want)
+		}
 	}
 	if strings.Contains(js, `credentials:"include"`) || strings.Contains(js, `credentials:"same-origin"`) {
 		t.Error("a link's relay sends credentials")
 	}
 }
 
-// TestTheOwnersRelaySendsTheirSessionOnlyWithATap: the owner's relay sends
-// their session same-origin, with a same-origin referrer policy (so a
-// Referer is there for requireSameOrigin should a browser send no Origin),
-// and only a send whose act is true; one without is answered
-// "Tap to send", before any request.
-func TestTheOwnersRelaySendsTheirSessionOnlyWithATap(t *testing.T) {
+// TestTheOwnersShellPostsOnlyWhatTheyConfirm (round 2, the operator's
+// decision): in the owner's shell a send opens the shell's own "Send as you?"
+// bar and is posted — their session, same-origin — only from its Send, a
+// trusted click in the shell's realm; Cancel answers "Not sent"; Send is
+// never focused on opening and a press within 500 ms is ignored; one send
+// waits at a time.
+func TestTheOwnersShellPostsOnlyWhatTheyConfirm(t *testing.T) {
 	js := ShellScript("/pages/7/versions/2", true)
-	if strings.Count(js, "fetch(") != 1 {
-		t.Errorf("the owner's relay fetches in %d places, want the one", strings.Count(js, "fetch("))
-	}
-	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`, `TAP=true`,
-		`if(TAP&&d.act!==true)return reply(false,"Tap to send");
- var comp=`, `fetch(base+(d.op==="submit"?"/submit":"/upload"),opts)`} {
+	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`, `OWNER=true`,
+		`if(!OWNER)return run(reply);
+ if(!box)return reply(false,"nothing can be sent from here");
+ if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
+  return reply(false,"Another send is waiting for your answer.");`,
+		`if(asking)return false;`,
+		`box.hidden=false;box.focus();`,
+		`if(yes&&Date.now()-shownAt<500)return;`,
+		`box.querySelector("[data-send-go]").addEventListener("click",function(e){if(e.isTrusted)decide(true);});`,
+		`if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}`,
+	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the owner's relay lacks %q", want)
 		}
 	}
-	if strings.Contains(js, `credentials:"omit"`) || strings.Contains(js, `"no-referrer"`) {
-		t.Error("the owner's relay omits their session or its Referer")
+	if strings.Contains(js, `credentials:"omit"`) || strings.Contains(js, "Tap to send") || strings.Contains(js, ".act") {
+		t.Error("the owner's relay omits their session, or keeps the page-realm tap gate")
+	}
+	out := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/pages/7/versions/2", Nonce: "N", Owner: &OwnerChrome{Version: 2, DetailHref: "/pages/7"}})
+	for _, want := range []string{
+		`<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what" tabindex="-1" data-send-confirm hidden>`,
+		`<p class="ch" id="send-confirm-h">Send as you?</p>`,
+		`<button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button>`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the owner's shell lacks %q", want)
+		}
+	}
+	if strings.Contains(out, "autofocus") {
+		t.Error("something in the owner's shell is autofocused")
+	}
+	link := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/s/T", Nonce: "N"})
+	if strings.Contains(link[:strings.Index(link, "<script nonce=")], "data-send-confirm") {
+		t.Error("a link's shell draws the owner's confirm")
 	}
 }
 
@@ -325,11 +370,13 @@ func TestTheShellHidesItsHeaderOnlyByTheRules(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{
 		`if(typeof y!=="number"||!isFinite(y)||y<0)return;`,
-		`if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);`,
+		`var down=y>lastY;
+ if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(down)window.__musterHeader(false);`,
 		`if(m.op==="scroll")onY(m.y);`,
-		// Round 1's 🟡-1: the shell's own rule — back after 3s with no report.
-		`clearTimeout(quiet);
- if(hdr&&hdr.hasAttribute("data-hidden"))quiet=setTimeout(function(){window.__musterHeader(true);},3000);`,
+		// Round 1's 🟡-1: the shell's own rule — back after 3s. Round 2: only
+		// a report FURTHER DOWN restarts the wait.
+		`if(!hdr||!hdr.hasAttribute("data-hidden")){clearTimeout(quiet);return;}
+ if(down){clearTimeout(quiet);quiet=setTimeout(function(){window.__musterHeader(true);},3000);}`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the header's rules lack %q", want)

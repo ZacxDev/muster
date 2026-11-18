@@ -212,7 +212,7 @@ type Response struct {
 	// LinkID is the link it came through; 0 for the owner's (ByOwner).
 	LinkID int64
 	// ByOwner: the page's owner sent it from their own view of the page,
-	// signed in (migration 0149), not a viewer through a link.
+	// signed in (migration 0150), not a viewer through a link.
 	ByOwner        bool
 	Version        int
 	Component      string
