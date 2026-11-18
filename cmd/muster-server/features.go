@@ -175,6 +175,8 @@ func featureCatalog() []features.Feature {
 			Description: "A card at the top of the chief panel grouping every one of your sessions by what it needs.",
 			Enable:      []features.Var{is(envFleetDigest, "1")}},
 		{ID: features.FleetOrchestration, Name: "Fleet proposals",
+			PlainName:   "Suggested messages",
+			OneLine:     "The chief suggests what to send each session; nothing is sent until you approve it.",
 			Description: "The chief proposes what to send each of your sessions; nothing is sent until you tap Approve on its card in the fleet digest.",
 			Enable:      []features.Var{is(envSessionState, "1"), is(envFleetDigest, "1"), is(envFleetOrchestration, "propose")}, NeedsChief: true},
 		{ID: features.AskLog, Name: "Ask log",
