@@ -35,7 +35,7 @@ import (
 // audit_log row carrying ids only (MoveAction; auditDetail), never text.
 // ---------------------------------------------------------------------------
 
-// The action classes this phase writes (0157's CHECK).
+// The action classes this phase writes (0157's CHECK, widened by 0158).
 const (
 	ClassContinue = "continue"
 	ClassHandoff  = "handoff"
