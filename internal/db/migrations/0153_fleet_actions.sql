@@ -1,4 +1,4 @@
--- muster 0152 — THE FLEET'S ACTION LOG (internal/fleet actions.go; docs/chief.md
+-- muster 0153 — THE FLEET'S ACTION LOG (internal/fleet actions.go; docs/chief.md
 -- "Fleet proposals", docs/schema.md).
 --
 --   fleet_actions   one row per action the chief's fleet orchestration
@@ -37,7 +37,7 @@
 -- rollback/rls_off.sql turns it off with the rest, and --rls-on re-applies
 -- this file (db.RLSOn), so every statement is idempotent.
 --
--- Must apply after its predecessor, 0151_session_route_target_host (the contiguity
+-- Must apply after its predecessor, 0152_page_owner_view (the contiguity
 -- test refuses a gap). 🔴 RENUMBER IT (and db.fleetActionsMigrationVersion) at
 -- merge if main moved.
 --
@@ -57,7 +57,7 @@
 --   ALTER TABLE public.fleet_owner_marks DROP COLUMN IF EXISTS proposals_pushed_at;
 --   DROP TABLE public.fleet_actions;   (its trigger goes with it)
 --   DROP FUNCTION public.fleet_actions_append_only();
---   DELETE FROM schema_migrations WHERE version = 152;
+--   DELETE FROM schema_migrations WHERE version = 153;
 
 SET LOCAL lock_timeout = '3s';
 
