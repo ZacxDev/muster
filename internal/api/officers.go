@@ -966,9 +966,24 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	if err != nil {
 		return nil, fmt.Errorf("officers: read agents: %w", err)
 	}
-	idx := f.s.instanceIndexWithin(octx, officerInstancesWithin)
+	// 🔴 ONLY THIS POOL'S INSTANCES ARE READ, and only those with an agent row
+	// (InstanceReader): a slot with no row has no instance to ask about. The
+	// whole-fleet read this replaced cost every agent namespace in the cluster
+	// per officer per pass, and with several officers checked at once it ran
+	// the provisioner's client out of request budget — every pass then failed
+	// blind and no officer started anything.
+	have := make([]agents.Agent, 0, o.Slots())
+	for n := 1; n <= o.Slots(); n++ {
+		if a, ok := rows[o.InstanceName(n)]; ok {
+			have = append(have, a)
+		}
+	}
+	idx := f.s.instancesOfWithin(octx, have, officerInstancesWithin)
 	if idx == nil {
-		return nil, errors.New("officers: the provisioner's instances could not be read")
+		// ErrBlind: the provisioner did not answer (an error, or no answer
+		// within the bound — both logged by the read). The officer runtime
+		// retries exactly this at the poll interval rather than backing off.
+		return nil, fmt.Errorf("officers: the provisioner's instances could not be read (%w)", provision.ErrBlind)
 	}
 	// 🔴 EVERY SLOT, chat-only instances included (Officer.Slots): an
 	// instance the loop started for chats and this list hid would read as

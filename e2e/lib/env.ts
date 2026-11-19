@@ -490,6 +490,13 @@ export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_M
 export const pluginAutostartPort = port + 450;
 export const pluginAutostartConnectPort = port + 451;
 export const pluginAutostartFakePort = port + 452;
+// tests/opencode-ask-media.spec.ts: a mirrored opencode session's ask carrying
+// a file — its own e2eterm server (uploads on, against a fake S3 the spec
+// plays), the fake S3, and the fake host's loopback MCP endpoint (+460 to
+// +462: clear of the blocks above).
+export const ocAskMediaPort = port + 460;
+export const ocAskMediaS3Port = port + 461;
+export const ocAskMediaMCPPort = port + 462;
 // tests/officer-needs-you.spec.ts: an officer's page as the place its owner
 // deals with it — its own server with plugins on (+445: clear of the blocks
 // above, of sidebarOfficersPort's +440/+441 and of featuresMember's +442 to +444).

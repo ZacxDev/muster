@@ -343,7 +343,8 @@ func TestOfficersWithNoAgentsStillDrawTheGroup(t *testing.T) {
 // TestATeamOfficersWaitingInstanceIsInItsTeamsGroup: a team officer's
 // instance that waits is drawn where any waiting team session is — in its
 // team's group, first after the team's chief — never in the viewer's own list
-// or the Officers group; its officer's row is marked "↑ waiting".
+// or the Officers group; its officer's row is marked "↓ waiting" (the team's
+// group is below the Officers group).
 func TestATeamOfficersWaitingInstanceIsInItsTeamsGroup(t *testing.T) {
 	list, offs := navOfficerFixture()
 	ago := func(d time.Duration) time.Time { return navNow.Add(-d) }
@@ -375,8 +376,9 @@ func TestATeamOfficersWaitingInstanceIsInItsTeamsGroup(t *testing.T) {
 	}
 	_, by := navOfficerRows(root)
 	ops := navOfficerRowOf(t, by, navOffOps)
-	if w := ccWithAttr(ops, "data-nav-officer-waiting", ""); len(w) != 1 || ccText(w[0]) != "↑ waiting" {
-		t.Errorf("the team officer's row is not marked waiting")
+	// Its team's group is BELOW the Officers group, so the marker points down.
+	if w := ccWithAttr(ops, "data-nav-officer-waiting", ""); len(w) != 1 || ccText(w[0]) != "↓ waiting" {
+		t.Errorf("the team officer's row is not marked \"↓ waiting\"")
 	}
 	if s, _ := ccAttr(ops, "data-nav-officer-state"); s != "running" {
 		t.Errorf("the team officer reads %q, want running", s)

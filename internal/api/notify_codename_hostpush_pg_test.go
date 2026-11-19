@@ -96,23 +96,30 @@ func TestTheSuccessorPushStartsWithItsWindow(t *testing.T) {
 			}
 			f.m.mu.Unlock()
 			f.srv.reconcileListing(context.Background(), f.owner, "host-echo", ws, time.Now())
-			deadline := time.Now().Add(3 * time.Second)
-			for {
-				if x, _ := f.plugins.ProposalByID(f.asOwner, id); !x.NotifiedAt.IsZero() {
-					break
+			// Wait for the PUSH, not for notified_at: armSuccessionPush records
+			// notified_at BEFORE pushTask registers its send with WaitForPushes,
+			// so a WaitForPushes right after notified_at appears can return
+			// before the send exists and read no push at all (2 of 24 -race
+			// runs, the CI red on 8f937fa57). Once one has arrived,
+			// WaitForPushes settles any others before the count below.
+			successorTitles := func() []string {
+				var titles []string
+				for _, p := range pusher.to(device) {
+					if p.Tag == proposalEventID(x) {
+						titles = append(titles, p.Title)
+					}
 				}
+				return titles
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for len(successorTitles()) == 0 {
 				if time.Now().After(deadline) {
-					t.Fatal("no push was recorded for the successor")
+					t.Fatal("no push was sent for the successor")
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
 			f.srv.WaitForPushes()
-			var titles []string
-			for _, p := range pusher.to(device) {
-				if p.Tag == proposalEventID(x) {
-					titles = append(titles, p.Title)
-				}
-			}
+			titles := successorTitles()
 			want := map[bool]string{false: "Your new session started on host-echo", true: "plum:4@host-echo · Your new session started"}[on]
 			if len(titles) != 1 || titles[0] != want {
 				t.Fatalf("successor pushes %q, want one %q", titles, want)

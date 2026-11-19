@@ -15,17 +15,19 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A REFUSED CAP ESCALATION THAT WITHHOLDS A JUDGEMENT INSTANCE IS LOUD.
+// A REFUSED CAP ESCALATION THAT WITHHOLDS A JUDGEMENT INSTANCE IS PUSHED,
+// TO THE OFFICER'S PAGE.
 //
 // When HQ keeps refusing the wall-time cap's escalation, muster keeps the item
 // held as its stopped holder and never starts that instance number again
 // (fail closed: a restart would claim new work and be stopped for the old
 // item's cap). At the default max_instances 1 that is the whole judgement
-// pool: every other judgement item waits. So the officer's owner is told ONCE
-// per episode, through goNotify, naming the officer, the item, HQ's refusal
-// and that the pool is waiting; the notification is cleared when the
-// escalation lands; and muster_officer_cap_refusal_withheld counts the
-// withheld instances meanwhile.
+// pool: every other judgement item waits. It is a decision for the owner
+// (officer_push.go, officerPushCapHold), so they are pushed ONCE per episode,
+// through goNotify, naming the officer, the item, HQ's refusal and that the
+// pool is waiting, opening the officer's page (officerDecisionCard); the
+// notification is cleared when the escalation lands; and
+// muster_officer_cap_refusal_withheld counts the withheld instances meanwhile.
 // ---------------------------------------------------------------------------
 
 const capHoldGauge = "muster_officer_cap_refusal_withheld"
@@ -46,14 +48,14 @@ func gaugeValue(t *testing.T, name string) (float64, bool) {
 	return 0, false
 }
 
-// TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce: the
+// TestARefusedCapEscalationThatWithholdsThePoolPushesItsPageOnce: the
 // judgement pool has the DEFAULT max_instances (1). Its one instance holds
 // item A past the 30-minute cap, item B waits, and HQ refuses the
 // escalation. The owner gets one notification naming the officer, A, HQ's
-// refusal and that the pool is waiting, and no more over four passes; the
-// gauge reads 1. Once HQ takes the escalation, the notification is cleared
-// (one resolved, same tag) and the gauge reads 0.
-func TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce(t *testing.T) {
+// refusal and that the pool is waiting, opening the officer's page, and no
+// more over four passes; the gauge reads 1. Once HQ takes the escalation,
+// the notification is cleared (one resolved, same tag) and the gauge reads 0.
+func TestARefusedCapEscalationThatWithholdsThePoolPushesItsPageOnce(t *testing.T) {
 	r := newOfficerRigWith(t, map[string]string{offATok: offA, offTTok: offT}, func(hqURL string) []officers.Officer {
 		raw := `[{"id":"` + offA + `","hq_url":"` + hqURL + `","max_instances":1},` +
 			`{"id":"` + offT + `","hq_url":"` + hqURL + `","tiers":{"routine":{"model":"haiku","max_instances":1},` +
@@ -107,8 +109,8 @@ func TestARefusedCapEscalationThatWithholdsThePoolNotifiesTheOwnerOnce(t *testin
 			t.Errorf("the notification's body %q does not contain %q", n.Body, want)
 		}
 	}
-	if n.Tag == "" {
-		t.Error("the notification has no tag, so it cannot be cleared when the escalation lands")
+	if want := "/officers/" + offT + "?owner=1"; n.Data["url"] != want {
+		t.Errorf("the notification opens %q, want the officer's page %q", n.Data["url"], want)
 	}
 	if v, ok := gaugeValue(t, capHoldGauge); !ok || v != 1 {
 		t.Errorf("%s = %v (registered: %v), want 1 while the escalation is refused", capHoldGauge, v, ok)
