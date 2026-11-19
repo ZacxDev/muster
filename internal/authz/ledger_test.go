@@ -376,6 +376,11 @@ var (
 		// one owner's queue of every kind. A fixture command, never linked into
 		// a binary, and it refuses any database not ending in _e2e.
 		"e2e/asksfeedfix.run",
+		// The Pages screens' browser fixture (e2e/pagesfix): it writes and
+		// clears pages, versions, links and responses through the real store
+		// AS the named fixture user. A fixture command, never linked into a
+		// binary, and it refuses any database not ending in _e2e.
+		"e2e/pagesfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions

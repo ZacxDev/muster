@@ -293,8 +293,9 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 				f.srv.renderPageDetail(w, r, id, 200, "", "", "")
 			}), "page-detail")
 			assertPagePlain(t, "the page screen with no link key", detail)
-			if !strings.Contains(detail, "Sharing isn't set up on this server") {
-				t.Errorf("the page screen does not say sharing is not set up:\n%s", detail)
+			// Why Share makes one-off links here is the ⓘ beside Share.
+			if !regexp.MustCompile(`id="page-share-setup"[^>]*data-info-sheet[\s\S]*Sharing isn(&#39;|')t set up on this server`).MatchString(detail) {
+				t.Errorf("the page screen's ⓘ does not say sharing is not set up:\n%s", detail)
 			}
 			setting := `data-info-code="">MUSTER_CONNECTOR_ENCRYPTION_KEY</code>`
 			if role == authz.RoleAdmin && !strings.Contains(detail, setting) {
@@ -303,9 +304,13 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			if role == authz.RoleMember && (strings.Contains(detail, "MUSTER_CONNECTOR_ENCRYPTION_KEY") || !strings.Contains(detail, `data-info-withheld`)) {
 				t.Errorf("a member's page screen names the setting, or does not say to ask their admin")
 			}
-			// Each link is told apart by its ⓘ, not a hash in the top layer.
-			if !strings.Contains(detail, `data-info-code="">`+oneOff.Label()+`</code>`) {
-				t.Errorf("the link's ⓘ does not hold its label %q", oneOff.Label())
+			// Each link is told apart by when it was made — never by a hash,
+			// in the top layer or an ⓘ (the row has none). A one-off link's
+			// address is not kept, so its row has no Copy.
+			oneRow := regexp.MustCompile(`(?s)<li [^>]*data-link-id="` + strconv.FormatInt(oneOff.ID, 10) + `".*?</li>`).FindString(detail)
+			if !strings.Contains(oneRow, `data-link-made><time `) || strings.Contains(detail, oneOff.Label()) ||
+				strings.Contains(oneRow, `data-info-open`) || strings.Contains(oneRow, `data-link-copy`) {
+				t.Errorf("the one-off link's row: %s", oneRow)
 			}
 			// The responses, labelled from the form: every value, by its label.
 			for _, want := range []string{
@@ -352,9 +357,10 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			}), "page-detail")
 			assertPagePlain(t, "the page screen with a reusable link", keyed)
 			for _, want := range []string{
-				`data-page-copy="" hidden="" data-page-id="` + sid + `" data-share-title="Pick a subject line" data-share-url="` + link + `"`,
 				`data-page-share="" data-page-id="` + sid + `" data-share-title="Pick a subject line" data-share-url="` + link + `"`,
-				`data-info-code="">` + link + `</code>`,
+				// Its row under Links copies it; the address is on the button
+				// only, never drawn and never in an ⓘ.
+				`data-copy-text="` + link + `" data-link-copy`,
 			} {
 				if !strings.Contains(keyed, want) {
 					t.Errorf("the keyed page screen lacks %q", want)
@@ -371,7 +377,7 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 				f.srv.renderPageDetail(w, r, mid, 200, "", "", "")
 			}), "page-detail")
 			assertPagePlain(t, "a mirrored session's page screen", mdetail)
-			if !strings.Contains(mdetail, "Made by work on atlas.") || !strings.Contains(mdetail, "asked for by work on atlas") {
+			if !strings.Contains(mdetail, "by work on atlas · v1") || !strings.Contains(mdetail, "asked for by work on atlas") {
 				t.Errorf("a mirrored session's page screen does not name it in words:\n%s", mdetail)
 			}
 
@@ -380,7 +386,7 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 				f.srv.renderPagesList(w, r, 200, "")
 			}), "pages-page")
 			assertPagePlain(t, "the Pages list", list)
-			if !strings.Contains(list, ">4 responses</span>") {
+			if !strings.Contains(list, ">4 replies</span>") {
 				t.Errorf("the list row does not count its responses in words:\n%s", list)
 			}
 		})

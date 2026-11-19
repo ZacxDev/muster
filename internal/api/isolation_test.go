@@ -300,18 +300,24 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/chief/fleet":         classList,
 	"GET /ui/chief/fleet/session": classList,
 	"POST /ui/chief/fleet/chat":   classList,
-	"GET /ui/connector-requests":  classList,
-	"GET /ui/connectors":          classList,
-	"GET /ui/connectors/new":      classList,
-	"GET /ui/notifications":       classList,
-	"GET /ui/tags":                classList,
-	"GET /ui/tasks":               classList,
-	"GET /ui/tasks/new":           classList,
-	"GET /ui/tasks/review-count":  classList,
-	"POST /chief/provision":       classList,
-	"POST /connectors":            classList,
-	"POST /tasks":                 classList,
-	"POST /tasks/merge":           classList, // the form names A's task as the loser
+	// Fleet proposals' cards (fleet_cards.go): each acts on the principal's
+	// own fleet_actions row by id (forced row-level security: another owner's
+	// id is not found), and the dialog route reads nothing.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": classParam,
+	"POST /ui/chief/fleet/bulk":                classList,
+	"GET /ui/chief/fleet/stepup":               classList,
+	"GET /ui/connector-requests":               classList,
+	"GET /ui/connectors":                       classList,
+	"GET /ui/connectors/new":                   classList,
+	"GET /ui/notifications":                    classList,
+	"GET /ui/tags":                             classList,
+	"GET /ui/tasks":                            classList,
+	"GET /ui/tasks/new":                        classList,
+	"GET /ui/tasks/review-count":               classList,
+	"POST /chief/provision":                    classList,
+	"POST /connectors":                         classList,
+	"POST /tasks":                              classList,
+	"POST /tasks/merge":                        classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,
@@ -2159,6 +2165,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
+	// with fleet proposals off, so every id answers 404 for A and the ghost
+	// alike. That another owner's tap on A's proposal decides nothing and sends
+	// nothing (forced row-level security on fleet_actions) is
+	// TestAnotherOwnersProposalCannotBeDecided's.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": "fleet proposals off in the walk: controlled in TestAnotherOwnersProposalCannotBeDecided",
 	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
 	// session the host lists, which the walk names none of, so A's own call and
 	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the
