@@ -340,18 +340,21 @@ the team (viewer and up) sees it:
 - **On its screen and its view**, where you can answer its questions and
   forms. What you send is recorded as **yours**: the page's screen says
   *Sent by <your name>* to everyone else on the team, and *Sent by you* to
-  you. Files can't be sent from a team page yet: a file field there says so.
+  you. Everyone's responses from the page's own view count together toward
+  its cap (1,000 per page, the same as one link's), not 1,000 each. Files
+  can't be sent from a team page yet: a file field there says so.
 - **Share** works for anyone on the team: one tap makes the page's link
   public, or shows it again if it already has one. The link's row names who
   tapped.
 
 **The page's creator manages it**: the person who started the team agent that
 made it (the person whose say-so the team chief's start was). Only they see,
-and can use, **Delete this page**, **Show this version** and ⋯ **New link**.
-Anyone else on the team gets a 403 from those routes: *this is a team's page:
-only the person who started the agent that made it can delete it, change its
-version or make a new link (a manager of the team can when that person has
-left the team)*.
+and can use, **Delete this page** and **Show this version**. Anyone else on the
+team gets a 403 from those routes: *this is a team's page: only the person who
+started the agent that made it can delete it or change its version (a manager
+of the team can when that person has left the team)*. The creator keeps this
+whatever their role on the team: a creator made a viewer still manages the
+page they started. Leaving the team is what ends it.
 
 **A manager of the team steps in**:
 
@@ -359,10 +362,11 @@ left the team)*.
   team chief itself), or its creator has **left the team**, any manager of the
   team manages it instead. Otherwise nobody could ever delete it.
 - A manager can **always revoke** the page's links (a link's **Revoke**, and
-  ⋯ **Revoke link**), even while the creator is on the team, so a mistaken
-  Share is undone at once. Anyone else is refused: *only the person who
-  started the agent that made it, or a manager of the team, can revoke its
-  links*.
+  ⋯ **Revoke link**) and make a **New link** (a revoke and a Share, both
+  theirs), even while the creator is on the team, so a mistaken Share is
+  undone at once. Anyone else is refused: *only the person who started the
+  agent that made it, or a manager of the team, can revoke its links or make
+  a new one*.
 
 **A team agent never makes a link live by itself.** Its `page_share_request`
 always files a pending link and a card, whatever any setting says. *Let my
@@ -380,9 +384,15 @@ policies, the creator check (`muster_page_manager`), and guards that let
 anyone else on the team do only three things. They can touch a page's
 *updated* time when they answer. They can make a live link (Share). They can
 move a pending link to live or denied (the card). A manager can also revoke a
-link. A member's answer to the card is recorded by
-`muster_answer_team_page_card`, because a viewer may not write the team's
-asks otherwise.
+link. Only the page's owner (its agent) names the card that decides a link.
+A member's answer to the card is recorded by `muster_answer_team_page_card`,
+because a viewer may not write the team's asks otherwise. That function
+answers only an agent's link's card, and only with one of the card's own
+options. For the same reason, a creator or manager's revoke withdraws the
+link's card through `muster_cancel_team_page_card`, and their delete revokes
+the page's file rows (under `pages/<id>/`) through
+`muster_revoke_team_page_uploads`. Each of these functions answers one kind
+of row, and only the application role may call it.
 
 ## In the chat
 

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -213,7 +215,7 @@ func TestOnlyTheCreatorIsOfferedOrAllowedToManageATeamsPage(t *testing.T) {
 		for _, r := range []struct{ path, body, want string }{
 			{"/pages/" + sid + "/delete", "", TeamPageCreatorOnly}, {"/pages/" + sid + "/rollback", "version=1", TeamPageCreatorOnly},
 			{"/pages/" + sid + "/links/" + strconv.FormatInt(l.ID, 10) + "/revoke", "", TeamPageRevokeOnly},
-			{"/pages/" + sid + "/share/rotate", "", TeamPageCreatorOnly}, {"/pages/" + sid + "/share/revoke", "", TeamPageRevokeOnly},
+			{"/pages/" + sid + "/share/rotate", "", TeamPageRevokeOnly}, {"/pages/" + sid + "/share/revoke", "", TeamPageRevokeOnly},
 		} {
 			code, got := f.req(t, uid, http.MethodPost, r.path, r.body, formHdr)
 			if code != http.StatusForbidden || strings.TrimSpace(got) != r.want {
@@ -357,12 +359,12 @@ func TestAManagerStepsInOnATeamsPage(t *testing.T) {
 		t.Fatalf("a viewer's Share: %d %s", code, body)
 	}
 	_, screen := f.req(t, mgr, http.MethodGet, "/pages/"+sid, "", nil)
-	for _, m := range []string{"data-link-revoke", "data-page-share-menu", `data-page-share-action="revoke"`} {
+	for _, m := range []string{"data-link-revoke", "data-page-share-menu", `data-page-share-action="revoke"`, `data-page-share-action="rotate"`} {
 		if !strings.Contains(screen, m) {
 			t.Errorf("a manager (the creator present) is not drawn %s", m)
 		}
 	}
-	for _, m := range []string{"data-page-delete", "data-version-current", `data-page-share-action="rotate"`} {
+	for _, m := range []string{"data-page-delete", "data-version-current"} {
 		if strings.Contains(screen, m) {
 			t.Errorf("a manager (the creator present) is drawn %s", m)
 		}
@@ -373,6 +375,10 @@ func TestAManagerStepsInOnATeamsPage(t *testing.T) {
 	code, body := f.req(t, mgr, http.MethodPost, "/pages/"+sid+"/share/revoke", "", map[string]string{"Accept": "application/json"})
 	if code != http.StatusOK || !strings.Contains(body, `"revoked":true`) {
 		t.Fatalf("a manager revoking the viewer's link while the creator is a member: %d %s", code, body)
+	}
+	// New link is a revoke and a Share, both a manager's: the route lets it.
+	if code, body := f.req(t, mgr, http.MethodPost, "/pages/"+sid+"/share/rotate", "", map[string]string{"Accept": "application/json"}); code != http.StatusOK {
+		t.Fatalf("a manager's New link while the creator is a member: %d %s", code, body)
 	}
 	// The creator leaves.
 	if err := f.users.RemoveTeamMember(sys, by, f.teamA, f.creator); err != nil {
@@ -528,6 +534,46 @@ func TestTheTeamCardAnswerDoorHoldsInTheDatabase(t *testing.T) {
 		t.Errorf("the function called with door 'mcp': %v %v; want NULL", got, err)
 	}
 	open("door 'mcp'")
+	// An answer that is not one of the card's own options records nothing.
+	if _, err := store.AnswerTeamPageCard(as(f.viewer, authz.ViaSession), ask, "Approve link, and anything else"); err == nil {
+		t.Error("an answer outside the card's options was recorded")
+	}
+	open("an answer outside the options")
+
+	// 🔴 A FORGED LINK (round-1 audit): a member points a link of theirs at an
+	// UNRELATED team owner card — here the team's "Start the deploy agent?" —
+	// to answer that card through this door. The guard refuses every way of
+	// naming a card (insert, retarget) to anyone but the page's owner, the
+	// creator included.
+	other, err := store.Create(f.asTeam(f.teamA), attention.New{Asker: attention.Asker{AgentID: f.teamAgent.ID, Label: "tpw"},
+		Question: "Start the deploy agent?", Options: []string{"Start", "Not now"}, Timeout: attention.MaxTimeout, OwnerCard: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator := as(f.creator, authz.ViaSession)
+	_, err = f.pool.Exec(creator, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, ask_id, made_by_agent, decided_at)
+		VALUES ($1, $2, repeat('ab', 32), 'denied', $3, false, now())`, f.teamA, id, other.ID)
+	if pe := (*pgconn.PgError)(nil); !errors.As(err, &pe) || pe.Code != "42501" {
+		t.Errorf("the creator inserting a link that names an unrelated card: %v; want the database's refusal", err)
+	}
+	_, err = f.pool.Exec(creator, `UPDATE page_links SET ask_id = $2 WHERE id = $1`, l.ID, other.ID)
+	if pe := (*pgconn.PgError)(nil); !errors.As(err, &pe) || pe.Code != "42501" {
+		t.Errorf("the creator retargeting the agent's link at an unrelated card: %v; want the database's refusal", err)
+	}
+	// And should such a link exist (planted past the guard), the door still
+	// answers only a card an AGENT's link names.
+	if _, err := f.pool.Exec(authz.System(context.Background()), `INSERT INTO page_links (owner_id, page_id, token_sha256, state, ask_id, made_by_agent, decided_at)
+		VALUES ($1, $2, repeat('cd', 32), 'denied', $3, false, now())`, f.teamA, id, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AnswerTeamPageCard(creator, other.ID, "Start"); err == nil {
+		t.Error("a member answered an unrelated team card through a link no agent made")
+	}
+	var otherStatus string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT status FROM attention_asks WHERE id = $1`, other.ID).Scan(&otherStatus); err != nil || otherStatus != "open" {
+		t.Fatalf("the unrelated card is %q (%v); want it still open", otherStatus, err)
+	}
+
 	a, err := store.AnswerTeamPageCard(as(f.viewer, authz.ViaSession), ask, pageShareApproveLabel)
 	if err != nil || a.Status != attention.Answered || a.AnsweredByUser != f.viewer {
 		t.Fatalf("control: the viewer, the link decided, from the browser: %+v %v", a, err)

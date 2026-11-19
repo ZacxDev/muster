@@ -762,6 +762,24 @@ func (s *PGStore) RevokeLink(ctx context.Context, id, linkID int64) (Link, error
 	return l, wrap("revoke link", err)
 }
 
+// RevokeTeamPageUploads revokes every uploads row under TEAM page id's own
+// prefix (pages/<id>/), for a caller who may manage the page (migration
+// 0162's muster_revoke_team_page_uploads): a delete's step, so no file row of
+// the page stays live once its objects are swept. 0127 writes uploads at
+// operator, so a viewer-role creator's or manager's per-file revoke would
+// revoke none. It reports how many rows it revoked; ErrNotFound when the
+// caller may not manage the page (or it is no team's).
+func (s *PGStore) RevokeTeamPageUploads(ctx context.Context, id int64) (int, error) {
+	var n *int
+	if err := s.pool.QueryRow(ctx, `SELECT public.muster_revoke_team_page_uploads($1)`, id).Scan(&n); err != nil {
+		return 0, wrap("revoke team page uploads", err)
+	}
+	if n == nil {
+		return 0, ErrNotFound
+	}
+	return *n, nil
+}
+
 // LinkByToken reads one live link by its token's hash, under the system
 // principal (sys). The token's shape is checked first, so a malformed one
 // never reaches the database.

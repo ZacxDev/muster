@@ -961,6 +961,28 @@ func (s *PGStore) AnswerTeamPageCard(ctx context.Context, id int64, answer strin
 	return cur, nil
 }
 
+// CancelTeamPageCard withdraws a team page link's card on behalf of the team
+// member who revoked the link (migration 0162's
+// muster_cancel_team_page_card): an open owner card of a team the caller is a
+// member of, named by a revoked, agent-made link of that team. 0127 writes
+// attention_asks at operator, so a viewer-role creator's or manager's cancel
+// through Cancel would withdraw nothing. ErrNotOpen (with the card as it
+// stands) for a row that is not such a card.
+func (s *PGStore) CancelTeamPageCard(ctx context.Context, id int64) (Ask, error) {
+	var got *int64
+	if err := s.pool.QueryRow(ctx, `SELECT public.muster_cancel_team_page_card($1)`, id).Scan(&got); err != nil {
+		return Ask{}, err
+	}
+	cur, err := s.Get(ctx, id)
+	if err != nil {
+		return Ask{}, err
+	}
+	if got == nil {
+		return cur, ErrNotOpen
+	}
+	return cur, nil
+}
+
 // ErrNotOwnerDoor: an owner card answered through a door that is not the
 // owner's own (answerSQL); the card stays open.
 var ErrNotOwnerDoor = errors.New("attention: this question is your owner's to answer, in muster or on their phone")

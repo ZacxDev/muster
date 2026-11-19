@@ -294,8 +294,8 @@ func PageShareMenu(id int64, title string, withDetail bool) g.Node {
 }
 
 // PageShareMenuFor is PageShareMenu with New link drawn only when rotate is
-// set: a team's manager who is not the page's creator revokes its link but
-// makes no new one (pages.MayRevoke, MayManage).
+// set (the server draws it wherever the reader may revoke: a revoke and a
+// Share make the same new link, pages.MayRevoke).
 func PageShareMenuFor(id int64, title string, withDetail, rotate bool) g.Node {
 	t := pageCardTitle(title)
 	pid := strconv.FormatInt(id, 10)

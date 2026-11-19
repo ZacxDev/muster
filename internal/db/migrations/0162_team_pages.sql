@@ -71,7 +71,18 @@
 --     decided (live or denied). It records the caller as answered_by_user —
 --     the same column 0127's muster_actor_column stamps on every other answer
 --     — and nothing else of theirs. It returns the ask's id, NULL when the row
---     is not such a card.
+--     is not such a card. The link must be AGENT-made, and the answer one of
+--     the card's own options; and page_links.ask_id is written only by the
+--     page's owner (page_links_team_guard), so no member can point a link of
+--     theirs at an unrelated team card and answer that.
+--
+-- muster_cancel_team_page_card(ask), muster_revoke_team_page_uploads(page)
+--     SECURITY DEFINER, the same shape: a viewer-role creator's (or
+--     manager's) revoke withdraws the link's card, and their delete revokes
+--     the page's uploads rows — each a write 0127 lets only an operator make.
+--     Each answers exactly one kind of row (see each function).
+--
+-- Every function above is EXECUTE to muster_app only, not PUBLIC.
 --
 -- 🔴 THE GUARDS (BEFORE triggers, the application role only — the login role,
 -- a migration or a restore is not held to them, as row-level security does
@@ -119,6 +130,8 @@
 --   DROP FUNCTION IF EXISTS public.muster_page_responder();
 --   DROP FUNCTION IF EXISTS public.muster_page_manager(bigint, bigint);
 --   DROP FUNCTION IF EXISTS public.muster_answer_team_page_card(bigint, text, text);
+--   DROP FUNCTION IF EXISTS public.muster_cancel_team_page_card(bigint);
+--   DROP FUNCTION IF EXISTS public.muster_revoke_team_page_uploads(bigint);
 --   DROP FUNCTION IF EXISTS public.muster_is_team_member(bigint, bigint);
 --   ALTER TABLE public.page_responses DROP COLUMN IF EXISTS responder_user;
 --   ALTER TABLE public.pages DROP COLUMN IF EXISTS created_by_user;
@@ -146,9 +159,11 @@ CREATE OR REPLACE FUNCTION public.muster_is_team_member(team bigint, person bigi
 AS $$
     SELECT EXISTS (SELECT 1 FROM public.team_members WHERE team_id = team AND user_id = person)
 $$;
--- Whether a person is on a team is no secret to the team's members (its
--- members page lists them); the function answers only that.
-GRANT EXECUTE ON FUNCTION public.muster_is_team_member(bigint, bigint) TO PUBLIC;
+-- It answers only membership (no secret to the team's members: its members
+-- page lists them), yet it is EXECUTE to the application role alone, not to
+-- PUBLIC: nothing else calls it.
+REVOKE ALL ON FUNCTION public.muster_is_team_member(bigint, bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.muster_is_team_member(bigint, bigint) TO muster_app;
 
 -- coalesce(…, false) WHOLE: a NULL setting must read as "no", never as a
 -- NULL that an IF NOT would let through.
@@ -213,6 +228,15 @@ DECLARE
 BEGIN
     IF current_user <> 'muster_app' OR current_setting('muster.scope', true) IS NOT DISTINCT FROM 'all' THEN
         RETURN NEW;
+    END IF;
+    -- 🔴 ask_id — the card that decides a pending link — is written ONLY by
+    -- the page's OWNER principal (its agent, filing its own card; a person on
+    -- their own page): no member and no manager sets, changes or clears it.
+    -- muster_answer_team_page_card trusts it to name the link's own card.
+    IF (CASE WHEN TG_OP = 'INSERT' THEN NEW.ask_id IS NOT NULL ELSE NEW.ask_id IS DISTINCT FROM OLD.ask_id END)
+       AND NEW.owner_id IS DISTINCT FROM nullif(current_setting('muster.uid', true), '')::bigint THEN
+        RAISE EXCEPTION 'only the owner of page % names the card that decides its link', NEW.page_id
+            USING ERRCODE = 'insufficient_privilege';
     END IF;
     -- The page's creator, read as the caller (a member reads the team's page).
     SELECT p.created_by_user INTO creator FROM public.pages p WHERE p.id = NEW.page_id AND p.owner_id = NEW.owner_id;
@@ -300,12 +324,92 @@ BEGIN
        AND a.owner_id = ANY (public.muster_team_ids(1))
        AND public.muster_owner_is_team(a.owner_id)
        AND EXISTS (SELECT 1 FROM public.page_links l
-                    WHERE l.ask_id = a.id AND l.owner_id = a.owner_id AND l.state IN ('live', 'denied'))
+                    WHERE l.ask_id = a.id AND l.owner_id = a.owner_id AND l.made_by_agent AND l.state IN ('live', 'denied'))
+       AND muster_answer_team_page_card.answer IN (SELECT jsonb_array_elements_text(a.options))
     RETURNING a.id INTO out;
     RETURN out;
 END
 $$;
-GRANT EXECUTE ON FUNCTION public.muster_answer_team_page_card(bigint, text, text) TO PUBLIC;
+REVOKE ALL ON FUNCTION public.muster_answer_team_page_card(bigint, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.muster_answer_team_page_card(bigint, text, text) TO muster_app;
+
+-- A team page link's card withdrawn by the member who revoked the link (a
+-- revoke, a delete's first step). attention_asks is written at operator
+-- (0127), so a creator or manager who is a VIEWER would withdraw nothing
+-- through the ordinary cancel, and the card would stay answerable over a
+-- revoked link. This cancels exactly one kind of row: an OPEN owner card of a
+-- team the caller is a member of, named by a REVOKED, agent-made link of
+-- that team (page_links.ask_id, which only the page's owner writes). NULL for
+-- anything else.
+CREATE OR REPLACE FUNCTION public.muster_cancel_team_page_card(ask bigint) RETURNS bigint
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+    SET muster.scope = 'all'
+AS $$
+DECLARE
+    caller bigint := nullif(current_setting('muster.uid', true), '')::bigint;
+    out    bigint;
+BEGIN
+    IF caller IS NULL THEN
+        RETURN NULL;
+    END IF;
+    UPDATE public.attention_asks a SET status = 'cancelled', resolved_at = now()
+     WHERE a.id = ask AND a.status = 'open' AND a.expires_at > now() AND a.owner_card
+       AND a.owner_id <> caller
+       AND a.owner_id = ANY (public.muster_team_ids(1))
+       AND public.muster_owner_is_team(a.owner_id)
+       AND EXISTS (SELECT 1 FROM public.page_links l
+                    WHERE l.ask_id = a.id AND l.owner_id = a.owner_id AND l.made_by_agent AND l.state = 'revoked')
+    RETURNING a.id INTO out;
+    RETURN out;
+END
+$$;
+REVOKE ALL ON FUNCTION public.muster_cancel_team_page_card(bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.muster_cancel_team_page_card(bigint) TO muster_app;
+
+-- A team page's files, revoked by whoever may manage the page (its delete):
+-- the uploads rows under its own prefix (pages/<id>/), owned by the team.
+-- uploads is written at operator (0127), so a creator or manager who is a
+-- VIEWER would revoke none of them and they would stay live (their objects
+-- are deleted by the delete's prefix sweep). The manage check is
+-- muster_page_manager's rule spelled out here, since the function runs with
+-- scope all (which that function would read as "yes"). It returns how many
+-- rows it revoked; NULL when the caller may not manage the page.
+CREATE OR REPLACE FUNCTION public.muster_revoke_team_page_uploads(page bigint) RETURNS integer
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+    SET muster.scope = 'all'
+AS $$
+DECLARE
+    caller bigint := nullif(current_setting('muster.uid', true), '')::bigint;
+    owner  bigint;
+    creator bigint;
+    n      integer;
+BEGIN
+    IF caller IS NULL THEN
+        RETURN NULL;
+    END IF;
+    SELECT p.owner_id, p.created_by_user INTO owner, creator FROM public.pages p WHERE p.id = page;
+    IF owner IS NULL OR NOT public.muster_owner_is_team(owner) OR NOT (
+           owner = caller
+           OR (creator IS NOT NULL AND creator = caller AND owner = ANY (public.muster_team_ids(1)))
+           OR (owner = ANY (public.muster_team_ids(3))
+               AND (creator IS NULL OR NOT public.muster_is_team_member(owner, creator)))) THEN
+        RETURN NULL;
+    END IF;
+    UPDATE public.uploads SET revoked_at = now()
+     WHERE owner_id = owner AND revoked_at IS NULL
+       AND object_key LIKE 'pages/' || page::text || '/%';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RETURN n;
+END
+$$;
+REVOKE ALL ON FUNCTION public.muster_revoke_team_page_uploads(bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.muster_revoke_team_page_uploads(bigint) TO muster_app;
 
 -- ---------------------------------------------------------------------------
 -- 3. The policies.

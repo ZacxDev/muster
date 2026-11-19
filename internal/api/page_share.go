@@ -209,13 +209,36 @@ func pageAskOpenHTML(href string) string {
 
 // withdrawLinkCard cancels a revoked link's still-open card, so a later tap
 // finds nothing to approve.
+//
+// On a TEAM's page revoked by a member (its creator or a manager, whatever
+// their role), the card is the team's, which 0127 lets only an operator
+// write: it is withdrawn through 0162's narrow door
+// (attention.PGStore.CancelTeamPageCard), never the ordinary cancel, which
+// would fail for a viewer-role creator and leave the card answerable.
 func (s *Server) withdrawLinkCard(ctx context.Context, l pages.Link) {
 	if l.AskID <= 0 || s.ext.Attention == nil {
 		return
 	}
-	if _, err := s.cancelAsk(ctx, l.AskID); err != nil && !errors.Is(err, attention.ErrNotOpen) && !errors.Is(err, attention.ErrNotFound) {
+	var err error
+	if p, ok := authz.From(ctx); ok && !p.All() && !p.Team && l.OwnerID != p.UserID {
+		if st, ok := s.ext.Attention.(teamPageCardCanceller); ok {
+			var a attention.Ask
+			if a, err = st.CancelTeamPageCard(ctx, l.AskID); err == nil {
+				s.askSettled(a)
+			}
+		}
+	} else {
+		_, err = s.cancelAsk(ctx, l.AskID)
+	}
+	if err != nil && !errors.Is(err, attention.ErrNotOpen) && !errors.Is(err, attention.ErrNotFound) {
 		s.logger.Printf("pages: link %d revoked; withdraw its card %d: %v", l.ID, l.AskID, err)
 	}
+}
+
+// teamPageCardCanceller is the attention store's withdrawal of a team page
+// link's card by a member (attention.PGStore.CancelTeamPageCard).
+type teamPageCardCanceller interface {
+	CancelTeamPageCard(ctx context.Context, id int64) (attention.Ask, error)
 }
 
 // pageWaits wakes page_responses calls blocked on a page.

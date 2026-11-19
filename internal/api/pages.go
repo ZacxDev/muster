@@ -738,7 +738,8 @@ func (s *Server) pageShareControls(id int64, title string, l pages.Link, manage,
 	var b strings.Builder
 	_ = ui.PageShareButton(id, title, url, s.ext.Pages.LinksReusable()).Render(&b)
 	if revoke {
-		_ = ui.PageShareMenuFor(id, title, false, manage).Render(&b)
+		// New link is a revoke and a Share, both a manager's: drawn with Revoke.
+		_ = ui.PageShareMenuFor(id, title, false, revoke).Render(&b)
 	}
 	return b.String()
 }
@@ -1544,6 +1545,19 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A TEAM's page deleted by a member (its creator or a manager, whatever
+	// their role): its uploads rows are the team's, which 0127 lets only an
+	// operator revoke, so the loop above may have revoked none of them. 0162's
+	// narrow door revokes every row under the page's prefix.
+	if pg, perr := s.ext.Pages.Page(ctx, id); perr == nil && memberOnTeamPage(ctx, pg) {
+		if rv, ok := s.ext.Pages.(teamPageUploadRevoker); ok {
+			if _, err := rv.RevokeTeamPageUploads(ctx, id); err != nil {
+				s.logger.Printf("pages: page %d: revoke the team's file rows: %v", id, err)
+				s.renderPageDetail(w, r, id, http.StatusBadGateway, "The page's files could not all be deleted, so the page is kept. Try again.", "", "")
+				return
+			}
+		}
+	}
 	swept := 0
 	if s.ext.Uploads != nil {
 		if swept, err = s.ext.Uploads.DeletePageFiles(ctx, id); err != nil {
@@ -1563,6 +1577,12 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Printf("pages: page %d deleted by its owner (%d file row(s); %d object(s) under its prefix)", id, len(files), swept)
 	http.Redirect(w, r, pagesPath, http.StatusSeeOther)
+}
+
+// teamPageUploadRevoker is the pages store's revoke of a team page's uploads
+// rows by its prefix (pages.PGStore.RevokeTeamPageUploads).
+type teamPageUploadRevoker interface {
+	RevokeTeamPageUploads(ctx context.Context, id int64) (int, error)
 }
 
 // pageUploadReadTimeout is how long a stranger's upload has to deliver its

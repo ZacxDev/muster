@@ -20,12 +20,13 @@ import (
 //   - read, respond (the owner view's form, recorded as the member:
 //     page_responses.responder_user) and Share (the page's one link) — any
 //     member;
-//   - delete, "Show this version", ⋯ New link — only the page's CREATOR, the
-//     person who started the agent that made it (pages.MayManage; with no
-//     creator recorded, or one who has left the team, any manager of it);
-//   - revoke a link, ⋯ Revoke link — the creator, and ANY manager of the
-//     team, even while the creator is present (pages.MayRevoke: a mistaken
-//     Share is undone at once);
+//   - delete, "Show this version" — only the page's CREATOR, the person who
+//     started the agent that made it (pages.MayManage; with no creator
+//     recorded, or one who has left the team, any manager of it);
+//   - revoke a link, ⋯ Revoke link, ⋯ New link — the creator, and ANY manager
+//     of the team, even while the creator is present (pages.MayRevoke: a
+//     mistaken Share is undone at once; New link is a revoke and a Share,
+//     both a manager's, so the database lets it too);
 //   - send a FILE from the owner view — no member in this release (a file is
 //     stored as the person who sends it, and a team's page keeps only files
 //     the team owns: its quota and its delete read them as the team).
@@ -72,7 +73,7 @@ var teamPageRoutes = map[string]teamPageRule{
 	"POST /pages/{id}/delete":              teamPageCreator,
 	"POST /pages/{id}/rollback":            teamPageCreator,
 	"POST /pages/{id}/links/{link}/revoke": teamPageRevoke,
-	"POST /pages/{id}/share/rotate":        teamPageCreator,
+	"POST /pages/{id}/share/rotate":        teamPageRevoke,
 	"POST /pages/{id}/share/revoke":        teamPageRevoke,
 	"POST /pages/{id}/versions/{v}/upload": teamPageNoFile,
 }
@@ -80,12 +81,12 @@ var teamPageRoutes = map[string]teamPageRule{
 // The refusals a member reads.
 const (
 	// TeamPageCreatorOnly: a creator-only route, to any other member.
-	TeamPageCreatorOnly = "this is a team's page: only the person who started the agent that made it can delete it, " +
-		"change its version or make a new link (a manager of the team can when that person has left the team)"
+	TeamPageCreatorOnly = "this is a team's page: only the person who started the agent that made it can delete it " +
+		"or change its version (a manager of the team can when that person has left the team)"
 	// TeamPageRevokeOnly: a revoke, to a member who is neither the creator
 	// nor a manager of the team.
 	TeamPageRevokeOnly = "this is a team's page: only the person who started the agent that made it, or a manager of " +
-		"the team, can revoke its links"
+		"the team, can revoke its links or make a new one"
 	// TeamPageNoFile: a file from a team page's owner view, to any member.
 	TeamPageNoFile = "this is a team's page: files can't be sent from a team page yet"
 )
