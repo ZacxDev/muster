@@ -103,14 +103,14 @@ func TestWhileUploadsAreOffNoAttachmentTextIsOffered(t *testing.T) {
 		t.Errorf("attention_ask's schema lost context: %s", schema)
 	}
 	// The mirrored sessions' paragraph: no attachment line either way of
-	// runtime while uploads are off; Claude Code's has it while they are on.
+	// runtime while uploads are off; each runtime's has it while they are on.
 	for _, oc := range []bool{false, true} {
 		if got := s.mirrorAttentionInstructionFor(oc); strings.Contains(got, "attach") {
 			t.Errorf("mirrored (opencode %v) with uploads off: %s", oc, got)
 		}
-	}
-	if got := attachTextServer(t, true).mirrorAttentionInstructionFor(false); !strings.Contains(got, "pass attachments:") {
-		t.Errorf("mirrored Claude Code with uploads on: %s", got)
+		if got := attachTextServer(t, true).mirrorAttentionInstructionFor(oc); !strings.Contains(got, "pass attachments:") {
+			t.Errorf("mirrored (opencode %v) with uploads on: %s", oc, got)
+		}
 	}
 
 }
