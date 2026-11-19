@@ -313,13 +313,13 @@ func suggestRowScript() g.Node {
     return [m, pop];
   }
   // blocked: what the server excludes, seen on the page too — a question card
-  // drawn, an attention ask (shown or hidden on this device: hidden is not
-  // answered).
+  // drawn, an open attention ask (the header's asks badge drawn: it is drawn
+  // only while one is open).
   function blocked() {
     var q = document.getElementById('mv-asks');
     if (q && !q.hidden && q.querySelector('form, button')) return true;
-    var a = document.getElementById('asker-asks');
-    if (a && a.querySelector('[id^="ask-"]')) return true;
+    var a = document.getElementById('` + AskerAsksBadgeID + `');
+    if (a && a.querySelector('[data-asker-asks-link]')) return true;
     return false;
   }
   function post(ev, extra) {
@@ -474,7 +474,7 @@ func suggestRowScript() g.Node {
   // read).
   if (typeof MutationObserver !== 'undefined') {
     var mo = new MutationObserver(function () { if (state() && blocked()) hide(); });
-    ['mv-asks', 'asker-asks'].forEach(function (id) {
+    ['mv-asks', '` + AskerAsksBadgeID + `'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
     });

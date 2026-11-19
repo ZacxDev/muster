@@ -15,7 +15,8 @@ func chiefPageView(chief bool) AgentDetailView {
 	return AgentDetailView{
 		ID: 7, Name: "chief-cc", DisplayName: "chief", Kind: agents.KindClaudeCode, CCAccount: "beta-acct",
 		LastFailover: "from alpha-acct · rate_limited · resets Nov 6 22:00 UTC", WorkerPool: "pool-gpu",
-		Status: agents.StatusRunning, ActiveSessionID: 3, AsksSrc: "/ui/attention/asker?agent=7",
+		Status: agents.StatusRunning, ActiveSessionID: 3, AsksSrc: "/attention/asker?from=agent%3Achief-cc",
+		Asks: AskerAsksBadgeHTML(3, "/attention?from=agent%3Achief-cc"),
 		Card: AgentCardView{ID: 7, Name: "chief-cc", Status: agents.StatusRunning, Kind: agents.KindClaudeCode, IsChief: chief},
 	}
 }
@@ -55,8 +56,8 @@ func ccInside(n, ancestor *html.Node) bool {
 // agent's header — the chief's AND a dispatched agent's (operator decision on
 // PR #527) — is ONE row holding the status dot, the asks badge and the ⋯; the
 // account, the failover with its whole line, the pool and the Terminal link are
-// IN the ⋯ menu; no Rendered | Terminal switch is drawn; and the asks block
-// comes after the transcript. A GATEWAY agent keeps its second row (the
+// IN the ⋯ menu; no Rendered | Terminal switch is drawn; and there is no asks
+// block, only the header's badge. A GATEWAY agent keeps its second row (the
 // control, TestAGatewayAgentKeepsItsHeader).
 func TestEveryClaudeCodeAgentsPageFoldsItsStatusRowIntoTheMenu(t *testing.T) {
 	for _, chief := range []bool{true, false} {
@@ -69,7 +70,7 @@ func foldedPageCase(t *testing.T, chief bool) {
 	header := ccFirst(t, doc, "data-folded-header", "")
 	menu := ccFirst(t, doc, "id", AgentMenuID)
 	row := header.FirstChild
-	for _, want := range []struct{ key, val string }{{"id", "agent-status"}, {"id", AskerAsksID + "-chip"}, {"id", AgentMenuID + "-open"}, {"data-header-tools", ""}} {
+	for _, want := range []struct{ key, val string }{{"id", "agent-status"}, {"id", AskerAsksBadgeID}, {"id", AgentMenuID + "-open"}, {"data-header-tools", ""}} {
 		if n := ccFirst(t, doc, want.key, want.val); n.Parent == nil || !ccInside(n, row) {
 			t.Errorf("%s=%q is not in the header's one row", want.key, want.val)
 		}
@@ -125,14 +126,9 @@ func foldedPageCase(t *testing.T, chief bool) {
 			t.Errorf("%d tools: class %q, want gap-1 and %s", n, cls, want)
 		}
 	}
-	// The badge is the chip: there is one, in the header.
-	if n := len(ccWithAttr(doc, "id", AskerAsksID+"-chip")); n != 1 {
-		t.Errorf("%d asks chips", n)
-	}
-	page := renderString(t, AgentDetailPage(chiefPageView(chief), Features{}))
-	if log, asks, form := strings.Index(page, `id="chat-log"`), strings.Index(page, `id="`+AskerAsksID+`"`), strings.Index(page, `id="chat-form"`); !(log < asks && asks < form) {
-		t.Errorf("the asks are not between the transcript (%d) and the composer (%d): %d", log, form, asks)
-	}
+	// The asks are the header's badge alone: one link, in the header, to the
+	// Asks page filtered to this agent's asks — and no asks block anywhere.
+	badgeInHeader(t, doc, header, "/attention?from=agent%3Achief-cc", "3")
 	// Delete follows the chief guard, not the fold (the positive control that
 	// the two cases really are the chief and not).
 	if got := len(ccWithAttr(menu, "data-agent-action", "delete")); got != map[bool]int{true: 0, false: 1}[chief] {
@@ -143,7 +139,7 @@ func foldedPageCase(t *testing.T, chief bool) {
 // TestAGatewayAgentKeepsItsHeader: an agent that is not claude-code — the chief
 // or a dispatched one — has no account, failover or terminal to fold, and its
 // second row is the model picker: it keeps the page header, its ⋯ at that
-// row's start and its asks chip under the block.
+// row's start and — as every agent page — its asks badge in its header.
 func TestAGatewayAgentKeepsItsHeader(t *testing.T) {
 	for _, chief := range []bool{true, false} {
 		v := chiefPageView(chief)
@@ -159,8 +155,31 @@ func TestAGatewayAgentKeepsItsHeader(t *testing.T) {
 		if n := len(ccWithAttr(menu, "data-cc-account", "")) + len(ccWithAttr(menu, "id", "view-terminal")); n != 0 {
 			t.Errorf("chief %v: a gateway agent's menu holds claude-code items", chief)
 		}
-		if chip := ccFirst(t, doc, "id", AskerAsksID+"-chip"); ccInside(chip, ccFirst(t, doc, "data-agent-title", "").Parent.Parent) {
-			t.Errorf("chief %v: a gateway agent's asks chip is in its header", chief)
+		badgeInHeader(t, doc, ccFirst(t, doc, "data-agent-title", "").Parent.Parent, "/attention?from=agent%3Achief-cc", "3")
+	}
+}
+
+// badgeInHeader: doc draws exactly one asks badge, inside header, a link to
+// href saying n — and no asks block (the element the removed block drew, or
+// its chip).
+func badgeInHeader(t *testing.T, doc, header *html.Node, href, n string) {
+	t.Helper()
+	links := ccWithAttr(doc, "data-asker-asks-link", "")
+	if len(links) != 1 {
+		t.Fatalf("%d asks badges, want 1", len(links))
+	}
+	if !ccInside(links[0], header) {
+		t.Error("the asks badge is not in the header")
+	}
+	if got, _ := ccAttr(links[0], "href"); got != href {
+		t.Errorf("the badge links to %q, want %q", got, href)
+	}
+	if got := ccText(links[0]); got != n {
+		t.Errorf("the badge says %q, want %q", got, n)
+	}
+	for _, id := range []string{"asker-asks", "asker-asks-chip"} {
+		if got := len(ccWithAttr(doc, "id", id)); got != 0 {
+			t.Errorf("the page draws #%s (the removed asks block)", id)
 		}
 	}
 }

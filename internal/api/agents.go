@@ -1642,8 +1642,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		// the message box (answerSideChatOpened).
 		view.FocusComposer = r.URL.Query().Get(ui.ComposerFocusParam) == "1"
 	}
-	// The agent's open attention asks, answerable here (attention_asker.go).
-	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
+	// The header's badge of the agent's open attention asks, opening the Asks
+	// page filtered to them (attention_asker.go).
+	view.Asks, view.AsksSrc = s.askerAsksBadge(op.begin("asks"), askerRef{agent: a.Name})
 	// The session switcher below the chat form (ui/switcher.go).
 	view.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{AgentID: a.ID})
 	// The viewer's tags on the agent, in the header (ui/session_tags.go).
@@ -1651,20 +1652,12 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// What the retired Agents list's card showed: the header's status strip,
 	// its ⋯ menu and the notices (ui/agent_actions.go).
 	view.Card = s.agentPageCard(op.begin("card"), a, idx)
-	// The page's step-up gated forms confirm in place: Rotate credentials
-	// (team_admin.go), and — on a TEAM's chief read by an operator or a
-	// manager of the team — the team's end and dispatch cards in its asks
-	// block, which the chief files and which can arrive with the block's live
-	// refresh (teamCardStepUpWhy; each form carries its own sentence).
-	switch {
-	case view.Card.CanRotateCredentials:
+	// The page's step-up gated form confirms in place: Rotate credentials
+	// (team_admin.go). (A team chief's end and dispatch cards are answered on
+	// the Asks page, which draws their dialog: the page has no asks block.)
+	if view.Card.CanRotateCredentials {
 		view.StepUp = s.stepUpView(r)
 		view.StepUp.Why = ui.AgentRotateWhy(view.StepUp.Window)
-	case memberOnTeamAgent(ctx, a) && !teamWatcherOf(ctx, a.OwnerID) && s.isChiefAgent(s.attentionPrincipal(ctx, a.OwnerID, true), a):
-		// (Whether it is the TEAM's chief is read among the team's agents,
-		// as the team: the member's own list mixes in their own.)
-		view.StepUp = s.stepUpView(r)
-		view.StepUp.Why = TeamDispatchCardWhy()
 	}
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).

@@ -1667,12 +1667,24 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	var b strings.Builder
 	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
-	feed, open := s.askFeedNow(r.Context(), items, rd, now)
+	// A session page's asks badge lands here filtered to that session's asks
+	// (attention_asker.go, ?from=): the Open list is those asks alone.
+	flt, filtered := s.asksFilter(r.Context(), r.URL.Query(), rd.hosts)
+	var feed string
+	var open int
+	if filtered {
+		feed, open = askFeedHTML(flt.only(items, rd.hosts), "", 0, now)
+	} else {
+		feed, open = s.askFeedNow(r.Context(), items, rd, now)
+	}
 	// THE CARD FEED (asks_feed.go): the heading and the open count, then the
 	// tabs, each a feed of cards.
 	b.WriteString(`<section class="flex flex-col gap-3" data-testid="attention-page">
 <div class="flex items-center gap-2 px-1"><h1 class="text-balance text-base font-semibold text-fg">Asks</h1>` + ui.AsksOpenCountHTML(open) + `</div>
 `)
+	if filtered {
+		b.WriteString(ui.AsksFilterHTML(flt.label, attentionPath))
+	}
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
 	// The feed's notice: a card post refused after the card left the page.
@@ -1710,7 +1722,12 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 <template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
 <template id="asks-drafts-wait-tpl">` + ui.AsksDraftsWaitHTML(2) + `</template>
 `)
-	b.WriteString(attentionPageScript)
+	if filtered {
+		// The live list keeps the filter.
+		b.WriteString(ui.AttentionLiveScript("attention-items", "/attention/items?"+flt.ref.query(), EventAttentionChanged))
+	} else {
+		b.WriteString(attentionPageScript)
+	}
 	// The answer boxes' mic (once, after the list it reveals; the live
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
@@ -1746,6 +1763,12 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := s.now() // as renderAsksPage
+	// The filtered page's live list (?from=, renderAsksPage): the same filter.
+	if flt, ok := s.asksFilter(r.Context(), r.URL.Query(), rd.hosts); ok {
+		feed, _ := askFeedHTML(flt.only(items, rd.hosts), "", 0, now)
+		_, _ = w.Write([]byte(feed))
+		return
+	}
 	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, rd, now)))
 }
 

@@ -131,8 +131,9 @@ type MirrorViewView struct {
 	// (FocusHistoryPath); "" when the host reports no Claude session for the
 	// window, which then has none. The index sheet's second tab.
 	FocusHistory string
-	// Asks and AsksSrc are the window's Claude sessions' OPEN attention asks
-	// and their fragment URL (AgentDetailView.Asks).
+	// Asks and AsksSrc are the header's asks badge for the window's Claude
+	// sessions' OPEN attention asks, and its fragment URL
+	// (AgentDetailView.Asks).
 	Asks    string
 	AsksSrc string
 	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
@@ -278,7 +279,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				overlayNav(v.Nav, ""),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
-					// Polled only without the asks block, whose asks:changed refreshes it.
+					// Polled only without the asks badge, whose live refresh's
+					// asks:changed refreshes it (AttentionLiveScript).
 					overlayNavButton(v.Switcher, v.AsksSrc == ""),
 					A(
 						ID("mv-back"),
@@ -309,6 +311,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							previewButtonSlot(v.Plugins, PreviewInRow),
 						),
 					),
+					// The window's sessions' open attention asks: a count that
+					// opens the Asks page filtered to them (AskerAsksBadge).
+					g.If(v.AsksSrc != "", AskerAsksBadge(v.Asks)),
 					chatIndexButton("mv-log"),
 					// The window's Preview button, while it has something to
 					// preview (plugin_chip.go).
@@ -352,8 +357,6 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// What Claude Code has queued itself (cc_queued.go): OUTSIDE the
 				// conversation, so it never moves what is being read there.
 				CCQueued(nil),
-				// The window's sessions' attention asks (attention_ask), answered here.
-				g.If(v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, false)),
 				Div(
 					ID("mv-working"),
 					g.Attr("hidden", ""),
@@ -380,7 +383,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				agentTitleFitScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
-				// The attention asks block's live refresh.
+				// The header's asks badge's live refresh.
 				AskerAsksLive(v.AsksSrc),
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),

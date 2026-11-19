@@ -437,21 +437,33 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await expect(row, 'cancelled: it leaves the list').toHaveCount(0);
 });
 
-// ANSWERED ON THE ASKING SESSION'S OWN VIEW (attention_asker.go): the
-// notification's URL, /attention/open/<key>, resolves a mirrored session's
-// ask to the ask's own page when tapped (attention_push_target.go;
-// ask-page.spec.ts drives that page), whose context link is the session's
-// rendered view. The view shows the ask with the queue's own form; a second
-// ask arrives live; the operator answers there, lands back on the view, and
-// the session's wait returns the answer. On a phone the block stays above the
-// pinned composer.
+// clearOpenAsks dismisses every ask open in the queue (the spec shares it: an
+// earlier test may leave one open), so a count below is exact.
+async function clearOpenAsks(page: Page) {
+  const html = await (await page.request.get(origin + '/attention')).text();
+  for (const m of html.matchAll(/<li id="ask-(\d+)"/g)) {
+    const r = await page.request.post(origin + `/attention/asks/${m[1]}/cancel`, { headers: { Origin: origin }, maxRedirects: 0 });
+    expect([303, 409], `dismissing ask ${m[1]}`).toContain(r.status());
+  }
+  expect(await (await page.request.get(origin + '/attention')).text(), 'no ask left open').not.toMatch(/<li id="ask-\d+"/);
+}
+
+// THE ASKING SESSION'S VIEW COUNTS ITS ASKS (attention_asker.go): a mirrored
+// session's rendered view draws no asks block — its header counts the
+// session's open asks, live — so the conversation and the composer keep the
+// room they have with none waiting. The count's tap opens the Asks page
+// filtered to that session: exactly its asks, not the agent's open one (two
+// sessions, two counts). There the operator answers by an option and by free
+// text, and the session's wait returns each answer.
+// 🔴 RED at origin/main: the view drew the asks block above the composer, and
+// its header had no count.
 for (const vp of [
   { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
 ]) {
   test.describe(`on a ${vp.name}`, () => {
     test.use(vp.use);
-    test('a mirrored session\'s ask is answered on its own rendered view', async ({ page }) => {
+    test('a mirrored session\'s asks are a count in its view\'s header that opens Asks filtered to them', async ({ page }) => {
       test.setTimeout(120_000);
       // The host writes its local secret once it is up (a fresh worker may run
       // this test first).
@@ -462,128 +474,76 @@ for (const vp of [
         const r = (await (await localCall('attention_ask', { question, options }, auth)).json()) as { result: { content: { text: string }[] } };
         return (JSON.parse(r.result.content[0].text) as { id: number }).id;
       };
-      const id = await askLocal(`Merge on the ${vp.name}?`, ['merge', 'hold']);
 
       await signIn(page, origin);
-      // The notification's URL (the tap route) resolves to the ask's page,
-      // whose context link is the window's view.
+      await clearOpenAsks(page);
       const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
-      await page.goto(origin + `/attention/open/ask-${id}`);
-      await page.waitForURL(origin + `/attention/asks/${id}`);
-      await page.locator('[data-ask-context]').click();
-      await page.waitForURL(view);
-      const block = page.locator('#asker-asks');
-      const item = block.locator(`#ask-${id}`);
-      await expect(item.locator('[data-attention-text]')).toHaveText(`Merge on the ${vp.name}?`);
-      await expect(item.getByRole('button', { name: 'merge', exact: true })).toBeVisible();
+      await page.goto(view);
+      await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+      const count = page.locator('header [data-asker-asks-link]');
+      await expect(count, 'none open: no count').toHaveCount(0);
+      const layout = async () => {
+        const c = (await page.locator('#mv-compose').boundingBox())!;
+        const l = (await page.locator('#mv-log').boundingBox())!;
+        return { composeY: c.y, composeH: c.height, logY: l.y, logH: l.height };
+      };
+      const none = await layout();
 
-      // A second ask, raised while the view is open, arrives without a reload.
+      // Two asks from this session and one from the agent, arriving live.
+      const id = await askLocal(`Merge on the ${vp.name}?`, ['merge', 'hold']);
+      const agentAsk = await ask(`The agent's own question on the ${vp.name}?`, ['yes', 'no']);
+      await expect(count).toHaveAttribute('data-count', '1', { timeout: 15_000 });
       const id2 = await askLocal(`And the changelog on the ${vp.name}?`);
-      await expect(block.locator(`#ask-${id2}`)).toBeVisible({ timeout: 15_000 });
-      // One card at a time (ui.AskerAsksList): the newest is on show and the
-      // first waits behind "Show N more", which opens it in place — and keeps
-      // it open across the block's live refreshes. N counts what the block
-      // holds: the window may hold an earlier test's open ask too (the split
-      // pane's).
-      await expect(item).toBeHidden();
-      const held = await block.locator('[data-attention-item]').count();
-      expect(held).toBeGreaterThanOrEqual(2);
-      await expect(block.locator('[data-asks-more]')).toHaveText(`Show ${held - 1} more`);
-      await block.locator('[data-asks-more]').click();
-      await expect(item).toBeVisible();
+      await expect(count).toHaveAttribute('data-count', '2', { timeout: 15_000 });
+      await expect(count).toHaveAccessibleName('Open the 2 questions waiting on your answer');
+      expect((await count.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
 
-      // The layout holds: the block sits above the pinned composer, which is
-      // still inside the visible viewport, and the conversation keeps room.
+      // No block: nothing of the asks between the conversation and the
+      // composer, and both keep the room they had with none waiting.
+      await expect(page.locator('#asker-asks, #asker-asks-chip, [data-asker-asks-hide]'), 'no asks block').toHaveCount(0);
+      await expect(page.locator(`#ask-${id}, #ask-${id2}`), 'no ask card on the view').toHaveCount(0);
+      const now = await layout();
+      for (const k of ['composeY', 'composeH', 'logY', 'logH'] as const) {
+        expect.soft(Math.abs(now[k] - none[k]), `${k} is ${now[k]}, ${none[k]} with none waiting`).toBeLessThanOrEqual(1);
+      }
       const size = page.viewportSize()!;
-      const compose = (await page.locator('#mv-compose').boundingBox())!;
-      const asks = (await block.boundingBox())!;
-      const log = (await page.locator('#mv-log').boundingBox())!;
-      expect(compose.y + compose.height, 'the composer is on screen').toBeLessThanOrEqual(size.height + 1);
-      expect(asks.y + asks.height, 'the asks block ends above the composer').toBeLessThanOrEqual(compose.y + 1);
-      expect(log.height, 'the conversation keeps room').toBeGreaterThan(80);
+      expect(now.composeY + now.composeH, 'the composer is on screen').toBeLessThanOrEqual(size.height + 1);
 
-      // Answer by an option: back on this view, the session's wait gets it, the ask leaves.
+      // The tap: the Asks page, filtered to this session — its two asks, not the agent's.
+      await Promise.all([
+        page.waitForURL((u) => u.pathname === '/attention' && u.searchParams.get('from') === `window:${host}:@1:work`),
+        vp.use.hasTouch ? count.tap() : count.click(),
+      ]);
+      await expect(page.locator('[data-testid="asks-filter"]')).toBeVisible();
+      const listed = page.locator('#attention-items [data-attention-item]');
+      await expect(listed).toHaveCount(2);
+      await expect(page.locator(`#attention-items #ask-${id}`)).toHaveCount(1);
+      await expect(page.locator(`#attention-items #ask-${id2}`)).toHaveCount(1);
+      await expect(page.locator(`#ask-${agentAsk}`), 'not the agent\'s ask').toHaveCount(0);
+      await expect(page.locator('[data-asks-open-count]')).toHaveText('2 open');
+
+      // Answer by an option, from the filtered page: the session's wait gets it, the card leaves.
+      const item = page.locator(`#attention-items #ask-${id}`);
       const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
-      await Promise.all([page.waitForURL(view), item.getByRole('button', { name: 'hold', exact: true }).click()]);
+      await item.getByRole('button', { name: 'hold', exact: true }).click();
       const got = (await waited) as { result: { content: { text: string }[] } };
       expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered', answer: 'hold' });
-      await expect(block.locator(`#ask-${id}`)).toHaveCount(0);
+      await expect(page.locator(`#ask-${id}`)).toHaveCount(0, { timeout: 15_000 });
 
       // Free text on the second: it leaves too.
-      const second = block.locator(`#ask-${id2}`);
-      await second.locator('textarea').fill('yes, add it');
-      await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
+      const second = page.locator(`#attention-items #ask-${id2}`);
+      await second.locator('textarea[name="answer"]').fill('yes, add it');
+      await second.getByRole('button', { name: 'Answer', exact: true }).click();
+      await expect(page.locator(`#ask-${id2}`)).toHaveCount(0, { timeout: 15_000 });
       const w2 = (await (await localCall('attention_wait', { id: id2, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
       expect(JSON.parse(w2.result.content[0].text)).toMatchObject({ status: 'answered', answer: 'yes, add it' });
-      await expect(block.locator(`#ask-${id2}`)).toHaveCount(0);
+
+      // Back on the view, nothing of this session's is open: no count.
+      await page.goto(view);
+      await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+      await expect(count).toHaveCount(0);
+      await clearOpenAsks(page);
     });
   });
 }
 
-// HIDE UNTIL NEXT ASK, on the Rendered view (ui/attention.go): the operator's
-// "close it without taking any action". The block hides here and NOTHING is
-// sent — no request of any kind, so the session's wait still says pending and
-// the ask is still in the queue; an "N waiting" chip takes its place and
-// reopens it; a NEW ask (arriving live, by the queue's SSE event) brings the
-// block back by itself. 🔴 A REGRESSION TEST: at the base the block has no hide.
-test('the rendered view\'s asks hide until the next ask, without answering or sending anything', async ({ page }) => {
-  test.setTimeout(120_000);
-  await expect.poll(() => fs.existsSync(mcpSecretFile), { timeout: 30_000 }).toBe(true);
-  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
-  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
-  const askLocal = async (question: string, options: string[] = []) => {
-    const r = (await (await localCall('attention_ask', { question, options }, auth)).json()) as { result: { content: { text: string }[] } };
-    return (JSON.parse(r.result.content[0].text) as { id: number }).id;
-  };
-  const status = async (id: number) => {
-    const r = (await (await localCall('attention_wait', { id, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
-    return (JSON.parse(r.result.content[0].text) as { status: string }).status;
-  };
-  const id = await askLocal('Rotate the staging key?', ['rotate', 'later']);
-
-  await signIn(page, origin);
-  const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
-  await page.goto(view);
-  const block = page.locator('#asker-asks');
-  const chip = page.locator('#asker-asks-chip');
-  await expect(block.locator(`#ask-${id}`)).toBeVisible();
-  // The window may hold an earlier test's open ask too (the split pane's): the
-  // chip counts what the block holds.
-  const n = await block.locator('[data-attention-item]').count();
-  expect(n).toBeGreaterThanOrEqual(1);
-
-  const sent: string[] = [];
-  page.on('request', (r) => {
-    if (r.resourceType() !== 'eventsource' && r.resourceType() !== 'websocket') sent.push(`${r.method()} ${new URL(r.url()).pathname}`);
-  });
-  await block.getByRole('button', { name: 'Hide until next ask' }).click();
-  await expect(block).toBeHidden();
-  await expect(chip).toHaveText(`${n} waiting`);
-  await page.waitForTimeout(500);
-  expect(sent.filter((s) => !s.startsWith('GET /mirror/view/asks')), 'the hide sent nothing (the asks poll aside, a GET)').toEqual([]);
-  expect(sent.filter((s) => !s.startsWith('GET ')), 'no POST of any kind').toEqual([]);
-  expect(await status(id), 'the session still waits: nothing answered or cancelled it').toBe('pending');
-  expect(await (await page.request.get(origin + '/attention')).text(), 'still in the Asks queue').toContain(`id="ask-${id}"`);
-
-  // A new ask arrives live: the block comes back by itself, with both.
-  const id2 = await askLocal('And the prod key?');
-  await expect(block.locator(`#ask-${id2}`)).toBeAttached({ timeout: 15_000 });
-  await expect(block).toBeVisible();
-  await expect(chip).toBeHidden();
-  // Hidden again, then reopened by the chip.
-  await block.getByRole('button', { name: 'Hide until next ask' }).click();
-  await expect(chip).toHaveText(`${n + 1} waiting`);
-  await chip.click();
-  await expect(block).toBeVisible();
-  await expect(chip).toBeHidden();
-  expect(sent.filter((s) => !s.startsWith('GET ')), 'still no POST').toEqual([]);
-
-  // Cleanup by the block's own answer forms (the queue is shared by the spec),
-  // newest first: the block shows one card at a time, the newest on top
-  // (ui.AskerAsksList), so each answer brings the next one into view.
-  const second = block.locator(`#ask-${id2}`);
-  await second.locator('textarea').fill('not now');
-  await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
-  expect(await status(id2)).toBe('answered');
-  await Promise.all([page.waitForURL(view), block.locator(`#ask-${id}`).getByRole('button', { name: 'later', exact: true }).click()]);
-});

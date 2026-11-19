@@ -547,7 +547,7 @@ var agentReadCallers = map[string]string{
 	"GetByName Server.handleAgentSend":           "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.handleAgentWS":             "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.activeNotificationRows":    "visible: the panel's link to an active agent (read)",
-	"GetByName Server.askerAsks":                 "visible: an agent's open asks (read)",
+	"GetByName Server.resolveAsker":              "visible: an agent's open asks, counted and filtered (read)",
 	"GetByName Server.leaving":                   "visible: the page home leaves out (read)",
 	"GetByName Server.teamAgentGate":             "visible: the team-agent route gate itself",
 	"GetByName Server.teamChief":                 "visible: /teams/{id}/chief's status (read); its writes run as the team (teamAdminContext)",

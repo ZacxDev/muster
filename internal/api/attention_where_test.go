@@ -213,13 +213,13 @@ func TestTheAskPageHeaderNamesTheSessionAndItsInfoTheExactTmuxTarget(t *testing.
 	}
 }
 
-// TestASessionPagesAsksBlockNamesTheExactTmuxTarget: the asks block on the
-// labelled window's own page.
-func TestASessionPagesAsksBlockNamesTheExactTmuxTarget(t *testing.T) {
+// TestASessionPagesAsksBadgeNamesTheExactTmuxTarget: the asks a session page's
+// badge counts, on the labelled window's own page (and its filtered Asks page lists).
+func TestASessionPagesAsksBadgeNamesTheExactTmuxTarget(t *testing.T) {
 	s := whereServer(t, whereAsks()...)
 	items := s.askerAsks(s.attentionPrincipal(context.Background(), 1), askerRef{mirror: ui.MirrorRef{Host: "ws", Session: "scratch3", Window: "@37"}})
 	if len(items) != 1 || items[0].AskID != 91 {
-		t.Fatalf("block items %+v, want ask 91 alone", items)
+		t.Fatalf("badge items %+v, want ask 91 alone", items)
 	}
 	if got, want := items[0].Source, whereAskSources[91]; got != want {
 		t.Fatalf("source %q, want %q", got, want)
