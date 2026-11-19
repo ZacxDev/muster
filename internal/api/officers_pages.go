@@ -39,6 +39,8 @@ import (
 //	POST /officers/{officer}/schedules          add or replace a schedule
 //	POST /officers/{officer}/schedules/{name}/delete
 //	POST /officers/{officer}/refusals/{item}/refile|drop   a refusal waiting on its owner (officer_needs_you.go)
+//	POST /officers/{officer}/chat                          chat with it (officer_operator_chat.go)
+//	POST /officers/{officer}/chat/cards/{card}/approve|reject   a confirm card it asked for in the chat
 //
 // 🔴 A DOOR, NOT A SECOND IMPLEMENTATION. Every write goes through the same
 // core the JSON admin API does (officer_declared.go's createDeclared and the
@@ -85,6 +87,10 @@ func (s *Server) registerOfficerPages(mux Mux) {
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules/{name}/delete", s.requireOperatorWrite(s.handleOfficerScheduleDeletePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/refusals/{item}/refile", s.requireOperatorWrite(s.handleOfficerRefusalRefile))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/refusals/{item}/drop", s.requireOperatorWrite(s.handleOfficerRefusalDrop))
+	// Chat with it, and its confirm cards (officer_operator_chat.go).
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/chat", s.requireOperatorWrite(s.handleOfficerChat))
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/chat/cards/{card}/approve", s.requireOperatorWrite(s.handleOfficerChatCardApprove))
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/chat/cards/{card}/reject", s.requireOperatorWrite(s.handleOfficerChatCardReject))
 }
 
 // officersOn reports whether this server keeps officers at all (the built-in
@@ -1917,6 +1923,11 @@ var officerNotices = map[string]string{
 	"refiled":        "Re-filed: the officer files it again at that time, and you approve the new draft.",
 	"dropped":        "Dropped: the officer will not redraft it.",
 	"cap-raised":     "Raised for today: it is woken for new work again, and its budget goes back at the next 00:00 UTC.",
+	// The chat's (officer_operator_chat.go).
+	"chat-sent":      "Sent. It answers below in a moment.",
+	"card-approved":  "Approved: its plugin sends exactly what the card showed, once.",
+	"card-rejected":  "Rejected: it is not sent, and the officer is told.",
+	"card-dismissed": "Dismissed: nothing was changed.",
 }
 
 // officerPageNotice is the words of a notice code on an officer's page: its
@@ -2008,7 +2019,11 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	controllable := sc.Manage && builtinBackend && (v.ManagedBy == officers.ManagedByDB || v.ManagedBy == officers.ManagedByEnv)
 	needs := s.officerNeedsOf(ctx, s.readNeeds(ctx), sc.Owner, v.ID, builtinBackend)
 	b.WriteString(s.needsYouHTML(ctx, sc, v, needs, s.officerRunHTML(ctx, sc, v, controllable), controllable))
-	if len(needs.drafts) > 0 {
+	// Chat with it (officer_operator_chat.go), right below what waits on
+	// the person: its confirm cards are decisions too.
+	chat := s.officerChatHTML(r, sc, v)
+	b.WriteString(chat)
+	if len(needs.drafts) > 0 || officerChatHasOpenCard(chat) {
 		// The Approve's "Confirm it's you" dialog and form script — the Asks
 		// page's own (draftStepUpHTML); the server checks it either way.
 		b.WriteString(s.draftStepUpHTML(r))

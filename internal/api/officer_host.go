@@ -562,6 +562,12 @@ const officerHostInstanceRefusal = "this window is host officer instance %s, not
 // officer's connector rule, the grant per agent), the attention tools as the
 // calling session.
 func (s *Server) toolHostOfficerInstance(ctx context.Context, a agents.Agent, c toolCaller, name, arguments string) string {
+	// 🔴 EVERY CALL OF A HOST OFFICER'S INSTANCE IS AN OFFICER'S CALL, its
+	// attention and connector tools included: no decision door takes it
+	// (officerDeciderRefusal).
+	if o, _, ok := s.officerOf(a); ok {
+		ctx = withOfficerCall(ctx, o)
+	}
 	if text, ok := s.dispatchOfficerTool(ctx, a, name, arguments); ok {
 		return text
 	}

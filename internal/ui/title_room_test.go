@@ -78,12 +78,19 @@ func TestTheRowFadeOnlyReadsTheScrollAndTheStylesheetKeysOffIt(t *testing.T) {
 // <title> is the same name (mirrorViewName).
 func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
 	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "scratch2", Window: "@1", Label: "billing-reconcile-nightly:1", Qualifier: "tower", Interactive: true}))
-	h1 := regexp.MustCompile(`(?s)<h1 id="mv-heading" tabindex="-1" data-agent-title="" data-title-fit="disable" class="min-w-0 text-sm font-semibold"><button id="mv-title" type="button" data-mv-title="" data-agent-title-text="" data-title-more="" popovertarget="mv-title-full" aria-haspopup="dialog" aria-controls="mv-title-full" aria-expanded="false" class="block w-full min-w-0 truncate[^"]*">(.*?)</button></h1>`).FindStringSubmatch(page)
+	h1 := regexp.MustCompile(`(?s)<h1 id="mv-heading" tabindex="-1" data-agent-title="" data-title-fit="disable" class="min-w-0 text-sm font-semibold"><button id="mv-title" type="button" data-mv-title="" data-title-more="" popovertarget="mv-title-full" aria-haspopup="dialog" aria-controls="mv-title-full" aria-expanded="false" class="block w-full min-w-0 rounded[^"]*">(.*?)</button></h1>`).FindStringSubmatch(page)
 	if h1 == nil {
 		t.Fatalf("no title button in the header's h1:\n%s", page[strings.Index(page, "<header"):][:2000])
 	}
-	if !strings.Contains(h1[1], `data-mirror-name`) || !strings.Contains(h1[1], `data-term-badge`) {
-		t.Errorf("the button does not hold the title and the badge:\n%s", h1[1])
+	// Two lines in the button (mirrorHostLine): the title — the fit script's
+	// truncating [data-agent-title-text], holding the name and not the badge —
+	// then the badge's own line.
+	line := regexp.MustCompile(`(?s)^<span data-agent-title-text="" class="block truncate">(.*?)</span><span data-term-badge="" class="flex min-w-0">`).FindStringSubmatch(h1[1])
+	if line == nil {
+		t.Fatalf("the button is not the title's line, then the badge's:\n%s", h1[1])
+	}
+	if !strings.Contains(line[1], `data-mirror-name`) || strings.Contains(line[1], `data-term-badge`) {
+		t.Errorf("the title's line does not hold the title alone:\n%s", line[1])
 	}
 	if strings.Contains(h1[1], `data-title-full`) {
 		t.Error("the popover is inside the <h1>")

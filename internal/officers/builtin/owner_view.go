@@ -177,6 +177,21 @@ func lockRefusal(ctx context.Context, tx pgx.Tx, owner int64, officer string, id
 // ErrDecided. at is at most MaxRefileAhead from now (an earlier at is now).
 // Answers the id of the item that carries the re-filed work.
 func (s *Store) RefileRefusal(ctx context.Context, owner int64, officer string, id int64, at, now time.Time) (int64, error) {
+	return s.refileRefusal(ctx, owner, officer, id, at, now, true)
+}
+
+// RefileRefusalFromChat is RefileRefusal as a person confirmed it from a
+// chat with the officer (the confirm card of its officer_refusal_refile,
+// internal/api officer_operator_chat.go): the same work comes back at at,
+// but 🔴 NOT AS THE OWNER'S OWN ITEM — the item keeps its origin (a new one
+// has none), so a spent daily budget holds it back like any of the
+// officer's work. An officer may not mint an item that gets past its own cap
+// by asking for it in a chat.
+func (s *Store) RefileRefusalFromChat(ctx context.Context, owner int64, officer string, id int64, at, now time.Time) (int64, error) {
+	return s.refileRefusal(ctx, owner, officer, id, at, now, false)
+}
+
+func (s *Store) refileRefusal(ctx context.Context, owner int64, officer string, id int64, at, now time.Time, asOwner bool) (int64, error) {
 	if at.After(now.Add(MaxRefileAhead)) {
 		return 0, fmt.Errorf("%w: a refusal is re-filed at most 30 days ahead", ErrInvalid)
 	}
@@ -196,8 +211,9 @@ func (s *Store) RefileRefusal(ctx context.Context, owner int64, officer string, 
 	carrier := it.ID
 	if it.Status == officers.StatusOpen || it.Status == officers.StatusClaimed {
 		raw, _ := json.Marshal(mark)
-		if _, err := tx.Exec(ctx, `UPDATE officer_items SET not_before = $2, payload = payload || $3::jsonb, origin = $4, updated_at = $5 WHERE id = $1`,
-			it.ID, at, raw, officers.OriginOwner, now); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE officer_items SET not_before = $2, payload = payload || $3::jsonb,
+			origin = CASE WHEN $4 THEN '`+officers.OriginOwner+`' ELSE origin END, updated_at = $5 WHERE id = $1`,
+			it.ID, at, raw, asOwner, now); err != nil {
 			return 0, classify(err)
 		}
 	} else {
@@ -208,8 +224,12 @@ func (s *Store) RefileRefusal(ctx context.Context, owner int64, officer string, 
 		payload["owner_note"] = RefileNote
 		payload["refiled_from"] = it.ID
 		raw, _ := json.Marshal(payload)
+		origin := ""
+		if asOwner {
+			origin = officers.OriginOwner
+		}
 		carrier, err = s.EnqueueTx(ctx, tx, owner, NewItem{Officer: officer, Kind: DraftRefusedKind, SubjectKey: it.SubjectKey, Payload: raw,
-			NotBefore: &at, Origin: officers.OriginOwner}, now)
+			NotBefore: &at, Origin: origin}, now)
 		if err != nil {
 			return 0, classify(err)
 		}

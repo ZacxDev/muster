@@ -652,7 +652,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// fleet's action log. Off by default; it needs the digest (config).
 		ext.FleetPropose = cfg.FleetPropose
 		ext.FleetActions = fleet.NewPG(a.pool)
-		// The morning report (MUSTER_MORNING_REPORT=1, migration 0160): one
+		// The morning report (MUSTER_MORNING_REPORT=1, migration 0161): one
 		// report per owner per day and its push. Off by default; it needs a
 		// database.
 		if cfg.MorningReport {

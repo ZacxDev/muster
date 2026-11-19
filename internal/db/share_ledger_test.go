@@ -86,7 +86,10 @@ var personalOwned = []string{
 	"officer_cap_raises",
 	// 0158: the fleet's action log; same reason.
 	"fleet_actions",
-	// 0160: the morning report; it lists its owner's own sessions, tasks and
+	// 0160: the confirm cards in a person's chat with an officer; one
+	// manager's cards are never another's.
+	"officer_chat_cards",
+	// 0161: the morning report; it lists its owner's own sessions, tasks and
 	// questions.
 	"morning_reports",
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -39,7 +40,7 @@ import (
 // draws them with), so the owner answers one in place through the queue's own
 // answer route, and the answer lands as it would on /attention.
 //
-// 🔴 ONE REPORT PER OWNER PER DAY, IN THE DATABASE (morning_reports, 0160):
+// 🔴 ONE REPORT PER OWNER PER DAY, IN THE DATABASE (morning_reports, 0161):
 // the day's row is inserted before anything is pushed, and the push is
 // claimed by one conditional update before it is sent, so a restart, a second
 // tick or a rolling update's second replica sends nothing twice.
@@ -537,7 +538,9 @@ func (s *Server) morningCost(octx context.Context, day morning.Day) morning.Cost
 func (s *Server) handleMorningReport(w http.ResponseWriter, r *http.Request) {
 	mr := s.ext.MorningReport
 	if mr == nil {
-		http.NotFound(w, r)
+		// Off: the turned-off feature's plain page (a member is told to ask
+		// their admin; an admin gets the ⓘ), or the typed JSON 404.
+		s.writeFeatureDisabled(w, r, features.MorningReport)
 		return
 	}
 	ctx := r.Context()

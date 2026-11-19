@@ -342,6 +342,9 @@ POST /mirror/view/suggest/event
 POST /officers/new
 POST /officers/spawns/{id}/share
 POST /officers/spawns/{id}/unshare
+POST /officers/{officer}/chat
+POST /officers/{officer}/chat/cards/{card}/approve
+POST /officers/{officer}/chat/cards/{card}/reject
 POST /officers/{officer}/delete
 POST /officers/{officer}/edit
 POST /officers/{officer}/mode
