@@ -66,6 +66,7 @@ var musterToolLabels = map[string]string{
 	// Sessions and agents.
 	"fleet_list":   "Looked over your sessions",
 	"fleet_report": "Reported on your sessions",
+	"notify_owner": "Sent you a notification",
 	// Fleet proposals (internal/api fleet_actions.go): each only files a
 	// card; nothing is sent until the owner taps it.
 	"session_instruct":    "Proposed a message to a session",
