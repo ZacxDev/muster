@@ -438,8 +438,8 @@ func TestTheBrandImagesCarryTheirOwnHeaders(t *testing.T) {
 }
 
 // TestPagesDrawTheBrandAndFallBack: with nothing set, the header and sidebar
-// draw the wordmark, the shell links muster's icons, the sign-in page has no
-// brand and the manifest is the constant. With a logo and name: the header
+// draw muster's lockup, the shell links muster's icons, the sign-in page draws
+// the lockup and no instance brand, and the manifest is the constant. With a logo and name: the header
 // draws the logo and name, the shell's favicon and touch icon and the
 // manifest's icons are the logo's (versioned by its ETag), and the sign-in
 // page — anonymous — draws both. A reset restores every default.
@@ -451,14 +451,14 @@ func TestPagesDrawTheBrandAndFallBack(t *testing.T) {
 	defaults := func(when string) {
 		t.Helper()
 		page := shell()
-		if strings.Contains(page, "data-brand-logo") || !strings.Contains(page, `<span class="text-accent">mu</span>ster`) {
-			t.Errorf("%s: the shell does not draw the wordmark alone", when)
+		if strings.Contains(page, "data-brand-logo") || strings.Count(page, `<img data-brand-mark="" src="/static/icons/lockup-horizontal.svg?v=`) != 2 {
+			t.Errorf("%s: the shell does not draw the lockup alone, in the header and the sidebar", when)
 		}
 		if !strings.Contains(page, `rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png`) || strings.Contains(page, "/brand/") {
 			t.Errorf("%s: the shell's favicon is not muster's", when)
 		}
-		if strings.Contains(login(), "login-brand") {
-			t.Errorf("%s: the sign-in page draws a brand", when)
+		if lp := login(); strings.Contains(lp, "login-brand") || !strings.Contains(lp, `data-testid="login-mark"`) {
+			t.Errorf("%s: the sign-in page draws an instance brand, or not muster's lockup", when)
 		}
 		if m := manifest(); strings.Contains(m, "/brand/") || !strings.Contains(m, "/static/icons/maskable-512.png") {
 			t.Errorf("%s: the manifest is not the default: %s", when, m)
@@ -481,12 +481,15 @@ func TestPagesDrawTheBrandAndFallBack(t *testing.T) {
 			t.Errorf("the branded shell lacks %s", want)
 		}
 	}
-	if strings.Contains(page, `<span class="text-accent">mu</span>ster`) {
-		t.Error("the branded shell still draws the wordmark")
+	if strings.Contains(page, "data-brand-mark") {
+		t.Error("the branded shell still draws muster's lockup")
 	}
 	lp := login()
 	if !strings.Contains(lp, `data-brand-logo src="/brand/logo.png`+v+`"`) || !strings.Contains(lp, "Team &lt;Example&gt;") {
 		t.Errorf("the sign-in page does not draw the logo and name:\n%s", lp)
+	}
+	if strings.Contains(lp, "login-mark") || strings.Contains(lp, "lockup-horizontal.svg") {
+		t.Error("the branded sign-in page still draws muster's lockup")
 	}
 	var m WebManifest
 	if err := json.Unmarshal([]byte(manifest()), &m); err != nil {

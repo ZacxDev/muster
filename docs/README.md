@@ -105,6 +105,7 @@ it off. The full list of features, with every `.env` line, is
 - [testing.md](testing.md) — the Go suite, the gates, the browser suite, screenshots
 - [limits.md](limits.md) — what it does not do, or has not proven
 - [decisions.md](decisions.md) — why things are the way they are
+- [brand.md](brand.md) — muster's own mark: the brand pack's files, where each is used, clear space, colours and the wordmark font's licence
 - [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
 - [design/agent-cards.md](design/agent-cards.md) — live subagent and shell counts, and tmux identity colours, on the (since retired) Agents list's cards
 - [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically

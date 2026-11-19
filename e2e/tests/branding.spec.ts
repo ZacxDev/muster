@@ -21,7 +21,7 @@ import {
 //    icons are the logo's; the sign-in page, opened with no session, draws the
 //    logo and name; GET /api/instance names both. An SVG upload is refused
 //    and the page says why. Reset logo, then an empty name, restore every
-//    default: the wordmark, muster's favicon and its manifest icons.
+//    default: muster's lockup, its favicon and its manifest icons.
 // 2. A MEMBER (gotrue mode, the real GoTrue) has no branding section on their
 //    Account page, and the write route refuses them.
 //
@@ -130,7 +130,9 @@ const pixel = (page: Page, url: string, x: number, y: number) =>
 const loaded = (page: Page, sel: string) =>
   page.locator(sel).first().evaluate((el) => (el as HTMLImageElement).complete && (el as HTMLImageElement).naturalWidth > 0);
 
-const iconHref = (page: Page) => page.locator('link[rel="icon"]').getAttribute('href');
+// The page's first favicon: the 192 px one, the logo's or muster's. With no
+// logo, muster's SVG and 32 px favicons follow it; with one, they are absent.
+const iconHref = (page: Page) => page.locator('link[rel="icon"]').first().getAttribute('href');
 
 test.describe('the admin', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
@@ -149,10 +151,11 @@ test.describe('the admin', () => {
     test.setTimeout(90_000);
     await signIn(page, origin);
 
-    // Nothing set: the wordmark, muster's icons.
+    // Nothing set: muster's lockup, muster's icons.
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-logo]')).toHaveCount(0);
     expect(await iconHref(page)).toContain('/static/icons/icon-192.png');
+    await expect(page.locator('link[rel="icon"][type="image/svg+xml"]')).toHaveCount(1);
 
     await page.goto(origin + '/account');
     const section = page.locator('[data-testid="branding"]');
@@ -194,6 +197,7 @@ test.describe('the admin', () => {
     // The favicon and touch icon are the logo's.
     expect(await iconHref(page)).toBe('/brand/icon-192.png?v=' + etag);
     expect(await page.locator('link[rel="apple-touch-icon"]').getAttribute('href')).toBe('/brand/icon-192.png?v=' + etag);
+    await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
     // The manifest's icons are the logo's.
     const manifest = await (await page.request.get(origin + '/manifest.webmanifest')).json();
     expect(manifest.icons.map((i: { src: string }) => i.src)).toEqual(['/brand/icon-192.png?v=' + etag, '/brand/icon-512.png?v=' + etag]);
@@ -274,13 +278,13 @@ test.describe('the admin', () => {
     expect(await iconHref(page)).toContain('/static/icons/icon-192.png');
     expect((await page.request.get(origin + '/brand/logo.png')).status()).toBe(404);
 
-    // Clear the name: the wordmark is back, and the manifest is muster's own.
+    // Clear the name: muster's lockup is back, and the manifest is muster's own.
     await page.goto(origin + '/account');
     await page.fill('#branding-name', '');
     await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-name]')).toHaveCount(0);
-    await expect(page.locator('header a[aria-label="muster home"]').first()).toHaveText('muster');
+    await expect(page.locator('header a[aria-label="muster home"] img[data-brand-mark]').first()).toBeVisible();
     const after = await (await page.request.get(origin + '/manifest.webmanifest')).json();
     expect(after.icons.map((i: { src: string }) => i.src)).toContain('/static/icons/maskable-512.png');
     expect(await (await page.request.get(origin + '/api/instance')).json()).toEqual({ name: null, logo: null });
