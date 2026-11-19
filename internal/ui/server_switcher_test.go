@@ -200,11 +200,11 @@ func TestTheListDrawsNoAddressUnlessNamesCollide(t *testing.T) {
 	}
 }
 
-// serverTokens is web/css/input.css's --mu-server-<i> values, as lower-case
+// serverTokens is web/css/tokens.css's --mu-server-<i> values, as lower-case
 // hex, once per theme block that defines them.
 func serverTokens(t *testing.T) [][]string {
 	t.Helper()
-	css, err := os.ReadFile("../../web/css/input.css")
+	css, err := os.ReadFile("../../web/css/tokens.css")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,11 +2,11 @@
 //
 // muster Tailwind config.
 //
-// Dark mode is the DEFAULT: the app root (<html>) carries the `dark` class by
-// default so the UI renders dark-first, with light as an opt-in toggle.
-// `darkMode: 'class'` makes that switch class-driven rather than tied to the OS
+// Dark is the ONLY theme: the app root (<html>) always carries the `dark` class
+// and the theme head script forces it (the light toggle is gone, #315).
+// `darkMode: 'class'` keeps the theme class-driven rather than tied to the OS
 // preference. Colour no longer needs the `dark:` variant at all: the palette is
-// a set of custom properties that the class swaps (web/css/input.css).
+// a set of custom properties that the class swaps (web/css/tokens.css).
 //
 // 🔴 TAILWIND DOES NOT ERROR ON A CONTENT PATH THAT MATCHES NOTHING. It emits
 // no rules for it and exits 0, so a missing or mistyped entry produces a
@@ -137,15 +137,15 @@ module.exports = {
   theme: {
     extend: {
       // 🔴 EVERY COLOUR IS A ROLE THAT READS A CUSTOM PROPERTY FROM
-      // web/css/input.css. The palette (dark and light) is defined there ONCE;
+      // web/css/tokens.css. The palette (dark and light) is defined there ONCE;
       // this block only names the roles, so a theme change never touches the
       // views and the views never name a hue. `<alpha-value>` keeps the opacity
       // modifier working (`bg-bg/80`).
       //
-      // ⚠ A ROLE ADDED HERE WITHOUT ITS VARIABLE IN input.css DOES NOT ERROR —
+      // ⚠ A ROLE ADDED HERE WITHOUT ITS VARIABLE IN tokens.css DOES NOT ERROR —
       // the browser resolves `rgb(var(--mu-missing))` to nothing and the element
       // simply loses its colour. TestEveryTailwindRoleHasATokenInBothThemes
-      // (internal/ui/theme_test.go) reads this file and input.css and fails on
+      // (internal/ui/theme_test.go) reads this file and tokens.css and fails on
       // that disagreement.
       colors: {
         bg: role('bg'),

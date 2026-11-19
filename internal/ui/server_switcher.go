@@ -68,7 +68,7 @@ func serverDotBadge() g.Node {
 
 // serverMonogramClasses is the servers' colours as role tokens, one per
 // colour of the palette and in its order: --mu-server-<i> in
-// web/css/input.css, the Android app's palette (core/auth Tenants.PALETTE).
+// web/css/tokens.css, the Android app's palette (core/auth Tenants.PALETTE).
 // servers.js spells the same colours as hex (PALETTE), and
 // TestTheMonogramPaletteIsTheScripts pins the stylesheet's values to the
 // script's.

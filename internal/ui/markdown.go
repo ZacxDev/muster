@@ -518,6 +518,11 @@ func mdTableStartsAt(lines []string, i int) bool {
 // sandboxed document, which loads no app.css). The one difference from
 // markdownHTML is that an ATX heading is a real <h1>…<h6>, not a styled div.
 // Every author character is escaped; only the renderer's own tags are emitted.
+//
+// 🔴 EVERY CLASS THIS FILE WRITES MUST BE DEFINED IN THAT DOCUMENT TOO. It
+// carries internal/pages/content_theme.css, which `make css` builds from this
+// file alone (tailwind.pages.config.js): a new class needs `make css`, and
+// internal/pages TestEveryMarkdownClassHasARule fails until it is run.
 func MarkdownHTML(src string) string { return markdownRender(src, true, nil) }
 
 // markdownHTML is the pure string transform (testable without a DOM). The output
