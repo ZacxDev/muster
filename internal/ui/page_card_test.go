@@ -18,7 +18,7 @@ const pageCreateResult = `{"page_id":42,"version":1,"title":"Launch plan","previ
 // call with no server-read card, draw no card.
 func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 	html := render(chatLogInner(AgentDetailView{Name: "a", Status: "running", PageCards: map[string]PageCardView{
-		"t1": {ID: 42, Title: "Launch plan", Version: 1, Kind: PageCardPublished},
+		"t1": {ID: 42, Title: "Launch plan", Version: 1, Kind: PageCardPublished, Reusable: true},
 	}, Messages: []ChatLine{
 		{Role: "assistant", Kind: "tool_call", ToolID: "t1", ToolName: "page_create", Content: `{"title":"Launch plan"}`},
 		{Role: "user", Kind: "tool_result", ToolID: "t1", ToolOK: true, Content: strings.Replace(pageCreateResult, "Launch plan", "What the agent claims", 1)},
@@ -29,7 +29,8 @@ func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 		`id="` + PageCardID("t1") + `"`, `data-page-card=""`, `data-page-card-kind="published"`, `>Launch plan<`,
 		`href="/pages/42/view"`, `aria-label="Open “Launch plan”"`,
 		`action="/pages/42/share"`, `data-page-share=""`, `aria-label="Share “Launch plan”"`,
-		`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`, `aria-label="More for “Launch plan”"`,
+		`aria-label="More for “Launch plan”"`, `popovertarget="` + PageCardID("t1") + `-menu"`,
+		`id="` + PageCardID("t1") + `-menu" popover="auto" role="menu"`, `data-floating-menu=""`, `>Page settings</a>`,
 		`data-tool-row`,
 	} {
 		if !strings.Contains(html, want) {
@@ -38,6 +39,11 @@ func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 	}
 	if n := strings.Count(html, `data-page-card=""`); n != 1 {
 		t.Errorf("%d page cards, want 1 (a refused call draws none)", n)
+	}
+	// A page with no live link has nothing to revoke or replace: the two
+	// items are drawn hidden, for the page script to show after a Share.
+	if !strings.Contains(html, `<div data-page-link-actions="" data-page-id="42" hidden="">`) {
+		t.Errorf("a card for a page with no live link does not hide Revoke link / New link")
 	}
 	// 🔴 The card never carries an address.
 	if strings.Contains(html, "data-share-url") {
@@ -148,3 +154,102 @@ func TestThePageShareScriptIsInTheAppScript(t *testing.T) {
 		}
 	}
 }
+
+// TestAPageCardsMenuOffersRevokeOnlyWithALiveLink: the chat card's ⋯ is a
+// popover menu (MoreMenu: Escape and a tap outside close it), never a
+// <details>; it holds Revoke link and New link only while the page has a live
+// link, and the page's own screen either way; two cards drawn without an id
+// (the card route's) never share a menu id.
+//
+// REGRESSION TEST: red at 35b55f6f3, whose card drew a <details> ⋯ with Revoke
+// link and New link on every card, a page with no link included.
+//
+// The items are drawn hidden, not absent, so the page script can show them
+// after a first Share (pages-share.spec.ts: the browser half); without a link
+// key they are not drawn at all (TestTheLinkItemsAreDrawnOnlyForAReusableLink).
+func TestAPageCardsMenuOffersRevokeOnlyWithALiveLink(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		html := render(PageCard(PageCardView{ID: 42, Title: "Launch plan", Kind: PageCardShared, Live: live, Reusable: true}, "card-a"))
+		for _, want := range []string{`popovertarget="card-a-menu"`, `id="card-a-menu" popover="auto"`, `href="/pages/42"`} {
+			if !strings.Contains(html, want) {
+				t.Errorf("live=%v: the card lacks %s", live, want)
+			}
+		}
+		if strings.Contains(html, "<details") {
+			t.Errorf("live=%v: the card's menu is a <details>", live)
+		}
+		// Revoke link and New link are there either way, hidden until the
+		// page has a live link.
+		for _, link := range []string{`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`} {
+			if !strings.Contains(html, link) {
+				t.Errorf("live=%v: no %s", live, link)
+			}
+		}
+		hidden := strings.Contains(html, `<div data-page-link-actions="" data-page-id="42" hidden="">`)
+		if !strings.Contains(html, `<div data-page-link-actions="" data-page-id="42"`) || hidden == live {
+			t.Errorf("live=%v: the link items hidden = %v", live, hidden)
+		}
+	}
+	a, b := render(PageCard(PageCardView{ID: 42, Title: "T"}, "")), render(PageCard(PageCardView{ID: 42, Title: "T"}, ""))
+	idOf := func(h string) string {
+		i := strings.Index(h, `popovertarget="`)
+		if i < 0 {
+			return ""
+		}
+		h = h[i+len(`popovertarget="`):]
+		return h[:strings.Index(h, `"`)]
+	}
+	if idOf(a) == "" || idOf(a) == idOf(b) {
+		t.Errorf("two id-less cards share the menu id %q", idOf(a))
+	}
+}
+
+// TestTheLinkItemsAreDrawnOnlyForAReusableLink: a card's and a list row's
+// Revoke link / New link, in each mode the server draws them:
+//   - no link key (a one-off link per Share): not drawn at all — both act on
+//     the reusable link, which such a page never has;
+//   - a link key, no link yet: drawn HIDDEN, for the page script to show
+//     when a Share makes the link;
+//   - a link key and a live link: drawn shown.
+//
+// The script's half (it shows them only on the reusable path) is
+// behavioural in the browser: pages-share.spec.ts's desktop card test (a
+// link key: Revoke link appears after Share) and pages.spec.ts's no-link-key
+// row test (it never appears).
+//
+// REGRESSION TEST: red at 776f0ca57, which drew them (hidden) without a link
+// key too, for the script to show after a one-off Share.
+func TestTheLinkItemsAreDrawnOnlyForAReusableLink(t *testing.T) {
+	const wrap = `<div data-page-link-actions="" data-page-id="`
+	for _, c := range []struct {
+		name           string
+		reusable, live bool
+		want           string // "absent", "hidden" or "shown"
+	}{
+		{"no link key", false, false, "absent"},
+		{"a link key, no link", true, false, "hidden"},
+		{"a link key, a live link", true, true, "shown"},
+	} {
+		card := render(PageCard(PageCardView{ID: 7, Title: "Seating", Kind: PageCardShared, Live: c.live, Reusable: c.reusable}, "c"))
+		row := v(PageRowView{ID: 8, Title: "Menu", Versions: 1, Current: 1, Reusable: c.reusable, ShareURL: map[bool]string{true: "https://muster.example.test/s/abc"}[c.live]})
+		for what, got := range map[string]string{"card 7": card, "row 8": row} {
+			id := map[string]string{"card 7": "7", "row 8": "8"}[what]
+			state := "absent"
+			switch {
+			case strings.Contains(got, wrap+id+`" hidden="">`):
+				state = "hidden"
+			case strings.Contains(got, wrap+id+`">`):
+				state = "shown"
+			}
+			if state != c.want {
+				t.Errorf("%s, %s: Revoke link / New link %s, want %s", c.name, what, state, c.want)
+			}
+			if revoke := strings.Contains(got, `action="/pages/`+id+`/share/revoke"`); revoke != (c.want != "absent") {
+				t.Errorf("%s, %s: the revoke form drawn = %v", c.name, what, revoke)
+			}
+		}
+	}
+}
+
+// v renders a list row.
+func v(r PageRowView) string { return render(PageRow(r)) }

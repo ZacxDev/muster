@@ -266,7 +266,7 @@ focused on opening; a press anywhere on the bar within 500 ms does nothing
 and restarts the 500 ms (round 3: a burst of taps had reached past a fixed
 window), and Send then needs a press that starts on it; one send waits at a
 time; the bar cancels itself after 10 minutes, and the SDK waits 30, so the
-page is never told "muster did not answer" while the bar could still send.
+page is never told "No answer came back" while the bar could still send.
 Escape cancels while the keyboard is in the shell; inside the frame the shell
 cannot see keys, and Cancel is the reliable path. The summary is the bar's
 accessible description. The row is `by_owner`, with no link;

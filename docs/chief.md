@@ -301,9 +301,9 @@ auth-failure marks: a team's agent is not placed on, or failed over to, an
 account the admin's agents found exhausted, and the reverse.
 
 A member sees the team chief's one shared conversation and its earlier chats,
-but the page offers no **New side chat**, **Fresh primary**, **Make
-primary**, **Archive** or **Unarchive** on it: the server refuses those to
-every member. Opening a team agent's page is not recorded in the member's
+and the chips switch between them, but the strip has no **+** (New side
+chat) and no **⋯** (Fresh primary, Make primary, Archive, Unarchive): the
+server refuses those to every member. Opening a team agent's page is not recorded in the member's
 **recently viewed**.
 
 A team's chief starts **team-owned** `pod/claude-code` agents on the team's
@@ -1254,25 +1254,42 @@ The chief has one **primary chat** and any number of **side chats**.
   they go to the primary instead; nothing is ever delivered into an archived
   chat.
 
-The chats are managed in one place. On the chief page, the header's list
-button (the same one a mirrored session has) opens a sheet whose first tab,
-**Chats**, lists them — tap one to switch to it — beside **Your messages** and
-**Focus history**. In the panel, the title bar's thread list holds them. The
-actions:
+The chats are a strip of chips under the chief page's header, and over the
+transcript in the chief panel. There is no sheet or dialog for them:
+
+    [★ Primary] [side chats, most recent first…] [Archived (n)]   [+]
+
+- **Tap a chip** to switch to its chat. The chip of the chat you are on is
+  highlighted. A side chat's chip shows a dot when a reply arrived since you
+  last opened it. A side chat is named by its title, and **New chat** until
+  its first line gives it one.
+- **+** opens a new side chat and puts the cursor in its message box. While the
+  newest side chat is still empty, **+** takes you back to that one instead
+  of opening a second (a double tap opens one chat), and still puts the cursor
+  in its box.
+- **Archived (n)** is the last chip. Tap it to show the archived chats' chips
+  in the strip, and again to hide them. The chat you are on is never hidden
+  there.
+- **⋯** on each chip holds that chat's actions (keyboard: Enter opens it, Tab
+  moves through it, Escape closes it).
+
+On a phone the strip scrolls sideways, and it scrolls the chip of the chat you
+are on into view. In the panel every one of these answers inside the panel:
+you stay on the grid.
 
 | on | action | where | what it does |
 |---|---|---|---|
-| every chat | **+ New side chat** | under the list | opens a side chat (the newest one is reused while it is still empty) |
-| the primary | **Fresh primary** | under the list, while on the primary | after a confirm, starts a new primary chat (below) |
-| a side chat | **Archive** | the row's ⋯ menu (the panel: under the list, for the chat it is on) | hides it among the archived chats, keeps its history, and leaves you on the primary |
-| an archived chat | **Unarchive** | the row's ⋯ menu (the panel: under the list) | puts it back among the side chats |
-| a side chat | **Make primary** | the row's ⋯ menu (the panel: beside the row) | makes it the primary |
-| a side chat | **Continue in a new session** | the panel: under the list, for the chat it is on (with the runtime picker offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
+| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty) |
+| the primary | **Fresh primary** | the primary chip's ⋯ | after a confirm, starts a new primary chat (below) |
+| a side chat | **Make primary** | its chip's ⋯ | makes it the primary (you stay on the chat you are on) |
+| a side chat | **Archive** | its chip's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |
+| an archived chat | **Unarchive** | its chip's ⋯ | puts it back among the side chats |
+| a side chat | **Continue in a new session** | the panel: under its thread list, for the chat it is on (with the runtime picker offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
 
-The primary cannot be archived. The list puts the primary first, marked
-**Primary**, then the side chats by last activity, each with a dot when a
-reply arrived since you last opened it, and the archived chats last, under
-**Archived** (a collapsed group on the page).
+The primary cannot be archived. The strip puts the primary first, marked
+**★ Primary**, then the side chats by last activity, and the archived chats
+last, behind **Archived (n)**. The panel's thread list (its title bar's list
+button) lists the same chats in the same order, for search.
 
 **The context chip.** The chief page's header shows, under the title (where a
 mirrored session's header shows its own), how full the chat's context is; the
@@ -1316,8 +1333,9 @@ NEW side chat on another model. The use it is built for: do the reading around
 — which sessions are stalled, what a task's history says — in a cheap side chat
 (say `haiku`), then hand over to a more capable model (say `opus`) to do the
 work, starting from a short structured handover instead of the whole recon
-conversation. In the panel, open the side chat's thread list and use
-**Continue in a new session** under the list: pick the runtime and model (the
+conversation. In the panel, open the thread list (the title bar's list button)
+while on the side chat, and use **Continue in a new session** under the list:
+pick the runtime and model (the
 same picker as **New session**) and confirm. The route underneath is
 `POST /agents/{id}/sessions/{sid}/continue` with `runtime` and `model` form
 fields, validated exactly as **New session** validates them.
@@ -1458,6 +1476,147 @@ Nothing in the digest acts on a session.
 The routes: `GET /ui/chief/fleet` (the card), `GET /ui/chief/fleet/session?id=`
 (a drill-in) and `POST /ui/chief/fleet/chat` (the Fleet chat). Each reads only
 your own fleet.
+
+## Fleet proposals
+
+**Off by default:** `MUSTER_FLEET_ORCHESTRATION=propose` turns it on, and it
+needs the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and session
+state (`MUSTER_SESSION_STATE=1`): the server refuses to boot with it on and
+either of them off. Unset (or `off`): the chief's fleet
+tools are not listed, the digest has no Proposed group, and nothing is written
+to the fleet's action log.
+
+With it on, the chief can **propose** what to send each of your sessions, and
+muster proposes a handoff for each finished session itself. **Every proposal
+is a card; nothing is sent until you tap Approve.** There is no automatic tier
+yet.
+
+**The chief's tools** (chief-only, your own sessions only):
+
+| tool | proposes |
+|---|---|
+| `session_instruct {subject, class, text?, reason}` | one message to a stopped session. `class` is `continue`, `handoff` or `stop_note` (muster's fixed texts, below) or `custom` (the chief's own text, at most 4 KiB) |
+| `session_wrap {subject, reason}` | **one** card, "Write handoff, then close": the handoff text; once the session's handoff turn has ended (it worked, then stopped again), muster closes it — a Claude Code window gets `/exit` at an idle prompt, an opencode window is closed, an agent is stopped and removed. It is left open, and the card says why, if it then has an open pull request, a queued message or background work, or if no handoff turn ends within 24 hours |
+| `session_answer {subject, answer_kind, ask_id?, text?, option?, reason}` | an answer to the question a stopped session holds. `continue` (`Yes, continue.`) and `composed` (the chief's own words, at most 4 KiB) answer an **open plain-text question** of the session's stop, from muster's [ask log](features.md#ask-log) (`MUSTER_ASK_LOG`): `ask_id`, or the session's one open question. With none (or the ask log off) the call is refused `no_question`: telling a session something is `session_instruct`'s. If the question is answered or ended before the paste, nothing is sent (`moved_on`). `pick`, for a session showing a picker (AskUserQuestion): `option` must be one of **that picker's own options**, byte for byte, or the call is refused `not_an_option`. On your tap a pick is typed into the picker exactly as your own tap on the picker's card types it |
+| `work_reassign {task_id, from, to, reason}` | **one** card, two steps: the task routed to `to` (a mirrored Claude Code session, as `route_to_session` routes a task), then `from` told the task moved and asked for its handoff. To move work to a **new** session, the chief calls `agent_dispatch` (its own card) and proposes `from`'s handoff |
+| `fleet_actions_list {since?, state?, subject?}` | nothing: it reads the action log, so the chief can explain what it proposed. `subject` is one session's fleet id, matched exactly (`agent:4` is agent 4's stops, never agent 42's) |
+
+`subject` is a session's `fleet_list` id. Every write answers `{action_id,
+state, refused?, card?}`. A proposal is filed only on a **stop**: a session
+that is working is refused `not_stopped`. Another owner's session, a team's
+window, the chief and an officer's instance (a dispatched one, or a window
+the officer runtime spawned on your host) are all refused `not_found`, the
+same answer for each. A session muster can only watch (an opencode pane its
+host does not send to, or a read-only host) is refused `view_only`, and no
+card is filed. There is at most one open proposal per session and class; a
+second is refused `already_proposed`.
+
+**The fixed texts**, byte for byte, each after muster's first line:
+
+| class | text |
+|---|---|
+| `continue` | `Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task.` |
+| `handoff` | `Your PR #<n> is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop.` (`closed` for a pull request closed unmerged; with no pull request known, only the second sentence) |
+| `stop_note` | `Stop after this step and wait for your owner's next message. Do not start anything new; ask with attention_ask if something cannot wait.` |
+| answer `continue` | `Yes, continue.` |
+| `ci_result` | `CI finished on #<n> at <sha12>: ok=<k> bad=<m> (<failed check names>). Continue.` (no parenthesis when nothing failed) |
+
+There is no "merge when green" answer yet: it returns once muster can read the
+audit ladder's verdict, not only the CI
+([ask-autoapproval.md](design/ask-autoapproval.md)).
+
+**Outside your turn.** `route_to_session {text}`, `route_many` and
+`end_session_propose`, called when the message the chief answers is not one you
+typed, used to refuse. With fleet proposals on, they file cards instead: a
+**custom** card per session (the chief's text, at most 4 KiB, sent on your tap with muster's
+first line — not a route: no answer is relayed back) and a **close** card
+(nothing typed; the session closed on your tap, unless an open pull request, a
+queued message or background work holds it). Each needs a stopped session.
+
+Every text a card sends starts with a line muster writes,
+`[Chief, approved by <you> at HH:MM UTC]`, never in your voice. muster counts
+that line as one of its own pastes, so a chief text is never later quoted as
+your words (the stall nudges' "your messages" rule,
+[chief-nudges.md](chief-nudges.md)).
+
+**muster's own proposals.** For an owner with a chief, the session-state pass
+proposes, with no model, the one card **"Write handoff, then close"** for each
+session the digest counts **Done** — its latest pull request merged or
+closed, nothing queued to it — that is stopped with no background work, no open
+ask and no turn error. Once per stop: a stop you already decided on is not
+proposed again. If you approve it and no handoff turn comes within 24 hours,
+its close is offered on its own, as a **Close** card (nothing is typed; the
+window is closed on your tap, unless an open pull request, a queued message or
+background work holds it).
+
+**CI finished (`ci_result`).** For a stopped Claude Code session whose latest
+pull request is open, muster reads its head's CI (the GitHub App, for an owner
+the App admits, reused for two minutes). When every check has finished and at
+least one finished **after** the session stopped — so it stopped while CI ran
+— a `ci_result` card is proposed with the fixed text above: the counts and the
+failed checks' names are facts muster read, no model. Once per stop.
+
+**The chief still judges stops.** Turning proposals on changes nothing about
+how a stop is judged: the chief's stall nudges, a stop's push wait and the
+per-stop pushes are exactly as with them off. The proposals run alongside.
+(Letting the fleet judge stops in the chief's place waits for its own triage, a
+later phase; an owner with a running [Session minder](officers-builtin.md) keeps
+the minder either way.)
+
+**The cards.** The digest's **Proposed** group, after Needs you, lists each
+open proposal: the session, the class as a verb ("Continue", "Write handoff,
+then close"), the one-line reason, and **exactly what will be sent**, in full.
+
+- **Approve** sends it. It needs a sign-in from the last `MUSTER_STEPUP_WINDOW`
+  (usually free); on a stale one muster asks "Confirm it's you" and taps again.
+- **Edit** opens the text in a box; **Send as mine** sends your text as your
+  own message — no chief line — with the same sign-in check. A card that
+  types nothing, routes a task or picks an option (Close, a task move, a
+  pick) and a dispatched agent's card have no Edit.
+- **Reject** sends nothing.
+- **Open session** goes to the session's rendered view.
+- **Approve all** and **Reject all** act on every card the group shows, after a
+  confirm that lists each one. Each is checked on its own; the note says, for
+  example, "3 sent, 1 skipped (moved on)".
+
+On a phone the group opens in a bottom sheet, and every button is full width
+and 44 px tall. There is no swipe: a proposal is approved only by a tap, with
+its text on screen. **A phone's notification can never approve one**: the card
+routes refuse a paired phone's signed action, and the push carries no action.
+
+**Checked twice.** When you tap, and again when the message is pasted, muster
+reads the session: the same stop, the same idle streak and, when one was
+recorded, the same pull-request head. If anything changed, nothing is sent and
+the proposal ends `suppressed:moved_on` ("Not sent: the session moved on…").
+
+**Expiry.** A proposal expires when its stop ends, when its evidence changes
+(a new message or a new pull-request head), or after 12 hours. Expired
+proposals leave the group.
+
+**Delivery**, per kind of session:
+
+| session | how |
+|---|---|
+| mirrored Claude Code (opened by hand, or dispatched on a host) | the send queue (a row with origin `fleet_action_id`, a server-stamped sign-in time, never edited or retried), typed through the Claude prompt guard |
+| mirrored opencode, launcher-bound, host running `-opencode-send` | the same queue row, sent through opencode's API |
+| any other opencode pane, or a read-only host | not delivered: refused `view_only`, no card |
+| a dispatched agent | a turn, as the chief's nudges start one |
+
+**The push.** At most every 30 minutes, and only when a new proposal arrived,
+one push: "N proposals waiting". Tapping it opens the chief panel. Beside it,
+**one** Attention item says the same: each push replaces it with the new count
+(never a second one), and it is withdrawn once no proposal waits. The per-stop
+pushes are unchanged.
+
+**The action log**, `fleet_actions` ([schema.md](schema.md)), is append-only:
+one row per proposal with its state (`proposed`, `approved`, `rejected`,
+`expired`, `queued`, `sent`, `failed`, `suppressed:<why>`), and one
+`audit_log` row (`fleet.<class>.<state>`) per change, carrying ids only.
+
+The routes: `POST /ui/chief/fleet/actions/{id}/approve`, `…/edit` (`text=`),
+`…/reject`, `POST /ui/chief/fleet/bulk` (`op=approve|reject`, `id=` for each
+card) and `GET /ui/chief/fleet/stepup` (the confirm dialog). Each answers 404
+with the flag off.
 
 ## Replacing the chief on another kind
 

@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plainscan"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // A PLAIN FEATURES PAGE (operator rule: muster is for people who are not
@@ -174,6 +175,13 @@ func TestAMembersFeaturesPageCarriesNoSetup(t *testing.T) {
 	s, _ := featureServer(t, Extensions{}, plainFeatureSet(t))
 	needles := []string{"MUSTER_", "COMPOSE_PROFILES", "docker compose", "data-info-code"}
 	member := scriptBlock.ReplaceAllString(sessionBody(t, featuresPageAs(t, s, authz.RoleMember)), "")
+	// The sidebar's server-address ⓘ (empty; the person's own browser-kept
+	// server list, not setup) is set aside as its exact string, so any other
+	// code row still fails.
+	member, sidebarSheet := ui.WithoutServerAddressSheet(member)
+	if !sidebarSheet {
+		t.Errorf("CONTROL: the member's page has no server-address sheet to set aside")
+	}
 	for _, n := range needles {
 		if i := strings.Index(member, n); i >= 0 {
 			t.Errorf("a member's Features page carries %q: …%s…", n, member[max(0, i-160):min(len(member), i+60)])

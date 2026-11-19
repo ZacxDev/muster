@@ -25,34 +25,50 @@ import (
 // html package does not provide first-class constructors for.
 func hx(name, value string) g.Node { return g.Attr(name, value) }
 
-// wordmark is the product name, split across two text nodes so the first
-// syllable can be coloured.
+// wordmark is muster's own brand in the header and the sidebar when no
+// branding is set: the brand pack's horizontal lockup (lockup, brand.go), one
+// <img> of the mark and the outlined wordmark, whose accessible name is its
+// alt text, "muster".
 //
-// 🔴 IT IS ONE FUNCTION BECAUSE THE SPLIT IS A RENAME HAZARD, AND THE HAZARD IS
-// MEASURED RATHER THAN IMAGINED. Upstream spelled this inline at both call
-// sites — the header and the sidebar — and because the name is never written
-// whole in the source, every grep for the upstream product name walked straight
-// past both. The extraction's scrub therefore left the old brand rendering in
-// muster's header and sidebar, with nothing erroring; the page simply said the
-// wrong name.
-//
-// Two copies also meant a HALF rename was possible, and that is the shape that
-// survives a naive guard: a test asking "does the document contain the right
-// name somewhere" passes while one of the two sites still shows the old one.
-// With a single function there is no half to rename, and
-// TestTheWordmarkSpellsMuster can assert the WHOLE reassembled string against
-// this one node instead of hunting for a substring in a document.
+// 🔴 IT IS ONE FUNCTION BECAUSE TWO COPIES ARE A RENAME HAZARD, AND THE HAZARD
+// IS MEASURED RATHER THAN IMAGINED. Upstream spelled the name inline at both
+// call sites — the header and the sidebar — split across two text nodes, so
+// every grep for the upstream product name walked straight past both, and the
+// extraction's scrub left the old brand rendering with nothing erroring. Two
+// copies also make a HALF change possible, which a "does the document contain
+// it somewhere" guard passes. TestBothWordmarkSitesGoThroughTheOneRenderer
+// counts the sites.
 //
 // 🔴 ONE ELEMENT, NOT A GROUP. Both sites put it in an `inline-flex … gap-2`
-// box (the gap is for a logo beside the name, brandMark), and a bare group's
-// span and text node are then two FLEX ITEMS with the gap between them: every
-// instance without branding read "mu ster" (#570 to this fix, visible in the
-// regenerated docs/img shots). TestTheWordmarkIsOneFlexItem pins the markup.
+// box (the gap is for a logo beside the name, brandMark), where every child
+// node is a flex item with the gap between them: the old two-node wordmark
+// read "mu ster" (#570). TestTheWordmarkIsTheLockup pins the whole markup.
 func wordmark() g.Node {
-	return Span(
-		Span(Class("text-accent"), g.Text("mu")),
-		g.Text("ster"),
-	)
+	return lockup("h-7 w-auto shrink-0")
+}
+
+// headerMarkClass is the header home link's extra classes (with a leading
+// space), or "" where brandMark draws no lockup (a logo or a name is set:
+// those pages carry nothing of muster's mark). Below sm it crops the header's
+// lockup (wordmark) to its mark, the left 100 of the lockup's 350 viewBox
+// units, which is 38 px at the header's 28 px height (2.375rem). The same file
+// and element, so nothing else is loaded; the sidebar, which has the room,
+// keeps the whole lockup. The LINK stays a 44 px target (min-w-[44px], the
+// touch-target rule e2e/tests/layout.spec.ts holds every control to) with the
+// 38 px mark inside it at its left edge; the link then ends at about 112 px,
+// still left of the pill's column.
+//
+// 🔴 WHY: the update pill (pwa.go, placeToast) sits in the header's top-right
+// corner only while nothing there is a control. At 390 px wide the whole
+// lockup put the home link's right edge at about 200 px, inside the column of
+// a right-anchored "Update a → b" pill (left edge about 141 px). The corner was
+// then never free, the pill slid down a column with no free 44 px slot on
+// /tasks, and it settled ON a control. The cropped mark ends at about 106 px.
+func headerMarkClass(b Brand) string {
+	if !b.drawsLockup() {
+		return ""
+	}
+	return " max-sm:min-w-[44px] max-sm:[&>img[data-brand-mark]]:w-[2.375rem] max-sm:[&>img[data-brand-mark]]:object-cover max-sm:[&>img[data-brand-mark]]:object-left"
 }
 
 // Page renders muster's full document shell. dark is the default theme: <html>
@@ -402,7 +418,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// anyone who reached the grid by clicking rather than by URL. Its body
 				// is lazy, so the cost of always rendering it is the shut aside and
 				// nothing else.
-				ChiefPanel(feat.FleetDigest),
+				ChiefPanel(feat.FleetDigest, feat.FleetPropose),
 				extra,
 			),
 		),
@@ -702,9 +718,14 @@ func header(push bool, brand Brand) g.Node {
 			// Brand wordmark links home. Boosted (Task 3) so tapping it does an
 			// AJAX body-swap to / rather than a full reload. An instance with
 			// branding draws its logo and name instead (brandMark).
+			//
+			// 🔴 BELOW sm THE HEADER SHOWS THE LOCKUP'S MARK ONLY (headerMarkClass):
+			// the whole lockup, about 132 px wide, reached into the update pill's
+			// top-right corner at a phone's width, and the pill then had no free
+			// spot on /tasks and sat on a control.
 			A(Href("/"),
 				g.Attr("aria-label", "muster home"),
-				Class("inline-flex min-h-[44px] min-w-0 items-center gap-2 text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
+				Class("inline-flex min-h-[44px] min-w-0 items-center gap-2 text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"+headerMarkClass(brand)),
 				brandMark(brand),
 			),
 			Span(Class("flex-1")),
