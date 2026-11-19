@@ -933,6 +933,34 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 	return ownerDoorRefused(noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nullable(answerVia(ctx)), nil, nil)))
 }
 
+// AnswerTeamPageCard records a team MEMBER's answer to a team agent's page
+// share card (migration 0162's muster_answer_team_page_card): an open owner
+// card of a team the caller is a member of (viewer and up), answered from
+// their browser or paired phone (answerVia), whose page link the caller has
+// already decided. The answer is the same transition as Answer's, the caller
+// recorded as answered_by_user. 0127 writes attention_asks at operator, so a
+// viewer's answer through Answer would not record; this one function, in the
+// database, is the narrow door. ErrNotOpen (with the card as it stands) for
+// a row that is not such a card.
+func (s *PGStore) AnswerTeamPageCard(ctx context.Context, id int64, answer string) (Ask, error) {
+	answer, err := CleanAnswer(answer)
+	if err != nil {
+		return Ask{}, err
+	}
+	var got *int64
+	if err := s.pool.QueryRow(ctx, `SELECT public.muster_answer_team_page_card($1, $2, $3)`, id, answer, nullable(answerVia(ctx))).Scan(&got); err != nil {
+		return Ask{}, err
+	}
+	cur, err := s.Get(ctx, id)
+	if err != nil {
+		return Ask{}, err
+	}
+	if got == nil {
+		return cur, ErrNotOpen
+	}
+	return cur, nil
+}
+
 // ErrNotOwnerDoor: an owner card answered through a door that is not the
 // owner's own (answerSQL); the card stays open.
 var ErrNotOwnerDoor = errors.New("attention: this question is your owner's to answer, in muster or on their phone")

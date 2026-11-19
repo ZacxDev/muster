@@ -3080,7 +3080,7 @@ func teamPageRouteList(routes []string) []string {
 	return out
 }
 
-// isoTeamPage is a page the TEAM owns (migration 0160), made by its agent on
+// isoTeamPage is a page the TEAM owns (migration 0162), made by its agent on
 // A's say-so (created_by_user = A), titled with the team's canary, with two
 // versions, a live link and a stranger's response.
 type isoTeamPage struct{ id, link, resp int64 }
@@ -3150,7 +3150,7 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 	// The team's host is online for the whole walk, every route included —
 	// the sidebar's too, which lists it to members only (VisibleHosts).
 	teamHost := w.objTeamHost(team, teamCanary)
-	// The team's page (0160), made on A's say-so: B is never its creator.
+	// The team's page (0162), made on A's say-so: B is never its creator.
 	tPage := w.addTeamPage(t, team, w.a.uid, teamCanary)
 	tPageObjs := w.objA
 	tPageObjs.page, tPageObjs.pageDel, tPageObjs.pageLink, tPageObjs.pageResp = tPage.id, tPage.id, tPage.link, tPage.resp
@@ -3196,7 +3196,7 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 				}
 			}
 		}
-		// THE TEAM PAGE LEG (0160): every page route, naming the TEAM's page.
+		// THE TEAM PAGE LEG (0162): every page route, naming the TEAM's page.
 		// A non-member sees it on no route; a member (viewer and up) reads it;
 		// and B — never its creator, a manager included — changes nothing of
 		// what its creator manages (its version, title, links).

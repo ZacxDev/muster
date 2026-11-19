@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A TEAM'S PAGES, SEEN BY THE TEAM (migration 0160; docs/pages.md "A team's
+// A TEAM'S PAGES, SEEN BY THE TEAM (migration 0162; docs/pages.md "A team's
 // pages"). A page a team-owned agent makes belongs to the team; every member
 // of the team (viewer and up) reads it through a door where a person is
 // present (the browser session, a paired phone: authz.Principal.TeamScope),
@@ -20,14 +20,17 @@ import (
 //   - read, respond (the owner view's form, recorded as the member:
 //     page_responses.responder_user) and Share (the page's one link) — any
 //     member;
-//   - delete, "Show this version", revoke a link, ⋯ New link, ⋯ Revoke link —
-//     only the page's CREATOR, the person who started the agent that made it
-//     (pages.MayManage; with no creator recorded, a manager of the team);
+//   - delete, "Show this version", ⋯ New link — only the page's CREATOR, the
+//     person who started the agent that made it (pages.MayManage; with no
+//     creator recorded, or one who has left the team, any manager of it);
+//   - revoke a link, ⋯ Revoke link — the creator, and ANY manager of the
+//     team, even while the creator is present (pages.MayRevoke: a mistaken
+//     Share is undone at once);
 //   - send a FILE from the owner view — no member in this release (a file is
 //     stored as the person who sends it, and a team's page keeps only files
 //     the team owns: its quota and its delete read them as the team).
 //
-// The database holds every statement to the same rule (0160's
+// The database holds every statement to the same rule (0162's
 // muster_page_manager and guards); this gate is what answers with words, and
 // what the screen's controls follow (renderPageDetail draws none of them for
 // a member who may not use them).
@@ -46,6 +49,9 @@ const (
 	teamPageShare
 	// teamPageCreator: the page's creator only (pages.MayManage).
 	teamPageCreator
+	// teamPageRevoke: the creator, or any manager of the team
+	// (pages.MayRevoke).
+	teamPageRevoke
 	// teamPageNoFile: no member (a file from the owner view).
 	teamPageNoFile
 )
@@ -65,9 +71,9 @@ var teamPageRoutes = map[string]teamPageRule{
 	"POST /pages/{id}/share":               teamPageShare,
 	"POST /pages/{id}/delete":              teamPageCreator,
 	"POST /pages/{id}/rollback":            teamPageCreator,
-	"POST /pages/{id}/links/{link}/revoke": teamPageCreator,
+	"POST /pages/{id}/links/{link}/revoke": teamPageRevoke,
 	"POST /pages/{id}/share/rotate":        teamPageCreator,
-	"POST /pages/{id}/share/revoke":        teamPageCreator,
+	"POST /pages/{id}/share/revoke":        teamPageRevoke,
 	"POST /pages/{id}/versions/{v}/upload": teamPageNoFile,
 }
 
@@ -75,9 +81,13 @@ var teamPageRoutes = map[string]teamPageRule{
 const (
 	// TeamPageCreatorOnly: a creator-only route, to any other member.
 	TeamPageCreatorOnly = "this is a team's page: only the person who started the agent that made it can delete it, " +
-		"change its version, revoke its links or make a new one"
+		"change its version or make a new link (a manager of the team can when that person has left the team)"
+	// TeamPageRevokeOnly: a revoke, to a member who is neither the creator
+	// nor a manager of the team.
+	TeamPageRevokeOnly = "this is a team's page: only the person who started the agent that made it, or a manager of " +
+		"the team, can revoke its links"
 	// TeamPageNoFile: a file from a team page's owner view, to any member.
-	TeamPageNoFile = "this is a team's page: files can't be sent from it here yet; open its link (Share) to send one"
+	TeamPageNoFile = "this is a team's page: files can't be sent from a team page yet"
 )
 
 // teamPageGate answers 403 and reports true when r names a page its
@@ -91,7 +101,7 @@ const (
 // not let the request through.
 func (s *Server) teamPageGate(w http.ResponseWriter, r *http.Request) bool {
 	rule, ok := teamPageRoutes[r.Pattern]
-	if !ok || (rule != teamPageCreator && rule != teamPageNoFile) || s.ext.Pages == nil {
+	if !ok || (rule != teamPageCreator && rule != teamPageRevoke && rule != teamPageNoFile) || s.ext.Pages == nil {
 		return false
 	}
 	ctx := r.Context()
@@ -119,14 +129,20 @@ func (s *Server) teamPageGate(w http.ResponseWriter, r *http.Request) bool {
 	case teamPageNoFile:
 		s.pageWriteError(w, http.StatusForbidden, TeamPageNoFile)
 		return true
-	case teamPageCreator:
-		if pages.MayManage(pg, p) {
+	case teamPageCreator, teamPageRevoke:
+		msg := TeamPageCreatorOnly
+		if rule == teamPageRevoke {
+			if pages.MayRevoke(pg, p) {
+				return false
+			}
+			msg = TeamPageRevokeOnly
+		} else if pages.MayManage(pg, p) {
 			return false
 		}
 		if wantsJSON(r) {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamPageCreatorOnly})
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": msg})
 		} else {
-			http.Error(w, TeamPageCreatorOnly, http.StatusForbidden)
+			http.Error(w, msg, http.StatusForbidden)
 		}
 		return true
 	}
@@ -146,13 +162,24 @@ func memberOnTeamPage(ctx context.Context, pg pages.Page) bool {
 }
 
 // pageManageable reports whether ctx may manage page pg (pages.MayManage):
-// what the page's screen draws its Delete, Show this version, Revoke and ⋯
-// menu for. Without a principal (a test's bare context) the page is the
-// caller's own, as every page was before 0160.
+// what the page's screen draws its Delete, Show this version and ⋯ New link
+// for. Without a principal (a test's bare context) the page is the caller's
+// own, as every page was before 0162.
 func pageManageable(ctx context.Context, pg pages.Page) bool {
 	p, ok := authz.From(ctx)
 	if !ok {
 		return true
 	}
 	return pages.MayManage(pg, p)
+}
+
+// pageRevocable reports whether ctx may revoke page pg's links
+// (pages.MayRevoke): what the screen draws each link's Revoke and ⋯ Revoke
+// link for.
+func pageRevocable(ctx context.Context, pg pages.Page) bool {
+	p, ok := authz.From(ctx)
+	if !ok {
+		return true
+	}
+	return pages.MayRevoke(pg, p)
 }

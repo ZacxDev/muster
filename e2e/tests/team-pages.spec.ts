@@ -5,7 +5,7 @@ import { signIn } from '../lib/signin';
 import { dsn, repoRoot, teamPagesConnectPort, teamPagesPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
-// A TEAM'S PAGE, read by a member who is NOT its creator (migration 0160;
+// A TEAM'S PAGE, read by a member who is NOT its creator (migration 0162;
 // docs/pages.md "A team's pages"), at a phone (390×844) and a desktop
 // (1280×800), each set here, never inherited from the config.
 //
@@ -14,8 +14,9 @@ import { startServer, Running } from '../lib/server';
 // The member finds the page in Pages marked with its team, opens it, is drawn
 // no Delete, no "Show this version", no Revoke and no ⋯ menu — but Share —
 // and answers its question from the page's own view; the response is
-// recorded as theirs (responder_user = 1). Its own server: pages on, a link
-// key. Every value is invented.
+// recorded as theirs (responder_user = 1); its file field says files can't
+// be sent from a team page yet. Its own server: pages on, a link key. Every
+// value is invented.
 //
 // 🔴 REGRESSION TEST: red at origin/main, where a team's page is in no
 // member's Pages list (the pages tables were personal).
@@ -98,6 +99,14 @@ for (const size of sizes) {
       await bar.locator('[data-send-go]').click();
       await expect(pick.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
       expect(mkteampage('responses', String(f.page)).split('\n'), 'the response is recorded as the member (user 1)').toEqual(['1']);
+
+      // 3b. Its file field says files can't be sent from a team page yet, and
+      // nothing is recorded.
+      const deck = frame.locator('[data-muster-component="deck"]');
+      await expect(deck.locator('[data-muster-status]')).toHaveText("Files can't be sent from a team page yet.");
+      await expect(deck.locator('input[type="file"]')).toBeDisabled();
+      await expect(deck.getByRole('button', { name: 'Upload slides' })).toHaveCount(0);
+      expect(mkteampage('responses', String(f.page)).split('\n'), 'a file was recorded').toEqual(['1']);
 
       // 4. Back on the screen, the member reads it as theirs.
       await page.goto(origin + `/pages/${f.page}`);

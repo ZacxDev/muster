@@ -20,7 +20,7 @@ import (
 //
 // 🔴 EVERY METHOD BUT LinkByToken RUNS UNDER THE CALLER'S PRINCIPAL. The
 // tables are under FORCE row-level security, so a request reads and writes
-// only its own user's rows — and, since 0160, a member reads the pages of the
+// only its own user's rows — and, since 0162, a member reads the pages of the
 // teams on their door and writes them only as its guards allow (answering,
 // sharing, deciding a share card; managing is the creator's). A new page's
 // owner is the principal's user (owner_id's default), never a parameter; a
@@ -112,7 +112,7 @@ type Store interface {
 	// ErrTooMany past MaxResponsesPerLink, or MaxUploadsPerLink for an upload.
 	AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
 	// AddOwnerResponse records one response the caller — page id's OWNER, or
-	// on a team's page a member of the team (0160), from their own view —
+	// on a team's page a member of the team (0162), from their own view —
 	// sent at version v (ByOwner, no link), recorded as the caller
 	// (ResponderUser). The same caps as a link's, counted over the page's
 	// owner-view responses (every member's together); ErrNotFound for a
@@ -157,12 +157,13 @@ func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 // owner it then acts as. Only the link row is handed on.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, coalesce(p.created_by_user, 0), p.created_at, p.updated_at`
+const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, coalesce(p.created_by_user, 0),
+	(p.created_by_user IS NOT NULL AND public.muster_is_team_member(p.owner_id, p.created_by_user)), p.created_at, p.updated_at`
 
 func scanPage(row pgx.Row, extra ...any) (Page, error) {
 	var p Page
 	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.Label,
-		&p.Creator.ByUser, &p.CreatedAt, &p.UpdatedAt}, extra...)
+		&p.Creator.ByUser, &p.CreatorInTeam, &p.CreatedAt, &p.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Page{}, ErrNotFound
@@ -230,7 +231,7 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID <= 0 && c.MirrorSession != "" {
 			sess = truncate(c.MirrorSession, 200)
 		}
-		// A team's page records the person who started its agent (0160); a
+		// A team's page records the person who started its agent (0162); a
 		// person's own records none (the database blanks it).
 		var byUser any
 		if c.ByUser > 0 {
@@ -507,7 +508,7 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 		}
 		// 🔴 ONLY THE HASH IS WRITTEN; the token goes back to the caller once.
 		// The row names the PAGE's owner, never the caller's default: on a
-		// team's page a member's Share writes the team's link (0160).
+		// team's page a member's Share writes the team's link (0162).
 		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, made_by_agent, decided_at)
 			VALUES ($6, $1, $2, $3, $4, $5, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
 			id, TokenHash(tok), string(state), truncate(requestedBy, 200), byAgent, owner))
@@ -850,7 +851,7 @@ func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, compone
 // The owner's caps are a link's caps, so their own view is no bigger a hole.
 //
 // owner is the PAGE's owner, named on the row: a team member's response on a
-// team's page is the team's row (0160), recorded as theirs by responder_user.
+// team's page is the team's row (0162), recorded as theirs by responder_user.
 func insertResponse(ctx context.Context, tx pgx.Tx, owner, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	if len(data) == 0 {
 		data = []byte("{}")

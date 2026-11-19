@@ -109,7 +109,15 @@ type RenderOptions struct {
 	// Uploads: the server can store files. Without it an upload block is drawn
 	// disabled, saying so.
 	Uploads bool
+	// UploadsOff, when set, is what a disabled upload block says instead of
+	// "File uploads are not available on this server." (a team member's own
+	// view of a team's page: TeamUploadsOff).
+	UploadsOff string
 }
+
+// TeamUploadsOff is what an upload block says in a team member's own view of
+// a TEAM's page: files are not taken from a team page's view yet (0162).
+const TeamUploadsOff = "Files can't be sent from a team page yet."
 
 // Content is the content document of version v: muster's base styles, the
 // SDK, then every block. It is served with ContentHeaders. A link's viewer
@@ -190,8 +198,12 @@ func renderBlock(b Block, o RenderOptions) string {
 			multi = " multiple"
 		}
 		if !o.Uploads {
+			off := "File uploads are not available on this server."
+			if o.UploadsOff != "" {
+				off = o.UploadsOff
+			}
 			return open + `<form data-muster-form><label for="` + id + `-f">` + esc(b.Label) + `</label><input type="file" id="` + id +
-				`-f" name="file" disabled><p class="mp-status" role="status" data-muster-status>File uploads are not available on this server.</p></form></section>`
+				`-f" name="file" disabled><p class="mp-status" role="status" data-muster-status>` + esc(off) + `</p></form></section>`
 		}
 		return open + `<form data-muster-form><label for="` + id + `-f">` + esc(b.Label) + `</label><input type="file" id="` + id +
 			`-f" name="file" required` + multi + `><button type="submit">` + esc(submitLabel(b, "Upload")) + `</button>` + status + `</form></section>`

@@ -1,6 +1,6 @@
--- NUMBER: 0160 (open pull requests hold 0156–0159; renumber at merge if main
+-- NUMBER: 0162 (open pull requests hold up to 0161; renumber at merge if main
 -- moved, with db.teamPagesMigrationVersion).
--- muster 0160 — A TEAM'S PAGES ARE SEEN BY THE TEAM'S MEMBERS
+-- muster 0162 — A TEAM'S PAGES ARE SEEN BY THE TEAM'S MEMBERS
 -- (internal/pages; docs/pages.md "A team's pages", docs/teams.md).
 --
 -- A page a team-owned agent makes belongs to the team (pages.owner_id is the
@@ -10,10 +10,14 @@
 --     the owner view and answers its questions and forms ("view + respond");
 --   - only the page's CREATOR — the person who started the team agent that
 --     made it — deletes it, changes its current version, revokes its links or
---     makes a new one;
---   - any member makes the page's link public by tapping Share, and a team
---     agent never makes one live by itself (enforced in the application:
---     internal/api page_tools.go pageAgentShareAllowed).
+--     makes a new one; when the page records no creator, or its creator has
+--     LEFT the team, any MANAGER of the team does instead;
+--   - any manager of the team may ALWAYS revoke a link (a mistaken Share is
+--     undone without waiting for the creator);
+--   - any member makes the page's link public by tapping Share, or by
+--     answering the team agent's share card, and a team agent never makes one
+--     live by itself (enforced in the application: internal/api
+--     page_tools.go pageAgentShareAllowed).
 --
 --   pages.created_by_user        the creator, for a TEAM's page: the person
 --       whose say-so started the agent (the chief dispatch's
@@ -45,9 +49,29 @@
 -- delete it, change its version, revoke a link, make a new one. The owner
 -- (the team's agent; a person on their own page), the scope all, the
 -- recorded creator while they are a member of the team, and — ONLY when the
--- page records no creator — a MANAGER of the team (else such a page would be
+-- page records no creator, or that creator is no longer a member of the team
+-- (muster_is_team_member) — a MANAGER of the team (else such a page would be
 -- undeletable by anyone). internal/pages MayManage is the same rule in Go,
--- for what the screen draws and the routes refuse.
+-- for what the screen draws and the routes refuse
+-- (TestMayManageMatchesTheDatabase pins the two together).
+--
+-- muster_is_team_member(team, person)   SECURITY DEFINER, scope all for its
+--     own duration (0131's muster_owner_is_team's shape): whether person is
+--     a member of team NOW. One boolean about one pair; team_members is
+--     self-read, so a member could not otherwise see whether the creator left.
+--
+-- muster_answer_team_page_card(ask, answer, via)   SECURITY DEFINER, scope
+--     all for its own duration: records a MEMBER's answer to a team agent's
+--     page share card. 0127 writes attention_asks at OPERATOR, so a viewer's
+--     answer through the ordinary path would decide the link and then fail to
+--     record — the card left open. This answers exactly one kind of row:
+--     an OPEN owner card of a team the caller is a member of (muster.teams,
+--     viewer and up), not the caller's own, from a browser or a paired phone
+--     (via), whose page link (page_links.ask_id) the caller has ALREADY
+--     decided (live or denied). It records the caller as answered_by_user —
+--     the same column 0127's muster_actor_column stamps on every other answer
+--     — and nothing else of theirs. It returns the ask's id, NULL when the row
+--     is not such a card.
 --
 -- 🔴 THE GUARDS (BEFORE triggers, the application role only — the login role,
 -- a migration or a restore is not held to them, as row-level security does
@@ -59,7 +83,9 @@
 --   page_links_team_guard   a non-manager may INSERT only a live link no agent
 --                           made and no card decides (Share), and UPDATE only
 --                           a pending link to live or denied (an agent's
---                           share card, answered) — never revoke one.
+--                           share card, answered); a MANAGER of the team may
+--                           also revoke a pending or live link. No other
+--                           member revokes one.
 --   page_responses_responder  responder_user is the caller on an owner-view
 --                           response, NULL on a link's; never changed.
 -- And 0127's owner_fixed on all four: owner_id never changes outside the
@@ -92,9 +118,11 @@
 --   DROP FUNCTION IF EXISTS public.muster_page_links_team_guard();
 --   DROP FUNCTION IF EXISTS public.muster_page_responder();
 --   DROP FUNCTION IF EXISTS public.muster_page_manager(bigint, bigint);
+--   DROP FUNCTION IF EXISTS public.muster_answer_team_page_card(bigint, text, text);
+--   DROP FUNCTION IF EXISTS public.muster_is_team_member(bigint, bigint);
 --   ALTER TABLE public.page_responses DROP COLUMN IF EXISTS responder_user;
 --   ALTER TABLE public.pages DROP COLUMN IF EXISTS created_by_user;
---   DELETE FROM schema_migrations WHERE version = 160;
+--   DELETE FROM schema_migrations WHERE version = 162;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -107,6 +135,20 @@ UPDATE public.page_responses SET responder_user = owner_id WHERE by_owner AND re
 -- ---------------------------------------------------------------------------
 -- 1. Who may manage a page.
 -- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION public.muster_is_team_member(team bigint, person bigint)
+    RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+    SET muster.scope = 'all'
+AS $$
+    SELECT EXISTS (SELECT 1 FROM public.team_members WHERE team_id = team AND user_id = person)
+$$;
+-- Whether a person is on a team is no secret to the team's members (its
+-- members page lists them); the function answers only that.
+GRANT EXECUTE ON FUNCTION public.muster_is_team_member(bigint, bigint) TO PUBLIC;
 
 -- coalesce(…, false) WHOLE: a NULL setting must read as "no", never as a
 -- NULL that an IF NOT would let through.
@@ -121,7 +163,8 @@ AS $$
         OR (creator IS NOT NULL
             AND creator = nullif(current_setting('muster.uid', true), '')::bigint
             AND owner = ANY (public.muster_team_ids(1)))
-        OR (creator IS NULL AND owner = ANY (public.muster_team_ids(3))),
+        OR (owner = ANY (public.muster_team_ids(3))
+            AND (creator IS NULL OR NOT public.muster_is_team_member(owner, creator))),
         false)
 $$;
 
@@ -190,6 +233,13 @@ BEGIN
        AND (to_jsonb(NEW) - 'state' - 'decided_at') = (to_jsonb(OLD) - 'state' - 'decided_at') THEN
         RETURN NEW;
     END IF;
+    -- A MANAGER of the team undoes a share: pending or live -> revoked (its
+    -- sealed token wiped), and nothing else about the row.
+    IF OLD.state IN ('pending', 'live') AND NEW.state = 'revoked'
+       AND NEW.owner_id = ANY (public.muster_team_ids(3))
+       AND (to_jsonb(NEW) - 'state' - 'decided_at' - 'token_sealed') = (to_jsonb(OLD) - 'state' - 'decided_at' - 'token_sealed') THEN
+        RETURN NEW;
+    END IF;
     RAISE EXCEPTION 'only the creator of team page % revokes or changes its links', NEW.page_id
         USING ERRCODE = 'insufficient_privilege';
 END
@@ -223,6 +273,39 @@ $$;
 DROP TRIGGER IF EXISTS page_responses_responder ON public.page_responses;
 CREATE TRIGGER page_responses_responder BEFORE INSERT OR UPDATE ON public.page_responses
     FOR EACH ROW EXECUTE FUNCTION public.muster_page_responder();
+
+-- A member's answer to a team agent's page share card (see the header).
+CREATE OR REPLACE FUNCTION public.muster_answer_team_page_card(ask bigint, answer text, via text) RETURNS bigint
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+    SET muster.scope = 'all'
+AS $$
+DECLARE
+    caller bigint := nullif(current_setting('muster.uid', true), '')::bigint;
+    out    bigint;
+BEGIN
+    IF caller IS NULL OR via IS NULL OR via NOT IN ('browser', 'device') THEN
+        RETURN NULL;
+    END IF;
+    UPDATE public.attention_asks a SET status = 'answered', answer = muster_answer_team_page_card.answer,
+           answered_by = 'operator', resolved_at = now(),
+           delivery = CASE WHEN a.agent_id IS NOT NULL THEN 'queued' WHEN a.mirror_session IS NOT NULL THEN 'pull' END,
+           delivery_queued_at = CASE WHEN a.agent_id IS NOT NULL THEN now() END,
+           answered_via = via, answered_via_host = NULL, answered_via_session = NULL,
+           answered_by_user = caller
+     WHERE a.id = ask AND a.status = 'open' AND a.expires_at > now() AND a.kind = 'ask' AND a.owner_card
+       AND a.owner_id <> caller
+       AND a.owner_id = ANY (public.muster_team_ids(1))
+       AND public.muster_owner_is_team(a.owner_id)
+       AND EXISTS (SELECT 1 FROM public.page_links l
+                    WHERE l.ask_id = a.id AND l.owner_id = a.owner_id AND l.state IN ('live', 'denied'))
+    RETURNING a.id INTO out;
+    RETURN out;
+END
+$$;
+GRANT EXECUTE ON FUNCTION public.muster_answer_team_page_card(bigint, text, text) TO PUBLIC;
 
 -- ---------------------------------------------------------------------------
 -- 3. The policies.

@@ -13,9 +13,9 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// A TEAM'S PAGES (migration 0160), as the database decides them, under forced
+// A TEAM'S PAGES (migration 0162), as the database decides them, under forced
 // row-level security as the application role. This file uses only what the
-// store had before 0160 (it reads; it records no creator), so it runs — and
+// store had before 0162 (it reads; it records no creator), so it runs — and
 // fails — against the tree before it too: there no member reads a team's page.
 //
 // The fixture's people and teams, each id distinct (so no assertion can pass

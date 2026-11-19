@@ -66,7 +66,7 @@ const noMember = 4
 // non-creator may change) and to delete — noMember where no member does.
 type pageClass struct{ read, lock, delete int }
 
-// teamPageTables is the pages tables (migration 0160: a team's pages, seen
+// teamPageTables is the pages tables (migration 0162: a team's pages, seen
 // by its members). Not 0127's uniform classes: every member reads; only the
 // page's creator manages it (muster_page_manager). The planted rows record
 // no creator, so deleting a page falls to a MANAGER of the team; a member
@@ -372,7 +372,7 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 		if _, page := teamPageTables[tbl]; page {
 			want := teamPagePolicies(tbl)
 			if len(ps) != len(want) {
-				t.Errorf("%s (team pages) has policies %v; want exactly the four of 0160", tbl, names)
+				t.Errorf("%s (team pages) has policies %v; want exactly the four of 0162", tbl, names)
 			}
 			for _, p := range ps {
 				w, ok := want[p.name]
@@ -489,7 +489,7 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 		// A lent table with team_owner_read (0133): the team's own rows read
 		// at that role, never written.
 		ownerRead, readsOwn := teamOwnerRead[tbl]
-		// A team page table (0160): read, lock and delete each at its own role.
+		// A team page table (0162): read, lock and delete each at its own role.
 		pc, page := teamPageTables[tbl]
 		wantDevice := 0
 		if (shared && level["manager"] >= c.read) || (readsOwn && level["manager"] >= ownerRead) || (page && level["manager"] >= pc.read) {

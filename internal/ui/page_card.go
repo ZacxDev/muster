@@ -126,9 +126,12 @@ type PageCardView struct {
 	// one every fetch would mint a new link, so it waits for the tap.
 	Reusable bool
 	// NoManage: the reader may not manage the page (a team's page, read by
-	// a member who is not its creator: pages.MayManage), so the card draws
-	// no ⋯ menu (New link, Revoke link). Share stays: any member shares.
+	// a member who is not its creator: pages.MayManage), so the card's ⋯
+	// menu has no New link. Share stays: any member shares.
 	NoManage bool
+	// NoRevoke: the reader may not revoke the page's link either
+	// (pages.MayRevoke), so the card draws no ⋯ menu at all.
+	NoRevoke bool
 }
 
 // pageToolBase is a tool name's page tool — MUSTER's own only: bare (a
@@ -287,6 +290,13 @@ func PageLinkSheet(id int64, shareURL string) g.Node {
 // PageShareMenu is page id's ⋯ menu: Revoke link, New link (the old one stops
 // working), and — off its own screen — the page's screen.
 func PageShareMenu(id int64, title string, withDetail bool) g.Node {
+	return PageShareMenuFor(id, title, withDetail, true)
+}
+
+// PageShareMenuFor is PageShareMenu with New link drawn only when rotate is
+// set: a team's manager who is not the page's creator revokes its link but
+// makes no new one (pages.MayRevoke, MayManage).
+func PageShareMenuFor(id int64, title string, withDetail, rotate bool) g.Node {
 	t := pageCardTitle(title)
 	pid := strconv.FormatInt(id, 10)
 	item := "press flex min-h-[44px] w-full items-center rounded-md px-3 text-left text-sm text-fg hover:bg-s2"
@@ -298,7 +308,7 @@ func PageShareMenu(id int64, title string, withDetail bool) g.Node {
 		Summary(g.Attr("aria-label", "More for “"+t+"”"), Class(pageButtonQuiet+" cursor-pointer list-none"), g.Text("⋯")),
 		Div(Class("absolute right-0 z-20 mt-1 flex w-48 flex-col rounded-lg bg-s1 p-1 shadow-lg shadow-black/30 ring-1 ring-line"),
 			action("revoke", PageShareRevokePath(id), "Revoke link"),
-			action("rotate", PageShareRotatePath(id), "New link"),
+			g.If(rotate, action("rotate", PageShareRotatePath(id), "New link")),
 			g.If(withDetail, A(Href(PageDetailPath(id)), hx("hx-boost", "false"), Class(item), g.Text("Page settings")))))
 }
 
@@ -341,7 +351,7 @@ func PageCard(v PageCardView, id string) g.Node {
 			A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
 			PageShareButton(v.ID, v.Title, "", v.Reusable),
-			g.If(!v.NoManage, PageShareMenu(v.ID, v.Title, true))),
+			g.If(!v.NoRevoke, PageShareMenuFor(v.ID, v.Title, true, !v.NoManage))),
 	)
 }
 

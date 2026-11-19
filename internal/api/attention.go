@@ -2197,12 +2197,17 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	}
 	// A page link's card (page_share.go): the owner's own door, one of its two
 	// options, the link still pending — then the link goes live or is denied.
+	teamCard := false
 	if note == nil {
-		if err := s.pageShareForAnswer(ctx, id, answer, src); err != nil {
+		if teamCard, err = s.pageShareForAnswer(ctx, id, answer, src); err != nil {
 			return a, err
 		}
 	}
-	if src.ViaSession() {
+	if teamCard {
+		// A team member's answer to a team agent's page share card: its own
+		// recording door (page_share.go recordTeamPageCardAnswer).
+		a, err = s.recordTeamPageCardAnswer(ctx, id, answer)
+	} else if src.ViaSession() {
 		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
 	} else {
 		a, err = s.ext.Attention.Answer(ctx, id, answer)

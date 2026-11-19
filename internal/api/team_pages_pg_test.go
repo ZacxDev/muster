@@ -23,7 +23,7 @@ import (
 )
 
 // A TEAM'S PAGES through the real server against a real Postgres (migration
-// 0160; team_pages.go): a team agent's page records the person who started
+// 0162; team_pages.go): a team agent's page records the person who started
 // the agent; every member sees it in their Pages list marked with its team,
 // opens it and answers it; only that person is offered — and allowed — the
 // managing controls; any member's Share makes the link; a team agent's
@@ -210,14 +210,14 @@ func TestOnlyTheCreatorIsOfferedOrAllowedToManageATeamsPage(t *testing.T) {
 				t.Errorf("%s is drawn %s on the team's page", who, m)
 			}
 		}
-		for _, r := range []struct{ path, body string }{
-			{"/pages/" + sid + "/delete", ""}, {"/pages/" + sid + "/rollback", "version=1"},
-			{"/pages/" + sid + "/links/" + strconv.FormatInt(l.ID, 10) + "/revoke", ""},
-			{"/pages/" + sid + "/share/rotate", ""}, {"/pages/" + sid + "/share/revoke", ""},
+		for _, r := range []struct{ path, body, want string }{
+			{"/pages/" + sid + "/delete", "", TeamPageCreatorOnly}, {"/pages/" + sid + "/rollback", "version=1", TeamPageCreatorOnly},
+			{"/pages/" + sid + "/links/" + strconv.FormatInt(l.ID, 10) + "/revoke", "", TeamPageRevokeOnly},
+			{"/pages/" + sid + "/share/rotate", "", TeamPageCreatorOnly}, {"/pages/" + sid + "/share/revoke", "", TeamPageRevokeOnly},
 		} {
 			code, got := f.req(t, uid, http.MethodPost, r.path, r.body, formHdr)
-			if code != http.StatusForbidden || strings.TrimSpace(got) != TeamPageCreatorOnly {
-				t.Errorf("%s POST %s: %d %q; want 403 %q", who, r.path, code, got, TeamPageCreatorOnly)
+			if code != http.StatusForbidden || strings.TrimSpace(got) != r.want {
+				t.Errorf("%s POST %s: %d %q; want 403 %q", who, r.path, code, got, r.want)
 			}
 		}
 		if p, err := f.pages.Page(f.asTeam(f.teamA), id); err != nil || p.CurrentVersion != 2 {
@@ -293,10 +293,12 @@ func TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn(t *testing.T) {
 	}
 }
 
-// TestAMemberAnswersTheTeamAgentsShareCard: an OPERATOR of the team
-// approving the team agent's share card from their browser makes the link
-// live; a VIEWER's tap is refused and leaves it pending; a member of B only
-// cannot reach it.
+// TestAMemberAnswersTheTeamAgentsShareCard: a VIEWER of the team approves the
+// team agent's share card from their browser, through the one answer path
+// (answerAskFrom): the link goes live AND the card is recorded answered, with
+// the viewer as answered_by_user — though 0127 lets a viewer write no
+// attention_asks row through the ordinary path (operator decision D1). A
+// member of team B only cannot reach it.
 func TestAMemberAnswersTheTeamAgentsShareCard(t *testing.T) {
 	f := newTeamPageFixture(t)
 	id := f.teamPage(t, "Launch")
@@ -308,20 +310,97 @@ func TestAMemberAnswersTheTeamAgentsShareCard(t *testing.T) {
 	session := func(uid int64) context.Context {
 		return authz.WithPrincipal(context.Background(), f.srv.principalFor(context.Background(), uid, authz.ViaSession))
 	}
-	if err := f.srv.pageShareForAnswer(session(f.viewer), ask, pageShareApproveLabel, attention.AnswerSource{}); err == nil {
-		t.Error("a viewer approved the team's share card; want it refused")
+	if _, err := f.srv.answerAskFrom(session(f.onlyB), ask, pageShareApproveLabel, attention.AnswerSource{}); err == nil {
+		t.Error("a member of B only answered team A's share card")
 	}
 	if l, _ := f.pages.LinkByAsk(f.asTeam(f.teamA), ask); l.State != pages.LinkPending {
-		t.Fatalf("after the viewer's tap the link is %s; want pending", l.State)
+		t.Fatalf("after B's tap the link is %s; want pending", l.State)
 	}
-	if err := f.srv.pageShareForAnswer(session(f.onlyB), ask, pageShareApproveLabel, attention.AnswerSource{}); err != nil {
-		t.Errorf("a member of B only reached the card: %v; want it unseen (nil: no card of theirs)", err)
-	}
-	if err := f.srv.pageShareForAnswer(session(f.both), ask, pageShareApproveLabel, attention.AnswerSource{}); err != nil {
-		t.Fatalf("an operator approving the team's share card: %v", err)
+	a, err := f.srv.answerAskFrom(session(f.viewer), ask, pageShareApproveLabel, attention.AnswerSource{})
+	if err != nil || a.Status != attention.Answered {
+		t.Fatalf("a viewer approving the team's share card: %+v %v; want it answered", a, err)
 	}
 	if l, _ := f.pages.LinkByAsk(f.asTeam(f.teamA), ask); l.State != pages.LinkLive {
-		t.Fatalf("after the operator's tap the link is %s; want live", l.State)
+		t.Fatalf("after the viewer's tap the link is %s; want live", l.State)
+	}
+	var status, via string
+	var by *int64
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT status, coalesce(answered_via, ''), answered_by_user FROM attention_asks WHERE id = $1`, ask).
+		Scan(&status, &via, &by); err != nil {
+		t.Fatal(err)
+	}
+	if status != "answered" || via != attention.ViaBrowser || by == nil || *by != f.viewer {
+		t.Fatalf("the card as recorded: status %s via %q by %v; want answered, from the browser, by the viewer %d", status, via, by, f.viewer)
+	}
+	// Once answered, nobody answers it again.
+	if _, err := f.srv.answerAskFrom(session(f.both), ask, pageShareDenyLabel, attention.AnswerSource{}); err == nil {
+		t.Error("the card was answered twice")
+	}
+}
+
+// TestAManagerStepsInOnATeamsPage: while the creator is a member, a MANAGER of
+// the team is drawn Revoke (a link, and ⋯ Revoke link, without New link) and
+// revokes the live link a viewer made; Delete, Show this version and New link
+// stay the creator's (not drawn, 403). Once the creator leaves the team the
+// manager is drawn and may use every one of them; a viewer still none.
+func TestAManagerStepsInOnATeamsPage(t *testing.T) {
+	f := newTeamPageFixture(t)
+	id := f.teamPage(t, "Retro")
+	sid := strconv.FormatInt(id, 10)
+	sys := authz.System(context.Background())
+	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	if err := f.users.SetTeamMember(sys, by, f.teamA, f.outsider, authz.TeamManager); err != nil {
+		t.Fatal(err)
+	}
+	mgr := f.outsider
+	if code, body := f.req(t, f.viewer, http.MethodPost, "/pages/"+sid+"/share", "", map[string]string{"Accept": "application/json"}); code != http.StatusOK {
+		t.Fatalf("a viewer's Share: %d %s", code, body)
+	}
+	_, screen := f.req(t, mgr, http.MethodGet, "/pages/"+sid, "", nil)
+	for _, m := range []string{"data-link-revoke", "data-page-share-menu", `data-page-share-action="revoke"`} {
+		if !strings.Contains(screen, m) {
+			t.Errorf("a manager (the creator present) is not drawn %s", m)
+		}
+	}
+	for _, m := range []string{"data-page-delete", "data-version-current", `data-page-share-action="rotate"`} {
+		if strings.Contains(screen, m) {
+			t.Errorf("a manager (the creator present) is drawn %s", m)
+		}
+	}
+	if code, got := f.req(t, mgr, http.MethodPost, "/pages/"+sid+"/rollback", "version=1", formHdr); code != http.StatusForbidden || strings.TrimSpace(got) != TeamPageCreatorOnly {
+		t.Errorf("a manager's rollback while the creator is a member: %d %q; want 403 %q", code, got, TeamPageCreatorOnly)
+	}
+	code, body := f.req(t, mgr, http.MethodPost, "/pages/"+sid+"/share/revoke", "", map[string]string{"Accept": "application/json"})
+	if code != http.StatusOK || !strings.Contains(body, `"revoked":true`) {
+		t.Fatalf("a manager revoking the viewer's link while the creator is a member: %d %s", code, body)
+	}
+	// The creator leaves.
+	if err := f.users.RemoveTeamMember(sys, by, f.teamA, f.creator); err != nil {
+		t.Fatal(err)
+	}
+	_, screen = f.req(t, mgr, http.MethodGet, "/pages/"+sid, "", nil)
+	for _, m := range []string{"data-page-delete", "data-version-current", `data-page-share-action="rotate"`} {
+		if !strings.Contains(screen, m) {
+			t.Errorf("a manager, the creator gone, is not drawn %s", m)
+		}
+	}
+	_, vscreen := f.req(t, f.viewer, http.MethodGet, "/pages/"+sid, "", nil)
+	for _, m := range []string{"data-page-delete", "data-version-current", "data-page-share-menu"} {
+		if strings.Contains(vscreen, m) {
+			t.Errorf("a viewer, the creator gone, is drawn %s", m)
+		}
+	}
+	if code, got := f.req(t, f.viewer, http.MethodPost, "/pages/"+sid+"/rollback", "version=1", formHdr); code != http.StatusForbidden || strings.TrimSpace(got) != TeamPageCreatorOnly {
+		t.Errorf("a viewer's rollback, the creator gone: %d %q; want 403", code, got)
+	}
+	if code, _ := f.req(t, mgr, http.MethodPost, "/pages/"+sid+"/rollback", "version=1", formHdr); code != http.StatusSeeOther {
+		t.Fatalf("a manager's rollback, the creator gone: %d; want 303", code)
+	}
+	if p, err := f.pages.Page(f.asTeam(f.teamA), id); err != nil || p.CurrentVersion != 1 {
+		t.Fatalf("after the manager's rollback the page is %+v %v; want version 1", p, err)
+	}
+	if code, _ := f.req(t, mgr, http.MethodPost, "/pages/"+sid+"/delete", "", formHdr); code != http.StatusSeeOther {
+		t.Fatalf("a manager's delete, the creator gone: %d; want 303", code)
 	}
 }
 

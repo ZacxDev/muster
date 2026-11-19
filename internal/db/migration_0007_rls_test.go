@@ -250,10 +250,10 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, page := teamPageTables[tbl]; page {
-			// The team page policies (0160), pinned whole by the share ledger
+			// The team page policies (0162), pinned whole by the share ledger
 			// (teamPagePolicies); here only that each is one of them.
 			if w, ok := teamPagePolicies(tbl)[name]; !ok || w[0] != cmd || permissive != "PERMISSIVE" || w[1] != qual || w[2] != check {
-				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0160's team page policies", tbl, name, cmd, permissive, qual, check)
+				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0162's team page policies", tbl, name, cmd, permissive, qual, check)
 			}
 			continue
 		}
@@ -723,5 +723,5 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 }
 
 // teamReadTables is every table with a team_read policy: the share-class ones
-// (0127) and the team page ones (0160).
+// (0127) and the team page ones (0162).
 func teamReadTables() []string { return ownerFixedTables() }

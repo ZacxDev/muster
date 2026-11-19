@@ -25,8 +25,8 @@ import (
 //
 //   - 🔴 THE OWNER'S OWN DOOR ONLY: a signed-in browser or the paired phone, as
 //     the card's owner (attention.IsOwnerDoor) — or, on a TEAM's card (a team
-//     agent's request), a person who is an operator or a manager of that
-//     team, from their own browser or phone (teamMemberCardDoor). A mirrored session's
+//     agent's request), any member of that team, from their own browser or
+//     phone (teamMemberCardDoor; recorded by recordTeamPageCardAnswer). A mirrored session's
 //     attention_answer — the one door an agent could reach — is refused here,
 //     before anything is decided, and the owner card refuses it again in SQL
 //     (answerSQL). So no agent can approve its own (or another's) link.
@@ -59,23 +59,29 @@ const pushEventPage = push.EventPage
 // pageShareForAnswer is THE TAP on a page link's card (answerAskFrom, BEFORE
 // the answer is recorded); nil when ask id is no link's card. See the file
 // header for its three rules.
-func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string, src attention.AnswerSource) error {
+//
+// byMember reports that a team MEMBER (not the card's owner) decided a TEAM's
+// card: answerAskFrom then records the answer through
+// recordTeamPageCardAnswer, the one door that records a viewer's answer too.
+func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string, src attention.AnswerSource) (byMember bool, err error) {
 	if s.ext.Pages == nil || s.ext.Attention == nil {
-		return nil
+		return false, nil
 	}
 	a, err := s.ext.Attention.Get(ctx, id)
 	if err != nil || a.Status != attention.Open {
-		return nil
+		return false, nil
 	}
 	l, err := s.ext.Pages.LinkByAsk(ctx, id)
 	if err != nil {
-		return nil
+		return false, nil
 	}
-	if src.ViaSession() || !(attention.IsOwnerDoor(ctx, a.Owner) || teamMemberCardDoor(ctx, a.Owner)) {
-		return errReleaseRefused(pageShareNotOwnersDoor)
+	owner := attention.IsOwnerDoor(ctx, a.Owner)
+	member := !owner && teamMemberCardDoor(ctx, a.Owner)
+	if src.ViaSession() || !(owner || member) {
+		return false, errReleaseRefused(pageShareNotOwnersDoor)
 	}
 	if l.State != pages.LinkPending {
-		return errReleaseRefused(pageShareDecided)
+		return false, errReleaseRefused(pageShareDecided)
 	}
 	var live bool
 	switch strings.TrimSpace(answer) {
@@ -83,35 +89,61 @@ func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string
 		live = true
 	case pageShareDenyLabel:
 	default:
-		return errReleaseRefused(pageShareNotAnOption)
+		return false, errReleaseRefused(pageShareNotAnOption)
 	}
 	if _, err := s.ext.Pages.DecideLink(ctx, l.ID, live); err != nil {
 		if errors.Is(err, pages.ErrNotPending) {
-			return errReleaseRefused(pageShareDecided)
+			return false, errReleaseRefused(pageShareDecided)
 		}
 		s.logger.Printf("pages: decide link %d: %v", l.ID, err)
-		return errReleaseRefused("The link could not be decided. Try again.")
+		return false, errReleaseRefused("The link could not be decided. Try again.")
 	}
 	decision := "denied"
 	if live {
 		decision = "approved"
 	}
 	metrics.PageShareDecisions.WithLabelValues(decision).Inc()
-	s.logger.Printf("pages: link %d of page %d %s by its owner", l.ID, l.PageID, decision)
-	return nil
+	by := "its owner"
+	if member {
+		by = "a member of its team"
+	}
+	s.logger.Printf("pages: link %d of page %d %s by %s", l.ID, l.PageID, decision, by)
+	return member, nil
+}
+
+// teamPageCardAnswerer is the attention store's record of a team member's
+// answer to a team page share card (attention.PGStore.AnswerTeamPageCard).
+type teamPageCardAnswerer interface {
+	AnswerTeamPageCard(ctx context.Context, id int64, answer string) (attention.Ask, error)
+}
+
+// recordTeamPageCardAnswer records a team MEMBER's answer to a team agent's
+// page share card, after pageShareForAnswer decided its link.
+//
+// 🔴 NOT THE ORDINARY ANSWER: 0127 writes attention_asks at OPERATOR, so a
+// VIEWER's answer would decide the link and then not record — the card left
+// open over a live link. 0162's muster_answer_team_page_card records it, for
+// this one kind of row only (an open owner card of a team the caller is a
+// member of, from their browser or phone, whose link the caller has already
+// decided), the caller recorded as answered_by_user.
+func (s *Server) recordTeamPageCardAnswer(ctx context.Context, id int64, answer string) (attention.Ask, error) {
+	st, ok := s.ext.Attention.(teamPageCardAnswerer)
+	if !ok {
+		return attention.Ask{}, errReleaseRefused("This card cannot be answered by a team member on this server.")
+	}
+	return st.AnswerTeamPageCard(ctx, id, answer)
 }
 
 // teamMemberCardDoor reports whether ctx is a PERSON answering a TEAM's page
 // share card (a team agent's page_share_request, owner team) from their own
 // door — a signed-in browser or their paired phone, the doors that carry
-// their memberships (authz.Principal.TeamScope) — as an operator or a
-// manager of that team. A team agent's link goes live only on such a tap: no
-// person is the team, so the team's own door (attention.IsOwnerDoor) is never
-// a person's. An operator, not a viewer: the answer is recorded on the
-// team's card, which a viewer may not write (0127: attention_asks at
-// operator), and the link is decided BEFORE the answer is recorded — a
-// viewer's tap would make it live and then fail to record. A viewer shares
-// with the page's own Share button instead.
+// their memberships (authz.Principal.TeamScope) — as ANY member of that team,
+// viewer included (operator decision D1: the card is the same act as Share,
+// which every member has, and 0162's link guard lets every member decide a
+// pending link). A team agent's link goes live only on such a tap: no person
+// is the team, so the team's own door (attention.IsOwnerDoor) is never a
+// person's. The answer is recorded by recordTeamPageCardAnswer, since 0127
+// lets a viewer write no attention_asks row.
 func teamMemberCardDoor(ctx context.Context, team int64) bool {
 	p, ok := authz.From(ctx)
 	if !ok || p.All() || p.Team || team <= 0 || p.UserID == team {
@@ -120,8 +152,8 @@ func teamMemberCardDoor(ctx context.Context, team int64) bool {
 	if p.Via != authz.ViaSession && p.Via != authz.ViaDevice {
 		return false
 	}
-	role, in := p.TeamScope().RoleIn(team)
-	return in && role.AtLeast(authz.TeamOperator)
+	_, in := p.TeamScope().RoleIn(team)
+	return in
 }
 
 // pageShareQuestion is the card's question: which page, by its title, in

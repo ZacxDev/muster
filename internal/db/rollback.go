@@ -382,13 +382,13 @@ const officerConnectorBlocksMigrationVersion = 148
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerSeenMigrationVersion = 156
 
-// teamPagesMigrationVersion is 0160: a team's pages, readable by its members
+// teamPagesMigrationVersion is 0162: a team's pages, readable by its members
 // (the four pages tables' team policies, their guards and owner_fixed). It
 // re-applies AFTER 0116, which re-creates owner_isolation on those tables;
 // its body drops it again. Applied only on a schema that has it
 // (muster_page_manager exists). Idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const teamPagesMigrationVersion = 160
+const teamPagesMigrationVersion = 162
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

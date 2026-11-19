@@ -240,7 +240,7 @@ type agentStarter interface {
 }
 
 // teamPageCreator is the PERSON a team agent's new page records as its
-// creator (pages.Creator.ByUser, migration 0160): the person whose say-so
+// creator (pages.Creator.ByUser, migration 0162): the person whose say-so
 // started the agent (its chief reservation's requested_by_user), read as the
 // team. 0 — the page records none, and a manager of the team manages it —
 // for any caller that is not a team-owned agent (a person's own page needs

@@ -11,7 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// What a member may DO to a team's page (migration 0160), as the database
+// What a member may DO to a team's page (migration 0162), as the database
 // holds it: every statement below runs as the application role under forced
 // row-level security, so an application check is not what refuses it.
 
@@ -71,12 +71,20 @@ func TestOnlyTheCreatorManagesATeamsPage(t *testing.T) {
 	if _, _, err := s.ShareLink(asTeam(f.teamA), p.ID, "team-worker", true); err != nil {
 		t.Fatal(err)
 	}
-	// A MANAGER who is not the creator manages nothing either: the manager
-	// fallback is only for a page that records no creator.
+	// A MANAGER who is not the creator, while the creator is a member, changes
+	// no version and closes no link (a delete's first step) — the manager
+	// steps in only when the creator is gone. (A manager may always REVOKE a
+	// link: TestAManagerRevokesAViewersShareWhileTheCreatorIsPresent.)
 	if err := f.store.SetTeamMember(context.Background(), usersActor(), f.teamA, f.outsider, authz.TeamManager); err != nil {
 		t.Fatal(err)
 	}
-	for name, uid := range map[string]int64{"a viewer": f.viewerA, "an operator (not the creator)": f.both, "a manager (not the creator)": f.outsider} {
+	if _, err := s.SetCurrent(f.person(t, f.outsider), p.ID, 1); !refused(err) {
+		t.Errorf("a manager (not the creator) making version 1 current: %v; want the database's refusal", err)
+	}
+	if _, err := s.CloseLinks(f.person(t, f.outsider), p.ID); !refused(err) {
+		t.Errorf("a manager (not the creator) closing the page's links: %v; want the database's refusal", err)
+	}
+	for name, uid := range map[string]int64{"a viewer": f.viewerA, "an operator (not the creator)": f.both} {
 		ctx := f.person(t, uid)
 		if _, err := s.SetCurrent(ctx, p.ID, 1); !refused(err) {
 			t.Errorf("%s making version 1 current: %v; want the database's refusal", name, err)
@@ -246,28 +254,37 @@ func TestMayManageMatchesTheDatabase(t *testing.T) {
 	f := newTeamFixture(t)
 	withCreator, _ := f.createdTeamPage(t, f.creator)
 	without, _ := f.createdTeamPage(t, 0)
+	// A creator who is not (or no longer) on the team: onlyB is on team B.
+	gone, _ := f.createdTeamPage(t, f.onlyB)
+	if !withCreator.CreatorInTeam || gone.CreatorInTeam || without.CreatorInTeam {
+		t.Fatalf("fixture: CreatorInTeam present=%v gone=%v none=%v; want true, false, false", withCreator.CreatorInTeam, gone.CreatorInTeam, without.CreatorInTeam)
+	}
+	// The outsider becomes a MANAGER of team A, so a manager reads too.
+	if err := f.store.SetTeamMember(context.Background(), usersActor(), f.teamA, f.outsider, authz.TeamManager); err != nil {
+		t.Fatal(err)
+	}
 	readers := map[string]context.Context{"team agent": asTeam(f.teamA), "team B agent": asTeam(f.teamB), "system": authz.System(context.Background())}
-	for name, uid := range map[string]int64{"creator": f.creator, "viewer": f.viewerA, "both": f.both, "onlyB": f.onlyB, "outsider": f.outsider, "manager": 0} {
-		if uid == 0 {
-			continue
-		}
+	for name, uid := range map[string]int64{"creator": f.creator, "viewer": f.viewerA, "both": f.both, "onlyB": f.onlyB, "manager": f.outsider} {
 		readers[name] = f.person(t, uid)
 	}
-	seenTrue, seenFalse := false, false
+	seen := map[string]bool{}
 	for name, ctx := range readers {
 		p, _ := authz.From(ctx)
-		for _, pg := range []Page{withCreator, without} {
+		for _, pg := range []Page{withCreator, without, gone} {
 			var db bool
 			if err := f.s.pool.QueryRow(ctx, `SELECT muster_page_manager($1, nullif($2, 0))`, pg.OwnerID, pg.Creator.ByUser).Scan(&db); err != nil {
 				t.Fatal(err)
 			}
 			if got := MayManage(pg, p); got != db {
-				t.Errorf("%s on a page with creator %d: MayManage %v, the database %v", name, pg.Creator.ByUser, got, db)
+				t.Errorf("%s on a page with creator %d (in the team: %v): MayManage %v, the database %v", name, pg.Creator.ByUser, pg.CreatorInTeam, got, db)
 			}
-			seenTrue, seenFalse = seenTrue || db, seenFalse || !db
+			seen[name+"/"+map[bool]string{true: "yes", false: "no"}[db]] = true
 		}
 	}
-	if !seenTrue || !seenFalse {
-		t.Fatalf("instrument: the readers never produced both answers (true %v, false %v)", seenTrue, seenFalse)
+	// The cases the rule turns on, each seen with the answer it must give.
+	for _, want := range []string{"manager/yes", "manager/no", "creator/yes", "viewer/no", "both/no", "onlyB/no"} {
+		if !seen[want] {
+			t.Errorf("instrument: never saw %s", want)
+		}
 	}
 }

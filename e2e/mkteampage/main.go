@@ -1,4 +1,4 @@
-// Command mkteampage makes, reads and removes a TEAM'S PAGE (migration 0160)
+// Command mkteampage makes, reads and removes a TEAM'S PAGE (migration 0162)
 // on the e2e database, for tests/team-pages.spec.ts: a team the operator
 // (user 1) is a VIEWER of, a second person who is the page's CREATOR (the
 // person who started the team agent that made it), and a two-version page the
@@ -31,8 +31,8 @@ import (
 	"github.com/ZacxDev/muster/internal/branding"
 )
 
-// Blocks is the page's one question, as the page tools would store it.
-const blocks = `[{"type":"question","id":"pick","label":"Which day suits the team?","submit_label":"Send pick"}]`
+// Blocks is the page's question and a file field, as the page tools would store them.
+const blocks = `[{"type":"question","id":"pick","label":"Which day suits the team?","submit_label":"Send pick"},{"type":"upload","id":"deck","label":"Your slides","submit_label":"Upload slides"}]`
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

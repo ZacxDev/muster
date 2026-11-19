@@ -676,7 +676,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	esc := html.EscapeString
 	now := s.now()
 	ctx := r.Context()
-	// A team's pages (0160) are in the list beside the person's own, each
+	// A team's pages (0162) are in the list beside the person's own, each
 	// marked with its team's name.
 	var teamIDs []int64
 	seen := map[int64]bool{}
@@ -714,7 +714,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 ` + team + `<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
 			` · ` + pageLinksWords(p.LiveLinks, p.Pending) + ` · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
 			pageCount(p.Responses, "response", "responses") + `</span> · ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `</span>
-<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID], pageManageable(ctx, p.Page)) + `</div>
+<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID], pageManageable(ctx, p.Page), pageRevocable(ctx, p.Page)) + `</div>
 </li>
 `)
 	}
@@ -727,17 +727,18 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 
 // pageShareControls is a page's Share button and ⋯ menu (ui/page_card.go),
 // carrying its live reusable link's address when it has one (l). The menu
-// (New link, Revoke link) is drawn only for a reader who may manage the page
+// is drawn only for a reader who may revoke its link (revoke:
+// pages.MayRevoke), and its New link only for one who may manage the page
 // (manage: pages.MayManage); Share is every reader's.
-func (s *Server) pageShareControls(id int64, title string, l pages.Link, manage bool) string {
+func (s *Server) pageShareControls(id int64, title string, l pages.Link, manage, revoke bool) string {
 	url := ""
 	if l.Token != "" {
 		url = s.pageLinkURL(l)
 	}
 	var b strings.Builder
 	_ = ui.PageShareButton(id, title, url, s.ext.Pages.LinksReusable()).Render(&b)
-	if manage {
-		_ = ui.PageShareMenu(id, title, false).Render(&b)
+	if revoke {
+		_ = ui.PageShareMenuFor(id, title, false, manage).Render(&b)
 	}
 	return b.String()
 }
@@ -808,16 +809,16 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	// Setup details (the setting that turns reusable links on, a response's
 	// stored form) are an admin's (ui.Features.Setup's predicate).
 	admin := authz.IsAdmin(ctx)
-	// A team's page, read by a member (0160): marked with its team, and its
+	// A team's page, read by a member (0162): marked with its team, and its
 	// managing controls drawn only for the one who may manage it.
-	manage := pageManageable(ctx, p)
+	manage, revoke := pageManageable(ctx, p), pageRevocable(ctx, p)
 	teamNote := ""
 	if memberOnTeamPage(ctx, p) {
 		team := s.teamNames(ctx, []int64{p.OwnerID})[p.OwnerID]
 		teamNote = `<p class="text-sm text-fg2" data-page-team="` + strconv.FormatInt(p.OwnerID, 10) + `"><span class="font-semibold text-fg">` + esc(teamPageLabel(team)) +
 			`.</span> Everyone on the team sees this page, can answer it and can share it.`
 		if !manage {
-			teamNote += ` Only the person who started the agent that made it can delete it, change its version or revoke its links.`
+			teamNote += ` Only the person who started the agent that made it can delete it or change its version; a manager of the team can revoke its links.`
 		}
 		teamNote += "</p>\n"
 	}
@@ -869,7 +870,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 			ui.InfoSheetHTML(pageShareSetupSheet(admin)) + `</div>
 `)
 	}
-	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur, manage))
+	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur, manage, revoke))
 	// With a link key: Copy link (shown by the page script only where the
 	// browser has a share sheet — elsewhere Share itself copies) and the
 	// link's ⓘ, drawn hidden while the page has no link so the script can
@@ -899,7 +900,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 <span class="text-xs text-fg2" data-link-made>` + ui.PlainWhenHTML("Made ", l.CreatedAt, now) + `</span>
 </div>` + ui.InfoSheetHTML(pageLinkDetailSheet(l)) + `</div>
 `)
-		if manage && (l.State == pages.LinkLive || l.State == pages.LinkPending) {
+		if revoke && (l.State == pages.LinkLive || l.State == pages.LinkPending) {
 			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + flowsQuietButton + `" data-link-revoke>Revoke</button></form>
 `)
 		}
@@ -1423,7 +1424,14 @@ func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions()))
+	opts := s.pageRenderOptions()
+	// A team member's own view of a TEAM's page takes no file yet (0162;
+	// team_pages.go teamPageNoFile refuses the upload too): its file fields
+	// are drawn off, saying so.
+	if p, err := s.ext.Pages.Page(r.Context(), id); err == nil && memberOnTeamPage(r.Context(), p) {
+		opts.Uploads, opts.UploadsOff = false, pages.TeamUploadsOff
+	}
+	_ = servePageContent(w, r, pages.Content(v, opts))
 }
 
 // handlePageRevokeLink is the owner's Revoke.
