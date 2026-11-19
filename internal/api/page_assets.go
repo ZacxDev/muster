@@ -75,20 +75,38 @@ func (s *Server) registerPageAssetRoutes(mux Mux) {
 // never change, so the browser keeps it; private, so no shared cache does.
 const pageAssetCacheControl = "private, max-age=31536000, immutable"
 
-// pageAssetThrottled is the one answer to a link past its read cap.
+// pageAssetThrottled is the answer to one viewer past their read cap on a
+// link (pageAssetLimit, per link and client address).
 const pageAssetThrottled = "Too many files read through this link for now. Try again in a minute."
+
+// pageAssetBytesPerLinkMinute is how many bytes of assets one link may serve
+// in a minute, all its viewers together: what bounds the bandwidth a link
+// holder can draw (pageAssetLimit alone allows 600 reads of 15 MiB each).
+const pageAssetBytesPerLinkMinute = 2 << 30
+
+// pageAssetByteBudget is the per-link byte budget in force (a var so a test
+// can lower it).
+var pageAssetByteBudget = pageAssetBytesPerLinkMinute
+
+// pageAssetOverBudget is the answer to a link past its byte budget.
+const pageAssetOverBudget = "This page's files have been downloaded a lot through this link in the last minute. Try again in a minute."
 
 // handlePageLinkAsset is GET /s/{token}/assets/{asset}: an asset the link's
 // page's CURRENT version refers to.
 func (s *Server) handlePageLinkAsset(w http.ResponseWriter, r *http.Request) {
 	l, _ := pageLinkOf(r.Context())
-	// Per link, as its submits and uploads: a link holder cannot make the
-	// server stream a page's files without end.
-	if !s.pageState.assets.take(strconv.FormatInt(l.ID, 10), s.now(), pageLimitWindow, pageAssetLimit) {
+	link := strconv.FormatInt(l.ID, 10)
+	throttle := func(msg string) {
 		metrics.PageLinkRequests.WithLabelValues("asset", "throttled").Inc()
 		w.Header().Set("Retry-After", "60")
 		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, pageAssetThrottled, http.StatusTooManyRequests)
+		http.Error(w, msg, http.StatusTooManyRequests)
+	}
+	// Guard one, the reads: per link AND client address, so one viewer's
+	// reads never throttle another's (a cold view of a page reads each of its
+	// assets once).
+	if !s.pageState.assets.take(link+"|"+clientIP(r), s.now(), pageLimitWindow, pageAssetLimit) {
+		throttle(pageAssetThrottled)
 		return
 	}
 	a, err := s.ext.Pages.VersionAsset(r.Context(), l.PageID, 0, r.PathValue("asset"))
@@ -97,6 +115,13 @@ func (s *Server) handlePageLinkAsset(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("pages: link %d: read an asset: %v", l.ID, err)
 		}
 		refusePageLink(w, "asset")
+		return
+	}
+	// Guard two, the bytes: per link, every viewer together, counted before
+	// the asset is served (its size is the row's), so a link cannot draw more
+	// than pageAssetByteBudget a minute however many addresses read it.
+	if !s.pageState.assetBytes.spend(link, s.now(), pageLimitWindow, int(a.Size), pageAssetByteBudget) {
+		throttle(pageAssetOverBudget)
 		return
 	}
 	if s.servePageAsset(w, r, a) {
@@ -411,8 +436,10 @@ func (s *Server) toolPageAssetDelete(ctx context.Context, c pages.Creator, argum
 	}
 	if svc := s.ext.Uploads; svc != nil {
 		if objErr, rerr := svc.Revoke(ctx, a.PublicID); rerr != nil || objErr != nil {
-			// The row is gone, so nothing serves it; the bytes go with the
-			// page's prefix when the page is deleted.
+			// The asset's row is gone, so nothing serves it. Its upload row
+			// (if the revoke failed) and its bytes go with the page: its delete
+			// revokes every live upload under the page's prefix (Store.Files)
+			// and sweeps the prefix.
 			s.logger.Printf("pages: page %d: asset %s deleted, its bytes not (row: %v; object: %v)", id, loggedID(a.PublicID), rerr, objErr)
 		}
 	}

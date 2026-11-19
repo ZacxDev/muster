@@ -66,10 +66,12 @@ var (
 	// pageSubmitLimit and pageUploadLimit: per link per pageLimitWindow.
 	pageSubmitLimit = 20
 	pageUploadLimit = 10
-	// pageAssetLimit: a link's reads of its page's images and video
-	// (page_assets.go). A view reads each asset once, and a repeat view comes
-	// from the browser's cache, so this is room for many views of a page of
-	// 200 assets and a bound on a link holder looping.
+	// pageAssetLimit: one viewer's reads of a page's images and video through
+	// a link (page_assets.go), keyed by link and client address. A view reads
+	// each asset once, and a repeat view comes from the browser's cache, so
+	// this is room for many views of a page of 200 assets and a bound on one
+	// viewer looping; the bytes all viewers of a link draw are bounded apart
+	// (pageAssetByteBudget).
 	pageAssetLimit  = 600
 	pageLimitWindow = time.Minute
 	// pagePushWindow: at most one owner push per page per window.
@@ -85,8 +87,10 @@ type pageState struct {
 	submits boundedWindow
 	uploads boundedWindow
 	assets  boundedWindow
-	pushes  boundedWindow
-	waits   pageWaits
+	// assetBytes counts BYTES, per link (spend), not requests.
+	assetBytes boundedWindow
+	pushes     boundedWindow
+	waits      pageWaits
 	// uploadSlots is the page uploads' in-flight slots, keyed by LINK — never
 	// the composer's (Server.uploadLimits, keyed by user).
 	uploadSlots pageSlots

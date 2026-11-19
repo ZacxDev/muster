@@ -257,7 +257,7 @@ func markdownWithAssets(text string, o RenderOptions) string {
 	nonce := make([]byte, 9)
 	_, _ = rand.Read(nonce)
 	mark := "MUSTERASSET" + strings.ToUpper(hex.EncodeToString(nonce))
-	var tags []string
+	var tags, literals []string
 	text = markdownAssetImage.ReplaceAllStringFunc(text, func(m string) string {
 		sub := markdownAssetImage.FindStringSubmatch(m)
 		ct, ok := kinds[sub[2]]
@@ -269,14 +269,60 @@ func markdownWithAssets(text string, o RenderOptions) string {
 		if IsVideo(ct) {
 			tag = `<video src="` + src + `" controls playsinline preload="metadata" aria-label="` + alt + `"></video>`
 		}
-		tags = append(tags, tag)
+		tags, literals = append(tags, tag), append(literals, html.EscapeString(m))
 		return mark + "N" + strconv.Itoa(len(tags)-1) + "X"
 	})
-	out := o.Markdown(text)
-	for i := len(tags) - 1; i >= 0; i-- {
-		out = strings.ReplaceAll(out, mark+"N"+strconv.Itoa(i)+"X", tags[i])
+	return spliceAssets(o.Markdown(text), mark, tags, literals)
+}
+
+// placeholderAt matches a placeholder's number at the start of what follows
+// its mark.
+var placeholderAt = regexp.MustCompile(`^N([0-9]+)X`)
+
+// spliceAssets puts tags[i] where placeholder i is TEXT in out, the
+// renderer's HTML — and literals[i] (the markdown as written, escaped) where
+// it is not: inside a tag (an attribute: a link's address that held the
+// image syntax) or inside a code span or block, which shows its markdown as
+// it was written. A tag spliced into either would break the markup (or turn
+// code into an image).
+//
+// out is the renderer's own HTML, every author character escaped, so a "<"
+// in it always begins one of the renderer's tags: the walk can trust it.
+func spliceAssets(out, mark string, tags, literals []string) string {
+	var b strings.Builder
+	inTag, code := false, 0
+	for i := 0; i < len(out); {
+		if strings.HasPrefix(out[i:], mark) {
+			if m := placeholderAt.FindStringSubmatch(out[i+len(mark):]); m != nil {
+				if n, err := strconv.Atoi(m[1]); err == nil && n < len(tags) {
+					if inTag || code > 0 {
+						b.WriteString(literals[n])
+					} else {
+						b.WriteString(tags[n])
+					}
+					i += len(mark) + len(m[0])
+					continue
+				}
+			}
+		}
+		c := out[i]
+		switch {
+		case !inTag && c == '<':
+			inTag = true
+			rest := out[i:]
+			switch {
+			case strings.HasPrefix(rest, "<code") || strings.HasPrefix(rest, "<pre"):
+				code++
+			case (strings.HasPrefix(rest, "</code") || strings.HasPrefix(rest, "</pre")) && code > 0:
+				code--
+			}
+		case inTag && c == '>':
+			inTag = false
+		}
+		b.WriteByte(c)
+		i++
 	}
-	return out
+	return b.String()
 }
 
 func renderField(component string, f Field) string {

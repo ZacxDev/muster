@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -406,30 +407,128 @@ func TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse(t *testing.T) {
 	}
 }
 
-// TestALinksAssetReadsAreCappedByTheirOwnGuard: with the cap lowered to 3, a
-// link reads 3 assets and its 4th is refused — 429, the throttle's own words
-// and Retry-After, uncacheable — while ANOTHER live link of the same page still
-// reads (the cap is per link), and the refusal is not the failed-lookup
-// limiter's (whose words differ: the link resolves).
-func TestALinksAssetReadsAreCappedByTheirOwnGuard(t *testing.T) {
+// readAs is a share link's asset read from client address addr.
+func (w *assetWorld) readAs(t *testing.T, path, addr string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.RemoteAddr = addr + ":40000"
+	rec := httptest.NewRecorder()
+	w.h.ServeHTTP(rec, r)
+	return rec
+}
+
+// throttled reports whether r is the asset throttle's refusal saying msg:
+// 429, those words, Retry-After, uncacheable.
+func throttled(r *httptest.ResponseRecorder, msg string) bool {
+	return r.Code == http.StatusTooManyRequests && strings.TrimSpace(r.Body.String()) == msg && r.Header().Get("Retry-After") == "60" &&
+		r.Header().Get("Cache-Control") == "no-store"
+}
+
+// TestOneViewerOfALinkDoesNotThrottleAnother: the read cap is per link AND
+// client address. With it lowered to 3 (and the byte budget left at its
+// 2 GiB), one viewer's 4th read is refused with the read cap's own words,
+// while a SECOND viewer of the same link still reads, as does the first
+// viewer through another link of the page.
+func TestOneViewerOfALinkDoesNotThrottleAnother(t *testing.T) {
 	w := newAssetWorld(t)
 	defer func(n int) { pageAssetLimit = n }(pageAssetLimit)
 	pageAssetLimit = 3
 	id := w.page(t, wsCreator, "Throttle")
 	img, _, _ := w.publishWith(t, id)
 	l, l2 := w.liveLink(t, id), w.liveLink(t, id)
+	path := pages.LinkPath(l.Token) + "/assets/" + img
 	for i := 0; i < 3; i++ {
-		if r := w.get(t, pages.LinkPath(l.Token)+"/assets/"+img, nil); r.Code != http.StatusOK {
-			t.Fatalf("read %d under the cap: %d", i+1, r.Code)
+		if r := w.readAs(t, path, "198.51.100.7"); r.Code != http.StatusOK {
+			t.Fatalf("viewer A's read %d under the cap: %d", i+1, r.Code)
 		}
 	}
-	r := w.get(t, pages.LinkPath(l.Token)+"/assets/"+img, nil)
-	if r.Code != http.StatusTooManyRequests || strings.TrimSpace(r.Body.String()) != pageAssetThrottled || r.Header().Get("Retry-After") != "60" ||
-		r.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("read 4 past a cap of 3: %d %q %v", r.Code, r.Body.String(), r.Header())
+	if r := w.readAs(t, path, "198.51.100.7"); !throttled(r, pageAssetThrottled) {
+		t.Fatalf("viewer A's 4th read past a cap of 3: %d %q %v", r.Code, r.Body.String(), r.Header())
 	}
-	if r := w.get(t, pages.LinkPath(l2.Token)+"/assets/"+img, nil); r.Code != http.StatusOK {
-		t.Fatalf("another link of the same page was throttled by the first's reads: %d", r.Code)
+	if r := w.readAs(t, path, "198.51.100.8"); r.Code != http.StatusOK {
+		t.Fatalf("viewer B was throttled by viewer A's reads: %d %q", r.Code, r.Body.String())
+	}
+	if r := w.readAs(t, pages.LinkPath(l2.Token)+"/assets/"+img, "198.51.100.7"); r.Code != http.StatusOK {
+		t.Fatalf("viewer A through another link of the page: %d", r.Code)
+	}
+}
+
+// TestALinksAssetBytesAreBudgeted: every viewer of a link together may draw
+// at most the link's byte budget a minute. With it lowered to 100 bytes and
+// the read cap left at 600, three viewers — each one read, so no viewer's cap
+// is near — read a 40-byte asset: 40 and 80 are served; the third would make
+// 120, past 100, and is refused with the budget's own words. Another link of
+// the same page still reads (the budget is per link).
+func TestALinksAssetBytesAreBudgeted(t *testing.T) {
+	w := newAssetWorld(t)
+	defer func(n int) { pageAssetByteBudget = n }(pageAssetByteBudget)
+	pageAssetByteBudget = 100
+	if len(askMediaPNG) != 40 {
+		t.Fatalf("fixture: the image is %d bytes, the sums below take 40", len(askMediaPNG))
+	}
+	id := w.page(t, wsCreator, "Budget")
+	img, _, _ := w.publishWith(t, id)
+	l, l2 := w.liveLink(t, id), w.liveLink(t, id)
+	path := pages.LinkPath(l.Token) + "/assets/" + img
+	for _, addr := range []string{"198.51.100.21", "198.51.100.22"} {
+		if r := w.readAs(t, path, addr); r.Code != http.StatusOK {
+			t.Fatalf("a read under the budget from %s: %d %q", addr, r.Code, r.Body.String())
+		}
+	}
+	if r := w.readAs(t, path, "198.51.100.23"); !throttled(r, pageAssetOverBudget) {
+		t.Fatalf("a read past the link's byte budget: %d %q %v", r.Code, r.Body.String(), r.Header())
+	}
+	if r := w.readAs(t, pages.LinkPath(l2.Token)+"/assets/"+img, "198.51.100.23"); r.Code != http.StatusOK {
+		t.Fatalf("another link of the page was refused by the first's budget: %d", r.Code)
+	}
+}
+
+// failingRevokes is an upload store whose Revoke fails while fail is set.
+type failingRevokes struct {
+	uploads.Store
+	fail bool
+}
+
+func (f *failingRevokes) Revoke(ctx context.Context, publicID string) (uploads.Upload, error) {
+	if f.fail {
+		return uploads.Upload{}, errors.New("the database went away")
+	}
+	return f.Store.Revoke(ctx, publicID)
+}
+
+// TestAnAssetWhoseRevokeFailedIsRevokedWithItsPage: page_asset_delete deletes
+// an unused asset's row, but its upload row's revoke fails (forced), so that
+// row is still live and no asset names it. Deleting the page then revokes it
+// all the same (Files lists every live upload under the page's prefix): no
+// live upload row of the page is left.
+func TestAnAssetWhoseRevokeFailedIsRevokedWithItsPage(t *testing.T) {
+	w := newAssetWorld(t)
+	store := &failingRevokes{Store: w.srv.ext.Uploads.Store}
+	w.srv.ext.Uploads.Store = store
+	id := w.page(t, wsCreator, "Revoke")
+	_, rec, _ := w.post(t, w.ws, id, "spare.png", "image/png", askMediaPNG, false)
+	aid, _ := rec["asset_id"].(string)
+	live := func() int {
+		var n int
+		if err := w.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM uploads WHERE object_key LIKE $1 AND revoked_at IS NULL`,
+			"pages/"+strconv.FormatInt(id, 10)+"/%").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	store.fail = true
+	if out := w.tool(t, pageAssetDeleteTool, map[string]any{"page_id": id, "asset_id": aid}); out["deleted"] != true {
+		t.Fatalf("page_asset_delete of an unused asset: %v", out)
+	}
+	store.fail = false
+	if n := live(); n != 1 {
+		t.Fatalf("fixture: after the failed revoke %d live upload row(s), want the 1 left behind", n)
+	}
+	if r := w.call(t, http.MethodPost, "/pages/"+strconv.FormatInt(id, 10)+"/delete", nil, w.operator()); r.Code != http.StatusSeeOther {
+		t.Fatalf("delete: %d %s", r.Code, r.Body.String())
+	}
+	if n := live(); n != 0 {
+		t.Fatalf("deleting the page left %d live upload row(s) under its prefix", n)
 	}
 }
 

@@ -187,7 +187,18 @@ placeholder: create media from the markup, or before the page's `load`.
 **Cached.** An asset's id never names other bytes, so each response is
 `Cache-Control: private, max-age=31536000, immutable`, and the shell's fetch
 uses the browser's cache: a repeat view does not fetch it again. Through a
-link, reads are capped per link ([Limits](#limits)).
+link, each viewer's reads are capped (per link and client address, so one
+viewer never throttles another), and so are the bytes all of a link's viewers
+draw together ([Limits](#limits)); either answers 429 with `Retry-After`, in
+its own words.
+
+⚠ **On plain HTTP, an asset the owner's view cached outlives signing out.**
+It is cached in that browser for up to a year (`private`: no shared cache
+keeps it). Signing out sends `Clear-Site-Data: "cache"`, which empties it —
+but a browser honours that only on a secure origin (HTTPS, or localhost), so
+on a muster served over plain HTTP the owner's cached media stays in that
+browser after sign-out. On a shared computer, serve muster over HTTPS, or
+clear the browser's cache.
 
 **Who can read one:** exactly who can read the page. A link serves only an
 asset its page's **current** version uses (a revoked link serves none); the
@@ -567,7 +578,8 @@ means a push service accepted it, not that the device showed it.
 | page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
 | uploads per link | 10 a minute |
-| asset reads per link | 600 a minute (a repeat view reads from the browser's cache) |
+| asset reads per link and viewer (client address) | 600 a minute (a repeat view reads from the browser's cache) |
+| asset bytes per link, all viewers | 2 GiB a minute |
 | failed link lookups per client address | 60 a minute, then 429 |
 | one MCP request (`page_create` / `page_update`) | 1088 KiB: the blocks as sent, up to 1 MiB (twice the stored 512 KiB, for an encoder that escapes more than muster's), plus 64 KiB for the rest |
 | one MCP request (any other tool or method) | 64 KiB |

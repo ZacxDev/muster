@@ -422,10 +422,18 @@ func (s *PGStore) SetCurrent(ctx context.Context, id int64, v int) (Page, error)
 func (s *PGStore) Files(ctx context.Context, id int64) ([]string, error) {
 	// A viewer's files, then the author's assets (0161): both are uploads rows
 	// under the page's prefix.
+	//
+	// 🔴 AND EVERY LIVE UPLOADS ROW UNDER THE PAGE'S PREFIX, whatever names it:
+	// an asset deleted while its row's revoke failed (page_asset_delete), or a
+	// file whose recording failed, is no longer named by either table above,
+	// and would outlive the page live. Each id once (GROUP BY).
 	rows, err := s.pool.Query(ctx, `SELECT f FROM (
 		SELECT upload_public_id AS f, 0 AS k, id FROM page_responses WHERE page_id = $1 AND kind = 'upload'
-		UNION ALL
-		SELECT public_id, 1, id FROM page_assets WHERE page_id = $1) x ORDER BY k, id`, id)
+		UNION
+		SELECT public_id, 1, id FROM page_assets WHERE page_id = $1
+		UNION
+		SELECT public_id, 2, id FROM uploads WHERE object_key LIKE 'pages/' || $1::bigint || '/%' AND revoked_at IS NULL) x
+		GROUP BY f ORDER BY min(k), min(id)`, id)
 	if err != nil {
 		return nil, wrap("files", err)
 	}
