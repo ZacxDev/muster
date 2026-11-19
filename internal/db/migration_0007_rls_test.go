@@ -124,6 +124,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO officer_seen (officer_owner, officer, seen_at) VALUES (1, 'draft:example-' || lower($1), now())`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_cap_raises (officer, day, daily_usd, raised_at) VALUES ('draft:example-' || lower($1), current_date, 20, now())`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO fleet_actions (class, proposer, subject_kind, subject_key, episode_id, text, text_sha256, state) VALUES ('continue', 'chief', 'mirror', $1, 1, 'go on', repeat('0', 64), 'proposed')`, func() []any { return []any{"sess-" + tag} }, nil},
+		{`INSERT INTO officer_chat_cards (officer_owner, officer, kind, draft_id, body_sha256, media_sha256, card_sha256) VALUES (1, 'draft:example-' || lower($1), 'draft', 1, repeat('a', 64), '{}', repeat('b', 64))`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},

@@ -463,12 +463,13 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 //
 // The button is the line itself, not a "…" beside it (the agent header's
 // titleMoreButton): a separate 44px "…" would take back more room than the
-// switch's padding gave (viewToggleSegClass). It is block and truncating, so
-// it draws exactly the box the <h1> drew before (no new height, no shift).
+// switch's padding gave (viewToggleSegClass). It is block; inside it the title
+// is one truncating line and "On <computer>" a second (mirrorHostLine).
 //
 // Whether it is clipped is decided by agentTitleFitScript — the agent
-// header's rule, not a copy of it: the <h1> is its [data-agent-title] box and
-// the button both its [data-agent-title-text] and its [data-title-more].
+// header's rule, not a copy of it: the <h1> is its [data-agent-title] box,
+// the button its [data-title-more] and the button's title line its
+// [data-agent-title-text].
 // data-title-fit="disable" makes that script DISABLE the button while the
 // title fits (a tap on a whole title opens nothing) rather than hide it, as
 // it hides the agent header's "…". Without script the button stays enabled
@@ -502,15 +503,17 @@ func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
 		g.Group(extra),
 		Type("button"),
 		g.Attr("data-mv-title", ""),
-		g.Attr("data-agent-title-text", ""),
 		g.Attr("data-title-more", ""),
 		g.Attr("popovertarget", mirrorTitlePopoverID),
 		g.Attr("aria-haspopup", "dialog"),
 		g.Attr("aria-controls", mirrorTitlePopoverID),
 		g.Attr("aria-expanded", "false"),
-		Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
-		mirrorViewEntryTitle(v),
-		Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
+		Class("block w-full min-w-0 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
+		// Two lines, each truncating on its own (mirrorHostLine): the title —
+		// the fit script's [data-agent-title-text], so the popover opens
+		// when the TITLE is clipped — then "On <computer>".
+		Span(g.Attr("data-agent-title-text", ""), Class("block truncate"), mirrorViewEntryTitle(v)),
+		g.If(!titleNamesHost(!v.SessionName.Human(), v.Qualifier, v.Host), mirrorHostLine(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
 	)
 }
 
@@ -576,8 +579,9 @@ func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 }
 
 // mirrorViewHeading is the header line as text: the name, then its badge's
-// "On <host>" (MirrorBadgeText). The full-title popover shows exactly this, so when only
-// the badge is clipped the popover still says what the header did not.
+// "On <host>" (MirrorBadgeText). The full-title popover shows exactly this. It
+// opens when the TITLE line is clipped; the "On <host>" line under it
+// (mirrorHostLine) truncates on its own and has the column's whole width.
 //
 // 🔴 NO TMUX ADDRESS (operator rule: no ids in the top layer). It
 // used to end with the window's technical id ("· tmux cedar:1 @ atlas", or

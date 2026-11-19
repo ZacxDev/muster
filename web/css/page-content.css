@@ -1,0 +1,15 @@
+/*
+ * The pages content document's theme (internal/pages/content_theme.css),
+ * built by `make css` with tailwind.pages.config.js.
+ *
+ * A page is served in a sandboxed frame whose CSP loads no stylesheet, so it
+ * cannot use web/static/app.css. This build is that stylesheet's twin for the
+ * page: the SAME palette (tokens.css) and the SAME Tailwind theme, emitting
+ * only the utilities ui.MarkdownHTML writes, each scoped under .mp-markdown
+ * (the config's `important`), with no preflight, so a page's own HTML blocks
+ * are not reset by it.
+ */
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind utilities;

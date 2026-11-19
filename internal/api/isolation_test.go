@@ -825,8 +825,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /s/{token}/upload":                           classPublic,
 
 	// Needs you (officer_needs_you.go): {item} is a refusal of A's officer.
-	"POST /officers/{officer}/refusals/{item}/refile": classParam,
-	"POST /officers/{officer}/refusals/{item}/drop":   classParam,
+	"POST /officers/{officer}/refusals/{item}/refile":    classParam,
+	"POST /officers/{officer}/refusals/{item}/drop":      classParam,
+	"POST /officers/{officer}/chat":                      classParam,
+	"POST /officers/{officer}/chat/cards/{card}/approve": classParam,
+	"POST /officers/{officer}/chat/cards/{card}/reject":  classParam,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control

@@ -1544,7 +1544,8 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
 	defs := append(append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef()), taskReadToolDefs()...)
-	return append(append(append(defs, itemAskToolDefs()...), prContextToolDef(), gapTaskToolDef(), rolloutEvidenceToolDef(), postDraftToolDef()), contactToolDefs()...)
+	defs = append(append(append(defs, itemAskToolDefs()...), prContextToolDef(), gapTaskToolDef(), rolloutEvidenceToolDef(), postDraftToolDef()), contactToolDefs()...)
+	return append(defs, ownStateToolDefs()...)
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -1796,6 +1797,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	if !s.officerToolServed(o, name) {
 		return toolErr("%s is not one of officer %s's tools", name, o.ID), true
 	}
+	// 🔴 EVERYTHING AN OFFICER TOOL REACHES IS AN OFFICER'S CALL: a decision
+	// door refuses it whatever principal it runs under (officerDeciderRefusal,
+	// officer_own_state.go).
+	ctx = withOfficerCall(ctx, o)
 	// 🔴 THE RUNTIME BINDS THE DOOR (officer_host.go): a host officer's tools
 	// are its host instances' (no agent row), a pod officer's its pods'.
 	if why := officerRuntimeRefusal(o, a, name); why != "" {
@@ -1868,6 +1873,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.officerPostDraft(ctx, a, o, c, arguments), true // plugin_outbound.go
 	case officers.ToolContactGet, officers.ToolContactsList, officers.ToolContactNote:
 		return s.officerContactTool(ctx, a, o, name, arguments), true // officer_contacts.go
+	case officers.ToolMyState, officers.ToolConfirmCard, officers.ToolRefusalRefile, officers.ToolRefusalDrop:
+		return s.officerOwnStateTool(ctx, a, o, name, arguments), true // officer_own_state.go
 	}
 	// The obs tools pass their arguments to HQ unchanged (officers.
 	// ObsQueryArgs) — but for a judgement instance's item_id, which is
