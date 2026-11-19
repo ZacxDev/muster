@@ -73,6 +73,10 @@ func ToolTarget(tool, input string) string {
 	return ""
 }
 
+// OneLine is oneLine, for a caller that picks its own field (ui.ToolRowTarget,
+// for muster's own tools).
+func OneLine(s string) string { return oneLine(s) }
+
 // oneLine is s's first non-blank line, whitespace-collapsed, capped at
 // MaxTarget runes (a cut is marked "…"). A multi-line command shows its first
 // line, which is the one a reader recognises.

@@ -85,6 +85,60 @@ func (b Block) Render(nonce string) string {
 	return s.String()
 }
 
+// openRE and closeRE are Render's two marker lines.
+var (
+	openRE  = regexp.MustCompile(`^<<<([a-z][a-z0-9-]*) untrusted nonce=([0-9a-f]{16}) count=([0-9]+)>>>$`)
+	closeRE = regexp.MustCompile(`^<<<end ([a-z][a-z0-9-]*) nonce=([0-9a-f]{16})>>>$`)
+)
+
+// Parse reads back a turn [Block.Render] wrote: ok only when s is EXACTLY one
+// rendered block — a preface, then an opening marker at column 0, every line
+// up to the closing marker behind [ContentPrefix], a closing marker carrying
+// the opening one's marker word and nonce, and nothing but white space after
+// it. Lines are the content lines without their prefix. A line a transcript
+// stripped of its trailing space (a blank content line, "|") reads as blank.
+//
+// It is for DRAWING a turn muster sent (the human's view of it), never for
+// deciding anything: what the agent was handed is s itself.
+func Parse(s string) (b Block, nonce string, ok bool) {
+	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(s, "\r\n", "\n"), " \t\n"), "\n")
+	open := -1
+	for i, l := range lines {
+		if openRE.MatchString(l) {
+			open = i
+			break
+		}
+	}
+	if open < 0 || len(lines) < open+2 {
+		return Block{}, "", false
+	}
+	m := openRE.FindStringSubmatch(lines[open])
+	c := closeRE.FindStringSubmatch(lines[len(lines)-1])
+	if c == nil || c[1] != m[1] || c[2] != m[2] {
+		return Block{}, "", false
+	}
+	count, err := strconv.Atoi(m[3])
+	if err != nil {
+		return Block{}, "", false
+	}
+	b = Block{Preface: strings.TrimRight(strings.Join(lines[:open], "\n"), "\n"), Marker: m[1], Count: count}
+	for _, l := range lines[open+1 : len(lines)-1] {
+		switch {
+		case strings.HasPrefix(l, ContentPrefix):
+			b.Lines = append(b.Lines, l[len(ContentPrefix):])
+		case l == strings.TrimRight(ContentPrefix, " "):
+			b.Lines = append(b.Lines, "")
+		default:
+			return Block{}, "", false // a line outside the prefix: not a block Render wrote
+		}
+	}
+	return b, m[2], true
+}
+
+// Unfold is [Sanitize]'s line-break folding undone, for showing a field as
+// the text it was: each " ⏎ " back to a line break.
+func Unfold(s string) string { return strings.ReplaceAll(s, " ⏎ ", "\n") }
+
 // Cut is the first n RUNES of s, with "…" when anything was dropped.
 func Cut(s string, n int) string {
 	seen := 0

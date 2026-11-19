@@ -163,7 +163,7 @@ for (const [label, viewport] of sizes) {
           .filter((c) => !(el as HTMLElement).contains(c) && (c as HTMLElement).getClientRects().length > 0)
           .map((c) => c.getAttribute('aria-label') || c.id),
       );
-      const want = ['New chat session', 'Chat history', 'Focus history'];
+      const want = ['New chat session', 'Chat history', 'What it worked on'];
       expect(firstRow, "the title row's controls").toEqual(label === 'phone' ? ['Open menu', ...want] : want);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 'no sideways scroll').toBe(0);
 

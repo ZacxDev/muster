@@ -217,7 +217,7 @@ func TestTheAsksListAgesAFocusTitleOnTheServersClock(t *testing.T) {
 	s, _ := r1NoticeServer(t)
 	rec := httptest.NewRecorder()
 	s.handleAttentionItems(rec, httptest.NewRequest("GET", "/attention/items", nil).WithContext(s.attentionPrincipal(context.Background(), 1)))
-	want := `<span data-attention-focus>` + r1Title + `</span><span class="font-normal" data-focus-age title="focus title set 3d ago" aria-label="focus title set 3d ago"> · 3d</span>`
+	want := `<span data-attention-focus>` + r1Title + `</span><span class="font-normal" data-focus-age title="Summary from 3 days ago" aria-label="Summary from 3 days ago"> · 3d</span>`
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("the Asks list lacks\n%s\nin:\n%s", want, rec.Body.String())
 	}

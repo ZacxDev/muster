@@ -598,16 +598,35 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 		if text == "" {
 			text = t.Norm
 		}
-		facts := make([]string, 0, 4)
-		for _, f := range askTopFacts(t) {
-			facts = append(facts, `<span class="`+ui.AsksLogFactClass+`">`+esc(f)+`</span>`)
-		}
 		b.WriteString(`<li class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-asklog-top-row data-count="` + strconv.Itoa(t.Count) +
 			`" data-norm="` + esc(t.Norm) + `"><p class="` + ui.AsksLogClampClass + `" data-asklog-top-question>` +
-			esc(text) + `</p><p class="` + ui.AsksLogFactsClass + `" data-asklog-top-facts>` + strings.Join(facts, " · ") + `</p></li>`)
+			esc(text) + `</p><p class="` + ui.AsksLogFactsClass + `" data-asklog-top-facts>` + askFactsHTML(askTopFacts(t), true) + `</p></li>`)
 	}
 	b.WriteString(`</ul>`)
 	return b.String()
+}
+
+// askFactsHTML is a facts line ("3 times · you answered 2 · median 11s"), its
+// facts plain text. 🔴 A SEPARATOR TRAVELS WITH THE FACT AFTER IT: every fact
+// after the first is one no-wrap unit "· fact", and the units are joined by a
+// plain space, the line's only break opportunity — so a wrap starts a line
+// with "·" and never ends one with it. The first fact is kept whole too when
+// firstWhole; otherwise (an answer's quoted text, which may be long) it wraps
+// freely.
+func askFactsHTML(facts []string, firstWhole bool) string {
+	esc := html.EscapeString
+	units := make([]string, 0, len(facts))
+	for i, f := range facts {
+		switch {
+		case i > 0:
+			units = append(units, `<span class="`+ui.AsksLogFactClass+`">· `+esc(f)+`</span>`)
+		case firstWhole:
+			units = append(units, `<span class="`+ui.AsksLogFactClass+`">`+esc(f)+`</span>`)
+		default:
+			units = append(units, `<span>`+esc(f)+`</span>`)
+		}
+	}
+	return strings.Join(units, " ")
 }
 
 // askTopFacts is a repeated question's facts line, short enough for a phone:
@@ -754,14 +773,18 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	if row.TextExpired {
 		b.WriteString(` data-text-expired`)
 	}
-	sub := askLogWhere(a)
-	if sub != "" {
-		sub += " · "
+	// The sub line: the place (truncated, its ellipsis inside it), then the
+	// age — never shrunk, its "·" with it — so the age is always seen.
+	age := `<time datetime="` + row.AskedAt.Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.AskedAt))) + `</time>`
+	sub := ""
+	if where := askLogWhere(a); where != "" {
+		sub = `<span class="` + ui.AsksLogWhereClass + `" data-asklog-where>` + esc(where) + `</span>`
+		age = `· ` + age
 	}
+	sub += `<span class="` + ui.AsksLogAgeClass + `" data-asklog-age>` + age + `</span>`
 	b.WriteString(`>
 <div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `">` + esc(labelOr(askKindLabels, row.Kind)) +
-		`</span><span class="` + ui.AsksSubClass + `">` + esc(sub) + `<time datetime="` + row.AskedAt.Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.AskedAt))) +
-		`</time></span></div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
+		`</span><span class="` + ui.AsksLogSubClass + `" data-asklog-sub>` + sub + `</span></div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
 `)
 	switch {
 	case row.TextExpired:
@@ -782,7 +805,9 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 		ans = append(ans, "after "+askDuration(a.Latency()))
 	}
 	if len(ans) > 0 {
-		b.WriteString(`<p class="` + ui.AsksLogFactsClass + `" data-asklog-answer>` + esc(strings.Join(ans, " · ")) + `</p>
+		// The answer's quoted text (first, when there is one) wraps freely;
+		// "· by you" and "· after 11s" each travel whole, separator first.
+		b.WriteString(`<p class="` + ui.AsksLogFactsClass + `" data-asklog-answer>` + askFactsHTML(ans, strings.TrimSpace(a.Answer) == "") + `</p>
 `)
 	}
 	b.WriteString(`</li>`)
