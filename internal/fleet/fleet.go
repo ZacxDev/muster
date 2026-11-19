@@ -113,14 +113,14 @@ var GroupOrder = []string{GroupNeedsYou, GroupWaitingCI, GroupWorking, GroupDone
 
 // GroupLabel is each group's name on the card.
 //
-// 🔴 "Waiting on CI" SAYS WHAT IS KNOWN, NOT MORE: muster does not read
+// 🔴 "Waiting on checks" SAYS WHAT IS KNOWN, NOT MORE: muster does not read
 // checks yet, so the group is "stopped with an open pull request", and the
 // card says the checks are unknown (GroupNote).
 var GroupLabel = map[string]string{
 	GroupNeedsYou:  "Needs you",
-	GroupWaitingCI: "Waiting on CI",
+	GroupWaitingCI: "Waiting on checks",
 	GroupWorking:   "Working",
-	GroupDone:      "Done, can wrap",
+	GroupDone:      "Done",
 	GroupStalled:   "Stalled",
 }
 
