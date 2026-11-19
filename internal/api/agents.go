@@ -2160,6 +2160,11 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(mctx), agentTurnBudget(a.Kind))
 		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
+		// The chief's reply draws its session cards while it streams, as the
+		// stored reply does (chatMentionIndex).
+		if s.isChiefAgent(ctx, a) {
+			stream.mentions.WithSessionCards(func() map[string]ui.SessionCard { return s.sessionCards(ctx) })
+		}
 		parts, err := func() ([]agents.TurnPart, error) {
 			defer endCount() // a panic must not leave the count up (end is idempotent)
 			return s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)

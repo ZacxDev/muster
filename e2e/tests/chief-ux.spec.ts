@@ -138,11 +138,16 @@ async function script(body: { input?: { type?: string; content?: string; call_id
     await gate('kickoff-' + kick[1]).wait();
     return { text: 'Kickoff done: looked at the task.' };
   }
+  // A reply naming one of the owner's sessions by the marker the chief's tools
+  // teach it: muster draws it as a session card (ui/session_card.go).
+  const named = /CARD-ME agent:(\d+)/.exec(first);
+  if (named) return { text: `Ask [[session:agent:${named[1]}]] about the retry logging.` };
   if (first.includes('SIDE-USAGE')) {
-    // 120,000 + 30,000 + 2,000 = 152k in context (output is not counted).
+    // 330,000 + 30,000 + 2,345 = 362,345 in context (output is not counted):
+    // past the 350k the ⋯ menu's memory line waits for.
     return {
       text: 'GOT: ' + first.slice(-200),
-      usage: { input_tokens: 120_000, output_tokens: 777, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000 },
+      usage: { input_tokens: 330_000, output_tokens: 777, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_345 },
     };
   }
   const hold = /HOLD-ME-(\w+)/.exec(first);
@@ -708,6 +713,29 @@ for (const vp of [
       await expect(pageWorking(page)).toBeHidden();
     });
 
+    test('a session the chief names is a card: its name, a status dot, no raw id; a tap opens it', async ({ page }) => {
+      test.setTimeout(90_000);
+      const name = `e2e-ux-card-${vp.name.replace(/\W+/g, '-')}-${stamp}`;
+      const id = fix('agent', '1', name, `e2e-ux-card-token-${stamp}-${vp.name.length}`);
+      agentsMade.add(name);
+      await openChiefPage(page);
+      await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
+      await sendOnPage(page, `who has it? CARD-ME agent:${id}`);
+      const reply = pageLog(page).locator('[data-bubble="assistant"]').filter({ hasText: 'about the retry logging' }).last();
+      await expect(reply).toBeVisible({ timeout: 20_000 });
+      const card = reply.locator('[data-session-card]');
+      await expect(card).toHaveCount(1);
+      await expect(card.locator('[data-session-card-title]')).toHaveText(name);
+      await expect(card.locator('[data-session-status]')).toHaveCount(1);
+      await expect(reply).not.toContainText('[[session:');
+      await expect(reply).not.toContainText(`agent:${id}`);
+      await card.locator('[data-session-card-open]').click();
+      await page.waitForURL((u) => u.pathname === '/agents/' + name);
+      await expect(page.locator('#chat-form')).toBeVisible();
+      fix('rmagent', '1', name);
+      agentsMade.delete(name);
+    });
+
     // + LANDS WHERE YOU CAN TYPE (the operator: "the chief new side chat button
     // doesn't work" — the server opened the chat and the page moved to it, but
     // nothing on screen said so). Red at main: no strip, no current chip, and
@@ -777,16 +805,23 @@ for (const vp of [
       await noSheet(page);
 
       // 3. Once it has a line, + makes a NEW chat. The turn reports its tokens:
-      // the context chip in the header shows them when it ends, no reload.
+      // the ⋯ menu says how much memory the chat uses when it ends, no reload.
       await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
+      // No token chip in the header (operator decision, 2026-11-19).
+      await expect(page.locator('header [data-chief-context-row], header #chief-context-chip')).toHaveCount(0);
+      const memory = page.locator('#agent-actions [data-chief-memory]');
+      await expect(memory, 'no memory line before a turn reported its tokens').toHaveCount(0);
+      // A turn in the side chat that reports 362,345 tokens of context: the ⋯
+      // menu says it in plain words when the turn ends, no reload — and the
+      // header still carries no chip.
       await sendOnPage(page, `side question SIDE-USAGE (${vp.name})`);
       await expect(pageLog(page)).toContainText(`GOT: side question SIDE-USAGE (${vp.name})`, { timeout: 20_000 });
-      const chip = page.locator('header #chief-context-chip');
-      await expect(chip).toBeVisible({ timeout: 10_000 });
-      await expect(chip.locator('[data-ctx-count]')).toHaveText('152k');
-      await chip.click();
-      await expect(page.locator('#chief-context-detail [data-ctx-detail]')).toContainText('152,000 tokens');
+      await expect(memory).toHaveCount(1, { timeout: 10_000 });
+      await page.locator('#agent-actions-open').click();
+      await expect(memory).toBeVisible();
+      await expect(memory).toHaveText('Memory used: 362k');
       await page.keyboard.press('Escape');
+      await expect(page.locator('header [data-chief-context-row], header #chief-context-chip')).toHaveCount(0);
       await tap(plus);
       await page.waitForURL((u) => sessionOf(u.toString()) !== s1);
       const s2 = sessionOf(page.url())!;

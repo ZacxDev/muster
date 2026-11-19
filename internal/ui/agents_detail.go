@@ -151,6 +151,12 @@ type AgentDetailView struct {
 	// FocusComposer: the server asks for the cursor in #chat-input on arrival
 	// (the side chat route's answer: ComposerFocusParam, chief_chats.go).
 	FocusComposer bool
+	// UnfoldNewest: the conversation is the chief's, and its NEWEST reply is
+	// drawn whole — never folded under "Show more" (data-clamp-never,
+	// bubble_clamp.go); older replies fold as before (operator decision,
+	// 2026-11-19). Set by internal/api withChatLogLive, so the page, the
+	// panel and the chat-log refetch agree.
+	UnfoldNewest bool
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
@@ -460,10 +466,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			Div(
 				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
-				// A chief chat's context chip (chief_chats.go): in this row, as a
-				// mirrored session's is in its header's second row.
-				chiefHeaderContext(v.ChiefChat, "shrink-0"),
-				agentMenuSlot(v.Card),
+				// A chief's ⋯ says how much memory its chat uses, when that is
+				// high (chiefMemorySlot).
+				agentMenuSlotWith(v.Card, gatewayChiefMemory(v)),
 				agentModelControl(v),
 			),
 		),
@@ -936,11 +941,23 @@ func agentModelControl(v AgentDetailView) g.Node {
 // drawn once with the page — the strip's refresh never replaces it (its
 // Start/Stop follows the strip's status by a stylesheet rule); nothing for a
 // view with no card.
-func agentMenuSlot(a AgentCardView) g.Node {
+func agentMenuSlot(a AgentCardView) g.Node { return agentMenuSlotWith(a, nil) }
+
+// agentMenuSlotWith is agentMenuSlot with extra items first (nil: none).
+func agentMenuSlotWith(a AgentCardView, extra g.Node) g.Node {
 	if a.ID == 0 {
 		return nil
 	}
-	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenu(a))
+	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(a, "start", extra))
+}
+
+// gatewayChiefMemory is a gateway chief's ⋯ menu's memory slot (its only
+// extra item); nil off a chief's chat page.
+func gatewayChiefMemory(v AgentDetailView) g.Node {
+	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
+		return nil
+	}
+	return chiefMemorySlot(v.ChiefChat.AgentName, v.ChiefChat.SessionID, true)
 }
 
 // ChatSurfaceQueryParam is the query-string name the chat-log partial reads its
@@ -1491,6 +1508,14 @@ func chatLogInner(v AgentDetailView) g.Node {
 	// group once the whole transcript is laid out (groupToolRuns, tool_groups.go).
 	items := make([]logItem, 0, len(v.Messages)+2)
 	paired := map[int]bool{} // tool_result rows already drawn with their call
+	newest := -1             // the chief's newest reply: never folded
+	if v.UnfoldNewest {
+		newest = newestReply(v.Messages)
+	}
+	// answered is the answers of the latest "From <session>" cards, while the
+	// chief's turn after them is drawn: its relay of an answer is collapsed
+	// (dedupRelay). Any other user row ends it.
+	var answered []string
 	for i := 0; i < len(v.Messages); i++ {
 		m := v.Messages[i]
 		switch m.Kind {
@@ -1548,9 +1573,20 @@ func chatLogInner(v AgentDetailView) g.Node {
 			// person's bubble — a "From <session>" card (routed_card.go).
 			if cards, ok := v.RouteAnswers[m.ID]; ok && m.ID > 0 && m.Role == "user" && !m.Typed && len(cards) > 0 {
 				items = append(items, logItem{node: routeAnswerRow(m, cards)})
+				answered = answered[:0]
+				for _, c := range cards {
+					answered = append(answered, c.Body)
+				}
 				continue
 			}
-			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID, v.Mentions)})
+			content := m.Content
+			switch {
+			case m.Role == "user":
+				answered = nil
+			case len(answered) > 0:
+				content = dedupRelay(content, answered)
+			}
+			items = append(items, logItem{node: chatBubbleUnfolded(m.Role, content, m.ID, v.Mentions, i == newest)})
 		}
 	}
 	msgs := groupToolRuns(items)
@@ -1977,7 +2013,7 @@ func relayRow(m ChatLine) g.Node {
 		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
 		Summary(
 			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
-			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("✉")),
+			routedIconNode(routedIconMessage),
 			Span(Class("shrink-0 font-mono text-muted"), g.Text("plugin")),
 			Span(g.Attr("data-relay-label", ""), Class("min-w-0 truncate"), g.Text(label)),
 		),
@@ -1989,7 +2025,14 @@ func relayRow(m ChatLine) g.Node {
 }
 
 func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
+	return chatBubbleUnfolded(role, content, id, mx, false)
+}
+
+// chatBubbleUnfolded is chatBubble, drawn never folded when whole is set (the
+// chief's newest reply: data-clamp-never, bubble_clamp.go).
+func chatBubbleUnfolded(role, content string, id int64, mx *MentionIndex, whole bool) g.Node {
 	return chatBubbleOf(role,
+		g.If(whole, g.Attr("data-clamp-never", "")),
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
 		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),

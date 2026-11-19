@@ -317,6 +317,9 @@ var agentHrefCallLedger = map[string]int{
 	// render, and naming a session would cost it a sessions read per render
 	// for a link that is rarely followed.
 	"AgentPath ← internal/ui/mentions.go:MentionIndex.name": 1,
+	// A session card for an agent in the chief's reply (session_cards.go):
+	// the BARE page, as a mention's, for the same reason.
+	"AgentPath ← internal/api/session_cards.go:Server.sessionCards": 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the

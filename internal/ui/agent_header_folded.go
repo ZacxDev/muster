@@ -24,8 +24,8 @@ import (
 //     Chat history, Focus history, and the ⋯ — at the row's END, where a
 //     mirrored session's last control is. The CHIEF's row has the one list
 //     icon a mirrored session's has instead of the three (its sheet holds its
-//     chats: chief_chats.go) and its context chip under the title
-//     (foldedTitle);
+//     chats: chief_chats.go), and its ⋯ says how much memory the chat uses
+//     when that is high (chiefMemorySlot);
 //   - the status row's other controls IN THE ⋯ MENU (foldedMenuItems): the Claude
 //     account, the failover ("Account switched" and its whole line — in the menu
 //     itself, no second popover), the worker pool, and Terminal (the same
@@ -88,38 +88,18 @@ func foldedHeader(v AgentDetailView) g.Node {
 	)
 }
 
-// foldedTitle is the folded header's title: agentTitle — and, on a chief's
-// chat, the chat's context chip UNDER it (chiefHeaderContext), as a mirrored
-// session's header draws its chip under its title.
-//
-// 🔴 THE TWO LINES ARE THE ROW'S 44px, SO THE HEADER IS NOT TALLER FOR THEM:
-// the title's line is h-6 and the chip's h-5. The title's "…" (h-11, shown
-// only while the title is clipped) overflows its h-6 line rather than growing
-// it — so a title that starts or stops clipping moves nothing — and keeps its
-// 44px tap target.
-func foldedTitle(v AgentDetailView) g.Node {
-	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
-		return agentTitle(v)
-	}
-	return Div(
-		Class("flex min-w-0 flex-1 flex-col justify-center"),
-		Div(Class("flex h-6 min-w-0 items-center"), agentTitle(v)),
-		chiefHeaderContext(v.ChiefChat, "h-5"),
-	)
-}
+// foldedTitle is the folded header's title: agentTitle. A chief's chat drew
+// its context chip under it until 2026-11-19; how much context the chat uses is
+// in the ⋯ menu now, and only when it is high (chiefMemorySlot).
+func foldedTitle(v AgentDetailView) g.Node { return agentTitle(v) }
 
-// chiefHeaderContext is the line holding a chief chat's context chip in a page
-// header (chiefContextSlot), height h (its height before the chip loads, so the
-// chip's arrival moves nothing). Nothing off a chief's chat.
-func chiefHeaderContext(b *ChiefChatBar, h string) g.Node {
-	if b == nil {
+// foldedChiefMemory is a claude-code chief's ⋯ memory slot, among the
+// menu's other extras (so not its divider's peer); nil off a chief's chat page.
+func foldedChiefMemory(v AgentDetailView) g.Node {
+	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
 		return nil
 	}
-	return Div(
-		g.Attr("data-chief-context-row", ""),
-		Class("flex min-w-0 items-center "+h),
-		chiefContextSlot(b.AgentName, b.SessionID),
-	)
+	return chiefMemorySlot(v.ChiefChat.AgentName, v.ChiefChat.SessionID, false)
 }
 
 // foldedMenuItems is what the status row held, as the ⋯ menu's first items.
@@ -154,6 +134,9 @@ func foldedMenuItems(v AgentDetailView) g.Node {
 				Span(g.Attr("data-worker-pool", v.WorkerPool), Class("ml-auto min-w-0 truncate text-fg2"), g.Text(v.WorkerPool)),
 			)),
 		),
+		// A chief's chat: its memory line, when its context is high
+		// (chiefMemorySlot).
+		foldedChiefMemory(v),
 		// The Rendered | Terminal switch's link (viewToggle), as a menu item: the
 		// same id and data-view-swap, so the terminal opens in the kept frame
 		// (view_swap.go) and is a plain link without script. The view swap's

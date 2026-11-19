@@ -1306,22 +1306,34 @@ The primary cannot be archived. The strip puts the primary first, marked
 last, behind **Archived (n)**. The panel's thread list (its title bar's list
 button) lists the same chats in the same order, for search.
 
-**The context chip.** The chief page's header shows, under the title (where a
-mirrored session's header shows its own), how full the chat's context is; the
-panel shows it in its title bar. The chip shows the
-model, then `used/window` (`152k/200k`), amber from 70% of the window and red
-from 90%; tap it for the exact count. It reads the chat's latest turn's usage
+**Memory used.** When the chat's context is high — its latest turn sent more
+than 350k tokens — the chief page's ⋯ menu says so in plain words ("Memory
+used: 362k"); below that it says nothing, and the header carries no token
+count (operator decision, 2026-11-19). It reads the chat's latest turn's usage
 row (`chief_turn_usage`; migration 0115 adds the chat, the model and
 `context_tokens` to it): the context the turn's LAST model request was sent —
 its input + cache read + cache write — not the turn's total, which with tool
 calls counts the conversation once per request. `ccd` reports the last call's
 fill beside the turn's totals (`context_tokens` in its usage); a Responses-API
 gateway reports one response per request, whose own tokens are that request's.
-It updates when a turn of the chief ends. The window is known for Claude models
-named by an alias or id (200k, or 1M with `[1m]`) and for OpenRouter models
-(the catalogue's `context_length`). With no model known — a `claude-code`
-chief on its CLI's default model — or no window known, the chip shows the
-count alone and is never tinted.
+It updates when a turn of the chief ends.
+
+**Sessions the chief names are cards.** When the chief names one of your
+sessions it writes a marker, `[[session:<id>]]`, with the session's id as its
+tools give it (`mirror:…`, `agent:…`). The chat draws it as a compact card —
+the session's name, its computer and a status dot (busy, idle, waiting on
+you) — that opens the session on a tap; its terminal address is behind the
+card's ⓘ. The marker is resolved on the server against YOUR OWN sessions only:
+a marker naming anything else (another person's or a team's session, an ended
+one) is drawn as the words "a session", never as a card. An older reply's raw
+`tmux <session>:<index> @ <host>` or `mirror:<id>` becomes the same card only
+when it is exactly one of your sessions.
+
+**A routed answer is shown once.** A session's answer to a request the chief
+routed is its "From <session>" card; the chief is told not to repeat it, and a
+reply after the card that repeats it anyway has the repeat collapsed to "See
+the answer above". The chief's newest reply is always shown in full; older long
+replies fold under "Show more".
 
 **Fresh primary.** When the primary gets heavy, **Fresh primary** starts a new
 one:

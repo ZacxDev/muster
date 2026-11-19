@@ -57,6 +57,7 @@ var sessionNameCallers = []string{
 	"session_routes.go Server.resolveRouteTarget",                // route_to_session's text
 	"sessions_overview.go Server.repoHints",                      // a hint naming a session by its repo (#500)
 	"sessions_overview.go Server.liveSessions",                   // the chief's sessions_overview and the session hints
+	"session_cards.go Server.sessionCards",                       // a session card's title in the chief's chat
 	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
 	"task_claims.go Server.knownMirrorSession",                   // the name a session claims a task under (the board's claim chip)
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
@@ -117,6 +118,7 @@ var noTmuxAddress = map[string]string{
 	"session_routes.go Server.resolveRouteTarget":                "a chief tool",
 	"sessions_overview.go Server.repoHints":                      "a chief hint",
 	"sessions_overview.go Server.liveSessions":                   "a chief tool",
+	"session_cards.go Server.sessionCards":                       "a card in the chief's chat, not a notification: its tmux address is behind the card's ⓘ",
 	"task_actions.go Server.chiefTaskActions":                    "a chief tool",
 	"task_claims.go Server.knownMirrorSession":                   "a board chip, not a notification",
 	"task_routing.go Server.handTaskToChief":                     "a task event for plugins",

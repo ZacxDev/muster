@@ -76,6 +76,11 @@ import (
 // block is a collapsed <details>), a button, a form field or anything marked
 // [data-no-clamp] within the bubble never toggles the bubble.
 //
+// 🔴 A BUBBLE THE SERVER MARKED data-clamp-never IS NEVER CLAMPED: the chief's
+// NEWEST reply (AgentDetailView.UnfoldNewest, operator decision 2026-11-19) is
+// read whole. The mark is the server's, never inferred here; the next reply's
+// redraw moves it, and the reply that was newest then folds like any other.
+//
 // It is re-executable: the observers and the delegated handler are bound once
 // per document, on window.muClamp, and a re-run rescans.
 func bubbleClampScript() g.Node {
@@ -145,6 +150,8 @@ func bubbleClampScript() g.Node {
   // measure decides whether el is clamped. An open (or moving) bubble is left
   // alone: the reader chose to see all of it.
   function measure(el) {
+    // The server drew it whole (the chief's newest reply): never clamped.
+    if (el.hasAttribute('data-clamp-never')) return;
     var st = el.getAttribute('data-clamp');
     if (st === 'open' || st === 'moving') return;
     if (!el.isConnected || el.clientWidth === 0) return; // no box yet: measured when it gets one
