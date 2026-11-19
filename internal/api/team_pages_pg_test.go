@@ -473,3 +473,63 @@ func TestEveryPageRouteHasATeamRule(t *testing.T) {
 	}
 	_ = url.Values{}
 }
+
+// TestTheTeamCardAnswerDoorHoldsInTheDatabase: 0162's
+// muster_answer_team_page_card, called DIRECTLY (attention.PGStore
+// AnswerTeamPageCard), past every Go check in front of it, records only a
+// member's answer to a card of THEIR team whose link they already decided,
+// from a browser or phone. A member of team B only, a viewer whose link is
+// still pending, and the viewer through a door that is not a person's own
+// (their API token) are each refused, the card left open. CONTROL: the same
+// viewer, the link decided, from the browser, records it.
+func TestTheTeamCardAnswerDoorHoldsInTheDatabase(t *testing.T) {
+	f := newTeamPageFixture(t)
+	id := f.teamPage(t, "Door")
+	out := f.teamTool(t, pageShareRequestTool, map[string]any{"page_id": id})
+	ask := pnum(out["ask_id"])
+	if ask <= 0 {
+		t.Fatalf("share request: %v", out)
+	}
+	store := attention.NewPG(f.pool)
+	as := func(uid int64, via authz.Via) context.Context {
+		return authz.WithPrincipal(context.Background(), f.srv.principalFor(context.Background(), uid, via))
+	}
+	open := func(why string) {
+		t.Helper()
+		var status string
+		if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT status FROM attention_asks WHERE id = $1`, ask).Scan(&status); err != nil || status != "open" {
+			t.Fatalf("%s: the card is %q (%v); want it still open", why, status, err)
+		}
+	}
+	if _, err := store.AnswerTeamPageCard(as(f.viewer, authz.ViaSession), ask, pageShareApproveLabel); err == nil {
+		t.Error("a viewer recorded the card while its link was still pending")
+	}
+	open("a viewer, the link pending")
+	l, err := f.pages.LinkByAsk(f.asTeam(f.teamA), ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pages.DecideLink(as(f.viewer, authz.ViaSession), l.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AnswerTeamPageCard(as(f.onlyB, authz.ViaSession), ask, pageShareApproveLabel); err == nil {
+		t.Error("a member of team B only recorded team A's card")
+	}
+	open("a member of team B only")
+	if _, err := store.AnswerTeamPageCard(as(f.viewer, authz.ViaToken), ask, pageShareApproveLabel); err == nil {
+		t.Error("the viewer's API token recorded the card")
+	}
+	open("the viewer's API token")
+	// The door names itself in SQL: a member's session calling the function
+	// with any door but a browser or a phone (a session's attention_answer is
+	// 'mcp') records nothing.
+	var got *int64
+	if err := f.pool.QueryRow(as(f.viewer, authz.ViaSession), `SELECT muster_answer_team_page_card($1, $2, 'mcp')`, ask, pageShareApproveLabel).Scan(&got); err != nil || got != nil {
+		t.Errorf("the function called with door 'mcp': %v %v; want NULL", got, err)
+	}
+	open("door 'mcp'")
+	a, err := store.AnswerTeamPageCard(as(f.viewer, authz.ViaSession), ask, pageShareApproveLabel)
+	if err != nil || a.Status != attention.Answered || a.AnsweredByUser != f.viewer {
+		t.Fatalf("control: the viewer, the link decided, from the browser: %+v %v", a, err)
+	}
+}
