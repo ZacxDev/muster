@@ -2197,7 +2197,7 @@ officer_ask_person
 officer_obs_queries
 officer_obs_query
 officer_obs_raw
-officer_rollout_promote_propose
+officer_rollout_evidence_attach
 --- tools
 {
   "type": "function",
@@ -2509,14 +2509,14 @@ officer_rollout_promote_propose
 }
 {
   "type": "function",
-  "name": "officer_rollout_promote_propose",
-  "description": "Propose promoting one soaked preview tag to production, for a person to approve (POST /officers/{id}/items/{item_id}/rollout-promotions), for an item you hold. Send the repository, the preview tag the canary runs, and your soak evidence: a summary and each check you ran with its query and what it returned. HQ re-reads the canary's tag and its soak time itself and shows your evidence labelled as your claims. HQ asks the officer's approvers; only an approval makes HQ — never you — dispatch the promotion, and a person merges the bump pull request, so on success NOTHING is promoted yet: never claim a tag was promoted or production changed. 🔴 Success ENDS your lease on the item (it becomes waiting): stop working it — do not heartbeat, complete or release it. HQ owns every limit; a refusal comes back verbatim with HQ's status, code and message, and nothing was written. Do not retry an identical refused call. If muster says HQ is unavailable, the request may still have committed: check the item (officer_items) for an open ask before retrying, so you do not ask twice.",
+  "name": "officer_rollout_evidence_attach",
+  "description": "Attach your soak evidence for one tag to HQ (POST /officers/{id}/items/{item_id}/rollout-evidence), for an item you hold. Send the repository, the tag the canary runs, and your evidence: a summary that leads with your verdict and each check you ran, controls included, with its query and what it returned. HQ stores it and shows the newest evidence for the tag, labelled as your claims, to the person who decides whether to start a rollout — a person starts every rollout in HQ, never you, so on success NOTHING is started: never claim a rollout started or production changed. It does NOT end your lease: keep working the item and complete it as usual. HQ owns every limit; a refusal (e.g. 403 not_allowed, 409 lease_lost, 409 rollout_actuator_off) comes back verbatim with HQ's status, code and message, and nothing was written. Report it; do not retry an identical refused call.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
       "evidence": {
         "additionalProperties": false,
-        "description": "Your soak evidence, shown to the approver labelled as your claims: {summary, checks: [{name, query, result}]}.",
+        "description": "Your soak evidence, shown to the person labelled as your claims: {summary, checks: [{name, query, result}]}.",
         "properties": {
           "checks": {
             "description": "Each soak check you ran, positive controls included.",
@@ -2547,7 +2547,7 @@ officer_rollout_promote_propose
             "type": "array"
           },
           "summary": {
-            "description": "One paragraph for the approver: what you read and why the tag is ready.",
+            "description": "One paragraph for the person: your verdict first, then what you read.",
             "type": "string"
           }
         },
@@ -2561,19 +2561,19 @@ officer_rollout_promote_propose
         "description": "The item's id, as officer_items or officer_brief returned it. You must hold its live lease.",
         "type": "string"
       },
-      "preview_tag": {
-        "description": "The preview tag the canary runs, exactly as you read it.",
+      "repo": {
+        "description": "The repository the evidence is for, as owner/name (one your charter names).",
         "type": "string"
       },
-      "repo": {
-        "description": "The repository to promote, as owner/name (one your charter names).",
+      "tag": {
+        "description": "The tag the evidence is for (vX.Y.Z or a preview tag), exactly as you read it.",
         "type": "string"
       }
     },
     "required": [
       "item_id",
       "repo",
-      "preview_tag",
+      "tag",
       "evidence"
     ],
     "type": "object"

@@ -1526,7 +1526,7 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
 	defs := append(append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef()), taskReadToolDefs()...)
-	return append(append(append(defs, itemAskToolDefs()...), prContextToolDef(), gapTaskToolDef(), postDraftToolDef()), contactToolDefs()...)
+	return append(append(append(defs, itemAskToolDefs()...), prContextToolDef(), gapTaskToolDef(), rolloutEvidenceToolDef(), postDraftToolDef()), contactToolDefs()...)
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -1810,7 +1810,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		switch name {
 		case officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
 			// these end the holder's lease: the chat's item is the runner's
-			officers.ToolAskPerson, officers.ToolTaskAsk, officers.ToolFloodBlockPropose, officers.ToolRolloutPromotePropose,
+			officers.ToolAskPerson, officers.ToolTaskAsk, officers.ToolFloodBlockPropose,
 			// a ship action is bound to the item the primary holds, or writes
 			// to GitHub on the officer's behalf: never a chat session's
 			officers.ToolMergePR, officers.ToolTagRelease, officers.ToolMarkReady, officers.ToolShepherdReady,
@@ -1835,8 +1835,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.officerObsRaw(ctx, a, o, c, arguments), true
 	case officers.ToolTaskList, officers.ToolTaskGet:
 		return officerTaskRead(ctx, c, name, arguments), true // officer_tasks.go
-	case officers.ToolTaskAsk, officers.ToolFloodBlockPropose, officers.ToolRolloutPromotePropose:
+	case officers.ToolTaskAsk, officers.ToolFloodBlockPropose:
 		return s.officerItemAsk(ctx, c, o, caller, name, arguments), true // officer_item_asks.go
+	case officers.ToolRolloutEvidenceAttach:
+		return officerRolloutEvidence(ctx, c, caller, arguments), true // officer_rollout_evidence.go
 	case officers.ToolPRContext:
 		return officerPRContext(ctx, c, arguments), true // officer_pr_context.go
 	case officers.ToolGapTask:
@@ -2243,7 +2245,9 @@ const builtinAskedNote = "asked. Your lease on this item has ENDED: muster set i
 
 // itemAskToolResult is the answer of a tool whose success creates an HQ ask
 // on the item (officer_ask_person, officer_task_ask,
-// officer_flood_block_propose, officer_rollout_promote_propose): HQ's JSON with note added on success; on a
+// officer_flood_block_propose) — and of officer_rollout_evidence_attach,
+// whose success ends nothing but whose refusals are passed the same way:
+// HQ's JSON with note added on success; on a
 // 4xx (or a 5xx the route calls a decision) HQ's status, code and message,
 // with HQ's body verbatim under refused.hq; officerToolResult's shapes
 // otherwise (outage, retryable, too large).
