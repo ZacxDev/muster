@@ -16,8 +16,8 @@ import (
 // `main` cancelled the run of the `main` commit before it. It then became "PR
 // runs only; every other run in its own `run_id` group". From 2026-11-16 a
 // newer push to `main` cancelled the older `main` run, relying on the release
-// tool releasing the newest green `main` descendant; measured 2026-11-18, 38
-// of the 60 newest `main` runs were cancelled and `main` went 3 h+ with no
+// tool releasing the newest green `main` descendant; measured up to
+// 165951768, 38 of the 60 newest `main` runs were cancelled and `main` went 3 h+ with no
 // verdict and no green descendant (ci.yml carries the numbers). So `main` is
 // back in a `run_id` group of its own.
 //

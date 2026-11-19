@@ -81,13 +81,13 @@ on:
 # `main`: every push runs in a group of its own (`run_id`) and is never
 # cancelled. From 2026-11-16 a newer push cancelled the older `main` run, on
 # the premise that the downstream release tool releases the newest GREEN `main`
-# descendant of a commit whose own run was cancelled. Measured 2026-11-18 over
-# the 60 newest push-to-main runs (39 h): 38 cancelled, 19 success, 2 failure;
-# every one of the 8 pushes after 19:01Z was cancelled, so `main` had no
-# verdict at all for 3 h+ (last: 4e8a83c88, 18:45Z) and no green descendant
-# existed to release. Runs were cancelled mid-flight, e.g. one with 14 jobs
-# already green. So `main` goes back to one full run per push (as in
-# civitai/cli#920). The cost is runner time: a `main` run is 28 jobs, ~154
+# descendant of a commit whose own run was cancelled. Measured over the 60
+# push-to-main runs up to 165951768 (39 h): 38 cancelled, 19 success, 2
+# failure; every one of the 8 pushes after 562a178e5 was cancelled, so `main`
+# had no verdict at all for 3 h+ (the last was 4e8a83c88's) and no green
+# descendant existed to release. Runs were cancelled mid-flight, e.g. one with 14 jobs
+# already green. So `main` goes back to one full run per push, the block
+# this file had before 493314225. The cost is runner time: a `main` run is 28 jobs, ~154
 # job-minutes, against the plan's concurrent-job limit (~20), so a burst of
 # merges queues several full suites and PR runs wait behind them.
 #
