@@ -50,6 +50,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; for the pull-request groups, session routing + PR mail routing and the GitHub App | off | 1 line |
+| [Fleet proposals](#fleet-orchestration) | the chief proposes what to send each of your stopped sessions; each is a card in the fleet digest, sent only when you tap Approve | the fleet digest | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
@@ -521,6 +522,36 @@ model and no chief turn: muster draws it from what it already knows.
   404 and `fleet_list` is as before.
 - **Check:** `fleet digest: ON (MUSTER_FLEET_DIGEST=1) — …`; off, the line
   reads `fleet digest: OFF — MUSTER_FLEET_DIGEST is unset`.
+
+### Fleet orchestration
+
+**Fleet proposals.** The chief proposes what to send each of your stopped
+sessions — continue, write a handoff, stop and wait, its own words, "write a
+handoff, then close", or a task moved from one session to another — and each
+proposal is a card in the fleet digest's **Proposed** group showing exactly
+what will be sent. **Nothing is sent until you tap Approve** (or Edit it and
+send it as your own words). muster also proposes, with no model, "Write
+handoff, then close" for each session whose pull request merged and that
+stopped with nothing in flight, and "CI finished" for a session that stopped
+while its pull request's CI ran (the GitHub App's checks read)
+([chief.md](chief.md#fleet-proposals)).
+
+- **Needs:** the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and
+  [session state](#session-state) (`MUSTER_SESSION_STATE=1`) — the server
+  refuses to boot with proposals on and either off — and the [chief](#chief).
+  Moving a task needs [session routing](#session-routing); answering a
+  session's plain-text question needs the [ask log](#ask-log)
+  (`MUSTER_ASK_LOG=1`), which is how muster knows the question is open.
+- **Turn it on:** `MUSTER_FLEET_ORCHESTRATION=propose` in `.env`. The chief
+  keeps judging stopped sessions (its nudges and the per-stop pushes are
+  unchanged); the proposals run alongside.
+- **Turning it off:** unset it (or `off`). The chief's fleet tools are not
+  listed, the digest has no Proposed group, nothing is written to the action
+  log, a message already queued from a card is not sent, and the "N proposals
+  waiting" Attention item is withdrawn on the next session-state pass.
+- **Check:** `fleet proposals: ON (MUSTER_FLEET_ORCHESTRATION=propose) — …`;
+  off, the line reads `fleet proposals: OFF — MUSTER_FLEET_ORCHESTRATION is not
+  propose`.
 
 ### Ask log
 

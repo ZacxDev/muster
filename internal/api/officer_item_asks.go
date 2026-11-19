@@ -8,9 +8,8 @@ import (
 )
 
 // The HQ-derived ask tools (officers/item_asks.go): officer_task_ask (a
-// task-reconciler officer's), officer_flood_block_propose (a
-// web-performance officer's JUDGEMENT pool only) and
-// officer_rollout_promote_propose (a rollout officer's ROUTINE pool, or an untiered one). Each is ONE HQ call with the officer's own
+// task-reconciler officer's) and officer_flood_block_propose (a
+// web-performance officer's JUDGEMENT pool only). Each is ONE HQ call with the officer's own
 // token, which only muster holds; the instance never sees it. HQ derives the
 // person, the question and the options, and HQ — never the officer — applies
 // the person's answer. Offered by officers.ToolOffered to the named type only,
@@ -34,14 +33,7 @@ const floodProposedNote = "proposed — NO challenge is in place yet. HQ asked a
 	"Your lease on this item has ENDED (HQ set it to waiting with no holder): stop working it now — do not heartbeat, complete or release it, " +
 	"and never say traffic was challenged or blocked. HQ re-opens the item with the answer and its outcome on it; claim it then to report."
 
-// rolloutProposedNote is what a successful officer_rollout_promote_propose
-// adds to HQ's answer.
-const rolloutProposedNote = "proposed — NOTHING has been promoted, tagged or deployed. HQ asked the officer's approvers (asks[].to) to Approve & promote or Reject; " +
-	"only an approval makes HQ dispatch the promotion, with its own credentials, and a person still merges the bump pull request HQ opens. " +
-	"Your lease on this item has ENDED (HQ set it to waiting with no holder): stop working it now — do not heartbeat, complete or release it, " +
-	"and never say the tag was promoted or production changed. HQ re-opens the item with the answer on it; claim it then to report."
-
-// itemAskToolDefs are the three tools' definitions.
+// itemAskToolDefs are the two tools' definitions.
 func itemAskToolDefs() []agents.ToolDef {
 	item := strProp("The item's id, as officer_items or officer_brief returned it. You must hold its live lease.")
 	return []agents.ToolDef{
@@ -69,36 +61,10 @@ func itemAskToolDefs() []agents.ToolDef {
 					"description": "How long the challenge lasts once approved, in hours (a positive number; HQ sets the range)."},
 				"to": strProp("Optional: the HQ login to ask. Omit it to ask the officer's owner."),
 			}, "item_id", "unit_ids", "ttl_hours")},
-		{Type: "function", Name: officers.ToolRolloutPromotePropose,
-			Description: "Propose promoting one soaked preview tag to production, for a person to approve (POST /officers/{id}/items/{item_id}/rollout-promotions), for an item you hold. " +
-				"Send the repository, the preview tag the canary runs, and your soak evidence: a summary and each check you ran with its query and what it returned. HQ re-reads the canary's tag and its soak time itself and shows your evidence labelled as your claims. " +
-				"HQ asks the officer's approvers; only an approval makes HQ — never you — dispatch the promotion, and a person merges the bump pull request, so on success NOTHING is promoted yet: never claim a tag was promoted or production changed. " +
-				"🔴 Success ENDS your lease on the item (it becomes waiting): stop working it — do not heartbeat, complete or release it. " +
-				"HQ owns every limit; a refusal comes back verbatim with HQ's status, code and message, and nothing was written. Do not retry an identical refused call. If muster says HQ is unavailable, the request may still have committed: check the item (officer_items) for an open ask before retrying, so you do not ask twice.",
-			Parameters: objSchema(map[string]any{
-				"item_id":     item,
-				"repo":        strProp("The repository to promote, as owner/name (one your charter names)."),
-				"preview_tag": strProp("The preview tag the canary runs, exactly as you read it."),
-				// 🔴 mirrors HQ's §5r evidence shape ({summary, checks: [{name,
-				// query, result}]}, closed): change it with HQ's.
-				"evidence": map[string]any{"type": "object",
-					"description": "Your soak evidence, shown to the approver labelled as your claims: {summary, checks: [{name, query, result}]}.",
-					"properties": map[string]any{
-						"summary": strProp("One paragraph for the approver: what you read and why the tag is ready."),
-						"checks": map[string]any{"type": "array", "minItems": 1,
-							"description": "Each soak check you ran, positive controls included.",
-							"items": objSchema(map[string]any{
-								"name":   strProp("The check's name, one line."),
-								"query":  strProp("The query you sent."),
-								"result": strProp("What it returned."),
-							}, "name", "query", "result")},
-					},
-					"required": []string{"summary", "checks"}, "additionalProperties": false},
-			}, "item_id", "repo", "preview_tag", "evidence")},
 	}
 }
 
-// officerItemAsk runs one of the three tools for instance, with client c.
+// officerItemAsk runs one of the two tools for instance, with client c.
 func (s *Server) officerItemAsk(ctx context.Context, c officers.Backend, o officers.Officer, instance, name, arguments string) string {
 	var (
 		item officers.ItemID
@@ -129,17 +95,6 @@ func (s *Server) officerItemAsk(ctx context.Context, c officers.Backend, o offic
 		}
 		item, note = p.Item, floodProposedNote
 		body, err = fb.ProposeFloodBlock(ctx, instance, p)
-	case officers.ToolRolloutPromotePropose:
-		p, perr := officers.ParseRolloutPromotion([]byte(orEmptyJSON(arguments)))
-		if perr != nil {
-			return toolErr("%v", perr)
-		}
-		rb, serr := officers.Serves[officers.RolloutPromotionsBackend](c, officers.CapRollout)
-		if serr != nil {
-			return notServedResult(name, serr)
-		}
-		item, note = p.Item, rolloutProposedNote
-		body, err = rb.ProposeRolloutPromotion(ctx, instance, p)
 	default:
 		return toolErr("%s is not an item ask tool", name)
 	}

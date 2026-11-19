@@ -339,6 +339,11 @@ type agentTool struct {
 	// dispatchAgentTool, and the tool itself acts only for the caller's own
 	// officer.
 	officerOnly bool
+	// personChiefOnly: offered to, and callable by, a PERSON's chief alone —
+	// never a team's (the fleet tools: "a team's chief gets none of these tools
+	// in v1"). Enforced in the listing (toolsFor) and again at the call
+	// (dispatchFleetTool).
+	personChiefOnly bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -446,6 +451,16 @@ func (s *Server) agentTools() []agentTool {
 		// reasons; it reads the owner's whole fleet.
 		tools = append(tools, agentTool{def: fleetReportToolDef(), mcp: true, chiefOnly: true})
 	}
+	// Fleet proposals (fleet_actions.go), only with
+	// MUSTER_FLEET_ORCHESTRATION=propose: the chief proposes what to send
+	// its owner's sessions; only the owner's tap on the card sends it.
+	// Chief-only and on MCP, like the focus tools: they reach the owner's
+	// whole fleet.
+	if s.fleetProposeOn() {
+		for _, d := range fleetWriteToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true, personChiefOnly: true})
+		}
+	}
 	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on,
 	// with or without plugins: the chief hands a mirrored session the owner's
 	// own request, a task or (with plugins) a plugin message (chief-only, like
@@ -545,6 +560,7 @@ func (s *Server) agentTools() []agentTool {
 func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	all := s.agentTools()
 	chief, acting, decided := false, false, false
+	team, teamRead := false, false
 	decide := func() {
 		if !decided {
 			// acting: the chief AND on. A chief its owner turned off keeps
@@ -583,6 +599,16 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 		if t.chiefOnly || t.notChief {
 			decide()
 			if (t.chiefOnly && !acting) || (t.notChief && chief) {
+				continue
+			}
+		}
+		if t.personChiefOnly {
+			// A team's chief is not even shown them (an unreadable account
+			// reads as a team's: ownerIsTeam fails closed).
+			if !teamRead {
+				team, teamRead = s.ownerIsTeam(ctx, agentOwnerID(a)), true
+			}
+			if team {
 				continue
 			}
 		}
@@ -1067,6 +1093,9 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolEndSessionPropose(ctx, a, arguments)
 	case fleetReportToolName:
 		return s.toolFleetReport(ctx, a, arguments)
+	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool, sessionAnswerTool:
+		out, _ := s.dispatchFleetTool(ctx, name, arguments)
+		return out
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
 	case routeManyToolName:

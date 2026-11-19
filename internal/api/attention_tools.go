@@ -164,14 +164,15 @@ const (
 // given runtime reads: opencode's names its question tool, Claude Code's its.
 //
 // Each also carries the attention_ask context sentence (askMediaInstruction),
-// and — files: uploads are on — Claude Code's how to show files: an opencode
-// session's attachments are not supported yet (internal/mirrorhost
+// and — files: uploads are on — how to show files: both runtimes' hosts upload
+// a session's attachment paths from its working directory (internal/mirrorhost
 // mcpproxy_attach.go).
 func mirrorAttentionInstructionFor(openCode, files bool) string {
+	tool := claudeCodeQuestionTool
 	if openCode {
-		return mirrorAttentionInstruction(openCodeQuestionTool) + " When you call attention_ask: " + askMediaInstruction
+		tool = openCodeQuestionTool
 	}
-	out := mirrorAttentionInstruction(claudeCodeQuestionTool) + " When you call attention_ask: " + askMediaInstruction
+	out := mirrorAttentionInstruction(tool) + " When you call attention_ask: " + askMediaInstruction
 	if files {
 		out += " To show files (a screenshot, a log), pass attachments: [paths in your working directory]."
 	}

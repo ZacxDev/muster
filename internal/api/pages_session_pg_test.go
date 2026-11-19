@@ -165,7 +165,7 @@ func TestTheSessionButtonOpensTheSessionsCurrentWindow(t *testing.T) {
 		}
 	}
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr()).Body.String()
-	if !strings.Contains(detail, `Made by <a href="/mirror/view?host=workstation&amp;session=main&amp;window=%403" class="text-accent underline" data-page-session>main · window 3 on workstation</a>.`) {
+	if !strings.Contains(detail, `by <a href="/mirror/view?host=workstation&amp;session=main&amp;window=%403" class="inline-flex min-h-[44px] items-center text-accent underline" data-page-session>main · window 3 on workstation</a> · v1`) {
 		t.Errorf("the page's screen lacks the Made by link: %s", pageDetailSection(t, detail))
 	}
 	// The window moved (renumbered, a new tmux id), and another session now
@@ -206,7 +206,7 @@ func TestAnUnresolvableSessionDrawsNoButton(t *testing.T) {
 	if href, doc := f.viewSessionHref(t, id); href != "" || strings.Contains(doc, "data-page-made-by") {
 		t.Errorf("a session that runs nowhere is linked: %q", href)
 	}
-	if detail := f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String(); !strings.Contains(detail, "Made by workstation · build.") ||
+	if detail := f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String(); !strings.Contains(detail, "by workstation · build · v1") ||
 		strings.Contains(pageDetailSection(t, detail), "data-page-session") {
 		t.Errorf("the page's screen without the session: %s", pageDetailSection(t, detail))
 	}
@@ -299,7 +299,7 @@ func TestTheSessionIsNamedAsMusterNamesIt(t *testing.T) {
 			t.Errorf("the owner's view lacks %q", want)
 		}
 	}
-	if detail := pageDetailSection(t, f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String()); !strings.Contains(detail, `data-page-session>Checkout rewrite</a>.`) {
+	if detail := pageDetailSection(t, f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String()); !strings.Contains(detail, `data-page-session>Checkout rewrite</a> · v1`) {
 		t.Errorf("the page's screen: %s", detail)
 	}
 }
@@ -335,7 +335,7 @@ func TestTwoWindowsOfOneSessionNameTheirPagesApart(t *testing.T) {
 	second := pnum(out["page_id"])
 	for id, want := range map[int64]string{first: "main · window 3 on workstation", second: "main · window 4 on workstation"} {
 		detail := pageDetailSection(t, f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String())
-		if !strings.Contains(detail, `data-page-session>`+want+`</a>.`) || strings.Contains(detail, ":3 @") || strings.Contains(detail, ":4 @") {
+		if !strings.Contains(detail, `data-page-session>`+want+`</a> · v1`) || strings.Contains(detail, ":3 @") || strings.Contains(detail, ":4 @") {
 			t.Errorf("page %d's screen does not name its window %q:\n%s", id, want, detail)
 		}
 	}

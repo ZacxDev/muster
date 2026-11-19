@@ -566,7 +566,7 @@ func (s *Server) renderClaimForm(w http.ResponseWriter, code int, token, email, 
 <input id="` + id + `" name="` + name + `" type="` + typ + `" autocomplete="` + auto + `" required value="` + html.EscapeString(value) + `"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Claim the admin account", `<form id="claim-form" method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Claim the admin account", s.loginBrandHTML(context.Background())+`<form id="claim-form" method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Claim the admin account</h1>
 <p class="text-sm text-fg2">Choose the email and password you will sign in to muster with. This link works once.</p>
 `+problemNode(problem)+`

@@ -1,9 +1,9 @@
 import type { Page } from '@playwright/test';
 
-// The Features page's top layer, as a person reads it (operator rule: no
-// variable, Compose profile, flag or command in muster's top layer). The Go
-// scan is internal/plainscan's Setup; this is its browser half, over what the
-// browser actually shows.
+// A screen's top layer, as a person reads it (operator rule: no variable,
+// Compose profile, flag or command in muster's top layer, and no count that
+// does not read as words). The Go scans are internal/plainscan's Setup and
+// Counts; these are their browser halves, over what the browser actually shows.
 
 // setupJargon is internal/plainscan's Setup, the same list: a variable's
 // shape, an assignment, a placeholder, the .env file, a docs path, and the
@@ -17,18 +17,23 @@ const words = ['docker', 'compose', 'kubernetes', 'pods?', 'API', 'URLs?', 'MCP'
 export const setupJargon = new RegExp(
   /\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|=|<[a-z][^>]*>|\.env\b|\bdocs\/|\.md\b/.source + '|\\b(?:' + words.map(anyCase).join('|') + ')\\b',
 );
-// pageWords is the page's visible text and the tooltips, accessible names
-// and placeholders of its elements, never an ⓘ sheet's.
-export const pageWords = (page: Page) =>
-  page.locator('[data-features-page]').evaluate((root) => {
-    const out = [(root as HTMLElement).innerText];
-    root.querySelectorAll('[title], [aria-label], [placeholder]').forEach((el) => {
-      if (el.closest('[data-info-sheet]')) return;
+// clumsyCounts is internal/plainscan's Counts, the same pattern: a "(s)"
+// plural, and a zero said out loud about the Pages screens' things ("0 live
+// link", "0 responses", "0 waiting", "0 replies"). An invariant guard (see
+// the Go comment), not a regression test on its own.
+export const clumsyCounts = /\(s\)|(^|[^\d.,])0 (live links?|links?|responses?|repl(y|ies)|waiting|versions?)\b/;
+// pageWords is the visible text of root (the Features page's, unless named)
+// and the tooltips, accessible names and placeholders of its elements, never
+// an ⓘ sheet's.
+export const pageWords = (page: Page, root = '[data-features-page]') =>
+  page.locator(root).evaluate((el) => {
+    const out = [(el as HTMLElement).innerText];
+    el.querySelectorAll('[title], [aria-label], [placeholder]').forEach((x) => {
+      if (x.closest('[data-info-sheet]')) return;
       for (const a of ['title', 'aria-label', 'placeholder']) {
-        const v = el.getAttribute(a);
+        const v = x.getAttribute(a);
         if (v) out.push(v);
       }
     });
     return out.join('\n');
   });
-

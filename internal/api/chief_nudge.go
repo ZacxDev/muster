@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -348,7 +349,9 @@ type nudgeCandidate struct {
 // minds (sessionMinderOf, session_minder.go): its candidates are that
 // officer's items, so the owner is never nudged twice for one stop.
 func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFlight map[string]bool, p *nudgePass) {
-	if s.sessionMinderOf(octx, o.ID) != "" {
+	// 🔴 ONE JUDGE PER OWNER (stopJudgeOf): a Session minder's or the fleet's
+	// owner is not nudged.
+	if s.stopJudgeOf(octx, o.ID) != judgeChief {
 		return
 	}
 	chief, err := s.chiefAgent(octx)
@@ -979,7 +982,7 @@ func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudg
 // is never the owner's authority, however the transcript was read.
 // mirror.OfficerSpawnPreface opens a host officer instance's first message (its
 // kickoff), muster's text as well.
-var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface, mirror.OfficerSpawnPreface}
+var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface, mirror.OfficerSpawnPreface, fleet.HeaderPrefix}
 
 // injectedBodyReader is the send queue's read of what muster itself queued
 // (sendqueue.PGStore.InjectedBodies); a queue without it adds nothing.

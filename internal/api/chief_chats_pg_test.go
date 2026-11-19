@@ -31,16 +31,27 @@ type routeGateway struct {
 	keys  []string // the session key each turn named
 	lanes []string // its X-Muster-CC-Session header, "" for none (the primary CLI)
 	texts []string
+	// models is each turn's X-Muster-CC-Model header ("" for none): the
+	// --model ccd starts its lane's CLI with (cmd/ccd lanes.go).
+	models []string
 }
 
 func (g *routeGateway) record(ctx context.Context, key, text string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	lane := ""
+	lane, model := "", ""
 	if r, ok := agents.TurnRouteFrom(ctx); ok {
-		lane = r.Header.Get(agents.HeaderCCSession)
+		lane, model = r.Header.Get(agents.HeaderCCSession), r.Header.Get(agents.HeaderCCModel)
 	}
 	g.keys, g.lanes, g.texts = append(g.keys, key), append(g.lanes, lane), append(g.texts, text)
+	g.models = append(g.models, model)
+}
+
+// modelsSeen is each turn's model header, oldest first.
+func (g *routeGateway) modelsSeen() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.models...)
 }
 
 func (g *routeGateway) Chat(ctx context.Context, _ agents.Agent, key, text string, _ func(string)) (string, error) {
@@ -166,7 +177,7 @@ func (f *chatsFixture) sideChat(t *testing.T) agents.ChatSession {
 	}
 	for id, s := range f.sessions(t) {
 		if _, ok := before[id]; !ok {
-			if want := ui.AgentSessionHref(f.chief.Name, id); w.Header().Get("HX-Redirect") != want {
+			if want := ui.AgentSessionHref(f.chief.Name, id) + "&" + ui.ComposerFocusParam + "=1"; w.Header().Get("HX-Redirect") != want {
 				t.Fatalf("the side chat's answer goes to %q, want %q", w.Header().Get("HX-Redirect"), want)
 			}
 			return s
@@ -339,7 +350,7 @@ func TestASideChatIsAClaudeSessionOfItsOwn(t *testing.T) {
 	}
 }
 
-// TestARowActionOnAnotherChatStaysOnTheOpenOne: the Chats tab's row menu acts
+// TestARowActionOnAnotherChatStaysOnTheOpenOne: a chat chip's ⋯ menu acts
 // on a chat that may not be the one on screen. Archive, Unarchive and Make
 // primary of ANOTHER chat (?current= names the open one) answer with the open
 // chat — on the page (HX-Redirect) and in the panel (its body re-rendered on

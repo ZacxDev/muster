@@ -178,6 +178,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	s.registerChiefChatRoutes(mux)
 	// The fleet digest card (fleet_digest.go).
 	s.registerFleetDigestRoutes(mux)
+	s.registerFleetCardRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
@@ -1636,7 +1637,10 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// The chief's chat bar: primary or side chat, its context, the chat
 	// actions (chief_chats.go).
 	if s.isChiefAgent(ctx, a) {
-		view.ChiefChat = chiefChatBarFor(ctx, a, active)
+		view.ChiefChat = s.chiefChatBarFor(ctx, a, active)
+		// The side chat route's answer lands here asking for the cursor in
+		// the message box (answerSideChatOpened).
+		view.FocusComposer = r.URL.Query().Get(ui.ComposerFocusParam) == "1"
 	}
 	// The agent's open attention asks, answerable here (attention_asker.go).
 	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})

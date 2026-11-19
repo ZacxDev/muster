@@ -1062,6 +1062,19 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		return sendqueue.Outcome{Detail: why}
 	}
 	switch {
+	case it.FleetActionID != 0:
+		// A fleet action's card the owner approved: its action gates it
+		// (fleet_actions.go), not a sign-in — fleet proposals still on, the
+		// action still queued on this row, the session still in the stop it
+		// was proposed on. A state that cannot be read goes back to queued.
+		switch why := s.sendQueueFleetGate(ctx, it); why {
+		case "":
+		case SendQueueNudgeWait:
+			return sendqueue.Outcome{Superseded: true, Detail: why}
+		default:
+			return sendqueue.Outcome{Detail: why}
+		}
+		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
 	case it.ChiefForwardDispatch != 0:
 		// A chief's forward into a host-spawned window: its dispatch gates it
 		// (host_forward.go), not a sign-in; the host then checks the window's

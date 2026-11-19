@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// --- HQ-derived asks: task asks, flood-block and rollout proposals ------------
+// --- HQ-derived asks: task asks and flood-block proposals --------------------
 //
-// Three HQ routes where the officer PROPOSES and a person, asked by HQ,
+// Two HQ routes where the officer PROPOSES and a person, asked by HQ,
 // DECIDES; HQ applies the decision with its own credentials. Each takes the
 // officer's own token and the instance holding the item, and each creates an
 // ordinary HQ person ask (civ-hq docs/OFFICERS.md §5h), so — like
@@ -20,19 +20,17 @@ import (
 //
 //	POST /officers/{id}/items/{item}/task-asks           {"instance", "note"?}
 //	POST /officers/{id}/items/{item}/flood-blocks        {"instance", "to"?, "unit_ids", "action", "ttl_hours"}
-//	POST /officers/{id}/items/{item}/rollout-promotions  {"instance", "repo", "preview_tag", "evidence"}
 //
 // The route contract — what HQ derives, its limits and its refusal codes —
-// is HQ's, in HQ's officer docs (docs/OFFICERS.md, "Task asks", "Flood
-// remediation" and "Rollout promotions"). It is not copied here: a copy
-// would drift.
+// is HQ's, in HQ's officer docs (docs/OFFICERS.md, "Task asks" and "Flood
+// remediation"). It is not copied here: a copy would drift. (A rollout
+// officer's evidence attach, rollout_evidence.go, ends no lease and is not
+// one of these.)
 //
 // WHO MAY CALL: muster offers each tool by officer TYPE NAME (ToolOffered:
 // task-reconciler, both pools; web-performance, its JUDGEMENT pool only —
-// operator decision on muster#565; rollout, its ROUTINE pool (and an
-// untiered one) — HQ tiers the sweep, the item that proposes, routine, and
-// the judgement pool only escalates failed results); HQ enforces the
-// type POLICY (task_asks, flood_actuator, rollout_actuator) and the lease. muster does NOT check the lease:
+// operator decision on muster#565); HQ enforces the type POLICY
+// (task_asks, flood_actuator) and the lease. muster does NOT check the lease:
 // officer_ask_person does not either, and HQ's check is the authoritative one
 // (409 lease_lost) — a flood proposal is also allowed on a WAITING item,
 // which a local "holds a live claim" check would wrongly refuse.
@@ -44,7 +42,7 @@ import (
 // refused before HQ is called, never silently dropped (HQ's decoder would
 // refuse it too, but only if muster forwarded it).
 
-// The three tools.
+// The two tools.
 const (
 	// ToolTaskAsk is a task-reconciler officer's: ask HQ to ask a finding's
 	// task owner to approve one action (HQ picks the person and the options).
@@ -53,28 +51,6 @@ const (
 	// Cloudflare managed challenge on a bot surge's flood units, for a person
 	// to approve.
 	ToolFloodBlockPropose = "officer_flood_block_propose"
-	// ToolRolloutPromotePropose is a rollout officer's: propose promoting one
-	// soaked preview tag to production, for a person to approve; HQ — never
-	// the officer — dispatches the promotion with its own credentials.
-	ToolRolloutPromotePropose = "officer_rollout_promote_propose"
-)
-
-// RolloutOfficerType is the officer type whose instances may propose
-// rollout promotions.
-const RolloutOfficerType = "rollout"
-
-// RolloutNotConfiguredCode is the rollout route's 503 code for an HQ whose
-// rollout credential is unset: a FINAL refusal (a deployment's decision, not
-// an outage), as FloodNotConfiguredCode is the flood route's.
-const RolloutNotConfiguredCode = "rollout_actuator_not_configured"
-
-// rolloutDecisionCodes are the rollout route's 5xx codes that are decisions;
-// rolloutRetryableCodes the ones it documents as transient. HQ's 502
-// github_unavailable writes nothing (HQ could not read GitHub, so it decided
-// nothing), so the same call may be made again — as the merge-asks route's.
-var (
-	rolloutDecisionCodes  = []string{RolloutNotConfiguredCode}
-	rolloutRetryableCodes = []string{"github_unavailable"}
 )
 
 // WebPerformanceOfficerType is the officer type whose instances may propose
@@ -215,62 +191,4 @@ func (c *Client) ProposeFloodBlock(ctx context.Context, instance string, p Flood
 		return nil, fmt.Errorf("officers: encode request: %w", err)
 	}
 	return c.doCoded(ctx, http.MethodPost, c.itemPath(p.Item, "flood-blocks"), "application/json", body, floodDecisionCodes, nil)
-}
-
-// RolloutPromotion is officer_rollout_promote_propose's arguments: {item_id,
-// repo, preview_tag, evidence}.
-type RolloutPromotion struct {
-	Item       ItemID
-	Repo       string
-	PreviewTag string
-	// Evidence is the evidence object exactly as the instance gave it. muster
-	// forwards it whole, so nothing in it is ever silently dropped; HQ's
-	// decoder refuses an unknown or ill-typed field inside it (400 invalid).
-	// The tool's SCHEMA (internal/api itemAskToolDefs) mirrors HQ's §5r
-	// evidence shape and must change with it.
-	Evidence json.RawMessage
-}
-
-// ParseRolloutPromotion decodes officer_rollout_promote_propose's arguments
-// strictly. It checks TYPES only: the values (which repository, the tag's
-// form, the evidence's limits) are HQ's to refuse.
-func ParseRolloutPromotion(raw []byte) (RolloutPromotion, error) {
-	obj, err := strictObject(raw, ToolRolloutPromotePropose, "{item_id, repo, preview_tag, evidence}", "item_id", "repo", "preview_tag", "evidence")
-	if err != nil {
-		return RolloutPromotion{}, err
-	}
-	item, err := itemArg(obj)
-	if err != nil {
-		return RolloutPromotion{}, err
-	}
-	p := RolloutPromotion{Item: item}
-	if json.Unmarshal(obj["repo"], &p.Repo) != nil || strings.TrimSpace(p.Repo) == "" {
-		return RolloutPromotion{}, fmt.Errorf("repo is required: the repository as owner/name (a string)")
-	}
-	if json.Unmarshal(obj["preview_tag"], &p.PreviewTag) != nil || strings.TrimSpace(p.PreviewTag) == "" {
-		return RolloutPromotion{}, fmt.Errorf("preview_tag is required: the canary's preview tag (a string)")
-	}
-	ev := bytes.TrimSpace(obj["evidence"])
-	var probe map[string]json.RawMessage
-	if len(ev) == 0 || ev[0] != '{' || json.Unmarshal(ev, &probe) != nil {
-		return RolloutPromotion{}, fmt.Errorf("evidence is required: one JSON object {summary, checks: [{name, query, result}]}")
-	}
-	p.Evidence = append(json.RawMessage(nil), ev...)
-	return p, nil
-}
-
-// ProposeRolloutPromotion is POST …/items/{item}/rollout-promotions, HQ's
-// JSON passed through; a 503 rollout_actuator_not_configured is an *HQError
-// (final), a 502 github_unavailable a *RetryableError.
-func (c *Client) ProposeRolloutPromotion(ctx context.Context, instance string, p RolloutPromotion) ([]byte, error) {
-	body, err := json.Marshal(struct {
-		Instance   string          `json:"instance"`
-		Repo       string          `json:"repo"`
-		PreviewTag string          `json:"preview_tag"`
-		Evidence   json.RawMessage `json:"evidence"`
-	}{instance, p.Repo, p.PreviewTag, p.Evidence})
-	if err != nil {
-		return nil, fmt.Errorf("officers: encode request: %w", err)
-	}
-	return c.doCoded(ctx, http.MethodPost, c.itemPath(p.Item, "rollout-promotions"), "application/json", body, rolloutDecisionCodes, rolloutRetryableCodes)
 }
