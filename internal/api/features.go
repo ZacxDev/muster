@@ -10,6 +10,7 @@ import (
 	g "maragu.dev/gomponents"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -31,7 +32,9 @@ import (
 //     call featureOff) and a call to it explains (mcpDisabledTool); each door's
 //     muster_help lists the features its own tools need that are off.
 //   - the typed 404 a route answers when its feature is off
-//     (writeFeatureDisabled), which the CLI reports as "feature X is disabled".
+//     (writeFeatureDisabled), which the CLI reports as "feature X is disabled";
+//     a person who opens such a route gets the plain page (renderFeatureOff):
+//     the feature's plain name, and the setup behind an admin's ⓘ only.
 //   - the GATES that draw a control: dictatePath, uploadPath and shellFeatures
 //     (the Connectors tab, the push button, the dispatch "+"), through
 //     featureOff. The Set can only take a feature away there: a gate still
@@ -111,29 +114,107 @@ func (s *Server) featureOff(id string) bool {
 
 // writeFeatureDisabled answers a request for a route whose feature is off:
 // 404, with a body that says which feature and how to turn it on — JSON for a
-// client, the notice page for a person who typed the address.
+// client, the plain notice page (renderFeatureOff) for a person who typed the
+// address.
 //
 // 🔴 404, NOT 409: every one of these routes answered 404 while its feature was
 // off before the registry existed, and a caller that branches on the status
 // keeps working. What changes is that the body is now typed, so the CLI can
 // tell "this server has the route and the feature is off" from "this server
 // predates the route" (a bare mux 404, text/plain).
+//
+// 🔴 THE JSON IS THE MACHINES', THE PAGE IS A PERSON'S. The JSON body keeps its
+// setup text (`enable`, `message`, `reason`): the CLI prints it
+// (cmd/muster featureDisabled, which sends Accept: application/json) and the
+// MCP doors say the same through mcpDisabledTool. The page says none of it in
+// its top layer — see renderFeatureOff.
+//
+// WHO GETS WHICH, for a request that looks like a page load:
+//   - a browser session (Via session): the page;
+//   - NO caller yet — a gate that runs before any credential is examined
+//     (requirePluginsOn, requirePluginViewersOn): requireSession decides, so
+//     a signed-in browser gets the page and a signed-out one is sent to sign
+//     in (the page differs by reader, an admin's ⓘ, so it needs one);
+//   - a caller a token admitted (an API or hook token): the JSON, unchanged —
+//     never a redirect to a sign-in form a token cannot fill
+//     (TestATokenCallerGetsTheJSONNeverASignInRedirect).
 func (s *Server) writeFeatureDisabled(w http.ResponseWriter, r *http.Request, id string) {
+	if isDocumentNavigation(r) {
+		p, ok := authz.From(r.Context())
+		switch {
+		case !ok:
+			s.requireSession(func(w http.ResponseWriter, r *http.Request) { s.renderFeatureOff(w, r, id) })(w, r)
+			return
+		case p.Via == authz.ViaSession:
+			s.renderFeatureOff(w, r, id)
+			return
+		}
+	}
 	body := map[string]any{"error": FeatureDisabledError, "feature": id, "docs": features.DocsPage + "#" + id}
-	msg := "disabled: " + id + " (" + features.DocsPage + "#" + id + ")"
-	name := id
 	if f, ok := s.feature(id); ok {
-		msg, name = f.DisabledMessage(), f.Name
+		msg := f.DisabledMessage()
 		body["name"], body["state"], body["enable"], body["message"] = f.Name, f.State, f.EnableHint(), msg
 		if f.Reason != "" {
 			body["reason"] = f.Reason
 		}
 	}
-	if isDocumentNavigation(r) {
-		s.renderNotice(w, r, http.StatusNotFound, name+" is off on this server", msg)
-		return
-	}
 	s.writeJSON(w, http.StatusNotFound, body)
+}
+
+// The turned-off notice's plain words (its tests pin them as literals).
+const (
+	// FeatureOffNoticeText is the notice's line under the feature's name.
+	FeatureOffNoticeText = "Turned off on this server."
+	// FeatureNotSetUpNoticeText is that line for a misconfigured feature.
+	FeatureNotSetUpNoticeText = "Not fully set up on this server."
+	// FeatureOffUnknownName names a feature the registry does not list. A
+	// real server's catalog lists every gated feature; this is the fallback
+	// for a server handed no registry (tests), which draws no next step.
+	FeatureOffUnknownName = "This feature"
+)
+
+// renderFeatureOff is the page a person gets for a route whose feature is
+// off: the feature's plain name (the catalog's PlainName, as the Features page
+// shows it), that it is turned off, and the next step.
+//
+// 🔴 THE SETUP IS AN ADMIN'S, AND ABSENT — NOT HIDDEN — FOR ANYONE ELSE (the
+// Features page's rule, featureSheet). An admin's next step is the ⓘ, which is
+// the Features page row's own sheet: the exact .env line(s) as its code, with
+// Copy, and the docs link. A member is told to ask their admin (the Features
+// page's own words, featureAskAdmin), and the HTML carries no variable,
+// `.env`, docs path or ⓘ at all.
+//
+// The reader is always signed in here (writeFeatureDisabled), so the page is
+// always inside the app, with the nav.
+func (s *Server) renderFeatureOff(w http.ResponseWriter, r *http.Request, id string) {
+	e := html.EscapeString
+	admin := authz.IsAdmin(r.Context())
+	f, known := s.feature(id)
+	name, line, next, sheet := FeatureOffUnknownName, FeatureOffNoticeText, "", ""
+	if known {
+		name = f.ShownName()
+		if f.State == features.Misconfigured {
+			line = FeatureNotSetUpNoticeText
+		}
+		switch {
+		case !admin:
+			next = featureAskAdmin(f.State)
+		case f.State == features.Misconfigured:
+			next, sheet = FeatureNeedsSetupText, ui.InfoSheetHTML(featureSheet(f, name, true))
+		default:
+			next, sheet = FeatureOpenSheetText, ui.InfoSheetHTML(featureSheet(f, name, true))
+		}
+	}
+	inner := `<section data-feature-off="` + e(id) + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<div class="flex items-center gap-2"><h1 class="min-w-0 flex-1 text-balance text-base font-semibold text-fg">` + e(name) + `</h1>` + sheet + `</div>
+<p data-feature-off-state class="text-sm text-fg2">` + line + `</p>`
+	if next != "" {
+		inner += `
+<p data-feature-off-next class="text-sm text-fg">` + next + `</p>`
+	}
+	inner += `
+</section>`
+	s.writeNavDocument(w, r, http.StatusNotFound, name, "", false, inner)
 }
 
 // --- the MCP doors -------------------------------------------------------------
@@ -272,6 +353,9 @@ const (
 	// FeatureAskAdminText is a member's line under a feature that is not on,
 	// and what its sheet says.
 	FeatureAskAdminText = "Ask your admin to turn this on."
+	// FeatureAskAdminFinishText is that line for a feature that is on but
+	// not fully set up: there is nothing to turn on, only setup to finish.
+	FeatureAskAdminFinishText = "Ask your admin to finish setting it up."
 	// FeatureOpenSheetText is an admin's line under a feature that is off.
 	FeatureOpenSheetText = "To turn it on, open its ⓘ."
 	// FeatureNeedsSetupText is an admin's line under a misconfigured feature.
@@ -305,6 +389,16 @@ func (s *Server) handleFeaturesPage(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a></div>`)
 	b.WriteString(`<script>` + ui.FeaturesSheetJS + `</script>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Features", ui.NavFeatures, false, b.String())
+}
+
+// featureAskAdmin is a member's next step for a feature in state st that is
+// not on: ONE spelling, which the Features page row and the turned-off page
+// both draw.
+func featureAskAdmin(st features.State) string {
+	if st == features.Misconfigured {
+		return FeatureAskAdminFinishText
+	}
+	return FeatureAskAdminText
 }
 
 // needSetup is the counts line's verb for n misconfigured features.
@@ -361,7 +455,7 @@ func featureRow(f features.Feature, admin bool) string {
 	case f.State == features.Off && f.Replaced != "":
 		b.WriteString(`<p data-feature-replaced class="text-sm text-fg">` + e(f.Replaced) + `</p>`)
 	case !admin:
-		b.WriteString(`<p data-feature-ask class="text-sm text-fg">` + FeatureAskAdminText + `</p>`)
+		b.WriteString(`<p data-feature-ask class="text-sm text-fg">` + featureAskAdmin(f.State) + `</p>`)
 	case f.State == features.Misconfigured:
 		b.WriteString(`<p data-feature-next class="text-sm text-fg">` + FeatureNeedsSetupText + `</p>`)
 	default:
@@ -395,7 +489,7 @@ func featureSheet(f features.Feature, name string, admin bool) ui.InfoSheet {
 		case on:
 			sh.Lead, sh.WithheldText = name+" is on.", "Ask your admin if it needs changing."
 		case f.State == features.Misconfigured:
-			sh.Lead, sh.WithheldText = name+" is not fully set up on this server.", FeatureAskAdminText
+			sh.Lead, sh.WithheldText = name+" is not fully set up on this server.", FeatureAskAdminFinishText
 		default:
 			sh.Lead, sh.WithheldText = name+" is off on this server.", FeatureAskAdminText
 		}
