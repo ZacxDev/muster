@@ -1805,6 +1805,15 @@ A `muster-mirror@<tenant>` unit also needs `-agent-spawn-tenant-server`
 ([above](#starting-agents-on-a-tenants-tmux-server)). To turn it off, drop either and
 restart: a window already running keeps running, with its worktree.
 
+## Scheduled jobs (`-jobs-file`)
+
+A host can run fixed commands on a cron and post their output to a page:
+**scheduled host jobs**, declared in the host's own jobs file and never by
+muster, which only fires them, records their runs and raises an Attention
+item when one fails. They need neither `-interactive` nor `-agent-spawn`, and
+declaring them does not step up the host's mirror door. The whole guide is
+[host-jobs.md](host-jobs.md).
+
 ## Several muster instances
 
 One `muster-mirror` mirrors its host's sessions to **one** muster: the

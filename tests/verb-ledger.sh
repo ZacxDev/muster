@@ -75,6 +75,9 @@ flow cancel
 flow enqueue
 flow ls
 flow status
+job list
+job run
+job runs
 nudge next
 officer create
 officer def delete
@@ -133,7 +136,8 @@ whoami"
 # 47 -> 52: `officer ls|create|pause|resume|delete` (officers declared in the
 #   database, migration 0136; no restart).
 # 52 -> 54: `asks log` and `asks summary` (reading the ask log, docs/asks.md).
-WANT_COUNT=54
+# 54 -> 57: `job list|runs|run` (scheduled host jobs, docs/host-jobs.md).
+WANT_COUNT=57
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

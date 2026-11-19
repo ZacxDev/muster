@@ -235,7 +235,11 @@ type Hub struct {
 	// statusNotify is called with a host's owner whenever any of its agent
 	// windows' status changes (SetStatusNotify): the ask log's turn-end hook.
 	statusNotify func(owner int64)
-	now          func() time.Time
+	// jobsNotify and jobResultNotify are scheduled host jobs' inputs
+	// (hostjobs.go): each jobs message and each job-result.
+	jobsNotify      func(owner int64, host string, r HostJobsReport)
+	jobResultNotify func(owner int64, host string, r JobResult)
+	now             func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.
 	maxHosts int
 	// debounce coalesces change nudges (notifyDebounce; a test shortens it), and
@@ -527,6 +531,12 @@ type hostConn struct {
 	// spawnReady is the host's spawn readiness (spawnready.go), cleaned; nil
 	// from a host that sent none (an older or read-only muster-mirror).
 	spawnReady *SpawnReadiness
+	// jobsReport: the host sent a jobs message on this connection
+	// (hostjobs.go); jobs is its declared list then, jobsError why its jobs
+	// file could not be read.
+	jobsReport bool
+	jobs       []HostJob
+	jobsError  string
 	next       uint32
 }
 
@@ -1190,6 +1200,14 @@ func (h *Hub) ServeConnMarking(ctx context.Context, owner int64, host string, ws
 			case TypeAgentClonesList:
 				if hc.version >= 2 {
 					h.agentClonesListed(hc, m)
+				}
+			case TypeJobs:
+				if hc.version >= 2 {
+					h.jobsReported(hc, m)
+				}
+			case TypeJobResult:
+				if hc.version >= 2 {
+					h.jobResulted(hc, m)
 				}
 			case TypeSpawnReady:
 				// A changed readiness, from a host that sent one in its hello

@@ -160,6 +160,15 @@ type Config struct {
 	// AgentSpawn is -agent-spawn and its sibling flags (agentspawn.go): the
 	// chief starts agents on this host. OFF by default.
 	AgentSpawn AgentSpawnConfig
+	// Jobs are this host's scheduled jobs (hostjobs.go): -jobs-file, read by
+	// LoadJobs at start. muster triggers them by name; this host runs only
+	// these. JobsError is why the file could not be read ("" for none): it is
+	// reported to muster in place of the list.
+	Jobs      []JobSpec
+	JobsError string
+	// JobExec replaces the real command runner (runJobCommand). FOR TESTS
+	// ONLY; no flag sets it.
+	JobExec JobExec
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -223,6 +232,9 @@ type Client struct {
 	// spawner is this host's agent-spawn state (agentspawn.go): it outlives
 	// each connection.
 	spawner agentSpawner
+	// jobs is this host's scheduled-job state (hostjobs.go): it outlives each
+	// connection.
+	jobs jobRunner
 
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
@@ -545,6 +557,13 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			return err
 		}
 	}
+	// The declared jobs (hostjobs.go), every connection, an empty list too:
+	// how muster learns this host runs jobs at all, and which.
+	if version >= 2 {
+		if err := conn.sendJobs(); err != nil {
+			return err
+		}
+	}
 	if beforeRefreshHook != nil {
 		beforeRefreshHook(conn)
 	}
@@ -636,6 +655,12 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeAgentClones:
 				if conn.version >= 2 {
 					go traced(m, conn.agentClones)
+				}
+			case mirror.TypeJobRun:
+				// The RAW frame, not m: the host's checks refuse a field
+				// a decoded Msg would have silently dropped (hostjobs.go).
+				if conn.version >= 2 {
+					conn.jobRun(data)
 				}
 			}
 		}

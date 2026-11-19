@@ -38,6 +38,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
+	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
@@ -416,6 +417,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/officers/defs/{officer}/items":                          classAdmin,
 	"POST /api/officers/defs/{officer}/items/{id}/resolve":             classAdmin,
 	"GET /api/officers/defs/{officer}/schedules":                       classAdmin,
+	// Scheduled host jobs (hostjobs.go): requireArmedHookToken, as the caller.
+	"GET /api/host-jobs":                                               classAdmin,
+	"GET /api/host-jobs/{name}/runs":                                   classAdmin,
+	"POST /api/host-jobs/{name}/run":                                   classAdmin,
 	"GET /api/officers/defs/{officer}/usage":                           classAdmin,
 	"PUT /api/officers/defs/{officer}/schedules/{name}":                classAdmin,
 	"DELETE /api/officers/defs/{officer}/schedules/{name}":             classAdmin,
@@ -1355,7 +1360,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		opToken, "", time.Now().Add(time.Hour))
 	must(err, "op invite")
-	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
+	// A scheduled host job of A's (0157), as A's host would have reported it:
+	// the object GET /api/host-jobs/{name}/runs and its run route name.
+	aHostJob := "isojob-" + w.suffix
+	must(hostjobs.NewPG(pool).Report(ua, w.canary+"-host", []mirror.HostJob{{Name: aHostJob, Cron: "0 6 * * *",
+		Command: []string{"/usr/bin/env", w.canary}}}, time.Now()), "a host job")
+	w.objA = isoObjs{hostJob: aHostJob, ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
@@ -1366,7 +1376,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
-	w.ghost = isoObjs{team: ghostID, spawn: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+	w.ghost = isoObjs{hostJob: "ghostjob", team: ghostID, spawn: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
@@ -1463,7 +1473,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
 	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
-	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
+	srv.EnableHostJobs(hostjobs.NewPG(pool))
+	w.router =&isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	// The admin pages need GoTrue and the account store; the session tier stays
 	// password mode (sessionUserOverride below).
@@ -1740,6 +1751,8 @@ type isoObjs struct {
 	// A host officer spawn of A's (0125), its host the canary (phase 3's
 	// lend routes).
 	spawn int64
+	// hostJob is the name of A's scheduled host job (0157).
+	hostJob string
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1870,6 +1883,9 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	}
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
+	}
+	if strings.HasPrefix(path, "/api/host-jobs/{name}") {
+		name = o.hostJob
 	}
 	if strings.Contains(path, "credentials/claude/{name}") {
 		name = o.ccAccount

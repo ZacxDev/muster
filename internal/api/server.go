@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -446,6 +447,11 @@ type Server struct {
 	// officerStore is the built-in officer backend's store (EnableOfficerStore);
 	// nil while it is off.
 	officerStore *builtin.Store
+	// hostJobs is scheduled host jobs' store (EnableHostJobs, hostjobs.go);
+	// nil while they are off. hostJobsNow is its clock (nil: time.Now; a test
+	// sets it).
+	hostJobs    *hostjobs.Store
+	hostJobsNow func() time.Time
 	// spawnLender is the host spawns' team lending (EnableHostSpawnLending,
 	// officer_spawn_share.go); nil with no database.
 	spawnLender officers.HostSpawnLender
@@ -925,6 +931,8 @@ func (s *Server) registerAll(mux Mux) {
 	// The built-in officer store's admin API (officer_admin.go): 404 while it is off.
 	s.registerOfficerAdminRoutes(mux)
 	s.registerDeclaredOfficerRoutes(mux) // officer_declared.go
+	// Scheduled host jobs (hostjobs.go): 404 while they are off.
+	s.registerHostJobRoutes(mux)
 	s.registerMirrorRoutes(mux)
 	// Suggested replies (suggest.go): the composer's set, its counts and the
 	// per-user toggle.

@@ -52,6 +52,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; for the pull-request groups, session routing + PR mail routing and the GitHub App | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
+| [Scheduled host jobs](#scheduled-host-jobs) | a fixed command a mirrored machine runs on a cron, its output a page, its failures in Attention | pages, a `muster-mirror` jobs file on the machine | off (no jobs declared) | per machine |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
@@ -561,6 +562,22 @@ data, and you are notified. [pages.md](pages.md).
   time). You can revoke any link.
 - **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
   `shareable pages: OFF — MUSTER_PAGES is unset`.
+
+### Scheduled host jobs
+
+A fixed command one of your machines runs on a cron (UTC), its stdout written
+to a page when it changed, each run recorded and each failure an Attention
+item. The jobs are declared on the machine, in its muster-mirror jobs file;
+muster fires, records and alerts, and can never add or change a command.
+[host-jobs.md](host-jobs.md).
+
+- **Needs:** the core's database and mirror, [pages](#pages), and a current
+  `muster-mirror` on the machine.
+- **Turn it on:** write the machine's jobs file and point `muster-mirror` at it
+  (`-jobs-file` / `MUSTER_MIRROR_JOBS_FILE`, [configuration.md](configuration.md)),
+  then restart it. A team host's jobs are refused.
+- **Check:** `muster job list` lists the machine's jobs; `muster job run <name>`
+  runs one, and `muster job runs <name>` shows how it ended.
 
 ### Branding
 

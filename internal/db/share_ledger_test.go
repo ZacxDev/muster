@@ -81,6 +81,9 @@ var personalOwned = []string{
 	// 0156: when a person last looked at an officer's page; each member of
 	// a team looks on their own.
 	"officer_seen",
+	// 0157: scheduled host jobs and their runs; a job writes one of its
+	// owner's pages, which are personal, so a team host's jobs are refused.
+	"host_jobs", "host_job_runs",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

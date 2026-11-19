@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message, device, page, link, contact int64
+	var note, agent, session, plugin, message, device, page, link, contact, hostJob int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -122,6 +122,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chief_session_llm_reservations (session_id, amount_usd, expires_at) VALUES ($1, 0.01, now() + interval '1 minute')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO fleet_owner_marks (looked_at) VALUES (now())`, func() []any { return nil }, nil},
 		{`INSERT INTO officer_seen (officer_owner, officer, seen_at) VALUES (1, 'draft:example-' || lower($1), now())`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO host_jobs (host, name, cron, command, timeout_s, reported_at) VALUES ('host-a', 'smoke-' || lower($1), '0 6 * * *', '{/bin/true}', 60, now()) RETURNING id`, func() []any { return []any{tag} }, &hostJob},
+		{`INSERT INTO host_job_runs (job_id, host, job, trigger, status, timeout_s, fired_at) VALUES ($1, 'host-a', 'smoke', 'cron', 'ok', 60, now())`, func() []any { return []any{hostJob} }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
