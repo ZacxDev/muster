@@ -67,9 +67,21 @@ the runner stops heartbeating and the 2-minute lease runs out.
 
 | door | who | routes |
 |---|---|---|
-| The **page** | you, signed in | `/flows`: enqueue and cancel jobs, mint and revoke runner tokens, approve agents' requests |
+| The **page** | you, signed in | `/flows` (titled *Browser tasks*): cancel jobs and approve agents' requests; an **admin** also runs a task by hand and connects (mints) or disconnects (revokes) a computer's runner token |
 | The **API** | your personal `mst_` token | `POST /api/flows/jobs`, `GET /api/flows/jobs`, `GET /api/flows/jobs/{id}`, `POST /api/flows/jobs/{id}/cancel`. The shared hook and service secrets are refused. The CLI's `muster flow enqueue \| ls \| status \| cancel` uses these. |
 | The **runner** | an `mfr_` runner token | `POST /runner/flows/claim` (a 25-second long-poll, which answers 204 when there is nothing to do), `POST /runner/flows/{id}/heartbeat`, `POST /runner/flows/{id}/result` |
+
+Setting up is an admin's. `POST /flows/jobs`, `POST /flows/runner-tokens` and
+`POST /flows/runner-tokens/{id}/revoke` refuse a member (403), and a member's
+`/flows` says "Ask your admin to set up browser tasks." in place of the run form
+and the connected browsers. A member still sees, and decides, their own agents'
+requests, and sees and cancels their own jobs. The JSON API is unchanged: a
+member's personal token can still enqueue.
+
+The page names each field plainly (*Message*, *Computer*, *Browser*); the
+parameter keys and their exact descriptions are in the form's ⓘ, and a refused
+form leads with a plain sentence, with the API's exact message in the ⓘ beside
+it. The API's and the runner's messages are unchanged.
 
 A runner token is minted on `/flows` for one owner and one host. It acts as its
 owner and is confined to that host. The runner sends it as

@@ -488,11 +488,14 @@ var isolationClasses = map[string]routeClass{
 	// Browser flows (0012). The page and its forms are the session tier; the
 	// JSON API is a personal token only; the runner door is a runner token
 	// only. Each names A's job (or A's runner token) by id.
-	"GET /flows":                            classList,
-	"POST /flows/jobs":                      classList,
-	"POST /flows/runner-tokens":             classList,
-	"POST /flows/jobs/{id}/cancel":          classParam,
-	"POST /flows/runner-tokens/{id}/revoke": classParam,
+	"GET /flows":                   classList,
+	"POST /flows/jobs/{id}/cancel": classParam,
+	// Setting browser flows up is an admin's (requireAdminRole): running a
+	// task by hand and connecting or disconnecting a computer's browser. A
+	// member's /flows says to ask their admin.
+	"POST /flows/jobs":                      classAdminOnly,
+	"POST /flows/runner-tokens":             classAdminOnly,
+	"POST /flows/runner-tokens/{id}/revoke": classAdminOnly,
 	// An agent's request is decided by its owner only (PR 4).
 	"POST /flows/requests/{id}/approve": classParam,
 	"POST /flows/requests/{id}/deny":    classParam,
