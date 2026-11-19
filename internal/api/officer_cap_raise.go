@@ -90,8 +90,19 @@ func (s *Server) handleOfficerRaiseCap(w http.ResponseWriter, r *http.Request) {
 	}
 	o, running := s.runningOfficer(sc.Owner, id)
 	if !running {
+		// The officer page's own refusal for an officer that does not run
+		// (controlTarget's rule): none of the caller's is 404, while one of
+		// theirs that is only a def is its own 409 — never the same answer.
 		if _, err := s.officerStore.GetDeclared(ctx, sc.Owner, id); err != nil {
-			s.renderNotice(w, r, http.StatusNotFound, "No such officer", officerNotFound)
+			code, msg := officerPageRefusal(err)
+			if code == http.StatusInternalServerError {
+				s.logger.Printf("officers: read officer %s of %d: %v", id, sc.Owner, err)
+			}
+			title := "It has no budget to raise"
+			if code == http.StatusNotFound {
+				title = "No such officer"
+			}
+			s.renderNotice(w, r, code, title, msg)
 			return
 		}
 		s.renderOfficerDetail(w, r, sc, id, http.StatusConflict, "It is not running, so it has no budget to raise.")
