@@ -344,7 +344,15 @@ func runJobCommand(ctx context.Context, spec JobSpec) JobOutcome {
 	cmd := exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
 	cmd.Dir = spec.Dir
 	if cmd.Dir == "" {
-		cmd.Dir, _ = os.UserHomeDir()
+		// The home directory, when it is one: a service whose HOME names
+		// nothing (a build sandbox's /homeless-shelter) runs the job in this
+		// process's own directory instead of failing every start with
+		// "no such file or directory" for a program that is there.
+		if h, err := os.UserHomeDir(); err == nil {
+			if fi, err := os.Stat(h); err == nil && fi.IsDir() {
+				cmd.Dir = h
+			}
+		}
 	}
 	stdout := &capBuffer{n: mirror.MaxJobStdout}
 	stderr := &tailBuffer{n: mirror.MaxJobStderrTail}
