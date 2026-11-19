@@ -495,10 +495,12 @@ var isolationClasses = map[string]routeClass{
 	// JSON API is a personal token only; the runner door is a runner token
 	// only. Each names A's job (or A's runner token) by id.
 	"GET /flows":                            classList,
-	"POST /flows/jobs":                      classList,
 	"POST /flows/runner-tokens":             classList,
 	"POST /flows/jobs/{id}/cancel":          classParam,
 	"POST /flows/runner-tokens/{id}/revoke": classParam,
+	// Running a task by hand from the page is an admin's (requireAdminRole,
+	// operator decision 2026-11-18); connecting one's own browser is not.
+	"POST /flows/jobs": classAdminOnly,
 	// An agent's request is decided by its owner only (PR 4).
 	"POST /flows/requests/{id}/approve": classParam,
 	"POST /flows/requests/{id}/deny":    classParam,

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/plainscan"
 )
 
 // TestTheCatalogueIsExactlyMuse pins the closed set. Adding a flow is a
@@ -197,5 +199,90 @@ func TestValidateRefusesMalformedDispatchParams(t *testing.T) {
 				t.Fatalf("Validate = %v; want the refusal %q", err, m)
 			}
 		})
+	}
+}
+
+// TestEveryFlowAndParamHasAPlainName: the /flows form names a flow by its
+// PlainName and a parameter by its Label, so each must be set and plain (the
+// shared plain scan); the technical Help stays for the ⓘ.
+func TestEveryFlowAndParamHasAPlainName(t *testing.T) {
+	if plainscan.Jargon("the API token") == "" {
+		t.Fatal("CONTROL: the plain scan flags nothing")
+	}
+	for _, f := range Catalogue() {
+		if f.PlainName == "" || plainscan.Jargon(f.PlainName) != "" || strings.Contains(f.PlainName, f.Name) {
+			t.Errorf("flow %s: PlainName %q is empty, not plain, or its machine name", f.Name, f.PlainName)
+		}
+		for _, p := range f.Params {
+			if p.Label == "" || plainscan.Jargon(p.Label) != "" || strings.EqualFold(p.Label, p.Name) {
+				t.Errorf("flow %s param %s: Label %q is empty, not plain, or its raw key", f.Name, p.Name, p.Label)
+			}
+			if p.Help == "" {
+				t.Errorf("flow %s param %s: no Help for the ⓘ", f.Name, p.Name)
+			}
+		}
+	}
+}
+
+// TestValidationRefusalsKeepTheirMessagesAndNameTheirProblem: the page
+// translates a refusal by its Problem; the API answers its message verbatim,
+// and scripts and `muster flow` read that, so the message must not move.
+// (The messages are an INVARIANT guard: this change never altered them.)
+func TestValidationRefusalsKeepTheirMessagesAndNameTheirProblem(t *testing.T) {
+	ok := func() Request {
+		return Request{Flow: "muse.send", Host: "laptop", Instance: "personal", Params: map[string]string{"text": "hi"}}
+	}
+	cases := []struct {
+		name    string
+		mut     func(r *Request)
+		problem Problem
+		param   string
+		msg     string
+	}{
+		{"empty host", func(r *Request) { r.Host = "" }, ProblemHost, "",
+			`invalid flow request: host "" is not a host label (lowercase letters, digits and '-')`},
+		{"bad instance", func(r *Request) { r.Instance = "a/b" }, ProblemInstance, "",
+			`invalid flow request: instance "a/b" is not an instance label (lowercase letters, digits, '_' and '-')`},
+		{"unknown flow", func(r *Request) { r.Flow = "browser.nav" }, ProblemFlow, "",
+			`invalid flow request: unknown flow "browser.nav" (the catalogue: muse.poll, muse.send)`},
+		{"ttl", func(r *Request) { r.TTL = 30 * time.Second }, ProblemTTL, "",
+			`invalid flow request: ttl 30s is outside 1m0s..24h0m0s`},
+		{"missing text", func(r *Request) { delete(r.Params, "text") }, ProblemMissing, "text",
+			`invalid flow request: flow muse.send needs parameter "text"`},
+		{"unknown param", func(r *Request) { r.Params["url"] = "x" }, ProblemValue, "url",
+			`invalid flow request: flow muse.send takes no parameter "url"`},
+		{"bad task", func(r *Request) { r.Params["task"] = "0" }, ProblemValue, "task",
+			`invalid flow request: parameter "task" has a value this flow does not accept`},
+		{"wait over", func(r *Request) {
+			r.Params["session"] = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+			r.Params["wait"] = "3601"
+		}, ProblemValue, "wait", `invalid flow request: parameter "wait" is 3601; the limit is 3600`},
+		{"thread and session", func(r *Request) {
+			r.Params["thread"] = "Side chat"
+			r.Params["session"] = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+		}, ProblemThreadAndSession, "",
+			`invalid flow request: parameters "session" and "thread" are exclusive; name the thread by one of them`},
+		{"marker alone", func(r *Request) { r.Params["marker"] = "md-0f9e8d" }, ProblemMarkerNeedsSession, "",
+			`invalid flow request: parameter "marker" needs "session" (a dispatch targets its thread by uuid)`},
+	}
+	r0 := ok()
+	if _, err := Validate(&r0); err != nil {
+		t.Fatalf("control: the valid request was refused: %v", err)
+	}
+	for _, c := range cases {
+		r := ok()
+		c.mut(&r)
+		_, err := Validate(&r)
+		var ie *InvalidError
+		if !errors.Is(err, ErrInvalid) || !errors.As(err, &ie) {
+			t.Errorf("%s: %v is not an InvalidError wrapping ErrInvalid", c.name, err)
+			continue
+		}
+		if err.Error() != c.msg {
+			t.Errorf("%s: message %q, want %q", c.name, err.Error(), c.msg)
+		}
+		if ie.Problem != c.problem || ie.Param != c.param {
+			t.Errorf("%s: problem %q param %q, want %q %q", c.name, ie.Problem, ie.Param, c.problem, c.param)
+		}
 	}
 }
