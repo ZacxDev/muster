@@ -236,7 +236,7 @@ func chatTurnError(err error) (error, bool) {
 	case "":
 	case agentgateway.UnsentBusy, agentgateway.UnsentNotReady, agentgateway.UnsentCapacity:
 		if limited {
-			return fmt.Errorf("%w: %w (nothing was typed): %v", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, err), true
+			return fmt.Errorf("%w: %w (nothing was typed): %v%s", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, err, rateLimitDetail(err)), true
 		}
 		// Passes by itself: another turn, a CLI starting, every lane busy.
 		return fmt.Errorf("%w (%s)", officers.ErrChatLaneUnavailable, unsent), true
@@ -246,9 +246,22 @@ func chatTurnError(err error) (error, bool) {
 		return fmt.Errorf("%w (%s)", officers.ErrChatLaneBroken, unsent), true
 	}
 	if err != nil && limited {
-		return fmt.Errorf("%w: %w", officers.ErrChatRateLimited, err), false
+		return fmt.Errorf("%w: %w%s", officers.ErrChatRateLimited, err, rateLimitDetail(err)), false
 	}
 	return err, false
+}
+
+// rateLimitDetail is the runtime's own message of a typed failure, as
+// " (<message>)" — where the CLI states its reset ("resets Nov 23, 1am
+// (UTC)"), which the runner quotes to the member. 🔴 err's text alone is not
+// enough: a RuntimeError's Error() carries a snippet of the body, which can be
+// cut short or empty, and the message is what ccd states the reset in.
+func rateLimitDetail(err error) string {
+	var rt *agents.RuntimeError
+	if !errors.As(err, &rt) || rt.Message == "" {
+		return ""
+	}
+	return " (" + rt.Message + ")"
 }
 
 // chatTurnRateLimited reports whether err is the runtime's typed

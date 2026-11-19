@@ -41,6 +41,14 @@ func TestAChatTurnsRateLimitIsNotABusyLane(t *testing.T) {
 			}
 		})
 	}
+	// The reset the runtime's message states reaches the runner's error text
+	// (what ChatRateLimitedReply quotes), even when the body snippet is empty.
+	for _, status := range []int{http.StatusConflict, http.StatusTooManyRequests} {
+		got, _ := chatTurnError(&agents.RuntimeError{Status: status, Type: "rate_limited", Code: "rate_limit", Message: limit})
+		if want := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"; officers.ChatRateLimitedReply(got.Error()) != want {
+			t.Fatalf("%d rate_limited: the runner reads %q; want the reply %q", status, got.Error(), want)
+		}
+	}
 	if got, unsent := chatTurnError(nil); got != nil || unsent {
 		t.Fatalf("chatTurnError(nil) = %v, %v; want nil, false", got, unsent)
 	}
