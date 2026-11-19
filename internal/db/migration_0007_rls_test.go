@@ -231,7 +231,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"tables with a team lend policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
 			WHERE schemaname='public' AND policyname='team_lent_read'`), lentTables()},
 		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
+			WHERE schemaname='public' AND policyname='team_read'`), teamReadTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
 		if !slices.Equal(c.got, c.want) {
@@ -248,6 +248,14 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		var tbl, name, cmd, permissive, qual, check string
 		if err := rows.Scan(&tbl, &name, &cmd, &permissive, &qual, &check); err != nil {
 			t.Fatal(err)
+		}
+		if _, page := teamPageTables[tbl]; page {
+			// The team page policies (0160), pinned whole by the share ledger
+			// (teamPagePolicies); here only that each is one of them.
+			if w, ok := teamPagePolicies(tbl)[name]; !ok || w[0] != cmd || permissive != "PERMISSIVE" || w[1] != qual || w[2] != check {
+				t.Errorf("%s: policy %q %s %s USING %q CHECK %q; want one of 0160's team page policies", tbl, name, cmd, permissive, qual, check)
+			}
+			continue
 		}
 		if c, shared := shareClasses[tbl]; shared {
 			// The team policies (0127): one per command, each with the user
@@ -713,3 +721,7 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 		t.Errorf("RLSStatus tables = %v; want %v", tables, want)
 	}
 }
+
+// teamReadTables is every table with a team_read policy: the share-class ones
+// (0127) and the team page ones (0160).
+func teamReadTables() []string { return ownerFixedTables() }
