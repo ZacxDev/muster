@@ -100,6 +100,12 @@ type readyProv struct {
 	name string
 }
 
+// InstancesOf is Instances: every instance, whatever is asked (the
+// first-turn deliverer indexes the answer by name).
+func (p readyProv) InstancesOf(ctx context.Context, _ []agents.Agent) ([]provision.Instance, error) {
+	return p.Instances(ctx)
+}
+
 func (p readyProv) Instances(context.Context) ([]provision.Instance, error) {
 	return []provision.Instance{{Ref: provision.Ref{Name: p.name}, InstanceID: p.name + "-pod", Phase: provision.PhaseRunning, Ready: true, Replicas: 1}}, nil
 }

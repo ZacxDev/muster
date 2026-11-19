@@ -58,9 +58,15 @@ import (
 // to become ready; this bounds how long after that the stored status lags.
 const DefaultInterval = 10 * time.Second
 
-// InstanceLister lists live instances. agentprovision.Adapter satisfies it.
+// InstanceLister reads the live instances of named agents (absent: no
+// instance). agentprovision.Adapter.InstancesOf satisfies it.
+//
+// 🔴 THE WAITING AGENTS' INSTANCES, NOT THE FLEET'S: this read runs every tick
+// while anything is provisioning, and a whole-fleet read on the Kubernetes
+// driver's least-privilege layout costs three API requests per agent
+// namespace, on the client limiter every other reader shares.
 type InstanceLister interface {
-	Instances(ctx context.Context) ([]provision.Instance, error)
+	InstancesOf(ctx context.Context, ags []agents.Agent) ([]provision.Instance, error)
 }
 
 // Config is everything the promoter needs.
@@ -142,7 +148,7 @@ func (p *Promoter) Tick(ctx context.Context) (int, error) {
 		// one indexed list read per tick.
 		return 0, nil
 	}
-	insts, err := p.insts.Instances(ctx)
+	insts, err := p.insts.InstancesOf(ctx, waiting)
 	if err != nil {
 		return 0, fmt.Errorf("list instances (no action taken this tick): %w", err)
 	}

@@ -129,13 +129,21 @@ func (s *Server) consumerUsageInstances(ctx context.Context) ([]string, error) {
 	// A host officer instance's row is never provisioned and is seen as its
 	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
 	list = agents.ProvisionedOnly(list)
-	idx := s.instanceIndexWithin(octx, officerInstancesWithin)
+	// Only the eligible agents' instances are read (instancesOfWithin), not
+	// the fleet's: this collector runs on a timer and needs nothing else.
+	var eligible []agents.Agent
+	for _, a := range list {
+		if s.consumerUsageEligible(a) {
+			eligible = append(eligible, a)
+		}
+	}
+	idx := s.instancesOfWithin(octx, eligible, officerInstancesWithin)
 	if idx == nil {
 		return nil, errors.New("the provisioner's instances could not be read")
 	}
 	var out []string
-	for _, a := range list {
-		if s.consumerUsageEligible(a) && instanceUp(a, idx) {
+	for _, a := range eligible {
+		if instanceUp(a, idx) {
 			out = append(out, a.Name)
 		}
 	}
