@@ -99,11 +99,15 @@ func LockupHTML() string {
 	return sb.String()
 }
 
+// drawsLockup: no logo and no name is set, so brandMark draws muster's own
+// lockup (wordmark). One predicate for brandMark and headerMarkClass.
+func (b Brand) drawsLockup() bool { return !b.HasLogo() && b.Name == "" }
+
 // brandMark is the header's and the sidebar's brand: the logo, then the name,
 // each when set — the logo alone when it already shows the name
 // (Brand.DrawsName) — and the wordmark when neither is set.
 func brandMark(b Brand) g.Node {
-	if !b.HasLogo() && b.Name == "" {
+	if b.drawsLockup() {
 		return wordmark()
 	}
 	return g.Group{

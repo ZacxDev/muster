@@ -67,6 +67,9 @@ safe zone, and every colour has at least 3:1 contrast with its ground.
 - **Minimum size:** the mark at least 32 px wide (below that, use
   `favicon.svg`, which is drawn for 16 px and up), and the horizontal lockup at
   least 120 px wide. The header draws the lockup 28 px tall, about 132 px wide.
+  On a phone-width screen (below 640 px) the header crops it to the mark alone,
+  28 px tall and 38 px wide, so the update notice has room in the top-right
+  corner. The sidebar always draws the whole lockup.
 
 ## Colours
 

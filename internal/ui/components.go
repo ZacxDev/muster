@@ -47,6 +47,27 @@ func wordmark() g.Node {
 	return lockup("h-7 w-auto shrink-0")
 }
 
+// headerMarkClass is the header home link's extra classes (with a leading
+// space), or "" where brandMark draws no lockup (a logo or a name is set:
+// those pages carry nothing of muster's mark). Below sm it crops the header's
+// lockup (wordmark) to its mark, the left 100 of the lockup's 350 viewBox
+// units, which is 38 px at the header's 28 px height (2.375rem). The same file
+// and element, so nothing else is loaded; the sidebar, which has the room,
+// keeps the whole lockup.
+//
+// 🔴 WHY: the update pill (pwa.go, placeToast) sits in the header's top-right
+// corner only while nothing there is a control. At 390 px wide the whole
+// lockup put the home link's right edge at about 200 px, inside the column of
+// a right-anchored "Update a → b" pill (left edge about 141 px). The corner was
+// then never free, the pill slid down a column with no free 44 px slot on
+// /tasks, and it settled ON a control. The cropped mark ends at about 106 px.
+func headerMarkClass(b Brand) string {
+	if !b.drawsLockup() {
+		return ""
+	}
+	return " max-sm:[&>img[data-brand-mark]]:w-[2.375rem] max-sm:[&>img[data-brand-mark]]:object-cover max-sm:[&>img[data-brand-mark]]:object-left"
+}
+
 // Page renders muster's full document shell. dark is the default theme: <html>
 // carries the `dark` class, and light is reachable only by removing it.
 //
@@ -694,9 +715,14 @@ func header(push bool, brand Brand) g.Node {
 			// Brand wordmark links home. Boosted (Task 3) so tapping it does an
 			// AJAX body-swap to / rather than a full reload. An instance with
 			// branding draws its logo and name instead (brandMark).
+			//
+			// 🔴 BELOW sm THE HEADER SHOWS THE LOCKUP'S MARK ONLY (headerMarkClass):
+			// the whole lockup, about 132 px wide, reached into the update pill's
+			// top-right corner at a phone's width, and the pill then had no free
+			// spot on /tasks and sat on a control.
 			A(Href("/"),
 				g.Attr("aria-label", "muster home"),
-				Class("inline-flex min-h-[44px] min-w-0 items-center gap-2 text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
+				Class("inline-flex min-h-[44px] min-w-0 items-center gap-2 text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"+headerMarkClass(brand)),
 				brandMark(brand),
 			),
 			Span(Class("flex-1")),

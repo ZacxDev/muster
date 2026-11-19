@@ -77,6 +77,19 @@ test('the app shell draws the lockup in the header, and every manifest icon reso
   await expectServed(page, await page.locator('link[rel="icon"][type="image/svg+xml"]').getAttribute('href'),
     'image/svg+xml', 'the SVG favicon');
 
+  // At a phone's width the header crops the same image to its mark, 28 px
+  // tall and 38 px wide (the left 100 of the lockup's 350 units), so the home
+  // link stays clear of the update pill's top-right corner (update.spec.ts,
+  // "dragging moves the pill"). The sidebar, which has the room, keeps the
+  // whole lockup.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const phone = await page.locator(header).boundingBox();
+  expect(phone!.height).toBeCloseTo(28, 0);
+  expect(phone!.width).toBeCloseTo(38, 0);
+  expect(await page.locator(header).evaluate((el) => getComputedStyle(el).objectFit), 'cropped, not squashed').toBe('cover');
+  const side = await page.locator('#sidebar img[data-brand-mark]').boundingBox();
+  expect(side!.width, 'the sidebar keeps the whole lockup').toBeGreaterThan(125);
+
   const manifest = await (await page.request.get('/manifest.webmanifest')).json();
   const icons: { src: string; type: string; sizes: string; purpose: string }[] = manifest.icons;
   expect(icons.map((i) => `${i.src} ${i.purpose}`)).toEqual([
