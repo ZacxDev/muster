@@ -55,6 +55,7 @@ var mirrorToolDefFuncs = map[string]func() []agents.ToolDef{
 	"agentReportDoneToolDef":     func() []agents.ToolDef { return []agents.ToolDef{agentReportDoneToolDef()} },
 	"hostOfficerToolDefs":        hostOfficerToolDefs,
 	"connectorToolDefs":          connectorToolDefs,
+	"notifyOwnerToolDef":         func() []agents.ToolDef { return []agents.ToolDef{notifyOwnerToolDef()} },
 }
 
 // TestEveryMirrorToolIsClassifiedForTheStepUp: every tool the mirror door can

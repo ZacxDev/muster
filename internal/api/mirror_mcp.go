@@ -120,6 +120,9 @@ var openCodeMirrorTools = map[string]bool{
 	tasksListTool: true, taskGetTool: true, taskCommentTool: true, taskSetStatusTool: true,
 	// track_task (track_task_tool.go): the session's own declared tasks.
 	trackTaskTool: true,
+	// notify_owner (notify_owner.go): an opencode agent the chief spawned on a
+	// host tells its owner it is done, as any session may.
+	notifyOwnerTool: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +208,7 @@ func remoteToolRefusal(name string) string {
 // openCodeToolRefusal is the door's answer — a sentence, for a tool error —
 // to an opencode session naming a tool of the door it is not offered.
 func openCodeToolRefusal(name string) string {
-	return name + " is not offered to a mirrored opencode session: it gets attention_ask, attention_wait, attention_cancel and the task tools; " +
+	return name + " is not offered to a mirrored opencode session: it gets attention_ask, attention_wait, attention_cancel, the task tools and notify_owner; " +
 		"use one of your owner's Claude Code sessions for it"
 }
 
@@ -406,6 +409,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	// owner and asking for a link — with the page store and the feature on.
 	if s.pagesOn() {
 		out = append(out, pageToolDefs()...)
+	}
+	// notify_owner — a session pushing its owner, labelled as itself
+	// (notify_owner.go) — with muster's own push on.
+	if s.notifyOwnerOn() {
+		out = append(out, notifyOwnerToolDef())
 	}
 	// agent_report_done — a HOST-SPAWNED agent saying it finished
 	// (host_dispatch_done.go) — with the host-dispatch store. Listed for every
