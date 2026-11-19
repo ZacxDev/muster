@@ -363,7 +363,7 @@ jobs:
       # package, unreadable input). Milliseconds, and no database. So is the
       # shard planner: its partition (every test in exactly one shard) and its
       # refusals, on synthetic lists. Both in EVERY shard, before either is used.
-      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed, main_red.py acts only on main's head
+      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed, main_red.py lets only the newest finished run decide
         run: |
           python3 tests/verdict_test.py
           python3 tests/goshard_test.py
@@ -1873,8 +1873,10 @@ jobs:
   # pinned by TestCIMainRedNeedsWhatPublishGateNeeds and read by
   # .github/scripts/main_red.py: any failure, or any skip other than
   # main-verdict's (an undecided skip, as tag_gate.py gate treats it), is red; a
-  # cancellation decides nothing; only main's current head may open or close
-  # the issue. The issue is ASSIGNED to the repository owner, because an
+  # cancellation decides nothing; the newest FINISHED main run decides — a run
+  # whose newer main run has already finished with a verdict does nothing, so a
+  # late older run never flaps the issue (it reads the run list: actions: read).
+  # The issue is ASSIGNED to the repository owner, because an
   # assignee is notified whether or not they watch the repository.
   # ⚠ NOT COVERED: the image jobs downstream of publish-gate (a failed GHCR push).
   # They would make this job downstream of publish-gate, and every such job must
@@ -1887,6 +1889,7 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       issues: write
     steps:
@@ -1897,7 +1900,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: >-
           python3 .github/scripts/main_red.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"
-          --assignee "$GITHUB_REPOSITORY_OWNER"
+          --run-number "$GITHUB_RUN_NUMBER" --assignee "$GITHUB_REPOSITORY_OWNER"
           --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
   # Local: docker buildx build --platform linux/amd64,linux/arm64 .

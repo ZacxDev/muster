@@ -196,6 +196,7 @@
       "tests/asks-feed.spec.ts",
       "tests/asks-log.spec.ts",
       "tests/attention.spec.ts",
+      "tests/brand-mark.spec.ts",
       "tests/branding.spec.ts",
       "tests/chief-in-view.spec.ts",
       "tests/chief-toggle.spec.ts",
