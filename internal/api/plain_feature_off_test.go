@@ -153,7 +153,7 @@ func featureOffRegion(t *testing.T, page, id string) string {
 	return page[i : i+j+len(`</section>`)]
 }
 
-func topLayer(t *testing.T, markup string) string {
+func featureOffTopLayer(t *testing.T, markup string) string {
 	t.Helper()
 	texts, err := plainscan.TopLayerTexts(markup)
 	if err != nil {
@@ -162,7 +162,7 @@ func topLayer(t *testing.T, markup string) string {
 	return strings.Join(texts, " | ")
 }
 
-var infoCodeRe = regexp.MustCompile(`data-info-code="">([^<]*)</code>`)
+var featureOffInfoCodeRe = regexp.MustCompile(`data-info-code="">([^<]*)</code>`)
 
 // TestAMemberSeesATurnedOffFeatureWithNoSetup: for EVERY route that answers a
 // turned-off feature, a member's page is the plain name, the state and "Ask
@@ -181,7 +181,7 @@ func TestAMemberSeesATurnedOffFeatureWithNoSetup(t *testing.T) {
 				}
 			}
 			region := featureOffRegion(t, page, site.feature)
-			if got, w := topLayer(t, region), want.name+" | "+want.line+" | "+want.memberNext; got != w {
+			if got, w := featureOffTopLayer(t, region), want.name+" | "+want.line+" | "+want.memberNext; got != w {
 				t.Errorf("member's notice reads\n  %q\nwant\n  %q", got, w)
 			}
 			for _, bad := range []string{"data-info-sheet", "data-info-code", "popovertarget", "data-info-open"} {
@@ -205,7 +205,7 @@ func TestAnAdminSeesATurnedOffFeatureWithTheSettingBehindTheInfo(t *testing.T) {
 			page := featureOffPage(t, site, authz.RoleAdmin)
 			region := featureOffRegion(t, page, site.feature)
 			label := "How to turn on " + want.name
-			if got, w := topLayer(t, region), want.name+" | "+label+" | "+label+" | "+want.line+" | "+want.adminNext; got != w {
+			if got, w := featureOffTopLayer(t, region), want.name+" | "+label+" | "+label+" | "+want.line+" | "+want.adminNext; got != w {
 				t.Errorf("admin's notice reads\n  %q\nwant\n  %q", got, w)
 			}
 			texts, _ := plainscan.TopLayerTexts(region)
@@ -214,7 +214,7 @@ func TestAnAdminSeesATurnedOffFeatureWithTheSettingBehindTheInfo(t *testing.T) {
 					t.Errorf("admin's top layer says %q (%q)", s, m)
 				}
 			}
-			codes := infoCodeRe.FindAllStringSubmatch(region, -1)
+			codes := featureOffInfoCodeRe.FindAllStringSubmatch(region, -1)
 			if len(codes) != 1 || codes[0][1] != want.code {
 				t.Errorf("admin's ⓘ code = %v, want exactly [%q]", codes, want.code)
 			}
@@ -352,7 +352,7 @@ func TestEveryFeatureOffSiteIsListed(t *testing.T) {
 	}
 	sort.Strings(got)
 	sort.Strings(want)
-	got = dedupe(got)
+	got = featureOffDedupe(got)
 	if len(got) < 10 {
 		t.Fatalf("the scan found %d call(s) — it is not observing this package", len(got))
 	}
@@ -369,7 +369,7 @@ var featureIDs = map[string]string{
 	"AskLog": features.AskLog, "Attachments": features.Attachments,
 }
 
-func dedupe(xs []string) []string {
+func featureOffDedupe(xs []string) []string {
 	var out []string
 	for i, x := range xs {
 		if i == 0 || x != xs[i-1] {
