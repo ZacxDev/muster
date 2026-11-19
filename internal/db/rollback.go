@@ -375,12 +375,12 @@ const fleetOwnerMarksMigrationVersion = 147
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerConnectorBlocksMigrationVersion = 148
 
-// officerSeenMigrationVersion is 0155: officer_seen (when each person last
+// officerSeenMigrationVersion is 0156: officer_seen (when each person last
 // looked at each officer's page, internal/officers/builtin seen.go), owned
 // and under the same row-level security, personal; same treatment again. Its
 // body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerSeenMigrationVersion = 155
+const officerSeenMigrationVersion = 156
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

@@ -317,7 +317,7 @@ BEGIN
         ALTER TABLE public.fleet_owner_marks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.fleet_owner_marks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0155 (officer_seen), when this schema has it; same reason as 0011.
+    -- 0156 (officer_seen), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_seen') IS NOT NULL THEN
         ALTER TABLE public.officer_seen NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_seen DISABLE ROW LEVEL SECURITY;
