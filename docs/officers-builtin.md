@@ -134,7 +134,11 @@ repository, a connector or a host.
   **not** filter your notifications: every stop's push still reaches you; it
   asks about the stops that look like they need you and closes the rest. 🔴
   It needs session state (`MUSTER_SESSION_STATE=1`); without it, or with
-  nowhere to run, it suppresses nothing. Only one minder is used per owner,
+  nowhere to run, it suppresses nothing. 🔴 A minder that runs **on one of
+  your machines** (`"runtime": "host"`, or auto placed on a host) counts only
+  while that machine's mirror is **connected**: while it is offline nothing is
+  minding, so the chief's nudges come back on the next sweep and the minder is
+  fed nothing until it reconnects. Only one minder is used per owner,
   the first by id; a team officer is refused the permission (a team's pass
   runs no chief). It cannot type into a session; it asks you.
 - **Marketing (you post by hand)** — drafts posts on a weekly schedule

@@ -32,7 +32,8 @@ import (
 //     open, nor when the stop resumes after a host drop (episodeRoot).
 //
 // 🔴 IT MUST BE ABLE TO RUN: an enabled minder the roster load resolved to
-// nowhere (minderRuns) suppresses nothing and is fed nothing.
+// nowhere — or to a host whose mirror is not connected now — (minderRuns)
+// suppresses nothing and is fed nothing.
 //
 // 🔴 IT NEEDS SESSION STATE (MUSTER_SESSION_STATE=1): episodes are what it is
 // fed. With session state off there is nothing to feed it, so it minds
@@ -63,7 +64,7 @@ func (s *Server) sessionMinderOf(octx context.Context, owner int64) string {
 		s.logger.Printf("session minder: owner %d: %v", owner, err)
 		return ""
 	}
-	if !ok || !s.minderRuns(owner, officer) {
+	if !ok || !s.minderRuns(octx, owner, officer) {
 		return ""
 	}
 	return officer
@@ -71,16 +72,34 @@ func (s *Server) sessionMinderOf(octx context.Context, owner int64) string {
 
 // minderRuns reports whether owner's officer is in the LIVE roster — what the
 // roster load resolved to somewhere it runs (resolveDeclared → resolveRuntime,
-// the one runtime rule; the officers page's "running"). 🔴 An officer that is
-// switched on but resolved to nowhere (no pods, no qualifying host, a refused
+// the one runtime rule; the officers page's "running") — and, when that is a
+// host, whether the host is CONNECTED now. 🔴 An officer that is switched on
+// but resolved to nowhere (no pods, no qualifying host, a refused
 // declaration) would mind nothing, so it must not silence the chief either:
 // the nudges stay on, as with session state off. No officer runtime: false.
-func (s *Server) minderRuns(owner int64, officer string) bool {
+//
+// 🔴 A HOST OFFICER'S HOST MUST BE CONNECTED. The runtime rule places a
+// "runtime": "host" officer on its named host whenever this muster can run
+// host officers at all — it never asks whether that host is connected — and
+// an auto officer stays placed on a host that dropped (autoHostFor's grace,
+// or for good when nowhere else qualifies). Either is in the roster while its
+// host's mirror is gone, and nothing is minding. So a minder on a host counts
+// only while the hub sees that host online (officerHostView, the host fleet's
+// own check before it starts an instance there): offline, the chief's nudges
+// come back on the next sweep. A minder in pods is unchanged.
+func (s *Server) minderRuns(octx context.Context, owner int64, officer string) bool {
 	if s.officerRT == nil || s.officerRT.reg == nil {
 		return false
 	}
-	_, ok := s.officerRT.reg.ForOwner(owner, officer)
-	return ok
+	o, ok := s.officerRT.reg.ForOwner(owner, officer)
+	if !ok {
+		return false
+	}
+	if o.OnHost() {
+		_, online := s.officerHostView(s.officerPrincipal(octx, owner), o.Host)
+		return online
+	}
+	return true
 }
 
 // feedSessionMinder queues, for owner's active session minder, one item per
