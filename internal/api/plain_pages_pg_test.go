@@ -307,3 +307,27 @@ func TestPastLinksAreFoldedUnderTheirCount(t *testing.T) {
 		t.Errorf("the past links: %s", pastBox[2])
 	}
 }
+
+// TestARowsVersionBadgeIsTheVersionShown: the list's vN badge is the page's
+// CURRENT version (what its links show), not how many it has — after a
+// rollback to version 1 of 3 the row says v1, as the page's screen does.
+//
+// REGRESSION TEST: red at 366348af4, whose row said v3 there.
+func TestARowsVersionBadgeIsTheVersionShown(t *testing.T) {
+	f := newPageFixture(t)
+	own := f.as(f.owner, authz.ViaSession)
+	id := f.create(t, f.agent, "Rolled back", `[{"type":"markdown","text":"one"}]`)
+	for _, v := range []string{"two", "three"} {
+		f.tool(t, f.agent, pageUpdateTool, map[string]any{"page_id": id, "blocks": json.RawMessage(`[{"type":"markdown","text":"` + v + `"}]`)})
+	}
+	if _, err := f.pages.SetCurrent(own, id, 1); err != nil {
+		t.Fatal(err)
+	}
+	got := pagesListRows(t, f.get(t, "/pages", f.ownerHdr()).Body.String())[id]
+	if !slices.Equal(got, []string{"v1"}) {
+		t.Errorf("the rolled-back page's badges: %q, want [v1]", got)
+	}
+	if detail := f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String(); !strings.Contains(detail, " · v1</p>") {
+		t.Errorf("CONTROL: the page's screen does not say v1")
+	}
+}

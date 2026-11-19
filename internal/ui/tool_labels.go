@@ -56,7 +56,6 @@ var musterToolLabels = map[string]string{
 	"notify_owner":            "Sent you a notification",
 
 	// Pages.
-	"notify_owner":       "Sent you a notification",
 	"page_create":        "Made a page",
 	"page_update":        "Updated a page",
 	"page_get":           "Read a page",

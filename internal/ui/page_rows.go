@@ -28,8 +28,9 @@ type PageRowView struct {
 	// Now is what Updated is told against (PlainWhen).
 	Now time.Time
 	// Versions, Pending (links waiting for the owner's approval) and Replies
-	// (responses) are counts; Live is whether a live link exists.
-	Versions, Pending, Replies int
+	// (responses) are counts; Current is the version shown (what its links
+	// show); Live is whether a live link exists.
+	Versions, Current, Pending, Replies int
 	Live                       bool
 	// ShareURL is the page's reusable link when it has one (Share hands it out
 	// at once, and the ⋯ menu then offers Revoke link and New link); Reusable
@@ -41,8 +42,10 @@ type PageRowView struct {
 // pageBadges are a row's badges, in order: each only when it says something.
 func pageBadges(v PageRowView) []string {
 	var out []string
+	// The version SHOWN (the current one, which a rollback moves), drawn only
+	// when there is more than one.
 	if v.Versions > 1 {
-		out = append(out, "v"+strconv.Itoa(v.Versions))
+		out = append(out, "v"+strconv.Itoa(v.Current))
 	}
 	if v.Live {
 		out = append(out, "Live")
@@ -96,7 +99,7 @@ func pageRowMenu(v PageRowView) g.Node {
 	return MoreMenu("page-menu-"+strconv.FormatInt(v.ID, 10), "More for “"+pageCardTitle(v.Title)+"”",
 		PageShareMenuItem(v.ID, v.Title, v.ShareURL, v.Reusable),
 		A(Href(PageDetailPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-details", ""), Class(pageMenuItem), g.Text("Details")),
-		g.If(v.ShareURL != "", pageLinkActions(v.ID)))
+		pageLinkActions(v.ID, v.ShareURL != ""))
 }
 
 // PageLinkMenu is the page screen's ⋯ beside Share: Revoke link and New link.
@@ -106,7 +109,7 @@ func PageLinkMenu(id int64, title string, live bool) g.Node {
 	if !live {
 		return nil
 	}
-	return MoreMenu("page-link-menu-"+strconv.FormatInt(id, 10), "Link options for “"+pageCardTitle(title)+"”", pageLinkActions(id))
+	return MoreMenu("page-link-menu-"+strconv.FormatInt(id, 10), "Link options for “"+pageCardTitle(title)+"”", pageLinkActions(id, true))
 }
 
 // PageOpenButton is the page screen's primary button: the page's own view.

@@ -710,7 +710,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 `)
 		for _, p := range list {
 			v := ui.PageRowView{ID: p.ID, Title: p.Title, Maker: pageMakerName(p.Creator.Label, p.Creator.MirrorHost), Updated: p.UpdatedAt, Now: s.now(),
-				Versions: p.Versions, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable()}
+				Versions: p.Versions, Current: p.CurrentVersion, Pending: p.Pending, Replies: p.Responses, Live: p.LiveLinks > 0, Reusable: s.ext.Pages.LinksReusable()}
 			if l := shared[p.ID]; l.Token != "" {
 				v.ShareURL = s.pageLinkURL(l)
 			}

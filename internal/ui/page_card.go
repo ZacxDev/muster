@@ -268,17 +268,21 @@ func pageShareForm(id int64, t, shareURL string, reusable bool, class string) g.
 const pageMenuItem = "press flex min-h-[44px] w-full items-center gap-1.5 rounded-md px-3 text-left text-sm text-fg hover:bg-s2"
 
 // pageLinkActions are the ⋯ menu's link items: Revoke link and New link (the
-// old one stops working), each a form pageShareJS posts.
-func pageLinkActions(id int64) g.Node {
+// old one stops working), each a form pageShareJS posts. They are drawn
+// hidden while the page has no live link (live false) and pageShareJS shows
+// them once a Share makes one, and hides them again on Revoke — so a menu
+// drawn before the first Share offers them after it, with no redraw. (A plain
+// wrapper carries hidden: a display utility on it would win over the
+// attribute.)
+func pageLinkActions(id int64, live bool) g.Node {
 	pid := strconv.FormatInt(id, 10)
 	action := func(act, path, label string) g.Node {
 		return Form(Method("POST"), Action(path), g.Attr("data-page-share-action", act), g.Attr("data-page-id", pid),
 			Button(Type("submit"), Class(pageMenuItem), g.Text(label)))
 	}
-	return g.Group{
+	return Div(g.Attr("data-page-link-actions", ""), g.Attr("data-page-id", pid), g.If(!live, g.Attr("hidden", "")),
 		action("revoke", PageShareRevokePath(id), "Revoke link"),
-		action("rotate", PageShareRotatePath(id), "New link"),
-	}
+		action("rotate", PageShareRotatePath(id), "New link"))
 }
 
 // PageShareMenu is a page card's ⋯ (MoreMenu, menuID its element id): Revoke
@@ -287,7 +291,7 @@ func pageLinkActions(id int64) g.Node {
 // page's own screen.
 func PageShareMenu(id int64, title string, live bool, menuID string) g.Node {
 	return MoreMenu(menuID, "More for “"+pageCardTitle(title)+"”",
-		g.If(live, pageLinkActions(id)),
+		pageLinkActions(id, live),
 		A(Href(PageDetailPath(id)), hx("hx-boost", "false"), Class(pageMenuItem), g.Text("Page settings")))
 }
 
@@ -428,6 +432,12 @@ const pageShareJS = `
         b._ensure = null;
         if (url) b.setAttribute('data-share-url', url); else b.removeAttribute('data-share-url');
       });
+      setLive(id, !!url);
+    };
+    // setLive shows a page's Revoke link / New link (pageLinkActions) while it
+    // has a live link, and hides them once it has none.
+    var setLive = function (id, live) {
+      document.querySelectorAll('[data-page-link-actions][data-page-id="' + id + '"]').forEach(function (a) { a.hidden = !live; });
     };
     var postJSON = function (src) {
       return fetch(src, { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(function (r) {
@@ -445,7 +455,7 @@ const pageShareJS = `
       if (!btn._ensure) {
         btn._ensure = postJSON(btn.closest('form').action).then(function (j) {
           if (j.reusable) setShareURL(btn.getAttribute('data-page-id'), j.url);
-          else btn.setAttribute('data-share-url', j.url);
+          else { btn.setAttribute('data-share-url', j.url); setLive(btn.getAttribute('data-page-id'), true); }
           // The page has a live link now: its card no longer says private.
           document.querySelectorAll('[data-page-card][data-page-id="' + btn.getAttribute('data-page-id') + '"] [data-note-live]').forEach(function (n) {
             n.textContent = n.getAttribute('data-note-live');

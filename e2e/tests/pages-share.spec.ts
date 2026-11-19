@@ -198,9 +198,18 @@ test('desktop: Share on the page card copies the page link, the same one twice, 
     });
     const page = await ctx.newPage();
     const card = await openCard(page);
+    // The card was drawn before its page had a link: its ⋯ has no Revoke
+    // link yet, and has one as soon as Share makes the link — no redraw.
+    const more = card.getByRole('button', { name: `More for “${TITLE}”` });
+    await more.click();
+    await expect(page.getByRole('menuitem', { name: 'Revoke link' }).or(page.getByRole('button', { name: 'Revoke link' }))).toHaveCount(0);
+    await page.keyboard.press('Escape');
     const share = card.getByRole('button', { name: `Share “${TITLE}”` });
     await share.click();
     await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
+    await more.click();
+    await expect(page.getByRole('button', { name: 'Revoke link' })).toBeVisible();
+    await page.keyboard.press('Escape');
     const first = await page.evaluate(() => navigator.clipboard.readText());
     expect(first).toMatch(linkRE);
     // A second Share: the SAME link (the page's one reusable link).

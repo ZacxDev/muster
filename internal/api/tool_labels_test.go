@@ -30,7 +30,6 @@ var agentToolDefFuncs = map[string]func() []agents.ToolDef{
 	"agentReportDoneToolDef":       func() []agents.ToolDef { return []agents.ToolDef{agentReportDoneToolDef()} },
 	"answerSessionQuestionToolDef": func() []agents.ToolDef { return []agents.ToolDef{answerSessionQuestionToolDef()} },
 	"askOwnerToolDef":              func() []agents.ToolDef { return []agents.ToolDef{askOwnerToolDef()} },
-	"notifyOwnerToolDef":           func() []agents.ToolDef { return []agents.ToolDef{notifyOwnerToolDef()} },
 	"attentionToolDefs": func() []agents.ToolDef {
 		return append(attentionToolDefs(true), attentionToolDefs(false)...)
 	},

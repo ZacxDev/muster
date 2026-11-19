@@ -40,11 +40,10 @@ func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 	if n := strings.Count(html, `data-page-card=""`); n != 1 {
 		t.Errorf("%d page cards, want 1 (a refused call draws none)", n)
 	}
-	// A page with no live link has nothing to revoke or replace.
-	for _, banned := range []string{`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`} {
-		if strings.Contains(html, banned) {
-			t.Errorf("a card for a page with no live link draws %s", banned)
-		}
+	// A page with no live link has nothing to revoke or replace: the two
+	// items are drawn hidden, for the page script to show after a Share.
+	if !strings.Contains(html, `<div data-page-link-actions="" data-page-id="42" hidden="">`) {
+		t.Errorf("a card for a page with no live link does not hide Revoke link / New link")
 	}
 	// 🔴 The card never carries an address.
 	if strings.Contains(html, "data-share-url") {
@@ -164,6 +163,9 @@ func TestThePageShareScriptIsInTheAppScript(t *testing.T) {
 //
 // REGRESSION TEST: red at 35b55f6f3, whose card drew a <details> ⋯ with Revoke
 // link and New link on every card, a page with no link included.
+//
+// The items are drawn hidden, not absent, so the page script can show them
+// after a first Share (TestAShareShowsTheCardsLinkItems: its own half).
 func TestAPageCardsMenuOffersRevokeOnlyWithALiveLink(t *testing.T) {
 	for _, live := range []bool{false, true} {
 		html := render(PageCard(PageCardView{ID: 42, Title: "Launch plan", Kind: PageCardShared, Live: live}, "card-a"))
@@ -175,10 +177,16 @@ func TestAPageCardsMenuOffersRevokeOnlyWithALiveLink(t *testing.T) {
 		if strings.Contains(html, "<details") {
 			t.Errorf("live=%v: the card's menu is a <details>", live)
 		}
+		// Revoke link and New link are there either way, hidden until the
+		// page has a live link.
 		for _, link := range []string{`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`} {
-			if strings.Contains(html, link) != live {
-				t.Errorf("live=%v: %s drawn = %v", live, link, !live)
+			if !strings.Contains(html, link) {
+				t.Errorf("live=%v: no %s", live, link)
 			}
+		}
+		hidden := strings.Contains(html, `<div data-page-link-actions="" data-page-id="42" hidden="">`)
+		if !strings.Contains(html, `<div data-page-link-actions="" data-page-id="42"`) || hidden == live {
+			t.Errorf("live=%v: the link items hidden = %v", live, hidden)
 		}
 	}
 	a, b := render(PageCard(PageCardView{ID: 42, Title: "T"}, "")), render(PageCard(PageCardView{ID: 42, Title: "T"}, ""))
@@ -192,5 +200,25 @@ func TestAPageCardsMenuOffersRevokeOnlyWithALiveLink(t *testing.T) {
 	}
 	if idOf(a) == "" || idOf(a) == idOf(b) {
 		t.Errorf("two id-less cards share the menu id %q", idOf(a))
+	}
+}
+
+// TestAShareShowsTheCardsLinkItems: the page script shows a page's hidden
+// Revoke link / New link whenever its Share hands out a link (setShareURL,
+// which every Share answer and New link go through, and a one-off link's own
+// answer), and hides them on Revoke — so a card drawn before the first Share
+// offers them after it, with no redraw.
+//
+// REGRESSION TEST: red at 366348af4, whose card left them out until a redraw.
+// The browser half is pages-share.spec.ts's desktop card test.
+func TestAShareShowsTheCardsLinkItems(t *testing.T) {
+	for _, want := range []string{
+		"setLive(id, !!url);",
+		"document.querySelectorAll('[data-page-link-actions][data-page-id=\"' + id + '\"]').forEach(function (a) { a.hidden = !live; });",
+		"btn.setAttribute('data-share-url', j.url); setLive(btn.getAttribute('data-page-id'), true);",
+	} {
+		if !strings.Contains(pageShareJS, want) {
+			t.Errorf("pageShareJS lacks %q", want)
+		}
 	}
 }
