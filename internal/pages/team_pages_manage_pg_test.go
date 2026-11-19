@@ -71,7 +71,12 @@ func TestOnlyTheCreatorManagesATeamsPage(t *testing.T) {
 	if _, _, err := s.ShareLink(asTeam(f.teamA), p.ID, "team-worker", true); err != nil {
 		t.Fatal(err)
 	}
-	for name, uid := range map[string]int64{"a viewer": f.viewerA, "an operator (not the creator)": f.both} {
+	// A MANAGER who is not the creator manages nothing either: the manager
+	// fallback is only for a page that records no creator.
+	if err := f.store.SetTeamMember(context.Background(), usersActor(), f.teamA, f.outsider, authz.TeamManager); err != nil {
+		t.Fatal(err)
+	}
+	for name, uid := range map[string]int64{"a viewer": f.viewerA, "an operator (not the creator)": f.both, "a manager (not the creator)": f.outsider} {
 		ctx := f.person(t, uid)
 		if _, err := s.SetCurrent(ctx, p.ID, 1); !refused(err) {
 			t.Errorf("%s making version 1 current: %v; want the database's refusal", name, err)
