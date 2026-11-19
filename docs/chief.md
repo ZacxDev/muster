@@ -1508,7 +1508,7 @@ your words (the stall nudges' "your messages" rule,
 
 **muster's own proposals.** For an owner with a chief, the session-state pass
 proposes, with no model, the one card **"Write handoff, then close"** for each
-session the digest counts **Done, can wrap** — its latest pull request merged or
+session the digest counts **Done** — its latest pull request merged or
 closed, nothing queued to it — that is stopped with no background work, no open
 ask and no turn error. Once per stop: a stop you already decided on is not
 proposed again. If you approve it and no handoff turn comes within 24 hours,

@@ -189,7 +189,7 @@ type Item struct {
 	// delivery (sendQueueChiefForwardGate), pasted with mirror.ForDispatch so the
 	// host checks the window's own tag, and never edited or retried.
 	ChiefForwardDispatch int64
-	// FleetActionID marks a message a FLEET ACTION sent (migration 0155;
+	// FleetActionID marks a message a FLEET ACTION sent (migration 0156;
 	// internal/api's fleet delivery, its only writer): the owner's tap on the
 	// action's card. 0 for any other row. Gated on that action at delivery
 	// (sendQueueFleetGate: still queued on THIS row, the session still in the

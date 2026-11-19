@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/cctranscript"
 )
 
 // The kickoff shape measured live (agent 100, CLI 2.1.296, 2026-10-11): what
@@ -47,9 +49,9 @@ func TestUnwrapPastedContent(t *testing.T) {
 		{"only an opening tag", "<pasted_content id=\"1c", "", false},
 	}
 	for _, c := range cases {
-		body, ok := unwrapPastedContent(c.in)
+		body, ok := cctranscript.UnwrapPastedContent(c.in)
 		if ok != c.ok || body != c.body {
-			t.Errorf("%s: unwrapPastedContent(%q) = %q, %v; want %q, %v", c.name, c.in, body, ok, c.body, c.ok)
+			t.Errorf("%s: UnwrapPastedContent(%q) = %q, %v; want %q, %v", c.name, c.in, body, ok, c.body, c.ok)
 		}
 	}
 }

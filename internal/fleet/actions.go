@@ -19,7 +19,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THE FLEET'S ACTION LOG (migration 0155; docs/chief.md "Fleet proposals").
+// THE FLEET'S ACTION LOG (migration 0156; docs/chief.md "Fleet proposals").
 //
 // One row per action the chief's fleet orchestration proposes on one of the
 // owner's sessions. In this phase EVERY action is a PROPOSAL: nothing is sent
@@ -35,7 +35,7 @@ import (
 // audit_log row carrying ids only (MoveAction; auditDetail), never text.
 // ---------------------------------------------------------------------------
 
-// The action classes this phase writes (0155's CHECK).
+// The action classes this phase writes (0156's CHECK).
 const (
 	ClassContinue = "continue"
 	ClassHandoff  = "handoff"
@@ -68,13 +68,13 @@ var ClassVerb = map[string]string{
 	ClassClose:    "Close",
 }
 
-// Who proposed an action (0155's CHECK).
+// Who proposed an action (0156's CHECK).
 const (
 	ProposerChief = "chief"
 	ProposerSweep = "sweep_code"
 )
 
-// The action states (0155's CHECK). Suppressed(guard) is the family of
+// The action states (0156's CHECK). Suppressed(guard) is the family of
 // "muster did not send it, and why".
 const (
 	StateProposed = "proposed"
@@ -115,7 +115,7 @@ const (
 const (
 	// MaxCustomBytes bounds a custom text (session_instruct's `custom`).
 	MaxCustomBytes = 4 << 10
-	// MaxReasonRunes bounds a row's reason (0155's CHECK).
+	// MaxReasonRunes bounds a row's reason (0156's CHECK).
 	MaxReasonRunes = 300
 	// ProposalTTL is how long a proposal waits for its tap before it expires.
 	ProposalTTL = 12 * time.Hour

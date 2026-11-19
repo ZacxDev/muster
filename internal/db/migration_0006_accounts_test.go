@@ -119,7 +119,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - chief_session_llm_usage, chief_session_llm_reservations (0144, what the
 //     chief's OpenRouter sessions spend, and hold in flight).
 //   - fleet_owner_marks (0147, the fleet digest's marks).
-//   - fleet_actions (0155, the fleet's action log).
+//   - fleet_actions (0156, the fleet's action log).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).

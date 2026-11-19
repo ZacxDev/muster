@@ -82,15 +82,20 @@ func focusHistoryRows(v FocusHistoryPageView) g.Node {
 		rows = append(rows, focusHistoryMore(v.Next, "Load older"))
 	} else {
 		rows = append(rows, Li(g.Attr("data-focus-history-end", ""), Class("px-4 py-4 text-center text-xs text-muted"),
-			g.Text("The start of this session's focus history.")))
+			g.Text("The start of what this session worked on.")))
 	}
 	return g.Group(rows)
 }
 
+// FocusHistoryLabel is the focus history's name wherever a person reads it
+// (its tab, its dialog, its button): plain words, not muster's term "focus"
+// (the operator rule; jargon audit F023).
+const FocusHistoryLabel = "What it worked on"
+
 // focusHistoryEmpty is the list of a session with no history yet.
 func focusHistoryEmpty() g.Node {
 	return Li(g.Attr("data-focus-history-empty", ""), Class("px-4 py-6 text-center text-sm text-muted"),
-		g.Text("No focus history yet. A line is added here each time this session's focus changes."))
+		g.Text("Nothing here yet. A line is added each time what this session is working on changes."))
 }
 
 // focusHistoryMore is the sentinel row that loads href: by being scrolled to,
@@ -114,9 +119,9 @@ func focusHistoryMore(href, label string) g.Node {
 func focusHistoryList(path string) g.Node {
 	var first g.Node = focusHistoryEmpty()
 	if path != "" {
-		first = focusHistoryMore(path, "Load focus history")
+		first = focusHistoryMore(path, "Show what it worked on")
 	}
-	return Ol(g.Attr("data-focus-history-list", ""), g.Attr("aria-label", "Focus history, newest first"), Class("py-1"), first)
+	return Ol(g.Attr("data-focus-history-list", ""), g.Attr("aria-label", FocusHistoryLabel+", newest first"), Class("py-1"), first)
 }
 
 // focusHistoryButton is the agent page's header control that opens
@@ -126,8 +131,8 @@ func focusHistoryButton() g.Node {
 		Type("button"),
 		ID("focus-history-open"),
 		g.Attr("data-focus-history-open", "focus-history"),
-		g.Attr("aria-label", "Focus history"),
-		g.Attr("title", "Focus history"),
+		g.Attr("aria-label", FocusHistoryLabel),
+		g.Attr("title", FocusHistoryLabel),
 		g.Attr("aria-haspopup", "dialog"),
 		g.Attr("aria-controls", "focus-history"),
 		g.Attr("aria-expanded", "false"),
@@ -153,7 +158,7 @@ func focusHistoryDialog(path string) g.Node {
 		Class("mx-auto mb-0 mt-auto h-[70dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-s1 p-0 text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60 sm:m-auto sm:rounded-2xl [&[open]]:flex"),
 		Div(
 			Class("flex items-center gap-2 border-b border-line px-4 py-2"),
-			H2(ID("focus-history-title"), Class("flex-1 text-sm font-semibold text-fg"), g.Text("Focus history")),
+			H2(ID("focus-history-title"), Class("flex-1 text-sm font-semibold text-fg"), g.Text(FocusHistoryLabel)),
 			Button(
 				Type("button"),
 				g.Attr("data-focus-history-close", ""),

@@ -64,8 +64,10 @@ type InfoSheet struct {
 	// WithheldText is what a withheld sheet says instead of its code; ""
 	// is InfoSheetWithheldText.
 	WithheldText string
-	// Multiline keeps Code's line breaks (several .env lines): drawn as
-	// written, and copied as written.
+	// Multiline keeps Code's line breaks (several .env lines, a whole
+	// message muster handed an agent): drawn as written, in a scroller
+	// bounded to half the screen so the sheet's Copy stays on it, and copied
+	// as written.
 	Multiline bool
 	// Extra is more of the technical detail, drawn under the code: absent,
 	// like the code, when the sheet is withheld.
@@ -127,12 +129,13 @@ func (s InfoSheet) sheet() g.Node {
 		}
 		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(text))
 	case s.Code != "" || s.Live:
-		codeClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg"
+		codeClass, rowClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
 		if s.Multiline {
-			codeClass += " whitespace-pre-wrap"
+			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-fg"
+			rowClass = "flex items-start gap-2 rounded-lg bg-s2 px-3 py-2"
 		}
 		code = Div(
-			Class("flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"),
+			Class(rowClass),
 			Code(Class(codeClass), g.Attr("data-info-code", ""), g.Text(s.Code)),
 			Button(
 				Type("button"),
