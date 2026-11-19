@@ -522,8 +522,23 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"muster_agent_name_taken", "muster_owner_is_team", "muster_retire_agent_name"}; !slices.Equal(got, want) {
+	// 0162 adds two, each pinned below to the same shape: muster_is_team_member
+	// (whether a page's creator is still on its team) and
+	// muster_answer_team_page_card (a member's answer to a team agent's page
+	// share card; its behaviour is TestAMemberAnswersTheTeamAgentsShareCard's).
+	if want := []string{"muster_agent_name_taken", "muster_answer_team_page_card", "muster_is_team_member", "muster_owner_is_team",
+		"muster_retire_agent_name"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
+	}
+	for _, fn := range []string{"muster_is_team_member", "muster_answer_team_page_card"} {
+		var cfg []string
+		if err := f.pool.QueryRow(f.mig, `SELECT proconfig FROM pg_proc WHERE proname = $1`, fn).Scan(&cfg); err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(cfg)
+		if !slices.Equal(cfg, []string{"muster.scope=all", "search_path=pg_catalog"}) {
+			t.Errorf("%s: proconfig=%v; want search_path pinned and scope all for its own duration", fn, cfg)
+		}
 	}
 }
 
