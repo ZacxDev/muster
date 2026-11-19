@@ -24,7 +24,7 @@ type instances struct {
 	before func()
 }
 
-func (f *instances) Instances(context.Context) ([]provision.Instance, error) {
+func (f *instances) InstancesOf(context.Context, []agents.Agent) ([]provision.Instance, error) {
 	if f.before != nil {
 		f.before()
 	}

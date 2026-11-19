@@ -226,6 +226,9 @@ agents:
   connectUrl: ""
   # MUSTER_AGENT_MODEL: the default model for agents ("" = the runtime decides).
   model: ""
+  # MUSTER_AGENT_KUBE_QPS: the kubernetes driver's API client rate limit, in
+  # requests per second; the burst is twice it (0 = the server's default, 50).
+  kubeQPS: 0
   # MUSTER_AGENT_WORKSPACE_PERSIST and MUSTER_AGENT_WORKSPACE_STORAGE_CLASS.
   workspace:
     persist: false

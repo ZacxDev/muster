@@ -377,9 +377,11 @@ func (s *Server) notifyBatchAwaiting(owner int64, d plugins.Draft) {
 		return
 	}
 	id := plugins.BatchID(d.OwnerID, *d.Officer, d.CreatedAt.UTC().Format("2006-01-02"))
-	s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: id, Title: OutreachBatchPushTitle,
-		Body: "Follows and likes by officer " + *d.Officer + " for " + d.CreatedAt.UTC().Format("2006-01-02") + ". Nothing goes out until you tick it.",
-		Tag:  batchTag(id), Data: map[string]string{"url": batchLink(id)}}, nil)
+	if s.officerPushSends(officerPushOutreachBatch, owner, batchTag(id)) {
+		s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: id, Title: OutreachBatchPushTitle,
+			Body: "Follows and likes by officer " + *d.Officer + " for " + d.CreatedAt.UTC().Format("2006-01-02") + ". Nothing goes out until you tick it.",
+			Tag:  batchTag(id), Data: map[string]string{"url": officerDecisionCard(officerPushOutreachBatch, officerCardRef{ID: id})}}, nil)
+	}
 	s.attentionChanged(owner, batchKey(id))
 }
 
@@ -470,6 +472,12 @@ func groupBatches(cards []plugins.DraftCard) (single []plugins.DraftCard, batche
 // exactly the entries drawn (plugins.BatchSHA256); the engagement is the
 // person's words, escaped and labelled untrusted.
 func outreachBatchCardHTML(g batchGroup) string {
+	return outreachBatchCardHTMLIn(g, cardPlace{})
+}
+
+// outreachBatchCardHTMLIn is THE batch card drawn in place p (draftCardHTMLIn's
+// rule: one card, a place only adds its return field).
+func outreachBatchCardHTMLIn(g batchGroup, p cardPlace) string {
 	esc := html.EscapeString
 	_, _, day, _ := plugins.ParseBatchID(g.id)
 	ids := make([]int64, 0, len(g.entries))
@@ -495,7 +503,7 @@ func outreachBatchCardHTML(g batchGroup) string {
 		return b.String()
 	}
 	b.WriteString(`<form method="POST" action="` + outreachBatchPath + `/` + esc(g.id) + `/decide" data-step-up-form class="flex min-w-0 flex-col gap-2">
-<input type="hidden" name="batch_sha256" value="` + plugins.BatchSHA256(ids) + `">
+<input type="hidden" name="batch_sha256" value="` + plugins.BatchSHA256(ids) + `">` + p.backField() + `
 <ul class="flex flex-col gap-2">
 `)
 	for _, c := range g.entries {
@@ -514,6 +522,7 @@ func outreachBatchCardHTML(g batchGroup) string {
 <span class="break-all"><span class="font-semibold">` + esc(action) + ` ` + esc(flows.VisibleEscape(entryPerson(c))) + `</span> · ` + esc(d.VenueText()) + `</span></label>
 <span class="break-words text-xs text-fg2" data-outreach-reason>Why: ` + esc(flows.VisibleEscape(reason)) + `</span>
 `)
+		b.WriteString(outreachPersonHTML(c.Person))
 		if m := c.ReplyTo; m != nil {
 			b.WriteString(`<span class="break-all text-xs text-fg2">Their engagement · untrusted · message ` + strconv.FormatInt(m.ID, 10) + `</span>
 <pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-outreach-engagement>` + esc(m.Body) + `</pre>
@@ -536,6 +545,49 @@ func outreachBatchCardHTML(g batchGroup) string {
 	return b.String()
 }
 
+// outreachPerson is outreach draft d's person as the officer's record holds
+// them (officer_contacts, read as the reader: row-level security), nil when
+// d names no person or the record cannot be read.
+func (s *Server) outreachPerson(ctx context.Context, d plugins.Draft) *plugins.OutreachPerson {
+	if d.ContactID == nil || s.officerStore == nil {
+		return nil
+	}
+	ct, err := s.officerStore.ContactByID(ctx, d.OwnerID, *d.ContactID)
+	if err != nil {
+		return nil
+	}
+	return &plugins.OutreachPerson{Display: ct.Display, Bio: ct.Bio, ProfileURL: ct.ProfileURL}
+}
+
+// outreachPersonHTML is an outreach entry's person, in a box labelled
+// UNTRUSTED: every word of it is what their plugin reported of them. The
+// profile address is TEXT, never a link (the rule for every untrusted
+// address muster draws). Nothing when muster holds no record of them.
+func outreachPersonHTML(p *plugins.OutreachPerson) string {
+	if p == nil || p.Display == "" && p.Bio == "" && p.ProfileURL == "" {
+		return ""
+	}
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<div class="flex min-w-0 flex-col gap-0.5 rounded-md bg-bg px-2 py-1 ring-1 ring-inset ring-edge" data-outreach-person>
+<span class="flex flex-wrap items-center gap-1.5 text-xs text-fg2"><span class="font-semibold">Their profile</span><span class="` + ui.AsksPillClass + `" data-outreach-untrusted>untrusted</span></span>
+`)
+	if p.Display != "" {
+		b.WriteString(`<span class="break-words text-sm text-fg" data-outreach-person-name>` + esc(flows.VisibleEscape(p.Display)) + `</span>
+`)
+	}
+	if p.Bio != "" {
+		b.WriteString(`<span class="whitespace-pre-wrap break-words text-xs text-fg2" data-outreach-person-bio>` + esc(p.Bio) + `</span>
+`)
+	}
+	if p.ProfileURL != "" {
+		b.WriteString(`<span class="break-all text-xs text-fg2" data-outreach-person-url>` + esc(flows.VisibleEscape(p.ProfileURL)) + `</span>
+`)
+	}
+	b.WriteString("</div>\n")
+	return b.String()
+}
+
 func refOf(d plugins.Draft) string {
 	if d.BecauseRef != nil {
 		return *d.BecauseRef
@@ -548,9 +600,13 @@ func refOf(d plugins.Draft) string {
 // HERE, as for every approval (decideDraft).
 func (s *Server) handleOutreachBatchDecide(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	back, onOfficer := officerReturn(r)
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if isDocumentNavigation(r) {
 			w.Header().Set("X-Muster-Step-Up", "required")
+			if onOfficer && s.renderOfficerReturn(w, r, back, http.StatusForbidden, DraftStepUpRequired) {
+				return
+			}
 			s.renderAsksPage(w, r, http.StatusForbidden, DraftStepUpRequired, asksTabDrafts, 0)
 			return
 		}
@@ -562,6 +618,9 @@ func (s *Server) handleOutreachBatchDecide(w http.ResponseWriter, r *http.Reques
 	for _, v := range r.PostForm["approve"] {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n <= 0 {
+			if onOfficer && s.renderOfficerReturn(w, r, back, http.StatusBadRequest, "A ticked entry is not a draft id.") {
+				return
+			}
 			s.renderAsksPage(w, r, http.StatusBadRequest, "A ticked entry is not a draft id.", asksTabDrafts, 0)
 			return
 		}
@@ -570,7 +629,14 @@ func (s *Server) handleOutreachBatchDecide(w http.ResponseWriter, r *http.Reques
 	_, refused := s.decideBatchAs(r.Context(), id, plugins.BatchDecision{BatchSHA256: r.PostForm.Get("batch_sha256"), Approve: approve,
 		Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}})
 	if refused != nil {
+		if onOfficer && s.renderOfficerReturn(w, r, back, refused.code, refused.msg) {
+			return
+		}
 		s.renderAsksPage(w, r, refused.code, refused.msg, refused.tab, 0)
+		return
+	}
+	if onOfficer {
+		http.Redirect(w, r, officerReturnDone(back, "batch-decided"), http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, attentionPath+"?"+asksTabParam+"="+asksTabArchived, http.StatusSeeOther)
@@ -596,6 +662,7 @@ func (s *Server) withBatches(ctx context.Context, pending []plugins.DraftCard) [
 			if err != nil {
 				c = plugins.DraftCard{Draft: d}
 			}
+			c.Person = s.outreachPerson(ctx, d)
 			pending = append(pending, c)
 		}
 	}

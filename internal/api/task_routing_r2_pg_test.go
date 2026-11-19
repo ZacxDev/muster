@@ -164,6 +164,12 @@ func (g *kickoffGateway) SendWithTools(context.Context, agentgateway.Target, str
 
 type oneInstance struct{ name string }
 
+// InstancesOf is Instances: every instance, whatever is asked (the
+// first-turn deliverer indexes the answer by name).
+func (o oneInstance) InstancesOf(ctx context.Context, _ []agents.Agent) ([]provision.Instance, error) {
+	return o.Instances(ctx)
+}
+
 func (o oneInstance) Instances(context.Context) ([]provision.Instance, error) {
 	return []provision.Instance{{Ref: provision.Ref{Name: o.name}, InstanceID: o.name + "-pod", Phase: provision.PhaseRunning,
 		Ready: true, Replicas: 1}}, nil

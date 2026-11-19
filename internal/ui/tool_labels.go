@@ -53,6 +53,7 @@ var musterToolLabels = map[string]string{
 	"attention_answer":        "Answered an open question",
 	"chief_ask":               "Asked your chief",
 	"answer_session_question": "Answered a session's question",
+	"notify_owner":            "Sent you a notification",
 
 	// Pages.
 	"page_create":        "Made a page",
@@ -66,7 +67,6 @@ var musterToolLabels = map[string]string{
 	// Sessions and agents.
 	"fleet_list":          "Looked over your sessions",
 	"fleet_report":        "Reported on your sessions",
-	"notify_owner":        "Sent you a notification",
 	"focus_search":        "Looked up what sessions are working on",
 	"sessions_overview":   "Checked what your sessions are doing",
 	"session_context":     "Looked at a session",

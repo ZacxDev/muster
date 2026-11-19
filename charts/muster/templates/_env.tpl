@@ -129,6 +129,10 @@ GoTrue that is not running, with a JWT secret no Secret holds. */ -}}
 {{- include "muster.env" (dict "name" "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS" "value" $v.agents.workspace.storageClass) }}
 {{- end }}
 {{- if eq $v.agents.provisioner "kubernetes" }}
+{{- if $v.agents.kubeQPS }}
+- name: MUSTER_AGENT_KUBE_QPS
+  value: {{ $v.agents.kubeQPS | toString | quote }}
+{{- end }}
 - name: MUSTER_AGENT_NETPOL_FROM_NAMESPACE
   value: {{ .Release.Namespace | quote }}
 - name: MUSTER_AGENT_NETPOL_FROM_POD_LABELS
