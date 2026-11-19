@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,7 +46,10 @@ import (
 //     member seq it answers — HQ completes the item.
 //
 // A lane muster cannot reach (ccd's 409 busy, 503 not_ready or capacity) is
-// not a failure: the claim is released and the item waits for a later pass.
+// not a failure: the claim is released and the item waits for a later pass —
+// within a bound (chatMaxLaneRefusals). A lane whose account is at its usage
+// limit (ErrChatRateLimited) backs off, and within chatRateLimitedAttempts the
+// member is answered with why (giveUp): a chat is never claimed for ever.
 // ---------------------------------------------------------------------------
 
 // ItemKindChat is the kind of an officer item that carries a chat turn.
@@ -443,6 +448,16 @@ var ErrChatLaneBroken = errors.New("officers: the chat's lane cannot take a turn
 // waits for a later pass.
 var ErrChatLaneUnavailable = errors.New("officers: the chat's lane could not take a turn now")
 
+// ErrChatRateLimited is a chat turn the lane's Claude account could not run
+// because it is at its usage limit: ccd's typed `rate_limited` — a 429 for a
+// turn that was typed and failed, or a 409 from a pane parked on the CLI's
+// usage-limit menu, before anything was typed (then wrapped with
+// ErrChatLaneUnavailable too). It does not pass by itself within a pass or
+// two: the runner backs off, and at chatRateLimitedAttempts such turns since
+// the chat's last answer answers the member with ChatRateLimitedReply rather than retry the
+// chat for as long as the limit lasts.
+var ErrChatRateLimited = errors.New("officers: the officer's Claude account is at its usage limit")
+
 // ChatLanes is how the runner reaches the chat lanes of an officer's
 // instances: internal/api implements it over the agents store and the agent
 // gateway.
@@ -565,10 +580,51 @@ type ChatRunner struct {
 }
 
 // chatBackoff is one failing chat's wait: its consecutive failures, and when
-// it may run again.
+// it may run again — and the two streaks that end in the member being told
+// (giveUp): its rate-limited turns since its last answer (limited),
+// and its turns in a row the lane refused (refused).
 type chatBackoff struct {
 	failures int
 	until    time.Time
+	limited  int
+	refused  int
+}
+
+// The bounds on a chat that cannot be answered, so it never loops silently:
+//
+//   - chatRateLimitedAttempts: the Nth rate-limited turn (ErrChatRateLimited)
+//     since the chat's last answer is answered with ChatRateLimitedReply. The
+//     first ones back off (chatBackoffBase, doubling) so an account failover
+//     — which the agent gateway starts on the first `rate_limited` — has
+//     passes to land on before the member is told.
+//   - chatMaxLaneRefusals: the Nth turn in a row the lane refused before
+//     typing anything (ErrChatLaneUnavailable: busy, not_ready, capacity) is
+//     answered with ChatLaneUnavailableReply. A refusal is retried every pass
+//     (about a minute) without backoff, so this is about that many minutes.
+//
+// Both are counted in this process only: a restarted muster starts them
+// again, which at worst delays the answer by one more bound.
+const (
+	chatRateLimitedAttempts = 3
+	chatMaxLaneRefusals     = 15
+)
+
+// ChatRateLimitedReply is the reply posted for a chat whose turns keep coming
+// back rate-limited (chatRateLimitedAttempts): the member is told why and,
+// when the CLI stated it, when the limit resets (detail is the failure's
+// text, read for "resets …").
+func ChatRateLimitedReply(detail string) string {
+	until := ""
+	if reset := ccpool.ResetPhrase(detail); reset != "" {
+		until = " (" + reset + ")"
+	}
+	return "(The officer can't reply right now: its Claude accounts are at their usage limit" + until + ". Ask again later.)"
+}
+
+// ChatLaneUnavailableReply is the reply posted for a chat whose lane refused
+// chatMaxLaneRefusals turns in a row.
+func ChatLaneUnavailableReply(refusals int) string {
+	return fmt.Sprintf("(The officer can't reply right now: its chat session refused %d tries in a row (busy or not ready). Ask again later.)", refusals)
 }
 
 // Backoff bounds of a failing chat: the first failure waits chatBackoffBase,
@@ -579,16 +635,31 @@ const (
 )
 
 // settle records how chat key's turn ended: a failure (the lane broken or
-// unsupported, a turn, read or reply that failed) backs it off; an answer
-// clears it; anything else (not claimed, the lane busy) changes nothing.
+// unsupported, a turn, read or reply that failed, the account rate-limited)
+// backs it off; an answer — the lane's, or the member told it cannot be
+// answered (ChatGaveUp) — clears it; a lane refusal counts towards
+// chatMaxLaneRefusals; anything else (not claimed) changes nothing.
 func (r *ChatRunner) settle(key string, out ChatOutcome) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if out != ChatLaneBusy && out != ChatNotClaimed {
+		if b, ok := r.backoff[key]; ok {
+			b.refused = 0
+			r.backoff[key] = b
+		}
+	}
 	switch out {
-	case ChatReplied, ChatReplyDropped:
+	case ChatReplied, ChatReplyDropped, ChatGaveUp:
 		delete(r.backoff, key)
-	case ChatLaneBroken, ChatUnsupported, ChatTurnFailed, ChatReadFailed, ChatReplyFailed:
+	case ChatLaneBusy:
 		b := r.backoff[key]
+		b.refused++
+		r.backoff[key] = b
+	case ChatLaneBroken, ChatUnsupported, ChatTurnFailed, ChatReadFailed, ChatReplyFailed, ChatRateLimited:
+		b := r.backoff[key]
+		if out == ChatRateLimited {
+			b.limited++
+		}
 		b.failures++
 		wait := chatBackoffBase
 		for i := 1; i < b.failures && wait < chatBackoffMax; i++ {
@@ -608,6 +679,15 @@ func (r *ChatRunner) backingOff(key string, now time.Time) bool {
 	defer r.mu.Unlock()
 	b, ok := r.backoff[key]
 	return ok && now.Before(b.until)
+}
+
+// streaks is chat key's rate-limited turns since its last answer and its lane
+// refusals in a row, before the turn now running settles.
+func (r *ChatRunner) streaks(key string) (limited, refused int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b := r.backoff[key]
+	return b.limited, b.refused
 }
 
 // logOnce writes line once per key (per process).
@@ -1075,9 +1155,17 @@ const (
 	// ChatUnsupported: the instance's runtime does not say it names a chat
 	// session's MCP calls (ChatLanes.Supports): nothing claimed.
 	ChatUnsupported ChatOutcome = "unsupported"
-	ChatNothingNew  ChatOutcome = "nothing_new"
-	ChatReadFailed  ChatOutcome = "read_failed"
-	ChatNotServed   ChatOutcome = "not_served"
+	// ChatRateLimited: the lane's Claude account is at its usage limit
+	// (ErrChatRateLimited): released, and the chat backs off.
+	ChatRateLimited ChatOutcome = "rate_limited"
+	// ChatGaveUp: the chat could not be answered within its bound
+	// (chatRateLimitedAttempts, chatMaxLaneRefusals), so the member was
+	// answered with why (ChatRateLimitedReply, ChatLaneUnavailableReply) and
+	// HQ completed the item.
+	ChatGaveUp     ChatOutcome = "gave_up"
+	ChatNothingNew ChatOutcome = "nothing_new"
+	ChatReadFailed ChatOutcome = "read_failed"
+	ChatNotServed  ChatOutcome = "not_served"
 )
 
 // Run is one chat turn of item it on instance n of pool o, start to end
@@ -1240,18 +1328,59 @@ func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome
 			return ChatReadFailed
 		}
 		reply, err = r.lanes.Turn(ctx, o, n, chat, chatTurnText(o, n, name, fresh, first, retry, reload))
+		// 🔴 A CHAT THAT CANNOT BE ANSWERED IS TOLD SO, NEVER RETRIED FOR EVER.
+		// Before, a lane parked on the CLI's usage-limit menu (409
+		// rate_limited, read as "busy") was released and claimed again every
+		// pass for as long as the limit lasted, and the member got nothing.
+		// Now a rate-limited turn backs off, and the chatRateLimitedAttempts-th
+		// in a row — or the chatMaxLaneRefusals-th lane refusal in a row — is
+		// answered with why, which completes the item (giveUp).
+		limited, refused := r.streaks(chatRunKey(o, chat))
 		if errors.Is(err, ErrChatLaneUnavailable) || errors.Is(err, ErrChatLaneBroken) {
 			// Nothing was typed: the lane has not seen them after all.
 			if merr := r.lanes.Mark(context.WithoutCancel(ctx), o, n, chat, prev); merr != nil {
 				r.log.Printf("officers: %s: chat %s: restore its marks after a refused turn: %v", o.label(), chat, merr)
 			}
-			release("lane refused the turn")
-			if errors.Is(err, ErrChatLaneBroken) {
+			switch {
+			case errors.Is(err, ErrChatLaneBroken):
+				release("lane refused the turn")
 				r.log.Printf("officers: %s: chat %s: instance %s's lane cannot take the turn: %v; it backs off", o.label(), chat, o.InstanceLabel(n), err)
 				return ChatLaneBroken
+			case errors.Is(err, ErrChatRateLimited):
+				if limited+1 >= chatRateLimitedAttempts {
+					if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatRateLimitedReply(err.Error()), &prev, stop, release, err) {
+						return ChatGaveUp
+					}
+					return ChatRateLimited
+				}
+				release("lane rate-limited")
+				r.log.Printf("officers: %s: chat %s: instance %s's lane is at its usage limit: %v; it backs off (%d of %d before the member is told)",
+					o.label(), chat, o.InstanceLabel(n), err, limited+1, chatRateLimitedAttempts)
+				return ChatRateLimited
 			}
-			r.log.Printf("officers: %s: chat %s: instance %s's lane did not take the turn: %v; a later pass tries again", o.label(), chat, o.InstanceLabel(n), err)
+			if refused+1 >= chatMaxLaneRefusals {
+				if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatLaneUnavailableReply(refused+1), &prev, stop, release, err) {
+					return ChatGaveUp
+				}
+				return ChatLaneBusy
+			}
+			release("lane refused the turn")
+			r.log.Printf("officers: %s: chat %s: instance %s's lane did not take the turn: %v; a later pass tries again (%d of %d before the member is told)",
+				o.label(), chat, o.InstanceLabel(n), err, refused+1, chatMaxLaneRefusals)
 			return ChatLaneBusy
+		}
+		if err != nil && errors.Is(err, ErrChatRateLimited) {
+			// Typed and failed on the limit: the lane has seen them (next).
+			if limited+1 >= chatRateLimitedAttempts {
+				if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatRateLimitedReply(err.Error()), &next, stop, release, err) {
+					return ChatGaveUp
+				}
+				return ChatRateLimited
+			}
+			r.log.Printf("officers: %s: chat %s: its turn on instance %s hit the usage limit: %v (released; it backs off, %d of %d before the member is told)",
+				o.label(), chat, o.InstanceLabel(n), err, limited+1, chatRateLimitedAttempts)
+			release("turn rate-limited")
+			return ChatRateLimited
 		}
 		if err != nil {
 			r.log.Printf("officers: %s: chat %s: its turn on instance %s failed: %v (released; the next claim asks the lane to answer again)", o.label(), chat, o.InstanceLabel(n), err)
@@ -1356,6 +1485,27 @@ func (r *ChatRunner) dropTurn(ctx context.Context, o Officer, n int, chat string
 	if err := r.lanes.Mark(context.WithoutCancel(ctx), o, n, chat, *marks); err != nil {
 		r.log.Printf("officers: %s: chat %s: record the dropped turn: %v", o.label(), chat, err)
 	}
+}
+
+// giveUp answers member seq inReplyTo of chat with text — why the officer
+// cannot reply (ChatRateLimitedReply, ChatLaneUnavailableReply) — in place of
+// the lane's reply: HQ takes it as the officer's reply and completes the item,
+// so the chat is no longer claimed every pass. The turn is marked answered
+// (dropTurn) on marks, the lane's marks as they stand, so no later claim asks
+// the lane to answer it again. why is the failure that ended the chat's
+// bound. A reply HQ did not take releases the claim instead (false): the item
+// is claimed again on a later pass, and posted again then.
+func (r *ChatRunner) giveUp(ctx context.Context, cb ChatsBackend, o Officer, n int, chat string, inReplyTo int64, text string,
+	marks *ChatMarks, stop func(), release func(string), why error) bool {
+	if _, err := r.postReply(ctx, cb, chat, text, inReplyTo); err != nil {
+		r.log.Printf("officers: %s: chat %s: tell the member it cannot be answered (%v): %v (released; a later pass tries again)", o.label(), chat, why, err)
+		release("give-up reply refused")
+		return false
+	}
+	stop()
+	r.dropTurn(ctx, o, n, chat, marks)
+	r.log.Printf("officers: %s: chat %s: answered seq %d with %q: %v", o.label(), chat, inReplyTo, text, why)
+	return true
 }
 
 // charterVersion is the charter version HQ's brief answers for the officer

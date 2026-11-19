@@ -1125,7 +1125,9 @@ instance's volume); a new chat goes to the up instance running the fewest
 chats. When that instance has no free lane, the item is **left unclaimed** for
 a later pass; when `ccd` refuses the turn anyway (`503 capacity`, `503
 not_ready`, `409 busy` — nothing typed), the item is released and retried on a
-later pass. Neither ever fails or drops a chat. The least recently used idle
+later pass — up to 15 refusals in a row, after which the member is answered
+"(The officer can't reply right now: its chat session refused 15 tries in a
+row (busy or not ready). Ask again later.)". The least recently used idle
 lane is stopped when another needs its slot, and resumed from its transcript
 on its next turn. With `tiers`, chats run in the **judgement** pool only.
 When every lane of every up instance is busy, muster starts another instance
@@ -1288,6 +1290,18 @@ no scale-down) when it cannot run now:
   refusal that passes by itself (`409 busy`, `503 not_ready`, `503 capacity`)
   is no failure: the item is released and the next pass tries again. Every
   refusal's reason is logged.
+
+**A chat whose account is at its usage limit is answered, not looped.** A
+lane turn that comes back `rate_limited` — a `429` for a turn the limit failed,
+or the `409` of a pane parked on the CLI's usage-limit menu, which is not a
+busy lane — backs off like a failure (the agent gateway fails the account over
+on the first one, when another is usable). The third in a row is answered
+"(The officer can't reply right now: its Claude accounts are at their usage
+limit (resets …). Ask again later.)", quoting the reset the CLI stated; the
+item is then done, and the member's next message runs a turn again. `ccd`
+stops a lane whose paste was refused by that menu once no turn holds it (the
+menu outlives the limit's reset), so the lane's next turn resumes its
+conversation in a fresh CLI.
 
 **A reply HQ will not take is never retried for ever.** muster cuts a reply
 to HQ's 64 KiB cap (on a character boundary, ending `[reply cut by muster at

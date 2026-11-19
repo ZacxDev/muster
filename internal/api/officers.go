@@ -559,7 +559,10 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	var chats *officers.ChatRunner
 	if _, ok := s.ext.Agents.(agents.OfficerChatStore); ok {
 		chats, err = officers.NewChatRunner(officers.ChatRunnerConfig{Lanes: officerChatLanes{s: s}, Backend: hq.Backend, Logger: s.logger,
-			Context: s.streams.context(), HeartbeatEvery: cfg.ChatHeartbeatEvery, ReplyRetries: cfg.ChatReplyRetries})
+			Context: s.streams.context(), HeartbeatEvery: cfg.ChatHeartbeatEvery, ReplyRetries: cfg.ChatReplyRetries,
+			// The wake loop's clock: a chat's backoff is read on the same one
+			// Dispatch is handed (nil is time.Now).
+			Now: cfg.Now})
 		if err != nil {
 			return nil, err
 		}
