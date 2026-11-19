@@ -299,6 +299,10 @@ for (const vp of [
       // Remove it: the list is this server alone again.
       await row.locator('[data-server-remove]').click();
       await expect(manage.locator('li')).toHaveCount(1);
+      // A click in the dialog is not a click away from the menu behind it —
+      // even Remove, whose row is redrawn (its button detached) before the
+      // menu's click-away listener runs; that once shut the menu here.
+      await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'true');
       await manage.locator('[data-dialog-close]').click();
       await expect(manage).toHaveJSProperty('open', false);
       await expect(items(page)).toHaveCount(1);

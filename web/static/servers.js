@@ -595,7 +595,17 @@
       if (!box || !t || t.getAttribute('aria-expanded') !== 'true') return;
       // The dialogs live outside the row's box (in the sidebar's root), and a
       // click in one is not a click away from the menu.
-      if (box.contains(e.target) || (e.target.closest && e.target.closest('#server-add, #server-manage, #server-offer'))) return;
+      //
+      // 🔴 JUDGED BY THE EVENT'S PATH, NOT ITS TARGET'S PLACE NOW. A click on
+      // a Manage row's Remove redraws the rows before this listener runs, so
+      // its target is DETACHED: contains() and closest() both said "outside",
+      // and the menu shut under the dialog. composedPath() is the path the
+      // click was dispatched along, kept whatever happened to it since.
+      var path = e.composedPath ? e.composedPath() : [e.target];
+      for (var i = 0; i < path.length; i++) {
+        var n = path[i];
+        if (n === box || (n && (n.id === 'server-add' || n.id === 'server-manage' || n.id === 'server-offer'))) return;
+      }
       setOpen(false);
     });
     root.addEventListener('storage', function (e) { if (e.key === KEY) render(); });
