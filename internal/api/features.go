@@ -10,6 +10,7 @@ import (
 	g "maragu.dev/gomponents"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -31,7 +32,9 @@ import (
 //     call featureOff) and a call to it explains (mcpDisabledTool); each door's
 //     muster_help lists the features its own tools need that are off.
 //   - the typed 404 a route answers when its feature is off
-//     (writeFeatureDisabled), which the CLI reports as "feature X is disabled".
+//     (writeFeatureDisabled), which the CLI reports as "feature X is disabled";
+//     a person who opens such a route gets the plain page (renderFeatureOff):
+//     the feature's plain name, and the setup behind an admin's ⓘ only.
 //   - the GATES that draw a control: dictatePath, uploadPath and shellFeatures
 //     (the Connectors tab, the push button, the dispatch "+"), through
 //     featureOff. The Set can only take a feature away there: a gate still
@@ -111,29 +114,97 @@ func (s *Server) featureOff(id string) bool {
 
 // writeFeatureDisabled answers a request for a route whose feature is off:
 // 404, with a body that says which feature and how to turn it on — JSON for a
-// client, the notice page for a person who typed the address.
+// client, the plain notice page (renderFeatureOff) for a person who typed the
+// address.
 //
 // 🔴 404, NOT 409: every one of these routes answered 404 while its feature was
 // off before the registry existed, and a caller that branches on the status
 // keeps working. What changes is that the body is now typed, so the CLI can
 // tell "this server has the route and the feature is off" from "this server
 // predates the route" (a bare mux 404, text/plain).
+//
+// 🔴 THE JSON IS THE MACHINES', THE PAGE IS A PERSON'S. The JSON body keeps its
+// setup text (`enable`, `message`, `reason`): the CLI prints it
+// (cmd/muster featureDisabled, which sends Accept: application/json) and the
+// MCP doors say the same through mcpDisabledTool. The page says none of it in
+// its top layer — see renderFeatureOff.
 func (s *Server) writeFeatureDisabled(w http.ResponseWriter, r *http.Request, id string) {
+	if isDocumentNavigation(r) {
+		// Some gates run before any credential is examined (requirePluginsOn,
+		// requirePluginViewersOn), so the context may name no reader yet. The
+		// page differs by reader (an admin's ⓘ), so it is drawn for a signed-in
+		// one only: a signed-out navigation is sent to sign in, as every other
+		// signed-in page sends it.
+		if p, ok := authz.From(r.Context()); ok && p.Via == authz.ViaSession {
+			s.renderFeatureOff(w, r, id)
+			return
+		}
+		s.requireSession(func(w http.ResponseWriter, r *http.Request) { s.renderFeatureOff(w, r, id) })(w, r)
+		return
+	}
 	body := map[string]any{"error": FeatureDisabledError, "feature": id, "docs": features.DocsPage + "#" + id}
-	msg := "disabled: " + id + " (" + features.DocsPage + "#" + id + ")"
-	name := id
 	if f, ok := s.feature(id); ok {
-		msg, name = f.DisabledMessage(), f.Name
+		msg := f.DisabledMessage()
 		body["name"], body["state"], body["enable"], body["message"] = f.Name, f.State, f.EnableHint(), msg
 		if f.Reason != "" {
 			body["reason"] = f.Reason
 		}
 	}
-	if isDocumentNavigation(r) {
-		s.renderNotice(w, r, http.StatusNotFound, name+" is off on this server", msg)
-		return
-	}
 	s.writeJSON(w, http.StatusNotFound, body)
+}
+
+// The turned-off notice's plain words (its tests pin them as literals).
+const (
+	// FeatureOffNoticeText is the notice's line under the feature's name.
+	FeatureOffNoticeText = "Turned off on this server."
+	// FeatureNotSetUpNoticeText is that line for a misconfigured feature.
+	FeatureNotSetUpNoticeText = "Not fully set up on this server."
+	// FeatureOffAskAdminText is a member's next step: no setup at all.
+	FeatureOffAskAdminText = "Ask your admin to turn it on."
+	// FeatureOffUnknownName names a feature the registry does not list (a
+	// server handed no registry).
+	FeatureOffUnknownName = "This feature"
+)
+
+// renderFeatureOff is the page a person gets for a route whose feature is
+// off: the feature's plain name (the catalog's PlainName, as the Features page
+// shows it), that it is turned off, and the next step.
+//
+// 🔴 THE SETUP IS AN ADMIN'S, AND ABSENT — NOT HIDDEN — FOR ANYONE ELSE (the
+// Features page's rule, featureSheet). An admin's next step is the ⓘ, which is
+// the Features page row's own sheet: the exact .env line(s) as its code, with
+// Copy, and the docs link. A member is told to ask their admin, and the HTML
+// carries no variable, `.env`, docs path or ⓘ at all.
+//
+// The reader is always signed in here (writeFeatureDisabled), so the page is
+// always inside the app, with the nav.
+func (s *Server) renderFeatureOff(w http.ResponseWriter, r *http.Request, id string) {
+	e := html.EscapeString
+	admin := authz.IsAdmin(r.Context())
+	f, known := s.feature(id)
+	name, line, next := FeatureOffUnknownName, FeatureOffNoticeText, FeatureOpenSheetText
+	if known {
+		name = f.ShownName()
+		if f.State == features.Misconfigured {
+			line, next = FeatureNotSetUpNoticeText, FeatureNeedsSetupText
+		}
+	}
+	sheet := ""
+	switch {
+	case !admin:
+		next = FeatureOffAskAdminText
+	case known:
+		sheet = ui.InfoSheetHTML(featureSheet(f, name, true))
+	default:
+		sheet = ui.InfoSheetHTML(ui.InfoSheet{ID: ui.FeatureSheetID(id), Label: "How to turn on this feature",
+			Heading: "Turn on this feature", Lead: "Its page in the docs:", Code: features.DocsPage + "#" + id})
+	}
+	inner := `<section data-feature-off="` + e(id) + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<div class="flex items-center gap-2"><h1 class="min-w-0 flex-1 text-balance text-base font-semibold text-fg">` + e(name) + `</h1>` + sheet + `</div>
+<p data-feature-off-state class="text-sm text-fg2">` + line + `</p>
+<p data-feature-off-next class="text-sm text-fg">` + next + `</p>
+</section>`
+	s.writeNavDocument(w, r, http.StatusNotFound, name, "", false, inner)
 }
 
 // --- the MCP doors -------------------------------------------------------------

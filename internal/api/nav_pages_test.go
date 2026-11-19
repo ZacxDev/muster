@@ -29,6 +29,7 @@ import (
 var apiNavWriters = []string{
 	"handleAccountPage",            // /account
 	"handleFeaturesPage",           // /account/features
+	"renderFeatureOff",             // a route whose feature is off, as a page (always signed in)
 	"handleAccountTeams",           // /account/teams (your teams, each one's notify switch)
 	"renderAccountTokens",          // /account/tokens
 	"renderCredentials",            // /account/credentials
@@ -385,6 +386,7 @@ var apiNavSecret = map[string]bool{
 	"renderAccountPasskeys":        true,  // runs passkey ceremonies
 	"handleAccountPage":            false, // sign-out forms only
 	"handleFeaturesPage":           false, // variable names and states, never a value
+	"renderFeatureOff":             false, // the feature's plain name; an admin's ⓘ holds variable names, never a value
 	"renderAsksPage":               false, // the queue; the shell beside it has Faro already
 	"renderAskPage":                false, // one ask and its answer box
 	"renderNotice":                 false, // one sentence
