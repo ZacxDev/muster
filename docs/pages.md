@@ -182,7 +182,11 @@ choice already saved is kept: a user who had it off (including one whose
 preferences row was written, off, before the default changed) stays off until
 they turn it on. A team's pages, if a team-owned agent makes one, ALWAYS get the ask
 flow, whatever is stored: nobody signs in as a team, so nobody could turn it
-off for one.
+off for one. And a session on a machine the [step-up gate](design/officers-on-hosts.md)
+covers — one that runs a host officer or starts agents for the chief, or a
+session mirrored to another muster — ALWAYS asks, even with the switch on: any
+process on such a machine can name your session, so its request proves
+nothing about who sent it.
 
 - **Off** — the agent asks, and you approve, below.
 - **On** (everyone's default) — for your pages the link goes **live at once**, and the agent is given

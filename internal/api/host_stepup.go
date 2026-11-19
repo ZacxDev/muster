@@ -111,7 +111,7 @@ var hostStepUpExempt = map[string]string{
 	// data; on a host-officer machine a header-named caller can therefore only
 	// mislabel that one session's tasks, never act as the owner.
 	trackTaskTool:             "the session's own declared tasks (untrusted data; no owner authority)",
-	pageShareRequestTool:      "asks the owner for a link (their tap decides)",
+	pageShareRequestTool:      "on a machine this gate covers it always asks the owner for a link, whatever their pages setting says (pageShareGoesLive), so their tap decides",
 	pageResponsesTool:         "a read of the session's own page",
 	pageLinkRevokeTool:        "revokes a link of the session's own page",
 	notifyOwnerTool:           "tells the owner something, labelled as the session; it decides nothing",
@@ -291,6 +291,20 @@ const (
 	hostDecisionRefuse  = "Refuse"
 )
 
+// stepUpCoverage is THE ONE PREDICATE for whether the step-up gate covers a
+// call from c on host: the machine runs a host officer (ids), c is a remote
+// caller, or the machine starts agents for the chief (spawn, why). The gate
+// and page_share_request (pageShareGoesLive) both read it.
+func (s *Server) stepUpCoverage(ctx context.Context, host string, c toolCaller) (ids []string, spawn string, covered bool) {
+	p, _ := authz.From(ctx)
+	ids = s.hostOfficersOnMachine(ctx, p.UserID, host)
+	if len(ids) > 0 || c.remote {
+		return ids, "", true
+	}
+	spawn = s.hostSpawnStepUp(ctx, host)
+	return ids, spawn, spawn != ""
+}
+
 // hostStepUpGate is the mirror door's gate, run on every call after the host
 // instance rule: an owner-authority tool from a machine that runs a host
 // officer, from a machine that starts agents for the chief (hostSpawnStepUp),
@@ -309,12 +323,11 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	if why := s.ownersOwnSession(ctx, c); why == ownerAuthoritySpawned {
 		return toolErr("%s", why), true
 	}
-	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
-	spawn := ""
+	ids, spawn, covered := s.stepUpCoverage(ctx, host, c)
+	if !covered {
+		return "", false
+	}
 	if len(ids) == 0 && !c.remote {
-		if spawn = s.hostSpawnStepUp(ctx, host); spawn == "" {
-			return "", false
-		}
 		// The one carve-out on a machine that only starts agents: a reply to a
 		// route the chief sent to THIS session (operator decision).
 		if name == routeReplyToolName && s.routeReplyToItsOwnSession(ctx, c, args) {

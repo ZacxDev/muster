@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/users"
@@ -160,7 +161,7 @@ func TestAnOwnerWhoDidNotOptInIsStillAsked(t *testing.T) {
 }
 
 // TestOnlyTheOwnerFlipsTheirOwnOptIn: a member's POST sets their own switch
-// and nobody else's; it is ON for everyone until then (migration 0159), and
+// and nobody else's; it is ON for everyone until then (migration 0160), and
 // the Account page draws it on for a member who never chose; the route takes
 // no agent's, anonymous or cross-origin request; and the store refuses a read
 // of another user's row.
@@ -281,7 +282,7 @@ func TestTheToolsReadRightInBothStates(t *testing.T) {
 
 // TestAnOwnerWhoNeverChoseHasTheirAgentShareAtOnce: an owner with NO
 // notify_preferences row at all — they never touched any switch — gets the
-// default, on (migration 0159): their agent's page_share_request through the
+// default, on (migration 0160): their agent's page_share_request through the
 // real tool path makes the link live, files no attention ask, and a stranger
 // opens it.
 func TestAnOwnerWhoNeverChoseHasTheirAgentShareAtOnce(t *testing.T) {
@@ -577,5 +578,57 @@ func TestATeamOwnedAgentsShareIsAlwaysAsked(t *testing.T) {
 	pid := f.create(t, f.agent, "Person page", `[{"type":"markdown","text":"x"}]`)
 	if r := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": pid}); r["status"] != "live" {
 		t.Fatalf("control: a person with no row: %v, want live", r)
+	}
+}
+
+// TestAStepUpCoveredCallerIsAlwaysAsked: with the owner's switch ON
+// (explicitly), a mirrored session the step-up gate covers — a host whose
+// token is marked as having started agents for the chief, and a remote caller
+// (a session mirrored to another muster) — gets status "pending" and files
+// exactly one ask; page_create's hint says it will be asked. The control: a
+// mirrored session on an UNCOVERED host of the same owner, same switch, goes
+// live. (operator decision, #847 round 1; pageShareGoesLive.)
+func TestAStepUpCoveredCallerIsAlwaysAsked(t *testing.T) {
+	f := newPageFixture(t).keyed(t)
+	f.optIn(t, f.owner, true)
+	base := f.as(f.owner, authz.ViaMirrorHost)
+	spawned := time.Now().Add(-time.Hour)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		c    toolCaller
+	}{
+		{"a host that started agents for the chief",
+			context.WithValue(base, mirrorHostCtxKey{}, mirror.Token{ID: 9, OwnerID: f.owner, Host: "host-spawner", SpawnedAt: &spawned}),
+			mirrorCaller("host-spawner", "0d1e2f3a-aaaa-4bbb-8ccc-000000000101")},
+		{"a remote caller", base, func() toolCaller {
+			c := mirrorCaller("host-elsewhere", "0d1e2f3a-aaaa-4bbb-8ccc-000000000102")
+			c.remote = true
+			return c
+		}()},
+	} {
+		out := f.toolAs(t, tc.ctx, tc.c, pageCreateTool, map[string]any{"title": "Covered " + tc.name, "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+		id := pnum(out["page_id"])
+		if n, _ := out["next"].(string); id <= 0 || !strings.Contains(n, "your owner is asked") {
+			t.Fatalf("%s: page_create: %v (want its hint to say the owner is asked)", tc.name, out)
+		}
+		before := f.asksOf(t, f.owner)
+		req := f.toolAs(t, tc.ctx, tc.c, pageShareRequestTool, map[string]any{"page_id": id})
+		if req["status"] != "pending" || pnum(req["ask_id"]) <= 0 {
+			t.Fatalf("%s, switch on: page_share_request %v, want pending with an ask", tc.name, req)
+		}
+		if n := f.asksOf(t, f.owner); n != before+1 {
+			t.Fatalf("%s: %d ask(s) filed, want 1", tc.name, n-before)
+		}
+		if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusNotFound {
+			t.Fatalf("%s: the pending link serves: %d", tc.name, w.Code)
+		}
+	}
+	// The control: an uncovered host of the same owner, the same switch.
+	ctx := context.WithValue(base, mirrorHostCtxKey{}, mirror.Token{ID: 10, OwnerID: f.owner, Host: "host-plain"})
+	c := mirrorCaller("host-plain", "0d1e2f3a-aaaa-4bbb-8ccc-000000000103")
+	out := f.toolAs(t, ctx, c, pageCreateTool, map[string]any{"title": "Uncovered", "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+	if r := f.toolAs(t, ctx, c, pageShareRequestTool, map[string]any{"page_id": pnum(out["page_id"])}); r["status"] != "live" {
+		t.Fatalf("control: an uncovered host, switch on: %v, want live", r)
 	}
 }

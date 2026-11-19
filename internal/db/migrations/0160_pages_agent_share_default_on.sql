@@ -1,4 +1,4 @@
--- muster 0159 — "LET MY AGENTS SHARE PAGES WITHOUT ASKING" IS ON BY DEFAULT
+-- muster 0160 — "LET MY AGENTS SHARE PAGES WITHOUT ASKING" IS ON BY DEFAULT
 -- (docs/pages.md#when-an-agent-shares; internal/notifypref).
 --
 --   notify_preferences.pages_agent_share   (0135) DEFAULT false → DEFAULT true:
@@ -17,8 +17,8 @@
 -- A changed default on 0094's owned table: its forced owner_isolation policy
 -- is untouched, and rollback/rls_off.sql + --rls-on re-apply 0094 unchanged.
 -- Must apply after its predecessor (the contiguity test refuses a gap).
--- Numbered 0159 when written: main's newest was 0156 and open pull requests
--- held 0157 and 0158. 🔴 RENUMBER IT at merge to the next free number
+-- Numbered 0160 when written: main's newest was 0156 and open pull requests
+-- held 0157, 0158 and 0159. 🔴 RENUMBER IT at merge to the next free number
 -- (and its test's version constant) if those have not all landed first.
 -- Idempotent.
 --
@@ -26,7 +26,7 @@
 -- as off again). A row written while this was applied keeps the true it was
 -- given; the rollback cannot tell it from a user's own choice, so it leaves it:
 --   ALTER TABLE public.notify_preferences ALTER COLUMN pages_agent_share SET DEFAULT false;
---   DELETE FROM schema_migrations WHERE version = 159;
+--   DELETE FROM schema_migrations WHERE version = 160;
 
 SET LOCAL lock_timeout = '3s';
 

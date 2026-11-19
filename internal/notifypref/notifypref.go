@@ -18,7 +18,7 @@
 // a row the user wrote off, and a read that fails are all off: off is exactly
 // the text every user had before the preference existed.
 //
-// 🔴 PagesAgentShare IS ON UNLESS THE USER TURNED IT OFF (migration 0159): a
+// 🔴 PagesAgentShare IS ON UNLESS THE USER TURNED IT OFF (migration 0160): a
 // person with no row reads on, and a row written by another switch takes the
 // column's default, on. A stored value — off included — is the user's and is
 // kept. 🔴 A TEAM owner (users.kind = 'team') ALWAYS reads OFF, whatever is

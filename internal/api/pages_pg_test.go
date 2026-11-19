@@ -101,7 +101,7 @@ func newPageFixture(t *testing.T) *pageFixture {
 }
 
 // askFlow turns the owner's "Let my agents share pages without asking" OFF —
-// on is every person's default since migration 0159 — for a test of the ask
+// on is every person's default since migration 0160 — for a test of the ask
 // flow: an agent's page_share_request files a pending link and an owner card.
 func (f *pageFixture) askFlow(t *testing.T) *pageFixture {
 	t.Helper()

@@ -36,7 +36,7 @@ import (
 // (page_share.go). The one exception is the PAGE OWNER'S own switch, "Let my
 // agents share pages without asking" on Account (notify_preferences
 // .pages_agent_share — ON for every person until they turn it off, migration
-// 0159; always off for a team owner; pageAgentShareOn): for that owner's pages
+// 0160; always off for a team owner; pageAgentShareOn): for that owner's pages
 // page_share_request makes the
 // link live at once and the owner is TOLD (a push, the page's card) instead
 // of asked — still only for a page the caller made, under its owner's
@@ -196,7 +196,7 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 	}
 	switch name {
 	case pageCreateTool:
-		return s.toolPageCreate(ctx, creator, arguments), true
+		return s.toolPageCreate(ctx, c, creator, arguments), true
 	case pageUpdateTool:
 		return s.toolPageUpdate(ctx, c, creator, arguments), true
 	case pageGetTool:
@@ -276,11 +276,11 @@ func pageInput(arguments string, needTitle bool) (id int64, title string, blocks
 	return in.PageID, title, blocks, size, ""
 }
 
-// pageNext is what a create or update says to do next.
-func (s *Server) pageNext(ctx context.Context, p pages.Page) string {
+// pageNext is what a create or update says to do next, for caller c.
+func (s *Server) pageNext(ctx context.Context, c toolCaller, p pages.Page) string {
 	id := p.ID
 	how := "your owner is asked, and approves the link"
-	if s.pageAgentShareOn(ctx, p.OwnerID) {
+	if s.pageShareGoesLive(ctx, c, p.OwnerID) {
 		how = "its link is live at once, and your owner is told"
 	}
 	return "Your owner has been shown it, and can open it signed in at " + s.pageViewURL(id) + ". To let someone else open it, call page_share_request{page_id: " +
@@ -305,7 +305,7 @@ func (s *Server) pagePublished(p pages.Page) {
 	})
 }
 
-func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments string) string {
+func (s *Server) toolPageCreate(ctx context.Context, caller toolCaller, c pages.Creator, arguments string) string {
 	_, title, blocks, size, bad := pageInput(arguments, true)
 	if bad != "" {
 		return bad
@@ -319,7 +319,7 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 	}
 	s.pagePublished(p)
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
-		"next": s.pageNext(ctx, p)})
+		"next": s.pageNext(ctx, caller, p)})
 }
 
 func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.Creator, arguments string) string {
@@ -346,7 +346,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.
 	}
 	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator})
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
-		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
+		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, caller, p)})
 }
 
 // pageIDArg reads {page_id}.
@@ -442,8 +442,9 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 		return pageToolRefusal("read", in.PageID, err)
 	}
 	// 🔴 THE PAGE OWNER'S OPT-IN, read for p.OwnerID — never the caller's or
-	// the operator's (TestTheOptInIsThePageOwners).
-	if s.pageAgentShareOn(ctx, p.OwnerID) {
+	// the operator's (TestTheOptInIsThePageOwners) — and never for a caller the
+	// step-up gate covers (pageShareGoesLive).
+	if s.pageShareGoesLive(ctx, c, p.OwnerID) {
 		return s.pageShareAuto(ctx, creator, p, in.Reason)
 	}
 	if s.ext.Attention == nil {
@@ -484,6 +485,29 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 		"note": "Keep url: it is shown only this once (muster stores only its hash). It opens nothing until your owner approves it, and then opens the page for anyone who has it.",
 		"next": "Your owner decides on the Attention view or their phone. " + askNext(c, a.ID) +
 			" When the answer is \"" + pageShareApproveLabel + "\", url is live; page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows its state."})
+}
+
+// pageShareGoesLive reports whether caller c's page_share_request for a page
+// of owner's makes the link live at once instead of asking: the owner's own
+// setting is on (pageAgentShareOn) AND c is not a caller the step-up gate
+// covers (host_stepup.go stepUpCoverage: a mirrored session on a machine that
+// runs a host officer or starts agents for the chief, or a remote caller).
+//
+// 🔴 A COVERED CALLER ALWAYS ASKS (operator decision, #847 round 1): its
+// door names the session by a header any process on that machine can set —
+// the host officer, a spawned agent — so the call proves nothing about the
+// owner's own session, and "the owner's agents may share" does not reach it.
+// Only a dispatched agent (no mirror host) and the owner's own sessions on an
+// uncovered machine go live. TestAStepUpCoveredCallerIsAlwaysAsked.
+func (s *Server) pageShareGoesLive(ctx context.Context, c toolCaller, owner int64) bool {
+	if !s.pageAgentShareOn(ctx, owner) {
+		return false
+	}
+	if c.asker.MirrorHost == "" && !c.remote {
+		return true
+	}
+	_, _, covered := s.stepUpCoverage(ctx, c.asker.MirrorHost, c)
+	return !covered
 }
 
 // pageAgentShareOn reports whether "Let my agents share pages without asking"

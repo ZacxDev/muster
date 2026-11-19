@@ -11,7 +11,7 @@ import (
 
 // TestPagesAgentShareIsOnUntilTurnedOffAndIsPerUserAndIndependent: "Let my
 // agents share pages without asking" reads ON for every person who never
-// chose (migration 0159) — with no row, and with a row another switch wrote;
+// chose (migration 0160) — with no row, and with a row another switch wrote;
 // off is that user's alone, and leaves their other switches as they were;
 // another user can neither read nor write it; the system scope reads it.
 func TestPagesAgentShareIsOnUntilTurnedOffAndIsPerUserAndIndependent(t *testing.T) {
