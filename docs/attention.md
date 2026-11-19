@@ -59,10 +59,12 @@ dictation is on. An ask's options sit two to a row when there are two to four
 short ones (each at most 18 characters), one to a row otherwise. The question
 is cut to three lines until the card is expanded.
 
-**The answer form is the same everywhere:** on a card here and in a session
-page's asks block, the asker's options first (Answer is then quiet), then the
-one-line box that grows, its mic and **Answer** on one row. A session page has
-no footer, so its Dismiss ends that row.
+**The answer form is the same everywhere:** on a card here and on an
+officer's page, the asker's options first (Answer is then quiet), then the
+one-line box that grows, its mic and **Answer** on one row. An officer's page
+has no footer, so its Dismiss ends that row. A session's page draws no answer
+form: its header counts the asker's open questions and opens them here,
+filtered to that asker (below).
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
@@ -416,8 +418,8 @@ carries it as each item's `name` (absent when the session has no human name).
 
 Every attention text that names a mirrored window — a chief nudge's ask, a
 waiting session, a session question, a mirrored session's own ask (its source
-on the queue, its page's "*<source>* asks" header and the asks block of its
-session page), an answered ask's card and its delivery line ("Queued for …",
+on the queue and its page's "*<source>* asks" header), an answered ask's card
+and its delivery line ("Queued for …",
 "Waiting for … to read it"), a notice, a session-state stop's row, and their
 notifications — names it the same way
 (`mirror.Where`), so you can go straight to it in a terminal. The chief reads
@@ -491,13 +493,29 @@ itself, showing the answer and where it went. It follows the queue live: chips
 that arrive after it opened appear, and a question answered elsewhere shows as
 answered (`internal/api/attention_ask_page.go`).
 
-**The session's page also shows the asker's open questions with the same answer
-form as `/attention`** (its option buttons — a chief's task actions included —
-free text, Dismiss): an agent's page lists that agent's open asks, a window's
-rendered view the asks of the Claude sessions it runs, never another asker's.
-Answering there sends you back to that page; the list follows the queue live (an
-ask answered anywhere leaves it, a new one arrives, never replacing an answer
-you are typing) (`internal/api/attention_asker.go`). A session is not re-notified:
+**The session's page counts the asker's open questions in its header.** An
+agent's page (the chief's included) and a window's rendered view draw a small
+count badge while the asker has questions open: an agent's page counts that
+agent's open asks, a window's rendered view the asks of the Claude sessions it
+runs, never another asker's. It counts what waits on you, as every other
+count does: a team's question you only watch is not counted, nor is a
+session's question to its chief or a notice. The page draws no list of them and no answer form:
+**tap the badge** to open the Asks page filtered to them,
+`/attention?from=<asker>`, where they are answered, dismissed and listed like
+every other card. The count follows the queue live (an ask answered anywhere,
+or a new one, moves it without a reload), and with nothing open the badge is
+not drawn (`internal/api/attention_asker.go`).
+
+**The filtered Asks page** lists, on its Open tab, that asker's open questions
+alone (no notices, waiting sessions or drafts), with a line above the tabs —
+`Showing asks from <name> · Show all` — and its *N open* counts those that wait on you (no drafts or stalled sessions); **Show all**
+is the unfiltered page. The filter is `from=agent:<name>` for an agent, or
+`from=window:<host>:<window id>:<tmux session>` for a mirrored window; the
+other tabs are unfiltered. It is read as you: a `from` naming an agent you
+cannot read or a window that is not one of yours is ignored, and the page
+lists what it lists without it.
+
+A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
