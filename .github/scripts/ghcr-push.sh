@@ -41,6 +41,12 @@
 # login would read as "nothing published yet" and the push would decide what a
 # tag means.
 #
+# OUTPUTS: under GitHub Actions (GITHUB_OUTPUT set) push, buildx and retag
+# also write the step outputs `digest=<sha256:…>` (what <remote-ref> now names)
+# and `pushed=yes|no` — yes only when THIS run pushed that image. The image
+# jobs attest build provenance only on `pushed=yes`: an image kept or retagged
+# was attested by the run that built it, and this run did not build it.
+#
 # Exit codes: 0 done / probe answered; 1 refused (tag taken under `refuse`, or
 # under `release` by another commit's image, or a push failed); 2 harness error (bad arguments, a probe it could not classify).
 set -euo pipefail
@@ -66,6 +72,8 @@ probe() {  # present | absent on stdout; exit 2 on anything else
 }
 
 summary() { [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY" || true; }
+# outputs <digest> yes|no: the step outputs described in the header.
+outputs() { [ -z "${GITHUB_OUTPUT:-}" ] || printf 'digest=%s\npushed=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
 
 revision_of() {  # the revision label(s) of a remote ref, one per line, deduplicated
   docker buildx imagetools inspect "$1" --format '{{json .Image}}' | python3 -c '
@@ -91,6 +99,7 @@ on_present() {
   d="$(digest_of "$ref")"
   echo "ghcr-push: $ref already published at $d ($mode) — kept, not overwritten"
   summary "- \`$ref@$d\` (already published, kept)"
+  outputs "$d" no
   exit 0
 }
 
@@ -118,6 +127,7 @@ case "$cmd" in
     d="$(digest_of "$ref")"
     echo "ghcr-push: pushed $ref@$d"
     summary "- \`$ref@$d\` (pushed)"
+    outputs "$d" yes
     ;;
   buildx)
     [ $# -ge 5 ] && [ "$5" = "--" ] || die "usage: $0 buildx <remote-ref> reuse|refuse|release <platforms> -- <build args…>" 2
@@ -130,6 +140,7 @@ case "$cmd" in
     d="$(digest_of "$ref")"
     echo "ghcr-push: pushed $ref@$d ($platforms)"
     summary "- \`$ref@$d\` (pushed, $platforms)"
+    outputs "$d" yes
     ;;
   retag)
     [ $# -eq 3 ] || die "usage: $0 retag <src-ref> <dst-ref>" 2
@@ -140,6 +151,7 @@ case "$cmd" in
       [ "$(digest_of "$ref")" = "$sd" ] && {
         echo "ghcr-push: $ref already points at $src ($sd) — kept"
         summary "- \`$ref@$sd\` (already retagged from \`$src\`, kept)"
+        outputs "$sd" no
         exit 0; }
       on_present "$ref" release
     fi
@@ -148,6 +160,7 @@ case "$cmd" in
     [ "$d" = "$sd" ] || die "retag produced $ref@$d, not the source digest $sd"
     echo "ghcr-push: retagged $src -> $ref@$d (no rebuild)"
     summary "- \`$ref@$d\` (retagged from \`$src\`, unchanged since)"
+    outputs "$d" no
     ;;
   *)
     die "usage: $0 probe <remote-ref> | push <local-image> <remote-ref> reuse|refuse|release | buildx <remote-ref> reuse|refuse|release <platforms> -- <args…>" 2

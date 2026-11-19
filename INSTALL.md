@@ -305,7 +305,7 @@ Read the output and note:
 
 | what | needed on | if it is missing |
 |---|---|---|
-| `os`, `arch` | every machine | Linux and macOS on amd64 or arm64 only. Stop on anything else and tell the person. macOS hosts are experimental: see [docs/mirroring.md](docs/mirroring.md) for what a Mac can show, and tell the person. |
+| `os`, `arch` | every machine | Linux and macOS on amd64 or arm64 only. Stop on anything else and tell the person. On Windows (Git Bash, MSYS2, Cygwin) only the `muster` CLI runs, not `muster-mirror` (it needs tmux): tell the person, and offer WSL, which is Linux and follows this guide as one ([docs/releases.md](docs/releases.md)). macOS hosts are experimental: see [docs/mirroring.md](docs/mirroring.md) for what a Mac can show, and tell the person. |
 | `curl`, `tar` | every machine | Install them with the system package manager (ask first). |
 | `tmux` | every machine | Install it (`sudo apt install tmux`, `sudo dnf install tmux`, `brew install tmux`; ask first). muster shows tmux windows, so this is required. Any packaged version works. |
 | `docker`, `docker compose`, `docker: usable` | the hub only | See **Docker on Linux** below, or Docker Desktop on macOS. |
@@ -907,10 +907,30 @@ again.
   env_set MUSTER_UI_PASSWORD "$(mi_rand 18)" && mi_dc up -d --wait --quiet-pull && echo "PASSWORD CHANGED"
   ```
 
+- **Verify what was downloaded** (optional; Step 2 already checks every
+  file against the release's `checksums.txt`): each release asset, each
+  program in it and the release's muster image have a signed build-provenance
+  attestation. With
+  the GitHub CLI signed in, a pass names the workflow and commit that built it;
+  anything else means stop and tell the person:
+
+  ```sh
+  . "$HOME/.config/muster-install/lib.sh"
+  gh attestation verify "$MUSTER_BIN/muster" --repo ZacxDev/muster &&
+    gh attestation verify "$MUSTER_BIN/muster-mirror" --repo ZacxDev/muster &&
+    gh attestation verify "oci://ghcr.io/zacxdev/muster:$MUSTER_VERSION" --repo ZacxDev/muster && echo "ATTESTED"
+  ```
+
+  Releases before the one that introduced attestations have none (the
+  command says so). [docs/releases.md](docs/releases.md#verifying-a-download)
+  has the rest.
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`mi_dc exec -T muster /muster-server mirror
-  token ls`, then `… revoke <id>`).
+  token ls`, then `… revoke <id>`). If the programs were installed as system
+  packages (`MUSTER_PACKAGE=deb|rpm`; this guide never does), also
+  `sudo apt remove muster muster-mirror` or `sudo dnf remove muster muster-mirror`
+  (ask first: it removes them for every user of the machine).
 - **Remove muster's HTTPS mapping**, and only it: `tailscale serve --https=443
   off` when `mi_serve_state` says `ours`. Never `tailscale serve reset`: it
   removes everything else this machine serves too.

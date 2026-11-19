@@ -390,7 +390,7 @@ func TestARowWhoseTextExpiredSaysSo(t *testing.T) {
 	body := f.session(t, askLogPanelPath, f.a).Body.String()
 	card := regexp.MustCompile(`(?s)<li id="asklog-` + strconv.FormatInt(aIDs[0], 10) + `".*?</li>`).FindString(body)
 	if !strings.Contains(card, "data-text-expired") || !strings.Contains(card, "Text expired") || strings.Contains(card, f.canary) ||
-		!strings.Contains(card, "by you · after 10s") {
+		!strings.Contains(reTag.ReplaceAllString(card, ""), "by you · after 10s") {
 		t.Fatalf("the expired card: %s", card)
 	}
 }
