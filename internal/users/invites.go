@@ -185,10 +185,35 @@ func (s *PGStore) Audited(ctx context.Context, by Actor, action, object string, 
 	})
 }
 
-// RecentAudit returns the newest audit rows, newest first.
+// NotifyAuditAction is the audit_log action of an agent's notification to its
+// owner (internal/api notify_owner.go): the owner's own record, read on their
+// Account page (OwnAudit), never the admins' activity list (RecentAudit).
+const NotifyAuditAction = "agent.notify"
+
+// RecentAudit returns the newest audit rows, newest first: the admins'
+// activity list. An agent's notification to its owner (NotifyAuditAction) is
+// left out — it is the owner's record of what their agents told them, not an
+// admin action, and a chatty agent would push every admin action off the list.
 func (s *PGStore) RecentAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
-		FROM audit_log ORDER BY at DESC, id DESC LIMIT $1`, limit)
+	return s.auditRows(sys(ctx), `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
+		FROM audit_log WHERE action <> $2 ORDER BY at DESC, id DESC LIMIT $1`, limit, NotifyAuditAction)
+}
+
+// OwnAudit returns user uid's own audit rows of action, newest first, read
+// under ctx's principal: row-level security (audit_log's self_read) confines
+// it to the caller, and uid is named in the query too, so an admin's
+// all-scope read still returns only their OWN rows.
+func (s *PGStore) OwnAudit(ctx context.Context, uid int64, action string, limit int) ([]AuditEntry, error) {
+	if uid <= 0 {
+		return nil, nil
+	}
+	return s.auditRows(ctx, `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
+		FROM audit_log WHERE user_id = $2 AND action = $3 ORDER BY at DESC, id DESC LIMIT $1`, limit, uid, action)
+}
+
+// auditRows runs one audit_log read.
+func (s *PGStore) auditRows(ctx context.Context, q string, args ...any) ([]AuditEntry, error) {
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

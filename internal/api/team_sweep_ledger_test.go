@@ -35,6 +35,8 @@ var teamSweepClasses = map[string]string{
 	"pages.go Server.pageResponded":                        "never: pages are personal",
 	"page_tools.go Server.pagePublished":                   "never: pages are personal",
 	"page_tools.go Server.pageShareAuto":                   "never: pages are personal",
+	"notify_owner.go Server.pageUpdated":                   "never: pages are personal",
+	"notify_owner.go Server.toolNotifyOwner":               "never: refused for a team owner (no one owner to push)",
 	"plugin_drafts.go Server.notifyDraftRefused":           "never withdrawn: information only",
 	"plugin_pairing.go Server.pairRequested":               "never: pairing requests are personal",
 	"push_task.go Server.flushCreatedTasks":                "never withdrawn: replaced by its tag",
