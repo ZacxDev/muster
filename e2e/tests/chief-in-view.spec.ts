@@ -214,6 +214,16 @@ test.afterEach(async ({ page }, info) => {
 const view = () => `${rig.viewPath('oc')}&window=${encodeURIComponent('@2')}`;
 const strip = (page: Page) => page.locator('#mv-chief-log');
 
+// replyAfter is the strip's text AFTER the last place it shows line — this
+// test's own line — so a reply to an earlier turn (another viewport's run on
+// the same window and chief) is never read as the reply to this one. "" when
+// the line is not in the strip.
+async function replyAfter(page: Page, line: string): Promise<string> {
+  const text = (await strip(page).textContent()) ?? '';
+  const at = text.lastIndexOf(line);
+  return at < 0 ? '' : text.slice(at + line.length);
+}
+
 // The switch's FIXED name; its checked state is the mode, and its description
 // names the current target and the action.
 const SWITCH_NAME = 'Send to the chief';
@@ -361,10 +371,18 @@ for (const vp of [
       // own conversation (it is not the session's).
       await expect(strip(page).locator('[data-bubble="user"]').last()).toContainText(line, { timeout: 20_000 });
       await expect(page.locator('#mv-log')).not.toContainText(line);
+      // 🔴 THIS TEST'S OWN TURN, NEVER A REPLY ALREADY IN THE STRIP. The phone
+      // and desktop runs talk to ONE chief about ONE window, so the strip the
+      // second run opens already holds the first run's CHIEF-SAW reply: a wait
+      // for "any CHIEF-SAW" passed at once, before the chief had even been
+      // handed this run's line (CI: "the chief got the line as a turn").
+      // So wait for the fake chief to receive THIS line, then for the reply
+      // drawn AFTER it (replyAfter).
+      await expect.poll(() => chiefTurns(line), { timeout: 30_000, message: 'the chief got the line as a turn' }).toBe(1);
       // The chief's reply, from session_context on the subject muster bound:
       // this window's opencode session, its kickoff block named by ref.
-      await expect(strip(page)).toContainText(`CHIEF-SAW opencode:${sid} (opencode) kickoff m:`, { timeout: 30_000 });
-      await expect(strip(page)).toContainText('block 0: ' + KICKOFF_LINE);
+      await expect.poll(() => replyAfter(page, line), { timeout: 30_000 }).toContain(`CHIEF-SAW opencode:${sid} (opencode) kickoff m:`);
+      expect(await replyAfter(page, line)).toContain('block 0: ' + KICKOFF_LINE);
       // The chief was handed the line behind muster's header naming this session.
       const turn = asked.find((a) => a.first.endsWith('\n---\n' + line));
       expect(turn, 'the chief got the line as a turn').toBeTruthy();
@@ -385,7 +403,7 @@ for (const vp of [
       await expect(cb).toHaveAccessibleName(SWITCH_NAME);
       await expect(cb).toHaveAccessibleDescription(CHIEF_DESC);
       await expect(input).toBeEnabled();
-      await expect(strip(page)).toContainText(`CHIEF-SAW opencode:${sid}`, { timeout: 20_000 });
+      await expect.poll(() => replyAfter(page, line), { timeout: 20_000 }).toContain(`CHIEF-SAW opencode:${sid}`);
       await expectChiefLook(page, agentLook);
       // Back to the agent: disabled again, the strip gone, the form posting to
       // the agent, and the composer exactly as it was.

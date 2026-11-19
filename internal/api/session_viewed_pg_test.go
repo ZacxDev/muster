@@ -77,6 +77,7 @@ func (f *stateFixture) handledTwoPassesLater(t *testing.T, id int64, reason stri
 func TestOpeningTheSessionsViewEndsItsEpisodeAndClearsThePush(t *testing.T) {
 	f := newStateFixture(t, false)
 	id, tag := f.pushedStall(t)
+	f.advance(pushBroadcastTimeout + time.Second) // its push has been sent (clearEpisode holds a withdrawal inside that)
 	if code := f.get(t, viewPath(), nil); code != http.StatusOK {
 		t.Fatalf("GET %s: %d", viewPath(), code)
 	}
@@ -215,6 +216,7 @@ func TestOpeningAnAgentConversationRecordsTheStreakItShowed(t *testing.T) {
 	if stored == want || stored == "" {
 		t.Fatalf("fixture: the stored streak %q must lag the newer message's %q", stored, want)
 	}
+	f.advance(pushBroadcastTimeout + time.Second) // its push has been sent (clearEpisode holds a withdrawal inside that)
 	if code := f.get(t, ui.AgentSessionHref(worker.Name, sess.ID), nil); code != http.StatusOK {
 		t.Fatalf("GET the conversation: %d", code)
 	}
