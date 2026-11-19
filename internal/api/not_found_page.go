@@ -87,6 +87,12 @@ func (n *notFoundWriter) WriteHeader(code int) {
 	if n.wrote {
 		return
 	}
+	// An informational status (103 Early Hints) is not the response's
+	// status: passed on, and the real one still to come.
+	if code >= 100 && code < 200 {
+		n.ResponseWriter.WriteHeader(code)
+		return
+	}
 	n.wrote = true
 	if code == http.StatusNotFound && strings.HasPrefix(n.Header().Get("Content-Type"), "text/plain") {
 		n.held = true

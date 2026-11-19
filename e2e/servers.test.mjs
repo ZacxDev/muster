@@ -60,7 +60,7 @@ test('an address is https, or http on localhost / 127.0.0.1 only', () => {
 // Jargon audit F029: junk typed into Add server is 'invalid' — whatever
 // the engine's URL parser makes of it — and is never put on the list.
 test('an address that is not a server address is refused, and nothing is added', () => {
-  for (const input of ['not a server', 'not%20a%20server', 'https://not%20a%20server', 'notaserver', 'https://exa_mple.com', 'https://-atlas.example.org', 'https://atlas..example.org', 'atlas example org']) {
+  for (const input of ['not a server', 'not%20a%20server', 'https://not%20a%20server', 'https://exa!mple.com', 'https://-atlas.example.org', 'https://atlas..example.org', 'atlas example org']) {
     deq(plain(core.parseServer(input)), { ok: false, error: 'invalid' }, input);
     const r = core.add(core.normalize(null, SELF), input);
     assert.equal(r.ok, false, input);
@@ -73,6 +73,19 @@ test('an address that is not a server address is refused, and nothing is added',
   deq(plain(core.parseServer('https://192.0.2.10')), { ok: true, origin: 'https://192.0.2.10' });
   deq(plain(core.parseServer('https://[2001:db8::1]:8443')), { ok: true, origin: 'https://[2001:db8::1]:8443' });
   deq(plain(core.parseServer('https://atlas')), { ok: true, origin: 'https://atlas' });
+  deq(plain(core.parseServer('https://my_server.lan')), { ok: true, origin: 'https://my_server.lan' }, 'the URL standard allows "_"');
+  deq(plain(core.parseServer('workbench:30306')), { ok: true, origin: 'https://workbench:30306' }, 'a short name with a port');
+});
+
+// A short tailnet name typed alone is refused with a hint that adding
+// https:// works — the whole sentence pinned — and is accepted with it.
+test('one bare word is refused, saying that https:// in front of it works', () => {
+  for (const input of ['workbench', 'atlas', 'notaserver']) {
+    deq(plain(core.parseServer(input)), { ok: false, error: 'bareword' }, input);
+    deq(plain(core.parseServer('https://' + input)), { ok: true, origin: 'https://' + input }, input);
+  }
+  assert.equal(core.ERRORS.bareword, "That doesn't look like a server address. If it is one, add https:// in front of it.");
+  assert.equal(core.ERRORS.invalid, "That doesn't look like a server address.");
   deq(plain(core.parseServer('bücher.example')), { ok: true, origin: 'https://xn--bcher-kva.example' });
 });
 
@@ -115,6 +128,29 @@ test('the same server, typed another way, is never added twice', () => {
     deq(plain({ ok: r.ok, error: r.error }), { ok: false, error: 'duplicate' }, input);
   }
   assert.equal(core.add(l, 'https://atlas.example.org:8443').ok, true, 'another port is another server');
+});
+
+// 🔴 A SAVED server is never lost to a typing rule newer than it (audit of
+// PR #854): an underscore host survives a load as it is, and so does a host
+// only the typing rules refuse ("!"); a trailing-dot entry is migrated to its
+// dot-less form; each keeps its label, and only junk is dropped.
+test('saved servers survive a load with their labels; a trailing dot is migrated, junk dropped', () => {
+  const stored = {
+    v: 1,
+    servers: [
+      { origin: 'https://my_server.lan', label: 'Home lab' },
+      { origin: 'https://atlas.example.', label: 'Atlas' },
+      { origin: 'https://atlas.example', label: 'second copy' },
+      { origin: 'https://exa!mple.example', label: 'Old typing rules' },
+      { origin: 'https://not%20a%20server', label: 'junk' },
+    ],
+  };
+  deq(core.normalize(stored, SELF), [
+    { origin: SELF, label: '' },
+    { origin: 'https://my_server.lan', label: 'Home lab' },
+    { origin: 'https://atlas.example', label: 'Atlas' },
+    { origin: 'https://exa!mple.example', label: 'Old typing rules' },
+  ]);
 });
 
 test('an address with a user name or password in it is refused, not stripped', () => {

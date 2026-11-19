@@ -57,7 +57,10 @@ func TestABrowserNeverSeesGosBareNotFoundText(t *testing.T) {
 // TestNotFoundStaysPlainForAnythingButAPageLoad: an API client, a script or
 // curl (no HTML in Accept) keeps the plain 404 text, a POST is never swapped,
 // and a plain-text 404 whose body only STARTS with Go's text passes through
-// byte for byte even to a browser.
+// byte for byte even to a browser. And the edges of a page load: a request
+// that says so by Sec-Fetch-Dest alone still gets the page (an invariant
+// guard), and so does one whose handler sent a 103 first (red before 1xx
+// was passed through).
 // INVARIANT GUARD: these held before the not-found page existed; they pin
 // that the swap is no broader than a browser's page load of Go's own text.
 func TestNotFoundStaysPlainForAnythingButAPageLoad(t *testing.T) {
@@ -75,6 +78,30 @@ func TestNotFoundStaysPlainForAnythingButAPageLoad(t *testing.T) {
 	}
 
 	s, _, _, _ := brandingServer(t)
+
+	// A navigation that names itself only by Sec-Fetch-Dest (no HTML in
+	// Accept) is a page load all the same.
+	req = httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), NotFoundHeading) {
+		t.Errorf("Sec-Fetch-Dest: document alone: %d %q, want the not-found page", rr.Code, rr.Body.String())
+	}
+
+	// A 103 before Go's text does not decide the status: still swapped.
+	early := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		http.NotFound(w, r)
+	})
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set("Accept", "text/html")
+	s.plainNotFound(early).ServeHTTP(rr, req)
+	if !strings.Contains(rr.Body.String(), NotFoundHeading) {
+		t.Errorf("after a 103: %q, want the not-found page", rr.Body.String())
+	}
+
 	// Longer than Go's text (released while writing) and shorter (decided
 	// at the end): both are someone else's words, kept as written.
 	for _, body := range []string{"404 page not found\nand more", "404 no such run\n"} {

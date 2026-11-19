@@ -52,22 +52,33 @@
   var LOGO_PATH = '/brand/icon-192.png';
 
   // A host as a server address may have it: DNS labels (letters, digits,
-  // hyphens; an international name is already punycode by now), or an IPv6
-  // literal. Anything else — a space, a percent escape — is not an address.
-  var HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*|\[[0-9a-f:.]+\])$/;
+  // hyphens, underscores — the URL standard allows "_", and LAN names use
+  // it; an international name is already punycode by now), or an IPv6
+  // literal. Anything else is not an address someone typed.
+  var HOST_RE = /^(?:[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*|\[[0-9a-f:.]+\])$/;
+  // JUNK is what a host can never hold, in any parser: a space (Chromium
+  // percent-encodes it), or a percent escape. The only host test a SAVED
+  // entry must pass (normalize): HOST_RE is for what is typed.
+  var JUNK_RE = /[\s%]/;
 
   // parseServer turns what a person typed into a server's origin, or says why
-  // not: 'empty', 'invalid', 'credentials' (a user name or password in it), or
-  // 'scheme' (not https, nor http on a loopback host). A missing scheme is
-  // https. Only the origin is returned: a path, query or fragment is dropped.
+  // not: 'empty', 'invalid', 'bareword' (one word, no dot, no port, no
+  // scheme), 'credentials' (a user name or password in it), or 'scheme' (not
+  // https, nor http on a loopback host). A missing scheme is https. Only the
+  // origin is returned: a path, query or fragment is dropped.
+  //
+  // saved: the address is a SAVED entry being loaded, not typed — of the host
+  // rules only junk (JUNK_RE) is refused, so a server the person already had
+  // is never lost to a typing rule added after they saved it.
   //
   // 🔴 JUNK IS REFUSED HERE, NOT BY THE BROWSER'S URL PARSER (jargon audit
   // F029): Chromium's parser percent-encodes a space in a host where the
   // standard (and node) refuses it, so "not a server" came back as the origin
   // https://not%20a%20server and was listed. So the host is checked here: one
-  // that is not DNS labels or an IP — and, when no scheme was typed, a bare
-  // word with no dot in it (not localhost) — is 'invalid' in every engine.
-  function parseServer(input) {
+  // that is not DNS labels or an IP is 'invalid' in every engine. One word
+  // typed with no dot, no port and no scheme (not localhost) is 'bareword':
+  // its message says adding https:// works (a short tailnet name).
+  function parseServer(input, saved) {
     var s = String(input == null ? '' : input).trim();
     if (!s) return { ok: false, error: 'empty' };
     var typedScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
@@ -77,9 +88,9 @@
     if (u.username || u.password) return { ok: false, error: 'credentials' };
     // A trailing dot is the same host: dropped, so it is not a second entry.
     var host = u.hostname.replace(/\.$/, '');
-    if (!host || !HOST_RE.test(host)) return { ok: false, error: 'invalid' };
-    if (!typedScheme && host.indexOf('.') < 0 && host.charAt(0) !== '[' && !LOOPBACK[host]) {
-      return { ok: false, error: 'invalid' };
+    if (!host || JUNK_RE.test(host) || (!saved && !HOST_RE.test(host))) return { ok: false, error: 'invalid' };
+    if (!saved && !typedScheme && !u.port && host.indexOf('.') < 0 && host.charAt(0) !== '[' && !LOOPBACK[host]) {
+      return { ok: false, error: 'bareword' };
     }
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOOPBACK[host])) {
       return { ok: false, error: 'scheme' };
@@ -146,8 +157,14 @@
   }
 
   // normalize makes a stored value a valid list: every origin re-checked (one
-  // that does not come back from parseServer as itself is dropped), no
-  // duplicates, this server (self) first and always present, at most MAX.
+  // that is not its own URL origin, or is junk, is dropped), no duplicates,
+  // this server (self) first and always present, at most MAX.
+  //
+  // 🔴 A SAVED SERVER IS MIGRATED, NEVER DROPPED, BY A RULE NEWER THAN IT. An
+  // entry saved with a trailing dot (https://atlas.example.) is kept, label
+  // and all, as its dot-less form; one whose host the typing rules would now
+  // refuse is kept as it is. Only junk goes. The next save writes the list
+  // back, so a drop here would be permanent.
   function normalize(stored, self) {
     var list = stored && stored.v === VERSION && Array.isArray(stored.servers) ? stored.servers : [];
     var seen = {};
@@ -164,8 +181,10 @@
         if (!mine) mine = entry(self, s);
         continue;
       }
-      var p = parseServer(s.origin);
-      if (!p.ok || p.origin !== s.origin || seen[p.origin]) continue;
+      var p = parseServer(s.origin, true);
+      var own = false;
+      try { own = new URL(s.origin).origin === s.origin; } catch (e) { own = false; }
+      if (!p.ok || !own || seen[p.origin]) continue;
       seen[p.origin] = true;
       if (p.origin === self) mine = entry(self, s);
       else out.push(entry(p.origin, s));
@@ -262,9 +281,21 @@
     return p.origin;
   }
 
+  // ERRORS is what Add server says for each of add's errors.
+  var ERRORS = {
+    empty: 'Enter the server’s address.',
+    invalid: 'That doesn\'t look like a server address.',
+    bareword: 'That doesn\'t look like a server address. If it is one, add https:// in front of it.',
+    credentials: 'Leave the user name and password out of the address.',
+    scheme: 'The address must start with https:// (http:// only for localhost).',
+    duplicate: 'That server is already on the list.',
+    full: 'The list is full (' + MAX + ' servers). Remove one first.',
+  };
+
   var core = {
+    ERRORS: ERRORS,
     KEY: KEY, MAX: MAX, PALETTE: PALETTE, LOGO_PATH: LOGO_PATH,
-    parseServer: parseServer, hostLabel: hostLabel, hostName: hostName, cleanText: cleanText, colours: colours, normalize: normalize,
+    parseServer: parseServer, hostLabel: hostLabel, cleanText: cleanText, colours: colours, normalize: normalize,
     load: load, save: save, add: add, remove: remove, rename: rename, display: display, logoSrc: logoSrc,
     switchHref: switchHref, handoff: handoff, kept: kept, HANDOFF_KEY: HANDOFF_KEY, HANDOFF_MAX_AGE_MS: HANDOFF_MAX_AGE_MS,
   };
@@ -274,14 +305,6 @@
   // ---- the page ---------------------------------------------------------------
 
   var self = location.origin;
-  var ERRORS = {
-    empty: 'Enter the server’s address.',
-    invalid: 'That doesn\'t look like a server address.',
-    credentials: 'Leave the user name and password out of the address.',
-    scheme: 'The address must start with https:// (http:// only for localhost).',
-    duplicate: 'That server is already on the list.',
-    full: 'The list is full (' + MAX + ' servers). Remove one first.',
-  };
 
   function storage() { try { return root.localStorage; } catch (e) { return null; } }
   function current() {

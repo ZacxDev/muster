@@ -166,15 +166,21 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   and is drawn as text, never markup.
 - A row shows the label only. The exact address is behind the ⓘ on each
   Manage servers row (the shared details sheet), with Copy.
-- An address must look like one: whitespace anywhere, or a host that is not
-  DNS labels or an IP, is refused ("That doesn't look like a server
-  address."), and a bare word with no dot (other than `localhost`) is refused
-  unless its scheme is typed. This is checked by servers.js itself, not left
-  to the browser's URL parser: Chromium's percent-encodes a space in a host
-  where the standard refuses it, which once listed "not a server" as
-  `https://not%20a%20server`. A stored entry of that shape is dropped on load.
+- A typed address must look like one: a host that is not DNS labels
+  (letters, digits, `-`, `_`) or an IP is refused ("That doesn't look like a
+  server address."). One word with no dot, no port and no scheme (other than
+  `localhost`) is refused with "That doesn't look like a server address. If
+  it is one, add https:// in front of it." (`workbench:30306` and
+  `https://workbench` are accepted). This is checked by servers.js itself,
+  not left to the browser's URL parser: Chromium's percent-encodes a space in
+  a host where the standard refuses it, which once listed "not a server" as
+  `https://not%20a%20server`.
 - A trailing dot on a host is dropped, so `atlas.example.` and
   `atlas.example` are one server.
+- 🔴 A SAVED entry is never lost to a typing rule newer than it: on load, a
+  trailing-dot entry is migrated to its dot-less form with its label, and a
+  host the typing rules would refuse is kept. Only junk (a space or `%` in the
+  host) is dropped.
 - Another server's logo is `<origin>/brand/icon-192.png`, built from the
   stored origin alone, requested only while the list is shown.
 
