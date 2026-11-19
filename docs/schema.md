@@ -174,6 +174,7 @@ buys only a word.
 | `0154` | A plugin's [auto-start](plugins.md#auto-start): four columns on `plugins` — `autostart_target` (`pod/claude-code` or `pod/gateway`), `autostart_repo` (`owner/name`), `autostart_daily_cap` (1 to 10, the chief's own daily cap `MaxChiefDispatchesPerDay`; a test fails if the two diverge) and `autostart_at` — all NULL (off, every plugin's default) or all set (`plugins_autostart_whole`). 🔴 Only the owner's signed-in browser writes them (`plugins.SetAutostart` refuses any other door, a plugin's own token included): the database cannot tell a plugin token from its owner. No new table or policy (0015's covers the columns), not re-applied by `db.RLSOn`. Numbered `0154` at merge (`0152` is the pages owner view's, `0153` the plugin task backfill's). 🔴 Renumber it if another migration takes 0154 first. Rollback: an older image never reads them; the statements are in the migration's header. |
 | `0155` | `session_routes.paste_sha256`: the SHA-256 of the routed block muster queued into the target session (`plugins.RoutedPasteSHA256`: CRLF and lone CR folded to LF, the Claude Code CLI's `<pasted_content` escaping undone, trailing white space trimmed), set with `send_queue_id`; `NULL` for a route that pasted nothing or was made before it. A mirrored session's view draws a routed paste as a "From …" card only when its route exists, targets that session, was delivered (its send-queue row sent, the prompt no earlier than the delivery) and recorded this very text's hash, and only for the first such prompt — a block of the same shape typed by anything else is the person's own bubble. A new column on an owned table: not re-applied by `db.RLSOn`. Rollback: drop the column (the statement is in the file's header). |
 | `0156` | `officer_seen`: one row per (viewer, officer) — `owner_id` is the VIEWER, `officer_owner` and `officer` name the officer (a person's or a team's), `seen_at` when they last opened [its page](officers-builtin.md#an-officers-page); the sidebar's and the Officers list's "N new" count that officer's items finished since (an officer never opened counts the last 7 days). No foreign key to the officer; the viewer's rows go with them (`ON DELETE CASCADE`). Owned, under forced row-level security (personal: one member's look clears nothing for another), and re-applied by `db.RLSOn`. Renumber at merge if main moved. Rollback: an older image never reads it; the statements are in the migration's header. |
+| `0160` | [A team's pages](pages.md#a-teams-pages): the four pages tables leave the personal class for their own ([team access](#team-access)). Every member of the page's team reads it (`team_read` at viewer). Only the page's owner writes versions. `pages.created_by_user` is the person who started the team agent that made a team's page (NULL on a person's own page, and never changed). Deleting a page, changing its version and revoking or replacing its links is `muster_page_manager`'s: the owner, the recorded creator, or a team manager when no creator is recorded. Guards (`pages_team_guard`, `page_links_team_guard`) let any other member only touch `updated_at`, make a live link (Share) and decide a pending one. `page_responses.responder_user` is who sent an owner-view response, forced to the caller (`page_responses_responder`; backfilled to the owner); a member inserts only their own `by_owner` row. `owner_fixed` on all four. Re-applied by `db.RLSOn` after `0116`. Numbered `0160` while `0157`–`0159` are held by open pull requests; it may be renumbered at merge. Rollback: in the file's header. |
 
 To change the schema, add a new numbered file.
 
@@ -220,7 +221,7 @@ Phase 2a (`0127`) puts every owned table in one share class, pinned by
 
 - **Personal** (`owner_isolation` only): never shared. This covers
   credentials, connectors, devices, push, preferences, pins, recents, tags,
-  flows, pages, jobs, pairing requests, chief host dispatches
+  flows, jobs, pairing requests, chief host dispatches
   (`host_dispatches`), and `agent_secrets` (an agent's credentials,
   never shared even though `agents` is, since `0131`).
 - **Lent** (`owner_isolation` plus `team_lent_read`, phase 3, `0130`):
@@ -238,6 +239,11 @@ Phase 2a (`0127`) puts every owned table in one share class, pinned by
   `chief_turn_usage`): a member reads them and no member writes them; only
   the owner's recording path or the system scope does.
 - **Managed:** a member reads at viewer or operator and writes at manager.
+- **Team pages** (`pages`, `page_versions`, `page_links`, `page_responses`,
+  `0160`): a member reads at viewer; only the page's creator manages it
+  (`muster_page_manager`), and guards narrow what any other member writes to
+  answering, sharing and deciding a share card. Pinned by `teamPageTables` in
+  `internal/db/share_ledger_test.go`.
   This covers `mirror_tokens`, the officer types, defs and schedules, and the
   plugin tables.
 

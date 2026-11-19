@@ -280,6 +280,9 @@ and managers type into its hosts' sessions, each with their own fresh sign-in
     charters, plugins and their drafts).
   - Credentials, connectors, devices and push are never shared. A team's
     agents are (0131), without their secrets, which live in `agent_secrets`.
+  - A team's [pages](pages.md#a-teams-pages) (0160): every member reads them,
+    answers them and shares them; only the person who started the agent that
+    made one deletes it, changes its version or revokes its links.
   - A Claude account's rate-limit and auth-failure marks are the ACCOUNT's:
     the admin and every team on the server pool see the same marks on the
     pool's accounts. A member's own accounts, and their marks, are theirs.
