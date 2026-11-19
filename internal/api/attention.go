@@ -326,6 +326,9 @@ type attentionItem struct {
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
 	// nudge's is found through its decision (nudgeSessionPath).
 	systemAsk bool
+	// officerAsk: an ask muster raised for a builtin officer
+	// (officerSystemAsk): its push opens officerDecisionCard's card.
+	officerAsk bool
 	// owner is an ask's owner (attention.Ask.Owner): the reader's own, or —
 	// for a member — a TEAM's (team sharing 2b.3). Set by askItem; zero for
 	// every other item.
@@ -505,6 +508,7 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
 		it.systemAsk = true
+		it.officerAsk = officerSystemAsk(a)
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
 		if t, ok := unroutedPushText(a.Question); ok {
 			it.pushText = t
@@ -1066,8 +1070,15 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 		// the push's own title rule does not plain it a second time.
 		keep = it.Name
 	}
+	url := attentionOpenURL(it.Key)
+	if it.officerAsk {
+		// An officer's question or escalation: its decision card
+		// (officer_push.go). Read here, not at the filing, so a re-push
+		// (repushAsk, the suggestions) opens the same card.
+		url = officerDecisionCard(officerPushAsk, officerCardRef{ID: it.Key})
+	}
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: keep}
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": url}, Update: update, TitleKeep: keep}
 	n.CodenameTitle, n.CodenameKeep = attentionCodenameTitle(it)
 	if it.Kind == attentionKindAsk && it.AskID > 0 && !it.noActions {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}

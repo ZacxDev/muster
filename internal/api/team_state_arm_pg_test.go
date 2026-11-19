@@ -283,6 +283,7 @@ func TestRevokingATeamsLastTokenEndsItsEpisodes(t *testing.T) {
 	f := newStateFixture(t, false)
 	st, rec := newStateTeam(t, f)
 	id := pushedTeamWait(t, f, st, rec)
+	f.advance(pushBroadcastTimeout + time.Second) // its push has been sent (clearEpisode holds a withdrawal inside that)
 	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE mirror_tokens SET revoked_at = now() WHERE owner_id = $1`, st.team); err != nil {
 		t.Fatal(err)
 	}

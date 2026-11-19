@@ -253,8 +253,10 @@ func TestAnOwnerRejectionPastTheBoundIsHeldNotLost(t *testing.T) {
 }
 
 // TestAPluginRefusalPastTheBoundIsHeld (case 4, the plugin's door): the
-// refusal is held for the officer, the item settles naming it, and the
-// refusal push says it goes back to the officer once it is under the bound.
+// refusal is held for the officer and the item settles naming it. An
+// officer's refused draft is information, not a decision (officer_push.go):
+// the owner is pushed no refusal, held or not; the draft's notification is
+// withdrawn instead.
 func TestAPluginRefusalPastTheBoundIsHeld(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	pushes := w.withPushes()
@@ -285,15 +287,20 @@ func TestAPluginRefusalPastTheBoundIsHeld(t *testing.T) {
 		t.Fatalf("the item: %s %s %q; want %q", st, outcome, summary, want)
 	}
 	w.srv.WaitForPushes()
-	var bodies []string
+	var refusals, withdrawn int
 	for _, p := range pushes.to(ep("outbound-owner")) {
-		if p.Tag == "plugin-draft-"+strconv.FormatInt(id, 10) && p.Title == "A reply was not sent" {
-			bodies = append(bodies, p.Body)
+		if p.Tag != "plugin-draft-"+strconv.FormatInt(id, 10) {
+			continue
+		}
+		switch {
+		case p.Type == push.TypeResolved:
+			withdrawn++
+		case p.Title == "A reply was not sent":
+			refusals++
 		}
 	}
-	const tail = "refused it. It goes back to the officer that wrote it once that officer has fewer than 3 open draft.refused items. It said: "
-	if len(bodies) != 1 || !strings.Contains(bodies[0], tail) || strings.Contains(bodies[0], "NOT told") {
-		t.Fatalf("the refusal pushes: %q; want one saying it is held for the officer", bodies)
+	if refusals != 0 || withdrawn == 0 {
+		t.Fatalf("the draft's pushes: %d refusal(s), %d withdrawal(s); want none, and its notification withdrawn", refusals, withdrawn)
 	}
 }
 

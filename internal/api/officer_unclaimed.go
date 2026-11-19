@@ -171,7 +171,9 @@ func (s *Server) raiseUnclaimedNotice(ctx context.Context, st officers.HostSpawn
 		return
 	}
 	s.logger.Printf("officers: %s: has not claimed its item %s after it started on %s (spawn %d); told its owner (%s)", r.Instance, s.unclaimedAfter(), o.Host, r.ID, cause)
-	s.askFiled(a)
+	// Information, not a decision (officer_push.go): its card is on the Asks
+	// page, and it pushes nothing.
+	s.officerAskFiled(officerPushUnclaimed, a)
 }
 
 // settleUnclaimed withdraws each of owner's open unclaimed notices whose

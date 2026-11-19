@@ -31,7 +31,7 @@ has its own toggle, and all are on by default:
 | `agent_outcome` | An agent you dispatched **finished** — only when it says so (`<agent> finished: <summary>` from `agent_report_done`, or `… moved its task to complete`; a move to ready for review is told by the `review` push alone) — is **waiting for you** (`<agent> is waiting for you: <the last line of its reply>`: its turn ended without saying it finished, e.g. a question), **failed** (`<agent> failed: <reason>`: a turn of it failed, and its status is now `error`) or went **quiet** (`<agent> is stuck: no reply since kickoff` / `… silent for 30 min`). One notification per change of its outcome, tagged `agent-<id>-outcome` so a newer one replaces the older on the device; a tap opens the agent's page. See [provisioner.md](provisioner.md#how-an-agents-work-ends). An agent the chief started **on one of your hosts** pushes under the same toggle, tagged `host-dispatch-<id>-outcome`: `<runtime> on <host> finished: <summary>` (Claude's `agent_report_done`, or an opencode reply whose last line is `MUSTER-DONE: <summary>`) or, for opencode, `… is waiting for you: <the reply's last line>`; a tap opens the host's agents session. |
 | `created` | A machine (an agent, the CLI) created tasks. |
 | `comment` | A machine commented on a task, or a member commented on a team task ([below](#team-notifications)). |
-| `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Drafts tab (`/attention?tab=drafts#draft-<id>`). The same toggle carries the notice that your chief [routed a plugin message or a task to a session](plugins.md#you-are-told-where-the-chief-routed-it) on its own: one per route, `Chief routed it to <tmux place>`, its body the plugin's label and the message's subject (or the task's number and title), tagged `route-<route id>`; a tap opens the session (or the task). Information only: nothing to answer. |
+| `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Drafts tab (`/attention?tab=drafts#draft-<id>`). An officer's outbound draft is titled `A message awaits your approval`, its body naming the officer, and opens its card the same way ([below](#officer-notifications-decisions-only)). The same toggle carries the notice that your chief [routed a plugin message or a task to a session](plugins.md#you-are-told-where-the-chief-routed-it) on its own: one per route, `Chief routed it to <tmux place>`, its body the plugin's label and the message's subject (or the task's number and title), tagged `route-<route id>`; a tap opens the session (or the task). Information only: nothing to answer. |
 | `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item's session when it has one (a waiting window's or a held question's rendered view, an asking agent's page, an asking mirrored session's window) and its item on `/attention` otherwise, decided when tapped (`/attention/open/<key>`; [attention.md](attention.md)). A decided reply draft's `plugin` notification is withdrawn the same way. With `MUSTER_SESSION_STATE=1`, a waiting window or a stalled session is pushed instead as its **episode**: one notification per stop, titled by its window as every attention text names it, `<label> · tmux <session>:<window index> @ <host> needs you` (or `is stalled`; [attention.md](attention.md#how-a-window-is-named)), resolved when sent, its body only the state and idle time — never the session's text, except for a question muster can answer (below), whose push carries that question in full — tagged `attention-episode-<id>`, and withdrawn when the stop ends. A waiting window's episode is **not pushed at once**: it is held for 60 seconds and sent once they have passed unless the stop ended first (a window whose host drops meanwhile is still sent, once muster has known the host offline for 60 seconds too), so a prompt answered at the terminal never buzzes ([attention.md](attention.md#stalled--waiting-session-state)). **This holds for a question muster can answer too** (a held AskUserQuestion, an opencode prompt; since the follow-up to #463): its card shows at once, and its push — the question's own full-text notification, `<where> is asking`, tagged `attention-episode-<id>` — is sent only if it is still open after 60 seconds; a restart never re-sends one it already sent. Without session state, or for a window muster cannot key, the waiting push (`attention-session-<hash>`) is held by the same 60 seconds. |
 | `page` | Someone sent a response through one of your [pages](pages.md)' links: at most one notification per page a minute. |
 | `page_published` | An agent published a new page for you (`page_create`): `Page ready: <title>`, its body `From agent <name>.` or `From session "<name>".`, tagged `page-<id>-ready`; a tap opens your view of it. |
@@ -133,7 +133,7 @@ notify, and a team-owned agent's call is refused.
 - **What the agent is told.** The tool waits for the send and says what
   happened: `delivered` (a push service accepted it for that many devices,
   which is not proof you read it), `suppressed` with the reason
-  (`sender_cap`, `owner_cap`, `muted`), `no_device`, `failed`, or
+  (`sender_cap`, `owner_cap`, `muted`, `officer` for an [officer](#officer-notifications-decisions-only)), `no_device`, `failed`, or
   `not_configured`.
 - **The record.** Every call writes one `audit_log` row (`agent.notify`): the
   sender and its kind, the title, the link, and the outcome. **Account →
@@ -155,6 +155,41 @@ device refused or failed it, a team with no operator or manager whose
 notifications are on, and a notification that names no owner. On a server with
 no push at all, every notification is dropped, so that is logged once, for the
 first.
+
+### Officer notifications: decisions only
+
+An [officer](officers.md) pushes you **only when you have something to
+decide**, and a tap opens the card you decide it on. Everything else an officer
+does is on its page, the sidebar and the Asks page when you look; none of it
+pushes. One table in the server classifies every push an officer can cause
+(`internal/api/officer_push.go`), and one function names each decision's card,
+so a later change can move a card without touching each push. A test pins
+every push call site in the server as either routed through that table or
+named, with a reason, as one no officer reaches: a new push path fails it
+until it is classified.
+
+| what the officer did | pushes? | a tap opens |
+|---|---|---|
+| asked you a question (`officer_ask_person`) | yes (`attention`) | the ask's card (`/attention/open/ask-<id>`: its own page while open) |
+| escalated an item to you | yes (`attention`) | the escalation's card, as above |
+| filed an outbound draft its plugin passed | yes (`plugin`) | the draft's card (`/attention?tab=drafts#draft-<id>`) |
+| filed a day's follows and likes | yes (`plugin`), one per batch | the batch's card (`/attention?tab=drafts#outreach-<…>`) |
+| asked for a connector | yes (`connector`) | the request's card (`/connectors#connector-request-<id>`, or the team's page) |
+| its plugin refused a draft | no: the draft went back to the officer; its "awaits your approval" notification is withdrawn | — |
+| its daily budget was reached (it is held for the day) | yes (`attention`), once per day | the officer's page (`/officers/<id>?owner=<owner>`), where the hold is lifted or the day's cap raised |
+| its judgement pool is held by a refused cap escalation | yes (`attention`), once per hold; withdrawn when the hold ends | the officer's page, as above |
+| its spend could not be read | no: muster's own failure, in its log | — |
+| a host instance has not claimed its item | no: its notice is on the Asks page | — |
+| published a page, or shared one under your opt-in to unasked shares | no: the page lists its links | — |
+| published a new version of a page (`page_update`) | no: the page shows it | — |
+| called `notify_owner` | no: the tool answers `suppressed` (reason `officer`); to ask you something it uses `officer_ask_person` | — |
+
+What an officer's instance does through the tools every agent has is pushed as
+any agent's is: a generic `attention_ask` or `page_share_request` (an ask, a
+decision, opening its card), a task it moves to ready for review (the task), a
+host step-up confirmation, and a host officer's window waiting at a prompt.
+Each dropped officer push logs one line, `push: officer <path> is information
+only: not pushed (owner <id>, tag <tag>)`.
 
 ### Team notifications
 
