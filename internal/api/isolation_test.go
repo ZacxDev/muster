@@ -3098,7 +3098,9 @@ func (w *isoWorld) addTeamPage(t *testing.T, team, creator int64, teamCanary str
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM pages WHERE owner_id = $1`, team) })
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM pages WHERE owner_id = $1`, team)
+	})
 	if _, _, err := pgs.AddVersion(ctx, c, p.ID, "team page "+teamCanary+" v2", b, n); err != nil {
 		t.Fatal(err)
 	}
