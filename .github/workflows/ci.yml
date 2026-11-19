@@ -72,39 +72,44 @@ on:
   # the `test` job (restore no cache) are ready for a nightly that does not
   # count against a release; adding one is the operator's call.
 
-# 🔴 A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR ONLY. EVERY `main`
-# PUSH AND EVERY vX.Y.Z TAG RUN IS NEVER CANCELLED OR DROPPED.
+# 🔴 THREE KINDS OF GROUP. A newer PR commit cancels its PR's older run; `main`
+# keeps ONE run going and ONE (the newest push) waiting; a vX.Y.Z tag run is
+# never cancelled or replaced.
 #
-# PULL REQUESTS: a newer commit on a PR cancels the older run of the SAME PR
-# (group `refs/pull/N/merge`).
+# PULL REQUESTS: group `refs/pull/N/merge`, cancel-in-progress: a newer commit
+# on a PR cancels the older run of the SAME PR.
 #
-# `main`: every push runs in a group of its own (`run_id`) and is never
-# cancelled. From 2026-11-16 a newer push cancelled the older `main` run, on
-# the premise that the downstream release tool releases the newest GREEN `main`
-# descendant of a commit whose own run was cancelled. Measured over the 60
-# push-to-main runs up to 165951768 (39 h): 38 cancelled, 19 success, 2
-# failure; every one of the 8 pushes after 562a178e5 was cancelled, so `main`
-# had no verdict at all for 3 h+ (the last was 4e8a83c88's) and no green
-# descendant existed to release. Runs were cancelled mid-flight, e.g. one with 14 jobs
-# already green. So `main` goes back to one full run per push, the block
-# this file had before 493314225. The cost is runner time: a `main` run is 28 jobs, ~154
-# job-minutes, against the plan's concurrent-job limit (~20), so a burst of
-# merges queues several full suites and PR runs wait behind them.
+# `main`: every push to main shares group `main` with cancel-in-progress OFF.
+# The running main run always finishes, so its verdict always lands; GitHub
+# keeps at most ONE pending run per group and REPLACES it with each newer push
+# (the replaced run ends cancelled), so at most two main runs exist at once.
+# History, newest last:
+#   - a newer push cancelled the running main run (493314225): measured over the
+#     60 push-to-main runs up to 165951768, 38 were cancelled, often mid-flight,
+#     and main went 3 h+ with no verdict at all;
+#   - every push ran in a group of its own (b1c2ae4c2): every verdict landed,
+#     but a burst of merges queued a full suite each (a main run is 28 jobs,
+#     ~154 job-minutes, against the plan's ~20 concurrent jobs), so main runs
+#     waited hours in the queue (8 queued at once behind 7c7ea9e92);
+#   - now: one running, the newest waiting (operator's choice). A commit whose
+#     pending run was replaced gets no run of its own; the next verdict covers
+#     it, and .github/scripts/main_red.py lets the newest finished run decide
+#     (a replaced, cancelled run never blocks it). A vX.Y.Z tag on such a commit
+#     re-runs its tests, because tag_gate.py skips them only after the SAME
+#     commit's main run succeeded.
 #
 # 🔴 A TAG RUN KEEPS A GROUP OF ITS OWN (`run_id`) AND `cancel-in-progress:
 # false`. It publishes the release images and the GitHub release (`image-*`,
 # `release`); cancelling it part-way could leave a version half-published, and
-# the release tool pushed that tag expecting it to complete. Only a
-# pull_request event joins a shared group, so a tag, a `main` push or any
-# trigger added later can never be cancelled by, or replace, another run.
-# (`cancel-in-progress: false` alone is not enough: a group holds one running
-# and ONE pending run, and a newer pending run replaces an older pending one
-# whatever the flag says.)
+# the release tool pushed that tag expecting it to complete. A GROUP, NOT ONLY
+# THE FLAG: a group holds one running and ONE pending run, and a newer pending
+# run replaces an older pending one whatever the flag says. Only a pull_request
+# event or a push to refs/heads/main joins a shared group, so a tag, or any
+# trigger added later, can never be cancelled by, or replace, another run.
 #
-# Pinned as an exact string by TestCIConcurrencySupersedesPullRequestRunsOnly
-# (internal/modulegate).
+# Pinned as an exact string by TestCIConcurrencyGroups (internal/modulegate).
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
