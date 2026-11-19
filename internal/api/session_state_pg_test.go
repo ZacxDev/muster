@@ -30,6 +30,9 @@ type stateFixture struct {
 	// retries is the deferred withdrawals (clearEpisodeLater), run only when a
 	// test fires them: no real timer outlives a test.
 	retries *clearRetryRec
+	// rechecks is the status hook's deferred re-checks (episodeStatusRun),
+	// likewise run only when a test fires them.
+	rechecks *clearRetryRec
 }
 
 // newStateFixture is the nudge fixture with episodes on, its window idle for

@@ -188,6 +188,9 @@ type Server struct {
 	// clearRetry is the episode withdrawals deferred until their push's
 	// fan-out has had pushBroadcastTimeout (clearEpisodeLater, session_push.go).
 	clearRetry episodeClearRetries
+	// statusRuns is the status hook's per-owner coalescing and negative reads
+	// (episodeStatusMoved, session_state.go).
+	statusRuns episodeStatusRuns
 
 	// askLog is the ask log's capture state (ask_log.go), nil when
 	// Extensions.AskLog is unset; set by UseExtensions.

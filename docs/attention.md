@@ -239,10 +239,13 @@ do not count, and looking at the window in a tmux terminal outside muster
 cannot be seen), sustained work of its own (2 minutes), or its window gone
 from a host that is online. Whatever ends it, the notification is withdrawn
 as the stop ends, not on a later pass, with two exceptions. A stop whose
-notification was sent less than 15 seconds before it ended is withdrawn once
-those 15 seconds are up, not at once (withdrawing it at once could reach your
-device before the notification itself, which would then stay up); the next
-30-second pass is the backstop for it, and only one withdrawal is ever sent. A
+notification was sent less than 15 seconds before it ended — or, for a stop
+back from a window that went missing, quietly shown again less than 15
+seconds before — is withdrawn once those 15 seconds are up, not at once
+(withdrawing it at once could reach your device before the notification
+itself, which would then stay up); the next 30-second pass is the backstop for
+it. Normally one withdrawal is sent; if muster cannot record that it sent one,
+it may send it again, which closes nothing new. A
 stop ended because it repeats one you already dealt with is closed by the next
 30-second pass. A stop you dealt with (acted in, or opened) is not
 pushed again while the session sits where it was; once it moves, its next

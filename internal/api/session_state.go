@@ -894,10 +894,107 @@ func (s *Server) MirrorStatusChanged(owner int64) {
 // episode whose window is not listed, or whose status is unknown, is left to
 // the pass. A waiting episode is the waiting hook's (episodeWaitsAnswered), an
 // unpushed one has nothing to withdraw and the pass ends it.
+//
+// 🔴 COALESCED PER OWNER, AND ITS READS BOUNDED PER STREAK. The hub fires the
+// hook on its own goroutine for every status change of any of the owner's
+// windows: one run per owner at a time, and every trigger that lands during a
+// run collapses into ONE trailing run after it (statusRuns) — never lost,
+// since the trailing run reads the hosts as they are then. A read that finds
+// no owner message is not repeated for that episode and streak for
+// episodeStatusRecheck (the negative TTL), and schedules ONE re-check of the
+// owner after it — the transcript-lag case: Claude Code reported the turn
+// before the owner's line was readable, and the next status move may be
+// minutes away. So a streak costs the hook at most two reads plus one per
+// later status move outside the TTL, and the owner's line, once readable,
+// ends the stop within about episodeStatusRecheck.
 func (s *Server) episodeStatusMoved(owner int64) {
 	if s == nil || !s.sessionStateOn() || s.ext.Mirror == nil || owner <= 0 {
 		return
 	}
+	r := &s.statusRuns
+	r.mu.Lock()
+	if r.running[owner] {
+		r.again[owner] = true
+		r.mu.Unlock()
+		return
+	}
+	if r.running == nil {
+		r.running, r.again = map[int64]bool{}, map[int64]bool{}
+	}
+	r.running[owner] = true
+	r.mu.Unlock()
+	for {
+		s.episodeStatusRun(owner)
+		r.mu.Lock()
+		if r.again[owner] {
+			delete(r.again, owner)
+			r.mu.Unlock()
+			continue
+		}
+		delete(r.running, owner)
+		r.mu.Unlock()
+		return
+	}
+}
+
+// episodeStatusRecheck is the hook's negative TTL for one episode and streak,
+// and how long after a read that found no owner message it reads once more.
+const episodeStatusRecheck = 2 * time.Second
+
+// episodeStatusRuns is the status hook's per-owner coalescing and its
+// per-episode negative reads (episodeStatusMoved). after, when set (a test),
+// replaces time.AfterFunc for the re-check.
+type episodeStatusRuns struct {
+	mu      sync.Mutex
+	running map[int64]bool // an owner's run in progress
+	again   map[int64]bool // a trigger landed during it: run once more
+	runs    int            // runs started (tests)
+	tried   map[int64]statusTry
+	after   func(d time.Duration, f func())
+}
+
+// statusTry is the hook's last read of an episode that found no owner message.
+type statusTry struct {
+	streak     string
+	at         time.Time
+	rechecking bool // its one re-check for this streak is scheduled or done
+}
+
+// skip reports whether episode id was read on streak, finding nothing, less
+// than episodeStatusRecheck before now.
+func (r *episodeStatusRuns) skip(id int64, streak string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tried[id]
+	return ok && t.streak == streak && now.Sub(t.at) < episodeStatusRecheck
+}
+
+// missed records a read of episode id on streak at now that found no owner
+// message, and reports whether this is the streak's first (its re-check is
+// owed). Entries older than a minute are forgotten.
+func (r *episodeStatusRuns) missed(id int64, streak string, now time.Time) (recheck bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tried == nil {
+		r.tried = map[int64]statusTry{}
+	}
+	for k, t := range r.tried {
+		if now.Sub(t.at) > time.Minute {
+			delete(r.tried, k)
+		}
+	}
+	prev, ok := r.tried[id]
+	recheck = !ok || prev.streak != streak || !prev.rechecking
+	r.tried[id] = statusTry{streak: streak, at: now, rechecking: true}
+	return recheck
+}
+
+// episodeStatusRun is one run of the status hook for owner.
+func (s *Server) episodeStatusRun(owner int64) {
+	r := &s.statusRuns
+	r.mu.Lock()
+	r.runs++
+	r.mu.Unlock()
 	octx := s.attentionPrincipal(context.Background(), owner)
 	open, err := s.ext.Episodes.OpenEpisodes(octx)
 	if err != nil {
@@ -914,15 +1011,33 @@ func (s *Server) episodeStatusMoved(owner int64) {
 		return
 	}
 	hs := s.ext.Mirror.Hosts(octx)
+	recheck := false
 	for _, ep := range eps {
 		c, ok := s.movedWindow(octx, hs, ep)
-		if !ok {
+		if !ok || r.skip(ep.ID, c.StreakKey, s.now()) {
 			continue
 		}
 		if s.ownerActedRead(octx, c, ep, false) {
 			s.endEpisode(octx, ep, sessionstate.EndOwner, s.now())
+		} else if r.missed(ep.ID, c.StreakKey, s.now()) {
+			recheck = true
 		}
 	}
+	if !recheck {
+		return
+	}
+	r.mu.Lock()
+	after := r.after
+	r.mu.Unlock()
+	if after == nil {
+		after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+	}
+	after(episodeStatusRecheck, func() {
+		if s.streams.context().Err() != nil {
+			return // muster is shutting down
+		}
+		s.episodeStatusMoved(owner)
+	})
 }
 
 // movedWindow is open mirrored episode ep's session as the stall facts would

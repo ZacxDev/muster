@@ -48,14 +48,18 @@ func (r *clearRetryRec) fire() []time.Duration {
 	return waits
 }
 
-// holdClearRetries installs a clearRetryRec on f's server (newStateFixture
-// does, for every state test).
+// holdClearRetries installs a clearRetryRec on f's server for the deferred
+// withdrawals (f.retries) and another for the status hook's re-checks
+// (f.rechecks) — newStateFixture does, for every state test.
 func (f *stateFixture) holdClearRetries() *clearRetryRec {
-	r := &clearRetryRec{}
+	r, rc := &clearRetryRec{}, &clearRetryRec{}
 	f.srv.clearRetry.mu.Lock()
 	f.srv.clearRetry.after = r.after
 	f.srv.clearRetry.mu.Unlock()
-	f.retries = r
+	f.srv.statusRuns.mu.Lock()
+	f.srv.statusRuns.after = rc.after
+	f.srv.statusRuns.mu.Unlock()
+	f.retries, f.rechecks = r, rc
 	return r
 }
 

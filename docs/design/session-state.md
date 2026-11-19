@@ -316,7 +316,11 @@ An episode is one stop of one session.
     message ends it about a second after they type rather than on the pass.
     That read only ever ends: one that finds no owner message is NOT recorded
     as read (the transcript can lag the status), so the pass reads the streak
-    again;
+    again. The hook runs once per owner at a time (triggers during a run
+    collapse into one trailing run); a read that found nothing is not repeated
+    for that episode and streak for 2 s, and schedules one re-check after
+    those 2 s, so a lagging transcript still ends the stop within about 2 s of
+    the owner's line becoming readable;
   - **the owner opened the session in muster** (`viewed`), at once: the
     document of the session's own page — a mirrored window's rendered view or
     terminal page, or an agent's page for the conversation it draws — under
