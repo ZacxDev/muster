@@ -118,14 +118,14 @@ type RenderOptions struct {
 // shell's route's to say (ShellScript), never the content's.
 //
 // 🔴 ITS THEME IS THE APP'S, AND IT IS THE SAME FOR EVERY VIEWER. The <html>
-// carries ContentThemeClass, as every document of the app does, and the
+// carries contentThemeClass, as every document of the app does, and the
 // stylesheet is the app's palette (contentThemeCSS); nothing about the viewer
 // (a cookie, a header, the device's colour scheme) is read, so the document
 // stays one document and no cache can hand one viewer's theme to another.
 func Content(v Version, o RenderOptions) string {
 	esc := html.EscapeString
 	var b strings.Builder
-	b.WriteString("<!doctype html>\n<html lang=\"en\" class=\"" + ContentThemeClass + "\"><head><meta charset=\"utf-8\">" +
+	b.WriteString("<!doctype html>\n<html lang=\"en\" class=\"" + contentThemeClass + "\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + contentCSS + "</style>\n<script>")
 	var blocks strings.Builder
@@ -386,12 +386,12 @@ R(AEL,D,["submit",function(ev){
 })();`
 }
 
-// ContentThemeClass is the class on the content document's <html>: the app's
+// contentThemeClass is the class on the content document's <html>: the app's
 // one theme. Every document the app draws carries class="dark" (internal/ui's
 // layouts; the light theme has no toggle since the theme head forces dark), and
 // the palette (web/css/tokens.css) selects its dark block by it, its light one
 // by its absence.
-const ContentThemeClass = "dark"
+const contentThemeClass = "dark"
 
 // contentThemeCSS is the app's palette and the utilities ui.MarkdownHTML
 // writes, scoped under .mp-markdown: built by `make css` from

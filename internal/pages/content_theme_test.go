@@ -142,9 +142,6 @@ func TestTheContentDocumentIsTheAppsTheme(t *testing.T) {
 	if !strings.Contains(doc, `<html lang="en" class="dark">`) {
 		t.Errorf("the content document's <html> does not carry the app's theme class: %.120q", doc)
 	}
-	if pages.ContentThemeClass != "dark" {
-		t.Errorf("ContentThemeClass = %q, want the app's %q", pages.ContentThemeClass, "dark")
-	}
 	// The device's own setting does not decide it.
 	if strings.Contains(css, "prefers-color-scheme") {
 		t.Error("the content document's colours follow the device's prefers-color-scheme, not the app's theme")
