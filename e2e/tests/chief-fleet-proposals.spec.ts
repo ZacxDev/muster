@@ -40,21 +40,28 @@ const chiefName = 'e2e-fprop-chief-' + stamp;
 const chiefToken = 'e2e-fprop-chief-token-not-a-real-one-' + stamp;
 const REPO = 'e2e-quill/ledger';
 const MERGED_PR = 31;
+const OPEN_PR = 32;
+const CI_HEAD = 'd00dfeedd00dfeedd00dfeedd00dfeedd00dfeed';
+const ANSWER = 'Keep the old flag for one release, then drop it.';
 const MERGED_HEAD = 'c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00';
 const HANDOFF = `Your PR #${MERGED_PR} is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop.`;
 const CONTINUE = 'Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task.';
 // What the chief proposes on each window (one class per window: at most one
 // open proposal per session and class).
-const CLASS: Record<string, string> = { approve: 'continue', edit: 'handoff', reject: 'stop_note', gone: 'continue', bulkGone: 'continue', bulkA: 'handoff', bulkB: 'continue' };
+const CLASS: Record<string, string> = { answer: 'composed', approve: 'continue', edit: 'handoff', reject: 'stop_note', gone: 'continue', bulkGone: 'continue', bulkA: 'handoff', bulkB: 'continue' };
 const prefix = `fprop${stamp}`.replace(/[^0-9A-Za-z]/g, '');
 
 // Seven finished windows per viewport, one per step.
-const ROLES = ['approve', 'edit', 'reject', 'gone', 'bulkGone', 'bulkA', 'bulkB'] as const;
+const ROLES = ['approve', 'edit', 'reject', 'gone', 'bulkGone', 'bulkA', 'bulkB', 'answer'] as const;
 type Role = (typeof ROLES)[number];
 const windowsOf = (vp: string, base: number) =>
   Object.fromEntries(ROLES.map((r, i) => [r, { sid: `${prefix}${vp}x${i}`, win: `@${base + i}` }])) as Record<Role, { sid: string; win: string }>;
 const PHONE = windowsOf('p', 10);
 const DESK = windowsOf('d', 30);
+// One window per viewport whose open pull request's CI finished after it
+// stopped: muster proposes ci_result (its stop is opened in that viewport's
+// test, so the other's card is not in its bulk approve).
+const CIW = { p: { sid: `${prefix}pci`, win: '@50' }, d: { sid: `${prefix}dci`, win: '@51' } };
 
 const APP_ID = '515151';
 const APP_ACCOUNT = { login: 'e2e-quill', id: 5151, type: 'User' };
@@ -73,6 +80,9 @@ const rig = new MirrorRig(chiefProposePort, 'e2e-cprop', {
   MUSTER_SESSION_STATE: '1',
   MUSTER_FLEET_DIGEST: '1',
   MUSTER_FLEET_ORCHESTRATION: 'propose',
+  // The ask log: a composed answer answers a question the session HOLDS
+  // (its open plain-text ask-log row).
+  MUSTER_ASK_LOG: '1',
   MUSTER_PLUGINS: '1',
   MUSTER_SESSION_ROUTING: '1',
   MUSTER_PR_MAIL_SENDERS: 'e2e-review/pr-check',
@@ -112,6 +122,13 @@ test.beforeAll(async ({ browser }) => {
     if (u.pathname === '/app/installations/83/access_tokens') {
       return res.end(JSON.stringify({ token: 'ghs_e2e_fprop_not_a_real_token', expires_at: new Date(Date.now() + 3600_000).toISOString() }));
     }
+    if (u.pathname === `/repos/${REPO}/pulls/${OPEN_PR}`) {
+      return res.end(JSON.stringify({ number: OPEN_PR, state: 'open', merged: false, head: { sha: CI_HEAD } }));
+    }
+    if (u.pathname === `/repos/${REPO}/commits/${CI_HEAD}/status`) return res.end(JSON.stringify({ statuses: [] }));
+    if (u.pathname === `/repos/${REPO}/commits/${CI_HEAD}/check-runs`) {
+      return res.end(JSON.stringify({ check_runs: [{ id: 501, name: 'unit', status: 'completed', conclusion: 'success', completed_at: new Date().toISOString() }] }));
+    }
     if (u.pathname === `/repos/${REPO}/pulls/${MERGED_PR}`) {
       return res.end(JSON.stringify({ number: MERGED_PR, state: 'closed', merged: true, head: { sha: MERGED_HEAD }, closed_at: '2000-01-02T03:04:05Z' }));
     }
@@ -126,13 +143,13 @@ test.beforeAll(async ({ browser }) => {
   const longAgo = Date.now() - 60 * 60 * 1000;
   const lines: string[] = [];
   let i = 0;
-  for (const w of [...Object.values(PHONE), ...Object.values(DESK)]) {
+  for (const w of [...Object.values(PHONE), ...Object.values(DESK), CIW.p, CIW.d]) {
     i++;
     const file = path.join(rig.dir, `${w.sid}.jsonl`);
     fs.writeFileSync(file, cc.prompt('Fix ledger bug ' + i + '.') + cc.reply('Ledger fix ' + i + ' is merged.'));
     writeFileAtomic(file + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: longAgo }));
     lines.push(`work|${w.win}|${i}|${i === 1 ? 1 : 0}|claude|${Math.floor(Date.now() / 1000) - 30}|${file}`);
-    fix('prsession', '1', w.sid, REPO, String(MERGED_PR));
+    fix('prsession', '1', w.sid, REPO, String(w === CIW.p || w === CIW.d ? OPEN_PR : MERGED_PR));
   }
   const windows = path.join(rig.dir, 'windows');
   writeFileAtomic(windows, lines.join('\n') + '\n');
@@ -146,6 +163,9 @@ test.beforeAll(async ({ browser }) => {
   // each (its idle streak), which a proposal is filed on.
   const all = [...Object.values(PHONE), ...Object.values(DESK)];
   for (const w of all) fix('episode', '1', w.sid, 'stalled', rig.host, w.win);
+  // The question each answer card answers: an open plain-text ask in the
+  // answer window's stop.
+  for (const set of [PHONE, DESK]) fix('plainask', '1', set.answer.sid, rig.host, set.answer.win, 'Keep the old flag, or drop it now?');
   await expect
     .poll(() => all.filter((w) => fix('episodestreak', '1', w.sid) !== '').length, {
       message: 'the session-state pass observed every stop', timeout: 90_000, intervals: [3_000],
@@ -156,6 +176,7 @@ test.beforeAll(async ({ browser }) => {
 test.afterAll(async () => {
   try {
     fix('rmfleetactions', '1', prefix);
+    fix('rmasks', '1', prefix);
     fix('rmprsessions', '1', prefix);
     fix('rmepisodes', '1', prefix);
     if (chiefMade) fix('rmagent', '1', chiefName);
@@ -190,8 +211,10 @@ async function chiefCall(name: string, args: Record<string, unknown>): Promise<R
 // then waits for its cards.
 async function propose(page: Page, set: Record<Role, { sid: string; win: string }>) {
   for (const r of ROLES) {
-    const args: Record<string, unknown> = { subject: `mirror:${set[r].sid}`, class: CLASS[r], reason: `the ${r} step` };
-    const out = await chiefCall('session_instruct', args);
+    const out =
+      r === 'answer'
+        ? await chiefCall('session_answer', { subject: `mirror:${set[r].sid}`, answer_kind: 'composed', text: ANSWER, reason: 'it asked which way' })
+        : await chiefCall('session_instruct', { subject: `mirror:${set[r].sid}`, class: CLASS[r], reason: `the ${r} step` });
     expect(out.state, `session_instruct ${r}: ${JSON.stringify(out)}`).toBe('proposed');
   }
   let last = '';
@@ -204,6 +227,25 @@ async function propose(page: Page, set: Record<Role, { sid: string; win: string 
       { message: 'a card for every proposal', timeout: 20_000, intervals: [1_000] },
     )
     .toBe(ROLES.length)
+    .catch((e) => {
+      throw new Error(`${e.message}\ncard:\n${last.slice(0, 6000)}\nserver log (tail):\n${(rig.server?.log() ?? '').split('\n').slice(-80).join('\n')}`);
+    });
+}
+
+// ciCard opens one viewport's CI window's stop, then waits for muster's own
+// ci_result card on it (the pass: within a pass or two).
+async function ciCard(page: Page, w: { sid: string; win: string }) {
+  fix('episode', '1', w.sid, 'stalled', rig.host, w.win);
+  let last = '';
+  await expect
+    .poll(
+      async () => {
+        last = await (await page.request.get(rig.origin + '/ui/chief/fleet')).text();
+        return last.includes(`data-fleet-proposal-subject="mirror:${w.sid}"`);
+      },
+      { message: 'muster proposes ci_result', timeout: 100_000, intervals: [2_000] },
+    )
+    .toBe(true)
     .catch((e) => {
       throw new Error(`${e.message}\ncard:\n${last.slice(0, 6000)}\nserver log (tail):\n${(rig.server?.log() ?? '').split('\n').slice(-80).join('\n')}`);
     });
@@ -234,6 +276,8 @@ for (const vp of [
       const tap = async (loc: ReturnType<Page['locator']>) => (vp.phone ? loc.tap() : loc.click());
       await rig.login(page);
       await propose(page, vp.set);
+      const ciw = vp.phone ? CIW.p : CIW.d;
+      await ciCard(page, ciw);
       await page.addInitScript(clsInit);
       await openPanel(page);
       const card = page.locator('#fleet-digest [data-fleet-digest]');
@@ -263,6 +307,21 @@ for (const vp of [
       await tap(first.locator('[data-fleet-approve]'));
       await expect(card.locator('[data-fleet-note]')).toHaveText('Queued: it is pasted once the session is idle.');
       await expect(of('approve')).toHaveCount(0);
+
+      // An answer card (the chief's own words) and muster's ci_result card:
+      // each shows exactly what is sent, and Approve queues it.
+      const ans = of('answer');
+      await expect(ans.locator('[data-fleet-verb]')).toHaveText("Answer (the chief's words)");
+      await expect(ans.locator('[data-fleet-text]')).toContainText(ANSWER);
+      await tap(ans.locator('[data-fleet-approve]'));
+      await expect(card.locator('[data-fleet-note]')).toHaveText('Queued: it is pasted once the session is idle.');
+      await expect(of('answer')).toHaveCount(0);
+      const ci = group().locator(`[data-fleet-proposal-subject="mirror:${ciw.sid}"]`);
+      await expect(ci.locator('[data-fleet-verb]')).toHaveText('Tell it CI finished');
+      await expect(ci.locator('[data-fleet-text]')).toContainText(`CI finished on #${OPEN_PR} at ${CI_HEAD.slice(0, 12)}: ok=1 bad=0. Continue.`);
+      await tap(ci.locator('[data-fleet-approve]'));
+      await expect(card.locator('[data-fleet-note]')).toHaveText('Queued: it is pasted once the session is idle.');
+      await expect(ci).toHaveCount(0);
 
       // Edit: the box, the owner's own words, sent as theirs.
       const ed = of('edit');

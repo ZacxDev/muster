@@ -402,6 +402,30 @@ func run(args []string) error {
 			owner, args[2], args[3], args[4], args[5]); err != nil {
 			return err
 		}
+	case "plainask":
+		// An OPEN plain-text question in the ask log (internal/asklog, 0089),
+		// as the capture writes one for a Claude Code window's last turn, in
+		// the session's open stop: what session_answer continue / composed
+		// answers (fleet_answers.go fleetHeldQuestion).
+		owner, err := num(1)
+		if err != nil || len(args) != 6 {
+			return fmt.Errorf("usage: plainask <owner-id> <session-key> <host> <window> <question>")
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO asks (owner_id, kind, runtime, mirror_host, mirror_session, mirror_window, claude_session,
+				episode_id, question, question_norm, asked_at)
+			SELECT $1, 'plain_text', 'claude-code', $3, 'work', $4, $2, e.id, $5, lower($5), now() - interval '30 minutes'
+			FROM session_episodes e WHERE e.owner_id = $1 AND e.session_kind = 'mirror' AND e.session_key = $2 AND e.ended_at IS NULL`,
+			owner, args[2], args[3], args[4], args[5]); err != nil {
+			return err
+		}
+	case "rmasks":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmasks <owner-id> <session-key-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM asks WHERE owner_id = $1 AND starts_with(claude_session, $2)`, owner, args[2]); err != nil {
+			return err
+		}
 	case "endepisode":
 		// Ends a mirrored session's OPEN stop now, as the owner's own word
 		// would (end_reason 'owner'): the stop a fleet proposal was filed in

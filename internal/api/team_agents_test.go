@@ -470,9 +470,10 @@ var agentReadCallers = map[string]string{
 	"AgentsByNoteIDs Server.outcomeTaskDone": "machine: acts only when actor (refOriginFrom: an agent's own door) IS the task's agent",
 	"AgentsByNoteIDs Server.apiAgentsByNote": "machine: GET /api/tasks, hook and API tokens",
 
-	"Get Server.acceptEndSession": "own: ag.OwnerID == requestOwner(ctx)",
-	"Get Server.fleetTarget":      "own: ag.OwnerID == requestOwner(ctx) (a team's agent is never a fleet subject)",
-	"Get Server.askingAgentHref":  "own: a.OwnerID == owner",
+	"Get Server.acceptEndSession":     "own: ag.OwnerID == requestOwner(ctx)",
+	"Get Server.fleetTarget":          "own: ag.OwnerID == requestOwner(ctx) (a team's agent is never a fleet subject)",
+	"GetByName Server.fleetCloseCard": "own: ag.OwnerID == the chief's owner (a team's chief files no card: fleetCardsFor)",
+	"Get Server.askingAgentHref":      "own: a.OwnerID == owner",
 	// A page's maker, for its owner's view (pages.go): only an agent of the
 	// page's own owner — the viewer, whose page it is under row-level
 	// security — is linked.
@@ -534,6 +535,7 @@ var agentReadCallers = map[string]string{
 	"Get focusSessions.Visible":               "visible: whether a focus subject is readable (read)",
 	"Get officerFleet.Reprompt":               "machine: an officer's door",
 	"Get officerChatLanes.Home":               "machine: an officer's door (a chat lane's instance)",
+	"Get Server.chatMessageEntries":           "machine: the officer's own instance holding a person's chat, read as the officer's owner and kept only when it is that officer's (officerOf); only its messages are drawn",
 
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
 	"GetByName Server.officerInstances":          "visible: a team officer's page links each instance agent's page to its members (a read; GET /officers/{officer}?owner=)",

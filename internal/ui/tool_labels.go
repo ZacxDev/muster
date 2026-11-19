@@ -71,6 +71,7 @@ var musterToolLabels = map[string]string{
 	// card; nothing is sent until the owner taps it.
 	"session_instruct":    "Proposed a message to a session",
 	"session_wrap":        "Proposed wrapping up a session",
+	"session_answer":      "Proposed an answer to a session",
 	"work_reassign":       "Proposed moving a task",
 	"fleet_actions_list":  "Looked over its proposals",
 	"focus_search":        "Looked up what sessions are working on",
@@ -129,6 +130,10 @@ var musterToolLabels = map[string]string{
 	"officer_contact_get":             "Looked up a person",
 	"officer_contact_note":            "Made a note about a person",
 	"officer_post_draft":              "Asked to post something",
+	"officer_my_state":                "Looked at its own work",
+	"officer_confirm_card":            "Asked you to approve something",
+	"officer_refusal_refile":          "Filed a refused post again",
+	"officer_refusal_drop":            "Dropped a refused post",
 	"officer_flood_block_propose":     "Suggested blocking a traffic flood",
 	"officer_kube_read":               "Checked a server",
 	"officer_obs_queries":             "Looked at monitoring checks",

@@ -179,3 +179,55 @@ test('a side chat offers Continue in a new session, posting to its own continue 
   await expect(form.locator('select[name="model"] option')).toHaveText(['opus', 'sonnet', 'haiku']);
   await expect(form.getByRole('button', { name: 'Continue' })).toBeVisible();
 });
+
+// THE SIDE CHAT "+" MODEL MENU (internal/ui chiefNewChatChip): with the
+// runtimes gate on, "+" in the chief page's chip strip opens a small menu
+// (Default, Opus, Sonnet, Haiku), not a modal. Sonnet opens a new side chat on
+// sonnet: its chip is current and tagged "sonnet", the cursor is in its message
+// box, and the tag is the STORED model (a reload draws it again). The gate-off
+// "+" (a chat at once) is chief-ux.spec.ts's.
+test('"+" opens a model menu; a chat picked on Sonnet lands focused with a sonnet tag that survives a reload', async ({ page }) => {
+  const strip = () => page.locator('body > [data-chief-strip-row] [data-chief-chat-strip]');
+  const chipIds = () => strip().locator('[data-chief-chip]').evaluateAll((els) => els.map((e) => e.getAttribute('data-chief-chip') ?? ''));
+  const menu = page.locator('#chief-new-chat-menu');
+  // pick taps "+", then the entry named name, and returns the chat it landed on.
+  const pick = async (name: string) => {
+    const url0 = page.url();
+    const plus = strip().locator('button[data-chief-side-chat]');
+    await expect(plus).toHaveAccessibleName('New side chat');
+    await plus.tap();
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveText(['Default', 'Opus', 'Sonnet', 'Haiku']);
+    // A menu, not a navigation: nothing is opened yet.
+    expect(page.url()).toBe(url0);
+    await menu.getByRole('menuitem', { name }).tap();
+    await page.waitForURL((u) => u.toString() !== url0);
+    return new URL(page.url()).searchParams.get('session')!;
+  };
+  await signIn(page, origin);
+  await page.goto(origin + '/agents/' + chief);
+  await expect(strip()).toBeVisible();
+
+  // Default first: the specs above leave an EMPTY sonnet chat as the newest
+  // side chat, which "+" reuses on the same model (internal/api openSideChat).
+  // A Default chat is on another model, so it is new, untagged, and makes the
+  // Sonnet pick below a new chat too.
+  let before = await chipIds();
+  const def = await pick('Default');
+  expect(before, 'Default opened a NEW chat').not.toContain(def);
+  await expect(strip().locator(`[data-chief-chat-row="${def}"]`)).toHaveAttribute('aria-current', 'true');
+  await expect(strip().locator(`[data-chief-chip="${def}"] [data-chief-chip-model]`)).toHaveCount(0);
+
+  before = await chipIds();
+  const sid = await pick('Sonnet');
+  expect(before, 'Sonnet opened a NEW chat').not.toContain(sid);
+  await expect(strip().locator(`[data-chief-chat-row="${sid}"]`)).toHaveAttribute('aria-current', 'true');
+  await expect(strip().locator(`[data-chief-chip="${sid}"] [data-chief-chip-model]`)).toHaveText('sonnet');
+  await expect(page.locator('#chat-input'), "the cursor is in the new chat's message box").toBeFocused();
+  // The Default chat, on the chief's own model, is still untagged beside it.
+  await expect(strip().locator(`[data-chief-chip="${def}"] [data-chief-chip-model]`)).toHaveCount(0);
+
+  await page.reload();
+  await expect(strip().locator(`[data-chief-chip="${sid}"] [data-chief-chip-model]`)).toHaveText('sonnet');
+  await expect(strip().locator(`[data-chief-chat-row="${sid}"]`)).toHaveAttribute('aria-current', 'true');
+});

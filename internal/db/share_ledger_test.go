@@ -86,6 +86,9 @@ var personalOwned = []string{
 	"officer_cap_raises",
 	// 0158: the fleet's action log; same reason.
 	"fleet_actions",
+	// 0160: the confirm cards in a person's chat with an officer; one
+	// manager's cards are never another's.
+	"officer_chat_cards",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

@@ -204,6 +204,9 @@ func TestTheAskPageHeaderNamesTheSessionAndItsInfoTheExactTmuxTarget(t *testing.
 			t.Errorf("ask %d: header %q asks%q, want %q asks%q", a.ID, got[0], got[1], want[0], want[1])
 		}
 		target, names := targets[a.ID]
+		// The sidebar's server-address ⓘ has an empty code row (servers.js
+		// fills it): set aside, or an ask with no target would match it.
+		body, _ = ui.WithoutServerAddressSheet(body)
 		if got := strings.Contains(body, `data-info-code="">`+target+`</code>`); got != names {
 			t.Errorf("ask %d: the ⓘ holds the target %q: %v, want %v", a.ID, target, got, names)
 		}

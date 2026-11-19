@@ -123,6 +123,10 @@ func (s *Server) toolRouteMany(ctx context.Context, chief agents.Agent, argument
 	// owner_asked check (ownerTurnFor), unchanged: refused, nothing is routed.
 	msg, why := s.ownerTurnFor(ctx, chief)
 	if why != "" {
+		// 🔴 OUTSIDE AN OWNER TURN, ONE CARD PER SESSION (fleet proposals on).
+		if out, ok := s.fleetRouteManyCards(ctx, chief, in.Subjects, text); ok {
+			return out
+		}
 		s.logger.Printf("routes: agent %d: a route_many REFUSED: %s", chief.ID, why)
 		return s.routeOwnerAskedRefusal(ctx, chief, why)
 	}

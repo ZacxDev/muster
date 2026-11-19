@@ -66,3 +66,52 @@ func TestTheOfferClaimsNoOrigin(t *testing.T) {
 		t.Errorf("Not now does not take the focus: %s", offer)
 	}
 }
+
+// TestTheServerRowsShowANameAndNoAddressLine (jargon audit F028): neither the
+// switcher's menu row nor a Manage servers row has a second line for the
+// server's address ([data-server-host], which servers.js filled with
+// host:port); a Manage row carries the address ⓘ instead — the shared
+// InfoSheet, with a Copy and an (empty, script-filled) code row — and the
+// menu row, a link, carries none (a button inside a link is invalid).
+func TestTheServerRowsShowANameAndNoAddressLine(t *testing.T) {
+	menu := renderString(t, serverSwitcher(Brand{Name: "Team Example"}))
+	dialogs := renderString(t, serverSwitcherDialogs())
+	for what, page := range map[string]string{"menu": menu, "dialogs": dialogs} {
+		if strings.Contains(page, "data-server-host") {
+			t.Errorf("%s: a row still has an address line (data-server-host)", what)
+		}
+	}
+	i := strings.Index(dialogs, `id="server-manage-row-tpl"`)
+	if i < 0 {
+		t.Fatal("no Manage row template")
+	}
+	row := dialogs[i:]
+	row = row[:strings.Index(row, "</template>")]
+	want := InfoSheetHTML(serverAddressSheet())
+	if !strings.Contains(row, want) {
+		t.Errorf("the Manage row lacks the address sheet:\n%s", row)
+	}
+	for _, part := range []string{`data-info-code=""`, `data-info-copy=""`, `popovertarget="` + ServerAddressSheetTpl + `"`} {
+		if !strings.Contains(row, part) {
+			t.Errorf("the Manage row's sheet lacks %s", part)
+		}
+	}
+	j := strings.Index(menu, `id="server-item-tpl"`)
+	item := menu[j:]
+	item = item[:strings.Index(item, "</template>")]
+	if strings.Contains(item, "data-info-open") {
+		t.Errorf("the menu row (a link) carries an ⓘ button: %s", item)
+	}
+}
+
+// TestTheManageRowsAddressSheetIsTheOneServersJSRenames: servers.js renames
+// the row template's sheet by the id the template draws it with.
+func TestTheManageRowsAddressSheetIsTheOneServersJSRenames(t *testing.T) {
+	src, err := os.ReadFile("../../web/static/servers.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "var ADDRESS_TPL = '"+ServerAddressSheetTpl+"';") {
+		t.Fatalf("servers.js does not rename the sheet the template draws (%q)", ServerAddressSheetTpl)
+	}
+}
