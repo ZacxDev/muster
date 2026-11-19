@@ -758,7 +758,7 @@ func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 	// Afterwards the page shows its state and label — never the token.
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr())
 	if strings.Contains(detail.Body.String(), token) || strings.Contains(detail.Body.String(), "data-link-new") ||
-		!strings.Contains(detail.Body.String(), `data-info-code="">`+ls[0].Label()+`</code>`) {
+		!strings.Contains(detail.Body.String(), `data-link-id="`+strconv.FormatInt(ls[0].ID, 10)+`" data-link-state="live"`) {
 		t.Fatalf("the detail page after the mint: %s", detail.Body.String())
 	}
 	// It shows a bearer link: never cached. (That it loads no telemetry is

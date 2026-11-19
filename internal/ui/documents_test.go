@@ -10,6 +10,7 @@ import (
 	g "maragu.dev/gomponents"
 
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/web"
 )
 
 // The registry of every full HTML document muster serves, and the derivation
@@ -623,39 +624,25 @@ func jsValueAfter(t *testing.T, js, decl string) string {
 	return strings.TrimSpace(rest[:j])
 }
 
-// TestTheWordmarkSpellsMuster pins the RENDERED, tag-stripped wordmark as a
-// WHOLE STRING.
-//
-// 🔴 THE FIRST VERSION OF THIS TEST WAS WALKABLE, AND A MUTANT PROVED IT. It
-// asked whether the shell's rendered text CONTAINED "muster" anywhere. Reverting
-// just the HEADER wordmark to the upstream brand left the SIDEBAR one intact, so
-// the document still contained the right name and the test stayed green while
-// half the app showed the wrong one — a substring check answering a question
-// about presence when the question is about identity.
-//
-// Two changes close it. The wordmark is now ONE function (see wordmark()), so
-// there is no half to rename; and this asserts equality against the whole
-// normalised string rather than membership, so any edit to either syllable
-// fails. Pinning the whole string means a deliberate rename must also edit this
-// line — which is the cost, paid on purpose for a machine-readable claim.
-func TestTheWordmarkSpellsMuster(t *testing.T) {
-	if got := strippedText(renderString(t, wordmark())); got != "muster" {
-		t.Errorf("the wordmark reassembles to %q, want %q.\n"+
-			"It is split across two text nodes so the first syllable can be coloured, so the name is "+
-			"never spelled whole in the source and no search for it can find this.", got, "muster")
+// TestTheWordmarkIsTheLockup pins the WHOLE rendered wordmark: ONE element
+// (both sites hold it in an `inline-flex … gap-2` box, where anything but one
+// element is split by the gap on screen — the old two-node wordmark read
+// "mu ster"), the brand pack's lockup at its content-hashed URL, and "muster"
+// as its alt text, which is the name a screen reader announces since the
+// lockup's wordmark is outlines, not text. Pinning the whole string means a
+// deliberate change must also edit this line: the cost, paid on purpose.
+func TestTheWordmarkIsTheLockup(t *testing.T) {
+	h := web.AssetHash("/static/icons/lockup-horizontal.svg")
+	if h == "" {
+		t.Fatal("the lockup is not in the embed")
 	}
-}
-
-// TestTheWordmarkIsOneFlexItem: both sites hold the wordmark in an
-// `inline-flex … gap-2` box, where every child node is a flex item and the gap
-// falls between them. Rendered as a bare group (a span, then a text node) the
-// name was drawn "mu ster". The whole markup is pinned: one wrapping element,
-// the two syllables inside it.
-func TestTheWordmarkIsOneFlexItem(t *testing.T) {
-	const want = `<span><span class="text-accent">mu</span>ster</span>`
+	want := `<img data-brand-mark="" src="/static/icons/lockup-horizontal.svg?v=` + h +
+		`" alt="muster" width="350" height="74" class="h-7 w-auto shrink-0">`
 	if got := renderString(t, wordmark()); got != want {
-		t.Errorf("the wordmark renders %q, want %q.\n"+
-			"Its container is inline-flex with a gap, so anything but ONE element is split by that gap on screen.", got, want)
+		t.Errorf("the wordmark renders\n  %s\nwant\n  %s", got, want)
+	}
+	if got := strippedText(renderString(t, wordmark())); got != "" {
+		t.Errorf("the wordmark carries text %q: the name is drawn by the lockup, and typed nowhere", got)
 	}
 }
 

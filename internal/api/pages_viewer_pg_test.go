@@ -299,7 +299,7 @@ func previewHits(s string) []string {
 func pageDetailSection(t *testing.T, doc string) string {
 	t.Helper()
 	i := strings.Index(doc, `data-testid="page-detail"`)
-	j := strings.Index(doc, `data-page-delete>Delete this page</button>`)
+	j := strings.Index(doc, `data-page-delete-box>`)
 	if i < 0 || j < i {
 		t.Fatalf("no page-detail section in %s", doc)
 	}
@@ -356,9 +356,18 @@ func TestTheChipIsTheOwnersAndListsTheVersions(t *testing.T) {
 	if len(vs) != 2 {
 		t.Fatalf("versions: %+v", vs)
 	}
-	made := map[int]string{vs[0].Version: ruleTime(vs[0].CreatedAt), vs[1].Version: ruleTime(vs[1].CreatedAt)}
+	// Each version's time is in words, as on the Pages screens: the day,
+	// which the shell's script redraws in the reader's zone with its time
+	// (data-plain-when). RED before: "current · 2026-11-17 23:37 UTC".
+	made := map[int]string{
+		vs[0].Version: `<time data-plain-when="` + strconv.FormatInt(vs[0].CreatedAt.UnixMilli(), 10) + `" data-plain-when-prefix="">today</time>`,
+		vs[1].Version: `<time data-plain-when="` + strconv.FormatInt(vs[1].CreatedAt.UnixMilli(), 10) + `" data-plain-when-prefix="">today</time>`,
+	}
 
 	cur := f.get(t, "/pages/"+sid+"/view", f.ownerHdr()).Body.String()
+	if strings.Contains(cur, " UTC<") {
+		t.Errorf("the version popover spells a UTC clock")
+	}
 	for _, want := range []string{
 		`aria-label="Version 2: show versions">v2 <span aria-hidden="true">▾</span></button>`,
 		`<li><a href="/pages/` + sid + `/view?v=2" data-version-link="2" aria-current="page">Version 2<span class="w">current · ` + made[2] + `</span></a></li>` +

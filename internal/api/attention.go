@@ -714,6 +714,7 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 	if err != nil {
 		return nil, err
 	}
+	s.withDraftOfficerNames(cards)
 	var out []attentionItem
 	now := time.Now()
 	// A follow or a like is on its outreach batch's ONE item (outreach_batch.go),

@@ -120,7 +120,13 @@ func (b *Backend) budgetGate(ctx context.Context, now time.Time) (held, unreadab
 	if err != nil {
 		return true, true, 0
 	}
-	return b.officer.OverBudget(spent), false, spent
+	// The owner's raise for today (cap_raise.go); an unreadable raise is the
+	// declared budget, the lower cap (fail closed).
+	o := b.officer
+	if c, err := raisedCap(b.scope(ctx), b.store.pool, o.Owner, o.ID, now); err == nil {
+		o = o.WithRaisedCap(c)
+	}
+	return o.OverBudget(spent), false, spent
 }
 
 // overBudgetClaimable narrows claim-next's `claimable` for an officer over

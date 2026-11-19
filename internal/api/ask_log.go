@@ -623,6 +623,11 @@ func askLogProvenanceOf(reply string, sent []sendqueue.SentBody) string {
 			// The chief's task_forward: the chief routing a message, never the
 			// person's own send (0089's provenance has no other word for it).
 			return asklog.ProvRoute
+		case b.FleetActionID > 0:
+			// A fleet action's card the owner approved: the chief's text,
+			// relayed on the owner's tap — a route in 0089's words, never the
+			// person's own send.
+			return asklog.ProvRoute
 		default:
 			return asklog.ProvMusterSend
 		}

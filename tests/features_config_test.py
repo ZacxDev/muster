@@ -217,15 +217,18 @@ def features_links(text: str) -> set[str]:
 # text may hold an image (`[![badge](img)](target)`), whose own target
 # MD_IMG checks.
 MD_LINK = re.compile(r"(?<!\!)\[(?:[^\[\]]|!\[[^\]]*\]\([^)\s]*\))*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
-# Images: `![alt](path)` and `<img src="path">`. Their targets must exist too.
-MD_IMG = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)|<img\b[^>]*?\bsrc=\"([^\"]+)\"")
+# Images: `![alt](path)`, `<img src="path">` and a `<picture>`'s
+# `<source srcset="path">` (one URL, no descriptor: the README's light and dark
+# logo). Their targets must exist too.
+MD_IMG = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)|<img\b[^>]*?\bsrc=\"([^\"]+)\""
+                    r"|<source\b[^>]*?\bsrcset=\"([^\"\s,]+)\"")
 
 
 def link_targets(text: str) -> list[str]:
     """Every link and image target in text outside code."""
     body = strip_code(text)
     return [m.group(1) for m in MD_LINK.finditer(body)] + \
-        [m.group(1) or m.group(2) for m in MD_IMG.finditer(body)]
+        [m.group(1) or m.group(2) or m.group(3) for m in MD_IMG.finditer(body)]
 
 
 def github_slugs(md: str) -> set[str]:
@@ -381,6 +384,7 @@ class FeaturesConfig(unittest.TestCase):
         planted["docs/planted.md"] = ("# Title\n\n## Twice\n\n## Twice\n\n[a](nope.md) [b](features.md#no-such-feature) "
                                       "[c](#nowhere) [d](#twice-1) `[e](nope-in-code.md)`\n"
                                       "![f](img/nope.png) <img alt=\"g\" src=\"img/nope2.png\"> `![h](nope3.png)`\n"
+                                      "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"img/nope5.svg\"></picture>\n"
                                       "[![i](https://example.com/b.svg)](nope4.md) and `a wrapped\n"
                                       "span` then [j](#nowhere-2)\n")
         errs = broken_links(planted)
@@ -390,6 +394,7 @@ class FeaturesConfig(unittest.TestCase):
                                  "#nowhere -> #nowhere is not a heading of docs/planted.md",
                                  "img/nope.png -> docs/img/nope.png does not exist",
                                  "img/nope2.png -> docs/img/nope2.png does not exist",
+                                 "img/nope5.svg -> docs/img/nope5.svg does not exist",
                                  "nope4.md -> docs/nope4.md does not exist",
                                  "#nowhere-2 -> #nowhere-2 is not a heading of docs/planted.md"]))
 

@@ -62,12 +62,13 @@ func TestTheSidebarsOfficerFieldIsTheServersBindingRule(t *testing.T) {
 // navCountingReads is navOfficerReads that counts its calls, answering fixed
 // maps or failing.
 type navCountingReads struct {
-	counts, spends, unreads       int
-	countErr, spendErr, unreadErr error
-	queued                        map[builtin.OfficerRef]int
-	spent                         map[builtin.OfficerRef]float64
-	unread                        map[builtin.OfficerRef]int
-	countOwners                   [][]int64
+	counts, spends, unreads, raises int
+	countErr, spendErr, unreadErr   error
+	queued                          map[builtin.OfficerRef]int
+	spent                           map[builtin.OfficerRef]float64
+	raised                          map[builtin.OfficerRef]float64
+	unread                          map[builtin.OfficerRef]int
+	countOwners                     [][]int64
 }
 
 func (c *navCountingReads) UnreadCounts(context.Context, []int64, time.Time) (map[builtin.OfficerRef]int, error) {
@@ -93,6 +94,11 @@ func (c *navCountingReads) SpentOn(context.Context, []int64, time.Time) (map[bui
 		return nil, c.spendErr
 	}
 	return c.spent, nil
+}
+
+func (c *navCountingReads) RaisedCapsOn(context.Context, []int64, time.Time) (map[builtin.OfficerRef]float64, error) {
+	c.raises++
+	return c.raised, nil
 }
 
 const navTeam int64 = 900

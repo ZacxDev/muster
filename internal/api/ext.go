@@ -397,6 +397,17 @@ type Extensions struct {
 	// MUSTER_PR_MAIL_SENDERS): without that a session has no pull requests, and
 	// the digest's Waiting on CI and Done groups stay empty whatever the App.
 	FleetPRStates PRStateReader
+	// FleetPropose turns on fleet proposals (MUSTER_FLEET_ORCHESTRATION=
+	// propose; fleet_actions.go): the chief's fleet write tools
+	// (session_instruct, session_wrap, work_reassign, fleet_actions_list),
+	// the digest's proposal cards and their routes, the deterministic handoff
+	// proposals of the session-state pass, and the batched push. False, the
+	// default, is the build before it: no tool listed, no card, no
+	// fleet_actions write. It needs FleetDigest (refused at boot without).
+	FleetPropose bool
+	// FleetActions is the fleet's action log (internal/fleet, migration
+	// 0158). nil (no database): fleet proposals are off whatever FleetPropose.
+	FleetActions fleet.Actions
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
