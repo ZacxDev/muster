@@ -11,12 +11,8 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// liveHeartbeatEvery is how often a live socket or stream sends its heartbeat:
-// ui.LiveHeartbeat (MUSTER_LIVE_HEARTBEAT). A function variable so a test can
-// beat faster without touching the process-wide setting.
-var liveHeartbeatEvery = ui.LiveHeartbeat
-
-// socketHeartbeat writes ui.LivePingFrame to c every liveHeartbeatEvery until
+// socketHeartbeat writes ui.LivePingFrame to c every heartbeat (ctx's
+// socketSettings: ui.LiveHeartbeat, MUSTER_LIVE_HEARTBEAT, in production) until
 // ctx ends, stop is called or a write fails. It is how a page tells a socket
 // that is alive from one that only LOOKS open (ui/live.go): every socket a page
 // watches for staleness gets one.
@@ -48,10 +44,10 @@ var liveHeartbeatEvery = ui.LiveHeartbeat
 func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	stopped := make(chan struct{})
-	// Both read here, on the handler's goroutine: the beat may outlive the
-	// handler by a moment (stop does not wait for it), and must not read them
-	// then.
-	every, bound := liveHeartbeatEvery(), terminalWriteTimeout
+	// Both read here, from ctx's socketSettings — never a package variable a
+	// test could reassign while this beat, outliving its test, still ran.
+	set := socketSettingsOf(ctx)
+	every, bound := set.heartbeatEvery(), set.writeTimeout()
 	safeGo(logger, "live heartbeat", func() {
 		// Whenever the beat ends — stopped, its context gone, or a failed
 		// write — the note is forgotten only once stop has been called.
@@ -91,7 +87,7 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+stallGrace)
 	defer cancel()
-	seams := writeSeamsOf(ctx)
+	seams := socketSettingsOf(ctx)
 	disarm := armStall(seams, c, time.Now().Add(bound))
 	seams.beatWriting()
 	err := c.Write(wctx, websocket.MessageText, []byte(ui.LivePingFrame))
@@ -107,21 +103,29 @@ func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) erro
 	return err
 }
 
-// writeSeams are the test seams around one write to a page — a beat
-// (writePing) or any other page write (pageWrite) — and its stall timer
-// (armStall). They ride on the CONTEXT of the write they hook (withWriteSeams),
-// and production never sets them: writeSeamsOf then returns nil, whose methods
-// are no-ops.
+// socketSettings are the timings of a page's socket and the test seams around
+// its writes. They ride on the CONTEXT of the socket or write they apply to
+// (withSocketSettings), set once before it opens and never changed after;
+// production sets none, and socketSettingsOf then returns nil, whose timings
+// are the production defaults (terminalWriteTimeout, pageWriteGrace,
+// terminalPingInterval, ui.LiveHeartbeat) and whose seams are no-ops. A zero
+// timing is its default too.
 //
-// 🔴 NEVER A PACKAGE VARIABLE. A beat's goroutine outlives the handler that
-// started it by a moment (socketHeartbeat's stop does not wait for it), and
-// nothing makes a handler end with the test that opened its socket. A
-// seam held in a package variable was read by a beat one test had left behind
-// while the next test assigned it: a data race, and a hook firing on a write
-// that was never the test's (TestAStallCallbackFinishesBeforeTheBeatReturns,
-// on CI). On the write's own context, a seam reaches exactly the writes made
-// on that context — a test's, never another test's.
-type writeSeams struct {
+// 🔴 NEVER A PACKAGE VARIABLE A TEST REASSIGNS. A beat's goroutine outlives
+// the handler that started it by a moment (socketHeartbeat's stop does not
+// wait for it), and nothing makes a handler end with the test that opened its
+// socket. A seam or timing held in a package variable was read by a socket
+// one test had left behind while the next test assigned it: a data race
+// (TestAStallCallbackFinishesBeforeTheBeatReturns on CI; the write timeout,
+// reassigned in a test's cleanup, against socketHeartbeat's read), and a hook
+// or bound applied to a socket that was never the test's. On the context, a
+// setting reaches exactly the sockets and writes made on it.
+type socketSettings struct {
+	every time.Duration // the heartbeat (socketHeartbeat, the /events stream)
+	bound time.Duration // one write to the page (pageWriteContext, the beat, the keepalive)
+	grace time.Duration // a page write past its stream's cancellation (pageWriteContext)
+	ping  time.Duration // the terminal keepalive's interval (bridgeTerminal)
+
 	stallFiring  func() // the stall timer's callback begins (armStall)
 	beatWrite    func() // just before a beat's write (writePing)
 	writeStarts  func() // just before a page write (pageWrite)
@@ -129,17 +133,52 @@ type writeSeams struct {
 	stallNoted   func() // a stall was noted (notePageWrite)
 }
 
-type writeSeamsKey struct{}
+type socketSettingsKey struct{}
 
-// withWriteSeams returns ctx carrying s for every write made on it.
-func withWriteSeams(ctx context.Context, s *writeSeams) context.Context {
-	return context.WithValue(ctx, writeSeamsKey{}, s)
+// withSocketSettings returns ctx carrying s for every socket and write on it.
+func withSocketSettings(ctx context.Context, s *socketSettings) context.Context {
+	return context.WithValue(ctx, socketSettingsKey{}, s)
 }
 
-// writeSeamsOf is the seams ctx carries, nil (all no-ops) when it carries none.
-func writeSeamsOf(ctx context.Context) *writeSeams {
-	s, _ := ctx.Value(writeSeamsKey{}).(*writeSeams)
+// socketSettingsOf is the settings ctx carries, nil (production's) when none.
+func socketSettingsOf(ctx context.Context) *socketSettings {
+	s, _ := ctx.Value(socketSettingsKey{}).(*socketSettings)
 	return s
+}
+
+func orDefault(d, def time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return def
+}
+
+func (s *socketSettings) heartbeatEvery() time.Duration {
+	if s == nil || s.every <= 0 {
+		return ui.LiveHeartbeat()
+	}
+	return s.every
+}
+
+func (s *socketSettings) writeTimeout() time.Duration {
+	if s == nil {
+		return terminalWriteTimeout
+	}
+	return orDefault(s.bound, terminalWriteTimeout)
+}
+
+func (s *socketSettings) writeGrace() time.Duration {
+	if s == nil {
+		return pageWriteGrace
+	}
+	return orDefault(s.grace, pageWriteGrace)
+}
+
+func (s *socketSettings) pingInterval() time.Duration {
+	if s == nil {
+		return terminalPingInterval
+	}
+	return orDefault(s.ping, terminalPingInterval)
 }
 
 func runSeam(f func()) {
@@ -148,31 +187,31 @@ func runSeam(f func()) {
 	}
 }
 
-func (s *writeSeams) fireStall() {
+func (s *socketSettings) fireStall() {
 	if s != nil {
 		runSeam(s.stallFiring)
 	}
 }
 
-func (s *writeSeams) beatWriting() {
+func (s *socketSettings) beatWriting() {
 	if s != nil {
 		runSeam(s.beatWrite)
 	}
 }
 
-func (s *writeSeams) writeStarting() {
+func (s *socketSettings) writeStarting() {
 	if s != nil {
 		runSeam(s.writeStarts)
 	}
 }
 
-func (s *writeSeams) writeReturned() {
+func (s *socketSettings) writeReturned() {
 	if s != nil {
 		runSeam(s.writeReturns)
 	}
 }
 
-func (s *writeSeams) noteStall() {
+func (s *socketSettings) noteStall() {
 	if s != nil {
 		runSeam(s.stallNoted)
 	}

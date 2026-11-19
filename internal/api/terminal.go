@@ -373,7 +373,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 	pingDone := make(chan struct{})
 	safeGo(logger, "terminal keepalive", func() {
 		defer close(pingDone)
-		t := time.NewTicker(terminalPingInterval)
+		t := time.NewTicker(socketSettingsOf(sockCtx).pingInterval())
 		defer t.Stop()
 		for {
 			select {
@@ -393,9 +393,9 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 				// cut the wait for a pong from terminalWriteTimeout (10 s) to
 				// 4 s, which was declined (2026-11-16). Pinned by
 				// TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout.
-				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
+				pctx, pcancel := context.WithTimeout(sockCtx, socketSettingsOf(sockCtx).writeTimeout())
 				err := c.Ping(pctx)
-				notePageWrite(writeSeamsOf(pctx), c, err)
+				notePageWrite(socketSettingsOf(pctx), c, err)
 				pcancel()
 				if err != nil {
 					cancel()
@@ -485,19 +485,21 @@ func shutdownFrame(c *websocket.Conn) {
 // that close quiet connections (a read-only view of an idle TUI can send
 // nothing for minutes), and detects a peer that vanished without a close
 // frame — a phone that lost signal — so its exec does not stay attached until
-// TCP gives up. A variable so a test can ping in less than 25 seconds.
-var terminalPingInterval = 25 * time.Second
+// TCP gives up. Production's: a test pings sooner on its own socket's context
+// (socketSettings), never by reassigning a package variable.
+const terminalPingInterval = 25 * time.Second
 
 // terminalWriteTimeout bounds one write to the browser. A stalled browser
-// ends the exec rather than backing the pod's output up into muster. A
-// variable so a test can stall a page in less than ten seconds.
-var terminalWriteTimeout = 10 * time.Second
+// ends the exec rather than backing the pod's output up into muster.
+// Production's: a test stalls a page sooner on its own socket's context
+// (socketSettings).
+const terminalWriteTimeout = 10 * time.Second
 
 // pageWriteGrace is how long a write to the page may still take once its
 // stream's context has been CANCELLED (a shutdown, the bridge ending) — whether
-// the write was already in flight then or started after. A variable so a test
-// can measure it in less than a second.
-var pageWriteGrace = time.Second
+// the write was already in flight then or started after. Production's: a test
+// measures a shorter one on its own context (socketSettings).
+const pageWriteGrace = time.Second
 
 // pageWriteContext is the context ONE write to the page runs on. It ends at
 // the EARLIEST of:
@@ -517,12 +519,13 @@ var pageWriteGrace = time.Second
 // timeout; the heartbeat's writePing applies the same rule (a context the
 // stream's end does not cancel).
 func pageWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	deadline := time.Now().Add(terminalWriteTimeout)
+	set := socketSettingsOf(ctx)
+	deadline := time.Now().Add(set.writeTimeout())
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
 	wctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
-	grace := pageWriteGrace
+	grace := set.writeGrace()
 	stop := context.AfterFunc(ctx, func() {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			// ctx ran out of time: wctx carries the same deadline and ends
@@ -567,7 +570,7 @@ func pageWrite(ctx context.Context, c *websocket.Conn, typ websocket.MessageType
 			wcancel()
 		}
 	})()
-	seams := writeSeamsOf(ctx)
+	seams := socketSettingsOf(ctx)
 	disarm := armStall(seams, c, deadline)
 	seams.writeStarting()
 	err := c.Write(wctx, typ, b)
@@ -589,7 +592,7 @@ const stallGrace = time.Second
 // that finds c closed by the stall always finds the note (markPageGone,
 // streamEndReason). disarm stops it and reports whether it fired; a fired
 // callback has finished noting and closing by the time disarm returns.
-func armStall(seams *writeSeams, c *websocket.Conn, deadline time.Time) (disarm func() (fired bool)) {
+func armStall(seams *socketSettings, c *websocket.Conn, deadline time.Time) (disarm func() (fired bool)) {
 	done := make(chan struct{})
 	t := time.AfterFunc(time.Until(deadline), func() {
 		defer close(done)
@@ -631,7 +634,7 @@ var stalledPages sync.Map // *websocket.Conn → struct{}
 // notePageWrite records that a write to c timed out, when err says so, and
 // tells the write's seams (stallNoted: a test's count of the notes made, which
 // a note forgotten moments later leaves no other trace of).
-func notePageWrite(seams *writeSeams, c *websocket.Conn, err error) {
+func notePageWrite(seams *socketSettings, c *websocket.Conn, err error) {
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		stalledPages.Store(c, struct{}{})
 		seams.noteStall()

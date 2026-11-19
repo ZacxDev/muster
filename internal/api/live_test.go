@@ -29,13 +29,9 @@ import (
 //
 // Red at origin/main baf851ac: none of them sent anything while idle.
 
-// fastBeat makes every stream beat every 40 ms for the test.
-func fastBeat(t *testing.T) {
-	t.Helper()
-	saved := liveHeartbeatEvery
-	liveHeartbeatEvery = func() time.Duration { return 40 * time.Millisecond }
-	t.Cleanup(func() { liveHeartbeatEvery = saved })
-}
+// fastBeat is how often a test's streams beat: on its own servers' sockets
+// (socketSettings), never the process's.
+const fastBeat = 40 * time.Millisecond
 
 // wantPings reads c until it has seen n heartbeat frames, skipping anything
 // else (a terminal's ready and output). A heartbeat must be the exact frame
@@ -57,19 +53,18 @@ func wantPings(t *testing.T, name string, c *websocket.Conn, n int) {
 }
 
 func TestEveryLiveSocketBeatsWhileIdle(t *testing.T) {
-	fastBeat(t)
 	t.Run("rendered view", func(t *testing.T) {
 		// fakeMirror with a v2 and no batches: the watch opens and says nothing.
-		s, ts, _ := streamServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
+		s, ts, _ := streamServerWith(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, &socketSettings{every: fastBeat})
 		wantPings(t, "rendered view", dialPage(t, s, ts, viewSock), 3)
 	})
 	t.Run("mirror terminal", func(t *testing.T) {
 		// One chunk of output, then nothing.
 		m := &streamMirror{fakeMirror: &fakeMirror{online: true}, chunk: 16, idle: true}
-		s, ts, _ := streamServer(t, m)
+		s, ts, _ := streamServerWith(t, m, &socketSettings{every: fastBeat})
 		wantPings(t, "mirror terminal", dialPage(t, s, ts, terminalSock), 3)
 	})
-	f := newStreamFixture(t)
+	f := newStreamFixtureWith(t, &socketSettings{every: fastBeat})
 	at, rt, _ := f.fake.Mint(f.sub)
 	dial := func(t *testing.T, path string) *websocket.Conn {
 		h := http.Header{}
@@ -120,10 +115,9 @@ func TestEveryLiveSocketBeatsWhileIdle(t *testing.T) {
 // reading is a timeout, whichever writer — a batch, output, or a beat — hit
 // it. The close-reason tests, with a beat every 40 ms.
 func TestCloseReasonsHoldWhileBeating(t *testing.T) {
-	fastBeat(t)
-	t.Run("stopped reading", TestAPageThatStopsReadingIsATimeout)
-	t.Run("left", TestAPageThatLeftIsTheBrowserLeavingAtTheHandler)
-	t.Run("idle terminal not answering", TestAnIdleTerminalWhosePageStoppedAnsweringIsATimeout)
+	t.Run("stopped reading", func(t *testing.T) { pageThatStopsReadingIsATimeout(t, fastBeat) })
+	t.Run("left", func(t *testing.T) { pageThatLeftIsTheBrowserLeavingAtTheHandler(t, fastBeat) })
+	t.Run("idle terminal not answering", func(t *testing.T) { idleTerminalWhosePageStoppedAnsweringIsATimeout(t, fastBeat) })
 }
 
 // TestTheHeartbeatSettingIsBoundedAndDefaulted: MUSTER_LIVE_HEARTBEAT unset is
@@ -177,11 +171,8 @@ func TestATimedOutBeatIsForgottenWhenItsSocketEnds(t *testing.T) {
 	// A beat every millisecond to a page that never reads, over small socket
 	// buffers: the buffers fill and a beat times out (streamServer's 300 ms
 	// write bound) — a real stall, not a forced error.
-	saved := liveHeartbeatEvery
-	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
-	t.Cleanup(func() { liveHeartbeatEvery = saved })
 	var noted atomic.Int64
-	s, ts, _ := streamServerWith(t, &fakeMirror{online: true}, &writeSeams{stallNoted: func() { noted.Add(1) }})
+	s, ts, _ := streamServerWith(t, &fakeMirror{online: true}, &socketSettings{every: time.Millisecond, stallNoted: func() { noted.Add(1) }})
 	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: chatAgents{}, SessionLiveness: stubLiveness{},
 		Provisioner: newFakeTerminal(), Gateway: stubGateway{}, Mirror: &fakeMirror{online: true}})
 	base := stalledCount()
@@ -221,12 +212,6 @@ func TestATimedOutBeatIsForgottenWhenItsSocketEnds(t *testing.T) {
 // ⚠ The agent pod's terminal is not covered: its handler classifies no end.
 func TestAnIdlePageThatStopsReadingIsATimeoutWhenOnlyTheBeatWrites(t *testing.T) {
 	const sockets = 64
-	saved := liveHeartbeatEvery
-	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
-	t.Cleanup(func() { liveHeartbeatEvery = saved })
-	savedPing := terminalPingInterval
-	terminalPingInterval = time.Hour
-	t.Cleanup(func() { terminalPingInterval = savedPing })
 	for _, c := range []struct {
 		view, path string
 		m      Mirror
@@ -236,7 +221,8 @@ func TestAnIdlePageThatStopsReadingIsATimeoutWhenOnlyTheBeatWrites(t *testing.T)
 	} {
 		t.Run(c.view, func(t *testing.T) {
 			var noted atomic.Int64
-			s, ts, _ := streamServerWith(t, c.m, &writeSeams{stallNoted: func() { noted.Add(1) }})
+			// A beat every millisecond; the terminal's keepalive pushed out of the test's time.
+			s, ts, _ := streamServerWith(t, c.m, &socketSettings{every: time.Millisecond, ping: time.Hour, stallNoted: func() { noted.Add(1) }})
 			before := disconnects(c.view)
 			for i := 0; i < sockets; i++ {
 				_ = dialPage(t, s, ts, c.path) // and never reads
@@ -275,11 +261,8 @@ func TestAnIdlePageThatStopsReadingIsATimeoutWhenOnlyTheBeatWrites(t *testing.T)
 // its bound, note a stall and close the socket), the socket stays open, and
 // once it ends every goroutine it started is gone.
 func TestAHealthyBeatIsNotSlowedAndLeavesNothingBehind(t *testing.T) {
-	saved := liveHeartbeatEvery
-	liveHeartbeatEvery = func() time.Duration { return 5 * time.Millisecond }
-	t.Cleanup(func() { liveHeartbeatEvery = saved })
 	var noted atomic.Int64
-	s, ts, _ := streamServerWith(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, &writeSeams{stallNoted: func() { noted.Add(1) }})
+	s, ts, _ := streamServerWith(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, &socketSettings{every: 5 * time.Millisecond, stallNoted: func() { noted.Add(1) }})
 	time.Sleep(100 * time.Millisecond)
 	g0 := runtime.NumGoroutine()
 	c := dialPage(t, s, ts, viewSock)
@@ -361,13 +344,19 @@ func TestAStallCallbackFinishesBeforeTheBeatReturns(t *testing.T) {
 	defer forgetPage(c)
 
 	entered, release := make(chan struct{}), make(chan struct{})
-	seams := &writeSeams{
+	seams := &socketSettings{
 		stallFiring: func() { close(entered); <-release },
-		beatWrite:   func() { <-entered }, // the timer has fired before the write
+		beatWrite: func() { // the timer has fired before the write
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Error("the stall timer never fired before the beat's write (its stallFiring seam never ran)")
+			}
+		},
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- writePing(withWriteSeams(context.Background(), seams), c, time.Nanosecond) }()
+	go func() { done <- writePing(withSocketSettings(context.Background(), seams), c, time.Nanosecond) }()
 	select {
 	case <-done:
 		close(release)
@@ -426,15 +415,13 @@ func TestAWriteSeamReachesOnlyTheWritesMadeOnItsContext(t *testing.T) {
 	c := <-got
 	defer forgetPage(c)
 
-	saved := liveHeartbeatEvery
-	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
-	stop := socketHeartbeat(context.Background(), log.New(io.Discard, "", 0), c) // the foreign beat
-	liveHeartbeatEvery = saved
-	defer stop()
+	foreign := withSocketSettings(context.Background(), &socketSettings{every: time.Millisecond})
+	stop := socketHeartbeat(foreign, log.New(io.Discard, "", 0), c) // the foreign beat
+	t.Cleanup(stop)
 
 	var ran atomic.Int64
-	seams := &writeSeams{beatWrite: func() { ran.Add(1) }}
-	if err := writePing(withWriteSeams(context.Background(), seams), c, 5*time.Second); err != nil {
+	seams := &socketSettings{beatWrite: func() { ran.Add(1) }}
+	if err := writePing(withSocketSettings(context.Background(), seams), c, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
