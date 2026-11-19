@@ -282,6 +282,11 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 			}
 		}
 	}
+	// 🔴 AN OFFICER NEVER DECIDES ITS OWN WORK (officer_own_state.go): before
+	// the store (a team's refusal above names the team rule first).
+	if msg := officerDeciderRefusal(ctx); msg != "" {
+		return plugins.BatchDecided{}, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
+	}
 	res, err := ps.DecideOutreachBatch(ctx, id, dec)
 	var blocked plugins.ContactBlockedError
 	switch {
