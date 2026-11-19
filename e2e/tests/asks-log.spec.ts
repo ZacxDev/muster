@@ -11,7 +11,7 @@ import { startServer, Running } from '../lib/server';
 //
 //   - the owner opens /attention and TAPS the Log tab — the panel is fetched
 //     then (the page's own render reads nothing from the log) — and sees the
-//     summary (7 asks, 5 answered by you, typical 30s, 9 in 10 within 2m (discrete)),
+//     summary (7 asks, 5 answered by you, typical 30s, 9 in 10 within 2m 40s),
 //     the breakdowns as plain "label N" rows under the page's one heading
 //     style (no pill: nothing there is a control), the log's unended ask as
 //     "No answer" (never "Open", the header's word for what waits on you
@@ -83,7 +83,14 @@ for (const vp of [
       await expect(stat('total')).toHaveText('7');
       await expect(stat('owner')).toHaveText('5');
       await expect(stat('median')).toHaveText('30s');
-      await expect(stat('p90')).toHaveText('2m');
+      // "9 in 10 answered within" is the DISCRETE 90th percentile
+      // (percentile_disc: the smallest answer time at least 90% of answers
+      // took no longer than), so the claim is true of the rows. askfix's 6
+      // rows with an answer time (5 answered + 1 declined) took 5, 10, 20,
+      // 40, 80 and 160 s; 80 s covers only 5 of 6 (83%), 160 s covers 6 of 6
+      // — so 2m 40s. (The interpolated p90 the API still reports is 2m: 80 +
+      // 0.5 × 80, a time only 5 of 6 were answered within.)
+      await expect(stat('p90')).toHaveText('2m 40s');
 
       // THE BREAKDOWNS: plain statistics under the Asks page's one heading
       // style, never pills. askfix's 7: 5 answered, 1 declined and 1 never
