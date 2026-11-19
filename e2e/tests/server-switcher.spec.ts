@@ -298,9 +298,15 @@ for (const vp of [
       expect((await stored(page)).servers.map((x: { origin: string }) => x.origin)).toEqual([A]);
 
       // The keyboard: Escape closes the menu and gives focus back to its button.
+      // Escape closes the innermost overlay only: on a phone the drawer the
+      // menu sits in stays open (its own Escape closing too slid it shut and
+      // dropped the focus at the end of the slide — a timing-dependent red).
       await page.locator('#server-switcher-toggle').focus();
+      const drawer = await page.locator('#sidebar-root').getAttribute('data-open');
       await page.keyboard.press('Escape');
       await expect(page.locator('#server-switcher-menu')).toBeHidden();
+      expect(await page.locator('#sidebar-root').getAttribute('data-open')).toBe(drawer);
+      await expect(page.locator('#server-switcher-toggle')).toBeVisible();
       await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'false');
       await expect(page.locator('#server-switcher-toggle')).toBeFocused();
       await page.keyboard.press('Enter');

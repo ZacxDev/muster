@@ -560,13 +560,23 @@
   // on its button), and another tab's change to the list redraws this one.
   if (!root.__musterServersInit) {
     root.__musterServersInit = true;
-    document.addEventListener('keydown', function (e) {
+    // 🔴 THE INNERMOST OVERLAY TAKES THE ESCAPE, AND ONLY IT. The menu sits
+    // inside the sidebar, whose own Escape (ui components.go) closes the
+    // phone's drawer. Both ran on one keypress: the menu shut and the toggle
+    // took focus, then the drawer slid out and its panel went
+    // visibility: hidden at the END of the slide — dropping that focus a
+    // transition later, so "focus is back on the toggle" held or failed by
+    // timing (red in CI on a phone). Listening on the window in the CAPTURE
+    // phase runs this before any document listener, and stopping the event
+    // here leaves the drawer open with the focus on the toggle.
+    root.addEventListener('keydown', function (e) {
       var t = $('server-switcher-toggle');
       if (e.key !== 'Escape' || !t || t.getAttribute('aria-expanded') !== 'true') return;
       if (document.querySelector('#server-add[open], #server-manage[open], #server-offer[open]')) return;
+      e.stopPropagation();
       setOpen(false);
       t.focus();
-    });
+    }, true);
     document.addEventListener('click', function (e) {
       var box = $('server-switcher');
       var t = $('server-switcher-toggle');
