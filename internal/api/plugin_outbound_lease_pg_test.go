@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // A slow post: the plugin's send can outlast the 2-minute lease (a post made
@@ -265,8 +266,10 @@ func TestARenewIsRefusedToANonHolderALapsedLeaseAndAnUnclaimedDraft(t *testing.T
 // had made the draft unconfirmed and escalated its item to the owner asking
 // whether it was posted. The late failure: the draft is failed; the item is
 // settled no_action naming the draft.refused follow-up, which carries the
-// plugin's detail; the owner's "may have been posted" ask is withdrawn; and
-// the owner's push says it went back to the officer.
+// plugin's detail; the owner's "may have been posted" ask is withdrawn; and —
+// an officer's refused draft being information, not a decision
+// (officer_push.go) — the owner is pushed no refusal: the draft's
+// notification is withdrawn (resolved, its tag) instead.
 func TestALateFailureOfAnUnconfirmedDraftSettlesItsItemAndWithdrawsTheEscalation(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	pushes := w.withPushes()
@@ -297,14 +300,20 @@ func TestALateFailureOfAnUnconfirmedDraftSettlesItsItemAndWithdrawsTheEscalation
 		t.Fatalf("the owner's escalation asks after the late failure: %v; want the one withdrawn", got)
 	}
 	w.srv.WaitForPushes()
-	var bodies []string
+	var refusals, withdrawn int
 	for _, x := range pushes.to(ep("outbound-owner")) {
-		if x.Tag == "plugin-draft-"+strconv.FormatInt(id, 10) && x.Title == "A reply was not sent" {
-			bodies = append(bodies, x.Body)
+		if x.Tag != "plugin-draft-"+strconv.FormatInt(id, 10) {
+			continue
+		}
+		switch {
+		case x.Type == push.TypeResolved:
+			withdrawn++
+		case x.Title == "A reply was not sent":
+			refusals++
 		}
 	}
-	if len(bodies) != 1 || !strings.Contains(bodies[0], "It went back to the officer that wrote it.") {
-		t.Fatalf("the owner's refusal pushes: %q; want one saying it went back to the officer", bodies)
+	if refusals != 0 || withdrawn == 0 {
+		t.Fatalf("the draft's pushes: %d refusal(s), %d withdrawal(s); want none, and its notification withdrawn", refusals, withdrawn)
 	}
 	w.srv.SweepOfficerAttention(w.ctx)
 	if st, _, _, _ := w.itemRow(item); st != officers.StatusDone {

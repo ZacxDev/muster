@@ -53,6 +53,7 @@ var musterToolLabels = map[string]string{
 	"attention_answer":        "Answered an open question",
 	"chief_ask":               "Asked your chief",
 	"answer_session_question": "Answered a session's question",
+	"notify_owner":            "Sent you a notification",
 
 	// Pages.
 	"page_create":        "Made a page",
