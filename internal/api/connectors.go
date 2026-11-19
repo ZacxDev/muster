@@ -580,9 +580,20 @@ func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	if g.Reason != "" {
 		body += " — " + g.Reason
 	}
-	link, team := "/connectors", false
+	var teamID int64
+	team := false
 	if p, ok := authz.From(ctx); ok && p.Team && !p.All() && p.UserID > 0 {
-		link, team = "/teams/"+strconv.FormatInt(p.UserID, 10)+"/connectors", true
+		teamID, team = p.UserID, true
+	}
+	// Every request's push opens its card (connectorRequestLink); an
+	// officer's goes through officer_push.go's classification and card.
+	link := connectorRequestLink(teamID, g.ID)
+	if s.connectorRequestByOfficer(ctx, g) {
+		ref := officerCardRef{ID: strconv.FormatInt(g.ID, 10), Team: teamID}
+		if !s.officerPushSends(officerPushConnectorRequest, requestOwner(ctx), "connector-"+ref.ID) {
+			return
+		}
+		link = officerDecisionCard(officerPushConnectorRequest, ref)
 	}
 	s.goNotify(requestOwner(ctx), push.EventConnector, RouterNotification{
 		Type:         "connector",

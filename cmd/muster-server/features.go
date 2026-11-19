@@ -120,7 +120,7 @@ func featureCatalog() []features.Feature {
 			Description: "Start, stop and destroy agents in their own Kubernetes pods.",
 			Enable:      provisioner,
 			Settings: []string{envAgentImageTag, envAgentModel, envAgentOpenRouterKey, envAgentNSPrefix, envAgentNSShared, envAgentNamespace,
-				envAgentNSClusterRole, envAgentWorkspaceKeep, envAgentStorageClass, envAgentEndpointTmpl, envAgentCairnURL, envAgentCairnToken}},
+				envAgentNSClusterRole, envAgentWorkspaceKeep, envAgentStorageClass, envAgentEndpointTmpl, envAgentKubeQPS, envAgentCairnURL, envAgentCairnToken}},
 		{ID: features.AgentGateway, Kubernetes: true, Name: "Agent chat",
 			PlainName:   "Agent chat",
 			OneLine:     "Talk with the agents you started, right here.",
