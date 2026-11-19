@@ -102,9 +102,9 @@ func TestAnOpenStreamKeepsItsSessionSeen(t *testing.T) {
 	p.sessions.mu.Lock()
 	p.sessions.m[id].seen = old
 	p.sessions.mu.Unlock()
-	waitFor(t, func() bool {
+	waitUntil(t, "a keep-alive to refresh the session", func() bool {
 		p.sessions.mu.Lock()
 		defer p.sessions.mu.Unlock()
 		return p.sessions.m[id].seen.After(old)
-	}, "a keep-alive to refresh the session")
+	})
 }

@@ -31,7 +31,7 @@ func TestAReconnectRereadsTheListsAtOnce(t *testing.T) {
 	_ = postBody(t, p, sess, listBody)
 	before := reads()
 	go p.WatchTools(ctx)
-	waitFor(t, func() bool { return reads() > before }, "the watch's first read")
+	waitUntil(t, "the watch's first read", func() bool { return reads() > before })
 
 	primary.set([]map[string]any{tool("agents_list"), tool("track_task", "keys!")}, nil)
 	settled := reads()
@@ -44,21 +44,10 @@ func TestAReconnectRereadsTheListsAtOnce(t *testing.T) {
 	}
 
 	p.KickTools()
-	waitFor(t, func() bool { return reads() > settled }, "a re-read after the kick")
+	waitUntil(t, "a re-read after the kick", func() bool { return reads() > settled })
 	// The read's plan is stored once the read returns; poll the answer.
-	waitFor(t, func() bool {
+	waitUntil(t, "list_changed on the next answer after the kick", func() bool {
 		msgs := sseMessages(postBody(t, p, withAccept(sess), callBody("agents_list", nil)).Body.String())
 		return len(msgs) == 2 && msgs[0] == listChangedData
-	}, "list_changed on the next answer after the kick")
-}
-
-func waitFor(t *testing.T, ok func() bool, what string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	})
 }
