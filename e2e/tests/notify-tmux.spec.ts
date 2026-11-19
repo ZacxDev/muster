@@ -448,7 +448,7 @@ for (const vp of [
       // 1. Off by default: exactly the name.
       await page.goto(origin + '/account');
       await expect(page.locator('[data-testid="notify-tmux"]')).toHaveAttribute('data-state', 'off');
-      await expect(page.locator('[data-testid="notify-tmux"]')).toContainText('Show tmux sessions');
+      await expect(page.locator('[data-testid="notify-tmux"]')).toContainText('Show technical session names');
       await page.goto(origin + '/attention');
       await expect(askRow(page, w)).toHaveText(name);
 
@@ -508,15 +508,15 @@ for (const vp of [
       try {
         await page.goto(origin + '/account');
         await expect(sw).toHaveAttribute('data-state', 'off');
-        await expect(sw).toContainText('Start notification titles with the tmux name: Off.');
+        await expect(sw).toContainText('Start notifications with the computer and session name: Off.');
         await expect(sw).toContainText('like mango:1@laptop');
-        await expect(button).toHaveText('Turn on: Start notification titles with the tmux name');
+        await expect(button).toHaveText('Turn on: Start notifications with the computer and session name');
         expect((await button.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
         const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
         expect(o.sw, 'the Account page does not scroll sideways').toBeLessThanOrEqual(o.cw);
 
         await flip(true);
-        await expect(button).toHaveText('Turn off: Start notification titles with the tmux name');
+        await expect(button).toHaveText('Turn off: Start notifications with the computer and session name');
         await page.goto(origin + '/attention');
         await expect(askRow(page, w), 'a list is not a push title: exactly the name').toHaveText(name);
 

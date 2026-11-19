@@ -23,7 +23,7 @@ the `muster` wordmark and muster's own icons.
 
 ## Setting it
 
-Open **Account** as an admin. The **Instance branding** section has:
+Open **Account** as an admin. The **Server name and logo** section has:
 
 - **Display name**: optional, up to 64 characters. Surrounding spaces are
   trimmed. Control characters, text-direction controls and invisible

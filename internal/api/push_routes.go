@@ -14,8 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // muster-native Web Push: the browser's subscribe flow (pushScript in
@@ -110,7 +112,14 @@ func (s *Server) handlePushPreferences(w http.ResponseWriter, r *http.Request) {
 // It is the ONE predicate behind Features.Push and every handler's 503.
 func (s *Server) pushServed() bool { return s.ext.Push != nil }
 
-const pushUnconfigured = "Push notifications are not configured on this server (MUSTER_VAPID_* is unset)."
+// pushUnconfigured is the routes' 503 (a machine reads it, so it names the
+// variables); pushUnconfiguredWords is what the Account page says, with the
+// variables in an admin's ⓘ (the jargon audit's F085).
+const (
+	pushUnconfigured      = "Push notifications are not configured on this server (MUSTER_VAPID_* is unset)."
+	pushUnconfiguredWords = "Phone notifications aren't set up on this server."
+	pushSetupCode         = "MUSTER_VAPID_PUBLIC_KEY\nMUSTER_VAPID_PRIVATE_KEY\nMUSTER_VAPID_SUBJECT"
+)
 
 func (s *Server) handlePushKey(w http.ResponseWriter, r *http.Request) {
 	if !s.pushServed() {
@@ -428,7 +437,14 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 `)
 	b.WriteString(s.accountNotifyTmuxForm(r))
 	if !s.pushServed() {
-		b.WriteString(`<p class="text-sm text-fg2">` + html.EscapeString(pushUnconfigured) + `</p></section>`)
+		admin := authz.IsAdmin(r.Context())
+		words := pushUnconfiguredWords
+		if !admin {
+			words += " Your admin can turn them on."
+		}
+		b.WriteString(`<div class="flex items-center gap-1"><p class="text-sm text-fg2" data-push-unset>` + html.EscapeString(words) + `</p>` +
+			ui.InfoSheetHTML(ui.SetupSheet("push-setup", "How to turn on phone notifications",
+				"Set these in the server's settings and restart muster (docs/push.md):", pushSetupCode, admin)) + `</div></section>`)
 		return b.String()
 	}
 	q := r.URL.Query()

@@ -217,7 +217,8 @@ func TestTheSuggestedRepliesSectionFollowsTheRegistry(t *testing.T) {
 			if !strings.Contains(body, `data-testid="suggest-settings"`) {
 				t.Fatalf("no suggested-replies section:\n%s", body)
 			}
-			got := strings.Contains(body, `data-state="off-needs-key"`) && strings.Contains(body, "Off: needs EXAMPLE_OPENROUTER_KEY") &&
+			got := strings.Contains(body, `data-state="off-needs-key"`) && strings.Contains(body, "Off — needs an OpenRouter key on the server.") &&
+				strings.Contains(body, `data-info-code="">needs EXAMPLE_OPENROUTER_KEY</code>`) &&
 				strings.Contains(body, `#suggested-replies`)
 			if got != c.off {
 				t.Fatalf("off note drawn = %v, want %v", got, c.off)

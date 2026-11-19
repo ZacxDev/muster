@@ -5,10 +5,15 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 )
+
+// SuggestOffNeedsKey is the Suggested replies section's line when the server
+// has no OpenRouter key: what is missing, never the variable's name.
+const SuggestOffNeedsKey = "Off — needs an OpenRouter key on the server."
 
 // accountSuggestSection is the Account page's "Suggested replies" section:
 // the caller's own toggle (POST /account/suggest, back to this page), saying
@@ -50,10 +55,22 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	// features.go) is what knows the server has no key, and on a keyless
 	// install with no credential store it says OFF — so this section says Off,
 	// with the registry's reason, and offers no switch that would do nothing.
+	//
+	// The registry's reason names a variable, so it is in the admin's ⓘ: the
+	// line says what is missing in words (the jargon audit's F087), and only
+	// an admin gets the link to the feature's setup.
 	if f, ok := s.feature(features.SuggestedReplies); ok && f.State == features.Off {
-		return head + state("off-needs-key", "Off: "+html.EscapeString(f.Reason)+". ") +
-			`<a href="` + ui.FeatureHref(features.SuggestedReplies) + `" class="text-sm text-accent underline">How to turn them on</a>
-</section>`
+		admin := authz.IsAdmin(r.Context())
+		words, link := SuggestOffNeedsKey, ""
+		if admin {
+			link = `<a href="` + ui.FeatureHref(features.SuggestedReplies) + `" class="text-sm text-accent underline">How to turn them on</a>
+`
+		} else {
+			words += " Your admin can turn them on."
+		}
+		return head + `<div class="flex items-center gap-1">` + state("off-needs-key", html.EscapeString(words)) +
+			ui.InfoSheetHTML(ui.SetupSheet("suggest-setup", "What suggested replies need", "What the server reports:", f.Reason, admin)) + `</div>
+` + link + `</section>`
 	}
 	owner := requestOwner(r.Context())
 	usage := s.suggestUsageReadout(r, owner)

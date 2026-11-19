@@ -415,7 +415,7 @@ func TestAResetWithoutTheBoxNeverDeletesAPasskey(t *testing.T) {
 	}
 	ck := setCookies(r)
 	page := do(w.edge, "GET", r.Header().Get("Location"), nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
-	want := "Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+	want := "Your password was reset. Your access keys were revoked; create new ones under Access keys below. " +
 		"Any passkeys you have were kept. You can review them under Passkeys."
 	if got := resetNoteText(t, page.Body.String()); got != want {
 		t.Fatalf("the note when the passkeys could not be counted\n got: %q\nwant: %q", got, want)
@@ -630,17 +630,17 @@ func TestTheResetDoneNoteSaysWhatHappenedToThePasskeys(t *testing.T) {
 		note     string
 	}{
 		{"kept", false, 2, "/account?reset=1&passkeys=kept",
-			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+			"Your password was reset. Your access keys were revoked; create new ones under Access keys below. " +
 				"Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."},
 		// 🔴 "kept" only for someone who HAS a passkey: with none, the note
 		// says nothing about passkeys (#596 said "were kept" to everyone).
 		{"kept-one", false, 1, "/account?reset=1&passkeys=kept",
-			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+			"Your password was reset. Your access keys were revoked; create new ones under Access keys below. " +
 				"Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."},
 		{"none", false, 0, "/account?reset=1&passkeys=none",
-			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below."},
+			"Your password was reset. Your access keys were revoked; create new ones under Access keys below."},
 		{"removed", true, 3, "/account?reset=1&passkeys=3",
-			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+			"Your password was reset. Your access keys were revoked; create new ones under Access keys below. " +
 				"All 3 of your passkeys were removed."},
 	} {
 		_, sub, _, _ := w.joinMember("pk-note-" + c.name + "@invite.test")

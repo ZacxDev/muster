@@ -775,8 +775,9 @@ func TestAKeylessAccountPageSaysSuggestedRepliesAreOff(t *testing.T) {
 	if !strings.Contains(body, `data-testid="suggest-settings"`) {
 		t.Fatalf("no suggested-replies section (%d):\n%.2000s", w.Code, body)
 	}
-	if !strings.Contains(body, `data-state="off-needs-key"`) || !strings.Contains(body, "Off: needs "+envAgentOpenRouterKey) {
-		t.Fatalf("the keyless Account page does not say Off with the needs-key reason")
+	if !strings.Contains(body, `data-state="off-needs-key"`) || !strings.Contains(body, "Off — needs an OpenRouter key on the server.") ||
+		!strings.Contains(body, `data-info-code="">needs `+envAgentOpenRouterKey) {
+		t.Fatalf("the keyless Account page does not say Off, with the needs-key reason in its ⓘ")
 	}
 	if strings.Contains(body, `data-state="on"`) || strings.Contains(body, ">On.") {
 		t.Fatalf("the keyless Account page says suggested replies are On")
