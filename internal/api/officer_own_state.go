@@ -15,7 +15,6 @@ import (
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
-	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -43,12 +42,17 @@ import (
 // officer caller (officerDeciderRefusal) — the draft and batch decisions and
 // the card's — and no officer tool decides anything.
 //
-// 🔴 THE THREE THAT ACT RUN ONLY IN AN OPERATOR CHAT (a chat lane whose id is
-// officers.OperatorChatID: verifyChatLaneCall proved its lane secret), and as
-// THAT PERSON (chatPersonPrincipal): the same store call the officer page's
-// route makes (RefileRefusal, DropRefusal), refused by row-level security for
-// a person who may not make it, and audited for a team as the page's are. An
-// officer working its queue, or an HQ chat, gets a refusal.
+// 🔴 THE OTHER THREE ONLY PROPOSE, AND ONLY IN THIS OFFICER'S OPERATOR CHAT
+// (a chat lane whose id is officers.OperatorChatID for this officer and a
+// person: verifyChatLaneCall proved its lane secret). Each records a confirm
+// card in that person's chat, as them (chatPersonPrincipal), and NOTHING
+// else: the lane secret is written into the instance pod, where every process
+// — the queue session reading plugin and inbound text included — can read it,
+// so a call holding it may ask the person, never act for them. The person's
+// click on the card makes the choice (decideChatCard): a draft's or batch's
+// decision, or the page's Re-file (as the officer's own work, held by its
+// budget: RefileRefusalFromChat) or Drop. An officer working its queue, an
+// HQ chat and another officer's chat get a refusal.
 // ---------------------------------------------------------------------------
 
 // officerCallKey marks a context as an officer instance's tool call
@@ -119,9 +123,9 @@ func ownStateToolDefs() []agents.ToolDef {
 				"batch_id": strProp("Your open outreach batch, as officer_my_state lists it."),
 			})},
 		{Type: "function", Name: officers.ToolRefusalRefile,
-			Description: "In a chat with your owner, and only when they ask for it: re-file one of the refusals waiting on them (item_id, as " +
-				"officer_my_state lists it), exactly as Re-file on your page does — the same work comes back to you at that time as your owner's " +
-				"own item, and they approve the draft you file then. when: 1h, 6h, tomorrow (the next UTC midnight) or at (with at, a UTC time " +
+			Description: "In a chat with your owner, when they ask for it: PROPOSE re-filing one of the refusals waiting on them (item_id, as " +
+				"officer_my_state lists it). muster shows them a confirm card; only their own click re-files it, as Re-file on your page does — the " +
+				"same work comes back to you at that time (your daily budget still applies), and they approve the draft you file then. when: 1h, 6h, tomorrow (the next UTC midnight) or at (with at, a UTC time " +
 				"YYYY-MM-DDTHH:MM, at most 30 days ahead). Leave when out to re-file it at the time its plugin said it can go (the refusal's " +
 				"retry_at, as officer_my_state lists it), as your page does by default; a refusal without one needs when.",
 			Parameters: objSchema(map[string]any{
@@ -130,8 +134,9 @@ func ownStateToolDefs() []agents.ToolDef {
 				"at":      strProp("With when \"at\": the UTC time, YYYY-MM-DDTHH:MM."),
 			}, "item_id")},
 		{Type: "function", Name: officers.ToolRefusalDrop,
-			Description: "In a chat with your owner, and only when they ask for it: drop one of the refusals waiting on them (item_id, as " +
-				"officer_my_state lists it), exactly as Drop on your page does — you never redraft it.",
+			Description: "In a chat with your owner, when they ask for it: PROPOSE dropping one of the refusals waiting on them (item_id, as " +
+				"officer_my_state lists it). muster shows them a confirm card; only their own click drops it, as Drop on your page does — then you " +
+				"never redraft it.",
 			Parameters: objSchema(map[string]any{
 				"item_id": intProp("The refusal's item id, as officer_my_state lists it.", 1, 1<<53),
 			}, "item_id")},
@@ -157,7 +162,8 @@ func (s *Server) officerOwnStateTool(ctx context.Context, a agents.Agent, o offi
 	}
 	chat, lane := chatLaneCall(ctx)
 	uid, operator := officers.OperatorChatUser(chat)
-	if !lane || !operator {
+	// 🔴 THIS OFFICER'S chat with that person, not another officer's.
+	if !lane || !operator || chat != officers.OperatorChatID(uid, o.Owner, o.ID) {
 		return toolErr(operatorChatOnly, name)
 	}
 	pctx, ok := s.chatPersonPrincipal(ctx, o, uid)
@@ -168,7 +174,7 @@ func (s *Server) officerOwnStateTool(ctx context.Context, a agents.Agent, o offi
 	case officers.ToolConfirmCard:
 		return s.officerConfirmCard(ctx, pctx, o, arguments)
 	case officers.ToolRefusalRefile, officers.ToolRefusalDrop:
-		return s.officerRefusalTool(pctx, a, o, uid, name, arguments)
+		return s.officerRefusalTool(ctx, pctx, o, name, arguments)
 	}
 	return toolErr("unknown tool %q", name)
 }
@@ -394,10 +400,15 @@ func (s *Server) officerConfirmCard(ctx, pctx context.Context, o officers.Office
 			"do not say it is approved or sent; tell them the card is there."})
 }
 
-// officerRefusalTool is officer_refusal_refile / officer_refusal_drop for o,
-// as person uid (pctx): THE store calls the officer page's routes make
-// (handleOfficerRefusalRefile, handleOfficerRefusalDrop), with their audit.
-func (s *Server) officerRefusalTool(pctx context.Context, a agents.Agent, o officers.Officer, uid int64, name, arguments string) string {
+// officerRefusalTool is officer_refusal_refile / officer_refusal_drop for o
+// in person uid's chat (pctx): 🔴 IT ONLY PROPOSES. It draws a confirm card
+// (builtin.CardRefile, CardDrop) for one of o's refusals waiting on its owner,
+// and the person's own signed-in click on that card makes the page's choice
+// (decideChatCard). A chat lane's secret is in the instance pod, readable by
+// every process there — the instance's queue session, which takes in
+// plugin and inbound text, among them — so nothing a call holding it makes
+// may act as the person: it can only ask them.
+func (s *Server) officerRefusalTool(ctx, pctx context.Context, o officers.Officer, name, arguments string) string {
 	var in struct {
 		ItemID int64  `json:"item_id"`
 		When   string `json:"when"`
@@ -407,45 +418,47 @@ func (s *Server) officerRefusalTool(pctx context.Context, a agents.Agent, o offi
 		return toolErr("arguments are {item_id, when?, at?}")
 	}
 	now := s.officerNow()
-	by := users.Actor{UserID: uid, Via: authz.ViaOfficer}
-	if name == officers.ToolRefusalDrop {
-		if err := s.officerStore.DropRefusal(pctx, o.Owner, o.ID, in.ItemID, now); err != nil {
-			return s.refusalToolErr(o, name, in.ItemID, err)
+	octx := s.officerPrincipal(ctx, o.Owner)
+	// Only a refusal of its own that still waits on its owner.
+	var rf *builtin.Refusal
+	if list, err := s.officerStore.RefusalsAwaitingOwner(octx, o.Owner, o.ID, now.Add(-builtin.RefusalWindow)); err == nil {
+		for i := range list {
+			if list[i].Item == in.ItemID {
+				rf = &list[i]
+			}
 		}
-		s.logger.Printf("officers: %s (%s) dropped refusal %d of %s for user %d in their chat", a.Name, officers.ToolRefusalDrop, in.ItemID, o.ID, uid)
-		if s.officerOwnerIsTeam(pctx, o.Owner) {
-			s.auditTeam(pctx, by, o.Owner, "officer.refusal.drop", "officer_def:"+o.ID, map[string]any{"item": in.ItemID, "via": "chat"})
-		}
-		return toolJSON(map[string]any{"item_id": in.ItemID, "dropped": true, "note": "dropped: you never redraft it"})
 	}
-	var at time.Time
-	if in.When == "" {
-		// 🔴 THE PAGE'S DEFAULT (refileDefault): the plugin's retry_at, when
-		// the refusal names one Re-file can take.
+	if rf == nil {
+		return toolErr("refusal %d is not one of yours waiting on your owner (officer_my_state lists them)", in.ItemID)
+	}
+	card := builtin.ChatCard{OfficerOwner: o.Owner, Officer: o.ID, Kind: builtin.CardDrop, RefusalItem: rf.Item}
+	if name == officers.ToolRefusalRefile {
+		var at time.Time
 		var ok bool
-		if at, ok = s.refusalRetryAt(pctx, o, in.ItemID, now); !ok {
-			return toolErr("refusal %d names no time its plugin said it can go: give when (1h, 6h, tomorrow or at)", in.ItemID)
-		}
-	} else {
-		var ok bool
-		if at, ok = refileAt(in.When, in.At, now); !ok {
+		if in.When == "" {
+			// 🔴 THE PAGE'S DEFAULT (refileDefault): the plugin's retry_at,
+			// when the refusal names one Re-file can take.
+			if at, ok = refileDefault(*rf, now); !ok {
+				return toolErr("refusal %d names no time its plugin said it can go: give when (1h, 6h, tomorrow or at)", in.ItemID)
+			}
+		} else if at, ok = refileAt(in.When, in.At, now); !ok {
 			return toolErr("when is 1h, 6h, tomorrow or at (with at, a UTC time YYYY-MM-DDTHH:MM)")
 		}
+		if at.After(now.Add(builtin.MaxRefileAhead)) {
+			return toolErr("a refusal is re-filed at most 30 days ahead")
+		}
+		card.Kind, card.RefileAt = builtin.CardRefile, &at
 	}
-	carrier, err := s.officerStore.RefileRefusal(pctx, o.Owner, o.ID, in.ItemID, at, now)
-	if err != nil {
-		return s.refusalToolErr(o, name, in.ItemID, err)
+	got, err := s.officerStore.AddChatCard(pctx, card, now)
+	switch {
+	case errors.Is(err, builtin.ErrTooManyCards):
+		return toolErr("your owner already has %d confirm cards waiting in this chat: let them decide those first", builtin.MaxOpenCards)
+	case err != nil:
+		s.logger.Printf("officers: %s: %s for refusal %d: %v", o.ID, name, in.ItemID, err)
+		return toolErr("the confirm card could not be recorded")
 	}
-	s.logger.Printf("officers: %s (%s) re-filed refusal %d of %s for user %d in their chat, at %s as item %d", a.Name, officers.ToolRefusalRefile, in.ItemID, o.ID, uid,
-		at.UTC().Format(time.RFC3339), carrier)
-	if s.officerOwnerIsTeam(pctx, o.Owner) {
-		s.auditTeam(pctx, by, o.Owner, "officer.refusal.refile", "officer_def:"+o.ID, map[string]any{"item": in.ItemID, "at": at.UTC(), "as": carrier, "via": "chat"})
-	}
-	if s.officerRT != nil && s.officerRT.rec != nil && !at.After(now) {
-		s.officerRT.rec.Due(o.Key())
-	}
-	return toolJSON(map[string]any{"item_id": in.ItemID, "refiled_as": carrier, "at": at.UTC(),
-		"note": "re-filed: the same work comes back to you then, and your owner approves the draft you file"})
+	return toolJSON(map[string]any{"card_id": got.ID, "item_id": in.ItemID, "status": "waiting on your owner",
+		"note": "muster shows your owner a confirm card in this chat. Nothing is re-filed or dropped until they tap it: tell them the card is there."})
 }
 
 // refusalRetryAt is refusal item's Re-file default (refileDefault, the page's

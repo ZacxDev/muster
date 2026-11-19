@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ import (
 // A builtin pod officer's owner (or a manager of its team) chats with it on
 // its page like with any agent. Each person has ONE chat with each officer:
 // a chat lane (officerChatLanes, officer_chat.go — the lane HQ chats run in)
-// keyed officers.ChatSessionKey(officers.OperatorChatID(person)) on one of
+// keyed officers.ChatSessionKey(officers.OperatorChatID(person, officer)) on one of
 // its instances, so the chat runs in a Claude Code session of its own beside
 // the instance's queue work, and its own tool calls carry the lane's secret
 // (verifyChatLaneCall): muster knows a call comes from THAT person's chat.
@@ -187,7 +188,7 @@ func (s *Server) handleOfficerChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := authz.MustFrom(r.Context()).UserID
-	chatID := officers.OperatorChatID(uid)
+	chatID := officers.OperatorChatID(uid, o.Owner, o.ID)
 	key := operatorChatKey(o, chatID)
 	if !s.officerChats.begin(key, text, time.Now()) {
 		s.renderOfficerDetail(w, r, sc, id, http.StatusConflict, "It is still answering your last message. Send this one once it has.")
@@ -207,7 +208,7 @@ func operatorChatHeader(o officers.Officer) string {
 	return fmt.Sprintf("[muster] This is a chat on your page in muster with your owner, a person, not queue work. Answer them in plain words, briefly. "+
 		"Call %s first if you have not loaded your charter in this session. Read your own state with %s. When they want something of yours approved "+
 		"(a draft, your outreach batch), call %s: muster shows them a confirm card with the exact text and media, and only their own click decides it — "+
-		"you cannot approve anything, ever. When they ask you to re-file or drop a refusal, use %s or %s. You take no queue work here: "+
+		"you cannot approve anything, ever. When they ask you to re-file or drop a refusal, use %s or %s: each also only shows them a card to confirm. You take no queue work here: "+
 		"never claim, complete or release an item in this chat.",
 		officers.ToolBrief, officers.ToolMyState, officers.ToolConfirmCard, officers.ToolRefusalRefile, officers.ToolRefusalDrop) + operatorChatHeaderEnd
 }
@@ -228,7 +229,7 @@ func (s *Server) runOperatorChat(ctx context.Context, o officers.Officer, uid in
 		}
 	}()
 	lanes := officerChatLanes{s}
-	n, err := s.operatorChatInstance(ctx, o)
+	n, err := s.operatorChatInstance(ctx, lanes, o, chatID)
 	if err != nil {
 		s.logger.Printf("officers: %s: user %d's chat: no instance: %v", o.ID, uid, err)
 		failed = "It could not be started just now. Try again in a moment."
@@ -307,15 +308,25 @@ func (s *Server) operatorChatTurn(ctx context.Context, lanes officerChatLanes, o
 	return reply, nil
 }
 
-// operatorChatInstance is the instance a chat turn of o goes to: the chat's
-// home (the instance whose agent already holds its session) when that is up,
-// else the first up instance, else instance 1 — started now, as the wake
-// loop starts one (its kickoff read now).
-func (s *Server) operatorChatInstance(ctx context.Context, o officers.Officer) (int, error) {
+// operatorChatInstance is the instance chat chatID's turn of o goes to:
+//
+//   - its HOME (officerChatLanes.Home: the instance whose agent holds its
+//     session) when that is up;
+//   - else, when another instance is up, that one — the chat RE-HOMED there
+//     first (officerChatLanes.Rehome: its session on the old home set aside,
+//     so its key is free for the new one; chat_sessions.session_key is
+//     unique across every agent);
+//   - else its home (or instance 1 for a chat with none), started now as the
+//     wake loop starts one (its kickoff read now), the session kept.
+func (s *Server) operatorChatInstance(ctx context.Context, lanes officerChatLanes, o officers.Officer, chatID string) (int, error) {
 	fleet := officerFleet{s: s}
 	states, err := fleet.Instances(ctx, o)
 	if err != nil {
 		return 0, err
+	}
+	home, err := lanes.Home(ctx, o, chatID)
+	if err != nil {
+		return 0, fmt.Errorf("its chat's home: %w", err)
 	}
 	up := map[int]bool{}
 	first := 0
@@ -327,13 +338,31 @@ func (s *Server) operatorChatInstance(ctx context.Context, o officers.Officer) (
 			}
 		}
 	}
-	if first > 0 {
+	switch {
+	case home > 0 && up[home]:
+		return home, nil
+	case first > 0:
+		if home > 0 {
+			if err := lanes.Rehome(ctx, o, chatID, home); err != nil {
+				return 0, fmt.Errorf("re-home its chat from instance %s: %w", o.InstanceLabel(home), err)
+			}
+			s.logger.Printf("officers: %s: chat %s moved from instance %s (not running) to %s", o.ID, chatID, o.InstanceLabel(home), o.InstanceLabel(first))
+		}
 		return first, nil
 	}
-	if err := fleet.Start(ctx, o, 1, s.officerKickoff(ctx, o, 1)); err != nil {
+	n := home
+	if n == 0 || n > o.MaxInstances {
+		n = 1
+	}
+	if home > 0 && n != home {
+		if err := lanes.Rehome(ctx, o, chatID, home); err != nil {
+			return 0, fmt.Errorf("re-home its chat from instance %s: %w", o.InstanceLabel(home), err)
+		}
+	}
+	if err := fleet.Start(ctx, o, n, s.officerKickoff(ctx, o, n)); err != nil {
 		return 0, err
 	}
-	return 1, nil
+	return n, nil
 }
 
 // --- the page ----------------------------------------------------------------------
@@ -365,7 +394,7 @@ func (s *Server) officerChatHTML(r *http.Request, sc officerScope, v declaredOff
 		return b.String()
 	}
 	uid := authz.MustFrom(ctx).UserID
-	chatID := officers.OperatorChatID(uid)
+	chatID := officers.OperatorChatID(uid, o.Owner, o.ID)
 	entries := s.chatMessageEntries(ctx, o, chatID, name)
 	cards, err := s.officerStore.ChatCards(ctx, sc.Owner, v.ID, operatorChatCardsShown)
 	if err != nil {
@@ -516,20 +545,59 @@ func (s *Server) chatCardHTML(ctx context.Context, sc officerScope, c builtin.Ch
 		} else {
 			live = true
 		}
+	case builtin.CardRefile, builtin.CardDrop:
+		var rf *builtin.Refusal
+		if list, err := s.officerStore.RefusalsAwaitingOwner(ctx, c.OfficerOwner, c.Officer, s.officerNow().Add(-builtin.RefusalWindow)); err == nil {
+			for i := range list {
+				if list[i].Item == c.RefusalItem {
+					rf = &list[i]
+				}
+			}
+		}
+		what := "a refused post"
+		if rf != nil {
+			what = strings.ToLower(refusalWhat(rf.TargetKind)[:1]) + refusalWhat(rf.TargetKind)[1:] + " that was refused"
+		}
+		if c.Kind == builtin.CardRefile && c.RefileAt != nil {
+			b.WriteString(`<span class="text-xs font-semibold text-fg2" data-chat-card-refusal>It asks to file ` + esc(what) + ` again at ` + esc(fmtTime(*c.RefileAt)) + `</span>`)
+		} else {
+			b.WriteString(`<span class="text-xs font-semibold text-fg2" data-chat-card-refusal>It asks to drop ` + esc(what) + `, never to redraft it</span>`)
+		}
+		if rf == nil {
+			state = "It is no longer waiting on you."
+			break
+		}
+		if rf.Detail != "" {
+			b.WriteString(`<p class="break-words text-sm text-fg2">` + esc(capFirst(refusalBy(rf.By))) + ` said: ` + esc(flows.VisibleEscape(rf.Detail)) + `</p>`)
+		}
+		live = true
 	}
 	switch {
 	case c.Decision == builtin.CardApproved:
 		b.WriteString(`<p class="text-sm text-fg" data-chat-card-decided="approved">You approved it.</p>`)
+	case c.Decision == builtin.CardRejected && (c.Kind == builtin.CardRefile || c.Kind == builtin.CardDrop):
+		b.WriteString(`<p class="text-sm text-fg" data-chat-card-decided="rejected">You dismissed it.</p>`)
 	case c.Decision == builtin.CardRejected:
 		b.WriteString(`<p class="text-sm text-fg" data-chat-card-decided="rejected">You rejected it.</p>`)
 	case !live:
 		b.WriteString(`<p class="text-sm text-fg2" data-chat-card-state>` + esc(state) + `</p>`)
 	default:
 		bind := `<input type="hidden" name="card_sha256" value="` + esc(c.CardSHA256) + `">` + sc.ownerField()
+		yes, no, rejectFresh := "Approve and send", "Reject", ""
+		switch c.Kind {
+		case builtin.CardRefile:
+			yes, no = "File it again then", "Dismiss"
+		case builtin.CardDrop:
+			yes, no = "Drop it", "Dismiss"
+		case builtin.CardBatch:
+			// rejecting the batch rejects every entry: a recent sign-in,
+			// as its Approve (handleOfficerChatCard)
+			rejectFresh = ` data-step-up-form`
+		}
 		b.WriteString(`<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + esc(base+"/approve") + `" data-step-up-form class="min-w-0">` + bind +
-			`<button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-chat-card-approve>Approve and send</button></form>` +
-			`<form method="POST" action="` + esc(base+"/reject") + `" class="flex flex-wrap items-center gap-2">` + bind +
-			`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-chat-card-reject>Reject</button></form></div>`)
+			`<button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-chat-card-approve>` + yes + `</button></form>` +
+			`<form method="POST" action="` + esc(base+"/reject") + `"` + rejectFresh + ` class="flex flex-wrap items-center gap-2">` + bind +
+			`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-chat-card-reject>` + no + `</button></form></div>`)
 	}
 	b.WriteString(`</li>`)
 	return b.String()
@@ -564,7 +632,17 @@ func (s *Server) handleOfficerChatCard(w http.ResponseWriter, r *http.Request, a
 		s.renderOfficerDetail(w, r, sc, id, http.StatusNotFound, "No such card.")
 		return
 	}
-	if approve && !stepup.Fresh(r.Context(), s.stepUpNow()) {
+	// 🔴 A BATCH CARD'S REJECT NEEDS A RECENT SIGN-IN TOO: it rejects every
+	// entry at once, as the Asks page's batch decision does (handleOutreach-
+	// BatchDecide checks the step-up whatever is ticked). A single draft's
+	// Reject stays as the Asks page has it.
+	needFresh := approve
+	if !approve {
+		if c, err := s.officerStore.ChatCard(r.Context(), sc.Owner, id, card); err == nil && c.Kind == builtin.CardBatch {
+			needFresh = true
+		}
+	}
+	if needFresh && !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if isDocumentNavigation(r) {
 			w.Header().Set("X-Muster-Step-Up", "required")
 			s.renderOfficerDetail(w, r, sc, id, http.StatusForbidden, DraftStepUpRequired)
@@ -635,12 +713,33 @@ func (s *Server) decideChatCard(ctx context.Context, officerOwner int64, officer
 			}
 			return "", refused
 		}
+	case builtin.CardRefile, builtin.CardDrop:
+		if approve {
+			// The officer page's own choice, made by THIS person's click:
+			// the decider rule first (no decision door here ends in
+			// decideDraftAs), then the store call the page's route makes —
+			// a re-file as the officer's own work (RefileRefusalFromChat),
+			// never as an owner's item that gets past the budget.
+			if msg := officerDeciderRefusal(ctx); msg != "" {
+				return "", &draftRefusal{http.StatusForbidden, msg, ""}
+			}
+			if refused := s.decideRefusalCard(ctx, officerOwner, officer, c); refused != nil {
+				return "", refused
+			}
+		}
 	default:
 		return "", &draftRefusal{http.StatusConflict, ChatCardNotShown, ""}
 	}
 	decision, notice := builtin.CardRejected, "card-rejected"
-	if approve {
+	switch {
+	case approve && c.Kind == builtin.CardRefile:
+		decision, notice = builtin.CardApproved, "refiled"
+	case approve && c.Kind == builtin.CardDrop:
+		decision, notice = builtin.CardApproved, "dropped"
+	case approve:
 		decision, notice = builtin.CardApproved, "card-approved"
+	case c.Kind == builtin.CardRefile || c.Kind == builtin.CardDrop:
+		notice = "card-dismissed"
 	}
 	if err := s.officerStore.DecideChatCard(ctx, c.ID, decision, s.officerNow()); err != nil {
 		// The decision itself is made and recorded on the draft (or batch);
@@ -648,4 +747,50 @@ func (s *Server) decideChatCard(ctx context.Context, officerOwner int64, officer
 		s.logger.Printf("officers: record confirm card %d of %s %s: %v", c.ID, officer, decision, err)
 	}
 	return notice, nil
+}
+
+// decideRefusalCard makes refusal card c's choice as the caller (a person's
+// signed-in session): Re-file at the card's time, or Drop — the store calls
+// the officer page's routes make, refused by row-level security for a person
+// who may not, and audited for a team as theirs are.
+func (s *Server) decideRefusalCard(ctx context.Context, officerOwner int64, officer string, c builtin.ChatCard) *draftRefusal {
+	now := s.officerNow()
+	p := authz.MustFrom(ctx)
+	by := users.Actor{UserID: p.UserID, Via: p.Via}
+	refused := func(err error) *draftRefusal {
+		code, msg := refusalRefused(err)
+		if code == http.StatusInternalServerError {
+			s.logger.Printf("officers: confirm card %d (%s refusal %d of %s): %v", c.ID, c.Kind, c.RefusalItem, officer, err)
+		}
+		return &draftRefusal{code, msg, ""}
+	}
+	if c.Kind == builtin.CardDrop {
+		if err := s.officerStore.DropRefusal(ctx, officerOwner, officer, c.RefusalItem, now); err != nil {
+			return refused(err)
+		}
+		s.logger.Printf("officers: user %d dropped refusal %d of %s (owner %d) from their chat's card", p.UserID, c.RefusalItem, officer, officerOwner)
+		if s.officerOwnerIsTeam(ctx, officerOwner) {
+			s.auditTeam(ctx, by, officerOwner, "officer.refusal.drop", "officer_def:"+officer, map[string]any{"item": c.RefusalItem, "via": "chat"})
+		}
+		return nil
+	}
+	at := now
+	if c.RefileAt != nil && c.RefileAt.After(now) {
+		at = *c.RefileAt
+	}
+	carrier, err := s.officerStore.RefileRefusalFromChat(ctx, officerOwner, officer, c.RefusalItem, at, now)
+	if err != nil {
+		return refused(err)
+	}
+	s.logger.Printf("officers: user %d re-filed refusal %d of %s (owner %d) from their chat's card, at %s as item %d", p.UserID, c.RefusalItem, officer, officerOwner,
+		at.UTC().Format(time.RFC3339), carrier)
+	if s.officerOwnerIsTeam(ctx, officerOwner) {
+		s.auditTeam(ctx, by, officerOwner, "officer.refusal.refile", "officer_def:"+officer, map[string]any{"item": c.RefusalItem, "at": at.UTC(), "as": carrier, "via": "chat"})
+	}
+	if s.officerRT != nil && s.officerRT.rec != nil && !at.After(now) {
+		if o, ok := s.officerRT.reg.ForOwner(officerOwner, officer); ok {
+			s.officerRT.rec.Due(o.Key())
+		}
+	}
+	return nil
 }

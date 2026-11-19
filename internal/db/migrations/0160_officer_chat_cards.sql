@@ -5,9 +5,12 @@
 --   officer_chat_cards   one row per confirm card: an officer, chatting with a
 --       person on its page, called officer_confirm_card for one of its
 --       PENDING outbound drafts (kind 'draft') or its open outreach batch
---       (kind 'batch'). muster draws the card in that person's chat with the
---       exact text and media, and only that person's own signed-in click
---       approves it — never the officer.
+--       (kind 'batch'), or officer_refusal_refile / officer_refusal_drop for
+--       one of its refusals waiting on its owner (kinds 'refile', 'drop':
+--       refusal_item, and refile_at for a re-file). muster draws the card in
+--       that person's chat — the exact text and media, or the refusal and
+--       when — and only that person's own signed-in click decides it, never
+--       the officer: a tool call from the chat only PROPOSES.
 --
 --   🔴 THE CARD IS BOUND TO WHAT IT SHOWED WHEN IT WAS DRAWN. A draft card
 --   keeps the draft's body_sha256 and every medium's sha256 (in order); a
@@ -51,13 +54,15 @@ CREATE TABLE IF NOT EXISTS public.officer_chat_cards (
                   REFERENCES public.users (id) ON DELETE CASCADE,
     officer_owner BIGINT      NOT NULL CHECK (officer_owner > 0),
     officer       TEXT        NOT NULL CHECK (officer ~ '^[a-z0-9-]+:[a-z0-9-]+$'),
-    kind          TEXT        NOT NULL CHECK (kind IN ('draft', 'batch')),
+    kind          TEXT        NOT NULL CHECK (kind IN ('draft', 'batch', 'refile', 'drop')),
     draft_id      BIGINT      CHECK (draft_id > 0),
     body_sha256   TEXT        CHECK (body_sha256 ~ '^[0-9a-f]{64}$'),
     media_sha256  TEXT[],
     batch_id      TEXT        CHECK (length(batch_id) BETWEEN 1 AND 200),
     batch_sha256  TEXT        CHECK (batch_sha256 ~ '^[0-9a-f]{64}$'),
     batch_entries BIGINT[],
+    refusal_item  BIGINT      CHECK (refusal_item > 0),
+    refile_at     TIMESTAMPTZ,
     card_sha256   TEXT        NOT NULL CHECK (card_sha256 ~ '^[0-9a-f]{64}$'),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at    TIMESTAMPTZ,
@@ -69,7 +74,12 @@ CREATE TABLE IF NOT EXISTS public.officer_chat_cards (
         OR
         (kind = 'batch' AND batch_id IS NOT NULL AND batch_sha256 IS NOT NULL AND batch_entries IS NOT NULL
             AND draft_id IS NULL AND body_sha256 IS NULL AND media_sha256 IS NULL)
-    )
+        OR
+        (kind IN ('refile', 'drop') AND refusal_item IS NOT NULL AND (refile_at IS NOT NULL) = (kind = 'refile')
+            AND draft_id IS NULL AND body_sha256 IS NULL AND media_sha256 IS NULL
+            AND batch_id IS NULL AND batch_sha256 IS NULL AND batch_entries IS NULL)
+    ),
+    CHECK (kind IN ('refile', 'drop') OR (refusal_item IS NULL AND refile_at IS NULL))
 );
 
 CREATE INDEX IF NOT EXISTS officer_chat_cards_chat

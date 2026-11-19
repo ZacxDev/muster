@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"html"
 	"net/http"
@@ -31,7 +33,6 @@ import (
 const (
 	tChatSection   = "officer-chat"
 	tChatPath      = "/officers/" + builtinOfficerID + "/chat"
-	tOperatorLane  = "officer-chat:operator-1"
 	tOtherOfficer  = "marketing:elsewhere"
 	tSelfDecide    = "An officer never decides its own drafts or outreach: its owner approves them, signed in."
 	tCardNotShown  = "This is not the card you were shown: reload the page and look at it again."
@@ -39,10 +40,22 @@ const (
 	tChatOnlyWords = "is offered only in a chat with your owner on your page in muster"
 )
 
-// laneCtx is a tool call from person uid's operator chat lane, as
-// verifyChatLaneCall marks one whose lane secret matched.
+// chatKey is the session key of person uid's chat with owner's officer,
+// spelled out here (the contract), never derived from the code under test:
+// "officer-chat:operator-<uid>-" and the first 8 bytes of the SHA-256 of
+// "<owner>\x00<officer>", in lower-case hex.
+func chatKey(uid, owner int64, officer string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + officer))
+	return "officer-chat:operator-" + strconv.FormatInt(uid, 10) + "-" + hex.EncodeToString(sum[:8])
+}
+
+// tOperatorLane is user 1's chat with the world's officer.
+var tOperatorLane = chatKey(1, 1, builtinOfficerID)
+
+// laneCtx is a tool call from person uid's operator chat lane with the
+// world's officer, as verifyChatLaneCall marks one whose lane secret matched.
 func laneCtx(ctx context.Context, uid int64) context.Context {
-	return withChatLaneCall(ctx, officers.ChatSessionKey("operator-"+strconv.FormatInt(uid, 10)))
+	return withChatLaneCall(ctx, chatKey(uid, 1, builtinOfficerID))
 }
 
 // cardRow is one confirm card as the database holds it.
@@ -227,9 +240,10 @@ func TestTheActingToolsRunOnlyInAnOperatorChat(t *testing.T) {
 	}
 	for name, a := range args {
 		for where, ctx := range map[string]context.Context{
-			"the primary":  w.ctx,
-			"an HQ chat":   withChatLaneCall(w.ctx, officers.ChatSessionKey("4242")),
-			"a forged key": withChatLaneCall(w.ctx, officers.ChatSessionKey("operator-01")),
+			"the primary":            w.ctx,
+			"an HQ chat":             withChatLaneCall(w.ctx, officers.ChatSessionKey("4242")),
+			"a forged key":           withChatLaneCall(w.ctx, officers.ChatSessionKey("operator-01")),
+			"another officer's chat": withChatLaneCall(w.ctx, chatKey(1, 1, tOtherOfficer)),
 		} {
 			if out := w.srv.dispatchAgentTool(ctx, w.agent, name, a); !isToolErr(out) || !strings.Contains(out, tChatOnlyWords) {
 				t.Errorf("%s from %s: %s; want the operator-chat-only refusal", name, where, out)
@@ -250,11 +264,28 @@ func TestTheActingToolsRunOnlyInAnOperatorChat(t *testing.T) {
 	if cs := w.cards(); len(cs) != 1 || cs[0].id != card || cs[0].owner != 1 || cs[0].draft != id || cs[0].kind != "draft" {
 		t.Fatalf("the card: %+v", cs)
 	}
+	// The drop only proposes: a card, the refusal untouched until the
+	// person taps it.
 	if out := w.srv.dispatchAgentTool(laneCtx(w.ctx, 1), w.agent, officers.ToolRefusalDrop, args[officers.ToolRefusalDrop]); isToolErr(out) {
 		t.Fatalf("drop in the operator chat: %s", out)
 	}
+	if it := w.itemFull(refusal); it.payload["owner_decision"] != nil {
+		t.Fatalf("the chat's drop acted before the person tapped its card: %+v", it)
+	}
+	var drop cardRow
+	for _, c := range w.cards() {
+		if c.kind == "drop" {
+			drop = c
+		}
+	}
+	if !strings.Contains(chatSection(w.officerPage()), `data-chat-card="`+strconv.FormatInt(drop.id, 10)+`"`) {
+		t.Fatalf("the drop card %d is not in the chat", drop.id)
+	}
+	if rec := w.cardPost(drop.id, "approve", url.Values{"card_sha256": {drop.sha}}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the person's tap on the drop card: %d %.300s", rec.Code, rec.Body.String())
+	}
 	if it := w.itemFull(refusal); it.payload["owner_decision"] != "drop" || it.summary != tDroppedWords {
-		t.Fatalf("after the chat's drop: %+v", it)
+		t.Fatalf("after the person's tap: %+v", it)
 	}
 }
 

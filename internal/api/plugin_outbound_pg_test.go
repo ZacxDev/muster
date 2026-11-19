@@ -126,6 +126,9 @@ type outboundFixture struct {
 	// usage, when set, is the usage collector's source (never run on its
 	// own: a test ticks or flushes it).
 	usage usage.Source
+	// moreOfficers, when set, is more MUSTER_OFFICERS entries (",{…}"),
+	// declared after the world's own; it may make what they need (a team).
+	moreOfficers func(t *testing.T, f *connFixture) string
 }
 
 func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboundWorld {
@@ -158,7 +161,11 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		_, _ = f.pool.Exec(sys, `DELETE FROM audit_log WHERE user_id = $1`, other)
 		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, other)
 	})
-	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"` + fx.officerExtra + `}]`
+	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"` + fx.officerExtra + `}`
+	if fx.moreOfficers != nil {
+		decl += fx.moreOfficers(t, f)
+	}
+	decl += `]`
 	if onHost {
 		decl = `[{"id":"` + builtinOfficerID + `","backend":"builtin","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `","connectors":["pg-example"]` + fx.officerExtra + `}]`
 	}

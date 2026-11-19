@@ -36,6 +36,10 @@ import (
 const (
 	CardDraft = "draft"
 	CardBatch = "batch"
+	// CardRefile and CardDrop are a refusal's Re-file (at RefileAt) and
+	// Drop, as officer_refusal_refile / officer_refusal_drop PROPOSE them.
+	CardRefile = "refile"
+	CardDrop   = "drop"
 )
 
 // The decisions a card records.
@@ -61,7 +65,11 @@ type ChatCard struct {
 	BatchID      string
 	BatchSHA256  string
 	BatchEntries []int64
-	CardSHA256   string
+	// A refusal card's refusal (its draft.refused item) and, for a
+	// re-file, when.
+	RefusalItem int64
+	RefileAt    *time.Time
+	CardSHA256  string
 	CreatedAt    time.Time
 	DecidedAt    *time.Time
 	Decision     string
@@ -83,6 +91,12 @@ func CardSHA256(c ChatCard) string {
 			ids[i] = strconv.FormatInt(id, 10)
 		}
 		b.WriteString(c.BatchID + "\n" + c.BatchSHA256 + "\n" + strings.Join(ids, ",") + "\n")
+	case CardRefile, CardDrop:
+		at := ""
+		if c.RefileAt != nil {
+			at = c.RefileAt.UTC().Format(time.RFC3339)
+		}
+		b.WriteString(strconv.FormatInt(c.RefusalItem, 10) + "\n" + at + "\n")
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
@@ -100,12 +114,12 @@ var ErrTooManyCards = errors.New("officers: this chat already holds the most und
 var ErrCardDecided = errors.New("officers: this confirm card was already decided")
 
 const chatCardCols = `id, owner_id, officer_owner, officer, kind, coalesce(draft_id, 0), coalesce(body_sha256, ''), coalesce(media_sha256, '{}'),
-	coalesce(batch_id, ''), coalesce(batch_sha256, ''), coalesce(batch_entries, '{}'), card_sha256, created_at, decided_at, coalesce(decision, '')`
+	coalesce(batch_id, ''), coalesce(batch_sha256, ''), coalesce(batch_entries, '{}'), coalesce(refusal_item, 0), refile_at, card_sha256, created_at, decided_at, coalesce(decision, '')`
 
 func scanChatCard(row pgx.Row) (ChatCard, error) {
 	var c ChatCard
 	err := row.Scan(&c.ID, &c.Owner, &c.OfficerOwner, &c.Officer, &c.Kind, &c.DraftID, &c.BodySHA256, &c.MediaSHA256,
-		&c.BatchID, &c.BatchSHA256, &c.BatchEntries, &c.CardSHA256, &c.CreatedAt, &c.DecidedAt, &c.Decision)
+		&c.BatchID, &c.BatchSHA256, &c.BatchEntries, &c.RefusalItem, &c.RefileAt, &c.CardSHA256, &c.CreatedAt, &c.DecidedAt, &c.Decision)
 	return c, err
 }
 
@@ -114,10 +128,14 @@ func scanChatCard(row pgx.Row) (ChatCard, error) {
 // CardSHA256. An UNDECIDED card for the same draft (or the same batch at the
 // same batch SHA-256) is returned instead of a second one.
 func (s *Store) AddChatCard(ctx context.Context, c ChatCard, at time.Time) (ChatCard, error) {
-	c.CardSHA256 = CardSHA256(c)
 	var draft, batchEntries any
 	var body, batch, batchSHA any
-	var media any
+	var media, refusal, refileAt any
+	if c.RefileAt != nil {
+		t := c.RefileAt.UTC().Truncate(time.Second)
+		c.RefileAt = &t
+	}
+	c.CardSHA256 = CardSHA256(c)
 	switch c.Kind {
 	case CardDraft:
 		if c.MediaSHA256 == nil {
@@ -126,6 +144,11 @@ func (s *Store) AddChatCard(ctx context.Context, c ChatCard, at time.Time) (Chat
 		draft, body, media = c.DraftID, c.BodySHA256, c.MediaSHA256
 	case CardBatch:
 		batch, batchSHA, batchEntries = c.BatchID, c.BatchSHA256, c.BatchEntries
+	case CardRefile, CardDrop:
+		refusal = c.RefusalItem
+		if c.Kind == CardRefile {
+			refileAt = c.RefileAt
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -157,9 +180,9 @@ func (s *Store) AddChatCard(ctx context.Context, c ChatCard, at time.Time) (Chat
 		return ChatCard{}, ErrTooManyCards
 	}
 	out, err := scanChatCard(tx.QueryRow(ctx, `INSERT INTO officer_chat_cards
-		(officer_owner, officer, kind, draft_id, body_sha256, media_sha256, batch_id, batch_sha256, batch_entries, card_sha256, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING `+chatCardCols,
-		c.OfficerOwner, c.Officer, c.Kind, draft, body, media, batch, batchSHA, batchEntries, c.CardSHA256, at))
+		(officer_owner, officer, kind, draft_id, body_sha256, media_sha256, batch_id, batch_sha256, batch_entries, refusal_item, refile_at, card_sha256, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING `+chatCardCols,
+		c.OfficerOwner, c.Officer, c.Kind, draft, body, media, batch, batchSHA, batchEntries, refusal, refileAt, c.CardSHA256, at))
 	if err != nil {
 		return ChatCard{}, classify(err)
 	}

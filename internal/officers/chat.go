@@ -2,6 +2,8 @@ package officers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,20 +117,37 @@ func ChatSessionKey(chatID string) string { return ChatSessionKeyPrefix + chatID
 // muster (internal/api officer_operator_chat.go), never through HQ.
 const operatorChatPrefix = "operator-"
 
-// OperatorChatID is the chat id of person user's operator chat with an
-// officer: its lane's session key is ChatSessionKey(OperatorChatID(user)).
-// One chat per person, so a team's managers never read each other's.
-func OperatorChatID(user int64) string { return operatorChatPrefix + strconv.FormatInt(user, 10) }
+// OperatorChatID is the chat id of person user's operator chat with owner's
+// officer officer: "operator-<user>-<16 hex>", the hex the first 8 bytes of
+// the SHA-256 of the officer's (owner, id). Its lane's session key is
+// ChatSessionKey(OperatorChatID(…)).
+//
+// 🔴 ONE CHAT PER (OFFICER, PERSON). chat_sessions.session_key is unique
+// across every agent, so a key per person alone collided as soon as the same
+// person chatted with a second officer — of the same owner, or a personal and
+// a team officer of the same id. A team's managers never read each other's.
+func OperatorChatID(user, owner int64, officer string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + officer))
+	return operatorChatPrefix + strconv.FormatInt(user, 10) + "-" + hex.EncodeToString(sum[:8])
+}
 
 // OperatorChatUser is the person whose operator chat chatID is; ok false for
-// any other chat id (an HQ chat's included).
+// any other chat id (an HQ chat's included). It does not say WHICH officer's:
+// a caller compares chatID with OperatorChatID for the officer it acts for.
 func OperatorChatUser(chatID string) (int64, bool) {
 	rest, found := strings.CutPrefix(chatID, operatorChatPrefix)
 	if !found {
 		return 0, false
 	}
-	n, err := strconv.ParseInt(rest, 10, 64)
-	if err != nil || n <= 0 || OperatorChatID(n) != chatID {
+	uid, tag, found := strings.Cut(rest, "-")
+	if !found || len(tag) != 16 {
+		return 0, false
+	}
+	if _, err := hex.DecodeString(tag); err != nil || strings.ToLower(tag) != tag {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(uid, 10, 64)
+	if err != nil || n <= 0 || strconv.FormatInt(n, 10) != uid {
 		return 0, false
 	}
 	return n, true

@@ -1924,9 +1924,10 @@ var officerNotices = map[string]string{
 	"dropped":        "Dropped: the officer will not redraft it.",
 	"cap-raised":     "Raised for today: it is woken for new work again, and its budget goes back at the next 00:00 UTC.",
 	// The chat's (officer_operator_chat.go).
-	"chat-sent":     "Sent. It answers below in a moment.",
-	"card-approved": "Approved: its plugin sends exactly what the card showed, once.",
-	"card-rejected": "Rejected: it is not sent, and the officer is told.",
+	"chat-sent":      "Sent. It answers below in a moment.",
+	"card-approved":  "Approved: its plugin sends exactly what the card showed, once.",
+	"card-rejected":  "Rejected: it is not sent, and the officer is told.",
+	"card-dismissed": "Dismissed: nothing was changed.",
 }
 
 // officerPageNotice is the words of a notice code on an officer's page: its

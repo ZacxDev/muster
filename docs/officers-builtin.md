@@ -202,7 +202,8 @@ sign-in, so nothing the officer does can approve its own work.
 **Chat with it** — talk to the officer like any agent: ask what it is
 doing, what waits on you, or to get something ready for you. It answers in
 the chat (reload to see a reply that is still coming). Each person has
-their own chat with each officer; a team's managers never read each
+their own chat with each officer (it follows the officer to whichever of its
+instances is running); a team's managers never read each
 other's. Details in [Chat with it](#chat-with-it).
 
 **What it did** — its finished work, newest first, in plain words: each
@@ -262,18 +263,24 @@ In the chat the officer reads and acts on **its own state** with four tools
 |---|---|
 | `officer_my_state` `{section?}` | its open questions to you, its pending drafts (exact text and media) and outreach batch, the refusals waiting on you, today's spend against its budget, its schedules |
 | `officer_confirm_card` `{draft_id}` or `{batch_id}` | asks muster to show you a **confirm card** for one of its pending drafts or its open batch |
-| `officer_refusal_refile` `{item_id, when, at?}` | your page's **Re-file** of a refusal, when you ask for it |
-| `officer_refusal_drop` `{item_id}` | your page's **Drop** of a refusal, when you ask for it |
+| `officer_refusal_refile` `{item_id, when?, at?}` | asks you, with a confirm card, to **Re-file** a refusal (by default at the time its plugin said it can go) |
+| `officer_refusal_drop` `{item_id}` | asks you, with a confirm card, to **Drop** a refusal |
 
-The last three work only inside a chat with you: muster knows a call comes
-from your chat by the secret it gave that chat's session, and they act as
-**you** (a team officer's are in the team's audit). Its queue work is
-refused in the chat, as in any chat session.
+The last three work only inside your chat with **that** officer, and they
+only **ask**: each puts a card in your chat, and nothing happens until you
+tap it. (The chat's session holds a secret muster gave it, but every process
+in the officer's pod can read that secret, so muster never lets a call that
+holds it act for you.) Your tap on a Re-file or Drop card makes your page's
+own choice, in the team's audit for a team officer — except that a re-file
+asked for in a chat comes back as the officer's **own** work, so a spent
+daily budget holds it back like any of its work. Its queue work is refused
+in the chat, as in any chat session.
 
 🔴 **A confirm card is yours to decide, never the officer's.** It shows the
 exact text and every image and video (or each follow and like of the
 batch), with **Approve and send** and **Reject**. Approving needs a recent
-sign-in, as every approval does, and decides **exactly what the card
+sign-in, as every approval does (and so does rejecting a batch card, which
+rejects every follow and like on it), and decides **exactly what the card
 showed**: the card keeps the SHA-256 of the text and of each medium (a batch
 card, the batch's own SHA-256 and its entries), and the approval is made on
 those — so if the draft or the batch changed after the card was drawn,
