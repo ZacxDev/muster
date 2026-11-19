@@ -305,6 +305,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /officers/{officer}/delete",
 		"POST /officers/{officer}/schedules",
 		"POST /officers/{officer}/schedules/{name}/delete",
+		"POST /officers/{officer}/refusals/{item}/refile",
+		"POST /officers/{officer}/refusals/{item}/drop",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",

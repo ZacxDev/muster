@@ -343,6 +343,8 @@ POST /officers/{officer}/delete
 POST /officers/{officer}/edit
 POST /officers/{officer}/mode
 POST /officers/{officer}/pause
+POST /officers/{officer}/refusals/{item}/drop
+POST /officers/{officer}/refusals/{item}/refile
 POST /officers/{officer}/resume
 POST /officers/{officer}/run
 POST /officers/{officer}/schedules

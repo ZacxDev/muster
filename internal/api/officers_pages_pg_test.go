@@ -270,7 +270,10 @@ func TestEnvOfficersAreReadOnlyOnThePages(t *testing.T) {
 	for _, c := range []struct {
 		suffix string
 		form   url.Values
-	}{{"/edit", wizardForm()}, {"/pause", url.Values{}}, {"/mode", url.Values{"mode": {"live"}}}, {"/run", url.Values{}},
+		// Run now and Pause / Resume are NOT here: they write the officer's
+		// queue and on-off switch, never its declaration, so an env officer
+		// takes them (TestRunControlsTakeAnEnvOfficerToo).
+	}{{"/edit", wizardForm()}, {"/mode", url.Values{"mode": {"live"}}},
 		{"/delete", url.Values{"confirm": {declID}}}, {"/schedules", url.Values{"schedule_preset": {"hourly"}}}} {
 		if rec := r.page(t, 1, http.MethodPost, "/officers/"+declID+c.suffix, c.form); rec.Code != http.StatusConflict {
 			t.Errorf("POST %s on an env officer: %d; want 409", c.suffix, rec.Code)
@@ -284,7 +287,7 @@ func TestEnvOfficersAreReadOnlyOnThePages(t *testing.T) {
 		t.Fatalf("after the refused writes the env officer's def is %+v, %v", d, err)
 	}
 	if items, _ := r.store.ListItems(sys, 1, declID, "", 10); len(items) != 0 {
-		t.Fatalf("a refused Run now queued %d items", len(items))
+		t.Fatalf("a refused write queued %d items", len(items))
 	}
 }
 
