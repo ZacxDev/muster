@@ -42,8 +42,17 @@ func PlainWhenHTML(prefix string, t, now time.Time) string {
 		`" data-plain-when-prefix="` + html.EscapeString(prefix) + `">` + html.EscapeString(prefix+PlainWhen(t, now)) + `</time>`
 }
 
+// PlainWhenTitledHTML is PlainWhenHTML with a tooltip: the exact date and
+// time in the reader's own zone, then extra ("134 KB") when it is not "".
+// The server writes only extra (it knows no zone); plainWhenJS adds the time.
+func PlainWhenTitledHTML(prefix string, t, now time.Time, extra string) string {
+	h := PlainWhenHTML(prefix, t, now)
+	return `<time title="` + html.EscapeString(extra) + `" data-plain-when-title="` + html.EscapeString(extra) + `"` + h[len(`<time`):]
+}
+
 // plainWhenJS redraws each <time data-plain-when> in the reader's zone, with
-// PlainWhen's words; the server's text stays where it cannot.
+// PlainWhen's words; the server's text stays where it cannot. One that
+// carries data-plain-when-title gets the exact time as its tooltip too.
 const plainWhenJS = `
   (function () {
     var draw = function () {
@@ -62,6 +71,10 @@ const plainWhenJS = `
           else if (d.getFullYear() === now.getFullYear()) day = 'on ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' });
           else day = 'on ' + d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
           ts[i].textContent = (ts[i].getAttribute('data-plain-when-prefix') || '') + day + ' at ' + clock;
+          if (ts[i].hasAttribute('data-plain-when-title')) {
+            var extra = ts[i].getAttribute('data-plain-when-title');
+            ts[i].title = d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + (extra ? ' · ' + extra : '');
+          }
         } catch (e) {}
       }
     };

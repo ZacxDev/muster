@@ -38,6 +38,14 @@ var Host = regexp.MustCompile("(^|[\\s(`\"'“‘])--?[a-z][a-z-]*\\b|\\bmirror:
 var Setup = regexp.MustCompile(`\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|=|<[a-z][^>]*>|\.env\b|\bdocs/|\.md\b|` +
 	`(?i:\bdocker\b|\bcompose\b|\bkubernetes\b|\bpods?\b|\bAPI\b|\bURLs?\b|\bMCP\b|\btokens?\b|\bJWT\b|\bVAPID\b|\bGoTrue\b|\bS3\b|\bwebhooks?\b|\bmisconfigured\b)`)
 
+// Counts is a count that does not read as words: a "(s)" plural ("live
+// link(s)", "response(s)"), which a screen that knows the number never needs,
+// and a zero said out loud about the Pages screens' things ("0 live link", "0
+// responses", "0 waiting", "0 replies"), where nothing should be drawn at all.
+// An INVARIANT GUARD: it keeps the Pages screens from saying either again;
+// on its own it is no regression test ("(s)" was already gone at #823).
+var Counts = regexp.MustCompile(`\(s\)|(^|[^\d.,])0 (live links?|links?|responses?|repl(y|ies)|waiting|versions?)\b`)
+
 // Jargon is the first jargon any scan finds in s, or "" when s is plain.
 func Jargon(s string) string {
 	for _, re := range []*regexp.Regexp{Setup, Host, Address} {
