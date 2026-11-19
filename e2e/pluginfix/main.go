@@ -67,7 +67,8 @@
 //	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
 //	    so a spec that used the Account page's switch leaves the default behind.
 //	  - notifypref: clears the owner's notification preferences
-//	    (notify_preferences), the same way: off, the default, is left behind.
+//	    (notify_preferences), the same way: each switch's default is left
+//	    behind (off, but "Let my agents share pages without asking" on).
 //	  - branding: clears the instance's branding (instance_branding, 0105) —
 //	    the server's, not an owner's, so it takes no owner: nothing set, the
 //	    built-in mark, is left behind for every later spec on the shared
@@ -155,7 +156,7 @@ func run(args []string) error {
 		}
 	case "notifypref":
 		// Clears the owner's notification preferences (migration 0094): the
-		// next reader sees the default, off.
+		// next reader sees each switch's default (pages_agent_share: on).
 		owner, err := num(1)
 		if err != nil || len(args) != 3 || args[2] != "clear" {
 			return fmt.Errorf("usage: notifypref <owner-id> clear")

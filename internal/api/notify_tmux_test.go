@@ -22,7 +22,8 @@ type memNotifyPrefs struct {
 	err error
 	// first is "Start notification titles with the tmux name", owner → on.
 	first map[int64]bool
-	// pages is "Let my agents share pages without asking", owner → on.
+	// pages is "Let my agents share pages without asking", owner → on; a
+	// missing owner reads on (the default since migration 0159).
 	pages map[int64]bool
 }
 
@@ -32,7 +33,11 @@ func (m *memNotifyPrefs) PagesAgentShare(ctx context.Context, owner int64) (bool
 	if m.err != nil {
 		return false, m.err
 	}
-	return m.pages[owner], nil
+	if on, ok := m.pages[owner]; ok {
+		return on, nil
+	}
+	// No choice made: on, as notifypref.PG reads a person's missing row.
+	return true, nil
 }
 
 func (m *memNotifyPrefs) SetPagesAgentShare(ctx context.Context, owner int64, on bool) error {

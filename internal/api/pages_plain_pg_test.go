@@ -228,7 +228,7 @@ func pageSection(t *testing.T, body, testid string) string {
 func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 	for _, role := range []authz.Role{authz.RoleAdmin, authz.RoleMember} {
 		t.Run(string(role), func(t *testing.T) {
-			f := newPageFixture(t)
+			f := newPageFixture(t).askFlow(t)
 			id, askID, oneOff := pagePlainSurfaces(t, f)
 			mid, mask := pagePlainMirrored(t, f)
 			ctx := f.pageAs(role)

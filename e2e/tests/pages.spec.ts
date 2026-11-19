@@ -189,6 +189,10 @@ test.afterAll(async () => {
   try {
     // The branding is the SERVER's row in the leg's shared database.
     fix('branding', 'clear');
+    // So is the owner's (user 1's) preferences row, where the test below
+    // turned "Let my agents share pages without asking" off: cleared, every
+    // later spec sees the default (on) again.
+    fix('notifypref', '1', 'clear');
   } finally {
     if (mirrorProc && mirrorProc.exitCode === null) {
       const done = new Promise((r) => mirrorProc!.once('exit', r));
@@ -303,9 +307,12 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await page.fill('#branding-name', BRAND);
   await page.setInputFiles('#branding-logo', { name: 'logo.png', mimeType: 'image/png', buffer: PNG });
   await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
-  // The ask flow is an owner who did NOT let their agents share without
-  // asking (Account → Pages): the leg's database is shared, so it is checked
-  // here, not assumed.
+  // The ask flow is an owner who turned OFF "Let my agents share pages
+  // without asking" (Account → Pages; on is every user's default): the owner
+  // turns it off here, through the switch, and that is checked, not assumed.
+  if ((await page.locator('#pages-agent-share').getAttribute('data-state')) === 'on') {
+    await page.locator('#pages-agent-share-toggle').click();
+  }
   await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'off');
 
   // 1. The agent publishes; the page is private.

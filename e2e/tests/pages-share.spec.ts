@@ -10,8 +10,8 @@ import { serverBinary, startServer, Running } from '../lib/server';
 
 // SHAREABLE PAGES, INSTANT SHARE (docs/pages.md#sharing, #in-the-chat), every
 // hop real, on a server with a link key (MUSTER_CONNECTOR_ENCRYPTION_KEY),
-// whose owner turns ON "Let my agents share pages without asking" on the
-// Account page (a per-owner opt-in; pages.spec.ts is an owner who did not):
+// whose owner keeps "Let my agents share pages without asking" ON, every
+// user's default (pages.spec.ts is an owner who turned it off):
 //
 //   a Claude Code session in a mirrored window publishes a page through its
 //   host's loopback MCP endpoint (page_create) → the call and its result land
@@ -22,9 +22,10 @@ import { serverBinary, startServer, Running } from '../lib/server';
 //     - on a phone, navigator.share is called with the page's title and that
 //       same link, SYNCHRONOUSLY inside the tap (the address is fetched on
 //       pointerdown, before the click — what iOS Safari's share sheet needs);
-//   → a signed-out browser opens the link and sees the page → the owner turns
-//   the opt-in on, on Account → the agent's own page_share_request is live at
-//   once and returns that same link.
+//   → a signed-out browser opens the link and sees the page → an owner who
+//   never chose (no preferences row) has the agent's own page_share_request
+//   live at once, returning that same link → the owner turns it off on
+//   Account, and the next request is asked instead.
 //
 // Every value below is an obvious fake.
 
@@ -43,6 +44,10 @@ let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 
 const rec = (o: object) => JSON.stringify(o) + '\n';
+// clearPrefs deletes the owner's (user 1's) notify_preferences row: no choice
+// made, so "Let my agents share pages without asking" reads its default, on.
+const clearPrefs = () =>
+  execFileSync('go', ['run', './e2e/pluginfix', 'notifypref', '1', 'clear'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -85,20 +90,10 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async ({ browser }) => {
-  // 🔴 THE OPT-IN IS THE OWNER'S ROW IN THE LEG'S SHARED DATABASE (user 1's,
-  // every spec's owner): turned off again here, or a spec after this one —
-  // pages.spec.ts, the ask flow — would find its agent sharing at once.
-  if (server) {
-    const ctx = await browser.newContext({ baseURL: origin });
-    try {
-      const page = await ctx.newPage();
-      await signIn(page, origin);
-      const r = await page.request.post(origin + '/account/pages/agent-share', { form: { on: '0' }, headers: { Origin: origin }, maxRedirects: 0 });
-      expect(r.status(), 'the opt-in was turned off again').toBe(303);
-    } finally {
-      await ctx.close();
-    }
-  }
+  // 🔴 THE SWITCH IS THE OWNER'S ROW IN THE LEG'S SHARED DATABASE (user 1's,
+  // every spec's owner): the test below turns it off, so the row is cleared
+  // here and every later spec sees the default (on) again.
+  if (server) clearPrefs();
   if (mirrorProc && mirrorProc.exitCode === null) {
     const done = new Promise((r) => mirrorProc!.once('exit', r));
     mirrorProc.kill('SIGTERM');
@@ -362,30 +357,32 @@ test('phone: the page screen’s Copy link copies the exact link, and its ⓘ sh
   }
 });
 
-test('an owner who opts in on Account: the agent’s share request is live at once and returns the page’s same link', async ({ browser }) => {
+test('an owner who never chose: the agent’s share request is live at once with the page’s same link; turned off on Account, it is asked', async ({ browser }) => {
   await publish();
-  // Before the opt-in the agent is asked to wait for the owner.
-  const asked = await call('page_share_request', { page_id: pageID });
-  expect(asked.body.status, asked.text).toBe('pending');
-  // The owner turns it on, on the Account page.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: origin });
-  try {
-    const page = await ctx.newPage();
-    await signIn(page, origin);
-    await page.goto(origin + '/account#pages-agent-share');
-    const sw = page.locator('#pages-agent-share');
-    await expect(sw).toHaveAttribute('data-state', 'off');
-    await page.locator('#pages-agent-share-toggle').click();
-    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'on');
-  } finally {
-    await ctx.close();
-  }
+  // No preferences row at all: the default, on.
+  clearPrefs();
   const req = await call('page_share_request', { page_id: pageID, reason: 'for the client' });
   expect(req.isError, req.text).toBe(false);
-  expect(req.body.status).toBe('live');
+  expect(req.body.status, req.text).toBe('live');
   expect(req.body.ask_id).toBeUndefined();
   expect(req.body.url).toMatch(linkRE);
   if (sharedURL) expect(req.body.url, "the owner's Share link").toBe(sharedURL);
   const again = await call('page_share_request', { page_id: pageID });
   expect(again.body.url).toBe(req.body.url);
+  // The owner's Account page draws it on, and the owner turns it off there.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: origin });
+  try {
+    const page = await ctx.newPage();
+    await signIn(page, origin);
+    await page.goto(origin + '/account#pages-agent-share');
+    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'on');
+    await expect(page.locator('#pages-agent-share-toggle')).toContainText('Turn off');
+    await page.locator('#pages-agent-share-toggle').click();
+    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'off');
+  } finally {
+    await ctx.close();
+  }
+  // Off: the agent is asked to wait for the owner.
+  const asked = await call('page_share_request', { page_id: pageID });
+  expect(asked.body.status, asked.text).toBe('pending');
 });

@@ -31,12 +31,13 @@ import (
 // security confines every read to the owner as well, so another owner's page
 // and another creator's page read alike: "no such page".
 //
-// 🔴 BY DEFAULT NO TOOL MAKES A LINK LIVE. page_share_request files a PENDING
-// link and an owner card; only the owner's own door approves it
-// (page_share.go). The one exception is the PAGE OWNER'S own opt-in, "Let my
+// 🔴 NO TOOL MAKES A LINK LIVE ON ITS OWN AUTHORITY. page_share_request files a
+// PENDING link and an owner card; only the owner's own door approves it
+// (page_share.go). The one exception is the PAGE OWNER'S own switch, "Let my
 // agents share pages without asking" on Account (notify_preferences
-// .pages_agent_share, off for everyone until they turn it on;
-// pageAgentShareOn): for that owner's pages page_share_request makes the
+// .pages_agent_share — ON for every person until they turn it off, migration
+// 0159; off for a team owner; pageAgentShareOn): for that owner's pages
+// page_share_request makes the
 // link live at once and the owner is TOLD (a push, the page's card) instead
 // of asked — still only for a page the caller made, under its owner's
 // row-level security (pageShareAuto). The one
@@ -483,9 +484,10 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 			" When the answer is \"" + pageShareApproveLabel + "\", url is live; page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows its state."})
 }
 
-// pageAgentShareOn reports whether owner turned on "Let my agents share pages
-// without asking" (Account → Pages). Off — no store, no row, a failed read
-// (logged) — is the ask flow. ctx acts as owner here (an agent's or a mirrored
+// pageAgentShareOn reports whether "Let my agents share pages without asking"
+// (Account → Pages) is on for owner: on unless they turned it off (no row is
+// on for a person, off for a team — notifypref.PG.PagesAgentShare). No store
+// or a failed read (logged) is the ask flow. ctx acts as owner here (an agent's or a mirrored
 // session's request runs as the agent's owner); the store refuses any other
 // principal, which reads as off.
 func (s *Server) pageAgentShareOn(ctx context.Context, owner int64) bool {

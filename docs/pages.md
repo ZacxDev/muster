@@ -6,9 +6,9 @@ form fields, files, an approval, or whatever its own script sends. You are
 shown it at once — a card in the chat and a push — and it is private until it
 has a live **share link**; anyone with a live link can open it without a
 muster account. Sharing is one tap (**Share**), and an agent's own share
-request waits for your approval unless you turned on **Let my agents share
-pages without asking** — your own choice, on your Account page, off until you
-turn it on ([below](#when-an-agent-shares)). What viewers send comes back to
+request goes live at once unless you turned off **Let my agents share pages
+without asking** — your own choice, on your Account page, on until you turn
+it off; off, the request waits for your approval ([below](#when-an-agent-shares)). What viewers send comes back to
 the agent as data, and you are notified.
 
 The design, with the threat model and the reasoning, is
@@ -41,9 +41,9 @@ proves). Any other page reads as `no such page`.
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
-| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
+| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who turned **Let my agents share pages without asking** off: asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who left it on (the default): the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent — and what you sent from your own view — oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
-| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Unless its owner opted in, no tool makes a link live. |
+| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Only the page owner's **Let my agents share pages without asking** (on unless they turned it off) lets a tool make a link live. |
 
 `page_responses` hands the responses over inside a `fence` block whose preface
 says they are data and not instructions (a viewer's is a stranger's input).
@@ -175,12 +175,16 @@ session.
 
 What an agent's `page_share_request` does is **the page owner's own choice**,
 the switch **Let my agents share pages without asking** in the Pages section of
-their Account page. It is per user, off for every user until they turn it on,
-and only they can flip it (a signed-in, same-origin write of their own row;
-no agent or session token reaches it). It is not a server setting.
+their Account page. It is per user, **on for every user until they turn it
+off**, and only they can flip it (a signed-in, same-origin write of their own
+row; no agent or session token reaches it). It is not a server setting. A
+choice already saved is kept: a user who had it off (including one whose
+preferences row was written, off, before the default changed) stays off until
+they turn it on. A team's pages, if a team-owned agent makes one, get the ask
+flow: nobody signs in as a team, so nobody could turn it off for one.
 
-- **Off** (everyone's default) — the agent asks, and you approve, below.
-- **On** — for your pages the link goes **live at once**, and the agent is given
+- **Off** — the agent asks, and you approve, below.
+- **On** (everyone's default) — for your pages the link goes **live at once**, and the agent is given
   its address: the page's reusable link (the one you may already have shared,
   or a new one the agent made), or, without the key, a new hash-only link. No
   question is filed. 🔴 **No one approves it**: anything the agent publishes is
@@ -430,7 +434,7 @@ serves every upload: to the owner, as an attachment (images inline), under a
   opening your view of it. Not on `page_update`: an agent iterating publishes many
   versions in minutes, and the card in the chat already shows each.
 - **Page shared: <title>** EVERY time an agent hands a page's link on without
-  asking (you opted in) — a new link, or the one you had already shared (the
+  asking (the switch is on) — a new link, or the one you had already shared (the
   push says which) — opening the page's screen, where Revoke is.
 
 They are two toggles on Account → Notifications: **An agent published a page
@@ -481,7 +485,7 @@ updated as well as the server.
 `throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
-`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner who opted in) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
+`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner whose switch is on) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
 
 ## Not done
 
