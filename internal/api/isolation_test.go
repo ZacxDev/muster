@@ -3068,6 +3068,63 @@ func (w *isoWorld) objTeamHost(team int64, teamCanary string) isoObjs {
 
 // mirrorRoutes is the routes of routes that name a mirrored entry
 // (mirrorTeamRoutes, but for the host doors, which take no owner=).
+// teamPageRouteList is every page route ("/pages/{id}…"): the team-page leg
+// of teamRoleWalks.
+func teamPageRouteList(routes []string) []string {
+	var out []string
+	for _, r := range routes {
+		if _, ok := teamPageRoutes[r]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// isoTeamPage is a page the TEAM owns (migration 0160), made by its agent on
+// A's say-so (created_by_user = A), titled with the team's canary, with two
+// versions, a live link and a stranger's response.
+type isoTeamPage struct{ id, link, resp int64 }
+
+func (w *isoWorld) addTeamPage(t *testing.T, team, creator int64, teamCanary string) isoTeamPage {
+	t.Helper()
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: team, Role: authz.RoleMember, Via: authz.ViaAgent, Team: true})
+	pgs := pages.NewPG(w.pool)
+	b, n, err := pages.Parse([]byte(`[{"type":"question","id":"q1","label":"team question"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := pages.Creator{AgentID: 990000 + team, Label: "team worker", ByUser: creator}
+	p, _, err := pgs.Create(ctx, c, "team page "+teamCanary, b, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM pages WHERE owner_id = $1`, team) })
+	if _, _, err := pgs.AddVersion(ctx, c, p.ID, "team page "+teamCanary+" v2", b, n); err != nil {
+		t.Fatal(err)
+	}
+	l, err := pgs.CreateLink(ctx, p.ID, pages.LinkLive, "team worker", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := pgs.AddResponse(ctx, l, 2, "q1", pages.KindSubmit, []byte(`{"answer":"stranger"}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return isoTeamPage{id: p.ID, link: l.ID, resp: r.ID}
+}
+
+// teamPageState is the team page's managed state, read as System: what no
+// one but its creator may change — its existence, current version and title,
+// and the state of its link (link). A NEW link is not in it: any member's
+// Share makes the page's link, by design.
+func (w *isoWorld) teamPageState(id, link int64) string {
+	var st string
+	_ = w.pool.QueryRow(authz.System(context.Background()), `SELECT p.current_version || '|' || p.title || '|' ||
+		coalesce((SELECT l.state FROM page_links l WHERE l.page_id = p.id AND l.id = $2), 'gone')
+		FROM pages p WHERE p.id = $1`, id, link).Scan(&st)
+	return st
+}
+
 func mirrorRoutes(routes []string) []string {
 	var out []string
 	for _, r := range routes {
@@ -3093,6 +3150,10 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 	// The team's host is online for the whole walk, every route included —
 	// the sidebar's too, which lists it to members only (VisibleHosts).
 	teamHost := w.objTeamHost(team, teamCanary)
+	// The team's page (0160), made on A's say-so: B is never its creator.
+	tPage := w.addTeamPage(t, team, w.a.uid, teamCanary)
+	tPageObjs := w.objA
+	tPageObjs.page, tPageObjs.pageDel, tPageObjs.pageLink, tPageObjs.pageResp = tPage.id, tPage.id, tPage.link, tPage.resp
 	for _, role := range []string{"none", "viewer", "operator", "manager"} {
 		if role == "none" {
 			if err := store.RemoveTeamMember(w.sys, by, team, w.b.uid); err != nil {
@@ -3134,6 +3195,26 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 					t.Errorf("DISTINGUISHABLE: B, NOT a member, %s %s answered %d about the team's host but %d about a host it does not have", res.via, res.route, res.status, g)
 				}
 			}
+		}
+		// THE TEAM PAGE LEG (0160): every page route, naming the TEAM's page.
+		// A non-member sees it on no route; a member (viewer and up) reads it;
+		// and B — never its creator, a manager included — changes nothing of
+		// what its creator manages (its version, title, links).
+		pageBefore := w.teamPageState(tPage.id, tPage.link)
+		pageSaw := 0
+		for _, res := range w.walkAs(w.b, tPageObjs, []cred{{sessionUser: w.b.uid}}, teamPageRouteList(routes)) {
+			if strings.Contains(res.body, "team page "+teamCanary) {
+				pageSaw++
+				if role == "none" {
+					t.Errorf("LEAK: B, NOT a member, %s %s → %d carries the team PAGE's canary\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+				}
+			}
+		}
+		if role != "none" && pageSaw == 0 {
+			t.Errorf("CONTROL: B as the team's %s saw the team's PAGE on no page route: the team-page leg is not reaching it", role)
+		}
+		if after := w.teamPageState(tPage.id, tPage.link); after != pageBefore || pageBefore == "" {
+			t.Errorf("MUTATION: B as the team's %s (not the page's creator) changed the team's page:\n before %q\n after  %q", role, pageBefore, after)
 		}
 		w.checkOutsider(t, "B as the team's "+role, results)
 		w.sameRows(t, "B's walk as the team's "+role, aBefore)
