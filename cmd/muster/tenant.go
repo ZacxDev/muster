@@ -312,8 +312,8 @@ func readTenantFile(path, display string) (map[string]string, error) {
 	if err := checkTenantsDir(filepath.Dir(path), filepath.Dir(display)); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, syscall.ELOOP) {
+	f, symlink, err := openTenantFile(path)
+	if symlink {
 		return nil, failf(exitUsage, "%s is a symlink; a tenant file must be a regular file", display)
 	}
 	if err != nil {

@@ -50,7 +50,12 @@ var expectedCommentWriterLedger = map[string][]string{
 	// Muster's own bookkeeping — local, rendered as muster-only history:
 	"applyGateRelease":   {"commentByMuster"},
 	"applyAnswerRelease": {"commentByMuster"}, // the owner's Release tap (answer_release.go)
-	"handleTaskMerge":    {"commentByMuster", "commentByMuster"},
+	// Auto-start (plugin_autostart.go): what muster started, or why not, and
+	// the owner's Stop.
+	"autostartStarted":       {"commentByMuster"},
+	"autostartSkipped":       {"commentByMuster"},
+	"autostartStopForAnswer": {"commentByMuster"},
+	"handleTaskMerge":        {"commentByMuster", "commentByMuster"},
 }
 
 // expectedDirectThreadWriters is every function that calls a store method

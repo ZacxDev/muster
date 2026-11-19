@@ -931,8 +931,8 @@ func attentionFocusHTML(title string, age ui.FocusAge) string {
 	if age.Text != "" {
 		// Labelled: the card's header already ends in how long it has waited,
 		// in the same "· 3m" shape; this one is how old the title is.
-		after = `<span class="font-normal" data-focus-age title="` + esc(ui.FocusAgeLabel(age)) + `" aria-label="` +
-			esc(ui.FocusAgeLabel(age)) + `">` + esc(ui.FocusAgeSuffix(age)) + `</span>`
+		after = `<span class="font-normal" data-focus-age title="` + esc(ui.FocusAgeTooltip(age)) + `" aria-label="` +
+			esc(ui.FocusAgeTooltip(age)) + `">` + esc(ui.FocusAgeSuffix(age)) + `</span>`
 	}
 	return `<span class="` + cls + `"` + stale + `><span data-attention-focus>` + esc(title) + `</span>` + after + `</span>
 `
@@ -2163,6 +2163,11 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	// before the answer is recorded, applied before anyone is woken by it.
 	rel, err := s.releaseForAnswer(ctx, id, answer, src)
 	if err != nil {
+		return a, err
+	}
+	// An auto-start's Stop ask (plugin_autostart.go): the agent is stopped
+	// before the answer is recorded; a stop that failed leaves the ask open.
+	if err := s.autostartStopForAnswer(ctx, id, answer); err != nil {
 		return a, err
 	}
 	// A chief proposal's card (chief_proposal.go): the owner's tap DOES what

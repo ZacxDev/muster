@@ -209,6 +209,11 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 	}
 	gotSinks := htmlSinks(js)
 	wantSinks := []string{
+		// A muster tool row's ⓘ line (toolLabelsJS): the server's own markup
+		// (toolNameSheet, embedded at render time), with only its id
+		// placeholder replaced by a key the script reduces to [A-Za-z0-9_-];
+		// the raw tool name is set as text afterwards.
+		`.innerHTML = MUSTER_TOOL_SHEET.split("__tool_sheet__-tn").join(key + '-tn')`,
 		// keepOpenHTML's, whose only caller passes a delta's reply so far
 		// (checked just below).
 		".innerHTML = serverHTML",

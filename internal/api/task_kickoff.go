@@ -19,7 +19,7 @@ import (
 //
 //   - Every door that starts an agent on a task — the chief's agent_dispatch, a
 //     session's approved dispatch_request, a host spawn, POST /api/agents with
-//     note_id — builds the first message through taskKickoffText /
+//     note_id, a plugin's auto-start — builds the first message through taskKickoffText /
 //     taskKickoffTextWithin. Each one used to paste task.Body raw.
 //   - Every task tool that answers an agent with a task — task_get,
 //     agent_get_task, a status answer — goes through taskToolText, and

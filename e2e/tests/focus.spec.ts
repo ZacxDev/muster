@@ -576,7 +576,7 @@ for (const vp of [
       await expect(stale).toHaveText(STALE_TITLE + '· 5d');
       await expect(stale.locator('[data-focus-age]')).toHaveText('· 5d');
       // Labelled: it is how old the title is, not a waiting time.
-      await expect(stale.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 5d ago (stale)');
+      await expect(stale.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'Summary from 5 days ago, out of date');
       await expect(stale).toHaveAttribute('data-focus-stale', '');
       await styleOf(stale).toEqual(['italic', '0.6']);
       await expectAgeInside(stale);
@@ -601,7 +601,7 @@ for (const vp of [
       await expect(row).toHaveCount(1, { timeout: 15_000 });
       await expect(row.locator('[data-attention-focus]')).toHaveText(STALE_TITLE);
       await expect(row.locator('[data-focus-age]')).toHaveText('· 5d');
-      await expect(row.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 5d ago (stale)');
+      await expect(row.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'Summary from 5 days ago, out of date');
       const line = row.locator('[data-focus-stale]');
       await expect(line).toHaveCount(1);
       await styleOf(line).toEqual(['italic', '0.6']);
@@ -634,7 +634,7 @@ for (const vp of [
         await expectAgeInside(line);
         const w5 = rowOfLabel('focuswin · window 5');
         await expect(w5.locator('[data-focus-age]')).toHaveText('· 2d');
-        await expect(w5.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 2d ago');
+        await expect(w5.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'Summary from 2 days ago');
         await expect(w5.locator('[data-focus-line]')).not.toHaveAttribute('data-focus-stale');
         // CONTROL: a fresh focus, no age.
         const ag = rowOfLabel(agentName);

@@ -18,7 +18,6 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/web"
@@ -156,6 +155,11 @@ type AgentDetailView struct {
 	// read from the page itself under the viewer's principal (internal/api
 	// pageCardsFor); a call whose page the viewer cannot see has none.
 	PageCards map[string]PageCardView
+	// RouteAnswers is each stored row (by its ID) that carries sessions'
+	// answers to routed requests, as internal/api read them from each route's
+	// own record (routeAnswerCardsFor): drawn as "From <session>" cards
+	// (routed_card.go). A row with none is drawn as before.
+	RouteAnswers map[int64][]RouteAnswerCard
 	// OwnerCards is each STORED ask_owner card's state — its attention ask —
 	// by the call's tool id (internal/api ownerCardsFor). A call whose result
 	// names no stored ask draws from the transcript alone (a server with no
@@ -400,7 +404,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
-		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur lg:pl-72"),
+		Class(StickyHeaderClass+" lg:pl-72"),
 		Div(
 			// contentWidth() — the SAME helper the <main> below it uses, so the
 			// header's left edge and the chat column's left edge cannot drift apart.
@@ -1533,6 +1537,13 @@ func chatLogInner(v AgentDetailView) g.Node {
 				items = append(items, logItem{node: relayRow(m)})
 				continue
 			}
+			// A session's answer to a routed request, as the SERVER read it
+			// from the route's record (RouteAnswers): muster's turn, never the
+			// person's bubble — a "From <session>" card (routed_card.go).
+			if cards, ok := v.RouteAnswers[m.ID]; ok && m.ID > 0 && m.Role == "user" && !m.Typed && len(cards) > 0 {
+				items = append(items, logItem{node: routeAnswerRow(m, cards)})
+				continue
+			}
 			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID, v.Mentions)})
 		}
 	}
@@ -2050,12 +2061,18 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 // chip the live stream shows: ONE line — 🔧 name, its target (the file, the
 // command), a ✓/✗/… status — expanding to the args and result. call carries the
 // args (Content), result (may be nil) the output + ok.
-func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "") }
+//
+// bare is true here: chatToolChip draws the chief's and an agent's own chat,
+// where a gateway agent calls muster's tools by their bare names (a mirrored
+// session's rows come through toolChip with bare false).
+func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "", true) }
 
 // toolChip is chatToolChip with an element id (the mirrored view replaces a
 // running row in place when its result arrives) and, from the mirrored view,
-// extra nodes drawn just before the status (its context badge).
-func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Node {
+// extra nodes drawn just before the status (its context badge). bare: a tool
+// name with no prefix may be one of muster's own (the chief's chat only;
+// MusterToolBase).
+func toolChip(call ChatLine, result *ChatLine, id string, bare bool, extra ...g.Node) g.Node {
 	name := call.ToolName
 	if name == "" && result != nil {
 		name = result.ToolName
@@ -2063,10 +2080,8 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 	if name == "" {
 		name = "tool"
 	}
-	target := call.ToolTarget
-	if target == "" {
-		target = cctranscript.ToolTarget(name, call.Content)
-	}
+	// One of muster's own tools never draws an id as its target (ToolRowTarget).
+	target := ToolRowTarget(name, call.Content, call.ToolTarget, bare)
 	state := toolChipState(result)
 	status, statusClass := "…", "ml-auto shrink-0 text-muted"
 	switch state {
@@ -2076,11 +2091,24 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 		status, statusClass = "✗", "ml-auto shrink-0 font-semibold text-st-error-fg"
 	}
 	body := []g.Node{}
+	// One of muster's own tools is drawn by its plain label (tool_labels.go),
+	// and its raw name is in the row's ⓘ — inside the row's body, since an ⓘ
+	// is never a child of a toggle (info_sheet.go) and the summary is one.
+	label, mine := MusterToolLabel(name, call.Content, bare, toolChipState(result))
+	if sheet, ok := toolNameSheet(call.ToolID, id, name); mine && ok {
+		body = append(body, sheet)
+	}
 	if strings.TrimSpace(call.Content) != "" {
 		body = append(body, toolPre("args", call.Content))
 	}
 	if result != nil && strings.TrimSpace(result.Content) != "" {
 		body = append(body, toolPre("result", result.Content))
+	}
+	// The name truncates past half the row (a long MCP tool name), so the
+	// context badge and the status always fit beside it at a phone's width.
+	nameNode := Span(g.Attr("data-tool-name", ""), Class("min-w-0 max-w-[50%] shrink-0 truncate font-mono text-st-review-fg"), g.Text(name))
+	if mine {
+		nameNode = Span(g.Attr("data-tool-name", ""), g.Attr("data-tool-label", ""), Class("min-w-0 max-w-[60%] shrink-0 truncate text-fg"), g.Text(label))
 	}
 	return Details(
 		g.If(id != "", ID(id)),
@@ -2092,15 +2120,42 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 			// every visible summary).
 			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
 			Span(Class("shrink-0"), g.Text("🔧")),
-			// The name truncates past half the row (a long MCP tool name), so the
-			// context badge and the status always fit beside it at a phone's width.
-			Span(g.Attr("data-tool-name", ""), Class("min-w-0 max-w-[50%] shrink-0 truncate font-mono text-st-review-fg"), g.Text(name)),
+			nameNode,
 			g.If(target != "", Span(g.Attr("data-tool-target", ""), Class("min-w-0 truncate font-mono text-muted"), g.Text(target))),
 			g.Group(extra),
 			Span(Class(statusClass), g.Attr("aria-label", "status: "+state), g.Text(status)),
 		),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),
 	)
+}
+
+// The ⓘ of a muster tool's row: its words, shared with the live stream's copy
+// of the row (toolLabelsJS), which draws the same sheet from a template.
+const (
+	toolNameSheetLabel   = "The step's exact name"
+	toolNameSheetHeading = "The exact step"
+	toolNameSheetLead    = "muster's own name for this step, for anyone who needs it:"
+	// toolNameSheetLine is the text beside the ⓘ, at the top of the opened row.
+	toolNameSheetLine = "A muster step"
+)
+
+// toolNameSheet is a muster tool row's ⓘ line: a few plain words and the ⓘ,
+// whose sheet holds the raw tool name with Copy. Its id is the row's (rowID,
+// the mirrored view's) or else derived from the call's tool id; ok false when
+// neither exists (a document needs unique ids).
+func toolNameSheet(toolID, rowID, name string) (g.Node, bool) {
+	if rowID == "" {
+		if toolID == "" {
+			return nil, false
+		}
+		rowID = toolRowID(toolID)
+	}
+	return Div(
+		g.Attr("data-tool-info", ""),
+		Class("flex items-center gap-2 text-[11px] text-muted"),
+		Span(g.Text(toolNameSheetLine)),
+		InfoSheet{ID: rowID + "-tn", Label: toolNameSheetLabel, Heading: toolNameSheetHeading, Lead: toolNameSheetLead, Code: name, Inline: true}.Node(),
+	), true
 }
 
 // toolChipState is a row's state: running until its result exists, then ok or
@@ -2382,8 +2437,9 @@ func agentChatScript(name string) g.Node {
     return s.length > 4000 ? s.slice(0, 4000) + '\n…(truncated)' : s;
   }
 
+` + toolLabelsJS() + `
   // Render (or fetch) the collapsible tool chip for a tool_call id.
-  function toolChip(id, nm, target) {
+  function toolChip(id, nm, target, label) {
     if (tools[id]) return tools[id];
     ensureTurn();
     var d = document.createElement('details');
@@ -2391,7 +2447,12 @@ func agentChatScript(name string) g.Node {
     var s = document.createElement('summary');
     s.className = 'flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg';
     var icon = document.createElement('span'); icon.textContent = '🔧';
-    var nameEl = document.createElement('span'); nameEl.className = 'shrink-0 font-mono text-st-review-fg'; nameEl.textContent = nm || 'tool';
+    // One of muster's own tools by its plain label, its raw name in the
+    // row's ⓘ (ui.toolChip's rule, from the same table: toolLabelsJS).
+    var plain = label || musterToolLabel(nm);
+    var nameEl = document.createElement('span'); nameEl.setAttribute('data-tool-name', '');
+    if (plain) { nameEl.className = 'min-w-0 max-w-[60%] shrink-0 truncate text-fg'; nameEl.setAttribute('data-tool-label', ''); nameEl.textContent = plain; }
+    else { nameEl.className = 'shrink-0 font-mono text-st-review-fg'; nameEl.textContent = nm || 'tool'; }
     var stat = document.createElement('span'); stat.className = 'ml-auto shrink-0 text-muted'; stat.textContent = '…';
     s.appendChild(icon); s.appendChild(nameEl);
     if (target) { var tg = document.createElement('span'); tg.className = 'min-w-0 truncate font-mono text-muted'; tg.setAttribute('data-tool-target', ''); tg.textContent = target; s.appendChild(tg); }
@@ -2400,6 +2461,7 @@ func agentChatScript(name string) g.Node {
     d.className += ' w-full max-w-[92%] min-w-0 self-start';
     d.setAttribute('data-tool-row', ''); d.setAttribute('data-tool-status', 'running');
     var body = document.createElement('div'); body.className = 'flex flex-col gap-1 px-3 pb-2 pt-0';
+    if (plain) { var sheet = musterToolSheet(id, nm); if (sheet) body.appendChild(sheet); }
     d.appendChild(s); d.appendChild(body);
     turn.appendChild(d);
     // A second call in a row joins the first in one "N tool calls" row, and
@@ -2550,7 +2612,7 @@ func agentChatScript(name string) g.Node {
         scroll();
         break;
       case 'tool_call': {
-        var c = toolChip(msg.id, msg.name, msg.target);
+        var c = toolChip(msg.id, msg.name, msg.target, msg.label);
         if (!c.args && msg.args) { c.args = pre('args', clip(msg.args)); c.body.appendChild(c.args); }
         // Interleave: text streamed AFTER this tool call must render in a NEW bubble
         // below the chip, not merged into the pre-tool text bubble (which made tool

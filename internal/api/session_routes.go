@@ -137,8 +137,9 @@ const (
 	RouteSweepInterval = 30 * time.Second
 	// routedCutMark ends a body cut to fit one paste.
 	routedCutMark = " … [cut]"
-	// routedMarker is the routed block's fence marker.
-	routedMarker = "routed-message"
+	// routedMarker is the routed block's fence marker (plugins.RoutedMarker,
+	// whose ParseRoutedBlock draws a paste back for a person).
+	routedMarker = plugins.RoutedMarker
 )
 
 // routesOn reports whether ext turns session routing on: its configuration and
@@ -713,7 +714,7 @@ func (s *Server) injectRoute(ctx context.Context, r plugins.Route, p plugins.Plu
 		s.logger.Printf("routes: %s: queue for %s: %v", r.RouteID, target, err)
 		return "the message could not be queued for the window"
 	}
-	if err := s.ext.Routes.SetRouteQueued(ctx, r.RouteID, stored.ID); err != nil {
+	if err := s.ext.Routes.SetRouteQueued(ctx, r.RouteID, stored.ID, plugins.RoutedPasteSHA256(text)); err != nil {
 		// The route must name its row, or a timeout could not cancel it: take
 		// the row back out and fail the route. (Even a row left behind cannot be
 		// pasted once its route is not `routed`: sendQueueRoutedGate.)
@@ -736,19 +737,21 @@ func renderRoutedMessage(r plugins.Route, p plugins.Plugin, m plugins.Message, n
 }
 
 // Who a routed block says routed it (renderRoutedMessageBy): muster's words.
+// The words are plugins' (routed_block.go), where the reader that draws a
+// paste for a person (plugins.ParseRoutedBlock) shares their one spelling.
 const (
-	routedByChief = "your owner's chief"
+	routedByChief = plugins.RoutedByChief
 	// RoutedPrefacePrefix opens every routed block's preface (a message's and a
 	// task's): the ONE spelling, which the chief nudge sweep also reads to
 	// keep a routed paste out of the owner's own messages (chief_nudge.go).
-	RoutedPrefacePrefix = "Routed to you by "
-	routedByOwner       = "your owner, from one of their mirrored sessions"
+	RoutedPrefacePrefix = plugins.RoutedPrefacePrefix
+	routedByOwner       = plugins.RoutedByOwner
 	// routedByThread: a route by thread (routeByThread).
-	routedByThread = "muster, because it is a reply on a mail thread this session started"
+	routedByThread = plugins.RoutedByThread
 	// routedByRule: a route by an approved routing rule (routing_rules.go).
-	routedByRule = "muster, because it matches a routing rule your owner approved for this session"
+	routedByRule = plugins.RoutedByRule
 	// routedByRedraft: a refused reply handed back to its session (redraftRoute).
-	routedByRedraft = "muster, because the plugin refused the reply you wrote to it"
+	routedByRedraft = plugins.RoutedByRedraft
 )
 
 // redraftEarlierRunes and redraftRefusalRunes bound what a redraft's block

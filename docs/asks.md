@@ -89,10 +89,19 @@ themselves. Three readers, all of **your own** asks only:
   newest first, 50 a page (*Older* / *Newest*). The tab's panel is read when
   you open it, not with the rest of the Asks page. With `MUSTER_ASK_LOG` off
   the page has no Log tab; on, with nothing recorded yet, it says that; with
-  filters that match nothing, it offers to clear them. Its *By outcome*
-  pills add up to the log's total: *Open* is the log's asks with no outcome
-  recorded yet (not the page heading's open count, which is what is waiting
-  on you now).
+  filters that match nothing, it offers to clear them. The summary is four
+  tiles, then three plain counts — *Kind of question*, *How it ended* and
+  *Who answered* — then the questions *Asked most often*, each shown as you
+  saw it (the last paragraph of the newest of its asks — what was asked; they
+  are grouped by their normal form), with
+  a short line such as *6 times · usually “yes” · median 31s* (*you answered
+  N* is added only when it was not you every time). *How it ended* adds up to
+  the log's total. It shows *Answered*, *No answer* and any outcome that
+  holds at least a tenth of the asks on rows of their own, and folds the rest
+  into one *Other* row; its ⓘ says what every outcome means and which ones
+  *Other* counts. *No answer* is the log's asks with no outcome recorded yet:
+  history, never the page heading's open count, which is what is waiting on
+  you now. (The filter and the API still call that outcome `open`.)
 - **The API**, with a personal token (`mst_…`):
   `GET /api/asks/log` and `GET /api/asks/summary`. Query parameters: `kind`,
   `runtime`, `outcome` (`open` for an ask not yet ended), `answered_by`
@@ -115,7 +124,7 @@ themselves. Three readers, all of **your own** asks only:
 | `by_kind`, `by_outcome`, `by_answered_by` | those asks counted (`open` and `none` for an ask not ended, or answered by nobody) |
 | `answered` | the asks with an answer time (`answered`, `answered_in_session`, `declined`): what the next two are computed over |
 | `median_answer_secs`, `p90_answer_secs` | the median and 90th percentile of the time from the question to its answer — **continuous** percentiles (linear between the two nearest asks, Postgres `percentile_cont`), so with answers after 10, 20 and 40 s they are 20 s and 36 s |
-| `top_questions` | the questions asked **at least twice**, by their normal form (the same normalisation the rules will match on), most often first: how many times, how many of them you answered, the median time to an answer, and the most frequent answer (trimmed, lower case) with how often it was given |
+| `top_questions` | the questions asked **at least twice**, by their normal form (the same normalisation the rules will match on), most often first: the normal form (`question_norm`), the newest of its asks' own text (`question`, redacted like every stored question), how many times, how many of them you answered, the median time to an answer, and the most frequent answer (trimmed, lower case) with how often it was given |
 
 A question whose text has expired has no normal form any more, so it leaves
 `top_questions` (the counts and times keep it). So does a question with no

@@ -78,6 +78,7 @@ var expectedTaskTextReaders = map[string]string{
 	// The doors that start an agent on a task — the text goes through the rule.
 	"toolAgentDispatch":    kickoffViaHelper, // the chief's agent_dispatch (it also names the agent from the body)
 	"toolDispatchApprove":  kickoffViaHelper, // a session's dispatch_request, approved (and the agent's name)
+	"autostartStart":       "names the auto-started agent from the body (dispatchDisplayName); its first message is autostartKickoff",
 	"handleAPIAgentCreate": kickoffViaHelper, // POST /api/agents with note_id (and the agent's name)
 	// The rule itself.
 	"taskKickoffTextWithin": "the one kickoff rule: fences a plugin's text, returns the owner's unchanged",
@@ -106,6 +107,7 @@ var expectedTaskTextReaders = map[string]string{
 var expectedKickoffBuilders = map[string]bool{
 	"toolAgentDispatch":    true,
 	"toolDispatchApprove":  true,
+	"autostartKickoff":     true, // an auto-started agent's first message (plugin_autostart.go)
 	"handleAPIAgentCreate": true,
 	"spawnPromptFor":       true, // host_dispatch.go: a host-spawned session's prompt, cut to fit
 	"taskKickoffText":      true, // the unbudgeted spelling, over taskKickoffTextWithin

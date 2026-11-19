@@ -199,8 +199,13 @@ type Summary struct {
 
 // TopQuestion is one repeated question in a Summary.
 type TopQuestion struct {
-	// Norm is the question's normal form (Normalise).
+	// Norm is the question's normal form (Normalise): what the rows are
+	// grouped by.
 	Norm string
+	// Question is one of its rows' question text as the owner saw it
+	// (redacted, like every stored question): the newest one, so a reader is
+	// shown a sentence, not the lower-cased normal form.
+	Question string
 	// Count is how many rows have it; ByOwner how many of those the owner
 	// answered (answered_by = owner).
 	Count, ByOwner int
@@ -278,11 +283,15 @@ func (p *PG) Summarize(ctx context.Context, f Filter, top int) (Summary, error) 
 				max(asked_at) AS last
 			FROM f GROUP BY question_norm HAVING count(*) >= 2
 			ORDER BY n DESC, question_norm LIMIT $`+strconv.Itoa(len(targs))+`)
-		SELECT g.question_norm, g.n, g.by_owner, g.med, g.last, coalesce(a.answer, ''), coalesce(a.cnt, 0)
+		SELECT g.question_norm, g.n, g.by_owner, g.med, g.last, coalesce(a.answer, ''), coalesce(a.cnt, 0), coalesce(o.question, '')
 		FROM g LEFT JOIN LATERAL (
 			SELECT lower(btrim(f.answer)) AS answer, count(*) AS cnt FROM f
 			WHERE f.question_norm = g.question_norm AND btrim(f.answer) <> ''
 			GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1) a ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT btrim(f.question) AS question FROM f
+			WHERE f.question_norm = g.question_norm AND btrim(f.question) <> ''
+			ORDER BY f.asked_at DESC, f.id DESC LIMIT 1) o ON TRUE
 		ORDER BY g.n DESC, g.question_norm`, targs...)
 	if err != nil {
 		return Summary{}, fmt.Errorf("asklog: summarize questions: %w", err)
@@ -291,7 +300,7 @@ func (p *PG) Summarize(ctx context.Context, f Filter, top int) (Summary, error) 
 	for trows.Next() {
 		var q TopQuestion
 		var m float64
-		if err := trows.Scan(&q.Norm, &q.Count, &q.ByOwner, &m, &q.LastAsked, &q.TopAnswer, &q.TopAnswerCount); err != nil {
+		if err := trows.Scan(&q.Norm, &q.Count, &q.ByOwner, &m, &q.LastAsked, &q.TopAnswer, &q.TopAnswerCount, &q.Question); err != nil {
 			return Summary{}, fmt.Errorf("asklog: summarize questions: %w", err)
 		}
 		q.MedianAnswer = seconds(m)
