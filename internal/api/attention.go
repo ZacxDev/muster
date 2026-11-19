@@ -1673,7 +1673,12 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	var feed string
 	var open int
 	if filtered {
-		feed, open = askFeedHTML(flt.only(items, rd.hosts), "", 0, now)
+		// The count is THE ONE OPEN COUNT's rule over the filtered asks
+		// (asksPendingOf: what waits on the reader — a team's ask a viewer
+		// watches is listed, not counted); no drafts or stalled rows here.
+		mine := flt.only(items, rd.hosts)
+		feed, _ = askFeedHTML(mine, "", 0, now)
+		open = asksPendingOf(r.Context(), mine, 0)
 	} else {
 		feed, open = s.askFeedNow(r.Context(), items, rd, now)
 	}

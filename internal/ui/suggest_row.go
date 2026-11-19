@@ -313,13 +313,14 @@ func suggestRowScript() g.Node {
     return [m, pop];
   }
   // blocked: what the server excludes, seen on the page too — a question card
-  // drawn, an open attention ask (the header's asks badge drawn: it is drawn
-  // only while one is open).
+  // drawn, or ANY attention ask from the session open, a question to the chief
+  // and a notice included (the badge slot's open mark, AskerAsksOpenMark: the
+  // badge's count leaves those out, the server's block does not).
   function blocked() {
     var q = document.getElementById('mv-asks');
     if (q && !q.hidden && q.querySelector('form, button')) return true;
     var a = document.getElementById('` + AskerAsksBadgeID + `');
-    if (a && a.querySelector('[data-asker-asks-link]')) return true;
+    if (a && a.querySelector('[data-asker-asks-open]')) return true;
     return false;
   }
   function post(ev, extra) {

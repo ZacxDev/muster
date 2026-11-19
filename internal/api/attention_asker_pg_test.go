@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -135,7 +136,7 @@ func TestAnAgentWithNoOpenAsksDrawsNoBadge(t *testing.T) {
 	if href, n := badgeOf(t, page); href != "" || n != 0 {
 		t.Errorf("a badge with nothing open: %q %d", href, n)
 	}
-	if !strings.Contains(page, `<span id="`+ui.AskerAsksBadgeID+`" class="inline-flex shrink-0 empty:hidden" aria-live="polite"></span>`) {
+	if !strings.Contains(page, `<span id="`+ui.AskerAsksBadgeID+`" class="`+html.EscapeString(ui.AskerAsksSlotClass)+`" aria-live="polite"></span>`) {
 		t.Error("the badge's empty slot is not drawn (the live refresh fills it)")
 	}
 }

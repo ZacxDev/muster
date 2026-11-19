@@ -16,7 +16,7 @@ func chiefPageView(chief bool) AgentDetailView {
 		ID: 7, Name: "chief-cc", DisplayName: "chief", Kind: agents.KindClaudeCode, CCAccount: "beta-acct",
 		LastFailover: "from alpha-acct · rate_limited · resets Nov 6 22:00 UTC", WorkerPool: "pool-gpu",
 		Status: agents.StatusRunning, ActiveSessionID: 3, AsksSrc: "/attention/asker?from=agent%3Achief-cc",
-		Asks: AskerAsksBadgeHTML(3, "/attention?from=agent%3Achief-cc"),
+		Asks: AskerAsksBadgeHTML(3, "/attention?from=agent%3Achief-cc", true),
 		Card: AgentCardView{ID: 7, Name: "chief-cc", Status: agents.StatusRunning, Kind: agents.KindClaudeCode, IsChief: chief},
 	}
 }

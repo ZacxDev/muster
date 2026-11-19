@@ -33,8 +33,9 @@ import (
 // sessions that window runs, by the rule the sidebar's attention counts and the
 // push use (claudeSessionWindow). Never another asker's, and row-level security
 // keeps it to the signed-in owner's. The badge's count and the filtered page's
-// list are ONE predicate (askerOf.has), so the number tapped is the number
-// listed.
+// list are ONE predicate (askerOf.has), and both are counted by the rule of
+// every count (waitingOnReader), so the number tapped is the filtered page's
+// "N open" (a team's ask a viewer only watches is listed, not counted).
 //
 // THE KEY (askerRef.key, the ?from= value) follows how an ask records its
 // asker: an agent ("agent:<name>"), or a mirrored Claude session, which a page
@@ -142,12 +143,15 @@ func (s *Server) resolveAsker(ctx context.Context, r askerRef, hosts func() []mi
 }
 
 // has reports whether it is one of k's asks: an ask (not a notice, not another
-// kind of item) raised by k's agent, or by a Claude session k's window runs
-// (claudeSessionWindow over hosts(), called only for a window's ask).
+// kind of item) raised by k (from).
 func (k askerOf) has(it attentionItem, hosts func() []mirror.HostView) bool {
-	if it.Kind != attentionKindAsk {
-		return false
-	}
+	return it.Kind == attentionKindAsk && k.from(it, hosts)
+}
+
+// from reports whether it was raised by k, whatever its kind: by k's agent, or
+// by a Claude session k's window runs (claudeSessionWindow over hosts(),
+// called only for a window's item).
+func (k askerOf) from(it attentionItem, hosts func() []mirror.HostView) bool {
 	if k.ref.agent != "" {
 		return it.card.agentID == k.agentID
 	}
@@ -173,12 +177,14 @@ func (k askerOf) only(items []attentionItem, hosts []mirror.HostView) []attentio
 
 // askerAsks is ctx's principal's open asks raised by r's asker, as the Asks
 // page builds them (attentionItemsWith: a question to the chief and a notice
-// are not asks waiting on the owner); nil without the queue's store, for an
-// asker that does not resolve for ctx, and on a read error (logged): the page
-// then shows no badge rather than failing.
-func (s *Server) askerAsks(ctx context.Context, r askerRef) []attentionItem {
+// are not asks waiting on the owner), and whether ANY open ask was raised by
+// it, those two included (the suggested replies' block: suggest.go withholds
+// them while any ask from the session is open). nil, false without the
+// queue's store, for an asker that does not resolve for ctx, and on a read
+// error (logged): the page then shows no badge rather than failing.
+func (s *Server) askerAsks(ctx context.Context, r askerRef) ([]attentionItem, bool) {
 	if s.ext.Attention == nil {
-		return nil
+		return nil, false
 	}
 	// The owner's windows, read once and only when a window or a mirrored ask
 	// needs them.
@@ -192,37 +198,47 @@ func (s *Server) askerAsks(ctx context.Context, r askerRef) []attentionItem {
 	}
 	k, ok := s.resolveAsker(ctx, r, hostViews)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	asks, err := s.ext.Attention.Open(ctx)
 	if err != nil {
 		s.logger.Printf("attention: the asks for a session page: %v", err)
-		return nil
+		return nil, false
 	}
 	var out []attentionItem
+	anyOpen := false
 	for _, a := range asks {
-		if a.ToChief || a.Kind == attention.KindNotice {
-			continue
-		}
 		var hs []mirror.HostView
 		if askNeedsHosts(a) {
 			hs = hostViews()
 		}
-		if it := askItem(a, hs...); k.has(it, hostViews) {
+		it := askItem(a, hs...)
+		if !k.from(it, hostViews) {
+			continue
+		}
+		anyOpen = true
+		if !a.ToChief && a.Kind != attention.KindNotice {
 			out = append(out, it)
 		}
 	}
-	return out
+	return out, anyOpen
 }
 
 // askerAsksBadge is ctx's principal's badge for r: its content
-// (ui.AskerAsksBadgeHTML, "" at zero) and its fragment URL; both "" when the
-// queue is not served (the page draws no badge).
+// (ui.AskerAsksBadgeHTML) and its fragment URL; both "" when the queue is not
+// served (the page draws no badge).
+//
+// 🔴 IT COUNTS WHAT WAITS ON THE READER (waitingOnReader, the rule of every
+// other count): a team's ask a viewer of the team only watches is listed on
+// the filtered page, but it is not "waiting on your answer", so it is not
+// counted — a viewer on the team chief's page saw "2" for questions they
+// could not answer, and the page the badge opened then said "0 open".
 func (s *Server) askerAsksBadge(ctx context.Context, r askerRef) (string, string) {
 	if s.ext.Attention == nil {
 		return "", ""
 	}
-	return ui.AskerAsksBadgeHTML(len(s.askerAsks(ctx, r)), r.asksHref()), r.src()
+	asks, anyOpen := s.askerAsks(ctx, r)
+	return ui.AskerAsksBadgeHTML(len(waitingOnReader(ctx, asks)), r.asksHref(), anyOpen), r.src()
 }
 
 // handleAttentionAsker is GET /attention/asker?from=<key>: the badge's

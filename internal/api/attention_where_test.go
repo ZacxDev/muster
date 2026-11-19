@@ -217,7 +217,7 @@ func TestTheAskPageHeaderNamesTheSessionAndItsInfoTheExactTmuxTarget(t *testing.
 // badge counts, on the labelled window's own page (and its filtered Asks page lists).
 func TestASessionPagesAsksBadgeNamesTheExactTmuxTarget(t *testing.T) {
 	s := whereServer(t, whereAsks()...)
-	items := s.askerAsks(s.attentionPrincipal(context.Background(), 1), askerRef{mirror: ui.MirrorRef{Host: "ws", Session: "scratch3", Window: "@37"}})
+	items, _ := s.askerAsks(s.attentionPrincipal(context.Background(), 1), askerRef{mirror: ui.MirrorRef{Host: "ws", Session: "scratch3", Window: "@37"}})
 	if len(items) != 1 || items[0].AskID != 91 {
 		t.Fatalf("badge items %+v, want ask 91 alone", items)
 	}

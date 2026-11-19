@@ -190,22 +190,33 @@ const askerAsksEvent = "attention_queue.changed"
 // (attentionBadgeTrigger), and once a minute.
 const askerAsksTrigger = "sse:" + askerAsksEvent + " delay:50ms, every 60s"
 
-// AskerAsksBadgeHTML is the badge's content for n open asks: a link to href
-// (the Asks page filtered to them), the count in a small pill; "" at zero, so
-// the slot (AskerAsksBadge, empty:hidden) takes no room in the header.
+// AskerAsksBadgeHTML is the badge's content for n asks waiting on the reader:
+// a link to href (the Asks page filtered to them), the count in a small pill;
+// no link at zero, so the slot (AskerAsksBadge) is hidden and takes no room
+// in the header.
+//
+// open: ANY ask from the session is open — a question to the chief, a notice
+// or one the reader only watches included, none of which n counts. It draws
+// AskerAsksOpenMark, the mark the rendered view's suggested replies hide by
+// (suggest_row.go blocked(), the server's own rule: suggest.go withholds them
+// while any ask from the session is open).
 //
 // A full navigation (hx-boost="false"): /attention is a standalone document,
 // never a body swap of the agent page's shell (attentionLink's rule).
-func AskerAsksBadgeHTML(n int, href string) string {
+func AskerAsksBadgeHTML(n int, href string, open bool) string {
+	mark := ""
+	if open || n > 0 {
+		mark = AskerAsksOpenMark
+	}
 	if n <= 0 {
-		return ""
+		return mark
 	}
 	c := strconv.Itoa(n)
 	label := "Open the " + c + " questions waiting on your answer"
 	if n == 1 {
 		label = "Open the question waiting on your answer"
 	}
-	return `<a href="` + html.EscapeString(href) + `" hx-boost="false" data-asker-asks-link data-count="` + c + `" aria-label="` + label + `" title="` + label + `"` +
+	return mark + `<a href="` + html.EscapeString(href) + `" hx-boost="false" data-asker-asks-link data-count="` + c + `" aria-label="` + label + `" title="` + label + `"` +
 		// A 44px tap target, drawn as the small pill inside it.
 		` class="press group inline-flex h-11 shrink-0 items-center justify-center px-0.5">` +
 		`<span class="inline-flex h-6 min-w-[1.5rem] items-center justify-center gap-1 rounded-full bg-accent/15 px-1.5 text-xs font-semibold tabular-nums text-accent ring-1 ring-inset ring-accent/40 transition group-hover:bg-accent/25">` +
@@ -216,10 +227,18 @@ func AskerAsksBadgeHTML(n int, href string) string {
 // (AskerAsksBadgeHTML). It carries no refresh of its own: a header is outside
 // the agent page's SSE section, where the sse extension registers nothing
 // (askerAsksRefresh does it from inside), and the mirrored view has no htmx
-// (AskerAsksLive).
+// (AskerAsksLive). Without a link inside it the slot is hidden (it may still
+// hold AskerAsksOpenMark), so it takes no room and no gap in the header.
 func AskerAsksBadge(inner string) g.Node {
-	return Span(ID(AskerAsksBadgeID), Class("inline-flex shrink-0 empty:hidden"), g.Attr("aria-live", "polite"), g.Raw(inner))
+	return Span(ID(AskerAsksBadgeID), Class(AskerAsksSlotClass), g.Attr("aria-live", "polite"), g.Raw(inner))
 }
+
+// AskerAsksSlotClass is the badge slot's class: hidden while it holds no link.
+const AskerAsksSlotClass = "inline-flex shrink-0 [&:not(:has([data-asker-asks-link]))]:hidden"
+
+// AskerAsksOpenMark marks, inside the badge's slot, that an ask from the
+// session is open (AskerAsksBadgeHTML's open).
+const AskerAsksOpenMark = `<span hidden data-asker-asks-open></span>`
 
 // askerAsksRefresh keeps the agent page's badge live: a hidden element INSIDE
 // the chat pane's SSE section (agentChatPane), re-reading src into the

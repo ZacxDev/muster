@@ -497,7 +497,9 @@ answered (`internal/api/attention_ask_page.go`).
 agent's page (the chief's included) and a window's rendered view draw a small
 count badge while the asker has questions open: an agent's page counts that
 agent's open asks, a window's rendered view the asks of the Claude sessions it
-runs, never another asker's. The page draws no list of them and no answer form:
+runs, never another asker's. It counts what waits on you, as every other
+count does: a team's question you only watch is not counted, nor is a
+session's question to its chief or a notice. The page draws no list of them and no answer form:
 **tap the badge** to open the Asks page filtered to them,
 `/attention?from=<asker>`, where they are answered, dismissed and listed like
 every other card. The count follows the queue live (an ask answered anywhere,
@@ -506,7 +508,7 @@ not drawn (`internal/api/attention_asker.go`).
 
 **The filtered Asks page** lists, on its Open tab, that asker's open questions
 alone (no notices, waiting sessions or drafts), with a line above the tabs —
-`Showing asks from <name> · Show all` — and its count is theirs; **Show all**
+`Showing asks from <name> · Show all` — and its *N open* counts those that wait on you (no drafts or stalled sessions); **Show all**
 is the unfiltered page. The filter is `from=agent:<name>` for an agent, or
 `from=window:<host>:<window id>:<tmux session>` for a mirrored window; the
 other tabs are unfiltered. It is read as you: a `from` naming an agent you
