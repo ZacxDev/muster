@@ -11,7 +11,7 @@ import { startServer, Running } from '../lib/server';
 //
 //   - the owner opens /attention and TAPS the Log tab — the panel is fetched
 //     then (the page's own render reads nothing from the log) — and sees the
-//     summary (7 asks, 5 answered by you, typical 30s, 9 in 10 within 2m),
+//     summary (7 asks, 5 answered by you, typical 30s, 9 in 10 within 2m (discrete)),
 //     the breakdowns as plain "label N" rows under the page's one heading
 //     style (no pill: nothing there is a control), the log's unended ask as
 //     "No answer" (never "Open", the header's word for what waits on you
@@ -92,7 +92,7 @@ for (const vp of [
       const counts = (k: string) =>
         panel.locator(`[data-asklog-counts="${k}"] [data-count]`).evaluateAll((els) =>
           els.map((e) => `${e.querySelector('dt')!.textContent!.trim()} ${e.querySelector('dd')!.textContent!.trim()}`));
-      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'Permission request (opencode) 1']);
+      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'Permission (opencode) 1']);
       expect(await counts('outcome')).toEqual(['Answered 5', 'No answer 1', 'Declined 1']);
       expect(await counts('answered_by')).toEqual(['You 5', 'The chief 1', 'Nobody 1']);
       await expect(page.locator('[data-asks-open-count]')).toHaveText(/^\d+ open$/);
@@ -118,7 +118,7 @@ for (const vp of [
       await expect(top).toHaveCount(1);
       await expect(top).toHaveAttribute('data-norm', 'shall i continue with the next step');
       await expect(top.locator('[data-asklog-top-question]')).toHaveText('Shall I continue with the next step?');
-      await expect(top.locator('[data-asklog-top-facts]')).toHaveText('3 times · you answered 2 · usually “yes” · median 20s');
+      await expect(top.locator('[data-asklog-top-facts]')).toHaveText('3 times · you answered 2 · usually “yes” · answered in about 20s');
 
       const rows = panel.locator('[data-asklog-row]');
       await expect(rows).toHaveCount(7);
@@ -211,7 +211,7 @@ test.describe('long lines', () => {
         await page.goto(`${origin}/attention?tab=log`);
         const panel = page.getByTestId('asklog-panel');
         const facts = panel.locator('[data-asklog-top-row] [data-asklog-top-facts]');
-        await expect(facts).toHaveText('3 times · you answered 2 · always “continue with the plan” · median 11s');
+        await expect(facts).toHaveText('3 times · you answered 2 · always “continue with the plan” · answered in about 11s');
         // Every visible character's box, grouped into the lines they sit on:
         // a line's text is its characters in order, and what ENDS it is its
         // last non-space one.
@@ -309,7 +309,7 @@ test.describe('long lines', () => {
         await signIn(page, origin);
         await page.goto(`${origin}/attention?tab=log`);
         const panel = page.getByTestId('asklog-panel');
-        await expect(panel.locator('[data-asklog-row]')).toHaveCount(7);
+        await expect(panel.locator('[data-asklog-row]')).toHaveCount(9);
         const rows = await panel.locator('[data-asklog-row]').evaluateAll((cards) => {
           const ell = document.createElement('span');
           return cards.map((card) => {
@@ -380,7 +380,16 @@ test.describe('long lines', () => {
             // must not leave a hole where it was.
             let hole = 0;
             for (let i = 1; i < words.length; i++) hole = Math.max(hole, words[i].x - words[i - 1].right);
-            return { id: card.id, seen: seen.replace(/\s+/g, ' ').trim(), cut, hole, title: sub.getAttribute('title') };
+            // The row's title and outcome pill (the audit of #867: a long
+            // pill never shrinks, so it cut the title beside it): each
+            // drawn whole, its text not overflowing its box.
+            const head = card.querySelector('[data-asklog-title]') as HTMLElement;
+            const pill = card.querySelector('[data-asklog-outcome]') as HTMLElement;
+            const whole = (el: HTMLElement) => el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().right <= card.getBoundingClientRect().right + 0.5;
+            return {
+              id: card.id, seen: seen.replace(/\s+/g, ' ').trim(), cut, hole, title: sub.getAttribute('title'),
+              head: head.textContent, headWhole: whole(head), pill: pill.textContent, pillWhole: whole(pill),
+            };
           });
         });
         const report = JSON.stringify(rows.map((r) => r.seen));
@@ -398,6 +407,8 @@ test.describe('long lines', () => {
           // …and straight after the place: no hole where a dropped part was
           // (a space and the flex gap are about 8px at this size).
           expect(r.hole, `a hole of ${r.hole}px on "${r.seen}": ${report}`).toBeLessThanOrEqual(12);
+          expect(r.headWhole, `the title "${r.head}" is cut beside its "${r.pill}" pill: ${report}`).toBe(true);
+          expect(r.pillWhole, `the "${r.pill}" pill is cut: ${report}`).toBe(true);
         }
         const by = (s: string) => rows.find((r) => r.seen.startsWith(s))!;
         // The full place is always available to the reader.
@@ -411,6 +422,9 @@ test.describe('long lines', () => {
           expect(ci.seen, `the ci row shows a readable part of its repo: ${report}`).toMatch(/^ci on mac · acme-c[^…]*… · .*ago$/);
           // …and the row with no room for one drops its repo whole.
           expect(by('ratelimit on work-laptop').seen, `the ratelimit row drops its repo: ${report}`).toBe('ratelimit on work-laptop · 2h ago');
+          // Positive control for the pill check: the two rows that did not
+          // end in an answer are there, with their short pills.
+          expect(rows.map((r) => r.pill).filter((p) => p !== 'Answered').sort(), report).toEqual(['Replaced', 'Skipped']);
         } else {
           // At a desktop a normal-length place fits whole: nothing changes.
           expect(by('docs on studio-mac').seen, report).toMatch(/^docs on studio-mac · acme\/api · \S+ ago$/);

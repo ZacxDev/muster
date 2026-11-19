@@ -115,7 +115,7 @@ func countRows(t *testing.T, html, key string) []string {
 // its own name. RED at origin/main fcb27a6b: every outcome was its own pill.
 func TestRareOutcomesFoldIntoOther(t *testing.T) {
 	html := askLogSummaryHTML(glanceOutcomeSum(), asklog.DefaultTextTTL)
-	want := []string{"answered|Answered|41", "moved_on|Skipped (agent carried on)|13", "open|No answer|3", "other|Other|7"}
+	want := []string{"answered|Answered|41", "moved_on|Skipped|13", "open|No answer|3", "other|Other|7"}
 	if got := countRows(t, html, "outcome"); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("How it ended: %q, want %q", got, want)
 	}
@@ -131,7 +131,7 @@ func TestRareOutcomesFoldIntoOther(t *testing.T) {
 			t.Errorf("the ⓘ marks %s folded=%v, want %v", k, m[1] != "", folded)
 		}
 	}
-	if !strings.Contains(sheet, "A newer question replaced it before an answer.") {
+	if !strings.Contains(sheet, "Replaced by a newer question before anyone answered.") {
 		t.Errorf("the ⓘ does not say what Superseded means:\n%s", sheet)
 	}
 

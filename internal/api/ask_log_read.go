@@ -320,8 +320,9 @@ var (
 		// muster's own names for its kinds, not the reader's).
 		asklog.KindPlainText: "Question in chat", asklog.KindAskUserQuestion: "Question with choices", asklog.KindAttention: "Agent's question",
 		// The app in brackets, after what it is: the row reads as a
-		// question first (the jargon audit, U-19).
-		asklog.KindOpenCodeQuestion: "Question (opencode)", asklog.KindOpenCodePermission: "Permission request (opencode)",
+		// question first (the jargon audit, U-19). Short enough to fit a
+		// row's title beside its outcome pill at 390px.
+		asklog.KindOpenCodeQuestion: "Question (opencode)", asklog.KindOpenCodePermission: "Permission (opencode)",
 	}
 	// 🔴 THE LOG NEVER SAYS "Open". The page heading's "N open" is what waits
 	// on you NOW (THE ONE OPEN COUNT, asks_count.go); a log row with no outcome
@@ -332,9 +333,12 @@ var (
 	askOutcomeLabels = map[string]string{
 		asklog.OutcomeOpen: "No answer", asklog.OutcomeAnswered: "Answered", asklog.OutcomeAnsweredInSession: "Answered in session",
 		// "Moved on" and "Superseded" said what muster calls them, not what
-		// happened (the jargon audit, F038/U-20).
-		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Skipped (agent carried on)", asklog.OutcomeExpired: "Expired",
-		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Replaced by a newer question", asklog.OutcomeGone: "Gone",
+		// happened (the jargon audit, F038/U-20). 🔴 ONE SHORT WORD: a label
+		// is also a row's outcome PILL, which never shrinks, so a long one
+		// cut the row's title and place to stubs at 390px. What it means in
+		// full is askOutcomeMeanings' (the "How it ended" ⓘ).
+		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Skipped", asklog.OutcomeExpired: "Expired",
+		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Replaced", asklog.OutcomeGone: "Gone",
 		asklog.OutcomeUnknown: "Unknown",
 	}
 	// askOutcomeMeanings is each outcome in a sentence a newcomer gets: the
@@ -347,7 +351,7 @@ var (
 		asklog.OutcomeMovedOn:           "The session carried on without an answer.",
 		asklog.OutcomeExpired:           "It timed out before anyone answered.",
 		asklog.OutcomeCancelled:         "The agent withdrew it.",
-		asklog.OutcomeSuperseded:        "A newer question replaced it before an answer.",
+		asklog.OutcomeSuperseded:        "Replaced by a newer question before anyone answered.",
 		asklog.OutcomeGone:              "Its session closed before any answer.",
 		asklog.OutcomeUnknown:           "muster restarted before it saw how it ended.",
 	}
@@ -564,9 +568,13 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	tile("total", strconv.Itoa(sum.Total), "asks")
 	tile("owner", strconv.Itoa(sum.ByAnsweredBy[asklog.ByOwner]), "answered by you")
 	// In words, not statistics (the jargon audit, F037/U-21): the median is
-	// the typical wait, the 90th percentile the time 9 in 10 were answered in.
+	// the typical wait. 🔴 "9 in 10 answered within" is a CLAIM about the
+	// rows, so its value is P90Within — a time at least 9 in 10 answers took
+	// no longer than (percentile_disc) — never P90Answer, which interpolates
+	// between rows and so names a time fewer than 9 in 10 were answered by
+	// (10, 20, 40 s: 36 s, which only 2 of 3 beat).
 	tile("median", lat(sum.MedianAnswer), "typical time to answer")
-	tile("p90", lat(sum.P90Answer), "9 in 10 answered within")
+	tile("p90", lat(sum.P90Within), "9 in 10 answered within")
 	b.WriteString(`</div>`)
 	// THE BREAKDOWNS, AS PLAIN STATISTICS: a heading (the page's one heading
 	// style) over "label … N" rows. No pill: nothing here is a control.
@@ -613,7 +621,7 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	return b.String()
 }
 
-// askFactsHTML is a facts line ("3 times · you answered 2 · median 11s"), its
+// askFactsHTML is a facts line ("3 times · you answered 2 · answered in about 11s"), its
 // facts plain text. 🔴 A SEPARATOR TRAVELS WITH THE FACT AFTER IT: every fact
 // after the first is one no-wrap unit "· fact", and the units are joined by a
 // plain space, the line's only break opportunity — so a wrap starts a line
@@ -638,7 +646,7 @@ func askFactsHTML(facts []string, firstWhole bool) string {
 
 // askTopFacts is a repeated question's facts line, short enough for a phone:
 // how many times; who answered, only when it was not you every time; its
-// usual answer; the median time to one.
+// usual answer; the median time to one ("answered in about 11s").
 func askTopFacts(t asklog.TopQuestion) []string {
 	facts := []string{strconv.Itoa(t.Count) + " times"}
 	if t.ByOwner < t.Count {
@@ -655,7 +663,8 @@ func askTopFacts(t asklog.TopQuestion) []string {
 		}
 	}
 	if t.MedianAnswer > 0 {
-		facts = append(facts, "median "+askDuration(t.MedianAnswer))
+		// The median, in words (the jargon audit): "median" is a statistic.
+		facts = append(facts, "answered in about "+askDuration(t.MedianAnswer))
 	}
 	return facts
 }
@@ -736,7 +745,7 @@ func askOutcomeSheetHTML(m map[string]int, folded []string) string {
 		}
 		label := askOutcomeLabels[k]
 		if in[k] {
-			label += " (in Other)"
+			label += ", in Other"
 		}
 		b.WriteString(`<div data-meaning="` + esc(k) + `"`)
 		if in[k] {
@@ -841,7 +850,7 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	}
 	sub := askLogSubHTML(a, `<time datetime="`+row.AskedAt.Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.AskedAt)))+`</time>`)
 	b.WriteString(`>
-<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `">` + esc(labelOr(askKindLabels, row.Kind)) +
+<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `" data-asklog-title>` + esc(labelOr(askKindLabels, row.Kind)) +
 		`</span>` + sub + `</div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
 `)
 	switch {

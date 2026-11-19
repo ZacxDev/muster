@@ -42,14 +42,14 @@ const (
 	// beside it (a heading may hold only text, so the ⓘ is its sibling).
 	AsksLogSectionHeadClass = "flex items-center justify-between gap-2"
 	// AsksLogFactClass is one fact on a facts line: kept whole, so the line
-	// wraps between facts, never inside one ("median 31s" never splits). 🔴
+	// wraps between facts, never inside one ("answered in about 31s" never splits). 🔴
 	// Every fact after the first carries its "· " separator INSIDE its own
-	// unit ("· median 31s"), so a wrap starts the next line with the
+	// unit ("· answered in about 31s"), so a wrap starts the next line with the
 	// separator and never leaves one dangling at the end of a line (it did at
-	// a phone's width: "… always “continue” ·" / "median 11s").
+	// a phone's width: "… always “continue” ·" / "median 11s", its old words).
 	AsksLogFactClass = "whitespace-nowrap"
 	// AsksLogSubClass is a log row's muted line under its title: where it was
-	// asked, then how long ago — "ratelimit @ work-laptop · acme/api · 15m
+	// asked, then how long ago — "ratelimit on work-laptop · acme/api · 15m
 	// ago" (internal/api askLogSubHTML), its parts AsksLogWhoClass then
 	// AsksLogTailClass. 🔴 THE AGE IS ALWAYS SEEN, AND NO PART OF THE PLACE IS
 	// CUT TO A STUB: it was one truncated line, age last, so a long place cut

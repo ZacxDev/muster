@@ -96,7 +96,7 @@ func run(args []string) error {
 // question asked three times from a LONG place — "Keep going with the plan?",
 // answered "continue with the plan" by the owner after 9 s and 14 s and by the
 // chief after 11 s — so its facts line, "3 times · you answered 2 · always
-// “continue with the plan” · median 11s", wraps at a phone's width, and each
+// “continue with the plan” · answered in about 11s", wraps at a phone's width, and each
 // row's place, "ratelimit-backoff-and-retry-budget @
 // work-laptop.corp.example.org · acme-corporation/api-gateway-monorepo", is
 // wider than its card at a phone's AND a desktop's width. It prints the newest
@@ -104,10 +104,13 @@ func run(args []string) error {
 //
 // Before those, OLDER and each asked once (so none is a repeated question),
 // the place stubs spec's rows (asks-log.spec.ts, "no place is cut to a
-// stub"): places whose session @ host is SHORT and whose repo is long, so at a
+// stub"): places whose session and computer are SHORT and whose repo is long, so at a
 // phone's width the repo is what gives way — the rows a phone review showed
 // cut to "a…" and "ac…" — plus one whose repo has room to show a readable
-// part, and one short enough to fit whole at a desktop.
+// part, one short enough to fit whole at a desktop, and two that did NOT end
+// in an answer (Replaced, Skipped), so the spec sees rows whose outcome pill
+// is not "Answered" beside their title and place (the audit of #867: a long
+// pill never shrinks, and cut both to stubs at 390px).
 func seedWraps(ctx context.Context, st *asklog.PG, now time.Time) (int64, error) {
 	for i, r := range wrapsPlaces {
 		at := now.Add(-r.ago)
@@ -116,7 +119,11 @@ func seedWraps(ctx context.Context, st *asklog.PG, now time.Time) (int64, error)
 		if err != nil {
 			return 0, fmt.Errorf("open place %d: %w", i, err)
 		}
-		if _, ok, err := st.Resolve(ctx, id, asklog.Resolution{Outcome: asklog.OutcomeAnswered, AnsweredBy: asklog.ByOwner, Answer: "yes", At: at.Add(time.Duration(3+i) * time.Second)}); err != nil || !ok {
+		res := asklog.Resolution{Outcome: asklog.OutcomeAnswered, AnsweredBy: asklog.ByOwner, Answer: "yes", At: at.Add(time.Duration(3+i) * time.Second)}
+		if r.outcome != "" {
+			res = asklog.Resolution{Outcome: r.outcome, At: at.Add(time.Duration(3+i) * time.Second)}
+		}
+		if _, ok, err := st.Resolve(ctx, id, res); err != nil || !ok {
 			return 0, fmt.Errorf("resolve place %d: ok=%v err=%v", i, ok, err)
 		}
 	}
@@ -146,13 +153,17 @@ func seedWraps(ctx context.Context, st *asklog.PG, now time.Time) (int64, error)
 
 // wrapsPlaces are seedWraps's place-stub rows (all synthetic), oldest last.
 var wrapsPlaces = []struct {
-	ago                            time.Duration
+	ago                           time.Duration
 	session, host, repo, question string
+	// outcome is how it ended ("": answered "yes" by the owner).
+	outcome string
 }{
-	{2 * time.Hour, "ratelimit", "work-laptop", "acme-corporation/api-gateway-monorepo", "Retry the flaky upload?"},
-	{20 * time.Hour, "s3-retries", "studio-mac", "acme-corp/payments-service", "Bump the retry budget?"},
-	{26 * time.Hour, "ci", "mac", "acme-corporation/api-gateway-monorepo", "Rerun the failed job?"},
-	{30 * time.Hour, "docs", "studio-mac", "acme/api", "Publish the docs now?"},
+	{2 * time.Hour, "ratelimit", "work-laptop", "acme-corporation/api-gateway-monorepo", "Retry the flaky upload?", ""},
+	{20 * time.Hour, "s3-retries", "studio-mac", "acme-corp/payments-service", "Bump the retry budget?", ""},
+	{26 * time.Hour, "ci", "mac", "acme-corporation/api-gateway-monorepo", "Rerun the failed job?", ""},
+	{30 * time.Hour, "docs", "studio-mac", "acme/api", "Publish the docs now?", ""},
+	{32 * time.Hour, "migrate", "work-laptop", "acme-corp/payments-service", "Run the migration now?", asklog.OutcomeSuperseded},
+	{34 * time.Hour, "lint", "studio-mac", "acme-corp/payments-service", "Fix the lint warnings too?", asklog.OutcomeMovedOn},
 }
 
 func seed(ctx context.Context, st *asklog.PG, now time.Time) (int64, error) {

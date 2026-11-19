@@ -27,8 +27,8 @@ func plainText(s string) string {
 // The filter form, every field and option, as one line.
 func TestTheAskLogFiltersSayPlainWords(t *testing.T) {
 	form := askLogFormHTML(url.Values{})
-	const want = "Filters Kind Any Question in chat Question with choices Agent's question Question (opencode) Permission request (opencode) " +
-		"Outcome Any No answer Answered Answered in session Declined Skipped (agent carried on) Expired Cancelled Replaced by a newer question Gone Unknown " +
+	const want = "Filters Kind Any Question in chat Question with choices Agent's question Question (opencode) Permission (opencode) " +
+		"Outcome Any No answer Answered Answered in session Declined Skipped Expired Cancelled Replaced Gone Unknown " +
 		"Answered by Any You The chief Someone else Nobody When Last 24 hours Last 7 days Last 30 days All time " +
 		"App Any Claude Code opencode Agent Host Project Session Apply Clear"
 	if got := plainText(form); got != want {
@@ -47,19 +47,20 @@ func TestTheAskLogFiltersSayPlainWords(t *testing.T) {
 	}
 }
 
-// The four tiles, in words rather than statistics.
+// The four tiles, in words rather than statistics. P90Answer and P90Within
+// differ, so the 9-in-10 tile is seen to draw the discrete one (its claim is
+// only true of that; the pg test pins the 10/20/40 s case end to end).
 func TestTheAskLogTilesSayHowLongInWords(t *testing.T) {
 	sum := asklog.Summary{Total: 7, Answered: 5, ByAnsweredBy: map[string]int{asklog.ByOwner: 4},
-		MedianAnswer: 31 * time.Second, P90Answer: 7*time.Minute + 57*time.Second}
+		MedianAnswer: 31 * time.Second, P90Answer: 7*time.Minute + 3*time.Second, P90Within: 7*time.Minute + 57*time.Second}
 	out := askLogSummaryHTML(sum, 30*24*time.Hour)
-	i := strings.Index(out, `data-asklog-stat="total"`)
-	j := strings.Index(out, `data-asklog-counts=`)
-	if i < 0 || j < i {
-		t.Fatalf("no tiles:\n%s", out)
+	var tiles []string
+	for _, m := range regexp.MustCompile(`data-asklog-stat="[a-z0-9]+"><span[^>]*>([^<]*)</span><span[^>]*>([^<]*)</span></div>`).FindAllStringSubmatch(out, -1) {
+		tiles = append(tiles, m[1]+" "+m[2])
 	}
-	const want = "7 asks 4 answered by you 31s typical time to answer 7m 57s 9 in 10 answered within"
-	if got := plainText(`<x ` + out[i:j]); !strings.HasPrefix(got, want) {
-		t.Errorf("the tiles read\n%q\nwant prefix\n%q", got, want)
+	const want = "7 asks | 4 answered by you | 31s typical time to answer | 7m 57s 9 in 10 answered within"
+	if got := strings.Join(tiles, " | "); got != want {
+		t.Errorf("the tiles read\n%q\nwant\n%q", got, want)
 	}
 	for _, bad := range []string{"percentile", "median to answer"} {
 		if strings.Contains(out, bad) {

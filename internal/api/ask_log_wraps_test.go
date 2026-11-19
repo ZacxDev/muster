@@ -143,7 +143,7 @@ func TestAFactsSeparatorTravelsWithTheFactAfterIt(t *testing.T) {
 	if len(facts) != 1 {
 		t.Fatalf("%d facts lines, want 1", len(facts))
 	}
-	if got := wrapText(facts[0]); got != "3 times · you answered 2 · always “continue” · median 11s" {
+	if got := wrapText(facts[0]); got != "3 times · you answered 2 · always “continue” · answered in about 11s" {
 		t.Errorf("facts read %q", got)
 	}
 	checkSeparatorsTravelWithTheNextFact(t, "top facts", facts[0], 4, true)
