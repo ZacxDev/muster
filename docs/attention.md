@@ -221,14 +221,22 @@ second row), but its push is a plain wait's text-free one.
 **One push per stop.** Each episode is pushed **once**, however the stop moves
 between waiting and idle, and its notification closes when the stop ends:
 **you acted in the session** (you sent it a message of your own after the stop
-began, or answered the prompt it was waiting on: the push and the row go on
-the next 30-second pass; a chief nudge muster sent does not count), **you
+began, or answered the prompt it was waiting on; a chief nudge muster sent
+does not count. A prompt answered at the terminal ends the stop the moment its
+host reports the window no longer waiting, and the push and the row go at
+once; a message of your own is seen by the next 30-second pass, and the push
+and the row go then), **you
 opened the session in muster** (its rendered view or terminal, or the agent's
 conversation, on the web or in the app, which shows the same pages: the push
 and the row go at once; the Agents list, the bar, the Asks page and a prefetch
 do not count, and looking at the window in a tmux terminal outside muster
 cannot be seen), sustained work of its own (2 minutes), or its window gone
-from a host that is online. A stop you dealt with (acted in, or opened) is not
+from a host that is online. Whatever ends it, the notification is withdrawn
+as the stop ends, not on a later pass, with two exceptions that the next
+30-second pass closes instead: a stop whose notification was sent less than
+15 seconds before it ended (withdrawing it at once could reach your device
+before the notification itself, which would then stay up), and a stop
+ended because it repeats one you already dealt with. A stop you dealt with (acted in, or opened) is not
 pushed again while the session sits where it was; once it moves, its next
 stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting

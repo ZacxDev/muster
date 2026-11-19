@@ -75,6 +75,14 @@ func TestTheLifecycleAdapterSatisfiesTheConsumerInterface(t *testing.T) {
 			"POST /agents/{id}/credentials/rotate would answer 501 on every deployment")
 	}
 
+	// The officer loop's instance read type-asserts for InstanceReader; without
+	// it every officer's pass reads the whole fleet again — correct, and the
+	// request storm that ran the Kubernetes client out of budget.
+	if _, ok := any(adapter).(InstanceReader); !ok {
+		t.Errorf("*agentprovision.Adapter does NOT satisfy api.InstanceReader: " +
+			"every officer pass would read every instance in the backend rather than its own")
+	}
+
 	if _, ok := any(adapter).(Gateway); ok {
 		t.Error("*agentprovision.Adapter satisfies api.Gateway, which it must not.\n" +
 			"    Gateway is the CHAT half. The adapter is built over " +

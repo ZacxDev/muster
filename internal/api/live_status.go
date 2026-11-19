@@ -79,7 +79,56 @@ func (s *Server) instanceIndexWithin(ctx context.Context, within time.Duration) 
 	}
 	// The provisioner is read HERE, not in the goroutine: a read left running
 	// past the bound must not touch the Server after this call returns.
+	return s.indexWithin(ctx, within, s.ext.Provisioner.Instances)
+}
+
+// InstanceReader is the optional, NARROW instance read: the instances of the
+// named agents only (agentprovision.Adapter.InstancesOf), with the same
+// contract as Provisioner.Instances for those agents — absent when the backend
+// has none, an error when it cannot be read.
+//
+// 🔴 IT EXISTS FOR THE OFFICER LOOP, WHOSE EVERY PASS READ THE WHOLE FLEET.
+// officerFleet.Instances wants the few instances of one pool, and
+// Provisioner.Instances costs every instance the backend has — on the
+// Kubernetes driver's least-privilege layout, three API requests per agent
+// namespace. With a few dozen agents and several officers checked at once,
+// those reads alone exhausted the client's request budget and every officer's
+// pass failed blind.
+//
+// ⚠ OPTIONAL, AND A PROVISIONER WITHOUT IT IS STILL CORRECT: the officer read
+// falls back to the whole-fleet index, which answers the same question at a
+// higher cost. TestTheLifecycleAdapterSatisfiesTheConsumerInterface asserts
+// the one implementation satisfies it, because a failed assertion is silent.
+type InstanceReader interface {
+	InstancesOf(ctx context.Context, ags []agents.Agent) ([]provision.Instance, error)
+}
+
+// instancesOfWithin is the live index of ags only, bounded as
+// instanceIndexWithin is (nil: not observed). It reads only ags' instances
+// when the provisioner is an InstanceReader, and the whole fleet otherwise.
+// No agents is an empty index without a read: there is nothing to look up.
+func (s *Server) instancesOfWithin(ctx context.Context, ags []agents.Agent, within time.Duration) map[string]*provision.Instance {
 	p := s.ext.Provisioner
+	if p == nil {
+		return nil
+	}
+	r, ok := p.(InstanceReader)
+	if !ok {
+		return s.instanceIndexWithin(ctx, within)
+	}
+	if len(ags) == 0 {
+		return map[string]*provision.Instance{}
+	}
+	ags = append([]agents.Agent(nil), ags...)
+	read := func(ctx context.Context) ([]provision.Instance, error) { return r.InstancesOf(ctx, ags) }
+	if within <= 0 {
+		return s.indexOf(read(ctx))
+	}
+	return s.indexWithin(ctx, within, read)
+}
+
+// indexWithin runs read, given up after within; see instanceIndexWithin.
+func (s *Server) indexWithin(ctx context.Context, within time.Duration, read func(context.Context) ([]provision.Instance, error)) map[string]*provision.Instance {
 	// 🔴 cancel IS THE CALLER'S, NEVER THE READ'S. It used to be deferred inside
 	// the goroutine, so a read that ANSWERED also cancelled ctx a moment later;
 	// a caller reaching the select after both had happened found both cases
@@ -96,7 +145,7 @@ func (s *Server) instanceIndexWithin(ctx context.Context, within time.Duration) 
 	}
 	done := make(chan answer, 1)
 	safeGo(s.logger, "agents: bounded instance read", func() {
-		insts, err := p.Instances(ctx)
+		insts, err := read(ctx)
 		done <- answer{insts, err}
 	})
 	select {

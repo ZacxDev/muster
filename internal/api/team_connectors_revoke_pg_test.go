@@ -240,14 +240,15 @@ func TestATeamAgentsConnectorRequestPushesTheTeamsManagersItsPage(t *testing.T) 
 		_ = json.Unmarshal(raw, &v)
 		return v.Data["url"]
 	}
-	want := "/teams/" + strconv.FormatInt(f.team, 10) + "/connectors"
+	// The page, at the request's card (connectorRequestLink).
+	want := "/teams/" + strconv.FormatInt(f.team, 10) + "/connectors#connector-request-990401"
 	for _, p := range rec.sent(f.ana, "connector-990401", false) {
 		if got := url(p); got != want {
 			t.Errorf("the team request's push links %q; want the team's page %q", got, want)
 		}
 	}
 	personal := rec.sent(f.ana, "connector-990402", false)
-	if len(personal) != 1 || url(personal[0]) != "/connectors" {
-		t.Errorf("control: ana's own request: %d push(es) linking %v; want one linking /connectors", len(personal), personal)
+	if len(personal) != 1 || url(personal[0]) != "/connectors#connector-request-990402" {
+		t.Errorf("control: ana's own request: %d push(es) linking %v; want one linking /connectors#connector-request-990402", len(personal), personal)
 	}
 }

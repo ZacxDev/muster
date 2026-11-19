@@ -497,6 +497,10 @@ export const pluginAutostartFakePort = port + 452;
 export const ocAskMediaPort = port + 460;
 export const ocAskMediaS3Port = port + 461;
 export const ocAskMediaMCPPort = port + 462;
+// tests/officer-needs-you.spec.ts: an officer's page as the place its owner
+// deals with it — its own server with plugins on (+445: clear of the blocks
+// above, of sidebarOfficersPort's +440/+441 and of featuresMember's +442 to +444).
+export const officerNeedsYouPort = port + 445;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

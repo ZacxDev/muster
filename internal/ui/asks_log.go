@@ -49,15 +49,51 @@ const (
 	// a phone's width: "… always “continue” ·" / "median 11s").
 	AsksLogFactClass = "whitespace-nowrap"
 	// AsksLogSubClass is a log row's muted line under its title: where it was
-	// asked, then how long ago. 🔴 THE AGE IS ALWAYS SEEN: the place is the
-	// part that gives way (AsksLogWhereClass, its ellipsis inside it) and the
-	// age never shrinks (AsksLogAgeClass). It was one truncated line, age
-	// last, so a long place cut the age off ("… acme/api · …").
+	// asked, then how long ago — "ratelimit @ work-laptop · acme/api · 15m
+	// ago" (internal/api askLogSubHTML), its parts AsksLogWhoClass then
+	// AsksLogTailClass. 🔴 THE AGE IS ALWAYS SEEN, AND NO PART OF THE PLACE IS
+	// CUT TO A STUB: it was one truncated line, age last, so a long place cut
+	// the age off ("… acme/api · …"); then a place that truncated as one
+	// string cut its repo to "· a…" on a phone.
 	AsksLogSubClass = "flex min-w-0 items-baseline gap-1 text-xs text-fg2"
-	// AsksLogWhereClass is the sub line's place: it shrinks and truncates.
-	AsksLogWhereClass = "min-w-0 truncate"
-	// AsksLogAgeClass is the sub line's age ("· 15m ago"): it never shrinks.
-	AsksLogAgeClass = "shrink-0 whitespace-nowrap"
+	// AsksLogWhoClass is the sub line's session @ host part. It gives way to
+	// the tail (which never narrows past the age) and truncates against the
+	// rest of the line: on a phone that leaves well over a dozen characters
+	// ("ratelimit-backoff-and-retry-…"), never a stub.
+	AsksLogWhoClass = "min-w-0 truncate"
+	// AsksLogTailClass is the sub line's repo and age: ONE line (h-4 is
+	// text-xs's 1rem line) that wraps its items and clips the rest. 🔴 A REPO
+	// WITH NO ROOM TO BE READ WRAPS AWAY WHOLE: a flex item moves to the next
+	// (clipped) line when its flex basis does not fit beside the items before
+	// it, and the age is laid out first (AsksLogAgeClass's order-first), so it
+	// is the repo, never the age, that goes — with no script measuring
+	// anything. The line runs right-to-left (flex-row-reverse: the age, first,
+	// is drawn rightmost) and is packed to its LEFT edge (justify-end, in a
+	// reversed row), so it reads "· repo · age" straight after the session @
+	// host part and any room left over is at the line's end, not a gap where
+	// a dropped repo was. It takes the rest of the sub line (grow) and never
+	// narrows past its min-content (min-w-min), which is the age's width: the
+	// repo contributes none (AsksLogRepoClass's w-0).
+	AsksLogTailClass = "flex h-4 min-w-min grow flex-row-reverse flex-wrap content-start justify-end gap-x-1 overflow-hidden"
+	// AsksLogRepoClass is the sub line's repo ("· acme/api"). Its flex basis,
+	// 12ch, is the room it needs to be read when it is cut: its "· ", SIX
+	// characters, and the ellipsis — six because fewer reads as debris ("· a…",
+	// "· ac…") while six names a repo ("· acme-c…"). Measured at the line's
+	// 12px in Chromium's sans-serif (DejaVu Sans on the e2e host), "· " + six
+	// characters + "…" is 7.5ch for "api-ga", 8.3ch for "acme-c", and at most
+	// 11.9ch for the widest run measured ("WWWWWW"; "mmmmmm" 11.8ch) — so 12ch
+	// leaves six characters of every run measured. With less room than that beside
+	// the age it wraps onto the tail's clipped line and is not drawn; with
+	// more it grows up to its own width (max-w-max), so a repo that fits shows
+	// whole (a repo narrower than 12ch needs only its own width: max-w-max
+	// clamps the basis). w-0 makes its contribution to the tail's min-content
+	// zero, so a long repo never holds the tail wide (the flex basis, not the
+	// width, sizes it).
+	AsksLogRepoClass = "w-0 min-w-0 max-w-max grow basis-[12ch] truncate"
+	// AsksLogAgeClass is the sub line's age ("· 15m ago"): it never shrinks,
+	// never wraps, and is first on the tail's line (order-first), so it is
+	// never the item that wraps away.
+	AsksLogAgeClass = "order-first shrink-0 whitespace-nowrap"
 	// AsksLogClampClass clamps a question to three lines in the list.
 	AsksLogClampClass = "line-clamp-3 whitespace-pre-wrap break-words text-sm text-fg"
 	// AsksLogFactsClass is a card's secondary line that WRAPS (a repeated

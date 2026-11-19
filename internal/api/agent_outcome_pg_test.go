@@ -140,6 +140,12 @@ func (e outcomeEndpoint) Endpoint(context.Context, provision.Ref) (provision.End
 
 type readyInstances struct{ names []string }
 
+// InstancesOf is Instances: every instance, whatever is asked (the
+// first-turn deliverer indexes the answer by name).
+func (r readyInstances) InstancesOf(ctx context.Context, _ []agents.Agent) ([]provision.Instance, error) {
+	return r.Instances(ctx)
+}
+
 func (r readyInstances) Instances(context.Context) ([]provision.Instance, error) {
 	var out []provision.Instance
 	for _, n := range r.names {

@@ -555,7 +555,9 @@ muster then, once, on the call that recorded it:
   or straight to your chief. It does this for every failed
   send. For a check refusal it does this only when the reply is not going back
   to its session, because there is nothing for your owner to do while the
-  session rewrites it.
+  session rewrites it. An **officer's** refused draft goes back to the officer
+  and pushes nothing; its earlier "awaits your approval" notification is
+  withdrawn instead ([Officer notifications](push.md#officer-notifications-decisions-only)).
 - **hands a routed reply back to the session that wrote it.** The route ends
   `send_failed`, not `relayed`, so `plugin_messages_list` says `send_failed`.
   The route sweep makes a **new route** of the same message to the same
@@ -1066,9 +1068,14 @@ An officer's follows and likes of one UTC day are **one batch**, id
 `<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Drafts tab, one Attention item
 and one notification (each new entry replaces the batch's last notification),
 never one each. Each entry shows the person, the venue, the action, the
-engagement of theirs that motivated it (untrusted, escaped) and the officer's
-reason, with a checkbox; entries still awaiting their plugin's check are
-counted, not listed, and are not part of the decision.
+engagement of theirs that motivated it (untrusted, escaped), their profile as
+the officer's record of them holds it (display name, bio and profile address —
+what their plugin reported, labelled untrusted; the address is text, never a
+link) and the officer's reason, with a checkbox; entries still awaiting their
+plugin's check are counted, not listed, and are not part of the decision. The
+same card is in the officer's own page's
+[Needs you](officers-builtin.md#an-officers-page), deciding through the same
+route.
 
 🔴 **The decision binds the exact set.** **Approve ticked, reject the rest**
 posts the ticked draft ids and the batch's `batch_sha256` (the SHA-256 of every
