@@ -97,6 +97,8 @@ var teamHostTools = map[string]teamHostRule{
 	// Starting work as the owner, and the owner's chief.
 	dispatchRequestTool: teamRefused("starts an agent as the owner: a team agent is started by a manager"),
 	chiefAskTool:        teamRefused("a question to the owner's chief: a team chief does not bind to team hosts in 2b (G4)"),
+	// A push to the owner: a team has no one owner to push.
+	notifyOwnerTool: teamRefused("a push to one owner, and a team has none: its members hear of a team's work through its asks"),
 	// The page tools.
 	pageCreateTool:       teamRefused(whyPage),
 	pageUpdateTool:       teamRefused(whyPage),
