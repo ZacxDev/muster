@@ -375,11 +375,11 @@ const fleetOwnerMarksMigrationVersion = 147
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerConnectorBlocksMigrationVersion = 148
 
-// morningReportsMigrationVersion is 0155: morning_reports (one morning report
+// morningReportsMigrationVersion is 0156: morning_reports (one morning report
 // per owner per day, internal/morning), owned and under the same row-level
 // security; same treatment again. Its body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const morningReportsMigrationVersion = 155
+const morningReportsMigrationVersion = 156
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

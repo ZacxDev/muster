@@ -51,8 +51,8 @@ func TestThePanelPinsTheDigestAboveTheChat(t *testing.T) {
 func TestTheCardsStatesAndAnUnavailableCard(t *testing.T) {
 	v := FleetDigestView{Total: 2, Since: "Since you last looked (5m ago): 1 new stop", Groups: []FleetGroupView{
 		{Key: "needs_you", Label: "Needs you", Asks: []FleetAskView{{ID: 9, Question: "Ship it?", Href: "/attention/asks/9"}}},
-		{Key: "waiting_ci", Label: "Waiting on CI"}, {Key: "working", Label: "Working"},
-		{Key: "done", Label: "Done, can wrap", Rows: []FleetRowView{{ID: "mirror:abc", Name: "Fix the loader", State: "stalled", Detail: "stalled 2h"}}},
+		{Key: "waiting_ci", Label: "Waiting on checks"}, {Key: "working", Label: "Working"},
+		{Key: "done", Label: "Done", Rows: []FleetRowView{{ID: "mirror:abc", Name: "Fix the loader", State: "stalled", Detail: "stalled 2h"}}},
 		{Key: "stalled", Label: "Stalled"},
 	}}
 	var b strings.Builder

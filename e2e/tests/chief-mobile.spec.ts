@@ -500,7 +500,7 @@ for (const vp of [
 
       // The sheet: three tabs, in order.
       await open();
-      await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'Focus history']);
+      await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'What it worked on']);
       await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
       await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'Fresh primary on the primary').toBeVisible();
       // Fresh primary keeps its confirm: the confirm is asked, and dismissed,

@@ -51,6 +51,7 @@ var sessionNameCallers = []string{
 	"pages.go Server.pageSessionLink",                            // the session that made a page: its owner's session button, "Made by" in the version popover and on /pages/{id}
 	"plugin_message_route_tools.go Server.routeSubjectFor",       // the route candidates the chief is offered
 	"pr_routes.go Server.prAuthorHint",                           // a plugin message's PR author hint
+	"route_answer_cards.go Server.routeAnswerCardsFor",           // "From <session>" on a route's answer in the chief's chat
 	"session_names.go Server.mirrorNameUnchanged",                // a Save of the unchanged prefilled name is not a rename
 	"session_push.go Server.episodeWho",                          // a stalled / waiting session's push title
 	"session_routes.go Server.resolveRouteTarget",                // route_to_session's text
@@ -111,6 +112,7 @@ var noTmuxAddress = map[string]string{
 	"pages.go Server.pageSessionLink":                            "a page's owner chrome (a link to the session), not a notification",
 	"plugin_message_route_tools.go Server.routeSubjectFor":       "a chief tool",
 	"pr_routes.go Server.prAuthorHint":                           "a plugin message hint",
+	"route_answer_cards.go Server.routeAnswerCardsFor":           "a chat card's heading (its HUMAN name only, else \"a session\"), not a notification",
 	"session_names.go Server.mirrorNameUnchanged":                "the rename form",
 	"session_routes.go Server.resolveRouteTarget":                "a chief tool",
 	"sessions_overview.go Server.repoHints":                      "a chief hint",

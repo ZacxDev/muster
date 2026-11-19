@@ -91,7 +91,7 @@ func TestAgentHeaderToolsReserveTheirWidth(t *testing.T) {
 		want  []string // the controls' aria-labels, in order
 	}{
 		{"no focus history", "", []string{"New chat session", "Chat history"}},
-		{"focus history", FocusHistoryPath("agent:42", ""), []string{"New chat session", "Chat history", "Focus history"}},
+		{"focus history", FocusHistoryPath("agent:42", ""), []string{"New chat session", "Chat history", "What it worked on"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := sampleAgentDetailView()

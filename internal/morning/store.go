@@ -13,7 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// THE MORNING REPORT'S ROWS (migration 0155). Every method runs as ctx's
+// THE MORNING REPORT'S ROWS (migration 0156). Every method runs as ctx's
 // principal: morning_reports is under FORCE row-level security, so an owner
 // reads and writes only its own reports — and every read and the push claim
 // ALSO name the principal's owner in SQL (ownerIs), so a policy turned off

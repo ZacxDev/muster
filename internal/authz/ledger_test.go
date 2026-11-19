@@ -188,7 +188,7 @@ var (
 		// global hourly cap and reads the live decisions still in flight; each
 		// decision is then acted on as its own owner (attentionPrincipal).
 		"internal/chiefnudge.sys",
-		// The morning report (migration 0155): which owners get one — enabled
+		// The morning report (migration 0156): which owners get one — enabled
 		// persons' ids only (morning.PG.Owners); each report is then built and
 		// stored as its own owner (attentionPrincipal).
 		"internal/morning.(*PG).Owners",

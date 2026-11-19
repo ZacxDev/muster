@@ -504,13 +504,13 @@ session, never quoting it), and open stops are listed as rows of the Asks page's
 ### Fleet digest
 
 A card at the top of the chief panel, above whichever chat is open, that groups
-every one of your own sessions by what it needs — Needs you, Waiting on CI,
-Working, Done (can wrap), Stalled — with a drill-in per session and a Fleet
+every one of your own sessions by what it needs — Needs you, Waiting on checks,
+Working, Done, Stalled — with a drill-in per session and a Fleet
 side chat to ask the chief about one ([chief.md](chief.md#fleet-digest)). No
 model and no chief turn: muster draws it from what it already knows.
 
 - **Needs:** [session state](#session-state) for the states, and the
-  [chief](#chief). The Waiting on CI and Done groups also need
+  [chief](#chief). The Waiting on checks and Done groups also need
   [session routing](#session-routing) and [PR mail routing](#pr-mail-routing) (`MUSTER_SESSION_ROUTING=1`, `MUSTER_PR_MAIL_SENDERS`) for the pull requests each session created, and the [GitHub App](#github-app) for their states. Without the first, sessions have no pull requests;
   without the App, every state is unknown. Either way those sessions are
   Stalled. States are read only for an owner the App admits (an admin, or a
