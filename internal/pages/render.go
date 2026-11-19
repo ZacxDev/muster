@@ -3,9 +3,11 @@ package pages
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"html"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -109,6 +111,11 @@ type RenderOptions struct {
 	// Uploads: the server can store files. Without it an upload block is drawn
 	// disabled, saying so.
 	Uploads bool
+	// Assets are the author's assets the version refers to (Store.VersionAssets):
+	// what the SDK asks the shell for, and how a markdown block's
+	// ![alt](asset:<id>) is drawn (an <img>, or a <video> for a video). A
+	// reference to anything else is left as it was written.
+	Assets []Asset
 }
 
 // Content is the content document of version v: muster's base styles, the
@@ -126,7 +133,11 @@ func Content(v Version, o RenderOptions) string {
 		blocks.WriteString(renderBlock(blk, o))
 		blocks.WriteString("\n")
 	}
-	b.WriteString(sdkScript(v, blocks.String()))
+	ids := make([]string, 0, len(o.Assets))
+	for _, a := range o.Assets {
+		ids = append(ids, a.PublicID)
+	}
+	b.WriteString(sdkScript(v, blocks.String(), ids))
 	b.WriteString("</script></head>\n<body><main class=\"mp\"></main></body></html>\n")
 	return b.String()
 }
@@ -146,7 +157,7 @@ func renderBlock(b Block, o RenderOptions) string {
 	switch b.Type {
 	case BlockMarkdown:
 		if o.Markdown != nil {
-			return `<section class="mp-block mp-markdown">` + o.Markdown(b.Text) + `</section>`
+			return `<section class="mp-block mp-markdown">` + markdownWithAssets(b.Text, o) + `</section>`
 		}
 		return `<section class="mp-block mp-markdown"><pre>` + esc(b.Text) + `</pre></section>`
 	case BlockHTML:
@@ -212,6 +223,54 @@ func req(r bool) string {
 		return " required"
 	}
 	return ""
+}
+
+// markdownAssetImage is a markdown image whose address is an asset reference:
+// ![alt](asset:<id>). The renderer (o.Markdown) draws no image of its own.
+var markdownAssetImage = regexp.MustCompile(`!\[([^\]\n]{0,200})\]\(asset:([A-Za-z0-9_-]{22})\)`)
+
+// markdownWithAssets is markdown text through o.Markdown, with each
+// ![alt](asset:<id>) naming one of o.Assets drawn as that asset: an <img>, or a
+// <video controls> for a video, its src the reference itself (the SDK puts the
+// asset's blob: URL in its place, sdkScript). Any other image syntax is the
+// renderer's to draw as text.
+//
+// 🔴 THE RENDERER STILL ESCAPES EVERY AUTHOR CHARACTER: each such image is
+// swapped for a placeholder (letters and digits around a per-render random
+// nonce, which no markdown rule changes and no author can predict) before the
+// text is rendered, and the placeholder for muster's own tag after; the alt
+// text is escaped here.
+func markdownWithAssets(text string, o RenderOptions) string {
+	kinds := map[string]string{}
+	for _, a := range o.Assets {
+		kinds[a.PublicID] = a.ContentType
+	}
+	if len(kinds) == 0 || !strings.Contains(text, "](asset:") {
+		return o.Markdown(text)
+	}
+	nonce := make([]byte, 9)
+	_, _ = rand.Read(nonce)
+	mark := "MUSTERASSET" + strings.ToUpper(hex.EncodeToString(nonce))
+	var tags []string
+	text = markdownAssetImage.ReplaceAllStringFunc(text, func(m string) string {
+		sub := markdownAssetImage.FindStringSubmatch(m)
+		ct, ok := kinds[sub[2]]
+		if !ok {
+			return m
+		}
+		alt, src := html.EscapeString(sub[1]), AssetScheme+sub[2]
+		tag := `<img src="` + src + `" alt="` + alt + `">`
+		if IsVideo(ct) {
+			tag = `<video src="` + src + `" controls playsinline preload="metadata" aria-label="` + alt + `"></video>`
+		}
+		tags = append(tags, tag)
+		return mark + "N" + strconv.Itoa(len(tags)-1) + "X"
+	})
+	out := o.Markdown(text)
+	for i := len(tags) - 1; i >= 0; i-- {
+		out = strings.ReplaceAll(out, mark+"N"+strconv.Itoa(i)+"X", tags[i])
+	}
+	return out
 }
 
 func renderField(component string, f Field) string {
@@ -289,19 +348,36 @@ func jsString(s string) string {
 // What the page sends is NOT checked here: in the owner's view the SHELL
 // shows it to the owner and posts it only on their own tap (ShellScript);
 // through a link it is recorded, as it always was.
-func sdkScript(v Version, blocks string) string {
+func sdkScript(v Version, blocks string, assets []string) string {
+	ids, _ := json.Marshal(assets)
+	if assets == nil {
+		ids = []byte("[]")
+	}
 	return `(function(){"use strict";
 var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
  PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
- DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,
+ DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,BL=W.Blob,COU=URL.createObjectURL,
  gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
  gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
- BLOCKS=` + jsString(blocks) + `,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
+ BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
 function later(){R(ST,W,[show,0]);}
+// load asks the shell for each asset the version refers to (the frame has no
+// network: the shell fetches it, asset.go) and makes a blob: URL of each Blob
+// it is handed; once every one has answered, show() puts the page in, each
+// asset:<id> in its markup replaced by its URL. One that fails stays as it
+// was written, which the page's policy loads nothing from.
+function load(){
+ if(loading)return;loading=true;var left=ASSETS.length;if(!left)return show();
+ ASSETS.forEach(function(a){send("asset",a,null,function(ok,x){
+  if(ok&&x instanceof BL){try{urls[a]=R(COU,URL,[x]);}catch(e){}}
+  if(--left===0)show();
+ });});
+}
 function show(){
  if(shown)return;var m=D.querySelector("main.mp");
  if(!m||R(gRS,D,[])==="loading"){if(!waitedDCL){waitedDCL=true;R(AEL,D,["DOMContentLoaded",later]);}return;}
+ for(var a in urls)BLOCKS=BLOCKS.split("asset:"+a).join(urls[a]);
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
  R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
@@ -315,7 +391,7 @@ function answer(ev){
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
  R(SIP,ev,[]);var d=R(gData,ev,[]);
- if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();}
+ if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();load();}
 },true]);
 // Only the browser's own scroll of the document reports: not a dispatched
 // "scroll" (isTrusted is unforgeable), not an inner element's.
@@ -331,7 +407,7 @@ if(PARENT===W)show();else hello();
 function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
  var id="m"+(++seq);waiting[id]=done;
- R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
+ R(PM,port,[op==="asset"?{muster:1,id:id,op:"asset",asset:component}:op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
  R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},` + sdkWaitMs + `]);
 }
 function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
@@ -769,6 +845,15 @@ function relay(d){
  if(typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
  if(!base)return reply(false,"nothing can be sent from here");
+ // An asset the version refers to (asset.go): a READ, fetched here — the
+ // frame has no network — by the route under base (the link's token, or the
+ // owner's session), and handed back as a Blob. No confirm: nothing is sent.
+ if(d.op==="asset"){
+  if(!only(d,["muster","id","op","asset"])||typeof d.asset!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(d.asset))return reply(false,"muster does not take that");
+  return fetch(base+"/assets/"+d.asset,{credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `}).then(function(r){
+   if(!r.ok)throw new Error("muster answered "+r.status);return r.blob();
+  }).then(function(b){reply(true,b);},function(){reply(false,"the asset could not be loaded");});
+ }
  var comp=typeof d.component==="string"?d.component.slice(0,64):"",what,summary,run,i;
  if(d.op==="submit"){
   if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");

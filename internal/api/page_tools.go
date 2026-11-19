@@ -93,7 +93,9 @@ func pageBlocksSchema() map[string]any {
 			"{type:\"approval\", id, label, comment?} — Approve / Decline, optionally with a comment; " +
 			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame (no network requests, and it is shown only inside muster's share page); it saves data with " +
 			"muster.submit(data) and files with muster.upload(file) (each returns a Promise), and reads muster.page {title, version}. " +
-			"Component ids are a letter then letters, digits, _ or -, unique on the page. Images must be inline (data: URIs); " +
+			"Component ids are a letter then letters, digits, _ or -, unique on the page. An image or video at full size is an asset: attach the file with " +
+			"page_asset_upload and write its ref (asset:<id>) where its address goes — ![what it shows](asset:<id>) in markdown, src=\"asset:<id>\" in html; " +
+			"small images may also be inline (data: URIs); " +
 			"the whole page is at most " + strconv.Itoa(pages.MaxVersionBytes>>10) + " KiB.",
 		"items": map[string]any{"type": "object", "required": []string{"type"},
 			"properties": map[string]any{
@@ -115,7 +117,7 @@ func pageBlocksSchema() map[string]any {
 // pageToolDefs are the page tools.
 func pageToolDefs() []agents.ToolDef {
 	id := intProp("The page's id, as page_create returned it.", 1, 1<<53)
-	return []agents.ToolDef{
+	return append([]agents.ToolDef{
 		{Type: "function", Name: pageCreateTool,
 			Description: "Publish a page for your owner — a small web page that can show what you built, or collect answers, choices, form " +
 				"fields, files or an approval from someone you share it with. It is PRIVATE until it has a live share link: " +
@@ -169,13 +171,14 @@ func pageToolDefs() []agents.ToolDef {
 				"page_id": id,
 				"link_id": intProp("The link's id, as page_get or page_share_request returned it.", 1, 1<<53),
 			}, "page_id", "link_id")},
-	}
+	}, pageAssetToolDefs()...)
 }
 
 // pageToolNames is the page tools' names, for the dispatch.
 func isPageTool(name string) bool {
 	switch name {
-	case pageCreateTool, pageUpdateTool, pageGetTool, pageListTool, pageShareRequestTool, pageResponsesTool, pageLinkRevokeTool:
+	case pageCreateTool, pageUpdateTool, pageGetTool, pageListTool, pageShareRequestTool, pageResponsesTool, pageLinkRevokeTool,
+		pageAssetUploadTool, pageAssetDeleteTool:
 		return true
 	}
 	return false
@@ -208,6 +211,10 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 		return s.toolPageResponses(ctx, c, creator, arguments), true
 	case pageLinkRevokeTool:
 		return s.toolPageLinkRevoke(ctx, creator, arguments), true
+	case pageAssetUploadTool:
+		return s.toolPageAssetUpload(ctx, c, creator, arguments), true
+	case pageAssetDeleteTool:
+		return s.toolPageAssetDelete(ctx, creator, arguments), true
 	}
 	return "", false
 }
@@ -397,7 +404,8 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 	versions, verr := s.ext.Pages.Versions(ctx, id)
 	links, lerr := s.ext.Pages.Links(ctx, id)
 	resps, rerr := s.ext.Pages.Responses(ctx, id, 0, 500)
-	if err := errors.Join(verr, lerr, rerr); err != nil {
+	assets, aerr := s.ext.Pages.Assets(ctx, id)
+	if err := errors.Join(verr, lerr, rerr, aerr); err != nil {
 		s.logger.Printf("pages: get %d: %v", id, err)
 		return toolErr("page %d could not be read whole", id)
 	}
@@ -409,8 +417,9 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 	for _, l := range links {
 		ls = append(ls, s.pageLinkView(l))
 	}
+	av, abytes := pageAssetsView(assets)
 	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "current_version": p.CurrentVersion, "versions": vs, "links": ls,
-		"responses": len(resps), "preview_url": s.pageViewURL(p.ID),
+		"responses": len(resps), "assets": av, "asset_bytes": abytes, "preview_url": s.pageViewURL(p.ID),
 		"note": "A link's url is never shown here: page_share_request gave it (a pending link's only once; where links go live at once, page_share_request returns the page's reusable link again). A hash-only link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. preview_url is the owner's view: your owner's own view of the page, signed in."})
 }
 

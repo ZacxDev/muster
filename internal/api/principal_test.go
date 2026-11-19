@@ -163,6 +163,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages/{id}/responses/{rid}/raw",
 		"POST /pages/{id}/versions/{v}/submit",
 		"POST /pages/{id}/versions/{v}/upload",
+		// An author's asset, as the owner's view of a version reads it
+		// (page_assets.go).
+		"GET /pages/{id}/versions/{v}/assets/{asset}",
 		"POST /pages/{id}/links/{link}/revoke",
 		"POST /pages/{id}/share",
 		"POST /pages/{id}/share/rotate",
@@ -643,16 +646,21 @@ var routeVias = map[authz.Via][]string{
 		// A session's ask attachment, sent by its host (ask_media.go).
 		"POST /mirror/ask-attachments",
 		"DELETE /mirror/ask-attachments/{id}",
+		// A page's asset, sent by the host of the session that made the page
+		// (page_assets.go).
+		"POST /mirror/pages/{id}/assets",
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},
-	// A page's SHARE LINK (0116) opens exactly the four share-link routes; the
+	// A page's SHARE LINK (0116) opens exactly the five share-link routes; the
 	// token is in the path (credential rewrites the path's placeholder).
 	authz.ViaPageLink: {
 		"GET /s/{token}",
 		"GET /s/{token}/content",
 		"POST /s/{token}/submit",
 		"POST /s/{token}/upload",
+		// An author's asset the page's current version uses (page_assets.go).
+		"GET /s/{token}/assets/{asset}",
 	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {
@@ -704,6 +712,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /agent/blocked",
 		"POST /agent/officer/ask-images",
 		"POST /agent/ask-attachments",
+		// `ccd page-asset`: an asset of a page the agent made (page_assets.go).
+		"POST /agent/pages/{id}/assets",
 		"POST /agent/work",
 	},
 }

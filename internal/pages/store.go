@@ -47,8 +47,9 @@ type Store interface {
 	Version(ctx context.Context, id int64, v int) (Version, error)
 	// SetCurrent makes version v current (a rollback).
 	SetCurrent(ctx context.Context, id int64, v int) (Page, error)
-	// Files is the public ids of every file sent through page id's links
-	// (its upload responses): what deleting the page must delete first.
+	// Files is the public ids of every file the page holds — sent through its
+	// links (its upload responses) and its author's assets: what deleting the
+	// page must delete first.
 	Files(ctx context.Context, id int64) ([]string, error)
 	// CloseLinks revokes every pending or live link of page id, under the page
 	// row's lock, and returns them (their cards are the caller's to withdraw).
@@ -119,6 +120,34 @@ type Store interface {
 	// ResponsesBefore is page id's responses with an id below before (0: no
 	// bound), NEWEST first, at most limit (the owner's screen's pages).
 	ResponsesBefore(ctx context.Context, id, before int64, limit int) ([]Response, error)
+
+	// The author's assets (asset.go, migration 0157).
+
+	// AssetRoom is what c's page id may still take, under its caps: the bytes
+	// (MaxAssetBytesPerPage less what it holds) — ErrNotFound for a page that
+	// is not c's, ErrClosing for one being deleted, ErrTooMany when it holds
+	// MaxAssetsPerPage. A hint for the upload's own cap: AddAsset decides.
+	AssetRoom(ctx context.Context, c Creator, id int64) (int64, error)
+	// AddAsset records a stored asset of c's page id, under the page row's
+	// lock: ErrTooMany past MaxAssetsPerPage or MaxAssetBytesPerPage (counted
+	// with a), ErrClosing for a page being deleted, ErrAssetType for a type
+	// that is not one of the six.
+	AddAsset(ctx context.Context, c Creator, id int64, a Asset) (Asset, error)
+	// AssetFor is asset publicID of c's page id.
+	AssetFor(ctx context.Context, c Creator, id int64, publicID string) (Asset, error)
+	// Assets is page id's assets (the caller's page, any creator's), oldest first.
+	Assets(ctx context.Context, id int64) ([]Asset, error)
+	// VersionAsset is asset publicID of page id IF version v (0: the current
+	// one) refers to it; ErrNotFound otherwise — another page's asset, an
+	// asset this version does not use, a missing one alike.
+	VersionAsset(ctx context.Context, id int64, v int, publicID string) (Asset, error)
+	// VersionAssets is every asset version v (0: the current one) of page id
+	// refers to.
+	VersionAssets(ctx context.Context, id int64, v int) ([]Asset, error)
+	// DeleteAsset deletes asset publicID of c's page id and returns it (its
+	// bytes are the caller's to delete): ErrAssetInUse while any version
+	// refers to it.
+	DeleteAsset(ctx context.Context, c Creator, id int64, publicID string) (Asset, error)
 }
 
 // PGStore is Store on Postgres.
@@ -194,7 +223,33 @@ func insertVersion(ctx context.Context, tx pgx.Tx, page int64, v int, title stri
 	out := Version{PageID: page, Version: v, Title: title, Blocks: blocks, SizeBytes: size, CreatedBy: by}
 	err = tx.QueryRow(ctx, `INSERT INTO page_versions (page_id, version, title, blocks, size_bytes, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`, page, v, title, enc, size, by).Scan(&out.ID, &out.CreatedAt)
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	return out, insertVersionAssets(ctx, tx, page, v, blocks)
+}
+
+// insertVersionAssets records the assets version v of page refers to
+// (AssetRefs), in the version's own transaction.
+//
+// 🔴 ONLY THE PAGE'S OWN: each is looked up among page's assets first, and one
+// that is not there — another page's, another owner's (row-level security:
+// unseen), deleted, never attached — refuses the version with a sentence
+// naming it. 0157's foreign key holds the same if this check ever went.
+func insertVersionAssets(ctx context.Context, tx pgx.Tx, page int64, v int, blocks []Block) error {
+	for _, ref := range AssetRefs(blocks) {
+		var ok bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM page_assets WHERE page_id = $1 AND public_id = $2)`, page, ref).Scan(&ok); err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: %s%s is not an asset of this page: attach the file to this page with page_asset_upload first, and use the ref it returns", ErrInvalid, AssetScheme, ref)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO page_version_assets (page_id, version, asset_id) VALUES ($1, $2, $3)`, page, v, ref); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Create inserts the page and its version 1 in one transaction.
@@ -365,7 +420,12 @@ func (s *PGStore) SetCurrent(ctx context.Context, id int64, v int) (Page, error)
 
 // Files lists a page's uploaded files.
 func (s *PGStore) Files(ctx context.Context, id int64) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT upload_public_id FROM page_responses WHERE page_id = $1 AND kind = 'upload' ORDER BY id`, id)
+	// A viewer's files, then the author's assets (0157): both are uploads rows
+	// under the page's prefix.
+	rows, err := s.pool.Query(ctx, `SELECT f FROM (
+		SELECT upload_public_id AS f, 0 AS k, id FROM page_responses WHERE page_id = $1 AND kind = 'upload'
+		UNION ALL
+		SELECT public_id, 1, id FROM page_assets WHERE page_id = $1) x ORDER BY k, id`, id)
 	if err != nil {
 		return nil, wrap("files", err)
 	}
@@ -925,7 +985,7 @@ func wrap(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing, ErrResponseTooLarge} {
+	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing, ErrResponseTooLarge, ErrAssetInUse, ErrAssetType} {
 		if errors.Is(err, e) {
 			return err
 		}

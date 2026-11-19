@@ -121,6 +121,8 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	mux.HandleFunc("POST "+accountPagesAgentSharePath, s.requireOperatorWrite(s.handleAccountPagesAgentShare))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/rollback", s.requireOperatorWrite(s.handlePageRollback))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/delete", s.requireOperatorWrite(s.handlePageDelete))
+	// The author's images and video (page_assets.go).
+	s.registerPageAssetRoutes(mux)
 }
 
 // pageLinkCtxKey carries the admitted share link to its handler.
@@ -153,6 +155,8 @@ func pageRouteLabel(r *http.Request) string {
 		return "submit"
 	case strings.HasSuffix(r.URL.Path, "/upload"):
 		return "upload"
+	case strings.Contains(r.URL.Path, "/assets/"):
+		return "asset"
 	}
 	return "shell"
 }
@@ -197,9 +201,20 @@ func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// pageRenderOptions is how a content document is rendered here.
-func (s *Server) pageRenderOptions() pages.RenderOptions {
-	return pages.RenderOptions{Markdown: ui.MarkdownHTML, Uploads: s.ext.Uploads != nil}
+// pageRenderOptions is how version v of a page is rendered here: with the
+// author's assets it refers to (asset.go), which the SDK asks the shell for.
+// A failed read is logged and renders with none (each reference left as it
+// was written, which loads nothing).
+func (s *Server) pageRenderOptions(ctx context.Context, v pages.Version) pages.RenderOptions {
+	o := pages.RenderOptions{Markdown: ui.MarkdownHTML, Uploads: s.ext.Uploads != nil}
+	if s.ext.Uploads != nil {
+		a, err := s.ext.Pages.VersionAssets(ctx, v.PageID, v.Version)
+		if err != nil {
+			s.logger.Printf("pages: page %d: the assets of version %d: %v", v.PageID, v.Version, err)
+		}
+		o.Assets = a
+	}
+	return o
 }
 
 // servePageContent is THE writer of a content document: every one — a link's
@@ -268,7 +283,7 @@ func (s *Server) handlePageContent(w http.ResponseWriter, r *http.Request) {
 		refusePageLink(w, "content")
 		return
 	}
-	if servePageContent(w, r, pages.Content(v, s.pageRenderOptions())) {
+	if servePageContent(w, r, pages.Content(v, s.pageRenderOptions(r.Context(), v))) {
 		metrics.PageLinkRequests.WithLabelValues("content", "served").Inc()
 	}
 }
@@ -1346,7 +1361,7 @@ func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions()))
+	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions(r.Context(), v)))
 }
 
 // handlePageRevokeLink is the owner's Revoke.

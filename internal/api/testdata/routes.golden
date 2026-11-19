@@ -162,6 +162,7 @@ GET /pages/{id}
 GET /pages/{id}/card
 GET /pages/{id}/preview
 GET /pages/{id}/responses/{rid}/raw
+GET /pages/{id}/versions/{v}/assets/{asset}
 GET /pages/{id}/versions/{v}/content
 GET /pages/{id}/view
 GET /plugin/v1/drafts/checks
@@ -173,6 +174,7 @@ GET /plugins/drafts/{id}/media/{n}
 GET /readyz
 GET /rules
 GET /s/{token}
+GET /s/{token}/assets/{asset}
 GET /s/{token}/content
 GET /send-queue
 GET /sessions/tags
@@ -257,6 +259,7 @@ POST /agent/ask-attachments
 POST /agent/blocked
 POST /agent/connectors/{name}/request
 POST /agent/officer/ask-images
+POST /agent/pages/{id}/assets
 POST /agent/task/comment
 POST /agent/work
 POST /agents/pins
@@ -327,6 +330,7 @@ POST /mirror/ask
 POST /mirror/ask-attachments
 POST /mirror/confirm-send
 POST /mirror/mcp
+POST /mirror/pages/{id}/assets
 POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/ask

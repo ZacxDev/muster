@@ -120,7 +120,7 @@ it could not tell.
 A file someone uploaded is served from muster's own origin, so a file that a
 browser renders as a page (HTML, SVG, XHTML, or anything it sniffs as one)
 would run its script **as muster**, with the signed-in operator's session:
-stored XSS. Four routes serve uploaded bytes, and all four answer through one
+stored XSS. Six routes serve uploaded bytes, and all six answer through one
 function, `uploads.SetServeHeaders`:
 
 | Route | Who | Bytes |
@@ -129,6 +129,8 @@ function, `uploads.SetServeHeaders`:
 | `GET /uploads/{id}/file` | the owner's session (thumbnails, Open) | an upload, from the object store |
 | `GET /tasks/{id}/attachments/{aid}` | a session | a task's attachment, from Postgres |
 | `GET /attention/asks/{id}/attachments/{upload id}` | a session that may read the ask | an ask's attachment, from the object store ([below](#an-asks-attachments)) |
+| `GET /s/{token}/assets/{id}` | a page's live share link (its shell) | an author asset the page's current version uses ([pages.md](pages.md#images-and-video)) |
+| `GET /pages/{id}/versions/{v}/assets/{asset id}` | the page owner's session (their view's shell) | an author asset version `v` uses |
 
 Each response is decided from the type **sniffed from the bytes** at serve
 time, never from what the uploader claimed (a task attachment's stored type is

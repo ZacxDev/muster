@@ -132,6 +132,12 @@ func init() {
 	e2eNoCatalog = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_CATALOG") == "1" }
 	e2eNoSubagents = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_SUBAGENTS") == "1" }
 	e2eNoWork = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_WORK") == "1" }
+	// The fake's Claude Code processes all run in MUSTER_MIRROR_E2E_CLAUDE_CWD
+	// (their PID is a placeholder, so /proc cannot say); unset, none has one.
+	e2eProcCwd = func(int) (string, bool) {
+		d := os.Getenv("MUSTER_MIRROR_E2E_CLAUDE_CWD")
+		return d, d != ""
+	}
 	e2ePreviews = func() func() map[string]mirror.WindowPreviews {
 		f := os.Getenv("MUSTER_MIRROR_E2E_PREVIEWS_FILE")
 		if f == "" {
