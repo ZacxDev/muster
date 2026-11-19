@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -36,10 +37,15 @@ func (s *Server) registerTeamPluginPages(mux Mux) {
 // The page's answers, one spelling each.
 const (
 	TeamPluginsStepUp   = "Adding or revoking a team viewer plugin needs a recent sign-in. Confirm it's you, then try again."
-	TeamPluginsOff      = "This server does not offer viewer plugins (plugins are off, or MUSTER_PLUGIN_ORIGINS is unset)."
+	TeamPluginsOff      = "Viewer plugins aren't turned on for this server."
 	TeamPluginsNoPlugin = "That plugin does not exist, is not this team's, or is already revoked."
 	TeamPluginsManager  = "Only a manager of the team manages its viewer plugins."
-	teamPluginsAbout    = "A team viewer plugin opens a team session's previews for every member who can see the session, viewers included. Its token redeems preview hand-offs and nothing else. To serve previews, the preview gateway's admin adds this token to the gateway's PLUGIN_TOKENS_FILE and mints the team's host tokens there as team:<id>."
+	// teamPluginsAbout is the page's lead in words (the jargon audit's
+	// F118); teamPluginsSetup, the gateway setup, is in its ⓘ.
+	teamPluginsAbout = "Viewer plugins let team members open session previews."
+	teamPluginsSetup = "A team viewer plugin opens a team session's previews for every member who can see the session, viewers included. Its key opens previews and nothing else. To serve previews, the preview gateway's admin adds the key to the gateway's PLUGIN_TOKENS_FILE and mints the team's host tokens there as team:<id>."
+	// teamPluginsOffSetup is why viewer plugins are off, for an admin (F119).
+	teamPluginsOffSetup = "plugins are off, or MUSTER_PLUGIN_ORIGINS is unset"
 )
 
 // teamPluginsWrite is the page's gate: teamManagerPage, with this page's own
@@ -67,9 +73,16 @@ func (s *Server) renderTeamPlugins(w http.ResponseWriter, r *http.Request, team 
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Team viewer plugins · ` + html.EscapeString(name) + `</h1>
-<p class="text-sm text-fg2">` + html.EscapeString(teamPluginsAbout) + `</p></section>`)
+<div class="flex items-center gap-1"><p class="text-sm text-fg2">` + html.EscapeString(teamPluginsAbout) + `</p>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "team-plugins-how", Label: "How viewer plugins work", Heading: "How viewer plugins work", Lead: teamPluginsSetup, Inline: true}) + `</div></section>`)
 	if !s.teamPluginsOn() {
-		b.WriteString(`<section class="` + adminCard + `" id="team-plugins-off"><p class="text-sm text-fg2">` + html.EscapeString(TeamPluginsOff) + `</p></section>`)
+		admin := authz.IsAdmin(r.Context())
+		words := TeamPluginsOff
+		if !admin {
+			words += " Your admin can turn them on."
+		}
+		b.WriteString(`<section class="` + adminCard + `" id="team-plugins-off"><div class="flex items-center gap-1"><p class="text-sm text-fg2">` + html.EscapeString(words) + `</p>` +
+			ui.InfoSheetHTML(ui.SetupSheet("team-plugins-setup", "Why viewer plugins are off", "What the server says:", teamPluginsOffSetup, admin)) + `</div></section>`)
 		s.writeNavDocument(w, r, code, "Team plugins", ui.NavAccount, true, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
 		return
 	}

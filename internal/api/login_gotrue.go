@@ -182,10 +182,17 @@ func (s *Server) registerAccountRoutes(mux Mux) {
 // stays bare (writeAuthDocument): every nav link there would answer with the
 // sign-in form. The test is the principal requireSession attached, so a
 // caller cannot pick the wrong one: TestANoticeHasTheNavOnlyForASignedInReader.
-func (s *Server) renderNotice(w http.ResponseWriter, r *http.Request, code int, heading, body string) {
+//
+// sheet, when given, is an ⓘ beside the sentence: where the exact detail (a
+// setting, a variable) goes, never in the sentence itself.
+func (s *Server) renderNotice(w http.ResponseWriter, r *http.Request, code int, heading, body string, sheet ...ui.InfoSheet) {
+	line := `<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>`
+	if len(sheet) > 0 && sheet[0].ID != "" {
+		line = `<div class="flex items-center gap-1">` + line + ui.InfoSheetHTML(sheet[0]) + `</div>`
+	}
 	inner := `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">` + html.EscapeString(heading) + `</h1>
-<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>
+` + line + `
 </section>`
 	if p, ok := authz.From(r.Context()); ok && p.Via == authz.ViaSession {
 		s.writeNavDocument(w, r, code, heading, "", false, inner)
