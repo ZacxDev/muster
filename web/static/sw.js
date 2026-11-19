@@ -377,14 +377,69 @@ self.addEventListener('notificationclick', (event) => {
   // still carry one) has no decision endpoint on this service. Open the app
   // rather than POSTing somewhere that would 404.
   if (event.action) {
-    event.waitUntil(focusOrOpen(data.url || '/'));
+    event.waitUntil(focusOrOpen(sameOriginPath(data.url)));
     return;
   }
 
   // Body tap: bring the app forward (or open it) at this card.
-  const target = (data.url || '/#' + (id || '')).toString();
+  const target = sameOriginPath(data.url || '/#' + (id || ''));
+  // An agent's notification that links an EXTERNAL address (notify_owner,
+  // internal/api notify_owner.go): its url is muster's own /notify/open,
+  // which checks the address against the server's allowlist and redirects.
+  // It opens in a NEW window, so the redirect never takes a muster tab away.
+  if (data.open === 'external' && target.startsWith('/notify/open?')) {
+    event.waitUntil(openNewWindow(target));
+    return;
+  }
   event.waitUntil(focusOrOpen(target));
 });
+
+// sameOriginPath is u as a path on THIS origin, or '/' when it is anything
+// else. 🔴 A NOTIFICATION NEVER STEERS A MUSTER TAB OFF MUSTER: an absolute
+// URL on another origin, a scheme-relative '//host', a '/\host' (which a
+// browser reads as '//host'), a 'javascript:' or 'data:' URL and anything
+// that does not parse all become '/'. An absolute URL on this origin is kept
+// as its path.
+function sameOriginPath(u) {
+  const raw = (u === undefined || u === null ? '' : String(u)).trim();
+  if (!raw) return '/';
+  if (raw[0] !== '/' || raw[1] === '/' || raw[1] === '\\' || /[\\\u0000-\u001f\u007f]/.test(raw)) {
+    try {
+      const abs = new URL(raw);
+      if (abs.origin === self.location.origin) return notSchemeRelative(abs.pathname + abs.search + abs.hash);
+    } catch (e) {
+      /* not an absolute URL either */
+    }
+    return '/';
+  }
+  try {
+    const resolved = new URL(raw, self.location.origin);
+    if (resolved.origin !== self.location.origin) return '/';
+    return notSchemeRelative(resolved.pathname + resolved.search + resolved.hash);
+  } catch (e) {
+    return '/';
+  }
+}
+
+// notSchemeRelative is p, or '/' when p begins '//' or '/\'. 🔴 THE CHECK IS
+// ON THE RESULT, AFTER NORMALISATION: URL parsing keeps an empty first
+// segment, so '/.//host', '/%2e//host', '/a/..//host' and this origin's own
+// 'https://<origin>//host' all come out as '//host', which a navigation then
+// reads as another host.
+function notSchemeRelative(p) {
+  return p.startsWith('//') || p.startsWith('/\\') ? '/' : p;
+}
+
+// openNewWindow opens target (a path on this origin) in a new window, and
+// never moves an open muster tab.
+async function openNewWindow(target) {
+  if (!self.clients.openWindow) return;
+  try {
+    await self.clients.openWindow(target);
+  } catch (e) {
+    console.warn('muster sw: could not open a window for ' + target, e);
+  }
+}
 
 // focusOrOpen moves an open muster tab to target and brings it forward, or
 // opens target in a new window when no tab will take it.

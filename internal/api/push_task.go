@@ -166,6 +166,8 @@ func (s *Server) routerServes(owner int64) bool {
 
 func (s *Server) pushTask(owner int64, event string, payload RouterNotification) {
 	if !s.notifiable() {
+		s.logPushOff(payload.Tag, event)
+		payload.outcome.addDrop(pushDropOff)
 		return
 	}
 	if payload.Data["url"] == "" {

@@ -425,6 +425,10 @@ const (
 	// the browser push services an endpoint may be on — a self-hosted ntfy for
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
 	envPushExtraHosts = "MUSTER_PUSH_EXTRA_HOSTS"
+	// The external hosts an agent's notify_owner link may open (exact names,
+	// https, default port; internal/api notify_owner.go). Empty: muster paths
+	// only.
+	envNotifyLinkHosts = "MUSTER_NOTIFY_LINK_HOSTS"
 	// The opt-in dial guard (internal/safedial): with it on, the postgres
 	// connector refuses a database that is, or resolves to, a loopback,
 	// private, link-local, CGNAT, unspecified or multicast address, checked at
@@ -1050,6 +1054,10 @@ type config struct {
 	// PushExtraHosts is MUSTER_PUSH_EXTRA_HOSTS as read; validate parses it
 	// (push.ParseExtraHosts) and pushExtraHosts returns the clean list.
 	PushExtraHosts string
+	// NotifyLinkHosts is MUSTER_NOTIFY_LINK_HOSTS as read; validate parses it
+	// (push.ParseExtraHosts: the same exact-host grammar) and notifyLinkHosts
+	// returns the clean list.
+	NotifyLinkHosts string
 	// AndroidAllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS.
 	AndroidAllowPINKeys bool
 	// AndroidPackage / AndroidCertSHA256 are MUSTER_ANDROID_PACKAGE and
@@ -1679,6 +1687,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		VAPIDPrivateKey:      strings.TrimSpace(getenv(envVAPIDPrivateKey)),
 		VAPIDSubject:         strings.TrimSpace(getenv(envVAPIDSubject)),
 		PushExtraHosts:       strings.TrimSpace(getenv(envPushExtraHosts)),
+		NotifyLinkHosts:      strings.TrimSpace(getenv(envNotifyLinkHosts)),
 		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
 		AndroidPackage:       strings.TrimSpace(getenv(envAndroidPackage)),
 		AndroidCertSHA256:    strings.TrimSpace(getenv(envAndroidCertSHA256)),
@@ -2668,6 +2677,9 @@ func (c config) validate() error {
 	if _, err := push.ParseExtraHosts(c.PushExtraHosts); err != nil {
 		return fmt.Errorf("%s: %v", envPushExtraHosts, err)
 	}
+	if _, err := push.ParseExtraHosts(c.NotifyLinkHosts); err != nil {
+		return fmt.Errorf("%s: %v", envNotifyLinkHosts, err)
+	}
 	if _, err := c.assetLinks(); err != nil {
 		return err
 	}
@@ -2797,6 +2809,14 @@ func (c config) vapid() push.VAPIDConfig {
 func (c config) pushAllowlist() push.Allowlist {
 	hosts, _ := push.ParseExtraHosts(c.PushExtraHosts)
 	return push.NewAllowlist(hosts)
+}
+
+// notifyLinkHosts is MUSTER_NOTIFY_LINK_HOSTS as exact, lower-case host names
+// (validate has already refused a bad entry, so a parse error here cannot
+// happen and reads as none).
+func (c config) notifyLinkHosts() []string {
+	hosts, _ := push.ParseExtraHosts(c.NotifyLinkHosts)
+	return hosts
 }
 
 // dialGuard is the ONE answer to "are configured-address dials guarded": the
