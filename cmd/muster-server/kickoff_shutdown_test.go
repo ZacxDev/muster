@@ -103,7 +103,7 @@ func (g *heldGateway) SendWithTools(context.Context, agentgateway.Target, string
 
 type readyLister struct{ inst provision.Instance }
 
-func (l readyLister) Instances(context.Context) ([]provision.Instance, error) {
+func (l readyLister) InstancesOf(context.Context, []agents.Agent) ([]provision.Instance, error) {
 	return []provision.Instance{l.inst}, nil
 }
 

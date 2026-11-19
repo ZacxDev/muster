@@ -303,10 +303,18 @@ test.describe('desktop', () => {
 //
 // 🔴 RED at origin/main: no #sidebar-officers-group, no data-nav-officer row,
 // and the waiter's instance is an ordinary row with no officer row to mark.
+//
+// 🔴 THE GROUP'S PLACE (operator decision; nav_officers.go's header): directly
+// below the top rows (#sidebar-top-rows: the chief and every session waiting
+// on the operator) and above the rest of the list. PLAIN is an own agent that
+// does not wait, so the rest of the list is never empty and the "above the
+// list" half is never vacuous. RED before that change: no #sidebar-top-rows,
+// and the group was drawn below the list.
 test.describe('the Officers group', () => {
   const origin = `http://localhost:${sidebarOfficersPort}`;
   const SLEEPER = 'e2e-sleeper:main';
   const WAITER = `e2e-waiter-${stamp}:main`;
+  const PLAIN = `e2e-nav-plain-${stamp}`;
   const OFF_QUESTION = 'Which release notes template should the digest use?';
   let server: Running | undefined;
   let instance = '';
@@ -347,9 +355,11 @@ test.describe('the Officers group', () => {
     expect(instance, 'the waiter names its first instance').not.toBe('');
     fix('agent', '1', instance, `e2e-nav-officer-token-not-a-real-one-${stamp}`);
     offAsk = fix('ask', '1', instance, OFF_QUESTION);
+    fix('agent', '1', PLAIN, `e2e-nav-plain-token-not-a-real-one-${stamp}`);
   });
 
   test.afterAll(async () => {
+    fix('rmagent', '1', PLAIN);
     if (offAsk) fix('rmask', '1', offAsk);
     if (server) await remove(WAITER);
     if (instance) fix('rmagent', '1', instance);
@@ -390,15 +400,29 @@ test.describe('the Officers group', () => {
     const firstPlain = flags.findIndex((f) => !f.chief && !f.wait);
     expect(at, `the waiting instance is listed: ${JSON.stringify(flags)}`).toBeGreaterThanOrEqual(0);
     if (firstPlain >= 0) expect(at, `the waiting instance is above every row that does not wait: ${JSON.stringify(flags)}`).toBeLessThan(firstPlain);
-    // The group is below the list and above Idle (when there is one).
-    const order = await page.evaluate(() => {
-      const list = document.querySelector('#sidebar-agents-list [aria-labelledby="sidebar-agents-label"]');
-      const g = document.getElementById('sidebar-officers-group');
-      const idle = document.getElementById('sidebar-idle');
+    // The group's place: the waiting instance, the asker and the chief are in
+    // the top rows; the group is below them and above the rest of the list
+    // (PLAIN's row), every team group and Idle — in the document AND on
+    // screen (each row's top edge), so a CSS reorder cannot fake it.
+    await expect(page.locator(`#sidebar-top-rows a[data-nav-agent][href^="/agents/${instance}"]`), 'the waiting instance is in the top rows').toHaveCount(1);
+    await expect(page.locator(`#sidebar-top-rows a[data-nav-agent][href^="/agents/${ASKER}"]`), 'the waiting asker is in the top rows').toHaveCount(1);
+    const plain = page.locator(`#sidebar-agents-list a[data-nav-agent][href^="/agents/${PLAIN}"]`);
+    await expect(plain, 'the plain agent is listed').toHaveCount(1);
+    await expect(page.locator(`#sidebar-top-rows a[data-nav-agent][href^="/agents/${PLAIN}"]`), 'the plain agent is not in the top rows').toHaveCount(0);
+    const order = await page.evaluate((plainPath) => {
+      const top = document.getElementById('sidebar-top-rows');
+      const g = document.getElementById('sidebar-officers-group')!;
+      const plainRow = document.querySelector(`#sidebar-agents-list a[data-nav-agent][href^="${plainPath}"]`);
+      const later = [plainRow, ...document.querySelectorAll('#sidebar-agents-list [data-nav-team], #sidebar-idle, #sidebar-superseded')];
       const after = (a: Element | null, b: Element | null) => !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-      return { listFirst: !list || after(list, g), idleAfter: !idle || after(g, idle) };
-    });
-    expect(order).toEqual({ listFirst: true, idleAfter: true });
+      const y = (e: Element) => e.getBoundingClientRect().top;
+      return {
+        topFirst: after(top, g),
+        restAfter: later.every((e) => after(g, e)),
+        onScreen: !!top && !!plainRow && y(top) < y(g) && y(g) < y(plainRow),
+      };
+    }, `/agents/${PLAIN}`);
+    expect(order).toEqual({ topFirst: true, restAfter: true, onScreen: true });
   }
 
   test('desktop: the rail shows the Officers group; an asleep officer opens its page', async ({ page }) => {

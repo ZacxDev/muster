@@ -408,8 +408,17 @@ const (
 // 🔴 IT CARRIES THE PLUGIN'S REASON (operator decision), one line, cut — never
 // the draft or the message it answers (notifyDraftAwaiting's "who and where,
 // never what"): the reason is the plugin's words about the reply.
+//
+// 🔴 AN OFFICER'S REFUSED DRAFT PUSHES NOTHING (officer_push.go: it went back
+// to the officer, which handles it). Its earlier "awaits your approval"
+// notification is WITHDRAWN instead, on the same tag — the refusal used to
+// replace it, and left alone it would offer a decision that no longer exists.
 func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, where int) {
 	id := strconv.FormatInt(d.ID, 10)
+	if d.Officer != nil && !s.officerPushSends(officerPushDraftRefused, p.OwnerID, draftTag(d.ID)) {
+		s.goNotify(p.OwnerID, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: id, Tag: draftTag(d.ID)}, nil)
+		return
+	}
 	s.goNotify(p.OwnerID, push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,
@@ -554,9 +563,16 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", asksTabDrafts, id)
 		return
 	}
+	// A card drawn on an officer's page (officer_needs_you.go) carries that
+	// page as `return`: the decision is THIS one, and only where the browser
+	// lands differs.
+	back, onOfficer := officerReturn(r)
 	if how != "reject" && !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if isDocumentNavigation(r) {
 			w.Header().Set("X-Muster-Step-Up", "required")
+			if onOfficer && s.renderOfficerReturn(w, r, back, http.StatusForbidden, DraftStepUpRequired) {
+				return
+			}
 			s.renderAsksPage(w, r, http.StatusForbidden, DraftStepUpRequired, asksTabDrafts, id)
 			return
 		}
@@ -577,7 +593,18 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	}
 	d, refused := s.decideDraftAs(r.Context(), id, dec)
 	if refused != nil {
+		if onOfficer && s.renderOfficerReturn(w, r, back, refused.code, refused.msg) {
+			return
+		}
 		s.renderAsksPage(w, r, refused.code, refused.msg, refused.tab, id)
+		return
+	}
+	if onOfficer {
+		notice := "draft-approved"
+		if how == "reject" {
+			notice = "draft-rejected"
+		}
+		http.Redirect(w, r, officerReturnDone(back, notice), http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, draftDecidedLink(d.ID), http.StatusSeeOther)
@@ -845,6 +872,14 @@ func draftCardHTML(c plugins.DraftCard) string {
 
 // draftCardHTMLAt is draftCardHTML at now (the expiry pill's clock).
 func draftCardHTMLAt(c plugins.DraftCard, now time.Time) string {
+	return draftCardHTMLIn(c, now, cardPlace{})
+}
+
+// draftCardHTMLIn is THE draft card at now, drawn in place p: the Asks page
+// (the zero place) or an officer's page (p.back, the page each decision
+// returns to). 🔴 ONE CARD: the same markup, the same forms, the same routes
+// and bindings wherever it is drawn — a place only adds its return field.
+func draftCardHTMLIn(c plugins.DraftCard, now time.Time, p cardPlace) string {
 	esc := html.EscapeString
 	d, m := c.Draft, c.Message
 	id := strconv.FormatInt(d.ID, 10)
@@ -910,12 +945,12 @@ func draftCardHTMLAt(c plugins.DraftCard, now time.Time) string {
 		b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-twice>An earlier reply to this message is unconfirmed: it may already have been sent. If you approve this one, the sender may get both.</span>
 `)
 	}
-	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` +
+	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` + p.backField() +
 		draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button></form>`
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
-			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` +
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` + p.backField() +
 				draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>Withdraw the approval</button></form></div>
 `)
 		}
@@ -939,7 +974,7 @@ func draftCardHTMLAt(c plugins.DraftCard, now time.Time) string {
 			}
 			binding = outboundApproveFields(d)
 		}
-		b.WriteString(`<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + binding + `<button type="submit" class="` +
+		b.WriteString(`<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + p.backField() + binding + `<button type="submit" class="` +
 			ui.AsksPrimaryButtonClass + `" data-draft-approve>Approve and send</button></form>` + reject + `</div>
 `)
 	}

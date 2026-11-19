@@ -130,7 +130,10 @@ type Store interface {
 	// yet closed (cleared_at null): what the restart rule clears.
 	Uncleared(ctx context.Context) ([]Episode, error)
 	// MarkCleared records that ended episode id's notification was closed.
-	MarkCleared(ctx context.Context, id int64, at time.Time) error
+	// 🔴 THE CLEAR CLAIM: claimed is true for exactly one caller — the one
+	// whose write took an ended row with no cleared_at — and only that caller
+	// sends the withdrawal (ClaimPush's rule, for the other end of the push).
+	MarkCleared(ctx context.Context, id int64, at time.Time) (claimed bool, err error)
 	// Missed records one more consecutive pass that found open episode id's
 	// session missing, and whether that pass saw its window listed dead
 	// (Episode.DeadListed); it returns the count (0 when it is not open).
@@ -507,10 +510,13 @@ func (p *PG) Uncleared(ctx context.Context) ([]Episode, error) {
 }
 
 // MarkCleared implements Store.
-func (p *PG) MarkCleared(ctx context.Context, id int64, at time.Time) error {
-	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET cleared_at = $2, updated_at = $2
+func (p *PG) MarkCleared(ctx context.Context, id int64, at time.Time) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET cleared_at = $2, updated_at = $2
 		WHERE id = $1 AND ended_at IS NOT NULL AND cleared_at IS NULL`, id, at)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // Missed implements Store.

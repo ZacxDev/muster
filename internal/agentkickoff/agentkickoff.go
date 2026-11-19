@@ -132,10 +132,18 @@ const bookkeepingTimeout = 15 * time.Second
 const EmptyReplyReason = agents.KickoffEmptyReplyReason
 
 // InstanceLister is what the deliverer needs from a provisioner: the live
-// instances, so it can tell a ready recipient from one that is not.
-// agentprovision.Adapter.Instances satisfies it.
+// instances of the agents that owe a first turn, so it can tell a ready
+// recipient from one that is not. agentprovision.Adapter.InstancesOf satisfies
+// it.
+//
+// 🔴 THE OWED AGENTS' INSTANCES, NOT THE FLEET'S. This read runs every tick
+// (10s) while anything is owed, and on the Kubernetes driver's least-privilege
+// layout a whole-fleet read costs three API requests per agent namespace —
+// at ~70 namespaces ~21 requests a second from this loop alone, on the client
+// limiter every other reader shares. An agent absent from the answer has no
+// instance, as it would be absent from a whole-fleet list.
 type InstanceLister interface {
-	Instances(ctx context.Context) ([]provision.Instance, error)
+	InstancesOf(ctx context.Context, ags []agents.Agent) ([]provision.Instance, error)
 }
 
 // Gateway is a first turn's two halves: Resolve (no connection to the runtime) and
@@ -440,7 +448,7 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 	if len(owed) == 0 {
 		return nil
 	}
-	insts, err := d.insts.Instances(ctx)
+	insts, err := d.insts.InstancesOf(ctx, owed)
 	if err != nil {
 		return fmt.Errorf("list instances (no action taken this tick): %w", err)
 	}

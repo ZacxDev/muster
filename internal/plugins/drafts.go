@@ -322,6 +322,18 @@ type DraftCard struct {
 	// session's name by the one naming rule (internal/api readDraftViews),
 	// set by the reader for display only; "" draws AgentName.
 	AgentDisplay string
+	// Person is, for an outreach draft (a follow, a like, a DM), what the
+	// officer's record of the person says of them — the plugin's words, so
+	// UNTRUSTED — set by the reader for display only (internal/api
+	// withBatches); nil when there is no record or it could not be read.
+	Person *OutreachPerson
+}
+
+// OutreachPerson is an outreach draft's person as its card draws them: what
+// their plugin reported (display name, a short bio, a profile address), every
+// field the person's own and untrusted.
+type OutreachPerson struct {
+	Display, Bio, ProfileURL string
 }
 
 var (
