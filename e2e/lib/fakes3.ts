@@ -1,24 +1,30 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 
-// A FAKE S3 for one spec's upload store: path-style requests to one bucket,
-// signed with one access key, holding objects in memory — what muster's
-// upload store does to it for a few small files (PUT, a chunked PUT, HEAD,
-// GET, DELETE, the bucket's HEAD and location; no lifecycle). It is
-// ask-media.spec.ts's (and uploads.spec.ts's) fake, cut to that.
+// THE e2e FAKE S3, one for every spec whose server has an upload store
+// (uploads, pages, ask-media, opencode-ask-media). Path-style, one bucket,
+// what minio-go (internal/uploads) sends: HEAD bucket, ?lifecycle,
+// ?location, PUT (aws-chunked when the payload is streamed), HEAD, GET and
+// DELETE object. Multipart uploads are not played: every file is far under
+// one part. A PUT is checked as S3 checks it: a streamed body's decoded
+// length must match x-amz-decoded-content-length, any other's SHA-256 must
+// match x-amz-content-sha256 (unless UNSIGNED-PAYLOAD).
 //
 //   const s3 = await startFakeS3(port, ACCESS, 'muster-e2e');
 //   … MUSTER_S3_ENDPOINT: `http://127.0.0.1:${port}`, MUSTER_S3_BUCKET: 'muster-e2e' …
+//   s3.objects (key → bytes), s3.log ("<METHOD> <path>[?query]", in order)
 //   await s3.close();
 
 export interface FakeS3 {
   objects: Map<string, Buffer>;
+  log: string[];
   close(): Promise<void>;
 }
 
 const xmlErr = (res: http.ServerResponse, status: number, code: string) =>
   res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`);
 
+// unchunk decodes an aws-chunked body: `<hex size>[;chunk-signature=…]\r\n<data>\r\n` … `0…`.
 function unchunk(b: Buffer): Buffer {
   const out: Buffer[] = [];
   let at = 0;
@@ -42,6 +48,8 @@ const objHeaders = (b: Buffer) => ({
 
 export async function startFakeS3(port: number, access: string, bucket: string): Promise<FakeS3> {
   const objects = new Map<string, Buffer>();
+  const log: string[] = [];
+  const prefix = '/' + bucket;
   const srv = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c) => chunks.push(c));
@@ -49,9 +57,10 @@ export async function startFakeS3(port: number, access: string, bucket: string):
       let body = Buffer.concat(chunks);
       const [rawPath, query = ''] = (req.url ?? '').split('?');
       const p = decodeURIComponent(rawPath);
+      log.push(`${req.method} ${p}${query ? '?' + query : ''}`);
       if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${access}/`)) return xmlErr(res, 403, 'AccessDenied');
-      if (!p.startsWith('/' + bucket)) return xmlErr(res, 404, 'NoSuchBucket');
-      const key = p.slice(bucket.length + 1).replace(/^\//, '');
+      if (p !== prefix && !p.startsWith(prefix + '/')) return xmlErr(res, 404, 'NoSuchBucket');
+      const key = p.slice(prefix.length).replace(/^\//, '');
       if (key === '') {
         if (req.method === 'HEAD') return void res.writeHead(200).end();
         if (query.startsWith('lifecycle')) return xmlErr(res, 404, 'NoSuchLifecycleConfiguration');
@@ -59,7 +68,13 @@ export async function startFakeS3(port: number, access: string, bucket: string):
         return xmlErr(res, 400, 'NotImplemented');
       }
       if (req.method === 'PUT') {
-        if (String(req.headers['x-amz-content-sha256'] ?? '').startsWith('STREAMING')) body = unchunk(body);
+        const declared = String(req.headers['x-amz-content-sha256'] ?? '');
+        if (declared.startsWith('STREAMING')) {
+          body = unchunk(body);
+          if (String(body.length) !== String(req.headers['x-amz-decoded-content-length'])) return xmlErr(res, 400, 'IncompleteBody');
+        } else if (declared !== 'UNSIGNED-PAYLOAD' && declared !== crypto.createHash('sha256').update(body).digest('hex')) {
+          return xmlErr(res, 400, 'XAmzContentSHA256Mismatch');
+        }
         objects.set(key, body);
         return void res.writeHead(200, { ETag: objHeaders(body).ETag }).end();
       }
@@ -74,5 +89,5 @@ export async function startFakeS3(port: number, access: string, bucket: string):
     });
   });
   await new Promise<void>((r) => srv.listen(port, '127.0.0.1', () => r()));
-  return { objects, close: () => new Promise((r) => srv.close(() => r())) };
+  return { objects, log, close: () => new Promise((r) => srv.close(() => r())) };
 }

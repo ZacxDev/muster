@@ -175,7 +175,7 @@ second store). They arrive from where the agent is, never from a browser:
 
 | Route | Who sends | Credential |
 |---|---|---|
-| `POST /mirror/ask-attachments?filename=<name>` | a mirror host's `muster-mirror`, for one of its sessions' `attention_ask` (Claude Code's or opencode's) | the host's mirror token, and the calling session, which the host must list running now: a Claude Code session's id in `X-Muster-Claude-Session`, or an opencode session's key in `X-Muster-Agent-Session` (`opencode:<id>`, with `X-Muster-Client: opencode`), never both, by the same rule as the [MCP door](attention.md#mirrored-opencode-sessions) |
+| `POST /mirror/ask-attachments?filename=<name>` | a mirror host's `muster-mirror`, for one of its sessions' `attention_ask` (Claude Code's or opencode's) | the host's mirror token, and the calling session, which the host must list running now: a Claude Code session's id in `X-Muster-Claude-Session`, or an opencode session's key in `X-Muster-Agent-Session` (`opencode:<id>`; `muster-mirror` also sends `X-Muster-Client: opencode`, which the route does not require, but a request carrying that marker must name the key), never both, by the same rule as the [MCP door](attention.md#mirrored-opencode-sessions) |
 | `POST /agent/ask-attachments?filename=<name>` | `ccd ask-attach <path>` in a dispatched claude-code agent's pod | the agent's own token (`X-Muster-Token`) |
 | `DELETE /mirror/ask-attachments/{id}` | a mirror host taking back an upload whose ask was not filed | as the POST: the upload is revoked and its object deleted; only its owner's uploads (another id is 404) |
 

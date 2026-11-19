@@ -15,7 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -227,10 +227,13 @@ func TestTheAskUploadRouteNamesAnOpenCodeSessionByTheDoorsRule(t *testing.T) {
 
 // TestAMirroredOpenCodeSessionsWhyIsItsContextOrItsFocusAndLastWords: an
 // opencode session's ask stores its context as given (the fallback not read)
-// and, without one, its focus title and its last assistant message — read
-// from its OWN window's backfill as an opencode session (the read names the
-// opencode runtime and the session's key), secrets redacted — as a Claude
-// Code session's does.
+// and, without one, its focus title and its last assistant message, secrets
+// redacted, as a Claude Code session's does. The last words go through the
+// REAL read (no nudgeReadHook): nudgeTranscript, mirrorRead's watch of the
+// session's OWN window (ws oc:@5), whose backfill names its conversation by
+// the BARE opencode id (Msg.Gen "ses_launch", not the "opencode:" key), and
+// nudgeMirrorMessages' mapping of the events. A batch of ANOTHER conversation
+// on that window is not read as its words.
 //
 // 🔴 REGRESSION TEST (the fallback half): at the base an opencode session's
 // ask without a context stored no why at all.
@@ -240,14 +243,22 @@ func TestAMirroredOpenCodeSessionsWhyIsItsContextOrItsFocusAndLastWords(t *testi
 	if _, err := focus.NewPG(f.pool).Upsert(asUser(1), focus.MirrorSubject(key), focus.Write{Title: "Ship the opencode header", Source: focus.SourceSummarizer}); err != nil {
 		t.Fatal(err)
 	}
-	var reads []chiefnudge.Session
-	f.srv.nudgeReadHook = func(_ context.Context, s chiefnudge.Session) (nudgeRead, error) {
-		reads = append(reads, s)
-		if s.Runtime != mirror.RuntimeOpenCode || s.Key != key {
-			return nudgeRead{}, errNoSession
+	backfill := func(gen string) {
+		f.mirror.v2.mu.Lock()
+		f.mirror.v2.batches = []mirror.Msg{
+			{Gen: gen, Reset: true, Events: []cctranscript.Event{
+				{Kind: cctranscript.KindPrompt, Text: "push it when the tests pass", Line: 7},
+				{Kind: cctranscript.KindText, Text: "Pushed with token ghp_" + strings.Repeat("b", 36) + " and waiting."}}},
+			{Gen: gen, PromptIndex: true, Prompts: []cctranscript.PromptRef{{Line: 7}}},
 		}
-		return nudgeRead{Msgs: []chiefnudge.Msg{{Role: "assistant", Text: "Pushed with token ghp_" + strings.Repeat("b", 36) + " and waiting."}, {Role: "user", Text: "?"}}}, nil
+		f.mirror.v2.mu.Unlock()
 	}
+	watched := func() []string {
+		f.mirror.mu.Lock()
+		defer f.mirror.mu.Unlock()
+		return append([]string(nil), f.mirror.asked...)
+	}
+	backfill("ses_launch")
 	ask := func(args map[string]any) attention.Ask {
 		t.Helper()
 		_, r, body := f.mirrorRPC(t, mirrorAsOpenCode(ws, key), mcpToolCall(attentionAskTool, args))
@@ -269,15 +280,24 @@ func TestAMirroredOpenCodeSessionsWhyIsItsContextOrItsFocusAndLastWords(t *testi
 		return a
 	}
 	if a := ask(map[string]any{"question": "Ship?", "context": "CI is green but the canary is red"}); a.Why == nil || a.Why.Text != "CI is green but the canary is red" ||
-		a.Why.Focus != "" || a.Why.Last != "" || len(reads) != 0 {
-		t.Fatalf("with a context the why is %+v (%d reads)", a.Why, len(reads))
+		a.Why.Focus != "" || a.Why.Last != "" || len(watched()) != 0 {
+		t.Fatalf("with a context the why is %+v (windows watched: %v)", a.Why, watched())
 	}
 	a := ask(map[string]any{"question": "Ship now?"})
 	if a.Asker.MirrorSession != key || a.Why == nil || a.Why.Text != "" || a.Why.Focus != "Ship the opencode header" ||
-		!strings.HasPrefix(a.Why.Last, "Pushed with token ") || !strings.HasSuffix(a.Why.Last, " and waiting.") || strings.Contains(a.Why.Last, "ghp_bbbb") || len(reads) != 1 {
-		t.Fatalf("without a context the why is %+v (asker %+v, reads %+v)", a.Why, a.Asker, reads)
+		!strings.HasPrefix(a.Why.Last, "Pushed with token ") || !strings.HasSuffix(a.Why.Last, " and waiting.") || strings.Contains(a.Why.Last, "ghp_bbbb") {
+		t.Fatalf("without a context the why is %+v (asker %+v)", a.Why, a.Asker)
 	}
-	if s := reads[0]; s.Window != "@5" || s.TmuxSession != "oc" || s.Host != "ws" {
-		t.Fatalf("the backfill read named %+v, want ws's oc:@5", s)
+	if got := watched(); len(got) != 1 || got[0] != "@5" {
+		t.Fatalf("the backfill read watched windows %v, want ses_launch's @5 once", got)
+	}
+	// The control: the window's backfill is another conversation's (the
+	// "opencode:" key spelled as its Gen is one too): no last words, the
+	// focus title alone.
+	for _, gen := range []string{"ses_other", key} {
+		backfill(gen)
+		if a := ask(map[string]any{"question": "And now? (" + gen + ")"}); a.Why == nil || a.Why.Focus != "Ship the opencode header" || a.Why.Last != "" {
+			t.Fatalf("a backfill of conversation %q: the why is %+v", gen, a.Why)
+		}
 	}
 }

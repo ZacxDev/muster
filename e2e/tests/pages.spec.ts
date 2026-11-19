@@ -1,5 +1,4 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -9,6 +8,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, pagesFakeS3Port, pagesMirrorMCPPort, pagesPort, pagesRouterPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { clsInit, readCls, settle } from '../lib/cls';
 
 // SHAREABLE PAGES, every hop real (internal/api pages.go, page_tools.go,
@@ -51,6 +51,7 @@ const localMCP = `http://127.0.0.1:${pagesMirrorMCPPort}/mcp`;
 const ACCESS = 'e2e-pages-s3-access-not-real';
 const BRAND = 'Example Studio ' + stamp;
 let server: Running | undefined;
+let s3: FakeS3 | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 
@@ -59,61 +60,6 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8AAQv8ZYAwAQ84H+VjtZqAAAAAASUVORK5CYII=',
   'base64',
 );
-
-// --- the fake S3 (uploads.spec.ts's, minus multipart: every file here is tiny) ---
-const objects = new Map<string, Buffer>();
-const xmlErr = (res: http.ServerResponse, status: number, code: string) =>
-  res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`);
-function unchunk(b: Buffer): Buffer {
-  const out: Buffer[] = [];
-  let at = 0;
-  for (;;) {
-    const eol = b.indexOf('\r\n', at);
-    if (eol < 0) break;
-    const size = parseInt(b.subarray(at, eol).toString('latin1').split(';')[0], 16);
-    if (!size) break;
-    out.push(b.subarray(eol + 2, eol + 2 + size));
-    at = eol + 2 + size + 2;
-  }
-  return Buffer.concat(out);
-}
-const objHeaders = (b: Buffer) => ({
-  'Content-Length': String(b.length),
-  ETag: '"' + crypto.createHash('md5').update(b).digest('hex') + '"',
-  'Last-Modified': new Date().toUTCString(),
-  'Content-Type': 'application/octet-stream',
-});
-const s3 = http.createServer((req, res) => {
-  const chunks: Buffer[] = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    let body = Buffer.concat(chunks);
-    const [rawPath, query = ''] = (req.url ?? '').split('?');
-    const p = decodeURIComponent(rawPath);
-    if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${ACCESS}/`)) return xmlErr(res, 403, 'AccessDenied');
-    if (!p.startsWith('/muster-e2e')) return xmlErr(res, 404, 'NoSuchBucket');
-    const key = p.replace(/^\/muster-e2e\/?/, '');
-    if (key === '') {
-      if (req.method === 'HEAD') return void res.writeHead(200).end();
-      if (query.startsWith('lifecycle')) return xmlErr(res, 404, 'NoSuchLifecycleConfiguration');
-      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
-      return xmlErr(res, 400, 'NotImplemented');
-    }
-    if (req.method === 'PUT') {
-      if (String(req.headers['x-amz-content-sha256'] ?? '').startsWith('STREAMING')) body = unchunk(body);
-      objects.set(key, body);
-      return void res.writeHead(200, { ETag: objHeaders(body).ETag }).end();
-    }
-    const b = objects.get(key);
-    if (req.method === 'HEAD') return b ? void res.writeHead(200, objHeaders(b)).end() : void res.writeHead(404).end();
-    if (req.method === 'GET') return b ? void res.writeHead(200, objHeaders(b)).end(b) : xmlErr(res, 404, 'NoSuchKey');
-    if (req.method === 'DELETE') {
-      objects.delete(key);
-      return void res.writeHead(204).end();
-    }
-    res.writeHead(405).end();
-  });
-});
 
 // --- the fake permission router: it records POST /api/notify ---------------------
 type Notification = { type: string; title?: string; body?: string; tag?: string; data?: Record<string, string> };
@@ -141,7 +87,7 @@ const fix = (...args: string[]) =>
 
 test.beforeAll(async () => {
   test.setTimeout(240_000);
-  await new Promise<void>((r) => s3.listen(pagesFakeS3Port, '127.0.0.1', () => r()));
+  s3 = await startFakeS3(pagesFakeS3Port, ACCESS, 'muster-e2e');
   await new Promise<void>((r) => router.listen(pagesRouterPort, '127.0.0.1', () => r()));
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   server = await startServer(versionTerm, pagesPort, {
@@ -196,7 +142,7 @@ test.afterAll(async () => {
       await done;
     }
     await server?.stop();
-    await new Promise((r) => s3.close(r));
+    await s3?.close();
     await new Promise((r) => router.close(r));
     fs.rmSync(dir, { recursive: true, force: true });
   }
