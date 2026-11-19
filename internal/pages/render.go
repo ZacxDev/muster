@@ -386,8 +386,8 @@ R(AEL,D,["submit",function(ev){
 })();`
 }
 
-// contentThemeClass is the class on the content document's <html>: the app's
-// one theme. Every document the app draws carries class="dark" (internal/ui's
+// contentThemeClass is the class on the content document's and the shell's
+// <html>: the app's one theme. Every document the app draws carries class="dark" (internal/ui's
 // layouts; the light theme has no toggle since the theme head forces dark), and
 // the palette (web/css/tokens.css) selects its dark block by it, its light one
 // by its absence.
@@ -550,46 +550,52 @@ const sessionIcon = `<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" str
 // from y -4 (past the screen's top edge) to 40, the header's bottom (an
 // ::after is placed against the padding box, inside the 1px border, so
 // bottom -6px is the box's bottom edge plus 5): never over the page below.
-const shellCSS = `:root{color-scheme:light dark}html,body{margin:0;height:100%;overflow:hidden;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+//
+// Its colours are the app's palette, the same contentThemeCSS the frame
+// carries (Shell writes it first), named by role as the app names them: the
+// header is the app header's ground (bg) and hairline (line), a menu or the
+// confirm bar a surface (s1), a control's edge `edge`, the confirm's Send the
+// accent. TestTheShellIsTheAppsTheme resolves them.
+const shellCSS = `:root{--bg:rgb(var(--mu-bg));--s1:rgb(var(--mu-s1));--s2:rgb(var(--mu-s2));--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--muted:rgb(var(--mu-muted));--line:rgb(var(--mu-line));--edge:rgb(var(--mu-edge));--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent))}html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 header{position:fixed;top:0;left:0;right:0;z-index:2;box-sizing:border-box;height:` + shellHeaderPx + `px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;
-background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent);transition:transform .18s ease-out}
+background:var(--bg);border-bottom:1px solid var(--line);transition:transform .18s ease-out}
 header[data-hidden]:not(:focus-within){transform:translateY(-100%)}
 header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
-header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,CanvasText 65%,transparent)}
+header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
 .sess{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
-border:1px solid color-mix(in srgb,CanvasText 25%,transparent);color:inherit;text-decoration:none;font-size:13px}
+border:1px solid var(--edge);color:inherit;text-decoration:none;font-size:13px}
 .sess::after{content:"";position:absolute;left:-2px;right:-2px;bottom:-6px;height:44px}.sess svg{flex:none;width:14px;height:14px}
 .sess .sl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}}
-.chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
+.chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid var(--edge);
 background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;left:-4px;right:-4px;bottom:-6px;height:44px}
 .scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
-.pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:Canvas;
+.pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:var(--s1);
 padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25)}
 @media (min-width:640px){.scrim{background:transparent}.pop{left:auto;bottom:auto;top:44px;right:8px;width:24rem;max-width:calc(100vw - 16px);border-radius:12px;padding:8px;
-box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid color-mix(in srgb,CanvasText 15%,transparent)}}
+box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid var(--line)}}
 .scrim[hidden],.pop[hidden]{display:none}
-.pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:var(--muted)}
 .pop ul{list-style:none;margin:0;padding:0}.pop form{display:contents}
 .pop a,.pop button{box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;
 background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;white-space:nowrap;cursor:pointer}
-.pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:color-mix(in srgb,CanvasText 9%,transparent)}
-.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
-.pop hr{border:0;border-top:1px solid color-mix(in srgb,CanvasText 15%,transparent);margin:6px 4px}
+.pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:var(--s2)}
+.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:var(--muted)}
+.pop hr{border:0;border-top:1px solid var(--line);margin:6px 4px}
 #action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
-.confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:Canvas;
-padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid color-mix(in srgb,CanvasText 20%,transparent);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
-@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}}
+.confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:var(--s1);
+padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
+@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid var(--line)}}
 .confirm[hidden]{display:none}.confirm:focus{outline:none}
-.confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:color-mix(in srgb,CanvasText 70%,transparent);font-size:14px}
+.confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:var(--fg2);font-size:14px}
 .confirm .cs{margin:0 0 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
-padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,transparent)}
+padding:8px;border-radius:8px;background:var(--s2)}
 .confirm .cb{display:flex;justify-content:flex-end;gap:8px}
 .confirm button{min-height:44px;min-width:5.5rem;padding:0 16px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;color:inherit;
-background:transparent;border:1px solid color-mix(in srgb,CanvasText 25%,transparent)}.confirm button.go{background:#2f6fde;border-color:#2f6fde;color:#fff}
-#action-toasts>*{padding:8px 12px;border-radius:8px;background:CanvasText;color:Canvas;font-size:14px;overflow-wrap:anywhere}`
+background:transparent;border:1px solid var(--edge)}.confirm button.go{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+#action-toasts>*{padding:8px 12px;border-radius:8px;background:var(--fg);color:var(--bg);font-size:14px;overflow-wrap:anywhere}`
 
 // Shell is the shell document: the instance branding and the title in one
 // slim header (and, for the owner, the version chip), the sandboxed frame of
@@ -598,7 +604,7 @@ func Shell(v ShellView) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<html lang="en" class="` + contentThemeClass + `"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex, nofollow">
 <title>` + esc(v.Title) + `</title>
 `)
@@ -606,7 +612,7 @@ func Shell(v ShellView) string {
 		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
 `)
 	}
-	b.WriteString(`<style>` + shellCSS + `</style></head>
+	b.WriteString(`<style>` + contentThemeCSS + "\n" + shellCSS + `</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)

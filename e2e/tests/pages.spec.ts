@@ -1249,8 +1249,9 @@ for (const vp of ROUND_VIEWPORTS) {
   });
 }
 
-// THE CONTENT DOCUMENT IS IN THE APP'S THEME (internal/pages render.go Content,
-// content_theme.css): a markdown page's ground is the app's background, its
+// THE PAGE IS IN THE APP'S THEME (internal/pages render.go Content and Shell,
+// content_theme.css): the page's own top bar is the app header's ground, and
+// in the frame a markdown page's ground is the app's background, its
 // table cells are ruled in the palette's line colour, and its links are the
 // app's accent, for the owner and for a link's viewer.
 //
@@ -1263,7 +1264,7 @@ for (const vp of ROUND_VIEWPORTS) {
 //
 // MUSTER_E2E_PAGES_SHOTS=<dir> saves the owner's view in each theme there.
 const THEME = {
-  dark: { bg: 'rgb(17, 15, 28)', accent: 'rgb(228, 181, 86)', line: 'rgb(47, 42, 72)' },
+  dark: { bg: 'rgb(17, 15, 28)', accent: 'rgb(228, 181, 86)', line: 'rgb(47, 42, 72)', text: 'rgb(238, 235, 247)' },
   light: { bg: 'rgb(246, 244, 251)', accent: 'rgb(131, 93, 15)', line: 'rgb(220, 215, 234)' },
 } as const;
 const THEMED_MD =
@@ -1289,6 +1290,8 @@ for (const vp of ROUND_VIEWPORTS) {
       // The app's own ground, in each theme, from the app's own document.
       await page.goto(origin + '/pages');
       const appDark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+      const appHeader = await page.locator('header').first().evaluate((h) => getComputedStyle(h).backgroundColor);
+      expect(appHeader, "control: the app's header is drawn on its dark ground").toBe(THEME.dark.bg);
       await page.evaluate(() => document.documentElement.classList.remove('dark'));
       const appLight = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
       expect(appDark, "control: the app's dark ground is the palette's").toBe(THEME.dark.bg);
@@ -1298,6 +1301,14 @@ for (const vp of ROUND_VIEWPORTS) {
       const frame = page.frameLocator('iframe#page');
       await expect(frame.locator('td').first()).toHaveText('Basic');
       await shot(page, `theme-${vp.name}-dark`);
+      // The page's own top bar is the app's header: its ground and its rule.
+      const bar = await page.locator('header[data-page-brand]').evaluate((h) => {
+        const c = getComputedStyle(h);
+        return { bg: c.backgroundColor, rule: c.borderBottomColor, text: getComputedStyle(h.querySelector('[data-page-title]')!).color };
+      });
+      expect(bar.bg, "the page's top bar is the app header's ground, not white").toBe(appHeader);
+      expect(bar.rule, "the top bar's rule is the palette's line").toBe(THEME.dark.line);
+      expect(bar.text, "the top bar's title is the palette's text").toBe(THEME.dark.text);
       const dark = await look(frame);
       expect(dark.bg, "the frame's ground is the app's dark background").toBe(THEME.dark.bg);
       expect(dark.border, 'a table cell is ruled: 1px solid, in the line colour').toEqual(['1px', 'solid', THEME.dark.line, '1px', 'solid']);

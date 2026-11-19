@@ -333,3 +333,90 @@ func TestTheGuardsInstrumentsWork(t *testing.T) {
 		}
 	}
 }
+
+// resolveColour resolves expr's var() references against vars (a custom
+// property map), repeatedly, and fails on one it cannot resolve.
+func resolveColour(t *testing.T, vars map[string]string, expr string) string {
+	t.Helper()
+	re := regexp.MustCompile(`var\((--[a-z0-9-]+)\)`)
+	for i := 0; i < 8 && re.MatchString(expr); i++ {
+		expr = re.ReplaceAllStringFunc(expr, func(m string) string {
+			v, ok := vars[re.FindStringSubmatch(m)[1]]
+			if !ok {
+				t.Fatalf("%s is not defined on the root", m)
+			}
+			return v
+		})
+	}
+	return expr
+}
+
+// declOf is property prop's value in the first rule whose selector is sel.
+func declOf(t *testing.T, rules []cssRule, sel, prop string) string {
+	t.Helper()
+	for _, r := range rules {
+		if r.sel != sel {
+			continue
+		}
+		for _, d := range strings.Split(r.body, ";") {
+			if k, v, ok := strings.Cut(d, ":"); ok && strings.TrimSpace(k) == prop {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	t.Fatalf("no %s in a %q rule", prop, sel)
+	return ""
+}
+
+// TestTheShellIsTheAppsTheme: the page's own top bar, its version menu and
+// the owner's confirm bar are drawn in the app's palette (the same generated
+// stylesheet the frame carries), not the device's system colours.
+//
+// The expected colours are the palette's, copied by hand from
+// web/css/tokens.css, never read back from the shell.
+func TestTheShellIsTheAppsTheme(t *testing.T) {
+	out := pages.Shell(pages.ShellView{Title: "T", FrameSrc: "/c", Base: "/b", Nonce: "N",
+		Owner: &pages.OwnerChrome{Version: 1, Versions: []pages.ShellVersion{{Version: 1, Current: true, Href: "/v1"}}, DetailHref: "/d"}})
+	if !strings.Contains(out, `<html lang="en" class="dark">`) {
+		t.Errorf("the shell's <html> does not carry the app's theme class: %.120q", out)
+	}
+	css := styleOf(t, out)
+	for _, bad := range []string{"Canvas", "prefers-color-scheme", "color-scheme:light dark", "#2f6fde"} {
+		if strings.Contains(css, bad) {
+			t.Errorf("the shell's CSS still uses %q, not the app's palette", bad)
+		}
+	}
+	rules := cssRules(css)
+	for _, c := range []struct {
+		name             string
+		dark             bool
+		bg, fg, line, s1 string
+	}{
+		{"dark", true, "rgb(17 15 28)", "rgb(238 235 247)", "rgb(47 42 72)", "rgb(25 22 42)"},
+		{"light", false, "rgb(246 244 251)", "rgb(26 22 48)", "rgb(220 215 234)", "rgb(255 255 255)"},
+	} {
+		vars := rootTokens(t, css, c.dark)
+		for _, r := range rules {
+			if r.sel == ":root" && strings.Contains(r.body, "--muted:") {
+				for _, d := range strings.Split(r.body, ";") {
+					if k, v, ok := strings.Cut(d, ":"); ok {
+						vars[strings.TrimSpace(k)] = strings.TrimSpace(v)
+					}
+				}
+			}
+		}
+		for _, chk := range []struct{ what, sel, prop, want string }{
+			{"the page's ground", "html,body", "background", c.bg},
+			{"the page's text", "html,body", "color", c.fg},
+			{"the header's ground", "header", "background", c.bg},
+			{"the header's rule", "header", "border-bottom", "1px solid " + c.line},
+			{"the version menu's ground", ".pop", "background", c.s1},
+			{"the confirm bar's ground", ".confirm", "background", c.s1},
+			{"the confirm bar's rule", ".confirm", "border-top", "1px solid " + c.line},
+		} {
+			if got := resolveColour(t, vars, declOf(t, rules, chk.sel, chk.prop)); got != chk.want {
+				t.Errorf("%s selected: %s (%s %s) = %q, want the app's %q", c.name, chk.what, chk.sel, chk.prop, got, chk.want)
+			}
+		}
+	}
+}
