@@ -224,19 +224,27 @@ between waiting and idle, and its notification closes when the stop ends:
 began, or answered the prompt it was waiting on; a chief nudge muster sent
 does not count. A prompt answered at the terminal ends the stop the moment its
 host reports the window no longer waiting, and the push and the row go at
-once; a message of your own is seen by the next 30-second pass, and the push
-and the row go then), **you
+once. A message of your own typed into a pushed idle stop is checked the moment
+its host reports the window's status moved (normally busy, about a second after
+you press Enter): the session's transcript is read then, and if your message is
+in it the stop ends and the push and the row go at once. If the transcript does
+not show your message yet at that moment, nothing is decided there, and the
+next 30-second pass reads it again and ends the stop then. A stop that was
+never pushed, and a message the host reports no status change for, are left
+to that pass), **you
 opened the session in muster** (its rendered view or terminal, or the agent's
 conversation, on the web or in the app, which shows the same pages: the push
 and the row go at once; the Agents list, the bar, the Asks page and a prefetch
 do not count, and looking at the window in a tmux terminal outside muster
 cannot be seen), sustained work of its own (2 minutes), or its window gone
 from a host that is online. Whatever ends it, the notification is withdrawn
-as the stop ends, not on a later pass, with two exceptions that the next
-30-second pass closes instead: a stop whose notification was sent less than
-15 seconds before it ended (withdrawing it at once could reach your device
-before the notification itself, which would then stay up), and a stop
-ended because it repeats one you already dealt with. A stop you dealt with (acted in, or opened) is not
+as the stop ends, not on a later pass, with two exceptions. A stop whose
+notification was sent less than 15 seconds before it ended is withdrawn once
+those 15 seconds are up, not at once (withdrawing it at once could reach your
+device before the notification itself, which would then stay up); the next
+30-second pass is the backstop for it, and only one withdrawal is ever sent. A
+stop ended because it repeats one you already dealt with is closed by the next
+30-second pass. A stop you dealt with (acted in, or opened) is not
 pushed again while the session sits where it was; once it moves, its next
 stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting

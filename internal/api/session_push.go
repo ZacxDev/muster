@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -607,15 +608,17 @@ func episodeBody(state string, idle time.Duration) string {
 // shows, and — cleared_at set — nothing ever withdraws it. So an episode
 // pushed less than pushBroadcastTimeout ago (the bound on one goNotify
 // fan-out: its push has been sent, or given up, by then) is NOT cleared here:
-// it is left uncleared, its row updated, and a later pass's backstop
-// withdraws it once that much time has passed. The check is here, not in
-// endEpisode, because the backstop can run a moment after the push too.
+// it is left uncleared, its row updated, and its withdrawal is retried the
+// moment that much time has passed (clearEpisodeLater) — with a later pass's
+// backstop behind it. The check is here, not in endEpisode, because the
+// backstop can run a moment after the push too.
 func (s *Server) clearEpisode(octx context.Context, ep sessionstate.Episode) {
 	if ep.PushedAt.IsZero() || !ep.ClearedAt.IsZero() {
 		return
 	}
-	if s.now().Sub(ep.PushedAt) < pushBroadcastTimeout {
-		s.attentionChanged(ep.Owner, episodeKey(ep.ID)) // its row goes now; its push on a later pass
+	if wait := pushBroadcastTimeout - s.now().Sub(ep.PushedAt); wait > 0 {
+		s.attentionChanged(ep.Owner, episodeKey(ep.ID)) // its row goes now; its push once the fan-out is done
+		s.clearEpisodeLater(octx, ep, wait)
 		return
 	}
 	claimed, err := s.ext.Episodes.MarkCleared(octx, ep.ID, s.now())
@@ -643,6 +646,58 @@ func (s *Server) clearEndedEpisodes(octx context.Context, owner int64) {
 	for _, ep := range eps {
 		s.clearEpisode(octx, ep)
 	}
+}
+
+// episodeClearRetries is the withdrawals clearEpisode deferred, one per
+// episode. after, when set (a test), replaces time.AfterFunc.
+type episodeClearRetries struct {
+	mu      sync.Mutex
+	pending map[int64]bool
+	after   func(d time.Duration, f func())
+}
+
+// clearEpisodeLater runs clearEpisode for ended episode ep again after wait —
+// the rest of its push's pushBroadcastTimeout — so a stop ended moments after
+// its push is withdrawn about then, not on the pass after (up to
+// SessionStateInterval later). 🔴 IDEMPOTENT WITH THE BACKSTOP: the retry is a
+// plain clearEpisode, so the MarkCleared claim decides which of it and
+// clearEndedEpisodes sends the one `resolved`; one retry per episode is
+// pending at a time, and one that fires a moment early schedules itself again.
+// It runs with octx's values (its principal: the claim is row-level-secured)
+// and is cancelled by the server's shutdown (streams): once muster is shutting
+// down it does nothing, and the backstop of the next process withdraws it.
+func (s *Server) clearEpisodeLater(octx context.Context, ep sessionstate.Episode, wait time.Duration) {
+	r := &s.clearRetry
+	r.mu.Lock()
+	if r.pending[ep.ID] {
+		r.mu.Unlock()
+		return
+	}
+	if r.pending == nil {
+		r.pending = map[int64]bool{}
+	}
+	r.pending[ep.ID] = true
+	after := r.after
+	r.mu.Unlock()
+	if after == nil {
+		after = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+	}
+	// octx's values (its principal), not its deadline: the caller's context
+	// (a pass's, a hook's) has ended by the time this runs.
+	kept := context.WithoutCancel(octx)
+	after(wait, func() {
+		r.mu.Lock()
+		delete(r.pending, ep.ID)
+		r.mu.Unlock()
+		base := s.streams.context()
+		if base.Err() != nil {
+			return // muster is shutting down
+		}
+		rctx, cancel := context.WithCancel(kept)
+		defer cancel()
+		defer context.AfterFunc(base, cancel)()
+		s.clearEpisode(rctx, ep)
+	})
 }
 
 // --- the waiting hook --------------------------------------------------------

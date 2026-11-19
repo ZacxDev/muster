@@ -185,6 +185,9 @@ type Server struct {
 	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
 	// another, 0 for none.
 	waitingGrace time.Duration
+	// clearRetry is the episode withdrawals deferred until their push's
+	// fan-out has had pushBroadcastTimeout (clearEpisodeLater, session_push.go).
+	clearRetry episodeClearRetries
 
 	// askLog is the ask log's capture state (ask_log.go), nil when
 	// Extensions.AskLog is unset; set by UseExtensions.

@@ -309,7 +309,14 @@ An episode is one stop of one session.
     conversation is read for this once after the episode opens (or after a
     restart, so episodes opened before the rule existed are read too), then
     again only when the session's streak moves — a record of what was READ,
-    kept apart from the streak every pass writes onto the episode;
+    kept apart from the streak every pass writes onto the episode. A PUSHED,
+    non-waiting mirrored episode is also checked from the hub's status hook
+    (`episodeStatusMoved`, through `MirrorStatusChanged`) the moment its window
+    is listed in a known, non-waiting status on a new streak, so the owner's
+    message ends it about a second after they type rather than on the pass.
+    That read only ever ends: one that finds no owner message is NOT recorded
+    as read (the transcript can lag the status), so the pass reads the streak
+    again;
   - **the owner opened the session in muster** (`viewed`), at once: the
     document of the session's own page — a mirrored window's rendered view or
     terminal page, or an agent's page for the conversation it draws — under
