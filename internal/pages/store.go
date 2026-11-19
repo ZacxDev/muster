@@ -493,17 +493,19 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 	}
 	var l Link
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := lockPage(ctx, tx, id); err != nil {
+		owner, err := lockPage(ctx, tx, id)
+		if err != nil {
 			return err
 		}
 		if err := openLinkRoom(ctx, tx, id); err != nil {
 			return err
 		}
-		var err error
 		// 🔴 ONLY THE HASH IS WRITTEN; the token goes back to the caller once.
-		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, made_by_agent, decided_at)
-			VALUES ($1, $2, $3, $4, $5, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
-			id, TokenHash(tok), string(state), truncate(requestedBy, 200), byAgent))
+		// The row names the PAGE's owner, never the caller's default: on a
+		// team's page a member's Share writes the team's link (0160).
+		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, made_by_agent, decided_at)
+			VALUES ($6, $1, $2, $3, $4, $5, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
+			id, TokenHash(tok), string(state), truncate(requestedBy, 200), byAgent, owner))
 		return err
 	})
 	if err != nil {
@@ -565,9 +567,10 @@ func (s *PGStore) insertReusable(ctx context.Context, tx pgx.Tx, owner, id int64
 	}
 	// 🔴 THE LOOKUP KEY IS STILL THE HASH; the sealed copy is only ever read
 	// back to show the owner (or the agent, in auto mode) the same address.
-	l, err := scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, made_by_agent, reusable, token_sealed, decided_at)
-		VALUES ($1, $2, 'live', $3, $4, true, $5, now()) RETURNING `+linkCols,
-		id, TokenHash(tok), truncate(requestedBy, 200), byAgent, sealed))
+	// The page's owner, named (a team member's Share writes the team's row).
+	l, err := scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, made_by_agent, reusable, token_sealed, decided_at)
+		VALUES ($6, $1, $2, 'live', $3, $4, true, $5, now()) RETURNING `+linkCols,
+		id, TokenHash(tok), truncate(requestedBy, 200), byAgent, sealed, owner))
 	if err != nil {
 		return Link{}, err
 	}
@@ -804,7 +807,7 @@ func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component stri
 			return ErrLinkNotFound
 		}
 		var err error
-		out, err = insertResponse(ctx, tx, l.PageID, l.ID, v, component, kind, data, uploadID)
+		out, err = insertResponse(ctx, tx, l.OwnerID, l.PageID, l.ID, v, component, kind, data, uploadID)
 		return err
 	})
 	if err != nil {
@@ -819,11 +822,11 @@ func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component stri
 func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	var out Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := lockPage(ctx, tx, id); err != nil {
+		owner, err := lockPage(ctx, tx, id)
+		if err != nil {
 			return err
 		}
-		var err error
-		out, err = insertResponse(ctx, tx, id, 0, v, component, kind, data, uploadID)
+		out, err = insertResponse(ctx, tx, owner, id, 0, v, component, kind, data, uploadID)
 		return err
 	})
 	if err != nil {
@@ -840,7 +843,10 @@ func (s *PGStore) AddOwnerResponse(ctx context.Context, id int64, v int, compone
 // 🔴 ONE RESPONDER PER ROW: linkID > 0 is that link's response; 0 is the
 // owner's (by_owner, link_id NULL — 0152's page_responses_one_responder).
 // The owner's caps are a link's caps, so their own view is no bigger a hole.
-func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
+//
+// owner is the PAGE's owner, named on the row: a team member's response on a
+// team's page is the team's row (0160), recorded as theirs by responder_user.
+func insertResponse(ctx context.Context, tx pgx.Tx, owner, page, linkID int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
@@ -865,8 +871,8 @@ func insertResponse(ctx context.Context, tx pgx.Tx, page, linkID int64, v int, c
 	if kind == KindUpload && files >= MaxUploadsPerLink {
 		return Response{}, fmt.Errorf("%w: %s recorded %d files, the most one link may", ErrTooMany, who, files)
 	}
-	out, err := scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (page_id, link_id, by_owner, version, component, kind, data, upload_public_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+responseCols, page, link, byOwner, v, component, string(kind), data, uploadID))
+	out, err := scanResponse(tx.QueryRow(ctx, `INSERT INTO page_responses (owner_id, page_id, link_id, by_owner, version, component, kind, data, upload_public_id)
+		VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+responseCols, page, link, byOwner, v, component, string(kind), data, uploadID, owner))
 	// The data's own CHECK (0116: pg_column_size(data) <= 40000) can refuse
 	// what CheckSubmit's byte bound let through (it bounds the JSON text,
 	// not its stored form): a refusal, never a server error.
