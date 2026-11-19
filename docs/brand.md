@@ -30,8 +30,8 @@ The web app's copies are in `web/icon-src/` (the sources) and
 
 | served file | made from | used for |
 |---|---|---|
-| `lockup-horizontal.svg` | copied | the header, the sidebar, the sign-in page and the admin claim page |
-| `favicon.svg` | copied | the browser tab: a version of the mark drawn on a 16 px grid; also the server in view's entry in the server switcher's list, when it has no branding |
+| `lockup-horizontal.svg` | copied | the header, the sign-in page and the admin claim page |
+| `favicon.svg` | copied | the browser tab: a version of the mark drawn on a 16 px grid; also the sidebar server switcher's picture of a server with no branding (the row and its own entry in the list) |
 | `favicon-32.png` | `favicon.svg` at 32 px | the tab, in a browser that draws no SVG icon |
 | `icon-192.png`, `icon-512.png` | `icon.svg` | the manifest's `any` icons, a large favicon, and the Web Push icon (192) |
 | `apple-touch-icon.png` | `icon.svg` at 180 px | the touch icon (iOS home screen) |
@@ -69,7 +69,8 @@ safe zone, and every colour has at least 3:1 contrast with its ground.
   least 120 px wide. The header draws the lockup 28 px tall, about 132 px wide.
   On a phone-width screen (below 640 px) the header crops it to the mark alone,
   28 px tall and 38 px wide, so the update notice has room in the top-right
-  corner. The sidebar always draws the whole lockup.
+  corner. The sidebar does not draw the lockup: its server switcher draws the
+  square mark (`favicon.svg`) at 28 px.
 
 ## Colours
 

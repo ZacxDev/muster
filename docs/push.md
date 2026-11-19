@@ -398,7 +398,8 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
 
 - **The row** shows the server you are on as its logo alone (or, with no
   logo, a monogram: the first letters of its name; with no branding at all,
-  muster's own logo), with a small dot of its colour on the corner. Its name
+  muster's own square mark). In the list, each server also has a small dot
+  of its colour. Its name
   is the button's label for a screen reader and its tooltip. On a phone it is
   in the menu (the button at the top left). Tap the logo, or press Enter on
   it, for the list of servers, even when this is the only one (Add server is

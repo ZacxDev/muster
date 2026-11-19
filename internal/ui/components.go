@@ -25,7 +25,7 @@ import (
 // html package does not provide first-class constructors for.
 func hx(name, value string) g.Node { return g.Attr(name, value) }
 
-// wordmark is muster's own brand in the header and the sidebar when no
+// wordmark is muster's own brand in the header when no
 // branding is set: the brand pack's horizontal lockup (lockup, brand.go), one
 // <img> of the mark and the outlined wordmark, whose accessible name is its
 // alt text, "muster".
@@ -52,8 +52,8 @@ func wordmark() g.Node {
 // those pages carry nothing of muster's mark). Below sm it crops the header's
 // lockup (wordmark) to its mark, the left 100 of the lockup's 350 viewBox
 // units, which is 38 px at the header's 28 px height (2.375rem). The same file
-// and element, so nothing else is loaded; the sidebar, which has the room,
-// keeps the whole lockup. The LINK stays a 44 px target (min-w-[44px], the
+// and element, so nothing else is loaded. (The sidebar draws no lockup: its
+// server switcher draws the square mark.) The LINK stays a 44 px target (min-w-[44px], the
 // touch-target rule e2e/tests/layout.spec.ts holds every control to) with the
 // 38 px mark inside it at its left edge; the link then ends at about 112 px,
 // still left of the pill's column.

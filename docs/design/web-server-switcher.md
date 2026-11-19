@@ -148,13 +148,15 @@ now:
 - the server in view's **picture is the button**, with a small chevron, then
   search (and close, where the sidebar is a slide-out). The picture is the
   server's logo; with no logo, a **monogram** of its name; with no branding at
-  all, muster's own lockup. No name and no address is drawn in the row: the
-  name is the button's accessible name ("Switch server, current: <name>") and
-  its tooltip;
-- the server's colour stays, as a small badge on the picture's corner: it is
-  what tells two servers with the same picture apart (two unbranded servers
-  both show muster's lockup), and it is the Android app's colour for that
-  server;
+  all, muster's compact square mark (the brand pack's `favicon.svg`, in the
+  same 28 px slot as a logo; operator decision on round 0, Q1: not the
+  horizontal lockup). No name and no address is drawn in the row: the name is
+  the button's accessible name ("Switch server, current: <name>") and its
+  tooltip;
+- the row draws the picture alone: **no colour dot** (round 0, D2). The
+  server's colour, the Android app's colour for it, stays in the open list as
+  a small badge on each entry's picture, where it tells two entries with the
+  same picture apart;
 - the row is the old brand row's height (68 px, lining up with the content
   header's border) and is a 44 px target;
 - the button opens the menu whether or not other servers are known: **Add
@@ -206,7 +208,7 @@ layout-shift gate, `cls.spec.ts`).
 
 | | Android 0.2.0 | web (this design) |
 |---|---|---|
-| see which server is in view | bar above the page: colour, label | the sidebar's top row: the server's logo (or monogram) with its colour as a badge; the name is the button's accessible name and tooltip (on a phone, inside the menu) |
+| see which server is in view | bar above the page: colour, label | the sidebar's top row: the server's logo (or monogram, or muster's square mark) alone; its colour is in the list; the name is the button's accessible name and tooltip (on a phone, inside the menu) |
 | switch | instant, each server's WebView kept | a page load of the other server's origin |
 | separate sign-ins | per-server WebView profile | per-origin by the browser, always |
 | add a server | Add server, then pair the phone | Add server (an address); sign in there as usual |

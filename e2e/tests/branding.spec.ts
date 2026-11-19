@@ -200,6 +200,7 @@ test.describe('the admin', () => {
     await expect(toggle.locator('[data-brand-logo]')).toBeVisible();
     expect(await loaded(page, '#server-switcher-toggle [data-brand-logo]')).toBe(true);
     await expect(toggle.locator('[data-server-monogram]')).toBeHidden();
+    await expect(toggle.locator('[data-server-dot]')).toHaveCount(0);
     await expect(toggle).toHaveAccessibleName('Switch server, current: Team Example');
     expect((await toggle.innerText()).trim()).toBe('');
     // A logo that fails to load gives way to the monogram ("TE").

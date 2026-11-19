@@ -344,10 +344,24 @@ for (const vp of VIEWPORTS) {
       const tb = (await toggle.boundingBox())!;
       expect(tb.height).toBeGreaterThanOrEqual(44);
       expect(tb.width).toBeGreaterThanOrEqual(44);
-      // Nothing to read in the row: no name, no address. The picture is
-      // muster's lockup (this server has no branding) or its logo.
+      // Nothing to read in the row: no name, no address.
       expect((await row.innerText()).trim()).toBe('');
       await expect(page.locator('#server-switcher [data-server-label]:visible')).toHaveCount(0);
+      // The shared server has no branding: the picture is muster's compact
+      // square mark in a 28 px logo slot, not the horizontal lockup, so the
+      // button is the mark and its chevron alone.
+      const inst = await (await page.request.get(A + '/api/instance')).json();
+      expect(inst).toEqual({ name: null, logo: null });
+      const mark = toggle.locator('img[data-server-mark]');
+      await expect(mark).toBeVisible();
+      expect(await mark.getAttribute('src')).toMatch(/^\/static\/icons\/favicon\.svg\?v=/);
+      expect(await mark.evaluate((i) => (i as HTMLImageElement).naturalWidth > 0)).toBe(true);
+      const mb = (await mark.boundingBox())!;
+      expect([Math.round(mb.width), Math.round(mb.height)]).toEqual([28, 28]);
+      await expect(row.locator('img[data-brand-mark]')).toHaveCount(0);
+      expect(tb.width).toBeLessThanOrEqual(64);
+      // The row has no colour dot: the picture alone.
+      await expect(row.locator('[data-server-dot]')).toHaveCount(0);
 
       // The tap opens the list: names, no addresses (no names collide).
       if (vp.name === 'phone') await toggle.tap(); else await toggle.click();
@@ -358,10 +372,15 @@ for (const vp of VIEWPORTS) {
       const menuText = await page.locator('#server-switcher-menu').innerText();
       expect(menuText).not.toContain(hostOf(A));
       expect(menuText).not.toContain(hostOf(A2));
-      // Each entry has a picture: a monogram until (unless) a logo loads.
+      // Each entry has a picture (a monogram until, unless, a logo loads;
+      // this unbranded server's own entry: the square mark) and keeps its
+      // colour dot, painted.
       for (const o of [A, A2]) {
         await expect(item(page, o).locator('[data-server-monogram]:visible, [data-server-logo]:visible')).toHaveCount(1);
+        await expect(item(page, o).locator('[data-server-dot]')).toBeVisible();
+        expect(await item(page, o).locator('[data-server-dot]').evaluate((d) => (d as HTMLElement).style.backgroundColor)).toMatch(/^rgb\(/);
       }
+      await expect(item(page, A).locator('[data-server-logo]')).toHaveAttribute('src', /^\/static\/icons\/favicon\.svg\?v=/);
       // A click away shuts it; so does the sidebar's own search button.
       await page.locator('#sidebar-search').click();
       await expect(toggle).toHaveAttribute('aria-expanded', 'false');

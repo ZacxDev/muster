@@ -53,7 +53,8 @@ func TestTheServerRowIsAnnouncedOnce(t *testing.T) {
 
 // TestTheRowIsTheLogoOnly pins the row button for each branding state, by
 // literal: its accessible name and tooltip, the picture it draws (the logo,
-// the monogram, or muster's lockup), the monogram's letters and colour, and
+// the monogram, or muster's square mark: never the lockup), no colour dot,
+// the monogram's letters and colour, and
 // NO text at all on screen (no name, no address: the operator's ask, "just
 // show the logo"). The monogram is drawn in every state, hidden behind a
 // picture, for servers.js to show when the logo fails.
@@ -73,7 +74,7 @@ func TestTheRowIsTheLogoOnly(t *testing.T) {
 		{"a logo and a name", Brand{Name: "Example Studio", ETag: "e1"}, "Example Studio", "/brand/logo.png?v=e1", "ES", "bg-server-1", false},
 		{"a name only", Brand{Name: "Example Studio"}, "Example Studio", "", "ES", "bg-server-1", true},
 		{"a logo only", Brand{ETag: "e1"}, "This server", "/brand/logo.png?v=e1", "TS", "bg-server-0", false},
-		{"no branding", Brand{}, "This server", "/static/icons/lockup-horizontal.svg?v=", "TS", "bg-server-0", false},
+		{"no branding", Brand{}, "This server", "/static/icons/favicon.svg?v=", "TS", "bg-server-0", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -123,7 +124,7 @@ func TestTheRowIsTheLogoOnly(t *testing.T) {
 			case c.picture != "" && (len(imgs) != 1 || !strings.HasPrefix(imgs[0], c.picture)):
 				t.Errorf("the row draws %v, want one image at %s…", imgs, c.picture)
 			}
-			for _, banned := range []string{"data-server-label", "data-server-host", "data-brand-name"} {
+			for _, banned := range []string{"data-server-label", "data-server-host", "data-brand-name", "data-brand-mark", "data-server-dot"} {
 				if findAttr(btn, banned) != nil {
 					t.Errorf("the row button carries [%s]", banned)
 				}
@@ -192,7 +193,7 @@ func TestTheListDrawsNoAddressUnlessNamesCollide(t *testing.T) {
 		t.Fatal("no item template")
 	}
 	item := page[i : i+strings.Index(page[i:], "</template>")]
-	for _, want := range []string{`<span data-server-host="" hidden`, `<span data-server-monogram="" aria-hidden="true"`, `<img data-server-logo="" alt="" hidden`} {
+	for _, want := range []string{`<span data-server-host="" hidden`, `<span data-server-monogram="" aria-hidden="true"`, `<img data-server-logo="" alt="" hidden`, `<span data-server-dot="" aria-hidden="true"`} {
 		if !strings.Contains(item, want) {
 			t.Errorf("the item template lacks %s:\n%s", want, item)
 		}

@@ -66,8 +66,8 @@ func (b Brand) Versioned(path string) string { return path + "?v=" + url.QueryEs
 // muster's own mark, as the pages draw it when no logo is set, is the brand
 // pack's files (docs/brand.md), rendered or copied into web/static/icons/ by
 // `make icons` and held to the pack by internal/api's brand asset tests:
-// lockup-horizontal.svg (the header, the sidebar, the sign-in page),
-// favicon.svg and favicon-32.png (the tab), icon-192.png (a large favicon
+// lockup-horizontal.svg (the header, the sign-in page),
+// favicon.svg (the tab, and the sidebar server switcher's square mark) and favicon-32.png (the tab), icon-192.png (a large favicon
 // slot, and Web Push) and apple-touch-icon.png (180 px). Each is spelled at
 // its one use as web.Asset("/static/…"), the form
 // TestEveryStaticPathInTheViewsGoesThroughWebAsset reads.

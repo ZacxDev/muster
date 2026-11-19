@@ -21,8 +21,8 @@ There is no environment variable for it. Branding is set in the UI and kept in
 the database, so a server without a database has none.
 
 With nothing set, every surface is exactly what it was before branding existed:
-muster's own mark (the lockup in the header, the sidebar and on the sign-in
-page) and muster's own icons and favicons ([brand.md](brand.md)). With a logo
+muster's own mark (the lockup in the header and on the sign-in page, the
+compact square mark in the sidebar's server switcher) and muster's own icons and favicons ([brand.md](brand.md)). With a logo
 set, none of muster's favicons is linked.
 
 ## Setting it

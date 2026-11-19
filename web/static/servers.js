@@ -346,16 +346,15 @@
 
   // fillToggle draws the row button for this server (mine): its name as the
   // button's accessible name and tooltip (the person's own label wins, as in
-  // the list), its colour on the badge, and its monogram. The picture the
-  // server drew (its logo, or muster's lockup) stays; a logo that fails to
-  // load gives way to the monogram — whether it failed before this deferred
-  // script ran (complete with no width) or fails later.
-  function fillToggle(t, mine, colour, box) {
+  // the list) and its monogram. The row has no colour badge (that is the
+  // list's). The picture the server drew (its logo, or muster's square mark)
+  // stays; one that fails to load gives way to the monogram — whether it
+  // failed before this deferred script ran (complete with no width) or fails
+  // later.
+  function fillToggle(t, mine, box) {
     var n = name(mine, box);
     t.setAttribute('aria-label', TOGGLE_LABEL + n);
     t.setAttribute('title', n);
-    var dot = t.querySelector('[data-server-dot]');
-    if (dot) dot.style.backgroundColor = colour;
     var mono = paintMonogram(t, n);
     var pic = t.querySelector('img[data-server-picture]');
     if (!pic || !mono || pic.__musterBound) return;
@@ -375,7 +374,7 @@
     var list = current();
     var mine = list[0];
     var cols = colours(list.map(function (s) { return s.origin; }));
-    fillToggle(box.querySelector('#server-switcher-toggle'), mine, cols[self], box);
+    fillToggle(box.querySelector('#server-switcher-toggle'), mine, box);
 
     var ul = $('server-switcher-list');
     var tpl = $('server-item-tpl');

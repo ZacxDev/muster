@@ -21,7 +21,7 @@ import (
 // switcher"): the brand row and the server row were two rows, the logo, the
 // name and, in the list, every server's address. The row now draws the
 // current server's picture (serverPicture: its logo, else a monogram of its
-// name, else muster's own lockup), a chevron, and the sidebar's search and
+// name, else muster's compact square mark), a chevron, and the sidebar's search and
 // close buttons; the name is the button's accessible name and its tooltip.
 // The list keeps every server's name (pictures alone cannot tell servers
 // apart) and shows an address only where two names collide (servers.js).
@@ -57,9 +57,10 @@ func serverLogo() g.Node {
 }
 
 // serverDotBadge is a server's colour as a small badge on its picture's
-// corner: the same swatch as serverDot (the Android app's palette, a
-// function of the SET of servers on the list, servers.js colours), which
-// tells two servers with the same picture apart.
+// corner, in the open list only: the same swatch as serverDot (the Android
+// app's palette, a function of the SET of servers on the list, servers.js
+// colours), which tells two entries with the same picture apart. The row has
+// none: it draws the picture alone (operator decision on round 0, D2).
 func serverDotBadge() g.Node {
 	return Span(g.Attr("data-server-dot", ""), g.Attr("aria-hidden", "true"),
 		Class("absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-muted ring-2 ring-s1"))
@@ -109,11 +110,19 @@ func serverMonogramColour(name string) int {
 // serverMonogramClass is a monogram's box, the size of a menu entry's logo.
 const serverMonogramClass = "inline-flex h-7 w-7 shrink-0 select-none items-center justify-center rounded-md text-xs font-bold leading-none text-black"
 
-// serverPicture is the row button's picture of the server in view: its
-// logo; with none, a monogram of its name; with no branding at all, muster's
-// own lockup. A monogram is always drawn (hidden behind a logo or the lockup)
-// so servers.js can show it when the logo fails to load, and so it can redraw
-// it when the person has given this server a label of their own.
+// serverMark is muster's own compact square mark, drawn where a logo slot
+// shows a server with no branding at all (the row, and this server's entry in
+// the list): the brand pack's favicon.svg (docs/brand.md), the mark on its
+// ground, already served for the tab. Not the horizontal lockup: the operator's
+// decision on round 0 (Q1), the row is the same size whatever is in it.
+func serverMark() string { return web.Asset("/static/icons/favicon.svg") }
+
+// serverPicture is the row button's picture of the server in view, and
+// nothing else (no colour badge): its logo; with none, a monogram of its
+// name; with no branding at all, muster's compact square mark
+// (serverMark). A monogram is always drawn (hidden behind a logo or the
+// mark) so servers.js can show it when the picture fails to load, and so it
+// can redraw it when the person has given this server a label of their own.
 func serverPicture(b Brand, name string) g.Node {
 	mono := Span(g.Attr("data-server-monogram", ""), g.Attr("aria-hidden", "true"),
 		g.If(b.HasLogo() || b.drawsLockup(), g.Attr("hidden", "")),
@@ -124,10 +133,13 @@ func serverPicture(b Brand, name string) g.Node {
 		pic = Img(g.Attr("data-brand-logo", ""), g.Attr("data-server-picture", ""), Src(b.Versioned(BrandLogoPath)), Alt(""),
 			Class("h-7 w-auto max-w-[8rem] shrink-0 object-contain"))
 	case b.drawsLockup():
-		pic = wordmark()
+		// width/height are the file's own 16 × 16 viewBox (the brand
+		// ledger's declared size, internal/api brand_assets_test.go); the
+		// class draws it at the logo slot's 28 px.
+		pic = Img(g.Attr("data-server-mark", ""), g.Attr("data-server-picture", ""), Src(serverMark()), Alt(""),
+			Width("16"), Height("16"), Class("h-7 w-7 shrink-0 rounded-md"))
 	}
-	return Span(g.Attr("data-server-avatar", ""), Class("relative inline-flex shrink-0 items-center"),
-		pic, mono, serverDotBadge())
+	return Span(g.Attr("data-server-avatar", ""), Class("inline-flex shrink-0 items-center"), pic, mono)
 }
 
 // serverSwitcherName is the name the row is drawn with before servers.js
@@ -159,8 +171,8 @@ func serverSwitcher(b Brand, trailing ...g.Node) g.Node {
 		g.Attr("data-self-name", b.Name),
 		g.If(selfLogo != "", g.Attr("data-self-logo", selfLogo)),
 		// No branding at all: this server's entry in the list is muster's
-		// own square mark, as the row is its lockup.
-		g.If(b.drawsLockup(), g.Attr("data-self-mark", web.Asset("/static/icons/favicon.svg"))),
+		// own square mark, as the row is.
+		g.If(b.drawsLockup(), g.Attr("data-self-mark", serverMark())),
 		Class("border-b border-line"),
 		// The row: min-h keeps it the height the 44px close button gives it
 		// (py-3 + 44px = 68px) where that button is hidden — the desktop rail
