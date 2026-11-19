@@ -84,6 +84,8 @@ var personalOwned = []string{
 	// 0157: an owner's raise of an officer's daily budget for one UTC day;
 	// only the officer's owner raises it.
 	"officer_cap_raises",
+	// 0158: the fleet's action log; same reason.
+	"fleet_actions",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

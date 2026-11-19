@@ -461,6 +461,15 @@ export const chiefFleetPort = port + 425;
 export const chiefFleetFakePort = port + 426;
 export const chiefFleetGitHubPort = port + 427;
 export const chiefFleetConnectPort = port + 428;
+// tests/chief-fleet-proposals.spec.ts: the fleet digest's proposal cards
+// (MUSTER_FLEET_ORCHESTRATION=propose) at a phone and a desktop width — its
+// own mirror rig, fake runtime, fake GitHub App and the App's connect listener
+// (+446 to +449: clear of the blocks above, and of features-member's +442 to
+// +444).
+export const chiefProposePort = port + 446;
+export const chiefProposeFakePort = port + 447;
+export const chiefProposeGitHubPort = port + 448;
+export const chiefProposeConnectPort = port + 449;
 // tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
 // in through its own real GoTrue (+410 to +412: clear of the blocks above).
 export const teamUxMainPort = port + 410;
