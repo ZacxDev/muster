@@ -395,7 +395,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 				// TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout.
 				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
 				err := c.Ping(pctx)
-				notePageWrite(c, err)
+				notePageWrite(writeSeamsOf(pctx), c, err)
 				pcancel()
 				if err != nil {
 					cancel()
@@ -567,14 +567,15 @@ func pageWrite(ctx context.Context, c *websocket.Conn, typ websocket.MessageType
 			wcancel()
 		}
 	})()
-	disarm := armStall(c, deadline)
-	pageWriteStarting(ctx)
+	seams := writeSeamsOf(ctx)
+	disarm := armStall(seams, c, deadline)
+	seams.writeStarting()
 	err := c.Write(wctx, typ, b)
-	pageWriteReturned(ctx)
+	seams.writeReturned()
 	if disarm() {
 		return stalledWriteErr(err)
 	}
-	notePageWrite(c, err)
+	notePageWrite(seams, c, err)
 	return err
 }
 
@@ -588,12 +589,12 @@ const stallGrace = time.Second
 // that finds c closed by the stall always finds the note (markPageGone,
 // streamEndReason). disarm stops it and reports whether it fired; a fired
 // callback has finished noting and closing by the time disarm returns.
-func armStall(c *websocket.Conn, deadline time.Time) (disarm func() (fired bool)) {
+func armStall(seams *writeSeams, c *websocket.Conn, deadline time.Time) (disarm func() (fired bool)) {
 	done := make(chan struct{})
 	t := time.AfterFunc(time.Until(deadline), func() {
 		defer close(done)
-		stallFiring()
-		notePageWrite(c, context.DeadlineExceeded)
+		seams.fireStall()
+		notePageWrite(seams, c, context.DeadlineExceeded)
 		_ = c.CloseNow()
 	})
 	return func() bool {
@@ -618,14 +619,6 @@ func stalledWriteErr(err error) error {
 	return fmt.Errorf("%w: %w", errPageStalled, err)
 }
 
-// Test seams around one write to the page, no-ops in production:
-// pageWriteStarting runs just before the write, pageWriteReturned once it has
-// returned and before its outcome is noted. A test orders writers with them.
-var (
-	pageWriteStarting = func(context.Context) {}
-	pageWriteReturned = func(context.Context) {}
-)
-
 // stalledPages is every page socket a write to which has TIMED OUT — a page
 // alive but not reading. The stall's bound closes the connection then
 // (armStall, after noting it here), so the next write by anyone else (a batch
@@ -635,17 +628,15 @@ var (
 // returns.
 var stalledPages sync.Map // *websocket.Conn → struct{}
 
-// notePageWrite records that a write to c timed out, when err says so.
-func notePageWrite(c *websocket.Conn, err error) {
+// notePageWrite records that a write to c timed out, when err says so, and
+// tells the write's seams (stallNoted: a test's count of the notes made, which
+// a note forgotten moments later leaves no other trace of).
+func notePageWrite(seams *writeSeams, c *websocket.Conn, err error) {
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		stalledPages.Store(c, struct{}{})
-		pageStallNoted()
+		seams.noteStall()
 	}
 }
-
-// pageStallNoted is called each time a stall is noted: a test's count of the
-// notes made, which a note forgotten moments later leaves no other trace of.
-var pageStallNoted = func() {}
 
 // pageStalled reports whether a write to c has timed out.
 func pageStalled(c *websocket.Conn) bool {

@@ -91,8 +91,9 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+stallGrace)
 	defer cancel()
-	disarm := armStall(c, time.Now().Add(bound))
-	beatWriting()
+	seams := writeSeamsOf(ctx)
+	disarm := armStall(seams, c, time.Now().Add(bound))
+	seams.beatWriting()
 	err := c.Write(wctx, websocket.MessageText, []byte(ui.LivePingFrame))
 	if disarm() {
 		// The timer fired, and disarm has waited for its callback to finish:
@@ -102,15 +103,77 @@ func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) erro
 		// Noted and closed now; the beat ends.
 		return stalledWriteErr(err)
 	}
-	notePageWrite(c, err)
+	notePageWrite(seams, c, err)
 	return err
 }
 
-// Test seams around a write's stall timer (armStall), no-ops in production:
-// stallFiring runs as the timer's callback begins, beatWriting just before the
-// beat's write. A test holds them to put the callback and the write in a
-// chosen order.
-var (
-	stallFiring = func() {}
-	beatWriting = func() {}
-)
+// writeSeams are the test seams around one write to a page — a beat
+// (writePing) or any other page write (pageWrite) — and its stall timer
+// (armStall). They ride on the CONTEXT of the write they hook (withWriteSeams),
+// and production never sets them: writeSeamsOf then returns nil, whose methods
+// are no-ops.
+//
+// 🔴 NEVER A PACKAGE VARIABLE. A beat's goroutine outlives the handler that
+// started it by a moment (socketHeartbeat's stop does not wait for it), and
+// nothing makes a handler end with the test that opened its socket. A
+// seam held in a package variable was read by a beat one test had left behind
+// while the next test assigned it: a data race, and a hook firing on a write
+// that was never the test's (TestAStallCallbackFinishesBeforeTheBeatReturns,
+// on CI). On the write's own context, a seam reaches exactly the writes made
+// on that context — a test's, never another test's.
+type writeSeams struct {
+	stallFiring  func() // the stall timer's callback begins (armStall)
+	beatWrite    func() // just before a beat's write (writePing)
+	writeStarts  func() // just before a page write (pageWrite)
+	writeReturns func() // a page write returned, before its outcome is noted
+	stallNoted   func() // a stall was noted (notePageWrite)
+}
+
+type writeSeamsKey struct{}
+
+// withWriteSeams returns ctx carrying s for every write made on it.
+func withWriteSeams(ctx context.Context, s *writeSeams) context.Context {
+	return context.WithValue(ctx, writeSeamsKey{}, s)
+}
+
+// writeSeamsOf is the seams ctx carries, nil (all no-ops) when it carries none.
+func writeSeamsOf(ctx context.Context) *writeSeams {
+	s, _ := ctx.Value(writeSeamsKey{}).(*writeSeams)
+	return s
+}
+
+func runSeam(f func()) {
+	if f != nil {
+		f()
+	}
+}
+
+func (s *writeSeams) fireStall() {
+	if s != nil {
+		runSeam(s.stallFiring)
+	}
+}
+
+func (s *writeSeams) beatWriting() {
+	if s != nil {
+		runSeam(s.beatWrite)
+	}
+}
+
+func (s *writeSeams) writeStarting() {
+	if s != nil {
+		runSeam(s.writeStarts)
+	}
+}
+
+func (s *writeSeams) writeReturned() {
+	if s != nil {
+		runSeam(s.writeReturns)
+	}
+}
+
+func (s *writeSeams) noteStall() {
+	if s != nil {
+		runSeam(s.stallNoted)
+	}
+}

@@ -116,13 +116,28 @@ func (l smallListener) Accept() (net.Conn, error) {
 // write timeout shortened to 300 ms and small socket buffers.
 func streamServer(t *testing.T, m Mirror) (*Server, *httptest.Server, *lockedLog) {
 	t.Helper()
+	return streamServerWith(t, m, nil)
+}
+
+// streamServerWith is streamServer whose every request carries seams
+// (withWriteSeams): every write its handlers make — a beat included — runs
+// them, and no write from any other test's server can.
+func streamServerWith(t *testing.T, m Mirror, seams *writeSeams) (*Server, *httptest.Server, *lockedLog) {
+	t.Helper()
 	saved := terminalWriteTimeout
 	terminalWriteTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { terminalWriteTimeout = saved })
 	lg := &lockedLog{}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(lg, "", 0))
 	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Mirror: m})
-	ts := httptest.NewUnstartedServer(s.Handler())
+	h := s.Handler()
+	if seams != nil {
+		inner := h
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			inner.ServeHTTP(w, r.WithContext(withWriteSeams(r.Context(), seams)))
+		})
+	}
+	ts := httptest.NewUnstartedServer(h)
 	ts.Listener = smallListener{ts.Listener}
 	ts.Start()
 	t.Cleanup(ts.Close)
@@ -358,9 +373,6 @@ func TestAStreamWriteCutByAStalledBeatIsATimeout(t *testing.T) {
 	}
 }
 
-// relayWrite tags the asks relay's write in TestABatchQueuedBehindTheAsksRelaysStallIsATimeout.
-type relayWrite struct{}
-
 // TestABatchQueuedBehindTheAsksRelaysStallIsATimeout: the asks relay writes
 // to the view's socket with terminalWriteJSON. When ITS write stalls on a page
 // that stopped reading while a batch is queued behind it, the relay's bound
@@ -369,7 +381,7 @@ type relayWrite struct{}
 // is the timeout, never the page gone: the stall must be noted BEFORE the
 // close can be seen, not after the relay's write returns (audit #713 F1).
 //
-// The relay is held after its write returns (pageWriteReturned) until the
+// The relay is held after its write returns (its writeReturns seam) until the
 // batch has failed, so a note written only then is too late, every run.
 func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
 	saved := terminalWriteTimeout
@@ -378,40 +390,32 @@ func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
 	c := unreadPage(t)
 	live := context.Background()
 	batchErr, batchFailed := make(chan error, 1), make(chan struct{})
-	savedHook := pageWriteReturned
-	pageWriteReturned = func(ctx context.Context) {
-		if ctx.Value(relayWrite{}) == nil {
-			return
-		}
-		select {
-		case <-batchFailed:
-		case <-time.After(10 * time.Second):
-		}
-	}
 	relayWriting := make(chan struct{})
-	savedStart := pageWriteStarting
-	pageWriteStarting = func(ctx context.Context) {
-		if ctx.Value(relayWrite{}) != nil {
-			close(relayWriting)
-		}
+	// The seams ride on the relay's context only, so only its write runs them.
+	relaySeams := &writeSeams{
+		writeReturns: func() {
+			select {
+			case <-batchFailed:
+			case <-time.After(10 * time.Second):
+			}
+		},
+		writeStarts: func() { close(relayWriting) },
+		// And the relay's stall timer is held — until the batch has failed, or
+		// 300 ms, well inside stallGrace — before it notes and closes: a close
+		// by anything else at the bound (coder/websocket's own, on the write's
+		// context) is then seen by the batch with no note, every run. Only the
+		// relay's write can stall here: the batch's bound is 30 s.
+		stallFiring: func() {
+			select {
+			case <-batchFailed:
+			case <-time.After(300 * time.Millisecond):
+			}
+		},
 	}
-	// And the relay's stall timer is held — until the batch has failed, or
-	// 300 ms, well inside stallGrace — before it notes and closes: a close by
-	// anything else at the bound (coder/websocket's own, on the write's
-	// context) is then seen by the batch with no note, every run. Only the
-	// relay's write can stall here: the batch's bound is 30 s.
-	savedFiring := stallFiring
-	stallFiring = func() {
-		select {
-		case <-batchFailed:
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-	t.Cleanup(func() { pageWriteReturned, pageWriteStarting, stallFiring = savedHook, savedStart, savedFiring })
 
 	// The relay: one frame far larger than the socket's buffers, so it holds
 	// the write lock mid-frame, bounded at 2 s.
-	rctx, rcancel := context.WithTimeout(context.WithValue(live, relayWrite{}, true), 2*time.Second)
+	rctx, rcancel := context.WithTimeout(withWriteSeams(live, relaySeams), 2*time.Second)
 	defer rcancel()
 	relayErr := make(chan error, 1)
 	go func() {

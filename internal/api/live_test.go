@@ -179,10 +179,7 @@ func TestATimedOutBeatIsForgottenWhenItsSocketEnds(t *testing.T) {
 	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
 	t.Cleanup(func() { liveHeartbeatEvery = saved })
 	var noted atomic.Int64
-	savedHook := pageStallNoted
-	pageStallNoted = func() { noted.Add(1) }
-	t.Cleanup(func() { pageStallNoted = savedHook })
-	s, ts, _ := streamServer(t, &fakeMirror{online: true})
+	s, ts, _ := streamServerWith(t, &fakeMirror{online: true}, &writeSeams{stallNoted: func() { noted.Add(1) }})
 	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: chatAgents{}, SessionLiveness: stubLiveness{},
 		Provisioner: newFakeTerminal(), Gateway: stubGateway{}, Mirror: &fakeMirror{online: true}})
 	base := stalledCount()
@@ -237,10 +234,7 @@ func TestAnIdlePageThatStopsReadingIsATimeoutWhenOnlyTheBeatWrites(t *testing.T)
 	} {
 		t.Run(c.view, func(t *testing.T) {
 			var noted atomic.Int64
-			savedHook := pageStallNoted
-			pageStallNoted = func() { noted.Add(1) }
-			t.Cleanup(func() { pageStallNoted = savedHook })
-			s, ts, _ := streamServer(t, c.m)
+			s, ts, _ := streamServerWith(t, c.m, &writeSeams{stallNoted: func() { noted.Add(1) }})
 			before := disconnects(c.view)
 			for i := 0; i < sockets; i++ {
 				_ = dialPage(t, s, ts, c.path) // and never reads
@@ -283,10 +277,7 @@ func TestAHealthyBeatIsNotSlowedAndLeavesNothingBehind(t *testing.T) {
 	liveHeartbeatEvery = func() time.Duration { return 5 * time.Millisecond }
 	t.Cleanup(func() { liveHeartbeatEvery = saved })
 	var noted atomic.Int64
-	savedHook := pageStallNoted
-	pageStallNoted = func() { noted.Add(1) }
-	t.Cleanup(func() { pageStallNoted = savedHook })
-	s, ts, _ := streamServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
+	s, ts, _ := streamServerWith(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, &writeSeams{stallNoted: func() { noted.Add(1) }})
 	time.Sleep(100 * time.Millisecond)
 	g0 := runtime.NumGoroutine()
 	c := dialPage(t, s, ts, viewSock)
@@ -368,13 +359,13 @@ func TestAStallCallbackFinishesBeforeTheBeatReturns(t *testing.T) {
 	defer forgetPage(c)
 
 	entered, release := make(chan struct{}), make(chan struct{})
-	savedF, savedW := stallFiring, beatWriting
-	stallFiring = func() { close(entered); <-release }
-	beatWriting = func() { <-entered } // the timer has fired before the write
-	t.Cleanup(func() { stallFiring, beatWriting = savedF, savedW })
+	seams := &writeSeams{
+		stallFiring: func() { close(entered); <-release },
+		beatWrite:   func() { <-entered }, // the timer has fired before the write
+	}
 
 	done := make(chan error, 1)
-	go func() { done <- writePing(context.Background(), c, time.Nanosecond) }()
+	go func() { done <- writePing(withWriteSeams(context.Background(), seams), c, time.Nanosecond) }()
 	select {
 	case <-done:
 		close(release)
