@@ -447,7 +447,7 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex min-w-0 items-center gap-0.5"),
-		// No context chip (removed 2026-11-19: the page says it in its ⋯ menu,
+		// No context chip (removed in #871: the page says it in its ⋯ menu,
 		// and only when it is high). Its new chat is the "+" on the chip strip
 		// over the transcript (chiefChatStrip); the title bar keeps the thread
 		// list.

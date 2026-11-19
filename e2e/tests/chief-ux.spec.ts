@@ -807,7 +807,7 @@ for (const vp of [
       // 3. Once it has a line, + makes a NEW chat. The turn reports its tokens:
       // the ⋯ menu says how much memory the chat uses when it ends, no reload.
       await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
-      // No token chip in the header (operator decision, 2026-11-19).
+      // No token chip in the header (operator decision, #871).
       await expect(page.locator('header [data-chief-context-row], header #chief-context-chip')).toHaveCount(0);
       const memory = page.locator('#agent-actions [data-chief-memory]');
       await expect(memory, 'no memory line before a turn reported its tokens').toHaveCount(0);

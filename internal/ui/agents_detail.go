@@ -154,7 +154,7 @@ type AgentDetailView struct {
 	// UnfoldNewest: the conversation is the chief's, and its NEWEST reply is
 	// drawn whole — never folded under "Show more" (data-clamp-never,
 	// bubble_clamp.go); older replies fold as before (operator decision,
-	// 2026-11-19). Set by internal/api withChatLogLive, so the page, the
+	// #871). Set by internal/api withChatLogLive, so the page, the
 	// panel and the chat-log refetch agree.
 	UnfoldNewest bool
 	// DispatchCards is each agent_dispatch call's card, by its tool id

@@ -186,7 +186,7 @@ func routedCard(kind, id string, icon routedIcon, heading, line, subject string,
 }
 
 // THE CARDS' ICONS ARE THE APP'S OWN, NEVER AN EMOJI (operator decision,
-// 2026-11-19: the ✉ they carried drew as a broken glyph). Each is a 16px
+// #871: the ✉ they carried drew as a broken glyph). Each is a 16px
 // stroked glyph in currentColor, text-fg2 — the colour every other card icon
 // is drawn in (hostMark):
 //

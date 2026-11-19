@@ -1309,7 +1309,7 @@ button) lists the same chats in the same order, for search.
 **Memory used.** When the chat's context is high — its latest turn sent more
 than 350k tokens — the chief page's ⋯ menu says so in plain words ("Memory
 used: 362k"); below that it says nothing, and the header carries no token
-count (operator decision, 2026-11-19). It reads the chat's latest turn's usage
+count (operator decision, #871). It reads the chat's latest turn's usage
 row (`chief_turn_usage`; migration 0115 adds the chat, the model and
 `context_tokens` to it): the context the turn's LAST model request was sent —
 its input + cache read + cache write — not the turn's total, which with tool

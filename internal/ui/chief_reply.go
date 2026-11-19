@@ -5,7 +5,7 @@ import (
 	"unicode"
 )
 
-// THE CHIEF'S REPLIES, AT A GLANCE (operator decisions, 2026-11-19).
+// THE CHIEF'S REPLIES, AT A GLANCE (operator decisions, #871).
 
 // newestReply is the index in msgs of the newest reply the log draws as an
 // agent's bubble — an assistant text row that is not a "no reply" sentinel —

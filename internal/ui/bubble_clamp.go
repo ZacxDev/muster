@@ -77,7 +77,7 @@ import (
 // [data-no-clamp] within the bubble never toggles the bubble.
 //
 // 🔴 A BUBBLE THE SERVER MARKED data-clamp-never IS NEVER CLAMPED: the chief's
-// NEWEST reply (AgentDetailView.UnfoldNewest, operator decision 2026-11-19) is
+// NEWEST reply (AgentDetailView.UnfoldNewest, operator decision #871) is
 // read whole. The mark is the server's, never inferred here; the next reply's
 // redraw moves it, and the reply that was newest then folds like any other.
 //

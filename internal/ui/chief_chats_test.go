@@ -124,7 +124,7 @@ func TestTheChiefPanelDrawsTheStripAnsweredIntoItsBody(t *testing.T) {
 			}
 		}
 		// No token chip in the panel's title bar (operator decision,
-		// 2026-11-19): the page says it in its ⋯ menu, when it is high.
+		// #871): the page says it in its ⋯ menu, when it is high.
 		bar := renderString(t, chiefPanelActions(p))
 		if strings.Contains(bar, ChiefContextPath("chiefy", c.bar.SessionID)) || strings.Contains(bar, `id="`+chiefContextID+`"`) {
 			t.Errorf("%s: the panel's title bar still carries the context chip slot: %s", c.kind, bar)
@@ -424,7 +424,7 @@ func TestASharedRoomsStripOnlySwitches(t *testing.T) {
 
 // TestTheChiefHeaderHasNoTokenChipButItsMenuHasTheMemorySlot: the raw
 // token-count chip is gone from the chief page's header (operator decision,
-// 2026-11-19) — outside the ⋯ menu the header has no slot at all — and the ⋯
+// #871) — outside the ⋯ menu the header has no slot at all — and the ⋯
 // menu holds the memory line's slot instead: loading its own chat's line,
 // refreshed when a turn of the chief starts or ends or a reply is stored, its
 // own target. Claude-code (folded) and gateway chiefs alike. A worker's header

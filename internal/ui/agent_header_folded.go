@@ -89,7 +89,7 @@ func foldedHeader(v AgentDetailView) g.Node {
 }
 
 // foldedTitle is the folded header's title: agentTitle. A chief's chat drew
-// its context chip under it until 2026-11-19; how much context the chat uses is
+// its context chip under it before #871; how much context the chat uses is
 // in the ⋯ menu now, and only when it is high (chiefMemorySlot).
 func foldedTitle(v AgentDetailView) g.Node { return agentTitle(v) }
 

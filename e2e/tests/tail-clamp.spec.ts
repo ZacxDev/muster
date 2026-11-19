@@ -56,7 +56,7 @@ test.beforeAll(async () => {
     { role: 'assistant', content: lines(N, 'shortreply') },
   ]);
   // The chief: a long USER message, a long reply, then a long NEWEST reply —
-  // which the chief's chat never folds (operator decision, 2026-11-19).
+  // which the chief's chat never folds (operator decision, #871).
   mkchat(CHIEF, [
     { role: 'user', content: lines(30, 'chiefask') },
     { role: 'assistant', content: lines(N, 'chiefreply') },

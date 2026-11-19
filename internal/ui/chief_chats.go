@@ -654,7 +654,7 @@ func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, clau
 }
 
 // THE CHIEF'S MEMORY IN THE ⋯ MENU, ONLY WHEN IT IS HIGH (operator decision,
-// 2026-11-19). The header used to carry a raw token-count chip ("45k") under
+// #871). The header used to carry a raw token-count chip ("45k") under
 // the chief's title, always. It is gone from the header and from the panel's
 // title bar; the chief page's ⋯ menu says "Memory used: 362k" in plain words
 // — and only while the chat's latest turn sent more than ChiefMemoryShowAbove

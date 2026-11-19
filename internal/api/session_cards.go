@@ -90,6 +90,10 @@ func (s *Server) sessionCards(ctx context.Context) map[string]ui.SessionCard {
 		for _, a := range s.activeAgentsList(owner) {
 			busy[a.Name] = a.InFlight
 		}
+		// 🔴 A HOST OFFICER'S ROW IS NO CARD (agents.ProvisionedOnly): it has
+		// no pod and no page of its own to open — its instance IS a mirrored
+		// window, whose card the window's own key (mirror:<key>) draws above.
+		// So [[session:agent:<n>]] naming such a row draws "a session".
 		for _, a := range ownedBy(agents.ProvisionedOnly(list), owner) {
 			st := ui.SessionCardIdle
 			if busy[a.Name] {

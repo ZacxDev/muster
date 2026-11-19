@@ -12,7 +12,7 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// SESSION CARDS IN THE CHIEF'S CHAT (operator decision, 2026-11-19). When the
+// SESSION CARDS IN THE CHIEF'S CHAT (operator decision, #871). When the
 // chief names one of its owner's sessions, the chat draws a compact card —
 // the session's title, its computer and a status dot — that opens the session
 // on a tap. Its tmux address is behind the card's ⓘ, never in the text.

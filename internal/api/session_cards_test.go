@@ -39,7 +39,8 @@ func (cardsMirror) Hosts(ctx context.Context) []mirror.HostView {
 }
 
 // cardsAgents is the agents table as each owner's principal reads it: owner
-// 1's chief (40) and agent fix-login (41), and a TEAM's agent (77) a member
+// 1's chief (40), agent fix-login (41) and a host officer's row (42), and a
+// TEAM's agent (77) a member
 // sees since 0131; owner 2's agent (50) and chief (51).
 type cardsAgents struct{ stubAgentsStore }
 
@@ -48,7 +49,9 @@ func (cardsAgents) rows(ctx context.Context) []agents.Agent {
 	case 1:
 		return []agents.Agent{{ID: 40, Name: "chief", OwnerID: 1, Kind: agents.KindClaudeCode},
 			{ID: 41, Name: "fix-login", OwnerID: 1, Kind: agents.KindClaudeCode},
-			{ID: 77, Name: "team-bot", OwnerID: 900, Kind: agents.KindClaudeCode}}
+			{ID: 77, Name: "team-bot", OwnerID: 900, Kind: agents.KindClaudeCode},
+			// A host officer's row: its instance runs in a window on studio-mac.
+			{ID: 42, Name: "release-officer", OwnerID: 1, Kind: agents.KindClaudeCode, RunsOnHost: "studio-mac"}}
 	case 2:
 		return []agents.Agent{{ID: 50, Name: "theirs", OwnerID: 2, Kind: agents.KindClaudeCode},
 			{ID: 51, Name: "chief", OwnerID: 2, Kind: agents.KindClaudeCode}}
@@ -93,14 +96,15 @@ func chiefLog(t *testing.T, s *Server, ctx context.Context, reply string) string
 // the link that opens it); one naming another owner's session, a team's
 // session the owner can see, a team's agent, or a ghost draws the plain
 // words "a session" — never a card, and nothing that session's index entry
-// holds (its host, its tmux name, its id). The owner's agent is the control
-// for the agent kind.
+// holds (its host, its tmux name, its id). So does the owner's own HOST
+// OFFICER row (agent 42): it has no page to open; its instance's card is its
+// window's. The owner's agent is the control for the agent kind.
 func TestASessionMarkerResolvesOnlyTheOwnersOwn(t *testing.T) {
 	s := cardsServer(t)
 	html := chiefLog(t, s, cardsAs(1),
 		"Mine [[session:mirror:cs-heron-0001]]; agent [[session:agent:41]]; theirs [[session:mirror:cs-lynx-0001]]; "+
 			"team [[session:mirror:cs-team-0001]]; team agent [[session:agent:77]]; their agent [[session:agent:50]]; "+
-			"ghost [[session:mirror:no-such-0001]].")
+			"ghost [[session:mirror:no-such-0001]]; officer [[session:agent:42]].")
 	if n := strings.Count(html, `data-session-card="`); n != 2 {
 		t.Fatalf("%d cards, want 2 (the owner's session and agent):\n%s", n, html)
 	}
@@ -108,13 +112,13 @@ func TestASessionMarkerResolvesOnlyTheOwnersOwn(t *testing.T) {
 		`data-session-card="busy"`, `>heron</span>`, `>studio-mac</span>`,
 		`href="` + strings.ReplaceAll(ui.MirrorRef{Host: "studio-mac", Session: "heron", Window: "@1"}.ViewPath(), "&", "&amp;") + `"`,
 		`href="/agents/fix-login"`,
-		"theirs a session; team a session; team agent a session; their agent a session; ghost a session.",
+		"theirs a session; team a session; team agent a session; their agent a session; ghost a session; officer a session.",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the log lacks %s:\n%s", want, html)
 		}
 	}
-	for _, leak := range []string{"work-laptop", "lynx", "team-box", "team-bot", "theirs<", "cs-lynx", "cs-team", "no-such", "[[session:"} {
+	for _, leak := range []string{"release-officer", "work-laptop", "lynx", "team-box", "team-bot", "theirs<", "cs-lynx", "cs-team", "no-such", "[[session:"} {
 		if strings.Contains(html, leak) {
 			t.Errorf("the log draws %q:\n%s", leak, html)
 		}
