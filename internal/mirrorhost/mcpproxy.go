@@ -1,6 +1,7 @@
 package mirrorhost
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -842,7 +843,78 @@ func (p *MCPProxy) send(w http.ResponseWriter, req *http.Request) (*http.Respons
 		return nil, false
 	}
 	p.revokeIfRefused(req, resp)
+	nameOldMusterUnread(req, resp)
 	return resp, true
+}
+
+// legacyUnreadMax bounds what nameOldMusterUnread reads of a reply before it
+// relays it: the old server's whole answer is under 100 bytes.
+const legacyUnreadMax = 4 << 10
+
+// nameOldMusterUnread replaces an OLD muster's answer to a request it could
+// not read (mirror.LegacyMCPUnreadMessage; mirror.MCPUnreadByOldMuster says
+// why) with one naming that muster, the request's size and the limits: a tool
+// error on a tools/call, a JSON-RPC error on anything else. Only a request
+// over mirror.LegacyMCPReadBytes — the most such a muster read — is looked at,
+// and only a 200 whose first byte opens a JSON object: a streamed reply (a
+// long call's keep-alive whitespace first) is relayed untouched, as is
+// anything that is not that exact reply.
+func nameOldMusterUnread(req *http.Request, resp *http.Response) {
+	if req.ContentLength <= mirror.LegacyMCPReadBytes || resp.StatusCode != http.StatusOK || req.GetBody == nil {
+		return
+	}
+	br := bufio.NewReaderSize(resp.Body, legacyUnreadMax)
+	orig := resp.Body
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{br, orig}
+	if first, err := br.Peek(1); err != nil || first[0] != '{' {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(br, legacyUnreadMax+1))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(raw), br), orig}
+	if err != nil || len(raw) > legacyUnreadMax {
+		return
+	}
+	var rep struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &rep) != nil || rep.Error == nil ||
+		rep.Error.Code != mirror.LegacyMCPUnreadCode || rep.Error.Message != mirror.LegacyMCPUnreadMessage {
+		return
+	}
+	var head struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	if b, err := req.GetBody(); err == nil {
+		_ = json.NewDecoder(b).Decode(&head)
+		_ = b.Close()
+	}
+	msg := mirror.MCPUnreadByOldMuster(req.URL.Host, req.ContentLength)
+	out := map[string]any{"jsonrpc": "2.0", "id": rawOrNull(head.ID)}
+	if head.Method == "tools/call" {
+		text, _ := json.Marshal(map[string]string{"error": msg})
+		out["result"] = map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": true}
+	} else {
+		out["error"] = map[string]any{"code": -32600, "message": msg}
+	}
+	body, _ := json.Marshal(out)
+	body = append(body, '\n')
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{bytes.NewReader(body), orig}
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Del("Content-Length")
 }
 
 // do is THE one way this proxy sends a request upstream — to the primary or an
