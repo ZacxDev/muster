@@ -276,9 +276,16 @@ for (const vp of [
       const ids = await manage.locator('[data-info-sheet]').evaluateAll((els) => els.map((e) => e.id));
       expect(new Set(ids).size).toBe(2);
       expect(await info.getAttribute('popovertarget')).toBe(await sheet.getAttribute('id'));
+      // Escape closes the sheet and nothing behind it: the dialog stays open,
+      // and so does the phone's drawer (the sidebar's own Escape used to shut
+      // it here, behind the dialog — and the focus the dialog's close later
+      // gave the toggle was lost at the end of that slide).
+      const drawerBefore = await page.locator('#sidebar-root').getAttribute('data-open');
+      if (vp.name === 'phone') expect(drawerBefore, 'CONTROL: the drawer is open on a phone').toBe('true');
       await page.keyboard.press('Escape');
       await expect(sheet).toBeHidden();
       await expect(manage).toHaveJSProperty('open', true);
+      expect(await page.locator('#sidebar-root').getAttribute('data-open')).toBe(drawerBefore);
       await row.locator('input').fill('Work');
       await row.locator('input').press('Enter');
       await expect(s.locator('[data-server-label]')).toHaveText('Work');
@@ -303,10 +310,22 @@ for (const vp of [
       // dropped the focus at the end of the slide — a timing-dependent red).
       await page.locator('#server-switcher-toggle').focus();
       const drawer = await page.locator('#sidebar-root').getAttribute('data-open');
+      if (vp.name === 'phone') expect(drawer, 'CONTROL: the drawer is still open on a phone').toBe('true');
       await page.keyboard.press('Escape');
       await expect(page.locator('#server-switcher-menu')).toBeHidden();
       expect(await page.locator('#sidebar-root').getAttribute('data-open')).toBe(drawer);
       await expect(page.locator('#server-switcher-toggle')).toBeVisible();
+      // The same, in one tick: with the menu open again, an Escape at the
+      // focused toggle leaves the toggle as document.activeElement when the
+      // keydown returns — no timing for a poll to hide.
+      await page.locator('#server-switcher-toggle').click();
+      await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'true');
+      expect(await page.evaluate(() => {
+        const t = document.getElementById('server-switcher-toggle')!;
+        t.focus();
+        t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        return [document.activeElement === t, t.getAttribute('aria-expanded'), document.getElementById('sidebar-root')!.getAttribute('data-open')];
+      })).toEqual([true, 'false', drawer]);
       await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'false');
       await expect(page.locator('#server-switcher-toggle')).toBeFocused();
       await page.keyboard.press('Enter');

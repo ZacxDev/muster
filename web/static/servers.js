@@ -569,10 +569,22 @@
     // timing (red in CI on a phone). Listening on the window in the CAPTURE
     // phase runs this before any document listener, and stopping the event
     // here leaves the drawer open with the focus on the toggle.
+    //
+    // The same holds with one of the switcher's dialogs open: the browser's
+    // own Escape closes the innermost thing there (an ⓘ sheet, else the
+    // dialog) as its default action, which stopping propagation does not
+    // touch — but the sidebar's listener must not ALSO shut the drawer behind
+    // the dialog. It did: an Escape that closed a Manage row's ⓘ shut the
+    // phone drawer, so the toggle the dialog's close then focused went
+    // visibility: hidden at the end of the slide and lost the focus.
     root.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      if (document.querySelector('#server-add[open], #server-manage[open], #server-offer[open]')) {
+        e.stopPropagation();
+        return;
+      }
       var t = $('server-switcher-toggle');
-      if (e.key !== 'Escape' || !t || t.getAttribute('aria-expanded') !== 'true') return;
-      if (document.querySelector('#server-add[open], #server-manage[open], #server-offer[open]')) return;
+      if (!t || t.getAttribute('aria-expanded') !== 'true') return;
       e.stopPropagation();
       setOpen(false);
       t.focus();
