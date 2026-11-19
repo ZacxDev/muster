@@ -421,6 +421,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/host-jobs":                                               classAdmin,
 	"GET /api/host-jobs/{name}/runs":                                   classAdmin,
 	"POST /api/host-jobs/{name}/run":                                   classAdmin,
+	"DELETE /api/host-jobs/{name}":                                     classAdmin,
 	"GET /api/officers/defs/{officer}/usage":                           classAdmin,
 	"PUT /api/officers/defs/{officer}/schedules/{name}":                classAdmin,
 	"DELETE /api/officers/defs/{officer}/schedules/{name}":             classAdmin,
@@ -1886,6 +1887,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	}
 	if strings.HasPrefix(path, "/api/host-jobs/{name}") {
 		name = o.hostJob
+		if method == http.MethodDelete {
+			// forget names its host: A's job's (the canary host), the ghost's.
+			path += "?" + url.Values{"host": {o.mirrorHost}}.Encode()
+		}
 	}
 	if strings.Contains(path, "credentials/claude/{name}") {
 		name = o.ccAccount

@@ -72,7 +72,10 @@ import (
 // 54 → 57: `job list|runs|run` (job.go), /api/host-jobs — scheduled host
 // jobs (docs/host-jobs.md): read what the hosts declare, read a job's runs,
 // run one now. No verb declares or changes a job: that is the host's.
-const wantVerbCount = 57
+//
+// 57 → 58: `job forget` (job.go), DELETE /api/host-jobs/{name} — forget a
+// job of a host that is gone (its row, runs and schedule).
+const wantVerbCount = 58
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -173,6 +176,7 @@ var wiring = []struct {
 	{"job list", []string{"job", "list"}, "GET /api/host-jobs"},
 	{"job runs", []string{"job", "runs", "smoke", "--host", "alpha"}, "GET /api/host-jobs/smoke/runs"},
 	{"job run", []string{"job", "run", "smoke"}, "POST /api/host-jobs/smoke/run"},
+	{"job forget", []string{"job", "forget", "alpha", "smoke"}, "DELETE /api/host-jobs/smoke"},
 }
 
 // tenantWiring is the `tenant …` half of the ledger. These verbs manage files
@@ -358,6 +362,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/host-jobs", http.StatusOK, `{"hosts":[]}`)
 			h.json("GET /api/host-jobs/smoke/runs", http.StatusOK, `{"host":"alpha","job":"smoke","runs":[]}`)
 			h.json("POST /api/host-jobs/smoke/run", http.StatusOK, `{"host":"alpha","job":"smoke","run":{"id":4,"status":"running"}}`)
+			h.json("DELETE /api/host-jobs/smoke", http.StatusOK, `{"forgot":"smoke","host":"alpha"}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)
 			h.json("GET /api/doctor", http.StatusOK, `{"auth_mode":"password","hook_token_armed":true,`+

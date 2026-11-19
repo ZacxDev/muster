@@ -452,6 +452,9 @@ type Server struct {
 	// sets it).
 	hostJobs    *hostjobs.Store
 	hostJobsNow func() time.Time
+	// hostJobReports is why a host's last jobs message could not be
+	// recorded, per (owner, host), and its Attention item (hostjobs.go).
+	hostJobReports hostJobReportErrs
 	// spawnLender is the host spawns' team lending (EnableHostSpawnLending,
 	// officer_spawn_share.go); nil with no database.
 	spawnLender officers.HostSpawnLender

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,7 +84,9 @@ func LoadJobs(path string) ([]JobSpec, error) {
 		return nil, fmt.Errorf("the jobs file %s declares %d jobs; a host declares at most %d", path, len(f.Jobs), mirror.MaxJobs)
 	}
 	seen := map[string]bool{}
-	for _, j := range f.Jobs {
+	for i := range f.Jobs {
+		f.Jobs[i].Cron = mirror.NormalizeCron(f.Jobs[i].Cron)
+		j := f.Jobs[i]
 		if why := mirror.CheckHostJob(j.HostJob); why != "" {
 			return nil, fmt.Errorf("the jobs file %s: %s", path, why)
 		}
@@ -164,6 +167,15 @@ func (h *hostSide) sendJobs() error {
 	if err := h.send(m); err != nil {
 		return err
 	}
+	return h.flushJobResults()
+}
+
+// flushJobResults sends the results a previous connection could not, on this
+// one. Called after the jobs message AND again once this connection is
+// published as the client's current one (client.go): a run that ended in
+// between found no current connection and was kept, and would otherwise wait
+// for the NEXT reconnect.
+func (h *hostSide) flushJobResults() error {
 	h.c.jobs.mu.Lock()
 	pending := h.c.jobs.pending
 	h.c.jobs.pending = nil
@@ -276,15 +288,32 @@ func (h *hostSide) jobRun(data []byte) {
 
 // sendJobResult sends r on whichever connection is live now, or keeps it
 // for the next one (sendJobs).
+//
+// 🔴 "NO CONNECTION" IS DECIDED UNDER THE PENDING LIST'S LOCK, and the
+// connection's flush after it is published takes that lock: so a result
+// that saw no connection is in the list before that flush reads it, and is
+// never stranded until the next reconnect.
 func (c *Client) sendJobResult(r mirror.JobResult) {
+	c.jobs.mu.Lock()
 	c.curMu.Lock()
 	h := c.cur
 	c.curMu.Unlock()
-	if h != nil && h.send(mirror.Msg{Type: mirror.TypeJobResult, JobResult: &r}) == nil {
+	if h == nil {
+		c.keepJobResult(r)
+		c.jobs.mu.Unlock()
+		return
+	}
+	c.jobs.mu.Unlock()
+	if h.send(mirror.Msg{Type: mirror.TypeJobResult, JobResult: &r}) == nil {
 		return
 	}
 	c.jobs.mu.Lock()
 	defer c.jobs.mu.Unlock()
+	c.keepJobResult(r)
+}
+
+// keepJobResult keeps r for the next connection, under c.jobs.mu.
+func (c *Client) keepJobResult(r mirror.JobResult) {
 	if len(c.jobs.pending) >= maxPendingJobResults {
 		old := c.jobs.pending[0]
 		c.log.Printf("muster-mirror: job %s's result for run %d dropped: %d results are waiting for a connection", old.Job, old.Run, maxPendingJobResults)
@@ -334,6 +363,20 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// jobEnv is a job's environment: muster-mirror's own, MINUS every variable
+// whose name starts MUSTER_ — this daemon's token file, URL and switches are
+// not the job's. Everything else is kept (HOME, PATH, SSH_AUTH_SOCK, …): a job
+// legitimately needs the user's tools and agents.
+func jobEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "MUSTER_") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // runJobCommand is the real JobExec: spec's argv, exec'd directly (no shell),
 // in spec's dir (or the home directory), with no stdin, in a process group
 // of its own that is killed whole at ctx's deadline.
@@ -354,6 +397,7 @@ func runJobCommand(ctx context.Context, spec JobSpec) JobOutcome {
 			}
 		}
 	}
+	cmd.Env = jobEnv(os.Environ())
 	stdout := &capBuffer{n: mirror.MaxJobStdout}
 	stderr := &tailBuffer{n: mirror.MaxJobStderrTail}
 	cmd.Stdout, cmd.Stderr = stdout, stderr

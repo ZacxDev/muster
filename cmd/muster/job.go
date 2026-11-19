@@ -19,6 +19,7 @@ const (
 	hostJobsRoute    = "/api/host-jobs"
 	hostJobRunsRoute = "/api/host-jobs/{name}/runs"
 	hostJobRunRoute  = "/api/host-jobs/{name}/run"
+	hostJobRoute     = "/api/host-jobs/{name}"
 )
 
 func newJobCmd(a *app) *cobra.Command {
@@ -32,7 +33,7 @@ it, records each run and raises an Attention item when one fails (a non-zero
 exit, a timeout, an output that is not a valid page, the host offline at fire
 time). Nothing here can add, change or parameterise a job.`,
 	}
-	cmd.AddCommand(newJobListCmd(a), newJobRunsCmd(a), newJobRunCmd(a))
+	cmd.AddCommand(newJobListCmd(a), newJobRunsCmd(a), newJobRunCmd(a), newJobForgetCmd(a))
 	return cmd
 }
 
@@ -90,6 +91,22 @@ item, as a fire's).`,
 	}
 	cmd.Flags().StringVar(&host, "host", "", "the host, when the name is declared on several")
 	return cmd
+}
+
+func newJobForgetCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "forget <host> <name>",
+		Short: "DELETE " + hostJobRoute + "?host= — forget a job of a host that is gone: its row, its runs and its schedule",
+		Long: `Forget one of your jobs for good: its record, its run history and its
+pending schedule are deleted, and its runs' open Attention items withdrawn, so
+a host you decommissioned stops raising "did not run" items. For a host that
+is GONE: a host that still declares the job records it again on its next
+connection (remove it from that host's jobs file instead). Your own jobs only.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.jobCall(cmd, http.MethodDelete, hostJobRoute, map[string]string{"name": args[1]}, url.Values{"host": {args[0]}})
+		},
+	}
 }
 
 // jobCall makes one host-jobs API call as the configured credential and

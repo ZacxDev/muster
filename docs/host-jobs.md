@@ -55,7 +55,7 @@ changes one.
 | `timeoutSeconds` | no | 1–21600, default 600. At the limit the host kills the command's whole process group |
 | `output` | no | `markdown` (default): stdout is one markdown block. `blocks`: stdout is a JSON list of page blocks, as the page tools take ([pages.md](pages.md)) |
 | `title` | no | the page's title (default: the job's name) |
-| `dir` | no | the working directory, absolute (default: the home directory) |
+| `dir` | no | the working directory, absolute (default: the home directory; when `HOME` names no directory, muster-mirror's own working directory) |
 
 The file is read **once, at start**, and validated whole: one bad entry and no
 job of that file is declared. The reason is logged, and sent to muster, which
@@ -71,9 +71,11 @@ removed from the file stops being fired; its run history stays.
 ## How a run goes
 
 **muster fires the cron**, not the host: one scheduler on the server, the
-officer schedules' compare-and-set, so each fire happens once however many
-replicas run, and a fire while the host is **offline** is a run of its own
-with its own Attention item — a missed run is seen, not silent. Missed fires
+officer schedules' compare-and-set, so a due time is never fired twice, and a
+fire while the host is **offline** is a run of its own with an Attention item
+— a missed run is seen, not silent. (Like the rest of the mirror, this needs
+muster to run as ONE replica: a host is connected to one process, and a
+replica not holding that connection would see it offline.) Missed fires
 (muster itself down) collapse to one, as officer schedules' do.
 
 1. At a due time muster records a run and sends the host a `job-run` over the
@@ -81,7 +83,12 @@ with its own Attention item — a missed run is seen, not silent. Missed fires
    ([below](#what-muster-can-and-cannot-make-a-host-do)).
 2. The host looks the name up in its own file and runs that entry's argv,
    with no stdin, capturing stdout (at most 512 KiB) and the last 2 KiB of
-   stderr.
+   stderr. **Its environment** is muster-mirror's own — `HOME`, `PATH`,
+   `SSH_AUTH_SOCK` and every other variable the service has — **minus every
+   variable whose name starts `MUSTER_`** (the daemon's token file, URL and
+   switches are not the job's). A job needing a tool the service's `PATH`
+   does not reach names it by absolute path, or sets it up in a wrapper
+   script.
 3. When it ends — exit, timeout — the host sends a `job-result` on whichever
    connection is up then, so a run that outlives a reconnect still reports
    (a result that finds no connection is kept for the next one).
@@ -142,14 +149,19 @@ words, exactly:
 | timeout | `Job <name> on <host> timed out: the host stopped it after its <timeout> limit.` |
 | output is not a valid page | `Job <name> on <host> ran, but its output is not a valid page, so the page was not changed: <why>.` |
 | stdout over 512 KiB, page not writable | `Job <name> on <host> failed: <why>.` |
-| host offline at fire time | `Job <name> on <host> did not run at <YYYY-MM-DD HH:MM UTC>: <host> was not connected to muster.` |
+| host offline at fire time | `Job <name> on <host> did not run at <YYYY-MM-DD HH:MM UTC>: <host> was not connected to muster.` — **one** item for consecutive offline fires of the job (each run records it), withdrawn when the host connects again or a run succeeds |
 | the host refused the run | `Job <name> on <host> did not run: <host> refused it (<why>).` |
 | no result came back | `Job <name> on <host> was sent at <time>, and muster never got its result back (it was due within <timeout>). Check muster-mirror's log on <host>.` |
 
 Every item for a run that started ends with the tail of its stderr
 (`The end of its stderr:` and up to 2 KiB), or `Its stderr was empty.`
 
-A run that succeeds raises nothing; neither does a skipped one. A new page
+A run that succeeds raises nothing; neither does a skipped one.
+
+If muster cannot **record** a host's jobs message (the database refuses it),
+the jobs as last recorded stand, `muster job list` shows the reason as the
+host's `jobs_error`, and one item labelled `jobs on <host>` says so; it is
+withdrawn when a later connection's jobs are recorded. A new page
 version sends no notification either: the item for a failure is the push
 (Attention's own, [attention.md](attention.md)).
 
@@ -160,7 +172,14 @@ muster job list                  # your hosts' declared jobs, per host, as each 
 muster job runs smoke            # a job's runs, newest first
 muster job runs smoke --host x   # when the name is declared on several hosts
 muster job run smoke             # run it now, as its cron would
+muster job forget old-box smoke  # a host that is gone: delete the job, its runs and its schedule
 ```
+
+`job forget <host> <name>` is for a machine you decommissioned: its job
+would otherwise fire, and raise its "did not run" item, for ever. It deletes
+the job, its run history and its schedule, and withdraws its open items. A
+host that still declares the job records it again on its next connection —
+remove it from that host's jobs file instead. Your own jobs only.
 
 `job list` shows each host's jobs (name, cron, command, page, output,
 timeout, next fire), whether the host is connected, and — for a connected
@@ -171,7 +190,7 @@ ended, its exit code, duration, the page version it wrote (none when the
 output was unchanged), the stderr tail, and its Attention item. `job run`
 answers the run as recorded: `running` (sent; `job runs` shows how it ends),
 `skipped`, `offline` or `refused`. The API is `GET /api/host-jobs`,
-`GET /api/host-jobs/{name}/runs` and `POST /api/host-jobs/{name}/run`, as the
+`GET /api/host-jobs/{name}/runs`, `POST /api/host-jobs/{name}/run` and `DELETE /api/host-jobs/{name}?host=`, as the
 CLI's credential: a personal API token, or the hook token acting as the admin
 ([cli.md](cli.md)).
 

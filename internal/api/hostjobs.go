@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
@@ -26,6 +27,7 @@ import (
 //	GET  /api/host-jobs                     the caller's declared jobs, per host
 //	GET  /api/host-jobs/{name}/runs         ?host=&limit= a job's runs, newest first
 //	POST /api/host-jobs/{name}/run          ?host= run it now
+//	DELETE /api/host-jobs/{name}            ?host= forget it (a host that is gone)
 //
 // 🔴 MUSTER TRIGGERS, RECORDS AND ALERTS — IT NEVER DECLARES. A job exists
 // here only because its host's jobs message reported it (hostJobsReported);
@@ -127,10 +129,123 @@ func (s *Server) HostJobsReported(owner int64, host string, r mirror.HostJobsRep
 		return
 	}
 	if err := s.hostJobs.Report(octx, host, r.Jobs, s.hostJobClock()); err != nil {
+		// 🔴 NEVER SILENT: the jobs as last recorded stand (Report is one
+		// transaction), and the owner is told — jobs_error in `job list`, and
+		// one Attention item per host while the error lasts.
 		s.logger.Printf("host jobs: record %s's jobs (owner %d): %v", host, owner, err)
+		s.hostJobReportFailed(octx, owner, host, err)
 		return
 	}
+	s.hostJobReportOK(octx, owner, host)
+	// The host is connected: its jobs' open offline items are settled.
+	s.withdrawHostJobOffline(octx, host, 0)
 	s.logger.Printf("host jobs: %s (owner %d) declares %d job(s)", host, owner, len(r.Jobs))
+}
+
+// hostJobReportErrs is, per (owner, host), why muster could not record the
+// host's last jobs message, and the Attention item that said so. In memory:
+// the next jobs message (each reconnect) records or fails again.
+type hostJobReportErrs struct {
+	mu sync.Mutex
+	m  map[hostJobReportKey]hostJobReportErr
+}
+
+type hostJobReportKey struct {
+	owner int64
+	host  string
+}
+
+type hostJobReportErr struct {
+	err    string
+	notice int64
+}
+
+// hostJobReportFailed records why owner's host's jobs could not be recorded
+// and raises its ONE Attention item (none while an earlier one is open).
+func (s *Server) hostJobReportFailed(octx context.Context, owner int64, host string, err error) {
+	why := "muster could not record them (" + truncate(err.Error(), 300) + ")"
+	k := hostJobReportKey{owner, host}
+	s.hostJobReports.mu.Lock()
+	if s.hostJobReports.m == nil {
+		s.hostJobReports.m = map[hostJobReportKey]hostJobReportErr{}
+	}
+	prev := s.hostJobReports.m[k]
+	s.hostJobReports.m[k] = hostJobReportErr{err: why, notice: prev.notice}
+	s.hostJobReports.mu.Unlock()
+	actx := s.attentionPrincipal(octx, owner)
+	if s.ext.Attention == nil {
+		return
+	}
+	if prev.notice > 0 {
+		if a, err := s.ext.Attention.Get(actx, prev.notice); err == nil && a.Status == attention.Open {
+			return
+		}
+	}
+	a, cerr := s.ext.Attention.Create(actx, attention.New{Asker: attention.Asker{System: true, Label: "jobs on " + host},
+		Question: hostJobReportText(host, why), Notice: true})
+	if cerr != nil {
+		s.logger.Printf("host jobs: raise %s's report notice: %v", host, cerr)
+		return
+	}
+	s.hostJobReports.mu.Lock()
+	s.hostJobReports.m[k] = hostJobReportErr{err: why, notice: a.ID}
+	s.hostJobReports.mu.Unlock()
+	s.askFiled(a)
+}
+
+// hostJobReportOK clears owner's host's report error and withdraws its item.
+func (s *Server) hostJobReportOK(octx context.Context, owner int64, host string) {
+	k := hostJobReportKey{owner, host}
+	s.hostJobReports.mu.Lock()
+	prev, had := s.hostJobReports.m[k]
+	delete(s.hostJobReports.m, k)
+	s.hostJobReports.mu.Unlock()
+	if had && prev.notice > 0 && s.ext.Attention != nil {
+		if _, err := s.cancelAsk(s.attentionPrincipal(octx, owner), prev.notice); err != nil && !errors.Is(err, attention.ErrNotOpen) {
+			s.logger.Printf("host jobs: withdraw %s's report notice: %v", host, err)
+		}
+	}
+}
+
+// hostJobReportError is why owner's host's jobs could not be recorded, ""
+// for none.
+func (s *Server) hostJobReportError(owner int64, host string) string {
+	s.hostJobReports.mu.Lock()
+	defer s.hostJobReports.mu.Unlock()
+	return s.hostJobReports.m[hostJobReportKey{owner, host}].err
+}
+
+// withdrawHostJobOffline withdraws the open offline items of host's jobs
+// (job 0) or of one job: the host is connected again, or a run succeeded.
+func (s *Server) withdrawHostJobOffline(octx context.Context, host string, job int64) {
+	if s.ext.Attention == nil {
+		return
+	}
+	ids, err := s.hostJobs.OfflineNotices(octx, host, job)
+	if err != nil {
+		s.logger.Printf("host jobs: read %s's offline items: %v", host, err)
+		return
+	}
+	for _, id := range ids {
+		if _, err := s.cancelAsk(octx, id); err != nil && !errors.Is(err, attention.ErrNotOpen) && !errors.Is(err, attention.ErrNotFound) {
+			s.logger.Printf("host jobs: withdraw offline item %d: %v", id, err)
+		}
+	}
+}
+
+// raiseHostJobOffline is an offline run's item: consecutive offline fires of
+// one job share ONE open item (each run records it), so a decommissioned or
+// long-off host does not file one per fire.
+func (s *Server) raiseHostJobOffline(octx context.Context, run hostjobs.Run, text string) {
+	if s.ext.Attention != nil {
+		if id, err := s.hostJobs.OpenOfflineNotice(octx, run.JobID, run.ID); err == nil && id > 0 {
+			if a, err := s.ext.Attention.Get(octx, id); err == nil && a.Status == attention.Open {
+				_, _ = s.hostJobs.SetNotice(octx, run.ID, id)
+				return
+			}
+		}
+	}
+	s.raiseHostJobNotice(octx, run, text)
 }
 
 // RunHostJobScheduler fires due jobs and settles lost runs every interval
@@ -200,7 +315,7 @@ func (s *Server) startHostJobRun(ctx context.Context, j hostjobs.Job, trigger st
 		return r, nil
 	case hostjobs.StatusOffline:
 		s.logger.Printf("host jobs: %s on %s (owner %d): run %d not started: the host is offline", j.Name, j.Host, j.Owner, r.ID)
-		s.raiseHostJobNotice(octx, r, hostJobOfflineText(r.Job, r.Host, due))
+		s.raiseHostJobOffline(octx, r, hostJobOfflineText(r.Job, r.Host, due))
 		return r, nil
 	}
 	terr := mj.TriggerJob(octx, j.Owner, j.Host, r.ID, j.Name)
@@ -219,7 +334,11 @@ func (s *Server) startHostJobRun(ctx context.Context, j hostjobs.Job, trigger st
 		return r, err
 	}
 	s.logger.Printf("host jobs: %s on %s (owner %d): run %d not sent: %v", j.Name, j.Host, j.Owner, r.ID, terr)
-	s.raiseHostJobNotice(octx, done, text)
+	if done.Status == hostjobs.StatusOffline {
+		s.raiseHostJobOffline(octx, done, text)
+	} else {
+		s.raiseHostJobNotice(octx, done, text)
+	}
 	return done, nil
 }
 
@@ -250,6 +369,15 @@ func (s *Server) HostJobResult(owner int64, host string, res mirror.JobResult) {
 		return
 	}
 	now := s.hostJobClock()
+	// 🔴 CLAIMED BEFORE ANYTHING IS WRITTEN: of two results for one run (a
+	// duplicate, or the lost sweep), only the claim's winner writes a page
+	// version and records the ending.
+	if won, err := s.hostJobs.ClaimRun(octx, r.ID, now); err != nil || !won {
+		if err != nil {
+			s.logger.Printf("host jobs: run %d: claim its ending: %v", r.ID, err)
+		}
+		return
+	}
 	fin := hostjobs.Finish{EndedAt: now, StderrTail: string(res.Stderr)}
 	if res.StartedMs > 0 {
 		t := time.UnixMilli(res.StartedMs)
@@ -300,6 +428,11 @@ func (s *Server) HostJobResult(owner int64, host string, res mirror.JobResult) {
 	s.logger.Printf("host jobs: %s on %s (owner %d): run %d %s (%s)", r.Job, r.Host, owner, r.ID, done.Status, done.Detail)
 	if text != "" {
 		s.raiseHostJobNotice(octx, done, text)
+		return
+	}
+	if done.Status == hostjobs.StatusOK {
+		// A run that succeeded settles the job's open offline item.
+		s.withdrawHostJobOffline(octx, r.Host, r.JobID)
 	}
 }
 
@@ -434,15 +567,36 @@ func hostJobTimeoutText(job, host string, timeout time.Duration, tail string) st
 	return fmt.Sprintf("Job %s on %s timed out: the host stopped it after its %s limit.", job, host, timeout) + hostJobTail(tail)
 }
 
+// maxHostJobWhyRunes bounds the reason an item quotes (a pages.Parse error
+// can quote its input), so the item — header, reason and the stderr tail —
+// stays inside attention.MaxQuestionRunes.
+const maxHostJobWhyRunes = 1000
+
+// hostJobWhy is why bounded to maxHostJobWhyRunes.
+func hostJobWhy(why string) string {
+	if r := []rune(why); len(r) > maxHostJobWhyRunes {
+		return string(r[:maxHostJobWhyRunes]) + "…"
+	}
+	return why
+}
+
+// hostJobReportText is the item for a host whose jobs muster could not record.
+func hostJobReportText(host, why string) string {
+	return fmt.Sprintf("The jobs %s declares were not recorded: %s. Its jobs as muster last recorded them stand; `muster job list` shows this until its next connection records them.", host, why)
+}
+
 func hostJobInvalidText(job, host, why, tail string) string {
+	why = hostJobWhy(why)
 	return fmt.Sprintf("Job %s on %s ran, but its output is not a valid page, so the page was not changed: %s.", job, host, why) + hostJobTail(tail)
 }
 
 func hostJobFailedText(job, host, why, tail string) string {
+	why = hostJobWhy(why)
 	return fmt.Sprintf("Job %s on %s failed: %s.", job, host, why) + hostJobTail(tail)
 }
 
 func hostJobRefusedText(job, host, why string) string {
+	why = hostJobWhy(why)
 	return fmt.Sprintf("Job %s on %s did not run: %s refused it (%s).", job, host, host, why)
 }
 
@@ -458,6 +612,41 @@ func (s *Server) registerHostJobRoutes(mux Mux) {
 	mux.HandleFunc("GET /api/host-jobs", h(s.handleHostJobs))
 	mux.HandleFunc("GET /api/host-jobs/{name}/runs", h(s.handleHostJobRuns))
 	mux.HandleFunc("POST /api/host-jobs/{name}/run", h(s.handleHostJobRun))
+	mux.HandleFunc("DELETE /api/host-jobs/{name}", h(s.handleHostJobForget))
+}
+
+// handleHostJobForget is DELETE /api/host-jobs/{name}?host= (`muster job
+// forget <host> <name>`): the caller's job and its runs are deleted — its
+// pending schedule with it — and its runs' open Attention items withdrawn.
+// For a host that is GONE: a host still declaring the job records it again on
+// its next connection. ?host= is required (a name may be declared on several
+// hosts). The caller's own rows only (row-level security): another user's job
+// reads as missing, 404.
+func (s *Server) handleHostJobForget(w http.ResponseWriter, r *http.Request) {
+	name, host := r.PathValue("name"), r.URL.Query().Get("host")
+	if !mirror.ValidJobName(name) || mirror.ValidHost(host) != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "forget names a job and its host: DELETE /api/host-jobs/{name}?host=<host>"})
+		return
+	}
+	notices, err := s.hostJobs.Forget(r.Context(), host, name)
+	switch {
+	case errors.Is(err, hostjobs.ErrNotFound):
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "you have no job of that name on that host"})
+		return
+	case err != nil:
+		s.logger.Printf("host jobs: forget %s on %s: %v", name, host, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the job could not be forgotten"})
+		return
+	}
+	if s.ext.Attention != nil {
+		for _, id := range notices {
+			if _, err := s.cancelAsk(r.Context(), id); err != nil && !errors.Is(err, attention.ErrNotOpen) && !errors.Is(err, attention.ErrNotFound) {
+				s.logger.Printf("host jobs: forget %s on %s: withdraw item %d: %v", name, host, id, err)
+			}
+		}
+	}
+	s.logger.Printf("host jobs: %s on %s forgotten (owner %d)", name, host, adminOwner(r))
+	s.writeJSON(w, http.StatusOK, map[string]any{"forgot": name, "host": host})
 }
 
 // requireHostJobs answers 404 while jobs are off.
@@ -501,6 +690,9 @@ func (s *Server) handleHostJobs(w http.ResponseWriter, r *http.Request) {
 		if mj != nil {
 			h.Online, h.JobsError = mj.HostConnected(owner, host), mj.JobsError(owner, host)
 		}
+		if h.JobsError == "" {
+			h.JobsError = s.hostJobReportError(owner, host)
+		}
 		byHost[host] = h
 		order = append(order, host)
 		return h
@@ -511,7 +703,7 @@ func (s *Server) handleHostJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.ext.Mirror != nil && mj != nil {
 		for _, v := range s.ext.Mirror.Hosts(r.Context()) {
-			if v.Online && byHost[v.Host] == nil && mj.JobsError(owner, v.Host) != "" {
+			if byHost[v.Host] == nil && ((v.Online && mj.JobsError(owner, v.Host) != "") || s.hostJobReportError(owner, v.Host) != "") {
 				add(v.Host)
 			}
 		}

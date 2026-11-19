@@ -67,12 +67,12 @@ var (
 
 // Job is one job as its host last reported it.
 type Job struct {
-	ID          int64      `json:"id"`
-	Owner       int64      `json:"-"`
-	Host        string     `json:"host"`
-	Name        string     `json:"name"`
-	Cron        string     `json:"cron"`
-	Command     []string   `json:"command"`
+	ID      int64    `json:"id"`
+	Owner   int64    `json:"-"`
+	Host    string   `json:"host"`
+	Name    string   `json:"name"`
+	Cron    string   `json:"cron"`
+	Command []string `json:"command"`
 	// PageID is the page muster made for the job on its first output (0:
 	// none yet). Every job writes its own page; a host names none.
 	PageID      int64      `json:"page_id,omitempty"`
@@ -89,7 +89,6 @@ type Job struct {
 func (j Job) Decl() mirror.HostJob {
 	return mirror.HostJob{Name: j.Name, Cron: j.Cron, Command: j.Command, Title: j.Title, Output: j.Output, TimeoutSeconds: j.TimeoutS}
 }
-
 
 // Run is one run of a job.
 type Run struct {
@@ -388,6 +387,79 @@ func (s *Store) FinishRun(ctx context.Context, id int64, f Finish) (Run, bool, e
 	return r, true, nil
 }
 
+// ClaimRun claims the ending of the caller's RUNNING run id at now (its
+// ended_at, until FinishRun records the rest): true for the ONE caller that
+// claims it — before any page is written for it — false when it is claimed
+// or ended already. A claimed run is never called lost.
+func (s *Store) ClaimRun(ctx context.Context, id int64, now time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE host_job_runs SET ended_at = $2 WHERE id = $1 AND status = 'running' AND ended_at IS NULL`, id, now)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// OpenOfflineNotice is the Attention item the caller's job's latest OFFLINE
+// run before run except recorded (0: none): what a consecutive offline fire
+// shares rather than filing its own. Only a run AFTER the job's last run of
+// any other status counts: once the job ran (or failed otherwise), the next
+// offline fire is a new episode.
+func (s *Store) OpenOfflineNotice(ctx context.Context, job, except int64) (int64, error) {
+	var id int64
+	var status string
+	err := s.pool.QueryRow(ctx, `SELECT coalesce(notice_id, 0), status FROM host_job_runs
+		WHERE job_id = $1 AND id < $2 AND status <> 'skipped'
+		ORDER BY id DESC LIMIT 1`, job, except).Scan(&id, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil || status != StatusOffline {
+		return 0, err
+	}
+	return id, nil
+}
+
+// OfflineNotices is the distinct Attention items the caller's OFFLINE runs of
+// host's jobs recorded (of job only, when job > 0).
+func (s *Store) OfflineNotices(ctx context.Context, host string, job int64) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT notice_id FROM host_job_runs
+		WHERE host = $1 AND ($2 = 0 OR job_id = $2) AND status = 'offline' AND notice_id IS NOT NULL ORDER BY notice_id`, host, job)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// Forget deletes the caller's job name on host — declared or not — with its
+// runs (0163's cascade), and answers the Attention items its runs recorded
+// (the caller withdraws the open ones). ErrNotFound when the caller has no
+// such job. A host that still declares it records it again on its next
+// connection: forget is for a host that is gone.
+func (s *Store) Forget(ctx context.Context, host, name string) ([]int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	rows, err := tx.Query(ctx, `SELECT DISTINCT r.notice_id FROM host_job_runs r JOIN host_jobs j ON j.id = r.job_id
+		WHERE j.host = $1 AND j.name = $2 AND r.notice_id IS NOT NULL ORDER BY 1`, host, name)
+	if err != nil {
+		return nil, err
+	}
+	notices, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM host_jobs WHERE host = $1 AND name = $2`, host, name)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound
+	}
+	return notices, tx.Commit(ctx)
+}
+
 // SetNotice records Attention item ask as run id's — once: false when the
 // run has one already (another path raised it first; the caller withdraws
 // its copy).
@@ -411,7 +483,7 @@ const LostRunGrace = 5 * time.Minute
 func (s *Store) LostRuns(ctx context.Context, now time.Time, limit int) ([]Run, error) {
 	return collectRuns(s.pool.Query(sys(ctx), `UPDATE host_job_runs SET status = 'lost', ended_at = $1,
 		detail = 'muster never got its result from the host'
-		WHERE id IN (SELECT id FROM host_job_runs WHERE status = 'running'
+		WHERE id IN (SELECT id FROM host_job_runs WHERE status = 'running' AND ended_at IS NULL
 			AND fired_at + make_interval(secs => timeout_s) + make_interval(secs => $2) < $1 ORDER BY id LIMIT $3)
 		AND status = 'running' RETURNING `+runCols, now, LostRunGrace.Seconds(), limit))
 }

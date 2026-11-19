@@ -249,6 +249,7 @@ func CheckHostJob(j HostJob) string {
 func CleanJobs(in []HostJob) (kept []HostJob, dropped []string) {
 	seen := map[string]bool{}
 	for _, j := range in {
+		j.Cron = NormalizeCron(j.Cron)
 		if why := CheckHostJob(j); why != "" {
 			dropped = append(dropped, why)
 			continue
@@ -267,6 +268,13 @@ func CleanJobs(in []HostJob) (kept []HostJob, dropped []string) {
 	}
 	return kept, dropped
 }
+
+// NormalizeCron is cron with its fields separated by exactly one space and
+// nothing around them: the form 0163's CHECK (`^\S+( \S+){4}$`) holds the
+// column to, and the grammar (internal/cronspec) reads the same either way.
+// So "0  14 * * *", a leading space or a tab is the job its operator meant,
+// never a row the database refuses.
+func NormalizeCron(cron string) string { return strings.Join(strings.Fields(cron), " ") }
 
 // CleanJobsError is a jobs message's error as muster keeps it: one line,
 // bounded.

@@ -580,6 +580,13 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		}
 		c.curMu.Unlock()
 	}()
+	// A job result that ended between the jobs message's flush and this
+	// publication was kept for a connection: send it now (hostjobs.go).
+	if version >= 2 {
+		if err := conn.flushJobResults(); err != nil {
+			return err
+		}
+	}
 	for {
 		typ, data, err := ws.Read(ctx)
 		if err != nil {

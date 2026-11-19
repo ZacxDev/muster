@@ -199,6 +199,7 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			h.json("GET /api/host-jobs", http.StatusOK, `{"hosts":[{"host":"alpha","online":true,"jobs":[{"name":"smoke","nested":{"a":1}}]}]}`)
 			h.json("GET /api/host-jobs/smoke/runs", http.StatusOK, `{"host":"alpha","job":"smoke","runs":[{"id":3,"status":"ok","nested":{"a":1}}]}`)
 			h.json("POST /api/host-jobs/smoke/run", http.StatusOK, `{"host":"alpha","job":"smoke","run":{"id":4,"status":"running","nested":{"a":1}}}`)
+			h.json("DELETE /api/host-jobs/smoke", http.StatusOK, `{"forgot":"smoke","host":"alpha","nested":{"a":1}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)
 			h.json("GET /api/doctor", http.StatusOK, `{"hook_token_armed":true,"push":true,"dictation":true,"mirror":{"enabled":true,"hosts":[{"host":"alpha","token":true,"online":true}]}}`)
 

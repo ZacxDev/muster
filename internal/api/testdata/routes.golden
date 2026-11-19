@@ -32,6 +32,7 @@ DELETE /agents/{id}
 DELETE /api/agents/{name}
 DELETE /api/device
 DELETE /api/device/push
+DELETE /api/host-jobs/{name}
 DELETE /api/instance/branding/app-icon
 DELETE /api/instance/branding/logo
 DELETE /api/officers/declared/{officer}

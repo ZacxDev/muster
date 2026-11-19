@@ -25,6 +25,8 @@ func TestJobVerbsReachTheirRoutesWithTheirFlags(t *testing.T) {
 		{"runs, no flags", []string{"job", "runs", "nightly-report"}, "GET /api/host-jobs/nightly-report/runs", "/api/host-jobs/nightly-report/runs", http.MethodGet},
 		{"run", []string{"job", "run", "nightly-report", "--host", "build-02"}, "POST /api/host-jobs/nightly-report/run",
 			"/api/host-jobs/nightly-report/run?host=build-02", http.MethodPost},
+		{"forget", []string{"job", "forget", "build-02", "nightly-report"}, "DELETE /api/host-jobs/nightly-report",
+			"/api/host-jobs/nightly-report?host=build-02", http.MethodDelete},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newHarness(t)

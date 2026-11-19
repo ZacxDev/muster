@@ -827,6 +827,13 @@ func scanResponse(row pgx.Row) (Response, error) {
 func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	var out Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		// The page row first (page, then link: CloseLinks' order), which the
+		// response's own updated_at write takes anyway: so a rolling page's
+		// AddVersion (rollingDrop) never drops the version this response is
+		// being written at while it is uncommitted.
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM pages WHERE id = $1 FOR UPDATE`, l.PageID); err != nil {
+			return err
+		}
 		var state string
 		if err := tx.QueryRow(ctx, `SELECT state FROM page_links WHERE id = $1 AND page_id = $2 FOR UPDATE`,
 			l.ID, l.PageID).Scan(&state); err != nil {
