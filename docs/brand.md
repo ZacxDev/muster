@@ -31,7 +31,7 @@ The web app's copies are in `web/icon-src/` (the sources) and
 | served file | made from | used for |
 |---|---|---|
 | `lockup-horizontal.svg` | copied | the header, the sidebar, the sign-in page and the admin claim page |
-| `favicon.svg` | copied | the browser tab: a version of the mark drawn on a 16 px grid |
+| `favicon.svg` | copied | the browser tab: a version of the mark drawn on a 16 px grid; also the server in view's entry in the server switcher's list, when it has no branding |
 | `favicon-32.png` | `favicon.svg` at 32 px | the tab, in a browser that draws no SVG icon |
 | `icon-192.png`, `icon-512.png` | `icon.svg` | the manifest's `any` icons, a large favicon, and the Web Push icon (192) |
 | `apple-touch-icon.png` | `icon.svg` at 180 px | the touch icon (iOS home screen) |

@@ -27,6 +27,14 @@ import { noteFormSignIn } from '../lib/server';
 // 🔴 REGRESSION TEST: on origin/main the sidebar has no #server-switcher and
 // img-src is 'self' data: alone. Against this PR's first revision (f191b0f8)
 // the "reads nothing" checks are red: it fetched /api/instance and the icon.
+//
+// ONE ROW, THE LOGO ONLY (the operator's decision, "One row: the logo is the
+// switcher"): the sidebar's top is one row, the server in view's picture as
+// the button (no name, no address on screen; the name is its accessible
+// name), then search and close. The list names every server and shows an
+// address only where two names collide. 🔴 REGRESSION TEST: on the commit
+// before it, the row held the name as text under a separate brand row, and
+// every entry in the list showed its address.
 
 const A = baseURL;
 const A2 = `http://127.0.0.1:${port}`;
@@ -87,6 +95,17 @@ test.afterAll(async () => {
 
 const stored = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem('muster-servers') || 'null'));
 
+// setList: A's /tasks with exactly these servers on its list.
+async function setList(page: Page, servers: { origin: string; label: string }[]) {
+  await page.evaluate((list) => localStorage.setItem('muster-servers', JSON.stringify({ v: 1, servers: list })), servers);
+  await page.reload();
+  await expect(page.locator('#server-switcher')).toHaveCount(1);
+}
+
+// shownTexts: the text of each element matching sel that is on screen.
+const shownTexts = (page: Page, sel: string) => page.locator(sel).evaluateAll((els) =>
+  els.filter((e) => (e as HTMLElement).checkVisibility()).map((e) => (e as HTMLElement).innerText.trim()));
+
 // fresh: A's /tasks with an empty list.
 async function fresh(page: Page, origin = A) {
   await page.goto(origin + '/tasks');
@@ -139,10 +158,12 @@ function watch(page: Page) {
   return seen;
 }
 
-for (const vp of [
-  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+const VIEWPORTS = [
+  { name: 'phone', use: { viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 } } },
-]) {
+];
+
+for (const vp of VIEWPORTS) {
   test.describe(vp.name, () => {
     test.use(vp.use);
 
@@ -160,12 +181,18 @@ for (const vp of [
       // its host as its label until the person names it (below).
       const self = await (await page.request.get(A + '/api/instance')).json();
       const selfLabel = self.name || 'This server';
-      await expect(page.locator('#server-switcher-toggle [data-server-label]')).toHaveText(selfLabel);
-      await expect(page.locator('#server-switcher-toggle [data-server-label]')).not.toHaveText(hostOf(A));
+      const toggle = page.locator('#server-switcher-toggle');
+      // (Its attribute: a shut sidebar on a phone is hidden, and a hidden
+      // button has no accessible name. The open row's is checked below.)
+      await expect(toggle).toHaveAttribute('aria-label', 'Switch server, current: ' + selfLabel);
+      // Only one server is known, and the logo still opens the menu: Add
+      // server lives there.
       await openSwitcher(page);
       await expect(items(page)).toHaveCount(1);
       await expect(item(page, A)).toHaveAttribute('aria-current', 'true');
       await expect(item(page, A).locator('[data-server-current]')).toBeVisible();
+      await expect(item(page, A).locator('[data-server-label]')).toHaveText(selfLabel);
+      await expect(page.locator('#server-add-open')).toBeVisible();
 
       // Bad addresses are refused, saying why; the field is marked invalid.
       await addServer(page, 'http://b.example.net');
@@ -184,10 +211,13 @@ for (const vp of [
       await expect(items(page)).toHaveCount(2);
       const s = item(page, STUB);
       // Its label is its host; its logo is drawn (a real decode, 32 px) from
-      // its own icon path, with no CORS header anywhere on the stub.
+      // its own icon path, with no CORS header anywhere on the stub, in the
+      // monogram's place. No entry shows an address line: no names collide.
       await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
-      await expect(s.locator('[data-server-host]')).toHaveText(hostOf(STUB));
+      await expect(s.locator('[data-server-host]')).toBeHidden();
+      await expect(page.locator('#server-switcher-list [data-server-host]:visible')).toHaveCount(0);
       await expect(s.locator('[data-server-logo]')).toBeVisible();
+      await expect(s.locator('[data-server-monogram]')).toBeHidden();
       expect(await s.locator('[data-server-logo]').evaluate((i) => [(i as HTMLImageElement).src, (i as HTMLImageElement).naturalWidth, (i as HTMLImageElement).crossOrigin, (i as HTMLImageElement).referrerPolicy]))
         .toEqual([STUB + LOGO, 32, null, 'no-referrer']);
       expect(await s.locator('[data-server-dot]').evaluate((d) => (d as HTMLElement).style.backgroundColor)).toMatch(/^rgb\(/);
@@ -223,11 +253,15 @@ for (const vp of [
       await page.waitForTimeout(300);
       expect(stub.seen).toEqual([]);
 
-      // A server with no logo (404): the colour and the label, no broken image.
+      // A server with no logo (404): its monogram — the first letters of its
+      // name, here its host 127.0.0.1:<port> — on its name's colour, and its
+      // name; no broken image.
       stub.logo = false;
       await openSwitcher(page);
       await expect.poll(() => stub.seen.map((r) => r.url)).toContain(LOGO);
       await expect(s.locator('[data-server-logo]')).toBeHidden();
+      await expect(s.locator('[data-server-monogram]')).toBeVisible();
+      await expect(s.locator('[data-server-monogram]')).toHaveText('10');
       await expect(s.locator('[data-server-dot]')).toBeVisible();
       await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
 
@@ -246,6 +280,8 @@ for (const vp of [
       await row.locator('input').fill('Work');
       await row.locator('input').press('Enter');
       await expect(s.locator('[data-server-label]')).toHaveText('Work');
+      // The monogram follows the name (still no logo).
+      await expect(s.locator('[data-server-monogram]')).toHaveText('W');
       // The keyboard stays in the row just renamed (the rows are redrawn).
       expect(await page.evaluate(() => document.activeElement?.closest('[data-server-origin]')?.getAttribute('data-server-origin'))).toBe(STUB);
       expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('INPUT');
@@ -275,6 +311,97 @@ for (const vp of [
       // "no read" is both lists empty.
       expect(seen.foreignReads).toEqual([]);
       expect(cspErrors).toEqual([]);
+    });
+
+    test('one row: the logo is the switcher, no name or address on screen, and a tap opens the list', async ({ page }) => {
+      stub.logo = false;
+      await fresh(page);
+      const selfLabel = (await (await page.request.get(A + '/api/instance')).json()).name || 'This server';
+      await setList(page, [{ origin: A, label: '' }, { origin: A2, label: 'Staging' }]);
+      // A phone: the header is there, and its menu button slides the sidebar out.
+      if (vp.name === 'phone') {
+        await expect(page.locator('header')).toBeVisible();
+        await expect(page.locator('#server-switcher-toggle')).not.toBeInViewport();
+        await page.locator('#sidebar-open').click();
+        await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+      }
+      const toggle = page.locator('#server-switcher-toggle');
+      await expect(toggle).toBeInViewport();
+      await expect(toggle).toHaveAccessibleName('Switch server, current: ' + selfLabel);
+      // One row: the logo button, search (and close on a phone) side by side,
+      // the row as tall as the old brand row (68 px), and the first thing in
+      // the sidebar.
+      const row = page.locator('#server-switcher > div').first();
+      const rowBox = (await row.boundingBox())!;
+      expect(rowBox.height).toBeLessThanOrEqual(69);
+      expect(rowBox.y).toBeLessThanOrEqual(1);
+      const mid = (b: { y: number; height: number }) => b.y + b.height / 2;
+      const controls = ['#server-switcher-toggle', '#sidebar-search', ...(vp.name === 'phone' ? ['#sidebar-close'] : [])];
+      for (const sel of controls) {
+        const b = (await page.locator(sel).boundingBox())!;
+        expect(Math.abs(mid(b) - mid(rowBox)), sel).toBeLessThanOrEqual(2);
+      }
+      const tb = (await toggle.boundingBox())!;
+      expect(tb.height).toBeGreaterThanOrEqual(44);
+      expect(tb.width).toBeGreaterThanOrEqual(44);
+      // Nothing to read in the row: no name, no address. The picture is
+      // muster's lockup (this server has no branding) or its logo.
+      expect((await row.innerText()).trim()).toBe('');
+      await expect(page.locator('#server-switcher [data-server-label]:visible')).toHaveCount(0);
+
+      // The tap opens the list: names, no addresses (no names collide).
+      if (vp.name === 'phone') await toggle.tap(); else await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('#server-switcher-menu')).toBeVisible();
+      await expect(items(page)).toHaveCount(2);
+      expect(await shownTexts(page, '#server-switcher-list [data-server-label]')).toEqual([selfLabel, 'Staging']);
+      const menuText = await page.locator('#server-switcher-menu').innerText();
+      expect(menuText).not.toContain(hostOf(A));
+      expect(menuText).not.toContain(hostOf(A2));
+      // Each entry has a picture: a monogram until (unless) a logo loads.
+      for (const o of [A, A2]) {
+        await expect(item(page, o).locator('[data-server-monogram]:visible, [data-server-logo]:visible')).toHaveCount(1);
+      }
+      // A click away shuts it; so does the sidebar's own search button.
+      await page.locator('#sidebar-search').click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await page.keyboard.press('Escape');
+      // The phone's slide-out still shuts.
+      if (vp.name === 'phone') {
+        await page.locator('#sidebar-close').click();
+        await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'false');
+      }
+    });
+
+    test('two servers with the same name are told apart by their address, and only they', async ({ page }) => {
+      stub.logo = false;
+      await fresh(page);
+      const selfLabel = (await (await page.request.get(A + '/api/instance')).json()).name || 'This server';
+      // A2 named like this server; the stub named apart.
+      await setList(page, [{ origin: A, label: '' }, { origin: A2, label: selfLabel.toUpperCase() }, { origin: STUB, label: 'Lab' }]);
+      await openSwitcher(page);
+      await expect(items(page)).toHaveCount(3);
+      await expect(item(page, A).locator('[data-server-host]')).toBeVisible();
+      await expect(item(page, A).locator('[data-server-host]')).toHaveText(hostOf(A));
+      await expect(item(page, A2).locator('[data-server-host]')).toBeVisible();
+      await expect(item(page, A2).locator('[data-server-host]')).toHaveText(hostOf(A2));
+      await expect(item(page, STUB).locator('[data-server-host]')).toBeHidden();
+      expect(await page.locator('#server-switcher-menu').innerText()).not.toContain(hostOf(STUB));
+      // Renamed apart, the addresses go.
+      await page.evaluate(([a, a2, st]) => localStorage.setItem('muster-servers', JSON.stringify({ v: 1, servers: [{ origin: a, label: '' }, { origin: a2, label: 'Staging' }, { origin: st, label: 'Lab' }] })), [A, A2, STUB]);
+      await page.evaluate(() => window.dispatchEvent(new StorageEvent('storage', { key: 'muster-servers' })));
+      await expect(page.locator('#server-switcher-list [data-server-host]:visible')).toHaveCount(0);
+    });
+
+    test('switching: the logo opens the list, and an entry opens that server', async ({ page }) => {
+      await fresh(page);
+      await setList(page, [{ origin: A, label: '' }, { origin: A2, label: 'Staging' }]);
+      await openSwitcher(page);
+      const nav = page.waitForRequest((r) => r.isNavigationRequest() && r.url().startsWith(A2 + '/'));
+      if (vp.name === 'phone') await item(page, A2).tap(); else await item(page, A2).click();
+      const req = await nav;
+      expect(req.url()).toBe(A2 + '/');
+      await page.waitForURL((u) => u.origin === A2);
     });
   });
 }

@@ -1,0 +1,17 @@
+{
+  "_comment": "The server switcher's monogram rule, as literal cases: the name, its letters, its colour. Go (internal/ui serverMonogram, serverMonogramColour; TestTheMonogram) and the script (web/static/servers.js monogram, monogramColour; e2e/servers.test.mjs) are both held to this one table. The colours were computed apart from either implementation (32-bit FNV-1a over the name's UTF-16 code units, modulo the eight-colour palette).",
+  "cases": [
+    {"name": "Example Studio", "letters": "ES", "colour": "#2bb673"},
+    {"name": "This server", "letters": "TS", "colour": "#7c5cff"},
+    {"name": "staging", "letters": "S", "colour": "#47d1c9"},
+    {"name": "muster.example.com", "letters": "ME", "colour": "#e84d8a"},
+    {"name": "127.0.0.1:8105", "letters": "10", "colour": "#7c5cff"},
+    {"name": "élan vital", "letters": "ÉV", "colour": "#2bb673"},
+    {"name": "ß-team", "letters": "ßT", "colour": "#7c5cff"},
+    {"name": "🚀 Launch", "letters": "L", "colour": "#3da5ff"},
+    {"name": "🚀", "letters": "?", "colour": "#7c5cff"},
+    {"name": "", "letters": "?", "colour": "#e8c547"},
+    {"name": "a b c", "letters": "AB", "colour": "#b0b4c0"},
+    {"name": "東京 office", "letters": "東O", "colour": "#7c5cff"}
+  ]
+}

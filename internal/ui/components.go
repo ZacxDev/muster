@@ -955,14 +955,11 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			g.Attr("role", "navigation"),
 			g.Attr("aria-label", "Main menu"),
 			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out"),
-			// Sidebar header: brand + close. min-h keeps the row the height the
-			// 44px close button gave it (py-3 + 44px = 68px) where the button is
-			// hidden — the desktop rail — so its border still lines up with the
-			// content header's beside it.
-			Div(
-				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
-				Span(Class("inline-flex min-w-0 items-center gap-2 text-lg font-semibold tracking-tight"), brandMark(feat.Brand)),
-				Span(Class("flex-1")),
+			// Sidebar header: ONE row (server_switcher.go;
+			// docs/design/web-server-switcher.md) — the server in view's logo,
+			// which is the button that opens the list of the other muster
+			// servers this browser knows, then search and close.
+			serverSwitcher(feat.Brand,
 				// The command palette's other way in (palette.go): the same box
 				// the session switcher's magnifier opens.
 				sidebarSearchButton(),
@@ -982,9 +979,6 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
-			// The server in view, and the other muster servers this browser
-			// knows (server_switcher.go; docs/design/web-server-switcher.md).
-			serverSwitcher(feat.Brand),
 			// The agents, like a chat app's channels (nav_agents.go): the chief,
 			// then whoever waits on the operator, then the rest by recency — a
 			// lazy partial in the panel's flex-1 middle.

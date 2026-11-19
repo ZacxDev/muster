@@ -42,7 +42,8 @@ func (b Brand) HasLogo() bool { return b.ETag != "" }
 
 // DrawsName reports whether the name is drawn as text beside the logo: a name
 // is set, and no logo that already spells it (LogoShowsName) is. The one rule
-// for the header, the sidebar and the sign-in page.
+// for the header and the sign-in page (the sidebar draws the logo alone, as
+// the server switcher's button: server_switcher.go serverPicture).
 func (b Brand) DrawsName() bool {
 	return b.Name != "" && !(b.HasLogo() && b.LogoShowsName)
 }
@@ -100,10 +101,11 @@ func LockupHTML() string {
 }
 
 // drawsLockup: no logo and no name is set, so brandMark draws muster's own
-// lockup (wordmark). One predicate for brandMark and headerMarkClass.
+// lockup (wordmark). One predicate for brandMark, headerMarkClass and the
+// server switcher's picture (serverPicture).
 func (b Brand) drawsLockup() bool { return !b.HasLogo() && b.Name == "" }
 
-// brandMark is the header's and the sidebar's brand: the logo, then the name,
+// brandMark is the header's brand: the logo, then the name,
 // each when set — the logo alone when it already shows the name
 // (Brand.DrawsName) — and the wordmark when neither is set.
 func brandMark(b Brand) g.Node {

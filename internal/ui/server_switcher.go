@@ -1,15 +1,30 @@
 package ui
 
 import (
+	"strings"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/web"
 )
 
-// THE SERVER SWITCHER (docs/design/web-server-switcher.md): the sidebar row
-// that shows which muster server is in view and opens the list of the others
-// this browser knows. The web counterpart of the Android app's switcher bar.
+// THE SERVER SWITCHER (docs/design/web-server-switcher.md): the sidebar's top
+// row, where the server in view's LOGO is the button that opens the list of
+// the other servers this browser knows. The web counterpart of the Android
+// app's switcher bar.
+//
+// ONE ROW, THE LOGO ONLY (the operator's decision, "One row: the logo is the
+// switcher"): the brand row and the server row were two rows, the logo, the
+// name and, in the list, every server's address. The row now draws the
+// current server's picture (serverPicture: its logo, else a monogram of its
+// name, else muster's own lockup), a chevron, and the sidebar's search and
+// close buttons; the name is the button's accessible name and its tooltip.
+// The list keeps every server's name (pictures alone cannot tell servers
+// apart) and shows an address only where two names collide (servers.js).
 //
 // The list lives in the browser (web/static/servers.js), so the server draws
 // only the frame: the row (fixed height, so filling it in moves nothing), the
@@ -20,8 +35,8 @@ import (
 // The row is filled in by servers.js, DEFERRED: a parser-blocking <script
 // src> in the sidebar would stand in front of the view pages' composers, and a
 // paint while it loads moves them (terminal_paint_order_test.go). The row is
-// drawn at its final size with the server's name (or "This server"), so the
-// script changes only its text, never its box.
+// drawn at its final size with the server's picture, so the script changes
+// only its colours, letters and name, never its box.
 
 const serverPrimaryBtn = "press min-h-[44px] rounded-md px-3 py-2 text-sm font-semibold transition bg-accent text-on-accent hover:bg-accent/90"
 const serverSecondaryBtn = "press min-h-[44px] rounded-md px-3 py-2 text-sm font-semibold transition bg-bg text-fg ring-1 ring-inset ring-edge"
@@ -41,13 +56,100 @@ func serverLogo() g.Node {
 		Class("h-5 w-5 shrink-0 rounded object-contain"))
 }
 
-// serverSwitcher is the sidebar's server row and everything it opens. b is
-// this server's branding: its name and logo label its own entry.
-func serverSwitcher(b Brand) g.Node {
-	selfLabel := "This server"
-	if b.Name != "" {
-		selfLabel = b.Name
+// serverDotBadge is a server's colour as a small badge on its picture's
+// corner: the same swatch as serverDot (the Android app's palette, a
+// function of the SET of servers on the list, servers.js colours), which
+// tells two servers with the same picture apart.
+func serverDotBadge() g.Node {
+	return Span(g.Attr("data-server-dot", ""), g.Attr("aria-hidden", "true"),
+		Class("absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-muted ring-2 ring-s1"))
+}
+
+// serverMonogramClasses is the servers' colours as role tokens, one per
+// colour of the palette and in its order: --mu-server-<i> in
+// web/css/input.css, the Android app's palette (core/auth Tenants.PALETTE).
+// servers.js spells the same colours as hex (PALETTE), and
+// TestTheMonogramPaletteIsTheScripts pins the stylesheet's values to the
+// script's.
+var serverMonogramClasses = [...]string{"bg-server-0", "bg-server-1", "bg-server-2", "bg-server-3", "bg-server-4", "bg-server-5", "bg-server-6", "bg-server-7"}
+
+// serverMonogram is a server's picture when it has no logo: the first letter
+// or digit of each of the first two words of its name (a word is a run of
+// letters and digits), each upper-cased on its own. A name with no letter or
+// digit at all is "?". servers.js monogram is the same rule; the two are held
+// to one table of literal cases (TestTheMonogram, e2e/servers.test.mjs).
+func serverMonogram(name string) string {
+	words := strings.FieldsFunc(name, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+	if len(words) == 0 {
+		return "?"
 	}
+	var sb strings.Builder
+	for _, w := range words[:min(2, len(words))] {
+		r, _ := utf8.DecodeRuneInString(w)
+		sb.WriteRune(unicode.ToUpper(r))
+	}
+	return sb.String()
+}
+
+// serverMonogramColour is the monogram's background, as the index of its
+// palette colour: the one the 32-bit FNV-1a hash of the name's UTF-16 code
+// units picks (servers.js fnv1a, the hash its colours already use), so a name
+// is always the same colour, on every server and in both languages. Every
+// palette colour is light enough for the monogram's black letters (at least
+// 4.8:1).
+func serverMonogramColour(name string) int {
+	h := uint32(0x811c9dc5)
+	for _, u := range utf16.Encode([]rune(name)) {
+		h ^= uint32(u)
+		h *= 0x01000193
+	}
+	return int(h % uint32(len(serverMonogramClasses)))
+}
+
+// serverMonogramClass is a monogram's box, the size of a menu entry's logo.
+const serverMonogramClass = "inline-flex h-7 w-7 shrink-0 select-none items-center justify-center rounded-md text-xs font-bold leading-none text-black"
+
+// serverPicture is the row button's picture of the server in view: its
+// logo; with none, a monogram of its name; with no branding at all, muster's
+// own lockup. A monogram is always drawn (hidden behind a logo or the lockup)
+// so servers.js can show it when the logo fails to load, and so it can redraw
+// it when the person has given this server a label of their own.
+func serverPicture(b Brand, name string) g.Node {
+	mono := Span(g.Attr("data-server-monogram", ""), g.Attr("aria-hidden", "true"),
+		g.If(b.HasLogo() || b.drawsLockup(), g.Attr("hidden", "")),
+		Class(serverMonogramClass+" "+serverMonogramClasses[serverMonogramColour(name)]), g.Text(serverMonogram(name)))
+	var pic g.Node
+	switch {
+	case b.HasLogo():
+		pic = Img(g.Attr("data-brand-logo", ""), g.Attr("data-server-picture", ""), Src(b.Versioned(BrandLogoPath)), Alt(""),
+			Class("h-7 w-auto max-w-[8rem] shrink-0 object-contain"))
+	case b.drawsLockup():
+		pic = wordmark()
+	}
+	return Span(g.Attr("data-server-avatar", ""), Class("relative inline-flex shrink-0 items-center"),
+		pic, mono, serverDotBadge())
+}
+
+// serverSwitcherName is the name the row is drawn with before servers.js
+// runs: the branding's name, else "This server" (servers.js SELF_FALLBACK).
+// Never the host: no address in the top layer.
+func serverSwitcherName(b Brand) string {
+	if b.Name != "" {
+		return b.Name
+	}
+	return "This server"
+}
+
+// ServerSwitcherLabel is the row button's accessible name for a server named
+// name. servers.js spells the same words (TOGGLE_LABEL).
+func ServerSwitcherLabel(name string) string { return "Switch server, current: " + name }
+
+// serverSwitcher is the sidebar's top row and everything it opens: the
+// server in view's picture as the button, then trailing (the search and close
+// buttons) at the row's end. b is this server's branding: its name and logo
+// draw the row and its own entry in the list.
+func serverSwitcher(b Brand, trailing ...g.Node) g.Node {
+	name := serverSwitcherName(b)
 	selfLogo := ""
 	if b.HasLogo() {
 		selfLogo = b.Icon192()
@@ -56,22 +158,33 @@ func serverSwitcher(b Brand) g.Node {
 		ID("server-switcher"),
 		g.Attr("data-self-name", b.Name),
 		g.If(selfLogo != "", g.Attr("data-self-logo", selfLogo)),
-		Class("border-b border-line px-3 py-2"),
-		Button(
-			ID("server-switcher-toggle"),
-			Type("button"),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-controls", "server-switcher-menu"),
-			Class("press flex h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-sm text-fg transition hover:bg-s2"),
-			serverDot(),
-			Span(ID("server-switcher-hint"), Class("sr-only"), g.Text("Server in view:")),
-			Span(g.Attr("data-server-label", ""), Class("min-w-0 flex-1 truncate font-medium"), g.Text(selfLabel)),
-			g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8l4 4 4-4"/></svg>`),
+		// No branding at all: this server's entry in the list is muster's
+		// own square mark, as the row is its lockup.
+		g.If(b.drawsLockup(), g.Attr("data-self-mark", web.Asset("/static/icons/favicon.svg"))),
+		Class("border-b border-line"),
+		// The row: min-h keeps it the height the 44px close button gives it
+		// (py-3 + 44px = 68px) where that button is hidden — the desktop rail
+		// — so its border lines up with the content header's beside it.
+		Div(
+			Class("flex min-h-[4.25rem] items-center gap-3 px-4 py-3"),
+			Button(
+				ID("server-switcher-toggle"),
+				Type("button"),
+				g.Attr("aria-expanded", "false"),
+				g.Attr("aria-controls", "server-switcher-menu"),
+				g.Attr("aria-label", ServerSwitcherLabel(name)),
+				g.Attr("title", name),
+				Class("press -ml-1.5 inline-flex h-11 min-h-[44px] min-w-[44px] max-w-full items-center gap-1.5 rounded-lg px-1.5 text-fg transition hover:bg-s2"),
+				serverPicture(b, name),
+				g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8l4 4 4-4"/></svg>`),
+			),
+			Span(Class("flex-1")),
+			g.Group(trailing),
 		),
 		Div(
 			ID("server-switcher-menu"),
 			g.Attr("hidden", ""),
-			Class("mt-1 flex flex-col gap-1"),
+			Class("flex flex-col gap-1 px-3 pb-2"),
 			H2(ID("server-switcher-heading"), Class("px-2 pt-1 text-xs font-semibold uppercase tracking-wide text-muted"), g.Text("Servers")),
 			Ul(ID("server-switcher-list"), g.Attr("aria-labelledby", "server-switcher-heading"), Class("flex flex-col")),
 			Div(
@@ -81,13 +194,21 @@ func serverSwitcher(b Brand) g.Node {
 			),
 		),
 		// One server in the menu: a link to its origin (the script sets href).
+		// Its picture (the logo, or the monogram until the logo loads or when
+		// it fails), its name, and its address only where another entry has
+		// the same name (servers.js render).
 		Template(ID("server-item-tpl"),
 			Li(A(
-				Class("press flex min-h-[44px] min-w-0 items-center gap-2 rounded-lg px-2 text-sm text-fg transition hover:bg-s2 aria-[current=true]:bg-s2"),
-				serverDot(), serverLogo(),
+				Class("press flex min-h-[44px] min-w-0 items-center gap-2.5 rounded-lg px-2 text-sm text-fg transition hover:bg-s2 aria-[current=true]:bg-s2"),
+				Span(g.Attr("data-server-avatar", ""), Class("relative inline-flex h-7 w-7 shrink-0"),
+					Span(g.Attr("data-server-monogram", ""), g.Attr("aria-hidden", "true"), Class(serverMonogramClass)),
+					Img(g.Attr("data-server-logo", ""), Alt(""), g.Attr("hidden", ""), g.Attr("referrerpolicy", "no-referrer"), Width("28"), Height("28"),
+						Class("h-7 w-7 shrink-0 rounded-md object-contain")),
+					serverDotBadge(),
+				),
 				Span(Class("flex min-w-0 flex-1 flex-col"),
 					Span(g.Attr("data-server-label", ""), Class("truncate font-medium")),
-					Span(g.Attr("data-server-host", ""), Class("truncate text-xs text-muted")),
+					Span(g.Attr("data-server-host", ""), g.Attr("hidden", ""), Class("truncate text-xs text-muted")),
 				),
 				Span(g.Attr("data-server-current", ""), g.Attr("hidden", ""), Class("shrink-0 text-xs font-semibold text-accent"), g.Text("In view")),
 			)),

@@ -16,7 +16,7 @@
 // The image request carries no Referer (referrerpolicy="no-referrer" on the
 // tag, and muster's pages send Referrer-Policy: no-referrer) and is not a CORS
 // request (no crossorigin attribute). A server with no logo answers 404 and
-// the row shows its colour and label. Logos are requested only while the list
+// its entry shows its monogram and name. Logos are requested only while the list
 // is on screen, never on a page load with the menu shut.
 //
 // 🔴 NOTHING OF THIS SERVER IS EVER SENT TO ANOTHER. The switch's navigation
@@ -97,6 +97,45 @@
       h = Math.imul(h, 0x01000193) >>> 0;
     }
     return h >>> 0;
+  }
+
+  // monogram is a server's picture when it has no logo: the first letter or
+  // digit of each of the first two words of its name (a word is a run of
+  // letters and digits), each upper-cased on its own (kept as it was when its
+  // upper case is more than one character, as Go's unicode.ToUpper does). No
+  // letter or digit at all: '?'. The same rule as ui server_switcher.go
+  // serverMonogram, which draws the row before this script runs; both are
+  // held to one table of literal cases.
+  function monogram(name) {
+    var words = String(name == null ? '' : name).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    if (!words.length) return '?';
+    return words.slice(0, 2).map(function (w) {
+      var c = Array.from(w)[0];
+      var u = c.toUpperCase();
+      return Array.from(u).length === 1 ? u : c;
+    }).join('');
+  }
+
+  // monogramColour is a monogram's background: the palette colour its name's
+  // FNV-1a hash picks (ui serverMonogramColour), so a name is always the same
+  // colour.
+  function monogramColour(name) { return PALETTE[fnv1a(String(name == null ? '' : name)) % PALETTE.length]; }
+
+  // TOGGLE_LABEL is the row button's accessible name before the server's name
+  // (ui ServerSwitcherLabel).
+  var TOGGLE_LABEL = 'Switch server, current: ';
+
+  // collisions is the set of names (lower-cased) that more than one of names
+  // has: the entries the list must tell apart by their address.
+  function collisions(names) {
+    var seen = {};
+    var out = {};
+    names.forEach(function (n) {
+      var k = String(n).toLowerCase();
+      if (seen[k]) out[k] = true;
+      seen[k] = true;
+    });
+    return out;
   }
 
   // colours gives each origin a palette colour: its hash's slot, or the next
@@ -236,6 +275,7 @@
     parseServer: parseServer, hostLabel: hostLabel, cleanText: cleanText, colours: colours, normalize: normalize,
     load: load, save: save, add: add, remove: remove, rename: rename, display: display, logoSrc: logoSrc,
     switchHref: switchHref, handoff: handoff, kept: kept, HANDOFF_KEY: HANDOFF_KEY, HANDOFF_MAX_AGE_MS: HANDOFF_MAX_AGE_MS,
+    monogram: monogram, monogramColour: monogramColour, collisions: collisions, TOGGLE_LABEL: TOGGLE_LABEL,
   };
   root.musterServersCore = core;
   if (typeof document === 'undefined') return;
@@ -260,30 +300,69 @@
   function persist(list) { var st = storage(); if (st) save(st, list); }
   function $(id) { return document.getElementById(id); }
 
+  // name is the words a server is drawn and announced with. This server is
+  // never called by its address (no host:port in the top layer): with no
+  // label and no branding name it is SELF_FALLBACK, the words the server drew
+  // it with (ui server_switcher.go serverSwitcherName).
+  function name(s, box) { return display(s, s.origin === self ? (selfName(box) || SELF_FALLBACK) : ''); }
+
+  // paintMonogram draws name's monogram into its slot, if node has one.
+  function paintMonogram(node, n) {
+    var mono = node.querySelector('[data-server-monogram]');
+    if (!mono) return null;
+    mono.textContent = monogram(n);
+    mono.style.backgroundColor = monogramColour(n);
+    return mono;
+  }
+
   // fill draws one server into a cloned template's [data-server-*] slots.
   // logos: whether another server's logo may be requested now (the list is
   // on screen). This server's own logo is its own, versioned path.
   function fill(node, s, colour, box, logos) {
     var dot = node.querySelector('[data-server-dot]');
     if (dot) dot.style.backgroundColor = colour;
+    var n = name(s, box);
     var label = node.querySelector('[data-server-label]');
-    // This server is never called by its address (no host:port in the top
-    // layer): with no label and no branding name it is SELF_FALLBACK, the
-    // words the server drew it with (ui server_switcher.go's selfLabel).
-    if (label) label.textContent = display(s, s.origin === self ? (selfName(box) || SELF_FALLBACK) : '');
+    if (label) label.textContent = n;
     var host = node.querySelector('[data-server-host]');
     if (host) host.textContent = hostLabel(s.origin);
+    var mono = paintMonogram(node, n);
+    if (mono) mono.hidden = false;
     var img = node.querySelector('[data-server-logo]');
     if (!img) return;
-    var src = s.origin === self ? (box.getAttribute('data-self-logo') || '') : (logos ? logoSrc(s.origin) : '');
+    // This server: its own logo (versioned, same origin), else — no branding
+    // at all — muster's own mark. Another: its icon path, only while the list
+    // is on screen.
+    var src = s.origin === self ? (box.getAttribute('data-self-logo') || box.getAttribute('data-self-mark') || '') : (logos ? logoSrc(s.origin) : '');
     img.hidden = true;
     if (!src) { img.removeAttribute('src'); return; }
-    // Shown once it has loaded; a failure (no logo: 404, a server that is
-    // down, a refusal) leaves the colour and the label.
+    // Shown, in the monogram's place, once it has loaded; a failure (no logo:
+    // 404, a server that is down, a refusal) leaves the monogram.
     img.referrerPolicy = 'no-referrer';
-    img.addEventListener('load', function () { img.hidden = false; });
-    img.addEventListener('error', function () { img.hidden = true; img.removeAttribute('src'); });
+    img.addEventListener('load', function () { img.hidden = false; if (mono) mono.hidden = true; });
+    img.addEventListener('error', function () { img.hidden = true; img.removeAttribute('src'); if (mono) mono.hidden = false; });
     img.src = src;
+  }
+
+  // fillToggle draws the row button for this server (mine): its name as the
+  // button's accessible name and tooltip (the person's own label wins, as in
+  // the list), its colour on the badge, and its monogram. The picture the
+  // server drew (its logo, or muster's lockup) stays; a logo that fails to
+  // load gives way to the monogram — whether it failed before this deferred
+  // script ran (complete with no width) or fails later.
+  function fillToggle(t, mine, colour, box) {
+    var n = name(mine, box);
+    t.setAttribute('aria-label', TOGGLE_LABEL + n);
+    t.setAttribute('title', n);
+    var dot = t.querySelector('[data-server-dot]');
+    if (dot) dot.style.backgroundColor = colour;
+    var mono = paintMonogram(t, n);
+    var pic = t.querySelector('img[data-server-picture]');
+    if (!pic || !mono || pic.__musterBound) return;
+    pic.__musterBound = true;
+    var fail = function () { pic.hidden = true; mono.hidden = false; };
+    if (pic.complete && !pic.naturalWidth) fail();
+    else pic.addEventListener('error', fail);
   }
 
   function selfName(box) { return cleanText(box.getAttribute('data-self-name') || ''); }
@@ -296,16 +375,21 @@
     var list = current();
     var mine = list[0];
     var cols = colours(list.map(function (s) { return s.origin; }));
-    fill(box.querySelector('#server-switcher-toggle'), mine, cols[self], box, false);
+    fillToggle(box.querySelector('#server-switcher-toggle'), mine, cols[self], box);
 
     var ul = $('server-switcher-list');
     var tpl = $('server-item-tpl');
     if (ul && tpl) {
       ul.textContent = '';
+      // The list shows names, not addresses; an address only where two
+      // entries share a name (case aside), so those two can be told apart.
+      var clash = collisions(list.map(function (s) { return name(s, box); }));
       list.forEach(function (s) {
         var li = tpl.content.firstElementChild.cloneNode(true);
         var a = li.querySelector('a');
         fill(li, s, cols[s.origin], box, logos);
+        var host = li.querySelector('[data-server-host]');
+        if (host) host.hidden = !clash[name(s, box).toLowerCase()];
         a.setAttribute('data-server-origin', s.origin);
         if (s.origin === self) {
           a.setAttribute('href', '/');
@@ -489,12 +573,14 @@
       t.focus();
     });
     document.addEventListener('click', function (e) {
-      var box = $('server-switcher');
+      var menu = $('server-switcher-menu');
       var t = $('server-switcher-toggle');
-      if (!box || !t || t.getAttribute('aria-expanded') !== 'true') return;
-      // The dialogs live outside the row's box (in the sidebar's root), and a
-      // click in one is not a click away from the menu.
-      if (box.contains(e.target) || (e.target.closest && e.target.closest('#server-add, #server-manage, #server-offer'))) return;
+      if (!menu || !t || t.getAttribute('aria-expanded') !== 'true') return;
+      // The row's box also holds the sidebar's search and close buttons, so a
+      // click away is one outside the button and the menu. The dialogs live
+      // outside the box (in the sidebar's root), and a click in one is not a
+      // click away from the menu.
+      if (t.contains(e.target) || menu.contains(e.target) || (e.target.closest && e.target.closest('#server-add, #server-manage, #server-offer'))) return;
       setOpen(false);
     });
     root.addEventListener('storage', function (e) { if (e.key === KEY) render(); });

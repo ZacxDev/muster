@@ -57,7 +57,7 @@ exactly as if the person had typed its address.
     script can read it. It needs no CORS and no server change. The tag has
     no `crossorigin` attribute, so it is not a CORS request, and it has
     `referrerpolicy="no-referrer"`. A 404, or a server that is down, leaves
-    the colour and the label. Logos are requested only while the list is on
+    its monogram and its label. Logos are requested only while the list is on
     screen;
   - **the label** is the person's own, else the host. Another server's
     display name is not shown: reading it would need the cross-origin read
@@ -80,7 +80,7 @@ exactly as if the person had typed its address.
   - **an IP address**: a CSP host wildcard (`https://*:*`) does not match an
     IP address in browsers that follow the CSP spec, so a server addressed
     by IP (other than the two loopback sources listed) may show no logo,
-    only its colour and label.
+    only its monogram and label.
 - **The list is per origin**, so a server added on A is not on B's list. The
   switch carries one thing across: A's own origin, in the URL fragment of the
   navigation (`#muster-from=<A's origin>`; a fragment is never sent to a
@@ -136,12 +136,49 @@ prevents it later.
 ## Where it sits in the web layout
 
 Android draws a bar above the page. The web app's equivalent place is the
-sidebar, under its brand row: the sidebar is on every signed-in page, a rail
-on a wide screen and a slide-out (the menu button) on a phone. The row is the
-server in view: its colour, its label, a chevron. It opens a menu: the
-servers (the one in view marked current), **Add server**, **Manage servers**.
-It is drawn by the server at a fixed height, and the script only fills it in,
-so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
+sidebar's top row: the sidebar is on every signed-in page, a rail on a wide
+screen and a slide-out (the menu button) on a phone.
+
+**One row, the logo only** (operator decision, "One row: the logo is the
+switcher", on the ask to make the switcher smaller and less cluttered). The
+sidebar used to open with two rows: the brand (logo and name) with search and
+close, and under it the server row (colour, name, chevron). They are one row
+now:
+
+- the server in view's **picture is the button**, with a small chevron, then
+  search (and close, where the sidebar is a slide-out). The picture is the
+  server's logo; with no logo, a **monogram** of its name; with no branding at
+  all, muster's own lockup. No name and no address is drawn in the row: the
+  name is the button's accessible name ("Switch server, current: <name>") and
+  its tooltip;
+- the server's colour stays, as a small badge on the picture's corner: it is
+  what tells two servers with the same picture apart (two unbranded servers
+  both show muster's lockup), and it is the Android app's colour for that
+  server;
+- the row is the old brand row's height (68 px, lining up with the content
+  header's border) and is a 44 px target;
+- the button opens the menu whether or not other servers are known: **Add
+  server** lives there.
+
+The menu lists the servers (the one in view marked **In view**), each as its
+picture (logo, else monogram) and its name, then **Add server** and **Manage
+servers**. It shows **no address**, except where two entries have the same
+name (compared without case): only those show their host under the name, so
+they can still be told apart. Manage servers keeps every address (it is where
+labels are edited).
+
+A **monogram** is the first letter or digit of each of the first two words of
+the name (a word is a run of letters and digits), each upper-cased, on a
+palette colour picked by the name's FNV-1a hash: the same name is the same
+monogram everywhere. The server draws the row's monogram before the script
+runs (Go `serverMonogram`), the script draws the menu's (`monogram`), and both
+are held to one table of literal cases
+(`internal/ui/testdata/server-monograms.json`). It shows wherever a logo is
+absent or fails to load.
+
+The row is drawn by the server at a fixed size, and the script only fills it
+in (its colours, letters and name), so it moves nothing when it loads (the
+layout-shift gate, `cls.spec.ts`).
 
 ## Rules of the list
 
@@ -169,13 +206,13 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
 
 | | Android 0.2.0 | web (this design) |
 |---|---|---|
-| see which server is in view | bar above the page: colour, label | sidebar row: colour, label (on a phone, inside the menu) |
+| see which server is in view | bar above the page: colour, label | the sidebar's top row: the server's logo (or monogram) with its colour as a badge; the name is the button's accessible name and tooltip (on a phone, inside the menu) |
 | switch | instant, each server's WebView kept | a page load of the other server's origin |
 | separate sign-ins | per-server WebView profile | per-origin by the browser, always |
 | add a server | Add server, then pair the phone | Add server (an address); sign in there as usual |
 | the list | one list for the app | one list **per server, per browser**; a switch offers to add the server it names (also through a sign-in) |
 | the other server's name | from its `GET /api/instance` | **not shown**: the label is yours, else the host (no cross-origin read, by operator decision) |
-| the other server's logo | from `/api/instance`, cached by etag | drawn as an `<img>` of its `/brand/icon-192.png` (current icon, revalidated by the browser); colour and label when it has none |
+| the other server's logo | from `/api/instance`, cached by etag | drawn as an `<img>` of its `/brand/icon-192.png` (current icon, revalidated by the browser); a monogram of its label when it has none |
 | notifications from every server | yes, one UnifiedPush instance each | yes, if notifications were turned on **on each server** (Web Push is per origin); each arrives with that server's icon |
 | a notification's tap opens its server | yes, and switches the bar | yes: the server's own service worker opens its own page |
 | label on a notification | server label as subtext | not added: the icon (the server's logo) is the cue |
@@ -205,7 +242,9 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   no credentials, origin only), dedupe, the cap, colours, labels, an entry
   keeping only its origin and label, the logo path built from the origin
   alone, and a source check that the script makes no request of its own (no
-  fetch, XHR, beacon, socket or event stream).
+  fetch, XHR, beacon, socket or event stream); the monogram (against the
+  literal table Go is held to as well), which names collide, and the row
+  button's name.
 - `internal/api`: `GET /api/instance` and `/brand/*` send no
   `Access-Control-Allow-Origin` (404, 200, 304); the unversioned icon path is
   served revalidated; `connect-src` is `'self'` and `img-src` adds exactly
@@ -224,7 +263,19 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   - a crafted hand-off: neutral copy, the full origin, focus on Not now,
     nothing stored, and Enter dismisses;
   - a switch to a server you are not signed in to: the offer survives the
-    sign-in, and it is read once.
+    sign-in, and it is read once;
+  - one row (at 375 px and 1280 px): the picture button, search and close
+    side by side, 68 px tall, no text in it; a tap opens the list, which
+    shows names and no address; a server with no logo shows its monogram;
+    two servers with the same name show their addresses, and only they;
+    switching from either size.
+- `e2e/tests/branding.spec.ts`: the row is the instance's logo, alone; a logo
+  that fails to load gives way to the monogram; a name with no logo is its
+  monogram.
 - `internal/ui` and `internal/api`: the sign-in page keeps the hand-off under
-  the key `servers.js` reads; the row button is announced once; the offer's
-  copy claims no origin.
+  the key `servers.js` reads; the row button is announced once, by its
+  aria-label; the row for each branding state (logo, name only, logo only,
+  none), pinned by literal; the sidebar's top is one row; a menu entry's
+  address starts hidden; the monogram against the literal table; the
+  stylesheet's server colours are the script's palette, and black letters
+  read on each at 4.5:1 or more; the offer's copy claims no origin.

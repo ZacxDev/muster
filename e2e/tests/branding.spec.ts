@@ -193,7 +193,23 @@ test.describe('the admin', () => {
     expect(await logo.getAttribute('src')).toBe('/brand/logo.png?v=' + etag);
     expect(await loaded(page, 'header [data-brand-logo]')).toBe(true);
     await expect(page.locator('header [data-brand-name]').first()).toHaveText('Team Example');
+    // The sidebar draws the logo alone, as the server switcher's button: no
+    // name on screen (the button is named for it), the monogram hidden.
     await expect(page.locator('#sidebar [data-brand-logo]')).toHaveCount(1);
+    const toggle = page.locator('#server-switcher-toggle');
+    await expect(toggle.locator('[data-brand-logo]')).toBeVisible();
+    expect(await loaded(page, '#server-switcher-toggle [data-brand-logo]')).toBe(true);
+    await expect(toggle.locator('[data-server-monogram]')).toBeHidden();
+    await expect(toggle).toHaveAccessibleName('Switch server, current: Team Example');
+    expect((await toggle.innerText()).trim()).toBe('');
+    // A logo that fails to load gives way to the monogram ("TE").
+    await page.route('**/brand/logo.png*', (r) => r.abort());
+    await page.reload();
+    await expect(toggle.locator('[data-brand-logo]')).toBeHidden();
+    await expect(toggle.locator('[data-server-monogram]')).toBeVisible();
+    await expect(toggle.locator('[data-server-monogram]')).toHaveText('TE');
+    await page.unroute('**/brand/logo.png*');
+    await page.reload();
     // The favicon and touch icon are the logo's.
     expect(await iconHref(page)).toBe('/brand/icon-192.png?v=' + etag);
     expect(await page.locator('link[rel="apple-touch-icon"]').getAttribute('href')).toBe('/brand/icon-192.png?v=' + etag);
@@ -228,7 +244,10 @@ test.describe('the admin', () => {
     await expect(page.locator('#branding-logo-shows-name')).toBeChecked();
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-logo]').first()).toHaveAttribute('alt', 'Team Example');
-    await expect(page.locator('#sidebar [data-brand-logo]')).toHaveAttribute('alt', 'Team Example');
+    // The sidebar's logo is the server switcher's button, named by its
+    // aria-label: its own alt is empty.
+    await expect(page.locator('#sidebar [data-brand-logo]')).toHaveAttribute('alt', '');
+    await expect(page.locator('#server-switcher-toggle')).toHaveAccessibleName('Switch server, current: Team Example');
     await expect(page.locator('[data-brand-name]')).toHaveCount(0);
     expect((await (await page.request.get(origin + '/api/instance')).json()).name).toBe('Team Example');
     const anon2 = await browser.newContext({ storageState: { cookies: [], origins: [] } });
@@ -275,6 +294,10 @@ test.describe('the admin', () => {
     await page.goto(origin + '/tasks');
     await expect(page.locator('header [data-brand-logo]')).toHaveCount(0);
     await expect(page.locator('header [data-brand-name]').first()).toHaveText('Team Example');
+    // A name and no logo: the switcher's button is the name's monogram.
+    await expect(page.locator('#server-switcher-toggle [data-server-monogram]')).toBeVisible();
+    await expect(page.locator('#server-switcher-toggle [data-server-monogram]')).toHaveText('TE');
+    await expect(page.locator('#server-switcher-toggle img')).toHaveCount(0);
     expect(await iconHref(page)).toContain('/static/icons/icon-192.png');
     expect((await page.request.get(origin + '/brand/logo.png')).status()).toBe(404);
 

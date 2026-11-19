@@ -249,3 +249,29 @@ test('a hand-off kept through a sign-in is read only while fresh, and only in it
   assert.equal(core.handoff(core.kept(`${NOW}|${h}`, NOW), B), SELF);
   assert.equal(core.HANDOFF_KEY, 'muster-from');
 });
+
+// ---- the picture and the list's names ---------------------------------------
+
+test('a monogram: the letters and the colour of the one table Go is held to as well', () => {
+  const table = JSON.parse(fs.readFileSync(path.join(here, '..', 'internal', 'ui', 'testdata', 'server-monograms.json'), 'utf8'));
+  assert.ok(table.cases.length >= 10, 'the table loaded');
+  const colours = new Set();
+  for (const c of table.cases) {
+    assert.equal(core.monogram(c.name), c.letters, `letters of ${JSON.stringify(c.name)}`);
+    assert.equal(core.monogramColour(c.name), c.colour, `colour of ${JSON.stringify(c.name)}`);
+    colours.add(c.colour);
+  }
+  assert.ok(colours.size >= 5, 'the cases cover several colours');
+  assert.equal(core.monogram(null), '?');
+});
+
+test('names that collide (case aside) are the ones the list tells apart by address', () => {
+  deq(core.collisions(['Work', 'Home', 'work', 'Lab']), { work: true });
+  deq(core.collisions(['Work', 'Home', 'Lab']), {});
+  deq(core.collisions(['This server', 'This server', 'This server']), { 'this server': true });
+  deq(core.collisions([]), {});
+});
+
+test('the row button is named for the server in view', () => {
+  assert.equal(core.TOGGLE_LABEL + 'Example Studio', 'Switch server, current: Example Studio');
+});
