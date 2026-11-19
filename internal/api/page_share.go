@@ -24,7 +24,9 @@ import (
 // it is recorded (answerAskFrom, beside the routing rules' card):
 //
 //   - 🔴 THE OWNER'S OWN DOOR ONLY: a signed-in browser or the paired phone, as
-//     the card's owner (attention.IsOwnerDoor). A mirrored session's
+//     the card's owner (attention.IsOwnerDoor) — or, on a TEAM's card (a team
+//     agent's request), a person who is an operator or a manager of that
+//     team, from their own browser or phone (teamMemberCardDoor). A mirrored session's
 //     attention_answer — the one door an agent could reach — is refused here,
 //     before anything is decided, and the owner card refuses it again in SQL
 //     (answerSQL). So no agent can approve its own (or another's) link.

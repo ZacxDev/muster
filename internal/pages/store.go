@@ -20,9 +20,12 @@ import (
 //
 // 🔴 EVERY METHOD BUT LinkByToken RUNS UNDER THE CALLER'S PRINCIPAL. The
 // tables are under FORCE row-level security, so a request reads and writes
-// only its own user's rows, and a new row's owner is the principal's user
-// (owner_id's default), never a parameter. Another owner's page reads exactly
-// as a missing one (ErrNotFound).
+// only its own user's rows — and, since 0160, a member reads the pages of the
+// teams on their door and writes them only as its guards allow (answering,
+// sharing, deciding a share card; managing is the creator's). A new page's
+// owner is the principal's user (owner_id's default), never a parameter; a
+// link or response names its PAGE's owner, read under the page row's lock.
+// Another owner's page reads exactly as a missing one (ErrNotFound).
 //
 // 🔴 THE "…For" METHODS ARE ALSO SCOPED TO A CREATOR: a tool acts only on the
 // pages its caller made (Creator), and another creator's page — the same
@@ -108,9 +111,11 @@ type Store interface {
 	// AddResponse records one response through link l at version v.
 	// ErrTooMany past MaxResponsesPerLink, or MaxUploadsPerLink for an upload.
 	AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
-	// AddOwnerResponse records one response the caller — page id's OWNER, from
-	// their own view — sent at version v (ByOwner, no link). The same caps as
-	// a link's, counted over the page's owner responses; ErrNotFound for a
+	// AddOwnerResponse records one response the caller — page id's OWNER, or
+	// on a team's page a member of the team (0160), from their own view —
+	// sent at version v (ByOwner, no link), recorded as the caller
+	// (ResponderUser). The same caps as a link's, counted over the page's
+	// owner-view responses (every member's together); ErrNotFound for a
 	// page the caller cannot see, ErrClosing for one being deleted.
 	AddOwnerResponse(ctx context.Context, id int64, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error)
 	// Responses is page id's responses with an id above after, oldest first,
