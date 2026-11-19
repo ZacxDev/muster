@@ -297,13 +297,19 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// A reconnect that resumes (gen + offset) draws onto a page that already
 	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
 	drawn.Resumed = gen != "" && offset > 0
+	// A routed paste is drawn as its "From …" card only when muster has it on
+	// record for this very window's session (route_answer_cards.go).
+	drawn.RoutedPasteOnRecord = func(routeID, text string, at time.Time) bool {
+		return s.routedPasteOnRecord(r.WithContext(live), host, session, window, routeID, text, at)
+	}
 	// The tool-context ledger resumes from the checkpoint the socket before
 	// this one left at this very place (mirror_ledger.go), so a call still
 	// running across the reconnect is attributed when its next turn arrives.
 	lkey := ledgerKey{windowOwner(r.Context()), host, session, window}
 	if drawn.Resumed {
-		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
+		if l, routed, ok := s.ledgers.take(lkey, gen, offset); ok {
 			drawn.RestoreLedger(l)
+			drawn.RestoreRoutedSeen(routed)
 		}
 	}
 	curGen := gen
@@ -374,7 +380,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.Gen != "" {
 			curGen = m.Gen
 		}
-		s.ledgers.put(lkey, curGen, m.Offset, drawn.Ledger())
+		s.ledgers.put(lkey, curGen, m.Offset, drawn.Ledger(), drawn.RoutedSeen())
 		if m.PromptIndex {
 			refs, dropped := mirror.BoundPrompts(m.Prompts)
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)

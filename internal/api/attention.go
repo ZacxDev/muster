@@ -931,8 +931,8 @@ func attentionFocusHTML(title string, age ui.FocusAge) string {
 	if age.Text != "" {
 		// Labelled: the card's header already ends in how long it has waited,
 		// in the same "· 3m" shape; this one is how old the title is.
-		after = `<span class="font-normal" data-focus-age title="` + esc(ui.FocusAgeLabel(age)) + `" aria-label="` +
-			esc(ui.FocusAgeLabel(age)) + `">` + esc(ui.FocusAgeSuffix(age)) + `</span>`
+		after = `<span class="font-normal" data-focus-age title="` + esc(ui.FocusAgeTooltip(age)) + `" aria-label="` +
+			esc(ui.FocusAgeTooltip(age)) + `">` + esc(ui.FocusAgeSuffix(age)) + `</span>`
 	}
 	return `<span class="` + cls + `"` + stale + `><span data-attention-focus>` + esc(title) + `</span>` + after + `</span>
 `

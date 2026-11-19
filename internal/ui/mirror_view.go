@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -15,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
@@ -711,6 +714,18 @@ type MirrorTranscript struct {
 	// (forget).
 	ledger cctranscript.ToolContext
 	costs  map[string]cctranscript.ToolCost
+	// RoutedPasteOnRecord reports whether text — a prompt as muster pasted it
+	// (plugins.RoutedPromptText) — is the very block muster DELIVERED into
+	// THIS session for route routeID, recorded at at (internal/api
+	// routedPasteOnRecord: the route exists, targets this session, its
+	// send-queue row was sent no later than at, and its recorded SHA-256 is
+	// text's). Only then is a routed prompt drawn as its "From …" card
+	// (routed_card.go); nil draws every prompt as the person's bubble.
+	RoutedPasteOnRecord func(routeID, text string, at time.Time) bool
+	// routedSeen is the routes this transcript has drawn a card for: only the
+	// FIRST prompt matching a route is its card — the same block typed again
+	// later (a replay) is the person's bubble. Cleared by Reset.
+	routedSeen map[string]bool
 	// queued is the Claude Code queued messages drawn last (cc_queued.go),
 	// and queuedDrawn whether any list has been drawn by this socket.
 	queued      []string
@@ -718,6 +733,29 @@ type MirrorTranscript struct {
 }
 
 const maxDrawnCalls = 2048
+
+// RoutedSeen is the routes this transcript has drawn a "From …" card for,
+// sorted: what a resuming socket restores (RestoreRoutedSeen) so a replayed
+// paste after the resume point is still a bubble.
+func (t *MirrorTranscript) RoutedSeen() []string {
+	out := make([]string, 0, len(t.routedSeen))
+	for id := range t.routedSeen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RestoreRoutedSeen resumes the set from a checkpoint (RoutedSeen) taken at the
+// very place this socket resumes from.
+func (t *MirrorTranscript) RestoreRoutedSeen(ids []string) {
+	for _, id := range ids {
+		if t.routedSeen == nil {
+			t.routedSeen = map[string]bool{}
+		}
+		t.routedSeen[id] = true
+	}
+}
 
 // MirrorPromptID is a mirrored prompt's element id, from its Event.Line: the
 // ONE spelling both its bubble (Ops) and its prompt-index entry
@@ -756,6 +794,7 @@ func (t *MirrorTranscript) Reset() {
 	t.usage, t.fresh, t.agentCtx = nil, false, nil
 	t.ledger, t.costs = cctranscript.ToolContext{}, nil
 	t.queued, t.queuedDrawn = nil, false
+	t.routedSeen = nil
 }
 
 // endRun records that something other than a tool row was drawn: the next
@@ -1085,6 +1124,34 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// gets none here, and the message index gives the bubble a
 			// page-unique one (chatIndexScript).
 			t.endRun()
+			// A block muster ROUTED here (a plugin message, a task, the owner's
+			// request) is not the owner's own message: its "From …" card
+			// (routed_card.go), the exact paste in its ⓘ.
+			// 🔴 ITS SHAPE IS NOT ENOUGH: anything that can type into the pane
+			// can type a block of this shape. The card is drawn only when the
+			// server finds the paste on record (RoutedPasteOnRecord); with no
+			// such check, every prompt is the person's bubble.
+			// 🔴 READ AS MUSTER PASTED IT: the CLI records a long paste inside
+			// its own <pasted_content> wrapper (every routed paste, measured),
+			// which neither parses nor hashes as the block (RoutedPromptText).
+			if rt := plugins.RoutedPromptText(ev.Text); t.RoutedPasteOnRecord != nil && ev.PromptAt > 0 {
+				if rb, ok := plugins.ParseRoutedBlock(rt); ok && !t.routedSeen[rb.RouteID] && t.RoutedPasteOnRecord(rb.RouteID, rt, time.UnixMilli(ev.PromptAt)) {
+					if t.routedSeen == nil {
+						t.routedSeen = map[string]bool{}
+					}
+					t.routedSeen[rb.RouteID] = true
+					id := ""
+					if ev.Line > 0 {
+						id = MirrorPromptID(ev.Line)
+					}
+					sheet := "rp-" + toolRowID(ev.Text)[3:]
+					if id != "" {
+						sheet = id + "-rp"
+					}
+					ops = append(ops, MirrorOp{Op: "append", HTML: render(routedPromptCard(rb, rt, id, sheet))})
+					continue
+				}
+			}
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
 				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""),
 				// data-prompt: the prompt as the transcript holds it, before
@@ -1120,7 +1187,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			if _, seen := t.calls[ev.ToolID]; seen {
 				// The same call again: redrawn where it is, run and group untouched.
 				t.calls[ev.ToolID] = call
-				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))})
+				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id, false, t.ctxBadge(ev.ToolID)))})
 				t.states[ev.ToolID] = toolStateRunning
 				if gid, ok := t.groupOf[ev.ToolID]; ok {
 					ops = append(ops, t.groupStateOps(gid)...)
@@ -1133,7 +1200,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				t.order = t.order[1:]
 			}
 			t.calls[ev.ToolID] = call
-			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))...)
+			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id, false, t.ctxBadge(ev.ToolID)))...)
 		case cctranscript.KindToolResult:
 			if qs, isAsk := t.asks[ev.ToolID]; isAsk || (ev.Ask != nil && len(ev.Ask.Questions) > 0) {
 				ops = append(ops, t.askResult(ev, qs, isAsk)...)
@@ -1153,7 +1220,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				// socket knew), appended only if the page has none, and no run is
 				// started from it — see Resumed.
 				ops = append(ops, MirrorOp{Op: "result", ID: id,
-					HTML: render(toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))})
+					HTML: render(toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, false))})
 				continue
 			}
 			if !ok {
@@ -1165,10 +1232,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 					t.order = t.order[1:]
 				}
 				ops = append(ops, t.appendRow(ev.ToolID, toolChipState(&result),
-					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, t.ctxBadge(ev.ToolID)))...)
+					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, false, t.ctxBadge(ev.ToolID)))...)
 				continue
 			}
-			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id, t.ctxBadge(ev.ToolID)))})
+			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id, false, t.ctxBadge(ev.ToolID)))})
 			t.states[ev.ToolID] = toolChipState(&result)
 			if gid, ok := t.groupOf[ev.ToolID]; ok {
 				ops = append(ops, t.groupStateOps(gid)...)

@@ -192,7 +192,7 @@ func TestTheRenderedViewTabsYourMessagesWithFocusHistory(t *testing.T) {
 	for _, tab := range allAttr(list, "data-tab") {
 		labels = append(labels, focusNodeText(tab))
 	}
-	if strings.Join(labels, "|") != "Your messages|Focus history" {
+	if strings.Join(labels, "|") != "Your messages|What it worked on" {
 		t.Errorf("tabs %q", labels)
 	}
 	if key := attrOf(list, "data-tabs-key"); key != "mirror-view:host=host-a&session=main&window=%402" {
