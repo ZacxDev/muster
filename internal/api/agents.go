@@ -1637,7 +1637,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// The chief's chat bar: primary or side chat, its context, the chat
 	// actions (chief_chats.go).
 	if s.isChiefAgent(ctx, a) {
-		view.ChiefChat = chiefChatBarFor(ctx, a, active)
+		view.ChiefChat = s.chiefChatBarFor(ctx, a, active)
 		// The side chat route's answer lands here asking for the cursor in
 		// the message box (answerSideChatOpened).
 		view.FocusComposer = r.URL.Query().Get(ui.ComposerFocusParam) == "1"
