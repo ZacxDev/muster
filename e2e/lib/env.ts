@@ -443,6 +443,11 @@ export const pagesShareConnectPort = port + 407;
 // tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
 // 127.0.0.1) whose instance document and icon the spec controls.
 export const serverSwitcherStubPort = port + 404;
+// tests/team-pages.spec.ts: a team's page read by a member who is not its
+// creator — its own server (pages on, a link key) and the connect listener
+// the key needs. (+460, +461: clear of every block above.)
+export const teamPagesPort = port + 460;
+export const teamPagesConnectPort = port + 461;
 // tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
 // desktop width — its own server (plugins on), no mirror host.
 export const draftCardPort = port + 413; // was +405, pagesSharePort's too (e2e/env-ports.test.mjs)
