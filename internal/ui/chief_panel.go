@@ -1282,6 +1282,10 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     // close the panel while the operator was dismissing a modal on top of it.
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // An open popover (a chat chip's ⋯ menu, the context chip's detail) is
+      // the top layer: that Escape is the popover's, which the browser closes,
+      // and the panel stays.
+      try { if (document.querySelector(':popover-open')) return; } catch (err) {}
       // An open fleet sheet is the top layer: Escape shuts it, not the panel.
       if (closeSheets()) return;
       var p = panel();

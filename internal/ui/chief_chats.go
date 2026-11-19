@@ -206,11 +206,13 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 	}
 	kind, _ := chiefChatKind(*b)
 	var chips, archived []g.Node
+	var archivedIDs []string
 	for _, sess := range sessions {
 		// The chat on screen is never hidden behind "Archived (n)", archived or
 		// not (chiefChatViews lists an open archived chat with the side ones).
 		if sess.Archived && !sess.Active {
 			archived = append(archived, chiefChip(name, b, sess, surface, true))
+			archivedIDs = append(archivedIDs, chiefChipID(surface, sess.ID))
 			continue
 		}
 		chips = append(chips, chiefChip(name, b, sess, surface, false))
@@ -222,6 +224,8 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 				Type("button"),
 				g.Attr(chiefArchivedAttr, ""),
 				g.Attr("aria-expanded", "false"),
+				// The chips it shows and hides.
+				g.Attr("aria-controls", strings.Join(archivedIDs, " ")),
 				Class("group press inline-flex h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-3.5 text-xs font-medium text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg aria-expanded:bg-s2 aria-expanded:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 				g.Text(chiefArchivedChipText(len(archived))),
 				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition group-aria-expanded:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
@@ -324,10 +328,20 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 		g.Attr(chiefChipKindAttr, kind),
 		g.If(hidden, g.Attr(chiefArchivedChipAttr, "")),
 		g.If(hidden, g.Attr("hidden", "")),
+		g.If(hidden, ID(chiefChipID(surface, sess.ID))),
 		Class("flex h-11 shrink-0 items-center rounded-full ring-1 ring-inset transition "+ring),
 		link,
-		g.If(!b.SharedRoom, chiefChipMenu(b, sess, kind, surface)),
+		g.If(!b.SharedRoom, chiefChipMenu(b, sess, kind, label, surface)),
 	)
+}
+
+// chiefChipID is the element id of chat sid's chip on surface: an archived
+// chip's, which the "Archived (n)" toggle names in aria-controls.
+func chiefChipID(surface ChatSurface, sid int64) string {
+	if surface == ChatSurfaceChiefPanel {
+		return "chief-panel-chip-" + strconv.FormatInt(sid, 10)
+	}
+	return "chief-chip-" + strconv.FormatInt(sid, 10)
 }
 
 // chiefChipMenu is a chip's ⋯ menu: Fresh primary (with its confirm) on the
@@ -336,7 +350,11 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 // (ChiefCurrentParam), so acting on another chat leaves the operator where they
 // are. A popover in the top layer, placed by floatingMenuScript, so the strip's
 // scroller never clips it; Escape and a tap outside close it (the browser's).
-func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind string, surface ChatSurface) g.Node {
+//
+// label is the chip's own (its chat's title, or "Primary"): the ⋯ is named
+// "Actions for <label>", so a screen reader tells one chip's ⋯ from another's.
+func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind, label string, surface ChatSurface) g.Node {
+	name := "Actions for " + label
 	prefix := "chief-chat-menu-"
 	if surface == ChatSurfaceChiefPanel {
 		prefix = "chief-panel-chat-menu-"
@@ -370,8 +388,8 @@ func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind string, surface ChatS
 			g.Attr("popovertarget", id),
 			g.Attr("aria-haspopup", "menu"),
 			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Chat actions"),
-			g.Attr("title", "Chat actions"),
+			g.Attr("aria-label", name),
+			g.Attr("title", name),
 			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>`),
 		),
@@ -380,7 +398,7 @@ func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind string, surface ChatS
 			g.Attr(chiefChatMenuAttr, ""),
 			g.Attr("popover", "auto"),
 			g.Attr("role", "menu"),
-			g.Attr("aria-label", "Chat actions"),
+			g.Attr("aria-label", name),
 			g.Attr("data-floating-menu", ""),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			g.Group(items),

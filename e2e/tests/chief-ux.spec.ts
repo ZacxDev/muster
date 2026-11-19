@@ -976,6 +976,21 @@ for (const vp of [
       await stripLayout(page, strip, `${vp.name} panel`);
       await shot(page, `after-panel-plus-${vp.name}.png`);
 
+      // Escape on a chip's ⋯ closes the MENU only: the panel stays open, on
+      // the same chat (the panel's Escape used to shut the whole panel).
+      const p1Menu = strip.locator(`[data-chief-chip="${p1}"] button[aria-haspopup="menu"]`);
+      await expect(p1Menu).toHaveAccessibleName('Actions for New chat');
+      await p1Menu.focus();
+      await expect(p1Menu).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(page.locator(`#chief-panel-chat-menu-${p1}`)).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.locator(`#chief-panel-chat-menu-${p1}`)).toBeHidden();
+      await page.waitForTimeout(300);
+      await expect(panel(page), 'Escape on the menu leaves the panel open').toHaveAttribute('data-chief-panel-open', '1');
+      await expect(active).toHaveAttribute('data-chief-active-session', p1);
+      await expect(panel(page).locator('#chat-form')).toBeVisible();
+
       // A chip switches the panel's chat.
       await tap(strip.locator(`[data-chief-chat-row="${primary}"]`));
       await expect(active).toHaveAttribute('data-chief-active-session', primary);

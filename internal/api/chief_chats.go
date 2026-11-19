@@ -214,7 +214,7 @@ func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archive
 
 // stayOnCurrent is the chat an action on chat touched leaves the operator on:
 // the chat they were ON (?current=, ui.ChiefCurrentParam) when the action was
-// on another chat — a Chats-tab row's ⋯ menu archiving, unarchiving or making
+// on another chat — a chat chip's ⋯ menu archiving, unarchiving or making
 // primary a chat that is not the open one — else fallback (the action's own
 // answer: the primary after archiving the open chat, the chat itself after
 // unarchiving or making it primary).

@@ -641,3 +641,43 @@ func TestContinueOffersExactlyTheNewSessionChoices(t *testing.T) {
 		t.Errorf("Continue offers %v, New session offers %v: they must be the same choices", cont, start)
 	}
 }
+
+// TestEachChipsMenuIsNamedForItsChat: every chip's ⋯ (and its menu) is
+// "Actions for <the chip's label>" — "Primary" on the primary, the chat's title
+// on the others — and "Archived (n)" controls exactly the archived chips it
+// shows and hides, by their ids, on both surfaces.
+func TestEachChipsMenuIsNamedForItsChat(t *testing.T) {
+	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
+		html := renderString(t, chiefChatStrip(&ChiefChatBar{AgentID: 42, SessionID: 5, Primary: true}, "chiefy", chiefSheetSessions(5), surface))
+		var names []string
+		for _, m := range regexp.MustCompile(`aria-haspopup="menu" aria-expanded="false" aria-label="([^"]*)"`).FindAllStringSubmatch(html, -1) {
+			names = append(names, m[1])
+		}
+		if got := strings.Join(names, " | "); got != "Actions for Primary | Actions for Side one | Actions for Side two | Actions for Put away" {
+			t.Errorf("%s: the ⋯ names are %q", surface, got)
+		}
+		prefix := "chief-chip-"
+		if surface == ChatSurfaceChiefPanel {
+			prefix = "chief-panel-chip-"
+		}
+		if !strings.Contains(html, `aria-controls="`+prefix+`7"`) || !regexp.MustCompile(`<li `+chiefChipAttr+`="7" `+chiefChipKindAttr+`="archived" `+chiefArchivedChipAttr+`="" hidden(="")? id="`+prefix+`7"`).MatchString(html) {
+			t.Errorf("%s: Archived (n) does not control the archived chip by its id", surface)
+		}
+	}
+}
+
+// TestThePanelsEscapeStepsAsideForAnOpenPopover: the panel's Escape handler
+// returns while a popover (a chip's ⋯ menu) is open, so that Escape closes the
+// menu and not the panel. e2e chief-ux drives the keys.
+func TestThePanelsEscapeStepsAsideForAnOpenPopover(t *testing.T) {
+	js := renderString(t, chiefPanelScript())
+	esc := strings.Index(js, `if (e.key !== 'Escape' || e.defaultPrevented) return;`)
+	guard := strings.Index(js, `try { if (document.querySelector(':popover-open')) return; } catch (err) {}`)
+	shut := -1
+	if guard > esc && esc >= 0 {
+		shut = strings.Index(js[guard:], `setOpen(false);`)
+	}
+	if esc < 0 || guard < esc || shut < 0 || shut > 400 {
+		t.Errorf("the panel's Escape handler has no :popover-open guard before it shuts the panel (%d, %d, %d)", esc, guard, shut)
+	}
+}
