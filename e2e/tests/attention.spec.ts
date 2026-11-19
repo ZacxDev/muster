@@ -9,6 +9,7 @@ import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, ds
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 import { revealBox } from '../lib/composer';
+import { withMCPSession } from '../lib/localmcp';
 
 // THE ATTENTION QUEUE, the operator's click path, every hop real:
 //
@@ -276,10 +277,11 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
 // MCP config); the host forwards it to muster's /mirror/mcp with the host's
 // mirror token and the pane's Claude session id. The ask shows on /attention
 // as that window's, and the operator's answer reaches the session's wait.
+// It initializes an MCP session first, as Claude Code does (withMCPSession).
 async function localCall(name: string, args: Record<string, unknown>, headers: Record<string, string> = {}): Promise<Response> {
   return fetch(localMCP, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', ...(await withMCPSession(localMCP, headers)) },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
   });
 }

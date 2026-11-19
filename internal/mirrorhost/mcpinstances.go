@@ -46,8 +46,9 @@ import (
 // LIST CHANGES REACH THE CLIENT. Claude Code caches a server's tool list at
 // connect, so after a muster upgrade a session kept a stale schema. With
 // ToolsRefresh set, the proxy re-reads every instance's list on that interval
-// and, when what it would serve changes, sends notifications/tools/list_changed
-// on every open GET stream of /mcp; its `initialize` answer advertises
+// (and at once on KickTools) and sends notifications/tools/list_changed to
+// each MCP session whose last list differs — on its GET stream, or ahead of
+// its next answer (mcpsession.go); its `initialize` answer advertises
 // capabilities.tools.listChanged, without which Claude Code ignores the
 // notification (measured in Claude Code 2.1.289: its handler is registered only
 // when the server's initialize result sets tools.listChanged).
@@ -455,6 +456,8 @@ type instanceState struct {
 	// a newer one never replaces it (storePlan).
 	seq, planSeq uint64
 	hub          listenHub
+	// kick asks the watch for a read now (KickTools).
+	kick chan struct{}
 }
 
 // primaryName is the primary's name.
@@ -588,12 +591,20 @@ func (p *MCPProxy) beginRead() uint64 {
 func (p *MCPProxy) storePlan(seq uint64, session toolsList, remote map[string]toolsList, remoteAt time.Time) (toolPlan, bool) {
 	pl := buildPlan(p.primaryName(), p.extraNames(), session, remote)
 	p.state.mu.Lock()
-	defer p.state.mu.Unlock()
 	if seq <= p.state.planSeq {
+		p.state.mu.Unlock()
 		return pl, false
 	}
+	changed := p.state.plan != nil && p.state.plan.hash != pl.hash
 	p.state.planSeq = seq
 	p.state.session, p.state.remote, p.state.remoteAt, p.state.plan = session, remote, remoteAt, &pl
+	p.state.mu.Unlock()
+	if changed {
+		// Any read that finds another set — a session's tools/list or a
+		// call's re-read, not only the watch — wakes the open streams, each of
+		// which tells its session if it listed something else (serveListen).
+		p.state.hub.notify()
+	}
 	return pl, true
 }
 
@@ -625,6 +636,7 @@ func (p *MCPProxy) WatchTools(ctx context.Context) {
 	}
 	t := time.NewTicker(p.ToolsRefresh)
 	defer t.Stop()
+	kick := p.state.kicks()
 	p.pollTools(ctx)
 	for {
 		select {
@@ -632,8 +644,31 @@ func (p *MCPProxy) WatchTools(ctx context.Context) {
 			return
 		case <-t.C:
 			p.pollTools(ctx)
+		case <-kick:
+			p.pollTools(ctx)
 		}
 	}
+}
+
+// KickTools has the watch re-read the lists NOW rather than at its next tick:
+// muster-mirror calls it each time its tunnel to muster connects
+// (Client.OnConnected), which is also when a muster upgrade arrives. It never
+// blocks; kicks while one is pending are one kick.
+func (p *MCPProxy) KickTools() {
+	select {
+	case p.state.kicks() <- struct{}{}:
+	default:
+	}
+}
+
+// kicks is the watch's kick channel.
+func (s *instanceState) kicks() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.kick == nil {
+		s.kick = make(chan struct{}, 1)
+	}
+	return s.kick
 }
 
 // pollTools is one watch: read every list, build the plan, and — when its
@@ -656,9 +691,11 @@ func (p *MCPProxy) pollTools(ctx context.Context) {
 	prev := p.state.lastHash
 	p.state.lastHash = pl.hash
 	p.state.mu.Unlock()
+	// storePlan has woken the open streams if the set changed; each tells its
+	// session only when what that session last listed differs (serveListen),
+	// and a session with no stream is told on its next answer (serveMuster).
 	if prev != "" && prev != pl.hash {
-		n := p.state.hub.notify()
-		p.logf("muster-mirror: mcp: the tool list changed; told %d open stream(s) (notifications/tools/list_changed)", n)
+		p.logf("muster-mirror: mcp: the tool list changed; sessions that listed another set are sent notifications/tools/list_changed")
 	}
 }
 
@@ -729,10 +766,17 @@ func (h *listenHub) notify() int {
 const listChangedEvent = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"
 
 // serveListen is GET /mcp past the guard, for a Claude Code caller with the
-// watcher on: the transport's server-to-client stream, which carries only
-// list_changed (and a keep-alive comment). Past maxListenStreams it is the
-// transport's 405 "no stream", which a client takes as healthy.
+// watcher on: the transport's server-to-client stream of the caller's MCP
+// session (no session, or an unknown one: the transport's 400 or 404), which
+// carries only list_changed (and a keep-alive comment) — sent when the stream
+// opens or is woken and what the session last listed differs from what /mcp
+// serves now, once per change. Past maxListenStreams it is the transport's 405
+// "no stream", which a client takes as healthy.
 func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
+	sid, ok := p.requireSession(w, r)
+	if !ok {
+		return
+	}
 	ch, done, ok := p.state.hub.subscribe()
 	if !ok {
 		w.Header().Set("Allow", http.MethodPost)
@@ -746,6 +790,24 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
 	_ = rc.Flush()
+	// tell sends list_changed when this session's list is stale.
+	tell := func() error {
+		cur := p.currentToolsHash()
+		if !p.sessions.stale(sid, cur) {
+			return nil
+		}
+		if _, err := io.WriteString(w, listChangedEvent); err != nil {
+			return err
+		}
+		if err := rc.Flush(); err != nil {
+			return err
+		}
+		p.sessions.markNotified(sid, cur)
+		return nil
+	}
+	if tell() != nil {
+		return
+	}
 	t := time.NewTicker(listenKeepAlive)
 	defer t.Stop()
 	for {
@@ -755,9 +817,10 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 		case <-closed:
 			return
 		case <-ch:
-			if _, err := io.WriteString(w, listChangedEvent); err != nil {
+			if tell() != nil {
 				return
 			}
+			continue
 		case <-t.C:
 			if _, err := io.WriteString(w, ": keep-alive\n\n"); err != nil {
 				return

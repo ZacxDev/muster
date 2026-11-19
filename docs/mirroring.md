@@ -1915,17 +1915,51 @@ naming the instance that gave it: `[muster instance: <name>]`.
 
 ### The tool list stays current
 
-Claude Code caches a server's tool list when it connects, so after a muster
-upgrade a session kept a stale schema. The mirror now re-reads every
-instance's list every `-mcp-tools-refresh` (default `1m`; `0` turns it off).
-When what `/mcp` would serve changes, it sends
-`notifications/tools/list_changed` on every open `GET /mcp` stream. It also
-advertises `capabilities.tools.listChanged` in its `initialize` answer. Claude
+Claude Code caches a server's tool list when it connects. Before this, a
+long-running session kept the list from its first connect: one connected for
+two weeks never saw `page_create`, `notify_owner`, `dispatch_*` or `track_task`
+until `/mcp` → Reconnect, although the mirror had been upgraded and restarted
+meanwhile. The mirror now keeps every connected session's list current in
+three ways. All of them apply to a Claude Code caller of this host's tmux
+server while the watch is on (`-mcp-tools-refresh`, default `1m`; `0` turns all
+of this off).
+
+**Each connection is an MCP session.** The `initialize` answer carries an
+`Mcp-Session-Id`, and every later request on `/mcp` (POST, and the `GET`
+stream) must send it back. The mirror remembers what each session last listed:
+a hash of the tools' names and schemas.
+
+**A session holding an old list is told, once.** The mirror re-reads every
+instance's list on each tick, and at once each time its tunnel to muster
+connects again (which is when an upgraded muster arrives). It also learns the
+current list whenever any session lists it. When what `/mcp` serves differs
+from what a session last listed, that session is sent
+`notifications/tools/list_changed`:
+
+- on its open `GET /mcp` stream, at once, or as soon as the stream opens if it
+  was down when the list changed;
+- with no stream, ahead of the answer to its next request. That answer comes as
+  an event stream: the notification first, then the response. A long call's
+  keep-alive becomes an SSE comment.
+
+The `initialize` answer advertises `capabilities.tools.listChanged`. Claude
 Code 2.1.289's client registers its list-changed handler only when a server's
-`initialize` sets that capability, which is why the mirror sets it. The handler
-then re-reads `tools/list`, and Claude Code also re-reads it when the stream
-reopens, for example after the mirror restarts. This works with the primary
-alone too.
+`initialize` sets that capability, and the handler re-reads `tools/list`. This
+works with the primary alone too.
+
+**A session the mirror does not know initializes again.** After the mirror
+restarts it has no record of the sessions its previous process issued. A
+request naming such an id is answered `404 Session not found` (JSON-RPC
+`-32001`). A request with no id at all, from a session that connected before
+the mirror issued ids, is answered `400 Bad Request: Mcp-Session-Id header is
+required`. The call is not run either way. Both are the streamable-HTTP
+transport's own answers. Claude Code 2.1.289 (its bundled client's
+`isMcpSessionExpiredError`) treats each as an expired session on a tool call:
+it drops the connection, initializes again (reading the current capabilities
+and tool list), and retries the call once. On a `GET` stream it does not
+re-initialize, so recovery happens on the session's next tool call. The table
+holds 512 sessions; past that the least recently seen is forgotten and
+re-initializes the same way.
 
 The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
 server, at most 64 at once. Everyone else gets the transport's 405: an outsider,

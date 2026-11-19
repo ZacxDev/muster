@@ -314,7 +314,11 @@ func (spawnedWindows) Windows(context.Context) ([]WindowInfo, error) {
 // servedTools is /mcp's tools/list for a Claude Code caller, by name.
 func servedTools(t *testing.T, p *MCPProxy) (map[string]map[string]any, []string) {
 	t.Helper()
-	w := postBody(t, p, caller("%7"), listBody)
+	hdr := caller("%7")
+	if p.listChangedOn() {
+		hdr = openSession(t, p, "%7")
+	}
+	w := postBody(t, p, hdr, listBody)
 	var r struct {
 		Result struct {
 			Tools []map[string]any `json:"tools"`
@@ -431,24 +435,22 @@ func TestListChangedIsSentWhenAnUpstreamListChanges(t *testing.T) {
 		srv := httptest.NewServer(p)
 		t.Cleanup(srv.Close)
 
-		r := decodeReply(t, "initialize", postBody(t, p, caller("%7"), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
+		iw := postBody(t, p, caller("%7"), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+		r := decodeReply(t, "initialize", iw)
 		if !strings.Contains(string(r.Result), `"listChanged":true`) {
 			t.Fatalf("multi=%v: initialize: %s", multi, r.Result)
 		}
+		sess := caller("%7")
+		sess[MCPSessionIDHeader] = iw.Header().Get(MCPSessionIDHeader)
 
 		// Cleanups run last-first: the stream is closed before srv.Close,
 		// which waits for open connections — so a failing check below ends
 		// the test instead of hanging it.
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/mcp", nil)
-		for k, v := range caller("%7") {
-			req.Header.Set(k, v)
-		}
-		req.Header.Set("Accept", "text/event-stream")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil || resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
-			t.Fatalf("multi=%v: GET: %v %+v", multi, err, resp)
+		resp := openStream(t, ctx, srv.URL, sess)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+			t.Fatalf("multi=%v: GET: %+v", multi, resp)
 		}
 		t.Cleanup(func() { resp.Body.Close() })
 		events := make(chan string, 8)
@@ -461,6 +463,9 @@ func TestListChangedIsSentWhenAnUpstreamListChanges(t *testing.T) {
 			}
 		}()
 		p.pollTools(ctx) // the baseline
+		// The session lists what is served: what it is told about is a set
+		// other than this.
+		_ = postBody(t, p, sess, listBody)
 		p.pollTools(ctx) // nothing changed
 		select {
 		case e := <-events:
@@ -511,14 +516,14 @@ func TestListChangedIsSentWhenAnUpstreamListChanges(t *testing.T) {
 func TestNoSessionDataReachesAnExtraInstance(t *testing.T) {
 	p, primary, la := twoInstances(t)
 	p.ToolsRefresh = time.Hour
-	_ = postBody(t, p, caller("%7"), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	_ = postBody(t, p, caller("%7"), `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	sess := openSession(t, p, "%7")
+	_ = postBody(t, p, sess, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	_, _ = servedTools(t, p)
 	p.pollTools(context.Background())
-	_ = postBody(t, p, caller("%7"), callBody("attention_ask", map[string]any{"question": "secret plan?"}))
-	_ = postBody(t, p, caller("%7"), callBody("agents_list", nil))
-	_ = postBody(t, p, caller("%7"), callBody("attention_ask", map[string]any{"question": "secret plan?", "instance": "la"}))
-	_ = postBody(t, p, caller("%7"), callBody("agents_list", map[string]any{"instance": "la"}))
+	_ = postBody(t, p, sess, callBody("attention_ask", map[string]any{"question": "secret plan?"}))
+	_ = postBody(t, p, sess, callBody("agents_list", nil))
+	_ = postBody(t, p, sess, callBody("attention_ask", map[string]any{"question": "secret plan?", "instance": "la"}))
+	_ = postBody(t, p, sess, callBody("agents_list", map[string]any{"instance": "la"}))
 
 	seen := la.requests()
 	if len(seen) == 0 {
@@ -613,11 +618,12 @@ func TestAnIgnoredTargetsFileStillRefusesOtherInstances(t *testing.T) {
 	}
 }
 
-// openStream opens GET /mcp as caller %7 on srv, answering the response.
-func openStream(t *testing.T, ctx context.Context, url string) *http.Response {
+// openStream opens GET /mcp on srv with hdr (a caller's, with its session),
+// answering the response.
+func openStream(t *testing.T, ctx context.Context, url string, hdr map[string]string) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+"/mcp", nil)
-	for k, v := range caller("%7") {
+	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Accept", "text/event-stream")
@@ -649,7 +655,8 @@ func TestShutdownDrainsAPostAndEndsAStream(t *testing.T) {
 	go func() { _ = ServeMCP(ctx, l, p); close(served) }()
 	cctx, ccancel := context.WithCancel(context.Background())
 	t.Cleanup(ccancel)
-	resp := openStream(t, cctx, base)
+	sess := openSession(t, p, "%7")
+	resp := openStream(t, cctx, base, sess)
 	t.Cleanup(func() { resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET: %d", resp.StatusCode)
@@ -665,7 +672,7 @@ func TestShutdownDrainsAPostAndEndsAStream(t *testing.T) {
 	posted := make(chan answer, 1)
 	go func() {
 		req, _ := http.NewRequest(http.MethodPost, base+"/mcp", strings.NewReader(callBody("agents_list", nil)))
-		for k, v := range caller("%7") {
+		for k, v := range sess {
 			req.Header.Set(k, v)
 		}
 		r, err := http.DefaultClient.Do(req)
@@ -810,13 +817,14 @@ func TestTheListenStreamsAreCapped(t *testing.T) {
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	resp := openStream(t, ctx, srv.URL)
+	sess := openSession(t, p, "%7")
+	resp := openStream(t, ctx, srv.URL, sess)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != http.MethodPost {
 		t.Fatalf("GET at the cap: %d Allow=%q", resp.StatusCode, resp.Header.Get("Allow"))
 	}
 	release[0]()
-	resp = openStream(t, ctx, srv.URL)
+	resp = openStream(t, ctx, srv.URL, sess)
 	t.Cleanup(func() { resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("GET below the cap again: %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
