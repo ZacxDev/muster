@@ -56,7 +56,7 @@ const (
 	// the age off ("… acme/api · …"); then a place that truncated as one
 	// string cut its repo to "· a…" on a phone.
 	AsksLogSubClass = "flex min-w-0 items-baseline gap-1 text-xs text-fg2"
-	// AsksLogWhoClass is the sub line's session @ host part. It gives way to
+	// AsksLogWhoClass is the sub line's session-and-computer part. It gives way to
 	// the tail (which never narrows past the age) and truncates against the
 	// rest of the line: on a phone that leaves well over a dozen characters
 	// ("ratelimit-backoff-and-retry-…"), never a stub.

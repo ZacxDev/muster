@@ -80,17 +80,21 @@ The point of the log is to find the questions your agents could have answered
 themselves. Three readers, all of **your own** asks only:
 
 - **The Asks page's Log tab** (`/attention?tab=log`). Every filter — kind,
-  outcome, who answered, when (the last 24 hours, 7 days, 30 days, or every
-  row kept), the runtime, host, repository and session — is behind one
+  outcome, who answered, when (the last 24 hours, 7 days, 30 days, or *All
+  time*: every row kept), the app (Claude Code, opencode or an agent), host,
+  project (repository) and session — is behind one
   **Filters** toggle, shut when the tab opens; it says how many are set
   (*Filters (2)*). Kinds are named plainly: *Question in chat*, *Question with
-  choices*, *Agent's question*, *opencode question*, *opencode permission
-  request*. Then the summary of the filtered asks, then the asks themselves,
+  choices*, *Agent's question*, *Question (opencode)*, *Permission request
+  (opencode)*; so are outcomes (*Skipped (agent carried on)*, *Replaced by a
+  newer question*). Each ask's line says where it was asked as *session on
+  computer* (*ratelimit on atlas · acme/api*). Then the summary of the filtered asks, then the asks themselves,
   newest first, 50 a page (*Older* / *Newest*). The tab's panel is read when
   you open it, not with the rest of the Asks page. With `MUSTER_ASK_LOG` off
   the page has no Log tab; on, with nothing recorded yet, it says that; with
   filters that match nothing, it offers to clear them. The summary is four
-  tiles, then three plain counts — *Kind of question*, *How it ended* and
+  tiles (asks, answered by you, the *typical time to answer* — the median —
+  and the time *9 in 10* were *answered within* — the 90th percentile), then three plain counts — *Kind of question*, *How it ended* and
   *Who answered* — then the questions *Asked most often*, each shown as you
   saw it (the last paragraph of the newest of its asks — what was asked; they
   are grouped by their normal form), with

@@ -115,7 +115,7 @@ func countRows(t *testing.T, html, key string) []string {
 // its own name. RED at origin/main fcb27a6b: every outcome was its own pill.
 func TestRareOutcomesFoldIntoOther(t *testing.T) {
 	html := askLogSummaryHTML(glanceOutcomeSum(), asklog.DefaultTextTTL)
-	want := []string{"answered|Answered|41", "moved_on|Moved on|13", "open|No answer|3", "other|Other|7"}
+	want := []string{"answered|Answered|41", "moved_on|Skipped (agent carried on)|13", "open|No answer|3", "other|Other|7"}
 	if got := countRows(t, html, "outcome"); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("How it ended: %q, want %q", got, want)
 	}

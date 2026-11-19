@@ -11,7 +11,7 @@ import { startServer, Running } from '../lib/server';
 //
 //   - the owner opens /attention and TAPS the Log tab — the panel is fetched
 //     then (the page's own render reads nothing from the log) — and sees the
-//     summary (7 asks, 5 answered by you, median 30s, 90th percentile 2m),
+//     summary (7 asks, 5 answered by you, typical 30s, 9 in 10 within 2m),
 //     the breakdowns as plain "label N" rows under the page's one heading
 //     style (no pill: nothing there is a control), the log's unended ask as
 //     "No answer" (never "Open", the header's word for what waits on you
@@ -92,7 +92,7 @@ for (const vp of [
       const counts = (k: string) =>
         panel.locator(`[data-asklog-counts="${k}"] [data-count]`).evaluateAll((els) =>
           els.map((e) => `${e.querySelector('dt')!.textContent!.trim()} ${e.querySelector('dd')!.textContent!.trim()}`));
-      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'opencode permission request 1']);
+      expect(await counts('kind')).toEqual(['Question in chat 4', 'Question with choices 1', "Agent's question 1", 'Permission request (opencode) 1']);
       expect(await counts('outcome')).toEqual(['Answered 5', 'No answer 1', 'Declined 1']);
       expect(await counts('answered_by')).toEqual(['You 5', 'The chief 1', 'Nobody 1']);
       await expect(page.locator('[data-asks-open-count]')).toHaveText(/^\d+ open$/);
@@ -291,10 +291,10 @@ test.describe('long lines', () => {
       });
 
       // NO PLACE IS CUT TO A STUB (a phone review of #837): a row's sub line
-      // is "session @ host · repo · age", and when the place did not fit, the
+      // is "session on host · repo · age", and when the place did not fit, the
       // repo was what gave way — to "a…" or "ac…", which reads as debris. Now
       // a part of the place either shows at least STUB_MIN characters before
-      // its ellipsis or is not shown at all ("ratelimit @ work-laptop · 2h
+      // its ellipsis or is not shown at all ("ratelimit on work-laptop · 2h
       // ago"); the full place is the sub line's title.
       //
       // Measured on the LAYOUT: each character's box against every clipping
@@ -401,20 +401,20 @@ test.describe('long lines', () => {
         }
         const by = (s: string) => rows.find((r) => r.seen.startsWith(s))!;
         // The full place is always available to the reader.
-        expect(by('ratelimit @ work-laptop')?.title, `the full place is the place's title: ${report}`).toBe('ratelimit @ work-laptop · acme-corporation/api-gateway-monorepo');
-        expect(by('ci @ mac')?.title).toBe('ci @ mac · acme-corporation/api-gateway-monorepo');
+        expect(by('ratelimit on work-laptop')?.title, `the full place is the place's title: ${report}`).toBe('ratelimit on work-laptop · acme-corporation/api-gateway-monorepo');
+        expect(by('ci on mac')?.title).toBe('ci on mac · acme-corporation/api-gateway-monorepo');
         if (vp.phone) {
           // Positive control: on a phone a repo really is cut, and the rule
-          // above measured it — "ci @ mac" leaves room for a readable part.
-          const ci = by('ci @ mac');
+          // above measured it — "ci on mac" leaves room for a readable part.
+          const ci = by('ci on mac');
           expect(ci.cut.length, `the ci row's repo is cut on a phone: ${report}`).toBeGreaterThan(0);
-          expect(ci.seen, `the ci row shows a readable part of its repo: ${report}`).toMatch(/^ci @ mac · acme-c[^…]*… · .*ago$/);
+          expect(ci.seen, `the ci row shows a readable part of its repo: ${report}`).toMatch(/^ci on mac · acme-c[^…]*… · .*ago$/);
           // …and the row with no room for one drops its repo whole.
-          expect(by('ratelimit @ work-laptop').seen, `the ratelimit row drops its repo: ${report}`).toBe('ratelimit @ work-laptop · 2h ago');
+          expect(by('ratelimit on work-laptop').seen, `the ratelimit row drops its repo: ${report}`).toBe('ratelimit on work-laptop · 2h ago');
         } else {
           // At a desktop a normal-length place fits whole: nothing changes.
-          expect(by('docs @ studio-mac').seen, report).toMatch(/^docs @ studio-mac · acme\/api · \S+ ago$/);
-          expect(by('ratelimit @ work-laptop').seen, report).toBe('ratelimit @ work-laptop · acme-corporation/api-gateway-monorepo · 2h ago');
+          expect(by('docs on studio-mac').seen, report).toMatch(/^docs on studio-mac · acme\/api · \S+ ago$/);
+          expect(by('ratelimit on work-laptop').seen, report).toBe('ratelimit on work-laptop · acme-corporation/api-gateway-monorepo · 2h ago');
           for (const r of rows.filter((x) => !x.seen.startsWith('ratelimit-backoff'))) expect(r.cut, `a place that fits is cut at a desktop: ${report}`).toEqual([]);
         }
         await noSidewaysScroll(page);

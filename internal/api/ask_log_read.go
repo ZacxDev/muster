@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/features"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 	g "maragu.dev/gomponents"
 )
@@ -318,7 +319,9 @@ var (
 		// Plain words (the design review: "Picker" and "Attention ask" were
 		// muster's own names for its kinds, not the reader's).
 		asklog.KindPlainText: "Question in chat", asklog.KindAskUserQuestion: "Question with choices", asklog.KindAttention: "Agent's question",
-		asklog.KindOpenCodeQuestion: "opencode question", asklog.KindOpenCodePermission: "opencode permission request",
+		// The app in brackets, after what it is: the row reads as a
+		// question first (the jargon audit, U-19).
+		asklog.KindOpenCodeQuestion: "Question (opencode)", asklog.KindOpenCodePermission: "Permission request (opencode)",
 	}
 	// 🔴 THE LOG NEVER SAYS "Open". The page heading's "N open" is what waits
 	// on you NOW (THE ONE OPEN COUNT, asks_count.go); a log row with no outcome
@@ -328,8 +331,10 @@ var (
 	// value and the filter's URL value stay "open" (asklog.OutcomeOpen).
 	askOutcomeLabels = map[string]string{
 		asklog.OutcomeOpen: "No answer", asklog.OutcomeAnswered: "Answered", asklog.OutcomeAnsweredInSession: "Answered in session",
-		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Moved on", asklog.OutcomeExpired: "Expired",
-		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Superseded", asklog.OutcomeGone: "Gone",
+		// "Moved on" and "Superseded" said what muster calls them, not what
+		// happened (the jargon audit, F038/U-20).
+		asklog.OutcomeDeclined: "Declined", asklog.OutcomeMovedOn: "Skipped (agent carried on)", asklog.OutcomeExpired: "Expired",
+		asklog.OutcomeCancelled: "Cancelled", asklog.OutcomeSuperseded: "Replaced by a newer question", asklog.OutcomeGone: "Gone",
 		asklog.OutcomeUnknown: "Unknown",
 	}
 	// askOutcomeMeanings is each outcome in a sentence a newcomer gets: the
@@ -353,7 +358,7 @@ var (
 	// askByInline is who answered, inside a sentence ("by you").
 	askByInline      = map[string]string{asklog.ByOwner: "you", asklog.ByChief: "the chief", asklog.ByOther: "someone else"}
 	askRuntimeLabels = map[string]string{asklog.RuntimeClaudeCode: "Claude Code", asklog.RuntimeOpenCode: "opencode", asklog.RuntimeAgent: "Agent"}
-	askSinceChoices  = []struct{ v, label string }{{"24h", "Last 24 hours"}, {"7d", "Last 7 days"}, {"30d", "Last 30 days"}, {"", "All kept"}}
+	askSinceChoices  = []struct{ v, label string }{{"24h", "Last 24 hours"}, {"7d", "Last 7 days"}, {"30d", "Last 30 days"}, {"", "All time"}}
 )
 
 func labelOr(m map[string]string, k string) string {
@@ -462,7 +467,7 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 }
 
 // askLogFormHTML is the filter form: kind, outcome, who answered and the time
-// window on top; runtime, host, repository and session behind "More filters"
+// window on top; app (runtime), host, project (repository) and session behind "More filters"
 // (open when one of them is set). A GET to the Asks page on its Log tab.
 func askLogFormHTML(q url.Values) string {
 	esc := html.EscapeString
@@ -522,8 +527,8 @@ func askLogFormHTML(q url.Values) string {
 <form method="get" action="` + attentionPath + `" class="flex flex-col gap-2 pt-2" data-asklog-form aria-label="Filter the ask log">
 <input type="hidden" name="` + asksTabParam + `" value="` + asksTabLog + `">
 <div class="` + ui.AsksLogFormClass + `">` + sel("kind", "Kind", kinds) + sel("outcome", "Outcome", outcomes) + sel("answered_by", "Answered by", bys) +
-		sel("since", "When", since) + sel("runtime", "Runtime", runtimes) + text("host", "Host", "any") + text("repo", "Repository", "owner/name") +
-		text("session", "Session", "tmux or session id") + `</div>
+		sel("since", "When", since) + sel("runtime", "App", runtimes) + text("host", "Host", "any") + text("repo", "Project", "any") +
+		text("session", "Session", "Session name") + `</div>
 <div class="` + ui.AsksActionsClass + `"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `">Apply</button>` +
 		`<a class="` + ui.AsksSecondaryButtonClass + `" href="` + esc(askLogHref(url.Values{})) + `">Clear</a></div>
 </form></details>`
@@ -558,8 +563,10 @@ func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
 	b.WriteString(`<section class="flex flex-col gap-2" aria-label="Summary" data-asklog-summary><div class="` + ui.AsksLogStatsClass + `">`)
 	tile("total", strconv.Itoa(sum.Total), "asks")
 	tile("owner", strconv.Itoa(sum.ByAnsweredBy[asklog.ByOwner]), "answered by you")
-	tile("median", lat(sum.MedianAnswer), "median to answer")
-	tile("p90", lat(sum.P90Answer), "90th percentile")
+	// In words, not statistics (the jargon audit, F037/U-21): the median is
+	// the typical wait, the 90th percentile the time 9 in 10 were answered in.
+	tile("median", lat(sum.MedianAnswer), "typical time to answer")
+	tile("p90", lat(sum.P90Answer), "9 in 10 answered within")
 	b.WriteString(`</div>`)
 	// THE BREAKDOWNS, AS PLAIN STATISTICS: a heading (the page's one heading
 	// style) over "label … N" rows. No pill: nothing here is a control.
@@ -743,8 +750,8 @@ func askOutcomeSheetHTML(m map[string]int, folded []string) string {
 		Lead: "Every ask in the log ends one of these ways.", Extra: g.Raw(b.String()), Inline: true})
 }
 
-// askLogWhere is where an ask was asked, whole: the session @ host part
-// (askLogWho) and the repo, "ratelimit @ work-laptop · acme/api". It is the
+// askLogWhere is where an ask was asked, whole: the session and computer
+// (askLogWho) and the repo, "ratelimit on work-laptop · acme/api". It is the
 // card's place as its title spells it, so all of it is there to read when the
 // line shows less.
 func askLogWhere(a asklog.Ask) string {
@@ -758,21 +765,23 @@ func askLogWhere(a asklog.Ask) string {
 	return strings.Join(parts, " · ")
 }
 
-// askLogWho is the session @ host part of where an ask was asked ("" when it
-// names none): its tmux session and host, else its host, else its agent.
+// askLogWho is the session and computer part of where an ask was asked (""
+// when it names none): its tmux session "on" its host (mirror.PlaceWords, the
+// one way the top layer says where a window runs — never "session @ host"),
+// else its host, else its agent.
 func askLogWho(a asklog.Ask) string {
 	switch {
 	case a.Host != "" && a.TmuxSession != "":
-		return a.TmuxSession + " @ " + a.Host
+		return a.TmuxSession + " " + mirror.PlaceWords(a.Host)
 	case a.Host != "":
-		return "@ " + a.Host
+		return mirror.PlaceWords(a.Host)
 	case a.AgentID > 0:
 		return "agent " + strconv.FormatInt(a.AgentID, 10)
 	}
 	return ""
 }
 
-// askLogSubHTML is a row's sub line under its title: the session @ host
+// askLogSubHTML is a row's sub line under its title: the session-and-computer
 // part, the repo ("· acme/api"), then the age ("· 15m ago"), the whole place
 // as the line's title (so all of it is there to read when the line shows
 // less). age is the age's <time>.
@@ -784,8 +793,8 @@ func askLogWho(a asklog.Ask) string {
 // with less room than that wraps onto the tail's clipped second line and is
 // not drawn at all, rather than drawn as "· a…". The tail is drawn
 // right-to-left and packed to its left edge, so on screen it reads "· repo ·
-// age" straight after the session @ host part, with no gap where a dropped
-// repo was. The session @ host part (ui.AsksLogWhoClass) gives way to the
+// age" straight after the session-and-computer part, with no gap where a dropped
+// repo was. The session-and-computer part (ui.AsksLogWhoClass) gives way to the
 // age (the tail never narrows past it) and truncates against all the rest of
 // the line.
 func askLogSubHTML(a asklog.Ask, age string) string {
