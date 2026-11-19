@@ -770,8 +770,9 @@ func (l officerPluginLink) DraftEndedTx(ctx context.Context, tx pgx.Tx, d plugin
 }
 
 // draftRefusedKind is the kind of the item an officer gets for its outbound
-// draft that ended unsent.
-const draftRefusedKind = "draft.refused"
+// draft that ended unsent: the store's one spelling, which its refusal
+// reads (builtin.RefusalsAwaitingOwner) also use.
+const draftRefusedKind = builtin.DraftRefusedKind
 
 // maxOpenRefusedItems bounds the draft.refused items one officer may have
 // claimable at once (draftEndFor); more are held, not dropped.
