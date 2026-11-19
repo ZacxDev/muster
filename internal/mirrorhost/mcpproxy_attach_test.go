@@ -38,9 +38,12 @@ func (attachWindows) Windows(context.Context) ([]WindowInfo, error) {
 type fakeMusterForAsk struct {
 	mu       sync.Mutex
 	files    map[string][]byte // id → bytes
-	sessions []string          // the session each upload named
+	sessions []string          // the Claude session each upload named
+	agents   []string          // the agent session key (and marker) each upload named
 	calls    []string          // forwarded tools/call bodies
+	callAs   []string          // the agent session key (and marker) each forwarded call named
 	revoked  []string          // ids revoked (DELETE MirrorPath/{id})
+	revokeAs []string          // the session each take-back named: "<claude>|<agent key>|<marker>"
 	// refuseAsk: the MCP door answers the forwarded call with a tool error.
 	refuseAsk bool
 }
@@ -58,6 +61,7 @@ func newFakeMusterForAsk(t *testing.T) (*fakeMusterForAsk, *httptest.Server) {
 				return
 			}
 			f.revoked = append(f.revoked, strings.TrimPrefix(r.URL.Path, askattach.MirrorPath+"/"))
+			f.revokeAs = append(f.revokeAs, r.Header.Get(MCPSessionHeader)+"|"+agentOf(r))
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -70,10 +74,12 @@ func newFakeMusterForAsk(t *testing.T) (*fakeMusterForAsk, *httptest.Server) {
 			id := strings.Repeat(string(rune('A'+len(f.files))), 22)
 			f.files[id] = b
 			f.sessions = append(f.sessions, r.Header.Get(MCPSessionHeader))
+			f.agents = append(f.agents, agentOf(r))
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(askattach.Record{ID: id, Name: r.URL.Query().Get("filename"), Type: askattach.Sniff(b), Size: int64(len(b))})
 		case MCPPath:
 			f.calls = append(f.calls, string(b))
+			f.callAs = append(f.callAs, agentOf(r))
 			w.Header().Set("Content-Type", "application/json")
 			if f.refuseAsk {
 				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"{\"error\":\"the question is empty\"}"}],"isError":true}}`)
@@ -86,6 +92,12 @@ func newFakeMusterForAsk(t *testing.T) (*fakeMusterForAsk, *httptest.Server) {
 	}))
 	t.Cleanup(srv.Close)
 	return f, srv
+}
+
+// agentOf is how r names an agent session: "<X-Muster-Agent-Session>|<X-Muster-Client>"
+// ("|" for a request naming neither).
+func agentOf(r *http.Request) string {
+	return r.Header.Get(MCPAgentSessionHeader) + "|" + r.Header.Get(MCPClientHeader)
 }
 
 func attachProxy(base, cwd string) *MCPProxy {
@@ -123,6 +135,9 @@ func TestASessionsAttachmentsAreUploadedFromItsWorkingDirectoryAndTheCallCarries
 	}
 	if f.sessions[0] != proxySID || f.sessions[1] != proxySID {
 		t.Fatalf("the uploads named sessions %v, want the caller's %s", f.sessions, proxySID)
+	}
+	if f.agents[0] != "|" || f.agents[1] != "|" {
+		t.Fatalf("a Claude Code caller's uploads named an agent session: %v", f.agents)
 	}
 	if len(f.calls) != 1 {
 		t.Fatalf("%d forwarded calls", len(f.calls))
@@ -187,21 +202,6 @@ func TestARefusedAttachmentFailsTheCallAndNothingIsForwarded(t *testing.T) {
 	}
 }
 
-// An opencode session's attachments are a follow-up: refused, saying they are
-// not supported yet, and nothing is uploaded.
-func TestAnOpenCodeSessionsAttachmentsAreRefusedAsNotSupportedYet(t *testing.T) {
-	f, srv := newFakeMusterForAsk(t)
-	p := attachProxy(srv.URL, t.TempDir())
-	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	body, _, refused := p.uploadAskAttachments(r, []byte(askCall(map[string]any{"question": "q", "attachments": []string{"a.png"}})), "", true)
-	if body != nil || refused != "attachments from an opencode session are not supported yet (only a Claude Code session's are uploaded); ask without them" {
-		t.Fatalf("refused %q", refused)
-	}
-	if len(f.files) != 0 {
-		t.Fatalf("%d file(s) uploaded", len(f.files))
-	}
-}
-
 func TestACallWithoutAttachmentsIsForwardedAsItWas(t *testing.T) {
 	f, srv := newFakeMusterForAsk(t)
 	body := askCall(map[string]any{"question": "q?", "context": "why"})
@@ -243,6 +243,9 @@ func TestFilesAlreadyUploadedAreRevokedWhenTheAskFails(t *testing.T) {
 	}
 	if strings.Join(f.revoked, ",") != strings.Repeat("A", 22)+","+strings.Repeat("B", 22) {
 		t.Fatalf("revoked %v; want both uploads", f.revoked)
+	}
+	if strings.Join(f.revokeAs, ",") != proxySID+"||,"+proxySID+"||" {
+		t.Fatalf("the take-backs named %v; want the Claude session alone", f.revokeAs)
 	}
 	// The control: an ask muster files keeps its uploads.
 	f, srv = newFakeMusterForAsk(t)
