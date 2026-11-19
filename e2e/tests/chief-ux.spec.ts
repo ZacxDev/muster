@@ -748,6 +748,20 @@ for (const vp of [
       expect(landed.unsupported).toBeUndefined();
       expect(landed.total, `layout shift landing on a new chat: ${JSON.stringify(landed.shifts)}`).toBeLessThan(0.01);
       await shot(page, `after-page-plus-${vp.name}.png`);
+      // Only "+"'s answer asks for the focus: the address it landed on no
+      // longer carries the ask, so a reload — or a plain load of ?session= —
+      // leaves the cursor alone.
+      expect(new URL(page.url()).searchParams.has('focus'), 'the focus ask is dropped from the address').toBe(false);
+      const quiet = async (label: string) => {
+        await expect(page.locator('#chat-form')).toBeVisible();
+        await page.waitForLoadState('load');
+        await page.waitForTimeout(500);
+        await expect(page.locator('#chat-input'), label).not.toBeFocused();
+      };
+      await page.reload();
+      await quiet('a reload does not take the focus');
+      await page.goto(origin + '/agents/' + chiefName + '?session=' + s1);
+      await quiet('a plain load of ?session=N does not take the focus');
 
       // 2. + again while that chat is empty: the SAME chat, no second chip,
       // still current, the cursor in its box (HX-Redirect to this very page).

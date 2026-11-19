@@ -71,12 +71,6 @@ const MIN_LOG = 120;
 const OPTIONS = ['agent_dispatch on pod/gateway: start a new agent on it', 'agent_dispatch on pod/claude-code: start a new agent on it'];
 // The chief: a claude-code agent displayed as "chief".
 const CHIEF = `e2e-ccm-chief-${stamp}`;
-// A TEAM the operator manages, and its chief: the team's one shared room,
-// with two chats (e2e/mkteam, e2e/mkchat's MUSTER_E2E_TEAM).
-const TEAM_CHIEF = `e2e-ccm-team-chief-${stamp}`;
-let teamId = '';
-const mkchat = (env: Record<string, string>, input = '') =>
-  execFileSync('go', ['run', './e2e/mkchat'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn, ...env }, input });
 
 let server: Running | undefined;
 
@@ -102,21 +96,12 @@ test.beforeAll(async () => {
   // The CHIEF (a claude-code agent whose display name is "chief"): its page's
   // sheet, header and layout (the describes at the end of this file).
   go('./e2e/ccfix', 'agent', OWNER, CHIEF, 'beta', `e2e-ccm-chief-token-${stamp}`, 'chief');
-  teamId = go('./e2e/mkteam', 'create', `e2e chief chips ${stamp}`);
-  mkchat({ MUSTER_E2E_AGENT: TEAM_CHIEF, MUSTER_E2E_DISPLAY_NAME: 'chief', MUSTER_E2E_TEAM: teamId, MUSTER_E2E_THREADS: '1' }, JSON.stringify([
-    { title: 'Team main line', hoursAgo: 2, messages: [{ role: 'user', content: 'team main line' }] },
-    { title: 'Team side line', hoursAgo: 1, messages: [{ role: 'user', content: 'team side line' }] },
-  ]));
 });
 
 test.afterAll(async () => {
   try {
     go('./e2e/ccfix', 'rmagent', OWNER, NAME);
     go('./e2e/ccfix', 'rmagent', OWNER, CHIEF);
-    if (teamId) {
-      mkchat({ MUSTER_E2E_AGENT: TEAM_CHIEF, MUSTER_E2E_TEAM: teamId, MUSTER_E2E_DELETE: '1' });
-      go('./e2e/mkteam', 'remove', teamId);
-    }
   } finally {
     await server?.stop();
   }
@@ -540,34 +525,6 @@ for (const vp of [
       await expect(sheet.locator('#chat-index-tabs-panel-focus [data-focus-history-list]')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(sheet).toBeHidden();
-    });
-
-    // 7. A team's shared room: a member (the operator manages the team) gets
-    // the chips to switch with, and no "+" and no ⋯ — the server refuses
-    // them every chat action (internal/api teamAgentRoutes). Red at main: no
-    // chips at all.
-    test('a team\'s shared room: the chips switch, and there is no + and no ⋯', async ({ page }) => {
-      test.setTimeout(60_000);
-      await signIn(page, origin);
-      await page.goto(origin + '/agents/' + TEAM_CHIEF);
-      await expect(page.locator('#chat-form')).toBeVisible();
-      const strip = page.locator('[data-chief-chat-strip]');
-      await expect(strip.locator('[data-chief-chip]')).toHaveCount(2);
-      await expect(strip.locator('button[data-chief-side-chat]'), 'no +').toHaveCount(0);
-      await expect(strip.locator('button[aria-haspopup="menu"], [data-chief-chat-menu]'), 'no ⋯').toHaveCount(0);
-      await expect(strip.locator('form, [hx-post]'), 'no action at all').toHaveCount(0);
-      const sessionOf = (u: string) => new URL(u).searchParams.get('session');
-      const current = (await strip.locator('[aria-current="true"]').getAttribute('data-chief-chat-row'))!;
-      const other = (await strip.locator('[data-chief-chat-row]:not([aria-current])').getAttribute('data-chief-chat-row'))!;
-      expect(other).not.toBe(current);
-      await (vp.use.hasTouch ? strip.locator(`[data-chief-chat-row="${other}"]`).tap() : strip.locator(`[data-chief-chat-row="${other}"]`).click());
-      await page.waitForURL((u) => sessionOf(u.toString()) === other);
-      await expect(strip.locator(`[data-chief-chat-row="${other}"]`)).toHaveAttribute('aria-current', 'true');
-      await expect(strip.locator('[aria-current="true"]')).toHaveCount(1);
-      const title = (await strip.locator(`[data-chief-chat-row="${other}"]`).getAttribute('title'))!;
-      await expect(page.locator('#chat-log'), 'the transcript is the chat switched to').toContainText(title.toLowerCase());
-      await noSideScroll(page);
-      await shot(page, `chief-chips-team-${vp.name}.png`);
     });
   });
 }

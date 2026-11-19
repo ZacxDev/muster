@@ -166,7 +166,7 @@ func (f *chatsFixture) sideChat(t *testing.T) agents.ChatSession {
 	}
 	for id, s := range f.sessions(t) {
 		if _, ok := before[id]; !ok {
-			if want := ui.AgentSessionHref(f.chief.Name, id); w.Header().Get("HX-Redirect") != want {
+			if want := ui.AgentSessionHref(f.chief.Name, id) + "&" + ui.ComposerFocusParam + "=1"; w.Header().Get("HX-Redirect") != want {
 				t.Fatalf("the side chat's answer goes to %q, want %q", w.Header().Get("HX-Redirect"), want)
 			}
 			return s

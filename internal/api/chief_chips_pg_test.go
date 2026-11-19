@@ -107,3 +107,53 @@ func TestTheChiefPagesStripIsTheSwitcherOrder(t *testing.T) {
 		t.Errorf("the panel's strip is %v, want %v", got, want)
 	}
 }
+
+// TestTheSideChatRouteAsksForTheComposerAndNothingElseDoes: "+" lands with the
+// cursor in the message box because its route's answer asks for it — the
+// page's HX-Redirect carries focus=1 and the page drawn at that address
+// autofocuses #chat-input; the panel's answer renders its body with the box
+// autofocused — while a plain load of the same chat (?session=N, no flag), the
+// panel opened on it, and the other chat routes' answers (archive) do not.
+func TestTheSideChatRouteAsksForTheComposerAndNothingElseDoes(t *testing.T) {
+	f := newChatsFixture(t, "")
+	ctx := asUser(1)
+	if _, err := f.srv.primarySession(ctx, f.chief); err != nil {
+		t.Fatal(err)
+	}
+	const auto = `<textarea id="chat-input" autofocus`
+	page := f.post(t, ui.ChiefSideChatPath(f.chief.ID))
+	to := page.Header().Get("HX-Redirect")
+	if page.Code != http.StatusOK || !strings.HasSuffix(to, "&focus=1") {
+		t.Fatalf("the side chat's page answer: %d → %q, want an address ending &focus=1", page.Code, to)
+	}
+	sid := strings.TrimSuffix(strings.TrimPrefix(to, ui.AgentSessionHref(f.chief.Name, 0)+"?session="), "&focus=1")
+	landed := f.call(t, http.MethodGet, to, nil, f.operator())
+	if landed.Code != http.StatusOK || !strings.Contains(landed.Body.String(), auto) {
+		t.Errorf("the page the side chat route lands on does not autofocus the message box (%d)", landed.Code)
+	}
+	plain := f.call(t, http.MethodGet, ui.AgentSessionHref(f.chief.Name, mustID(t, sid)), nil, f.operator())
+	if plain.Code != http.StatusOK || strings.Contains(plain.Body.String(), auto) {
+		t.Errorf("a plain load of ?session=%s takes the focus (%d)", sid, plain.Code)
+	}
+	panel := f.post(t, ui.ChiefSideChatPath(f.chief.ID)+"?surface=chief-panel")
+	if panel.Code != http.StatusOK || panel.Header().Get("HX-Redirect") != "" || !strings.Contains(panel.Body.String(), auto) {
+		t.Errorf("the side chat's panel answer: %d, redirect %q, autofocus %v", panel.Code, panel.Header().Get("HX-Redirect"), strings.Contains(panel.Body.String(), auto))
+	}
+	opened := f.call(t, http.MethodGet, "/ui/chief/panel?session="+sid, nil, f.operator())
+	if opened.Code != http.StatusOK || strings.Contains(opened.Body.String(), auto) {
+		t.Errorf("the panel opened on the chat takes the focus (%d)", opened.Code)
+	}
+	arch := f.post(t, ui.ChiefArchivePath(f.chief.ID, mustID(t, sid), true))
+	if strings.Contains(arch.Header().Get("HX-Redirect"), "focus=") {
+		t.Errorf("archive's answer asks for the focus: %q", arch.Header().Get("HX-Redirect"))
+	}
+}
+
+func mustID(t *testing.T, s string) int64 {
+	t.Helper()
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("not a session id: %q", s)
+	}
+	return id
+}

@@ -504,22 +504,25 @@ func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 	check("panel list", b.String(), ">Primary<", []string{"Main line", "Newest side", "Older side", chiefArchivedLabel, "Put away"})
 }
 
-// TestTheStripScriptLandsPlusInTheMessageBox: the strip's script marks a "+"
-// request as it starts (by the + button's attribute, read off the posting
-// form), takes the mark on arrival — the page after HX-Redirect's navigation,
-// the panel after its swap — and focuses #chat-input; a failed request drops
-// it. e2e chief-chips drives it on both surfaces.
-func TestTheStripScriptLandsPlusInTheMessageBox(t *testing.T) {
-	js := renderString(t, chiefChipsScript())
-	for _, want := range []string{
-		`var KEY = '` + chiefFocusKey + `';`,
-		`if (el && el.querySelector && el.querySelector('[` + chiefSideChatAttr + `]')) {`,
-		`document.addEventListener('htmx:responseError', clear);`,
-		`input.focus({ preventScroll: true });`,
-		`if (window.__musterChiefChips) { settle(); return; }`,
-	} {
-		if !strings.Contains(js, want) {
-			t.Errorf("chiefChipsScript lacks %q", want)
+// TestTheComposerIsFocusedOnlyWhenTheServerAsks: #chat-input carries
+// autofocus, and the pane the focus call, exactly when FocusComposer is set —
+// on the page (which also drops ComposerFocusParam from its address) and in
+// the panel — and neither without it.
+func TestTheComposerIsFocusedOnlyWhenTheServerAsks(t *testing.T) {
+	for _, surface := range []ChatSurface{ChatSurfacePage, ChatSurfaceChiefPanel} {
+		for _, focus := range []bool{false, true} {
+			v := chiefChatView(surface, ChiefChatBar{SessionID: 6}, []SessionView{{ID: 6, Active: true}})
+			v.FocusComposer = focus
+			html := renderPane(t, v)
+			auto := regexp.MustCompile(`<textarea id="chat-input" autofocus`).MatchString(html)
+			call := strings.Contains(html, `var i = document.getElementById('chat-input'); if (i) i.focus({ preventScroll: true });`)
+			drop := strings.Contains(html, `u.searchParams.delete('`+ComposerFocusParam+`')`)
+			if auto != focus || call != focus {
+				t.Errorf("%s focus=%v: autofocus %v, focus call %v", surface, focus, auto, call)
+			}
+			if drop != (focus && surface == ChatSurfacePage) {
+				t.Errorf("%s focus=%v: drops the focus parameter from the address %v", surface, focus, drop)
+			}
 		}
 	}
 }

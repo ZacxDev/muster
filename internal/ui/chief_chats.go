@@ -38,7 +38,8 @@ import (
 // server opened the chat and the page moved to it, but nothing on screen said
 // so). The strip is drawn with the page, so the chat "+" lands on is a chip,
 // current, from the first paint; and the composer is focused on arrival
-// (chiefChipsScript), on the new chat or on the empty one the server reused.
+// (the side chat route's answer carries the flag: ComposerFocusParam), on the
+// new chat or on the empty one the server reused.
 //
 // The context chip stays in the header (chiefContextSlot).
 //
@@ -389,8 +390,8 @@ func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind string, surface ChatS
 
 // chiefNewChatChip is the strip's "+": a new side chat (or the newest one,
 // reused while it is still empty: internal/api openSideChat). Its answer moves
-// the view to that chat — and chiefChipsScript then puts the cursor in its
-// message box.
+// the view to that chat, with the cursor in its message box (the route's
+// answer asks for it: ComposerFocusParam).
 func chiefNewChatChip(agentID int64, surface ChatSurface) g.Node {
 	return Form(
 		chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(agentID))),
@@ -406,37 +407,23 @@ func chiefNewChatChip(agentID int64, surface ChatSurface) g.Node {
 	)
 }
 
-// chiefFocusKey is the sessionStorage key "+" leaves for the view it lands on.
-const chiefFocusKey = "muster.chief-focus-composer"
+// ComposerFocusParam is the query parameter (value "1") with which the side
+// chat route's page answer (HX-Redirect) asks the page it lands on to put the
+// cursor in the message box (AgentDetailView.FocusComposer). The panel's answer
+// sets the flag on the body it renders instead. Nothing else sets it, so a
+// plain load or reload of ?session=N never takes the focus.
+const ComposerFocusParam = "focus"
 
 // chiefChipsScript is the strip's behaviour, bound once per document (htmx
 // re-executes it on every swap that brings a strip; the guard leaves only the
-// settle step to run again):
+// scroll step to run again):
 //
 //   - THE CURRENT CHIP IS SCROLLED INTO VIEW on arrival (a phone shows two or
 //     three chips), inside the strip's own scroller — never the page's.
 //   - "Archived (n)" toggles its chats' chips inline (aria-expanded).
-//   - "+" LANDS IN THE MESSAGE BOX: as its request starts it leaves a mark in
-//     sessionStorage (it survives the page's HX-Redirect navigation), and the
-//     view it lands on — the page after the navigation, the panel after its
-//     swap — takes the mark and focuses #chat-input. A failed request drops the
-//     mark; a mark older than 15s is ignored, so a later visit never jumps.
 func chiefChipsScript() g.Node {
 	return Script(g.Raw(`
 (function () {
-  var KEY = '` + chiefFocusKey + `';
-  function clear() { try { sessionStorage.removeItem(KEY); } catch (e) {} }
-  function focusComposer() {
-    var t = 0;
-    try { t = +(sessionStorage.getItem(KEY) || 0); } catch (e) { return; }
-    if (!t) return;
-    if (Date.now() - t > 15000) { clear(); return; }
-    var input = document.getElementById('chat-input');
-    if (!input) return;
-    input.focus({ preventScroll: true });
-    // Taken only once it held: a composer not yet shown is tried again on load.
-    if (document.activeElement === input) clear();
-  }
   function reveal() {
     var ss = document.querySelectorAll('[` + chiefChipScrollAttr + `]');
     for (var i = 0; i < ss.length; i++) {
@@ -448,23 +435,14 @@ func chiefChipsScript() g.Node {
       else if (cr.right > sr.right) sc.scrollLeft += cr.right - sr.right + 8;
     }
   }
-  function settle() { reveal(); focusComposer(); }
-  if (window.__musterChiefChips) { settle(); return; }
+  if (window.__musterChiefChips) { reveal(); return; }
   window.__musterChiefChips = true;
-  document.addEventListener('htmx:beforeRequest', function (e) {
-    var el = e.detail && e.detail.elt;
-    if (el && el.querySelector && el.querySelector('[` + chiefSideChatAttr + `]')) {
-      try { sessionStorage.setItem(KEY, String(Date.now())); } catch (err) {}
-    }
-  });
-  document.addEventListener('htmx:responseError', clear);
-  document.addEventListener('htmx:sendError', clear);
-  // Only a swap that brought a strip (the panel body) settles it again: the
+  // Only a swap that brought a strip (the panel body) scrolls it again: the
   // page's other swaps (the context chip, the transcript) must not scroll the
   // strip back under the operator's thumb.
   document.addEventListener('htmx:afterSettle', function (e) {
     var t = e.detail && e.detail.target;
-    if (t && t.querySelector && t.querySelector('[` + chiefChatStripAttr + `]')) settle();
+    if (t && t.querySelector && t.querySelector('[` + chiefChatStripAttr + `]')) reveal();
   });
   document.addEventListener('click', function (e) {
     var b = e.target && e.target.closest && e.target.closest('button[` + chiefArchivedAttr + `]');
@@ -481,9 +459,8 @@ func chiefChipsScript() g.Node {
       if (last.right > sr.right) sc.scrollLeft += Math.min(last.right - sr.right + 8, b.getBoundingClientRect().left - sr.left);
     }
   });
-  window.addEventListener('load', focusComposer);
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', settle);
-  else settle();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', reveal);
+  else reveal();
 })();
 `))
 }

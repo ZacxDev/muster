@@ -148,6 +148,9 @@ type AgentDetailView struct {
 	// chat only, nil on every other agent's — which keeps the header's ＋ and
 	// draws no bar.
 	ChiefChat *ChiefChatBar
+	// FocusComposer: the server asks for the cursor in #chat-input on arrival
+	// (the side chat route's answer: ComposerFocusParam, chief_chats.go).
+	FocusComposer bool
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
@@ -1155,6 +1158,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 				// the paper-plane icon button, named by aria-label and title.
 				Textarea(
 					ID("chat-input"),
+					g.If(v.FocusComposer, g.Attr("autofocus", "")),
 					Name("text"),
 					Rows("1"),
 					g.Attr("enterkeyhint", "send"),
@@ -1198,6 +1202,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// restored draft is in the box, sized, before the pane is painted.
 		composerFitScript(),
 		composerDraftScript(),
+		g.If(v.FocusComposer, composerFocusScript(v.Surface)),
 		// The session switcher, below the input (switcher.go): the page's
 		// only — the chief panel is a pane inside another page. After the
 		// draft's script, which must size a restored draft before anything
@@ -3103,4 +3108,18 @@ func agentChatScript(name string) g.Node {
   }
 })();
 `))
+}
+
+// composerFocusScript puts the cursor in #chat-input, after the pane is laid
+// out (the page's form is invisible until window.__cgLayoutLog, so autofocus
+// alone can miss it, and an htmx swap — the chief panel's body — never honours
+// autofocus). On the page it also drops ComposerFocusParam from the address,
+// so a reload of it does not take the focus again. Drawn only when the server
+// set FocusComposer.
+func composerFocusScript(surface ChatSurface) g.Node {
+	drop := ""
+	if surface == ChatSurfacePage {
+		drop = `try { var u = new URL(location.href); if (u.searchParams.has('` + ComposerFocusParam + `')) { u.searchParams.delete('` + ComposerFocusParam + `'); history.replaceState(history.state, '', u); } } catch (e) {}`
+	}
+	return Script(g.Raw(`(function () { var i = document.getElementById('chat-input'); if (i) i.focus({ preventScroll: true }); ` + drop + ` })();`))
 }
