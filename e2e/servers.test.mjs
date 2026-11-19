@@ -153,6 +153,16 @@ test('saved servers survive a load with their labels; a trailing dot is migrated
   ]);
 });
 
+// A stale trailing-dot copy of THIS server never overwrites its own entry's
+// label, whichever order the two were saved in (audit round 2 of PR #854).
+test('this server keeps its own label over a trailing-dot copy of itself, in either order', () => {
+  const mine = { origin: SELF, label: 'Mine' };
+  const stale = { origin: SELF + '.', label: 'stale' };
+  for (const servers of [[mine, stale], [stale, mine]]) {
+    deq(core.normalize({ v: 1, servers }, SELF), [{ origin: SELF, label: 'Mine' }], JSON.stringify(servers));
+  }
+});
+
 test('an address with a user name or password in it is refused, not stripped', () => {
   for (const input of ['https://user:secret@b.example.net', 'https://user@b.example.net', 'user:secret@b.example.net', 'https://:secret@b.example.net']) {
     deq(plain(core.parseServer(input)), { ok: false, error: 'credentials' }, input);

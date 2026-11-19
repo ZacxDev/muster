@@ -460,6 +460,39 @@ test.describe('another muster (desktop)', () => {
     }
   });
 
+  // 🔴 Saved servers are never lost to a typing rule newer than them (audit
+  // of PR #854), in the browser's own URL parser: an underscore host and a
+  // trailing-dot entry both survive a reload with their labels (the dot
+  // migrated away), and the next save keeps them.
+  test('saved servers survive a reload with their labels, and the next save keeps them', async ({ page }) => {
+    await fresh(page);
+    await page.evaluate((a) => localStorage.setItem('muster-servers', JSON.stringify({
+      v: 1,
+      servers: [
+        { origin: a, label: '' },
+        { origin: 'https://my_server.lan', label: 'Home lab' },
+        { origin: 'https://atlas.example.', label: 'Atlas' },
+      ],
+    })), A);
+    await page.reload();
+    await openSwitcher(page);
+    await expect(items(page)).toHaveCount(3);
+    await expect(item(page, 'https://my_server.lan').locator('[data-server-label]')).toHaveText('Home lab');
+    await expect(item(page, 'https://atlas.example').locator('[data-server-label]')).toHaveText('Atlas');
+
+    // A save (renaming this server) writes the list back: both still there.
+    await page.locator('#server-manage-open').click();
+    const selfRow = page.locator(`#server-manage li[data-server-origin="${A}"]`);
+    await selfRow.locator('input').fill('Here');
+    await selfRow.locator('input').press('Enter');
+    await expect(item(page, A).locator('[data-server-label]')).toHaveText('Here');
+    expect((await stored(page)).servers).toEqual([
+      { origin: A, label: 'Here' },
+      { origin: 'https://my_server.lan', label: 'Home lab' },
+      { origin: 'https://atlas.example', label: 'Atlas' },
+    ]);
+  });
+
   test('a hand-off naming an address that is not a server is not offered', async ({ page }) => {
     await fresh(page);
     // A full load (from another page: a hash-only change would not reload).

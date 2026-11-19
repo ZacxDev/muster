@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -94,12 +95,20 @@ func TestNotFoundStaysPlainForAnythingButAPageLoad(t *testing.T) {
 		w.WriteHeader(http.StatusEarlyHints)
 		http.NotFound(w, r)
 	})
-	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set("Accept", "text/html")
-	s.plainNotFound(early).ServeHTTP(rr, req)
-	if !strings.Contains(rr.Body.String(), NotFoundHeading) {
-		t.Errorf("after a 103: %q, want the not-found page", rr.Body.String())
+	// Over a real connection: a ResponseRecorder keeps the 103 as its Code,
+	// while a client reads past it to the final status.
+	srv := httptest.NewServer(s.plainNotFound(early))
+	defer srv.Close()
+	ereq, _ := http.NewRequest(http.MethodGet, srv.URL+"/x", nil)
+	ereq.Header.Set("Accept", "text/html")
+	resp, err := srv.Client().Do(ereq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ebody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(ebody), NotFoundHeading) {
+		t.Errorf("after a 103: %d %q, want 404 and the not-found page", resp.StatusCode, ebody)
 	}
 
 	// Longer than Go's text (released while writing) and shorter (decided

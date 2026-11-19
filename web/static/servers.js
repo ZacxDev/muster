@@ -170,6 +170,7 @@
     var seen = {};
     var out = [];
     var mine = null;
+    var mineExact = false;
     for (var i = 0; i < list.length; i++) {
       var s = list[i];
       if (!s || typeof s.origin !== 'string') continue;
@@ -177,8 +178,11 @@
       // server reached over plain http on a LAN address is not one you could
       // ADD (parseServer refuses it), but it is the one you are on, and its
       // label must survive a reload.
+      // The EXACT entry wins over a migrated copy of this server (a stale
+      // trailing-dot one), whichever was saved first.
       if (s.origin === self) {
-        if (!mine) mine = entry(self, s);
+        if (!mineExact) mine = entry(self, s);
+        mineExact = true;
         continue;
       }
       var p = parseServer(s.origin, true);
@@ -186,7 +190,7 @@
       try { own = new URL(s.origin).origin === s.origin; } catch (e) { own = false; }
       if (!p.ok || !own || seen[p.origin]) continue;
       seen[p.origin] = true;
-      if (p.origin === self) mine = entry(self, s);
+      if (p.origin === self) { if (!mine) mine = entry(self, s); }
       else out.push(entry(p.origin, s));
     }
     out.unshift(mine || entry(self));

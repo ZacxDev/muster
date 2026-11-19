@@ -88,8 +88,10 @@ func (n *notFoundWriter) WriteHeader(code int) {
 		return
 	}
 	// An informational status (103 Early Hints) is not the response's
-	// status: passed on, and the real one still to come.
-	if code >= 100 && code < 200 {
+	// status: passed on, and the final one still to come. Except 101
+	// Switching Protocols, which IS final (the connection becomes another
+	// protocol): it is decided like any other status, below.
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
 		n.ResponseWriter.WriteHeader(code)
 		return
 	}
