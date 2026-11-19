@@ -40,8 +40,8 @@ import (
 // chatIndexLabel is the index control's and sheet's name; chatIndexChatsLabel
 // is it with the chief's Chats tab.
 const (
-	chatIndexLabel      = "Your messages and focus history"
-	chatIndexChatsLabel = "Chats, your messages and focus history"
+	chatIndexLabel      = "Your messages and what it worked on"
+	chatIndexChatsLabel = "Chats, your messages and what it worked on"
 )
 
 // chatIndexButton is the header control that opens the index for the log with
@@ -88,7 +88,7 @@ func chatIndexSheetWith(historyPath, tabsKey string, chats g.Node, partial strin
 	label := chatIndexLabel
 	tabList := []Tab{
 		{ID: "messages", Label: "Your messages", Panel: chatIndexMessages(partial)},
-		{ID: "focus", Label: "Focus history", Panel: focusHistoryList(historyPath)},
+		{ID: "focus", Label: FocusHistoryLabel, Panel: focusHistoryList(historyPath)},
 	}
 	if chats != nil {
 		label = chatIndexChatsLabel

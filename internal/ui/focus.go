@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,6 +94,29 @@ func FocusAgeLabel(age FocusAge) string {
 	return l
 }
 
+// FocusAgeTooltip is age in a PERSON'S words, for the age element's title and
+// aria-label wherever a person reads it (the sidebar, the dock and palette,
+// the Asks list): "Summary from 2 days ago", and ", out of date" when stale.
+// "" when there is no age.
+//
+// FocusAgeLabel stays as it was for the CHIEF (chief_nudge.go's prompt): it is
+// the model's text, and muster's term "focus title" means something to it
+// (the operator rule; jargon audit F024).
+func FocusAgeTooltip(age FocusAge) string {
+	if age.Text == "" {
+		return ""
+	}
+	n := strings.TrimSuffix(age.Text, "d")
+	l := "Summary from " + n + " days ago"
+	if n == "1" {
+		l = "Summary from 1 day ago"
+	}
+	if age.Stale {
+		l += ", out of date"
+	}
+	return l
+}
+
 // FocusAgeSuffix is age as plain text after its title — " · 2d" — or "" when
 // there is no age: the Asks list's age element and a notice's push body both
 // spell it through here.
@@ -142,7 +166,8 @@ const focusAgeLineJS = `  function focusAgeLine(age, stale, title) {
     line.appendChild(title);
     var a = el('span', 'shrink-0', '\u00b7 ' + age);
     a.setAttribute('data-focus-age', '');
-    var label = 'focus title set ' + age + ' ago' + (stale ? ' (stale)' : '');
+    var days = String(age).replace(/d$/, '');
+    var label = 'Summary from ' + days + (days === '1' ? ' day' : ' days') + ' ago' + (stale ? ', out of date' : '');
     a.setAttribute('title', label);
     a.setAttribute('aria-label', label);
     line.appendChild(a);

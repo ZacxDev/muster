@@ -29,10 +29,20 @@ name: ci
 # and `release`).
 #
 # A vX.Y.Z TAG ALSO PUBLISHES A GITHUB RELEASE (the `release` job at the end):
-# binaries, docker-compose.yml, env.example and checksums.txt, built by
-# scripts/release-build.sh — the same script the `release-dry-run` job runs on
-# every pull request that is ready for review (not on a draft), so a tag
-# publishes nothing a PR did not already build.
+# archives, .deb/.rpm packages, the Windows CLI, Homebrew formulas, a Scoop
+# manifest, docker-compose.yml, env.example and checksums.txt (docs/releases.md
+# lists them), built by scripts/release-build.sh — the same script the
+# `release-dry-run` job runs on every pull request that is ready for review
+# (not on a draft), so a tag publishes nothing a PR did not already build.
+# Every asset, every program in them and every image an image job PUSHES gets
+# a build-provenance attestation (actions/attest-build-provenance; `gh
+# attestation verify`); an image only kept or retagged is not re-attested.
+#
+# 🔴 EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, its version in a trailing
+# comment: a tag can be moved to other code after review, a commit cannot.
+# Pinned by tests/release_platforms_test.py (test job, shard 0). To bump one,
+# resolve the new tag to its commit (`gh api repos/<owner>/<repo>/commits/<tag>
+# --jq .sha`) and replace both the SHA and the comment.
 #
 # 🔴 THE TAG FILTER IS STRICT SEMVER, NOT `v*`, BECAUSE A RED RUN HERE IS NOT
 # CHEAP. A downstream release tool that refuses a sha unless EVERY CI run for
@@ -123,7 +133,7 @@ jobs:
     outputs:
       retest: ${{ steps.decide.outputs.retest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: decide from main's run for this commit
         id: decide
         env:
@@ -145,9 +155,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           # 🔴 `go-version-file`, NEVER A LITERAL. A hardcoded version here is a
           # second statement of the toolchain, and the failure when it drifts
@@ -248,7 +258,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # 🔴 `cache: false`: setup-go's own cache is keyed on go.sum ALONE, with no
       # restore-keys, and is saved only when that key misses — so it was saved
@@ -256,7 +266,7 @@ jobs:
       # frozen, forever. Every test in this job re-ran on every run (0 of the
       # suite's packages reported `(cached)` on main run 43722000476). The
       # cache below replaces it for this job.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         id: go
         with:
           go-version-file: go.mod
@@ -310,7 +320,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: restore Go's build and test cache
         if: ${{ github.event_name != 'schedule' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ${{ steps.gocache.outputs.build }}
@@ -407,6 +417,23 @@ jobs:
       - name: the Claude Code plugin is what the README installs
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/claude_plugin_test.py
+
+      # The release's own tooling, no network: the notes/CHANGELOG generator
+      # and the formula/manifest generator on fixtures; docs/releases.md's
+      # asset list against release-build.sh's, and every action SHA-pinned;
+      # install.sh's platform detection, package-manager choice and checksum
+      # refusal against fakes; ghcr-push.sh's attestation outputs against a
+      # fake docker. (The packaging itself runs in release-dry-run.)
+      - name: release tooling (notes, manifests, platforms, action pins, install.sh platforms, ghcr-push outputs)
+        if: ${{ strategy.job-index == 0 }}
+        run: |
+          python3 tests/release_notes_test.py
+          python3 tests/release_manifests_test.py
+          python3 tests/release_platforms_test.py
+          tests/install-platform-test.sh
+          tests/ghcr-push-output-test.sh
+          tests/publish-packages-test.sh
+          tests/changelog-bump-test.sh
 
       # 🔴 THE REQUIRED TESTS ARE GIVEN TO THE PLANNER, NOT TO verdict.py
       # DIRECTLY: each is in exactly one internal/api shard, so goshard.py hands
@@ -531,7 +558,7 @@ jobs:
       # one sha is exactly the flake the reader counts.
       - name: keep the go test -json stream (per-test timings)
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}
           path: ${{ runner.temp }}/go-test.json
@@ -546,7 +573,7 @@ jobs:
       # `schedule` run (it would restore nothing) or a tag.
       - name: save Go's build and test cache
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ${{ steps.gocache.outputs.build }}
@@ -559,7 +586,7 @@ jobs:
       # never stands in for the suite's own verdict. AFTER the Go suite, so a
       # binder failure never skips it, and `!cancelled()` so a red Go suite
       # never skips this. Node only, < 1 s. Shard 0 only.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: ${{ !cancelled() && strategy.job-index == 0 }}
         with:
           node-version: 22
@@ -623,7 +650,7 @@ jobs:
     env:
       MUSTER_LEAKSCAN_KEY: ${{ secrets.MUSTER_LEAKSCAN_KEY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # leakscan enumerates through `git ls-files`, so it needs a real
           # checkout rather than a shallow export of one commit's tree.
@@ -674,8 +701,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -717,9 +744,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -754,7 +781,7 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # ⚠ NO `cache: npm`, AND THE REASON IS MECHANICAL RATHER THAN A PREFERENCE.
       # That option REQUIRES a lock file and hard-fails the step when there is
@@ -763,7 +790,7 @@ jobs:
       # commits no lock file (only node_modules/ is ignored), so the cache
       # cannot be keyed and the step dies before npm runs. Measured: this job's
       # first run failed exactly there, having installed nothing.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
 
@@ -801,9 +828,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -859,9 +886,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -878,7 +905,7 @@ jobs:
           zsh --version
           bash --version | head -1
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -920,9 +947,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -934,7 +961,7 @@ jobs:
           command -v zsh
           zsh --version
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -972,9 +999,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -1001,7 +1028,7 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: docker build
         run: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent:ci .
@@ -1044,7 +1071,7 @@ jobs:
       - name: compose-smoke (ccd compose, real ccd and CLI)
         run: images/claude-code-agent/compose-smoke.sh claude-code-agent:ci
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -1161,14 +1188,14 @@ jobs:
       MUSTER_E2E_REQUIRE_FULL: "1"
       MUSTER_E2E_LEG: ${{ matrix.leg }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -1221,7 +1248,7 @@ jobs:
       # take each leg's latest (e2e/pick-legs.mjs).
       - name: keep the report (and traces of failures)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-results-leg-${{ matrix.leg }}-attempt-${{ github.run_attempt }}
           path: e2e/test-results/
@@ -1262,10 +1289,10 @@ jobs:
           echo "draft pull request: e2e-leg result: ${{ needs.e2e-leg.result }} (the legs run once the PR is marked ready)"
           test "${{ needs.e2e-leg.result }}" = skipped
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: ${{ env.E2E_DRAFT != 'true' }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           node-version: 22
@@ -1278,7 +1305,7 @@ jobs:
 
       # Every attempt's leg artifacts, each in a directory of its own (they are
       # named by attempt, so none overwrites another).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           pattern: e2e-results-leg-*
@@ -1344,14 +1371,14 @@ jobs:
       MUSTER_E2E_DATABASE_URL: postgres://muster:muster@127.0.0.1:5432/muster_e2e?sslmode=disable
       MUSTER_E2E_REQUIRE_FULL: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -1370,7 +1397,7 @@ jobs:
 
       - name: keep the report (and traces of failures)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: docshots-results-attempt-${{ github.run_attempt }}
           path: e2e/test-results/
@@ -1406,17 +1433,46 @@ jobs:
     steps:
       # Full history and tags: the compose default is checked against the
       # newest release tag below this commit.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
       - name: build the release assets (placeholder version 0.0.0)
-        run: scripts/release-build.sh 0.0.0
+        run: BINARY_SUMS=/tmp/binaries.sha256 scripts/release-build.sh 0.0.0
+
+      # 🔴 THE NEW FORMATS ARE INSTALLED, NOT ONLY BUILT. release-build.sh
+      # already checks each one's shape (the zip's members and PE header, the
+      # deb/rpm magic, no hostname, the formulas naming this release's
+      # hashes); this runs them as a person would: the formulas parse (ruby),
+      # the .deb installs here and its programs report 0.0.0, the .rpm installs
+      # in a Fedora container (and recommends tmux), and a SECOND build of the
+      # same commit is byte-identical — release-publish.sh refuses to replace a
+      # published asset, so a re-run of a tag job needs exactly that.
+      - name: the packages install, the formulas parse, and a rebuild is byte-identical
+        run: |
+          set -o pipefail
+          test "$(wc -l < /tmp/binaries.sha256)" = 10
+          for f in dist/muster.rb dist/muster-mirror.rb; do ruby -c "$f"; done
+          python3 -c 'import json, sys; m = json.load(open("dist/muster.json")); assert m["bin"] == "muster.exe", m'
+          sudo dpkg -i dist/muster_linux_amd64.deb dist/muster-mirror_linux_amd64.deb
+          /usr/bin/muster --version | tee /tmp/v.txt; grep -q '0\.0\.0' /tmp/v.txt
+          /usr/bin/muster-mirror -version | tee /tmp/v.txt; grep -q '0\.0\.0' /tmp/v.txt
+          sudo dpkg -r muster muster-mirror
+          test ! -e /usr/bin/muster && test ! -e /usr/bin/muster-mirror
+          docker run --rm -v "$PWD/dist:/dist:ro" fedora:42 sh -euc '
+            rpm -i /dist/muster_linux_amd64.rpm /dist/muster-mirror_linux_amd64.rpm
+            muster --version | grep -q "0\.0\.0"
+            muster-mirror -version | grep -q "0\.0\.0"
+            rpm -q --recommends muster-mirror | grep -qx tmux
+            echo "ok   the rpm packages install and run on Fedora"'
+          DIST=/tmp/dist-again scripts/release-build.sh 0.0.0 > /dev/null
+          diff dist/checksums.txt /tmp/dist-again/checksums.txt
+          echo "ok   a second build of this commit is byte-identical ($(wc -l < dist/checksums.txt) assets)"
 
       # 🔴 A CLONE RUNS THE NEWEST RELEASE, IT CAN RUN THIS FILE, AND IT EXISTS.
       # With no .env, deploy/docker-compose.yml runs the version written in it:
@@ -1467,7 +1523,7 @@ jobs:
 
       # Node and the two browsers the zero-config phase signs in with
       # (e2e/localhost: Chromium and WebKit on http://localhost).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
@@ -1543,7 +1599,7 @@ jobs:
 
       # setup-python, not the runner's system python: that one is
       # "externally managed" (PEP 668) and refuses `pip install`.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -1582,9 +1638,9 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -1685,9 +1741,9 @@ jobs:
       matrix:
         leg: [least-privilege, cluster-wide, services]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: matrix.leg == 'services'
         with:
           go-version-file: go.mod
@@ -1797,7 +1853,7 @@ jobs:
     if: ${{ !cancelled() && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: every test job succeeded, or was skipped behind a green main run
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -1829,7 +1885,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: open, update or close the main-red issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1855,7 +1911,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: the tags the push jobs would publish
         id: tag
@@ -1871,7 +1927,7 @@ jobs:
       # Same-repository pull requests only: a fork's token cannot read packages.
       - name: log in to ghcr.io
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1883,7 +1939,7 @@ jobs:
           .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.muster }}'
           .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.cca }}'
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: multi-arch build (pushes nothing)
         run: |
@@ -1902,8 +1958,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # build-provenance attestation of the pushed image (see its last step)
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: the tag this run publishes
         id: tag
@@ -1925,6 +1985,7 @@ jobs:
           fi
           {
             echo "version=$v"
+            echo "name=$ns/muster"
             echo "ref=$ns/muster:$v"
             echo "mode=$mode"
           } >> "$GITHUB_OUTPUT"
@@ -1936,7 +1997,7 @@ jobs:
             DOCKER_BUILD_FLAGS="--label org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY --label org.opencontainers.image.revision=$GITHUB_SHA"
 
       - name: log in to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1948,9 +2009,10 @@ jobs:
       # required because the default `docker` driver cannot build more than one
       # platform. The single-arch `make image` above stays: it is what every
       # local spelling builds. (A pull request's multi-arch build is `image-pr`.)
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: push (multi-arch)
+        id: push
         env:
           GHCR_REVISION: ${{ github.sha }}
         run: |
@@ -1960,6 +2022,19 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             .
+
+      # 🔴 ONLY AN IMAGE THIS RUN PUSHED (ghcr-push.sh's `pushed` output). One it
+      # kept was built, and attested, by the run that pushed it; attesting it
+      # here would name this run as its builder. The attestation goes to
+      # GitHub's store and, as an OCI referrer, to GHCR beside the image:
+      #   gh attestation verify oci://<image>:<tag> --repo <owner>/muster
+      - name: attest the image's build provenance
+        if: ${{ steps.push.outputs.pushed == 'yes' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.tag.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   image-claude-code-agent:
     name: claude-code-agent image (GHCR)
@@ -1973,8 +2048,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # build-provenance attestation of the pushed image (see its last step)
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # The short-sha tag on every run, and on a vX.Y.Z tag push ALSO the
       # release version (X.Y.Z), derived and checked as `image-muster` does.
@@ -1984,6 +2063,7 @@ jobs:
           ns="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           short="${GITHUB_SHA::7}"
           echo "short=$short" >> "$GITHUB_OUTPUT"
+          echo "name=$ns/claude-code-agent" >> "$GITHUB_OUTPUT"
           echo "ref=$ns/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -2034,14 +2114,25 @@ jobs:
         run: images/claude-code-agent/compose-smoke.sh "$IMG"
 
       - name: log in to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: push
+        id: push
         run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
+
+      # Only an image this run pushed (see image-muster). The release
+      # version below is the same digest, so this attestation covers it too.
+      - name: attest the image's build provenance
+        if: ${{ steps.push.outputs.pushed == 'yes' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.tag.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
       # 🔴 THE RELEASE VERSION IS A REGISTRY-SIDE COPY OF THE SHORT-SHA IMAGE,
       # NOT A SECOND BUILD. A tag usually lands on a commit `main` already
@@ -2083,10 +2174,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # build-provenance attestation of the pushed image (see its last step)
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       # Full history and tags: the build-or-retag decision diffs against the
       # previous release tag.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -2099,15 +2194,16 @@ jobs:
           fi
           v="${GITHUB_REF_NAME#v}"
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-cohere" >> "$GITHUB_OUTPUT"
           echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-cohere:$v" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # 🔴 REBUILT ONLY WHEN images/stt-cohere/ CHANGED. Every live release is
       # tagged, and most change nothing here; a rebuild would re-resolve apt's
@@ -2185,10 +2281,21 @@ jobs:
           '
 
       - name: push
+        id: push
         if: ${{ steps.src.outputs.mode == 'build' }}
         env:
           GHCR_REVISION: ${{ github.sha }}
         run: .github/scripts/ghcr-push.sh push 'muster-stt-cohere:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' release
+
+      # Only an image this run pushed (see image-muster): a retag is the
+      # previous release's image, attested when it was built.
+      - name: attest the image's build provenance
+        if: ${{ steps.push.outputs.pushed == 'yes' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.tag.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   # ---------------------------------------------------------------------------
   # THE GITHUB RELEASE, on a vX.Y.Z tag, after BOTH images are published.
@@ -2210,9 +2317,18 @@ jobs:
   # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z>; publishing
   # the release before them would hand people a compose file that cannot pull.
   #
-  # RELEASE NOTES: GitHub's generated notes — the pull requests merged since
-  # the previous release tag — under a short header naming the images and the
-  # install files. `--verify-tag` refuses to create a tag that was not pushed.
+  # RELEASE NOTES: scripts/release-notes.py — the pull requests merged since
+  # the previous vX.Y.Z tag, grouped (Security, Features, Fixes, Docs,
+  # Internal, Other) by label, else by title prefix, each linking its PR —
+  # above the install and verify block. CHANGELOG.md is the same data for
+  # every tag, rewritten by the release flow's post-release PR (scripts/changelog-bump.sh). `--verify-tag` refuses to create a tag that
+  # was not pushed.
+  #
+  # ATTESTATIONS: every asset in dist/, and every program as built (the files
+  # inside the archives and packages), get a signed build-provenance
+  # attestation BEFORE the release is published, so nothing is downloadable
+  # unattested. The build is reproducible, so a re-run attests the same
+  # digests again.
   #
   # Local (no publishing): scripts/release-build.sh <X.Y.Z>
   release:
@@ -2229,39 +2345,73 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      # the notes read each pull request's labels
+      pull-requests: read
+      # the build-provenance attestations
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - uses: actions/checkout@v6
+      # Full history and tags: the notes are the commits since the previous tag.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
       - name: build the release assets
-        run: scripts/release-build.sh "$GITHUB_REF_NAME"
+        run: BINARY_SUMS="$RUNNER_TEMP/binaries.sha256" scripts/release-build.sh "$GITHUB_REF_NAME"
+
+      - name: attest every asset's build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: attest every program's build provenance (as built, before archiving)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/binaries.sha256
 
       # The decision logic lives in a script so every branch is tested
       # without GitHub (tests/release-publish-test.sh, fake `gh`): create;
       # complete-and-publish a DRAFT a died attempt left; a no-op on a complete
       # release; refuse different bytes or a foreign asset, untouched.
+      # TAP: `tap` exactly when the publish-to-tap step below will run (the
+      # MUSTER_PACKAGES_TOKEN secret is set): only then do the notes offer
+      # `brew install <owner>/muster/…`; without it they point at the
+      # formula assets (scripts/release-install-block.sh).
+      - name: the release notes (the pull requests since the previous tag, grouped)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP: ${{ secrets.MUSTER_PACKAGES_TOKEN != '' && 'tap' || 'no-tap' }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          python3 scripts/release-notes.py collect --repo "$GITHUB_REPOSITORY" --tag "$tag" > "$RUNNER_TEMP/notes-data.json"
+          scripts/release-install-block.sh "$tag" "$GITHUB_REPOSITORY" "$TAP" > "$RUNNER_TEMP/install.md"
+          python3 scripts/release-notes.py notes --data "$RUNNER_TEMP/notes-data.json" --install "$RUNNER_TEMP/install.md" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
       - name: publish the release (create, or complete an existing one)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="$GITHUB_REF_NAME"; v="${tag#v}"; owner="${GITHUB_REPOSITORY_OWNER,,}"
-          {
-            echo "## Install"
-            echo
-            echo "Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64) and \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64)."
-            echo
-            echo "This machine, in one line: \`curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/install.sh | sh\` (docs/quickstart-local.md)."
-            echo "Server by hand: download \`docker-compose.yml\` and \`docker compose up -d --wait\` (no .env needed: the secrets are generated; \`env.example\`, saved as \`.env\`, sets your own)."
-            echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
-            echo "Kubernetes: the Helm chart \`muster-$v.tgz\` (its default image is this release): \`helm install muster https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/muster-$v.tgz\` (docs/kubernetes.md)."
-            echo
-            # Transition notice for the ClankMail plugin's move out of the image:
-            # remove this line (and the blank echo after it) once v0.250.0 ships.
-            echo "ClankMail plugin: the muster image no longer ships \`/muster-clankmail\` (earlier releases did). Use its own image, \`ghcr.io/$owner/muster-clankmail\` (https://github.com/ZacxDev/muster-clankmail; docs/clankmail.md)."
-            echo
-          } > "$RUNNER_TEMP/notes-header.md"
-          .github/scripts/release-publish.sh "$tag" dist "$RUNNER_TEMP/notes-header.md"
+        run: .github/scripts/release-publish.sh "$GITHUB_REF_NAME" dist "$RUNNER_TEMP/notes.md"
+
+      # The Homebrew tap (ZacxDev/homebrew-muster, Formula/) and the Scoop
+      # bucket (ZacxDev/scoop-muster, bucket/) get this release's formulas and
+      # manifest, one commit each — AFTER the release exists, since they name
+      # its assets. MUSTER_PACKAGES_TOKEN is a fine-grained PAT for those two
+      # repositories, Contents: read and write (the job's GITHUB_TOKEN cannot
+      # write another repository); unset, the step says it skipped and passes.
+      # Idempotent, never moves a repository back to an older version
+      # (.github/scripts/publish-packages.sh; tests/publish-packages-test.sh).
+      # 🔴 continue-on-error: the release is already out; a tap that refused
+      # a push must not turn the tag's run red, which would block the release
+      # tool from taking this sha. A failure shows as this step's annotation.
+      - name: publish the formulas and the manifest to the tap and the bucket (needs MUSTER_PACKAGES_TOKEN)
+        continue-on-error: true
+        env:
+          MUSTER_PACKAGES_TOKEN: ${{ secrets.MUSTER_PACKAGES_TOKEN }}
+        run: .github/scripts/publish-packages.sh "${GITHUB_REF_NAME#v}" dist

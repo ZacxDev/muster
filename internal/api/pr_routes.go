@@ -48,7 +48,7 @@ type PRMail struct {
 }
 
 // routedByPR: a route by pull request (routeByPR).
-const routedByPR = "muster, because this session created or pushed the pull request the message is about"
+const routedByPR = plugins.RoutedByPR
 
 // prRouteOn reports whether pull-request routing is on: a sender list, its
 // store, and session routing (the route it makes).

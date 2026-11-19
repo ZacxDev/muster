@@ -16,7 +16,9 @@ import (
 // across the reconnect could never be attributed: its issuing turn's context and
 // its size were read by the socket that is gone. So every batch a socket writes
 // leaves a checkpoint here — the ledger as it stood at that batch's offset — and
-// a socket that resumes from exactly that gen and offset starts from it.
+// a socket that resumes from exactly that gen and offset starts from it. The
+// routes it drew cards for ride along, so a replayed routed paste after the
+// resume is a bubble there too.
 //
 // 🔴 A CHECKPOINT IS USED ONLY FOR THE PLACE IT WAS TAKEN AT: the same viewer,
 // window, transcript generation and offset. Any other resume (a different
@@ -39,6 +41,10 @@ type ledgerCheckpoint struct {
 	gen    string
 	offset int64
 	ledger cctranscript.ToolContext
+	// routed is the routes the socket had drawn a "From …" card for by then
+	// (ui.MirrorTranscript.RoutedSeen): a resumed socket draws a later prompt
+	// naming one of them as a bubble, as the earlier socket would have.
+	routed []string
 	at     time.Time
 }
 
@@ -58,7 +64,7 @@ func (l *ledgerCheckpoints) clock() time.Time {
 
 // put records the ledger as it stood at gen/offset for k, replacing k's
 // earlier checkpoint.
-func (l *ledgerCheckpoints) put(k ledgerKey, gen string, offset int64, ledger cctranscript.ToolContext) {
+func (l *ledgerCheckpoints) put(k ledgerKey, gen string, offset int64, ledger cctranscript.ToolContext, routed []string) {
 	if gen == "" || offset <= 0 {
 		return
 	}
@@ -85,16 +91,17 @@ func (l *ledgerCheckpoints) put(k ledgerKey, gen string, offset int64, ledger cc
 			delete(l.m, oldest)
 		}
 	}
-	l.m[k] = ledgerCheckpoint{gen: gen, offset: offset, ledger: ledger, at: now}
+	l.m[k] = ledgerCheckpoint{gen: gen, offset: offset, ledger: ledger, routed: append([]string(nil), routed...), at: now}
 }
 
-// take is k's checkpoint for exactly gen/offset, and whether there is one.
-func (l *ledgerCheckpoints) take(k ledgerKey, gen string, offset int64) (cctranscript.ToolContext, bool) {
+// take is k's checkpoint for exactly gen/offset — its ledger and the routes
+// drawn as cards by then — and whether there is one.
+func (l *ledgerCheckpoints) take(k ledgerKey, gen string, offset int64) (cctranscript.ToolContext, []string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	c, ok := l.m[k]
 	if !ok || c.gen != gen || c.offset != offset || l.clock().Sub(c.at) > ledgerCheckpointTTL {
-		return cctranscript.ToolContext{}, false
+		return cctranscript.ToolContext{}, nil, false
 	}
-	return c.ledger.Clone(), true
+	return c.ledger.Clone(), append([]string(nil), c.routed...), true
 }

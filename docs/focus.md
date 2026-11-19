@@ -18,7 +18,8 @@ result, and the bold focus line of a row in the Asks list — its age follows it
 once it is **older than a day**, in whole days: `Bisecting the flaky tunnel
 test · 2d`. A title **older than four days** is also marked stale and drawn
 muted (italic, faded). A newer title shows no age. The age is labelled for a
-pointer and a screen reader ("focus title set 2d ago"), since an Asks card
+pointer and a screen reader ("Summary from 2 days ago", ", out of date" when
+stale), since an Asks card
 also shows how long it has waited in the same shape.
 
 A chief **notice** on the Asks list shows the session's title as the chief saw
@@ -466,11 +467,11 @@ does not fill its history.
 
 You can scroll back through it:
 - on a mirrored session's rendered view, the "Your messages" sheet (the list
-  icon in the header) has two tabs, **Your messages** and **Focus history**.
+  icon in the header) has two tabs, **Your messages** and **What it worked on**.
   The arrow keys move between them, and the tab you pick is remembered for that
   window in the browser;
 - on a dispatched agent's page, the target icon in the header opens a
-  **Focus history** dialog. That page has no "Your messages" sheet, so the
+  **What it worked on** dialog. That page has no "Your messages" sheet, so the
   history is a dialog of its own rather than a tab.
 
 Both list the newest first, 20 at a time, and load older pages as you scroll

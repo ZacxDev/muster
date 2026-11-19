@@ -79,7 +79,7 @@ func resumeBadge(t *testing.T, seed func(s *Server)) string {
 // socket held pending is measured by the socket that resumes at that place.
 func TestAResumingSocketStartsFromItsViewersCheckpoint(t *testing.T) {
 	html := resumeBadge(t, func(s *Server) {
-		s.ledgers.put(ledgerKey{owner: 1, host: "ws", session: "main"}, "g5", 500, pendingLedger(30113))
+		s.ledgers.put(ledgerKey{owner: 1, host: "ws", session: "main"}, "g5", 500, pendingLedger(30113), nil)
 	})
 	if !strings.Contains(html, `data-tool-ctx="measured"`) || !strings.Contains(html, `data-tool-ctx-tokens="1224"`) {
 		t.Fatalf("the resumed socket did not badge the pending call: %q", html)
@@ -91,7 +91,7 @@ func TestAResumingSocketStartsFromItsViewersCheckpoint(t *testing.T) {
 func TestAResumingSocketNeverStartsFromAnotherViewersCheckpoint(t *testing.T) {
 	for _, owner := range []int64{0, 2} {
 		html := resumeBadge(t, func(s *Server) {
-			s.ledgers.put(ledgerKey{owner: owner, host: "ws", session: "main"}, "g5", 500, pendingLedger(30113))
+			s.ledgers.put(ledgerKey{owner: owner, host: "ws", session: "main"}, "g5", 500, pendingLedger(30113), nil)
 		})
 		if html != "" {
 			t.Fatalf("viewer 1 resumed from owner %d's checkpoint: %q", owner, html)
