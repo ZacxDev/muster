@@ -239,6 +239,11 @@ func chatTurnError(err error) (error, bool) {
 			return fmt.Errorf("%w: %w (nothing was typed): %v%s", officers.ErrChatLaneUnavailable, officers.ErrChatRateLimited, err, rateLimitDetail(err)), true
 		}
 		// Passes by itself: another turn, a CLI starting, every lane busy.
+		if unsent == agentgateway.UnsentBusy {
+			// A turn runs in the lane (or its pane shows a dialog): the
+			// runner waits a turn in flight out (officers.ErrChatLaneBusy).
+			return fmt.Errorf("%w: %w (%s)", officers.ErrChatLaneUnavailable, officers.ErrChatLaneBusy, unsent), true
+		}
 		return fmt.Errorf("%w (%s)", officers.ErrChatLaneUnavailable, unsent), true
 	default:
 		// Does not pass by itself (unresolved, unauthorized, rejected, never

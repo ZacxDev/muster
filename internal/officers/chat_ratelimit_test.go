@@ -95,6 +95,104 @@ func TestARateLimitedChatIsAnsweredWithWhy(t *testing.T) {
 	}
 }
 
+// laneBusy is the runtime's 409 busy as internal/api's chatTurnError hands it on.
+func laneBusy() error {
+	return fmt.Errorf("%w: %w (busy)", officers.ErrChatLaneUnavailable, officers.ErrChatLaneBusy)
+}
+
+// TestABusyLaneWithATurnInFlightIsWaitedFor: a typed turn fails (the lane has
+// the member's message and owes its answer), then the lane refuses 15 turns
+// in a row as busy — its own turn still running — and then answers. The
+// lane's answer is posted; the member is never told the chat is unavailable.
+//
+// RED at 031967f3b: the 15th busy refusal posted the canned reply and marked
+// the turn answered, so the lane's answer was dropped.
+func TestABusyLaneWithATurnInFlightIsWaitedFor(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	seq, id := r.hq.MemberSays("c-41", "member1", "Member One", "Is web healthy?")
+	calls := 0
+	r.lanes.reply = func(string, string) (string, error) {
+		calls++
+		switch {
+		case calls == 1:
+			return "", fmt.Errorf("the turn ran past its deadline")
+		case calls <= 16:
+			return "", laneBusy()
+		}
+		return "the lane's answer", nil
+	}
+	passes(t, r, clk, id, 40)
+	replies := r.officerReplies("c-41")
+	if len(replies) != 1 || replies[0].Text != "the lane's answer" || replies[0].InReplyTo != seq {
+		t.Fatalf("replies %+v; want only the lane's answer, to %d (a busy lane owing a turn is waited for)", replies, seq)
+	}
+}
+
+// TestABusyLaneWithATurnInFlightStillEnds: the same lane refusing busy for
+// ever gives up at the first refusal chatMaxBusyWait (75 min) after the
+// streak's first — not at 15 refusals, and not never.
+func TestABusyLaneWithATurnInFlightStillEnds(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "Is web healthy?")
+	calls := 0
+	r.lanes.reply = func(string, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", fmt.Errorf("the turn ran past its deadline")
+		}
+		return "", laneBusy()
+	}
+	passes(t, r, clk, id, 120)
+	replies := r.officerReplies("c-41")
+	// The failed turn, its backoff's pass, then busy refusals a minute apart
+	// from minute 2: the 76th refusal is the first 75 minutes after the first.
+	want := "(The officer can't reply right now: its chat session refused 76 tries in a row (busy or not ready). Ask again later.)"
+	if r.hq.Item(id).Status != "done" || len(replies) != 1 || replies[0].Text != want {
+		t.Fatalf("after 120 passes: item %s, replies %+v; want done with %q", r.hq.Item(id).Status, replies, want)
+	}
+}
+
+// TestABusyLaneOwingNoTurnIsCounted: busy with nothing typed-and-unanswered
+// (an operator's turn, a dialog) is bounded by the count, 15.
+func TestABusyLaneOwingNoTurnIsCounted(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "Is web healthy?")
+	r.lanes.reply = func(string, string) (string, error) { return "", laneBusy() }
+	passes(t, r, clk, id, 40)
+	if n := len(r.lanes.sent()); r.hq.Item(id).Status != "done" || n != 15 {
+		t.Fatalf("item %s after %d turns; want done after 15", r.hq.Item(id).Status, n)
+	}
+}
+
+// TestAStreakIsForgottenWhenItsChatHasNoItem: 14 refusals, then a pass in
+// which the chat has no pending item (answered or closed elsewhere): its next
+// item starts a new count, so one more refusal does not give up.
+//
+// RED at 031967f3b: the stale count of 14 made the next item's first refusal
+// the 15th.
+func TestAStreakIsForgottenWhenItsChatHasNoItem(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "Is web healthy?")
+	r.lanes.reply = func(string, string) (string, error) {
+		return "", fmt.Errorf("%w (not_ready)", officers.ErrChatLaneUnavailable)
+	}
+	passes(t, r, clk, id, 14)
+	if n := len(r.lanes.sent()); n != 14 {
+		t.Fatalf("precondition: %d turns; want 14", n)
+	}
+	r.runner.Dispatch(context.Background(), r.o, officers.Observation{Chats: true, Instances: []officers.InstanceState{upInstance(r.o, 1)}}, clk.Now())
+	r.runner.Wait()
+	clk.Advance(time.Minute)
+	passes(t, r, clk, id, 1)
+	if st := r.hq.Item(id).Status; st != "open" || len(r.officerReplies("c-41")) != 0 {
+		t.Fatalf("after its chat had no item for a pass, one refusal answered the chat (item %s): the old streak carried over", st)
+	}
+}
+
 // TestTheRateLimitedReplyQuotesTheStatedReset: the reset the CLI stated, as it
 // wrote it; none stated, none quoted.
 func TestTheRateLimitedReplyQuotesTheStatedReset(t *testing.T) {

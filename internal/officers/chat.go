@@ -458,6 +458,15 @@ var ErrChatLaneUnavailable = errors.New("officers: the chat's lane could not tak
 // chat for as long as the limit lasts.
 var ErrChatRateLimited = errors.New("officers: the officer's Claude account is at its usage limit")
 
+// ErrChatLaneBusy is the ErrChatLaneUnavailable that is ccd's 409 `busy`
+// (awaiting_approval included): a turn is running in the lane's CLI. A lane
+// is one chat's, so that is usually the chat's OWN earlier turn — one a
+// restarted muster lost track of, or one that ran past the turn deadline —
+// whose answer the retry delivers once it ends. While the chat has such a
+// typed-but-unanswered turn, a busy streak is bounded by time
+// (chatMaxBusyWait), never by chatMaxLaneRefusals.
+var ErrChatLaneBusy = errors.New("officers: the chat's lane is mid-turn")
+
 // ChatLanes is how the runner reaches the chat lanes of an officer's
 // instances: internal/api implements it over the agents store and the agent
 // gateway.
@@ -588,6 +597,8 @@ type chatBackoff struct {
 	until    time.Time
 	limited  int
 	refused  int
+	// refusedSince is when the refused streak's first refusal settled.
+	refusedSince time.Time
 }
 
 // The bounds on a chat that cannot be answered, so it never loops silently:
@@ -604,9 +615,21 @@ type chatBackoff struct {
 //
 // Both are counted in this process only: a restarted muster starts them
 // again, which at worst delays the answer by one more bound.
+//
+// 🔴 A BUSY LANE WITH A TURN IN FLIGHT IS WAITED FOR, NOT COUNTED. When the
+// lane refuses `busy` (ErrChatLaneBusy) while the chat has a turn the lane
+// was given and has not answered (Seen > Answered), the turn running there
+// is most likely that one, and its answer is posted by the retry once it
+// ends: the count would give up on it after ~15 minutes and drop the real
+// reply. Such a streak gives up only after chatMaxBusyWait from its first
+// refusal — past ccd's turn timeout (30 min) and muster's turn deadline
+// (agents.ClaudeCodeTurnTimeout 35 min + officerChatTurnSlack 2 min), so a
+// turn that can still end is waited out, and a CLI that never sends its Stop
+// still ends.
 const (
 	chatRateLimitedAttempts = 3
 	chatMaxLaneRefusals     = 15
+	chatMaxBusyWait         = 75 * time.Minute
 )
 
 // ChatRateLimitedReply is the reply posted for a chat whose turns keep coming
@@ -644,7 +667,7 @@ func (r *ChatRunner) settle(key string, out ChatOutcome) {
 	defer r.mu.Unlock()
 	if out != ChatLaneBusy && out != ChatNotClaimed {
 		if b, ok := r.backoff[key]; ok {
-			b.refused = 0
+			b.refused, b.refusedSince = 0, time.Time{}
 			r.backoff[key] = b
 		}
 	}
@@ -653,6 +676,9 @@ func (r *ChatRunner) settle(key string, out ChatOutcome) {
 		delete(r.backoff, key)
 	case ChatLaneBusy:
 		b := r.backoff[key]
+		if b.refused == 0 {
+			b.refusedSince = r.now()
+		}
 		b.refused++
 		r.backoff[key] = b
 	case ChatLaneBroken, ChatUnsupported, ChatTurnFailed, ChatReadFailed, ChatReplyFailed, ChatRateLimited:
@@ -681,13 +707,14 @@ func (r *ChatRunner) backingOff(key string, now time.Time) bool {
 	return ok && now.Before(b.until)
 }
 
-// streaks is chat key's rate-limited turns since its last answer and its lane
-// refusals in a row, before the turn now running settles.
-func (r *ChatRunner) streaks(key string) (limited, refused int) {
+// streaks is chat key's rate-limited turns since its last answer, its lane
+// refusals in a row and when the first of those settled, before the turn now
+// running settles.
+func (r *ChatRunner) streaks(key string) (limited, refused int, since time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	b := r.backoff[key]
-	return b.limited, b.refused
+	return b.limited, b.refused, b.refusedSince
 }
 
 // logOnce writes line once per key (per process).
@@ -1030,6 +1057,27 @@ func (r *ChatRunner) touch(name string) {
 
 func chatRunKey(o Officer, chat string) string { return o.Key() + "\x00" + chat }
 
+// forgetGoneChats forgets the backoff and streaks (ChatRunner.backoff) of
+// every chat of pool o that has no pending item this pass and no turn
+// running: its item was answered, closed or removed, so a count left from it
+// never carries into the chat's next item.
+func (r *ChatRunner) forgetGoneChats(o Officer, pending []Item) {
+	keep := map[string]bool{}
+	for _, it := range pending {
+		if chat, _, ok := ChatOf(it); ok {
+			keep[chatRunKey(o, chat)] = true
+		}
+	}
+	prefix := o.Key() + "\x00"
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.backoff {
+		if _, running := r.running[key]; strings.HasPrefix(key, prefix) && !keep[key] && !running {
+			delete(r.backoff, key)
+		}
+	}
+}
+
 // Dispatch starts a turn for every pending chat of pool o that this process
 // is not already running, on its home instance — or, for a chat with no home
 // yet or one re-homed (rehomeWhy), the up instance running the fewest chats
@@ -1050,6 +1098,7 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 	}
 	up := chatUp(o, obs)
 	capped := cappedHolders(o, obs, now)
+	r.forgetGoneChats(o, PendingChats(obs, now))
 	for _, it := range PendingChats(obs, now) {
 		chat, _, _ := ChatOf(it)
 		key := chatRunKey(o, chat)
@@ -1335,7 +1384,7 @@ func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome
 		// Now a rate-limited turn backs off, and the chatRateLimitedAttempts-th
 		// in a row — or the chatMaxLaneRefusals-th lane refusal in a row — is
 		// answered with why, which completes the item (giveUp).
-		limited, refused := r.streaks(chatRunKey(o, chat))
+		limited, refused, refusedSince := r.streaks(chatRunKey(o, chat))
 		if errors.Is(err, ErrChatLaneUnavailable) || errors.Is(err, ErrChatLaneBroken) {
 			// Nothing was typed: the lane has not seen them after all.
 			if merr := r.lanes.Mark(context.WithoutCancel(ctx), o, n, chat, prev); merr != nil {
@@ -1358,7 +1407,7 @@ func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome
 					o.label(), chat, o.InstanceLabel(n), err, limited+1, chatRateLimitedAttempts)
 				return ChatRateLimited
 			}
-			if refused+1 >= chatMaxLaneRefusals {
+			if r.laneRefusalsExhausted(err, prev, refused, refusedSince) {
 				if r.giveUp(ctx, cb, o, n, chat, inReplyTo, ChatLaneUnavailableReply(refused+1), &prev, stop, release, err) {
 					return ChatGaveUp
 				}
@@ -1485,6 +1534,17 @@ func (r *ChatRunner) dropTurn(ctx context.Context, o Officer, n int, chat string
 	if err := r.lanes.Mark(context.WithoutCancel(ctx), o, n, chat, *marks); err != nil {
 		r.log.Printf("officers: %s: chat %s: record the dropped turn: %v", o.label(), chat, err)
 	}
+}
+
+// laneRefusalsExhausted reports whether the lane refusal err (the refused-th
+// before it in a row, the first at since) ends the chat's bound: the
+// chatMaxLaneRefusals-th refusal — or, for a busy lane while marks hold a
+// typed-but-unanswered turn, the first refusal chatMaxBusyWait after since.
+func (r *ChatRunner) laneRefusalsExhausted(err error, marks ChatMarks, refused int, since time.Time) bool {
+	if errors.Is(err, ErrChatLaneBusy) && marks.Seen > marks.Answered {
+		return !since.IsZero() && r.now().Sub(since) >= chatMaxBusyWait
+	}
+	return refused+1 >= chatMaxLaneRefusals
 }
 
 // giveUp answers member seq inReplyTo of chat with text — why the officer

@@ -1126,8 +1126,11 @@ chats. When that instance has no free lane, the item is **left unclaimed** for
 a later pass; when `ccd` refuses the turn anyway (`503 capacity`, `503
 not_ready`, `409 busy` — nothing typed), the item is released and retried on a
 later pass — up to 15 refusals in a row, after which the member is answered
-"(The officer can't reply right now: its chat session refused 15 tries in a
-row (busy or not ready). Ask again later.)". The least recently used idle
+"(The officer can't reply right now: its chat session refused N tries in a
+row (busy or not ready). Ask again later.)". A `409 busy` while the chat owes
+an answer to a turn its lane was given is that turn still running, so it is
+waited for up to 75 minutes from the first refusal (past `ccd`'s and muster's
+turn deadlines), not counted. The least recently used idle
 lane is stopped when another needs its slot, and resumed from its transcript
 on its next turn. With `tiers`, chats run in the **judgement** pool only.
 When every lane of every up instance is busy, muster starts another instance

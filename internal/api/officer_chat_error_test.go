@@ -34,6 +34,9 @@ func TestAChatTurnsRateLimitIsNotABusyLane(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, unsent := chatTurnError(c.err)
+			if busy := c.name == "409 busy"; errors.Is(got, officers.ErrChatLaneBusy) != busy {
+				t.Fatalf("chatTurnError(%v) = %v; want ErrChatLaneBusy %v (only a 409 busy is a turn in the lane)", c.err, got, busy)
+			}
 			if unsent != c.unsent || errors.Is(got, officers.ErrChatLaneUnavailable) != c.unavailable ||
 				errors.Is(got, officers.ErrChatLaneBroken) != c.broken || errors.Is(got, officers.ErrChatRateLimited) != c.rlm {
 				t.Fatalf("chatTurnError(%v) = %v (unsent %v); want unsent %v, unavailable %v, broken %v, rate-limited %v",
