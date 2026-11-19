@@ -675,6 +675,18 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	}
 	esc := html.EscapeString
 	now := s.now()
+	ctx := r.Context()
+	// A team's pages (0160) are in the list beside the person's own, each
+	// marked with its team's name.
+	var teamIDs []int64
+	seen := map[int64]bool{}
+	for _, p := range list {
+		if memberOnTeamPage(ctx, p.Page) && !seen[p.OwnerID] {
+			seen[p.OwnerID] = true
+			teamIDs = append(teamIDs, p.OwnerID)
+		}
+	}
+	teams := s.teamNames(ctx, teamIDs)
 	how := "An agent asks you before a link goes live (you can let your agents share without asking, on <a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
 	if s.pageAgentShareOn(r.Context(), requestOwner(r.Context())) {
 		how = "You let your agents share without asking: an agent's link goes live at once; you are told, and can revoke it (<a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
@@ -682,7 +694,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="pages-page">
 <h1 class="text-balance text-base font-semibold text-fg">Pages</h1>
-<p class="text-sm text-fg2">Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. ` + how + ` Share gives you the page's link to send.</p>
+<p class="text-sm text-fg2">Pages your agents made. Only you can see a page until you share it; then anyone with its link can open it, without signing in. ` + how + ` Share gives you the page's link to send.` + teamPagesLead(len(teamIDs) > 0) + `</p>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<ul class="flex flex-col gap-2" data-testid="pages">
@@ -692,12 +704,17 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	}
 	for _, p := range list {
 		id := strconv.FormatInt(p.ID, 10)
+		team := ""
+		if memberOnTeamPage(ctx, p.Page) {
+			team = `<span class="text-xs font-semibold text-fg" data-page-team="` + strconv.FormatInt(p.OwnerID, 10) + `">` + esc(teamPageLabel(teams[p.OwnerID])) + `</span>
+`
+		}
 		b.WriteString(`<li class="` + flowsCardClass + `" data-page-id="` + id + `">
 <a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(textplain.Title(p.Title)) + `</a>
-<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
+` + team + `<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
 			` · ` + pageLinksWords(p.LiveLinks, p.Pending) + ` · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
 			pageCount(p.Responses, "response", "responses") + `</span> · ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `</span>
-<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID]) + `</div>
+<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID], pageManageable(ctx, p.Page)) + `</div>
 </li>
 `)
 	}
@@ -709,16 +726,34 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 }
 
 // pageShareControls is a page's Share button and ⋯ menu (ui/page_card.go),
-// carrying its live reusable link's address when it has one (l).
-func (s *Server) pageShareControls(id int64, title string, l pages.Link) string {
+// carrying its live reusable link's address when it has one (l). The menu
+// (New link, Revoke link) is drawn only for a reader who may manage the page
+// (manage: pages.MayManage); Share is every reader's.
+func (s *Server) pageShareControls(id int64, title string, l pages.Link, manage bool) string {
 	url := ""
 	if l.Token != "" {
 		url = s.pageLinkURL(l)
 	}
 	var b strings.Builder
 	_ = ui.PageShareButton(id, title, url, s.ext.Pages.LinksReusable()).Render(&b)
-	_ = ui.PageShareMenu(id, title, false).Render(&b)
+	if manage {
+		_ = ui.PageShareMenu(id, title, false).Render(&b)
+	}
 	return b.String()
+}
+
+// teamPageLabel is a team page's mark in the list and on its screen, in
+// plain words: "Team: <name>".
+func teamPageLabel(team string) string { return "Team: " + team }
+
+// teamPagesLead is the list's sentence about a team's pages, when it shows
+// any.
+func teamPagesLead(any bool) string {
+	if !any {
+		return ""
+	}
+	return " Pages your teams' agents made are seen by everyone on that team: anyone on it can open one, answer it and share it; " +
+		"only the person who started the agent that made it can delete it or change it."
 }
 
 func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
@@ -773,12 +808,25 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	// Setup details (the setting that turns reusable links on, a response's
 	// stored form) are an admin's (ui.Features.Setup's predicate).
 	admin := authz.IsAdmin(ctx)
+	// A team's page, read by a member (0160): marked with its team, and its
+	// managing controls drawn only for the one who may manage it.
+	manage := pageManageable(ctx, p)
+	teamNote := ""
+	if memberOnTeamPage(ctx, p) {
+		team := s.teamNames(ctx, []int64{p.OwnerID})[p.OwnerID]
+		teamNote = `<p class="text-sm text-fg2" data-page-team="` + strconv.FormatInt(p.OwnerID, 10) + `"><span class="font-semibold text-fg">` + esc(teamPageLabel(team)) +
+			`.</span> Everyone on the team sees this page, can answer it and can share it.`
+		if !manage {
+			teamNote += ` Only the person who started the agent that made it can delete it, change its version or revoke its links.`
+		}
+		teamNote += "</p>\n"
+	}
 	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
 <h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
 <p class="text-sm text-fg2">` + pageMadeBy(esc(pageMakerName(p.Creator.Label, p.Creator.MirrorHost)), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
-`)
+` + teamNote)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
 		b.WriteString(`<p class="text-sm text-fg" role="status" data-page-notice>` + esc(notice) + `</p>`)
@@ -821,7 +869,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 			ui.InfoSheetHTML(pageShareSetupSheet(admin)) + `</div>
 `)
 	}
-	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur))
+	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur, manage))
 	// With a link key: Copy link (shown by the page script only where the
 	// browser has a share sheet — elsewhere Share itself copies) and the
 	// link's ⓘ, drawn hidden while the page has no link so the script can
@@ -851,7 +899,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 <span class="text-xs text-fg2" data-link-made>` + ui.PlainWhenHTML("Made ", l.CreatedAt, now) + `</span>
 </div>` + ui.InfoSheetHTML(pageLinkDetailSheet(l)) + `</div>
 `)
-		if l.State == pages.LinkLive || l.State == pages.LinkPending {
+		if manage && (l.State == pages.LinkLive || l.State == pages.LinkPending) {
 			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + flowsQuietButton + `" data-link-revoke>Revoke</button></form>
 `)
 		}
@@ -874,7 +922,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 			ui.InfoSheetHTML(pageVersionDetailSheet(v)) + `</div>
 <a href="` + pageViewPath(id) + `?v=` + vn + `" class="text-sm text-accent underline" data-version-view>View</a>
 `)
-		if v.Version != p.CurrentVersion {
+		if manage && v.Version != p.CurrentVersion {
 			b.WriteString(`<form method="POST" action="` + base + `/rollback"><input type="hidden" name="version" value="` + vn + `"><button type="submit" class="` + flowsQuietButton + `" data-version-current>Show this version</button></form>
 `)
 		}
@@ -893,9 +941,10 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	// Each response is drawn from ITS version's blocks (the form it was
 	// sent through), read once per version.
 	blocksOf := s.pageResponseBlocks(ctx, id, resps)
+	byName := s.pageResponderNames(ctx, resps)
 	for _, x := range resps {
 		blocks, read := blocksOf[x.Version]
-		b.WriteString(pageResponseHTML(x, blocks, read, now, admin))
+		b.WriteString(pageResponseHTML(x, blocks, read, now, admin, byName[x.ResponderUser]))
 	}
 	b.WriteString(`</ul>
 `)
@@ -910,10 +959,13 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		b.WriteString(`</div>
 `)
 	}
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Delete</h2>
+	if manage {
+		b.WriteString(`<h2 class="text-sm font-semibold text-fg">Delete</h2>
 <p class="text-sm text-fg2">Deletes the page, every version, link and response, and every file sent through it. It cannot be undone.</p>
 <form method="POST" action="` + base + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-page-delete>Delete this page</button></form>
-<a href="` + pagesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
+`)
+	}
+	b.WriteString(`<a href="` + pagesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
 </section>`)
 	// secret: it shows each live share link, a bearer capability, so it
 	// loads no telemetry (ui.NavDocumentView.Secret).
@@ -1120,7 +1172,11 @@ func orJSONNull(raw []byte) []byte {
 //
 // read is false when its version could not be read now (pageResponseBlocks):
 // it is then drawn from its data alone, under a plain "A response" / "A file".
-func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now time.Time, admin bool) string {
+//
+// by is the sender's name for an owner-view response someone OTHER than the
+// reader sent (a team member's, on a team's page: pageResponderNames); ""
+// draws it as the reader's own ("Sent by you").
+func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now time.Time, admin bool, by string) string {
 	esc := html.EscapeString
 	rid := strconv.FormatInt(x.ID, 10)
 	var a pages.Answer
@@ -1141,6 +1197,10 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now tim
 	when := ui.PlainWhenHTML("Sent ", x.CreatedAt, now)
 	if x.ByOwner {
 		when = `<span data-response-by="you">` + ui.PlainWhenHTML("Sent by you ", x.CreatedAt, now) + `</span>`
+		if by != "" {
+			when = `<span data-response-by="member" data-response-by-user="` + strconv.FormatInt(x.ResponderUser, 10) + `">` +
+				ui.PlainWhenHTML("Sent by "+textplain.Title(by)+" ", x.CreatedAt, now) + `</span>`
+		}
 	}
 	b.WriteString(`<li class="` + flowsCardClass + `" data-response-id="` + rid + `" data-response-kind="` + string(x.Kind) + `"` + pageResponseByAttr(x) + `>
 <div class="flex items-start gap-2"><div class="flex min-w-0 flex-1 flex-col gap-1">
@@ -1167,6 +1227,23 @@ func pageResponseHTML(x pages.Response, blocks []pages.Block, read bool, now tim
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// pageResponderNames names each owner-view response's sender in resps who is
+// NOT the reader (a team member's response on a team's page), by user id; the
+// reader's own and a link's are absent (drawn "you" and "Sent").
+func (s *Server) pageResponderNames(ctx context.Context, resps []pages.Response) map[int64]string {
+	me := requestOwner(ctx)
+	out := map[int64]string{}
+	for _, x := range resps {
+		if !x.ByOwner || x.ResponderUser <= 0 || x.ResponderUser == me {
+			continue
+		}
+		if _, ok := out[x.ResponderUser]; !ok {
+			out[x.ResponderUser] = s.personName(ctx, x.ResponderUser)
+		}
+	}
+	return out
 }
 
 // pageSessionLink is where the session that made page p is NOW, for the

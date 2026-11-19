@@ -109,12 +109,18 @@ func (s *Server) handlePageShare(w http.ResponseWriter, r *http.Request) {
 		s.pageShareStoreFail(w, r, id, "made", err)
 		return
 	}
+	// Who tapped: "you" on the caller's own page; on a team's page the
+	// member, by name — every other member reads the link's row too.
+	by := "you"
+	if memberOnTeamPage(ctx, p) {
+		by = s.personName(ctx, requestOwner(ctx))
+	}
 	var l pages.Link
 	created := true
 	if s.ext.Pages.LinksReusable() {
-		l, created, err = s.ext.Pages.ShareLink(ctx, id, "you", false)
+		l, created, err = s.ext.Pages.ShareLink(ctx, id, by, false)
 	} else {
-		l, err = s.ext.Pages.CreateLink(ctx, id, pages.LinkLive, "you", false)
+		l, err = s.ext.Pages.CreateLink(ctx, id, pages.LinkLive, by, false)
 	}
 	if err != nil {
 		s.pageShareStoreFail(w, r, id, "made", err)
@@ -209,7 +215,7 @@ func (s *Server) pageCardView(ctx context.Context, ref ui.PageToolRef) (ui.PageC
 		return ui.PageCardView{}, false
 	}
 	v := ui.PageCardView{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Kind: ui.PageCardKind(ref.Tool, ref.Status),
-		Reusable: s.ext.Pages.LinksReusable()}
+		Reusable: s.ext.Pages.LinksReusable(), NoManage: !pageManageable(ctx, p)}
 	if ref.Version > 0 {
 		v.Version = ref.Version
 	}

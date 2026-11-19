@@ -125,6 +125,10 @@ type PageCardView struct {
 	// the Share button may fetch it before the click (pageShareJS); without
 	// one every fetch would mint a new link, so it waits for the tap.
 	Reusable bool
+	// NoManage: the reader may not manage the page (a team's page, read by
+	// a member who is not its creator: pages.MayManage), so the card draws
+	// no ⋯ menu (New link, Revoke link). Share stays: any member shares.
+	NoManage bool
 }
 
 // pageToolBase is a tool name's page tool — MUSTER's own only: bare (a
@@ -337,7 +341,7 @@ func PageCard(v PageCardView, id string) g.Node {
 			A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
 			PageShareButton(v.ID, v.Title, "", v.Reusable),
-			PageShareMenu(v.ID, v.Title, true)),
+			g.If(!v.NoManage, PageShareMenu(v.ID, v.Title, true))),
 	)
 }
 

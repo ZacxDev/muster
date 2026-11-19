@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
@@ -68,7 +69,7 @@ func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string
 	if err != nil {
 		return nil
 	}
-	if src.ViaSession() || !attention.IsOwnerDoor(ctx, a.Owner) {
+	if src.ViaSession() || !(attention.IsOwnerDoor(ctx, a.Owner) || teamMemberCardDoor(ctx, a.Owner)) {
 		return errReleaseRefused(pageShareNotOwnersDoor)
 	}
 	if l.State != pages.LinkPending {
@@ -96,6 +97,29 @@ func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string
 	metrics.PageShareDecisions.WithLabelValues(decision).Inc()
 	s.logger.Printf("pages: link %d of page %d %s by its owner", l.ID, l.PageID, decision)
 	return nil
+}
+
+// teamMemberCardDoor reports whether ctx is a PERSON answering a TEAM's page
+// share card (a team agent's page_share_request, owner team) from their own
+// door — a signed-in browser or their paired phone, the doors that carry
+// their memberships (authz.Principal.TeamScope) — as an operator or a
+// manager of that team. A team agent's link goes live only on such a tap: no
+// person is the team, so the team's own door (attention.IsOwnerDoor) is never
+// a person's. An operator, not a viewer: the answer is recorded on the
+// team's card, which a viewer may not write (0127: attention_asks at
+// operator), and the link is decided BEFORE the answer is recorded — a
+// viewer's tap would make it live and then fail to record. A viewer shares
+// with the page's own Share button instead.
+func teamMemberCardDoor(ctx context.Context, team int64) bool {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.Team || team <= 0 || p.UserID == team {
+		return false
+	}
+	if p.Via != authz.ViaSession && p.Via != authz.ViaDevice {
+		return false
+	}
+	role, in := p.TeamScope().RoleIn(team)
+	return in && role.AtLeast(authz.TeamOperator)
 }
 
 // pageShareQuestion is the card's question: which page, by its title, in
