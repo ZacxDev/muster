@@ -129,7 +129,8 @@ func pageToolDefs() []agents.ToolDef {
 			}, "title", "blocks")},
 		{Type: "function", Name: pageUpdateTool,
 			Description: "Publish a new version of one of your pages. Its links keep working and show the new version; earlier versions are " +
-				"kept, and your owner can switch back to one.",
+				"kept, and your owner can switch back to one. Your owner is notified of each new version (at most " + strconv.Itoa(notifySenderBurst) +
+				" such notifications per " + strconv.Itoa(int(notifySenderWindow/time.Minute)) + " minutes from you; each replaces the last), so publish when a version is worth a look.",
 			Parameters: objSchema(map[string]any{
 				"page_id": id,
 				"title":   strProp("The new title (the current one when omitted)."),
@@ -196,7 +197,7 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 	case pageCreateTool:
 		return s.toolPageCreate(ctx, creator, arguments), true
 	case pageUpdateTool:
-		return s.toolPageUpdate(ctx, creator, arguments), true
+		return s.toolPageUpdate(ctx, c, creator, arguments), true
 	case pageGetTool:
 		return s.toolPageGet(ctx, creator, arguments), true
 	case pageListTool:
@@ -289,15 +290,15 @@ func (s *Server) pageNext(ctx context.Context, p pages.Page) string {
 // pagePublished tells the owner an agent published a NEW page: one push,
 // "Page ready: <title>", opening the owner's own view of it.
 //
-// 🔴 ONLY ON page_create, NOT ON EVERY page_update: an agent iterating on a
-// page publishes many versions in a few minutes, and the owner already has
-// the page (its card in the chat shows each version). The push is the
-// owner's page_published toggle, so a muted owner gets none.
+// A new VERSION is pushed too, by pageUpdated (notify_owner.go): under its
+// own toggle (page_updated) and the sender's own cap, so an agent iterating
+// on a page cannot flood. This push is the owner's page_published toggle, so
+// a muted owner gets none (and the drop is logged: goNotify).
 func (s *Server) pagePublished(p pages.Page) {
 	s.pushTask(p.OwnerID, push.EventPagePublished, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page ready: " + truncate(p.Title, 80),
-		Body:  "From " + truncate(p.Creator.Label, 60) + ". Tap to open it.",
+		Body:  "From " + pageCreatorLine(p.Creator) + ". Tap to open it.",
 		Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-ready",
 		Data:  map[string]string{"url": ui.PageViewPath(p.ID)},
 	})
@@ -320,7 +321,7 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 		"next": s.pageNext(ctx, p)})
 }
 
-func (s *Server) toolPageUpdate(ctx context.Context, c pages.Creator, arguments string) string {
+func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.Creator, arguments string) string {
 	id, title, blocks, size, bad := pageInput(arguments, false)
 	if bad != "" {
 		return bad
@@ -342,6 +343,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, c pages.Creator, arguments 
 		}
 		return pageToolRefusal("updated", id, err)
 	}
+	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator})
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
 }

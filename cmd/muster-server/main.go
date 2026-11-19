@@ -397,6 +397,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// /api/device/*, and Account → Devices.
 		ext.Devices = devices.NewPG(pool)
 		ext.AllowPINKeys = cfg.AndroidAllowPINKeys
+		ext.NotifyLinkHosts = cfg.notifyLinkHosts()
 		// Browser flows (migration 0012): the owner-scoped job queue and the
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
@@ -1909,10 +1910,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		} else {
 			l.Printf("web push: %s is unset, so only the browser push services are accepted", envPushExtraHosts)
 		}
+		if hosts := a.cfg.notifyLinkHosts(); len(hosts) > 0 {
+			l.Printf("web push: an agent's notify_owner link may open a muster path or https on %d host(s) of %s, by exact name: %s",
+				len(hosts), envNotifyLinkHosts, strings.Join(hosts, ", "))
+		} else {
+			l.Printf("web push: %s is unset, so an agent's notify_owner link may open a muster path only", envNotifyLinkHosts)
+		}
 	} else {
 		l.Printf("web push: OFF — %s/%s/%s are unset (or there is no database), so no Enable button is drawn, "+
-			"%s answers 503 and nothing is sent (%s is not read). Mint a keypair with `muster-server vapid generate`",
-			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key", envPushExtraHosts)
+			"%s answers 503 and nothing is sent (%s and %s are not read; no agent is offered notify_owner). Mint a keypair with `muster-server vapid generate`",
+			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key", envPushExtraHosts, envNotifyLinkHosts)
 	}
 
 	// The Android app's pairing policy, in both directions: whether a phone with
