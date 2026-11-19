@@ -1187,8 +1187,12 @@ fixed for the session's life:
 
 Open one from the chief panel: its thread list has a **New session** picker.
 Each thread names its runtime and model. The route underneath is
-`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A session's
-runtime and model never change; open a new session to use another.
+`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A side
+chat can be opened on a model from the chat strip's **+** too
+([Primary and side chats](#primary-and-side-chats)): its route,
+`POST /agents/{id}/sessions/side`, takes an optional `model` field, checked the
+same way. A session's runtime and model never change; open a new session to use
+another.
 
 A turn for a `claude-code` session runs in a CLI of its own (tmux session
 `cc-<id>`, started with the session's `--model`); a turn for a session with no
@@ -1267,6 +1271,17 @@ transcript in the chief panel. There is no sheet or dialog for them:
   newest side chat is still empty, **+** takes you back to that one instead
   of opening a second (a double tap opens one chat), and still puts the cursor
   in its box.
+- **Pick a model from +.** Where the deployment offers the Claude Code session
+  runtime to a claude-code chief (`MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`,
+  [the runtime picker](#sessions-on-more-than-one-runtime)), **+** opens a
+  small menu instead: **Default** (the chief's own model, what **+** opens
+  everywhere else), **Opus**, **Sonnet** and **Haiku**. Picking one opens the
+  side chat on that model and puts the cursor in its message box. A chat's
+  model is fixed once it is made, and its chip shows the model as a small tag
+  (for example `sonnet`); a chat on the chief's own model has none. The empty
+  newest side chat is reused only when it is on the model you picked. Without
+  that setting, **+** opens a chat at once as before, and the route refuses a
+  model (`400`) rather than open a chat on one you did not get.
 - **Archived (n)** is the last chip. Tap it to show the archived chats' chips
   in the strip, and again to hide them. The chat you are on is never hidden
   there.
@@ -1279,7 +1294,7 @@ you stay on the grid.
 
 | on | action | where | what it does |
 |---|---|---|---|
-| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty) |
+| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty); with the runtime picker offered, first a menu of Default, Opus, Sonnet and Haiku |
 | the primary | **Fresh primary** | the primary chip's ⋯ | after a confirm, starts a new primary chat (below) |
 | a side chat | **Make primary** | its chip's ⋯ | makes it the primary (you stay on the chat you are on) |
 | a side chat | **Archive** | its chip's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |

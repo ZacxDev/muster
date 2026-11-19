@@ -67,6 +67,12 @@ type ChiefChatBar struct {
 	// no ⋯; the chips switch, and that is all. (The chief PANEL never opens a
 	// team's chief: it is the viewer's own, chiefAgent.)
 	SharedRoom bool
+	// NewChatModels are the models the "+" menu offers a new side chat on,
+	// after its Default (the chief's own model): agents.ClaudeCodeModels, the
+	// list the New session picker offers too, where the deployment offers the
+	// claude-code session runtime to this chief (MUSTER_CHIEF_SESSION_RUNTIMES,
+	// internal/api chiefChatBarFor). None: no menu, "+" opens a chat at once.
+	NewChatModels []string
 }
 
 // The chats' data attributes: what both test tiers read.
@@ -91,9 +97,15 @@ const (
 	chiefArchiveAttr      = "data-chief-archive"
 	chiefUnarchiveAttr    = "data-chief-unarchive"
 	chiefUnreadAttr       = "data-chief-unread"
-	chiefContextID        = "chief-context"
-	chiefContextChipID    = "chief-context-chip"
-	chiefContextPopID     = "chief-context-detail"
+	// chiefNewChatMenuAttr marks the "+" menu; chiefNewChatModelAttr each of its
+	// entries, valued with the model it opens a chat on ("" for Default).
+	chiefNewChatMenuAttr  = "data-chief-new-chat-menu"
+	chiefNewChatModelAttr = "data-chief-new-chat-model"
+	// chiefChipModelAttr marks a chip's model tag, valued with the model.
+	chiefChipModelAttr = "data-chief-chip-model"
+	chiefContextID     = "chief-context"
+	chiefContextChipID = "chief-context-chip"
+	chiefContextPopID  = "chief-context-detail"
 )
 
 // The kinds data-chief-chat-kind names, and what each is called.
@@ -248,7 +260,7 @@ func chiefChatStrip(b *ChiefChatBar, name string, sessions []SessionView, surfac
 			Class("flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
 			g.Group(chips),
 		),
-		g.If(!b.SharedRoom, chiefNewChatChip(b.AgentID, surface)),
+		g.If(!b.SharedRoom, chiefNewChatChip(b, surface)),
 		chiefChipsScript(),
 		// The ⋯ menus are placed by floatingMenuScript: the chief page carries
 		// it already; the shell the panel lives in does not (it is bound once
@@ -294,6 +306,7 @@ func chiefChip(name string, b *ChiefChatBar, sess SessionView, surface ChatSurfa
 	inner := g.Group{
 		g.If(kind == ChiefChatKindPrimary, Span(g.Attr(sessionDefaultAttr, ""), g.Attr("aria-hidden", "true"), Class("shrink-0 text-accent"), g.Text("★"))),
 		Span(Class("min-w-0 truncate"), g.Text(label)),
+		chiefChipModelTag(sess),
 		g.If(sess.Unread, Span(
 			g.Attr(chiefUnreadAttr, ""),
 			g.Attr("role", "img"),
@@ -393,36 +406,112 @@ func chiefChipMenu(b *ChiefChatBar, sess SessionView, kind, label string, surfac
 			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>`),
 		),
-		Div(
-			ID(id),
-			g.Attr(chiefChatMenuAttr, ""),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "menu"),
-			g.Attr("aria-label", name),
-			g.Attr("data-floating-menu", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
-			g.Group(items),
-		),
+		chiefPopoverMenu(id, chiefChatMenuAttr, name, items),
 	}
 }
 
+// chiefPopoverMenu is the strip's popover menu (a chip's ⋯, the "+" menu): in
+// the top layer, placed beside its popovertarget by floatingMenuScript, closed
+// by Escape and a tap outside (the browser's). attr marks it.
+func chiefPopoverMenu(id, attr, name string, items []g.Node) g.Node {
+	return Div(
+		ID(id),
+		g.Attr(attr, ""),
+		g.Attr("popover", "auto"),
+		g.Attr("role", "menu"),
+		g.Attr("aria-label", name),
+		g.Attr("data-floating-menu", ""),
+		Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+		g.Group(items),
+	)
+}
+
+// chiefChipModelTag is a chip's model tag ("sonnet"): the model a side chat was
+// opened on from the "+" menu, fixed for its life. Nothing for a chat on the
+// chief's own model (Model "", the "+" menu's Default and every chat made
+// before the menu). Compact, so it barely widens the chip.
+func chiefChipModelTag(sess SessionView) g.Node {
+	if sess.Model == "" {
+		return nil
+	}
+	return Span(
+		g.Attr(chiefChipModelAttr, sess.Model),
+		g.Attr("title", "Model: "+sess.Model),
+		Class("max-w-[5.5rem] shrink-0 truncate rounded px-1 text-[10px] font-medium leading-4 text-muted ring-1 ring-inset ring-line"),
+		g.Text(sess.Model),
+	)
+}
+
 // chiefNewChatChip is the strip's "+": a new side chat (or the newest one,
-// reused while it is still empty: internal/api openSideChat). Its answer moves
-// the view to that chat, with the cursor in its message box (the route's
-// answer asks for it: ComposerFocusParam).
-func chiefNewChatChip(agentID int64, surface ChatSurface) g.Node {
-	return Form(
-		chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(agentID))),
-		Class("contents"),
+// reused while it is still empty and on the same model: internal/api
+// openSideChat). Its answer moves the view to that chat, with the cursor in its
+// message box (the route's answer asks for it: ComposerFocusParam).
+//
+// 🔴 WHERE A MODEL MAY BE PICKED (b.NewChatModels), "+" OPENS A SMALL MENU, NOT
+// A MODAL (the operator's ask: chief side chats on different models, picked
+// when the chat is made): Default (the chief's own model, what "+" opened
+// before) and each model, each entry posting it as the route's model. A chat's
+// model is fixed once it is made. Elsewhere "+" opens a chat at once, as
+// before.
+func chiefNewChatChip(b *ChiefChatBar, surface ChatSurface) g.Node {
+	post := chiefChatPost(surface, onSurface(surface, ChiefSideChatPath(b.AgentID)))
+	cls := "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	plus := Span(g.Attr("aria-hidden", "true"), g.Text("+"))
+	if len(b.NewChatModels) == 0 {
+		return Form(
+			post,
+			Class("contents"),
+			Button(
+				Type("submit"),
+				g.Attr(chiefSideChatAttr, ""),
+				g.Attr("aria-label", "New side chat"),
+				g.Attr("title", "New side chat"),
+				Class(cls),
+				plus,
+			),
+		)
+	}
+	id := "chief-new-chat-menu"
+	if surface == ChatSurfaceChiefPanel {
+		id = "chief-panel-new-chat-menu"
+	}
+	entry := func(model, label string) g.Node {
+		return Form(
+			post,
+			Class("contents"),
+			g.If(model != "", Input(Type("hidden"), Name("model"), Value(model))),
+			Button(Type("submit"), g.Attr(chiefNewChatModelAttr, model), g.Attr("role", "menuitem"),
+				Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-medium text-fg transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+				g.Text(label)),
+		)
+	}
+	items := []g.Node{entry("", "Default")}
+	for _, m := range b.NewChatModels {
+		items = append(items, entry(m, chiefModelLabel(m)))
+	}
+	return g.Group{
 		Button(
-			Type("submit"),
+			Type("button"),
 			g.Attr(chiefSideChatAttr, ""),
+			g.Attr("popovertarget", id),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("aria-expanded", "false"),
 			g.Attr("aria-label", "New side chat"),
 			g.Attr("title", "New side chat"),
-			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-s1 text-xl leading-none text-fg ring-1 ring-inset ring-line transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
-			Span(g.Attr("aria-hidden", "true"), g.Text("+")),
+			Class(cls),
+			plus,
 		),
-	)
+		chiefPopoverMenu(id, chiefNewChatMenuAttr, "New side chat on", items),
+	}
+}
+
+// chiefModelLabel is a "+" menu entry's label for model: an alias capitalised
+// ("sonnet" → "Sonnet"), any other model as it is.
+func chiefModelLabel(model string) string {
+	if model == "" || strings.ContainsAny(model, "-.[") {
+		return model
+	}
+	return strings.ToUpper(model[:1]) + model[1:]
 }
 
 // ComposerFocusParam is the query parameter (value "1") with which the side
