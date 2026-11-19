@@ -71,6 +71,7 @@ var musterToolLabels = map[string]string{
 	// card; nothing is sent until the owner taps it.
 	"session_instruct":    "Proposed a message to a session",
 	"session_wrap":        "Proposed wrapping up a session",
+	"session_answer":      "Proposed an answer to a session",
 	"work_reassign":       "Proposed moving a task",
 	"fleet_actions_list":  "Looked over its proposals",
 	"focus_search":        "Looked up what sessions are working on",

@@ -71,6 +71,9 @@ type fakeGitHub struct {
 	rawInstallations string
 	// rawApp, when set, is GET /app's body VERBATIM (GitHub's own JSON).
 	rawApp string
+	// ci is GET /repos/<owner>/<name>/commits/<sha>/{status,check-runs}'s
+	// body per "<owner>/<name>/<sha>/<status|check-runs>" (serveCI).
+	ci map[string]string
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
@@ -199,7 +202,53 @@ func (f *fakeGitHub) servePull(w http.ResponseWriter, r *http.Request, rest stri
 	_, _ = io.WriteString(w, p.body)
 }
 
+// serveCI answers GET /repos/<owner>/<name>/commits/<sha>/status and
+// .../check-runs: 404 unless the token was minted with checks AND statuses
+// read for that repository (as a private repository answers), then the
+// scripted body.
+func (f *fakeGitHub) serveCI(w http.ResponseWriter, r *http.Request, rest string) {
+	full, tail, _ := strings.Cut(rest, "/commits/")
+	sha, kind, _ := strings.Cut(tail, "/")
+	f.mu.Lock()
+	granted := false
+	for _, m := range f.mints {
+		if "token "+m.token != r.Header.Get("Authorization") {
+			continue
+		}
+		var body struct {
+			Repositories []string          `json:"repositories"`
+			Permissions  map[string]string `json:"permissions"`
+		}
+		_ = json.Unmarshal([]byte(m.body), &body)
+		_, name, _ := strings.Cut(full, "/")
+		in := false
+		for _, rn := range body.Repositories {
+			in = in || rn == name
+		}
+		granted = in && body.Permissions["checks"] == "read" && body.Permissions["statuses"] == "read"
+	}
+	// A page's own body when scripted ("…/check-runs#3"), else the one body
+	// every page answers.
+	b, ok := f.ci[full+"/"+sha+"/"+kind+"#"+r.URL.Query().Get("page")]
+	if !ok {
+		b, ok = f.ci[full+"/"+sha+"/"+kind]
+	}
+	f.mu.Unlock()
+	if !granted || !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+		return
+	}
+	_, _ = io.WriteString(w, b)
+}
+
 func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/repos/"); ok && r.Method == http.MethodGet && strings.Contains(rest, "/commits/") &&
+		(strings.HasSuffix(rest, "/status") || strings.HasSuffix(rest, "/check-runs")) {
+		w.Header().Set("Content-Type", "application/json")
+		f.serveCI(w, r, rest)
+		return
+	}
 	if rest, ok := strings.CutPrefix(r.URL.Path, "/repos/"); ok && r.Method == http.MethodGet && strings.Contains(rest, "/pulls/") {
 		w.Header().Set("Content-Type", "application/json")
 		f.servePull(w, r, rest)

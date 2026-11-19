@@ -22,8 +22,8 @@ docshots (pinned by TestCIMainRedNeedsWhatPublishGateNeeds):
 The issue is assigned to --assignee (the repository owner): GitHub notifies an
 assignee whether or not they watch the repository.
 
-🔴 THE NEWEST FINISHED VERDICT DECIDES. Runs finish out of order, and with every
-`main` push now running in full a run usually finishes AFTER a newer push. The
+🔴 THE NEWEST FINISHED VERDICT DECIDES. Runs finish out of order, and a main run
+usually finishes AFTER a newer push has landed (see ci.yml's concurrency). The
 first rule here was "act only if SHA is still main's head", and that never let a
 green run close the issue during a burst of merges: each green finished behind a
 newer push, so the issue stayed open through an hour of green (#843). Now this

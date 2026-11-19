@@ -101,6 +101,13 @@ func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 		t.Errorf("admin: no install guide link, or told to ask an admin:\n%s", admin)
 	}
 	// The member's: told to ask, and nothing of the setup in the markup.
+	// The sidebar's server-address ⓘ (the person's own browser-kept server
+	// list, not setup) is removed first, as its exact string: any other
+	// sheet still fails below.
+	member, sidebarSheet := WithoutServerAddressSheet(member)
+	if !sidebarSheet {
+		t.Errorf("CONTROL: the member's page has no server-address sheet to set aside")
+	}
 	if !strings.Contains(member, "data-onboarding-ask-admin") || !strings.Contains(member, OnboardingAskAdminText) {
 		t.Errorf("member: not told to ask their admin:\n%s", member)
 	}
