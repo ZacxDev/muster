@@ -513,6 +513,14 @@ func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arg
 	if text, ok := s.dispatchPageTool(ctx, c, name, arguments); ok {
 		return text, true
 	}
+	// notify_owner (notify_owner.go): every agent and every mirrored
+	// session, with muster's own push on; it needs no attention store.
+	if name == notifyOwnerTool {
+		if !s.notifyOwnerOn() {
+			return toolErr("%s: push notifications are not configured on this server (MUSTER_VAPID_*)", notifyOwnerTool), true
+		}
+		return s.toolNotifyOwner(ctx, c, arguments), true
+	}
 	if !s.attentionToolsOn() {
 		return "", false
 	}

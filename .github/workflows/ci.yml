@@ -72,41 +72,40 @@ on:
   # the `test` job (restore no cache) are ready for a nightly that does not
   # count against a release; adding one is the operator's call.
 
-# 🔴 A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR OR ON `main`; A
-# vX.Y.Z TAG RUN IS NEVER CANCELLED OR DROPPED.
+# 🔴 A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR ONLY. EVERY `main`
+# PUSH AND EVERY vX.Y.Z TAG RUN IS NEVER CANCELLED OR DROPPED.
 #
 # PULL REQUESTS: a newer commit on a PR cancels the older run of the SAME PR
 # (group `refs/pull/N/merge`).
 #
-# `main` (operator decision 2026-11-16): a newer push to `main` cancels the
-# older in-progress `main` run (group `refs/heads/main`). Until then every
-# `main` push ran in full in a group of its own, so a burst of merges queued
-# several full suites, each verdict landing after the commit was already
-# history. A cancelled `main` run leaves THAT commit without a verdict — the
-# reason this was once ruled out — and that is now accepted because the
-# release path no longer needs one: the downstream release tool, asked to
-# release a commit whose `main` run was cancelled, waits for the newest `main`
-# run whose head CONTAINS that commit and releases that green descendant
-# instead. A FAILED run still refuses. A shared group also means a newer PENDING run
-# replaces an older pending one (that is GitHub's rule whatever
-# `cancel-in-progress` says): the dropped middle commit of a burst is contained
-# in the run that replaced it, which is the same trade.
+# `main`: every push runs in a group of its own (`run_id`) and is never
+# cancelled. From 2026-11-16 a newer push cancelled the older `main` run, on
+# the premise that the downstream release tool releases the newest GREEN `main`
+# descendant of a commit whose own run was cancelled. Measured over the 60
+# push-to-main runs up to 165951768 (39 h): 38 cancelled, 19 success, 2
+# failure; every one of the 8 pushes after 562a178e5 was cancelled, so `main`
+# had no verdict at all for 3 h+ (the last was 4e8a83c88's) and no green
+# descendant existed to release. Runs were cancelled mid-flight, e.g. one with 14 jobs
+# already green. So `main` goes back to one full run per push, the block
+# this file had before 493314225. The cost is runner time: a `main` run is 28 jobs, ~154
+# job-minutes, against the plan's concurrent-job limit (~20), so a burst of
+# merges queues several full suites and PR runs wait behind them.
 #
 # 🔴 A TAG RUN KEEPS A GROUP OF ITS OWN (`run_id`) AND `cancel-in-progress:
 # false`. It publishes the release images and the GitHub release (`image-*`,
 # `release`); cancelling it part-way could leave a version half-published, and
-# the release tool pushed that tag expecting it to complete. Only a ref equal
-# to `refs/heads/main` or a pull_request event joins a shared group, so a tag —
-# or any trigger added later — can never be cancelled by, or replace, another
-# run. (A `main` run's own `image-*` jobs publish only `:<sha7>`; cancelling one
-# part-way leaves that sha unpublished, never a release version moved, and
-# ghcr-push.sh never overwrites a published tag.)
+# the release tool pushed that tag expecting it to complete. Only a
+# pull_request event joins a shared group, so a tag, a `main` push or any
+# trigger added later can never be cancelled by, or replace, another run.
+# (`cancel-in-progress: false` alone is not enough: a group holds one running
+# and ONE pending run, and a newer pending run replaces an older pending one
+# whatever the flag says.)
 #
-# Pinned as an exact string by TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags
+# Pinned as an exact string by TestCIConcurrencySupersedesPullRequestRunsOnly
 # (internal/modulegate).
 concurrency:
-  group: ci-${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Local: python3 .github/scripts/tag_gate.py decide --repo ZacxDev/muster \
@@ -604,6 +603,12 @@ jobs:
       - name: sw.js stores only scripts whose bytes match their URL
         if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/sw-install.test.mjs
+      # A notification tap never steers a muster tab off muster, and an
+      # agent's external link (notify_owner) opens muster's /notify/open in a
+      # new window (web/static/sw.js sameOriginPath). Node only, < 1 s.
+      - name: sw.js opens only this origin's paths from a notification
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/sw-notify-url.test.mjs
       # The server switcher's list rules (web/static/servers.js): addresses
       # (https only but loopback, no credentials, origin only), dedupe, the
       # cap, labels, the logo path, and that the script makes no request of

@@ -104,6 +104,7 @@ var noStoreLiterals = map[string]string{
 	"handleViewSuccessor":       "the view's succession read (its card and where the successor is): live state",
 	"handleNavAgents":           "the sidebar's agent list",
 	"handleNavWaiting":          "the ☰ button's waiting badge",
+	"handleNotifyOpen":          "a redirect to an agent's link, re-checked against the allowlist on every tap",
 	"handlePreviewButton":       "a session view's Preview button: the window's live preview counts",
 	"handleSessionPages":        "a session view's Pages tab: the viewer's own pages of the window's session",
 	"handleAgentOpenButton":     "an agent page's Open button: the agent's pages, counted now",

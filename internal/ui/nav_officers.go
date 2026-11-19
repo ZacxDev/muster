@@ -74,6 +74,9 @@ type NavOfficer struct {
 	// officers.Officer.OverBudget over Spent, never re-derived here. Only ever
 	// true with Spent known.
 	Held bool
+	// Unread is how many of its "What it did" entries finished since the
+	// viewer last opened its page (0: none, or not known).
+	Unread int
 }
 
 // navOfficerInstance is one officer instance's entry, as the list met it.
@@ -252,6 +255,9 @@ func navOfficerRow(o NavOfficer, instances []navOfficerInstance) g.Node {
 				Span(g.Attr("data-nav-name", ""), Class("truncate"), g.Text(name)),
 				g.If(len(facts) > 0, Span(g.Attr("data-nav-officer-facts", ""), Class(navTmuxLineClass), g.Text(strings.Join(facts, " · ")))),
 			),
+			g.If(o.Unread > 0, Span(g.Attr("data-nav-officer-unread", strconv.Itoa(o.Unread)),
+				g.Attr("title", "New on its page since you last opened it"),
+				Class("shrink-0 rounded-full bg-accent px-1.5 text-[11px] font-semibold tabular-nums text-on-accent"), g.Text(strconv.Itoa(o.Unread)+" new"))),
 			navOfficerSpend(o),
 			g.If(o.Held && o.Spent != nil, Span(g.Attr("data-nav-officer-held", ""),
 				g.Attr("title", "Its daily budget is spent: it is not woken again until the next UTC midnight"),

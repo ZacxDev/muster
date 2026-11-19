@@ -166,6 +166,12 @@ func splitDraftCards(cards []plugins.DraftCard, now time.Time) (pending, archive
 
 // draftListHTML is one view's <li>s, or its empty line.
 func draftListHTML(cards []plugins.DraftCard, empty string) string {
+	return draftListHTMLIn(cards, empty, cardPlace{})
+}
+
+// draftListHTMLIn is draftListHTML drawn in place p: each card is
+// draftCardHTMLIn's, each batch outreachBatchCardHTMLIn's.
+func draftListHTMLIn(cards []plugins.DraftCard, empty string, p cardPlace) string {
 	if len(cards) == 0 {
 		return ui.AsksEmptyHTML(` data-asks-empty="drafts-list" data-drafts-empty`, "", "", empty, "")
 	}
@@ -177,11 +183,11 @@ func draftListHTML(cards []plugins.DraftCard, empty string) string {
 		d := c.Draft
 		if d.Status == plugins.DraftPending && d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Officer != nil {
 			if i, first := at[d.ID]; first {
-				b.WriteString(outreachBatchCardHTML(batches[i]))
+				b.WriteString(outreachBatchCardHTMLIn(batches[i], p))
 			}
 			continue
 		}
-		b.WriteString(draftCardHTML(c))
+		b.WriteString(draftCardHTMLIn(c, time.Now(), p))
 	}
 	return b.String()
 }

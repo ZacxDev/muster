@@ -126,6 +126,12 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   entry knows what runs in the window's active pane: Claude Code, opencode, a
   shell, or the command name (the search finds it by that kind). A host lists up
   to 512 windows and reads them with one tmux call per refresh, every 5 seconds.
+  A Claude Code session's status (busy, idle, waiting) is sent sooner: the host
+  watches Claude Code's `sessions/` directory and refreshes about 50 ms after the
+  CLI rewrites its file, at most once every 250 ms however often it writes. If
+  that directory cannot be watched (it does not exist yet, or the system is out
+  of file watches), the host logs it once and the 5-second refresh carries the
+  status as before.
 - **Where they are listed.** The **sidebar** lists every entry like channels in
   a chat app: your chief first (if you turned one on), then every entry waiting
   on you, then the rest. The **session switcher**, the bar under the message box
@@ -1540,7 +1546,7 @@ anything else stays, logged.
 
 **How a spawned agent says it finished.** A Claude Code agent calls
 `agent_report_done` on the mirror MCP. An opencode agent is not offered it (its
-muster tools are the attention and task tools only:
+muster tools are the attention and task tools and `notify_owner` only:
 [attention.md](attention.md#mirrored-opencode-sessions)), so the host reads it
 instead: for each idle window carrying `@muster-dispatch` and
 running a launcher-bound opencode session, it reads that session's final reply
