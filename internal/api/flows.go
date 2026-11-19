@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -677,7 +678,8 @@ func (s *Server) flowTaskOptions(ctx context.Context) (string, bool) {
 			continue
 		}
 		n++
-		title := strings.TrimSpace(t.Title)
+		// A display, so the one title rule (textplain.Title), then escaped.
+		title := strings.TrimSpace(textplain.Title(t.Title))
 		if title == "" {
 			title = "Untitled task"
 		}

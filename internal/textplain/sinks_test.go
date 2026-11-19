@@ -196,7 +196,10 @@ var apiExempt = map[string]exemption{
 	// The Officers pages (O-C): the schedule presets and capability labels are
 	// fixed UI text; an escalation choice names a person (personLabel) or the
 	// team, as the teams pages do.
-	"officers_pages.go Server.officerSchedules p.Label":    {1, whyStatic},
+	"officers_pages.go Server.officerSchedules p.Label": {1, whyStatic},
+	// Browser flows: a catalogue parameter's plain Label (flows.Param), the
+	// form's field name and the Advanced ⓘ's line; compiled in, never author text.
+	"flows.go Server.writeFlowsSetup p.Label":              {2, whyStatic},
 	"officers_pages.go Server.renderOfficerForm c.Label":   {1, whyStatic},
 	"officers_pages.go Server.renderOfficerForm p.Label":   {1, whyStatic},
 	"officers_pages.go Server.renderOfficerForm who.Label": {1, whyPerson},

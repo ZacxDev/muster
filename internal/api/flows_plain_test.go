@@ -107,7 +107,7 @@ type pickerNotes struct{ notes.Store }
 func (pickerNotes) ListSummaries(context.Context) ([]notes.Note, error) {
 	return []notes.Note{
 		{ID: 41, Title: "Plan the acme launch", Status: notes.StatusOpen},
-		{ID: 43, Title: `Fix <b>&"quotes"`, Status: notes.StatusInProgress},
+		{ID: 43, Title: `Fix x<y>z & "q"`, Status: notes.StatusInProgress},
 		{ID: 42, Title: "Shipped already", Status: notes.StatusComplete},
 	}, nil
 }
@@ -271,7 +271,7 @@ func TestFlowsPageTopLayerIsPlainForAnAdmin(t *testing.T) {
 		t.Fatal("CONTROL: the plain scan does not flag the old runner-token sentence")
 	}
 	for _, s := range top {
-		if s == `Fix <b>&"quotes"` {
+		if s == `Fix x<y>z & "q"` {
 			continue // a task's own title is the user's words, not the page's (its escaping is pinned below)
 		}
 		if j := plainscan.Jargon(s); j != "" {
@@ -292,10 +292,11 @@ func TestFlowsPageTopLayerIsPlainForAnAdmin(t *testing.T) {
 	}
 	// The picker offers the admin's unfinished tasks, by title, and no
 	// finished one.
-	// The markup-shaped title is escaped, never drawn as markup.
+	// The markup-shaped title (which textplain.Title keeps as text) is
+	// escaped, never drawn as markup.
 	if !strings.Contains(page, `<option value="">Nowhere</option><option value="41">Plan the acme launch</option>`+
-		`<option value="43">Fix &lt;b&gt;&amp;&#34;quotes&#34;</option></select>`) {
-		t.Errorf("the task picker is not [Nowhere, Plan the acme launch, Fix <b>&\"quotes\"] escaped: %s",
+		`<option value="43">Fix x&lt;y&gt;z &amp; &#34;q&#34;</option></select>`) {
+		t.Errorf("the task picker is not [Nowhere, Plan the acme launch, Fix x<y>z & \"q\"] escaped: %s",
 			page[strings.Index(page, `name="param_task"`):][:300])
 	}
 }
