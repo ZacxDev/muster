@@ -422,14 +422,14 @@ func featureSheet(f features.Feature, name string, admin bool) ui.InfoSheet {
 	var x strings.Builder
 	x.WriteString(`<p data-feature-description class="text-sm text-fg2">` + e(f.Description) + `</p>`)
 	if f.Reason != "" {
-		x.WriteString(`<p data-feature-reason class="break-words text-sm text-fg">` + e(f.Reason) + `</p>`)
+		x.WriteString(`<p data-feature-reason class="break-words text-sm text-fg">` + e(ui.SentenceStart(f.Reason)) + `</p>`)
 	}
 	if !on && f.Kubernetes {
 		x.WriteString(`<p data-feature-kubernetes class="break-words text-sm text-fg2">` + e(features.KubernetesHint) +
 			`: not available in the Compose stack.</p>`)
 	}
 	if !on && f.Note != "" {
-		x.WriteString(`<p data-feature-note class="break-words text-sm text-fg2">` + e(f.Note) + `.</p>`)
+		x.WriteString(`<p data-feature-note class="break-words text-sm text-fg2">` + e(ui.SentenceStart(f.Note)) + `.</p>`)
 	}
 	if len(f.Settings) > 0 {
 		x.WriteString(`<p data-feature-settings class="break-words text-xs text-muted">Other settings: ` + e(strings.Join(f.Settings, ", ")) + `</p>`)

@@ -298,17 +298,25 @@ for (const size of [
 // SAFE-AREA INSET THE COST IS LARGER: the inset moves to the bar, so the input
 // row drops to pb-2 and keeps none of it — with a 34px inset the conversation
 // loses 53px, not 41 (here, in emulation, the inset is 0).
+//
+// ⚠ BOTH HEADERS ARE 8px TALLER SINCE THE COMPUTER'S NAME HAS ITS OWN LINE
+// (mirrorHostLine, the v0.250.0 phone check's F3): "On <computer>" shared the
+// title's one truncating line and never showed at 390px; it is a 16px line
+// under the title now, which takes the title column past the 44px controls.
+// The Rendered view's header 57 -> 65 (measured in Chromium at 390, on main
+// and on the branch, with the same markup), so the conversation 681 -> 673;
+// the terminal's first row grows the same 8px, 105 -> 113.
 test.describe('phone header', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test('adding the hamburger wraps no header and takes no height from the log or the terminal', async ({ page }) => {
     await bothWindowsListed(page);
     await page.goto(origin + viewOf('@1'));
     await expect(page.locator('#mv-status')).toHaveText('Live');
-    expect((await box(page, 'body > header')).height, 'the Rendered view header is one row').toBeLessThanOrEqual(57);
-    expect((await box(page, '#mv-log')).height, 'the conversation keeps its height').toBeGreaterThanOrEqual(681);
+    expect((await box(page, 'body > header')).height, 'the Rendered view header is one row').toBeLessThanOrEqual(65);
+    expect((await box(page, '#mv-log')).height, 'the conversation keeps its height').toBeGreaterThanOrEqual(673);
     await page.goto(origin + termOf('@1'));
     await expect(page.locator('#term-status')).toHaveText('Connected');
-    expect((await box(page, 'body > header')).height, 'the terminal header wraps no further').toBeLessThanOrEqual(105);
+    expect((await box(page, 'body > header')).height, 'the terminal header wraps no further').toBeLessThanOrEqual(113);
     await expect.poll(() => page.locator('#term .xterm-rows > div').count(), { message: 'the terminal keeps its rows' }).toBeGreaterThanOrEqual(37);
   });
 

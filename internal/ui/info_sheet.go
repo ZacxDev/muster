@@ -2,6 +2,8 @@ package ui
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -80,6 +82,36 @@ type InfoSheet struct {
 	Inline bool
 }
 
+// infoCodeWrap is how a code row wraps: at a space or a hyphen first, and
+// inside a token only when one is wider than the row (overflow-wrap:
+// anywhere). It was break-all, which broke every line at the row's last
+// column, mid-word ("MUSTER_GITHUB_APP_ACCOUNTS=<lo" / "gin:id,…>": the
+// v0.250.0 phone check, F4). word-break stays normal; Copy reads the <code>'s
+// text, which this does not change.
+const infoCodeWrap = "[overflow-wrap:anywhere]"
+
+// SentenceStart is s with its first letter capitalised: every ⓘ sheet's lead
+// is drawn through it, so a sentence assembled from a lower-case fragment
+// ("the VAPID keys are unset": a feature's reason) still starts like one (the
+// v0.250.0 phone check, F4). A first word that is a name is kept as written:
+// muster's own (lower-case wherever it appears, the brand: "muster",
+// "muster's", "muster-mirror"), and an identifier — one that is not all
+// lower-case ("iOS", "MUSTER_X") or holds an underscore ("attention_ask").
+func SentenceStart(s string) string {
+	r, n := utf8.DecodeRuneInString(s)
+	if n == 0 || !unicode.IsLower(r) {
+		return s
+	}
+	word := s
+	if i := strings.IndexFunc(s, func(c rune) bool { return !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '_' && c != '-' }); i >= 0 {
+		word = s[:i]
+	}
+	if word == "muster" || strings.HasPrefix(word, "muster-") || strings.Contains(word, "_") || strings.ToLower(word) != word {
+		return s
+	}
+	return string(unicode.ToUpper(r)) + s[n:]
+}
+
 // InfoSheetWithheldText is what a withheld sheet says instead of its code.
 const InfoSheetWithheldText = "Ask your admin for these details."
 
@@ -129,9 +161,9 @@ func (s InfoSheet) sheet() g.Node {
 		}
 		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(text))
 	case s.Code != "" || s.Live:
-		codeClass, rowClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
+		codeClass, rowClass := "min-w-0 flex-1 "+infoCodeWrap+" font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
 		if s.Multiline {
-			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-fg"
+			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap " + infoCodeWrap + " font-mono text-sm text-fg"
 			rowClass = "flex items-start gap-2 rounded-lg bg-s2 px-3 py-2"
 		}
 		code = Div(
@@ -172,7 +204,7 @@ func (s InfoSheet) sheet() g.Node {
 		),
 		Div(
 			Class("flex min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3"),
-			g.If(s.Lead != "", P(Class("text-sm text-fg2"), g.Text(s.Lead))),
+			g.If(s.Lead != "", P(Class("text-sm text-fg2"), g.Text(SentenceStart(s.Lead)))),
 			code,
 			g.If(!s.Withheld && s.Extra != nil, s.Extra),
 		),

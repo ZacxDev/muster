@@ -1515,20 +1515,22 @@ func terminalDocTitle(v AgentTerminalView) string {
 const TermTitleID = "term-title"
 
 // terminalTitle is a Terminal page's header title: a human name, else the
-// entry's label and qualifier as its card draws them, else the name; then the
-// mirrored badge. extra is a rename's in-place answer's hx-swap-oob
+// entry's label and qualifier as its card draws them, else the name; then, on
+// its own line, the mirrored badge (mirrorHostLine: each line truncates on its
+// own). extra is a rename's in-place answer's hx-swap-oob
 // (TerminalRenamed): the whole heading is swapped, so a name given or cleared
 // draws as a reload would.
 func terminalTitle(v AgentTerminalView, extra ...g.Node) g.Node {
 	raw, title, named := terminalNames(v)
 	return H1(ID(TermTitleID), g.Group(extra), g.Attr("tabindex", "-1"),
-		Class("min-w-0 flex-1 truncate text-sm font-semibold focus:outline-none"),
-		g.If(named, sessionNameTitle(v.SessionName, "")),
-		g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
-		// A mirrored entry: its label (the raw session name its tooltip),
-		// and/or its qualifier — drawn like its card.
-		g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
-		g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon))))
+		Class("min-w-0 flex-1 text-sm font-semibold focus:outline-none"),
+		Span(Class("block truncate"),
+			g.If(named, sessionNameTitle(v.SessionName, "")),
+			g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
+			// A mirrored entry: its label (the raw session name its tooltip),
+			// and/or its qualifier — drawn like its card.
+			g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier))),
+		g.If(v.Badge != "", mirrorHostLine(v.Badge, v.BadgeHost, v.BadgeHostIcon)))
 }
 
 func terminalDocName(title, qualifier string, named bool) string {
