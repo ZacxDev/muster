@@ -1480,13 +1480,30 @@ func (s *Server) removeJobWorktree(ctx context.Context, a agents.Agent, j jobs.J
 // other worktree is an orphan. (A turn the reaper failed may still be running
 // in ccd in its worktree; its output is discarded either way.) It does not
 // change j's outcome.
+//
+// 🔴 AND ONLY WHILE THAT HOLDS, SO IT IS CHECKED, NOT ASSUMED. Two ways j stops
+// reading running while this runner is still alive, each letting another
+// server start the agent's NEXT job, whose worktree and refs a sweep would
+// then delete under it:
+//   - a graceful shutdown: StopJobs, then FailOwnJobs fails j while its turn
+//     unwinds — so a stopping server never sweeps;
+//   - the reaper failing j past its deadline — so j is re-read, and swept for
+//     only while it still reads running. (Between that read and the sweep is a
+//     window of one store round trip; a server ending j inside it is the
+//     shutdown case, already excluded.)
 func (s *Server) sweepJobWorktrees(ctx context.Context, a agents.Agent, j jobs.Job) {
 	h, ok := s.ext.JobWorkspace.(JobWorktreeSweeper)
-	if !ok {
+	if !ok || s.jobsStopping.Load() || s.ext.Jobs == nil {
 		return
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobWorktreeSweepTimeout)
 	defer cancel()
+	if cur, err := s.ext.Jobs.Get(rctx, j.ID); err != nil || cur.Status != jobs.StatusRunning {
+		if err != nil {
+			s.logger.Printf("jobs: %d: not sweeping the job worktrees of %q: the job could not be re-read: %v", j.ID, a.Name, err)
+		}
+		return
+	}
 	gone, err := h.SweepJobWorktrees(rctx, a)
 	if len(gone) > 0 {
 		s.logger.Printf("jobs: %d: swept what earlier jobs of %q left: %s", j.ID, a.Name, strings.Join(gone, "; "))

@@ -195,9 +195,23 @@ func TestAShallowCheckoutsUnshallowFromAMirrorCarriesItsUploadPack(t *testing.T)
 		t.Fatalf("instrument: the script did not reach the default branch's fetch and its refusal: %s", out)
 	}
 	fetches := mirrorFetches(t, log, r.Origin)
-	assertUploadPack(t, fetches, up, 4)
+	if len(fetches) != 4 {
+		t.Fatalf("instrument: the shim saw %d fetch(es) from the mirror, want 4: %q", len(fetches), fetches)
+	}
 	if !slices.Contains(fetches[0], "--unshallow") {
 		t.Fatalf("the first fetch from the mirror is not the unshallow: %q", fetches[0])
+	}
+	// The unshallow's serving side (upload-pack and the pack-objects it starts)
+	// runs in this container too, and git clears the fetch's own -c before
+	// starting a local upload-pack: so the thread limit rides in the
+	// upload-pack command itself, which keeps the mirror's safe.directory.
+	wantUnshallow := "git -c pack.threads=1 " + strings.TrimPrefix(up, "git ")
+	if !strings.HasPrefix(up, "git -c safe.directory=") || !slices.Contains(fetches[0], "--upload-pack="+wantUnshallow) {
+		t.Fatalf("the unshallow's --upload-pack is not %q: %q", wantUnshallow, fetches[0])
+	}
+	assertUploadPack(t, fetches[1:], up, 3)
+	if got := worktreetest.Git(t, r.Checkout, "rev-parse", "--is-shallow-repository"); got != "false" {
+		t.Fatalf("the unshallow through the thread-limited upload-pack did not complete the checkout (%s)", got)
 	}
 }
 

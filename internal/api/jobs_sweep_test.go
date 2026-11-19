@@ -79,3 +79,48 @@ func TestAShaJobSweepsLeftWorktreesWhileItIsRunning(t *testing.T) {
 		t.Fatalf("a job without a sha swept: %q", got)
 	}
 }
+
+// TestNoSweepUnlessTheJobStillRunsAndTheServerIsNotStopping: the sweep is
+// what makes another job's worktree disposable, so it runs only while the
+// sweeping job still reads running AND its server is not stopping. A stopping
+// server (StopJobs, then FailOwnJobs fails its jobs while their turns unwind)
+// and a job the store already ended (the reaper, or that shutdown) let another
+// server start the agent's next job, whose worktree a sweep would delete.
+// The control: the same running job on a server that is not stopping sweeps.
+func TestNoSweepUnlessTheJobStillRunsAndTheServerIsNotStopping(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	j := f.store.putQueued(jobs.Job{AgentID: 1, Agent: "keen-wren", Prompt: "review", SHA: testFullSHA})
+	h := &sweepingWorkspace{jobWorkspace: f.ws, store: f.store, jobID: func() int64 { return j.ID }}
+	f.s.ext.JobWorkspace = h
+	a := agents.Agent{ID: 1, Name: "keen-wren"}
+	ctx := context.Background()
+
+	// Queued, not running: no sweep.
+	f.s.sweepJobWorktrees(ctx, a, j)
+	if got := h.seen(); len(got) != 0 {
+		t.Fatalf("a job that is not running swept: %q", got)
+	}
+	if ok, err := f.store.Start(ctx, j.ID, "", 0); !ok || err != nil {
+		t.Fatalf("start: %v %v", ok, err)
+	}
+	// Running, server stopping: no sweep.
+	f.s.StopJobs()
+	f.s.sweepJobWorktrees(ctx, a, j)
+	if got := h.seen(); len(got) != 0 {
+		t.Fatalf("a stopping server swept: %q", got)
+	}
+	// Control: running, not stopping: one sweep.
+	f.s.jobsStopping.Store(false)
+	f.s.sweepJobWorktrees(ctx, a, j)
+	if got := h.seen(); len(got) != 1 {
+		t.Fatalf("control: a running job on a live server swept %d time(s), want 1: %q", len(got), got)
+	}
+	// Ended by the store (the reaper) while its runner lives: no further sweep.
+	if _, err := f.store.Finish(ctx, j.ID, jobs.Failed(jobs.ReasonInterrupted, "reaped")); err != nil {
+		t.Fatal(err)
+	}
+	f.s.sweepJobWorktrees(ctx, a, j)
+	if got := h.seen(); len(got) != 1 {
+		t.Fatalf("a job the store had ended swept: %q", got)
+	}
+}

@@ -154,6 +154,25 @@ func runJobScripts(a *Adapter, r worktreetest.Repo) {
 // neutralisation, not a plant this git ignores. A vector this git cannot fire
 // at all (its control does not run either) is reported as such and skipped.
 func TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential(t *testing.T) {
+	runPlantTable(t, false)
+}
+
+// TestTheUnshallowRunsNoPlantedCommandAndShowsNoneATurnCredential is the same
+// table on a SHALLOW checkout, so the job's worktree script also runs its
+// one-time `git fetch --unshallow` — which the complete checkout above skips —
+// with each plant in force. The instrument check: at least one row's checkout
+// was actually unshallowed (else the path was never exercised).
+func TestTheUnshallowRunsNoPlantedCommandAndShowsNoneATurnCredential(t *testing.T) {
+	got := runPlantTable(t, true)
+	t.Logf("rows whose checkout the layered run unshallowed: %d of %d", got, len(plantVectors))
+	if got == 0 {
+		t.Fatal("instrument check: no row's checkout was unshallowed, so the unshallow never ran under a plant")
+	}
+}
+
+// runPlantTable runs the plant table, on a shallow checkout when shallow, and
+// returns how many rows' layered runs ended with the checkout complete.
+func runPlantTable(t *testing.T, shallow bool) (unshallowed int) {
 	out, _ := exec.Command("git", "--version").Output()
 	t.Logf("%s", strings.TrimSpace(string(out)))
 	reached := 0
@@ -165,6 +184,9 @@ func TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential(t *testing.T
 				d.env = append(containerEnv(), "HOME="+home)
 				d.unlayered = unlayered
 				r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
+				if shallow {
+					deepenOrigin(t, r, 5, 9)
+				}
 				dump := filepath.Join(t.TempDir(), "plant.env")
 				script := filepath.Join(t.TempDir(), "plant.sh")
 				// cat: a smudge filter must pass its input through; for every other
@@ -174,6 +196,11 @@ func TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential(t *testing.T
 				}
 				v.plant(t, r, home, script)
 				runJobScripts(a, r)
+				if shallow && !unlayered {
+					if o, _ := exec.Command("git", "-C", r.Checkout, "rev-parse", "--is-shallow-repository").Output(); strings.TrimSpace(string(o)) == "false" {
+						unshallowed++
+					}
+				}
 				b, err := os.ReadFile(dump)
 				if err != nil {
 					return false, nil
@@ -206,6 +233,7 @@ func TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential(t *testing.T
 	if reached == 0 {
 		t.Error("instrument check: no vector that runs was observed, so no credential assertion was reached")
 	}
+	return unshallowed
 }
 
 // 🔴 TestATerminalAttachHoldsNoTurnCredential: the terminal exec's process —

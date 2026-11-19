@@ -199,11 +199,26 @@ var gitRunsNoRepoCommands = func() string {
 // as common ground either. Measured: a depth-1 clone gained ~18,500 objects
 // per such pull-request fetch, a complete one 1; one worker held 1,389 packs
 // (161 GiB) this way. The unshallow runs under `timeout` (${10} seconds, a
-// share of the job's own budget: unshallowBudget) and with pack.threads=1. It
-// FAILING — a timeout, the network, no `timeout` binary — changes nothing: the
-// note UnshallowFailedNote goes to stderr and the job proceeds exactly as on a
-// shallow checkout before; the next job tries again. A complete checkout skips
-// it (one rev-parse).
+// share of the job's own budget: unshallowBudget) with pack.threads=1 on BOTH
+// sides: on the fetch's own command line, and — from a mirror, whose
+// upload-pack and pack-objects run in this container too, and to which git
+// does not pass the fetch's -c — inside the --upload-pack command itself
+// ("git -c pack.threads=1 -c safe.directory=… upload-pack"). Measured on a
+// ~700,000-object repository: the serving pack-objects peaked at 25 threads
+// and 710 MiB without it, 1 thread and 312 MiB with it.
+//
+// ITS FAILING — a timeout, the network, no `timeout` binary — never fails the
+// job: UnshallowFailedNote goes to stderr and the job proceeds on the shallow
+// checkout. What a failed attempt costs is then contained:
+//   - the tmp_pack_* / tmp_idx_* / tmp_rev_* files a cut-off transfer leaves in
+//     objects/pack are removed — only those newer than the attempt's start, so
+//     a pack another process had in flight BEFORE it is left (one that another
+//     git started during the attempt is not told apart);
+//   - the failure is counted in UnshallowFailedFile, and the next attempt waits
+//     1 h after one failure, doubling up to 16 h, instead of costing every
+//     later job a third of its deadline; a success removes the count.
+//
+// A complete checkout skips all of it (one rev-parse).
 //
 // 🔴 THE DEPLOY KEY ($7 set). This script never sees the key, and nothing it
 // runs can use it: it runs in the AGENT's container, as the session's uid,
@@ -294,11 +309,41 @@ if [ "$got" != "$url" ] || [ -n "$creds" ]; then
 	echo "` + AnonymousFetchMessage + ` (git would fetch $got)" >&2
 	exit 7
 fi
+gd=
 if [ "$unshallow" -gt 0 ] 2>/dev/null && [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
-	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-		timeout -s TERM "$unshallow" git -c credential.helper= -c http.extraHeader= -c pack.threads=1 \
-		fetch --quiet --no-tags --unshallow ${up:+"--upload-pack=$up"} "$url" ||
-		echo "` + UnshallowFailedNote + `" >&2
+	gd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || gd=
+fi
+if [ -n "$gd" ]; then
+	mark=$gd/` + UnshallowFailedFile + ` n=0 age=0 hold=0
+	if [ -f "$mark" ]; then
+		n=$(head -c 16 "$mark" | tr -cd 0-9)
+		n=${n:-1}
+		k=$n
+		[ "$k" -gt ` + unshallowBackoffDoublings + ` ] && k=` + unshallowBackoffDoublings + `
+		hold=$(( ` + unshallowBackoffBaseSeconds + ` << (k - 1) ))
+		age=$(( $(date +%s) - $(stat -c %Y "$mark") ))
+	fi
+	if [ "$n" -gt 0 ] && [ "$age" -lt "$hold" ]; then
+		echo "` + UnshallowBackoffNote + ` ($n failed attempt(s), the last ${age}s ago; next try after ${hold}s)" >&2
+	else
+		upu=$up
+		case $up in
+		git\ *) upu="git -c pack.threads=1 ${up#git }" ;;
+		esac
+		start=$gd/muster-unshallow-start
+		: > "$start"
+		if GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+			timeout -s TERM "$unshallow" git -c credential.helper= -c http.extraHeader= -c pack.threads=1 \
+			fetch --quiet --no-tags --unshallow ${upu:+"--upload-pack=$upu"} "$url"; then
+			rm -f "$mark"
+		else
+			echo "` + UnshallowFailedNote + `" >&2
+			find "$gd/objects/pack" -maxdepth 1 -type f \( -name 'tmp_pack_*' -o -name 'tmp_idx_*' -o -name 'tmp_rev_*' \) \
+				-newer "$start" -exec rm -f {} + 2>/dev/null
+			echo $((n + 1)) > "$mark"
+		fi
+		rm -f "$start"
+	fi
 fi
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+refs/pull/$pr/head:$ref" ||
@@ -366,6 +411,22 @@ done`
 // UnshallowFailedNote is what the worktree script prints (to stderr) when the
 // one-time unshallow of a shallow checkout failed; the job proceeds.
 const UnshallowFailedNote = "muster: could not unshallow the checkout (git fetch --unshallow failed or ran out of time); the job proceeds on the shallow checkout"
+
+// UnshallowFailedFile is the file in the checkout's git directory counting the
+// unshallow's consecutive failures (its mtime is the last one's time). While it
+// exists the unshallow is skipped for unshallowBackoffBaseSeconds × 2^(n−1)
+// seconds (n capped at unshallowBackoffDoublings + 1: 1 h, 2 h, … 16 h); a
+// success removes it.
+const UnshallowFailedFile = "muster-unshallow-failed"
+
+// UnshallowBackoffNote is what the worktree script prints (to stderr) when it
+// skips the unshallow because the last attempts failed.
+const UnshallowBackoffNote = "muster: not unshallowing the checkout yet: it failed recently"
+
+const (
+	unshallowBackoffBaseSeconds = "3600"
+	unshallowBackoffDoublings   = "5"
+)
 
 // UnshallowMaxBudget bounds the one-time unshallow of a shallow checkout
 // (jobOverlayScript, "THE UNSHALLOW"); unshallowBudget also caps it at a third
