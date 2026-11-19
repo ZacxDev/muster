@@ -490,6 +490,10 @@ export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_M
 export const pluginAutostartPort = port + 450;
 export const pluginAutostartConnectPort = port + 451;
 export const pluginAutostartFakePort = port + 452;
+// tests/officer-needs-you.spec.ts: an officer's page as the place its owner
+// deals with it — its own server with plugins on (+445: clear of the blocks
+// above, of sidebarOfficersPort's +440/+441 and of featuresMember's +442 to +444).
+export const officerNeedsYouPort = port + 445;
 // tests/pages-declutter.spec.ts: the Pages screens, plain — its own server
 // (pages on, a link key, so +456 its connect listener). +455: clear of the
 // blocks above.

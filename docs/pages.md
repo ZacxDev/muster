@@ -29,7 +29,7 @@ Off, no page tool is offered, the Pages screen answers the typed
 
 Offered to every dispatched agent (on its gateway turns and over `POST /mcp`)
 and to every mirrored Claude Code session (`POST /mirror/mcp`). A mirrored
-opencode session is not offered them: its set is the attention and task tools
+opencode session is not offered them: its set is the attention and task tools and `notify_owner`
 ([attention.md](attention.md#mirrored-opencode-sessions)). A tool acts
 only on pages its caller made: a dispatched agent on its own pages, a mirrored
 session on the pages made from its **host** (the host is what the mirror token
@@ -37,8 +37,8 @@ proves). Any other page reads as `no such page`.
 
 | tool | what it does |
 |---|---|
-| `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `url`, [your own view](#the-owners-view) of it, which only you can open, signed in. (`preview_url` is the same address, kept for older callers.) |
-| `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
+| `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `url`, [your own view](#the-owners-view) of it, which only you can open, signed in. (`preview_url` is the same address, kept for older callers.) You are notified: *Page ready: <title>*, under the `page_published` toggle. |
+| `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. You are notified of each version: *Page updated: <title> (v<N>)*, opening that version, under its own toggle `page_updated` — at most 6 per 10 minutes from one agent or session, the newer replacing the older on your device ([push.md](push.md#an-agent-notifies-you)). |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
 | `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
@@ -438,15 +438,21 @@ serves every upload: to the owner, as an attachment (images inline), under a
 ## Notifications
 
 - **Page ready: <title>** when an agent publishes a NEW page (`page_create`),
-  opening your view of it. Not on `page_update`: an agent iterating publishes many
-  versions in minutes, and the card in the chat already shows each.
+  opening your view of it.
+- **Page updated: <title> (v<N>)** when an agent publishes a new VERSION
+  (`page_update`), opening that version (`/pages/{id}/view?v=<N>`). An agent
+  iterating publishes many versions in minutes, so this one is capped: at most
+  6 per 10 minutes from one agent or session, and each replaces the page's last
+  one on your device ([push.md](push.md#an-agent-notifies-you)).
 - **Page shared: <title>** EVERY time an agent hands a page's link on without
   asking (you opted in) — a new link, or the one you had already shared (the
   push says which) — opening the page's screen, where Revoke is.
 
-They are two toggles on Account → Notifications: **An agent published a page
-for you** and **An agent shared one of your pages without asking**. 🔴 The
-second is its own on purpose: it is the one notice that a page went public
+They are three toggles on Account → Notifications: **An agent published a page
+for you**, **An agent published a new version of one of your pages** (its own,
+so you can mute an iterating agent's revisions and still hear of a new page)
+and **An agent shared one of your pages without asking**. 🔴 The
+last is its own on purpose: it is the one notice that a page went public
 with nobody approving it, so muting "a page is ready" must never also mute it.
 It is on by default, like every notification; muting it is its own, explicit
 choice.
@@ -455,6 +461,15 @@ A response pushes you **A viewer sent something through one of your pages'
 links** (its own toggle on Account → Notifications), naming the page and the
 part by its label (*Through “Your details”*), never what was sent; at most
 one a minute per page.
+
+### If a page's notification did not arrive
+
+Each page notification that reaches nobody is logged where it is dropped:
+`push: dropped tag=page-<id>-ready …` (or `-updated`), with the reason — the
+event muted in Account → Notifications, a cap reached, no device subscribed
+([push.md](push.md#every-dropped-notification-is-logged)). A delivered one
+logs `push: delivered tag=page-<id>-ready owner=<id> to N/M device(s)`, which
+means a push service accepted it, not that the device showed it.
 
 ## Limits
 

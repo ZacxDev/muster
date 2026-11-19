@@ -71,3 +71,43 @@ func TestBuildAppWiresTheExtraHostsIntoThePushStore(t *testing.T) {
 		t.Fatal("the push store does not admit the configured operator host")
 	}
 }
+
+// TestNotifyLinkHostsAreParsedAtBoot: MUSTER_NOTIFY_LINK_HOSTS reaches the
+// server as exact lower-case names, and an entry that is not a bare host name
+// refuses boot, naming the variable — never a silent "no external links".
+func TestNotifyLinkHostsAreParsedAtBoot(t *testing.T) {
+	load := func(v string) (config, error) {
+		c, err := loadConfig(func(k string) string {
+			switch k {
+			case envHookToken:
+				return fixtureHookToken
+			case envDatabase:
+				return "postgres://x/y"
+			case envStandalone:
+				return "1"
+			case envNotifyLinkHosts:
+				return v
+			}
+			return ""
+		})
+		if err != nil {
+			return c, err
+		}
+		return c, c.validate()
+	}
+	c, err := load("Docs.Example.com, status.example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.notifyLinkHosts(), ","); got != "docs.example.com,status.example.org" {
+		t.Fatalf("hosts %q", got)
+	}
+	if c, err := load(""); err != nil || len(c.notifyLinkHosts()) != 0 {
+		t.Fatalf("unset: %v, hosts %v", err, c.notifyLinkHosts())
+	}
+	for _, bad := range []string{"*.example.org", "https://docs.example.com", "docs.example.com:443", "docs.example.com/x", "localhost"} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), envNotifyLinkHosts) {
+			t.Errorf("%q: err = %v; want boot refused, naming %s", bad, err, envNotifyLinkHosts)
+		}
+	}
+}
