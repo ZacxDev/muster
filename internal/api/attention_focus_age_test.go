@@ -58,8 +58,8 @@ func TestTheAsksListShowsAFocusTitlesAge(t *testing.T) {
 	plover, heron, tern := row("k-aaaa"), row("k-bbbb"), row("k-cccc")
 	osprey, gull := row("k-dddd"), row("k-eeee")
 	for _, c := range []struct{ name, row, want string }{
-		{"two days", plover, `<span data-attention-focus>Weighing the plover samples</span><span class="font-normal" data-focus-age title="focus title set 2d ago" aria-label="focus title set 2d ago"> · 2d</span>`},
-		{"five days", heron, `<span data-attention-focus>Charting the heron migration</span><span class="font-normal" data-focus-age title="focus title set 5d ago (stale)" aria-label="focus title set 5d ago (stale)"> · 5d</span>`},
+		{"two days", plover, `<span data-attention-focus>Weighing the plover samples</span><span class="font-normal" data-focus-age title="Summary from 2 days ago" aria-label="Summary from 2 days ago"> · 2d</span>`},
+		{"five days", heron, `<span data-attention-focus>Charting the heron migration</span><span class="font-normal" data-focus-age title="Summary from 5 days ago, out of date" aria-label="Summary from 5 days ago, out of date"> · 5d</span>`},
 		{"five days, stale", heron, `text-fg2 italic opacity-60" data-focus-stale>`},
 		{"fresh", tern, `<span data-attention-focus>Counting the tern nests</span></span>`},
 		{"a notice, five days", osprey, `<span data-attention-focus>Banding the osprey chicks</span><span class="font-normal" data-focus-age`},
@@ -90,7 +90,7 @@ func TestANoticeOnlyListGetsItsFocusAge(t *testing.T) {
 	}}
 	items := []attentionItem{{Key: "k-ffff", Kind: attentionKindNotice, Text: "nudge", Since: now.Add(-time.Minute), Focus: "Banding the osprey chicks", subject: sub}}
 	s.withFocus(context.Background(), items)
-	if page := attentionItemsHTML(items, now); !strings.Contains(page, `aria-label="focus title set 2d ago"> · 2d</span>`) {
+	if page := attentionItemsHTML(items, now); !strings.Contains(page, `aria-label="Summary from 2 days ago"> · 2d</span>`) {
 		t.Errorf("a notice-only list drew no focus age:\n%s", page)
 	}
 }

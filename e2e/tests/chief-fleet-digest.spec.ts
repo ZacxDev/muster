@@ -16,7 +16,7 @@ import { writeFileAtomic } from '../lib/atomic';
 //     open, and stays there when the chat under it changes;
 //   - its groups come from muster's own state of each session: a prompt on
 //     screen and the chief's own open card are Needs you; a stall with its pull
-//     request open is Waiting on CI; one whose pull request merged is Done; a
+//     request open is Waiting on checks; one whose pull request merged is Done; a
 //     stall with none is Stalled; a busy window is Working;
 //   - desktop: a group opens inline; a phone: one row of chips, a chip opens a
 //     bottom sheet;

@@ -297,6 +297,12 @@ When a window's active pane runs Claude Code, its entry opens a **rendered** vie
 by default. Prompts and replies appear as chat bubbles, and each tool call as one
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
+A call to one of muster's own tools is named in plain words ("Made a page",
+"Asked you a question"), here and in the chief's chat; its exact name is in the
+opened row's ⓘ. Something muster routed to the session (a message, a task, a
+request of yours relayed by your chief) is drawn as a **From …** card, not as
+your own bubble; the exact text the session received is in the card's ⓘ. The
+session itself still receives it in full.
 
 A conversation too short to fill the screen sits at the bottom, next to the
 composer. A bubble longer than about 15 lines is shortened, with a **Show more** control.

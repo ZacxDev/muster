@@ -142,7 +142,7 @@ func TestCIUploadsTheVerdictStreamAsTestTimes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"if: ${{ !cancelled() }}",
-		"uses: actions/upload-artifact@v4",
+		"uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2", // SHA-pinned: tests/release_platforms_test.py
 		`path: ${{ runner.temp }}/go-test.json`,
 	} {
 		found := false

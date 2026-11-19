@@ -9,9 +9,22 @@
 # on every pull request with a placeholder version. So what a tag publishes is
 # what a pull request already built — there is no second recipe to drift.
 #
-# Assets (OS x ARCH = linux|darwin x amd64|arm64):
-#   muster-mirror_<os>_<arch>.tar.gz     the per-machine mirror daemon
-#   muster_<os>_<arch>.tar.gz            the CLI
+# Assets (ARCH = amd64|arm64; docs/releases.md lists them for people, and
+# tests/release_platforms_test.py holds that list and `expected` below equal):
+#   muster-mirror_<os>_<arch>.tar.gz     the per-machine mirror daemon (linux, darwin)
+#   muster_<os>_<arch>.tar.gz            the CLI (linux, darwin)
+#   muster_windows_<arch>.zip            the CLI on Windows (muster.exe). NO Windows
+#                                        muster-mirror: it drives tmux, which Windows
+#                                        does not have (under WSL, use the linux build)
+#   muster_linux_<arch>.deb / .rpm       the CLI as a package (/usr/bin/muster)
+#   muster-mirror_linux_<arch>.deb / .rpm  muster-mirror as a package
+#                                        (/usr/bin/muster-mirror; recommends tmux),
+#                                        built by nfpm from deploy/packaging/nfpm.yaml
+#   muster.rb, muster-mirror.rb          Homebrew formulas, and
+#   muster.json                          the Scoop manifest, GENERATED from this
+#                                        release's checksums (scripts/release-manifests.py);
+#                                        attached to the release, not published to a
+#                                        tap or bucket
 #   docker-compose.yml                   deploy/docker-compose.yml, its image default
 #                                        stamped with <version>
 #                                        (scripts/stamp-compose-version.sh): with no
@@ -50,7 +63,18 @@
 # can execute must print the version. A release that uploads "whatever landed
 # in dist/" is a release nobody checked.
 #
-# Needs: go, GNU tar, gzip, sha256sum. Exit 0 ok, 1 a check failed, 2 usage.
+# BINARY_SUMS=<file>: also write the sha256 of every built binary (the files
+# inside the archives and packages) there, one `<sha256>  <dir>` line each,
+# for the release job's provenance attestation of each binary
+# (actions/attest-build-provenance `subject-checksums`).
+#
+# NFPM=<path>: the nfpm binary to use; unset, nfpm $NFPM_VERSION is built with
+# `go install` (Go's checksum database verifies the module).
+#
+# REPO=<owner/name> (default $GITHUB_REPOSITORY, else ZacxDev/muster): the
+# repository the formulas' and the manifest's download URLs name.
+#
+# Needs: go, GNU tar, gzip, sha256sum, python3. Exit 0 ok, 1 a check failed, 2 usage.
 set -euo pipefail
 
 die() { echo "release-build: $1" >&2; exit "${2:-1}"; }
@@ -67,7 +91,7 @@ REV="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
 # Reproducible archive metadata: the commit's own time, not the build's.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)}"
 
-for tool in go tar gzip sha256sum; do
+for tool in go tar gzip sha256sum python3; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is not on PATH" 2
 done
 tar --version 2>/dev/null | grep -q 'GNU tar' || die "GNU tar is required (reproducible --sort/--mtime)" 2
@@ -77,6 +101,10 @@ tar --version 2>/dev/null | grep -q 'GNU tar' || die "GNU tar is required (repro
 [ -f "$ROOT/charts/muster/Chart.yaml" ] || die "charts/muster/Chart.yaml is missing" 2
 [ -f "$ROOT/deploy/install.sh" ] || die "deploy/install.sh is missing" 2
 [ -f "$ROOT/INSTALL.md" ] || die "INSTALL.md is missing" 2
+[ -f "$ROOT/deploy/packaging/nfpm.yaml" ] || die "deploy/packaging/nfpm.yaml is missing" 2
+REPO="${REPO:-${GITHUB_REPOSITORY:-ZacxDev/muster}}"
+# The newest nfpm whose go.mod asks for no newer Go than this repository's.
+NFPM_VERSION=v2.46.0
 
 rm -rf "$DIST"
 mkdir -p "$DIST"
@@ -105,6 +133,64 @@ for os in "${OSES[@]}"; do
   for arch in "${ARCHES[@]}"; do
     build muster-mirror muster-mirror "$os" "$arch" "main.buildRevision=$VERSION"
     build muster muster "$os" "$arch" "main.buildVersion=$VERSION" "main.buildRevision=$REV"
+  done
+done
+
+# The CLI on Windows, as a zip (what Windows opens natively and Scoop installs).
+# python3's zipfile, not `zip`: each entry's time is SOURCE_DATE_EPOCH in UTC
+# and its mode is fixed, so the bytes depend on neither the clock, the time
+# zone nor the umask (`zip` stores local time).
+for arch in "${ARCHES[@]}"; do
+  out="$WORK/muster_windows_${arch}"
+  mkdir -p "$out"
+  echo "build: muster windows/$arch"
+  CGO_ENABLED=0 GOOS=windows GOARCH="$arch" \
+    go -C "$ROOT" build -trimpath -ldflags="-s -w -X main.buildVersion=$VERSION -X main.buildRevision=$REV" -o "$out/muster.exe" ./cmd/muster
+  cp "$ROOT/LICENSE" "$ROOT/README.md" "$out/"
+  python3 - "$DIST/muster_windows_${arch}.zip" "$SOURCE_DATE_EPOCH" "$out" muster.exe LICENSE README.md <<'PY'
+import sys, time, zipfile
+dst, epoch, src, *names = sys.argv[1:]
+stamp = time.gmtime(max(int(epoch), 315532800))[:6]  # a zip's clock starts in 1980
+with zipfile.ZipFile(dst, "w") as z:
+    for n in sorted(names):
+        info = zipfile.ZipInfo(n, date_time=stamp)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 3  # unix: external_attr below is read as a mode
+        info.external_attr = (0o755 if n.endswith(".exe") else 0o644) << 16
+        with open(f"{src}/{n}", "rb") as f:
+            z.writestr(info, f.read(), compresslevel=9)
+PY
+done
+
+# The .deb and .rpm packages (linux), of the binaries built above.
+if [ -n "${NFPM:-}" ]; then
+  [ -x "$NFPM" ] || die "NFPM=$NFPM is not an executable" 2
+else
+  echo "build: nfpm $NFPM_VERSION"
+  GOBIN="$WORK/tools" go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@$NFPM_VERSION" ||
+    die "could not build nfpm $NFPM_VERSION" 2
+  NFPM="$WORK/tools/nfpm"
+fi
+for name in muster muster-mirror; do
+  case "$name" in
+    muster) desc="Command-line client for a muster server" ;;
+    muster-mirror) desc="Shows this machine's tmux sessions in muster" ;;
+  esac
+  for arch in "${ARCHES[@]}"; do
+    cfg="$WORK/nfpm-${name}-${arch}.yaml"
+    sed -e "s#@NAME@#$name#g" -e "s#@ARCH@#$arch#g" -e "s#@VERSION@#$VERSION#g" \
+        -e "s#@BIN@#$WORK/${name}_linux_${arch}/$name#g" -e "s#@LICENSE@#$ROOT/LICENSE#g" \
+        -e "s#@DESCRIPTION@#$desc#g" -e '/^[[:space:]]*#/d' "$ROOT/deploy/packaging/nfpm.yaml" > "$cfg"
+    [ "$name" = muster-mirror ] || sed -i '/# mirror-only$/d' "$cfg"
+    if grep -q '@[A-Z]*@' "$cfg"; then
+      die "deploy/packaging/nfpm.yaml has a placeholder this script does not fill: $(grep -o '@[A-Z]*@' "$cfg" | head -n 1)"
+    fi
+    for fmt in deb rpm; do
+      echo "build: $name linux/$arch .$fmt"
+      SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" "$NFPM" package --config "$cfg" --packager "$fmt" \
+        --target "$DIST/${name}_linux_${arch}.$fmt" >/dev/null ||
+        die "nfpm could not build ${name}_linux_${arch}.$fmt"
+    done
   done
 done
 
@@ -140,8 +226,24 @@ grep -q '^MUSTER_VERSION=$' "$ROOT/deploy/.env.example" ||
   die "deploy/.env.example has no empty 'MUSTER_VERSION=' line to fill in"
 sed "s/^MUSTER_VERSION=\$/MUSTER_VERSION=$VERSION/" "$ROOT/deploy/.env.example" > "$DIST/env.example"
 
+# The Homebrew formulas and the Scoop manifest name the archives by URL and
+# hash, so they are generated from the archives' checksums; checksums.txt then
+# covers them as well.
+(cd "$DIST" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs sha256sum) > "$WORK/pre-checksums.txt"
+python3 "$ROOT/scripts/release-manifests.py" --version "$VERSION" --repo "$REPO" \
+  --checksums "$WORK/pre-checksums.txt" --out "$DIST" ||
+  die "could not generate the Homebrew formulas and the Scoop manifest"
+
 (cd "$DIST" && find . -maxdepth 1 -type f ! -name checksums.txt -printf '%f\n' | LC_ALL=C sort |
   xargs sha256sum > checksums.txt)
+
+# Every binary, as built (before it went into an archive or a package): the
+# subjects of the release job's per-binary provenance attestation.
+if [ -n "${BINARY_SUMS:-}" ]; then
+  (cd "$WORK" && sha256sum muster-mirror_*_*/muster-mirror muster_*_*/muster muster_windows_*/muster.exe) |
+    sed -E 's#  ([^/]+)/[^/]+$#  \1#' > "$BINARY_SUMS"
+  [ "$(wc -l < "$BINARY_SUMS")" -eq 10 ] || die "BINARY_SUMS lists $(wc -l < "$BINARY_SUMS") binaries, want 10"
+fi
 
 # --- self-verification ------------------------------------------------------
 # 🔴 THE CONTRACT, SPELLED LITERALLY — never derived from OSES/ARCHES above.
@@ -153,6 +255,12 @@ expected=(
   muster-mirror_darwin_amd64.tar.gz muster-mirror_darwin_arm64.tar.gz
   muster_linux_amd64.tar.gz         muster_linux_arm64.tar.gz
   muster_darwin_amd64.tar.gz        muster_darwin_arm64.tar.gz
+  muster_windows_amd64.zip          muster_windows_arm64.zip
+  muster_linux_amd64.deb            muster_linux_arm64.deb
+  muster_linux_amd64.rpm            muster_linux_arm64.rpm
+  muster-mirror_linux_amd64.deb     muster-mirror_linux_arm64.deb
+  muster-mirror_linux_amd64.rpm     muster-mirror_linux_arm64.rpm
+  muster.rb muster-mirror.rb muster.json
   docker-compose.yml env.example install.sh INSTALL.md checksums.txt
   "muster-$VERSION.tgz"
 )
@@ -174,6 +282,37 @@ grep -q "^RELEASE=\"$VERSION\"" "$DIST/install.sh" || die "install.sh does not p
 grep -qx "MI_GUIDE_RELEASE=\"$VERSION\"" "$DIST/INSTALL.md" || die "INSTALL.md does not pin $VERSION"
 [ "$("$ROOT/scripts/stamp-compose-version.sh" --current < "$DIST/docker-compose.yml")" = "$VERSION" ] ||
   die "docker-compose.yml does not default to $VERSION in every image"
+# The Windows zips: the CLI and nothing else, and a Windows (PE) program.
+for arch in "${ARCHES[@]}"; do
+  z="$DIST/muster_windows_${arch}.zip"
+  members="$(python3 -c 'import sys, zipfile; print(" ".join(sorted(zipfile.ZipFile(sys.argv[1]).namelist())))' "$z")"
+  [ "$members" = "LICENSE README.md muster.exe" ] || die "$z holds '$members', want 'LICENSE README.md muster.exe'"
+  magic="$(python3 -c 'import sys, zipfile; print(zipfile.ZipFile(sys.argv[1]).read("muster.exe")[:2].decode("latin-1"))' "$z")"
+  [ "$magic" = MZ ] || die "$z: muster.exe is not a Windows program"
+done
+# The packages: a deb is an ar archive, an rpm starts with the rpm lead. And
+# 🔴 neither carries the building machine's name: nfpm writes the hostname
+# into an rpm unless deploy/packaging/nfpm.yaml fixes it, which leaks it and
+# changes the bytes on every runner.
+host_name="$(hostname 2>/dev/null || uname -n)"
+for f in "$DIST"/*.deb "$DIST"/*.rpm; do
+  case "$f" in
+    *.deb) [ "$(head -c 7 "$f")" = '!<arch>' ] || die "$f is not a deb (ar) archive" ;;
+    *.rpm) [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = edabeedb ] || die "$f is not an rpm" ;;
+  esac
+  if [ "${#host_name}" -ge 4 ] && grep -aqF "$host_name" "$f"; then die "$f carries this machine's hostname ($host_name)"; fi
+done
+# The formulas and the manifest name this release's own archives, with the
+# hashes checksums.txt verifies.
+for f in muster.rb muster-mirror.rb muster.json; do
+  grep -q "releases/download/v$VERSION/" "$DIST/$f" || die "$f does not name release v$VERSION's assets"
+done
+for a in muster_darwin_arm64.tar.gz muster_linux_amd64.tar.gz muster-mirror_darwin_amd64.tar.gz \
+         muster-mirror_linux_arm64.tar.gz muster_windows_amd64.zip muster_windows_arm64.zip; do
+  h="$(grep "  $a\$" "$DIST/checksums.txt" | cut -d' ' -f1)"
+  [ -n "$h" ] && grep -qF "$h" "$DIST/muster.rb" "$DIST/muster-mirror.rb" "$DIST/muster.json" ||
+    die "no formula or manifest carries $a's sha256 from checksums.txt"
+done
 # No asset may start with a period (GitHub would rename it; see the header).
 if (cd "$DIST" && find . -maxdepth 1 -type f -name '.*' | grep -q .); then die "an asset name starts with '.'"; fi
 

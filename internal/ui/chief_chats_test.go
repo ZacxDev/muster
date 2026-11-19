@@ -203,7 +203,7 @@ func TestTheChiefSheetHasChatsMessagesAndFocusHistory(t *testing.T) {
 		if strings.Join(got, ",") != "chats,messages,focus" {
 			t.Errorf("%s: the sheet's tabs are %v, want chats, messages, focus", kind, got)
 		}
-		for _, label := range []string{">Chats</button>", ">Your messages</button>", ">Focus history</button>"} {
+		for _, label := range []string{">Chats</button>", ">Your messages</button>", ">What it worked on</button>"} {
 			if !strings.Contains(sheet, label) {
 				t.Errorf("%s: no %s tab", kind, label)
 			}

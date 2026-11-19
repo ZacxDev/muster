@@ -91,7 +91,7 @@ type RouteStore interface {
 	// take, each with its latest route (RoutableMessage), at most limit.
 	RoutableMessages(ctx context.Context, limit int) ([]RoutableMessage, error)
 	Route(ctx context.Context, routeID string) (Route, error)
-	SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64) error
+	SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64, pasteSHA256 string) error
 	// FailRoute ends an open route as failed; handBack, when not "", is the
 	// reason it is owed back to the chief (TakeHandBack delivers it).
 	FailRoute(ctx context.Context, routeID, why, handBack string) (Route, error)
@@ -222,6 +222,12 @@ type Route struct {
 	// TargetHost is the mirror host the target session ran on when the route
 	// was sent (0151); "" for a route made before it.
 	TargetHost string
+	// PasteSHA256 is the SHA-256 of the block muster pasted into the target
+	// session (RoutedPasteSHA256; migration 0155), set with SendQueueID; ""
+	// for a route that pasted nothing or was made before 0155. A mirrored
+	// view draws a prompt as this route's "From …" card only when the prompt
+	// hashes to it (internal/api route_answer_cards.go routedPasteOnRecord).
+	PasteSHA256 string
 }
 
 // IsPRReview reports whether muster made r for a pull-request review: the one
@@ -415,14 +421,14 @@ func RouteObject(routeID string) string { return "session_route:" + routeID }
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
 	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
-	coalesce(pr_head_sha, ''), one_way, redraft, coalesce(batch_id, ''), coalesce(target_host, '')`
+	coalesce(pr_head_sha, ''), one_way, redraft, coalesce(batch_id, ''), coalesce(target_host, ''), coalesce(paste_sha256, '')`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
-		&r.PRHeadSHA, &r.OneWay, &r.Redraft, &r.BatchID, &r.TargetHost)
+		&r.PRHeadSHA, &r.OneWay, &r.Redraft, &r.BatchID, &r.TargetHost, &r.PasteSHA256)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -720,9 +726,10 @@ func (s *PGStore) Route(ctx context.Context, routeID string) (Route, error) {
 }
 
 // SetRouteQueued records the send-queue row that carries routeID's message into
-// its session (a mirrored target).
-func (s *PGStore) SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE session_routes SET send_queue_id = $2 WHERE route_id = $1`, routeID, sendQueueID)
+// its session (a mirrored target), and the SHA-256 of the block it pastes
+// (RoutedPasteSHA256).
+func (s *PGStore) SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64, pasteSHA256 string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE session_routes SET send_queue_id = $2, paste_sha256 = nullif($3, '') WHERE route_id = $1`, routeID, sendQueueID, pasteSHA256)
 	return err
 }
 

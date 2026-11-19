@@ -782,7 +782,7 @@ func navRowName(label string, it SwitcherItem) g.Node {
 			g.Attr("data-nav-focus", ""),
 			Class("flex min-w-0 items-baseline gap-1 text-xs font-normal text-muted"+classIf(it.FocusAge.Stale, " "+FocusStaleClass)),
 			Span(Class("min-w-0 truncate"), g.Text(it.Focus)),
-			g.If(age != "", Span(g.Attr("data-focus-age", ""), g.Attr("title", FocusAgeLabel(it.FocusAge)), Class("shrink-0"), g.Text(strings.TrimPrefix(age, " ")))),
+			g.If(age != "", Span(g.Attr("data-focus-age", ""), g.Attr("title", FocusAgeTooltip(it.FocusAge)), Class("shrink-0"), g.Text(strings.TrimPrefix(age, " ")))),
 		)
 	}
 	return Span(
