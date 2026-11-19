@@ -363,7 +363,7 @@ func (s *Server) handleFleetChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not open the Fleet chat", http.StatusInternalServerError)
 		return
 	}
-	s.writeChiefPanelBodyWith(ctx, w, a, strconv.FormatInt(sess.ID, 10), s.fleetDraft(ctx, r.FormValue("about")))
+	s.writeChiefPanelBodyWith(ctx, w, a, strconv.FormatInt(sess.ID, 10), s.fleetDraft(ctx, r.FormValue("about")), false)
 }
 
 // fleetChat is chief a's Fleet side chat: the one recorded (fleet_owner_marks)

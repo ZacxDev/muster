@@ -56,6 +56,10 @@ type Refusal struct {
 	TargetKind string
 	By         string
 	Detail     string
+	// RetryAt is when the plugin said the draft could go (its refusal's
+	// optional retry_at), nil when it said nothing or a time muster does not
+	// read: the owner's Re-file offers it first.
+	RetryAt *time.Time
 }
 
 // refusalPayload is the part of a draft.refused item's payload a Refusal
@@ -65,6 +69,7 @@ type refusalPayload struct {
 	Venue   string `json:"venue"`
 	By      string `json:"by"`
 	Detail  string `json:"detail"`
+	RetryAt string `json:"retry_at"`
 	Target  struct {
 		Kind string `json:"kind"`
 	} `json:"target"`
@@ -109,6 +114,10 @@ func (s *Store) RefusalsAwaitingOwner(ctx context.Context, owner int64, officer 
 		var p refusalPayload
 		_ = json.Unmarshal(raw, &p)
 		r.Draft, r.Venue, r.By, r.Detail, r.TargetKind = p.DraftID, p.Venue, p.By, p.Detail, p.Target.Kind
+		if t, err := time.Parse(time.RFC3339, p.RetryAt); err == nil {
+			t = t.UTC()
+			r.RetryAt = &t
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()

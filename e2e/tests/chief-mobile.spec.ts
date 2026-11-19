@@ -473,21 +473,19 @@ for (const vp of [
   test.describe(`the chief's chats on a ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    test('one list icon opens Chats | Your messages | Focus history: switch, create and archive a chat', async ({ page }) => {
+    // The chats are a strip of chips under the header, not a sheet (operator:
+    // "a simpler ui/ux to manage sidechats, no modal"). The header keeps its
+    // one row and its one list icon, whose sheet is Your messages and Focus
+    // history only. (e2e chief-ux drives the strip's +, chips and ⋯ menus.)
+    test('the strip is one row under the one-row header, every target 44px, and the sheet holds no chats', async ({ page }) => {
       test.setTimeout(120_000);
       setChiefAsks(0);
       await signIn(page, origin);
       await page.goto(origin + '/agents/' + CHIEF);
       await expect(page.locator('#chat-form')).toBeVisible();
-      const sheet = page.locator('#chat-index');
-      const chats = sheet.locator('[data-chief-chats]');
-      const open = async () => {
-        await page.locator('header #chat-index-open').click();
-        await expect(sheet).toBeVisible();
-        await sheet.locator('[role="tab"][data-tab="chats"]').click();
-        await expect(chats).toBeVisible();
-      };
-      const sessionOf = (u: string) => new URL(u).searchParams.get('session');
+      const strip = page.locator('[data-chief-chat-strip]');
+      await expect(strip).toHaveCount(1);
+      await expect(strip).toHaveAttribute('data-chief-chat-kind', 'primary');
 
       // The header: the one list icon, no ＋ / clock / target; the context
       // row under the title; no chat bar over the transcript.
@@ -498,93 +496,31 @@ for (const vp of [
       await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
       expect.soft((await page.locator('header').boundingBox())!.height, 'the header is the one row (+1px border)').toBeLessThanOrEqual(57);
 
-      // The sheet: three tabs, in order.
-      await open();
-      await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'What it worked on']);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
-      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'Fresh primary on the primary').toBeVisible();
-      // Fresh primary keeps its confirm: the confirm is asked, and dismissed,
-      // nothing happens.
-      const here0 = page.url();
-      const asked: string[] = [];
-      page.once('dialog', (d) => { asked.push(d.type()); void d.dismiss(); });
-      await chats.getByRole('button', { name: 'Fresh primary' }).click();
-      await expect.poll(() => asked, { message: 'Fresh primary asks its confirm' }).toEqual(['confirm']);
-      await page.waitForTimeout(300);
-      expect(page.url(), 'a dismissed confirm leaves the page where it was').toBe(here0);
+      // The strip: under the header, one 52px row, the ★ Primary chip current
+      // with its ⋯, then "+"; every target 44px.
+      const hb = (await page.locator('header').boundingBox())!;
+      const sb = (await strip.boundingBox())!;
+      expect.soft(sb.y, 'the strip starts under the header').toBeGreaterThanOrEqual(hb.y + hb.height - 0.5);
+      expect.soft(sb.height, 'the strip is one row').toBeLessThanOrEqual(52.5);
+      await expect(strip.locator('[aria-current="true"]')).toContainText('★Primary');
+      const targets = await strip
+        .locator('[data-chief-chip]:not([hidden]) > *:not([popover]), button[data-chief-side-chat]')
+        .evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { top: r.top, h: r.height, w: r.width }; }));
+      expect(targets.length, 'the primary\'s link, its ⋯, and +').toBe(3);
+      for (const t of targets) {
+        expect.soft(t.h, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect.soft(t.w, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect.soft(Math.abs(t.top - targets[0].top), 'on one row').toBeLessThanOrEqual(1);
+      }
       await noSideScroll(page);
+      await shot(page, `chief-chips-${vp.name}.png`);
 
-      // Create side chat A, then give it a line so the next New side chat is
-      // a new chat (an empty newest side chat is reused).
-      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
-      await page.waitForURL((u) => u.toString() !== here0);
-      const sideA = sessionOf(page.url())!;
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-      appendToLatest(CHIEF, `side A's line (${vp.name})`);
-      await page.reload();
-      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
-      await open();
-      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'no Fresh primary off the primary').toHaveCount(0);
-      const rowA = chats.locator(`[data-chief-chat-row="${sideA}"]`);
-      await expect(rowA).toHaveAttribute('aria-current', 'page');
-      await expect(rowA.locator('[data-chief-chat-current]')).toHaveText('Current');
-
-      // Create side chat B.
-      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
-      await page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
-      const sideB = sessionOf(page.url())!;
-      expect(sideB, 'B is a new chat').not.toBe(sideA);
-
-      // Switch to A from its row.
-      await open();
-      await chats.locator(`[data-chief-chat-row="${sideA}"]`).click();
-      await page.waitForURL((u) => sessionOf(u.toString()) === sideA);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-
-      // Escape: the open ⋯ menu closes, the sheet stays; again: the sheet goes.
-      await open();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
-      const menuB = page.locator(`#chief-chat-menu-${sideB}`);
-      await expect(menuB).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(menuB).toBeHidden();
-      await expect(sheet, 'Escape on the menu leaves the sheet open').toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(sheet).toBeHidden();
-
-      // ON A, archive B from its row's ⋯ menu: B moves into the collapsed
-      // Archived group, and the page STAYS ON A (it used to jump to the primary).
-      await open();
-      const archivedBefore = await chats.locator('[data-chief-archived] [data-chief-chat-row]').count();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
-      await expect(menuB).toBeVisible();
-      // The answer is HX-Redirect to A — this page — so htmx loads it again.
-      const reloaded = page.waitForEvent('load');
-      await menuB.getByRole('menuitem', { name: 'Archive' }).click();
-      await reloaded;
-      expect(sessionOf(page.url()), 'archiving another chat stays on the open one').toBe(sideA);
-      await expect(page.locator(`#chat-index [data-chief-archived] [data-chief-chat-row="${sideB}"]`)).toHaveCount(1);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
-      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
-      await open();
-      const group = chats.locator('[data-chief-archived]');
-      await expect(group).not.toHaveAttribute('open', '');
-      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeHidden();
-      await group.locator('summary').click();
-      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeVisible();
-      expect(await chats.locator('[data-chief-archived] [data-chief-chat-row]').count()).toBe(archivedBefore + 1);
-
-      // Archiving the OPEN chat (A, from its own row) lands on the primary.
-      await chats.locator(`button[popovertarget="chief-chat-menu-${sideA}"]`).click();
-      const toPrimary = page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
-      await page.locator(`#chief-chat-menu-${sideA}`).getByRole('menuitem', { name: 'Archive' }).click();
-      await toPrimary;
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
-      await open();
-
-      // The other two tabs are the mirrored session's.
-      await sheet.locator('[role="tab"][data-tab="messages"]').click();
-      await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeVisible();
+      // The sheet: two tabs, in order, and nothing chat-related.
+      await page.locator('header #chat-index-open').click();
+      const sheet = page.locator('#chat-index');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('[role="tab"]')).toHaveText(['Your messages', 'What it worked on']);
+      await expect(sheet.locator('[data-chief-chats], [data-chief-side-chat], [data-chief-chat-row]')).toHaveCount(0);
       await sheet.locator('[role="tab"][data-tab="focus"]').click();
       await expect(sheet.locator('#chat-index-tabs-panel-focus [data-focus-history-list]')).toBeVisible();
       await page.keyboard.press('Escape');

@@ -734,6 +734,30 @@ func (s *OpenCodeSource) Ancestors(id string) []string {
 	return out
 }
 
+// Directory is opencode session id's working directory: the
+// location.directory the opencode server records for it — where it runs that
+// session's tools — from the server's session list (knownSessions), read with
+// this host's pair token. What an opencode caller's attention_ask attachments
+// are resolved from (mcpproxy_attach.go), for the session its call was BOUND
+// to. false when the list cannot be read, does not hold id, or records no
+// absolute directory for it: the caller's attachments are then refused.
+func (s *OpenCodeSource) Directory(id string) (string, bool) {
+	if s == nil || !s.paired() || id == "" {
+		return "", false
+	}
+	sessions, err := s.knownSessions()
+	if err != nil {
+		return "", false
+	}
+	for _, o := range sessions {
+		if o.ID == id {
+			dir := o.Location.Directory
+			return dir, filepath.IsAbs(dir)
+		}
+	}
+	return "", false
+}
+
 // OpenCodeSourceOf is b's OpenCodeSource, looking through wrappers; nil for
 // none.
 func OpenCodeSourceOf(b Backend) *OpenCodeSource {

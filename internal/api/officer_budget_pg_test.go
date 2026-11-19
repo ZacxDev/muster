@@ -114,7 +114,7 @@ func TestOnlyTheOwnersRejectionIsTheOwnersFollowUp(t *testing.T) {
 		{"", settledByPlugin, ""},
 		{plugins.OutboundExpired, "", ""},
 	} {
-		e := draftEndFor(d, builtinOfficerID, tc.how, tc.by, "why")
+		e := draftEndFor(d, builtinOfficerID, tc.how, tc.by, "why", nil)
 		if e.FollowUp == nil {
 			t.Fatalf("%q/%q: no follow-up", tc.how, tc.by)
 		}

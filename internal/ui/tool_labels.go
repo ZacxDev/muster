@@ -144,7 +144,7 @@ var musterToolLabels = map[string]string{
 	"officer_tag_release":             "Tagged a release",
 	"officer_release_evaluation":      "Reported on a release",
 	"officer_rollout_status":          "Checked a release's rollout",
-	"officer_rollout_promote_propose": "Suggested releasing to everyone",
+	"officer_rollout_evidence_attach": "Attached evidence for a release",
 	"officer_spawn_share":             "Managed shared helper sessions",
 
 	// The MCP transport's own tool.

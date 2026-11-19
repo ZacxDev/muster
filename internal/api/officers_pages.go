@@ -79,6 +79,7 @@ func (s *Server) registerOfficerPages(mux Mux) {
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/resume", s.requireOperatorWrite(s.handleOfficerResume))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/mode", s.requireOperatorWrite(s.handleOfficerMode))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/run", s.requireOperatorWrite(s.handleOfficerRunNow))
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/raise-cap", s.requireOperatorWrite(s.handleOfficerRaiseCap))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/delete", s.requireOperatorWrite(s.handleOfficerDeletePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules", s.requireOperatorWrite(s.handleOfficerSchedulePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules/{name}/delete", s.requireOperatorWrite(s.handleOfficerScheduleDeletePage))
@@ -1915,6 +1916,7 @@ var officerNotices = map[string]string{
 	"batch-decided":  "Decided: the ticked ones go to their plugin, the rest were rejected.",
 	"refiled":        "Re-filed: the officer files it again at that time, and you approve the new draft.",
 	"dropped":        "Dropped: the officer will not redraft it.",
+	"cap-raised":     "Raised for today: it is woken for new work again, and its budget goes back at the next 00:00 UTC.",
 }
 
 // officerPageNotice is the words of a notice code on an officer's page: its
