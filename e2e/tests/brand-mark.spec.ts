@@ -87,6 +87,9 @@ test('the app shell draws the lockup in the header, and every manifest icon reso
   expect(phone!.height).toBeCloseTo(28, 0);
   expect(phone!.width).toBeCloseTo(38, 0);
   expect(await page.locator(header).evaluate((el) => getComputedStyle(el).objectFit), 'cropped, not squashed').toBe('cover');
+  // The link around the cropped mark is still a 44 px touch target (layout.spec.ts).
+  const link = await page.locator('header a[aria-label="muster home"]').boundingBox();
+  expect(link!.width, 'a 44px target').toBeGreaterThanOrEqual(44);
   const side = await page.locator('#sidebar img[data-brand-mark]').boundingBox();
   expect(side!.width, 'the sidebar keeps the whole lockup').toBeGreaterThan(125);
 

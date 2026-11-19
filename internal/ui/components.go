@@ -53,7 +53,10 @@ func wordmark() g.Node {
 // lockup (wordmark) to its mark, the left 100 of the lockup's 350 viewBox
 // units, which is 38 px at the header's 28 px height (2.375rem). The same file
 // and element, so nothing else is loaded; the sidebar, which has the room,
-// keeps the whole lockup.
+// keeps the whole lockup. The LINK stays a 44 px target (min-w-[44px], the
+// touch-target rule e2e/tests/layout.spec.ts holds every control to) with the
+// 38 px mark inside it at its left edge; the link then ends at about 112 px,
+// still left of the pill's column.
 //
 // 🔴 WHY: the update pill (pwa.go, placeToast) sits in the header's top-right
 // corner only while nothing there is a control. At 390 px wide the whole
@@ -65,7 +68,7 @@ func headerMarkClass(b Brand) string {
 	if !b.drawsLockup() {
 		return ""
 	}
-	return " max-sm:[&>img[data-brand-mark]]:w-[2.375rem] max-sm:[&>img[data-brand-mark]]:object-cover max-sm:[&>img[data-brand-mark]]:object-left"
+	return " max-sm:min-w-[44px] max-sm:[&>img[data-brand-mark]]:w-[2.375rem] max-sm:[&>img[data-brand-mark]]:object-cover max-sm:[&>img[data-brand-mark]]:object-left"
 }
 
 // Page renders muster's full document shell. dark is the default theme: <html>
