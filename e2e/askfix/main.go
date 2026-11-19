@@ -101,7 +101,25 @@ func run(args []string) error {
 // work-laptop.corp.example.org · acme-corporation/api-gateway-monorepo", is
 // wider than its card at a phone's AND a desktop's width. It prints the newest
 // row's id.
+//
+// Before those, OLDER and each asked once (so none is a repeated question),
+// the place stubs spec's rows (asks-log.spec.ts, "no place is cut to a
+// stub"): places whose session @ host is SHORT and whose repo is long, so at a
+// phone's width the repo is what gives way — the rows a phone review showed
+// cut to "a…" and "ac…" — plus one whose repo has room to show a readable
+// part, and one short enough to fit whole at a desktop.
 func seedWraps(ctx context.Context, st *asklog.PG, now time.Time) (int64, error) {
+	for i, r := range wrapsPlaces {
+		at := now.Add(-r.ago)
+		id, _, err := st.Open(ctx, asklog.Ask{Kind: asklog.KindPlainText, Runtime: asklog.RuntimeClaudeCode, Host: r.host,
+			TmuxSession: r.session, Repo: r.repo, Question: r.question, AskedAt: at})
+		if err != nil {
+			return 0, fmt.Errorf("open place %d: %w", i, err)
+		}
+		if _, ok, err := st.Resolve(ctx, id, asklog.Resolution{Outcome: asklog.OutcomeAnswered, AnsweredBy: asklog.ByOwner, Answer: "yes", At: at.Add(time.Duration(3+i) * time.Second)}); err != nil || !ok {
+			return 0, fmt.Errorf("resolve place %d: ok=%v err=%v", i, ok, err)
+		}
+	}
 	const q, answer = "Keep going with the plan?", "continue with the plan"
 	var newest int64
 	for i, r := range []struct {
@@ -124,6 +142,17 @@ func seedWraps(ctx context.Context, st *asklog.PG, now time.Time) (int64, error)
 		newest = id
 	}
 	return newest, nil
+}
+
+// wrapsPlaces are seedWraps's place-stub rows (all synthetic), oldest last.
+var wrapsPlaces = []struct {
+	ago                            time.Duration
+	session, host, repo, question string
+}{
+	{2 * time.Hour, "ratelimit", "work-laptop", "acme-corporation/api-gateway-monorepo", "Retry the flaky upload?"},
+	{20 * time.Hour, "s3-retries", "studio-mac", "acme-corp/payments-service", "Bump the retry budget?"},
+	{26 * time.Hour, "ci", "mac", "acme-corporation/api-gateway-monorepo", "Rerun the failed job?"},
+	{30 * time.Hour, "docs", "studio-mac", "acme/api", "Publish the docs now?"},
 }
 
 func seed(ctx context.Context, st *asklog.PG, now time.Time) (int64, error) {

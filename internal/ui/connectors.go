@@ -180,8 +180,20 @@ func ConnectorsPanel(active bool) g.Node {
 		hx("hx-trigger", "load"),
 		hx("hx-target", "#"+panelID("connectors")),
 		hx("hx-swap", "innerHTML"),
+		hx("hx-on::after-swap", connectorsFollowHashJS),
 	)
 }
+
+// connectorsFollowHashJS brings the card a push's link names into view
+// (/connectors#connector-request-<id>, ConnectorRequestAnchor): the cards
+// arrive in a lazy swap, after the browser has looked for the fragment and
+// found nothing. 🔴 ONCE, on the panel's first swap (data-hash-followed):
+// every later swap (a decision, a refresh) leaves the page where the reader
+// put it — a script that scrolled on each swap would be the "the page scrolls
+// by itself" defect panelClass guards against.
+const connectorsFollowHashJS = "if(this.dataset.hashFollowed)return;this.dataset.hashFollowed='1';" +
+	"try{var h=decodeURIComponent(location.hash.slice(1)),c=h&&document.getElementById(h);" +
+	"if(c&&this.contains(c))c.scrollIntoView({block:'center'})}catch(e){}"
 
 // RenderConnectors writes the /ui/connectors partial.
 func RenderConnectors(w io.Writer, c ConnectorsContent) error { return Connectors(c).Render(w) }
@@ -269,6 +281,13 @@ func ConnectorRequests(list []ConnectorRequestView) g.Node {
 	)
 }
 
+// ConnectorRequestAnchor is a connector request's card id on the Connectors
+// page: what its push's link names after the "#", so a tap lands on the card
+// the request is approved or denied on (internal/api connectorRequestLink).
+func ConnectorRequestAnchor(grantID int64) string {
+	return "connector-request-" + strconv.FormatInt(grantID, 10)
+}
+
 func connectorRequestCard(r ConnectorRequestView) g.Node {
 	ids := strconv.FormatInt(r.ID, 10)
 	var actions g.Node
@@ -294,6 +313,7 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 		)
 	}
 	return Div(
+		ID(ConnectorRequestAnchor(r.ID)),
 		Class("rounded-xl bg-s1/70 p-3 ring-1 ring-inset ring-line"),
 		g.Attr("data-connector-request", r.Connector),
 		Div(

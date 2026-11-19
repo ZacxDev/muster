@@ -41,6 +41,7 @@ var agentToolDefFuncs = map[string]func() []agents.ToolDef{
 	"flowToolDefs":             flowToolDefs,
 	"focusToolDefs":            func() []agents.ToolDef { return append(focusToolDefs(true), focusToolDefs(false)...) },
 	"gatedTaskToolDef":         func() []agents.ToolDef { return []agents.ToolDef{gatedTaskToolDef()} },
+	"notifyOwnerToolDef":       func() []agents.ToolDef { return []agents.ToolDef{notifyOwnerToolDef()} },
 	"officerSpawnShareToolDef": func() []agents.ToolDef { return []agents.ToolDef{officerSpawnShareToolDef()} },
 	"officerToolDefs":          officerToolDefs,
 	"pageToolDefs":             pageToolDefs,

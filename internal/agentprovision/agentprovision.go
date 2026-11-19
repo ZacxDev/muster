@@ -1018,6 +1018,51 @@ func (a *Adapter) Instances(ctx context.Context) ([]provision.Instance, error) {
 	return a.driver.List(ctx)
 }
 
+// InstancesOf returns the instances of ags only: one driver Get per agent,
+// never a List of the whole fleet. The officer loop reads its pool's
+// instances this way (api's officerFleet.Instances).
+//
+// 🔴 ITS COST IS THE AGENTS ASKED ABOUT, NOT THE FLEET. On the Kubernetes
+// driver's least-privilege layout List reads every agent namespace on its own
+// (three requests each), so a caller that wanted three instances paid for
+// every instance in the cluster — per officer, per pass — and a deployment
+// with a few dozen agents spent the client's whole request budget on it.
+//
+// What it answers matches what List would have said about the same agents:
+//
+//   - provision.ErrNotFound (the backend was reached and has no instance) is
+//     NOT an error: the agent is simply absent from the result, as it would be
+//     from List's. That includes a stranger's co-named Deployment, which a
+//     by-name read reports as ErrNotFound AND ErrNotManaged (provision's
+//     sentinel doc) and which List does not list either; ErrNotFound is
+//     therefore tested FIRST.
+//   - ErrNotManaged or ErrDivergentSpec ALONE (on the Kubernetes driver: a
+//     namespace RoleBinding muster refuses to use) is reported as the
+//     instance in PhaseUnknown with the refusal as its Reason — what List
+//     reports for the same namespace. Failing the read on it would blind the
+//     caller over one agent; omitting it would read as "not running" and have
+//     the caller start it again every pass.
+//   - Any other error (ErrBlind: the backend could not be read) fails the
+//     whole call, never a partial answer: a missing instance in a partial
+//     answer reads as "not running".
+func (a *Adapter) InstancesOf(ctx context.Context, ags []agents.Agent) ([]provision.Instance, error) {
+	out := make([]provision.Instance, 0, len(ags))
+	for _, ag := range ags {
+		inst, err := a.driver.Get(ctx, agents.RefOf(ag))
+		switch {
+		case err == nil:
+			out = append(out, inst)
+		case errors.Is(err, provision.ErrNotFound):
+		case errors.Is(err, provision.ErrNotManaged) || errors.Is(err, provision.ErrDivergentSpec):
+			out = append(out, provision.Instance{Ref: agents.RefOf(ag), Driver: a.driver.Driver(),
+				Phase: provision.PhaseUnknown, Reason: "Refused: " + err.Error()})
+		default:
+			return nil, fmt.Errorf("instance of %s: %w", ag.Name, err)
+		}
+	}
+	return out, nil
+}
+
 // StreamLogs follows the agent's instance output, calling emit per line.
 func (a *Adapter) StreamLogs(ctx context.Context, ag agents.Agent, emit func(string)) error {
 	return a.driver.StreamLogs(ctx, agents.RefOf(ag), emit)
