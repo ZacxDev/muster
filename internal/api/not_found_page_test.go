@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// visibleText is a page's text as a person reads it: tags dropped, entities
+// notFoundPageText is a page's text as a person reads it: tags dropped, entities
 // for an apostrophe undone, whitespace collapsed.
-func visibleText(page string) string {
+func notFoundPageText(page string) string {
 	page = regexp.MustCompile(`(?s)<head>.*</head>`).ReplaceAllString(page, "")
 	page = regexp.MustCompile(`(?s)<script.*?</script>`).ReplaceAllString(page, "")
 	page = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(page, " ")
@@ -46,7 +46,7 @@ func TestABrowserNeverSeesGosBareNotFoundText(t *testing.T) {
 		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 			t.Errorf("%s: Content-Type %q, want text/html", tc.what, ct)
 		}
-		if got := visibleText(body); got != want {
+		if got := notFoundPageText(body); got != want {
 			t.Errorf("%s: page text\n got %q\nwant %q", tc.what, got, want)
 		}
 		if !strings.Contains(body, `href="/"`) {
