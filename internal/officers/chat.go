@@ -110,6 +110,30 @@ const ChatSessionKeyPrefix = "officer-chat:"
 // turns are recorded on.
 func ChatSessionKey(chatID string) string { return ChatSessionKeyPrefix + chatID }
 
+// operatorChatPrefix prefixes an OPERATOR chat's id: a chat a builtin
+// officer's owner (or a manager of its team) holds with it on its page in
+// muster (internal/api officer_operator_chat.go), never through HQ.
+const operatorChatPrefix = "operator-"
+
+// OperatorChatID is the chat id of person user's operator chat with an
+// officer: its lane's session key is ChatSessionKey(OperatorChatID(user)).
+// One chat per person, so a team's managers never read each other's.
+func OperatorChatID(user int64) string { return operatorChatPrefix + strconv.FormatInt(user, 10) }
+
+// OperatorChatUser is the person whose operator chat chatID is; ok false for
+// any other chat id (an HQ chat's included).
+func OperatorChatUser(chatID string) (int64, bool) {
+	rest, found := strings.CutPrefix(chatID, operatorChatPrefix)
+	if !found {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || n <= 0 || OperatorChatID(n) != chatID {
+		return 0, false
+	}
+	return n, true
+}
+
 // chatHolderSuffix is what a chat claim's holder adds to the instance name.
 const chatHolderSuffix = "/chat"
 

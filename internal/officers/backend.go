@@ -271,6 +271,10 @@ func ToolCapability(tool string) (capability string, known bool) {
 		// backend: ToolOffered gives them to builtin officers only, and
 		// internal/api checks the type's contacts grant at call time.
 		return "", true
+	case ToolMyState, ToolConfirmCard, ToolRefusalRefile, ToolRefusalDrop:
+		// muster serves them (its own store, plugin drafts, the budget):
+		// ToolOffered gives them to builtin officers only.
+		return "", true
 	case ToolPostDraft:
 		// muster serves it (a plugin draft), never the backend: ToolOffered
 		// gives it to builtin officers only, and internal/api checks the

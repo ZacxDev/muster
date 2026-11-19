@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
@@ -122,6 +123,9 @@ type outboundFixture struct {
 	onHost       bool
 	officerExtra string
 	denyWords    []string
+	// usage, when set, is the usage collector's source (never run on its
+	// own: a test ticks or flushes it).
+	usage usage.Source
 }
 
 func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboundWorld {
@@ -188,6 +192,9 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		t.Fatal(err)
 	}
 	ocfg := OfficersConfig{Officers: list, InstallSession: discardSession, Builtin: store}
+	if fx.usage != nil {
+		ocfg.UsageSource, ocfg.NoUsageRun = fx.usage, true
+	}
 	if onHost {
 		ocfg.InstallSession, ocfg.HostSpawns = nil, officers.NewMemHostSpawnStore()
 	}
