@@ -37,7 +37,9 @@ import (
 // 🔴 AND EVALUATED PER EVENT, because the exact string cannot see a precedence
 // slip: TestCIConcurrencyGroupsPerEvent evaluates the pinned expressions (with
 // GitHub's `&&`/`||`, which return an operand, and bind `&&` tighter) for a PR,
-// a push to main and a tag push, and asserts the group and the flag for each.
+// a push to main, a RE-RUN of a main run (run_attempt 2: its own group, so it
+// can neither replace the newest push's waiting run nor be replaced) and a tag
+// push, and asserts the group and the flag for each.
 //
 // 🔴 WHAT THIS CANNOT SEE: it reads the YAML text, so it proves the expression
 // is spelled as intended, never how GitHub evaluates it. The PR-cancel half is
@@ -47,7 +49,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const wantCIConcurrency = `concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}`
 
 // TestCIConcurrencyGroups pins the workflow-level concurrency block.
@@ -91,9 +93,15 @@ func TestCIConcurrencyGroupsPerEvent(t *testing.T) {
 	}{
 		{"pull request", "pull_request", "refs/pull/7/merge", "ci-refs/pull/7/merge", true},
 		{"push to main", "push", "refs/heads/main", "ci-main", false},
+		{"re-run of a main run", "push", "refs/heads/main", "ci-4242", false},
 		{"tag push", "push", "refs/tags/v1.2.3", "ci-4242", false},
 	} {
-		ctx := map[string]string{"github.event_name": c.event, "github.ref": c.ref, "github.run_id": "4242"}
+		attempt := "1"
+		if c.name == "re-run of a main run" {
+			attempt = "2"
+		}
+		ctx := map[string]string{"github.event_name": c.event, "github.ref": c.ref, "github.run_id": "4242",
+			"github.run_attempt": attempt}
 		if g := "ci-" + evalExpr(t, group, ctx); g != c.wantGroup {
 			t.Errorf("%s: group %q, want %q", c.name, g, c.wantGroup)
 		}
@@ -130,9 +138,9 @@ func evalExpr(t *testing.T, expr string, ctx map[string]string) string {
 	var out string
 	for _, alt := range strings.Split(expr, " || ") {
 		v := ""
-		for i, term := range strings.Split(alt, " && ") {
+		for _, term := range strings.Split(alt, " && ") {
 			v = atom(term)
-			if i >= 0 && !truthy(v) {
+			if !truthy(v) {
 				break
 			}
 		}

@@ -94,9 +94,15 @@ on:
 #   - now: one running, the newest waiting (operator's choice). A commit whose
 #     pending run was replaced gets no run of its own; the next verdict covers
 #     it, and .github/scripts/main_red.py lets the newest finished run decide
-#     (a replaced, cancelled run never blocks it). A vX.Y.Z tag on such a commit
-#     re-runs its tests, because tag_gate.py skips them only after the SAME
-#     commit's main run succeeded.
+#     (a replaced, cancelled run never blocks it). The downstream release tool,
+#     asked for such a commit, releases the newest green main descendant that
+#     contains it; a vX.Y.Z tag on it re-runs its tests, because tag_gate.py
+#     skips them only after the SAME commit's main run succeeded.
+#
+# 🔴 A RE-RUN OF A MAIN RUN (run_attempt > 1) STAYS OUT OF `main`. It keeps its
+# own `run_id` group, so `gh run rerun --failed` on an older main run (the GHCR
+# recovery below) neither replaces the newest push's waiting run, leaving HEAD
+# with no verdict, nor gets replaced itself by the next merge.
 #
 # 🔴 A TAG RUN KEEPS A GROUP OF ITS OWN (`run_id`) AND `cancel-in-progress:
 # false`. It publishes the release images and the GitHub release (`image-*`,
@@ -109,7 +115,7 @@ on:
 #
 # Pinned as an exact string by TestCIConcurrencyGroups (internal/modulegate).
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
