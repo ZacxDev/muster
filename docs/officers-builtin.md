@@ -30,8 +30,14 @@ the admin API.
 **Officers** in the sidebar (under **More**; shown whenever muster has a
 database) opens `/officers`: your officers, and each team's you belong to, one row each with its id, where it
 runs, its status — **Live**, **Shadow**, **Paused**, or **Not running** with
-the reason — and how many items and asks are open on it. An officer
+the reason — and how many items and asks are open on it, how many decisions
+wait on you (*2 waiting on you*) and how many of its [What it did](#an-officers-page)
+entries are new since you last opened its page (*3 new*). An officer
 `MUSTER_OFFICERS` declares is listed **read-only**.
+
+At the top, **Needs you** gathers every officer of yours (and your teams')
+that has a decision waiting on you, with how many, each a link to that
+officer's own Needs-you section.
 
 Under the list, **Where officers can run here** reads the server's own state:
 pods (available only with the Kubernetes agent plane, else why not), each of
@@ -47,7 +53,10 @@ asleep, below your sessions and above **Superseded** and **Idle**. A row says
 whether the officer is running or asleep and how many items are queued for
 it; with a `daily_budget_usd` ([Daily budget](#daily-budget-and-routine-batching)) it also shows the day's spend against it
 (`$6.40 / $10`) and **held** once the cap has stopped it for the day (nothing
-when it has no budget, and no figure when the spend could not be read). It
+when it has no budget, and no figure when the spend could not be read), and
+**N new** while some of its work finished since you last opened its page
+(opening the page clears it; each person's own). An officer's routine work
+pushes you nothing: this count is how you notice it. It
 opens the running instance's chat, else the officer's page. An instance that
 waits on you is listed with the other waiting sessions at the top, and its
 officer's row says **↑ waiting**. A host officer's row says neither running
@@ -140,13 +149,55 @@ repository, a connector or a host.
 
 ### An officer's page
 
-An officer's page shows where it runs, why it is not running when it is
-not, its instances (a machine instance's window opens its mirrored view), its
-queue, its open asks, the drafts its instances filed, its schedules (add and
-delete them there) and its usage over the last 7 days when there is any. It
-shows no "last pass": the wake loop's memory of one is per replica and
-forgotten by a restart, so it is not drawn until a shared record of passes
-exists. Its actions:
+An officer's page is where you deal with it. From the top:
+
+**Needs you** — everything from this officer that waits on you, each one
+decided right there:
+
+- **Its posts and replies** to approve: the exact text and every image and
+  video, with **Approve and send** and **Reject** (with an optional reason,
+  which the officer is told). It is the same card as on the Asks page's
+  Drafts tab, posting to the same place: an approval binds the exact text
+  and media you were shown (their SHA-256), so an approval of anything else
+  is refused, and it needs a recent sign-in as there.
+- **Its outreach batch** of the day: each follow or like with the person's
+  profile (what their plugin reported — labelled **untrusted**), why the
+  officer chose them, and a tick; **Approve ticked, reject the rest**. As on
+  the Asks page, every entry you leave unticked is rejected "not selected".
+- **Its questions** to you, answered with the same form as the Asks page's.
+- **Refusals that wait on you**: a draft its plugin (or muster) refused that
+  the officer has not redrafted — for example one refused because the
+  venue's posting window was not open — with the plugin's own words for
+  why. **Re-file** it in an hour, in 6 hours, at the next UTC midnight or at a
+  time you choose (UTC): the officer gets the same work back then, and not
+  before, as your own item (a spent daily budget does not hold it back), and
+  you approve the draft it files then. **Drop it**: the officer never
+  redrafts it. A refusal you rejected yourself is not listed (that was your
+  decision), nor one older than 7 days.
+- **Its budget and run controls**: today's spend against its daily budget,
+  **held** once the budget has stopped it (until the next UTC midnight), and
+  **Run now** and **Pause** / **Resume**. Run now is how you wake a held
+  officer: work you give it yourself gets past the cap. ⚠ There is no
+  "raise today's cap" yet; the cap is `daily_budget_usd` in
+  `MUSTER_OFFICERS`.
+
+Every decision there is made only by your own signed-in browser: an
+officer's instance (or its machine's window) holds a token, never your
+sign-in, so nothing the officer does can approve its own work.
+
+**What it did** — its finished work, newest first, in plain words: each
+item's kind and how it ended, with the officer's own summary; what it sent
+(*Posted on X*, the text, and **See the post** where muster can build the
+address — an X post's id), and today's spend. Work finished since your last
+visit is marked **new**. The ids muster keeps for an entry (item, draft, the
+post's reference) are behind its ⓘ.
+
+Below those: where it runs and why it is not running when it is not, its
+instances (a machine instance's window opens its mirrored view), its raw
+queue, its schedules (add and delete them there) and its usage over the last
+7 days when there is any. It shows no "last pass": the wake loop's memory of
+one is per replica and forgotten by a restart, so it is not drawn until a
+shared record of passes exists. Its other actions:
 
 - **Run now** — puts one `manual.run` item in its queue, and it wakes for it
   within seconds; a second tap while it waits adds none.
@@ -162,12 +213,16 @@ exists. Its actions:
 Each writes only what it changes: a mode switch writes the mode, a pause the
 switch, and an Edit neither (the mode only when you changed it on the form),
 so none undoes another made while a page was open. An officer
-`MUSTER_OFFICERS` declares shows none of these: it is read-only here, and
-changed in the environment with a restart. A team's viewers and operators
-read a team officer's page — its machine instances' windows included; only a
-manager changes it, and Postgres refuses anyone else again. A manager's
-writes to a team officer (create, edit, mode, pause, Run now, schedules,
-delete) are in the team's audit.
+`MUSTER_OFFICERS` declares is read-only here — Edit, the mode, schedules and
+Delete are changed in the environment with a restart — but its Needs you,
+Run now and Pause / Resume work as for any other: they write its queue and
+its switch (its def's `enabled`, the one `muster officer def put --enabled`
+sets), never its declaration. A team's viewers and operators read a team
+officer's page — its machine instances' windows and its Needs you
+included; only a manager decides, re-files, runs or changes it, and Postgres
+refuses anyone else again. A manager's writes to a team officer (create,
+edit, mode, pause, Run now, schedules, re-file, drop, delete) are in the
+team's audit.
 
 ## ⚠ Before you declare one on a real deployment
 
@@ -926,8 +981,8 @@ enqueues as the owner):
 ### Switching it off
 
 **Pause** on its page (or `muster officer pause`) for a database-declared
-officer; for one `MUSTER_OFFICERS` declares, `muster officer def put
-marketing:example --enabled=false`. Either way the wake loop stops its
+officer; for one `MUSTER_OFFICERS` declares, **Pause** on its page too, or
+`muster officer def put marketing:example --enabled=false` (the same switch). Either way the wake loop stops its
 instances and starts none, whatever its queue holds, until it is switched on
 again. Removing it from `MUSTER_OFFICERS` also stops muster running it; its
 store rows stay.
