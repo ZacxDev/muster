@@ -1,5 +1,4 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -9,6 +8,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, pagesFakeS3Port, pagesMirrorMCPPort, pagesPort, pagesRouterPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { clsInit, readCls, settle } from '../lib/cls';
 
 // SHAREABLE PAGES, every hop real (internal/api pages.go, page_tools.go,
@@ -51,6 +51,7 @@ const localMCP = `http://127.0.0.1:${pagesMirrorMCPPort}/mcp`;
 const ACCESS = 'e2e-pages-s3-access-not-real';
 const BRAND = 'Example Studio ' + stamp;
 let server: Running | undefined;
+let s3: FakeS3 | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 
@@ -59,61 +60,6 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8AAQv8ZYAwAQ84H+VjtZqAAAAAASUVORK5CYII=',
   'base64',
 );
-
-// --- the fake S3 (uploads.spec.ts's, minus multipart: every file here is tiny) ---
-const objects = new Map<string, Buffer>();
-const xmlErr = (res: http.ServerResponse, status: number, code: string) =>
-  res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`);
-function unchunk(b: Buffer): Buffer {
-  const out: Buffer[] = [];
-  let at = 0;
-  for (;;) {
-    const eol = b.indexOf('\r\n', at);
-    if (eol < 0) break;
-    const size = parseInt(b.subarray(at, eol).toString('latin1').split(';')[0], 16);
-    if (!size) break;
-    out.push(b.subarray(eol + 2, eol + 2 + size));
-    at = eol + 2 + size + 2;
-  }
-  return Buffer.concat(out);
-}
-const objHeaders = (b: Buffer) => ({
-  'Content-Length': String(b.length),
-  ETag: '"' + crypto.createHash('md5').update(b).digest('hex') + '"',
-  'Last-Modified': new Date().toUTCString(),
-  'Content-Type': 'application/octet-stream',
-});
-const s3 = http.createServer((req, res) => {
-  const chunks: Buffer[] = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    let body = Buffer.concat(chunks);
-    const [rawPath, query = ''] = (req.url ?? '').split('?');
-    const p = decodeURIComponent(rawPath);
-    if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${ACCESS}/`)) return xmlErr(res, 403, 'AccessDenied');
-    if (!p.startsWith('/muster-e2e')) return xmlErr(res, 404, 'NoSuchBucket');
-    const key = p.replace(/^\/muster-e2e\/?/, '');
-    if (key === '') {
-      if (req.method === 'HEAD') return void res.writeHead(200).end();
-      if (query.startsWith('lifecycle')) return xmlErr(res, 404, 'NoSuchLifecycleConfiguration');
-      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
-      return xmlErr(res, 400, 'NotImplemented');
-    }
-    if (req.method === 'PUT') {
-      if (String(req.headers['x-amz-content-sha256'] ?? '').startsWith('STREAMING')) body = unchunk(body);
-      objects.set(key, body);
-      return void res.writeHead(200, { ETag: objHeaders(body).ETag }).end();
-    }
-    const b = objects.get(key);
-    if (req.method === 'HEAD') return b ? void res.writeHead(200, objHeaders(b)).end() : void res.writeHead(404).end();
-    if (req.method === 'GET') return b ? void res.writeHead(200, objHeaders(b)).end(b) : xmlErr(res, 404, 'NoSuchKey');
-    if (req.method === 'DELETE') {
-      objects.delete(key);
-      return void res.writeHead(204).end();
-    }
-    res.writeHead(405).end();
-  });
-});
 
 // --- the fake permission router: it records POST /api/notify ---------------------
 type Notification = { type: string; title?: string; body?: string; tag?: string; data?: Record<string, string> };
@@ -141,7 +87,7 @@ const fix = (...args: string[]) =>
 
 test.beforeAll(async () => {
   test.setTimeout(240_000);
-  await new Promise<void>((r) => s3.listen(pagesFakeS3Port, '127.0.0.1', () => r()));
+  s3 = await startFakeS3(pagesFakeS3Port, ACCESS, 'muster-e2e');
   await new Promise<void>((r) => router.listen(pagesRouterPort, '127.0.0.1', () => r()));
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   server = await startServer(versionTerm, pagesPort, {
@@ -196,7 +142,7 @@ test.afterAll(async () => {
       await done;
     }
     await server?.stop();
-    await new Promise((r) => s3.close(r));
+    await s3?.close();
     await new Promise((r) => router.close(r));
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -462,6 +408,58 @@ test('the Pages screens do not shift on load', async ({ page }) => {
     const r = await readCls(page);
     expect(r.total, `${url}: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
   }
+});
+
+// A PAGE OF ~400 KB THROUGH THE HOST'S MCP ENDPOINT (#833): a page_update of
+// 400,000 bytes goes Claude Code → this host's REAL muster-mirror → muster over
+// HTTP and comes back with a page version; one byte past the request bound
+// (mirror.MaxMCPRequestBytes, 1088 KiB = 1,114,112 bytes) is refused by the
+// mirror with a 413 that names it and the limit — never JSON-RPC -32700.
+//
+// ⚠ AN INVARIANT GUARD, NOT #833'S REGRESSION TEST: both binaries here are
+// built from this tree, and since #733 they agree on the bound, so this went
+// green at origin/main too. #833's -32700 came from an OLD muster behind a
+// current mirror (internal/mirrorhost's mcpproxy_oldmuster_test.go has the
+// red-then-green for that); this pins the seam a real mirror and a real muster
+// cross, which #733's tests reach only in process.
+test('a 400,000-byte page_update through the host MCP endpoint returns a version; one past the bound is a named 413', async () => {
+  const created = await call('page_create', { title: 'Big page ' + stamp, blocks: [{ type: 'markdown', text: 'v1' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const pageID = created.body.page_id as number;
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  // sized is a page_update padded to exactly n bytes: two html blocks (a block
+  // holds at most 256 KiB) of base64-shaped text, as inline images are sent.
+  const sized = (n: number) => {
+    const mk = (pad: number) => {
+      const a = Math.floor(pad / 2);
+      const blocks = [a, pad - a].map((k) => ({ type: 'html', html: `<img alt="" src="data:image/webp;base64,${'Q'.repeat(k)}">` }));
+      return JSON.stringify({ jsonrpc: '2.0', id: 41, method: 'tools/call', params: { name: 'page_update', arguments: { page_id: pageID, blocks } } });
+    };
+    const body = mk(n - mk(0).length);
+    expect(body.length, 'fixture size').toBe(n);
+    return body;
+  };
+  const post = (body: string) =>
+    fetch(localMCP, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+      body,
+    });
+
+  const ok = await post(sized(400_000));
+  const okText = await ok.text();
+  expect(ok.status, okText.slice(0, 300)).toBe(200);
+  const rep = JSON.parse(okText) as { error?: unknown; result?: { isError?: boolean; content: { text: string }[] } };
+  expect(rep.error, okText.slice(0, 300)).toBeUndefined();
+  expect(rep.result?.isError, okText.slice(0, 300)).toBeFalsy();
+  const out = JSON.parse(rep.result!.content[0].text) as { page_id: number; version: number };
+  expect(out).toMatchObject({ page_id: pageID, version: 2 });
+
+  const over = await post(sized(1_114_113));
+  const overText = await over.text();
+  expect(over.status, overText.slice(0, 300)).toBe(413);
+  expect(overText).not.toContain('-32700');
+  expect(overText).toContain('muster-mirror on this host refused this MCP request: it is larger than 1088 KiB');
 });
 
 // 🔴 A SERVER WITH NO LINK KEY (this spec's) MINTS ON THE TAP ONLY. There each

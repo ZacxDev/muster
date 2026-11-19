@@ -30,7 +30,8 @@ import (
 //
 //   - on every listing it applies the lines of <dir>/ops.jsonl it has not
 //     applied yet, each one of
-//     {"op": "session", "id", "title", "parent"?},
+//     {"op": "session", "id", "title", "parent"?, "directory"?} (the
+//     session's location directory; /srv/fixture when none is named),
 //     {"op": "message", "session", "message": {…a Session.Message.Info…}} (a
 //     message with an id already put is rewritten in place),
 //     {"op": "status", "session", "status": "busy"|"idle"},
@@ -123,16 +124,17 @@ func syncOpenCodeOps() {
 				ID       string `json:"id"`
 				Context  int64  `json:"context"`
 			} `json:"models"`
-			ID      string         `json:"id"`
-			Title   string         `json:"title"`
-			Parent  string         `json:"parent"`
-			Session string         `json:"session"`
-			Status  string         `json:"status"`
-			Message map[string]any `json:"message"`
-			Window  string         `json:"window"`
-			MS      int            `json:"ms"`
-			On      bool           `json:"on"`
-			Frame   string         `json:"frame"`
+			ID        string         `json:"id"`
+			Title     string         `json:"title"`
+			Parent    string         `json:"parent"`
+			Directory string         `json:"directory"`
+			Session   string         `json:"session"`
+			Status    string         `json:"status"`
+			Message   map[string]any `json:"message"`
+			Window    string         `json:"window"`
+			MS        int            `json:"ms"`
+			On        bool           `json:"on"`
+			Frame     string         `json:"frame"`
 		}
 		if json.Unmarshal(sc.Bytes(), &op) != nil {
 			continue
@@ -140,7 +142,11 @@ func syncOpenCodeOps() {
 		srv := e2eOpenCode.srv
 		switch op.Op {
 		case "session":
-			srv.PutSession(op.ID, op.Title, op.Parent)
+			if op.Directory != "" {
+				srv.PutSessionIn(op.ID, op.Title, op.Parent, op.Directory)
+			} else {
+				srv.PutSession(op.ID, op.Title, op.Parent)
+			}
 		case "message":
 			srv.PutMessage(op.Session, op.Message)
 		case "status":

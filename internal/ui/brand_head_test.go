@@ -93,16 +93,25 @@ func headLinks(page string) map[string][]string {
 }
 
 // checkIconLinks asserts page carries exactly one manifest link, and exactly
-// one favicon and one touch icon, both at want.
+// one favicon and one touch icon, both at want — on a branded page. On an
+// unbranded one (want is muster's own 192 px icon) the favicons are exactly
+// that icon, then the pack's SVG favicon and its 32 px render, and the touch
+// icon is the pack's 180 px icon: the full lists, so a muster favicon that
+// leaks onto a branded page, or one that goes missing, both fail.
 func checkIconLinks(t *testing.T, label, page, want string) {
 	t.Helper()
 	links := headLinks(page)
 	if got := links["manifest"]; len(got) != 1 {
 		t.Errorf("%s: %d rel=manifest links, want 1: %v", label, len(got), got)
 	}
-	for _, rel := range []string{"icon", "apple-touch-icon"} {
-		if got := links[rel]; len(got) != 1 || got[0] != want {
-			t.Errorf("%s: rel=%s links %v, want exactly [%s]", label, rel, got, want)
+	wantIcons, wantTouch := []string{want}, []string{want}
+	if !strings.Contains(want, BrandIcon192Path) {
+		wantIcons = []string{want, web.Asset("/static/icons/favicon.svg"), web.Asset("/static/icons/favicon-32.png")}
+		wantTouch = []string{web.Asset("/static/icons/apple-touch-icon.png")}
+	}
+	for rel, w := range map[string][]string{"icon": wantIcons, "apple-touch-icon": wantTouch} {
+		if got := links[rel]; strings.Join(got, " ") != strings.Join(w, " ") {
+			t.Errorf("%s: rel=%s links %v, want exactly %v", label, rel, got, w)
 		}
 	}
 }

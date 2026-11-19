@@ -171,7 +171,9 @@ decided right there:
   the officer has not redrafted — for example one refused because the
   venue's posting window was not open — with the plugin's own words for
   why. **Re-file** it in an hour, in 6 hours, at the next UTC midnight or at a
-  time you choose (UTC): the officer gets the same work back then, and not
+  time you choose (UTC) — or, when the plugin said when it could go (its
+  refusal's [`retry_at`](plugins.md#retry_at-when-a-refused-draft-could-go)),
+  at that time, which is then the default: the officer gets the same work back then, and not
   before, as your own item (a spent daily budget does not hold it back), and
   you approve the draft it files then. **Drop it**: the officer never
   redrafts it. A refusal you rejected yourself is not listed (that was your
@@ -179,9 +181,19 @@ decided right there:
 - **Its budget and run controls**: today's spend against its daily budget,
   **held** once the budget has stopped it (until the next UTC midnight), and
   **Run now** and **Pause** / **Resume**. Run now is how you wake a held
-  officer: work you give it yourself gets past the cap. ⚠ There is no
-  "raise today's cap" yet; the cap is `daily_budget_usd` in
-  `MUSTER_OFFICERS`.
+  officer: work you give it yourself gets past the cap. While it is held,
+  its **owner** also sees **Raise cap for today: +$N, to $M** — one more
+  day's worth of its `daily_budget_usd`, for the current UTC day only: it
+  goes back at the next 00:00 UTC by itself (the raise is stored against
+  that day, `officer_cap_raises`, so nothing has to clean it up). The next
+  wake pass reads it and the officer resumes the work the budget held back.
+  At most 3 raises a day. Only the officer's own owner can raise it, from
+  their own signed-in browser: a team's officer (whose owner is the team) is
+  not raised here, and no token — an officer's, an agent's, a personal API
+  token — can. Each raise is in the audit log (`officer.cap_raise`: who,
+  which officer, the cap before and after, and until when). It raises the
+  officer's daily budget, not an [LLM proxy](officers.md#the-llm-proxy)
+  pool's `llm.daily_budget_usd`.
 
 Every decision there is made only by your own signed-in browser: an
 officer's instance (or its machine's window) holds a token, never your

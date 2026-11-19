@@ -78,8 +78,8 @@ func TestTheAskToolTellsAnAgentItNeedNotWaitAndAMirroredSessionThatItMust(t *tes
 // work; ask an owner's decision with the runtime's own question tool, else
 // attention_ask + attention_wait; never end a turn on an offer, a menu or a
 // question typed into the chat. Each then carries attention_ask's context
-// sentence, and — only while uploads are on — Claude Code's how to attach
-// files (#767; an opencode session's attachments are not supported yet).
+// sentence, and — only while uploads are on — how to attach files (#767;
+// both runtimes' hosts upload them).
 const (
 	wantMirrorClaudeCodeAttention = `If work remains that you are authorized to do, keep going. ` +
 		`If a decision is your owner's — a choice, an approval, a missing fact — ask it with your AskUserQuestion tool: ` +
@@ -98,6 +98,9 @@ const (
 		`(repeat it while it answers "pending") until it returns the answer, then continue. ` +
 		`Never end your turn on an offer, a menu of next steps, or a question typed into the chat. ` +
 		`When you call attention_ask: Give context{one short line: why you are asking now and what the answer unblocks} with the question.`
+	// wantMirrorOpenCodeAttentionFiles is opencode's while uploads are on.
+	wantMirrorOpenCodeAttentionFiles = wantMirrorOpenCodeAttention + ` ` +
+		`To show files (a screenshot, a log), pass attachments: [paths in your working directory].`
 )
 
 // normInstruction collapses every whitespace run to one space, so a pin
@@ -113,7 +116,7 @@ func TestAMirroredSessionIsToldToKeepGoingAndAskWithItsOwnQuestionTool(t *testin
 		files    bool
 		want     string
 	}{{"claude code", false, false, wantMirrorClaudeCodeAttention}, {"claude code, uploads on", false, true, wantMirrorClaudeCodeAttentionFiles},
-		{"opencode", true, false, wantMirrorOpenCodeAttention}, {"opencode, uploads on", true, true, wantMirrorOpenCodeAttention}} {
+		{"opencode", true, false, wantMirrorOpenCodeAttention}, {"opencode, uploads on", true, true, wantMirrorOpenCodeAttentionFiles}} {
 		if got := normInstruction(mirrorAttentionInstructionFor(c.openCode, c.files)); got != normInstruction(c.want) {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}

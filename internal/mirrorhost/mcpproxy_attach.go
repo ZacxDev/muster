@@ -8,34 +8,46 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askattach"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // AN ASK'S FILES ARE ON THIS HOST (docs/attention.md "Attachments and
-// context"; internal/askattach). A Claude Code session's attention_ask may
-// name files by path — `attachments: ["shot.png"]` — and muster-server cannot
-// read this host's disk. So the proxy takes them out of the call before it is
-// forwarded: each path is resolved against the CALLING session's working
-// directory (its Claude Code process's cwd), sent to muster's upload store
+// context"; internal/askattach). A mirrored session's attention_ask — Claude
+// Code's or opencode's — may name files by path — `attachments: ["shot.png"]`
+// — and muster-server cannot read this host's disk. So the proxy takes them
+// out of the call before it is forwarded: each path is resolved against the
+// CALLING session's working directory (askRoot), sent to muster's upload store
 // (POST askattach.MirrorPath, this host's mirror token, the calling session),
 // and the call goes on with `attachment_ids` — the uploads' ids — in their
 // place. muster then files the ask with them, after checking each is an upload
 // of the same owner (internal/api ask_media.go).
 //
-// 🔴 CONFINED TO THE SESSION'S WORKING DIRECTORY, AFTER SYMLINKS
-// (workspacefile.Resolve, the rule `ccd ask-image` applies in a pod): `..`, an
-// absolute path elsewhere and a symlink that leads out are refused, before a
-// byte is read. Any refusal — a path outside, a missing file, too many, too
-// large, a type an ask cannot carry, muster refusing the upload — is the call's
-// TOOL error, and the call is NOT forwarded: no ask is filed without the files
-// it named.
+// THE WORKING DIRECTORY IS THE BOUND SESSION'S, NEVER THE CALL'S CLAIM:
 //
-// An opencode caller's attachments are not supported yet (it has no pane, so
-// no process to read a working directory from): refused, saying so. A
-// follow-up, by operator decision on #767.
+//   - a Claude Code caller: its Claude Code process's cwd (the process in the
+//     pane its call was resolved to);
+//   - an opencode caller: the location.directory the host's opencode server
+//     records for the session the call was BOUND to (openCodeBinding: the one
+//     window showing that session, or a subagent's root), read with this
+//     host's pair token (OpenCodeSource.Directory). Not the TUI's cwd — a TUI
+//     started with a directory argument runs its session there, not where it
+//     was started — and never a directory the call itself names: nothing in
+//     the call but the session id it is bound by is read, and a subagent's
+//     child session resolves to its ROOT's directory, the window's.
+//
+// 🔴 CONFINED TO THAT DIRECTORY, AFTER SYMLINKS (workspacefile.Resolve, the
+// rule `ccd ask-image` applies in a pod): `..`, an absolute path elsewhere —
+// another session's directory included — and a symlink that leads out are
+// refused, before a byte is read. Any refusal — a path outside, a missing
+// file, too many, too large, a type an ask cannot carry, a working directory
+// that cannot be read, muster refusing the upload — is the call's TOOL error,
+// and the call is NOT forwarded: no ask is filed without the files it named.
 
 // askToolName is the one call whose attachments the proxy uploads.
 const askToolName = "attention_ask"
@@ -47,9 +59,10 @@ const askUploadTimeout = 2 * time.Minute
 // replaced by attachment_ids (any ids the call already named kept first) — and
 // the uploads THIS call made — or the refusal; body unchanged for any other
 // call, or an attention_ask naming no attachments. sid is the calling Claude
-// session (ignored for openCode). 🔴 A refusal after some files were uploaded
-// revokes those uploads (revokeAskUploads), best effort.
-func (p *MCPProxy) uploadAskAttachments(r *http.Request, body []byte, sid string, openCode bool) ([]byte, askUploads, string) {
+// session (Claude Code's caller); ocSession the opencode session an opencode
+// caller's call was bound to (openCodeBinding). 🔴 A refusal after some files
+// were uploaded revokes those uploads (revokeAskUploads), best effort.
+func (p *MCPProxy) uploadAskAttachments(r *http.Request, body []byte, sid, ocSession string) ([]byte, askUploads, string) {
 	call, ok := parseCall(body)
 	if !ok || call.name != askToolName {
 		return body, askUploads{}, ""
@@ -75,23 +88,11 @@ func (p *MCPProxy) uploadAskAttachments(r *http.Request, body []byte, sid string
 	if len(paths)+len(ids) > askattach.MaxCount {
 		return nil, askUploads{}, fmt.Sprintf("at most %d attachments (%d named)", askattach.MaxCount, len(paths)+len(ids))
 	}
-	if openCode {
-		return nil, askUploads{}, "attachments from an opencode session are not supported yet (only a Claude Code session's are uploaded); ask without them"
+	root, made, why := p.askRoot(r, sid, ocSession)
+	if why != "" {
+		return nil, askUploads{}, why
 	}
-	c, _, err := p.callerClaude(r.Context(), r)
-	if err != nil {
-		return nil, askUploads{}, err.Error()
-	}
-	if sid != "" && c.Gen != sid {
-		return nil, askUploads{}, "the calling session changed while the call was bound; call again"
-	}
-	root, ok := p.cwdOf(c.PID)
-	if !ok || root == "" {
-		return nil, askUploads{}, fmt.Sprintf("cannot read the working directory of this session's Claude Code process (%d), so its attachments cannot be found; ask without them", c.PID)
-	}
-	t := askattach.Target{Base: strings.TrimRight(p.URL, "/"), Path: askattach.MirrorPath,
-		Header: http.Header{"Authorization": {"Bearer " + p.Token}, MCPSessionHeader: {c.Gen}}}
-	made := askUploads{session: c.Gen}
+	t := askattach.Target{Base: strings.TrimRight(p.URL, "/"), Path: askattach.MirrorPath, Header: made.header(p.Token)}
 	for _, path := range paths {
 		ctx, cancel := context.WithTimeout(r.Context(), askUploadTimeout)
 		rec, err := askattach.Upload(ctx, p.Client, t, root, path)
@@ -110,12 +111,63 @@ func (p *MCPProxy) uploadAskAttachments(r *http.Request, body []byte, sid string
 	return call.body(), made, ""
 }
 
+// askRoot is the calling session's working directory — what its attachments
+// are resolved against — and the (empty) uploads record naming that session,
+// or why there is none. An opencode caller (OpenCodeCaller): the directory the
+// opencode server records for ocSession, the session its call was bound to.
+// Any other: its Claude Code process's cwd.
+func (p *MCPProxy) askRoot(r *http.Request, sid, ocSession string) (string, askUploads, string) {
+	if OpenCodeCaller(r) {
+		key := mirror.OpenCodeCallerKey(ocSession)
+		if key == "" {
+			return "", askUploads{}, "this opencode call is bound to no session, so its attachments cannot be found; ask without them"
+		}
+		dir, ok := "", false
+		if p.OpenCodeDirectory != nil {
+			dir, ok = p.OpenCodeDirectory(ocSession)
+		}
+		if !ok || !filepath.IsAbs(dir) {
+			return "", askUploads{}, fmt.Sprintf("cannot read the working directory of opencode session %s from this host's opencode server, so its attachments cannot be found; ask without them", strconv.Quote(ocSession))
+		}
+		return dir, askUploads{session: key, openCode: true}, ""
+	}
+	c, _, err := p.callerClaude(r.Context(), r)
+	if err != nil {
+		return "", askUploads{}, err.Error()
+	}
+	if sid != "" && c.Gen != sid {
+		return "", askUploads{}, "the calling session changed while the call was bound; call again"
+	}
+	root, ok := p.cwdOf(c.PID)
+	if !ok || root == "" {
+		return "", askUploads{}, fmt.Sprintf("cannot read the working directory of this session's Claude Code process (%d), so its attachments cannot be found; ask without them", c.PID)
+	}
+	return root, askUploads{session: c.Gen}, ""
+}
+
 // askUploads are the files one forwarded attention_ask call uploaded, and the
 // session it uploaded them for: what revokeAskUploads takes back when the ask
-// is not filed.
+// is not filed. session is a Claude session id, or — openCode — an opencode
+// caller's key (mirror.OpenCodeCallerKey, "opencode:<id>").
 type askUploads struct {
-	session string
-	ids     []string
+	session  string
+	openCode bool
+	ids      []string
+}
+
+// header is how an upload or a take-back names u's session to muster: this
+// host's token, and the Claude session (MCPSessionHeader) — or, for an
+// opencode caller, its key (MCPAgentSessionHeader) and the opencode marker,
+// as its forwarded call names it.
+func (u askUploads) header(token string) http.Header {
+	h := http.Header{"Authorization": {"Bearer " + token}}
+	if u.openCode {
+		h.Set(MCPClientHeader, MCPClientOpenCode)
+		h.Set(MCPAgentSessionHeader, u.session)
+	} else {
+		h.Set(MCPSessionHeader, u.session)
+	}
+	return h
 }
 
 // askUploadsKey carries a forwarded call's askUploads on its request (send).
@@ -138,8 +190,7 @@ func (p *MCPProxy) revokeAskUploads(u askUploads) {
 		if err != nil {
 			continue
 		}
-		req.Header.Set("Authorization", "Bearer "+p.Token)
-		req.Header.Set(MCPSessionHeader, u.session)
+		req.Header = u.header(p.Token)
 		resp, err := p.do(req)
 		if err != nil {
 			p.logf("muster-mirror: mcp: revoking an unfiled ask's upload: %v", err)

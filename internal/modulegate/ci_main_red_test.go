@@ -24,7 +24,8 @@ import (
 //     nothing gates on (docshots is the one exception: the release tool refuses
 //     a sha whose docshots went red);
 //   - it is the ONLY job granted `issues: write`, and it is granted nothing
-//     beyond `contents: read` besides;
+//     beyond `actions: read` (the run list main_red.py reads) and
+//     `contents: read` besides;
 //   - its step hands main_red.py the needs context.
 //
 // WHAT THIS CANNOT SEE: it reads the YAML text, not a run. main_red.py's own
@@ -105,8 +106,10 @@ func TestCIMainRedNeedsWhatPublishGateNeeds(t *testing.T) {
 		}
 	}
 	sort.Strings(perms)
-	if strings.Join(perms, "; ") != "contents: read; issues: write" {
-		t.Errorf("main-red's permissions are %q, want exactly contents: read and issues: write", perms)
+	// actions: read is the run list main_red.py reads to let only the newest
+	// finished main run decide; it is read-only.
+	if strings.Join(perms, "; ") != "actions: read; contents: read; issues: write" {
+		t.Errorf("main-red's permissions are %q, want exactly actions: read, contents: read and issues: write", perms)
 	}
 
 	// No OTHER line in the workflow grants issues write, in any spelling.

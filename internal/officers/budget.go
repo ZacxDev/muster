@@ -148,6 +148,42 @@ func (o Officer) OverBudget(spent float64) bool {
 	return o.Budget.DailyUSD > 0 && spent >= o.Budget.DailyUSD
 }
 
+// WithRaisedCap is o with its daily budget for one UTC day raised to usd (its
+// owner's "Raise cap for today", builtin.Store.RaiseCapToday). THE rule for a
+// raise: it only ever RAISES — usd at or below the declared budget changes
+// nothing, and an officer with no budget (0, uncapped) is never given one.
+// Every reader of a raise (the wake loop, the claim, the pages) applies it
+// through here, then asks OverBudget.
+func (o Officer) WithRaisedCap(usd float64) Officer {
+	if o.Budget.DailyUSD > 0 && usd > o.Budget.DailyUSD {
+		o.Budget.DailyUSD = usd
+	}
+	return o
+}
+
+// RaisedCapBackend is a backend whose officer's daily budget its owner may
+// raise for one UTC day (builtin.Backend): the raised cap for now's UTC day,
+// 0 for none.
+type RaisedCapBackend interface {
+	RaisedCapToday(ctx context.Context, now time.Time) (float64, error)
+}
+
+// raisedCapReader is the part of the loop's HQ that reads a raise
+// (Backends.RaisedCapToday), asserted so an HQ without it raises nothing.
+type raisedCapReader interface {
+	RaisedCapToday(ctx context.Context, o Officer, now time.Time) (float64, error)
+}
+
+// RaisedCapToday is o's raised cap for now's UTC day through its backend; 0
+// when the backend has none or raises nothing.
+func (h *Backends) RaisedCapToday(ctx context.Context, o Officer, now time.Time) (float64, error) {
+	rb, ok := h.Backend(o).(RaisedCapBackend)
+	if !ok {
+		return 0, nil
+	}
+	return rb.RaisedCapToday(ctx, now)
+}
+
 // BudgetBackend is a backend that can say what its officer has spent on
 // now's UTC day (builtin.Backend). A backend without it has no budget.
 type BudgetBackend interface {

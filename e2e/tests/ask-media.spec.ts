@@ -1,10 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import crypto from 'node:crypto';
-import http from 'node:http';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { askMediaConnectPort, askMediaPort, askMediaS3Port, dsn, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { FakeS3, startFakeS3 } from '../lib/fakes3';
 
 // AN AGENT'S ASK CARRYING AN IMAGE (internal/api ask_media.go,
 // docs/attention.md "Attachments and context"), in a real browser against a
@@ -35,62 +34,8 @@ const PNG = Buffer.from(
   'base64',
 );
 
-// --- the fake S3 (uploads.spec.ts's, cut to what one small file needs) --------
-const objects = new Map<string, Buffer>();
-const xmlErr = (res: http.ServerResponse, status: number, code: string) =>
-  res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`);
-function unchunk(b: Buffer): Buffer {
-  const out: Buffer[] = [];
-  let at = 0;
-  for (;;) {
-    const eol = b.indexOf('\r\n', at);
-    if (eol < 0) break;
-    const size = parseInt(b.subarray(at, eol).toString('latin1').split(';')[0], 16);
-    if (!size) break;
-    out.push(b.subarray(eol + 2, eol + 2 + size));
-    at = eol + 2 + size + 2;
-  }
-  return Buffer.concat(out);
-}
-const objHeaders = (b: Buffer) => ({
-  'Content-Length': String(b.length),
-  ETag: '"' + crypto.createHash('md5').update(b).digest('hex') + '"',
-  'Last-Modified': new Date().toUTCString(),
-  'Content-Type': 'application/octet-stream',
-});
-const s3 = http.createServer((req, res) => {
-  const chunks: Buffer[] = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    let body = Buffer.concat(chunks);
-    const [rawPath, query = ''] = (req.url ?? '').split('?');
-    const p = decodeURIComponent(rawPath);
-    if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${ACCESS}/`)) return xmlErr(res, 403, 'AccessDenied');
-    if (!p.startsWith('/muster-e2e')) return xmlErr(res, 404, 'NoSuchBucket');
-    const key = p.replace(/^\/muster-e2e\/?/, '');
-    if (key === '') {
-      if (req.method === 'HEAD') return void res.writeHead(200).end();
-      if (query.startsWith('lifecycle')) return xmlErr(res, 404, 'NoSuchLifecycleConfiguration');
-      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
-      return xmlErr(res, 400, 'NotImplemented');
-    }
-    if (req.method === 'PUT') {
-      if (String(req.headers['x-amz-content-sha256'] ?? '').startsWith('STREAMING')) body = unchunk(body);
-      objects.set(key, body);
-      return void res.writeHead(200, { ETag: objHeaders(body).ETag }).end();
-    }
-    const b = objects.get(key);
-    if (req.method === 'HEAD') return b ? void res.writeHead(200, objHeaders(b)).end() : void res.writeHead(404).end();
-    if (req.method === 'GET') return b ? void res.writeHead(200, objHeaders(b)).end(b) : xmlErr(res, 404, 'NoSuchKey');
-    if (req.method === 'DELETE') {
-      objects.delete(key);
-      return void res.writeHead(204).end();
-    }
-    res.writeHead(405).end();
-  });
-});
-
 let server: Running | undefined;
+let s3: FakeS3 | undefined;
 let agentMade = false;
 const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
@@ -99,7 +44,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
-  await new Promise<void>((r) => s3.listen(askMediaS3Port, '127.0.0.1', () => r()));
+  s3 = await startFakeS3(askMediaS3Port, ACCESS, 'muster-e2e');
   server = await startServer(versionTerm, askMediaPort, {
     MUSTER_FOCUS_INTERVAL: '0',
     MUSTER_PUBLIC_URL: origin,
@@ -124,7 +69,7 @@ test.afterAll(async () => {
     if (agentMade) fix('cleanup', '1', agentName);
   } finally {
     await server?.stop();
-    await new Promise((r) => s3.close(r));
+    await s3?.close();
   }
 });
 

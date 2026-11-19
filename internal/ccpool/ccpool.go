@@ -524,6 +524,14 @@ const maxClockResetAhead = 12 * time.Hour
 // 9am (UTC)". Groups: month, day, hour, minute, am/pm, zone.
 var resetRe = regexp.MustCompile(`resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),\s+)?(\d{1,2})(?::(\d{2}))?\s*([aApP][mM])\s*\(([^)\s]+)\)`)
 
+// ResetPhrase is the reset detail states as the CLI wrote it ("resets Nov 23,
+// 1am (UTC)"), "" when it states none [statedReset] could read the shape of:
+// what an officer chat tells the member it waits for (internal/officers
+// ChatRateLimitedReply), with the same one pattern the pool reads it by.
+func ResetPhrase(detail string) string {
+	return strings.TrimSpace(resetRe.FindString(detail))
+}
+
 // statedReset is the reset time detail states, resolved against at (when the
 // account was marked): the next such clock time (or date and time) after at,
 // in the stated zone. ok is false when detail states none this can read — no

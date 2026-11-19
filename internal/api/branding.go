@@ -593,13 +593,14 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 
 // loginBrandHTML is the sign-in page's brand: the logo and name when set —
 // the logo alone, its alt the name, when it already shows the name
-// (ui.Brand.DrawsName, the header's rule) — and nothing when neither is set
-// (the page's own heading names muster). It is public — the sign-in page is —
-// and it is the server's, not a user's.
+// (ui.Brand.DrawsName, the header's rule) — and muster's own lockup (the
+// header's image, ui.LockupHTML) when neither is set. It is public — the
+// sign-in page is — and it is the server's, not a user's. The sign-in pages
+// and the admin claim (the first run) draw it.
 func (s *Server) loginBrandHTML(ctx context.Context) string {
 	b := s.uiBrand(ctx)
 	if !b.HasLogo() && b.Name == "" {
-		return ""
+		return `<div data-testid="login-mark" class="mb-4 flex justify-center">` + ui.LockupHTML() + `</div>`
 	}
 	var sb strings.Builder
 	sb.WriteString(`<div data-testid="login-brand" class="mb-4 flex flex-col items-center gap-2">`)
