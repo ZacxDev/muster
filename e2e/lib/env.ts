@@ -490,6 +490,11 @@ export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_M
 export const pluginAutostartPort = port + 450;
 export const pluginAutostartConnectPort = port + 451;
 export const pluginAutostartFakePort = port + 452;
+// tests/pages-declutter.spec.ts: the Pages screens, plain — its own server
+// (pages on, a link key, so +456 its connect listener). +455: clear of the
+// blocks above.
+export const pagesDeclutterPort = port + 455;
+export const pagesDeclutterConnectPort = port + 456;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

@@ -310,7 +310,7 @@ function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop
 function answer(ev){
  var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string")return;
  var cb=waiting[d.id];if(!cb)return;delete waiting[d.id];
- if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"refused");
+ if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"Not sent.");
 }
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
@@ -332,7 +332,7 @@ function send(op,component,value,done){
  if(!port)return done(false,"open this page through its link");
  var id="m"+(++seq);waiting[id]=done;
  R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
- R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},` + sdkWaitMs + `]);
+ R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"No answer came back. Try again.");}},` + sdkWaitMs + `]);
 }
 function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
@@ -416,7 +416,7 @@ const (
 	confirmGuardMs = "500"
 	// confirmWaitMs is how long the owner's confirm waits before it answers
 	// the page "Not sent" on its own; sdkWaitMs, how long the SDK waits for any
-	// answer — longer, so the page is never told "muster did not answer"
+	// answer — longer, so the page is never told "No answer came back"
 	// while the bar could still be confirmed (and a send it approves has
 	// sdkWaitMs - confirmWaitMs to finish).
 	confirmWaitMs = "600000"
@@ -484,8 +484,12 @@ type OwnerChrome struct {
 // ShellVersion is one version as the popover lists it.
 type ShellVersion struct {
 	Version int
-	// Made is when it was made, in words.
+	// Made is when it was made, in words: the day ("today"), which
+	// ShareScript redraws in the reader's own zone with its time ("today at
+	// 9:14") from AtMS, when AtMS is set.
 	Made string
+	// AtMS is when it was made, in Unix milliseconds; 0 draws Made as it is.
+	AtMS int64
 	// Current: the page's current version (what its links show).
 	Current bool
 	// Href views it (/pages/{id}/view?v=N).
@@ -590,6 +594,10 @@ func Shell(v ShellView) string {
 		for _, x := range o.Versions {
 			xn := strconv.Itoa(x.Version)
 			cur, what := "", esc(x.Made)
+			if x.AtMS > 0 {
+				// ui.PlainWhenHTML's <time>, which the script redraws.
+				what = `<time data-plain-when="` + strconv.FormatInt(x.AtMS, 10) + `" data-plain-when-prefix="">` + what + `</time>`
+			}
 			if x.Version == o.Version {
 				cur = ` aria-current="page"`
 			}

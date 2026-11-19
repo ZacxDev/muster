@@ -303,10 +303,11 @@ test('phone: Share opens the native share sheet with the title and the same link
   }
 });
 
-// THE PAGE'S OWN SCREEN, ON A PHONE: no address in its top layer — Copy link
-// puts the page's exact link on the clipboard, and the ⓘ beside it shows that
-// same link (with its own Copy). A stranger opens what was copied.
-test('phone: the page screen’s Copy link copies the exact link, and its ⓘ shows it', async ({ browser }) => {
+// THE PAGE'S OWN SCREEN, ON A PHONE: no address in its top layer — the page
+// starts with no link (no Links section, no ⋯ beside Share); Share makes it
+// (the phone's share sheet); then its row under Links copies that exact link.
+// A stranger opens what was copied.
+test('phone: the page screen’s Links row copies the exact link Share made', async ({ browser }) => {
   test.setTimeout(120_000);
   await publish();
   let ctx: BrowserContext | undefined;
@@ -318,43 +319,35 @@ test('phone: the page screen’s Copy link copies the exact link, and its ⓘ sh
       permissions: ['clipboard-read', 'clipboard-write'],
       baseURL: origin,
     });
-    // A phone's share sheet (stubbed: Copy link is drawn only where one exists).
+    // A phone's share sheet (stubbed: it resolves, so nothing is copied).
     await ctx.addInitScript(() => {
       Object.defineProperty(Navigator.prototype, 'share', { configurable: true, value: () => Promise.resolve() });
     });
     const page = await ctx.newPage();
     await signIn(page, origin);
-    // The page starts with NO link: its ⓘ is hidden until a tap makes one.
+    // The page starts with NO live link: no Copy, no ⋯ to revoke one.
     const revoked = await page.request.post(origin + `/pages/${pageID}/share/revoke`, { headers: { Origin: origin, Accept: 'application/json' } });
     expect(revoked.status()).toBe(200);
     await page.goto(origin + `/pages/${pageID}`);
     const box = page.locator('[data-page-share-box]');
     await expect(box).toBeVisible();
-    const info = page.getByRole('button', { name: "This page's link" });
-    await expect(info).toBeHidden();
-    // The top layer spells no address: the only place it is is the ⓘ.
+    await expect(page.locator('[data-link-state="live"]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Link options for/ })).toHaveCount(0);
+    // The top layer spells no address.
     await expect(box.locator('input')).toHaveCount(0);
-    await page.evaluate(() => navigator.clipboard.writeText('cleared'));
-    await page.getByRole('button', { name: `Copy the link to “${TITLE}”` }).tap();
-    await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
-    const copied = await page.evaluate(() => navigator.clipboard.readText());
-    expect(copied).toMatch(linkRE);
+    await page.getByRole('button', { name: `Share “${TITLE}”` }).tap();
     // The page's one link, as Share's own request answers it now.
     const share = await page.request.post(origin + `/pages/${pageID}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
-    expect((await share.json()).url, 'the same link Share hands out').toBe(copied);
+    const made = (await share.json()).url as string;
+    expect(made).toMatch(linkRE);
+    await page.reload();
     await expect(page.locator('[data-testid="page-detail"]')).not.toContainText('/s/', { useInnerText: true });
-    // The ⓘ appeared with that link, with no reload, and shows exactly it.
-    const sheet = page.locator(`#page-link-${pageID}`);
-    await expect(sheet).toBeHidden();
-    await info.tap();
-    await expect(sheet).toBeVisible();
-    await expect(sheet.locator('[data-info-code]')).toHaveText(copied);
-    // Its Copy copies the code as it reads (no second copy in an attribute).
     await page.evaluate(() => navigator.clipboard.writeText('cleared'));
-    const copy = sheet.locator('[data-info-copy]');
+    const copy = page.locator('[data-link-state="live"] [data-link-copy]');
     await copy.tap();
     await expect(copy).toHaveText('Copied');
-    expect(await page.evaluate(() => navigator.clipboard.readText()), 'the ⓘ copies the link').toBe(copied);
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copied, 'the row copies the link Share hands out').toBe(made);
     await strangerSees(browser, copied);
     sharedURL = copied;
   } finally {

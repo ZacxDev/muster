@@ -6,37 +6,6 @@ import (
 	"time"
 )
 
-// TestThePageLinkSheetIsDrawnForTheScriptToFill: with no link yet, the page's
-// link ⓘ is drawn hidden WITH its code row and Copy (empty), so the page
-// script can fill and show it on the first Share and hide it on Revoke; with
-// a link, it is shown holding it. Copy link is drawn hidden either way (the
-// script shows it only where a share sheet exists).
-func TestThePageLinkSheetIsDrawnForTheScriptToFill(t *testing.T) {
-	var b strings.Builder
-	_ = PageLinkSheet(7, "").Render(&b)
-	empty := b.String()
-	if !strings.HasPrefix(empty, `<span data-page-link-sheet="" data-page-id="7" hidden="">`) ||
-		!strings.Contains(empty, `data-info-code=""></code>`) || !strings.Contains(empty, `data-info-copy=""`) {
-		t.Errorf("no link yet: %s", empty)
-	}
-	b.Reset()
-	_ = PageLinkSheet(7, "https://muster.example.test/s/abc").Render(&b)
-	full := b.String()
-	if strings.Contains(full[:strings.Index(full, ">")], "hidden") || !strings.Contains(full, `data-info-code="">https://muster.example.test/s/abc</code>`) {
-		t.Errorf("with a link: %s", full)
-	}
-	b.Reset()
-	_ = PageCopyButton(7, "T", "", true).Render(&b)
-	if !strings.Contains(b.String(), `data-page-copy="" hidden=""`) {
-		t.Errorf("Copy link is not drawn hidden: %s", b.String())
-	}
-	for _, js := range []string{"s.hidden = !url;", "if (!navigator.share) return;"} {
-		if !strings.Contains(pageShareJS, js) {
-			t.Errorf("pageShareJS lacks %q", js)
-		}
-	}
-}
-
 // TestPlainWhenSaysTheDayAndNoClock: the server's words name the day only
 // (the script adds the reader's own time); never a clock or "UTC".
 func TestPlainWhenSaysTheDayAndNoClock(t *testing.T) {

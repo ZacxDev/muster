@@ -29,7 +29,8 @@ func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 		`id="` + PageCardID("t1") + `"`, `data-page-card=""`, `data-page-card-kind="published"`, `>Launch plan<`,
 		`href="/pages/42/view"`, `aria-label="Open “Launch plan”"`,
 		`action="/pages/42/share"`, `data-page-share=""`, `aria-label="Share “Launch plan”"`,
-		`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`, `aria-label="More for “Launch plan”"`,
+		`aria-label="More for “Launch plan”"`, `popovertarget="` + PageCardID("t1") + `-menu"`,
+		`id="` + PageCardID("t1") + `-menu" popover="auto" role="menu"`, `data-floating-menu=""`, `>Page settings</a>`,
 		`data-tool-row`,
 	} {
 		if !strings.Contains(html, want) {
@@ -38,6 +39,12 @@ func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 	}
 	if n := strings.Count(html, `data-page-card=""`); n != 1 {
 		t.Errorf("%d page cards, want 1 (a refused call draws none)", n)
+	}
+	// A page with no live link has nothing to revoke or replace.
+	for _, banned := range []string{`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`} {
+		if strings.Contains(html, banned) {
+			t.Errorf("a card for a page with no live link draws %s", banned)
+		}
 	}
 	// 🔴 The card never carries an address.
 	if strings.Contains(html, "data-share-url") {
@@ -146,5 +153,44 @@ func TestThePageShareScriptIsInTheAppScript(t *testing.T) {
 		if !strings.Contains(js, want) {
 			t.Errorf("appScript lacks %s", want)
 		}
+	}
+}
+
+// TestAPageCardsMenuOffersRevokeOnlyWithALiveLink: the chat card's ⋯ is a
+// popover menu (MoreMenu: Escape and a tap outside close it), never a
+// <details>; it holds Revoke link and New link only while the page has a live
+// link, and the page's own screen either way; two cards drawn without an id
+// (the card route's) never share a menu id.
+//
+// REGRESSION TEST: red at 35b55f6f3, whose card drew a <details> ⋯ with Revoke
+// link and New link on every card, a page with no link included.
+func TestAPageCardsMenuOffersRevokeOnlyWithALiveLink(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		html := render(PageCard(PageCardView{ID: 42, Title: "Launch plan", Kind: PageCardShared, Live: live}, "card-a"))
+		for _, want := range []string{`popovertarget="card-a-menu"`, `id="card-a-menu" popover="auto"`, `href="/pages/42"`} {
+			if !strings.Contains(html, want) {
+				t.Errorf("live=%v: the card lacks %s", live, want)
+			}
+		}
+		if strings.Contains(html, "<details") {
+			t.Errorf("live=%v: the card's menu is a <details>", live)
+		}
+		for _, link := range []string{`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`} {
+			if strings.Contains(html, link) != live {
+				t.Errorf("live=%v: %s drawn = %v", live, link, !live)
+			}
+		}
+	}
+	a, b := render(PageCard(PageCardView{ID: 42, Title: "T"}, "")), render(PageCard(PageCardView{ID: 42, Title: "T"}, ""))
+	idOf := func(h string) string {
+		i := strings.Index(h, `popovertarget="`)
+		if i < 0 {
+			return ""
+		}
+		h = h[i+len(`popovertarget="`):]
+		return h[:strings.Index(h, `"`)]
+	}
+	if idOf(a) == "" || idOf(a) == idOf(b) {
+		t.Errorf("two id-less cards share the menu id %q", idOf(a))
 	}
 }
