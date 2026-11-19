@@ -143,6 +143,13 @@ class Act(unittest.TestCase):
         gh = FakeGh(runs=[(501, None), (RUN, MAIN_RED_RUNNING)])
         self.assertEqual(act(REPO, SHA, URL, "red", gh, run_number=RUN), "opened the main-red issue")
 
+    def test_a_superseded_pending_run_does_not_block(self):
+        # main's group keeps one run going and one waiting; a newer push REPLACES
+        # the waiting run, which ends cancelled having started no job. It never
+        # decided, so it must not stop the run that did finish from acting.
+        gh = FakeGh(runs=[(502, MAIN_RED_RUNNING), (501, None), (RUN, MAIN_RED_RUNNING)], open_issues="9")
+        self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "closed #9")
+
     def test_the_newest_red_opens(self):
         gh = FakeGh(runs=[(RUN, MAIN_RED_RUNNING)])
         self.assertEqual(act(REPO, SHA, URL, "red", gh, run_number=RUN), "opened the main-red issue")
