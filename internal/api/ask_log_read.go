@@ -743,21 +743,78 @@ func askOutcomeSheetHTML(m map[string]int, folded []string) string {
 		Lead: "Every ask in the log ends one of these ways.", Extra: g.Raw(b.String()), Inline: true})
 }
 
-// askLogWhere is where an ask was asked, as the card's sub line names it.
+// askLogWhere is where an ask was asked, whole: the session @ host part
+// (askLogWho) and the repo, "ratelimit @ work-laptop · acme/api". It is the
+// card's place as its title spells it, so all of it is there to read when the
+// line shows less.
 func askLogWhere(a asklog.Ask) string {
 	var parts []string
-	switch {
-	case a.Host != "" && a.TmuxSession != "":
-		parts = append(parts, a.TmuxSession+" @ "+a.Host)
-	case a.Host != "":
-		parts = append(parts, "@ "+a.Host)
-	case a.AgentID > 0:
-		parts = append(parts, "agent "+strconv.FormatInt(a.AgentID, 10))
+	if who := askLogWho(a); who != "" {
+		parts = append(parts, who)
 	}
 	if a.Repo != "" {
 		parts = append(parts, a.Repo)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// askLogWho is the session @ host part of where an ask was asked ("" when it
+// names none): its tmux session and host, else its host, else its agent.
+func askLogWho(a asklog.Ask) string {
+	switch {
+	case a.Host != "" && a.TmuxSession != "":
+		return a.TmuxSession + " @ " + a.Host
+	case a.Host != "":
+		return "@ " + a.Host
+	case a.AgentID > 0:
+		return "agent " + strconv.FormatInt(a.AgentID, 10)
+	}
+	return ""
+}
+
+// askLogSubHTML is a row's sub line under its title: the session @ host
+// part, the repo ("· acme/api"), then the age ("· 15m ago"), the whole place
+// as the line's title (so all of it is there to read when the line shows
+// less). age is the age's <time>.
+//
+// 🔴 NO PART IS EVER CUT TO A STUB, AND THE AGE IS NEVER CUT. The repo and the
+// age are the line's TAIL (ui.AsksLogTailClass): one clipped line on which
+// the age is laid out first (ui.AsksLogAgeClass) and the repo after it, its
+// flex basis the room a readable part needs (ui.AsksLogRepoClass) — so a repo
+// with less room than that wraps onto the tail's clipped second line and is
+// not drawn at all, rather than drawn as "· a…". The tail is drawn
+// right-to-left and packed to its left edge, so on screen it reads "· repo ·
+// age" straight after the session @ host part, with no gap where a dropped
+// repo was. The session @ host part (ui.AsksLogWhoClass) gives way to the
+// age (the tail never narrows past it) and truncates against all the rest of
+// the line.
+func askLogSubHTML(a asklog.Ask, age string) string {
+	esc := html.EscapeString
+	who := askLogWho(a)
+	var b strings.Builder
+	b.WriteString(`<span class="` + ui.AsksLogSubClass + `" data-asklog-sub`)
+	if where := askLogWhere(a); where != "" {
+		b.WriteString(` title="` + esc(where) + `"`)
+	}
+	b.WriteString(`>`)
+	if who != "" {
+		// A space between parts (a flex row draws none): the line's text, as
+		// a screen reader or a copy reads it, is "who · repo · age".
+		b.WriteString(`<span class="` + ui.AsksLogWhoClass + `" data-asklog-who>` + esc(who) + `</span> `)
+	}
+	b.WriteString(`<span class="` + ui.AsksLogTailClass + `" data-asklog-tail>`)
+	if a.Repo != "" {
+		repo := esc(a.Repo)
+		if who != "" {
+			repo = `· ` + repo
+		}
+		b.WriteString(`<span class="` + ui.AsksLogRepoClass + `" data-asklog-repo>` + repo + `</span> `)
+	}
+	if who != "" || a.Repo != "" {
+		age = `· ` + age
+	}
+	b.WriteString(`<span class="` + ui.AsksLogAgeClass + `" data-asklog-age>` + age + `</span></span></span>`)
+	return b.String()
 }
 
 // askLogCardHTML is one ask's card: what kind and where, its outcome as a
@@ -773,18 +830,10 @@ func askLogCardHTML(a asklog.Ask, now time.Time, ttl time.Duration) string {
 	if row.TextExpired {
 		b.WriteString(` data-text-expired`)
 	}
-	// The sub line: the place (truncated, its ellipsis inside it), then the
-	// age — never shrunk, its "·" with it — so the age is always seen.
-	age := `<time datetime="` + row.AskedAt.Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.AskedAt))) + `</time>`
-	sub := ""
-	if where := askLogWhere(a); where != "" {
-		sub = `<span class="` + ui.AsksLogWhereClass + `" data-asklog-where>` + esc(where) + `</span>`
-		age = `· ` + age
-	}
-	sub += `<span class="` + ui.AsksLogAgeClass + `" data-asklog-age>` + age + `</span>`
+	sub := askLogSubHTML(a, `<time datetime="`+row.AskedAt.Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.AskedAt)))+`</time>`)
 	b.WriteString(`>
 <div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `">` + esc(labelOr(askKindLabels, row.Kind)) +
-		`</span><span class="` + ui.AsksLogSubClass + `" data-asklog-sub>` + sub + `</span></div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
+		`</span>` + sub + `</div><span class="` + ui.AsksPillClass + `" data-asklog-outcome>` + esc(labelOr(askOutcomeLabels, row.Outcome)) + `</span></div>
 `)
 	switch {
 	case row.TextExpired:
