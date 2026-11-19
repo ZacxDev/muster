@@ -380,6 +380,8 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
 
   // 9. Rollback on the Pages screen: version 1 again.
   await page.goto(origin + `/pages/${pageID}`);
+  // (An older version's ⋯ holds "Make current".)
+  await page.getByRole('button', { name: 'More for version 1' }).click();
   await Promise.all([page.waitForURL(origin + `/pages/${pageID}`), page.locator('[data-version="1"] [data-version-current]').click()]);
   await sp.goto(url);
   await expect(frame.locator('h1')).toHaveText('Pick your launch date');
@@ -399,7 +401,7 @@ test('the Pages screens do not shift on load', async ({ page }) => {
   const pageID = created.body.page_id as number;
   for (const [url, ready] of [
     ['/pages', '[data-testid="pages"] li'],
-    [`/pages/${pageID}`, '[data-testid="page-versions"] li'],
+    [`/pages/${pageID}`, '[data-page-title]'],
     [`/pages/${pageID}/view`, 'iframe#page'],
   ] as const) {
     await page.addInitScript(clsInit);
@@ -470,6 +472,8 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
   const pageID = created.body.page_id as number;
   const links = async () => ((await call('page_get', { page_id: pageID })).body.links as unknown[]).length;
   await page.goto(origin + '/pages');
+  // The row's Share is in its ⋯.
+  await page.locator(`li[data-page-id="${pageID}"] [data-more-menu-open]`).click();
   const share = page.locator(`[data-page-share][data-page-id="${pageID}"]`);
   await share.dispatchEvent('pointerdown');
   await share.focus();
@@ -479,6 +483,14 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
   await share.click();
   await expect(page.locator('[data-page-toast]').first()).toBeVisible();
   await expect.poll(links).toBe(1);
+  // That one-off link is not the page's reusable link, and Revoke link / New
+  // link act on that one only: the row's ⋯ still offers neither after the
+  // Share (red at 776f0ca57, whose script showed both).
+  await page.locator(`li[data-page-id="${pageID}"] [data-more-menu-open]`).click();
+  const menu = page.locator(`#page-menu-${pageID}`);
+  await expect(menu.getByRole('link', { name: 'Details' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Revoke link' })).toHaveCount(0);
+  await expect(menu.getByRole('button', { name: 'New link' })).toHaveCount(0);
 });
 
 // --- THE OWNER'S OWN VIEW, THE SLIM HEADER AND THE VERSION CHIP --------------
@@ -608,7 +620,7 @@ for (const vp of [
       await chip.click();
       await expect(chip).toHaveAttribute('aria-expanded', 'true');
       await expect(pop).toBeVisible();
-      await expect(pop.locator('[data-version-link]')).toHaveText([/^Version 2current · \d{4}-\d\d-\d\d \d\d:\d\d UTC$/, /^Version 1\d{4}-\d\d-\d\d \d\d:\d\d UTC$/]);
+      await expect(pop.locator('[data-version-link]')).toHaveText([/^Version 2current · today at \d{1,2}:\d{2}\s[AP]M$/, /^Version 1today at \d{1,2}:\d{2}\s[AP]M$/]);
       await expect(pop.locator('[data-page-share]')).toBeVisible();
       await expect(pop.locator('[data-page-details]')).toHaveAttribute('href', `/pages/${pageID}`);
       await expect(pop.locator('[data-version-link="2"]')).toBeFocused();
