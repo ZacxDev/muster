@@ -3,6 +3,8 @@ package api
 import (
 	"bufio"
 	"context"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -378,5 +380,71 @@ func TestAStallCallbackFinishesBeforeTheBeatReturns(t *testing.T) {
 	}
 	if !pageStalled(c) {
 		t.Error("the beat returned without its stall noted")
+	}
+}
+
+// TestAWriteSeamReachesOnlyTheWritesMadeOnItsContext: a beat another test
+// left running (socketHeartbeat's stop does not wait for its goroutine, and
+// nothing waits for a hijacked socket's handler) must never run THIS test's
+// seams. When the seams were package variables it did, racing the test that
+// assigned them (TestAStallCallbackFinishesBeforeTheBeatReturns on CI: the
+// test's assignment against writePing's call from socketHeartbeat's
+// goroutine). Here a foreign beat writes every millisecond on the same socket
+// while this test makes one write of its own on a context carrying seams: the
+// seam runs exactly once.
+func TestAWriteSeamReachesOnlyTheWritesMadeOnItsContext(t *testing.T) {
+	got := make(chan *websocket.Conn, 1)
+	hold := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		got <- c
+		<-hold
+	}))
+	t.Cleanup(func() { close(hold); srv.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.CloseNow()
+	var pings atomic.Int64
+	go func() { // a page that reads, and counts the beats
+		for {
+			_, data, err := page.Read(context.Background())
+			if err != nil {
+				return
+			}
+			if string(data) == ui.LivePingFrame {
+				pings.Add(1)
+			}
+		}
+	}()
+	c := <-got
+	defer forgetPage(c)
+
+	saved := liveHeartbeatEvery
+	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
+	stop := socketHeartbeat(context.Background(), log.New(io.Discard, "", 0), c) // the foreign beat
+	liveHeartbeatEvery = saved
+	defer stop()
+
+	var ran atomic.Int64
+	seams := &writeSeams{beatWrite: func() { ran.Add(1) }}
+	if err := writePing(withWriteSeams(context.Background(), seams), c, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for pings.Load() < 20 { // the foreign beat has written well past this test's write
+		if time.Now().After(deadline) {
+			t.Fatalf("control: the foreign beat wrote %d beats, want 20", pings.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := ran.Load(); n != 1 {
+		t.Errorf("the seam ran %d times over one write of its own and %d beats of another's: want 1", n, pings.Load())
 	}
 }
