@@ -11,7 +11,7 @@ import (
 // THE PALETTE'S GO HALF.
 //
 // The palette itself ("Brass Roll") is defined ONCE, as CSS custom properties in
-// web/css/input.css, and every view names a ROLE (`bg-s1`, `text-accent`) rather
+// web/css/tokens.css, and every view names a ROLE (`bg-s1`, `text-accent`) rather
 // than a hue. Two values cannot be CSS, because the browser reads them before
 // any stylesheet exists: the `theme-color` meta that tints the phone's status
 // bar, and the web app manifest's `theme_color` / `background_color`. Those two
@@ -19,7 +19,7 @@ import (
 //
 // 🔴 THESE ARE THE ONLY COLOUR LITERALS ALLOWED IN internal/ui, AND THEY ARE NOT
 // FREE-STANDING. TestNoHardCodedColourInUI exempts this file and nothing else,
-// and TestThemeColorsAreTheBackgroundTokens parses input.css and fails unless
+// and TestThemeColorsAreTheBackgroundTokens parses tokens.css and fails unless
 // each constant equals that theme's `--mu-bg`. So the status bar cannot drift
 // from the page it sits on: change the token and this file must follow.
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ const ThemeColorDark = "#110F1C"
 // `:root:not(.dark)`).
 //
 // ⚠ NOTHING RENDERS IT ANY MORE: the light theme is unreachable (the sidebar's
-// toggle is gone and ThemeHead forces dark). The light tokens in input.css and
+// toggle is gone and ThemeHead forces dark). The light tokens in tokens.css and
 // their contrast tests stay until a later cleanup removes the light palette as
 // a whole; this constant stays with them so TestThemeColorsAreTheBackgroundTokens
 // still pins it to its token.

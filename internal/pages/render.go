@@ -2,6 +2,7 @@ package pages
 
 import (
 	"crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"html"
@@ -115,12 +116,18 @@ type RenderOptions struct {
 // SDK, then every block. It is served with ContentHeaders. A link's viewer
 // and the page's owner get the SAME document: whose a response is, is the
 // shell's route's to say (ShellScript), never the content's.
+//
+// 🔴 ITS THEME IS THE APP'S, AND IT IS THE SAME FOR EVERY VIEWER. The <html>
+// carries ContentThemeClass, as every document of the app does, and the
+// stylesheet is the app's palette (contentThemeCSS); nothing about the viewer
+// (a cookie, a header, the device's colour scheme) is read, so the document
+// stays one document and no cache can hand one viewer's theme to another.
 func Content(v Version, o RenderOptions) string {
 	esc := html.EscapeString
 	var b strings.Builder
-	b.WriteString("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">" +
+	b.WriteString("<!doctype html>\n<html lang=\"en\" class=\"" + ContentThemeClass + "\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
-		"<title>" + esc(v.Title) + "</title>\n<style>" + contentCSS + "</style>\n<script>")
+		"<title>" + esc(v.Title) + "</title>\n<style>" + contentThemeCSS + "\n" + contentCSS + "</style>\n<script>")
 	var blocks strings.Builder
 	for _, blk := range v.Blocks {
 		blocks.WriteString(renderBlock(blk, o))
@@ -379,11 +386,46 @@ R(AEL,D,["submit",function(ev){
 })();`
 }
 
+// ContentThemeClass is the class on the content document's <html>: the app's
+// one theme. Every document the app draws carries class="dark" (internal/ui's
+// layouts; the light theme has no toggle since the theme head forces dark), and
+// the palette (web/css/tokens.css) selects its dark block by it, its light one
+// by its absence.
+const ContentThemeClass = "dark"
+
+// contentThemeCSS is the app's palette and the utilities ui.MarkdownHTML
+// writes, scoped under .mp-markdown: built by `make css` from
+// web/css/page-content.css (tailwind.pages.config.js), from the same palette
+// and theme as web/static/app.css, and checked fresh by `make css-check`.
+// TestEveryMarkdownClassHasARule fails on a class the renderer writes that it
+// does not define.
+//
+//go:embed content_theme.css
+var contentThemeCSS string
+
 // contentCSS is the content document's base styles: readable, phone-first,
-// and overridable by the page's own.
-const contentCSS = `:root{color-scheme:light dark;--fg:#1d1d1f;--fg2:#5b5b63;--bg:#fff;--line:#d9d9de;--accent:#2f6fde;--bad:#b3261e;--good:#1b7f3b}
-@media (prefers-color-scheme:dark){:root{--fg:#f2f2f5;--fg2:#a8a8b3;--bg:#141416;--line:#34343a;--accent:#7aa7ff;--bad:#ff8a80;--good:#7bd88f}}
+// and overridable by the page's own. Its colours are the palette's roles
+// (contentThemeCSS defines --mu-*); the short names (--fg, --accent, ...) stay
+// defined for a page's own HTML that used them.
+//
+// The .mp-markdown rules are the part of the app's reset (Tailwind's
+// preflight, which this document does not load) the renderer's utilities rely
+// on, plus a document's headings: scoped to a markdown block, so a page's own
+// HTML is never reset. A page's own styles still win over every global rule
+// here: those are element selectors, or :where() (no specificity at all).
+const contentCSS = `:root{--fg:rgb(var(--mu-text));--fg2:rgb(var(--mu-text2));--bg:rgb(var(--mu-bg));--line:rgb(var(--mu-line));--edge:rgb(var(--mu-edge));` +
+	`--accent:rgb(var(--mu-accent));--on-accent:rgb(var(--mu-on-accent));--bad:rgb(var(--mu-st-error-fg));--good:rgb(var(--mu-st-complete-fg))}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+:where(a){color:var(--accent)}
+.mp-markdown *{border:0 solid var(--line)}
+.mp-markdown :is(p,blockquote,pre,hr,ul,ol,figure){margin:0}.mp-markdown :is(ul,ol){padding:0}
+.mp-markdown hr{height:0;color:inherit;border-top-width:1px}
+.mp-markdown :is(h1,h2,h3,h4,h5,h6){margin:1.1em 0 .4em;line-height:1.25;font-weight:600;color:var(--fg)}
+.mp-markdown h1{font-size:1.6em}.mp-markdown h2{font-size:1.35em}.mp-markdown h3{font-size:1.15em}.mp-markdown :is(h4,h5,h6){font-size:1em}
+.mp-markdown :is(h4,h5,h6){color:var(--fg2)}.mp-markdown :is(h1,h2,h3,h4,h5,h6):first-child{margin-top:0}
+.mp-markdown :is(code,pre){font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.mp-markdown table{text-indent:0;border-color:inherit}.mp-markdown :is(th,td){vertical-align:top}.mp-markdown th{font-weight:600}
+.mp-markdown summary{list-style:none}.mp-markdown details{color:var(--fg)}
 html{scroll-padding-top:` + shellHeaderPx + `px}
 .mp{max-width:44rem;margin:0 auto;padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
 img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -391,8 +433,8 @@ form{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid v
 fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}legend,.mp-label{font-weight:600;padding:0;margin:0 0 4px}
 label{font-weight:500}.mp-option,.mp-check{display:flex;align-items:center;gap:8px;font-weight:400}
 input[type=text],input[type=email],input[type=number],input[type=date],select,textarea{width:100%;font:inherit;color:inherit;background:transparent;
-border:1px solid var(--line);border-radius:8px;padding:10px;min-height:44px}
-button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;align-self:flex-start}
+border:1px solid var(--edge);border-radius:8px;padding:10px;min-height:44px}
+button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font-weight:600;cursor:pointer;align-self:flex-start}
 button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.6}
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
 .mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}`
