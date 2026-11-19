@@ -331,7 +331,8 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
 	"AgentSessionHref ← internal/api/attention_asker.go:askerRef.page":                    1,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
-	// The views: the session drawer, the chief page's Chats tab (its rows name
+	"AgentSessionHref ← internal/api/chief_chats.go:Server.answerSideChatOpened":          1,
+	// The views: the session drawer, the chief page's chip strip (its chips name
 	// their session, like the drawer's), a task card's Open chat, the
 	// notification panel's two row kinds, the terminal page's back link.
 	// A list's links (the sidebar's rows and the switcher's pills via
@@ -340,7 +341,7 @@ var agentHrefCallLedger = map[string]int{
 	"AgentListHref ← internal/ui/agents.go:AgentCardView.PageHref":  1,
 	"AgentListHref ← internal/ui/notes.go:taskActionTrailing":       1,
 	"AgentSessionHref ← internal/ui/agents_detail.go:sessionDrawer": 1,
-	"AgentSessionHref ← internal/ui/chief_chats.go:chiefChatRow":    1,
+	"AgentSessionHref ← internal/ui/chief_chats.go:chiefChip":       1,
 	"AgentSessionHref ← internal/ui/notifications.go:activeRow":     1,
 	"AgentSessionHref ← internal/ui/notifications.go:notifRow":      1,
 	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":  1,

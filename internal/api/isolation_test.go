@@ -799,6 +799,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /officers/{officer}/resume":                  classParam,
 	"POST /officers/{officer}/mode":                    classParam,
 	"POST /officers/{officer}/run":                     classParam,
+	"POST /officers/{officer}/raise-cap":               classParam,
 	"POST /officers/{officer}/delete":                  classParam,
 	"POST /officers/{officer}/schedules":               classParam,
 	"POST /officers/{officer}/schedules/{name}/delete": classParam,
@@ -1382,7 +1383,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
 		page: ghostID, pageLink: ghostID, pageDel: ghostID, pageResp: ghostID,
 		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID, morningDate: "1999-01-01"}
-	// The morning report (0157): A's report of isoMorningDate names the canary
+	// The morning report (0158): A's report of isoMorningDate names the canary
 	// in a done line, so A's own page is told from the ghost day's by its body.
 	if _, err := morning.NewPG(pool).Insert(ua, morning.Row{Date: isoMorningDate, Since: time.Date(2001, 2, 2, 14, 0, 0, 0, time.UTC),
 		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTaskChanged, Label: w.canary + " morning"}}}}); err != nil {
@@ -1473,7 +1474,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
-	// The morning report (0157): A's report is a real object B must not reach.
+	// The morning report (0158): A's report is a real object B must not reach.
 	ext.MorningReport = &MorningReport{Store: morning.NewPG(pool), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}}
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)

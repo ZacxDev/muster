@@ -139,7 +139,22 @@ func (s *Server) handleChiefSideChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("chief chats: %s: side chat %d (runtime %q)", a.Name, sess.ID, sess.Runtime)
-	s.answerSessionOpened(ctx, w, r, a, sess)
+	s.answerSideChatOpened(ctx, w, r, a, sess)
+}
+
+// answerSideChatOpened is answerSessionOpened for the side chat route, asking
+// the view it lands on to put the cursor in the message box: the page by
+// ui.ComposerFocusParam on its HX-Redirect, the panel by the flag on the body it
+// renders. 🔴 "+" MUST VISIBLY LAND: the operator tapped New side chat, the page
+// moved, and nothing said so. Only this route asks; a plain load of the chat
+// does not take the focus.
+func (s *Server) answerSideChatOpened(ctx context.Context, w http.ResponseWriter, r *http.Request, a agents.Agent, sess agents.ChatSession) {
+	if chatSurfaceFromRequest(r) == ui.ChatSurfaceChiefPanel {
+		s.writeChiefPanelBodyWith(ctx, w, a, strconv.FormatInt(sess.ID, 10), "", true)
+		return
+	}
+	w.Header().Set("HX-Redirect", ui.AgentSessionHref(a.Name, sess.ID)+"&"+ui.ComposerFocusParam+"=1")
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleChiefChatArchive handles POST /agents/{id}/sessions/{sid}/archive,
@@ -199,7 +214,7 @@ func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archive
 
 // stayOnCurrent is the chat an action on chat touched leaves the operator on:
 // the chat they were ON (?current=, ui.ChiefCurrentParam) when the action was
-// on another chat — a Chats-tab row's ⋯ menu archiving, unarchiving or making
+// on another chat — a chat chip's ⋯ menu archiving, unarchiving or making
 // primary a chat that is not the open one — else fallback (the action's own
 // answer: the primary after archiving the open chat, the chat itself after
 // unarchiving or making it primary).

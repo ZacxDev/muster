@@ -310,8 +310,7 @@ type Server struct {
 	// the route answers PR 7251 and 404 pr_not_visible for any other.
 	PRContextReadOff bool
 	PRContextAbsent  bool
-	// The HQ-derived asks (civ-hq#509 task-asks, civ-hq#510 flood-blocks,
-	// civ-hq#887 rollout-promotions):
+	// The HQ-derived asks (civ-hq#509 task-asks, civ-hq#510 flood-blocks):
 	// verbRefusal[verb], when set, is answered by that route instead
 	// (RefuseVerb); derivedAsks is every one accepted, in order.
 	verbRefusal map[string]*refusal
@@ -323,6 +322,9 @@ type Server struct {
 	RerunCalls  []RerunCall
 	// gapTasks: every accepted gap-tasks request (civ-hq §5o), in order.
 	gapTasks []GapTask
+	// rolloutEvidence: every accepted rollout-evidence request (civ-hq
+	// §5r), in order.
+	rolloutEvidence []RolloutEvidence
 	// closedGapTasks: gap task ids a test closed (CloseGapTask).
 	closedGapTasks map[string]bool
 	// The usage route (PUT /officers/{id}/usage): UsageAbsent is an HQ
@@ -726,16 +728,15 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DerivedAsk is one accepted POST …/items/{item}/task-asks,
-// …/flood-blocks or …/rollout-promotions: the verb, and the body as HQ
-// decoded it.
+// DerivedAsk is one accepted POST …/items/{item}/task-asks or
+// …/flood-blocks: the verb, and the body as HQ decoded it.
 type DerivedAsk struct {
 	Verb, Officer, Item string
 	Body                map[string]any
 }
 
 // RefuseVerb makes item route verb ("task-asks", "flood-blocks",
-// "rollout-promotions") answer
+// "gap-tasks", "rollout-evidence") answer
 // status {error, code} (status 0: serve normally).
 func (s *Server) RefuseVerb(verb string, status int, code, msg string) {
 	s.mu.Lock()
@@ -757,8 +758,7 @@ func (s *Server) DerivedAsks() []DerivedAsk {
 	return append([]DerivedAsk(nil), s.derivedAsks...)
 }
 
-// derivedAsk serves task-asks, flood-blocks and rollout-promotions with
-// canned answers: a
+// derivedAsk serves task-asks and flood-blocks with canned answers: a
 // forced refusal (RefuseVerb) wins; otherwise the ask is recorded, the item
 // is WAITING with no holder (an ordinary HQ ask) and 201. HQ's own checks
 // (kind, lease, limits) are HQ's and are not re-implemented here.
@@ -775,12 +775,38 @@ func (s *Server) derivedAsk(w http.ResponseWriter, officer string, it *Item, ver
 		s.write(w, http.StatusCreated, map[string]any{"flood_block": map[string]any{"id": n, "state": "pending", "unit_ids": body["unit_ids"]}, "ask": ask, "item": *it})
 		return
 	}
-	if verb == "rollout-promotions" {
-		s.write(w, http.StatusCreated, map[string]any{"rollout_promotion": map[string]any{"id": n, "state": "pending", "repo": body["repo"], "preview_tag": body["preview_tag"]},
-			"asks": []any{ask}, "skipped": []any{}, "item": *it})
+	s.write(w, http.StatusCreated, map[string]any{"ask": ask, "task_ask": map[string]any{"ask_id": n, "task_id": "fixture-task-1", "task_rev": 3}, "item": *it})
+}
+
+// RolloutEvidence is one rollout-evidence request HQ accepted: the body as
+// decoded.
+type RolloutEvidence struct {
+	Officer, Item string
+	Body          map[string]any
+}
+
+// RolloutEvidenceAttached returns every accepted rollout-evidence request,
+// in order.
+func (s *Server) RolloutEvidenceAttached() []RolloutEvidence {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RolloutEvidence(nil), s.rolloutEvidence...)
+}
+
+// rolloutEvidenceAttach serves rollout-evidence with a canned answer: a
+// forced refusal (RefuseVerb) wins; otherwise the body is recorded and the
+// answer is 201 {evidence} with the evidence's exact bytes. The item is NOT
+// changed (an attach does not end the lease). HQ's own checks (the lease,
+// the tag's form, the limits, the allowlist) are HQ's and are not
+// re-implemented here.
+func (s *Server) rolloutEvidenceAttach(w http.ResponseWriter, officer string, it *Item, instance string, body map[string]any, now time.Time) {
+	if f := s.verbRefusal["rollout-evidence"]; f != nil {
+		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
 		return
 	}
-	s.write(w, http.StatusCreated, map[string]any{"ask": ask, "task_ask": map[string]any{"ask_id": n, "task_id": "fixture-task-1", "task_rev": 3}, "item": *it})
+	s.rolloutEvidence = append(s.rolloutEvidence, RolloutEvidence{Officer: officer, Item: it.ID, Body: body})
+	s.write(w, http.StatusCreated, map[string]any{"evidence": map[string]any{"id": len(s.rolloutEvidence), "officer_id": officer, "item_id": it.ID,
+		"instance": instance, "repo": body["repo"], "tag": body["tag"], "evidence": body["evidence"], "created_at": now}})
 }
 
 // GapTask is one gap-tasks request HQ accepted (the body as decoded) and
@@ -1810,8 +1836,10 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.transcript(w, officer, it, instance, live, body)
 	case "asks":
 		s.ask(w, officer, it, instance, live, body, now)
-	case "task-asks", "flood-blocks", "rollout-promotions":
+	case "task-asks", "flood-blocks":
 		s.derivedAsk(w, officer, it, verb, body, now)
+	case "rollout-evidence":
+		s.rolloutEvidenceAttach(w, officer, it, instance, body, now)
 	case "gap-tasks":
 		s.gapTask(w, officer, it, instance, body)
 	case "release":

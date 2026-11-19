@@ -25,14 +25,16 @@ import (
 //     ItemCounts), and only when an officer is builtin;
 //   - the day's spend is ONE query for every officer (builtin.Store.SpentOn,
 //     the budget's own sum), and only when an officer has a daily budget;
-//     "held" is officers.Officer.OverBudget over it, the cap's own predicate;
+//     "held" is officers.Officer.OverBudget over it, the cap's own predicate,
+//     with today's raise applied (officers.Officer.WithRaisedCap) — the
+//     raises are ONE more query (builtin.Store.RaisedCapsOn), only then too;
 //   - the "N new" counts (its finished items since the viewer last opened its
 //     page) are ONE query for every officer (builtin.Store.UnreadCounts), and
 //     only when an officer is builtin;
 //   - the teams' names are one read (teamNames), only when a team's officer
 //     is listed.
 //
-// So a sidebar load adds at most four reads, however many officers there are
+// So a sidebar load adds at most five reads, however many officers there are
 // (TestTheOfficerRosterReadsInBatches). Whether an officer runs is read from
 // the agent rows the list already holds (AgentCardView.Officer), never here.
 
@@ -41,6 +43,7 @@ import (
 type navOfficerReads interface {
 	ItemCounts(ctx context.Context, owners []int64, statuses []string) (map[builtin.OfficerRef]int, error)
 	SpentOn(ctx context.Context, owners []int64, now time.Time) (map[builtin.OfficerRef]float64, error)
+	RaisedCapsOn(ctx context.Context, owners []int64, now time.Time) (map[builtin.OfficerRef]float64, error)
 	UnreadCounts(ctx context.Context, owners []int64, now time.Time) (map[builtin.OfficerRef]int, error)
 }
 
@@ -149,7 +152,7 @@ func (s *Server) navOfficerRoster(ctx context.Context, reads navOfficerReads) []
 			queueOK = true
 		}
 	}
-	var spent map[builtin.OfficerRef]float64
+	var spent, raised map[builtin.OfficerRef]float64
 	spendOK := false
 	if len(spendOwners) > 0 && reads != nil {
 		var err error
@@ -157,6 +160,11 @@ func (s *Server) navOfficerRoster(ctx context.Context, reads navOfficerReads) []
 			s.logger.Printf("officers: the sidebar's spend read: %v (drawn without a figure)", err)
 		} else {
 			spendOK = true
+		}
+		// Today's raises: an unreadable one is the declared budget, as the
+		// wake loop reads it.
+		if raised, err = reads.RaisedCapsOn(ctx, spendOwners, rt.clock()); err != nil {
+			s.logger.Printf("officers: the sidebar's raised-cap read: %v (drawn at the declared budgets)", err)
 		}
 	}
 	// The "new" counts: the same owners as the queue's (builtin officers).
@@ -188,8 +196,10 @@ func (s *Server) navOfficerRoster(ctx context.Context, reads navOfficerReads) []
 		}
 		if e.officer != nil && e.officer.Budget.DailyUSD > 0 && spendOK {
 			x := spent[ref]
+			o := e.officer.WithRaisedCap(raised[ref])
 			v.Spent = &x
-			v.Held = e.officer.OverBudget(x)
+			v.Budget = o.Budget.DailyUSD
+			v.Held = o.OverBudget(x)
 		}
 		if v.TeamOwner != 0 {
 			v.Team = names[v.TeamOwner]
