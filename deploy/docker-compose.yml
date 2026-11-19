@@ -189,6 +189,7 @@ services:
       MUSTER_VAPID_PRIVATE_KEY_FILE: /run/muster-secrets/vapid_private_key
       MUSTER_VAPID_SUBJECT: ${MUSTER_VAPID_SUBJECT:-}
       MUSTER_PUSH_EXTRA_HOSTS: ${MUSTER_PUSH_EXTRA_HOSTS:-}
+      MUSTER_NOTIFY_LINK_HOSTS: ${MUSTER_NOTIFY_LINK_HOSTS:-}
 
       # Dictation (docs/features.md#dictation). The token turns it on. With
       # only the token set, URL and model point at the `stt` profile's service;
