@@ -659,6 +659,12 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 			return cur, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
 		}
 	}
+	// 🔴 AN OFFICER NEVER DECIDES ITS OWN WORK (officer_own_state.go): before
+	// the store, whatever the draft (a team's refusal above names the team
+	// rule first; this one covers every other officer caller).
+	if msg := officerDeciderRefusal(ctx); msg != "" {
+		return plugins.Draft{}, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
+	}
 	d, err := s.ext.Plugins.DecideDraftFrom(ctx, id, dec)
 	if err != nil {
 		r := draftDecisionRefusal(d, err, dec.Approve)
