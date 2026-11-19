@@ -60,7 +60,7 @@ func MCPRequestLimit(method, tool string) int {
 // a page of 400 KB, and the old server's answer reads as a malformed request
 // that names no hop and no limit (measured: 65,536 bytes read, 66,000 not, on
 // a server built from a pre-bound commit behind a current muster-mirror). The
-// host proxy recognises that exact reply to a request over MCPToolInputBytes
+// host proxy recognises that exact reply to a request over LegacyMCPReadBytes
 // and replaces it with MCPUnreadByOldMuster. muster no longer writes that
 // message (internal/api's serveMCP names itself and the cause). A muster from
 // MCPBoundRelease up to that change still writes it when a read fails for
@@ -69,7 +69,11 @@ func MCPRequestLimit(method, tool string) int {
 const (
 	// MCPBoundRelease is the first release whose muster reads a request
 	// under MaxMCPRequestBytes (#733).
-	MCPBoundRelease        = "v0.239.0"
+	MCPBoundRelease = "v0.239.0"
+	// LegacyMCPReadBytes is what such a muster read of a request: a fixed
+	// fact about old builds, its own constant so a later change to
+	// MCPToolInputBytes cannot move the match or the words.
+	LegacyMCPReadBytes     = 64 << 10
 	LegacyMCPUnreadCode    = -32700
 	LegacyMCPUnreadMessage = "could not read the request"
 )
@@ -79,7 +83,7 @@ const (
 func MCPUnreadByOldMuster(server string, n int64) string {
 	return fmt.Sprintf("muster at %s could not read this MCP request of %d bytes: it reads at most %d KiB per request, "+
 		"so it is probably older than %s (from %s on, %s and %s take up to %d KiB); upgrade that muster, or keep the request under %d KiB",
-		server, n, MCPToolInputBytes>>10, MCPBoundRelease, MCPBoundRelease, MCPPageCreateTool, MCPPageUpdateTool, MaxMCPRequestBytes>>10, MCPToolInputBytes>>10)
+		server, n, LegacyMCPReadBytes>>10, MCPBoundRelease, MCPBoundRelease, MCPPageCreateTool, MCPPageUpdateTool, MaxMCPRequestBytes>>10, LegacyMCPReadBytes>>10)
 }
 
 // MCPTooLarge is the refusal of a request over MaxMCPRequestBytes, read by

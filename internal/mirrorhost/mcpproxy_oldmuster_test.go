@@ -185,6 +185,66 @@ func TestOnlyAnOldMustersExactUnreadReplyIsRewritten(t *testing.T) {
 			}
 		})
 	}
+
+	// A large JSON answer: the look-ahead stops at legacyUnreadMax, so its
+	// start reaches the caller while the upstream still holds the rest back,
+	// and the whole of it arrives byte for byte.
+	t.Run("a large JSON answer the upstream is still writing", func(t *testing.T) {
+		head := `{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"` + strings.Repeat("a", 6000)
+		tail := strings.Repeat("b", 3000) + `"}]}}` + "\n"
+		release := make(chan struct{})
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, head)
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second):
+			}
+			_, _ = io.WriteString(w, tail)
+		}))
+		t.Cleanup(up.Close)
+		front := httptest.NewServer(proxyFor(up.URL))
+		t.Cleanup(front.Close)
+		req, _ := http.NewRequest(http.MethodPost, front.URL+"/mcp", strings.NewReader(sizedCall(t, "tools/call", 400000)))
+		for k, v := range oldMusterHdr {
+			req.Header.Set(k, v)
+		}
+		type result struct {
+			start string
+			all   string
+		}
+		started := make(chan string, 1)
+		done := make(chan result, 1)
+		go func() {
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				started <- ""
+				return
+			}
+			defer resp.Body.Close()
+			first := make([]byte, legacyUnreadMax)
+			n, _ := io.ReadFull(resp.Body, first)
+			started <- string(first[:n])
+			rest, _ := io.ReadAll(resp.Body)
+			done <- result{string(first[:n]), string(first[:n]) + string(rest)}
+		}()
+		select {
+		case s := <-started:
+			close(release)
+			if s != head[:legacyUnreadMax] {
+				t.Fatalf("the start of the answer: %d bytes, %.80q", len(s), s)
+			}
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("the answer's start was held back until the upstream finished")
+		}
+		if r := <-done; r.all != head+tail {
+			t.Fatalf("the answer arrived as %d bytes, want %d byte for byte", len(r.all), len(head+tail))
+		}
+	})
 }
 
 // TestALargeCallsKeepAliveStillReachesTheCallerAtOnce: muster keeps a long

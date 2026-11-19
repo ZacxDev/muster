@@ -847,12 +847,12 @@ const legacyUnreadMax = 4 << 10
 // not read (mirror.LegacyMCPUnreadMessage; mirror.MCPUnreadByOldMuster says
 // why) with one naming that muster, the request's size and the limits: a tool
 // error on a tools/call, a JSON-RPC error on anything else. Only a request
-// over mirror.MCPToolInputBytes — the most such a muster read — is looked at,
+// over mirror.LegacyMCPReadBytes — the most such a muster read — is looked at,
 // and only a 200 whose first byte opens a JSON object: a streamed reply (a
 // long call's keep-alive whitespace first) is relayed untouched, as is
 // anything that is not that exact reply.
 func nameOldMusterUnread(req *http.Request, resp *http.Response) {
-	if req.ContentLength <= mirror.MCPToolInputBytes || resp.StatusCode != http.StatusOK || req.GetBody == nil {
+	if req.ContentLength <= mirror.LegacyMCPReadBytes || resp.StatusCode != http.StatusOK || req.GetBody == nil {
 		return
 	}
 	br := bufio.NewReaderSize(resp.Body, legacyUnreadMax)
