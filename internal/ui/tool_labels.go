@@ -62,6 +62,8 @@ var musterToolLabels = map[string]string{
 	"page_responses":     "Read a page's responses",
 	"page_share_request": "Asked to share a page",
 	"page_link_revoke":   "Turned off a page link",
+	"page_asset_upload":  "Added an image or video to a page",
+	"page_asset_delete":  "Removed an image or video from a page",
 
 	// Sessions and agents.
 	"fleet_list":          "Looked over your sessions",
