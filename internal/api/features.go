@@ -172,6 +172,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.Officers, officerToolDefs()...)
 		add(features.Officers, officerSpawnShareToolDef())
 		add(features.Pages, pageToolDefs()...)
+		add(features.Push, notifyOwnerToolDef())
 	case mirrorDoor:
 		add(features.Connectors, connectorDecideToolDefs()...)
 		add(features.Plugins, pluginDraftToolDefs()...)
@@ -180,6 +181,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.Dispatch, chiefRestartToolDef())
 		add(features.TaskRouting, dispatchHoldToolDefs()...)
 		add(features.Pages, pageToolDefs()...)
+		add(features.Push, notifyOwnerToolDef())
 		add(features.Officers, hostOfficerToolDefs()...)
 		add(features.Connectors, connectorToolDefs()...)
 	}
