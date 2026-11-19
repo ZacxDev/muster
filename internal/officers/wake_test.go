@@ -303,6 +303,44 @@ func TestABlindFleetChangesNothing(t *testing.T) {
 	}
 }
 
+// TestABlindFleetIsRetriedAtThePollIntervalNotBackedOff: a pass that read HQ
+// but could not read its instances (muster's own provisioner) is checked
+// again one poll interval later, on every consecutive failure — not after
+// Backoff's 2m, 4m, 8m, which is for the officer's BACKEND failing. Each
+// failure still changes nothing. The control: HQ down still backs off.
+func TestABlindFleetIsRetriedAtThePollIntervalNotBackedOff(t *testing.T) {
+	r := newRig(t, 1, time.Minute)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.fleet.blind = true
+	for i := 1; i <= 3; i++ {
+		res := r.check(t)
+		if res.Skipped || res.Err == nil || len(r.fleet.starts) != 0 {
+			t.Fatalf("blind pass %d: %+v starts %v; want a failed pass that changes nothing", i, res, r.fleet.starts)
+		}
+		r.clk.Advance(r.o.PollInterval)
+	}
+	if res := r.check(t); res.Skipped {
+		t.Fatalf("one poll interval (%s) after its 3rd unreadable-fleet pass the officer was skipped; "+
+			"want it checked again (an unreadable fleet is retried at the poll interval, not backed off)", r.o.PollInterval)
+	}
+	r.fleet.blind = false
+	r.clk.Advance(r.o.PollInterval)
+	if res := r.check(t); res.Skipped || res.Err != nil || len(r.fleet.starts) != 1 {
+		t.Fatalf("fleet readable again: %+v starts %v; want the open item to start an instance", res, r.fleet.starts)
+	}
+
+	// The control: HQ down is still backed off.
+	r.hq.SetDown(true)
+	r.clk.Advance(r.o.PollInterval)
+	if res := r.check(t); res.Err == nil {
+		t.Fatalf("HQ down: %+v, want a failed pass", res)
+	}
+	r.clk.Advance(r.o.PollInterval)
+	if res := r.check(t); !res.Skipped {
+		t.Fatalf("one poll interval after an HQ failure: %+v; want skipped (backed off to %s)", res, officers.Backoff(r.o, 1))
+	}
+}
+
 func TestARestartedLoopMakesTheSameDecisions(t *testing.T) {
 	r := newRig(t, 2, 30*time.Minute)
 	r.hq.AddItem(relID, "release.evaluate", "svc:v1")

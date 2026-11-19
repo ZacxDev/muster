@@ -497,6 +497,9 @@ const (
 	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
 	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
 	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+	// The kubernetes driver's API client rate limit (requests per second; the
+	// burst is twice it). See config.AgentKubeQPS.
+	envAgentKubeQPS = "MUSTER_AGENT_KUBE_QPS"
 
 	// The hosted subsystem-store ("cairn") coordinates handed to the SUPERVISOR
 	// agent only. Both unset is the state this ships in, and in that state nothing
@@ -1227,6 +1230,18 @@ type config struct {
 
 	AgentEndpointTemplate string
 
+	// AgentKubeQPS is the kubernetes driver's API client rate limit, in
+	// requests per second (MUSTER_AGENT_KUBE_QPS; unset: defaultAgentKubeQPS).
+	// Its burst is twice it (kubeClientRateLimit).
+	//
+	// 🔴 UNSET USED TO MEAN client-go's OWN DEFAULT, 5 PER SECOND WITH A BURST
+	// OF 10, which nothing here chose. Reading every agent namespace costs
+	// three requests each on the least-privilege layout, so a deployment with
+	// a few dozen agents spent most of a minute of that budget on one read,
+	// and the reads queued behind it failed with "rate: Wait(n=1) would exceed
+	// context deadline".
+	AgentKubeQPS int
+
 	// AgentKinds is MUSTER_AGENT_KINDS as written (lower-cased, trimmed, in
 	// order). Empty means agents.KindGateway alone — see config.agentKinds.
 	AgentKinds []string
@@ -1770,6 +1785,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 	default:
 		return config{}, fmt.Errorf("invalid %s %q: want %s, or unset (officer instances get no cluster DNS)",
 			envOfficerEgressDNS, v, officerEgressDNSUnfiltered)
+	}
+	c.AgentKubeQPS = defaultAgentKubeQPS
+	if v := strings.TrimSpace(getenv(envAgentKubeQPS)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxAgentKubeQPS {
+			return config{}, fmt.Errorf("invalid %s %q: want an integer 1-%d, requests per second to the "+
+				"Kubernetes API (unset means %d; the burst is twice it)", envAgentKubeQPS, v, maxAgentKubeQPS, defaultAgentKubeQPS)
+		}
+		c.AgentKubeQPS = n
 	}
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)

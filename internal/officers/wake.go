@@ -755,8 +755,18 @@ const (
 	MaxBackoff = 10 * time.Minute
 )
 
+// fleetUnread is a pass's failure to read its pools' instances (Fleet.Instances):
+// muster's own provisioner, not the officer's backend. Its text is the
+// underlying error's. Check retries it at the poll interval rather than
+// Backoff's doubling.
+type fleetUnread struct{ err error }
+
+func (e fleetUnread) Error() string { return e.err.Error() }
+func (e fleetUnread) Unwrap() error { return e.err }
+
 // Backoff is how long to wait after the failures'th consecutive failed pass:
-// PollInterval doubled per failure, capped at MaxBackoff.
+// PollInterval doubled per failure, capped at MaxBackoff. A pass that failed
+// reading its fleet (fleetUnread) waits PollInterval instead.
 func Backoff(o Officer, failures int) time.Duration {
 	d := o.PollInterval
 	for i := 0; i < failures && d < MaxBackoff; i++ {
@@ -1094,6 +1104,17 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		s.capReached = false
 		s.failures++
 		s.nextAt = now.Add(Backoff(o, s.failures))
+		if errors.As(err, new(fleetUnread)) {
+			// 🔴 AN UNREADABLE FLEET IS RETRIED AT THE POLL INTERVAL, NOT
+			// BACKED OFF. The backoff protects the officer's BACKEND (HQ)
+			// from a retry storm; this pass read HQ fine and failed on
+			// muster's own provisioner, which a retry at the poll interval
+			// reads no more often than a healthy officer does. Doubling it
+			// meant one bad minute of the provisioner's client
+			// (a rate limiter out of budget) parked officers for 8 and 10
+			// minutes after it had recovered.
+			s.nextAt = now.Add(o.PollInterval)
+		}
 		f, next := s.failures, s.nextAt
 		refusal := permanentRefusal(err)
 		changed := false
@@ -1467,7 +1488,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 	for i, p := range pools {
 		insts, err := r.fleet.Instances(ctx, p)
 		if err != nil {
-			return nil, err
+			return nil, fleetUnread{err}
 		}
 		used, counted, err := r.judgement.Usage(ctx, p, r.now())
 		capped := used > 0 && used >= p.SessionCap()
