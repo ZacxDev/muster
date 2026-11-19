@@ -549,10 +549,6 @@ func newJobFixture(t *testing.T, serviceToken string) *jobFixture {
 	})
 	f.ts = httptest.NewServer(f.s.Handler())
 	t.Cleanup(f.ts.Close)
-	// A job's runner holds its agent's lane until its maintenance pass after
-	// the outcome is done (runJob): wait for it, so it never races the
-	// test's temporary directories being removed.
-	t.Cleanup(f.s.jobLanes.waitIdle)
 	return f
 }
 
