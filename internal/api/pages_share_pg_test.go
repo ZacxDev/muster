@@ -9,10 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // INSTANT SHARE (docs/pages.md#sharing): an owner's opt-in to their agents sharing without asking, the
@@ -512,5 +515,67 @@ func TestTheNavHasPages(t *testing.T) {
 	body := f.get(t, "/pages", f.ownerHdr()).Body.String()
 	if !strings.Contains(body, `id="sidebar-pages" href="/pages"`) || !strings.Contains(body, `href="/pages" hx-boost="false" aria-current="page"`) {
 		t.Fatalf("the Pages screen's nav has no current Pages entry")
+	}
+}
+
+// TestATeamOwnedAgentsShareIsAlwaysAsked: a TEAM-owned agent's
+// page_share_request, through the real tool path as the team acting
+// principal, stays PENDING — an attention ask is filed and no link serves —
+// with the team's preferences row absent AND with it forced to true (a team
+// is never auto-shared, whatever is stored: nobody signs in as a team). The
+// control: a person beside it, with no row, shares at once.
+func TestATeamOwnedAgentsShareIsAlwaysAsked(t *testing.T) {
+	f := newPageFixture(t).keyed(t)
+	sys := authz.System(context.Background())
+	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
+	team, err := users.NewPG(f.pool).CreateTeam(sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, "pages team "+sfx, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM pages WHERE owner_id = $1`, `DELETE FROM attention_asks WHERE owner_id = $1`,
+			`DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM notify_preferences WHERE owner_id = $1`,
+			`DELETE FROM team_members WHERE team_id = $1`, `DELETE FROM audit_log WHERE team_id = $1::bigint`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = f.pool.Exec(sys, q, team.ID)
+		}
+	})
+	teamCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: team.ID, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent})
+	ta, err := agents.NewPG(f.pool).Create(teamCtx, agents.Agent{Name: "pgt-" + sfx, Namespace: "devpod-pgt-" + sfx,
+		Status: agents.StatusRunning, HooksToken: "pgt-" + sfx + "-token"})
+	if err != nil || ta.OwnerID != team.ID {
+		t.Fatalf("the team's agent: owner %d (want %d), %v", ta.OwnerID, team.ID, err)
+	}
+	call := func(name string, args map[string]any) map[string]any {
+		t.Helper()
+		return f.toolAs(t, teamCtx, callerOfAgent(ta), name, args)
+	}
+	out := call(pageCreateTool, map[string]any{"title": "Team page", "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+	id := pnum(out["page_id"])
+	if id <= 0 {
+		t.Fatalf("page_create as the team's agent: %v", out)
+	}
+	for _, state := range []string{"no row", "row forced true"} {
+		if state == "row forced true" {
+			if _, err := f.pool.Exec(sys, `INSERT INTO notify_preferences (owner_id, pages_agent_share) VALUES ($1, true)
+				ON CONFLICT (owner_id) DO UPDATE SET pages_agent_share = true`, team.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := f.asksOf(t, team.ID)
+		req := call(pageShareRequestTool, map[string]any{"page_id": id})
+		if req["status"] != "pending" || pnum(req["ask_id"]) <= 0 {
+			t.Fatalf("%s: a team agent's page_share_request: %v, want pending with an ask", state, req)
+		}
+		if n := f.asksOf(t, team.ID); n != before+1 {
+			t.Fatalf("%s: %d ask(s) filed, want 1", state, n-before)
+		}
+		if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusNotFound {
+			t.Fatalf("%s: the team's pending link serves: %d", state, w.Code)
+		}
+	}
+	// The control: a person with no row shares at once.
+	pid := f.create(t, f.agent, "Person page", `[{"type":"markdown","text":"x"}]`)
+	if r := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": pid}); r["status"] != "live" {
+		t.Fatalf("control: a person with no row: %v, want live", r)
 	}
 }

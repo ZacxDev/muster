@@ -36,7 +36,7 @@ import (
 // (page_share.go). The one exception is the PAGE OWNER'S own switch, "Let my
 // agents share pages without asking" on Account (notify_preferences
 // .pages_agent_share — ON for every person until they turn it off, migration
-// 0159; off for a team owner; pageAgentShareOn): for that owner's pages
+// 0159; always off for a team owner; pageAgentShareOn): for that owner's pages
 // page_share_request makes the
 // link live at once and the owner is TOLD (a push, the page's card) instead
 // of asked — still only for a page the caller made, under its owner's
@@ -488,7 +488,7 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 
 // pageAgentShareOn reports whether "Let my agents share pages without asking"
 // (Account → Pages) is on for owner: on unless they turned it off (no row is
-// on for a person, off for a team — notifypref.PG.PagesAgentShare). No store
+// on for a person; a team is always off — notifypref.PG.PagesAgentShare). No store
 // or a failed read (logged) is the ask flow. ctx acts as owner here (an agent's or a mirrored
 // session's request runs as the agent's owner); the store refuses any other
 // principal, which reads as off.

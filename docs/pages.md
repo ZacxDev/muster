@@ -180,8 +180,9 @@ off**, and only they can flip it (a signed-in, same-origin write of their own
 row; no agent or session token reaches it). It is not a server setting. A
 choice already saved is kept: a user who had it off (including one whose
 preferences row was written, off, before the default changed) stays off until
-they turn it on. A team's pages, if a team-owned agent makes one, get the ask
-flow: nobody signs in as a team, so nobody could turn it off for one.
+they turn it on. A team's pages, if a team-owned agent makes one, ALWAYS get the ask
+flow, whatever is stored: nobody signs in as a team, so nobody could turn it
+off for one.
 
 - **Off** — the agent asks, and you approve, below.
 - **On** (everyone's default) — for your pages the link goes **live at once**, and the agent is given

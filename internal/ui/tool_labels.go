@@ -35,6 +35,7 @@ var musterToolLabels = map[string]string{
 	"agent_set_task_status":    "Updated its task",
 	"agent_list_pull_requests": "Looked at its code changes",
 	"agent_report_done":        "Said it's finished",
+	"notify_owner":             "Sent you a notification",
 	"tasks_list":               "Looked at your tasks",
 	"task_get":                 "Read a task",
 	"task_comment":             "Commented on a task",

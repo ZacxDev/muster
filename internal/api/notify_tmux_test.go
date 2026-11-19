@@ -25,6 +25,9 @@ type memNotifyPrefs struct {
 	// pages is "Let my agents share pages without asking", owner → on; a
 	// missing owner reads on (the default since migration 0159).
 	pages map[int64]bool
+	// teams is the owners that are TEAMS (users.kind = 'team'): each reads
+	// pages off whatever pages holds, as notifypref.PG does.
+	teams map[int64]bool
 }
 
 func (m *memNotifyPrefs) PagesAgentShare(ctx context.Context, owner int64) (bool, error) {
@@ -32,6 +35,9 @@ func (m *memNotifyPrefs) PagesAgentShare(ctx context.Context, owner int64) (bool
 	defer m.mu.Unlock()
 	if m.err != nil {
 		return false, m.err
+	}
+	if m.teams[owner] {
+		return false, nil
 	}
 	if on, ok := m.pages[owner]; ok {
 		return on, nil

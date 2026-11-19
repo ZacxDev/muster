@@ -21,9 +21,10 @@
 // 🔴 PagesAgentShare IS ON UNLESS THE USER TURNED IT OFF (migration 0159): a
 // person with no row reads on, and a row written by another switch takes the
 // column's default, on. A stored value — off included — is the user's and is
-// kept. A TEAM owner (users.kind = 'team') with no row reads OFF: nobody signs
-// in as a team, so nobody could ever turn it off for one. A read that fails is
-// off (the ask flow), as before.
+// kept. 🔴 A TEAM owner (users.kind = 'team') ALWAYS reads OFF, whatever is
+// stored: nobody signs in as a team, so nobody could turn it off for one, and
+// a team's pages are never shared without a person's approval. A read that
+// fails is off (the ask flow), as before.
 package notifypref
 
 import (
@@ -49,7 +50,7 @@ type Store interface {
 	// SetCodenameFirst records owner's choice, leaving TmuxAddress as it is.
 	SetCodenameFirst(ctx context.Context, owner int64, on bool) error
 	// PagesAgentShare reports whether owner let their agents share pages
-	// without asking. No row is true for a person and false for a team.
+	// without asking. No row is true for a person; a team is always false.
 	PagesAgentShare(ctx context.Context, owner int64) (bool, error)
 	// SetPagesAgentShare records owner's choice, leaving the others as they are.
 	SetPagesAgentShare(ctx context.Context, owner int64, on bool) error
@@ -84,13 +85,13 @@ func (p *PG) CodenameFirst(ctx context.Context, owner int64) (bool, error) {
 
 // PagesAgentShare implements Store, refusing what TmuxAddress refuses.
 //
-// The stored value when owner has a row; with none, on for a person and off
-// for a team (muster_owner_is_team, 0131: a SECURITY DEFINER read of
-// users.kind, so a principal that cannot see the users row still gets the
-// right answer).
+// For a person, the stored value when they have a row, and on with none. For
+// a TEAM, off — even with a row that says true (muster_owner_is_team, 0131: a
+// SECURITY DEFINER read of users.kind, so a principal that cannot see the
+// users row still gets the right answer).
 func (p *PG) PagesAgentShare(ctx context.Context, owner int64) (bool, error) {
-	return p.read(ctx, owner, `SELECT coalesce((SELECT pages_agent_share FROM notify_preferences WHERE owner_id = $1),
-		NOT public.muster_owner_is_team($1))`)
+	return p.read(ctx, owner, `SELECT coalesce((SELECT pages_agent_share FROM notify_preferences WHERE owner_id = $1), true)
+		AND NOT public.muster_owner_is_team($1)`)
 }
 
 // read is one boolean preference of owner's (q selects it by owner_id), as

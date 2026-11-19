@@ -71,11 +71,13 @@ func TestPagesAgentShareIsOnUntilTurnedOffAndIsPerUserAndIndependent(t *testing.
 	}
 }
 
-// TestPagesAgentShareIsOffForATeamWithNoRow: a TEAM owner (users.kind =
+// TestPagesAgentShareIsAlwaysOffForATeam: a TEAM owner (users.kind =
 // 'team') with no row reads OFF — nobody signs in as a team, so nobody could
 // turn it off for one — read as the team acting principal and as the system;
-// a person beside it, also with no row, reads on (the control).
-func TestPagesAgentShareIsOffForATeamWithNoRow(t *testing.T) {
+// a person beside it, also with no row, reads on (the control). Then the
+// team's row is forced to TRUE: it still reads off (a team is never
+// auto-shared, whatever is stored), while a person's stored true reads on.
+func TestPagesAgentShareIsAlwaysOffForATeam(t *testing.T) {
 	p := pgStore(t)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO users (id, role, kind, display_name) OVERRIDING SYSTEM VALUE
 		VALUES (9001, 'member', 'team', 'pages default team') ON CONFLICT (id) DO NOTHING`)
@@ -88,5 +90,15 @@ func TestPagesAgentShareIsOffForATeamWithNoRow(t *testing.T) {
 	}
 	if on, err := p.PagesAgentShare(asUser(3), 3); err != nil || !on {
 		t.Fatalf("control: a person with no row: on=%v err=%v, want on", on, err)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO notify_preferences (owner_id, pages_agent_share) VALUES (9001, true), (3, true)`)
+	if on, err := p.PagesAgentShare(team, 9001); err != nil || on {
+		t.Fatalf("a team whose row is forced true, as the team: on=%v err=%v, want off", on, err)
+	}
+	if on, err := p.PagesAgentShare(authz.System(context.Background()), 9001); err != nil || on {
+		t.Fatalf("a team whose row is forced true, as the system: on=%v err=%v, want off", on, err)
+	}
+	if on, err := p.PagesAgentShare(asUser(3), 3); err != nil || !on {
+		t.Fatalf("control: a person's stored true: on=%v err=%v, want on", on, err)
 	}
 }
