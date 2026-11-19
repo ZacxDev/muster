@@ -244,3 +244,57 @@ func TestTheChiefPageOffersTheModelMenuOnlyWithTheGate(t *testing.T) {
 		t.Errorf("the Default chat's chip has a model tag:\n%s", c)
 	}
 }
+
+// TestThePanelsPlusMenuOpensASonnetChatInThePanel: the chief PANEL draws the
+// same "+" menu (chief-panel-new-chat-menu) with the gate on, and its Sonnet
+// entry, posted as drawn (its own hx-post and hidden model), opens a side chat
+// on sonnet answered with the panel body re-rendered on it (no redirect: the
+// grid stays), its chip tagged sonnet.
+func TestThePanelsPlusMenuOpensASonnetChatInThePanel(t *testing.T) {
+	f := newChatsFixture(t, agents.KindClaudeCode)
+	f.srv.ext.SessionRuntimes = []string{agents.SessionRuntimeClaudeCode}
+	w := f.call(t, http.MethodGet, "/ui/chief/panel", nil, f.operator())
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET the chief panel: %d", w.Code)
+	}
+	panel := w.Body.String()
+	i := strings.Index(panel, `<div id="chief-panel-new-chat-menu"`)
+	if i < 0 {
+		t.Fatal("the panel draws no \"+\" model menu (chief-panel-new-chat-menu)")
+	}
+	menu := panel[i:]
+	menu = menu[:strings.Index(menu, "</div>")]
+	entry := regexp.MustCompile(`<form hx-post="([^"]+)"[^>]*><input type="hidden" name="model" value="([^"]+)"><button type="submit" data-chief-new-chat-model="sonnet"`).FindStringSubmatch(menu)
+	if entry == nil {
+		t.Fatalf("the panel's menu has no Sonnet entry:\n%s", menu)
+	}
+	path := strings.ReplaceAll(entry[1], "&amp;", "&")
+	if want := ui.ChiefSideChatPath(f.chief.ID) + "?surface=chief-panel"; path != want {
+		t.Fatalf("the Sonnet entry posts to %q, want %q", path, want)
+	}
+	if _, err := f.srv.primarySession(asUser(1), f.chief); err != nil {
+		t.Fatal(err)
+	}
+	before := f.sessions(t)
+	body, hdr := form(url.Values{"model": {entry[2]}})
+	w = f.call(t, http.MethodPost, path, body, merge(f.operator(), hdr))
+	if w.Code != http.StatusOK || w.Header().Get("HX-Redirect") != "" {
+		t.Fatalf("POST the panel's Sonnet entry: %d redirect %q; want 200 with the panel body", w.Code, w.Header().Get("HX-Redirect"))
+	}
+	var made []agents.ChatSession
+	for id, s := range f.sessions(t) {
+		if _, ok := before[id]; !ok {
+			made = append(made, s)
+		}
+	}
+	if len(made) != 1 || made[0].Model != "sonnet" || made[0].Runtime != agents.SessionRuntimeClaudeCode {
+		t.Fatalf("the panel's Sonnet entry made %+v; want one claude-code chat on sonnet", made)
+	}
+	sid := strconv.FormatInt(made[0].ID, 10)
+	if !strings.Contains(w.Body.String(), `data-chief-active-session="`+sid+`"`) {
+		t.Errorf("the panel's answer is not on the new chat %s", sid)
+	}
+	if !regexp.MustCompile(`data-chief-chip="` + sid + `"(?s:.)*?data-chief-chip-model="sonnet"`).MatchString(w.Body.String()) {
+		t.Errorf("the panel's answer draws no sonnet tag on chat %s's chip", sid)
+	}
+}
