@@ -7,7 +7,7 @@ import (
 
 // TestAWindowsPagesSurviveANewSessionInIt: a mirrored window lists the pages
 // made IN it — its host, tmux session and window id, recorded at create
-// (0158) — whatever Claude session made them, so a /clear (session A's page,
+// (0159) — whatever Claude session made them, so a /clear (session A's page,
 // the window now running session B) keeps them. A page made in another
 // window of the same host, the same window name on another host, the same
 // window id in another tmux session, and another owner's page from the same
