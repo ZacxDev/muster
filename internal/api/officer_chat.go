@@ -319,7 +319,8 @@ func officerCallerName(ctx context.Context, a agents.Agent) string {
 
 // chatLaneQueueRefusal is the refusal, from a chat lane, of a queue verb
 // (claim, heartbeat, complete, release), a verb that ends its holder's lease
-// (an ask), or a ship action (bound to the primary's item, or a write to
+// (an ask), the rollout evidence attach (the sweep's, which a chat's would
+// replace on HQ's confirm step), or a ship action (bound to the primary's item, or a write to
 // GitHub): a chat session works its chat, and muster holds and ends its
 // chat's item.
 func chatLaneQueueRefusal(tool, chat string) string {
