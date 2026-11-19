@@ -1,7 +1,10 @@
 <div align="center">
 
-<!-- LOGO PLACEHOLDER: the muster logo lockup goes here once the brand pack lands.
-     Until then this comment is the only thing in this slot; do not put an image here. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-horizontal.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/brand/lockup-horizontal-on-light.svg">
+  <img src="docs/brand/lockup-horizontal-on-light.svg" width="350" height="74" alt="muster">
+</picture>
 
 # muster
 
