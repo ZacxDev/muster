@@ -463,12 +463,13 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 //
 // The button is the line itself, not a "…" beside it (the agent header's
 // titleMoreButton): a separate 44px "…" would take back more room than the
-// switch's padding gave (viewToggleSegClass). It is block and truncating, so
-// it draws exactly the box the <h1> drew before (no new height, no shift).
+// switch's padding gave (viewToggleSegClass). It is block; inside it the title
+// is one truncating line and "On <computer>" a second (mirrorHostLine).
 //
 // Whether it is clipped is decided by agentTitleFitScript — the agent
-// header's rule, not a copy of it: the <h1> is its [data-agent-title] box and
-// the button both its [data-agent-title-text] and its [data-title-more].
+// header's rule, not a copy of it: the <h1> is its [data-agent-title] box,
+// the button its [data-title-more] and the button's title line its
+// [data-agent-title-text].
 // data-title-fit="disable" makes that script DISABLE the button while the
 // title fits (a tap on a whole title opens nothing) rather than hide it, as
 // it hides the agent header's "…". Without script the button stays enabled
@@ -512,7 +513,7 @@ func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
 		// the fit script's [data-agent-title-text], so the popover opens
 		// when the TITLE is clipped — then "On <computer>".
 		Span(g.Attr("data-agent-title-text", ""), Class("block truncate"), mirrorViewEntryTitle(v)),
-		mirrorHostLine(MirrorBadgeText(v.Host), v.Host, v.HostIcon),
+		g.If(!titleNamesHost(!v.SessionName.Human(), v.Qualifier, v.Host), mirrorHostLine(MirrorBadgeText(v.Host), v.Host, v.HostIcon)),
 	)
 }
 

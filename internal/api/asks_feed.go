@@ -67,7 +67,8 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 	return "other", "Item"
 }
 
-// asksCardContextSlot is a card's "why it's here" line, "" for none.
+// asksCardContextInner is the words of a card's "why it's here" line
+// (asksCardContextRow), "" for none.
 //
 // An agent's ask that carries a why (ask_media.go: its own `context`, or the
 // fallback muster stored — the session's focus title and the agent's last
@@ -76,12 +77,6 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 // what it already carries: the session's focus title (with its age), else the
 // item's second line (a waiting session's last words), else — for a task to
 // route — why it is in the queue.
-func asksCardContextSlot(it attentionItem, now time.Time) string {
-	return asksCardContextRow(asksCardContextInner(it, now), attentionPlaceSheetHTML(it, it.Key))
-}
-
-// asksCardContextInner is the words of a card's "why it's here" line
-// (asksCardContextSlot), "" for none.
 func asksCardContextInner(it attentionItem, now time.Time) string {
 	var inner string
 	switch w := askCardWhy(it); {
@@ -103,8 +98,9 @@ func asksCardContextInner(it attentionItem, now time.Time) string {
 // and a button cannot sit inside it. "" for neither.
 //
 // With no words the ⓘ is a row of its own: a 44px line holding one icon.
-// The Asks feed's cards draw that ⓘ in their footer instead, beside "View in
-// session", when they have one (askFeedCardHTML; the v0.250.0 phone check,
+// The Asks feed's cards and the ask page draw that ⓘ in their footer instead,
+// beside "View in session", when they have one (askFeedCardHTML,
+// handleAskPage; the v0.250.0 phone check,
 // F4: the lone ⓘ's empty line read as stray whitespace).
 func asksCardContextRow(inner, info string) string {
 	switch {

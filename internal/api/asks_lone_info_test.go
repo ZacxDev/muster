@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -55,5 +57,40 @@ func TestALoneAsksInfoSitsInTheFooterNotARowOfItsOwn(t *testing.T) {
 	unlinked := askFeedCardHTML(ask("", ""), now)
 	if !strings.Contains(unlinked, `data-asks-place`) || strings.Count(unlinked, trigger) != 1 {
 		t.Errorf("CONTROL: a card with no footer link lost its ⓘ:\n%s", unlinked)
+	}
+}
+
+// askPageFooter is the ask page's footer row.
+var askPageFooter = regexp.MustCompile(`(?s)<div class="` + regexp.QuoteMeta(ui.AsksCardFooterClass) + ` gap-x-4 border-t border-line pt-2" data-asks-footer>(.*?)</div>\n`)
+
+// TestTheAskPagesLoneInfoSitsInItsFooter: the ask page is the feed's card,
+// expanded, and puts a lone ⓘ (no context words) in its footer after "View
+// in session" the same way (asksCardContextRow). The fixture's asks that name
+// a window carry no context words, so each one's ⓘ moves. Red at
+// origin/main.
+func TestTheAskPagesLoneInfoSitsInItsFooter(t *testing.T) {
+	asks := whereAsks()
+	s := whereServer(t, asks...)
+	moved := 0
+	for _, a := range asks {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", askPagePath(a.ID), nil).WithContext(s.attentionPrincipal(context.Background(), 1))
+		s.renderAskPage(rec, r, a)
+		body := rec.Body.String()
+		trigger := regexp.MustCompile(`<button type="button" id="place-[^"]*-open"`).FindString(body)
+		if trigger == "" {
+			continue
+		}
+		foot := askPageFooter.FindStringSubmatch(body)
+		if foot == nil {
+			t.Fatalf("ask %d: no footer:\n%s", a.ID, body)
+		}
+		if strings.Contains(body, `data-asks-place`) || !strings.Contains(foot[1], `</a>`+trigger) {
+			t.Errorf("ask %d: the lone ⓘ is not in the footer after its link:\nfooter: %s", a.ID, foot[1])
+		}
+		moved++
+	}
+	if moved == 0 {
+		t.Fatal("CONTROL: no ask in the fixture has an ⓘ — the test sees nothing")
 	}
 }

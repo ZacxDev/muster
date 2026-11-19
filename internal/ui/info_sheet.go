@@ -90,10 +90,12 @@ type InfoSheet struct {
 // text, which this does not change.
 const infoCodeWrap = "[overflow-wrap:anywhere]"
 
-// SentenceStart is s with its first letter capitalised: every ⓘ sheet's lead
-// is drawn through it, so a sentence assembled from a lower-case fragment
-// ("the VAPID keys are unset": a feature's reason) still starts like one (the
-// v0.250.0 phone check, F4). A first word that is a name is kept as written:
+// SentenceStart is s with its first letter capitalised, for a sentence the
+// server assembles from a lower-case fragment: a feature ⓘ sheet's reason and
+// note ("the VAPID keys are unset", internal/api featureSheet) start like
+// sentences (the v0.250.0 phone check, F4). Not applied to InfoSheet.Lead:
+// every lead is written as a sentence, and one that starts with a host or a
+// command must stay as written. A first word that is a name is kept as written:
 // muster's own (lower-case wherever it appears, the brand: "muster",
 // "muster's", "muster-mirror"), and an identifier — one that is not all
 // lower-case ("iOS", "MUSTER_X") or holds an underscore ("attention_ask").
@@ -204,7 +206,7 @@ func (s InfoSheet) sheet() g.Node {
 		),
 		Div(
 			Class("flex min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3"),
-			g.If(s.Lead != "", P(Class("text-sm text-fg2"), g.Text(SentenceStart(s.Lead)))),
+			g.If(s.Lead != "", P(Class("text-sm text-fg2"), g.Text(s.Lead))),
 			code,
 			g.If(!s.Withheld && s.Extra != nil, s.Extra),
 		),

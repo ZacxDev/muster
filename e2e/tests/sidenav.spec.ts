@@ -304,8 +304,10 @@ for (const size of [
 // title's one truncating line and never showed at 390px; it is a 16px line
 // under the title now, which takes the title column past the 44px controls.
 // The Rendered view's header 57 -> 65 (measured in Chromium at 390, on main
-// and on the branch, with the same markup), so the conversation 681 -> 673;
-// the terminal's first row grows the same 8px, 105 -> 113.
+// and on the branch, with the same markup), so the conversation 681 -> 673.
+// The terminal's header no longer wraps at 390 (the 105px above is stale): it
+// is 57 -> 65 too, and keeps 39 rows (40 before), over the 37 floor. Its
+// bound is 65, so a header that wraps again fails here.
 test.describe('phone header', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test('adding the hamburger wraps no header and takes no height from the log or the terminal', async ({ page }) => {
@@ -316,7 +318,7 @@ test.describe('phone header', () => {
     expect((await box(page, '#mv-log')).height, 'the conversation keeps its height').toBeGreaterThanOrEqual(673);
     await page.goto(origin + termOf('@1'));
     await expect(page.locator('#term-status')).toHaveText('Connected');
-    expect((await box(page, 'body > header')).height, 'the terminal header wraps no further').toBeLessThanOrEqual(113);
+    expect((await box(page, 'body > header')).height, 'the terminal header is one row').toBeLessThanOrEqual(65);
     await expect.poll(() => page.locator('#term .xterm-rows > div').count(), { message: 'the terminal keeps its rows' }).toBeGreaterThanOrEqual(37);
   });
 

@@ -1530,7 +1530,7 @@ func terminalTitle(v AgentTerminalView, extra ...g.Node) g.Node {
 			// A mirrored entry: its label (the raw session name its tooltip),
 			// and/or its qualifier — drawn like its card.
 			g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier))),
-		g.If(v.Badge != "", mirrorHostLine(v.Badge, v.BadgeHost, v.BadgeHostIcon)))
+		g.If(v.Badge != "" && !titleNamesHost(!named, v.TitleQualifier, v.BadgeHost), mirrorHostLine(v.Badge, v.BadgeHost, v.BadgeHostIcon)))
 }
 
 func terminalDocName(title, qualifier string, named bool) string {

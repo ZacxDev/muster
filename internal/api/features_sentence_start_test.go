@@ -3,11 +3,13 @@ package api
 import (
 	"html"
 	"regexp"
+	"strings"
 	"testing"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/features"
 )
 
 // featureSheetSentence is one of a feature ⓘ sheet's own sentences: its
@@ -48,5 +50,33 @@ func TestAFeatureSheetsReasonAndNoteStartWithACapital(t *testing.T) {
 		if !got[want] {
 			t.Errorf("no %q among the sheets' sentences: %v", want, got)
 		}
+	}
+}
+
+// TestThePushSheetSaysTheVAPIDKeysAreUnsetAsASentence: the phone check's own
+// example. Push off, its reason the server's exact fragment ("the VAPID keys
+// are unset", cmd/muster-server/features.go), drawn on its admin sheet as
+// "The VAPID keys are unset". Red at origin/main.
+func TestThePushSheetSaysTheVAPIDKeysAreUnsetAsASentence(t *testing.T) {
+	set, err := features.Evaluate([]features.Feature{
+		{ID: features.Mirror, Name: "Mirrored sessions", Description: "Every tmux window as a card.", Core: true,
+			Enable: []features.Var{{Name: "MUSTER_EXAMPLE_MIRROR", Value: "1"}}},
+		{ID: features.Push, Name: "Push notifications", Description: "A push when an agent needs you.",
+			Enable: []features.Var{{Name: "MUSTER_EXAMPLE_VAPID_PUBLIC", Placeholder: "key"}}},
+	}, map[string]features.Status{
+		features.Mirror: {State: features.On},
+		features.Push:   {State: features.Off, Reason: "the VAPID keys are unset"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := featureServer(t, Extensions{}, set)
+	page := featuresPageAs(t, s, authz.RoleAdmin)
+	var reasons []string
+	for _, m := range featureSheetSentence.FindAllStringSubmatch(page, -1) {
+		reasons = append(reasons, m[1]+": "+html.UnescapeString(m[2]))
+	}
+	if strings.Join(reasons, "|") != "reason: The VAPID keys are unset" {
+		t.Errorf("the push sheet's sentences are %q, want exactly the capitalised reason", reasons)
 	}
 }

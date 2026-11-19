@@ -5,15 +5,19 @@ import (
 	"testing"
 )
 
-// TestAnInfoSheetsLeadStartsWithACapital: the v0.250.0 phone check (F4)
-// found admin-only ⓘ leads starting lower-case ("the VAPID keys are unset").
-// Every sheet draws its Lead through SentenceStart. Red at origin/main, which
-// drew the lead as written.
-func TestAnInfoSheetsLeadStartsWithACapital(t *testing.T) {
-	got := renderString(t, InfoSheet{ID: "push-setup", Label: "How to turn on Push", Heading: "Turn on Push",
-		Lead: "the VAPID keys are unset", Code: "MUSTER_EXAMPLE_VAPID=1"}.Node())
-	if !strings.Contains(got, `<p class="text-sm text-fg2">The VAPID keys are unset</p>`) {
-		t.Errorf("the lead is not capitalised:\n%s", got)
+// TestSentenceStartCapitalisesAFragmentNotAName: the v0.250.0 phone check
+// (F4) found admin-only ⓘ sentences starting lower-case ("the VAPID keys are
+// unset": a feature's reason). SentenceStart capitalises such a fragment and
+// keeps a first word that is a name as written. Its use on the feature sheet
+// is pinned in internal/api (TestAFeatureSheetsReasonAndNoteStartWithACapital).
+//
+// INVARIANT GUARD (not a regression test): a sheet's Lead is drawn exactly as
+// written — a lead may start with a host or a command ("atlas runs …").
+func TestSentenceStartCapitalisesAFragmentNotAName(t *testing.T) {
+	got := renderString(t, InfoSheet{ID: "where", Label: "Where", Heading: "Where it runs",
+		Lead: "atlas runs this session in tmux:", Code: "tmux fern:1 @ atlas"}.Node())
+	if !strings.Contains(got, `<p class="text-sm text-fg2">atlas runs this session in tmux:</p>`) {
+		t.Errorf("the lead is not drawn as written:\n%s", got)
 	}
 	for in, want := range map[string]string{
 		"the VAPID keys are unset":       "The VAPID keys are unset",
