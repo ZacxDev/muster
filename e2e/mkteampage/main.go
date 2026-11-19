@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/e2e/internal/e2edb"
+	"github.com/ZacxDev/muster/internal/branding"
 )
 
 // Blocks is the page's one question, as the page tools would store it.
@@ -92,11 +93,19 @@ func create(ctx context.Context, conn *pgx.Conn, stamp string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	name := "E2E Pages Team " + stamp
+	person := "E2E Page Creator " + stamp
+	// A name is a users.display_name: the character rule users.CreateTeam
+	// and every other writer applies (the display-name writer ledger's).
+	for _, n := range []string{name, person} {
+		if err := branding.CheckNameText(n); err != nil {
+			return err
+		}
+	}
 	var team, creator, page int64
 	if err := tx.QueryRow(ctx, `INSERT INTO users (kind, role, display_name) VALUES ('team', 'member', $1) RETURNING id`, name).Scan(&team); err != nil {
 		return err
 	}
-	if err := tx.QueryRow(ctx, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "E2E Page Creator "+stamp).Scan(&creator); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, person).Scan(&creator); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO team_members (team_id, user_id, role, added_by) VALUES ($1, 1, 'viewer', 1), ($1, $2, 'operator', 1)`, team, creator); err != nil {
