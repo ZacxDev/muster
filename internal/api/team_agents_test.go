@@ -479,6 +479,7 @@ var agentReadCallers = map[string]string{
 	"Get Server.pageSessionLink":             "own: a.OwnerID == p.OwnerID, the page's owner (the viewer)",
 	"Get Server.approvalItems":               "own: a.OwnerID == requestOwner(ctx)",
 	"Get Server.approveFromStanding":         "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.agentIsOfficer":              "own: a.OwnerID == owner, the owner of the push it decides (else false); it only routes that push through officerPushes, never acts on the row",
 	"Get Server.decideConnectorGrant":        "own: the grant is owner-isolated (connector_grants)",
 	"Get Server.goRerunBlocked":              "own: the approved grant's agent; the grant is owner-isolated (connector_grants)",
 	"Get Server.onPendingRefusal":            "own: the refused caller's own agent row (the connector door authenticated it), read to know its officer",

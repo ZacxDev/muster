@@ -125,17 +125,37 @@ func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d p
 			label = p.Label
 		}
 	}
+	title, body, url := DraftPushTitle, draftPushBody(m, label)+note, draftLink(d.ID)
+	if d.Officer != nil {
+		// An officer's draft: a decision (officer_push.go), opening its card
+		// there, and naming the officer — an outbound draft answers no
+		// message, so draftPushBody would call it the chief's reply.
+		if !s.officerPushSends(officerPushDraft, owner, draftTag(d.ID)) {
+			return
+		}
+		title, body = OfficerDraftPushTitle, officerDraftPushBody(*d.Officer)+note
+		url = officerDecisionCard(officerPushDraft, officerCardRef{ID: id})
+	}
 	n := RouterNotification{
 		Type:  "plugin",
 		ID:    id,
-		Title: DraftPushTitle,
-		Body:  draftPushBody(m, label) + note,
+		Title: title,
+		Body:  body,
 		Tag:   "plugin-draft-" + id,
-		Data:  map[string]string{"url": draftLink(d.ID)},
+		Data:  map[string]string{"url": url},
 	}
 	// A team's draft — an officer's or a reply — reaches its operators and
 	// managers through goNotify's one fan-out (team_notify.go).
 	s.goNotify(owner, push.EventPlugin, n, nil)
+}
+
+// OfficerDraftPushTitle is an officer's draft's notification title.
+const OfficerDraftPushTitle = "A message awaits your approval"
+
+// officerDraftPushBody is an officer's draft's notification body: who drafted
+// it, never what it says (notifyDraftAwaiting's "who and where, never what").
+func officerDraftPushBody(officer string) string {
+	return truncate("Officer "+officer+" drafted it. Nothing goes out until you approve it.", draftPushBodyMax)
 }
 
 // draftPushBody is a draft notification's body: "Reply draft: <sender's

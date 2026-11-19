@@ -49,7 +49,8 @@ No machine listed means none is mirrored: run `muster-mirror` with
 
 **In the sidebar**, an **Officers** group lists every officer you can see —
 yours and your teams' (each labelled with its team) — one row each, awake or
-asleep, below your sessions and above **Superseded** and **Idle**. A row says
+asleep, directly below your chief and the sessions waiting on you, and above
+the rest of your sessions, your teams' groups, **Superseded** and **Idle**. A row says
 whether the officer is running or asleep and how many items are queued for
 it; with a `daily_budget_usd` ([Daily budget](#daily-budget-and-routine-batching)) it also shows the day's spend against it
 (`$6.40 / $10`) and **held** once the cap has stopped it for the day (nothing
@@ -58,8 +59,9 @@ when it has no budget, and no figure when the spend could not be read), and
 (opening the page clears it; each person's own). An officer's routine work
 pushes you nothing: this count is how you notice it. It
 opens the running instance's chat, else the officer's page. An instance that
-waits on you is listed with the other waiting sessions at the top, and its
-officer's row says **↑ waiting**. A host officer's row says neither running
+waits on you is listed with the other waiting sessions at the top (just above
+the group), and its officer's row says **↑ waiting**; a team officer's waiting
+instance is in its team's group below, and the row says **↓ waiting**. A host officer's row says neither running
 nor asleep (its instances are mirrored windows) and opens its page.
 
 ### New officer

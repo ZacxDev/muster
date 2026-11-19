@@ -771,6 +771,9 @@ var bannerExempt = map[string]string{
 	envAgentEndpointTmpl: "overrides the driver's own DefaultEndpointTemplate. It decides " +
 		"where an instance is REACHED, which the driver resolves per instance " +
 		"(provision.Provisioner.Endpoint) rather than once at boot",
+	envAgentKubeQPS: "a client-side request rate with a default chosen for the workload (" +
+		"defaultAgentKubeQPS); a value outside 1-1000 is refused at boot by loadConfig, so " +
+		"there is no silent state for a banner line to announce",
 	envAgentCairnURL: "one half of a BOTH-OR-NEITHER pair reaching agentspec.Config. Unset " +
 		"is the shipping state and in it NOTHING is emitted — no install step, no " +
 		"credential file, no environment variable — so there is no posture for a banner " +
