@@ -243,7 +243,10 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 				"error": &mcpError{Code: -32600, Message: mirror.MCPTooLarge("muster")}})
 			return
 		}
-		s.writeMCP(w, nil, nil, &mcpError{Code: -32700, Message: "could not read the request"})
+		// Never mirror.LegacyMCPUnreadMessage: a host proxy reads that exact
+		// reply as an OLD muster's too-large answer (#833), so this one names
+		// muster and the cause.
+		s.writeMCP(w, nil, nil, &mcpError{Code: -32700, Message: "muster could not read this MCP request: " + err.Error()})
 		return
 	}
 	var req mcpRequest

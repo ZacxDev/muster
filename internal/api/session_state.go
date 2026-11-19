@@ -490,7 +490,8 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		// concurrent view, which opens on the streak it read, not the one the
 		// view ended on. Compared on c's CURRENT streak, it is ended here for
 		// that same reason, its push is withdrawn by this pass's
-		// clearEndedEpisodes, and the Open below then refuses it (the same rule).
+		// clearEndedEpisodes (EndRepeat ends it without endEpisode), and the
+		// Open below then refuses it (the same rule).
 		reason, ended, err := s.ext.Episodes.EndRepeat(octx, ep.ID, c.StreakKey, now)
 		if err != nil {
 			s.logger.Printf("session state: episode %d: repeat: %v", ep.ID, err)
@@ -554,7 +555,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 	busy := c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusBusy
 	if has && s.episodeOwnerActed(octx, c, ep) {
 		// The owner went to the session and acted in it: the stop is over
-		// (its push is withdrawn by this pass's clearEndedEpisodes), whether
+		// (its push is withdrawn at once, by endEpisode), whether
 		// or not the session then works for EndAfter.
 		s.endEpisode(octx, ep, sessionstate.EndOwner, now)
 		has = false
@@ -781,16 +782,27 @@ func (s *Server) episodeJevFor(octx context.Context, c chiefnudge.Session) (chie
 	return episodeJev(ep), true
 }
 
-// endEpisode ends ep for reason.
+// endEpisode ends ep for reason and, when this call ended it and ep was
+// pushed, withdraws its notification AT ONCE (clearEpisode) — every end
+// reason, from every caller, in one place. 🔴 NOT LEFT TO THE NEXT PASS: the
+// waiting hook ends a prompt answered at the terminal the moment the host
+// reports it, and a withdrawal deferred to clearEndedEpisodes kept the
+// notification up until the next pass (up to SessionStateInterval, 30 s).
+// clearEndedEpisodes stays the backstop: it closes one pushed after ep was
+// read (ep.PushedAt zero here), and the pass defers it. An end someone else
+// already wrote (ended false) is theirs to clear.
 func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reason string, now time.Time) {
-	// Its notification is closed by the same pass's clearEndedEpisodes (the
-	// owner's pass defers it), which also closes one pushed after this pass
-	// read the episode.
-	if _, err := s.ext.Episodes.End(octx, ep.ID, reason, now); err != nil {
+	ended, err := s.ext.Episodes.End(octx, ep.ID, reason, now)
+	if err != nil {
 		s.logger.Printf("session state: episode %d: end: %v", ep.ID, err)
 		return
 	}
 	s.ownerChecked.settle(ep.ID)
+	if !ended {
+		return
+	}
+	ep.EndedAt, ep.EndReason = now, reason
+	s.clearEpisode(octx, ep)
 }
 
 // episodeOwnerActed reports whether the owner acted in open episode ep's

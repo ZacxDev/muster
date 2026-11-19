@@ -63,7 +63,10 @@ func pageIconLinks(page string) map[string][]string {
 }
 
 // wantBrandIcon asserts page is a document carrying exactly one favicon and
-// one touch icon, both at want, and exactly one manifest link.
+// one touch icon, both at want (a logo's icon), and exactly one manifest link.
+// When want is muster's own 192 px icon, the favicons are exactly that icon,
+// then the brand pack's SVG favicon and its 32 px render, and the touch icon
+// is the pack's 180 px icon (ui brandIconLinks).
 func wantBrandIcon(t *testing.T, what, page, want string) {
 	t.Helper()
 	if !strings.Contains(strings.ToLower(page), "<!doctype html") {
@@ -71,9 +74,14 @@ func wantBrandIcon(t *testing.T, what, page, want string) {
 		return
 	}
 	links := pageIconLinks(page)
-	for _, rel := range []string{"icon", "apple-touch-icon"} {
-		if got := links[rel]; len(got) != 1 || got[0] != want {
-			t.Errorf("%s: rel=%s links %v, want exactly [%s]", what, rel, got, want)
+	wantIcons, wantTouch := []string{want}, []string{want}
+	if !strings.Contains(want, ui.BrandIcon192Path) {
+		wantIcons = []string{want, web.Asset("/static/icons/favicon.svg"), web.Asset("/static/icons/favicon-32.png")}
+		wantTouch = []string{web.Asset("/static/icons/apple-touch-icon.png")}
+	}
+	for rel, w := range map[string][]string{"icon": wantIcons, "apple-touch-icon": wantTouch} {
+		if got := links[rel]; strings.Join(got, " ") != strings.Join(w, " ") {
+			t.Errorf("%s: rel=%s links %v, want exactly %v", what, rel, got, w)
 		}
 	}
 	if got := links["manifest"]; len(got) != 1 {

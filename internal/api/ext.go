@@ -406,7 +406,7 @@ type Extensions struct {
 	// fleet_actions write. It needs FleetDigest (refused at boot without).
 	FleetPropose bool
 	// FleetActions is the fleet's action log (internal/fleet, migration
-	// 0157). nil (no database): fleet proposals are off whatever FleetPropose.
+	// 0158). nil (no database): fleet proposals are off whatever FleetPropose.
 	FleetActions fleet.Actions
 	// FleetChecks is the GitHub App's CI read of one commit (fleet_answers.go
 	// fleetCIRead: ci_result), read only for an

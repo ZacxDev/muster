@@ -883,8 +883,13 @@ successful answer does. It is logged loudly once per change
 zero** (logged as `scaled instance N to zero (HQ configuration fault: 404)`)
 rather than holding pods and Claude accounts for ever; the loop keeps
 retrying with the same backoff and logs "HQ answers again" when it does. A pass that cannot see muster's own
-instances (the provisioner is unreachable) is treated the same way: "I cannot
-see" is never read as "nothing is running".
+instances (the provisioner is unreachable) changes nothing either: "I cannot
+see" is never read as "nothing is running". When the provisioner could not be
+reached it is retried at the officer's poll interval rather than backed off,
+since the failure is muster's own and not HQ's, and it does not count towards
+HQ's backoff; any other failure to read the fleet (a host officer's host
+offline, the agents table unreadable) backs off as an HQ failure does. A pass reads only its own pools' instances (one read per instance
+that has an agent), never every instance in the cluster.
 
 **Restarts.** Every start decision is a function of HQ's queue and muster's
 instances, so a restarted muster makes the same decisions. The one thing kept
@@ -1046,8 +1051,10 @@ A verified call carrying an officer chat's key is that lane's:
 - it takes no queue work: `officer_claim` (claim-next and by id),
   `officer_heartbeat`, `officer_complete`, `officer_release`, and the tools
   that end their holder's lease (`officer_ask_person`, `officer_task_ask`,
-  `officer_flood_block_propose`, `officer_rollout_promote_propose`) are
-  refused, naming the chat. muster holds and ends the chat's item;
+  `officer_flood_block_propose`) are refused, naming the chat, and so is
+  `officer_rollout_evidence_attach` (the sweep's evidence: HQ shows the
+  newest for a tag, so a chat's attach would replace it). muster holds and
+  ends the chat's item;
 - it does not ship: `officer_merge_pr`, `officer_tag_release`,
   `officer_mark_ready`, `officer_shepherd_mark_ready`,
   `officer_shepherd_merge_ask` and `officer_public_branch` are bound to the
@@ -1120,7 +1127,12 @@ instance's volume); a new chat goes to the up instance running the fewest
 chats. When that instance has no free lane, the item is **left unclaimed** for
 a later pass; when `ccd` refuses the turn anyway (`503 capacity`, `503
 not_ready`, `409 busy` — nothing typed), the item is released and retried on a
-later pass. Neither ever fails or drops a chat. The least recently used idle
+later pass — up to 15 refusals in a row, after which the member is answered
+"(The officer can't reply right now: its chat session refused N tries in a
+row (busy or not ready). Ask again later.)". A `409 busy` while the chat owes
+an answer to a turn its lane was given is that turn still running, so it is
+waited for up to 75 minutes from the first refusal (past `ccd`'s and muster's
+turn deadlines), not counted. The least recently used idle
 lane is stopped when another needs its slot, and resumed from its transcript
 on its next turn. With `tiers`, chats run in the **judgement** pool only.
 When every lane of every up instance is busy, muster starts another instance
@@ -1284,6 +1296,18 @@ no scale-down) when it cannot run now:
   is no failure: the item is released and the next pass tries again. Every
   refusal's reason is logged.
 
+**A chat whose account is at its usage limit is answered, not looped.** A
+lane turn that comes back `rate_limited` — a `429` for a turn the limit failed,
+or the `409` of a pane parked on the CLI's usage-limit menu, which is not a
+busy lane — backs off like a failure (the agent gateway fails the account over
+on the first one, when another is usable). The third in a row is answered
+"(The officer can't reply right now: its Claude accounts are at their usage
+limit (resets …). Ask again later.)", quoting the reset the CLI stated; the
+item is then done, and the member's next message runs a turn again. `ccd`
+stops a lane whose paste was refused by that menu once no turn holds it (the
+menu outlives the limit's reset), so the lane's next turn resumes its
+conversation in a fresh CLI.
+
 **A reply HQ will not take is never retried for ever.** muster cuts a reply
 to HQ's 64 KiB cap (on a character boundary, ending `[reply cut by muster at
 64 KiB]`) and removes NULs before it posts. A reply HQ still refuses for its
@@ -1330,9 +1354,9 @@ listing and again at dispatch):
 | `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
 | `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
 | `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **both pools of a tiered officer** (never an untiered one): `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates, and today's HQ takes it for a judgement item only. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
-| `officer_task_ask` `{item_id, note?}` | **`task-reconciler:*` officers (both pools) only**: `POST …/items/{item}/task-asks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
-| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **the judgement pool of `web-performance:*` officers only**: `POST …/items/{item}/flood-blocks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
-| `officer_rollout_promote_propose` `{item_id, repo, preview_tag, evidence}` | **the routine pool of `rollout:*` officers (and an untiered one) only**: `POST …/items/{item}/rollout-promotions` — a proposal to promote one soaked preview tag; HQ re-reads the canary, asks the officer's approvers and, on an approval, promotes with its own credentials. `evidence` is forwarded as given. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
+| `officer_task_ask` `{item_id, note?}` | **`task-reconciler:*` officers (both pools) only**: `POST …/items/{item}/task-asks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
+| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **the judgement pool of `web-performance:*` officers only**: `POST …/items/{item}/flood-blocks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
+| `officer_rollout_evidence_attach` `{item_id, repo, tag, evidence}` | **the routine pool of `rollout:*` officers (and an untiered one) only**: `POST …/items/{item}/rollout-evidence` — the officer's soak evidence for one tag, which HQ shows (labelled as the officer's claims) to the person who starts a rollout. `evidence` is forwarded as given. Starts nothing. **Does not end the lease.** See [Rollout evidence](#rollout-evidence-officer_rollout_evidence_attach) |
 | `officer_gap_task` `{item_id, store, kind, namespace?, tier?, affected?}` | **`datastore:*` officers (both pools) only**: `POST …/items/{item}/gap-tasks` — HQ keeps ONE open task per (officer, store, gap kind), from its own template, assigned to the officer's owner, filed in shadow too (civ-hq docs/OFFICERS.md §5o). A repeat while that task is open answers `filed: false` with it; once a person closes it, the next filing files a new task. Arguments are decoded strictly (no title, text or assignee: HQ writes them). **Does not end the lease** |
 | `officer_pr_context` `{item_id, pr}` | **the judgement pool of `web-performance:*` officers only**: `GET /officers/{id}/prs/{pr}/context?item={item}` — what HQ holds about one PR of a compare range the item names (its release row, the release captain's notes, its review rounds and its why entries), as **attribution evidence only**, never a review verdict. HQ refuses a type without `pr_context_read` (403 `pr_context_read_off`) and a PR in no range of the officer's live items (404 `pr_not_visible`); a 404 with any other code is `pr_context_route_unavailable` (an HQ older than the route), never "not in range". Read-only; not a read of the item's read budget |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
@@ -1671,54 +1695,88 @@ checked before the item; 422 `unknown_recipient`, `recipient_muted` or
 `recipient_unreachable`; 429 `rate_limited`; 404 on an unknown item, with HQ's
 own message.
 
-### HQ-derived asks (`officer_task_ask`, `officer_flood_block_propose`, `officer_rollout_promote_propose`)
+### HQ-derived asks (`officer_task_ask`, `officer_flood_block_propose`)
 
-Three tools where the officer **proposes** and HQ asks a person, who
+Two tools where the officer **proposes** and HQ asks a person, who
 **decides**. HQ applies the decision itself, with its own credentials. Each is
 one HQ call, made by muster with the officer's token; the instance never holds
 that token. Code: `internal/officers/item_asks.go`, `internal/api/officer_item_asks.go`.
 
 The route contract — what HQ derives from the item, its limits and its
-refusal codes — is HQ's: see HQ's officer docs (`docs/OFFICERS.md`, "Task asks",
-"Flood remediation" and "Rollout promotions"). muster sends `POST
-…/items/{item}/task-asks` `{instance, note?}`, `POST …/items/{item}/flood-blocks`
-`{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}` and `POST
-…/items/{item}/rollout-promotions` `{instance, repo, preview_tag, evidence}`.
+refusal codes — is HQ's: see HQ's officer docs (`docs/OFFICERS.md`, "Task asks"
+and "Flood remediation"). muster sends `POST
+…/items/{item}/task-asks` `{instance, note?}` and `POST …/items/{item}/flood-blocks`
+`{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}`.
 
 - **Offered by officer type name** (`officers.ToolOffered`), and refused at
   dispatch for any other agent. `officer_task_ask` is offered to both pools of
   a task reconciler (and an untiered one). `officer_flood_block_propose` is
   offered to a web-performance officer's **judgement pool only**, never its
   routine pool or an untiered web-performance officer (operator decision).
-  `officer_rollout_promote_propose` is offered to a rollout officer's
-  **routine pool** (and an untiered one), never its judgement pool: HQ's
-  rollout policy tiers the sweep, the item that proposes, routine, and the
-  charter's judgement work only escalates a failed result. HQ enforces the type **policy** (`task_asks`,
-  `flood_actuator`, `rollout_actuator`, with its repository allowlist);
-  neither stands in for the other.
+  HQ enforces the type **policy** (`task_asks`, `flood_actuator`); neither
+  stands in for the other.
 - **The lease is HQ's to check** (409 `lease_lost`), as for
   `officer_ask_person`. muster does not check it locally: a flood proposal is
   also allowed on an item already `waiting` on an ask.
 - 🔴 **A success ENDS the instance's lease** (an ordinary HQ ask: the item is
   `waiting` with no holder). Transcript forwarding and the item meter stop for
   the item, and the result's `note` says that **nothing has been applied
-  yet**: the instance must not claim the task changed, traffic was
-  challenged or a tag was promoted.
+  yet**: the instance must not claim the task changed or traffic was
+  challenged.
 - **muster builds the body, so it decodes strictly.** An argument it does not
   know (`action`, a task id, a workflow, a token, another officer) or a wrongly
   typed one is refused before HQ is called. `action` is always
-  `managed_challenge`, muster's. The rollout proposal's `evidence` must be a
-  JSON object and is forwarded **whole, as given**, so nothing in it is
-  dropped; HQ's decoder refuses an unknown field inside it (400 `invalid`).
-  The tool's schema for it mirrors HQ's §5r evidence shape (`{summary,
-  checks: [{name, query, result}]}`, closed) and must change with it. It checks **none of HQ's limits**.
+  `managed_challenge`, muster's. It checks **none of HQ's limits**.
 - **Every HQ refusal reaches the model verbatim**: HQ's status and `code` in
   the error text and `refused.code`, and HQ's body under `refused.hq`. This
-  includes the flood route's 503 `flood_actuator_not_configured` and the
-  rollout route's 503 `rollout_actuator_not_configured`, which are final
-  refusals, not "retry in a minute". The rollout route's 502
-  `github_unavailable` (HQ could not read GitHub and wrote nothing) comes back
-  as `retryable` with HQ's code. An outage stays "HQ is unavailable".
+  includes the flood route's 503 `flood_actuator_not_configured`, a final
+  refusal, not "retry in a minute". An outage stays "HQ is unavailable".
+
+### Rollout evidence (`officer_rollout_evidence_attach`)
+
+A **person** starts every rollout in HQ — the rollout officer's owner or one
+of its escalation logins, for a tag they pick (civ-hq docs/OFFICERS.md §5r).
+The officer reads the canary's soak and **attaches** its evidence for the tag;
+HQ shows the newest evidence for the repository and tag, labelled as the
+officer's claims, beside its own soak read on the confirm step of a start.
+One HQ call, made by muster with the officer's token; the instance never holds
+that token. Code: `internal/officers/rollout_evidence.go`,
+`internal/api/officer_rollout_evidence.go`.
+
+muster sends `POST …/items/{item}/rollout-evidence` `{instance, repo, tag,
+evidence}`. The route contract — the tag's form, the evidence's limits, the
+repository allowlist and the refusal codes — is HQ's ("The evidence" in §5r).
+
+- **Offered by officer type name** (`officers.ToolOffered`) to a rollout
+  officer's **routine pool** (and an untiered one), never its judgement pool:
+  HQ's rollout policy tiers the hourly sweep, the item that attaches, routine,
+  and the charter's judgement work only escalates a failed result. Refused at
+  dispatch for any other agent, and refused to a chat session of an
+  untiered rollout officer ([Chat sessions](#chat-sessions)): HQ shows the
+  newest evidence for a tag, so a chat's attach would replace the sweep's.
+  HQ enforces the type **policy** (`rollout_actuator`, with its repository allowlist) and the **lease** (409
+  `lease_lost`: the instance must hold the item's live lease).
+- **It does NOT end the lease and starts nothing.** The instance keeps
+  working the item and completes it as usual; the result's `note` says that
+  nothing was started, promoted or deployed.
+- **muster builds the body, so it decodes strictly.** An argument it does not
+  know (the retired `preview_tag`, a workflow, a token, another officer) or a
+  wrongly typed one is refused before HQ is called. `evidence` must be a JSON
+  object and is forwarded **whole, as given**, so nothing in it is dropped;
+  HQ's decoder refuses an unknown field inside it (400 `invalid`). The tool's
+  schema for it mirrors HQ's §5r evidence shape (`{summary, checks: [{name,
+  query, result}]}`, closed) and must change with it. It checks **none of
+  HQ's limits**.
+- **Every HQ refusal reaches the model verbatim**, as for the HQ-derived
+  asks: HQ's status and `code` in the error text and `refused.code`, and HQ's
+  body under `refused.hq` (400 `invalid`, 403 `not_allowed`, 404, 409
+  `lease_lost` / `officer_disabled` / `rollout_actuator_off` /
+  `rollout_policy_invalid`). An outage stays "HQ is unavailable".
+
+It replaces `officer_rollout_promote_propose` (the officer proposing a
+promotion for HQ to ask approvers about). HQ retired that route when it moved
+the start to a person: it answers 410 `officer_propose_retired` and writes
+nothing, so muster no longer offers the tool.
 
 ### The first message
 
@@ -3402,13 +3460,15 @@ An officer may split its instances into two **pools**, one per HQ item tier
     the lease lapse.
   - While such a refusal holds, the holder's instance number is **withheld**
     from the pool. At the default `max_instances` of 1 that is the whole
-    judgement pool, and every other judgement item waits. This is loud: the
-    officer's owner gets **one** notification per episode (the "needs you"
-    channel, muted with the attention toggle on /account) naming the
-    officer, the item, HQ's refusal and that the pool is waiting, and it is
-    cleared when the escalation lands. The gauge
-    `muster_officer_cap_refusal_withheld` counts the withheld instances,
-    and the log says when one is withheld and when it is not any more. A
+    judgement pool, and every other judgement item waits. This is a
+    decision for the officer's owner
+    ([Officer notifications](push.md#officer-notifications-decisions-only)):
+    they get **one** notification per episode (the "needs you" channel,
+    muted with the attention toggle on /account) naming the officer, the
+    item, HQ's refusal and that the pool is waiting, opening the officer's
+    page, and it is cleared when the escalation lands. The gauge
+    `muster_officer_cap_refusal_withheld` counts the withheld instances, and
+    the log says when one is withheld and when it is not any more. A
     restarted muster starts a new episode for a refusal still in force.
 
 - **One conversation per item: `tiers.<pool>.fresh_session_per_item`**

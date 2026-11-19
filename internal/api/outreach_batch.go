@@ -377,9 +377,11 @@ func (s *Server) notifyBatchAwaiting(owner int64, d plugins.Draft) {
 		return
 	}
 	id := plugins.BatchID(d.OwnerID, *d.Officer, d.CreatedAt.UTC().Format("2006-01-02"))
-	s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: id, Title: OutreachBatchPushTitle,
-		Body: "Follows and likes by officer " + *d.Officer + " for " + d.CreatedAt.UTC().Format("2006-01-02") + ". Nothing goes out until you tick it.",
-		Tag:  batchTag(id), Data: map[string]string{"url": batchLink(id)}}, nil)
+	if s.officerPushSends(officerPushOutreachBatch, owner, batchTag(id)) {
+		s.goNotify(owner, push.EventPlugin, RouterNotification{Type: "plugin", ID: id, Title: OutreachBatchPushTitle,
+			Body: "Follows and likes by " + officerWords(plugins.DraftCard{Draft: d, OfficerDisplay: s.officerDisplayName(d.OwnerID, *d.Officer)}) + " for " + d.CreatedAt.UTC().Format("2006-01-02") + ". Nothing goes out until you tick it.",
+			Tag:  batchTag(id), Data: map[string]string{"url": officerDecisionCard(officerPushOutreachBatch, officerCardRef{ID: id})}}, nil)
+	}
 	s.attentionChanged(owner, batchKey(id))
 }
 
@@ -482,17 +484,15 @@ func outreachBatchCardHTMLIn(g batchGroup, p cardPlace) string {
 	for _, c := range g.entries {
 		ids = append(ids, c.Draft.ID)
 	}
-	officer := ""
+	// The officer by its display name, never its id (officerWords).
+	officer := officerWords(plugins.DraftCard{})
 	if len(g.entries)+len(g.waiting) > 0 {
-		first := append(append([]plugins.DraftCard{}, g.entries...), g.waiting...)[0]
-		if first.Draft.Officer != nil {
-			officer = *first.Draft.Officer
-		}
+		officer = officerWords(append(append([]plugins.DraftCard{}, g.entries...), g.waiting...)[0])
 	}
 	var b strings.Builder
 	b.WriteString(`<li id="` + batchKey(g.id) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-outreach-batch="` + esc(g.id) + `">
 ` + ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", "Outreach"),
-		`<span class="`+ui.AsksTitleClass+`">Batch `+esc(day)+`</span>`, `Follows and likes by officer `+esc(officer)) + `
+		`<span class="`+ui.AsksTitleClass+`">Batch `+esc(day)+`</span>`, `Follows and likes by `+esc(officer)) + `
 <span class="break-words text-xs text-fg2">Tick what goes out; every entry you leave unticked is rejected.</span>
 `)
 	if len(g.entries) == 0 {
@@ -661,6 +661,9 @@ func (s *Server) withBatches(ctx context.Context, pending []plugins.DraftCard) [
 				c = plugins.DraftCard{Draft: d}
 			}
 			c.Person = s.outreachPerson(ctx, d)
+			if d.Officer != nil {
+				c.OfficerDisplay = s.officerDisplayName(d.OwnerID, *d.Officer)
+			}
 			pending = append(pending, c)
 		}
 	}

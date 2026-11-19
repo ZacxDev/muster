@@ -301,9 +301,9 @@ auth-failure marks: a team's agent is not placed on, or failed over to, an
 account the admin's agents found exhausted, and the reverse.
 
 A member sees the team chief's one shared conversation and its earlier chats,
-but the page offers no **New side chat**, **Fresh primary**, **Make
-primary**, **Archive** or **Unarchive** on it: the server refuses those to
-every member. Opening a team agent's page is not recorded in the member's
+and the chips switch between them, but the strip has no **+** (New side
+chat) and no **⋯** (Fresh primary, Make primary, Archive, Unarchive): the
+server refuses those to every member. Opening a team agent's page is not recorded in the member's
 **recently viewed**.
 
 A team's chief starts **team-owned** `pod/claude-code` agents on the team's
@@ -1254,25 +1254,42 @@ The chief has one **primary chat** and any number of **side chats**.
   they go to the primary instead; nothing is ever delivered into an archived
   chat.
 
-The chats are managed in one place. On the chief page, the header's list
-button (the same one a mirrored session has) opens a sheet whose first tab,
-**Chats**, lists them — tap one to switch to it — beside **Your messages** and
-**Focus history**. In the panel, the title bar's thread list holds them. The
-actions:
+The chats are a strip of chips under the chief page's header, and over the
+transcript in the chief panel. There is no sheet or dialog for them:
+
+    [★ Primary] [side chats, most recent first…] [Archived (n)]   [+]
+
+- **Tap a chip** to switch to its chat. The chip of the chat you are on is
+  highlighted. A side chat's chip shows a dot when a reply arrived since you
+  last opened it. A side chat is named by its title, and **New chat** until
+  its first line gives it one.
+- **+** opens a new side chat and puts the cursor in its message box. While the
+  newest side chat is still empty, **+** takes you back to that one instead
+  of opening a second (a double tap opens one chat), and still puts the cursor
+  in its box.
+- **Archived (n)** is the last chip. Tap it to show the archived chats' chips
+  in the strip, and again to hide them. The chat you are on is never hidden
+  there.
+- **⋯** on each chip holds that chat's actions (keyboard: Enter opens it, Tab
+  moves through it, Escape closes it).
+
+On a phone the strip scrolls sideways, and it scrolls the chip of the chat you
+are on into view. In the panel every one of these answers inside the panel:
+you stay on the grid.
 
 | on | action | where | what it does |
 |---|---|---|---|
-| every chat | **+ New side chat** | under the list | opens a side chat (the newest one is reused while it is still empty) |
-| the primary | **Fresh primary** | under the list, while on the primary | after a confirm, starts a new primary chat (below) |
-| a side chat | **Archive** | the row's ⋯ menu (the panel: under the list, for the chat it is on) | hides it among the archived chats, keeps its history, and leaves you on the primary |
-| an archived chat | **Unarchive** | the row's ⋯ menu (the panel: under the list) | puts it back among the side chats |
-| a side chat | **Make primary** | the row's ⋯ menu (the panel: beside the row) | makes it the primary |
-| a side chat | **Continue in a new session** | the panel: under the list, for the chat it is on (with the runtime picker offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
+| every chat | **+** (New side chat) | the end of the strip | opens a side chat and moves you to it (the newest one is reused while it is still empty) |
+| the primary | **Fresh primary** | the primary chip's ⋯ | after a confirm, starts a new primary chat (below) |
+| a side chat | **Make primary** | its chip's ⋯ | makes it the primary (you stay on the chat you are on) |
+| a side chat | **Archive** | its chip's ⋯ | puts it behind **Archived (n)** and keeps its history. Archiving the chat you are on takes you to the primary; archiving another one leaves you where you are |
+| an archived chat | **Unarchive** | its chip's ⋯ | puts it back among the side chats |
+| a side chat | **Continue in a new session** | the panel: under its thread list, for the chat it is on (with the runtime picker offered) | after a confirm, continues it in a new side chat on the model you pick (below) |
 
-The primary cannot be archived. The list puts the primary first, marked
-**Primary**, then the side chats by last activity, each with a dot when a
-reply arrived since you last opened it, and the archived chats last, under
-**Archived** (a collapsed group on the page).
+The primary cannot be archived. The strip puts the primary first, marked
+**★ Primary**, then the side chats by last activity, and the archived chats
+last, behind **Archived (n)**. The panel's thread list (its title bar's list
+button) lists the same chats in the same order, for search.
 
 **The context chip.** The chief page's header shows, under the title (where a
 mirrored session's header shows its own), how full the chat's context is; the
@@ -1316,8 +1333,9 @@ NEW side chat on another model. The use it is built for: do the reading around
 — which sessions are stalled, what a task's history says — in a cheap side chat
 (say `haiku`), then hand over to a more capable model (say `opus`) to do the
 work, starting from a short structured handover instead of the whole recon
-conversation. In the panel, open the side chat's thread list and use
-**Continue in a new session** under the list: pick the runtime and model (the
+conversation. In the panel, open the thread list (the title bar's list button)
+while on the side chat, and use **Continue in a new session** under the list:
+pick the runtime and model (the
 same picker as **New session**) and confirm. The route underneath is
 `POST /agents/{id}/sessions/{sid}/continue` with `runtime` and `model` form
 fields, validated exactly as **New session** validates them.

@@ -244,6 +244,23 @@ class AgentRBAC(unittest.TestCase):
         refused(self, "layout", sets=AGENTS + ["agents.rbac.layout=default"])
 
 
+class AgentKubeQPS(unittest.TestCase):
+    """agents.kubeQPS reaches the server as MUSTER_AGENT_KUBE_QPS; unset (0)
+    sets nothing, so the server's own default applies."""
+
+    def test_set_reaches_the_server(self):
+        env = server_env(render(self, sets=AGENTS + ["agents.kubeQPS=80"]))
+        self.assertEqual(env.get("MUSTER_AGENT_KUBE_QPS", {}).get("value"), "80")
+
+    def test_unset_sets_nothing(self):
+        env = server_env(render(self, sets=AGENTS))
+        self.assertIn("MUSTER_AGENT_NAMESPACE_CLUSTERROLE", env, "instrument check: the kubernetes env block rendered")
+        self.assertNotIn("MUSTER_AGENT_KUBE_QPS", env)
+
+    def test_out_of_range_is_refused(self):
+        refused(self, "kubeQPS", sets=AGENTS + ["agents.kubeQPS=5000"])
+
+
 class ReleaseBuildUsageExit(unittest.TestCase):
     """scripts/release-build.sh exits 2 (usage/setup), not 1 (a check failed),
     when deploy/.env.example is missing — as for the compose file beside it."""

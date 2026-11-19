@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // ---------------------------------------------------------------------------
@@ -280,6 +281,10 @@ type Observation struct {
 	BudgetRead bool
 	// Spent is the officer's spend today in USD, when BudgetRead.
 	Spent float64
+	// Budget is the daily budget the pass held it to, in USD: the declared
+	// daily_budget_usd, or its owner's raise for today
+	// (Officer.WithRaisedCap). 0 with no budget.
+	Budget float64
 	// SpendUnreadable: the officer has a daily budget and its spend could not
 	// be read this pass (then OverBudget, fail closed).
 	SpendUnreadable bool
@@ -755,8 +760,24 @@ const (
 	MaxBackoff = 10 * time.Minute
 )
 
+// fleetUnread is a pass's failure to read its pools' instances because muster's
+// own provisioner could not be reached (Fleet.Instances answering
+// provision.ErrBlind) — not the officer's backend, and not a fleet failure of
+// any other kind. Its text is the underlying error's. Check retries it at the
+// poll interval rather than Backoff's doubling.
+//
+// ⚠ ONLY ErrBlind. A host officer's host being offline, a missing host-spawn
+// store or an unreadable agents table also fail Fleet.Instances, and keep the
+// normal backoff: a laptop offline overnight re-read every poll interval would
+// cost its HQ ~10x the requests for nothing.
+type fleetUnread struct{ err error }
+
+func (e fleetUnread) Error() string { return e.err.Error() }
+func (e fleetUnread) Unwrap() error { return e.err }
+
 // Backoff is how long to wait after the failures'th consecutive failed pass:
-// PollInterval doubled per failure, capped at MaxBackoff.
+// PollInterval doubled per failure, capped at MaxBackoff. A pass that failed
+// reading its fleet (fleetUnread) waits PollInterval instead.
 func Backoff(o Officer, failures int) time.Duration {
 	d := o.PollInterval
 	for i := 0; i < failures && d < MaxBackoff; i++ {
@@ -774,7 +795,11 @@ type officerState struct {
 	// an untiered officer's one pool).
 	idleSince map[string]time.Time
 	failures  int
-	nextAt    time.Time
+	// fleetFailures is the run of passes that failed reading the fleet
+	// (fleetUnread), counted apart from failures so it never grows the
+	// backend's backoff.
+	fleetFailures int
+	nextAt        time.Time
 	// promptedAt is when each instance was last started or re-prompted, by
 	// instance agent name (the two pools' numbers overlap).
 	promptedAt map[string]time.Time
@@ -1070,7 +1095,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	now := r.now()
 	r.mu.Lock()
 	s := r.st(key)
-	if !force && s.failures > 0 && now.Before(s.nextAt) {
+	if !force && (s.failures > 0 || s.fleetFailures > 0) && now.Before(s.nextAt) {
 		r.mu.Unlock()
 		return PassResult{Skipped: true}
 	}
@@ -1092,9 +1117,34 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		// SUCCESSFUL pass's state, so a failed pass (and a fault scale-down,
 		// which follows one) clears it rather than republish a stale value.
 		s.capReached = false
-		s.failures++
+		unread := errors.As(err, new(fleetUnread))
+		if unread {
+			// Counted apart from failures (fleetFailures): failures is the
+			// backend's run, which Backoff doubles, and a long provisioner
+			// outage must not leave the next HQ blip at the 10-minute cap.
+			// HQ answered this pass (observe reads it first), which ends the
+			// backend's run as a success would.
+			s.fleetFailures++
+			s.failures = 0
+		} else {
+			s.failures++
+		}
 		s.nextAt = now.Add(Backoff(o, s.failures))
+		if unread {
+			// 🔴 AN UNREADABLE FLEET IS RETRIED AT THE POLL INTERVAL, NOT
+			// BACKED OFF. The backoff protects the officer's BACKEND (HQ)
+			// from a retry storm; this pass read HQ fine and failed on
+			// muster's own provisioner, which a retry at the poll interval
+			// reads no more often than a healthy officer does. Doubling it
+			// meant one bad minute of the provisioner's client
+			// (a rate limiter out of budget) parked officers for 8 and 10
+			// minutes after it had recovered.
+			s.nextAt = now.Add(o.PollInterval)
+		}
 		f, next := s.failures, s.nextAt
+		if unread {
+			f = s.fleetFailures
+		}
 		refusal := permanentRefusal(err)
 		changed := false
 		if refusal != "" {
@@ -1167,7 +1217,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		s.switchedOff = false
 	}
 	s.strikes = 0
-	s.failures = 0
+	s.failures, s.fleetFailures = 0, 0
 	s.nextAt = now.Add(o.PollInterval)
 	s.chatUp, s.chatWaiting = 0, 0
 	for i, p := range pools {
@@ -1229,7 +1279,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 			for _, d := range ds {
 				waiting += d.BudgetWaiting
 			}
-			alert = &BudgetAlert{Spent: obs[0].Spent, Budget: o.Budget.DailyUSD, Waiting: waiting, ResetAt: CapResetAt(now)}
+			alert = &BudgetAlert{Spent: obs[0].Spent, Budget: obs[0].Budget, Waiting: waiting, ResetAt: CapResetAt(now)}
 		}
 	}
 	var ended []refusedCap
@@ -1308,7 +1358,7 @@ func (r *Reconciler) switchedOffPass(ctx context.Context, o Officer, now time.Ti
 	s := r.st(o.Key())
 	turned := !s.switchedOff
 	s.switchedOff = true
-	s.failures, s.strikes, s.fault, s.capReached = 0, 0, "", false
+	s.failures, s.fleetFailures, s.strikes, s.fault, s.capReached = 0, 0, 0, "", false
 	s.nextAt = now.Add(o.PollInterval)
 	r.mu.Unlock()
 	r.publish()
@@ -1447,6 +1497,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 	// closed), as an unreadable session ledger does.
 	var over, read, unreadable bool
 	var spent float64
+	budget := o.Budget.DailyUSD
 	if o.Budget.DailyUSD > 0 {
 		if sr, ok := r.hq.(spendReader); ok {
 			v, served, err := sr.SpentToday(ctx, o, r.now())
@@ -1455,7 +1506,19 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 				r.log.Printf("officers: %s: reading its spend for daily_budget_usd: %v — not waking it for new work this pass", o.ID, err)
 				over, unreadable = true, true
 			case served:
-				spent, read, over = v, true, o.OverBudget(v)
+				// The owner's raise for today, when there is one
+				// (Officer.WithRaisedCap). An unreadable raise is the
+				// declared budget: the lower cap, so fail closed.
+				ob := o
+				if rr, ok := r.hq.(raisedCapReader); ok {
+					if c, err := rr.RaisedCapToday(ctx, o, r.now()); err != nil {
+						r.log.Printf("officers: %s: reading today's raised cap: %v — holding it to its declared daily_budget_usd this pass", o.ID, err)
+					} else {
+						ob = o.WithRaisedCap(c)
+					}
+				}
+				budget = ob.Budget.DailyUSD
+				spent, read, over = v, true, ob.OverBudget(v)
 			}
 		}
 	}
@@ -1466,6 +1529,9 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 	out := make([]Observation, len(pools))
 	for i, p := range pools {
 		insts, err := r.fleet.Instances(ctx, p)
+		if errors.Is(err, provision.ErrBlind) {
+			return nil, fleetUnread{err}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1479,7 +1545,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 			used, capped, counted = 0, true, nil
 		}
 		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used,
-			OverBudget: over, BudgetRead: read, Spent: spent, SpendUnreadable: unreadable}
+			OverBudget: over, BudgetRead: read, Spent: spent, Budget: budget, SpendUnreadable: unreadable}
 		out[i].Chats = r.chats.On(p)
 		out[i].ChatPlan, out[i].ChatHeldBack = r.chats.Want(ctx, p, out[i], r.now())
 	}

@@ -315,12 +315,12 @@ type fakeInstances struct {
 	insts []provision.Instance
 	err   error
 	calls int
-	// panics, while above zero, makes Instances panic (and counts down): a
+	// panics, while above zero, makes InstancesOf panic (and counts down): a
 	// pass that panics, for the supervised-restart test.
 	panics atomic.Int32
 }
 
-func (f *fakeInstances) Instances(context.Context) ([]provision.Instance, error) {
+func (f *fakeInstances) InstancesOf(context.Context, []agents.Agent) ([]provision.Instance, error) {
 	if f.panics.Add(-1) >= 0 {
 		panic("fakeInstances: a pass panics")
 	}

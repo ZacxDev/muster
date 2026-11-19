@@ -155,10 +155,10 @@ one-off live link, so a press or a tab-through would leave links nobody holds
 there the tap alone makes the link. If the tap still beats the fetch, the link is copied in the same
 tap and the sheet is tried when it arrives; if the browser refuses it, the
 toast says the link is copied, and the next tap shares at once. The Pages
-screens draw the address on the button already. A server without the key says
-so on the page's screen in words (*Sharing isn't set up on this server*); the
-setting it needs is in the ⓘ beside that line, for an admin only (anyone else
-is told to ask their admin).
+screens draw the address on the button already. On a server without the key,
+the ⓘ beside Share on the page's screen says so (*Sharing isn't set up on this
+server*) and what Share does there; the setting it needs is in that ⓘ for an
+admin only (anyone else is told to ask their admin).
 
 **Older links** — every link made before reusable links existed, an agent's
 link you approved on Asks, and every link made on a server without the key —
@@ -263,7 +263,8 @@ answer.*). A viewer through a link sees no bar: what they send is recorded
 as before, turned into JSON the same way.
 
 Your header also has the **version chip** (`v3 ▾`). It opens a list of every
-version, when it was made and which is current (the one links show); tapping
+version, when it was made in words (*today at 9:14*, in your own time zone)
+and which is current (the one links show); tapping
 one views it. Under the list are **Share** (the same Share as everywhere else)
 and **Page details**, the page's screen. On a phone the list is a sheet from
 the bottom; Escape, a tap outside or the chip closes it.
@@ -285,28 +286,35 @@ viewer never does.
 ## The Pages screen
 
 **Pages** is in the sidebar (under More). `/pages` lists your pages, newest
-activity first, with their counts, each with **Share** and **⋯**. A page's
-screen (`/pages/{id}`) has:
+activity first. Each row is the page's title, who made it and when it last
+changed (*today at 9:14*, in your own time zone), and a badge only for what
+is there: the version (**v3**, when there is more than
+one), **Live** (it has a live link), **2 waiting** (links waiting for your
+approval) and **3 replies** (responses). Tapping a row opens [your own
+view](#the-owners-view) of the page; its **⋯** holds **Share**, **Details**
+(the page's screen) and, when the page has its Share link, **Revoke link** and
+**New link**. What the screen is for is behind the **ⓘ** beside its heading.
 
-- **Share**: **Share** and ⋯ — and on a phone, where Share opens the share
-  sheet, **Copy link** (the same link, always to the clipboard; elsewhere
-  Share itself copies). The page's reusable link (when it has one) is in the
-  ⓘ beside them, with its own Copy; it appears there on the first Share and
-  goes on Revoke — the screen never spells an address.
+A page's screen (`/pages/{id}`) has, under the title, who made it and the
+version shown:
 
-- **Open the page**: [your own view](#the-owners-view) of it.
-- **Links**: each link's state, who asked, when it was made in words
-  (*Made today at 9:14*, in your own time zone), whether it is the page's
-  Share link or an earlier one, and Revoke. Its ⓘ holds its exact label —
-  when it was made (UTC) and the first 8 hex digits of its token's hash
-  (`created 2026-11-11 14:02 UTC · 3fa9c2e1`), which tells links apart and
-  opens nothing. (There is no separate "make a link" button: Share and ⋯ → New link
-  make every link.)
-- **Versions**: each version, when it was made, **View** (your view of it),
-  and **Show this version** (a rollback: the version becomes current, every
-  link shows it, nothing is deleted). Its ⓘ holds its exact time and size.
-- **Responses**: everything viewers sent and you sent from your view (marked
-  *Sent by you*), newest first, each as labelled fields named by the page's
+- **Open** — [your own view](#the-owners-view) of the page — and **Share**. When
+  the page has its Share link, a **⋯** beside them has **Revoke link** and
+  **New link**. The screen never spells an address.
+- **Links**, only when the page has one. Each live or waiting link: its state,
+  who asked, when it was made in words (*Made today at 9:14*; the exact time
+  is its tooltip), whether it is the page's Share link or an earlier one,
+  **Copy** on the page's Share link (the one link whose address muster
+  keeps, on any device), and **Revoke**. Revoked and declined links are
+  folded under **Past links (n)**. (There is no separate "make a link"
+  button: Share and ⋯ → New link make every link.)
+- **Versions**, only when there is more than one: one row per version, newest
+  first (*v2 · current · today at 9:14*; its exact time and size are the
+  time's tooltip); tapping a row views that version. An older version's
+  **⋯** has **Make current** (a rollback: the version becomes current, every
+  link shows it, nothing is deleted).
+- **Responses**, only when there is one: everything viewers sent and you sent
+  from your view (marked *Sent by you*), newest first, each as labelled fields named by the page's
   own form (the version it was sent through): a form's field labels, a
   question's *Answer*, a choice's *Chose*, an approval's *Decision* and
   *Comment*; what a page's own script sent, by its keys (followed four levels
@@ -322,7 +330,10 @@ screen (`/pages/{id}`) has:
   (`/pages/{id}/responses/{rid}/raw`, a JSON attachment) when it is longer. A
   response too large to keep is refused with a 413 in plain words.
 
-- **Delete this page**: deletes the page, every version, link and response,
+- **Delete this page** (its ⓘ says what it removes) asks in place: it
+  becomes *Delete this page and its responses?* with **Delete** and
+  **Cancel** (Escape cancels too). Delete deletes the page, every
+  version, link and response,
   and every file sent through it. It cannot be undone. From its first step
   the page takes no new link (an agent's share or a Share is refused), so
   nothing goes live while it is being deleted; a delete that fails leaves it
@@ -336,8 +347,8 @@ front-end telemetry, and the page's screen is never cached.
 When an agent calls `page_create`, `page_update` or `page_share_request`, its
 chat draws a **page card** under the tool's row: the title, what happened (a
 new page, a new version, shared, or waiting for you), **Open** — [your own
-view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Revoke
-link, New link, Page settings). It is drawn in a dispatched agent's chat (its
+view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Page
+settings; Revoke link and New link too while the page has a live link). It is drawn in a dispatched agent's chat (its
 stored transcript and its live stream) and in a mirrored Claude Code
 session's view. The card never holds a link's address: Share asks muster for
 the page's current link on each tap, so a card from an hour ago never copies
@@ -489,6 +500,19 @@ refused …`). A `muster-mirror` older than this bound still refuses any
 request over 64 KiB with its old `{"error":"the request is too large"}`: a
 page over 64 KiB from a mirrored session needs the host's `muster-mirror`
 updated as well as the server.
+
+The other way round, a current `muster-mirror` in front of a muster older
+than v0.239.0: that muster reads at most 64 KiB per request and answers a
+larger one with a bare JSON-RPC `-32700 could not read the request`. The
+host proxy replaces that answer with one that names the muster, the
+request's size and both limits (`muster at <host> could not read this MCP
+request of N bytes: it reads at most 64 KiB per request, so it is probably
+older than v0.239.0 …`). The fix is to upgrade that muster. Every muster the
+host reaches counts, including any extra instance in its MCP targets file
+([mirroring.md](mirroring.md#several-muster-instances)). A `markdown` block
+holds at most 64 KiB on any version, so a probe of one large `markdown` block
+is refused by the page tool even when the transport is fine. Use `html`
+blocks to test a large page.
 
 ## Telemetry
 
