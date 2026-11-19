@@ -28,16 +28,23 @@ def needs(**results) -> str:
     return json.dumps({k.replace("_", "-"): {"result": v, "outputs": {}} for k, v in results.items()})
 
 
+RUN = 500  # this run's number; the fakes list runs around it
+
+
 class FakeGh:
-    def __init__(self, head=SHA, open_issues="", head_rc=0, list_rc=0, write_rc=0):
+    """runs: the `run_number status conclusion` lines the run-list API answers
+    (newest first, as GitHub orders them)."""
+
+    def __init__(self, runs=f"{RUN} in_progress null\n499 completed success\n", open_issues="",
+                 runs_rc=0, list_rc=0, write_rc=0):
         self.calls: list[list[str]] = []
-        self.head, self.open, self.head_rc, self.list_rc = head, open_issues, head_rc, list_rc
+        self.runs, self.open, self.runs_rc, self.list_rc = runs, open_issues, runs_rc, list_rc
         self.write_rc = write_rc
 
     def __call__(self, args):
         self.calls.append(args)
         if args[0] == "api":
-            return self.head_rc, self.head + "\n"
+            return self.runs_rc, self.runs
         if args[:2] == ["issue", "list"]:
             return self.list_rc, self.open
         if args[:2] in (["issue", "create"], ["issue", "close"], ["issue", "comment"]):
@@ -70,7 +77,7 @@ class Verdict(unittest.TestCase):
 class Act(unittest.TestCase):
     def test_red_with_no_open_issue_opens_one_assigned_to_the_owner(self):
         gh = FakeGh()
-        self.assertEqual(act(REPO, SHA, URL, "red", gh, assignee="owner1"), "opened the main-red issue")
+        self.assertEqual(act(REPO, SHA, URL, "red", gh, assignee="owner1", run_number=RUN), "opened the main-red issue")
         self.assertEqual(gh.verbs(), ["api", "issue list", "label create", "issue create"])
         create = gh.calls[-1]
         self.assertEqual(create[create.index("--title") + 1], "main is red")
@@ -79,36 +86,64 @@ class Act(unittest.TestCase):
         self.assertEqual(create[create.index("--assignee") + 1], "owner1")
 
     def test_a_failed_create_or_close_says_so(self):
-        self.assertEqual(act(REPO, SHA, URL, "red", FakeGh(write_rc=1)), "FAILED to open the main-red issue")
-        self.assertEqual(act(REPO, SHA, URL, "green", FakeGh(open_issues="9", write_rc=1)), "closed #9 (FAILED to close)")
+        self.assertEqual(act(REPO, SHA, URL, "red", FakeGh(write_rc=1), run_number=RUN), "FAILED to open the main-red issue")
+        self.assertEqual(act(REPO, SHA, URL, "green", FakeGh(open_issues="9", write_rc=1), run_number=RUN), "closed #9 (FAILED to close)")
 
     def test_red_with_open_issues_comments_on_the_oldest_and_opens_none(self):
         gh = FakeGh(open_issues="12\n9\n")
-        self.assertEqual(act(REPO, SHA, URL, "red", gh), "commented on #9")
+        self.assertEqual(act(REPO, SHA, URL, "red", gh, run_number=RUN), "commented on #9")
         self.assertEqual(gh.verbs(), ["api", "issue list", "issue comment"])
         self.assertEqual(gh.calls[-1][2], "9")
 
     def test_green_closes_every_open_issue(self):
         gh = FakeGh(open_issues="9\n12\n")
-        self.assertEqual(act(REPO, SHA, URL, "green", gh), "closed #9, #12")
+        self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "closed #9, #12")
         self.assertEqual(gh.verbs(), ["api", "issue list", "issue comment", "issue close", "issue comment", "issue close"])
         self.assertEqual([c[2] for c in gh.calls if c[:2] == ["issue", "close"]], ["9", "12"])
 
     def test_green_with_nothing_open_does_nothing(self):
         gh = FakeGh()
-        self.assertEqual(act(REPO, SHA, URL, "green", gh), "green, no open issue")
+        self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "green, no open issue")
         self.assertEqual(gh.verbs(), ["api", "issue list"])
 
-    def test_an_older_sha_than_main_head_does_nothing(self):
-        gh = FakeGh(head="b" * 40)
-        self.assertIn("is not main's head", act(REPO, SHA, URL, "red", gh))
+    def test_a_late_older_green_after_a_newer_red_does_not_close(self):
+        # #843's mirror image: run 500 is green but finishes AFTER run 501 went
+        # red. It must not close the issue 501 opened.
+        gh = FakeGh(runs="501 completed failure\n500 in_progress null\n", open_issues="9")
+        self.assertIn("already decided", act(REPO, SHA, URL, "green", gh, run_number=RUN))
         self.assertEqual(gh.verbs(), ["api"])
 
-    def test_a_failed_head_lookup_or_list_does_nothing(self):
-        for kw in ({"head_rc": 1}, {"list_rc": 1}):
+    def test_a_late_older_red_after_a_newer_green_does_not_reopen(self):
+        gh = FakeGh(runs="502 completed success\n500 in_progress null\n")
+        self.assertIn("run #502 (success)", act(REPO, SHA, URL, "red", gh, run_number=RUN))
+        self.assertEqual(gh.verbs(), ["api"])
+
+    def test_the_newest_green_closes_even_while_a_newer_push_is_still_running(self):
+        # #843: every green finished after the next push, so "only main's head"
+        # never closed it. A newer run that has not finished does not block.
+        gh = FakeGh(runs="501 in_progress null\n500 in_progress null\n499 completed failure\n", open_issues="9")
+        self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "closed #9")
+        self.assertEqual(gh.verbs(), ["api", "issue list", "issue comment", "issue close"])
+
+    def test_the_newest_red_opens(self):
+        gh = FakeGh(runs="501 queued null\n500 in_progress null\n")
+        self.assertEqual(act(REPO, SHA, URL, "red", gh, run_number=RUN), "opened the main-red issue")
+        self.assertEqual(gh.verbs(), ["api", "issue list", "label create", "issue create"])
+
+    def test_a_newer_cancelled_run_decides_nothing_and_does_not_block(self):
+        gh = FakeGh(runs="501 completed cancelled\n500 in_progress null\n", open_issues="9")
+        self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "closed #9")
+
+    def test_the_run_list_is_asked_for_main_pushes_of_ci_yml(self):
+        gh = FakeGh()
+        act(REPO, SHA, URL, "green", gh, run_number=RUN)
+        self.assertEqual(gh.calls[0][1], "repos/o/r/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50")
+
+    def test_a_failed_run_lookup_or_issue_list_does_nothing(self):
+        for kw in ({"runs_rc": 1}, {"list_rc": 1}):
             with self.subTest(**kw):
                 gh = FakeGh(**kw)
-                self.assertIn("nothing to do", act(REPO, SHA, URL, "red", gh))
+                self.assertIn("nothing to do", act(REPO, SHA, URL, "red", gh, run_number=RUN))
                 self.assertNotIn("issue create", gh.verbs())
 
     def test_no_verdict_makes_no_call(self):

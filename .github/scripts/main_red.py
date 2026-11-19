@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep ONE open `main-red` issue while `main` is red, and close it when `main` is green.
 
-    main_red.py --repo OWNER/NAME --sha SHA --run-url URL --assignee LOGIN   (reads `needs` as JSON from $NEEDS)
+    main_red.py --repo OWNER/NAME --sha SHA --run-number N --run-url URL --assignee LOGIN
+                (reads `needs` as JSON from $NEEDS)
 
 🔴 WHY. Nothing told anyone when a push to `main` went red: main HEAD 4c3d54f
 (2026-11-17) was red and nobody was notified. GitHub notifies a repository's
@@ -21,10 +22,20 @@ docshots (pinned by TestCIMainRedNeedsWhatPublishGateNeeds):
 The issue is assigned to --assignee (the repository owner): GitHub notifies an
 assignee whether or not they watch the repository.
 
-🔴 ONLY THE CURRENT HEAD OF `main` DECIDES. Runs finish out of order; an older
-run finishing red after a newer one went green must not reopen the issue. So the
-script acts only when SHA is main's head at the time it runs; any other sha (or a
-failed head lookup) is a no-op that says so.
+🔴 THE NEWEST FINISHED VERDICT DECIDES. Runs finish out of order, and with every
+`main` push now running in full a run usually finishes AFTER a newer push. The
+first rule here was "act only if SHA is still main's head", and that never let a
+green run close the issue during a burst of merges: each green finished behind a
+newer push, so the issue stayed open through an hour of green (#843). Now this
+run acts unless a NEWER `main` push run of ci.yml (higher run number) has already
+finished with a verdict (success or failure); a newer run still in progress does
+not stop it, because that run will decide in turn when it finishes. So a late
+older run never flaps the issue, and the newest finished run always decides. A
+failed run lookup is a no-op that says so.
+
+⚠ It cannot tell an infrastructure failure (a download that failed in a setup
+step) from a test failure: the needs context carries only each job's result. Such
+a red opens or comments on the issue like any other.
 
 ACTIONS
   red, no open issue     create it (title "main is red", label main-red)
@@ -76,15 +87,35 @@ def verdict(needs_json: str) -> str:
     return "green"
 
 
-def act(repo: str, sha: str, run_url: str, state: str, gh: Gh = real_gh, assignee: str = "") -> str:
+VERDICTS = {"success", "failure"}
+
+
+def newer_finished(repo: str, run_number: int, gh: Gh) -> tuple[bool, str]:
+    """(ok, what): whether a newer `main` push run of ci.yml has already
+    finished with a verdict. ok is False when the run list cannot be read."""
+    rc, out = gh(["api", f"repos/{repo}/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50",
+                  "--jq", '.workflow_runs[] | "\\(.run_number) \\(.status) \\(.conclusion)"'])
+    if rc != 0:
+        return False, ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 3 or not parts[0].isdigit():
+            continue
+        n, status, conclusion = int(parts[0]), parts[1], parts[2]
+        if n > run_number and status == "completed" and conclusion in VERDICTS:
+            return True, f"run #{n} ({conclusion})"
+    return True, ""
+
+
+def act(repo: str, sha: str, run_url: str, state: str, gh: Gh = real_gh, assignee: str = "",
+        run_number: int = 0) -> str:
     if state == "none":
         return "no verdict (a job was cancelled, or the needs context was unreadable): nothing to do"
-    rc, head = gh(["api", f"repos/{repo}/commits/main", "--jq", ".sha"])
-    head = head.strip()
-    if rc != 0 or not head:
-        return "could not read main's head: nothing to do"
-    if head != sha:
-        return f"{sha[:12]} is not main's head ({head[:12]}): a newer run decides"
+    ok, newer = newer_finished(repo, run_number, gh)
+    if not ok:
+        return "could not list ci.yml's main runs: nothing to do"
+    if newer:
+        return f"{sha[:12]} (run #{run_number}) is older than {newer}, which already decided: nothing to do"
     rc, out = gh(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                   "--json", "number", "--jq", ".[].number"])
     if rc != 0:
@@ -115,11 +146,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", required=True)
     ap.add_argument("--sha", required=True)
+    ap.add_argument("--run-number", type=int, required=True)
     ap.add_argument("--run-url", required=True)
     ap.add_argument("--assignee", default="")
     a = ap.parse_args()
     state = verdict(os.environ.get("NEEDS", ""))
-    print(f"main-red: verdict={state}: {act(a.repo, a.sha, a.run_url, state, assignee=a.assignee)}")
+    print(f"main-red: verdict={state}: {act(a.repo, a.sha, a.run_url, state, assignee=a.assignee, run_number=a.run_number)}")
     return 0
 
 
