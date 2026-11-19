@@ -555,7 +555,9 @@ muster then, once, on the call that recorded it:
   or straight to your chief. It does this for every failed
   send. For a check refusal it does this only when the reply is not going back
   to its session, because there is nothing for your owner to do while the
-  session rewrites it.
+  session rewrites it. An **officer's** refused draft goes back to the officer
+  and pushes nothing; its earlier "awaits your approval" notification is
+  withdrawn instead ([Officer notifications](push.md#officer-notifications-decisions-only)).
 - **hands a routed reply back to the session that wrote it.** The route ends
   `send_failed`, not `relayed`, so `plugin_messages_list` says `send_failed`.
   The route sweep makes a **new route** of the same message to the same

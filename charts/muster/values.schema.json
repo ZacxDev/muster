@@ -342,6 +342,11 @@
         "model": {
           "type": "string"
         },
+        "kubeQPS": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
         "workspace": {
           "type": "object",
           "additionalProperties": false,
