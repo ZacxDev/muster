@@ -1,10 +1,11 @@
--- muster 0157 — SCHEDULED HOST JOBS (internal/hostjobs; internal/api
+-- muster 0163 — SCHEDULED HOST JOBS (internal/hostjobs; internal/api
 -- hostjobs.go; docs/host-jobs.md).
 --
 --   host_jobs      one row per (owner, host, job name): the job AS ITS HOST
 --       LAST REPORTED IT (the host's muster-mirror jobs file is the only
 --       place a job is declared; muster never writes a command), its next
---       cron fire, and the page muster made for it when the host named none.
+--       cron fire, and page_id, the page muster made for it (every job
+--       writes its own: a host names no page).
 --       declared is false for a job the host no longer reports: kept for its
 --       runs, never fired.
 --   host_job_runs  one row per fire or `muster job run`: its trigger, its
@@ -18,6 +19,15 @@
 --   A command is stored for DISPLAY only (`muster job list`): no reader
 --   hands it back to the host, which runs its own copy.
 --
+--   pages.rolling_versions  a page muster made for a job (true) keeps its
+--       newest pages.MaxVersionsPerPage versions: a new version past the cap
+--       drops the oldest version nothing references (not the current one,
+--       which every live link serves; not one a response names) instead of
+--       being refused, so the job's page never fills and its id and links
+--       never change. Every other page is false and keeps the cap (internal/
+--       pages rollingDrop). A new column on an owned table; 0116's owner
+--       isolation covers it.
+--
 -- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, PERSONAL share class: a
 -- job's page is one of the owner's pages, and pages are personal, so a TEAM
 -- host's jobs are refused before they reach these tables (internal/api
@@ -26,15 +36,19 @@
 -- the rest, and --rls-on re-applies this file (db.RLSOn), so every
 -- statement is idempotent.
 --
--- Must apply after its predecessor, 0156_officer_seen (the contiguity test
--- refuses a gap). 🔴 RENUMBER IT (and db.hostJobsMigrationVersion) at merge if
--- main moved.
+-- Numbered 0163 at the coordinator's direction (0157-0162 are taken by open
+-- pull requests). The contiguity test refuses a gap, so it is red until those
+-- land: 🔴 RENUMBER IT (and db.hostJobsMigrationVersion) at merge to the next
+-- free number.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them):
 --   DROP TABLE public.host_job_runs, public.host_jobs;
---   DELETE FROM schema_migrations WHERE version = 157;
+--   ALTER TABLE public.pages DROP COLUMN rolling_versions;
+--   DELETE FROM schema_migrations WHERE version = 163;
 
 SET LOCAL lock_timeout = '3s';
+
+ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS rolling_versions BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS public.host_jobs (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -46,7 +60,6 @@ CREATE TABLE IF NOT EXISTS public.host_jobs (
     cron          TEXT        NOT NULL CHECK (cron ~ '^\S+( \S+){4}$' AND length(cron) <= 100),
     command       TEXT[]      NOT NULL CHECK (cardinality(command) BETWEEN 1 AND 32),
     page_id       BIGINT      CHECK (page_id > 0),
-    made_page_id  BIGINT      CHECK (made_page_id > 0),
     title         TEXT        NOT NULL DEFAULT '' CHECK (char_length(title) <= 200),
     output        TEXT        NOT NULL DEFAULT 'markdown' CHECK (output IN ('markdown', 'blocks')),
     timeout_s     INTEGER     NOT NULL CHECK (timeout_s BETWEEN 1 AND 21600),

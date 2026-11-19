@@ -44,7 +44,7 @@ func TestTheLargestJobResultFitsOneFrame(t *testing.T) {
 		}
 		argv[0] = "/" + argv[0][1:]
 		j := mirror.HostJob{Name: strings.Repeat("j", 62) + string(rune('a'+i%26)), Cron: strings.Repeat("<", 19) + " * * * *", Command: argv,
-			Page: 1 << 53, Title: strings.Repeat(" ", 200), Output: mirror.JobOutputBlocks, TimeoutSeconds: 21600}
+			Title: strings.Repeat(" ", 200), Output: mirror.JobOutputBlocks, TimeoutSeconds: 21600}
 		jobs = append(jobs, j)
 	}
 	b, err = json.Marshal(mirror.Msg{Type: mirror.TypeJobs, Jobs: jobs})
@@ -269,7 +269,6 @@ func TestCheckHostJobRefusesEachBound(t *testing.T) {
 		{func(j *mirror.HostJob) { j.Output = "html" }, "output"},
 		{func(j *mirror.HostJob) { j.Title = strings.Repeat("é", 201) }, "title"},
 		{func(j *mirror.HostJob) { j.Title = "two\nlines" }, "title"},
-		{func(j *mirror.HostJob) { j.Page = -1 }, "page"},
 	} {
 		j := ok
 		j.Command = append([]string(nil), ok.Command...)

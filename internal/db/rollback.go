@@ -382,11 +382,11 @@ const officerConnectorBlocksMigrationVersion = 148
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerSeenMigrationVersion = 156
 
-// hostJobsMigrationVersion is 0157: host_jobs and host_job_runs (scheduled
+// hostJobsMigrationVersion is 0163: host_jobs and host_job_runs (scheduled
 // host jobs, internal/hostjobs), owned and under the same row-level
 // security, personal; same treatment again. Its body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const hostJobsMigrationVersion = 157
+const hostJobsMigrationVersion = 163
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

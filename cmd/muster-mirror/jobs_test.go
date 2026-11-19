@@ -38,7 +38,7 @@ func TestTheJobsFileIsReadFromItsVariableAndCheckedByListJobs(t *testing.T) {
 	if rc := run([]string{"-list", "-jobs"}, env(good), &out, &errb); rc != 0 {
 		t.Fatalf("a valid file: exit %d, stderr %q", rc, errb.String())
 	}
-	if want := "smoke\t0 14 * * *\t1m0s\tmarkdown\tpage=new\t/usr/bin/env date -u\n"; out.String() != want {
+	if want := "smoke\t0 14 * * *\t1m0s\tmarkdown\t/usr/bin/env date -u\n"; out.String() != want {
 		t.Fatalf("stdout %q; want %q", out.String(), want)
 	}
 	out.Reset()

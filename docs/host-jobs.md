@@ -41,7 +41,6 @@ changes one.
       "cron": "*/30 * * * *",
       "title": "Disk on this machine",
       "output": "markdown",
-      "page": 0,
       "dir": "/tmp"
     }
   ]
@@ -56,7 +55,6 @@ changes one.
 | `timeoutSeconds` | no | 1–21600, default 600. At the limit the host kills the command's whole process group |
 | `output` | no | `markdown` (default): stdout is one markdown block. `blocks`: stdout is a JSON list of page blocks, as the page tools take ([pages.md](pages.md)) |
 | `title` | no | the page's title (default: the job's name) |
-| `page` | no | one of your pages **this host made** (a page a session on this machine published). 0 or absent: muster makes the job's own page on its first run |
 | `dir` | no | the working directory, absolute (default: the home directory) |
 
 The file is read **once, at start**, and validated whole: one bad entry and no
@@ -101,11 +99,19 @@ Attention item.
 
 ## The page
 
-A job writes one of **your** pages, as its host: the page its `page` names,
-which must be one this host made (the rule the page tools follow: a session
-acts on its host's pages), or the job's own page, which muster makes on the
-job's first successful output and reuses after. If the job's own page is
-deleted, the next run makes another.
+Every job writes **its own page**: one of your pages, which muster makes, as
+the host, on the job's first successful output and reuses after. A jobs file
+names no page. If the job's page is deleted, the next run makes another.
+
+**The page never fills.** A page keeps at most 100 versions
+([pages.md](pages.md)); a job's page is a *rolling* one: when a new version
+would be the 101st, muster drops the job page's **oldest version that nothing
+references** first, so the page keeps its newest 100 and its id and share
+links never change. A version is never dropped while it is referenced: the
+**current** version (the one your view and every live share link show) and
+any version a **response** was sent at are kept. If every older version is one
+of those, the run fails with the page's own "too many versions" reason, as any
+other page's would. Every other page keeps the plain cap.
 
 A new version is written **only when the output changed**: when the blocks and
 the title are the same as the page's current version, the run is `ok` and no
@@ -208,10 +214,8 @@ are safe to run at any time.
 - stdout at most 512 KiB (a page version's own bound); more fails the run.
 - A markdown output is one markdown block: at most 64 KiB.
 - The stderr tail kept and shown: the last 2 KiB.
-- A page keeps at most 100 versions ([pages.md](pages.md)): a job whose
-  output changes on every run reaches it in 100 runs, and its runs then fail
-  with that reason (an Attention item each) until the page is replaced:
-  delete the job's own page and the next run makes a new one.
+- A job's page holds its newest 100 versions ([above](#the-page)): older
+  unreferenced ones are dropped as new ones are written.
 - Each job keeps its last 1000 runs.
 - An older muster-mirror sends no jobs message, so muster sends it no
   `job-run`; an older muster ignores the jobs message. Upgrade both.

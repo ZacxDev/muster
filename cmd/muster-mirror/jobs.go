@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -38,11 +37,7 @@ func printJobs(path string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	for _, j := range jobs {
-		page := "new"
-		if j.Page > 0 {
-			page = strconv.FormatInt(j.Page, 10)
-		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\tpage=%s\t%s\n", j.Name, j.Cron, j.Timeout(), j.OutputFormat(), page, strings.Join(j.Command, " "))
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\n", j.Name, j.Cron, j.Timeout(), j.OutputFormat(), strings.Join(j.Command, " "))
 	}
 	return 0
 }

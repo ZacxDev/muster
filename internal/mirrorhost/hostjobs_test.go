@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -321,15 +322,29 @@ func TestTheHostDoesNotStartAJobWhoseRunIsStillGoing(t *testing.T) {
 	}
 }
 
+// toolPath is name found on PATH, as an absolute path; the test fails (it
+// does not skip) when it is missing, so a sandbox without it is seen.
+func toolPath(t *testing.T, name string) string {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("%s is not on PATH (%s): %v", name, os.Getenv("PATH"), err)
+	}
+	if p, err = filepath.Abs(p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // TestRunJobCommandCapturesAndBounds runs real processes: stdout whole, the
 // stderr tail, the exit status; stdout past the bound is an overflow with no
 // stdout; and a timeout kills the WHOLE process group — a background child
 // included — well before its children would have exited.
 func TestRunJobCommandCapturesAndBounds(t *testing.T) {
-	sh := "/bin/sh"
-	if _, err := os.Stat(sh); err != nil {
-		t.Skip("no /bin/sh")
-	}
+	// Hermetic: sh and pwd are resolved on PATH to absolute paths, never a
+	// fixed /bin/sh or /usr/bin/env — a build sandbox (the nix build of
+	// muster-mirror) has neither, and a job's program must be absolute.
+	sh, pwd := toolPath(t, "sh"), toolPath(t, "pwd")
 	ctx := context.Background()
 	o := runJobCommand(ctx, JobSpec{HostJob: mirror.HostJob{Command: []string{sh, "-c", "printf 'line one\\n'; printf 'to stderr' >&2; exit 3"}}})
 	if o.StartErr != nil || o.ExitCode != 3 || string(o.Stdout) != "line one\n" || string(o.Stderr) != "to stderr" || o.TimedOut || o.Overflow {
@@ -344,7 +359,7 @@ func TestRunJobCommandCapturesAndBounds(t *testing.T) {
 		t.Fatalf("600000 bytes of stdout: overflow %t, %d bytes kept; want an overflow and none", o.Overflow, len(o.Stdout))
 	}
 	dir := t.TempDir()
-	o = runJobCommand(ctx, JobSpec{HostJob: mirror.HostJob{Command: []string{"/usr/bin/env", "pwd"}}, Dir: dir})
+	o = runJobCommand(ctx, JobSpec{HostJob: mirror.HostJob{Command: []string{pwd, "-P"}}, Dir: dir})
 	if got := strings.TrimSpace(string(o.Stdout)); got != dir {
 		resolved, _ := filepath.EvalSymlinks(dir)
 		if got != resolved {
@@ -378,8 +393,8 @@ func TestLoadJobsValidatesTheWholeFile(t *testing.T) {
 		}
 		return p
 	}
-	jobs, err := LoadJobs(write(`{"jobs":[{"name":"smoke","command":["/usr/bin/env","printf","x"],"cron":"0 14 * * *","timeoutSeconds":60,"output":"blocks","page":7,"title":"Smoke","dir":"/tmp"}]}`))
-	want := []JobSpec{{HostJob: mirror.HostJob{Name: "smoke", Command: []string{"/usr/bin/env", "printf", "x"}, Cron: "0 14 * * *", TimeoutSeconds: 60, Output: "blocks", Page: 7, Title: "Smoke"}, Dir: "/tmp"}}
+	jobs, err := LoadJobs(write(`{"jobs":[{"name":"smoke","command":["/usr/bin/env","printf","x"],"cron":"0 14 * * *","timeoutSeconds":60,"output":"blocks","title":"Smoke","dir":"/tmp"}]}`))
+	want := []JobSpec{{HostJob: mirror.HostJob{Name: "smoke", Command: []string{"/usr/bin/env", "printf", "x"}, Cron: "0 14 * * *", TimeoutSeconds: 60, Output: "blocks", Title: "Smoke"}, Dir: "/tmp"}}
 	if err != nil || !reflect.DeepEqual(jobs, want) {
 		t.Fatalf("got %+v, %v; want %+v", jobs, err, want)
 	}

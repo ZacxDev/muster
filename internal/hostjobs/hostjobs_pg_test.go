@@ -14,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// THE STORE (migration 0157) on a real Postgres: a report's next fires, the
+// THE STORE (migration 0163) on a real Postgres: a report's next fires, the
 // scheduler's compare-and-set, the one-running rule, the single ending, and
 // row-level security between two owners.
 

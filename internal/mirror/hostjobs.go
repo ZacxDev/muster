@@ -65,7 +65,7 @@ const (
 	MaxJobArgs         = 32
 	MaxJobArgBytes     = 1024
 	MaxJobCommandBytes = 4096
-	// MaxJobCronBytes bounds a cron expression (0157's CHECK).
+	// MaxJobCronBytes bounds a cron expression (0163's CHECK).
 	MaxJobCronBytes = 100
 	// MaxJobStdout bounds a run's stdout: a page version's own bound
 	// (pages.MaxVersionBytes). A run that writes more FAILS: a cut-off
@@ -126,9 +126,6 @@ type HostJob struct {
 	// Command is its argv as the host runs it — reported for DISPLAY only:
 	// muster never sends it back, and the host runs its own copy.
 	Command []string `json:"command"`
-	// Page is the page its output is written to: one of the owner's pages
-	// this host made. 0: muster makes the job's own page on its first run.
-	Page int64 `json:"page,omitempty"`
 	// Title is the page's title ("" = the job's name).
 	Title string `json:"title,omitempty"`
 	// Output is JobOutputMarkdown ("" too) or JobOutputBlocks.
@@ -197,7 +194,7 @@ type JobResult struct {
 var jobNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // ValidJobName reports whether name may name a job: lowercase letters,
-// digits and '-' in words, at most 63 bytes (0157's CHECK).
+// digits and '-' in words, at most 63 bytes (0163's CHECK).
 func ValidJobName(name string) bool { return len(name) <= 63 && jobNamePattern.MatchString(name) }
 
 var (
@@ -223,8 +220,6 @@ func CheckHostJob(j HostJob) string {
 		return fmt.Sprintf("job %s: command is empty", j.Name)
 	case len(j.Command) > MaxJobArgs:
 		return fmt.Sprintf("job %s: command has more than %d arguments", j.Name, MaxJobArgs)
-	case j.Page < 0:
-		return fmt.Sprintf("job %s: page %d is not a page id", j.Name, j.Page)
 	case j.Output != "" && j.Output != JobOutputMarkdown && j.Output != JobOutputBlocks:
 		return fmt.Sprintf("job %s: output %q is neither %q nor %q", j.Name, j.Output, JobOutputMarkdown, JobOutputBlocks)
 	case j.TimeoutSeconds < 0 || (j.TimeoutSeconds > 0 && (j.Timeout() < MinJobTimeout || j.Timeout() > MaxJobTimeout)):

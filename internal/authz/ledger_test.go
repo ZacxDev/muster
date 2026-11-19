@@ -314,7 +314,7 @@ var (
 		// owner's running job holds the agent too; each job is then read and run
 		// as its owner (withPrincipalLedger's jobPrincipal).
 		"internal/jobs.(*PGStore).Heads",
-		// Scheduled host jobs (migration 0157): the store's one helper. The
+		// Scheduled host jobs (migration 0163): the store's one helper. The
 		// scheduler's compare-and-set of every owner's DUE jobs (FireDue) and
 		// the sweep's move of every owner's running runs whose result is
 		// overdue to lost (LostRuns); each row is handed back with its owner

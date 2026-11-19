@@ -43,11 +43,12 @@ import (
 // compare-and-set (hostjobs.Store.SetNotice), with the stderr tail where
 // there is one. A run that succeeded raises none, and neither does a skip.
 //
-// 🔴 PAGES: a job writes one of its OWNER's pages, as its HOST (pages.Creator
-// MirrorHost): the page its host named — which must be one this host made,
-// the page tools' rule — or the job's own, made on its first output. A new
-// version is written only when the output CHANGED from the page's current
-// version. A TEAM host's jobs are refused (hostJobsReported): pages are
+// 🔴 PAGES: a job writes its OWN page — one of its owner's pages, made by
+// muster as its HOST (pages.Creator MirrorHost) on the job's first output; a
+// host names no page. The page is ROLLING (0163's pages.rolling_versions): it
+// keeps its newest pages.MaxVersionsPerPage versions, dropping the oldest
+// unreferenced one, so it never fills. A new version is written only when the
+// output CHANGED from the page's current version. A TEAM host's jobs are refused (hostJobsReported): pages are
 // personal, so a page a team owned would be readable by none of its members.
 //
 // 🔴 NO HOST OFFICER, NO STEP-UP: nothing here declares an officer or marks a
@@ -326,14 +327,15 @@ func (s *Server) writeHostJobPage(ctx context.Context, j hostjobs.Job, stdout []
 	if err != nil {
 		return 0, 0, hostjobs.StatusFailed, "its page title is not valid: " + strings.TrimPrefix(err.Error(), pages.ErrInvalid.Error()+": ")
 	}
-	creator := pages.Creator{MirrorHost: j.Host, Label: hostJobLabel(j.Name, j.Host)}
-	target := j.TargetPage()
+	// The job's own page: made by muster on the job's first output, as its
+	// host, and ROLLING (pages.Creator.RollingVersions): it keeps its newest
+	// pages.MaxVersionsPerPage versions, so a job whose output changes every
+	// run never fills it and its id and links never change.
+	creator := pages.Creator{MirrorHost: j.Host, Label: hostJobLabel(j.Name, j.Host), RollingVersions: true}
+	target := j.PageID
 	if target > 0 {
-		// Creator-scoped: only a page THIS host made (the page tools' rule).
 		_, perr := s.ext.Pages.PageFor(ctx, creator, target)
 		switch {
-		case errors.Is(perr, pages.ErrNotFound) && j.PageID > 0:
-			return 0, 0, hostjobs.StatusFailed, fmt.Sprintf("page %d is not one of %s's pages (a job writes a page its host made, or one muster makes for it)", j.PageID, j.Host)
 		case errors.Is(perr, pages.ErrNotFound):
 			target = 0 // the page muster made is gone: make another
 		case perr != nil:
@@ -355,7 +357,7 @@ func (s *Server) writeHostJobPage(ctx context.Context, j hostjobs.Job, stdout []
 	if err != nil {
 		return 0, 0, hostjobs.StatusFailed, "its page could not be made: " + pageStoreWords(err)
 	}
-	if err := s.hostJobs.SetMadePage(ctx, j.ID, p.ID); err != nil {
+	if err := s.hostJobs.SetPage(ctx, j.ID, p.ID); err != nil {
 		s.logger.Printf("host jobs: %s on %s: record its page %d: %v", j.Name, j.Host, p.ID, err)
 	}
 	return p.ID, v.Version, hostjobs.StatusOK, "made page " + strconv.FormatInt(p.ID, 10)

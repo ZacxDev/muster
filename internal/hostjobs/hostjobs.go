@@ -1,4 +1,4 @@
-// Package hostjobs is the store of SCHEDULED HOST JOBS (migration 0157;
+// Package hostjobs is the store of SCHEDULED HOST JOBS (migration 0163;
 // docs/host-jobs.md): each job as its host last reported it, its cron's next
 // fire, and its runs. The protocol is internal/mirror's hostjobs.go, the host
 // half internal/mirrorhost's, and what a fire and a result DO — the trigger,
@@ -31,7 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// Run statuses (0157's CHECK).
+// Run statuses (0163's CHECK).
 const (
 	StatusRunning = "running"
 	// StatusOK: the command exited 0 and its output was a valid page — a
@@ -54,7 +54,7 @@ const (
 	StatusLost = "lost"
 )
 
-// Triggers (0157's CHECK).
+// Triggers (0163's CHECK).
 const (
 	TriggerCron   = "cron"
 	TriggerManual = "manual"
@@ -73,8 +73,9 @@ type Job struct {
 	Name        string     `json:"name"`
 	Cron        string     `json:"cron"`
 	Command     []string   `json:"command"`
+	// PageID is the page muster made for the job on its first output (0:
+	// none yet). Every job writes its own page; a host names none.
 	PageID      int64      `json:"page_id,omitempty"`
-	MadePageID  int64      `json:"made_page_id,omitempty"`
 	Title       string     `json:"title,omitempty"`
 	Output      string     `json:"output"`
 	TimeoutS    int        `json:"timeout_seconds"`
@@ -86,17 +87,9 @@ type Job struct {
 
 // Decl is j as its host declared it (mirror.HostJob).
 func (j Job) Decl() mirror.HostJob {
-	return mirror.HostJob{Name: j.Name, Cron: j.Cron, Command: j.Command, Page: j.PageID, Title: j.Title, Output: j.Output, TimeoutSeconds: j.TimeoutS}
+	return mirror.HostJob{Name: j.Name, Cron: j.Cron, Command: j.Command, Title: j.Title, Output: j.Output, TimeoutSeconds: j.TimeoutS}
 }
 
-// TargetPage is the page j writes: the one its host named, else the one
-// muster made for it (0: none yet).
-func (j Job) TargetPage() int64 {
-	if j.PageID > 0 {
-		return j.PageID
-	}
-	return j.MadePageID
-}
 
 // Run is one run of a job.
 type Run struct {
@@ -133,11 +126,11 @@ func NewPG(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 // acted on as that owner.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const jobCols = `id, owner_id, host, name, cron, command, coalesce(page_id, 0), coalesce(made_page_id, 0), title, output, timeout_s, declared, next_fire_at, last_fired_at, reported_at`
+const jobCols = `id, owner_id, host, name, cron, command, coalesce(page_id, 0), title, output, timeout_s, declared, next_fire_at, last_fired_at, reported_at`
 
 func scanJob(row pgx.Row) (Job, error) {
 	var j Job
-	err := row.Scan(&j.ID, &j.Owner, &j.Host, &j.Name, &j.Cron, &j.Command, &j.PageID, &j.MadePageID, &j.Title, &j.Output, &j.TimeoutS, &j.Declared, &j.NextFireAt, &j.LastFiredAt, &j.ReportedAt)
+	err := row.Scan(&j.ID, &j.Owner, &j.Host, &j.Name, &j.Cron, &j.Command, &j.PageID, &j.Title, &j.Output, &j.TimeoutS, &j.Declared, &j.NextFireAt, &j.LastFiredAt, &j.ReportedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, ErrNotFound
 	}
@@ -203,19 +196,15 @@ func (s *Store) Report(ctx context.Context, host string, jobs []mirror.HostJob, 
 		if ok {
 			nextAt = &next
 		}
-		var page any
-		if j.Page > 0 {
-			page = j.Page
-		}
 		names = append(names, j.Name)
-		_, err = tx.Exec(ctx, `INSERT INTO host_jobs AS h (host, name, cron, command, page_id, title, output, timeout_s, declared, next_fire_at, reported_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10)
+		_, err = tx.Exec(ctx, `INSERT INTO host_jobs AS h (host, name, cron, command, title, output, timeout_s, declared, next_fire_at, reported_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9)
 			ON CONFLICT (owner_id, host, name) DO UPDATE SET
-				command = EXCLUDED.command, page_id = EXCLUDED.page_id, title = EXCLUDED.title, output = EXCLUDED.output,
+				command = EXCLUDED.command, title = EXCLUDED.title, output = EXCLUDED.output,
 				timeout_s = EXCLUDED.timeout_s, reported_at = EXCLUDED.reported_at, updated_at = EXCLUDED.reported_at,
 				next_fire_at = CASE WHEN h.declared AND h.cron = EXCLUDED.cron AND h.next_fire_at IS NOT NULL THEN h.next_fire_at ELSE EXCLUDED.next_fire_at END,
 				cron = EXCLUDED.cron, declared = true`,
-			host, j.Name, j.Cron, j.Command, page, j.Title, j.OutputFormat(), int(j.Timeout()/time.Second), nextAt, now)
+			host, j.Name, j.Cron, j.Command, j.Title, j.OutputFormat(), int(j.Timeout()/time.Second), nextAt, now)
 		if err != nil {
 			return err
 		}
@@ -246,9 +235,9 @@ func (s *Store) Job(ctx context.Context, id int64) (Job, error) {
 	return scanJob(s.pool.QueryRow(ctx, `SELECT `+jobCols+` FROM host_jobs WHERE id = $1`, id))
 }
 
-// SetMadePage records page as the one muster made for the caller's job id.
-func (s *Store) SetMadePage(ctx context.Context, id, page int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE host_jobs SET made_page_id = $2, updated_at = now() WHERE id = $1`, id, page)
+// SetPage records page as the one muster made for the caller's job id.
+func (s *Store) SetPage(ctx context.Context, id, page int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE host_jobs SET page_id = $2, updated_at = now() WHERE id = $1`, id, page)
 	return err
 }
 
@@ -299,7 +288,7 @@ func (s *Store) FireDue(ctx context.Context, now time.Time, limit int) ([]Fire, 
 const maxRunsPerJob = 1000
 
 // StartRun records a run of the caller's job j by trigger at now, as ONE of:
-//   - skipped, when a run of j is still running (the 0157 one-running index
+//   - skipped, when a run of j is still running (the 0163 one-running index
 //     decides, whichever replica or path got there first);
 //   - running, when online (the caller then sends the host its job-run);
 //   - offline, when the host is not connected.
@@ -428,7 +417,7 @@ func (s *Store) LostRuns(ctx context.Context, now time.Time, limit int) ([]Run, 
 }
 
 // CleanTail is stderr as a run row keeps it: valid UTF-8 with no NUL, at most
-// mirror.MaxJobStderrTail bytes (0157's CHECK), cut at its START (it is a
+// mirror.MaxJobStderrTail bytes (0163's CHECK), cut at its START (it is a
 // tail).
 func CleanTail(s string) string {
 	s = strings.ReplaceAll(strings.ToValidUTF8(s, "?"), "\x00", "")
@@ -440,7 +429,7 @@ func CleanTail(s string) string {
 }
 
 // CleanDetail is a run's detail: valid UTF-8, at most 1000 characters
-// (0157's CHECK).
+// (0163's CHECK).
 func CleanDetail(s string) string {
 	s = strings.ReplaceAll(strings.ToValidUTF8(s, "?"), "\x00", "")
 	if utf8.RuneCountInString(s) > 1000 {

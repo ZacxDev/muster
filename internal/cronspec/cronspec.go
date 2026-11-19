@@ -21,7 +21,7 @@ import (
 // bare `*` — so `*/2` restricts (robfig/cron's rule; Vixie cron treats any
 // field starting with `*` as unrestricted). No names (MON, JAN), no `@daily`
 // macros, no seconds: 0118's CHECK already holds an officer schedule's column
-// to five fields, and 0157's a host job's.
+// to five fields, and 0163's a host job's.
 type Cron struct {
 	min, hour, dom, month, dow uint64 // bit i set: value i allowed
 	domStar, dowStar           bool

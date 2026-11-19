@@ -174,7 +174,7 @@ func (f *jobsFixture) job(t *testing.T, host, name string) hostjobs.Job {
 // runs is job's runs, newest first.
 func (f *jobsFixture) runs(t *testing.T, j hostjobs.Job) []hostjobs.Run {
 	t.Helper()
-	rs, err := f.srv.hostJobs.Runs(f.ownerCtx(), j.ID, 100)
+	rs, err := f.srv.hostJobs.Runs(f.ownerCtx(), j.ID, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,7 +20,7 @@ import (
 // hostjobs.go; the operator's guide docs/host-jobs.md).
 //
 // 🔴 THE JOBS FILE IS THE ONLY SOURCE OF A COMMAND. The operator declares each
-// job — its name, argv, cron, page and timeout — in this host's jobs file
+// job — its name, argv, cron, output and timeout — in this host's jobs file
 // (-jobs-file, LoadJobs), read ONCE at start. muster triggers a job by its
 // NAME; this host looks the name up in its own list and runs THAT entry's
 // argv, as given, with no shell (a job that wants one declares
@@ -57,7 +57,7 @@ type jobsFile struct {
 }
 
 // LoadJobs reads the jobs file at path — {"jobs": [{"name", "command",
-// "cron", "page"?, "title"?, "output"?, "timeoutSeconds"?, "dir"?}]} — and
+// "cron", "title"?, "output"?, "timeoutSeconds"?, "dir"?}]} — and
 // validates it WHOLE: every entry as muster checks a declaration
 // (mirror.CheckHostJob), its cron by the grammar officer schedules use
 // (internal/cronspec), its program an ABSOLUTE path (the service's PATH is
@@ -74,7 +74,7 @@ func LoadJobs(path string) ([]JobSpec, error) {
 	dec.DisallowUnknownFields()
 	var f jobsFile
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("the jobs file %s is not {\"jobs\": [{name, command, cron, page?, title?, output?, timeoutSeconds?, dir?}]}: %w", path, err)
+		return nil, fmt.Errorf("the jobs file %s is not {\"jobs\": [{name, command, cron, title?, output?, timeoutSeconds?, dir?}]}: %w", path, err)
 	}
 	if dec.More() {
 		return nil, fmt.Errorf("the jobs file %s is followed by more JSON", path)

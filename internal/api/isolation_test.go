@@ -1360,7 +1360,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		opToken, "", time.Now().Add(time.Hour))
 	must(err, "op invite")
-	// A scheduled host job of A's (0157), as A's host would have reported it:
+	// A scheduled host job of A's (0163), as A's host would have reported it:
 	// the object GET /api/host-jobs/{name}/runs and its run route name.
 	aHostJob := "isojob-" + w.suffix
 	must(hostjobs.NewPG(pool).Report(ua, w.canary+"-host", []mirror.HostJob{{Name: aHostJob, Cron: "0 6 * * *",
@@ -1751,7 +1751,7 @@ type isoObjs struct {
 	// A host officer spawn of A's (0125), its host the canary (phase 3's
 	// lend routes).
 	spawn int64
-	// hostJob is the name of A's scheduled host job (0157).
+	// hostJob is the name of A's scheduled host job (0163).
 	hostJob string
 }
 
