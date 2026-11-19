@@ -43,7 +43,7 @@ func (f *stateFixture) pushedWait(t *testing.T) (id int64, tag string) {
 func TestAPromptAnsweredAtTheTerminalIsWithdrawnAtOnce(t *testing.T) {
 	f := newStateFixture(t, false)
 	id, tag := f.pushedWait(t)
-	f.advance(5 * time.Second)
+	f.advance(pushBroadcastTimeout + time.Second) // past its push's send: see the moments-after test
 	f.statusSince(mirror.StatusBusy, nudgeSince+600_000, 0)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID) // the hook only: no pass
 	got := f.episodeByID(t, id)
@@ -65,7 +65,7 @@ func TestAPromptAnsweredAtTheTerminalIsWithdrawnAtOnce(t *testing.T) {
 func TestAWithdrawalAtTheEndIsNotSentAgainByThePass(t *testing.T) {
 	f := newStateFixture(t, false)
 	id, tag := f.pushedWait(t)
-	f.advance(5 * time.Second)
+	f.advance(pushBroadcastTimeout + time.Second) // past its push's send: see the moments-after test
 	f.statusSince(mirror.StatusBusy, nudgeSince+600_000, 0)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	for i := 0; i < 3; i++ {
@@ -93,6 +93,7 @@ func TestAWithdrawalAtTheEndIsNotSentAgainByThePass(t *testing.T) {
 func TestEndEpisodeWithdrawsAPushedEpisodeAtOnce(t *testing.T) {
 	f := newStateFixture(t, false)
 	id, tag := f.pushedWait(t)
+	f.advance(pushBroadcastTimeout + time.Second)
 	ctx := asUser(authz.OperatorUserID)
 	ep := f.episodeByID(t, id) // open: read whole, pushed_at included
 	if ep.PushedAt.IsZero() || !ep.Open() {
@@ -114,5 +115,51 @@ func TestEndEpisodeWithdrawsAPushedEpisodeAtOnce(t *testing.T) {
 	f.srv.clearEpisode(ctx, stale)
 	if p := f.pushes(); len(p) != 2 {
 		t.Fatalf("pushes after a second end, the backstop and a stale clear: %v, want no second withdrawal", p)
+	}
+}
+
+// TestAnEpisodeEndedMomentsAfterItsPushIsWithdrawnByTheBackstop (regression,
+// audit round 1): goNotify sends each push on its own goroutine, unordered per
+// tag, and a device closes a `resolved` tag only if it shows it NOW — so a
+// withdrawal sent moments after its push can land first, close nothing, and
+// leave the push up for good (cleared_at set, the backstop never re-sends).
+// An episode ended within pushBroadcastTimeout of its push is therefore NOT
+// withdrawn at once, nor by a pass inside that window; it is left uncleared,
+// and the first pass after it withdraws it exactly once. Red at d38006b71:
+// the hook sent `resolved` 1 s after the push.
+func TestAnEpisodeEndedMomentsAfterItsPushIsWithdrawnByTheBackstop(t *testing.T) {
+	f := newStateFixture(t, false)
+	id, tag := f.pushedWait(t)
+	f.advance(time.Second)
+	f.statusSince(mirror.StatusBusy, nudgeSince+600_000, 0)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	if got := f.episodeByID(t, id); got.EndedAt.IsZero() || got.EndReason != endOwner {
+		t.Fatalf("after the prompt was answered: ended %v reason %q, want %q", got.EndedAt, got.EndReason, endOwner)
+	}
+	if p := f.pushes(); len(p) != 1 {
+		t.Fatalf("pushes 1 s after the push: %v, want no withdrawal yet (it could overtake its push)", p)
+	}
+	if f.cleared(t, id) {
+		t.Fatal("cleared_at set with no withdrawal sent: the backstop would never send it")
+	}
+	f.advance(5 * time.Second) // a pass still inside the window holds it too
+	f.statePass(t)
+	if p := f.pushes(); len(p) != 1 {
+		t.Fatalf("pushes from a pass 6 s after the push: %v, want none yet", p)
+	}
+	f.advance(pushBroadcastTimeout)
+	f.statePass(t)
+	if p := f.pushes(); len(p) != 2 || p[1] != "resolved "+tag {
+		t.Fatalf("pushes after the window: %v, want the backstop's withdrawal", p)
+	}
+	if !f.cleared(t, id) {
+		t.Fatal("cleared_at not set by the backstop")
+	}
+	for i := 0; i < 2; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if p := f.pushes(); len(p) != 2 {
+		t.Fatalf("pushes after more passes: %v, want exactly one withdrawal", p)
 	}
 }

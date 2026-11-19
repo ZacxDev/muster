@@ -594,13 +594,28 @@ func episodeBody(state string, idle time.Duration) string {
 // clearEpisode closes ended episode ep's notification when it was shown, and
 // records that it was. 🔴 ONE WITHDRAWAL PER EPISODE: the clear is claimed
 // (sessionstate.PG.MarkCleared) BEFORE the resolved push is sent, and only the
-// claimer sends it — endEpisode (the waiting hook, a view, a pass) and the
-// pass's clearEndedEpisodes backstop can reach one episode concurrently. A
+// claimer sends it — endEpisode (the waiting hook, a pass), episodeViewed and
+// the pass's clearEndedEpisodes backstop can reach one episode concurrently. A
 // failed claim is still sent (and left uncleared, so the backstop retries it):
 // a repeated withdrawal of a closed notification, never one left shown. The
 // send is goNotify's own goroutine: no lock or transaction is held across it.
+//
+// 🔴 A WITHDRAWAL MUST NOT OVERTAKE ITS PUSH. goNotify sends every push on its
+// own goroutine with no order per tag, and a device closes `resolved`'s tag
+// only if it is showing NOW (sw.js keeps no memory of it): a `resolved` that
+// lands before the `attention` push it withdraws closes nothing, the push then
+// shows, and — cleared_at set — nothing ever withdraws it. So an episode
+// pushed less than pushBroadcastTimeout ago (the bound on one goNotify
+// fan-out: its push has been sent, or given up, by then) is NOT cleared here:
+// it is left uncleared, its row updated, and a later pass's backstop
+// withdraws it once that much time has passed. The check is here, not in
+// endEpisode, because the backstop can run a moment after the push too.
 func (s *Server) clearEpisode(octx context.Context, ep sessionstate.Episode) {
 	if ep.PushedAt.IsZero() || !ep.ClearedAt.IsZero() {
+		return
+	}
+	if s.now().Sub(ep.PushedAt) < pushBroadcastTimeout {
+		s.attentionChanged(ep.Owner, episodeKey(ep.ID)) // its row goes now; its push on a later pass
 		return
 	}
 	claimed, err := s.ext.Episodes.MarkCleared(octx, ep.ID, s.now())
@@ -615,8 +630,10 @@ func (s *Server) clearEpisode(octx context.Context, ep sessionstate.Episode) {
 
 // clearEndedEpisodes closes every ended episode of octx's owner whose push is
 // still shown: the BACKSTOP behind endEpisode's own clear — a stop that ended
-// while muster was down, one whose clear failed, or one ended on a read taken
-// before it pushed (so endEpisode saw it unpushed).
+// while muster was down, one whose clear failed, one ended on a read taken
+// before it pushed (so endEpisode saw it unpushed), one ended moments after its
+// push (clearEpisode holds it for pushBroadcastTimeout), and a repeat ended by
+// PG.EndRepeat, which does not go through endEpisode.
 func (s *Server) clearEndedEpisodes(octx context.Context, owner int64) {
 	eps, err := s.ext.Episodes.Uncleared(octx)
 	if err != nil {

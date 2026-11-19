@@ -232,7 +232,11 @@ and the row go at once; the Agents list, the bar, the Asks page and a prefetch
 do not count, and looking at the window in a tmux terminal outside muster
 cannot be seen), sustained work of its own (2 minutes), or its window gone
 from a host that is online. Whatever ends it, the notification is withdrawn
-as the stop ends, not on a later pass (the pass still closes any it missed). A stop you dealt with (acted in, or opened) is not
+as the stop ends, not on a later pass, with two exceptions that the next
+30-second pass closes instead: a stop whose notification was sent less than
+15 seconds before it ended (withdrawing it at once could reach your device
+before the notification itself, which would then stay up), and a stop
+ended because it repeats one you already dealt with. A stop you dealt with (acted in, or opened) is not
 pushed again while the session sits where it was; once it moves, its next
 stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting
