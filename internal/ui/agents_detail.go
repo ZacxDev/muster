@@ -2099,10 +2099,10 @@ func toolChip(call ChatLine, result *ChatLine, id string, bare bool, extra ...g.
 		body = append(body, sheet)
 	}
 	if strings.TrimSpace(call.Content) != "" {
-		body = append(body, toolPre("args", call.Content))
+		body = append(body, toolPre(ToolInputLabel, call.Content))
 	}
 	if result != nil && strings.TrimSpace(result.Content) != "" {
-		body = append(body, toolPre("result", result.Content))
+		body = append(body, toolPre(ToolOutputLabel, result.Content))
 	}
 	// The name truncates past half the row (a long MCP tool name), so the
 	// context badge and the status always fit beside it at a phone's width.
@@ -2170,6 +2170,14 @@ func toolChipState(result *ChatLine) string {
 		return toolStateError
 	}
 }
+
+// The labels over an opened tool row's two blocks: what the tool was given
+// and what it gave back, in words — never "args" and "result" (the jargon
+// audit's F020). The live stream's pre() calls spell the same two words.
+const (
+	ToolInputLabel  = "Input"
+	ToolOutputLabel = "Output"
+)
 
 // toolPre is one labeled, scrollable code block inside a persisted tool chip
 // (matching the live stream's pre()). Long output is truncated in the DOM.
@@ -2613,7 +2621,7 @@ func agentChatScript(name string) g.Node {
         break;
       case 'tool_call': {
         var c = toolChip(msg.id, msg.name, msg.target, msg.label);
-        if (!c.args && msg.args) { c.args = pre('args', clip(msg.args)); c.body.appendChild(c.args); }
+        if (!c.args && msg.args) { c.args = pre('Input', clip(msg.args)); c.body.appendChild(c.args); }
         // Interleave: text streamed AFTER this tool call must render in a NEW bubble
         // below the chip, not merged into the pre-tool text bubble (which made tool
         // calls look out of order vs the narration).
@@ -2632,7 +2640,7 @@ func agentChatScript(name string) g.Node {
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
         if (window.musterToolGroups) window.musterToolGroups.refresh(r.details);
         if (r.result) r.result.remove();
-        r.result = pre('result', clip(msg.output));
+        r.result = pre('Output', clip(msg.output));
         r.body.appendChild(r.result);
         text = null;
         scroll();

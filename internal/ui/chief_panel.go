@@ -239,6 +239,11 @@ func ChiefPanelToggle() g.Node {
 	)
 }
 
+// ChiefPanelSubtitle is the line under "Chief" in its panel's header: what
+// the chief does, in words (the jargon audit's F045; it said "the fleet's
+// orchestrator").
+const ChiefPanelSubtitle = "keeps an eye on all your agents"
+
 // ChiefPanel is the slide-out itself, rendered at BODY level by the shell.
 //
 // 🔴 BODY LEVEL IS WHAT SATISFIES CRITERION 3. #panel-tmux replaces its entire
@@ -289,7 +294,7 @@ func ChiefPanel(fleet bool) g.Node {
 			Div(
 				Class("flex items-baseline gap-2"),
 				Span(Class("text-sm font-semibold text-fg"), g.Text("Chief")),
-				Span(Class("text-[10px] text-muted"), g.Text("the fleet's orchestrator")),
+				Span(Class("text-[10px] text-muted"), g.Text(ChiefPanelSubtitle)),
 			),
 			// The launcher slot: new-thread + thread-list, filled out of band by the
 			// body partial (see chiefPanelActionsID). It renders EMPTY here rather
