@@ -1,4 +1,5 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import http from 'node:http';
