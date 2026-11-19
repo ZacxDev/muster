@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".github" / "scripts"))
-from main_red import act, verdict  # noqa: E402
+from main_red import JOB_NAME, act, verdict  # noqa: E402
 
 REPO = "o/r"
 SHA = "a" * 40
@@ -29,22 +29,30 @@ def needs(**results) -> str:
 
 
 RUN = 500  # this run's number; the fakes list runs around it
+MAIN_RED_DONE = "completed success"      # a newer run's main-red that has acted
+MAIN_RED_RUNNING = "in_progress null"    # ... still deciding
+MAIN_RED_SKIPPED = "completed skipped"   # ... skipped: the run was cancelled
 
 
 class FakeGh:
-    """runs: the `run_number status conclusion` lines the run-list API answers
-    (newest first, as GitHub orders them)."""
+    """runs: [(run_number, main-red job "status conclusion" or None)], newest
+    first as GitHub lists them; run ids are 9000 + run_number. The run list
+    answers `run_number id`; each run's job list answers its main-red job."""
 
-    def __init__(self, runs=f"{RUN} in_progress null\n499 completed success\n", open_issues="",
-                 runs_rc=0, list_rc=0, write_rc=0):
+    def __init__(self, runs=((RUN, MAIN_RED_RUNNING), (499, MAIN_RED_DONE)), open_issues="",
+                 runs_rc=0, jobs_rc=0, list_rc=0, write_rc=0):
         self.calls: list[list[str]] = []
-        self.runs, self.open, self.runs_rc, self.list_rc = runs, open_issues, runs_rc, list_rc
-        self.write_rc = write_rc
+        self.runs, self.open = list(runs), open_issues
+        self.runs_rc, self.jobs_rc, self.list_rc, self.write_rc = runs_rc, jobs_rc, list_rc, write_rc
 
     def __call__(self, args):
         self.calls.append(args)
-        if args[0] == "api":
-            return self.runs_rc, self.runs
+        if args[0] == "api" and "/actions/workflows/" in args[1]:
+            return self.runs_rc, "".join(f"{n} {9000 + n}\n" for n, _ in self.runs)
+        if args[0] == "api" and "/jobs" in args[1]:
+            run_id = int(args[1].split("/actions/runs/")[1].split("/")[0])
+            job = dict(self.runs).get(run_id - 9000)
+            return self.jobs_rc, (job + "\n") if job else ""
         if args[:2] == ["issue", "list"]:
             return self.list_rc, self.open
         if args[:2] in (["issue", "create"], ["issue", "close"], ["issue", "comment"]):
@@ -52,7 +60,7 @@ class FakeGh:
         return 0, ""
 
     def verbs(self):
-        return [" ".join(c[:2]) if c[0] != "api" else "api" for c in self.calls]
+        return [" ".join(c[:2]) if c[0] != "api" else ("api jobs" if "/jobs" in c[1] else "api") for c in self.calls]
 
 
 class Verdict(unittest.TestCase):
@@ -107,48 +115,66 @@ class Act(unittest.TestCase):
         self.assertEqual(gh.verbs(), ["api", "issue list"])
 
     def test_a_late_older_green_after_a_newer_red_does_not_close(self):
-        # #843's mirror image: run 500 is green but finishes AFTER run 501 went
-        # red. It must not close the issue 501 opened.
-        gh = FakeGh(runs="501 completed failure\n500 in_progress null\n", open_issues="9")
-        self.assertIn("already decided", act(REPO, SHA, URL, "green", gh, run_number=RUN))
-        self.assertEqual(gh.verbs(), ["api"])
+        # Run 500 is green but finishes AFTER run 501's main-red opened the issue.
+        gh = FakeGh(runs=[(501, MAIN_RED_DONE), (RUN, MAIN_RED_RUNNING)], open_issues="9")
+        self.assertIn("run #501, whose main-red has already acted", act(REPO, SHA, URL, "green", gh, run_number=RUN))
+        self.assertEqual(gh.verbs(), ["api", "api jobs"])
 
     def test_a_late_older_red_after_a_newer_green_does_not_reopen(self):
-        gh = FakeGh(runs="502 completed success\n500 in_progress null\n")
-        self.assertIn("run #502 (success)", act(REPO, SHA, URL, "red", gh, run_number=RUN))
-        self.assertEqual(gh.verbs(), ["api"])
+        gh = FakeGh(runs=[(502, MAIN_RED_DONE), (RUN, MAIN_RED_RUNNING)])
+        self.assertIn("run #502", act(REPO, SHA, URL, "red", gh, run_number=RUN))
+        self.assertNotIn("issue create", gh.verbs())
+
+    def test_a_newer_run_still_building_images_after_its_main_red_acted_still_blocks(self):
+        # Audit round 1 on #872: a newer RUN stays in_progress ~10 min after its
+        # main-red acted (the image jobs). What decides is its main-red JOB.
+        gh = FakeGh(runs=[(501, MAIN_RED_DONE), (RUN, MAIN_RED_RUNNING)], open_issues="9")
+        act(REPO, SHA, URL, "green", gh, run_number=RUN)
+        self.assertNotIn("issue close", gh.verbs())
 
     def test_the_newest_green_closes_even_while_a_newer_push_is_still_running(self):
         # #843: every green finished after the next push, so "only main's head"
-        # never closed it. A newer run that has not finished does not block.
-        gh = FakeGh(runs="501 in_progress null\n500 in_progress null\n499 completed failure\n", open_issues="9")
+        # never closed it. A newer run whose main-red has not acted does not block.
+        gh = FakeGh(runs=[(501, MAIN_RED_RUNNING), (RUN, MAIN_RED_RUNNING), (499, MAIN_RED_DONE)], open_issues="9")
         self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "closed #9")
-        self.assertEqual(gh.verbs(), ["api", "issue list", "issue comment", "issue close"])
+        self.assertEqual(gh.verbs(), ["api", "api jobs", "issue list", "issue comment", "issue close"])
+
+    def test_a_newer_run_with_no_main_red_job_yet_does_not_block(self):
+        gh = FakeGh(runs=[(501, None), (RUN, MAIN_RED_RUNNING)])
+        self.assertEqual(act(REPO, SHA, URL, "red", gh, run_number=RUN), "opened the main-red issue")
 
     def test_the_newest_red_opens(self):
-        gh = FakeGh(runs="501 queued null\n500 in_progress null\n")
+        gh = FakeGh(runs=[(RUN, MAIN_RED_RUNNING)])
         self.assertEqual(act(REPO, SHA, URL, "red", gh, run_number=RUN), "opened the main-red issue")
         self.assertEqual(gh.verbs(), ["api", "issue list", "label create", "issue create"])
 
     def test_a_newer_cancelled_run_decides_nothing_and_does_not_block(self):
-        gh = FakeGh(runs="501 completed cancelled\n500 in_progress null\n", open_issues="9")
+        gh = FakeGh(runs=[(501, MAIN_RED_SKIPPED), (RUN, MAIN_RED_RUNNING)], open_issues="9")
         self.assertEqual(act(REPO, SHA, URL, "green", gh, run_number=RUN), "closed #9")
 
-    def test_the_run_list_is_asked_for_main_pushes_of_ci_yml(self):
-        gh = FakeGh()
+    def test_the_run_and_job_lists_are_asked_for_main_pushes_of_ci_yml(self):
+        gh = FakeGh(runs=[(501, MAIN_RED_RUNNING), (RUN, MAIN_RED_RUNNING)])
         act(REPO, SHA, URL, "green", gh, run_number=RUN)
         self.assertEqual(gh.calls[0][1], "repos/o/r/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50")
+        self.assertEqual(gh.calls[1][1], "repos/o/r/actions/runs/9501/jobs?per_page=100")
+        self.assertIn('"main red? (open or close the main-red issue)"', gh.calls[1][3])
 
-    def test_a_failed_run_lookup_or_issue_list_does_nothing(self):
-        for kw in ({"runs_rc": 1}, {"list_rc": 1}):
+    def test_a_failed_run_job_or_issue_lookup_does_nothing(self):
+        for kw, runs in (({"runs_rc": 1}, None), ({"jobs_rc": 1}, [(501, MAIN_RED_DONE)]), ({"list_rc": 1}, None)):
             with self.subTest(**kw):
-                gh = FakeGh(**kw)
+                gh = FakeGh(**kw) if runs is None else FakeGh(runs=runs, **kw)
                 self.assertIn("nothing to do", act(REPO, SHA, URL, "red", gh, run_number=RUN))
                 self.assertNotIn("issue create", gh.verbs())
 
+    def test_job_name_is_ci_yml_main_red_jobs_name(self):
+        # The name newer_finished() matches a run's main-red job by must be the
+        # one ci.yml gives it, or no newer run ever reads as having decided.
+        ci = (Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertTrue(f"    name: {JOB_NAME}\n" in ci, f"ci.yml has no job named {JOB_NAME!r}")
+
     def test_no_verdict_makes_no_call(self):
         gh = FakeGh()
-        self.assertIn("nothing to do", act(REPO, SHA, URL, "none", gh))
+        self.assertIn("nothing to do", act(REPO, SHA, URL, "none", gh, run_number=RUN))
         self.assertEqual(gh.calls, [])
 
 

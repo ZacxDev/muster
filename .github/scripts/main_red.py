@@ -28,13 +28,20 @@ first rule here was "act only if SHA is still main's head", and that never let a
 green run close the issue during a burst of merges: each green finished behind a
 newer push, so the issue stayed open through an hour of green (#843). Now this
 run acts unless a NEWER `main` push run of ci.yml (higher run number) has already
-finished with a verdict (success or failure); a newer run still in progress does
-not stop it, because that run will decide in turn when it finishes. So a late
-older run never flaps the issue, and the newest finished run always decides. A
-failed run lookup is a no-op that says so.
+DECIDED: its own `main-red` job has completed successfully. That is the job, not
+the run: a run only completes ~10 min after its main-red acted (the image jobs run
+after it), and keying on the run let an older run act in that window and flap
+the issue the newer one had just set (audit round 1 on #872). A newer run whose
+main-red has not finished does not stop this one, because it will decide in turn;
+a newer run that was cancelled (its main-red skipped) decides nothing. A failed
+lookup is a no-op that says so.
 
-⚠ It cannot tell an infrastructure failure (a download that failed in a setup
-step) from a test failure: the needs context carries only each job's result. Such
+⚠ Two main-red jobs running at the same moment (seconds apart) can both act, in
+either order: neither has completed when the other looks.
+
+⚠ It does not classify an infrastructure failure (a download that failed in a
+setup step) as anything but red. The run's failed step names are readable, but
+they mix setup with deliberate checks, so no reliable rule tells them apart; such
 a red opens or comments on the issue like any other.
 
 ACTIONS
@@ -87,35 +94,42 @@ def verdict(needs_json: str) -> str:
     return "green"
 
 
-VERDICTS = {"success", "failure"}
+JOB_NAME = "main red? (open or close the main-red issue)"  # ci.yml's main-red job's name
 
 
 def newer_finished(repo: str, run_number: int, gh: Gh) -> tuple[bool, str]:
-    """(ok, what): whether a newer `main` push run of ci.yml has already
-    finished with a verdict. ok is False when the run list cannot be read."""
+    """(ok, what): whether a newer `main` push run of ci.yml has already DECIDED,
+    i.e. its own main-red job completed successfully. ok is False when a list
+    cannot be read."""
     rc, out = gh(["api", f"repos/{repo}/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50",
-                  "--jq", '.workflow_runs[] | "\\(.run_number) \\(.status) \\(.conclusion)"'])
+                  "--jq", '.workflow_runs[] | "\\(.run_number) \\(.id)"'])
     if rc != 0:
         return False, ""
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) != 3 or not parts[0].isdigit():
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
             continue
-        n, status, conclusion = int(parts[0]), parts[1], parts[2]
-        if n > run_number and status == "completed" and conclusion in VERDICTS:
-            return True, f"run #{n} ({conclusion})"
+        n, run_id = int(parts[0]), parts[1]
+        if n <= run_number:
+            continue
+        rc, jobs = gh(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+                       "--jq", f'.jobs[] | select(.name == "{JOB_NAME}") | "\\(.status) \\(.conclusion)"'])
+        if rc != 0:
+            return False, ""
+        if any(j.split() == ["completed", "success"] for j in jobs.splitlines()):
+            return True, f"run #{n}, whose main-red has already acted"
     return True, ""
 
 
-def act(repo: str, sha: str, run_url: str, state: str, gh: Gh = real_gh, assignee: str = "",
-        run_number: int = 0) -> str:
+def act(repo: str, sha: str, run_url: str, state: str, gh: Gh = real_gh, assignee: str = "", *,
+        run_number: int) -> str:
     if state == "none":
         return "no verdict (a job was cancelled, or the needs context was unreadable): nothing to do"
     ok, newer = newer_finished(repo, run_number, gh)
     if not ok:
         return "could not list ci.yml's main runs: nothing to do"
     if newer:
-        return f"{sha[:12]} (run #{run_number}) is older than {newer}, which already decided: nothing to do"
+        return f"{sha[:12]} (run #{run_number}) is older than {newer}: nothing to do"
     rc, out = gh(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                   "--json", "number", "--jq", ".[].number"])
     if rc != 0:
