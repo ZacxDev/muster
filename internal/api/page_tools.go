@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -194,6 +195,7 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 	}
 	switch name {
 	case pageCreateTool:
+		creator.ByUser = s.teamPageCreator(ctx, c)
 		return s.toolPageCreate(ctx, creator, arguments), true
 	case pageUpdateTool:
 		return s.toolPageUpdate(ctx, creator, arguments), true
@@ -228,6 +230,36 @@ func pageCreatorOf(c toolCaller) (pages.Creator, bool) {
 		return pages.Creator{MirrorHost: c.asker.MirrorHost, MirrorSession: c.asker.MirrorSession, Label: label}, true
 	}
 	return pages.Creator{}, false
+}
+
+// agentStarter is the chief dispatch store's read of who started an agent
+// (plugins.PGStore.AgentStartedBy).
+type agentStarter interface {
+	AgentStartedBy(ctx context.Context, agentID int64) (int64, error)
+}
+
+// teamPageCreator is the PERSON a team agent's new page records as its
+// creator (pages.Creator.ByUser, migration 0160): the person whose say-so
+// started the agent (its chief reservation's requested_by_user), read as the
+// team. 0 — the page records none, and a manager of the team manages it —
+// for any caller that is not a team-owned agent (a person's own page needs
+// none: its owner is its creator), and when no starter is recorded or it
+// cannot be read (logged).
+func (s *Server) teamPageCreator(ctx context.Context, c toolCaller) int64 {
+	p, ok := authz.From(ctx)
+	if c.agent == nil || c.agent.ID <= 0 || !ok || !p.Team || p.UserID != c.agent.OwnerID {
+		return 0
+	}
+	st, ok := s.ext.ChiefDispatch.(agentStarter)
+	if !ok {
+		return 0
+	}
+	person, err := st.AgentStartedBy(ctx, c.agent.ID)
+	if err != nil {
+		s.logger.Printf("pages: team agent %d: read who started it: %v (the page records no creator)", c.agent.ID, err)
+		return 0
+	}
+	return person
 }
 
 // pageToolRefusal is a store error as a tool's error.
@@ -278,7 +310,7 @@ func pageInput(arguments string, needTitle bool) (id int64, title string, blocks
 func (s *Server) pageNext(ctx context.Context, p pages.Page) string {
 	id := p.ID
 	how := "your owner is asked, and approves the link"
-	if s.pageAgentShareOn(ctx, p.OwnerID) {
+	if s.pageAgentShareAllowed(ctx, p.OwnerID) {
 		how = "its link is live at once, and your owner is told"
 	}
 	return "Your owner has been shown it, and can open it signed in at " + s.pageViewURL(id) + ". To let someone else open it, call page_share_request{page_id: " +
@@ -439,8 +471,9 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 		return pageToolRefusal("read", in.PageID, err)
 	}
 	// 🔴 THE PAGE OWNER'S OPT-IN, read for p.OwnerID — never the caller's or
-	// the operator's (TestTheOptInIsThePageOwners).
-	if s.pageAgentShareOn(ctx, p.OwnerID) {
+	// the operator's (TestTheOptInIsThePageOwners) — and never for a TEAM's
+	// page, whatever its row says (pageAgentShareAllowed).
+	if s.pageAgentShareAllowed(ctx, p.OwnerID) {
 		return s.pageShareAuto(ctx, creator, p, in.Reason)
 	}
 	if s.ext.Attention == nil {
@@ -481,6 +514,25 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 		"note": "Keep url: it is shown only this once (muster stores only its hash). It opens nothing until your owner approves it, and then opens the page for anyone who has it.",
 		"next": "Your owner decides on the Attention view or their phone. " + askNext(c, a.ID) +
 			" When the answer is \"" + pageShareApproveLabel + "\", url is live; page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows its state."})
+}
+
+// pageAgentShareAllowed reports whether an agent's page_share_request for a
+// page of owner's makes the link live at once (pageShareAuto) instead of
+// asking a person: the owner's own opt-in (pageAgentShareOn), and NEVER for a
+// team.
+//
+// 🔴 A TEAM AGENT NEVER MAKES A LINK LIVE BY ITSELF (operator decision: a
+// team's page goes public only when a person taps — Share on the page, or
+// the share card). No setting reaches it: the opt-in is never read for a
+// team, so a pages_agent_share true on a team's notify_preferences row — by
+// a default or by hand — cannot turn this on. An owner whose account cannot
+// be read is taken for a team (ownerIsTeam): it asks.
+// TestATeamAgentAlwaysAsksEvenWithTheTeamsSettingOn.
+func (s *Server) pageAgentShareAllowed(ctx context.Context, owner int64) bool {
+	if s.ownerIsTeam(ctx, owner) {
+		return false
+	}
+	return s.pageAgentShareOn(ctx, owner)
 }
 
 // pageAgentShareOn reports whether owner turned on "Let my agents share pages

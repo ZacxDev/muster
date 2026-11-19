@@ -24,6 +24,8 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // The limits (docs/design/pages.md#limits-and-quotas). Vars where a test
@@ -114,6 +116,12 @@ type Creator struct {
 	// acts on its HOST's pages (creatorClause), as before.
 	MirrorSession string
 	Label         string
+	// ByUser is the PERSON who started the team agent that makes a TEAM's
+	// page (migration 0160: pages.created_by_user), recorded at create so
+	// only they manage it (MayManage). 0 for a person's own page — its owner
+	// is its creator, and the database blanks it — and for a team agent
+	// whose starter is not recorded. It identifies; it never scopes a tool.
+	ByUser int64
 }
 
 // Valid reports whether c names exactly one creator.
@@ -128,6 +136,33 @@ type Page struct {
 	Creator        Creator
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+// MayManage reports whether p may MANAGE page pg: delete it, change its
+// current version, revoke a link or make a new one. The page's owner (a
+// person on their own page; a team's agent, the team acting principal, on
+// the team's), the system scope, and — on a TEAM's page — the person who
+// started the agent that made it (Creator.ByUser) while they are a member of
+// the team, or, ONLY when the page records no such person, a manager of the
+// team (else nobody could ever delete it). Every other member views and
+// responds, and shares (Share), but manages nothing.
+//
+// 🔴 THE SAME RULE AS THE DATABASE'S muster_page_manager (migration 0160),
+// which holds every statement to it; this copy decides what the screen draws
+// and which routes refuse with words (internal/api teamPageRoutes).
+// TestMayManageMatchesTheDatabase pins the two together.
+func MayManage(pg Page, p authz.Principal) bool {
+	if p.All() || (p.UserID > 0 && pg.OwnerID == p.UserID) {
+		return true
+	}
+	role, member := p.TeamScope().RoleIn(pg.OwnerID)
+	if !member {
+		return false
+	}
+	if pg.Creator.ByUser > 0 {
+		return pg.Creator.ByUser == p.UserID
+	}
+	return role.AtLeast(authz.TeamManager)
 }
 
 // Summary is a page as a list shows it: the page and its counts.
@@ -223,7 +258,12 @@ type Response struct {
 	LinkID int64
 	// ByOwner: the page's owner sent it from their own view of the page,
 	// signed in (migration 0152), not a viewer through a link.
-	ByOwner        bool
+	ByOwner bool
+	// ResponderUser is WHO sent an owner-view response (ByOwner): the
+	// signed-in person — the owner on their own page, the member on a team's
+	// (migration 0160: page_responses.responder_user, forced to the caller by
+	// the database, never what the statement wrote). 0 for a link's response.
+	ResponderUser  int64
 	Version        int
 	Component      string
 	Kind           ResponseKind

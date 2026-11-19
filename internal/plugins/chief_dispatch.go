@@ -662,6 +662,40 @@ func (s *PGStore) RecordChiefDispatchAgent(ctx context.Context, object string, a
 	})
 }
 
+// AgentStartedBy is the PERSON whose say-so started agentID through the
+// principal's chief: the requested_by_user of the chief reservation whose
+// start recorded the agent (ActionChiefDispatchAgent naming it, and the
+// newest ActionChiefDispatch on the same object before it). 0 when none is
+// recorded — an agent the chief did not start (a team's chief itself, one
+// made on its page), or one whose reservation named nobody.
+//
+// It reads audit_log under the caller's row-level security (self_read: the
+// rows whose user_id is the caller), so it is asked AS THE AGENT'S OWNER —
+// for a team's agent, the team acting principal, whose reservations they are.
+// What a team's page records as its creator (internal/api page_tools.go).
+func (s *PGStore) AgentStartedBy(ctx context.Context, agentID int64) (int64, error) {
+	if agentID <= 0 {
+		return 0, nil
+	}
+	var person int64
+	err := s.pool.QueryRow(ctx, `SELECT coalesce((r.detail->>'`+detailRequestedByUser+`')::bigint, 0)
+		  FROM audit_log a
+		  JOIN LATERAL (SELECT x.detail FROM audit_log x
+		                 WHERE x.action = $2 AND x.object = a.object AND x.user_id = a.user_id AND x.id < a.id
+		                 ORDER BY x.id DESC LIMIT 1) r ON true
+		 WHERE a.action = $1 AND a.detail ? 'agent_id' AND (a.detail->>'agent_id')::bigint = $3
+		 ORDER BY a.id DESC LIMIT 1`, ActionChiefDispatchAgent, ActionChiefDispatch, agentID).Scan(&person)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return person, err
+}
+
+// detailRequestedByUser is the reservation detail key naming the person whose
+// say-so a chief start is (internal/api DetailRequestedByUser spells the same
+// key; TestAgentStartedByReadsTheReservation pins them together).
+const detailRequestedByUser = "requested_by_user"
+
 // chiefStartRows is the ids of object's latest reservation and latest release by
 // owner (0 for none). A task's start is spent while reserved > released.
 func chiefStartRows(ctx context.Context, tx pgx.Tx, owner int64, object string) (reserved, released int64, err error) {

@@ -152,12 +152,12 @@ func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 // owner it then acts as. Only the link row is handed on.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, p.created_at, p.updated_at`
+const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, coalesce(p.created_by_user, 0), p.created_at, p.updated_at`
 
 func scanPage(row pgx.Row, extra ...any) (Page, error) {
 	var p Page
 	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.Label,
-		&p.CreatedAt, &p.UpdatedAt}, extra...)
+		&p.Creator.ByUser, &p.CreatedAt, &p.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Page{}, ErrNotFound
@@ -225,8 +225,14 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID <= 0 && c.MirrorSession != "" {
 			sess = truncate(c.MirrorSession, 200)
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, creator_label) VALUES ($1, $2, $3, $4, $5)
-			RETURNING `+pageCols, title, agent, c.MirrorHost, sess, truncate(c.Label, 200))
+		// A team's page records the person who started its agent (0160); a
+		// person's own records none (the database blanks it).
+		var byUser any
+		if c.ByUser > 0 {
+			byUser = c.ByUser
+		}
+		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, creator_label, created_by_user) VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING `+pageCols, title, agent, c.MirrorHost, sess, truncate(c.Label, 200), byUser)
 		var err error
 		if p, err = scanPage(row); err != nil {
 			return err
@@ -770,12 +776,12 @@ func (s *PGStore) LinkByToken(ctx context.Context, token string) (Link, error) {
 	return l, nil
 }
 
-const responseCols = `id, page_id, coalesce(link_id, 0), by_owner, version, component, kind, data, upload_public_id, created_at`
+const responseCols = `id, page_id, coalesce(link_id, 0), by_owner, coalesce(responder_user, 0), version, component, kind, data, upload_public_id, created_at`
 
 func scanResponse(row pgx.Row) (Response, error) {
 	var r Response
 	var kind string
-	err := row.Scan(&r.ID, &r.PageID, &r.LinkID, &r.ByOwner, &r.Version, &r.Component, &kind, &r.Data, &r.UploadPublicID, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.PageID, &r.LinkID, &r.ByOwner, &r.ResponderUser, &r.Version, &r.Component, &kind, &r.Data, &r.UploadPublicID, &r.CreatedAt)
 	r.Kind = ResponseKind(kind)
 	return r, err
 }
