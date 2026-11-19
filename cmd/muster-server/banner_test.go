@@ -336,6 +336,10 @@ var bannerLedger = []string{
 	// whether it is set (the hosts it adds) or unset (browser hosts only). With
 	// push OFF nothing is sent anywhere, so the hosts are moot.
 	envPushExtraHosts,
+	// notify_owner's external link hosts: with push ENABLED the banner names
+	// the variable whether it is set (the hosts) or unset (muster paths only);
+	// with push OFF the OFF line names it as not read.
+	envNotifyLinkHosts,
 	// The Android pairing policy: a line in both directions (set / unset).
 	envAndroidAllowPINKeys,
 	// The Android app's Digital Asset Links (its passkeys): a line in both

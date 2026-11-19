@@ -146,9 +146,10 @@ ask, a task ready for review. [push.md](push.md).
   docker compose run --rm --no-deps muster vapid generate >> .env   # appends the two keys
   ```
 
-  `MUSTER_VAPID_SUBJECT` (the contact address push services are given) and
+  `MUSTER_VAPID_SUBJECT` (the contact address push services are given),
   `MUSTER_PUSH_EXTRA_HOSTS` (your own push hosts, such as a self-hosted ntfy)
-  are optional ([configuration.md](configuration.md#muster-server-optional-features)).
+  and `MUSTER_NOTIFY_LINK_HOSTS` (the external hosts an agent's
+  [notification](push.md#an-agent-notifies-you) may link to) are optional ([configuration.md](configuration.md#muster-server-optional-features)).
 - **Profile:** none.
 - **Check:** `web push: ENABLED`. Then **Account → Notifications → Send a
   test notification**.

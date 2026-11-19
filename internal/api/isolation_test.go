@@ -164,6 +164,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
 	"GET /account":     classList,
+	// notify_owner's tap target (notify_owner.go): names no object — a
+	// redirect to the address in its own query, re-checked against the
+	// server's allowlist; it reads nobody's rows.
+	"GET /notify/open": classList,
 	// The step-up confirm names no object: it re-proves the CALLER (stepup.go).
 	"POST /auth/confirm": classList,
 	// Its passkey form names no object either: the options are for the caller's

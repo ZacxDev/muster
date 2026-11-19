@@ -114,6 +114,7 @@ var hostStepUpExempt = map[string]string{
 	pageShareRequestTool:      "asks the owner for a link (their tap decides)",
 	pageResponsesTool:         "a read of the session's own page",
 	pageLinkRevokeTool:        "revokes a link of the session's own page",
+	notifyOwnerTool:           "tells the owner something, labelled as the session; it decides nothing",
 	"connectors_list":         "a host instance's own (hostOfficerMirrorTool)",
 	"connector_request":       "a host instance's own (hostOfficerMirrorTool)",
 	"connector_status":        "a host instance's own (hostOfficerMirrorTool)",

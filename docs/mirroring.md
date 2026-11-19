@@ -1540,7 +1540,7 @@ anything else stays, logged.
 
 **How a spawned agent says it finished.** A Claude Code agent calls
 `agent_report_done` on the mirror MCP. An opencode agent is not offered it (its
-muster tools are the attention and task tools only:
+muster tools are the attention and task tools and `notify_owner` only:
 [attention.md](attention.md#mirrored-opencode-sessions)), so the host reads it
 instead: for each idle window carrying `@muster-dispatch` and
 running a launcher-bound opencode session, it reads that session's final reply

@@ -31,6 +31,15 @@ const (
 	// EventMorningReport: the morning report — once a day, only on a day
 	// something happened (internal/morning) — counts only, tapping opens it.
 	EventMorningReport = "morning_report"
+	// EventPageUpdated: an agent published a NEW VERSION of one of its
+	// owner's pages (page_update). Its OWN toggle, apart from page_published:
+	// an agent iterating on a page publishes many versions, and an owner who
+	// wants to hear of new pages may not want every revision — muting the
+	// revisions must never also hide a new page (the page_shared precedent).
+	EventPageUpdated = "page_updated"
+	// EventAgentNotify: one of the owner's agents sent them a notification
+	// of its own (the notify_owner tool, internal/api/notify_owner.go).
+	EventAgentNotify = "agent_notify"
 )
 
 // Event is one toggle.
@@ -54,6 +63,8 @@ var Events = []Event{
 	{EventPagePublished, "An agent published a page for you"},
 	{EventPageShared, "An agent shared one of your pages without asking (anyone with its link can open it)"},
 	{EventMorningReport, "Your morning report: what happened while you were away"},
+	{EventPageUpdated, "An agent published a new version of one of your pages"},
+	{EventAgentNotify, "An agent sent you a notification"},
 }
 
 // KnownEvent reports whether name is in Events.

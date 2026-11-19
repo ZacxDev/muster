@@ -33,7 +33,12 @@ has its own toggle, and all are on by default:
 | `comment` | A machine commented on a task, or a member commented on a team task ([below](#team-notifications)). |
 | `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Drafts tab (`/attention?tab=drafts#draft-<id>`). The same toggle carries the notice that your chief [routed a plugin message or a task to a session](plugins.md#you-are-told-where-the-chief-routed-it) on its own: one per route, `Chief routed it to <tmux place>`, its body the plugin's label and the message's subject (or the task's number and title), tagged `route-<route id>`; a tap opens the session (or the task). Information only: nothing to answer. |
 | `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item's session when it has one (a waiting window's or a held question's rendered view, an asking agent's page, an asking mirrored session's window) and its item on `/attention` otherwise, decided when tapped (`/attention/open/<key>`; [attention.md](attention.md)). A decided reply draft's `plugin` notification is withdrawn the same way. With `MUSTER_SESSION_STATE=1`, a waiting window or a stalled session is pushed instead as its **episode**: one notification per stop, titled by its window as every attention text names it, `<label> · tmux <session>:<window index> @ <host> needs you` (or `is stalled`; [attention.md](attention.md#how-a-window-is-named)), resolved when sent, its body only the state and idle time — never the session's text, except for a question muster can answer (below), whose push carries that question in full — tagged `attention-episode-<id>`, and withdrawn when the stop ends. A waiting window's episode is **not pushed at once**: it is held for 60 seconds and sent once they have passed unless the stop ended first (a window whose host drops meanwhile is still sent, once muster has known the host offline for 60 seconds too), so a prompt answered at the terminal never buzzes ([attention.md](attention.md#stalled--waiting-session-state)). **This holds for a question muster can answer too** (a held AskUserQuestion, an opencode prompt; since the follow-up to #463): its card shows at once, and its push — the question's own full-text notification, `<where> is asking`, tagged `attention-episode-<id>` — is sent only if it is still open after 60 seconds; a restart never re-sends one it already sent. Without session state, or for a window muster cannot key, the waiting push (`attention-session-<hash>`) is held by the same 60 seconds. |
+| `page` | Someone sent a response through one of your [pages](pages.md)' links: at most one notification per page a minute. |
+| `page_published` | An agent published a new page for you (`page_create`): `Page ready: <title>`, its body `From agent <name>.` or `From session "<name>".`, tagged `page-<id>-ready`; a tap opens your view of it. |
+| `page_shared` | An agent shared one of your pages without asking (your own opt-in, [pages.md](pages.md#when-an-agent-shares)): its own toggle, so muting `page_published` never hides that a page went public. |
 | `morning_report` | Your [morning report](features.md#morning-report): once a day at the server's report time, only on a day something happened overnight. Titled `While you were away`, its body counts only (`1 question for you · 3 merged · 2 stuck`), never a session's, a task's or a question's text; tagged `morning-report`, so the next day's replaces it. A tap opens that day's report (`/morning/<date>`), where its open questions are answered in place. Sent at most once per day. |
+| `page_updated` | An agent published a new **version** of one of your pages (`page_update`): `Page updated: <title> (v<N>)`, its body `From agent <name>.` or `From session "<name>".`; a tap opens that version in your view of the page (`/pages/<id>/view?v=<N>`). One tag per page (`page-<id>-updated`), so a newer version replaces the older on the device. At most 6 per 10 minutes from one agent or session ([the sender's cap](#an-agent-notifies-you)); the rest are dropped and logged. Its own toggle, apart from `page_published`, so you can mute an iterating agent's revisions and still hear of a new page. |
+| `agent_notify` | One of your agents sent you a notification with `notify_owner` ([below](#an-agent-notifies-you)). |
 
 **The task's reference and creator.** A `review`, `agent`, `created` or
 `comment` notification about a task ends its body with the task's external
@@ -85,6 +90,72 @@ Claude Code is waiting for you: …`
 ([focus.md](focus.md#tmux-name-first-in-push-titles)). It changes push titles
 only, on the browser and on the paired phone alike; its POST is
 `/account/notifications/codename` (`on=1|0`).
+
+### An agent notifies you
+
+Any of your agents can send you a notification of its own with the MCP tool
+`notify_owner {title, body?, url?}`: your mirrored Claude Code and opencode
+sessions (`POST /mirror/mcp`), your chief and your dispatched agents (their
+gateway turns and `POST /mcp`), and an agent the chief started on one of your
+hosts. It is offered while muster's own push is on (the `push` feature), and
+never on a [team host](#team-notifications): a team has no one owner to
+notify, and a team-owned agent's call is refused.
+
+- **Who sent it.** The body always starts with the sender as muster knows the
+  caller, never as the caller describes itself: `From agent <name>
+  (dispatched)`, `From your chief`, `From session "<name>"` for a mirrored
+  session, and `From session "<name>" (spawned on a host)` for an agent the
+  chief started on a host. Every kind has its own fixed marker. A session's
+  name is quoted (its own `"` become `'`) and cut to 60 characters, because
+  a session's name can come from its own transcript: a session named
+  "Your chief" still reads `From session "Your chief"`. The title is the
+  agent's own, so read the `From` line to tell who sent it. Title and body are flattened to plain text, the
+  title cut to 80 characters and the body to 200. One tag per sender, so a
+  sender's newer notification replaces its older one on the device.
+- **What a tap opens.** `url` is either a muster path (`/tasks/42`,
+  `/pages/7/view`) or an `https` address on a host listed in
+  `MUSTER_NOTIFY_LINK_HOSTS` ([configuration.md](configuration.md)), matched
+  exactly (no subdomains), with no user name, password or port. Anything
+  else is refused with a sentence: `http:`, `javascript:`, `data:`, another
+  host, `//host`, `/\host`, the same written with `%2F` or `%5C`, `.` and `..`
+  segments, spaces, control and non-ASCII characters. With no `url`, a
+  dispatched agent's notification opens its own page, and any other opens
+  muster's home. An external address is never put in a notification as the
+  tap target: the notification opens muster's own `/notify/open?to=<address>`
+  (signed in), which checks the address against the **current** list again
+  and then redirects with no referrer. A host you take off the list stops
+  working at once, also for notifications already sent. The browser opens it
+  in a new window, never in an open muster tab. The Android app opens it as
+  any muster path; what its shell does with the redirect is the app's own.
+- **Limits.** Each sender may send 6 per 10 minutes. That cap is on top of
+  your own cap (30 notifications per 10 minutes, all events together) and
+  the **An agent sent you a notification** toggle in Account → Notifications,
+  which is on by default.
+- **What the agent is told.** The tool waits for the send and says what
+  happened: `delivered` (a push service accepted it for that many devices,
+  which is not proof you read it), `suppressed` with the reason
+  (`sender_cap`, `owner_cap`, `muted`), `no_device`, `failed`, or
+  `not_configured`.
+- **The record.** Every call writes one `audit_log` row (`agent.notify`): the
+  sender and its kind, the title, the link, and the outcome. **Account →
+  Notifications** lists your 20 newest. Only you read them; they are not on
+  the admins' activity list.
+
+### Every dropped notification is logged
+
+A notification that reaches nobody leaves one line in muster's log, at the
+drop, naming its tag, its event, the owner and why:
+
+```
+push: dropped tag=page-12-ready event=page_published owner=3: no device is subscribed
+```
+
+The reasons: the event is muted, the owner's cap is reached (every drop, not
+only the first), the sender's cap is reached, no device is subscribed, every
+device refused or failed it, a team with no operator or manager whose
+notifications are on, and a notification that names no owner. On a server with
+no push at all, every notification is dropped, so that is logged once, for the
+first.
 
 ### Team notifications
 
@@ -208,6 +279,12 @@ as **payload v2**:
   100 and 200 characters — the Android app's own limits, so it cuts nothing
   more — and never in the middle of a character a reader sees as one (an
   accent, an emoji, a flag).
+- `url` is always a path on muster, never another origin's address: an
+  agent's link to an allowed external host is sent as muster's own
+  `/notify/open?to=<address>` ([above](#an-agent-notifies-you)). The browser's
+  service worker likewise opens only a path on its own origin from any
+  notification, and anything else (another origin, `//host`, `/\host`,
+  `javascript:`) opens muster's home.
 - An attention **ask** adds `ask`: `{"id": <ask id>, "options": [...],
   "suggestions": [...]}`, the chips the app draws — at most three of each,
   each whole (one longer than 140 characters is left out, never cut). When the

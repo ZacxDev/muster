@@ -194,6 +194,10 @@ type Extensions struct {
 	// (wsAllowedOrigins), for proxy setups that rewrite Host. "" accepts only
 	// the request's own Host.
 	PublicURL string
+	// NotifyLinkHosts is MUSTER_NOTIFY_LINK_HOSTS, parsed (lower-case, exact
+	// host names): the only external hosts a notify_owner link may open
+	// (notify_owner.go, notifyLinkFor). Empty (the default): muster paths only.
+	NotifyLinkHosts []string
 	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed: the origins a viewer
 	// plugin may be given (docs/design/previews.md). A request whose Host is
 	// under one is refused 421 before anything else runs

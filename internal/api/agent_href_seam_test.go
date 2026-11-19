@@ -302,6 +302,9 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/attention_push_target.go:Server.askingAgentHref": 1,
 	"AgentPath ← internal/api/push_task.go:Server.notifyAgentRunning":                 1,
 	"AgentPath ← internal/api/agent_outcome.go:Server.pushOutcome":                    1,
+	// notify_owner's default tap target for a dispatched agent: its BARE page,
+	// as the pushes above (#237).
+	"AgentPath ← internal/api/notify_owner.go:Server.toolNotifyOwner": 1,
 	// dispatch_approve's push: the BARE page, as notifyAgentRunning's (#237) —
 	// the agent was just created, so it has no session to name yet.
 	"AgentPath ← internal/api/dispatch_hold_tools.go:Server.pushSessionDispatch": 1,

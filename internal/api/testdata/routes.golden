@@ -153,6 +153,7 @@ GET /mirror/view/suggest
 GET /mirror/view/ws
 GET /morning
 GET /morning/{date}
+GET /notify/open
 GET /officers
 GET /officers/new
 GET /officers/spawns
