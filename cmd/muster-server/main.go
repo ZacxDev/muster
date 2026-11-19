@@ -482,6 +482,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// The fleet reader's pull-request states (internal/api fleet_read.go):
 			// the App's own server-side read, behind the reader's two-minute cache.
 			ext.FleetPRStates = gapp
+			// The fleet's CI read (ci_result): the App's own
+			// checks + statuses read, a token of its own (githubapp
+			// CommitChecks).
+			ext.FleetChecks = gapp
 			if ext.Connectors != nil {
 				// Admins, and the listed teams' own agents: the App is the
 				// deployment's (connectors.WithVirtual). ONE predicate,
@@ -2189,7 +2193,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 	switch {
 	case ext.FleetPropose && ext.Episodes != nil:
-		l.Printf("fleet proposals: ON (%s=propose) — the chief's session_instruct, session_wrap, work_reassign and fleet_actions_list "+
+		l.Printf("fleet proposals: ON (%s=propose) — the chief's session_instruct, session_answer, session_wrap, work_reassign and fleet_actions_list "+
 			"tools, and \"Write handoff, then close\" for each finished session (the session-state pass), become cards in the fleet "+
 			"digest; NOTHING is sent until the owner taps Approve; the chief keeps judging stops (its nudges and the per-stop pushes are "+
 			"unchanged)", envFleetOrchestration)
