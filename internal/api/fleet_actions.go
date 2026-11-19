@@ -121,9 +121,10 @@ func fleetWriteToolDefs() []agents.ToolDef {
 			Parameters: objSchema(map[string]any{
 				"task_id": intProp("The task's id (one of your owner's tasks).", 1, 1<<62),
 				"from":    strProp("The session the task leaves: its fleet id (\"mirror:<key>\" or \"agent:<id>\"), stopped now."),
-				"to":      strProp("The session the task goes to: a mirrored Claude Code session's fleet id (\"mirror:<key>\")."),
+				"to":      strProp("The session the task goes to: a mirrored Claude Code session's fleet id (\"mirror:<key>\"). For NEW work, use agent_dispatch's own card and a session_wrap or session_instruct handoff card instead."),
 				"reason":  reason,
 			}, "task_id", "from", "to", "reason")},
+		sessionAnswerToolDef(),
 		{Type: "function", Name: fleetActionsListTool,
 			Description: "Read your fleet proposals and what became of them (the fleet's action log): each {action_id, class, " +
 				"subject, state (proposed, approved, rejected, expired, queued, sent, failed, suppressed:<why>), outcome, reason, " +
@@ -156,13 +157,14 @@ func fleetToolResult(a fleet.Action, refused, why string) string {
 // dispatchFleetTool runs a fleet tool; ok false when name is not one.
 func (s *Server) dispatchFleetTool(ctx context.Context, name, arguments string) (string, bool) {
 	switch name {
-	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool:
+	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool, sessionAnswerTool:
 	default:
 		return "", false
 	}
 	// 🔴 RE-CHECKED AT THE CALL: a gateway runtime can name a tool it was
-	// never offered.
-	if !s.fleetProposeOn() {
+	// never offered. A TEAM's chief has none in this phase (the plan: "a
+	// team's chief gets none of these tools in v1").
+	if !s.fleetProposeOn() || s.ownerIsTeam(ctx, requestOwner(ctx)) {
 		return fleetToolResult(fleet.Action{}, fleetRefusedOff, "fleet proposals are off on this server (MUSTER_FLEET_ORCHESTRATION)"), true
 	}
 	switch name {
@@ -172,6 +174,8 @@ func (s *Server) dispatchFleetTool(ctx context.Context, name, arguments string) 
 		return s.toolSessionWrap(ctx, arguments), true
 	case workReassignTool:
 		return s.toolWorkReassign(ctx, arguments), true
+	case sessionAnswerTool:
+		return s.toolSessionAnswer(ctx, arguments), true
 	}
 	return s.toolFleetActionsList(ctx, arguments), true
 }
@@ -201,21 +205,58 @@ func (s *Server) fleetStoppedSubject(ctx context.Context, id string) (fleetSubje
 // never a tag; hostOfficerWindowsOpen's read). A read that fails guards.
 func (s *Server) fleetSubjectGuarded(ctx context.Context, sub fleetSubject) bool {
 	if sub.kind == chiefnudge.KindMirror {
-		st := s.officerHostSpawns()
-		if st == nil || sub.view.Window == "" {
-			return false
-		}
-		rows, err := st.HostSpawnsInWindows(s.officerPrincipal(ctx, requestOwner(ctx)), sub.view.Host, []string{sub.view.Window})
-		return err != nil || len(rows) > 0
+		officer, err := s.fleetHostOfficerWindow(ctx, sub.view.Host, sub.view.Window)
+		return err != nil || officer
 	}
 	if sub.kind != chiefnudge.KindAgent {
 		return false
 	}
-	if _, _, officer := s.officerOf(sub.agent); officer {
-		return true
+	officer, err := s.fleetOfficerAgent(ctx, sub.agent.ID)
+	return err != nil || officer
+}
+
+// fleetHostOfficerWindow reports whether host's window is one the officer
+// runtime spawned (the spawn store's recorded window).
+func (s *Server) fleetHostOfficerWindow(ctx context.Context, host, window string) (bool, error) {
+	st := s.officerHostSpawns()
+	if st == nil || window == "" {
+		return false, nil
 	}
-	_, protected, err := s.agentIsDeleteProtected(ctx, sub.agent.ID)
-	return err != nil || protected
+	rows, err := st.HostSpawnsInWindows(s.officerPrincipal(ctx, requestOwner(ctx)), host, []string{window})
+	return len(rows) > 0, err
+}
+
+// fleetOfficerAgent reports whether agent id is an officer's instance (or
+// another agent the destroy paths protect), read from the agent table.
+func (s *Server) fleetOfficerAgent(ctx context.Context, id int64) (bool, error) {
+	a, protected, err := s.agentIsDeleteProtected(ctx, id)
+	if err != nil || protected {
+		return protected, err
+	}
+	_, _, officer := s.officerOf(a)
+	return officer, nil
+}
+
+// fleetActionGuarded is fleetSubjectGuarded re-read for action a at the tap
+// and the paste (fleetStillOn): an officer's window or instance is never sent
+// to, even when it became one after the card was filed. A read that fails is
+// unknown (retried), never a send.
+func (s *Server) fleetActionGuarded(ctx context.Context, a fleet.Action) nudgeState {
+	var officer bool
+	var err error
+	switch a.SubjectKind {
+	case chiefnudge.KindMirror:
+		officer, err = s.fleetHostOfficerWindow(ctx, a.Host, a.Window)
+	case chiefnudge.KindAgent:
+		officer, err = s.fleetOfficerAgent(ctx, a.AgentID)
+	}
+	switch {
+	case err != nil:
+		return nudgeUnknown
+	case officer:
+		return nudgeMovedAway
+	}
+	return nudgeStalled
 }
 
 // fleetProposalFor is the proposal of class with text on stopped subject sub.
@@ -521,6 +562,20 @@ func fleetMirrorDelivery(h mirror.HostView, e mirror.SessionView) fleetDelivery 
 // "moved on" predicate) and — when one was recorded — the same pull request
 // head. nudgeUnknown when any of it cannot be read: never moved on.
 func (s *Server) fleetStillOn(ctx context.Context, a fleet.Action) nudgeState {
+	if st := s.fleetActionGuarded(ctx, a); st != nudgeStalled {
+		return st
+	}
+	switch {
+	case a.Class == fleet.ClassAnswerPick:
+		// A picker on screen is a WAITING window, not an idle one: the stop
+		// and the held question itself are what must still hold.
+		return s.fleetPickStillOn(ctx, a)
+	case a.Evidence.AskLogID > 0:
+		// An answer: the held question it answers is still open.
+		if st := s.fleetAskStillOpen(ctx, a); st != nudgeStalled {
+			return st
+		}
+	}
 	d := chiefnudge.Decision{Kind: a.SubjectKind, Key: a.SubjectKey, Host: a.Host, TmuxSession: a.TmuxSession, Window: a.Window,
 		AgentID: a.AgentID, ChatSessionID: a.ChatSessionID, StreakKey: a.StreakKey, EpisodeID: a.EpisodeID}
 	// DecidedAt stays zero: an episode PUSHED after the proposal is not moved
@@ -559,10 +614,12 @@ const (
 
 // fleetEditable reports whether a's card may be sent as the owner's own
 // edited text: never a reassign (its route is the point), an agent's turn,
-// or a close (nothing is typed — an edit would close the session and drop
-// the owner's text). ONE predicate: the card's Edit form and the approve.
+// a close (nothing is typed — an edit would close the session and drop the
+// owner's text) or a pick (an option is typed into a picker, not a text: an
+// edit would type the chief's option and drop the owner's words). ONE
+// predicate: the card's Edit form and the approve.
 func fleetEditable(a fleet.Action) bool {
-	return a.Class != fleet.ClassReassign && a.Class != fleet.ClassClose && a.SubjectKind != chiefnudge.KindAgent
+	return a.Class != fleet.ClassReassign && a.Class != fleet.ClassClose && a.Class != fleet.ClassAnswerPick && a.SubjectKind != chiefnudge.KindAgent
 }
 
 // fleetApproveResult is one approve: its note, and whether it moved on.
@@ -611,7 +668,12 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 			return fleetApproveResult{note: FleetNotDeliverable + why}
 		}
 	}
-	if a.Class == fleet.ClassClose {
+	switch a.Class {
+	case fleet.ClassAnswerPick:
+		// Typed into the picker as the owner's tap types it: no text, no
+		// attribution line (a picker takes an option, not a paste).
+		return s.fleetDeliverPick(ctx, a)
+	case fleet.ClassClose:
 		return s.fleetDeliverClose(ctx, a)
 	}
 	body := fleet.Body(s.personName(ctx, requestOwner(ctx)), s.now(), a.Text)
@@ -816,6 +878,7 @@ func (s *Server) fleetPass(octx context.Context, owner int64, facts []nudgeCandi
 	}
 	s.fleetSettle(octx, facts)
 	s.fleetProposeWraps(octx, facts)
+	s.fleetProposeCIResults(octx, facts)
 	s.fleetPushWaiting(octx, owner)
 }
 
