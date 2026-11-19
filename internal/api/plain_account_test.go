@@ -11,7 +11,9 @@ import (
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plainscan"
+	"github.com/ZacxDev/muster/internal/suggest"
 )
 
 // THE ACCOUNT PAGES IN PLAIN WORDS (jargon audit, "settings" theme: F079–F094,
@@ -194,6 +196,37 @@ func TestNotSetUpLinesKeepTheirSetupForAnAdmin(t *testing.T) {
 	}
 	if strings.Contains(admin, "Not available on this install") || strings.Contains(admin, "is unset).</p>") {
 		t.Error("the old not-set-up wording is still in the top layer")
+	}
+}
+
+// TestAMembersSuggestedRepliesOffLineCarriesNoSetup (F087; audit round 1):
+// with no OpenRouter key, a MEMBER's Suggested replies section says "Off —
+// needs an OpenRouter key on the server. Your admin can turn them on." and
+// carries none of the setup — not the registry's reason, not the sheet's
+// lead, no code row, no setup link — while the admin's does (the control).
+func TestAMembersSuggestedRepliesOffLineCarriesNoSetup(t *testing.T) {
+	s, _ := featureServer(t, Extensions{Suggest: &suggest.Engine{}},
+		testFeatureSet(t, map[string]features.Status{features.SuggestedReplies: {State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}}))
+	section := func(role authz.Role) string {
+		page := pageAs(t, s.handleAccountPage, "/account", role)
+		i := strings.Index(page, `data-testid="suggest-settings"`)
+		if i < 0 {
+			t.Fatalf("%s: no suggested-replies section", role)
+		}
+		sec := page[i:]
+		return sec[:strings.Index(sec, "</section>")]
+	}
+	admin, member := section(authz.RoleAdmin), section(authz.RoleMember)
+	if !strings.Contains(member, `data-state="off-needs-key" class="text-sm text-fg">Off — needs an OpenRouter key on the server. Your admin can turn them on.</p>`) {
+		t.Errorf("the member's line is not the plain one:\n%s", member)
+	}
+	for _, n := range []string{"needs EXAMPLE_OPENROUTER_KEY", "What the server reports:", "data-info-code", "#suggested-replies"} {
+		if !strings.Contains(admin, n) {
+			t.Errorf("CONTROL: the admin's section has no %q", n)
+		}
+		if strings.Contains(member, n) {
+			t.Errorf("a member's section carries %q", n)
+		}
 	}
 }
 

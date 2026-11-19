@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // THE OFFICERS SCREENS IN PLAIN WORDS (jargon audit, "settings" theme: F047,
@@ -67,6 +69,88 @@ func TestWhereOfficersCanRunIsSaidInWords(t *testing.T) {
 	}
 	if strings.Contains(member, "Kubernetes") || strings.Contains(member, "provisioner") {
 		t.Error("a member's panel carries the server's reason")
+	}
+}
+
+// TestWhereOfficersCanRunWithholdsEveryReasonFromAMember (F051–F054; audit
+// round 1): each place's reason and the command that adds a computer are in
+// an ADMIN's ⓘ — the server's host refusal, the "no computers" command and
+// each computer's own reason. A member's render of the same options carries
+// NONE of it: no reason, no command, no sheet lead, no code row; each of its
+// sheets says to ask instead.
+func TestWhereOfficersCanRunWithholdsEveryReasonFromAMember(t *testing.T) {
+	var noHub, noHosts, hosts runtimeOptions
+	noHub.Pod.Reason = "pods need the example agent plane"
+	noHub.HostReason = "this muster has no example mirror hub"
+	noHosts.Pod.Available = true
+	hosts.Pod.Available = true
+	hosts.Hosts = []hostOption{
+		{Host: "atlas", Reason: "it starts no agent (example spawn is off)"},
+		{Host: "nomad", Reason: "its muster-mirror predates officers with no repository (example)"},
+		{Host: "vega", Qualifies: true},
+	}
+	for _, c := range []struct {
+		name    string
+		opts    runtimeOptions
+		secret  []string // the withheld content, whole
+		sheets  int
+		visible string
+	}{
+		{"no hub", noHub, []string{noHub.Pod.Reason, noHub.HostReason, "What the server says:"}, 2, "not available on this server."},
+		{"no computers", noHosts, []string{"muster-mirror -interactive -agent-spawn", "Run muster-mirror with these settings"}, 1, "No computers connected yet."},
+		{"computers", hosts, []string{hosts.Hosts[0].Reason, hosts.Hosts[1].Reason, "What atlas reports:", "What nomad reports:"}, 2, "atlas</span> — can&#39;t start officers"},
+	} {
+		admin := runtimeAvailabilityHTML("rt", c.opts, true)
+		member := runtimeAvailabilityHTML("rt", c.opts, false)
+		for _, n := range c.secret {
+			if !strings.Contains(admin, n) {
+				t.Errorf("%s: CONTROL: the admin's panel has no %q", c.name, n)
+			}
+			if strings.Contains(member, n) {
+				t.Errorf("%s: a member's panel carries %q", c.name, n)
+			}
+		}
+		if strings.Contains(member, "data-info-code") {
+			t.Errorf("%s: a member's panel has a code row", c.name)
+		}
+		if n := strings.Count(member, "data-info-withheld"); n != c.sheets {
+			t.Errorf("%s: a member's panel has %d withheld sheet(s), want %d", c.name, n, c.sheets)
+		}
+		if !strings.Contains(member, c.visible) && !strings.Contains(member, strings.ReplaceAll(c.visible, "&#39;", "'")) {
+			t.Errorf("%s: a member's panel does not say %q:\n%s", c.name, c.visible, member)
+		}
+	}
+}
+
+// TestAnOfficerSetInSettingsIsBadgedSo (audit round 1): an officer declared in
+// the server's settings (MUSTER_OFFICERS) is read-only too, but it is not
+// built in: its badge is "Set in settings".
+func TestAnOfficerSetInSettingsIsBadgedSo(t *testing.T) {
+	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
+	list := s.officerList(asRole(authz.RoleAdmin), officerScope{Owner: 1, Manage: true},
+		[]declaredOfficerView{{ID: "growth:atlas", Owner: 1, ManagedBy: officers.ManagedByEnv, ReadOnly: true, Running: true}}, nil, nil)
+	if !strings.Contains(list, `<span class="text-xs text-muted" data-read-only>Set in settings</span>`) || strings.Contains(list, ">Built-in<") {
+		t.Errorf("the settings-declared officer's badge:\n%s", list)
+	}
+}
+
+// TestAnOfficersItemCarriesItsIDForTheChief (audit round 1): an item an
+// officer raised says its source in words for people and carries the id as
+// officer_id for the chief's attention_list; any other item has none.
+func TestAnOfficersItemCarriesItsIDForTheChief(t *testing.T) {
+	a := attention.Ask{ID: 5, Owner: 1, Question: "post it?", Asker: attention.Asker{System: true, Label: officerAskLabel("product:acme")}}
+	for name, it := range map[string]attentionItem{"ask": askItem(a), "notice": noticeItem(a, nil, nil)} {
+		raw, err := json.Marshal(it)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"source":"Product officer (Acme)"`) || !strings.Contains(string(raw), `"officer_id":"product:acme"`) {
+			t.Errorf("%s: %s", name, raw)
+		}
+	}
+	other := attention.Ask{ID: 6, Owner: 1, Question: "q", Asker: attention.Asker{System: true, Label: "muster"}}
+	if raw, _ := json.Marshal(askItem(other)); strings.Contains(string(raw), "officer_id") {
+		t.Errorf("a non-officer item carries officer_id: %s", raw)
 	}
 }
 

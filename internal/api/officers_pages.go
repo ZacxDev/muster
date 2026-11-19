@@ -575,7 +575,7 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 <div class="flex flex-wrap items-center gap-2"><a class="min-w-0 flex-1 truncate text-sm font-semibold text-fg underline-offset-2 hover:underline" href="` + officerHref(sc, v.ID, "") + `">` +
 			html.EscapeString(name) + `</a>` + statusChip(status))
 		if v.ReadOnly {
-			b.WriteString(`<span class="text-xs text-muted" data-read-only>Built-in</span>`)
+			b.WriteString(`<span class="text-xs text-muted" data-read-only>` + readOnlyBadge(v) + `</span>`)
 		}
 		sheet := officerHeadSheet(v)
 		sheet.ID = "officer-row-" + strconv.FormatInt(sc.Owner, 10) + "-" + strings.NewReplacer(":", "-").Replace(v.ID) + "-info"
@@ -611,8 +611,12 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 // (runtimeOptionsFor: the agent plane, the mirror hub, each host's readiness,
 // what auto picks), never guessed.
 func (s *Server) runtimeAvailability(ctx context.Context, owner int64, id string) string {
-	opts := s.runtimeOptionsFor(ctx, owner, "")
-	admin := authz.IsAdmin(ctx)
+	return runtimeAvailabilityHTML(id, s.runtimeOptionsFor(ctx, owner, ""), authz.IsAdmin(ctx))
+}
+
+// runtimeAvailabilityHTML is runtimeAvailability's section for opts, as
+// admin (who sees the reasons and the command) or anyone else.
+func runtimeAvailabilityHTML(id string, opts runtimeOptions, admin bool) string {
 	var b strings.Builder
 	b.WriteString(`<section class="` + adminCard + `" id="` + id + `"><h2 class="text-base font-semibold text-fg">Where officers can run here</h2><ul class="flex flex-col gap-2 text-sm">`)
 	// In words (the jargon audit's F051–F055): no "pod", no muster-mirror
@@ -648,6 +652,16 @@ func (s *Server) runtimeAvailability(ctx context.Context, owner int64, id string
 	b.WriteString(`<li data-runtime="auto"><span class="font-semibold text-fg">A new officer would run:</span> <span class="text-fg2" id="` + id + `-auto">` + html.EscapeString(autoPlainWords(opts)) + `</span></li>`)
 	b.WriteString(`</ul></section>`)
 	return b.String()
+}
+
+// readOnlyBadge is a read-only officer's badge: "Built-in" for a def in the
+// built-in store that nothing declares, "Set in settings" for one declared in
+// the server's own settings (MUSTER_OFFICERS) — never "read-only".
+func readOnlyBadge(v declaredOfficerView) string {
+	if v.ManagedBy == officers.ManagedByEnv {
+		return "Set in settings"
+	}
+	return "Built-in"
 }
 
 // OfficerNoComputers is what "Where officers can run here" says with no
@@ -2205,7 +2219,7 @@ func (s *Server) officerSchedules(ctx context.Context, sc officerScope, v declar
 	case err != nil:
 		b.WriteString(`<p class="text-sm text-fg2">Its schedules could not be read just now.</p>`)
 	case len(list) == 0:
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-schedules-none">None: it works only when you give it work (Run now).</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-schedules-none">None: it works only when you give it work (Run now) or a plugin sends it something.</p>`)
 	default:
 		b.WriteString(`<ul class="flex flex-col gap-2">`)
 		for _, sch := range list {

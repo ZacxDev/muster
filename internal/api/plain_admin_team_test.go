@@ -347,6 +347,37 @@ func TestTeamViewerPluginsAreSaidInWords(t *testing.T) {
 	}
 }
 
+// TestATeamManagersViewerPluginsPageCarriesNoSetup (F118, F119; audit round
+// 1): a team manager who is not an admin gets both ⓘs withheld — the gateway
+// setup (its tokens file, the team's host-token name), the off reason and
+// both sheets' leads are ABSENT from the page — while the admin's carry them
+// (the control).
+func TestATeamManagersViewerPluginsPageCarriesNoSetup(t *testing.T) {
+	s := plainAdminServer(t)
+	draw := func(ctx context.Context) string {
+		return mainOf(t, render(t, ctx, func(w http.ResponseWriter, r *http.Request) {
+			s.renderTeamPlugins(w, r, 2, r.Context(), http.StatusOK, "", "")
+		}))
+	}
+	admin := draw(asAdminOf())
+	manager := draw(authz.WithPrincipal(context.Background(), authz.Principal{UserID: 7, Role: authz.RoleMember, Via: authz.ViaSession}))
+	setup := []string{"PLUGIN_TOKENS_FILE", "team:2", "MUSTER_PLUGIN_ORIGINS", "plugin tokens file", "What the server says:", "data-info-code"}
+	for _, n := range setup {
+		if !strings.Contains(admin, n) {
+			t.Errorf("CONTROL: the admin's page has no %q", n)
+		}
+		if strings.Contains(manager, n) {
+			t.Errorf("a team manager's page carries %q", n)
+		}
+	}
+	if n := strings.Count(manager, "data-info-withheld"); n != 2 {
+		t.Errorf("the manager's page has %d withheld sheet(s), want 2 (how it works, why it is off)", n)
+	}
+	if !strings.Contains(manager, `<p class="text-sm text-fg2">Viewer plugins aren&#39;t turned on for this server. Your admin can turn them on.</p>`) {
+		t.Errorf("the manager's off line is not the plain one:\n%s", manager)
+	}
+}
+
 // TestABadSessionKindIsSaidInWords (F097): a pin, tag or title-drift request
 // naming no session kind is answered "Something went wrong: this link
 // doesn't say which session it is for." — not "kind must be agent or mirror".

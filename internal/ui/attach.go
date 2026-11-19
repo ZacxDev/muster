@@ -74,10 +74,12 @@ func attachControlOrOff(path string, off bool) g.Node {
 }
 
 // AttachOffLabel is the muted paperclip's accessible name and tooltip: that
-// the feature is not on, and who turns it on — never "on this server" or "how
-// to turn them on" (the jargon audit's F027). Its link is the feature's row
-// on the Features page, whose setup is an admin's only (Features.Setup).
-const AttachOffLabel = features.AttachmentsName + " aren't turned on. Your admin can turn them on."
+// the feature is not on, who turns it on and where — never "on this server"
+// or "how to turn them on" (the jargon audit's F027). One sentence for every
+// viewer: its link is the feature's row on the Features page, whose setup is
+// an admin's only (Features.Setup), so an admin following it finds the setup
+// and anyone else is told to ask.
+const AttachOffLabel = features.AttachmentsName + " aren't turned on. An admin turns them on under Features."
 
 // attachOffControl is the muted paperclip: a link, not a button.
 func attachOffControl() g.Node {

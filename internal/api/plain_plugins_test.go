@@ -113,7 +113,8 @@ func TestTheUsageTotalsAndDaysArePlain(t *testing.T) {
 	for _, want := range []string{
 		`<span class="text-sm text-fg" data-usage-replies>2 chief replies</span>`,
 		`<span class="text-xs text-fg2" data-usage-day-messages>3 messages</span>`,
-		`data-info-code="">1 rule · 1 muster · 1 chief · 2 turns · 4,250 tokens</code>`,
+		`data-info-code="">1 rule · 1 muster · 1 chief · 2 replies · 4,250 tokens</code>`,
+		`data-info-code="">2 chief replies · 4,250 tokens (in 1,000 · out 200 · cache read 3,000 · cache write 50)</code>`,
 		"A token total is a count, not a cost",
 	} {
 		if !strings.Contains(page, want) {

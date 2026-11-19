@@ -146,7 +146,7 @@ func (s *Server) noticeItemNow(ctx context.Context, a attention.Ask) attentionIt
 // with it rolled back).
 func noticeItem(a attention.Ask, ds map[int64]chiefnudge.Decision, hosts []mirror.HostView) attentionItem {
 	key := attentionAskKey(a.ID)
-	it := attentionItem{Key: key, Kind: attentionKindNotice, Source: shownAskLabel(a), Text: a.Question, Since: a.CreatedAt,
+	it := attentionItem{Key: key, Kind: attentionKindNotice, Source: shownAskLabel(a), OfficerID: officerAskID(a), Text: a.Question, Since: a.CreatedAt,
 		Link: attentionPath + "#" + key, AskID: a.ID, systemAsk: true}
 	if it.Source == "" {
 		it.Source = chiefNudgeAskLabel

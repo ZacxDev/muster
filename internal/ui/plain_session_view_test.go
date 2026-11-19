@@ -86,10 +86,10 @@ func TestTheChiefPanelSaysWhatTheChiefDoes(t *testing.T) {
 func TestTheMutedMicAndPaperclipSayWhoTurnsThemOn(t *testing.T) {
 	off := renderString(t, mirrorComposer(ComposerView{SendPath: "/mirror/view/send", Aria: "Message", DictateOff: true, UploadOff: true}))
 	for _, want := range []string{
-		`aria-label="Voice typing isn&#39;t turned on. Your admin can turn it on."`,
-		`title="Voice typing isn&#39;t turned on. Your admin can turn it on."`,
-		`aria-label="File attachments aren&#39;t turned on. Your admin can turn them on."`,
-		`title="File attachments aren&#39;t turned on. Your admin can turn them on."`,
+		`aria-label="Voice typing isn&#39;t turned on. An admin turns it on under Features."`,
+		`title="Voice typing isn&#39;t turned on. An admin turns it on under Features."`,
+		`aria-label="File attachments aren&#39;t turned on. An admin turns them on under Features."`,
+		`title="File attachments aren&#39;t turned on. An admin turns them on under Features."`,
 	} {
 		if !strings.Contains(off, want) {
 			t.Errorf("the muted controls have no %s", want)
@@ -113,5 +113,25 @@ func TestTheMutedMicAndPaperclipSayWhoTurnsThemOn(t *testing.T) {
 	}
 	if seen != 4 {
 		t.Errorf("CONTROL: the scan read %d of the 4 muted-control labels", seen)
+	}
+}
+
+// TestASetupSheetWithheldCarriesNoSetup (audit round 1): a SetupSheet for
+// anyone but an admin carries neither its code nor its lead — the lead
+// describes the setup too — only "Ask your admin…"; the admin's carries both.
+func TestASetupSheetWithheldCarriesNoSetup(t *testing.T) {
+	const lead, code = "Set this in the server's settings:", "MUSTER_EXAMPLE_KEY"
+	admin := InfoSheetHTML(SetupSheet("s", "How", lead, code, true))
+	member := InfoSheetHTML(SetupSheet("s", "How", lead, code, false))
+	for _, n := range []string{"Set this in the server", code, "data-info-code"} {
+		if !strings.Contains(admin, n) {
+			t.Errorf("CONTROL: the admin's sheet has no %q", n)
+		}
+		if strings.Contains(member, n) {
+			t.Errorf("a withheld sheet carries %q", n)
+		}
+	}
+	if !strings.Contains(member, ">Ask your admin for these details.</p>") {
+		t.Error("a withheld sheet does not say to ask the admin")
 	}
 }

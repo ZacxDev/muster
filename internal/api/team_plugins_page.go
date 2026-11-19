@@ -41,12 +41,20 @@ const (
 	TeamPluginsNoPlugin = "That plugin does not exist, is not this team's, or is already revoked."
 	TeamPluginsManager  = "Only a manager of the team manages its viewer plugins."
 	// teamPluginsAbout is the page's lead in words (the jargon audit's
-	// F118); teamPluginsSetup, the gateway setup, is in its ⓘ.
+	// F118); the gateway setup is in its ⓘ — an admin's (teamPluginsSheet).
 	teamPluginsAbout = "Viewer plugins let team members open session previews."
-	teamPluginsSetup = "A team viewer plugin opens a team session's previews for every member who can see the session, viewers included. Its key opens previews and nothing else. To serve previews, the preview gateway's admin adds the key to the gateway's PLUGIN_TOKENS_FILE and mints the team's host tokens there as team:<id>."
+	teamPluginsSetup = "A team viewer plugin opens a team session's previews for every member who can see the session, viewers included. Its key opens previews and nothing else. " +
+		"To serve previews, the preview gateway's admin adds the key to the gateway's plugin tokens file and mints the team's host tokens there under the team's name:"
 	// teamPluginsOffSetup is why viewer plugins are off, for an admin (F119).
 	teamPluginsOffSetup = "plugins are off, or MUSTER_PLUGIN_ORIGINS is unset"
 )
+
+// teamPluginsSheet is the page lead's ⓘ: the preview gateway's setup (its
+// tokens file and the team's host-token name), a SETUP detail and so an
+// admin's only — a team manager who is not one is told to ask.
+func teamPluginsSheet(team string, admin bool) ui.InfoSheet {
+	return ui.SetupSheet("team-plugins-how", "How viewer plugins work", teamPluginsSetup, "PLUGIN_TOKENS_FILE\nteam:"+team, admin)
+}
 
 // teamPluginsWrite is the page's gate: teamManagerPage, with this page's own
 // notice for a caller who is no longer a manager.
@@ -74,7 +82,7 @@ func (s *Server) renderTeamPlugins(w http.ResponseWriter, r *http.Request, team 
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Team viewer plugins · ` + html.EscapeString(name) + `</h1>
 <div class="flex items-center gap-1"><p class="text-sm text-fg2">` + html.EscapeString(teamPluginsAbout) + `</p>` +
-		ui.InfoSheetHTML(ui.InfoSheet{ID: "team-plugins-how", Label: "How viewer plugins work", Heading: "How viewer plugins work", Lead: teamPluginsSetup, Inline: true}) + `</div></section>`)
+		ui.InfoSheetHTML(teamPluginsSheet(id, authz.IsAdmin(r.Context()))) + `</div></section>`)
 	if !s.teamPluginsOn() {
 		admin := authz.IsAdmin(r.Context())
 		words := TeamPluginsOff

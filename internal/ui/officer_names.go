@@ -1,6 +1,10 @@
 package ui
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // AN OFFICER BY NAME (the operator rule: no id in muster's top layer). An
 // officer's id is a "<type>:<area>" slug ("marketing:acme"); where a surface
@@ -10,7 +14,7 @@ import "strings"
 // cannot call one officer three things.
 
 // officerWords is id's parts in words: each ":"-separated part with its
-// hyphens and underscores as spaces and its first letter upper-cased.
+// hyphens and underscores as spaces and its first rune upper-cased.
 func officerWords(id string) []string {
 	var out []string
 	for _, p := range strings.Split(strings.TrimSpace(id), ":") {
@@ -18,7 +22,8 @@ func officerWords(id string) []string {
 		if p == "" {
 			continue
 		}
-		out = append(out, strings.ToUpper(p[:1])+p[1:])
+		r, n := utf8.DecodeRuneInString(p)
+		out = append(out, string(unicode.ToUpper(r))+p[n:])
 	}
 	return out
 }

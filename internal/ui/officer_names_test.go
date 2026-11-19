@@ -21,3 +21,11 @@ func TestAnOfficerIsCalledByItsWords(t *testing.T) {
 		}
 	}
 }
+
+// TestAnOfficersFirstLetterIsARune: the first letter upper-cased is a rune,
+// never a byte (a byte slice would split "é" and draw a broken character).
+func TestAnOfficersFirstLetterIsARune(t *testing.T) {
+	if got := OfficerPlainName("", "école:ünit"); got != "École — Ünit" {
+		t.Errorf("OfficerPlainName = %q", got)
+	}
+}

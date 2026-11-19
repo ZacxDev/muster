@@ -2173,7 +2173,7 @@ func toolChipState(result *ChatLine) string {
 
 // The labels over an opened tool row's two blocks: what the tool was given
 // and what it gave back, in words — never "args" and "result" (the jargon
-// audit's F020). The live stream's pre() calls spell the same two words.
+// audit's F020). The live stream's pre() calls read these same constants.
 const (
 	ToolInputLabel  = "Input"
 	ToolOutputLabel = "Output"
@@ -2621,7 +2621,7 @@ func agentChatScript(name string) g.Node {
         break;
       case 'tool_call': {
         var c = toolChip(msg.id, msg.name, msg.target, msg.label);
-        if (!c.args && msg.args) { c.args = pre('Input', clip(msg.args)); c.body.appendChild(c.args); }
+        if (!c.args && msg.args) { c.args = pre('` + ToolInputLabel + `', clip(msg.args)); c.body.appendChild(c.args); }
         // Interleave: text streamed AFTER this tool call must render in a NEW bubble
         // below the chip, not merged into the pre-tool text bubble (which made tool
         // calls look out of order vs the narration).
@@ -2640,7 +2640,7 @@ func agentChatScript(name string) g.Node {
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
         if (window.musterToolGroups) window.musterToolGroups.refresh(r.details);
         if (r.result) r.result.remove();
-        r.result = pre('Output', clip(msg.output));
+        r.result = pre('` + ToolOutputLabel + `', clip(msg.output));
         r.body.appendChild(r.result);
         text = null;
         scroll();
