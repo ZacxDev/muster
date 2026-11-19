@@ -8,10 +8,11 @@ import (
 )
 
 // TestAgentKubeQPSIsReadDefaultedAndBounded: MUSTER_AGENT_KUBE_QPS reaches
-// the config — 50 unset, the integer when set within 1-1000 — and anything
-// else refuses to boot, naming the variable. The rest.Config the kubernetes
-// driver's client is built from then carries it, with a burst of twice it:
-// never client-go's own 5/10, which a rest.Config with QPS 0 gets.
+// the config — 0 (unset) when unset, the integer when set within 1-1000 — and
+// anything else refuses to boot, naming the variable. The rest.Config the
+// kubernetes driver's client is built from then carries it, with a burst of
+// twice it, and 50/100 when unset: never client-go's own 5/10, which a
+// rest.Config with QPS 0 gets.
 func TestAgentKubeQPSIsReadDefaultedAndBounded(t *testing.T) {
 	base := map[string]string{envDatabase: "postgres://x/y", envUIPassword: strings.Repeat("p", 40)}
 	load := func(v string, set bool) (config, error) {
@@ -29,8 +30,8 @@ func TestAgentKubeQPSIsReadDefaultedAndBounded(t *testing.T) {
 		wantQPS   float32
 		wantBurst int
 	}{
-		{"", false, 50, 50, 100},
-		{"", true, 50, 50, 100},
+		{"", false, 0, 50, 100},
+		{"", true, 0, 50, 100},
 		{"7", true, 7, 7, 14},
 		{" 120 ", true, 120, 120, 240},
 		{"1", true, 1, 1, 2},
@@ -61,5 +62,25 @@ func TestAgentKubeQPSIsReadDefaultedAndBounded(t *testing.T) {
 	kubeClientRateLimit(rc, 0)
 	if rc.QPS != 50 || rc.Burst != 100 {
 		t.Errorf("unset AgentKubeQPS gives QPS %v burst %d, want 50 and 100", rc.QPS, rc.Burst)
+	}
+}
+
+// TestAgentKubeQPSIsRefusedWithoutTheKubernetesDriver: set with any driver but
+// kubernetes, MUSTER_AGENT_KUBE_QPS refuses boot naming both variables — it
+// would limit nothing. With the kubernetes driver, or unset, it passes.
+func TestAgentKubeQPSIsRefusedWithoutTheKubernetesDriver(t *testing.T) {
+	for _, p := range []string{provisionerNone, provisionerNoop} {
+		// Through validateProvisioner, the boot check validate runs: the
+		// refusal must be reached there, not only exist.
+		err := config{AgentProvisioner: p, AgentKubeQPS: 80}.validateProvisioner()
+		if err == nil || !strings.Contains(err.Error(), envAgentKubeQPS) || !strings.Contains(err.Error(), envAgentProvisioner) {
+			t.Errorf("%s=%s with %s=80: err = %v, want a refusal naming both", envAgentProvisioner, p, envAgentKubeQPS, err)
+		}
+		if err := (config{AgentProvisioner: p}).validateKubeQPS(); err != nil {
+			t.Errorf("%s=%s with %s unset: %v, want no refusal", envAgentProvisioner, p, envAgentKubeQPS, err)
+		}
+	}
+	if err := (config{AgentProvisioner: provisionerK8s, AgentKubeQPS: 80}).validateKubeQPS(); err != nil {
+		t.Errorf("the kubernetes driver with %s=80: %v, want no refusal", envAgentKubeQPS, err)
 	}
 }

@@ -980,7 +980,10 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	}
 	idx := f.s.instancesOfWithin(octx, have, officerInstancesWithin)
 	if idx == nil {
-		return nil, errors.New("officers: the provisioner's instances could not be read")
+		// ErrBlind: the provisioner did not answer (an error, or no answer
+		// within the bound — both logged by the read). The officer runtime
+		// retries exactly this at the poll interval rather than backing off.
+		return nil, fmt.Errorf("officers: the provisioner's instances could not be read (%w)", provision.ErrBlind)
 	}
 	// 🔴 EVERY SLOT, chat-only instances included (Officer.Slots): an
 	// instance the loop started for chats and this list hid would read as

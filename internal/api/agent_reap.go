@@ -120,7 +120,15 @@ func (s *Server) reapStoppedAgents(ctx context.Context) int {
 	// would hang this pass, and with it the idle-task reaper sharing the loop.
 	// Past the bound instanceIndexWithin answers nil, which is the same
 	// fail-closed path as an error.
-	idx := s.instanceIndexWithin(ctx, s.reapInstancesWithin)
+	//
+	// 🔴 ONLY THE DUE AGENTS' INSTANCES ARE READ (instancesOfWithin), not the
+	// fleet's: the pass needs nothing else, and a whole-fleet read costs every
+	// agent namespace on the Kubernetes client's shared request budget.
+	dueAgents := make([]agents.Agent, 0, len(due))
+	for _, c := range due {
+		dueAgents = append(dueAgents, agents.Agent{ID: c.ID, Name: c.Name, OwnerID: c.OwnerID})
+	}
+	idx := s.instancesOfWithin(ctx, dueAgents, s.reapInstancesWithin)
 	if idx == nil {
 		s.logger.Printf("agent-reap: live instances could not be read; destroying nothing this pass (%d due)", len(due))
 		return 0

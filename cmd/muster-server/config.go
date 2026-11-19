@@ -1239,8 +1239,9 @@ type config struct {
 	AgentEndpointTemplate string
 
 	// AgentKubeQPS is the kubernetes driver's API client rate limit, in
-	// requests per second (MUSTER_AGENT_KUBE_QPS; unset: defaultAgentKubeQPS).
-	// Its burst is twice it (kubeClientRateLimit).
+	// requests per second (MUSTER_AGENT_KUBE_QPS). 0 is unset, which
+	// kubeClientRateLimit reads as defaultAgentKubeQPS; set, it is refused
+	// with any driver but kubernetes (validateKubeQPS). Its burst is twice it.
 	//
 	// 🔴 UNSET USED TO MEAN client-go's OWN DEFAULT, 5 PER SECOND WITH A BURST
 	// OF 10, which nothing here chose. Reading every agent namespace costs
@@ -1795,7 +1796,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s %q: want %s, or unset (officer instances get no cluster DNS)",
 			envOfficerEgressDNS, v, officerEgressDNSUnfiltered)
 	}
-	c.AgentKubeQPS = defaultAgentKubeQPS
 	if v := strings.TrimSpace(getenv(envAgentKubeQPS)); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > maxAgentKubeQPS {
@@ -3048,6 +3048,9 @@ func (c config) validateProvisioner() error {
 	if err := c.validateNamespaceClusterRole(); err != nil {
 		return err
 	}
+	if err := c.validateKubeQPS(); err != nil {
+		return err
+	}
 
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
@@ -3086,6 +3089,17 @@ func (c config) validateProvisioner() error {
 // where muster creates no namespace to bind itself in. Each refusal is an armed
 // switch that would otherwise boot and do nothing. (A name that is not a
 // ClusterRole's surfaces at the first dispatch, from waitForAccess, naming it.)
+// validateKubeQPS refuses MUSTER_AGENT_KUBE_QPS with any driver but
+// kubernetes: no other driver has a Kubernetes client for it to limit, so a
+// set value would read as in force and do nothing.
+func (c config) validateKubeQPS() error {
+	if c.AgentKubeQPS != 0 && c.agentProvisioner() != provisionerK8s {
+		return fmt.Errorf("%s is set but %s=%s: only the kubernetes driver has a Kubernetes API client to limit",
+			envAgentKubeQPS, envAgentProvisioner, c.agentProvisioner())
+	}
+	return nil
+}
+
 func (c config) validateNamespaceClusterRole() error {
 	role := c.AgentNamespaceClusterRole
 	if role == "" {

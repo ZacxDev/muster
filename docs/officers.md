@@ -884,9 +884,11 @@ zero** (logged as `scaled instance N to zero (HQ configuration fault: 404)`)
 rather than holding pods and Claude accounts for ever; the loop keeps
 retrying with the same backoff and logs "HQ answers again" when it does. A pass that cannot see muster's own
 instances (the provisioner is unreachable) changes nothing either: "I cannot
-see" is never read as "nothing is running". It is retried at the officer's
-poll interval rather than backed off, since the failure is muster's own and
-not HQ's. A pass reads only its own pools' instances (one read per instance
+see" is never read as "nothing is running". When the provisioner could not be
+reached it is retried at the officer's poll interval rather than backed off,
+since the failure is muster's own and not HQ's, and it does not count towards
+HQ's backoff; any other failure to read the fleet (a host officer's host
+offline, the agents table unreadable) backs off as an HQ failure does. A pass reads only its own pools' instances (one read per instance
 that has an agent), never every instance in the cluster.
 
 **Restarts.** Every start decision is a function of HQ's queue and muster's
