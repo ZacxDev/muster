@@ -66,6 +66,7 @@ var musterToolLabels = map[string]string{
 	// Sessions and agents.
 	"fleet_list":          "Looked over your sessions",
 	"fleet_report":        "Reported on your sessions",
+	"notify_owner":        "Sent you a notification",
 	"focus_search":        "Looked up what sessions are working on",
 	"sessions_overview":   "Checked what your sessions are doing",
 	"session_context":     "Looked at a session",
