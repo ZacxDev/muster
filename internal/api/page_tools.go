@@ -349,7 +349,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.
 		return pageToolRefusal("updated", id, err)
 	}
 	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator,
-		byOfficer: s.agentIsOfficer(ctx, c.AgentID)})
+		byOfficer: s.agentIsOfficer(ctx, c.AgentID, p.OwnerID)})
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
 }

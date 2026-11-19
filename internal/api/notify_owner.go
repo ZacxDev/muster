@@ -424,7 +424,7 @@ func (s *Server) toolNotifyOwner(ctx context.Context, c toolCaller, arguments st
 	delivered, devices := 0, 0
 	// An officer pushes only for a decision (officer_push.go): its
 	// notify_owner is answered, audited and logged, and sends nothing.
-	if c.agent != nil && s.agentIsOfficer(ctx, c.agent.ID) && !s.officerPushSends(officerPushNotifyOwner, owner, notifyTag(from)) {
+	if c.agent != nil && s.agentIsOfficer(ctx, c.agent.ID, owner) && !s.officerPushSends(officerPushNotifyOwner, owner, notifyTag(from)) {
 		status, reason = "suppressed", pushDropOfficer
 	} else if !s.notifySenders.allow(notifyBucketNotify+from.key, s.now()) {
 		s.logPushDrop(notifyTag(from), push.EventAgentNotify, owner, pushDropSenderCap)

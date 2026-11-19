@@ -51,6 +51,8 @@ var officerRouted = map[string]string{
 	"connectors.go Server.onConnectorRequested -> goNotify":            string(officerPushConnectorRequest),
 	"page_tools.go Server.pagePublished -> pushTask":                   string(officerPushPagePublished),
 	"page_tools.go Server.pageShareAuto -> pushTask":                   string(officerPushPageShared),
+	"notify_owner.go Server.pageUpdated -> pushTask":                   string(officerPushPageUpdated),
+	"notify_owner.go Server.toolNotifyOwner -> goNotify":               string(officerPushNotifyOwner),
 }
 
 // notOfficerRouted: every other call site, with why the table does not apply.
