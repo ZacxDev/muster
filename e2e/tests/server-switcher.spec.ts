@@ -32,6 +32,9 @@ const A = baseURL;
 const A2 = `http://127.0.0.1:${port}`;
 const STUB = `http://127.0.0.1:${serverSwitcherStubPort}`;
 const hostOf = (o: string) => new URL(o).host;
+// The name an unnamed other server is drawn with: its host name, no port
+// (jargon audit F028: no host:port in the top layer).
+const nameOf = (o: string) => new URL(o).hostname;
 const LOGO = '/brand/icon-192.png';
 
 // A w×h one-colour PNG (no binary fixture in the repo).
@@ -176,6 +179,19 @@ for (const vp of [
       await expect(page.locator('#server-add-error')).toHaveText(/user name and password/);
       await expect(page.locator('#server-add')).toHaveJSProperty('open', true);
 
+      // 🔴 Jargon audit F029: words that are not an address are refused in
+      // plain words — twice, as the audit typed them — and the list, kept or
+      // drawn, gains nothing (Chromium's own parser percent-encoded them into
+      // an entry).
+      for (let n = 0; n < 2; n++) {
+        await page.locator('#server-add-input').fill('not a server');
+        await page.locator('#server-add-submit').click();
+        await expect(page.locator('#server-add-error')).toHaveText('That doesn\'t look like a server address.');
+        await expect(page.locator('#server-add')).toHaveJSProperty('open', true);
+      }
+      await expect(items(page)).toHaveCount(1);
+      expect(await stored(page)).toBeNull();
+
       // The stub, pasted with a path and a token in its query: kept as its origin.
       await page.locator('#server-add-input').fill(STUB + '/tasks?token=mst_synthetic_not_a_token');
       await page.locator('#server-add-submit').click();
@@ -183,10 +199,13 @@ for (const vp of [
       await expect(page.locator('#server-switcher-toggle')).toBeFocused();
       await expect(items(page)).toHaveCount(2);
       const s = item(page, STUB);
-      // Its label is its host; its logo is drawn (a real decode, 32 px) from
-      // its own icon path, with no CORS header anywhere on the stub.
-      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
-      await expect(s.locator('[data-server-host]')).toHaveText(hostOf(STUB));
+      // Its label is its host name, and the row shows that and nothing else:
+      // no host:port line under it (jargon audit F028). Its logo is drawn (a
+      // real decode, 32 px) from its own icon path, with no CORS header
+      // anywhere on the stub.
+      await expect(s.locator('[data-server-label]')).toHaveText(nameOf(STUB));
+      expect((await s.innerText()).replace(/\s+/g, ' ').trim()).toBe(nameOf(STUB));
+      expect((await page.locator('#server-switcher').innerText())).not.toContain(hostOf(STUB));
       await expect(s.locator('[data-server-logo]')).toBeVisible();
       expect(await s.locator('[data-server-logo]').evaluate((i) => [(i as HTMLImageElement).src, (i as HTMLImageElement).naturalWidth, (i as HTMLImageElement).crossOrigin, (i as HTMLImageElement).referrerPolicy]))
         .toEqual([STUB + LOGO, 32, null, 'no-referrer']);
@@ -229,7 +248,7 @@ for (const vp of [
       await expect.poll(() => stub.seen.map((r) => r.url)).toContain(LOGO);
       await expect(s.locator('[data-server-logo]')).toBeHidden();
       await expect(s.locator('[data-server-dot]')).toBeVisible();
-      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
+      await expect(s.locator('[data-server-label]')).toHaveText(nameOf(STUB));
 
       // The same server again: refused as a duplicate.
       await addServer(page, 'http://' + hostOf(STUB) + '/');
@@ -243,6 +262,23 @@ for (const vp of [
       const row = manage.locator(`li[data-server-origin="${STUB}"]`);
       const selfRow = manage.locator(`li[data-server-origin="${A}"]`);
       await expect(selfRow.locator('[data-server-remove]')).toBeHidden();
+      // No address in the rows (F028): it is behind each row's ⓘ, with Copy.
+      expect(await manage.innerText()).not.toContain(hostOf(STUB));
+      await expect(row.locator('input')).toHaveAttribute('placeholder', nameOf(STUB));
+      const info = row.locator('[data-info-open]');
+      await expect(info).toHaveAttribute('aria-label', 'Address of ' + nameOf(STUB));
+      await info.click();
+      const sheet = row.locator('[data-info-sheet]');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('[data-info-code]')).toHaveText(STUB);
+      await expect(sheet.locator('[data-info-copy]')).toBeVisible();
+      // Each row's sheet is its own: unique ids, the trigger naming its sheet.
+      const ids = await manage.locator('[data-info-sheet]').evaluateAll((els) => els.map((e) => e.id));
+      expect(new Set(ids).size).toBe(2);
+      expect(await info.getAttribute('popovertarget')).toBe(await sheet.getAttribute('id'));
+      await page.keyboard.press('Escape');
+      await expect(sheet).toBeHidden();
+      await expect(manage).toHaveJSProperty('open', true);
       await row.locator('input').fill('Work');
       await row.locator('input').press('Enter');
       await expect(s.locator('[data-server-label]')).toHaveText('Work');
@@ -251,7 +287,7 @@ for (const vp of [
       expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('INPUT');
       await row.locator('input').fill('');
       await row.locator('input').press('Enter');
-      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
+      await expect(s.locator('[data-server-label]')).toHaveText(nameOf(STUB));
 
       // Remove it: the list is this server alone again.
       await row.locator('[data-server-remove]').click();
@@ -343,7 +379,7 @@ test.describe('another muster (desktop)', () => {
     await addServer(page, A2);
     await expect(page.locator('#server-add')).toHaveJSProperty('open', false);
     await expect(item(page, A2)).toHaveCount(1);
-    await expect(item(page, A2).locator('[data-server-label]')).toHaveText(hostOf(A2));
+    await expect(item(page, A2).locator('[data-server-label]')).toHaveText(nameOf(A2));
 
     const nav = page.waitForRequest((r) => r.isNavigationRequest() && r.url().startsWith(A2 + '/'));
     await item(page, A2).click();

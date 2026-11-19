@@ -51,32 +51,55 @@
   // logo is set). The ONE cross-origin path the CSP's img-src allows.
   var LOGO_PATH = '/brand/icon-192.png';
 
+  // A host as a server address may have it: DNS labels (letters, digits,
+  // hyphens; an international name is already punycode by now), or an IPv6
+  // literal. Anything else — a space, a percent escape — is not an address.
+  var HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*|\[[0-9a-f:.]+\])$/;
+
   // parseServer turns what a person typed into a server's origin, or says why
   // not: 'empty', 'invalid', 'credentials' (a user name or password in it), or
   // 'scheme' (not https, nor http on a loopback host). A missing scheme is
   // https. Only the origin is returned: a path, query or fragment is dropped.
+  //
+  // 🔴 JUNK IS REFUSED HERE, NOT BY THE BROWSER'S URL PARSER (jargon audit
+  // F029): Chromium's parser percent-encodes a space in a host where the
+  // standard (and node) refuses it, so "not a server" came back as the origin
+  // https://not%20a%20server and was listed. So the host is checked here: one
+  // that is not DNS labels or an IP — and, when no scheme was typed, a bare
+  // word with no dot in it (not localhost) — is 'invalid' in every engine.
   function parseServer(input) {
     var s = String(input == null ? '' : input).trim();
     if (!s) return { ok: false, error: 'empty' };
-    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = 'https://' + s;
+    var typedScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
+    if (!typedScheme) s = 'https://' + s;
     var u;
     try { u = new URL(s); } catch (e) { return { ok: false, error: 'invalid' }; }
     if (u.username || u.password) return { ok: false, error: 'credentials' };
-    if (!u.hostname) return { ok: false, error: 'invalid' };
-    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOOPBACK[u.hostname])) {
+    // A trailing dot is the same host: dropped, so it is not a second entry.
+    var host = u.hostname.replace(/\.$/, '');
+    if (!host || !HOST_RE.test(host)) return { ok: false, error: 'invalid' };
+    if (!typedScheme && host.indexOf('.') < 0 && host.charAt(0) !== '[' && !LOOPBACK[host]) {
+      return { ok: false, error: 'invalid' };
+    }
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOOPBACK[host])) {
       return { ok: false, error: 'scheme' };
     }
-    return { ok: true, origin: u.origin };
+    return { ok: true, origin: u.protocol + '//' + host + (u.port ? ':' + u.port : '') };
   }
 
   // SELF_FALLBACK is this server's name when neither the person nor its
   // branding gave it one.
   var SELF_FALLBACK = 'This server';
 
-  // hostLabel is an origin's fallback label: its host, with the port when it
-  // is not the scheme's default (URL.host already leaves that out).
+  // hostLabel is an origin's host, with the port when it is not the scheme's
+  // default (URL.host already leaves that out). Never drawn in the top layer.
   function hostLabel(origin) {
     try { return new URL(origin).host; } catch (e) { return String(origin); }
+  }
+
+  // hostName is an origin's host name alone: no scheme, no port.
+  function hostName(origin) {
+    try { return new URL(origin).hostname; } catch (e) { return String(origin); }
   }
 
   // cleanText strips control, text-direction and tag characters, trims, and
@@ -191,8 +214,16 @@
 
   // display is the label a server is drawn with: the person's own, else
   // name (this server's own display name, which its page already has), else
-  // its host. Another server's name is never read.
-  function display(s, name) { return s.label || name || hostLabel(s.origin); }
+  // its host NAME — no scheme, no port (jargon audit F028: no host:port in
+  // the top layer). Another server's name is never read. Only when another
+  // server on list has the same host name (two servers on one machine) is
+  // the port kept, or the two would read the same.
+  function display(s, name, list) {
+    if (s.label || name) return s.label || name;
+    var h = hostName(s.origin);
+    var twin = (list || []).some(function (o) { return o.origin !== s.origin && hostName(o.origin) === h; });
+    return twin ? hostLabel(s.origin) : h;
+  }
 
   // logoSrc is the <img> src for origin's logo: that origin's fixed icon path,
   // nothing of this page in it.
@@ -233,7 +264,7 @@
 
   var core = {
     KEY: KEY, MAX: MAX, PALETTE: PALETTE, LOGO_PATH: LOGO_PATH,
-    parseServer: parseServer, hostLabel: hostLabel, cleanText: cleanText, colours: colours, normalize: normalize,
+    parseServer: parseServer, hostLabel: hostLabel, hostName: hostName, cleanText: cleanText, colours: colours, normalize: normalize,
     load: load, save: save, add: add, remove: remove, rename: rename, display: display, logoSrc: logoSrc,
     switchHref: switchHref, handoff: handoff, kept: kept, HANDOFF_KEY: HANDOFF_KEY, HANDOFF_MAX_AGE_MS: HANDOFF_MAX_AGE_MS,
   };
@@ -245,7 +276,7 @@
   var self = location.origin;
   var ERRORS = {
     empty: 'Enter the server’s address.',
-    invalid: 'That is not a web address.',
+    invalid: 'That doesn\'t look like a server address.',
     credentials: 'Leave the user name and password out of the address.',
     scheme: 'The address must start with https:// (http:// only for localhost).',
     duplicate: 'That server is already on the list.',
@@ -263,16 +294,14 @@
   // fill draws one server into a cloned template's [data-server-*] slots.
   // logos: whether another server's logo may be requested now (the list is
   // on screen). This server's own logo is its own, versioned path.
-  function fill(node, s, colour, box, logos) {
+  function fill(node, s, colour, box, logos, list) {
     var dot = node.querySelector('[data-server-dot]');
     if (dot) dot.style.backgroundColor = colour;
     var label = node.querySelector('[data-server-label]');
     // This server is never called by its address (no host:port in the top
     // layer): with no label and no branding name it is SELF_FALLBACK, the
     // words the server drew it with (ui server_switcher.go's selfLabel).
-    if (label) label.textContent = display(s, s.origin === self ? (selfName(box) || SELF_FALLBACK) : '');
-    var host = node.querySelector('[data-server-host]');
-    if (host) host.textContent = hostLabel(s.origin);
+    if (label) label.textContent = shownName(s, box, list);
     var img = node.querySelector('[data-server-logo]');
     if (!img) return;
     var src = s.origin === self ? (box.getAttribute('data-self-logo') || '') : (logos ? logoSrc(s.origin) : '');
@@ -287,6 +316,26 @@
   }
 
   function selfName(box) { return cleanText(box.getAttribute('data-self-name') || ''); }
+  function shownName(s, box, list) { return display(s, s.origin === self ? (selfName(box) || SELF_FALLBACK) : '', list); }
+
+  // addressSheet makes a cloned Manage row's ⓘ (ui.InfoSheet, drawn once in
+  // the row's template under the id ADDRESS_TPL) this row's own: every id and
+  // every reference to one renamed to a unique id, the server's address in its
+  // <code> (what Copy copies), and its name in the button's label.
+  var ADDRESS_TPL = 'server-address-tpl';
+  function addressSheet(li, i, s, name) {
+    var id = 'server-address-' + i;
+    ['id', 'popovertarget', 'aria-controls', 'aria-labelledby', 'data-info-open'].forEach(function (attr) {
+      li.querySelectorAll('[' + attr + ']').forEach(function (el) {
+        var v = el.getAttribute(attr);
+        if (v.indexOf(ADDRESS_TPL) === 0) el.setAttribute(attr, id + v.slice(ADDRESS_TPL.length));
+      });
+    });
+    var code = li.querySelector('[data-info-code]');
+    if (code) code.textContent = s.origin;
+    var open = li.querySelector('[data-info-open]');
+    if (open) { open.setAttribute('aria-label', 'Address of ' + name); open.setAttribute('title', 'Address of ' + name); }
+  }
   function menuOpen() { var m = $('server-switcher-menu'); return !!m && !m.hidden; }
 
   function render(logos) {
@@ -296,7 +345,7 @@
     var list = current();
     var mine = list[0];
     var cols = colours(list.map(function (s) { return s.origin; }));
-    fill(box.querySelector('#server-switcher-toggle'), mine, cols[self], box, false);
+    fill(box.querySelector('#server-switcher-toggle'), mine, cols[self], box, false, list);
 
     var ul = $('server-switcher-list');
     var tpl = $('server-item-tpl');
@@ -305,7 +354,7 @@
       list.forEach(function (s) {
         var li = tpl.content.firstElementChild.cloneNode(true);
         var a = li.querySelector('a');
-        fill(li, s, cols[s.origin], box, logos);
+        fill(li, s, cols[s.origin], box, logos, list);
         a.setAttribute('data-server-origin', s.origin);
         if (s.origin === self) {
           a.setAttribute('href', '/');
@@ -325,21 +374,24 @@
     var rtpl = $('server-manage-row-tpl');
     if (rows && rtpl && !(rows.contains(document.activeElement) && document.activeElement.tagName === 'INPUT')) {
       rows.textContent = '';
-      list.forEach(function (s) {
+      list.forEach(function (s, i) {
         var li = rtpl.content.firstElementChild.cloneNode(true);
-        fill(li, s, cols[s.origin], box, logos);
+        fill(li, s, cols[s.origin], box, logos, list);
         li.setAttribute('data-server-origin', s.origin);
+        // The name it shows with no label of its own: the field's hint.
+        var unlabelled = shownName({ origin: s.origin, label: '' }, box, list);
+        addressSheet(li, i, s, s.label || unlabelled);
         var input = li.querySelector('input');
         input.value = s.label;
-        input.placeholder = (s.origin === self && selfName(box)) || hostLabel(s.origin);
-        input.setAttribute('aria-label', 'Label for ' + hostLabel(s.origin));
+        input.placeholder = unlabelled;
+        input.setAttribute('aria-label', 'Name for ' + unlabelled);
         var rm = li.querySelector('[data-server-remove]');
         if (s.origin === self) {
           rm.hidden = true;
           var tag = li.querySelector('[data-server-current]');
           if (tag) tag.hidden = false;
         } else {
-          rm.setAttribute('aria-label', 'Remove ' + display(s, ''));
+          rm.setAttribute('aria-label', 'Remove ' + display(s, '', list));
         }
         rows.appendChild(li);
       });

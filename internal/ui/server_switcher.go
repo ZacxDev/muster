@@ -85,10 +85,9 @@ func serverSwitcher(b Brand) g.Node {
 			Li(A(
 				Class("press flex min-h-[44px] min-w-0 items-center gap-2 rounded-lg px-2 text-sm text-fg transition hover:bg-s2 aria-[current=true]:bg-s2"),
 				serverDot(), serverLogo(),
-				Span(Class("flex min-w-0 flex-1 flex-col"),
-					Span(g.Attr("data-server-label", ""), Class("truncate font-medium")),
-					Span(g.Attr("data-server-host", ""), Class("truncate text-xs text-muted")),
-				),
+				// The name only (jargon audit F028): the address is behind
+				// the ⓘ in Manage servers, never a second line here.
+				Span(g.Attr("data-server-label", ""), Class("min-w-0 flex-1 truncate font-medium")),
 				Span(g.Attr("data-server-current", ""), g.Attr("hidden", ""), Class("shrink-0 text-xs font-semibold text-accent"), g.Text("In view")),
 			)),
 		),
@@ -162,16 +161,34 @@ func serverManageDialog() g.Node {
 		Template(ID("server-manage-row-tpl"),
 			Li(Class("flex min-w-0 items-center gap-2"),
 				serverDot(), serverLogo(),
-				Span(Class("flex min-w-0 flex-1 flex-col gap-1"),
-					Input(Type("text"), g.Attr("maxlength", "64"), g.Attr("data-server-label-input", ""),
-						Class("min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus")),
-					Span(g.Attr("data-server-host", ""), Class("truncate text-xs text-muted")),
-				),
+				Input(Type("text"), g.Attr("maxlength", "64"), g.Attr("data-server-label-input", ""),
+					Class("min-h-[44px] w-full min-w-0 flex-1 rounded-md bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus")),
 				Span(g.Attr("data-server-current", ""), g.Attr("hidden", ""), Class("shrink-0 text-xs font-semibold text-accent"), g.Text("In view")),
+				// The server's address, behind the ⓘ with Copy (jargon audit
+				// F028), never under its name. servers.js gives each row's
+				// copy its own ids and fills in the address.
+				serverAddressSheet().Node(),
 				Button(Type("button"), g.Attr("data-server-remove", ""), Class("shrink-0 "+serverSecondaryBtn), g.Text("Remove")),
 			),
 		),
 	)
+}
+
+// ServerAddressSheetTpl is the id the Manage row template's address ⓘ is
+// drawn with; servers.js spells it once too (ADDRESS_TPL) and renames it per
+// row. TestTheManageRowsAddressSheetIsTheOneServersJSRenames pins the two.
+const ServerAddressSheetTpl = "server-address-tpl"
+
+// serverAddressSheet is a Manage row's ⓘ: the server's exact address, to
+// copy. Live: the script fills the code in.
+func serverAddressSheet() InfoSheet {
+	return InfoSheet{
+		ID:      ServerAddressSheetTpl,
+		Label:   "Server address",
+		Heading: "Server address",
+		Lead:    "To add this server on another device, paste this address into Add server there.",
+		Live:    true,
+	}
 }
 
 // serverOfferDialog is the hand-off: a link's fragment (#muster-from=…) named
