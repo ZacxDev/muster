@@ -331,6 +331,13 @@ The officer can draft freely and post nothing on its own authority; the only
 path to the outside world is a human's approval of the exact content, carried
 out by a process on the operator's own machine.
 
+As built, the owner makes that approval on the Asks page's Drafts tab or on
+the officer's own page, whose **Needs you** draws the same card and posts to
+the same route — the officer's drafts, its outreach batch, its questions,
+the refusals waiting on the owner (re-file at a time, or drop) and its budget
+and run controls — beside **What it did**, its finished work in plain words
+([officers-builtin.md](../officers-builtin.md#an-officers-page)).
+
 ## Risks
 
 - **muster becomes stateful for builtin officers.** A deployment that ran
