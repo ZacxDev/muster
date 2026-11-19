@@ -22,7 +22,7 @@ see [branding.md](branding.md).)
 | [`brand/lockup-horizontal.svg`](brand/lockup-horizontal.svg) | the mark and the wordmark side by side, for a dark ground: the README (dark mode) |
 | [`brand/lockup-horizontal-on-light.svg`](brand/lockup-horizontal-on-light.svg) | the same for a light ground: the README (light mode) |
 | [`brand/mark-on-dark.svg`](brand/mark-on-dark.svg), [`brand/mark-on-light.svg`](brand/mark-on-light.svg) | the mark alone on its ground, drawn with its clear space |
-| [`brand/og-card.png`](brand/og-card.png) | the 1200 × 630 social card: the repository's social preview |
+| [`brand/og-card.png`](brand/og-card.png) | the 1200 × 630 social card: upload it as the repository's social preview (Settings → Social preview) |
 | [`brand/OFL.txt`](brand/OFL.txt) | the wordmark font's licence ([below](#font-and-licence)) |
 
 The web app's copies are in `web/icon-src/` (the sources) and
