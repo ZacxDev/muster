@@ -228,6 +228,40 @@ func TestOnlyTheOwnerRaisesTheCap(t *testing.T) {
 	}
 }
 
+// TestNoPrincipalWhoseIDIsTheTeamsRaisesItsOfficer pins why `!sc.Team` is
+// not the only thing between a "user whose id equals a team's id" and that
+// team's officer. A team IS a users row (0126: users.kind 'team', the same
+// users.id primary key a person has), so:
+//   - no PERSON can hold a team's id: inserting one is refused by the key;
+//   - the only principal with that id is the TEAM ROW itself, and a team never
+//     signs in: its browser session is refused at admit (TeamSignInRefusal),
+//     before the handler — where, with owner = its own id, scopeOf would read
+//     the team officer as the caller's OWN (sc.Team false), so admit is the
+//     guard that holds here, not `!sc.Team`.
+//
+// Nothing is written. CONTROL: user 1 raises their own officer.
+func TestNoPrincipalWhoseIDIsTheTeamsRaisesItsOfficer(t *testing.T) {
+	c := newCapRig(t)
+	if _, err := c.f.pool.Exec(authz.System(context.Background()),
+		`INSERT INTO users (id, kind, role, display_name) OVERRIDING SYSTEM VALUE VALUES (987302, 'person', 'member', 'same id as the team')`); err == nil ||
+		!strings.Contains(err.Error(), "23505") {
+		t.Fatalf("a person with the team's id: %v, want a unique violation (23505): one id space", err)
+	}
+	rec := c.page(t, declTeam, http.MethodPost, "/officers/"+capTeamOfficer+"/raise-cap", url.Values{"owner": {"987302"}})
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "team") {
+		t.Fatalf("the team row's own session raising its officer: %d %.300s; want 403 (a team never signs in)", rec.Code, rec.Body.String())
+	}
+	if rows, audits := c.raises(t); rows != 0 || audits != 0 {
+		t.Fatalf("the team's refused raise wrote %d raise row(s) and %d audit row(s)", rows, audits)
+	}
+	if rec := c.page(t, 1, http.MethodPost, "/officers/"+capOfficer+"/raise-cap", url.Values{}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("control: user 1's raise of their own officer: %d %.300s", rec.Code, rec.Body.String())
+	}
+	if rows, _ := c.raises(t); rows != 1 {
+		t.Fatalf("control: user 1's raise wrote %d row(s), want 1", rows)
+	}
+}
+
 // capPost is a same-origin form POST to path with no credential of its own.
 func capPost(path string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
