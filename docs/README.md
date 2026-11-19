@@ -62,6 +62,7 @@ it off. The full list of features, with every `.env` line, is
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
 - [pages.md](pages.md) — shareable pages: agents publish pages (showcases, questions, forms, uploads, their own script in a sandbox), you approve the share links, viewers' responses come back as data; the `page_*` tools, blocks, the SDK, the Pages screen
 - [push.md](push.md) — Web Push and the installable app, and the server switcher (several muster servers in one browser)
+- [brand.md](brand.md) — muster's own mark: the brand pack's files, where each is used, clear space, colours and the wordmark font's licence
 - [branding.md](branding.md) — the server's own logo and name: set by an admin on the Account page, drawn in the header, on the sign-in page, as the app and notification icon, and published at `GET /api/instance` for the apps
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
