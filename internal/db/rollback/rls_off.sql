@@ -317,13 +317,19 @@ BEGIN
         ALTER TABLE public.fleet_owner_marks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.fleet_owner_marks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0156 (officer_seen), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_seen') IS NOT NULL THEN
+        ALTER TABLE public.officer_seen NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_seen DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_seen ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
         ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_connector_blocks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_connector_blocks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0156 (morning_reports), when this schema has it; same reason as 0011.
+    -- 0157 (morning_reports), when this schema has it; same reason as 0011.
     IF to_regclass('public.morning_reports') IS NOT NULL THEN
         ALTER TABLE public.morning_reports NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.morning_reports DISABLE ROW LEVEL SECURITY;

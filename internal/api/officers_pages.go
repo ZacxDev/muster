@@ -19,7 +19,6 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
-	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -39,6 +38,7 @@ import (
 //	POST /officers/{officer}/delete             delete (deleteDeclared)
 //	POST /officers/{officer}/schedules          add or replace a schedule
 //	POST /officers/{officer}/schedules/{name}/delete
+//	POST /officers/{officer}/refusals/{item}/refile|drop   a refusal waiting on its owner (officer_needs_you.go)
 //
 // 🔴 A DOOR, NOT A SECOND IMPLEMENTATION. Every write goes through the same
 // core the JSON admin API does (officer_declared.go's createDeclared and the
@@ -82,6 +82,8 @@ func (s *Server) registerOfficerPages(mux Mux) {
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/delete", s.requireOperatorWrite(s.handleOfficerDeletePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules", s.requireOperatorWrite(s.handleOfficerSchedulePage))
 	mux.HandleFunc("POST "+officersPagePath+"/{officer}/schedules/{name}/delete", s.requireOperatorWrite(s.handleOfficerScheduleDeletePage))
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/refusals/{item}/refile", s.requireOperatorWrite(s.handleOfficerRefusalRefile))
+	mux.HandleFunc("POST "+officersPagePath+"/{officer}/refusals/{item}/drop", s.requireOperatorWrite(s.handleOfficerRefusalDrop))
 }
 
 // officersOn reports whether this server keeps officers at all (the built-in
@@ -137,18 +139,28 @@ func (s *Server) scopeFor(w http.ResponseWriter, r *http.Request) (officerScope,
 		s.renderNotice(w, r, http.StatusNotFound, "No officers here", "This muster keeps no officers: they need a database (DATABASE_URL).")
 		return officerScope{}, false
 	}
-	p := authz.MustFrom(r.Context())
-	raw := strings.TrimSpace(r.FormValue("owner"))
+	if sc, ok := s.scopeOf(r.Context(), r.FormValue("owner")); ok {
+		return sc, true
+	}
+	s.renderNotice(w, r, http.StatusNotFound, "No such officer", officerNotFound)
+	return officerScope{}, false
+}
+
+// scopeOf is scopeFor's rule over an `owner` value raw, answering nothing:
+// "" (or the person's own id) is the person's own officers; a team they are
+// in is that team's, managed when they manage it; anything else is ok false.
+func (s *Server) scopeOf(ctx context.Context, raw string) (officerScope, bool) {
+	p := authz.MustFrom(ctx)
+	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == strconv.FormatInt(p.UserID, 10) {
 		return officerScope{Owner: p.UserID, Manage: true}, true
 	}
 	team, err := strconv.ParseInt(raw, 10, 64)
 	if err == nil && team > 0 {
 		if role, in := p.TeamScope().RoleIn(team); in {
-			return officerScope{Owner: team, Team: true, Name: s.teamNames(r.Context(), []int64{team})[team], Manage: role == authz.TeamManager}, true
+			return officerScope{Owner: team, Team: true, Name: s.teamNames(ctx, []int64{team})[team], Manage: role == authz.TeamManager}, true
 		}
 	}
-	s.renderNotice(w, r, http.StatusNotFound, "No such officer", officerNotFound)
 	return officerScope{}, false
 }
 
@@ -298,6 +310,68 @@ func whereItRuns(v declaredOfficerView) string {
 	return on
 }
 
+// plainWhere is where an officer runs, in a person's words (no runtime
+// names): on a named machine, on muster's own servers, wherever muster can,
+// or nowhere yet. whereItRuns is the technical line, behind the head's ⓘ.
+func plainWhere(v declaredOfficerView) string {
+	on, host := v.RunsOn, v.RunsOnHost
+	if on == "" {
+		on, host = v.Runtime, v.Host
+	}
+	switch on {
+	case officers.RuntimePod:
+		return "on muster's own servers"
+	case officers.RuntimeHost:
+		if host != "" {
+			return "on " + host
+		}
+		return "on one of your machines"
+	}
+	if v.ManagedBy == managedByDef {
+		return "nowhere yet"
+	}
+	return "wherever muster can run it"
+}
+
+// plainNotRunning is why an officer does not run, in a person's words, from
+// where it is declared to run — the server's own reason (v.Reason, which
+// names settings and flags) is behind the head's ⓘ.
+func plainNotRunning(v declaredOfficerView) string {
+	switch {
+	case v.ManagedBy == managedByDef:
+		return "nothing is set up to run it."
+	case v.Runtime == officers.RuntimeHost && v.Host != "":
+		return "it runs on " + v.Host + ", and this server can't start it on that machine right now."
+	case v.Runtime == officers.RuntimeHost:
+		return "it runs on one of your machines, and this server can't start it on any of them right now."
+	case v.Runtime == officers.RuntimePod:
+		return "it runs on muster's own servers, and this server can't start it there."
+	}
+	return "this server has nowhere it can start it right now."
+}
+
+// officerHeadSheet is the officer head's ⓘ: its id, the technical
+// where-it-runs line and, when it does not run, the server's own reason.
+func officerHeadSheet(v declaredOfficerView) ui.InfoSheet {
+	code := "officer " + v.ID + " · runs " + whereItRuns(v)
+	if v.Repo != "" {
+		code += " · in " + v.Repo
+	} else if v.ManagedBy != managedByDef {
+		code += " · in a scratch directory"
+	}
+	switch v.ManagedBy {
+	case officers.ManagedByEnv:
+		code += " · declared by MUSTER_OFFICERS"
+	case managedByDef:
+		code += " · a def in the built-in store only (muster officer create declares where it runs)"
+	}
+	if !v.Running && v.Reason != "" {
+		code += " · not running: " + v.Reason
+	}
+	return ui.InfoSheet{ID: "officer-head-info", Label: "Technical details of this officer", Heading: "Details",
+		Lead: "What muster records for this officer:", Code: code, Inline: true}
+}
+
 // liveItem reports whether an item status is still the officer's to work.
 func liveItem(status string) bool {
 	return status == officers.StatusOpen || status == officers.StatusClaimed || status == officers.StatusWaiting
@@ -374,20 +448,11 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load your officers", "Try again in a moment.")
 		return
 	}
-	open := s.openAsks(ctx)
-	var b strings.Builder
-	if n, ok := officerListNotices[r.URL.Query().Get("notice")]; ok {
-		b.WriteString(`<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg" id="officer-notice">` + html.EscapeString(n) + `</p>`)
-	}
-	b.WriteString(`<section class="` + adminCard + `" id="officers-mine"><div class="flex flex-wrap items-center gap-2"><h1 class="flex-1 text-base font-semibold text-fg">Officers</h1>
-<a href="` + officersPagePath + `/new" id="officer-new" class="` + adminButton + ` inline-flex items-center">New officer</a></div>`)
-	if len(mine) == 0 {
-		b.WriteString(`<p class="text-sm text-fg2" id="officers-empty">An officer is a Claude Code agent with standing instructions that muster wakes when there is work for it — on a schedule, or when you hand it something — and that asks you before anything leaves.</p>`)
-	} else {
-		b.WriteString(s.officerList(ctx, officerScope{Owner: p.UserID, Manage: true}, mine, open))
-	}
-	b.WriteString(`</section>`)
 	// Each team the person is in: its officers, read by every member.
+	type teamList struct {
+		sc   officerScope
+		list []declaredOfficerView
+	}
 	var teams []int64
 	roles := map[int64]authz.TeamRole{}
 	for _, m := range p.TeamScope().List() {
@@ -395,6 +460,7 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 		roles[m.Team] = m.Role
 	}
 	names := s.teamNames(ctx, teams)
+	var teamLists []teamList
 	for _, t := range teams {
 		list, err := s.officerViews(ctx, t, true)
 		if err != nil {
@@ -405,8 +471,61 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 		if len(list) == 0 && !manage {
 			continue
 		}
-		sc := officerScope{Owner: t, Team: true, Name: names[t], Manage: manage}
-		id := strconv.FormatInt(t, 10)
+		teamLists = append(teamLists, teamList{officerScope{Owner: t, Team: true, Name: names[t], Manage: manage}, list})
+	}
+	// What waits on the person, and what is new, for every officer listed:
+	// the drafts and asks read once (readNeeds), the "new" counts in one
+	// query (UnreadCounts).
+	rd := s.readNeeds(ctx)
+	open := rd.asks
+	owners := []int64{p.UserID}
+	for _, tl := range teamLists {
+		owners = append(owners, tl.sc.Owner)
+	}
+	unread, err := s.officerStore.UnreadCounts(ctx, owners, s.officerNow())
+	if err != nil {
+		s.logger.Printf("officers: the list's new counts: %v (drawn without them)", err)
+	}
+	extra := map[builtin.OfficerRef]listExtra{}
+	var links []needsLink
+	collect := func(sc officerScope, list []declaredOfficerView) {
+		for _, v := range list {
+			ref := builtin.OfficerRef{Owner: sc.Owner, Officer: v.ID}
+			n := s.officerNeedsOf(ctx, rd, sc.Owner, v.ID, v.Backend == officers.BackendBuiltin).count()
+			extra[ref] = listExtra{needs: n, unread: unread[ref]}
+			name := v.Name
+			if name == "" {
+				name = v.ID
+			}
+			if sc.Team {
+				name += " (" + sc.Name + ")"
+			}
+			links = append(links, needsLink{name: name, href: officerHref(sc, v.ID, ""), n: n})
+		}
+	}
+	collect(officerScope{Owner: p.UserID, Manage: true}, mine)
+	for _, tl := range teamLists {
+		collect(tl.sc, tl.list)
+	}
+	var b strings.Builder
+	if n, ok := officerListNotices[r.URL.Query().Get("notice")]; ok {
+		b.WriteString(`<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg" id="officer-notice">` + html.EscapeString(n) + `</p>`)
+	}
+	if len(links) > 0 {
+		b.WriteString(needsSummaryHTML(links))
+	}
+	b.WriteString(`<section class="` + adminCard + `" id="officers-mine"><div class="flex flex-wrap items-center gap-2"><h1 class="flex-1 text-base font-semibold text-fg">Officers</h1>
+<a href="` + officersPagePath + `/new" id="officer-new" class="` + adminButton + ` inline-flex items-center">New officer</a></div>`)
+	if len(mine) == 0 {
+		b.WriteString(`<p class="text-sm text-fg2" id="officers-empty">An officer is a Claude Code agent with standing instructions that muster wakes when there is work for it — on a schedule, or when you hand it something — and that asks you before anything leaves.</p>`)
+	} else {
+		b.WriteString(s.officerList(ctx, officerScope{Owner: p.UserID, Manage: true}, mine, open, extra))
+	}
+	b.WriteString(`</section>`)
+	for _, tl := range teamLists {
+		sc, list := tl.sc, tl.list
+		manage := sc.Manage
+		id := strconv.FormatInt(sc.Owner, 10)
 		b.WriteString(`<section class="` + adminCard + `" id="officers-team-` + id + `" data-officers-team="` + id + `"><div class="flex flex-wrap items-center gap-2"><h2 class="flex-1 text-base font-semibold text-fg">` +
 			html.EscapeString(sc.Name) + `'s officers</h2>`)
 		if manage {
@@ -416,12 +535,12 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 		if len(list) == 0 {
 			b.WriteString(`<p class="text-sm text-fg2">This team has no officers yet.</p>`)
 		} else {
-			b.WriteString(s.officerList(ctx, sc, list, open))
+			b.WriteString(s.officerList(ctx, sc, list, open, extra))
 		}
 		b.WriteString(`</section>`)
 	}
 	b.WriteString(s.runtimeAvailability(ctx, p.UserID, "officers-runtimes"))
-	s.writeNavDocument(w, r, http.StatusOK, "Officers", ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+	s.writeNavDocument(w, r, http.StatusOK, "Officers", ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`, navWide)
 }
 
 // officerListNotices are the words the list's ?notice= shows (a closed set).
@@ -429,9 +548,15 @@ var officerListNotices = map[string]string{
 	"deleted": "Deleted, with its queue and schedules; its instances are being stopped.",
 }
 
+// listExtra is what the list adds to an officer's row: how many decisions
+// wait on the viewer, and how many of its "What it did" entries are new.
+type listExtra struct {
+	needs, unread int
+}
+
 // officerList is the officers in list, each one row: name, where it runs, its
-// status, and what is open on it.
-func (s *Server) officerList(ctx context.Context, sc officerScope, list []declaredOfficerView, open []attention.Ask) string {
+// status, what is open on it, what waits on the viewer and what is new.
+func (s *Server) officerList(ctx context.Context, sc officerScope, list []declaredOfficerView, open []attention.Ask, extra map[builtin.OfficerRef]listExtra) string {
 	var b strings.Builder
 	b.WriteString(`<ul class="flex flex-col divide-y divide-line" data-officer-list>`)
 	for _, v := range list {
@@ -457,7 +582,10 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 		if v.ReadOnly {
 			b.WriteString(`<span class="text-xs text-muted" data-read-only>read-only</span>`)
 		}
-		b.WriteString(`</div><span class="text-xs text-fg2">` + html.EscapeString(v.ID) + ` · runs ` + html.EscapeString(whereItRuns(v)) + `</span>`)
+		sheet := officerHeadSheet(v)
+		sheet.ID = "officer-row-" + strconv.FormatInt(sc.Owner, 10) + "-" + strings.NewReplacer(":", "-").Replace(v.ID) + "-info"
+		b.WriteString(`</div><div class="flex items-center gap-1"><span class="min-w-0 flex-1 text-xs text-fg2" data-officer-where>runs ` + html.EscapeString(plainWhere(v)) + `</span>` +
+			ui.InfoSheetHTML(sheet) + `</div>`)
 		// 🔴 NO "LAST PASS" HERE (round 0's D2): the wake loop's memory of its
 		// last pass is per replica and forgotten by a restart, so it is not
 		// drawn until a shared record of passes exists.
@@ -466,9 +594,16 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 			facts = append(facts, plural(openItems, "open item"))
 		}
 		facts = append(facts, plural(asks, "ask"))
+		x := extra[builtin.OfficerRef{Owner: sc.Owner, Officer: v.ID}]
+		if x.needs > 0 {
+			facts = append(facts, strconv.Itoa(x.needs)+" waiting on you")
+		}
+		if w := unreadWords(x.unread); w != "" {
+			facts = append(facts, w)
+		}
 		b.WriteString(`<span class="text-xs text-fg2" data-officer-facts>` + html.EscapeString(strings.Join(facts, " · ")) + `</span>`)
 		if !v.Running && v.Reason != "" {
-			b.WriteString(`<span class="text-xs text-st-error-fg" data-officer-reason>` + html.EscapeString(v.Reason) + `</span>`)
+			b.WriteString(`<span class="text-xs text-st-error-fg" data-officer-reason>Not running: ` + html.EscapeString(plainNotRunning(v)) + `</span>`)
 		}
 		b.WriteString(`</li>`)
 	}
@@ -1605,20 +1740,36 @@ func (s *Server) handleOfficerResume(w http.ResponseWriter, r *http.Request) {
 	s.officerSwitch(w, r, true)
 }
 
+// officerSwitch is Pause / Resume. 🔴 ON THE SWITCH ONLY, so an officer
+// MUSTER_OFFICERS declares takes it too (controlTarget): a database-declared
+// one's is its declared row's (switchDeclared), an env one's its def's — the
+// switch `muster officer def put --enabled` sets, which the wake loop honours
+// for every builtin officer (officers.SwitchGated). Its declaration is never
+// written.
 func (s *Server) officerSwitch(w http.ResponseWriter, r *http.Request, on bool) {
-	sc, row, ok := s.editableRow(w, r)
+	sc, id, key, env, ok := s.controlTarget(w, r)
 	if !ok {
 		return
 	}
-	err := s.switchDeclared(r.Context(), sc.Owner, row.Officer, on)
+	var err error
+	if env {
+		if err = s.officerStore.SetEnabled(r.Context(), sc.Owner, id, on); err == nil {
+			s.logger.Printf("officers: user %d switched env officer %s of owner %d on=%v", authz.MustFrom(r.Context()).UserID, id, sc.Owner, on)
+			if key != "" && s.officerRT.rec != nil {
+				s.officerRT.rec.Due(key)
+			}
+		}
+	} else {
+		err = s.switchDeclared(r.Context(), sc.Owner, id, on)
+	}
 	notice := "paused"
 	if on {
 		notice = "resumed"
 	}
 	if err == nil && sc.Team {
-		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer."+strings.TrimSuffix(notice, "d"), "officer_def:"+row.Officer, nil)
+		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer."+strings.TrimSuffix(notice, "d"), "officer_def:"+id, nil)
 	}
-	s.officerActionDone(w, r, sc, row.Officer, notice, err)
+	s.officerActionDone(w, r, sc, id, notice, err)
 }
 
 // handleOfficerMode is the Shadow/Live switch: the mode and nothing else
@@ -1644,28 +1795,32 @@ func (s *Server) handleOfficerMode(w http.ResponseWriter, r *http.Request) {
 // runNowKind is the kind of item "Run now" puts in an officer's queue.
 const runNowKind = "manual.run"
 
+// handleOfficerRunNow is Run now: one owner item in the queue. It writes the
+// QUEUE only, so an officer MUSTER_OFFICERS declares takes it too
+// (controlTarget). An owner item gets past a spent daily budget
+// (officers.Officer.BypassesBudget): Run now is how a held officer is woken.
 func (s *Server) handleOfficerRunNow(w http.ResponseWriter, r *http.Request) {
-	sc, row, ok := s.editableRow(w, r)
+	sc, officer, key, _, ok := s.controlTarget(w, r)
 	if !ok {
 		return
 	}
 	// One live "run now" at a time: a second tap while the first is still
 	// open returns that item (the store's dedupe on kind and subject).
-	id, created, err := s.officerStore.EnqueueChecked(r.Context(), sc.Owner, builtin.NewItem{Officer: row.Officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner}, s.officerNow())
+	id, created, err := s.officerStore.EnqueueChecked(r.Context(), sc.Owner, builtin.NewItem{Officer: officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner}, s.officerNow())
 	notice := "queued"
 	if err == nil && !created {
 		notice = "already-queued"
 	}
 	if err == nil {
-		s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, created %v)", authz.MustFrom(r.Context()).UserID, row.Officer, sc.Owner, id, created)
+		s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, created %v)", authz.MustFrom(r.Context()).UserID, officer, sc.Owner, id, created)
 		if sc.Team {
-			s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.run", "officer_def:"+row.Officer, map[string]any{"item": id, "created": created})
+			s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.run", "officer_def:"+officer, map[string]any{"item": id, "created": created})
 		}
-		if st, ok := s.officerRT.declaredView(sc.Owner, row.Officer); ok && st.officer != nil && s.officerRT.rec != nil {
-			s.officerRT.rec.Due(st.officer.Key())
+		if key != "" && s.officerRT.rec != nil {
+			s.officerRT.rec.Due(key)
 		}
 	}
-	s.officerActionDone(w, r, sc, row.Officer, notice, err)
+	s.officerActionDone(w, r, sc, officer, notice, err)
 }
 
 func (s *Server) handleOfficerDeletePage(w http.ResponseWriter, r *http.Request) {
@@ -1754,6 +1909,25 @@ var officerNotices = map[string]string{
 	"already-queued":   "It already has a Run now waiting.",
 	"schedule-saved":   "Schedule saved.",
 	"schedule-deleted": "Schedule deleted.",
+	// The Needs-you section's decisions (officer_needs_you.go).
+	"draft-approved": "Approved: its plugin sends exactly that, once.",
+	"draft-rejected": "Rejected: it is not sent, and the officer is told why.",
+	"batch-decided":  "Decided: the ticked ones go to their plugin, the rest were rejected.",
+	"refiled":        "Re-filed: the officer files it again at that time, and you approve the new draft.",
+	"dropped":        "Dropped: the officer will not redraft it.",
+}
+
+// officerPageNotice is the words of a notice code on an officer's page: its
+// own (officerNotices), else an answer form's (composerNotices: an ask
+// answered on this page that was not recorded). ok false for any other.
+func officerPageNotice(code string) (string, bool) {
+	if n, ok := officerNotices[code]; ok {
+		return n, true
+	}
+	if n, ok := composerNotices[code]; ok && strings.HasPrefix(code, "ask-") {
+		return n.text, true
+	}
+	return "", false
 }
 
 func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc officerScope, id string, code int, problem string) {
@@ -1778,32 +1952,33 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	builtinBackend := v.Backend == officers.BackendBuiltin
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
-	if n, ok := officerNotices[r.URL.Query().Get("notice")]; ok && problem == "" {
+	if n, ok := officerPageNotice(r.URL.Query().Get("notice")); ok && problem == "" {
 		b.WriteString(`<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg" id="officer-notice">` + esc(n) + `</p>`)
 	}
 	// The head: who, where, how it is.
 	b.WriteString(`<section class="` + adminCard + `" id="officer-head" data-officer="` + esc(v.ID) + `" data-managed-by="` + v.ManagedBy + `">
 <p class="text-xs"><a href="` + officersPagePath + `" class="text-fg2 underline-offset-2 hover:underline">← Officers</a></p>
 <div class="flex flex-wrap items-center gap-2"><h1 class="min-w-0 flex-1 break-words text-base font-semibold text-fg">` + esc(name) + `</h1>` + statusChip(status) + `</div>
-<p class="text-xs text-fg2">` + esc(v.ID))
+`)
+	// 🔴 THE TOP LAYER IS PLAIN WORDS (the operator rule): where it runs and,
+	// when it does not, why — in a sentence. Its id, the technical
+	// where-it-runs line and the server's own reason (which names settings)
+	// are behind the ⓘ (officerHeadSheet).
+	plain := ""
 	if sc.Team {
-		b.WriteString(` · ` + esc(sc.Name) + `'s`)
+		plain = sc.Name + "'s · "
 	}
-	b.WriteString(` · runs ` + esc(whereItRuns(v)))
-	if v.Repo != "" {
-		b.WriteString(` · in ` + esc(v.Repo))
-	} else if v.ManagedBy != managedByDef {
-		b.WriteString(` · in a scratch directory`)
-	}
-	b.WriteString(`</p>`)
+	plain += "runs " + plainWhere(v)
+	b.WriteString(`<div class="flex items-center gap-1"><p class="min-w-0 flex-1 text-xs text-fg2" data-officer-where>` + esc(plain) + `</p>` +
+		ui.InfoSheetHTML(officerHeadSheet(v)) + `</div>`)
 	if !v.Running && v.Reason != "" {
-		b.WriteString(`<p class="text-sm text-st-error-fg" id="officer-reason">Not running: ` + esc(v.Reason) + `</p>`)
+		b.WriteString(`<p class="text-sm text-st-error-fg" id="officer-reason">Not running: ` + esc(plainNotRunning(v)) + `</p>`)
 	}
 	switch v.ManagedBy {
 	case officers.ManagedByEnv:
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">MUSTER_OFFICERS declares it, so it is read-only here: change the environment and restart.</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">Its setup comes from this server's own settings, so it is changed there, not here. Its decisions, Run now and Pause still work here.</p>`)
 	case managedByDef:
-		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">Only a def in the built-in store: declare where it runs with <code>muster officer create</code>, or add it to MUSTER_OFFICERS.</p>`)
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-read-only">It has instructions but nowhere to run yet, so muster does not start it.</p>`)
 	}
 	if v.RunsOn == officers.RuntimeHost || v.Runtime == officers.RuntimeHost {
 		b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" data-host-risk>` + esc(hostRiskLine) + `</p>`)
@@ -1813,13 +1988,9 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 			return `<form method="POST" action="` + esc(officersPagePath+"/"+url.PathEscape(v.ID)+suffix) + `">` + sc.ownerField() + extra +
 				`<button type="submit" class="` + cls + `">` + label + `</button></form>`
 		}
+		// Run now and Pause / Resume are the Needs-you section's run
+		// controls (officerRunHTML), drawn for every officer they apply to.
 		b.WriteString(`<div class="flex flex-wrap gap-2" id="officer-actions">`)
-		b.WriteString(form("/run", "Run now", adminButton, ""))
-		if v.Paused != nil && *v.Paused {
-			b.WriteString(form("/resume", "Resume", adminQuiet, ""))
-		} else {
-			b.WriteString(form("/pause", "Pause", adminQuiet, ""))
-		}
 		if v.Mode == "shadow" {
 			b.WriteString(form("/mode", "Switch to Live", adminQuiet, `<input type="hidden" name="mode" value="live">`))
 		} else {
@@ -1831,13 +2002,41 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	}
 	b.WriteString(`</section>`)
 
+	// Needs you, then What it did (officer_needs_you.go).
+	controllable := sc.Manage && builtinBackend && (v.ManagedBy == officers.ManagedByDB || v.ManagedBy == officers.ManagedByEnv)
+	needs := s.officerNeedsOf(ctx, s.readNeeds(ctx), sc.Owner, v.ID, builtinBackend)
+	b.WriteString(s.needsYouHTML(ctx, sc, v, needs, s.officerRunHTML(ctx, sc, v, controllable), controllable))
+	if len(needs.drafts) > 0 {
+		// The Approve's "Confirm it's you" dialog and form script — the Asks
+		// page's own (draftStepUpHTML); the server checks it either way.
+		b.WriteString(s.draftStepUpHTML(r))
+	}
+	// 🔴 THE LOOK IS RECORDED ONLY WHEN THE PAGE IS DRAWN FOR A GET: a refusal
+	// re-drawn after a POST is not the person reading what it did.
+	var seen *time.Time
+	if builtinBackend && r.Method == http.MethodGet && code == http.StatusOK {
+		prev, err := s.officerStore.MarkSeen(ctx, sc.Owner, v.ID, s.officerNow())
+		if err != nil {
+			s.logger.Printf("officers: record user %d's look at %s: %v", authz.MustFrom(ctx).UserID, v.ID, err)
+		}
+		seen = prev
+	}
+	b.WriteString(s.timelineHTML(ctx, sc, v, seen))
+
 	// The instances.
 	b.WriteString(s.officerInstances(ctx, sc, v))
 
-	// The queue.
+	// Schedules.
+	if builtinBackend {
+		b.WriteString(s.officerSchedules(ctx, sc, v, writable))
+	}
+
+	// The raw queue: what What it did says in words, in the store's own terms
+	// — behind a closed Technical details, never in the top layer.
+	b.WriteString(`<details class="` + adminCard + `" id="officer-technical"><summary class="cursor-pointer text-base font-semibold text-fg">Technical details</summary>`)
 	if builtinBackend {
 		items, err := s.officerItems(ctx, sc.Owner, v.ID, 50)
-		b.WriteString(`<section class="` + adminCard + `" id="officer-queue"><h2 class="text-base font-semibold text-fg">Queue</h2>`)
+		b.WriteString(`<section class="flex flex-col gap-3" id="officer-queue"><h2 class="text-sm font-semibold text-fg">Queue</h2>`)
 		switch {
 		case err != nil:
 			s.logger.Printf("officers: read %s's items: %v", v.ID, err)
@@ -1866,28 +2065,9 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 		}
 		b.WriteString(`</section>`)
 	} else {
-		b.WriteString(`<section class="` + adminCard + `" id="officer-queue"><h2 class="text-base font-semibold text-fg">Queue</h2><p class="text-sm text-fg2">Its queue is in its HQ.</p></section>`)
+		b.WriteString(`<section class="flex flex-col gap-3" id="officer-queue"><h2 class="text-sm font-semibold text-fg">Queue</h2><p class="text-sm text-fg2">Its queue is in its HQ.</p></section>`)
 	}
-
-	// Asks and drafts.
-	asks := raisedByOfficer(s.openAsks(ctx), sc.Owner, v.ID)
-	b.WriteString(`<section class="` + adminCard + `" id="officer-asks"><h2 class="text-base font-semibold text-fg">Asks</h2>`)
-	if len(asks) == 0 {
-		b.WriteString(`<p class="text-sm text-fg2">Nothing it is waiting on you for.</p>`)
-	} else {
-		b.WriteString(`<ul class="flex flex-col gap-2">`)
-		for _, a := range asks {
-			b.WriteString(`<li><a class="text-sm text-fg underline-offset-2 hover:underline" href="/attention/asks/` + strconv.FormatInt(a.ID, 10) + `">` + esc(truncateRunes(a.Question, 200)) + `</a></li>`)
-		}
-		b.WriteString(`</ul>`)
-	}
-	b.WriteString(`</section>`)
-	b.WriteString(s.officerDrafts(ctx, v))
-
-	// Schedules.
-	if builtinBackend {
-		b.WriteString(s.officerSchedules(ctx, sc, v, writable))
-	}
+	b.WriteString(`</details>`)
 
 	// Its spend, where the server books it.
 	if builtinBackend {
@@ -1911,7 +2091,7 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 <input id="officer-delete-confirm" name="confirm" autocomplete="off" class="` + adminInput + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-danger px-3 py-2 text-base font-semibold text-on-danger">Delete officer</button></form></section>`)
 	}
-	s.writeNavDocument(w, r, code, name, ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+	s.writeNavDocument(w, r, code, name, ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`, navWide)
 }
 
 // truncateRunes is v cut to n runes, with an ellipsis when cut.
@@ -1978,43 +2158,6 @@ func (s *Server) officerInstances(ctx context.Context, sc officerScope, v declar
 		b.WriteString(`</li>`)
 	}
 	b.WriteString(`</ul></section>`)
-	return b.String()
-}
-
-// officerDrafts draws the outbound drafts v's instances filed (the person's
-// drafts whose agent is one of v's instances), linked to the Asks page where
-// they are decided.
-func (s *Server) officerDrafts(ctx context.Context, v declaredOfficerView) string {
-	if s.ext.Plugins == nil || len(v.Instances) == 0 {
-		return ""
-	}
-	cards, err := s.ext.Plugins.DraftCards(ctx, 100)
-	if err != nil {
-		return ""
-	}
-	mine := map[string]bool{}
-	for _, n := range v.Instances {
-		mine[n] = true
-	}
-	var list []plugins.DraftCard
-	for _, c := range cards {
-		if mine[c.Draft.AgentName] {
-			list = append(list, c)
-		}
-	}
-	esc := html.EscapeString
-	var b strings.Builder
-	b.WriteString(`<section class="` + adminCard + `" id="officer-drafts"><h2 class="text-base font-semibold text-fg">Drafts</h2>`)
-	if len(list) == 0 {
-		b.WriteString(`<p class="text-sm text-fg2">No drafts.</p></section>`)
-		return b.String()
-	}
-	b.WriteString(`<ul class="flex flex-col gap-2">`)
-	for _, c := range list {
-		b.WriteString(`<li class="flex flex-col"><span class="break-words text-sm text-fg">` + esc(truncateRunes(c.Draft.Body, 200)) + `</span><span class="text-xs text-fg2">` +
-			esc(string(c.Draft.Status)) + ` · ` + fmtTime(c.Draft.CreatedAt) + `</span></li>`)
-	}
-	b.WriteString(`</ul><p class="text-xs"><a class="text-fg2 underline underline-offset-2" href="/attention/drafts">Decide drafts on the Asks page</a></p></section>`)
 	return b.String()
 }
 

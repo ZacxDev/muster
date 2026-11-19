@@ -78,7 +78,10 @@ var personalOwned = []string{
 	// 0147: the fleet digest's marks; a team's sessions are not in an
 	// owner's fleet.
 	"fleet_owner_marks",
-	// 0156: the morning report; it lists its owner's own sessions, tasks and
+	// 0156: when a person last looked at an officer's page; each member of
+	// a team looks on their own.
+	"officer_seen",
+	// 0157: the morning report; it lists its owner's own sessions, tasks and
 	// questions.
 	"morning_reports",
 }
