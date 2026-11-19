@@ -604,6 +604,12 @@ jobs:
       - name: sw.js stores only scripts whose bytes match their URL
         if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/sw-install.test.mjs
+      # A notification tap never steers a muster tab off muster, and an
+      # agent's external link (notify_owner) opens muster's /notify/open in a
+      # new window (web/static/sw.js sameOriginPath). Node only, < 1 s.
+      - name: sw.js opens only this origin's paths from a notification
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/sw-notify-url.test.mjs
       # The server switcher's list rules (web/static/servers.js): addresses
       # (https only but loopback, no credentials, origin only), dedupe, the
       # cap, labels, the logo path, and that the script makes no request of

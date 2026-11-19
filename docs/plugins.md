@@ -1066,9 +1066,14 @@ An officer's follows and likes of one UTC day are **one batch**, id
 `<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Drafts tab, one Attention item
 and one notification (each new entry replaces the batch's last notification),
 never one each. Each entry shows the person, the venue, the action, the
-engagement of theirs that motivated it (untrusted, escaped) and the officer's
-reason, with a checkbox; entries still awaiting their plugin's check are
-counted, not listed, and are not part of the decision.
+engagement of theirs that motivated it (untrusted, escaped), their profile as
+the officer's record of them holds it (display name, bio and profile address —
+what their plugin reported, labelled untrusted; the address is text, never a
+link) and the officer's reason, with a checkbox; entries still awaiting their
+plugin's check are counted, not listed, and are not part of the decision. The
+same card is in the officer's own page's
+[Needs you](officers-builtin.md#an-officers-page), deciding through the same
+route.
 
 🔴 **The decision binds the exact set.** **Approve ticked, reject the rest**
 posts the ticked draft ids and the batch's `batch_sha256` (the SHA-256 of every
