@@ -3199,7 +3199,8 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		// THE TEAM PAGE LEG (0162): every page route, naming the TEAM's page.
 		// A non-member sees it on no route; a member (viewer and up) reads it;
 		// and B — never its creator, a manager included — changes nothing of
-		// what its creator manages (its version, title, links).
+		// what its creator manages (its version, title), and only a manager
+		// revokes its link.
 		pageBefore := w.teamPageState(tPage.id, tPage.link)
 		pageSaw := 0
 		for _, res := range w.walkAs(w.b, tPageObjs, []cred{{sessionUser: w.b.uid}}, teamPageRouteList(routes)) {
@@ -3213,8 +3214,15 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		if role != "none" && pageSaw == 0 {
 			t.Errorf("CONTROL: B as the team's %s saw the team's PAGE on no page route: the team-page leg is not reaching it", role)
 		}
-		if after := w.teamPageState(tPage.id, tPage.link); after != pageBefore || pageBefore == "" {
-			t.Errorf("MUTATION: B as the team's %s (not the page's creator) changed the team's page:\n before %q\n after  %q", role, pageBefore, after)
+		// A MANAGER may always revoke a link (0162, operator decision Q1), so
+		// the walk's revoke route takes the manager's link away — and that is
+		// all it changes; every other role changes nothing.
+		want := pageBefore
+		if role == "manager" {
+			want = strings.TrimSuffix(pageBefore, "|live") + "|revoked"
+		}
+		if after := w.teamPageState(tPage.id, tPage.link); after != want || pageBefore == "" || !strings.HasSuffix(pageBefore, "|live") {
+			t.Errorf("MUTATION: B as the team's %s (not the page's creator) left the team's page as %q; want %q (before %q)", role, after, want, pageBefore)
 		}
 		w.checkOutsider(t, "B as the team's "+role, results)
 		w.sameRows(t, "B's walk as the team's "+role, aBefore)
