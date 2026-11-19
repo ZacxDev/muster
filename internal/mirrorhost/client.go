@@ -231,6 +231,9 @@ type Client struct {
 
 	// heldLogged: the attempt code was already printed (logHeld).
 	heldLogged atomic.Bool
+	// watchLogged is what the sessions watch already logged (sessionwatch.go):
+	// it outlives each connection, so a line is printed once per process.
+	watchLogged sync.Map
 }
 
 // beforeRefreshHook, when set (tests), runs on a connection after its hello
@@ -448,6 +451,14 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
 	}
 	defer conn.closeAll()
+	// A Claude Code session's status move (its sessions file rewritten)
+	// sends the listing at once, not at the next Refresh — through nudge,
+	// like an opencode ask. Started before the first read, which names the
+	// directories to watch (read: sessWatch.want).
+	if conn.watchesSessions() {
+		conn.sessWatch = newSessionsWatch(conn.nudge, c.log.Printf, &c.watchLogged)
+		defer conn.sessWatch.start(ctx)()
+	}
 
 	first, ok := conn.read()
 	if !ok {
@@ -695,6 +706,10 @@ type hostSide struct {
 	want chan struct{}
 	// nudged counts nudge calls (tests observe a signal was raised).
 	nudged atomic.Int64
+	// sessWatch watches Claude Code's sessions directories and nudges when a
+	// sessions file changes (sessionwatch.go); nil for a backend that runs
+	// no Claude Code.
+	sessWatch *sessionsWatch
 	// opens is each stream's open until its first reply (trace.go), by
 	// stream id: *openTrace.
 	opens sync.Map
@@ -772,6 +787,9 @@ func hostLimitEqual(a, b *mirror.HostLimit) bool {
 func (h *hostSide) read() (listing, bool) {
 	wl, ok := WindowListerOf(h.c.cfg.Backend)
 	if !ok {
+		if h.sessWatch != nil {
+			h.sessWatch.want(claudeConfigDirs(h.defaultClaudeConfigDir(), nil))
+		}
 		sessions := h.c.list(h.ctx)
 		return listing{sessions: sessions, claude: h.resolveClaude(sessions), labels: h.labels(sessions), activity: h.activity(sessions)}, true
 	}
@@ -788,6 +806,9 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	if err != nil {
 		return listing{}, false
+	}
+	if h.sessWatch != nil {
+		h.sessWatch.want(claudeConfigDirs(h.defaultClaudeConfigDir(), raw))
 	}
 	h.pending.attachPending(raw)
 	h.lastMsg.attach(raw)
