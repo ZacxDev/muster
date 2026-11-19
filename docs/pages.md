@@ -490,6 +490,19 @@ request over 64 KiB with its old `{"error":"the request is too large"}`: a
 page over 64 KiB from a mirrored session needs the host's `muster-mirror`
 updated as well as the server.
 
+The other way round, a current `muster-mirror` in front of a muster older
+than v0.239.0: that muster reads at most 64 KiB per request and answers a
+larger one with a bare JSON-RPC `-32700 could not read the request`. The
+host proxy replaces that answer with one that names the muster, the
+request's size and both limits (`muster at <host> could not read this MCP
+request of N bytes: it reads at most 64 KiB per request, so it is probably
+older than v0.239.0 …`). The fix is to upgrade that muster. Every muster the
+host reaches counts, including any extra instance in its MCP targets file
+([mirroring.md](mirroring.md#several-muster-instances)). A `markdown` block
+holds at most 64 KiB on any version, so a probe of one large `markdown` block
+is refused by the page tool even when the transport is fine. Use `html`
+blocks to test a large page.
+
 ## Telemetry
 
 `muster_page_link_requests_total{route,outcome}` (`served`, `not_found`,

@@ -464,6 +464,58 @@ test('the Pages screens do not shift on load', async ({ page }) => {
   }
 });
 
+// A PAGE OF ~400 KB THROUGH THE HOST'S MCP ENDPOINT (#833): a page_update of
+// 400,000 bytes goes Claude Code → this host's REAL muster-mirror → muster over
+// HTTP and comes back with a page version; one byte past the request bound
+// (mirror.MaxMCPRequestBytes, 1088 KiB = 1,114,112 bytes) is refused by the
+// mirror with a 413 that names it and the limit — never JSON-RPC -32700.
+//
+// ⚠ AN INVARIANT GUARD, NOT #833'S REGRESSION TEST: both binaries here are
+// built from this tree, and since #733 they agree on the bound, so this went
+// green at origin/main too. #833's -32700 came from an OLD muster behind a
+// current mirror (internal/mirrorhost's mcpproxy_oldmuster_test.go has the
+// red-then-green for that); this pins the seam a real mirror and a real muster
+// cross, which #733's tests reach only in process.
+test('a 400,000-byte page_update through the host MCP endpoint returns a version; one past the bound is a named 413', async () => {
+  const created = await call('page_create', { title: 'Big page ' + stamp, blocks: [{ type: 'markdown', text: 'v1' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const pageID = created.body.page_id as number;
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  // sized is a page_update padded to exactly n bytes: two html blocks (a block
+  // holds at most 256 KiB) of base64-shaped text, as inline images are sent.
+  const sized = (n: number) => {
+    const mk = (pad: number) => {
+      const a = Math.floor(pad / 2);
+      const blocks = [a, pad - a].map((k) => ({ type: 'html', html: `<img alt="" src="data:image/webp;base64,${'Q'.repeat(k)}">` }));
+      return JSON.stringify({ jsonrpc: '2.0', id: 41, method: 'tools/call', params: { name: 'page_update', arguments: { page_id: pageID, blocks } } });
+    };
+    const body = mk(n - mk(0).length);
+    expect(body.length, 'fixture size').toBe(n);
+    return body;
+  };
+  const post = (body: string) =>
+    fetch(localMCP, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+      body,
+    });
+
+  const ok = await post(sized(400_000));
+  const okText = await ok.text();
+  expect(ok.status, okText.slice(0, 300)).toBe(200);
+  const rep = JSON.parse(okText) as { error?: unknown; result?: { isError?: boolean; content: { text: string }[] } };
+  expect(rep.error, okText.slice(0, 300)).toBeUndefined();
+  expect(rep.result?.isError, okText.slice(0, 300)).toBeFalsy();
+  const out = JSON.parse(rep.result!.content[0].text) as { page_id: number; version: number };
+  expect(out).toMatchObject({ page_id: pageID, version: 2 });
+
+  const over = await post(sized(1_114_113));
+  const overText = await over.text();
+  expect(over.status, overText.slice(0, 300)).toBe(413);
+  expect(overText).not.toContain('-32700');
+  expect(overText).toContain('muster-mirror on this host refused this MCP request: it is larger than 1088 KiB');
+});
+
 // 🔴 A SERVER WITH NO LINK KEY (this spec's) MINTS ON THE TAP ONLY. There each
 // Share makes a new one-off link, so a finger going down (or a tab landing) on
 // Share must make nothing: a press that turns into a scroll, or a tab-through,

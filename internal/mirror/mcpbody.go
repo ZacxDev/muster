@@ -53,6 +53,35 @@ func MCPRequestLimit(method, tool string) int {
 	return MCPToolInputBytes
 }
 
+// 🔴 A NEW HOST PROXY IN FRONT OF AN OLD muster (#833). A muster older than
+// MCPBoundRelease read every MCP request under a flat 64 KiB and answered any
+// read failure, the too-large one included, with exactly LegacyMCPUnreadCode /
+// LegacyMCPUnreadMessage (HTTP 200, id null): a current muster-mirror forwards
+// a page of 400 KB, and the old server's answer reads as a malformed request
+// that names no hop and no limit (measured: 65,536 bytes read, 66,000 not, on
+// a server built from a pre-bound commit behind a current muster-mirror). The
+// host proxy recognises that exact reply to a request over MCPToolInputBytes
+// and replaces it with MCPUnreadByOldMuster. muster no longer writes that
+// message (internal/api's serveMCP names itself and the cause). A muster from
+// MCPBoundRelease up to that change still writes it when a read fails for
+// another reason (a connection cut mid-body), which is why the replacement
+// says "probably".
+const (
+	// MCPBoundRelease is the first release whose muster reads a request
+	// under MaxMCPRequestBytes (#733).
+	MCPBoundRelease        = "v0.239.0"
+	LegacyMCPUnreadCode    = -32700
+	LegacyMCPUnreadMessage = "could not read the request"
+)
+
+// MCPUnreadByOldMuster is the host proxy's answer when muster at server gave
+// the legacy unread reply to a request of n bytes.
+func MCPUnreadByOldMuster(server string, n int64) string {
+	return fmt.Sprintf("muster at %s could not read this MCP request of %d bytes: it reads at most %d KiB per request, "+
+		"so it is probably older than %s (from %s on, %s and %s take up to %d KiB); upgrade that muster, or keep the request under %d KiB",
+		server, n, MCPToolInputBytes>>10, MCPBoundRelease, MCPBoundRelease, MCPPageCreateTool, MCPPageUpdateTool, MaxMCPRequestBytes>>10, MCPToolInputBytes>>10)
+}
+
 // MCPTooLarge is the refusal of a request over MaxMCPRequestBytes, read by
 // who ("muster" or "muster-mirror on this host"): which side refused, and
 // what the bounds are, so a mixed rollout says where it stopped.
