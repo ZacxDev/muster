@@ -408,8 +408,17 @@ const (
 // 🔴 IT CARRIES THE PLUGIN'S REASON (operator decision), one line, cut — never
 // the draft or the message it answers (notifyDraftAwaiting's "who and where,
 // never what"): the reason is the plugin's words about the reply.
+//
+// 🔴 AN OFFICER'S REFUSED DRAFT PUSHES NOTHING (officer_push.go: it went back
+// to the officer, which handles it). Its earlier "awaits your approval"
+// notification is WITHDRAWN instead, on the same tag — the refusal used to
+// replace it, and left alone it would offer a decision that no longer exists.
 func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, where int) {
 	id := strconv.FormatInt(d.ID, 10)
+	if d.Officer != nil && !s.officerPushSends(officerPushDraftRefused, p.OwnerID, draftTag(d.ID)) {
+		s.goNotify(p.OwnerID, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: id, Tag: draftTag(d.ID)}, nil)
+		return
+	}
 	s.goNotify(p.OwnerID, push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,

@@ -194,6 +194,12 @@ func TestACheckLaneHeldTwiceIsStoppedByTheLastReleaseOnly(t *testing.T) {
 	if b, f := r.l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true}); f != nil || b != a {
 		t.Fatalf("the same check key again: %v %v", b, f)
 	}
+	// The stop under test is of a lane whose CLI is up, as a real check's is
+	// once its turn ran. Without this wait the last release stops it MID-START,
+	// and the by-design second kill (lane.killLateSession) lands asynchronously:
+	// "kills=2; want stopped" whenever it beats the assertion below (see
+	// started). Stopping mid-start is lanes_release_test.go's case.
+	started(t, a)
 	r.l.release(a)
 	if r.l.get(a.id) != a || r.pane(key).kills() != 0 {
 		t.Fatalf("one of two holders released: in set=%v kills=%d; want kept and running", r.l.get(a.id) == a, r.pane(key).kills())

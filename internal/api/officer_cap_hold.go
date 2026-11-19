@@ -36,9 +36,14 @@ func (s *Server) officerCapHoldNotice(o officers.Officer, h officers.CapHold) {
 		s.goNotify(o.Owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: tag, Tag: tag}, nil)
 		return
 	}
+	if !s.officerPushSends(officerPushCapHold, o.Owner, tag) {
+		return
+	}
+	// A decision (officer_push.go): it opens the officer's page.
 	s.goNotify(o.Owner, push.EventAttention, RouterNotification{Type: "notify", ID: tag, Tag: tag,
 		Title: fmt.Sprintf("Officer %s: judgement pool withheld", o.ID),
-		Body:  capHoldBody(o, h)}, nil)
+		Body:  capHoldBody(o, h),
+		Data:  map[string]string{"url": officerDecisionCard(officerPushCapHold, officerCardRef{ID: o.ID, Owner: o.Owner})}}, nil)
 }
 
 // officerBudgetNotice is the wake loop's officers.Config.BudgetAlert: it tells
@@ -50,12 +55,20 @@ func (s *Server) officerCapHoldNotice(o officers.Officer, h officers.CapHold) {
 func (s *Server) officerBudgetNotice(o officers.Officer, a officers.BudgetAlert) {
 	tag := "officer-budget-" + o.ID + "-" + a.ResetAt.UTC().Format("2006-01-02")
 	title := fmt.Sprintf("Officer %s: daily budget reached", o.ID)
+	kind := officerPushBudget
 	if a.Unreadable {
 		tag = "officer-budget-unreadable-" + o.ID + "-" + s.officerNow().UTC().Format("2006-01-02")
 		title = fmt.Sprintf("Officer %s: spend unreadable", o.ID)
+		kind = officerPushBudgetUnreadable
+	}
+	// Reached: a decision, opening the officer's page. Unreadable:
+	// information, not pushed (officer_push.go).
+	if !s.officerPushSends(kind, o.Owner, tag) {
+		return
 	}
 	s.goNotify(o.Owner, push.EventAttention, RouterNotification{Type: "notify", ID: tag, Tag: tag,
-		Title: title, Body: budgetBody(a)}, nil)
+		Title: title, Body: budgetBody(a),
+		Data: map[string]string{"url": officerDecisionCard(kind, officerCardRef{ID: o.ID, Owner: o.Owner})}}, nil)
 }
 
 // budgetBody is the daily budget notice's body: the spend, the cap, what is

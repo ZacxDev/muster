@@ -132,3 +132,26 @@ func TestEveryConnectorControlNamesItsOwnTarget(t *testing.T) {
 		t.Fatalf("controls that would inherit the panel's target:\n  %s", strings.Join(missing, "\n  "))
 	}
 }
+
+// TestAConnectorRequestCardCarriesItsPushAnchor: each request's card is
+// id="connector-request-<grant id>" (ConnectorRequestAnchor) — what an
+// officer's connector-request push links to — distinct per request, and the
+// lazy panel follows the fragment once its cards arrive.
+func TestAConnectorRequestCardCarriesItsPushAnchor(t *testing.T) {
+	var b strings.Builder
+	if err := RenderConnectorRequests(&b, []ConnectorRequestView{{ID: 6421, AgentName: "a", Connector: "svc", Exists: true}, {ID: 6437, AgentName: "b", Connector: "new-one"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"connector-request-6421", "connector-request-6437"} {
+		if strings.Count(b.String(), `id="`+id+`"`) != 1 {
+			t.Errorf("no single card with id %q in %s", id, b.String())
+		}
+	}
+	var p strings.Builder
+	if err := ConnectorsPanel(true).Render(&p); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.String(), `hx-on::after-swap="`) || !strings.Contains(p.String(), "hashFollowed") {
+		t.Errorf("the Connectors panel does not follow the fragment after its lazy swap: %s", p.String())
+	}
+}

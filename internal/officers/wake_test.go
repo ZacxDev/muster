@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/hqtest"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 const (
@@ -28,6 +30,9 @@ type fakeFleet struct {
 	stops   []int
 	kickoff []string
 	blind   bool
+	// fleetErr, when set, is Instances' error: a fleet failure that is NOT
+	// the provisioner being unreachable (a host officer's host offline).
+	fleetErr error
 	// reprompts records instance numbers re-prompted; reprompt holds the text.
 	reprompts []int
 	reprompt  []string
@@ -56,7 +61,10 @@ func (f *fakeFleet) Instances(_ context.Context, o officers.Officer) ([]officers
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.blind {
-		return nil, errors.New("provisioner blind")
+		return nil, fmt.Errorf("%w: provisioner blind", provision.ErrBlind)
+	}
+	if f.fleetErr != nil {
+		return nil, f.fleetErr
 	}
 	var out []officers.InstanceState
 	for n := 1; n <= o.Slots(); n++ {
@@ -300,6 +308,73 @@ func TestABlindFleetChangesNothing(t *testing.T) {
 	r.fleet.blind = true
 	if res := r.check(t); res.Err == nil || len(r.fleet.starts) != 0 {
 		t.Fatalf("a blind fleet must change nothing: %+v starts %v", res, r.fleet.starts)
+	}
+}
+
+// TestABlindFleetIsRetriedAtThePollIntervalNotBackedOff: a pass that read HQ
+// but could not read its instances (muster's own provisioner) is checked
+// again one poll interval later, on every consecutive failure — not after
+// Backoff's 2m, 4m, 8m, which is for the officer's BACKEND failing. Each
+// failure still changes nothing. The control: HQ down still backs off.
+func TestABlindFleetIsRetriedAtThePollIntervalNotBackedOff(t *testing.T) {
+	r := newRig(t, 1, time.Minute)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.fleet.blind = true
+	for i := 1; i <= 3; i++ {
+		res := r.check(t)
+		if res.Skipped || res.Err == nil || len(r.fleet.starts) != 0 {
+			t.Fatalf("blind pass %d: %+v starts %v; want a failed pass that changes nothing", i, res, r.fleet.starts)
+		}
+		r.clk.Advance(r.o.PollInterval)
+	}
+
+	// Straight after the outage, an HQ blip: backed off from its FIRST step
+	// (Backoff 1 = 2m), not from where the 3 unreadable-fleet passes would
+	// have left a shared failure count (Backoff 4 = the 10m cap).
+	r.hq.SetDown(true)
+	if res := r.check(t); res.Skipped || res.Err == nil {
+		t.Fatalf("one poll interval after the 3rd unreadable-fleet pass: %+v; want it checked (and failing on HQ), "+
+			"not skipped: an unreadable fleet is retried at the poll interval, not backed off", res)
+	}
+	r.clk.Advance(r.o.PollInterval)
+	if res := r.check(t); !res.Skipped {
+		t.Fatalf("one poll interval after an HQ failure: %+v; want skipped (backed off to %s)", res, officers.Backoff(r.o, 1))
+	}
+	r.hq.SetDown(false)
+	r.fleet.blind = false
+	r.clk.Advance(officers.Backoff(r.o, 1) - r.o.PollInterval)
+	if res := r.check(t); res.Skipped || res.Err != nil || len(r.fleet.starts) != 1 {
+		t.Fatalf("%s after the first HQ failure that followed 3 unreadable-fleet passes: %+v starts %v; want it checked "+
+			"and the open item to start an instance (the HQ backoff starts at %s, not where a shared failure count "+
+			"would put it)", officers.Backoff(r.o, 1), res, r.fleet.starts, officers.Backoff(r.o, 1))
+	}
+}
+
+// TestAFleetFailureThatIsNotTheProvisionerStillBacksOff: only the
+// provisioner being unreachable (provision.ErrBlind) is retried at the poll
+// interval. A host officer whose host is offline — a fleet failure of another
+// kind — keeps the doubling backoff: one poll interval after its 1st and 2nd
+// failures it is skipped, as after an HQ failure.
+func TestAFleetFailureThatIsNotTheProvisionerStillBacksOff(t *testing.T) {
+	r := newRig(t, 1, time.Minute)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.fleet.fleetErr = errors.New("officers: release:x runs on host laptop-1, which is not connected")
+	if res := r.check(t); res.Err == nil || res.Skipped {
+		t.Fatalf("host offline: %+v, want a failed pass", res)
+	}
+	r.clk.Advance(r.o.PollInterval)
+	if res := r.check(t); !res.Skipped {
+		t.Fatalf("one poll interval after a host-offline failure: %+v; want skipped (backed off to %s, "+
+			"not retried at the poll interval like an unreachable provisioner)", res, officers.Backoff(r.o, 1))
+	}
+	r.clk.Advance(officers.Backoff(r.o, 1))
+	if res := r.check(t); res.Skipped || res.Err == nil {
+		t.Fatalf("after the backoff: %+v, want a second failed pass", res)
+	}
+	r.clk.Advance(officers.Backoff(r.o, 1))
+	if res := r.check(t); !res.Skipped {
+		t.Fatalf("%s after the 2nd host-offline failure: %+v; want skipped (backed off to %s)",
+			officers.Backoff(r.o, 1), res, officers.Backoff(r.o, 2))
 	}
 }
 

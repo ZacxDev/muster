@@ -543,6 +543,7 @@ func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, erro
 			"would provision into whichever cluster the ambient context names)",
 			envAgentProvisioner, provisionerK8s, err)
 	}
+	kubeClientRateLimit(rc, cfg.AgentKubeQPS)
 	client, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes client: %w", err)
@@ -566,6 +567,33 @@ func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, erro
 		dc.NamespaceRoleBinding.ServiceAccountName = name
 	}
 	return k8sdriver.New(dc)
+}
+
+// The kubernetes driver's API client rate limit (MUSTER_AGENT_KUBE_QPS).
+//
+// 🔴 50 PER SECOND, NOT client-go's 5. A rest.Config with QPS 0 gets 5 per
+// second with a burst of 10, and that budget is shared by everything this
+// process asks the cluster: board status, the stopped-agent reaper, every
+// officer's pass. Reading all agents on the least-privilege layout costs three
+// requests per agent namespace (k8s listPerNamespace), so at ~70 namespaces one
+// read took ~40s of the budget and the reads behind it failed with "rate:
+// Wait(n=1) would exceed context deadline". At 50/100 that read is ~2-3s. The
+// ceiling is a guard against a typo, not a recommendation: the apiserver's own
+// priority-and-fairness limits still apply.
+const (
+	defaultAgentKubeQPS = 50
+	maxAgentKubeQPS     = 1000
+)
+
+// kubeClientRateLimit sets rc's client-side rate limit to qps requests per
+// second with a burst of twice that. qps < 1 is defaultAgentKubeQPS (a config
+// built without loadConfig, as tests build them).
+func kubeClientRateLimit(rc *rest.Config, qps int) {
+	if qps < 1 {
+		qps = defaultAgentKubeQPS
+	}
+	rc.QPS = float32(qps)
+	rc.Burst = 2 * qps
 }
 
 // serviceAccountFromToken reads the ServiceAccount a Kubernetes token was
