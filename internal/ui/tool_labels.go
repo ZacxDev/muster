@@ -55,6 +55,7 @@ var musterToolLabels = map[string]string{
 	"answer_session_question": "Answered a session's question",
 
 	// Pages.
+	"notify_owner":       "Sent you a notification",
 	"page_create":        "Made a page",
 	"page_update":        "Updated a page",
 	"page_get":           "Read a page",
