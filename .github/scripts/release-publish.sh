@@ -3,11 +3,13 @@
 # `release` job in .github/workflows/ci.yml; tested by tests/release-publish-test.sh
 # with a fake `gh`.
 #
-#   release-publish.sh <tag> <dist-dir> <notes-header-file>
+#   release-publish.sh <tag> <dist-dir> <notes-file>
 #
-# No release for the tag: create it with every asset in <dist-dir>, GitHub's
-# generated notes (the PRs merged since the previous release tag) under the
-# header file, and --verify-tag (never creates a tag that was not pushed).
+# No release for the tag: create it with every asset in <dist-dir>, <notes-file>
+# as its notes, whole (scripts/release-notes.py: the PRs merged since the
+# previous release tag, grouped, with the install block), and --verify-tag
+# (never creates a tag that was not pushed). GitHub's own generated notes are
+# NOT added: they would list the same PRs a second time, ungrouped.
 #
 # A release that EXISTS — a re-pushed tag, a re-run, or an attempt that died
 # half-way — is COMPLETED, never replaced:
@@ -28,10 +30,10 @@
 set -euo pipefail
 
 die() { echo "release-publish: $1" >&2; exit "${2:-1}"; }
-[ $# -eq 3 ] || die "usage: $0 <tag> <dist-dir> <notes-header-file>" 2
-tag="$1"; dist="$2"; header="$3"
+[ $# -eq 3 ] || die "usage: $0 <tag> <dist-dir> <notes-file>" 2
+tag="$1"; dist="$2"; notes="$3"
 [ -d "$dist" ] || die "no dist directory $dist" 2
-[ -f "$header" ] || die "no notes header $header" 2
+[ -s "$notes" ] || die "no notes in $notes" 2
 
 names_in_dist() { (cd "$dist" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort); }
 
@@ -70,8 +72,7 @@ else
   gh release create "$tag" "${files[@]}" \
     --verify-tag \
     --title "muster $tag" \
-    --notes-file "$header" \
-    --generate-notes
+    --notes-file "$notes"
 fi
 
 published="$(gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort)"
