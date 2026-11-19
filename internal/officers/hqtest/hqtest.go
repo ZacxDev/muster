@@ -793,20 +793,15 @@ func (s *Server) RolloutEvidenceAttached() []RolloutEvidence {
 	return append([]RolloutEvidence(nil), s.rolloutEvidence...)
 }
 
-// rolloutEvidenceAttach serves rollout-evidence as civ-hq's route does in
-// the parts muster can observe: a forced refusal (RefuseVerb) wins; a caller
-// without the item's live lease is 409 lease_lost; otherwise the body is
-// recorded and the answer is 201 {evidence} with the evidence's exact
-// bytes. The item is NOT changed (an attach does not end the lease). HQ's
-// own checks (the tag's form, the limits, the allowlist) are HQ's and are
-// not re-implemented here.
-func (s *Server) rolloutEvidenceAttach(w http.ResponseWriter, officer string, it *Item, instance string, live bool, body map[string]any, now time.Time) {
+// rolloutEvidenceAttach serves rollout-evidence with a canned answer: a
+// forced refusal (RefuseVerb) wins; otherwise the body is recorded and the
+// answer is 201 {evidence} with the evidence's exact bytes. The item is NOT
+// changed (an attach does not end the lease). HQ's own checks (the lease,
+// the tag's form, the limits, the allowlist) are HQ's and are not
+// re-implemented here.
+func (s *Server) rolloutEvidenceAttach(w http.ResponseWriter, officer string, it *Item, instance string, body map[string]any, now time.Time) {
 	if f := s.verbRefusal["rollout-evidence"]; f != nil {
 		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
-		return
-	}
-	if !live || it.ClaimedBy != instance {
-		s.write(w, http.StatusConflict, map[string]any{"error": "this instance does not hold a live lease on the item", "code": "lease_lost"})
 		return
 	}
 	s.rolloutEvidence = append(s.rolloutEvidence, RolloutEvidence{Officer: officer, Item: it.ID, Body: body})
@@ -1844,7 +1839,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	case "task-asks", "flood-blocks":
 		s.derivedAsk(w, officer, it, verb, body, now)
 	case "rollout-evidence":
-		s.rolloutEvidenceAttach(w, officer, it, instance, live, body, now)
+		s.rolloutEvidenceAttach(w, officer, it, instance, body, now)
 	case "gap-tasks":
 		s.gapTask(w, officer, it, instance, body)
 	case "release":

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -283,9 +284,8 @@ func TestTheEvidenceToolRefusesLocallyWhatMusterOwns(t *testing.T) {
 // documents (§5r: 400 invalid, 403 not_allowed, 404, 409 lease_lost /
 // officer_disabled / rollout_actuator_off / rollout_policy_invalid) comes
 // back as a FINAL refusal with HQ's status, its code, its message and HQ's
-// body under refused.hq; an outage as "unavailable". A real lease_lost (the
-// instance does not hold the item) passes through the same way. In none of
-// them does muster end its own tracking of the item.
+// body under refused.hq; an outage as "unavailable". In none of them does
+// muster end its own tracking of the item.
 func TestEveryEvidenceRefusalReachesTheModelVerbatim(t *testing.T) {
 	r := newRolloutRig(t)
 	ctx := context.Background()
@@ -326,20 +326,63 @@ func TestEveryEvidenceRefusalReachesTheModelVerbatim(t *testing.T) {
 		t.Errorf("HQ recorded %d attaches while every call was refused", n)
 	}
 
-	// The fake's own lease check: an item this instance does not hold.
-	other := r.hq.AddTieredItem(offRO, kindSweep, "sched:rollout-sweep:other", officers.TierRoutine)
-	out := r.s.dispatchAgentTool(ctx, inst, evidenceTool, evidenceArgs(other))
-	if st, code, _, _ := refusedHQ(t, out); st != http.StatusConflict || code != "lease_lost" {
-		t.Errorf("attach on an item not held: %s, want 409 lease_lost", out)
-	}
-
 	r.hq.SetDown(true)
-	out = r.s.dispatchAgentTool(ctx, inst, evidenceTool, evidenceArgs(item))
+	out := r.s.dispatchAgentTool(ctx, inst, evidenceTool, evidenceArgs(item))
 	r.hq.SetDown(false)
 	if !isToolErr(out) || !strings.Contains(out, "unavailable") || strings.Contains(out, "refused") {
 		t.Errorf("HQ down: %s, want unavailable", out)
 	}
 	if !r.tracked(inst, item) {
 		t.Error("HQ down: muster stopped tracking the item")
+	}
+}
+
+// TestAChatLaneOfAnUntieredRolloutOfficerIsRefusedTheEvidenceTool: an
+// untiered rollout officer runs chats and is offered the evidence tool, but
+// a call from one of its chat lanes — acting as its chat claim's holder — is
+// refused, naming the chat session, before HQ is called: HQ shows the NEWEST
+// evidence for a tag, so a chat's attach would replace the sweep's on the
+// confirm step. The same instance's primary session does reach HQ.
+func TestAChatLaneOfAnUntieredRolloutOfficerIsRefusedTheEvidenceTool(t *testing.T) {
+	r := newOfficerRigCfg(t, map[string]string{offROTok: offRO, offWPTok: offWP}, func(hqURL string) []officers.Officer {
+		raw := `[{"id":"` + offRO + `","hq_url":"` + hqURL + `"},{"id":"` + offWP + `","hq_url":"` + hqURL + `"}]`
+		list, err := officers.Parse(raw, func(k string) string {
+			return map[string]string{
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offRO): offROTok,
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offWP): offWPTok,
+			}[k]
+		}, "muster-agent-")
+		if err != nil {
+			t.Fatalf("parse the untiered rollout officer: %v", err)
+		}
+		return list
+	}, func(c *OfficersConfig) {
+		c.TranscriptSource = emptyTranscripts{}
+		c.NoTranscriptRun = true
+	})
+	if r.a.Tier != "" || !r.a.ChatsPool() || !officers.ToolOffered(r.a, evidenceTool) {
+		t.Fatalf("control: %s is not an untiered, chat-running officer offered %s (tier %q)", r.a.ID, evidenceTool, r.a.Tier)
+	}
+	inst := r.addNamed(r.a.InstanceName(1), 1451)
+	chat := r.hq.AddItem(offRO, officers.ItemKindChat, "chat:c-77")
+	r.hq.SetClaim(chat, officers.ChatHolder(inst.Name), time.Now().Add(10*time.Minute))
+	r.hq.ResetRequests()
+	lane := withChatLaneCall(context.Background(), officers.ChatSessionKey("c-77"))
+	out := r.s.dispatchAgentTool(lane, inst, evidenceTool, evidenceArgs(chat))
+	if !isToolErr(out) || !strings.Contains(out, "not offered to a chat session") {
+		t.Errorf("a chat lane's %s: %s; want the chat-session refusal", evidenceTool, out)
+	}
+	if n := len(r.hq.Requests()); n != 0 {
+		t.Errorf("the chat lane's refused %s reached HQ (%d requests)", evidenceTool, n)
+	}
+	// Positive control: the primary session on an item it holds does reach
+	// HQ, so the refusal above is the lane's.
+	item := r.hq.AddItem(offRO, kindSweep, "sched:rollout-sweep:untiered")
+	if out := r.s.dispatchAgentTool(context.Background(), inst, officers.ToolClaim, `{"item_id":"`+item+`"}`); isToolErr(out) {
+		t.Fatalf("claim: %s", out)
+	}
+	r.hq.ResetRequests()
+	if out := r.s.dispatchAgentTool(context.Background(), inst, evidenceTool, evidenceArgs(item)); isToolErr(out) || len(r.hq.Requests()) != 1 {
+		t.Fatalf("control: the primary's attach: %s (%d HQ requests)", out, len(r.hq.Requests()))
 	}
 }

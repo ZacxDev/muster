@@ -1811,6 +1811,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		case officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
 			// these end the holder's lease: the chat's item is the runner's
 			officers.ToolAskPerson, officers.ToolTaskAsk, officers.ToolFloodBlockPropose,
+			// rollout evidence is the sweep's: HQ shows the NEWEST for a tag to
+			// the person starting a rollout, so a chat's attach would replace it
+			officers.ToolRolloutEvidenceAttach,
 			// a ship action is bound to the item the primary holds, or writes
 			// to GitHub on the officer's behalf: never a chat session's
 			officers.ToolMergePR, officers.ToolTagRelease, officers.ToolMarkReady, officers.ToolShepherdReady,

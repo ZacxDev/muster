@@ -1046,8 +1046,10 @@ A verified call carrying an officer chat's key is that lane's:
 - it takes no queue work: `officer_claim` (claim-next and by id),
   `officer_heartbeat`, `officer_complete`, `officer_release`, and the tools
   that end their holder's lease (`officer_ask_person`, `officer_task_ask`,
-  `officer_flood_block_propose`) are
-  refused, naming the chat. muster holds and ends the chat's item;
+  `officer_flood_block_propose`) are refused, naming the chat, and so is
+  `officer_rollout_evidence_attach` (the sweep's evidence: HQ shows the
+  newest for a tag, so a chat's attach would replace it). muster holds and
+  ends the chat's item;
 - it does not ship: `officer_merge_pr`, `officer_tag_release`,
   `officer_mark_ready`, `officer_shepherd_mark_ready`,
   `officer_shepherd_merge_ask` and `officer_public_branch` are bound to the
@@ -1727,8 +1729,10 @@ repository allowlist and the refusal codes — is HQ's ("The evidence" in §5r).
   officer's **routine pool** (and an untiered one), never its judgement pool:
   HQ's rollout policy tiers the hourly sweep, the item that attaches, routine,
   and the charter's judgement work only escalates a failed result. Refused at
-  dispatch for any other agent. HQ enforces the type **policy**
-  (`rollout_actuator`, with its repository allowlist) and the **lease** (409
+  dispatch for any other agent, and refused to a chat session of an
+  untiered rollout officer ([Chat sessions](#chat-sessions)): HQ shows the
+  newest evidence for a tag, so a chat's attach would replace the sweep's.
+  HQ enforces the type **policy** (`rollout_actuator`, with its repository allowlist) and the **lease** (409
   `lease_lost`: the instance must hold the item's live lease).
 - **It does NOT end the lease and starts nothing.** The instance keeps
   working the item and completes it as usual; the result's `note` says that
