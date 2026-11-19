@@ -148,6 +148,9 @@ type AgentDetailView struct {
 	// chat only, nil on every other agent's — which keeps the header's ＋ and
 	// draws no bar.
 	ChiefChat *ChiefChatBar
+	// FocusComposer: the server asks for the cursor in #chat-input on arrival
+	// (the side chat route's answer: ComposerFocusParam, chief_chats.go).
+	FocusComposer bool
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
@@ -315,6 +318,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
+				// A chief's chats, as a strip of chips under the header
+				// (chief_chats.go): switch, "+", and each chip's ⋯.
+				chiefPageStrip(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
 				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
 				// the (server-rendered) transcript is clamped and scrolled to its end
@@ -363,11 +369,11 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Div(ID("task-modal")),
 				// The agent's focus history (focus_history.go): a dialog the header's
 				// focusHistoryButton opens. The chief's page has the mirrored
-				// session's sheet instead (chat_index.go), its Chats tab first and
-				// its focus history a tab.
+				// session's sheet instead (chat_index.go): Your messages and Focus
+				// history. Its chats are the strip under the header, not a tab.
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
-				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chiefChatsPanel(v), chatIndexPartialPage)),
+				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chatIndexPartialPage)),
 				g.If(v.ChiefChat != nil, chatIndexScript()),
 				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
@@ -489,16 +495,16 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 		gap = "gap-1 "
 	}
 	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
-	// header has (chatIndexButton), opening the same sheet — with its Chats tab
-	// first, where the chief's chats are switched, made and archived
-	// (chief_chats.go), then Your messages and Focus history. No ＋, no clock,
-	// no target: the operator asked for the same icons a mirrored session has,
-	// and for the chat management in one place. Every other agent is unchanged.
+	// header has (chatIndexButton), opening the same sheet — Your messages and
+	// Focus history. No ＋, no clock, no target: the operator asked for the same
+	// icons a mirrored session has. The chief's chats are switched, made and
+	// archived on the strip of chips under the header (chief_chats.go), never in
+	// a sheet. Every other agent is unchanged.
 	if v.ChiefChat != nil {
 		return Div(
 			g.Attr("data-header-tools", ""),
 			Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
-			chatIndexButtonNamed("chat-log", chatIndexChatsLabel),
+			chatIndexButton("chat-log"),
 		)
 	}
 	n := 2
@@ -980,8 +986,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		//
-		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the header sheet's Chats tab
-		// (chiefChatsPanel), and nothing there opens a drawer.
+		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the strip of chips under its
+		// header (chiefPageStrip), and nothing there opens a drawer.
 		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
 		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
 		// session does, with the chip in its header (foldedHeader); see below.
@@ -990,9 +996,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
-		// 🔴 NO CHAT BAR OVER A CHIEF'S TRANSCRIPT: its chats are managed in the
-		// header sheet's Chats tab (page) or under the panel's thread list, and
-		// its context chip is in the header (chief_chats.go).
+		// 🔴 NO CHAT BAR IN A CHIEF'S CHAT PANE: its chats are the strip of chips
+		// under the page's header (chiefPageStrip) or over the panel's pane
+		// (chiefPanelBody), and its context chip is in the header (chief_chats.go).
 		Div(
 			ID("chat-log"),
 			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the
@@ -1152,6 +1158,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 				// the paper-plane icon button, named by aria-label and title.
 				Textarea(
 					ID("chat-input"),
+					g.If(v.FocusComposer, g.Attr("autofocus", "")),
 					Name("text"),
 					Rows("1"),
 					g.Attr("enterkeyhint", "send"),
@@ -1195,6 +1202,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// restored draft is in the box, sized, before the pane is painted.
 		composerFitScript(),
 		composerDraftScript(),
+		g.If(v.FocusComposer, composerFocusScript(v.Surface)),
 		// The session switcher, below the input (switcher.go): the page's
 		// only — the chief panel is a pane inside another page. After the
 		// draft's script, which must size a restored draft before anything
@@ -3100,4 +3108,18 @@ func agentChatScript(name string) g.Node {
   }
 })();
 `))
+}
+
+// composerFocusScript puts the cursor in #chat-input, after the pane is laid
+// out (the page's form is invisible until window.__cgLayoutLog, so autofocus
+// alone can miss it, and an htmx swap — the chief panel's body — never honours
+// autofocus). On the page it also drops ComposerFocusParam from the address,
+// so a reload of it does not take the focus again. Drawn only when the server
+// set FocusComposer.
+func composerFocusScript(surface ChatSurface) g.Node {
+	drop := ""
+	if surface == ChatSurfacePage {
+		drop = `try { var u = new URL(location.href); if (u.searchParams.has('` + ComposerFocusParam + `')) { u.searchParams.delete('` + ComposerFocusParam + `'); history.replaceState(history.state, '', u); } } catch (e) {}`
+	}
+	return Script(g.Raw(`(function () { var i = document.getElementById('chat-input'); if (i) i.focus({ preventScroll: true }); ` + drop + ` })();`))
 }
