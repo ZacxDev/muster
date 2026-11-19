@@ -38,7 +38,7 @@ import (
 // (chief_chats.go).
 
 // chatIndexLabel is the index control's and sheet's name.
-const chatIndexLabel = "Your messages and focus history"
+const chatIndexLabel = "Your messages and what it worked on"
 
 // chatIndexButton is the header control that opens the index for the log with
 // id logID.
@@ -81,7 +81,7 @@ func chatIndexSheetWith(historyPath, tabsKey, partial string) g.Node {
 	const label = chatIndexLabel
 	tabs := Tabs("chat-index-tabs", tabsKey, "Session index",
 		Tab{ID: "messages", Label: "Your messages", Panel: chatIndexMessages(partial)},
-		Tab{ID: "focus", Label: "Focus history", Panel: focusHistoryList(historyPath)},
+		Tab{ID: "focus", Label: FocusHistoryLabel, Panel: focusHistoryList(historyPath)},
 	)
 	return g.Group{Div(
 		ID("chat-index"),

@@ -180,7 +180,7 @@ func skeletonGroups() []FleetGroupView {
 var fleetGroupKeys = []string{"needs_you", "waiting_ci", "working", "done", "stalled"}
 
 var fleetGroupLabels = map[string]string{
-	"needs_you": "Needs you", "waiting_ci": "Waiting on CI", "working": "Working", "done": "Done, can wrap", "stalled": "Stalled",
+	"needs_you": "Needs you", "waiting_ci": "Waiting on checks", "working": "Working", "done": "Done", "stalled": "Stalled",
 }
 
 // RenderFleetDigest writes the card (the slot's content).

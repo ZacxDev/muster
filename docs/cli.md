@@ -73,6 +73,12 @@ Where it is read from:
 A **tenant** is a separate muster server, at its own URL, with its own
 credential. On this host each one is an env file:
 
+⚠ **Not on Windows.** The Windows CLI refuses tenant files (it cannot open
+them without following a symlink, nor check that only you can read them), so
+`muster tenant add` there writes a file that every command selecting that tenant refuses. On
+Windows use the default `~/.muster/muster.env`, or `--api-url` and
+`MUSTER_API_URL` / the token variables per call; WSL (Linux) has tenants.
+
 ```text
 ~/.muster/muster.env          # tenant "default": today's file, unchanged
 ~/.muster/tenants/work.env    # tenant "work" (0600; the directory 0700)

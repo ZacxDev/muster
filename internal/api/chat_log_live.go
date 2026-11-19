@@ -85,6 +85,7 @@ func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, ses
 	v.TurnInFlight = s.sessionTurns.inFlight(session.SessionKey)
 	v.DispatchCards = s.dispatchCardsFor(ctx, v.Messages)
 	v.PageCards = s.pageCardsFor(ctx, v.Messages)
+	v.RouteAnswers = s.routeAnswerCardsFor(ctx, session.AgentID, v.Messages)
 	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
 	v.Mentions = s.mentionIndex(ctx)
 	for _, l := range v.Messages {

@@ -7,6 +7,10 @@ account anywhere and no `.env` to fill in. Your phone comes later, in one step:
 You need Docker with Compose v2 and tmux, on Linux or macOS (amd64 or arm64);
 the full list, checked for you, is
 [INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine).
+On Windows only the `muster` CLI runs (Scoop, or the release's zip;
+`muster-mirror` needs tmux): use WSL for this page. Every platform and package
+a release publishes, and how to verify a download, is in
+[releases.md](releases.md).
 
 ## One line
 
@@ -15,7 +19,9 @@ curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh
 ```
 
 It starts the server in Docker (in `~/muster`), installs `muster-mirror` and
-the `muster` CLI in `~/.local/bin`, runs `muster-mirror` as a user service so
+the `muster` CLI in `~/.local/bin` (on Linux, `MUSTER_PACKAGE=deb` or `rpm`
+installs the release's system packages instead, asking before it uses sudo:
+[releases.md](releases.md#installing-by-platform)), runs `muster-mirror` as a user service so
 this machine's tmux windows show up, and finishes with `muster doctor`. It
 prints the address and the sign-in password at the end.
 

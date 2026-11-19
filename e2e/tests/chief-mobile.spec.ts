@@ -534,7 +534,7 @@ for (const vp of [
       await page.locator('header #chat-index-open').click();
       const sheet = page.locator('#chat-index');
       await expect(sheet).toBeVisible();
-      await expect(sheet.locator('[role="tab"]')).toHaveText(['Your messages', 'Focus history']);
+      await expect(sheet.locator('[role="tab"]')).toHaveText(['Your messages', 'What it worked on']);
       await expect(sheet.locator('[data-chief-chats], [data-chief-side-chat], [data-chief-chat-row]')).toHaveCount(0);
       await sheet.locator('[role="tab"][data-tab="focus"]').click();
       await expect(sheet.locator('#chat-index-tabs-panel-focus [data-focus-history-list]')).toBeVisible();

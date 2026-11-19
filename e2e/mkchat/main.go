@@ -57,7 +57,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -93,19 +92,8 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
-	// Every row is the operator's, as the seed's are (row-level security) —
-	// or, with MUSTER_E2E_TEAM=<team id>, that TEAM's (a team's chief, whose
-	// one shared room its members see: the chief-mobile spec's).
+	// Every row is the operator's, as the seed's are (row-level security).
 	ctx = authz.Operator(ctx)
-	if t := os.Getenv("MUSTER_E2E_TEAM"); t != "" {
-		team, err := strconv.ParseInt(t, 10, 64)
-		if err != nil || team <= 1 {
-			return fmt.Errorf("MUSTER_E2E_TEAM %q: not a team id", t)
-		}
-		ctx = authz.WithPrincipal(context.Background(), authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent})
-		ctx, cancel = context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-	}
 	as := agents.NewPG(pool)
 
 	if os.Getenv("MUSTER_E2E_DELETE") == "1" {

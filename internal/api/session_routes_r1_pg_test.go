@@ -42,11 +42,11 @@ func (f *flakyRoutes) RelayRoute(ctx context.Context, routeID, agentName string,
 	return f.RouteStore.RelayRoute(ctx, routeID, agentName, approve)
 }
 
-func (f *flakyRoutes) SetRouteQueued(ctx context.Context, routeID string, id int64) error {
+func (f *flakyRoutes) SetRouteQueued(ctx context.Context, routeID string, id int64, sha string) error {
 	if f.failQueued.Load() {
 		return errFlaky
 	}
-	return f.RouteStore.SetRouteQueued(ctx, routeID, id)
+	return f.RouteStore.SetRouteQueued(ctx, routeID, id, sha)
 }
 
 // chiefSession gives the chief a conversation for the routes' plugin, so a

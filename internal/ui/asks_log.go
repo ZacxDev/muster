@@ -42,8 +42,22 @@ const (
 	// beside it (a heading may hold only text, so the ⓘ is its sibling).
 	AsksLogSectionHeadClass = "flex items-center justify-between gap-2"
 	// AsksLogFactClass is one fact on a facts line: kept whole, so the line
-	// wraps between facts, never inside one ("median 31s" never splits).
+	// wraps between facts, never inside one ("median 31s" never splits). 🔴
+	// Every fact after the first carries its "· " separator INSIDE its own
+	// unit ("· median 31s"), so a wrap starts the next line with the
+	// separator and never leaves one dangling at the end of a line (it did at
+	// a phone's width: "… always “continue” ·" / "median 11s").
 	AsksLogFactClass = "whitespace-nowrap"
+	// AsksLogSubClass is a log row's muted line under its title: where it was
+	// asked, then how long ago. 🔴 THE AGE IS ALWAYS SEEN: the place is the
+	// part that gives way (AsksLogWhereClass, its ellipsis inside it) and the
+	// age never shrinks (AsksLogAgeClass). It was one truncated line, age
+	// last, so a long place cut the age off ("… acme/api · …").
+	AsksLogSubClass = "flex min-w-0 items-baseline gap-1 text-xs text-fg2"
+	// AsksLogWhereClass is the sub line's place: it shrinks and truncates.
+	AsksLogWhereClass = "min-w-0 truncate"
+	// AsksLogAgeClass is the sub line's age ("· 15m ago"): it never shrinks.
+	AsksLogAgeClass = "shrink-0 whitespace-nowrap"
 	// AsksLogClampClass clamps a question to three lines in the list.
 	AsksLogClampClass = "line-clamp-3 whitespace-pre-wrap break-words text-sm text-fg"
 	// AsksLogFactsClass is a card's secondary line that WRAPS (a repeated

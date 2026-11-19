@@ -4,6 +4,7 @@
 // Log tab has a summary, a repeated question and a row whose text expired.
 //
 //	DATABASE_URL=…_e2e go run ./e2e/askfix seed <owner>    prints the expired row's id
+//	DATABASE_URL=…_e2e go run ./e2e/askfix wraps <owner>   long lines (seedWraps); prints its newest row's id
 //	DATABASE_URL=…_e2e go run ./e2e/askfix clear <owner>
 //
 // The rows (all synthetic), latencies pairwise distinct:
@@ -47,7 +48,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) != 2 {
-		return fmt.Errorf("usage: askfix seed <owner> | clear <owner>")
+		return fmt.Errorf("usage: askfix seed <owner> | wraps <owner> | clear <owner>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -73,6 +74,13 @@ func run(args []string) error {
 	case "clear":
 		_, err := pool.Exec(as, `DELETE FROM asks`)
 		return err
+	case "wraps":
+		id, err := seedWraps(as, asklog.NewPG(pool), time.Now())
+		if err != nil {
+			return err
+		}
+		fmt.Println(id)
+		return nil
 	case "seed":
 		id, err := seed(as, asklog.NewPG(pool), time.Now())
 		if err != nil {
@@ -82,6 +90,40 @@ func run(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown command %q", args[0])
+}
+
+// seedWraps is the wrap spec's log (asks-log.spec.ts, "long lines"): one
+// question asked three times from a LONG place — "Keep going with the plan?",
+// answered "continue with the plan" by the owner after 9 s and 14 s and by the
+// chief after 11 s — so its facts line, "3 times · you answered 2 · always
+// “continue with the plan” · median 11s", wraps at a phone's width, and each
+// row's place, "ratelimit-backoff-and-retry-budget @
+// work-laptop.corp.example.org · acme-corporation/api-gateway-monorepo", is
+// wider than its card at a phone's AND a desktop's width. It prints the newest
+// row's id.
+func seedWraps(ctx context.Context, st *asklog.PG, now time.Time) (int64, error) {
+	const q, answer = "Keep going with the plan?", "continue with the plan"
+	var newest int64
+	for i, r := range []struct {
+		ago, lat time.Duration
+		by       string
+	}{
+		{45 * time.Minute, 9 * time.Second, asklog.ByOwner},
+		{30 * time.Minute, 11 * time.Second, asklog.ByChief},
+		{15 * time.Minute, 14 * time.Second, asklog.ByOwner},
+	} {
+		at := now.Add(-r.ago)
+		id, _, err := st.Open(ctx, asklog.Ask{Kind: asklog.KindPlainText, Runtime: asklog.RuntimeClaudeCode, Host: "work-laptop.corp.example.org",
+			TmuxSession: "ratelimit-backoff-and-retry-budget", Repo: "acme-corporation/api-gateway-monorepo", Question: q, AskedAt: at})
+		if err != nil {
+			return 0, fmt.Errorf("open %d: %w", i, err)
+		}
+		if _, ok, err := st.Resolve(ctx, id, asklog.Resolution{Outcome: asklog.OutcomeAnswered, AnsweredBy: r.by, Answer: answer, At: at.Add(r.lat)}); err != nil || !ok {
+			return 0, fmt.Errorf("resolve %d: ok=%v err=%v", i, ok, err)
+		}
+		newest = id
+	}
+	return newest, nil
 }
 
 func seed(ctx context.Context, st *asklog.PG, now time.Time) (int64, error) {
