@@ -380,3 +380,58 @@ func TestTheOfferClaimsNoOrigin(t *testing.T) {
 		t.Errorf("Not now does not take the focus: %s", offer)
 	}
 }
+
+// TestTheServerRowsShowANameAndNoAddressLine (jargon audit F028): a Manage
+// servers row has no second line for the server's address
+// ([data-server-host]); it carries the address ⓘ instead — the shared
+// InfoSheet, with a Copy and an (empty, script-filled) code row — and the
+// menu row, a link, carries no ⓘ (a button inside a link is invalid).
+//
+// The menu row's address line is the ONE exception, by the operator's
+// decision on #877 (D3): it is drawn HIDDEN, and servers.js shows it only
+// where two entries' names collide, or the two would read the same
+// (TestTheListDrawsNoAddressUnlessNamesCollide; e2e "two servers with the
+// same name"). So the menu template's every address line must start hidden.
+func TestTheServerRowsShowANameAndNoAddressLine(t *testing.T) {
+	menu := renderString(t, serverSwitcher(Brand{Name: "Team Example"}))
+	dialogs := renderString(t, serverSwitcherDialogs())
+	if strings.Contains(dialogs, "data-server-host") {
+		t.Errorf("dialogs: a Manage row still has an address line (data-server-host)")
+	}
+	if n, hidden := strings.Count(menu, "data-server-host"), strings.Count(menu, `data-server-host="" hidden`); n != hidden || n != 1 {
+		t.Errorf("menu: %d address lines, %d of them hidden; want one, hidden (shown only on a name collision)", n, hidden)
+	}
+	i := strings.Index(dialogs, `id="server-manage-row-tpl"`)
+	if i < 0 {
+		t.Fatal("no Manage row template")
+	}
+	row := dialogs[i:]
+	row = row[:strings.Index(row, "</template>")]
+	want := InfoSheetHTML(serverAddressSheet())
+	if !strings.Contains(row, want) {
+		t.Errorf("the Manage row lacks the address sheet:\n%s", row)
+	}
+	for _, part := range []string{`data-info-code=""`, `data-info-copy=""`, `popovertarget="` + ServerAddressSheetTpl + `"`} {
+		if !strings.Contains(row, part) {
+			t.Errorf("the Manage row's sheet lacks %s", part)
+		}
+	}
+	j := strings.Index(menu, `id="server-item-tpl"`)
+	item := menu[j:]
+	item = item[:strings.Index(item, "</template>")]
+	if strings.Contains(item, "data-info-open") {
+		t.Errorf("the menu row (a link) carries an ⓘ button: %s", item)
+	}
+}
+
+// TestTheManageRowsAddressSheetIsTheOneServersJSRenames: servers.js renames
+// the row template's sheet by the id the template draws it with.
+func TestTheManageRowsAddressSheetIsTheOneServersJSRenames(t *testing.T) {
+	src, err := os.ReadFile("../../web/static/servers.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "var ADDRESS_TPL = '"+ServerAddressSheetTpl+"';") {
+		t.Fatalf("servers.js does not rename the sheet the template draws (%q)", ServerAddressSheetTpl)
+	}
+}

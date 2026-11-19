@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
@@ -122,6 +123,18 @@ type outboundFixture struct {
 	onHost       bool
 	officerExtra string
 	denyWords    []string
+	// usage, when set, is the usage collector's source (never run on its
+	// own: a test ticks or flushes it).
+	usage usage.Source
+	// moreOfficers, when set, is more MUSTER_OFFICERS entries (",{…}"),
+	// declared after the world's own; it may make what they need (a team).
+	moreOfficers func(t *testing.T, f *connFixture) string
+	// provisioner and gateway, when set, replace the stub provisioner and
+	// the (absent) gateway — set BEFORE anything starts: the world's own
+	// instance start dispatches on a goroutine that reads them
+	// (createAndDispatchAgent), so a test must never swap them after.
+	provisioner Provisioner
+	gateway     Gateway
 }
 
 func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboundWorld {
@@ -154,7 +167,11 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		_, _ = f.pool.Exec(sys, `DELETE FROM audit_log WHERE user_id = $1`, other)
 		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, other)
 	})
-	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"` + fx.officerExtra + `}]`
+	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"` + fx.officerExtra + `}`
+	if fx.moreOfficers != nil {
+		decl += fx.moreOfficers(t, f)
+	}
+	decl += `]`
 	if onHost {
 		decl = `[{"id":"` + builtinOfficerID + `","backend":"builtin","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `","connectors":["pg-example"]` + fx.officerExtra + `}]`
 	}
@@ -169,6 +186,12 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 	ext := Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
 		Attention: attention.NewPG(f.pool), Plugins: ps, Users: users.NewPG(f.pool),
 		Uploads: &uploads.Service{Objects: objs}, APITokens: apitokens.NewPG(f.pool)}
+	if fx.provisioner != nil {
+		ext.Provisioner = fx.provisioner
+	}
+	if fx.gateway != nil {
+		ext.Gateway = fx.gateway
+	}
 	var hm *hostOfficerMirror
 	if onHost {
 		// The Compose shape: no provisioner, no kinds; a mirror hub.
@@ -188,6 +211,9 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		t.Fatal(err)
 	}
 	ocfg := OfficersConfig{Officers: list, InstallSession: discardSession, Builtin: store}
+	if fx.usage != nil {
+		ocfg.UsageSource, ocfg.NoUsageRun = fx.usage, true
+	}
 	if onHost {
 		ocfg.InstallSession, ocfg.HostSpawns = nil, officers.NewMemHostSpawnStore()
 	}

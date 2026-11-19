@@ -59,7 +59,7 @@ exactly as if the person had typed its address.
     `referrerpolicy="no-referrer"`. A 404, or a server that is down, leaves
     its monogram and its label. Logos are requested only while the list is on
     screen;
-  - **the label** is the person's own, else the host. Another server's
+  - **the label** is the person's own, else the host name. Another server's
     display name is not shown: reading it would need the cross-origin read
     this decision removes. (The server in view still shows its own name,
     which its page already has.);
@@ -166,8 +166,8 @@ The menu lists the servers (the one in view marked **In view**), each as its
 picture (logo, else monogram) and its name, then **Add server** and **Manage
 servers**. It shows **no address**, except where two entries have the same
 name (compared without case): only those show their host under the name, so
-they can still be told apart. Manage servers keeps every address (it is where
-labels are edited).
+they can still be told apart. Manage servers rows show the label too, with
+the exact address behind each row's ⓘ (Copy).
 
 A **monogram** is the first character of each of the first two words of the
 name, on a palette colour picked by the name's FNV-1a hash: the same name is
@@ -211,10 +211,31 @@ layout-shift gate, `cls.spec.ts`).
   list (a hash of the origin picks the palette slot; a clash takes the next
   free slot, in origin order), so a server keeps its colour from one list to
   the next when the lists hold the same servers.
-- The label is the person's own, else the host (and the port when it is not
-  the default). The server in view's own entry falls back to its own display
-  name before its host. A label is at most 64 characters, with control and
-  text-direction characters removed, and is drawn as text, never markup.
+- The label is the person's own, else the host name, with no scheme and no
+  port — the port only when another server on the list has the same host
+  name, to tell the two apart. The server in view's own entry falls back to
+  its own display name, then "This server", never its address. A label is at
+  most 64 characters, with control and text-direction characters removed,
+  and is drawn as text, never markup.
+- A row shows the label only. The exact address is behind the ⓘ on each
+  Manage servers row (the shared details sheet), with Copy. The one
+  exception is the menu: where two entries' labels collide (case aside),
+  each shows its host under it, so the two can be told apart.
+- A typed address must look like one: a host that is not DNS labels
+  (letters, digits, `-`, `_`) or an IP is refused ("That doesn't look like a
+  server address."). One word with no dot, no port and no scheme (other than
+  `localhost`) is refused with "That doesn't look like a server address. If
+  it is one, add https:// in front of it." (`acme:40001` and
+  `https://acme` are accepted). This is checked by servers.js itself,
+  not left to the browser's URL parser: Chromium's percent-encodes a space in
+  a host where the standard refuses it, which once listed "not a server" as
+  `https://not%20a%20server`.
+- A trailing dot on a host is dropped, so `atlas.example.` and
+  `atlas.example` are one server.
+- 🔴 A SAVED entry is never lost to a typing rule newer than it: on load, a
+  trailing-dot entry is migrated to its dot-less form with its label, and a
+  host the typing rules would refuse is kept. Only junk (a space or `%` in the
+  host) is dropped.
 - Another server's logo is `<origin>/brand/icon-192.png`, built from the
   stored origin alone, requested only while the list is shown.
 

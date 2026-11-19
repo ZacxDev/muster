@@ -452,6 +452,9 @@ type Server struct {
 	// officerStore is the built-in officer backend's store (EnableOfficerStore);
 	// nil while it is off.
 	officerStore *builtin.Store
+	// officerChats is the operator chats' turns in flight on this replica
+	// (officer_operator_chat.go).
+	officerChats operatorChats
 	// spawnLender is the host spawns' team lending (EnableHostSpawnLending,
 	// officer_spawn_share.go); nil with no database.
 	spawnLender officers.HostSpawnLender

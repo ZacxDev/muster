@@ -40,6 +40,9 @@ const A = baseURL;
 const A2 = `http://127.0.0.1:${port}`;
 const STUB = `http://127.0.0.1:${serverSwitcherStubPort}`;
 const hostOf = (o: string) => new URL(o).host;
+// The name an unnamed other server is drawn with: its host name, no port
+// (jargon audit F028: no host:port in the top layer).
+const nameOf = (o: string) => new URL(o).hostname;
 const LOGO = '/brand/icon-192.png';
 
 // A w×h one-colour PNG (no binary fixture in the repo).
@@ -203,6 +206,19 @@ for (const vp of VIEWPORTS) {
       await expect(page.locator('#server-add-error')).toHaveText(/user name and password/);
       await expect(page.locator('#server-add')).toHaveJSProperty('open', true);
 
+      // 🔴 Jargon audit F029: words that are not an address are refused in
+      // plain words — twice, as the audit typed them — and the list, kept or
+      // drawn, gains nothing (Chromium's own parser percent-encoded them into
+      // an entry).
+      for (let n = 0; n < 2; n++) {
+        await page.locator('#server-add-input').fill('not a server');
+        await page.locator('#server-add-submit').click();
+        await expect(page.locator('#server-add-error')).toHaveText('That doesn\'t look like a server address.');
+        await expect(page.locator('#server-add')).toHaveJSProperty('open', true);
+      }
+      await expect(items(page)).toHaveCount(1);
+      expect(await stored(page)).toBeNull();
+
       // The stub, pasted with a path and a token in its query: kept as its origin.
       await page.locator('#server-add-input').fill(STUB + '/tasks?token=mst_synthetic_not_a_token');
       await page.locator('#server-add-submit').click();
@@ -210,10 +226,14 @@ for (const vp of VIEWPORTS) {
       await expect(page.locator('#server-switcher-toggle')).toBeFocused();
       await expect(items(page)).toHaveCount(2);
       const s = item(page, STUB);
-      // Its label is its host; its logo is drawn (a real decode, 32 px) from
-      // its own icon path, with no CORS header anywhere on the stub, in the
-      // monogram's place. No entry shows an address line: no names collide.
-      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
+      // Its label is its host name, and the row shows that and nothing else:
+      // no host:port line under it (jargon audit F028; the line is drawn
+      // only where two names collide, below). Its logo is drawn (a real
+      // decode, 32 px) from its own icon path, with no CORS header anywhere on
+      // the stub, in the monogram's place.
+      await expect(s.locator('[data-server-label]')).toHaveText(nameOf(STUB));
+      expect((await s.innerText()).replace(/\s+/g, ' ').trim()).toBe(nameOf(STUB));
+      expect((await page.locator('#server-switcher').innerText())).not.toContain(hostOf(STUB));
       await expect(s.locator('[data-server-host]')).toBeHidden();
       await expect(page.locator('#server-switcher-list [data-server-host]:visible')).toHaveCount(0);
       await expect(s.locator('[data-server-logo]')).toBeVisible();
@@ -263,7 +283,7 @@ for (const vp of VIEWPORTS) {
       await expect(s.locator('[data-server-monogram]')).toBeVisible();
       await expect(s.locator('[data-server-monogram]')).toHaveText('10');
       await expect(s.locator('[data-server-dot]')).toBeVisible();
-      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
+      await expect(s.locator('[data-server-label]')).toHaveText(nameOf(STUB));
 
       // The same server again: refused as a duplicate.
       await addServer(page, 'http://' + hostOf(STUB) + '/');
@@ -277,6 +297,30 @@ for (const vp of VIEWPORTS) {
       const row = manage.locator(`li[data-server-origin="${STUB}"]`);
       const selfRow = manage.locator(`li[data-server-origin="${A}"]`);
       await expect(selfRow.locator('[data-server-remove]')).toBeHidden();
+      // No address in the rows (F028): it is behind each row's ⓘ, with Copy.
+      expect(await manage.innerText()).not.toContain(hostOf(STUB));
+      await expect(row.locator('input')).toHaveAttribute('placeholder', nameOf(STUB));
+      const info = row.locator('[data-info-open]');
+      await expect(info).toHaveAttribute('aria-label', 'Address of ' + nameOf(STUB));
+      await info.click();
+      const sheet = row.locator('[data-info-sheet]');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('[data-info-code]')).toHaveText(STUB);
+      await expect(sheet.locator('[data-info-copy]')).toBeVisible();
+      // Each row's sheet is its own: unique ids, the trigger naming its sheet.
+      const ids = await manage.locator('[data-info-sheet]').evaluateAll((els) => els.map((e) => e.id));
+      expect(new Set(ids).size).toBe(2);
+      expect(await info.getAttribute('popovertarget')).toBe(await sheet.getAttribute('id'));
+      // Escape closes the sheet and nothing behind it: the dialog stays open,
+      // and so does the phone's drawer (the sidebar's own Escape used to shut
+      // it here, behind the dialog — and the focus the dialog's close later
+      // gave the toggle was lost at the end of that slide).
+      const drawerBefore = await page.locator('#sidebar-root').getAttribute('data-open');
+      if (vp.name === 'phone') expect(drawerBefore, 'CONTROL: the drawer is open on a phone').toBe('true');
+      await page.keyboard.press('Escape');
+      await expect(sheet).toBeHidden();
+      await expect(manage).toHaveJSProperty('open', true);
+      expect(await page.locator('#sidebar-root').getAttribute('data-open')).toBe(drawerBefore);
       await row.locator('input').fill('Work');
       await row.locator('input').press('Enter');
       await expect(s.locator('[data-server-label]')).toHaveText('Work');
@@ -287,20 +331,42 @@ for (const vp of VIEWPORTS) {
       expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('INPUT');
       await row.locator('input').fill('');
       await row.locator('input').press('Enter');
-      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
+      await expect(s.locator('[data-server-label]')).toHaveText(nameOf(STUB));
 
       // Remove it: the list is this server alone again.
       await row.locator('[data-server-remove]').click();
       await expect(manage.locator('li')).toHaveCount(1);
+      // A click in the dialog is not a click away from the menu behind it —
+      // even Remove, whose row is redrawn (its button detached) before the
+      // menu's click-away listener runs; that once shut the menu here.
+      await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'true');
       await manage.locator('[data-dialog-close]').click();
       await expect(manage).toHaveJSProperty('open', false);
       await expect(items(page)).toHaveCount(1);
       expect((await stored(page)).servers.map((x: { origin: string }) => x.origin)).toEqual([A]);
 
       // The keyboard: Escape closes the menu and gives focus back to its button.
+      // Escape closes the innermost overlay only: on a phone the drawer the
+      // menu sits in stays open (its own Escape closing too slid it shut and
+      // dropped the focus at the end of the slide — a timing-dependent red).
       await page.locator('#server-switcher-toggle').focus();
+      const drawer = await page.locator('#sidebar-root').getAttribute('data-open');
+      if (vp.name === 'phone') expect(drawer, 'CONTROL: the drawer is still open on a phone').toBe('true');
       await page.keyboard.press('Escape');
       await expect(page.locator('#server-switcher-menu')).toBeHidden();
+      expect(await page.locator('#sidebar-root').getAttribute('data-open')).toBe(drawer);
+      await expect(page.locator('#server-switcher-toggle')).toBeVisible();
+      // The same, in one tick: with the menu open again, an Escape at the
+      // focused toggle leaves the toggle as document.activeElement when the
+      // keydown returns — no timing for a poll to hide.
+      await page.locator('#server-switcher-toggle').click();
+      await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'true');
+      expect(await page.evaluate(() => {
+        const t = document.getElementById('server-switcher-toggle')!;
+        t.focus();
+        t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        return [document.activeElement === t, t.getAttribute('aria-expanded'), document.getElementById('sidebar-root')!.getAttribute('data-open')];
+      })).toEqual([true, 'false', drawer]);
       await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'false');
       await expect(page.locator('#server-switcher-toggle')).toBeFocused();
       await page.keyboard.press('Enter');
@@ -489,7 +555,7 @@ test.describe('another muster (desktop)', () => {
     await addServer(page, A2);
     await expect(page.locator('#server-add')).toHaveJSProperty('open', false);
     await expect(item(page, A2)).toHaveCount(1);
-    await expect(item(page, A2).locator('[data-server-label]')).toHaveText(hostOf(A2));
+    await expect(item(page, A2).locator('[data-server-label]')).toHaveText(nameOf(A2));
 
     const nav = page.waitForRequest((r) => r.isNavigationRequest() && r.url().startsWith(A2 + '/'));
     await item(page, A2).click();
@@ -568,6 +634,39 @@ test.describe('another muster (desktop)', () => {
     } finally {
       await ctx.close();
     }
+  });
+
+  // 🔴 Saved servers are never lost to a typing rule newer than them (audit
+  // of PR #854), in the browser's own URL parser: an underscore host and a
+  // trailing-dot entry both survive a reload with their labels (the dot
+  // migrated away), and the next save keeps them.
+  test('saved servers survive a reload with their labels, and the next save keeps them', async ({ page }) => {
+    await fresh(page);
+    await page.evaluate((a) => localStorage.setItem('muster-servers', JSON.stringify({
+      v: 1,
+      servers: [
+        { origin: a, label: '' },
+        { origin: 'https://my_server.lan', label: 'Home lab' },
+        { origin: 'https://atlas.example.', label: 'Atlas' },
+      ],
+    })), A);
+    await page.reload();
+    await openSwitcher(page);
+    await expect(items(page)).toHaveCount(3);
+    await expect(item(page, 'https://my_server.lan').locator('[data-server-label]')).toHaveText('Home lab');
+    await expect(item(page, 'https://atlas.example').locator('[data-server-label]')).toHaveText('Atlas');
+
+    // A save (renaming this server) writes the list back: both still there.
+    await page.locator('#server-manage-open').click();
+    const selfRow = page.locator(`#server-manage li[data-server-origin="${A}"]`);
+    await selfRow.locator('input').fill('Here');
+    await selfRow.locator('input').press('Enter');
+    await expect(item(page, A).locator('[data-server-label]')).toHaveText('Here');
+    expect((await stored(page)).servers).toEqual([
+      { origin: A, label: 'Here' },
+      { origin: 'https://my_server.lan', label: 'Home lab' },
+      { origin: 'https://atlas.example', label: 'Atlas' },
+    ]);
   });
 
   test('a hand-off naming an address that is not a server is not offered', async ({ page }) => {
