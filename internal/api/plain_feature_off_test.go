@@ -96,15 +96,28 @@ var featureOffSites = []featureOffSite{
 }
 
 // featureOffWant is what each feature's notice says, as literals.
-var featureOffWant = map[string]struct{ name, line, adminNext, code, docs string }{
-	features.SessionRouting: {"Hand work to a session", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_ROUTING=1", "docs/features.md#session-routing"},
-	features.Pages:          {"Shareable pages", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PAGES=1", "docs/features.md#pages"},
-	features.PRMailRouting:  {"Code review mail", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PR_MAIL=1", "docs/features.md#pr-mail-routing"},
-	features.Dictation:      {"Voice typing", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_STT=1", "docs/features.md#dictation"},
-	features.Plugins:        {"Plugins", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PLUGINS=1", "docs/features.md#plugins"},
-	features.PluginViewers:  {"Plugin views", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PLUGIN_ORIGINS=1", "docs/features.md#plugin-viewers"},
-	features.AskLog:         {"Question history", "Turned off on this server.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_ASK_LOG=1", "docs/features.md#ask-log"},
-	features.Attachments:    {"Attach files", "Not fully set up on this server.", "Something it needs is missing. Its ⓘ says what.", "MUSTER_EXAMPLE_S3_BUCKET=1", "docs/features.md#attachments"},
+var featureOffWant = map[string]struct{ name, line, memberNext, adminNext, code, docs string }{
+	features.SessionRouting: {"Hand work to a session", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_ROUTING=1", "docs/features.md#session-routing"},
+	features.Pages:          {"Shareable pages", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PAGES=1", "docs/features.md#pages"},
+	features.PRMailRouting:  {"Code review mail", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PR_MAIL=1", "docs/features.md#pr-mail-routing"},
+	features.Dictation:      {"Voice typing", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_STT=1", "docs/features.md#dictation"},
+	features.Plugins:        {"Plugins", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PLUGINS=1", "docs/features.md#plugins"},
+	features.PluginViewers:  {"Plugin views", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_PLUGIN_ORIGINS=1", "docs/features.md#plugin-viewers"},
+	features.AskLog:         {"Question history", "Turned off on this server.", "Ask your admin to turn this on.", "To turn it on, open its ⓘ.", "MUSTER_EXAMPLE_ASK_LOG=1", "docs/features.md#ask-log"},
+	features.Attachments:    {"Attach files", "Not fully set up on this server.", "Ask your admin to finish setting it up.", "Something it needs is missing. Its ⓘ says what.", "MUSTER_EXAMPLE_S3_BUCKET=1", "docs/features.md#attachments"},
+}
+
+// featureOffJSON is each feature's typed 404 body, byte for byte, as it was
+// before the plain page (origin/main f7f97c6e6): every key, reason included.
+var featureOffJSON = map[string]string{
+	features.SessionRouting: `{"docs":"docs/features.md#session-routing","enable":"set MUSTER_EXAMPLE_ROUTING=1 in .env and restart (docs/features.md#session-routing)","error":"feature_disabled","feature":"session-routing","message":"disabled: session-routing — set MUSTER_EXAMPLE_ROUTING=1 in .env and restart (docs/features.md#session-routing)","name":"Session routing","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.Pages:          `{"docs":"docs/features.md#pages","enable":"set MUSTER_EXAMPLE_PAGES=1 in .env and restart (docs/features.md#pages)","error":"feature_disabled","feature":"pages","message":"disabled: pages — set MUSTER_EXAMPLE_PAGES=1 in .env and restart (docs/features.md#pages)","name":"Pages","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.PRMailRouting:  `{"docs":"docs/features.md#pr-mail-routing","enable":"set MUSTER_EXAMPLE_PR_MAIL=1 in .env and restart (docs/features.md#pr-mail-routing)","error":"feature_disabled","feature":"pr-mail-routing","message":"disabled: pr-mail-routing — set MUSTER_EXAMPLE_PR_MAIL=1 in .env and restart (docs/features.md#pr-mail-routing)","name":"Pull request routing","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.Dictation:      `{"docs":"docs/features.md#dictation","enable":"set MUSTER_EXAMPLE_STT=1 in .env and restart (docs/features.md#dictation)","error":"feature_disabled","feature":"dictation","message":"disabled: dictation — set MUSTER_EXAMPLE_STT=1 in .env and restart (docs/features.md#dictation)","name":"Dictation","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.Plugins:        `{"docs":"docs/features.md#plugins","enable":"set MUSTER_EXAMPLE_PLUGINS=1 in .env and restart (docs/features.md#plugins)","error":"feature_disabled","feature":"plugins","message":"disabled: plugins — set MUSTER_EXAMPLE_PLUGINS=1 in .env and restart (docs/features.md#plugins)","name":"Plugin bots","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.PluginViewers:  `{"docs":"docs/features.md#plugin-viewers","enable":"set MUSTER_EXAMPLE_PLUGIN_ORIGINS=1 in .env and restart (docs/features.md#plugin-viewers)","error":"feature_disabled","feature":"plugin-viewers","message":"disabled: plugin-viewers — set MUSTER_EXAMPLE_PLUGIN_ORIGINS=1 in .env and restart (docs/features.md#plugin-viewers)","name":"Plugin viewers","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.AskLog:         `{"docs":"docs/features.md#ask-log","enable":"set MUSTER_EXAMPLE_ASK_LOG=1 in .env and restart (docs/features.md#ask-log)","error":"feature_disabled","feature":"ask-log","message":"disabled: ask-log — set MUSTER_EXAMPLE_ASK_LOG=1 in .env and restart (docs/features.md#ask-log)","name":"Ask log","reason":"MUSTER_EXAMPLE_ is unset","state":"off"}` + "\n",
+	features.Attachments:    `{"docs":"docs/features.md#attachments","enable":"set MUSTER_EXAMPLE_S3_BUCKET=1 in .env and restart (docs/features.md#attachments)","error":"feature_disabled","feature":"attachments","message":"misconfigured: attachments — MUSTER_EXAMPLE_S3_BUCKET is not a bucket name; set MUSTER_EXAMPLE_S3_BUCKET=1 in .env and restart (docs/features.md#attachments)","name":"File attachments","reason":"MUSTER_EXAMPLE_S3_BUCKET is not a bucket name","state":"misconfigured"}` + "\n",
 }
 
 // featureOffPage reaches site as a document navigation by a signed-in reader
@@ -153,7 +166,8 @@ var infoCodeRe = regexp.MustCompile(`data-info-code="">([^<]*)</code>`)
 
 // TestAMemberSeesATurnedOffFeatureWithNoSetup: for EVERY route that answers a
 // turned-off feature, a member's page is the plain name, the state and "Ask
-// your admin to turn it on." — whole strings — and the document carries no
+// your admin to turn this on." (or "…to finish setting it up." for a feature
+// that is not fully set up) — whole strings — and the document carries no
 // variable, .env, docs path or ⓘ anywhere (absent, not hidden).
 func TestAMemberSeesATurnedOffFeatureWithNoSetup(t *testing.T) {
 	for _, site := range featureOffSites {
@@ -167,7 +181,7 @@ func TestAMemberSeesATurnedOffFeatureWithNoSetup(t *testing.T) {
 				}
 			}
 			region := featureOffRegion(t, page, site.feature)
-			if got, w := topLayer(t, region), want.name+" | "+want.line+" | Ask your admin to turn it on."; got != w {
+			if got, w := topLayer(t, region), want.name+" | "+want.line+" | "+want.memberNext; got != w {
 				t.Errorf("member's notice reads\n  %q\nwant\n  %q", got, w)
 			}
 			for _, bad := range []string{"data-info-sheet", "data-info-code", "popovertarget", "data-info-open"} {
@@ -234,22 +248,54 @@ func TestASignedOutNavigationToATurnedOffFeatureIsSentToSignIn(t *testing.T) {
 }
 
 // TestATurnedOffFeaturesJSONKeepsItsSetup — an INVARIANT GUARD, not regression
-// coverage: the machine answer (the CLI reads `enable`, sending Accept:
-// application/json) is unchanged by the plain page. Green before and after.
+// coverage: for EVERY site, the machine answer (the CLI reads `enable`) is the
+// pre-change body BYTE FOR BYTE — every key, reason included. Green before
+// and after; dropping or rewording any key turns it red.
 func TestATurnedOffFeaturesJSONKeepsItsSetup(t *testing.T) {
-	s, _ := featureServer(t, Extensions{}, featureOffSet(t))
-	req := httptest.NewRequest(http.MethodGet, "/pages", nil).WithContext(asRole(authz.RoleMember))
-	req.Header.Set("Accept", "application/json")
-	w := httptest.NewRecorder()
-	s.handlePagesList(w, req)
-	var b map[string]any
-	if w.Code != http.StatusNotFound || json.Unmarshal(w.Body.Bytes(), &b) != nil {
-		t.Fatalf("%d %s", w.Code, w.Body)
+	for _, site := range featureOffSites {
+		t.Run(site.key(), func(t *testing.T) {
+			ext := Extensions{}
+			if site.viewers {
+				ext.Plugins = stubPlugins{}
+			}
+			s, _ := featureServer(t, ext, featureOffSet(t))
+			// No Accept: the share door answers its own JSON to an
+			// Accept: application/json caller (pageShareOn), so a bare
+			// request is the one every site hands to writeFeatureDisabled.
+			req := httptest.NewRequest(http.MethodGet, "/x", strings.NewReader("{}")).WithContext(asRole(authz.RoleMember))
+			w := httptest.NewRecorder()
+			site.call(s, w, req)
+			if w.Code != http.StatusNotFound || w.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("%d %q", w.Code, w.Header().Get("Content-Type"))
+			}
+			if got, want := w.Body.String(), featureOffJSON[site.feature]; got != want {
+				t.Errorf("JSON body changed:\n got %s\nwant %s", got, want)
+			}
+		})
 	}
-	if b["error"] != FeatureDisabledError || b["feature"] != "pages" ||
-		b["enable"] != "set MUSTER_EXAMPLE_PAGES=1 in .env and restart (docs/features.md#pages)" ||
-		b["message"] != "disabled: pages — set MUSTER_EXAMPLE_PAGES=1 in .env and restart (docs/features.md#pages)" {
-		t.Fatalf("JSON body changed: %v", b)
+}
+
+// TestATokenCallerGetsTheJSONNeverASignInRedirect: a caller a TOKEN admitted
+// (the hook token here) whose request looks like a page load (Accept:
+// text/html) gets the unchanged JSON 404 — never a 303 to a sign-in form it
+// cannot fill, and never the person's page (that is a browser session's).
+func TestATokenCallerGetsTheJSONNeverASignInRedirect(t *testing.T) {
+	_, h := featureServer(t, Extensions{}, featureOffSet(t))
+	for _, c := range []struct{ method, path, feature string }{
+		{http.MethodPost, "/api/routes/abc/reply", features.SessionRouting},
+		{http.MethodGet, prSessionsPath, features.PRMailRouting},
+	} {
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+testHookToken)
+		req.Header.Set("Accept", "text/html")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		var b map[string]any
+		if w.Code != http.StatusNotFound || w.Header().Get("Content-Type") != "application/json" ||
+			json.Unmarshal(w.Body.Bytes(), &b) != nil || b["error"] != FeatureDisabledError || b["feature"] != c.feature {
+			t.Errorf("%s %s with a token and Accept: text/html: %d %q Location=%q\n%.600s",
+				c.method, c.path, w.Code, w.Header().Get("Content-Type"), w.Header().Get("Location"), w.Body)
+		}
 	}
 }
 

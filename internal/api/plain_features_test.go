@@ -186,9 +186,13 @@ func TestAMembersFeaturesPageCarriesNoSetup(t *testing.T) {
 		}
 	}
 	// Six of the eight are not on and not replaced; each row says to ask
-	// the admin (and its sheet says it again).
-	if n := strings.Count(member, `<p data-feature-ask class="text-sm text-fg">Ask your admin to turn this on.</p>`); n != 6 {
-		t.Errorf("a member's page has %d \"Ask your admin to turn this on.\" row line(s), want one per feature that is not on and not replaced (6)", n)
+	// the admin (and its sheet says it again): to turn it on for the five
+	// that are off, to finish setting it up for the misconfigured one.
+	if n := strings.Count(member, `<p data-feature-ask class="text-sm text-fg">Ask your admin to turn this on.</p>`); n != 5 {
+		t.Errorf("a member's page has %d \"Ask your admin to turn this on.\" row line(s), want one per feature that is off and not replaced (5)", n)
+	}
+	if n := strings.Count(member, `<p data-feature-ask class="text-sm text-fg">Ask your admin to finish setting it up.</p>`); n != 1 {
+		t.Errorf("a member's page has %d \"Ask your admin to finish setting it up.\" row line(s), want one, for the misconfigured feature", n)
 	}
 	if strings.Contains(admin, ">Ask your admin to turn this on.</p>") {
 		t.Error("the admin's page tells the admin to ask their admin")
