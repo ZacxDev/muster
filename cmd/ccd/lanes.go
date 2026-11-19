@@ -853,6 +853,19 @@ func (l *lanes) release(ln *lane) {
 		delete(l.set, ln.id)
 		log.Printf("ccd: stopping check session %s (%s): its turn is over and a check's CLI is never kept", ln.id, ln.key)
 		ln.stop()
+	} else if !ln.pinned && ln.reserved == 0 && l.set[ln.id] == ln && ln.srv.parkedOnLimitMenu() {
+		// 🔴 A LANE PARKED ON THE USAGE-LIMIT MENU IS STOPPED, NOT KEPT. The
+		// menu stays until someone answers it — past the limit's reset — and
+		// every turn meanwhile is refused 409 rate_limited before anything is
+		// typed; nothing else ends it (the lane is idle, so only a cap
+		// eviction would). Its conversation is on disk: its next turn starts
+		// a fresh CLI that resumes it (--resume), and if the limit still
+		// holds that turn says so again. Stopped under l.mu, as a check lane
+		// is, so a turn for the key arriving now starts a new lane after it.
+		// Never the pinned lane (the chief's primary chat).
+		delete(l.set, ln.id)
+		log.Printf("ccd: stopping session %s (%s): its pane is parked on the CLI's usage-limit menu; its next turn resumes it in a fresh CLI", ln.id, ln.key)
+		ln.stop()
 	}
 	// An excess an unpinning left while every candidate was held (trimLocked).
 	l.trimLocked()
