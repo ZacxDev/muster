@@ -961,8 +961,73 @@ kept — the job keeps its status and `error` says
    pull-request, default-branch and base refs deleted. For a job without a
    `sha`, the result file is deleted as above.
 
+7. For a `sha` job, still inside step 6 and while the job reads `running`:
+   every other job worktree under `.muster-jobs/` and every
+   `refs/muster-jobs/*` ref is removed (see [housekeeping](#housekeeping-of-a-workers-checkout)).
+8. For a `sha` job, after the outcome is recorded: one bounded git
+   maintenance pass of the agent's checkout, when one is due.
+
 The job's `timeout_s` covers steps 3–5, not the wait in step 1; the removal in
-step 6 has its own bound.
+step 6 has its own bound, and so do steps 7 and 8.
+
+## Housekeeping of a worker's checkout
+
+`sha` jobs fetch into the agent's checkout, and two things used to grow there
+without bound (measured on one review worker: 161 GiB of git packs, 1,389 of
+them, plus 19 left-behind job worktrees, 4.8 GB):
+
+- **Packs.** A worker's checkout is often shallow, and fetching a pull
+  request's head into a shallow clone without `--depth` downloads the pull
+  request's whole history again on every job — the job's ref is deleted
+  afterwards, so the next fetch cannot offer those objects as common ground.
+  That is one full-history pack per job (300–400 MB each on that worker). git's own
+  auto-gc never cleaned them: a stale `.git/gc.log` blocked it, and when it
+  does run it is a full repack whose memory follows every object of every
+  pack — in a 3 GiB agent container it went from ~0.9 GB to over 2.7 GB and
+  was OOM-killed, which would also kill the agent's session.
+- **Worktrees.** A job's worktree is removed by the server running the job;
+  when that server stops or crashes mid-turn (see [What it does not
+  do](#what-it-does-not-do)), nothing removed it.
+
+So, through the provisioner's exec, like the job's other steps:
+
+- **The sweep** (step 7) removes every job worktree under
+  `<workspace>/.muster-jobs/` (entries named by a job id only), runs
+  `git worktree prune`, and deletes every `refs/muster-jobs/*` ref. It runs
+  while the job reads `running`, and no other job of the agent can be running
+  on any server then, so all of them are leftovers. It does not change the
+  job's outcome; what it removed is logged.
+- **The maintenance pass** (step 8) first writes `gc.auto=0`,
+  `gc.autoPackLimit=0` and `maintenance.auto=false` into the checkout's own
+  config (on every pass: a session can change that config), so git never
+  starts its unbounded gc there; then removes a `gc.log` older than a day,
+  logging what it said. It then runs, when the checkout holds more than 8
+  packs or the last pass started more than a day ago:
+  `git maintenance run --task=loose-objects`, then `git multi-pack-index`
+  `write`, `expire`, `repack --batch-size=256m`, `expire`, each with
+  `pack.threads=1`, `pack.windowMemory=64m` and small cache limits. The
+  multi-pack-index takes each duplicated object from the newest pack holding
+  it, so `expire` deletes the packs a later fetch duplicated without
+  repacking them, and `repack` rewrites only a batch of small remainders.
+  None of these steps deletes an object no other pack holds, so they are safe
+  beside a fetch. No step starts after 10 minutes; one that started runs to
+  the end (killing git mid-step would leave a lock), and the next job's pass
+  continues where it stopped. The pass runs after the job's outcome is
+  recorded, holding the agent's lane on that server, so it never delays a
+  result.
+
+**Its memory**, measured on a synthetic shallow checkout (40 and 120
+full-history fetches of a ~20,000-object repository; 702,232 and 1,864,411
+packed entries; sum of anonymous RSS over the process tree): the pass's
+largest step peaked at 9 MiB anonymous memory at both sizes (the
+`multi-pack-index write` at 1–2 MiB), against 54 MiB and 88 MiB for
+`git gc` with the same low-memory settings. gc's grows with every packed
+entry (~29 bytes each, so ~6 GB at the 206 million entries the worker had);
+the pass's grows with distinct objects and the batch size. The index files
+the write reads are memory-mapped (page cache, which the kernel reclaims), not
+anonymous memory. Not measured: a first pass over a checkout of a thousand
+packs, whose `multi-pack-index write` reads every pack's index (about 28
+bytes per packed entry) and can take minutes.
 
 ## What it does not do
 

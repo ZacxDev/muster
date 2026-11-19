@@ -1264,6 +1264,13 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		next, again := s.failoverJob(ctx, j, a, o)
 		if !again {
 			finish(o)
+			// After the outcome is recorded, still holding the agent's lane, so
+			// it never delays the result and this process starts no job on the
+			// agent meanwhile (another server may: the steps are safe beside a
+			// fetch).
+			if j.SHA != "" {
+				s.maintainJobRepository(ctx, a, j)
+			}
 			return
 		}
 		a = next
@@ -1466,7 +1473,66 @@ func (s *Server) removeJobWorktree(ctx context.Context, a agents.Agent, j jobs.J
 			o.Error = note
 		}
 	}
+	s.sweepJobWorktrees(ctx, a, j)
 	return o
+}
+
+// sweepJobWorktrees removes the worktrees and refs earlier jobs of a left
+// behind (JobWorkspaceHousekeeper.SweepJobWorktrees), logging what went.
+//
+// 🔴 WHY HERE: a job's own removal is a deferred call in the server running
+// it, so a server that stops or crashes mid-turn leaves that job's worktree
+// and refs for ever. This runs while j still reads `running`, and the job store
+// starts no other job of a on any server until it is finished (Heads), so every
+// other worktree is an orphan. (A turn the reaper failed may still be running
+// in ccd in its worktree; its output is discarded either way.) It does not
+// change j's outcome.
+func (s *Server) sweepJobWorktrees(ctx context.Context, a agents.Agent, j jobs.Job) {
+	h, ok := s.ext.JobWorkspace.(JobWorkspaceHousekeeper)
+	if !ok {
+		return
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobWorktreeSweepTimeout)
+	defer cancel()
+	gone, err := h.SweepJobWorktrees(rctx, a)
+	if len(gone) > 0 {
+		s.logger.Printf("jobs: %d: swept what earlier jobs of %q left: %s", j.ID, a.Name, strings.Join(gone, "; "))
+	}
+	if err != nil {
+		s.logger.Printf("jobs: %d: sweep the job worktrees of %q: %v", j.ID, a.Name, err)
+	}
+}
+
+// jobWorktreeSweepTimeout bounds the sweep: removing a few left-behind
+// worktrees of a large checkout takes longer than one job's removal.
+const jobWorktreeSweepTimeout = 2 * time.Minute
+
+// jobRepositoryMaintainTimeout bounds one maintenance pass's exec. The pass
+// itself starts no step after agentprovision.MaintenanceBudget; this is the
+// backstop for a step that started in time and runs long (the first pass over
+// a checkout with over a thousand packs).
+const jobRepositoryMaintainTimeout = time.Hour
+
+// maintainJobRepository runs one bounded maintenance pass on a's checkout
+// (JobWorkspaceHousekeeper.MaintainJobRepository), logging its report. The
+// pass decides itself whether it is due.
+func (s *Server) maintainJobRepository(ctx context.Context, a agents.Agent, j jobs.Job) {
+	h, ok := s.ext.JobWorkspace.(JobWorkspaceHousekeeper)
+	if !ok {
+		return
+	}
+	// Not detached: a stopping server does not wait for a pass (the next job's
+	// pass continues the work).
+	mctx, cancel := context.WithTimeout(ctx, jobRepositoryMaintainTimeout)
+	defer cancel()
+	report, err := h.MaintainJobRepository(mctx, a)
+	if err != nil {
+		s.logger.Printf("jobs: %d: git maintenance of %q's checkout: %v: %s", j.ID, a.Name, err, report)
+		return
+	}
+	if report != "" && !strings.HasPrefix(report, "not due") {
+		s.logger.Printf("jobs: %d: git maintenance of %q's checkout: %s", j.ID, a.Name, strings.ReplaceAll(report, "\n", "; "))
+	}
 }
 
 // JobWorktreeRemoveFailedPrefix opens the note a job's error carries when its

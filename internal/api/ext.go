@@ -566,6 +566,21 @@ type JobWorkspace interface {
 	RemoveUntrackedWorkspaceFile(ctx context.Context, a agents.Agent, rel string) (removed bool, err error)
 }
 
+// JobWorkspaceHousekeeper is the optional part of a JobWorkspace that keeps a
+// worker's checkout from filling its volume (*agentprovision.Adapter
+// implements it; agentprovision jobworkspace_maint.go says why each step is
+// what it is). A JobWorkspace without it gets no housekeeping.
+type JobWorkspaceHousekeeper interface {
+	// SweepJobWorktrees removes every job worktree of a's checkout and every
+	// refs/muster-jobs/* ref, returning what it removed. The runner calls it
+	// only while a's current job still reads running, so none is in use.
+	SweepJobWorktrees(ctx context.Context, a agents.Agent) ([]string, error)
+	// MaintainJobRepository runs one bounded git maintenance pass on a's
+	// checkout when one is due (auto-gc off, a stale gc.log cleared,
+	// multi-pack-index consolidation), returning its report.
+	MaintainJobRepository(ctx context.Context, a agents.Agent) (string, error)
+}
+
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken
 // for none, a revoked one included). It runs under the system scope.
 type MirrorTokenAuth interface {

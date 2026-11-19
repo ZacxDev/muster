@@ -129,12 +129,15 @@ func mustCopyExec(t *testing.T, from, to string) {
 
 // runJobScripts runs every job operation that runs git in the agent's
 // workspace — prepare the job's worktree, remove an untracked result file,
-// remove the worktree — ignoring their results (a plant may make one fail; what
-// is asserted is what ran).
+// sweep the job worktrees (the one just made among them), remove the worktree,
+// one maintenance pass — ignoring their results (a plant may make one fail;
+// what is asserted is what ran).
 func runJobScripts(a *Adapter, r worktreetest.Repo) {
 	_, _ = prepareJob(a, r, r.Commit)
 	_, _ = a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "nothing-here.md")
+	_, _ = a.SweepJobWorktrees(context.Background(), workspaceAgent)
 	_ = a.RemoveJobWorktree(context.Background(), workspaceAgent, overlayJobID)
+	_, _ = a.MaintainJobRepository(context.Background(), workspaceAgent)
 }
 
 // 🔴 TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential, one row per
