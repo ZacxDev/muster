@@ -264,6 +264,10 @@ services:
       # fleet_list's fleet fields (docs/chief.md#fleet-digest). Off by
       # default; its states come from session state, above.
       MUSTER_FLEET_DIGEST: ${MUSTER_FLEET_DIGEST:-}
+      # Fleet proposals: off or propose. The chief proposes what to send your
+      # sessions as cards in the digest; nothing is sent until you tap
+      # Approve (docs/chief.md#fleet-proposals). Needs the digest, above.
+      MUSTER_FLEET_ORCHESTRATION: ${MUSTER_FLEET_ORCHESTRATION:-}
 
       # Shareable pages: agents publish pages and ask before a share link goes
       # live (docs/features.md#pages). Off by default; needs only the database.

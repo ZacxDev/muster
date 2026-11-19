@@ -1492,6 +1492,125 @@ The routes: `GET /ui/chief/fleet` (the card), `GET /ui/chief/fleet/session?id=`
 (a drill-in) and `POST /ui/chief/fleet/chat` (the Fleet chat). Each reads only
 your own fleet.
 
+## Fleet proposals
+
+**Off by default:** `MUSTER_FLEET_ORCHESTRATION=propose` turns it on, and it
+needs the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and session
+state (`MUSTER_SESSION_STATE=1`): the server refuses to boot with it on and
+either of them off. Unset (or `off`): the chief's fleet
+tools are not listed, the digest has no Proposed group, and nothing is written
+to the fleet's action log.
+
+With it on, the chief can **propose** what to send each of your sessions, and
+muster proposes a handoff for each finished session itself. **Every proposal
+is a card; nothing is sent until you tap Approve.** There is no automatic tier
+yet.
+
+**The chief's tools** (chief-only, your own sessions only):
+
+| tool | proposes |
+|---|---|
+| `session_instruct {subject, class, text?, reason}` | one message to a stopped session. `class` is `continue`, `handoff` or `stop_note` (muster's fixed texts, below) or `custom` (the chief's own text, at most 4 KiB) |
+| `session_wrap {subject, reason}` | **one** card, "Write handoff, then close": the handoff text; once the session's handoff turn has ended (it worked, then stopped again), muster closes it — a Claude Code window gets `/exit` at an idle prompt, an opencode window is closed, an agent is stopped and removed. It is left open, and the card says why, if it then has an open pull request, a queued message or background work, or if no handoff turn ends within 24 hours |
+| `work_reassign {task_id, from, to, reason}` | **one** card, two steps: the task routed to `to` (a mirrored Claude Code session, as `route_to_session` routes a task), then `from` told the task moved and asked for its handoff |
+| `fleet_actions_list {since?, state?, subject?}` | nothing: it reads the action log, so the chief can explain what it proposed. `subject` is one session's fleet id, matched exactly (`agent:4` is agent 4's stops, never agent 42's) |
+
+`subject` is a session's `fleet_list` id. Every write answers `{action_id,
+state, refused?, card?}`. A proposal is filed only on a **stop**: a session
+that is working is refused `not_stopped`. Another owner's session, a team's
+window, the chief and an officer's instance (a dispatched one, or a window
+the officer runtime spawned on your host) are all refused `not_found`, the
+same answer for each. A session muster can only watch (an opencode pane its
+host does not send to, or a read-only host) is refused `view_only`, and no
+card is filed. There is at most one open proposal per session and class; a
+second is refused `already_proposed`.
+
+**The fixed texts**, byte for byte, each after muster's first line:
+
+| class | text |
+|---|---|
+| `continue` | `Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task.` |
+| `handoff` | `Your PR #<n> is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop.` (`closed` for a pull request closed unmerged; with no pull request known, only the second sentence) |
+| `stop_note` | `Stop after this step and wait for your owner's next message. Do not start anything new; ask with attention_ask if something cannot wait.` |
+
+Every text a card sends starts with a line muster writes,
+`[Chief, approved by <you> at HH:MM UTC]`, never in your voice. muster counts
+that line as one of its own pastes, so a chief text is never later quoted as
+your words (the stall nudges' "your messages" rule,
+[chief-nudges.md](chief-nudges.md)).
+
+**muster's own proposals.** For an owner with a chief, the session-state pass
+proposes, with no model, the one card **"Write handoff, then close"** for each
+session the digest counts **Done** — its latest pull request merged or
+closed, nothing queued to it — that is stopped with no background work, no open
+ask and no turn error. Once per stop: a stop you already decided on is not
+proposed again. If you approve it and no handoff turn comes within 24 hours,
+its close is offered on its own, as a **Close** card (nothing is typed; the
+window is closed on your tap, unless an open pull request, a queued message or
+background work holds it).
+
+**The chief still judges stops.** Turning proposals on changes nothing about
+how a stop is judged: the chief's stall nudges, a stop's push wait and the
+per-stop pushes are exactly as with them off. The proposals run alongside.
+(Letting the fleet judge stops in the chief's place waits for its own triage, a
+later phase; an owner with a running [Session minder](officers-builtin.md) keeps
+the minder either way.)
+
+**The cards.** The digest's **Proposed** group, after Needs you, lists each
+open proposal: the session, the class as a verb ("Continue", "Write handoff,
+then close"), the one-line reason, and **exactly what will be sent**, in full.
+
+- **Approve** sends it. It needs a sign-in from the last `MUSTER_STEPUP_WINDOW`
+  (usually free); on a stale one muster asks "Confirm it's you" and taps again.
+- **Edit** opens the text in a box; **Send as mine** sends your text as your
+  own message — no chief line — with the same sign-in check. A card that
+  types nothing or routes a task (Close, a task move) and a dispatched agent's
+  card have no Edit.
+- **Reject** sends nothing.
+- **Open session** goes to the session's rendered view.
+- **Approve all** and **Reject all** act on every card the group shows, after a
+  confirm that lists each one. Each is checked on its own; the note says, for
+  example, "3 sent, 1 skipped (moved on)".
+
+On a phone the group opens in a bottom sheet, and every button is full width
+and 44 px tall. There is no swipe: a proposal is approved only by a tap, with
+its text on screen. **A phone's notification can never approve one**: the card
+routes refuse a paired phone's signed action, and the push carries no action.
+
+**Checked twice.** When you tap, and again when the message is pasted, muster
+reads the session: the same stop, the same idle streak and, when one was
+recorded, the same pull-request head. If anything changed, nothing is sent and
+the proposal ends `suppressed:moved_on` ("Not sent: the session moved on…").
+
+**Expiry.** A proposal expires when its stop ends, when its evidence changes
+(a new message or a new pull-request head), or after 12 hours. Expired
+proposals leave the group.
+
+**Delivery**, per kind of session:
+
+| session | how |
+|---|---|
+| mirrored Claude Code (opened by hand, or dispatched on a host) | the send queue (a row with origin `fleet_action_id`, a server-stamped sign-in time, never edited or retried), typed through the Claude prompt guard |
+| mirrored opencode, launcher-bound, host running `-opencode-send` | the same queue row, sent through opencode's API |
+| any other opencode pane, or a read-only host | not delivered: refused `view_only`, no card |
+| a dispatched agent | a turn, as the chief's nudges start one |
+
+**The push.** At most every 30 minutes, and only when a new proposal arrived,
+one push: "N proposals waiting". Tapping it opens the chief panel. Beside it,
+**one** Attention item says the same: each push replaces it with the new count
+(never a second one), and it is withdrawn once no proposal waits. The per-stop
+pushes are unchanged.
+
+**The action log**, `fleet_actions` ([schema.md](schema.md)), is append-only:
+one row per proposal with its state (`proposed`, `approved`, `rejected`,
+`expired`, `queued`, `sent`, `failed`, `suppressed:<why>`), and one
+`audit_log` row (`fleet.<class>.<state>`) per change, carrying ids only.
+
+The routes: `POST /ui/chief/fleet/actions/{id}/approve`, `…/edit` (`text=`),
+`…/reject`, `POST /ui/chief/fleet/bulk` (`op=approve|reject`, `id=` for each
+card) and `GET /ui/chief/fleet/stepup` (the confirm dialog). Each answers 404
+with the flag off.
+
 ## Replacing the chief on another kind
 
 An agent's kind is fixed for life. To move the chief to another kind, replace

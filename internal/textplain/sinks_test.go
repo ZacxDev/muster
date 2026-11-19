@@ -101,7 +101,12 @@ var plainingHelpers = map[string]bool{
 	"pageCardTitle":   true,
 	"PageShareButton": true,
 	"PageShareMenu":   true,
-	"PageCopyButton":  true,
+
+	// The Pages screens' Share controls and ⋯ menus (page_card.go,
+	// page_rows.go): each plains its title argument through pageCardTitle.
+	"PageShareQuietButton": true,
+	"PageShareMenuItem":    true,
+	"PageLinkMenu":         true,
 }
 
 // helperNameArgs are, per plaining helper, the argument positions that carry a
@@ -117,7 +122,10 @@ var helperNameArgs = map[string][]int{
 	"pageCardTitle":       {0},    // raw
 	"PageShareButton":     {1},    // title (id and the address are not names)
 	"PageShareMenu":       {1},    // title
-	"PageCopyButton":      {1},    // title (id and the address are not names)
+
+	"PageShareQuietButton": {1}, // title (id and the address are not names)
+	"PageShareMenuItem":    {1}, // title
+	"PageLinkMenu":         {1}, // title
 }
 
 type exemption struct {
@@ -205,10 +213,8 @@ var apiExempt = map[string]exemption{
 	"team_dispatch.go Server.personName u.DisplayName":         {2, whyPerson},
 	"plugins.go Server.renderPluginsPage p.Label":              {1, "a plugin's configured label (its name), not a title"},
 	"plugin_pairing.go Server.pairSectionHTML p.Label":         {1, "a pairing request's label (the plugin's name to be), not a title"},
-	"pages.go Server.renderPagesList p.Creator.Label":          {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
 	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
-	"pages.go Server.renderPagesList p.Title":                  {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
-	"pages.go Server.renderPageDetail p.Title":                 {2, "passed RAW to pageShareControls and ui.PageCopyButton, whose ui.PageShareButton / ui.PageShareMenu / ui.PageCopyButton plain it once (pageCardTitle)"},
+	"pages.go Server.renderPageDetail p.Title":                 {2, "passed RAW to ui.PageShareQuietButton and ui.PageLinkMenu, which plain it once (pageCardTitle)"},
 	"pages.go pageResponseHTML l.Label":                        {1, "a response's field label: the page's own form field's label (else its name) or muster's fixed words (Answer, Chose, Decision), from pages.DescribeAnswer; not a title"},
 	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
 	"features.go featureSheet f.Description":                   {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
