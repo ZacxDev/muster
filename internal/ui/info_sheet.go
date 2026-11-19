@@ -58,6 +58,12 @@ type InfoSheet struct {
 	// are the setup ⓘs (HostSettingSheet, HostDetailSheet), for a viewer who
 	// is not an admin (Features.Setup).
 	Withheld bool
+	// Live: the code is filled in by a page script, so its row and Copy are
+	// drawn even while Code is "". Its caller is the Manage servers row's
+	// address ⓘ (server_switcher.go), whose address servers.js reads from
+	// the browser's own list. (#839 removed the flag with its first caller,
+	// the Pages Share link; this one needs it.)
+	Live bool
 	// WithheldText is what a withheld sheet says instead of its code; ""
 	// is InfoSheetWithheldText.
 	WithheldText string
@@ -125,7 +131,7 @@ func (s InfoSheet) sheet() g.Node {
 			text = InfoSheetWithheldText
 		}
 		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(text))
-	case s.Code != "":
+	case s.Code != "" || s.Live:
 		codeClass, rowClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
 		if s.Multiline {
 			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-all font-mono text-sm text-fg"
