@@ -53,13 +53,11 @@ const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNE
 // /agent/work is the same pod's live work counts (agent_work.go), on the same
 // per-agent token. /agent/officer is an officer instance's pod uploading a
 // workspace image for an ask (`ccd ask-image`, officers.go), on the same token.
-// /agent/pages/ is a dispatched agent's pod attaching an image or video to a
-// page it made (`ccd page-asset`, page_assets.go), on the same token.
 //
 // /llm/ is the officer LLM proxy (officer_llm.go): a routine officer
 // instance's Claude Code reaches its model through it, on its own per-agent
 // token, so its pod gains no egress and holds no provider key.
-var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked", "/agent/work", "/agent/officer", "/agent/ask-attachments", "/agent/pages/", "/llm/"}
+var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked", "/agent/work", "/agent/officer", "/agent/ask-attachments", "/llm/"}
 
 // OnlyConnectSurface wraps h so it serves only ConnectSurfacePrefixes (and
 // /health, for a probe), answering 404 for every other path.

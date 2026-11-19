@@ -22,7 +22,7 @@ var ownedAfter0127 = []string{
 	"fleet_owner_marks",                  // 0147
 	"officer_connector_blocks",           // 0148
 	"officer_seen",                       // 0156
-	"page_assets", "page_version_assets", // 0157
+	"page_assets", "page_version_assets", // 0161
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

@@ -259,7 +259,6 @@ POST /agent/ask-attachments
 POST /agent/blocked
 POST /agent/connectors/{name}/request
 POST /agent/officer/ask-images
-POST /agent/pages/{id}/assets
 POST /agent/task/comment
 POST /agent/work
 POST /agents/pins

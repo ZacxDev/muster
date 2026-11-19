@@ -454,10 +454,9 @@ var isolationClasses = map[string]routeClass{
 	"POST /agent/officer/ask-images": classAgentToken,
 	// A dispatched agent's ask attachment (ask_media.go): stored as the
 	// agent's owner's own upload; it names no object.
-	"POST /agent/ask-attachments":   classAgentToken,
-	"POST /agent/pages/{id}/assets": classAgentToken,
-	"POST /agent/work":              classAgentToken,
-	"POST /agent/task/comment":      classAgentToken,
+	"POST /agent/ask-attachments": classAgentToken,
+	"POST /agent/work":            classAgentToken,
+	"POST /agent/task/comment":    classAgentToken,
 
 	"/connect/{connector}/{host}/{path...}": classConnect,
 	"GET /agent/connectors":                 classConnect,
@@ -2168,8 +2167,8 @@ var sideEffectControlled = map[string]string{
 	// host's take-back revokes its owner's upload, and another owner's host
 	// naming that id gets 404 and leaves it live.
 	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
-	// A page's author asset (page_assets.go). The upload routes take a page
-	// THE CALLER MADE (an agent, or the host whose session is listed), which
+	// A page's author asset (page_assets.go). The upload route takes a page
+	// THE CALLER MADE (the host whose session is listed), which
 	// the walk's credentials are not; the read names an asset id a version of
 	// the page must use, which the walk cannot name. Each is controlled in its
 	// own test: the author adds, another creator of the same owner and another
@@ -2177,7 +2176,6 @@ var sideEffectControlled = map[string]string{
 	// the same name, TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost),
 	// and the owner reads an asset while another owner's session gets 404
 	// (TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse).
-	"POST /agent/pages/{id}/assets":               "only the page's own agent adds one: controlled in TestOnlyThePagesAuthorAddsAnAsset",
 	"POST /mirror/pages/{id}/assets":              "needs a listed session of the page's host: controlled in TestAMirroredSessionsImageAndVideoReachItsPageThroughItsHost",
 	"GET /pages/{id}/versions/{v}/assets/{asset}": "an asset id the walk cannot name: controlled in TestAnAssetIsReadByWhoCanReadItsPageAndNoOneElse",
 	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,

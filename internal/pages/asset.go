@@ -9,12 +9,12 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A PAGE'S AUTHOR ASSETS (migration 0157; docs/pages.md "Images and video").
+// A PAGE'S AUTHOR ASSETS (migration 0161; docs/pages.md "Images and video").
 //
 // The page's author — the agent or mirrored session that made it — attaches
-// an image or a video to the page (POST …/pages/{id}/assets, from where the
-// file is: muster-mirror for a mirrored session, `ccd page-asset` in a
-// dispatched agent's pod) and gets back its reference, `asset:<id>`, which a
+// an image or a video to the page (POST /mirror/pages/{id}/assets, from
+// where the file is: muster-mirror sends it for a mirrored session; a
+// dispatched agent has no way to yet) and gets back its reference, `asset:<id>`, which a
 // markdown block (`![alt](asset:<id>)`) or an html block (`<img
 // src="asset:<id>">`, `<video src="asset:<id>">`) uses.
 //
@@ -27,14 +27,14 @@ import (
 // markup goes in. So a page can show only the assets of ITS OWN version, by
 // the shell's two routes, and nothing else.
 //
-// 🔴 A VERSION REFERS ONLY TO ITS OWN PAGE'S ASSETS (0157's foreign key, and
+// 🔴 A VERSION REFERS ONLY TO ITS OWN PAGE'S ASSETS (0161's foreign key, and
 // checked first with a sentence); a version keeps the assets it refers to
 // (the key is NO ACTION, so DeleteAsset refuses one in use); deleting the
 // page deletes every asset with it.
 // ---------------------------------------------------------------------------
 
 const (
-	// MaxAssetBytes bounds one asset (0157's CHECK).
+	// MaxAssetBytes bounds one asset (0161's CHECK).
 	MaxAssetBytes int64 = 15 << 20
 	// MaxAssetBytesPerPage bounds a page's assets in all.
 	MaxAssetBytesPerPage int64 = 100 << 20
@@ -48,7 +48,7 @@ var MaxAssetsPerPage = 200
 
 // assetTypes are the types an asset may be, as the bytes sniff
 // (http.DetectContentType's names): four images a page shows in an <img> and
-// two videos it plays in a <video>. 0157's CHECK holds the same six.
+// two videos it plays in a <video>. 0161's CHECK holds the same six.
 var assetTypes = map[string]string{
 	"image/png":  "image",
 	"image/jpeg": "image",

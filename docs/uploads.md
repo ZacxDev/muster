@@ -132,6 +132,8 @@ function, `uploads.SetServeHeaders`:
 | `GET /s/{token}/assets/{id}` | a page's live share link (its shell) | an author asset the page's current version uses ([pages.md](pages.md#images-and-video)) |
 | `GET /pages/{id}/versions/{v}/assets/{asset id}` | the page owner's session (their view's shell) | an author asset version `v` uses |
 
+The two asset routes differ in one header: an asset's id never names other bytes, so they send `Cache-Control: private, max-age=31536000, immutable` in place of `no-store` ([pages.md](pages.md#images-and-video)).
+
 Each response is decided from the type **sniffed from the bytes** at serve
 time, never from what the uploader claimed (a task attachment's stored type is
 not read: rows written before this rule hold the uploader's claim). Every

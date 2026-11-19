@@ -81,7 +81,7 @@ var personalOwned = []string{
 	// 0156: when a person last looked at an officer's page; each member of
 	// a team looks on their own.
 	"officer_seen",
-	// 0157: a page's author assets and which versions use them; a page is
+	// 0161: a page's author assets and which versions use them; a page is
 	// personal (its siblings above), so are they.
 	"page_assets", "page_version_assets",
 }

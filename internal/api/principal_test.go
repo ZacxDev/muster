@@ -712,8 +712,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /agent/blocked",
 		"POST /agent/officer/ask-images",
 		"POST /agent/ask-attachments",
-		// `ccd page-asset`: an asset of a page the agent made (page_assets.go).
-		"POST /agent/pages/{id}/assets",
 		"POST /agent/work",
 	},
 }

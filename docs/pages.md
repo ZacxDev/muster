@@ -44,7 +44,7 @@ proves). Any other page reads as `no such page`.
 | `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent — and what you sent from your own view — oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
 | `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Unless its owner opted in, no tool makes a link live. |
-| `page_asset_upload{page_id, path, content_type?}` | Attaches an image or video file to the page ([below](#images-and-video)) and returns its `ref` (`asset:<id>`), which a block then uses. A mirrored session names the file by path; a dispatched agent runs `ccd page-asset` instead. |
+| `page_asset_upload{page_id, path, content_type?}` | Attaches an image or video file to the page ([below](#images-and-video)) and returns its `ref` (`asset:<id>`), which a block then uses. A mirrored Claude Code session's only, for now: a dispatched agent is not offered it (or `page_asset_delete`). |
 | `page_asset_delete{page_id, asset_id}` | Deletes an asset no version of the page uses (one a version uses is refused, naming the versions), and its bytes. |
 
 `page_responses` hands the responses over inside a `fence` block whose preface
@@ -129,7 +129,9 @@ to it: a page can then carry full-size review media and short clips that a
 | a page's assets | at most 100 MiB in all, and 200 assets |
 
 **Attaching one**, from where the file is (muster-server never reads an
-agent's disk, and the bytes never travel inside an MCP request):
+agent's disk, and the bytes never travel inside an MCP request). For now only
+a **mirrored Claude Code session** can: a dispatched agent is not offered the
+asset tools, and one that calls them is told so (a follow-up).
 
 - **A mirrored Claude Code session** calls `page_asset_upload{page_id, path}`,
   `path` relative to its working directory. Its host's `muster-mirror` takes
@@ -140,16 +142,11 @@ agent's disk, and the bytes never travel inside an MCP request):
   mirror token and the calling session; the call goes on to muster with the
   asset's id, and answers its `ref`. An older `muster-mirror` forwards the path
   and muster answers that the host must be updated.
-- **A dispatched claude-code agent** runs `ccd page-asset <page id> <path>`
-  in its pod: it sends the file to `POST /agent/pages/{id}/assets` (on the
-  [connect listener](connectors.md), with the agent's own token) and prints
-  `{"asset_id", "ref", "name", "type", "size"}`. Its `page_asset_upload` with a
-  path says so.
 
-Either way muster checks the bytes again whatever sent them, and only the
-page's **author** may add one: the mirror route acts for the host that made
-the page, the agent route for the agent that did; any other page — another
-owner's, or the same owner's made by another agent or host — answers 404.
+Muster checks the bytes again whatever sent them, and only the page's
+**author** may add one: the route acts for the host that made the page; any
+other page — another owner's, or the same owner's made by an agent or another
+host — answers 404.
 A refused file stores nothing; the two caps refuse with their own codes,
 `asset_too_large` (the one asset's) and `page_assets_full` (the page's),
 before a byte is read when the length is known.
@@ -170,10 +167,27 @@ network. Muster's own shell — on muster's origin, outside the frame — fetche
 each asset the version uses, through a link's token (`GET
 /s/<token>/assets/<id>`, no credentials) or the owner's session (`GET
 /pages/{id}/versions/{v}/assets/<id>`), and hands the bytes to the frame on
-its private channel; the frame makes a `blob:` URL of each and puts it in
-place of `asset:<id>` before the page's markup goes in (so the page's own
-script sees the `blob:` URL). The page appears once every asset has arrived;
-one that could not be loaded stays as written, which loads nothing.
+its private channel; the frame makes a `blob:` URL of each.
+
+**The page renders at once.** Its markup goes in straight away, each
+`asset:<id>` replaced by a **placeholder** — a `data:` URL of a 1×1
+transparent image ending `#muster-asset-<id>` — on an element marked
+`data-muster-asset="loading"`, drawn as a 16:9 box at the full width. As each
+asset arrives, every `src` or `poster` still holding its placeholder is set to
+the asset's `blob:` URL and the mark is removed (a `<source>`'s video is
+reloaded), so the element's own `load` or `loadedmetadata` follows. An image of
+another shape than 16:9 moves the layout once, when it arrives. One that
+could not be loaded keeps its placeholder, marked `data-muster-asset="failed"`.
+⚠ **A page's own script that reads an asset before it arrives sees the
+placeholder**, not the asset: wait for the element's `load`
+(`loadedmetadata` for a video), or read its `src` again after. An element the
+script creates with the reference AFTER that asset has arrived keeps the
+placeholder: create media from the markup, or before the page's `load`.
+
+**Cached.** An asset's id never names other bytes, so each response is
+`Cache-Control: private, max-age=31536000, immutable`, and the shell's fetch
+uses the browser's cache: a repeat view does not fetch it again. Through a
+link, reads are capped per link ([Limits](#limits)).
 
 **Who can read one:** exactly who can read the page. A link serves only an
 asset its page's **current** version uses (a revoked link serves none); the
@@ -553,6 +567,7 @@ means a push service accepted it, not that the device showed it.
 | page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
 | uploads per link | 10 a minute |
+| asset reads per link | 600 a minute (a repeat view reads from the browser's cache) |
 | failed link lookups per client address | 60 a minute, then 429 |
 | one MCP request (`page_create` / `page_update`) | 1088 KiB: the blocks as sent, up to 1 MiB (twice the stored 512 KiB, for an encoder that escapes more than muster's), plus 64 KiB for the rest |
 | one MCP request (any other tool or method) | 64 KiB |
@@ -586,6 +601,7 @@ updated as well as the server.
 - **Require the viewer's email** per link.
 - **An asset from an opencode session**: a mirrored opencode session is not
   offered the page tools.
-- **Streaming an asset**: the shell fetches each asset whole before the page
-  appears (at most 100 MiB a page), so a video does not start before it has
-  arrived.
+- **Streaming an asset**: the shell fetches each asset whole, so a video
+  does not start before it has arrived (the rest of the page shows meanwhile).
+- **An asset from a dispatched agent**: the asset tools are a mirrored
+  session's only, for now.

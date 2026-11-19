@@ -600,6 +600,52 @@ test('a mirrored session attaches a 2 MB image and a 2 MB video from its working
   await stranger.close();
 });
 
+// RENDER FIRST, FILL IN (asset.go): the page's text is on screen while an
+// asset is still on its way — its element a placeholder box marked
+// data-muster-asset="loading" — and the asset then renders in place. The
+// asset's response is HELD (the shell's fetch, on muster's own origin, is the
+// one that goes through this route) until the text has been seen.
+test('a page renders at once and fills in an asset when it arrives', async ({ page }) => {
+  test.setTimeout(120_000);
+  await signIn(page, origin);
+  fs.writeFileSync(path.join(workDir, 'slow-still.png'), noisePNG(400, 300));
+  const created = await call('page_create', { title: 'Slow media ' + stamp, blocks: [{ type: 'markdown', text: 'Media coming.' }] });
+  expect(created.isError, JSON.stringify(created.body)).toBe(false);
+  const pageID = created.body.page_id as number;
+  const up = await call('page_asset_upload', { page_id: pageID, path: 'slow-still.png' });
+  expect(up.isError, JSON.stringify(up.body)).toBe(false);
+  const upd = await call('page_update', {
+    page_id: pageID,
+    blocks: [{ type: 'markdown', text: '# Visible before the media\n\n![The still](' + (up.body.ref as string) + ')' }],
+  });
+  expect(upd.isError, JSON.stringify(upd.body)).toBe(false);
+
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let asked = 0;
+  await page.route('**/assets/**', async (route) => {
+    asked++;
+    await held;
+    await route.continue();
+  });
+  await page.goto(origin + `/pages/${pageID}/view`);
+  const frame = page.frameLocator('iframe#page');
+  // The text, while the asset is held: the page did not wait for it.
+  await expect(frame.locator('h1')).toHaveText('Visible before the media');
+  await expect.poll(() => asked, 'the shell asked for the asset').toBe(1);
+  const still = frame.locator('.mp-markdown img');
+  await expect(still).toHaveAttribute('data-muster-asset', 'loading');
+  expect(await still.getAttribute('src')).toMatch(/^data:image\/gif;base64,.*#muster-asset-[A-Za-z0-9_-]{22}$/);
+  // The placeholder is a box, not a 1px dot: no jump to nothing.
+  expect((await still.boundingBox())!.height).toBeGreaterThan(50);
+  // Released: it renders in place.
+  release();
+  await expect.poll(() => still.evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth), { timeout: 30_000 }).toBe(400);
+  expect(await still.getAttribute('src')).toMatch(/^blob:/);
+  await expect(still).not.toHaveAttribute('data-muster-asset', /.*/);
+  await page.unroute('**/assets/**');
+});
+
 // The owner's two Pages screens settle without layout shift (cls.spec.ts
 // names them as measured here: they need pages on and an agent-made page).
 test('the Pages screens do not shift on load', async ({ page }) => {

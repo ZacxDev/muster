@@ -117,7 +117,7 @@ func pageBlocksSchema() map[string]any {
 // pageToolDefs are the page tools.
 func pageToolDefs() []agents.ToolDef {
 	id := intProp("The page's id, as page_create returned it.", 1, 1<<53)
-	return append([]agents.ToolDef{
+	return []agents.ToolDef{
 		{Type: "function", Name: pageCreateTool,
 			Description: "Publish a page for your owner — a small web page that can show what you built, or collect answers, choices, form " +
 				"fields, files or an approval from someone you share it with. It is PRIVATE until it has a live share link: " +
@@ -171,7 +171,7 @@ func pageToolDefs() []agents.ToolDef {
 				"page_id": id,
 				"link_id": intProp("The link's id, as page_get or page_share_request returned it.", 1, 1<<53),
 			}, "page_id", "link_id")},
-	}, pageAssetToolDefs()...)
+	}
 }
 
 // pageToolNames is the page tools' names, for the dispatch.
@@ -195,6 +195,9 @@ func (s *Server) dispatchPageTool(ctx context.Context, c toolCaller, name, argum
 	creator, ok := pageCreatorOf(c)
 	if !ok {
 		return toolErr("%s is for an agent or a mirrored session", name), true
+	}
+	if c.agent != nil && (name == pageAssetUploadTool || name == pageAssetDeleteTool) {
+		return toolErr("%s", pageAssetsMirrorOnly), true
 	}
 	switch name {
 	case pageCreateTool:

@@ -323,7 +323,7 @@ BEGIN
         ALTER TABLE public.officer_seen DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_seen ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0157 (page_assets, page_version_assets), when this schema has them; same
+    -- 0161 (page_assets, page_version_assets), when this schema has them; same
     -- reason as 0011.
     IF to_regclass('public.page_assets') IS NOT NULL THEN
         ALTER TABLE public.page_assets NO FORCE ROW LEVEL SECURITY;

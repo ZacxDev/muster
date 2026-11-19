@@ -142,11 +142,14 @@ func TestThePagesMarkupIsNotInTheDocument(t *testing.T) {
 	}
 	sdk := sdkScript(v, "", nil)
 	for _, want := range []string{
-		// Put in only once the port is held (and the version's assets have
-		// answered: load, asset.go).
-		`if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();load();}`,
-		`if(loading)return;loading=true;var left=ASSETS.length;if(!left)return show();`,
-		`if(--left===0)show();`,
+		// Put in only once the port is held — at once, each asset a
+		// placeholder (asset.go: render first, fill in), and only THEN are
+		// the version's assets asked for.
+		`if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();load();}`,
+		`ASSETS.forEach(function(a){BLOCKS=BLOCKS.split("asset:"+a).join(ph(a));});
+ shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
+ ASSETS.forEach(function(a){if(urls[a])fill(a);else mark(a,"loading");});`,
+		`if(!shown)return;if(urls[a])fill(a);else mark(a,"failed");`,
 		`shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));`,
 		// Framed, it asks for the port; it shows nothing until it has it.
 		`if(PARENT===W)show();else hello();`,
@@ -169,8 +172,8 @@ func TestThePagesMarkupIsNotInTheDocument(t *testing.T) {
 			t.Errorf("the SDK lacks %q", want)
 		}
 	}
-	if strings.Count(sdk, "show();") != 3 || strings.Count(sdk, "load();") != 1 {
-		t.Errorf("show() is called from %d places, want 3 (load's two — no assets, the last asset answered — and no parent at all); load() from %d, want 1 (the port)",
+	if strings.Count(sdk, "show();") != 2 || strings.Count(sdk, "load();") != 1 {
+		t.Errorf("show() is called from %d places, want 2 (the port, and no parent at all); load() from %d, want 1 (the port, after show)",
 			strings.Count(sdk, "show();"), strings.Count(sdk, "load();"))
 	}
 }
@@ -313,7 +316,7 @@ func TestTheShellChecksASendsOwnCopy(t *testing.T) {
 	// Two fetches: fetchJSON (every send) and an asset's read (asset.go),
 	// which takes only a 22-character id and fetches it under base.
 	if strings.Count(js, "fetch(") != 2 || !strings.Contains(js, `if(!only(d,["muster","id","op","asset"])||typeof d.asset!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(d.asset))return reply(false,"muster does not take that");
-  return fetch(base+"/assets/"+d.asset,{credentials:"omit",cache:"no-store",referrerPolicy:"no-referrer"})`) {
+  return fetch(base+"/assets/"+d.asset,{credentials:"omit",referrerPolicy:"no-referrer"})`) {
 		t.Errorf("the shell fetches in %d places, want the two (a send, an asset)", strings.Count(js, "fetch("))
 	}
 }

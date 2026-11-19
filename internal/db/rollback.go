@@ -382,14 +382,14 @@ const officerConnectorBlocksMigrationVersion = 148
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerSeenMigrationVersion = 156
 
-// pageAssetsMigrationVersion is 0157: page_assets and page_version_assets (a
+// pageAssetsMigrationVersion is 0161: page_assets and page_version_assets (a
 // page's author images and video, and which versions refer to them,
 // internal/pages asset.go), owned and under the same row-level security in
 // the page tables' share class; same treatment again, re-applied when
 // page_assets exists (the one migration creates both). Its body is
 // idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const pageAssetsMigrationVersion = 157
+const pageAssetsMigrationVersion = 161
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

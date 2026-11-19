@@ -20,17 +20,19 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A PAGE'S AUTHOR ASSETS (internal/pages asset.go, migration 0157;
+// A PAGE'S AUTHOR ASSETS (internal/pages asset.go, migration 0161;
 // docs/pages.md "Images and video"): images and video the page's author
 // attaches, which its markdown and html blocks show.
 //
 //	POST /mirror/pages/{id}/assets        a mirror host sends a session's file (mirror token)
-//	POST /agent/pages/{id}/assets         a dispatched pod sends its agent's file (agent token)
 //	GET  /s/{token}/assets/{asset}        the link's shell reads one (the token)
 //	GET  /pages/{id}/versions/{v}/assets/{asset}   the owner's shell reads one (session)
 //
-// 🔴 ONLY THE PAGE'S AUTHOR ADDS ONE. Both POSTs act as a pages.Creator — the
-// mirror token's HOST, or the agent — and every store call is scoped to the
+// A dispatched agent has no way to attach one yet (a follow-up): only a
+// mirrored session's host can send a file from where it is.
+//
+// 🔴 ONLY THE PAGE'S AUTHOR ADDS ONE. The POST acts as a pages.Creator — the
+// mirror token's HOST — and every store call is scoped to the
 // pages that creator made (as the page tools are), under the owner's
 // row-level security: another creator's page, the same owner's included,
 // reads as missing.
@@ -49,6 +51,12 @@ import (
 // reads no other page's asset and a revoked link reads none
 // (requirePageLink). The bytes go out inert (uploads.SetServeHeaders) and
 // same-origin only (Cross-Origin-Resource-Policy).
+//
+// CACHED, BECAUSE AN ID'S BYTES NEVER CHANGE: an asset is never rewritten (a
+// new file is a new id), so each response may be kept by the browser for a
+// year, immutable (pageAssetCacheControl) — private, never a shared cache's.
+// A link's reads are also capped per link (pageAssetLimit), as its submits
+// and uploads are.
 // ---------------------------------------------------------------------------
 
 // The two asset refusals a sender branches on, each its own guard's.
@@ -61,13 +69,28 @@ func (s *Server) registerPageAssetRoutes(mux Mux) {
 	mux.HandleFunc("GET "+pages.SharePrefix+"{token}/assets/{asset}", s.requirePageLink(s.handlePageLinkAsset))
 	mux.HandleFunc("GET "+pagesPath+"/{id}/versions/{v}/assets/{asset}", s.requireSession(s.handleOwnerPageAsset))
 	mux.HandleFunc("POST /mirror/pages/{id}/assets", s.requireMirrorHostToken(s.handleMirrorPageAsset))
-	mux.HandleFunc("POST /agent/pages/{id}/assets", s.requireRelayAgent(s.handleAgentPageAsset))
 }
+
+// pageAssetCacheControl is every asset response's Cache-Control: an id's bytes
+// never change, so the browser keeps it; private, so no shared cache does.
+const pageAssetCacheControl = "private, max-age=31536000, immutable"
+
+// pageAssetThrottled is the one answer to a link past its read cap.
+const pageAssetThrottled = "Too many files read through this link for now. Try again in a minute."
 
 // handlePageLinkAsset is GET /s/{token}/assets/{asset}: an asset the link's
 // page's CURRENT version refers to.
 func (s *Server) handlePageLinkAsset(w http.ResponseWriter, r *http.Request) {
 	l, _ := pageLinkOf(r.Context())
+	// Per link, as its submits and uploads: a link holder cannot make the
+	// server stream a page's files without end.
+	if !s.pageState.assets.take(strconv.FormatInt(l.ID, 10), s.now(), pageLimitWindow, pageAssetLimit) {
+		metrics.PageLinkRequests.WithLabelValues("asset", "throttled").Inc()
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, pageAssetThrottled, http.StatusTooManyRequests)
+		return
+	}
 	a, err := s.ext.Pages.VersionAsset(r.Context(), l.PageID, 0, r.PathValue("asset"))
 	if err != nil || s.ext.Uploads == nil {
 		if err != nil && !errors.Is(err, pages.ErrNotFound) {
@@ -112,6 +135,7 @@ func (s *Server) servePageAsset(w http.ResponseWriter, r *http.Request, a pages.
 	defer body.Close()
 	h := w.Header()
 	uploads.SetServeHeaders(h, a.ContentType, a.Filename, size)
+	h.Set("Cache-Control", pageAssetCacheControl)
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
 	h.Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(http.StatusOK)
@@ -132,18 +156,6 @@ func (s *Server) handleMirrorPageAsset(w http.ResponseWriter, r *http.Request) {
 	// The label is only the asset row's created_by (scoping is the host's):
 	// the host's name, never a session's display name (no name rule here).
 	s.storePageAsset(w, r, pages.Creator{MirrorHost: t.Host, Label: "a session on " + t.Host})
-}
-
-// handleAgentPageAsset is POST /agent/pages/{id}/assets?filename=<name>: a
-// dispatched agent's pod (`ccd page-asset`) sends one workspace file as one
-// of page id's assets — a page this agent made.
-func (s *Server) handleAgentPageAsset(w http.ResponseWriter, r *http.Request) {
-	a, _ := agentFromContext(r.Context())
-	if a.ID <= 0 {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "this route is an agent's"})
-		return
-	}
-	s.storePageAsset(w, r, pages.Creator{AgentID: a.ID, Label: callerOfAgent(a).author()})
 }
 
 // pageAssetFull is the page cap's refusal in words: room bytes left.
@@ -332,12 +344,18 @@ func pageAssetIn(arguments string) (id int64, assetID, path string, bad string) 
 	return in.PageID, strings.TrimPrefix(strings.TrimSpace(in.AssetID), pages.AssetScheme), strings.TrimSpace(in.Path), ""
 }
 
+// pageAssetsMirrorOnly is a dispatched agent's answer from either asset tool.
+const pageAssetsMirrorOnly = "attaching images and video to a page is available from mirrored sessions only, for now; an image on your page must be inline (a data: URI)"
+
 // toolPageAssetUpload is page_asset_upload as it reaches muster: with
 // asset_id, the file muster-mirror already sent (POST
 // /mirror/pages/{id}/assets) — reported, once it is checked to be an asset of
 // a page this caller made. With only a path, nothing here can read the file:
-// a mirrored session's muster-mirror is older than page assets, and a
-// dispatched agent sends it with `ccd page-asset`.
+// the session's muster-mirror is older than page assets.
+//
+// A dispatched agent is not offered the asset tools (mirrorTools offers them,
+// agentTools does not); one that calls them anyway is told
+// pageAssetsMirrorOnly.
 func (s *Server) toolPageAssetUpload(ctx context.Context, caller toolCaller, c pages.Creator, arguments string) string {
 	id, assetID, path, bad := pageAssetIn(arguments)
 	if bad != "" {
@@ -349,12 +367,6 @@ func (s *Server) toolPageAssetUpload(ctx context.Context, caller toolCaller, c p
 		}
 		if why := s.askUploadsOff(); why != "" {
 			return toolErr("file uploads are off on this muster (its upload store is not configured), so a page cannot carry files; use data: URIs")
-		}
-		if caller.agent != nil {
-			if !shipsCcd(*caller.agent) {
-				return toolErr("page assets are not available to you: an image must be inline (a data: URI)")
-			}
-			return toolErr("muster cannot read files in your workspace: run `ccd page-asset %d %s` in your shell (it prints the asset's ref, asset:<id>), then use that ref in your blocks and publish with page_update", id, path)
 		}
 		return toolErr("this host's muster-mirror did not send the file (it is older than page assets): update muster-mirror on this host")
 	}

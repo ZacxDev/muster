@@ -39,7 +39,7 @@ and setup are in [github-app.md](github-app.md).
 | variable | meaning |
 |---|---|
 | `MUSTER_CONNECTOR_ENCRYPTION_KEY` | 32 random bytes, as 64 hex digits or as base64. Setting it turns on members' own credentials; agents get the store only with `MUSTER_AGENT_CONNECT_URL` and `MUSTER_CONNECT_PORT` too. It must differ from the GitHub key. |
-| `MUSTER_CONNECT_PORT` | A second listener that serves **only** the agent-facing routes: `/connect/`, `/agent/connectors`, `/mcp`, `/agent/approvals`, `/agent/blocked`, `/agent/work`, `/agent/ask-attachments` (an ask's file, `ccd ask-attach`), `/agent/pages/` (a page's image or video, `ccd page-asset`), the officer [LLM proxy](#the-llm-proxy) under `/llm/`, and `/health`. Everything else answers 404 there. |
+| `MUSTER_CONNECT_PORT` | A second listener that serves **only** the agent-facing routes: `/connect/`, `/agent/connectors`, `/mcp`, `/agent/approvals`, `/agent/blocked`, `/agent/work`, `/agent/ask-attachments` (an ask's file, `ccd ask-attach`), the officer [LLM proxy](#the-llm-proxy) under `/llm/`, and `/health`. Everything else answers 404 there. |
 | `MUSTER_AGENT_CONNECT_URL` | The URL agents are given (as `MUSTER_CONNECT_URL`) to reach that listener. It also opens the `claude-code` agents' NetworkPolicy to the connect port. |
 
 While the key is unset, every connector route answers 503, the Connectors tab is

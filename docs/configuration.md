@@ -498,7 +498,7 @@ variables when it provisions an agent, so you normally never set them yourself.
 |---|---|---|---|
 | `MUSTER_GATEWAY_BEARER` | none | this or `HOOKS_TOKEN` | The bearer token `ccd`'s `/v1/responses` accepts. muster mints it per `claude-code` agent at random (`agents.gateway_secret`, migration 0042); it is not derived from `MUSTER_HOOK_TOKEN`. |
 | `HOOKS_TOKEN` | none | this or the bearer | A token the bearer is derived from (`sha256("gw-"+token)`). If both are set, they must agree. muster no longer ships it to `claude-code` agents. |
-| `MUSTER_CONNECT_URL` | none | no | muster's connect listener. `ccd approve`, `ccd connect-git`, `ccd ask-image`, `ccd ask-attach` and `ccd page-asset` use it. |
+| `MUSTER_CONNECT_URL` | none | no | muster's connect listener. `ccd approve`, `ccd connect-git`, `ccd ask-image` and `ccd ask-attach` use it. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | none | this or a `/login` file | The Claude credential, taken from the agent's Secret. `ccd` treats either one as "has a credential". |
 | `CCD_LISTEN` | `:18789` | no | The gateway address. |
 | `CCD_SPEC_DIR` | none | no | Set: the container is a `docker compose` service. The entrypoint runs `ccd compose` instead of `ccd serve`, which reads the spec muster writes in this directory and runs the normal entrypoint as its child when the spec says so ([provisioner.md](provisioner.md#the-image-as-a-docker-compose-service)). Kubernetes never sets it. `ccd compose` listens on port 18789 and proxies to the child, which it starts with `CCD_LISTEN=127.0.0.1:18790`. |

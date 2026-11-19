@@ -225,6 +225,12 @@ func req(r bool) string {
 	return ""
 }
 
+// assetPlaceholder begins an asset's placeholder in the page's markup until
+// its bytes arrive (sdkScript): a 1x1 transparent GIF the page's policy
+// allows (img-src data:), then a fragment the SDK appends the asset's id to,
+// so each asset's elements can be found again.
+const assetPlaceholder = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7#muster-asset-"
+
 // markdownAssetImage is a markdown image whose address is an asset reference:
 // ![alt](asset:<id>). The renderer (o.Markdown) draws no image of its own.
 var markdownAssetImage = regexp.MustCompile(`!\[([^\]\n]{0,200})\]\(asset:([A-Za-z0-9_-]{22})\)`)
@@ -357,28 +363,45 @@ func sdkScript(v Version, blocks string, assets []string) string {
 var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
  PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
  DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,BL=W.Blob,COU=URL.createObjectURL,
+ QSA=Document.prototype.querySelectorAll,SA=Element.prototype.setAttribute,RA=Element.prototype.removeAttribute,GA=Element.prototype.getAttribute,ML=HTMLMediaElement.prototype.load,
+ gTag=gd(Element.prototype,"tagName"),gPar=gd(Node.prototype,"parentNode"),
  gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
  gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
  SE=D.scrollingElement||D.documentElement,
- BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
+ BLOCKS=` + jsString(blocks) + `,ASSETS=` + string(ids) + `,PH=` + jsString(assetPlaceholder) + `,urls=Object.create(null),loading=false,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
 function later(){R(ST,W,[show,0]);}
-// load asks the shell for each asset the version refers to (the frame has no
-// network: the shell fetches it, asset.go) and makes a blob: URL of each Blob
-// it is handed; once every one has answered, show() puts the page in, each
-// asset:<id> in its markup replaced by its URL. One that fails stays as it
-// was written, which the page's policy loads nothing from.
+// RENDER FIRST, FILL IN (asset.go). The page goes in at once, each asset:<id>
+// in its markup a placeholder (PH+id: a 1x1 transparent image, drawn as a
+// box by data-muster-asset, contentCSS); load asks the shell for each asset
+// the version refers to (the frame has no network: the shell fetches it) and,
+// as each Blob arrives, fill puts a blob: URL of it in every src or poster
+// still holding its placeholder. One that fails keeps the placeholder,
+// marked failed. A page's own script reading one before it arrives sees the
+// placeholder; the element's own load (or loadedmetadata) follows the swap.
+function ph(a){return PH+a;}
+function els(a){return R(QSA,D,['[src="'+ph(a)+'"],[poster="'+ph(a)+'"]']);}
+function mark(a,state){var l=els(a);for(var i=0;i<l.length;i++)R(SA,l[i],["data-muster-asset",state]);}
+function fill(a){
+ var u=urls[a],l=els(a);if(!u)return;
+ for(var i=0;i<l.length;i++){var e=l[i],t=R(gTag,e,[]);
+  if(R(GA,e,["poster"])===ph(a))R(SA,e,["poster",u]);
+  if(R(GA,e,["src"])===ph(a))R(SA,e,["src",u]);
+  R(RA,e,["data-muster-asset"]);
+  if(t==="SOURCE"){var p=R(gPar,e,[]);if(p instanceof HTMLMediaElement)R(ML,p,[]);}}
+}
 function load(){
- if(loading)return;loading=true;var left=ASSETS.length;if(!left)return show();
+ if(loading)return;loading=true;
  ASSETS.forEach(function(a){send("asset",a,null,function(ok,x){
   if(ok&&x instanceof BL){try{urls[a]=R(COU,URL,[x]);}catch(e){}}
-  if(--left===0)show();
+  if(!shown)return;if(urls[a])fill(a);else mark(a,"failed");
  });});
 }
 function show(){
  if(shown)return;var m=D.querySelector("main.mp");
  if(!m||R(gRS,D,[])==="loading"){if(!waitedDCL){waitedDCL=true;R(AEL,D,["DOMContentLoaded",later]);}return;}
- for(var a in urls)BLOCKS=BLOCKS.split("asset:"+a).join(urls[a]);
+ ASSETS.forEach(function(a){BLOCKS=BLOCKS.split("asset:"+a).join(ph(a));});
  shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
+ ASSETS.forEach(function(a){if(urls[a])fill(a);else mark(a,"loading");});
  R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
  if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
 }
@@ -391,7 +414,7 @@ function answer(ev){
 R(AEL,W,["message",function(ev){
  if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
  R(SIP,ev,[]);var d=R(gData,ev,[]);
- if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();load();}
+ if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();load();}
 },true]);
 // Only the browser's own scroll of the document reports: not a dispatched
 // "scroll" (isTrusted is unforgeable), not an inner element's.
@@ -471,7 +494,8 @@ border:1px solid var(--line);border-radius:8px;padding:10px;min-height:44px}
 button{font:inherit;min-height:44px;padding:8px 18px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;align-self:flex-start}
 button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.6}
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
-.mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}`
+.mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}
+[data-muster-asset]{display:block;width:100%;aspect-ratio:16/9;background:var(--line);border-radius:8px;object-fit:contain}`
 
 // The shell's header is ONE slim row (shellHeaderPx high) laid OVER the frame,
 // which fills the window; the content document leaves room for it at its top
@@ -850,7 +874,7 @@ function relay(d){
  // owner's session), and handed back as a Blob. No confirm: nothing is sent.
  if(d.op==="asset"){
   if(!only(d,["muster","id","op","asset"])||typeof d.asset!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(d.asset))return reply(false,"muster does not take that");
-  return fetch(base+"/assets/"+d.asset,{credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `}).then(function(r){
+  return fetch(base+"/assets/"+d.asset,{credentials:` + creds + `,referrerPolicy:` + refpol + `}).then(function(r){
    if(!r.ok)throw new Error("muster answered "+r.status);return r.blob();
   }).then(function(b){reply(true,b);},function(){reply(false,"the asset could not be loaded");});
  }

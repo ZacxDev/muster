@@ -17,8 +17,8 @@ import (
 // A PAGE'S AUTHOR ASSET (internal/pages asset.go; docs/pages.md "Images and
 // video") is a workspace file too, sent from where it is by the same client
 // (Send): a mirrored session's host (muster-mirror's MCP proxy, for
-// page_asset_upload) to PageAssetMirrorPath, a dispatched agent's pod (`ccd
-// page-asset`) to PageAssetAgentPath. muster checks the bytes again on
+// page_asset_upload) to PageAssetMirrorPath. (A dispatched agent has no way to
+// send one yet: a follow-up.) muster checks the bytes again on
 // arrival — the type sniffed from them against the one declared, the size
 // against pages.MaxAssetBytes and the page's room — whatever sent them.
 
@@ -31,12 +31,6 @@ const PageAssetTool = "page_asset_upload"
 // assets to, with its mirror token and the calling session.
 func PageAssetMirrorPath(id int64) string {
 	return "/mirror/pages/" + strconv.FormatInt(id, 10) + "/assets"
-}
-
-// PageAssetAgentPath is muster's route a dispatched agent's pod sends one to,
-// with the agent's own token.
-func PageAssetAgentPath(id int64) string {
-	return "/agent/pages/" + strconv.FormatInt(id, 10) + "/assets"
 }
 
 // assetExtTypes are the types a file's extension declares, for a sender told

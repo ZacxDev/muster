@@ -120,7 +120,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //     chief's OpenRouter sessions spend, and hold in flight).
 //   - fleet_owner_marks (0147, the fleet digest's marks).
 //   - officer_seen (0156, when each person last looked at each officer's page).
-//   - page_assets, page_version_assets (0157, a page's author assets and the versions using them).
+//   - page_assets, page_version_assets (0161, a page's author assets and the versions using them).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -256,7 +256,7 @@ var wantForeignKeys = []string{
 	"page_responses|page_responses_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"page_responses|page_responses_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
 	"page_responses|page_responses_link_fkey|FOREIGN KEY (link_id, owner_id) REFERENCES page_links(id, owner_id) ON DELETE CASCADE",
-	// 0157: an asset names its page, and a version's reference its version
+	// 0161: an asset names its page, and a version's reference its version
 	// and its asset, by the composite key — so none names another owner's,
 	// and a reference names only its OWN page's asset (NO ACTION: a version
 	// keeps its asset).

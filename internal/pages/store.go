@@ -121,7 +121,7 @@ type Store interface {
 	// bound), NEWEST first, at most limit (the owner's screen's pages).
 	ResponsesBefore(ctx context.Context, id, before int64, limit int) ([]Response, error)
 
-	// The author's assets (asset.go, migration 0157).
+	// The author's assets (asset.go, migration 0161).
 
 	// AssetRoom is what c's page id may still take, under its caps: the bytes
 	// (MaxAssetBytesPerPage less what it holds) — ErrNotFound for a page that
@@ -235,7 +235,7 @@ func insertVersion(ctx context.Context, tx pgx.Tx, page int64, v int, title stri
 // 🔴 ONLY THE PAGE'S OWN: each is looked up among page's assets first, and one
 // that is not there — another page's, another owner's (row-level security:
 // unseen), deleted, never attached — refuses the version with a sentence
-// naming it. 0157's foreign key holds the same if this check ever went.
+// naming it. 0161's foreign key holds the same if this check ever went.
 func insertVersionAssets(ctx context.Context, tx pgx.Tx, page int64, v int, blocks []Block) error {
 	for _, ref := range AssetRefs(blocks) {
 		var ok bool
@@ -420,7 +420,7 @@ func (s *PGStore) SetCurrent(ctx context.Context, id int64, v int) (Page, error)
 
 // Files lists a page's uploaded files.
 func (s *PGStore) Files(ctx context.Context, id int64) ([]string, error) {
-	// A viewer's files, then the author's assets (0157): both are uploads rows
+	// A viewer's files, then the author's assets (0161): both are uploads rows
 	// under the page's prefix.
 	rows, err := s.pool.Query(ctx, `SELECT f FROM (
 		SELECT upload_public_id AS f, 0 AS k, id FROM page_responses WHERE page_id = $1 AND kind = 'upload'

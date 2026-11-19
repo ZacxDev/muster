@@ -52,6 +52,7 @@ var mirrorToolDefFuncs = map[string]func() []agents.ToolDef{
 	"pluginMessageRouteToolDefs": pluginMessageRouteToolDefs,
 	"dispatchHoldToolDefs":       dispatchHoldToolDefs,
 	"pageToolDefs":               pageToolDefs,
+	"pageAssetToolDefs":          pageAssetToolDefs,
 	"agentReportDoneToolDef":     func() []agents.ToolDef { return []agents.ToolDef{agentReportDoneToolDef()} },
 	"hostOfficerToolDefs":        hostOfficerToolDefs,
 	"connectorToolDefs":          connectorToolDefs,
