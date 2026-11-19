@@ -171,11 +171,16 @@ Every release publishes these assets on its
 | **Helm chart** | `muster-<X.Y.Z>.tgz` | the server on Kubernetes, and dispatched agents | [docs/kubernetes.md](docs/kubernetes.md) |
 | **Mirror daemon** | `muster-mirror_<os>_<arch>.tar.gz` | each machine whose tmux sessions muster shows | [docs/mirroring.md](docs/mirroring.md) |
 | **CLI** | `muster_<os>_<arch>.tar.gz` | `muster doctor`, tasks and the rest from a terminal | [docs/cli.md](docs/cli.md) |
+| **Linux packages** (opt-in) | `muster_linux_<arch>.deb`, `muster-mirror_linux_<arch>.deb`, `muster_linux_<arch>.rpm`, `muster-mirror_linux_<arch>.rpm` | the CLI and the mirror in `/usr/bin`, for every user: `apt`/`dnf` install, or `install.sh` with `MUSTER_PACKAGE=deb` or `rpm` | [docs/releases.md](docs/releases.md#installing-by-platform) |
+| **Homebrew** | `muster.rb`, `muster-mirror.rb` | macOS and Linux: `brew install zacxdev/muster/…` once the tap is published (it needs the release's tap token); until then these formula files in a local tap | [docs/releases.md](docs/releases.md#homebrew-and-scoop) |
+| **Windows** (CLI only) | `muster_windows_<arch>.zip`, or Scoop with `muster.json` | the CLI on Windows; there is no Windows mirror (it needs tmux): use WSL for that | [docs/releases.md](docs/releases.md#installing-by-platform) |
 | **From source** | a clone of this repository | working on muster | [docs/development.md](docs/development.md) |
 
-The binaries are built for `<os>` = `linux` or `darwin` and `<arch>` = `amd64`
-or `arm64`. There is no server binary: the server ships as the container image
-the Compose file and the chart run.
+`<arch>` is `amd64` or `arm64` everywhere; the archives' `<os>` is `linux` or
+`darwin`; Windows gets the CLI only. Every download is in `checksums.txt` and
+carries a build-provenance attestation ([verify](docs/releases.md#verifying-a-download)).
+There is no server binary: the server ships as the container image the Compose
+file and the chart run.
 
 <details>
 <summary><b>Install from inside Claude Code, or as a skill</b></summary>

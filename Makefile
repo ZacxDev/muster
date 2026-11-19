@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: release-dry-run release-logic-test compose-check compose-up-test features-config-test install-guide-test build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots docshots-check
+.PHONY: release-dry-run release-logic-test release-tooling-test changelog compose-check compose-up-test features-config-test install-guide-test build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots docshots-check
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -110,6 +110,8 @@ help:
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
 	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
+	@echo "  make release-tooling-test  release notes, manifests, asset docs, action pins, install.sh platforms (no network)"
+	@echo "  make changelog        rewrite CHANGELOG.md from every release tag (needs gh; the release flow's bump PR runs it)"
 	@echo "  make compose-check    deploy/docker-compose.yml is valid, every profile, every healthcheck"
 	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it,"
 	@echo "                        then the s3 and stt profiles (COMPOSE_UP_PROFILES; stt needs espeak-ng)"
@@ -404,6 +406,25 @@ release-dry-run:
 release-logic-test:
 	tests/release-publish-test.sh
 	tests/stt-cohere-source-test.sh
+
+# The release's tooling, no network (CI: test, shard 0): notes/CHANGELOG and
+# formula/manifest generators on fixtures, the documented assets against the
+# built ones, every action SHA-pinned, install.sh's platforms and package
+# choice, ghcr-push.sh's attestation outputs.
+release-tooling-test:
+	python3 tests/release_notes_test.py
+	python3 tests/release_manifests_test.py
+	python3 tests/release_platforms_test.py
+	tests/install-platform-test.sh
+	tests/ghcr-push-output-test.sh
+	tests/publish-packages-test.sh
+	tests/changelog-bump-test.sh
+
+# CHANGELOG.md from every vX.Y.Z tag (needs the tags fetched and `gh`): the
+# same data and grouping as each release's notes (scripts/release-notes.py).
+# The release flow's post-release pull request runs the same script.
+changelog:
+	scripts/changelog-bump.sh
 
 # deploy/docker-compose.yml: `docker compose config` for every profile, plus the
 # shape the install guide relies on. Pulls nothing, starts nothing.

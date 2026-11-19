@@ -109,7 +109,9 @@ BADGES = {
 }
 
 PLACEHOLDERS = {"<os>": ["linux", "darwin"], "<arch>": ["amd64", "arm64"]}
-ASSET_TOKEN = re.compile(r"`([\w<>.-]+\.(?:tar\.gz|tgz|yml|sh)|env\.example)`")
+# <os> is the archives' (linux, darwin); a Windows or package asset is spelled
+# with its platform (`muster_windows_<arch>.zip`, `muster_linux_<arch>.deb`).
+ASSET_TOKEN = re.compile(r"`([\w<>.-]+\.(?:tar\.gz|tgz|yml|sh|zip|deb|rpm|rb|json)|env\.example)`")
 A_HREF = re.compile(r"<a[^>]*\shref=\"([^\"]+)\"")
 CLAUDEDOCS_LINK = re.compile(r"\]\((?:\./|(?:\.\./)+)?claudedocs(?:/|\))")
 
@@ -513,6 +515,20 @@ class FrontDoor(unittest.TestCase):
             "the README offers muster_linux_amd64.zip.tar.gz, which no release builds",
             "the README offers muster_linux_arm64.zip.tar.gz, which no release builds",
             "a release builds muster-<X.Y.Z>.tgz, which the README's install options do not name",
+        ])
+        # ...and the newer formats: a dropped Windows zip, package, formula or
+        # manifest is each reported, and a Windows mirror nobody builds is too.
+        dropped = (section.replace("`muster_windows_<arch>.zip`", "").replace("`muster-mirror_linux_<arch>.rpm`", "")
+                   .replace("`muster.rb`", "").replace("`muster.json`", "") + "\n`muster-mirror_windows_<arch>.zip`\n")
+        self.assertEqual(install_table_drift(dropped, contract), [
+            "the README offers muster-mirror_windows_amd64.zip, which no release builds",
+            "the README offers muster-mirror_windows_arm64.zip, which no release builds",
+            "a release builds muster-mirror_linux_amd64.rpm, which the README's install options do not name",
+            "a release builds muster-mirror_linux_arm64.rpm, which the README's install options do not name",
+            "a release builds muster.json, which the README's install options do not name",
+            "a release builds muster.rb, which the README's install options do not name",
+            "a release builds muster_windows_amd64.zip, which the README's install options do not name",
+            "a release builds muster_windows_arm64.zip, which the README's install options do not name",
         ])
 
 

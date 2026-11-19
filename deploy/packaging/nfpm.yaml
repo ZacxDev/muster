@@ -1,0 +1,51 @@
+# The .deb and .rpm packages of the muster CLI and muster-mirror (linux amd64
+# and arm64). ONE template for both programs and both formats:
+# scripts/release-build.sh fills in the @PLACEHOLDERS@ per package and runs
+# `nfpm package` once per (program, arch, format). Not run by hand;
+# `make release-dry-run` builds them.
+#
+#   @NAME@         muster | muster-mirror
+#   @ARCH@         amd64 | arm64 (nfpm names it x86_64/aarch64 inside an rpm)
+#   @VERSION@      X.Y.Z, the release
+#   @BIN@          the built binary, installed as /usr/bin/@NAME@
+#   @LICENSE@      the repository's LICENSE
+#   @DESCRIPTION@  one line
+#
+# The line marked `# mirror-only` is dropped for the CLI.
+#
+# 🔴 tmux is RECOMMENDED, NOT A HARD DEPENDENCY: `dpkg -i` and `rpm -U` resolve
+# no dependencies, so a `depends` would refuse the install on a machine without
+# tmux instead of installing and saying so (install.sh says so).
+#
+# Reproducible: nfpm stamps every file and the package itself with
+# SOURCE_DATE_EPOCH (release-build.sh sets it to the commit's time), so the
+# same commit builds the same bytes — release-publish.sh refuses to replace a
+# published asset with different ones.
+name: "@NAME@"
+arch: "@ARCH@"
+platform: linux
+version: "@VERSION@"
+version_schema: semver
+release: "1"
+section: utils
+priority: optional
+maintainer: "muster maintainers <https://github.com/ZacxDev/muster>"
+vendor: muster
+homepage: https://github.com/ZacxDev/muster
+license: MIT
+description: "@DESCRIPTION@"
+recommends: [tmux] # mirror-only
+# 🔴 A FIXED BUILD HOST. Left empty, nfpm writes the building machine's
+# hostname into every rpm: a different value on each runner (so a re-run
+# builds different bytes) and the name of whatever machine built it.
+rpm:
+  buildhost: muster-release
+contents:
+  - src: "@BIN@"
+    dst: "/usr/bin/@NAME@"
+    file_info:
+      mode: 0755
+  - src: "@LICENSE@"
+    dst: "/usr/share/doc/@NAME@/LICENSE"
+    file_info:
+      mode: 0644
