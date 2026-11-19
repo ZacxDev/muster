@@ -73,9 +73,11 @@ const (
 	mcpMaxReply = 8 << 20
 	// maxListenStreams bounds the open GET streams of /mcp.
 	maxListenStreams = 64
-	// listenKeepAlive is how often an open GET stream gets an SSE comment.
-	listenKeepAlive = 25 * time.Second
 )
+
+// listenKeepAlive is how often an open GET stream gets an SSE comment (a var
+// so a test can shorten it).
+var listenKeepAlive = 25 * time.Second
 
 // DefaultToolsRefresh is how often the proxy re-reads the instances' tool
 // lists when -mcp-tools-refresh is unset.
@@ -790,10 +792,16 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
 	_ = rc.Flush()
-	// tell sends list_changed when this session's list is stale.
-	tell := func() error {
+	// tell sends list_changed when this session's list is stale — or, for a
+	// LEGACY caller (no session: requireSession), on every wake, which comes
+	// only when the set changed (storePlan), as before sessions existed.
+	tell := func(woken bool) error {
 		cur := p.currentToolsHash()
-		if !p.sessions.stale(sid, cur) {
+		if sid == "" {
+			if !woken {
+				return nil
+			}
+		} else if p.sessions.touch(sid); !p.sessions.stale(sid, cur) {
 			return nil
 		}
 		if _, err := io.WriteString(w, listChangedEvent); err != nil {
@@ -805,7 +813,7 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 		p.sessions.markNotified(sid, cur)
 		return nil
 	}
-	if tell() != nil {
+	if tell(false) != nil {
 		return
 	}
 	t := time.NewTicker(listenKeepAlive)
@@ -817,11 +825,16 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 		case <-closed:
 			return
 		case <-ch:
-			if tell() != nil {
+			if tell(true) != nil {
 				return
 			}
 			continue
 		case <-t.C:
+			// An open stream is activity: the session is not the least
+			// recently seen while it holds one (maxMCPSessions).
+			if sid != "" {
+				p.sessions.touch(sid)
+			}
 			if _, err := io.WriteString(w, ": keep-alive\n\n"); err != nil {
 				return
 			}

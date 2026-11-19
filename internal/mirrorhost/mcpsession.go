@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,17 +21,26 @@ import (
 //
 //   - its `initialize` answer carries a fresh Mcp-Session-Id, and every later
 //     request (POST, and the GET stream) must send it back;
-//   - a request with NO id is answered 400 "Bad Request: Mcp-Session-Id header
-//     is required", and one with an id this process does not know (it
-//     restarted, or evicted it) 404 "Session not found" — the spec's answers,
-//     and the ones Claude Code (measured in 2.1.289's bundled client,
+//   - a request with an id this process does not know (it restarted, or
+//     evicted it) is answered 404 "Session not found" — the spec's answer,
+//     and one Claude Code (measured in 2.1.289's bundled client,
 //     isMcpSessionExpiredError) treats as an EXPIRED session on a tools/call:
 //     it drops the connection, initializes again — reading the CURRENT
-//     capabilities and tool list — and retries the call once. The 400 is what
+//     capabilities and tool list — and retries the call once;
+//   - a request with NO id is answered 400 "Bad Request: Mcp-Session-Id
+//     header is required" ONLY when its User-Agent names Claude Code at or
+//     past minRecoveringClaudeCode, the first version whose bundled client is
+//     known to take those words as an expired session (2.1.289, the one
+//     measured; an earlier one may also, but is not known to). That is what
 //     recovers a session that connected before this endpoint issued ids: its
-//     transport holds no id, so a 404 would not count for it, while the 400's
-//     words do;
-//   - what each session last LISTED (a hash of the tools, names and schemas)
+//     transport holds no id, so a 404 would not count for it, while the
+//     400's words do. EVERY OTHER caller with no id — an older or unknown
+//     Claude Code, a script — is served exactly as before sessions existed
+//     (the LEGACY path: forwarded, no tracking, its GET stream told of every
+//     change), and counted in the log: refusing a client that does not
+//     recover would fail every one of its calls until a manual reconnect;
+//   - what each session last LISTED (a hash of each whole tool object as
+//     served: name, description and schema)
 //     is kept. When what /mcp serves now differs — the watch re-read it, a
 //     reconnect to muster triggered a re-read (KickTools), another session
 //     listed it — that session is sent notifications/tools/list_changed ONCE:
@@ -103,11 +114,15 @@ func (t *sessionTable) touch(id string) bool {
 }
 
 // setListed records that session id was just served the tools hashing to h.
+//
+// It also forgets what the session was last told: a session that re-lists an
+// OLDER set (in a rolling update, from a pod still draining) must be told
+// again when the newer set returns, though it was told about it before.
 func (t *sessionTable) setListed(id, h string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if s := t.m[id]; s != nil {
-		s.listed = h
+		s.listed, s.notified = h, ""
 	}
 }
 
@@ -136,19 +151,70 @@ func (p *MCPProxy) sessionsOn(r *http.Request) bool {
 	return p.listChangedOn() && !OpenCodeCaller(r)
 }
 
-// requireSession is the caller's session id, or — none, or one this process
-// does not know — the transport's 400 or 404 written, and ok false.
+// minRecoveringClaudeCode is the first Claude Code version known to treat
+// the 400's words as an expired session and re-initialize: 2.1.289, the
+// version whose bundle was read (isMcpSessionExpiredError). Conservative: no
+// earlier bundle was available to measure.
+var minRecoveringClaudeCode = [3]int{2, 1, 289}
+
+// claudeCodeUA is Claude Code's MCP User-Agent: "claude-code/<version>",
+// optionally followed by " (<entrypoint>, …)" (2.1.289's qW()).
+var claudeCodeUA = regexp.MustCompile(`^claude-code/(\d+)\.(\d+)\.(\d+)(?: \(|$)`)
+
+// recoversFromMissingSession reports whether the caller's User-Agent names a
+// Claude Code at or past minRecoveringClaudeCode.
+func recoversFromMissingSession(ua string) bool {
+	m := claudeCodeUA.FindStringSubmatch(strings.TrimSpace(ua))
+	if m == nil {
+		return false
+	}
+	var v [3]int
+	for i := range v {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return false
+		}
+		v[i] = n
+	}
+	for i := range v {
+		if v[i] != minRecoveringClaudeCode[i] {
+			return v[i] > minRecoveringClaudeCode[i]
+		}
+	}
+	return true
+}
+
+// requireSession is the caller's session id; "" with ok true for a LEGACY
+// caller (no id, and not a Claude Code known to recover from the 400: served
+// as before sessions existed). An unknown id, or no id from a Claude Code
+// that recovers, is the transport's 404 or 400 written, and ok false.
 func (p *MCPProxy) requireSession(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := strings.TrimSpace(r.Header.Get(MCPSessionIDHeader))
 	switch {
-	case id == "":
+	case id == "" && recoversFromMissingSession(r.Header.Get("User-Agent")):
 		writeSessionRefusal(w, http.StatusBadRequest, mcpSessionRequired)
 		return "", false
+	case id == "":
+		p.countLegacy(r)
+		return "", true
 	case !p.sessions.touch(id):
 		writeSessionRefusal(w, http.StatusNotFound, mcpSessionNotFound)
 		return "", false
 	}
 	return id, true
+}
+
+// countLegacy counts a caller served on the legacy path, logging the count
+// at 1, 10, 100, … (with that caller's User-Agent), not once per request.
+func (p *MCPProxy) countLegacy(r *http.Request) {
+	n := p.legacyCallers.Add(1)
+	for m := uint64(1); m <= n; m *= 10 {
+		if m == n {
+			p.logf("muster-mirror: mcp: %d request(s) with no MCP session id served the legacy way (no list tracking); this one's User-Agent %q is not a Claude Code known to re-initialize (>= %d.%d.%d)",
+				n, r.Header.Get("User-Agent"), minRecoveringClaudeCode[0], minRecoveringClaudeCode[1], minRecoveringClaudeCode[2])
+			return
+		}
+	}
 }
 
 func writeSessionRefusal(w http.ResponseWriter, code int, body string) {

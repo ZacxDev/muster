@@ -1927,7 +1927,8 @@ of this off).
 **Each connection is an MCP session.** The `initialize` answer carries an
 `Mcp-Session-Id`, and every later request on `/mcp` (POST, and the `GET`
 stream) must send it back. The mirror remembers what each session last listed:
-a hash of the tools' names and schemas.
+a hash of each whole tool object as served (name, description and schema),
+so a reworded description counts as a change too.
 
 **A session holding an old list is told, once.** The mirror re-reads every
 instance's list on each tick, and at once each time its tunnel to muster
@@ -1950,16 +1951,25 @@ works with the primary alone too.
 **A session the mirror does not know initializes again.** After the mirror
 restarts it has no record of the sessions its previous process issued. A
 request naming such an id is answered `404 Session not found` (JSON-RPC
-`-32001`). A request with no id at all, from a session that connected before
-the mirror issued ids, is answered `400 Bad Request: Mcp-Session-Id header is
-required`. The call is not run either way. Both are the streamable-HTTP
-transport's own answers. Claude Code 2.1.289 (its bundled client's
-`isMcpSessionExpiredError`) treats each as an expired session on a tool call:
+`-32001`), and the call is not run. Claude Code 2.1.289 (its bundled client's
+`isMcpSessionExpiredError`) treats that as an expired session on a tool call:
 it drops the connection, initializes again (reading the current capabilities
 and tool list), and retries the call once. On a `GET` stream it does not
 re-initialize, so recovery happens on the session's next tool call. The table
-holds 512 sessions; past that the least recently seen is forgotten and
-re-initializes the same way.
+holds 512 sessions; past that the least recently seen is forgotten (an open
+`GET` stream counts as activity) and re-initializes the same way.
+
+A request with **no id at all** comes from a session that connected before the
+mirror issued ids. It is refused with `400 Bad Request: Mcp-Session-Id header
+is required` **only** when its `User-Agent` is `claude-code/<version>` at
+2.1.289 or later. That is the first version known to take those words as an
+expired session and re-initialize; 2.1.289's bundle was read, and no earlier
+one was available to measure. Every other caller with no id, such as an
+older or unidentified Claude Code or a script (Node's `fetch` sends
+`User-Agent: node`), is served exactly as before: forwarded, with no list
+tracking, and its `GET` stream is told of every change. The log counts such
+requests. Refusing a client that does not recover would fail every one of its
+calls until someone reconnects it by hand.
 
 The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
 server, at most 64 at once. Everyone else gets the transport's 405: an outsider,

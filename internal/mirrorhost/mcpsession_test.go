@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -251,8 +252,11 @@ func TestAnUnknownSessionIsAnsweredAsExpired(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// No session id at all.
-	w = postBody(t, after, withAccept(caller("%7")), callBody("agents_list", nil))
+	// No session id at all, from a Claude Code known to re-initialize on the
+	// 400 (the legacy path for every other caller: TestALegacyCallerIsServedAsBefore).
+	noID := withAccept(caller("%7"))
+	noID["User-Agent"] = "claude-code/2.1.289 (cli)"
+	w = postBody(t, after, noID, callBody("agents_list", nil))
 	if w.Code != http.StatusBadRequest || !claudeCodeExpired.MatchString("Error POSTing to endpoint: "+w.Body.String()) {
 		t.Fatalf("a call with no session: %d %s", w.Code, w.Body)
 	}
@@ -270,5 +274,115 @@ func TestAnUnknownSessionIsAnsweredAsExpired(t *testing.T) {
 	}
 	if w = postBody(t, after, map[string]string{"Authorization": "Bearer " + proxySecret, MCPClientHeader: MCPClientOpenCode}, listBody); w.Code != http.StatusOK {
 		t.Fatalf("CONTROL: an opencode caller: %d %s", w.Code, w.Body)
+	}
+}
+
+// claudeCodeHeaders is caller(pane) as Claude Code version v sends it: its
+// MCP User-Agent (2.1.289's qW(): "claude-code/<version> (<entrypoint>)").
+func claudeCodeHeaders(pane, v string) map[string]string {
+	h := withAccept(caller(pane))
+	h["User-Agent"] = "claude-code/" + v + " (cli)"
+	return h
+}
+
+// TestALegacyCallerIsServedAsBefore: a request with NO session id from a
+// caller not known to re-initialize on the 400 — no User-Agent, a script
+// (Node's fetch sends "node"), a Claude Code older than 2.1.289 — is served
+// exactly as before sessions existed: its call runs and answers 200, its
+// tools/list is relayed, its GET stream is told of a change; and it is
+// counted in the log. The control: the same request from Claude Code 2.1.289
+// is the 400, and does not run.
+func TestALegacyCallerIsServedAsBefore(t *testing.T) {
+	primary := newFakeInstance(t, []map[string]any{tool("agents_list")}, nil, true)
+	p := proxyFor(primary.srv.URL)
+	p.ToolsRefresh = time.Hour
+	var logs strings.Builder
+	p.Logger = log.New(&logs, "", 0)
+
+	legacy := map[string]map[string]string{
+		"no User-Agent":       withAccept(caller("%7")),
+		"node":                func() map[string]string { h := withAccept(caller("%7")); h["User-Agent"] = "node"; return h }(),
+		"Claude Code 2.1.288": claudeCodeHeaders("%7", "2.1.288"),
+	}
+	runs := 0
+	for name, h := range legacy {
+		w := postBody(t, p, h, callBody("agents_list", nil))
+		runs++
+		if w.Code != http.StatusOK || len(primary.calls()) != runs || !strings.Contains(w.Body.String(), `\"ran\":\"agents_list\"`) {
+			t.Fatalf("%s: a call with no session was not served: %d %s", name, w.Code, w.Body)
+		}
+		if w = postBody(t, p, h, listBody); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"agents_list"`) {
+			t.Fatalf("%s: tools/list with no session: %d %s", name, w.Code, w.Body)
+		}
+	}
+	if !strings.Contains(logs.String(), "served the legacy way") {
+		t.Fatalf("legacy callers were not counted in the log: %q", logs.String())
+	}
+
+	// Its GET stream is told of a change, as before.
+	srv := httptest.NewServer(p)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p.pollTools(ctx)
+	resp := sessionStream(t, ctx, srv.URL, caller("%7"))
+	t.Cleanup(func() { resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a legacy GET: %d", resp.StatusCode)
+	}
+	got := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		got <- string(buf[:n])
+	}()
+	primary.set([]map[string]any{tool("agents_list"), tool("page_create", "title!")}, nil)
+	p.pollTools(ctx)
+	select {
+	case s := <-got:
+		if m := sseMessages(s); len(m) != 1 || m[0] != listChangedData {
+			t.Fatalf("a legacy stream got %q", s)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a legacy stream was not told of a change")
+	}
+
+	// Control: Claude Code 2.1.289 with no id is refused, and nothing runs.
+	before := len(primary.calls())
+	if w := postBody(t, p, claudeCodeHeaders("%7", "2.1.289"), callBody("agents_list", nil)); w.Code != http.StatusBadRequest || len(primary.calls()) != before {
+		t.Fatalf("CONTROL: Claude Code 2.1.289 with no session: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestASessionThatReListsAnOlderSetIsToldAgain: in a rolling update a
+// session lists A, the watch sees B and the session is told; it re-lists on a
+// pod still draining and gets A again; the watch then sees B again. The
+// session holds A, so it must be told again — though it was told about B
+// before.
+func TestASessionThatReListsAnOlderSetIsToldAgain(t *testing.T) {
+	a := []map[string]any{tool("agents_list")}
+	b := []map[string]any{tool("agents_list"), tool("page_create", "title!")}
+	primary := newFakeInstance(t, a, nil, true)
+	p := proxyFor(primary.srv.URL)
+	p.ToolsRefresh = time.Hour
+	ctx := context.Background()
+	sess := heldSession(t, p, "%7")
+	told := func() bool {
+		m := sseMessages(postBody(t, p, withAccept(sess), callBody("agents_list", nil)).Body.String())
+		return len(m) == 2 && m[0] == listChangedData
+	}
+
+	_ = postBody(t, p, sess, listBody) // lists A
+	primary.set(b, nil)
+	p.pollTools(ctx) // the watch sees B
+	if !told() {
+		t.Fatal("not told about B the first time")
+	}
+	primary.set(a, nil)
+	_ = postBody(t, p, sess, listBody) // re-lists on the draining pod: A
+	primary.set(b, nil)
+	p.pollTools(ctx) // the watch sees B again
+	if !told() {
+		t.Fatal("a session that re-listed the older set A was not told about B again")
 	}
 }

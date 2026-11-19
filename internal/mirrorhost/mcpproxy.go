@@ -187,6 +187,8 @@ type MCPProxy struct {
 	state instanceState
 	// sessions are /mcp's MCP sessions (mcpsession.go), with the watch on.
 	sessions sessionTable
+	// legacyCallers counts requests served on the legacy path (countLegacy).
+	legacyCallers atomic.Uint64
 
 	// outsiderLogged: the first caller from another tmux server is logged,
 	// the rest are not (every Claude Code session on another tenant's server
@@ -702,7 +704,7 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 		if sid, ok = p.requireSession(w, r); !ok {
 			return
 		}
-		if len(head.ID) > 0 && string(head.ID) != "null" && head.Method != "tools/list" && acceptsEventStream(r) {
+		if sid != "" && len(head.ID) > 0 && string(head.ID) != "null" && head.Method != "tools/list" && acceptsEventStream(r) {
 			if cur := p.currentToolsHash(); p.sessions.stale(sid, cur) {
 				lw := &listChangedWriter{w: w}
 				defer func() {
