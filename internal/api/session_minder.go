@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
@@ -116,6 +117,13 @@ func (s *Server) feedSessionMinder(octx context.Context, owner int64, facts []nu
 	}
 	now := s.now()
 	for _, c := range s.stalledSessions(octx, facts) {
+		// 🔴 ONE JUDGE PER STOP: a stop the chief already judged (while this
+		// minder was not running: its host offline, paused) is not fed to it
+		// as well — the chief's own record (nudgeEpisodeJudged), the rule its
+		// sweep skips a judged stop by. A read that fails feeds nothing.
+		if c.episodeID != 0 && s.nudgeEpisodeJudged(octx, c.episodeID) {
+			continue
+		}
 		n, err := minderItem(minder, c, now)
 		if err != nil {
 			s.logger.Printf("session minder: owner %d: episode %d: %v", owner, c.episodeID, err)
@@ -170,6 +178,58 @@ func minderItem(minder string, c nudgeCandidate, now time.Time) (builtin.NewItem
 	if ep.State == sessionstate.StateNeedsYou {
 		prio = "high"
 	}
-	return builtin.NewItem{Officer: minder, Kind: minderItemKind, SubjectKey: "episode:" + strconv.FormatInt(episodeRoot(ep), 10),
+	return builtin.NewItem{Officer: minder, Kind: minderItemKind, SubjectKey: minderSubject(ep),
 		Payload: raw, Tier: "judgement", Priority: prio}, nil
+}
+
+// minderSubject is the subject of a minder's item for the stop ep is in:
+// "episode:<first episode of the stop>" (episodeRoot).
+func minderSubject(ep sessionstate.Episode) string {
+	return "episode:" + strconv.FormatInt(episodeRoot(ep), 10)
+}
+
+// minderHandoverSummary is the summary of a minder's item the chief took over.
+const minderHandoverSummary = "the chief judged this stop: the session minder was not running when it was due"
+
+// chiefTakesStop is THE HANDOVER of one stop from a session minder to the
+// chief, asked by the chief's sweep before it judges candidate c of owner's:
+// whether the chief may judge it. 🔴 ONE JUDGE PER STOP. A minder that stops
+// running (its host dropped, it was paused) gives its owner's nudges back
+// (minderRuns), but stops already fed to it are still in its queue:
+//
+//   - an item the minder has ACTED ON — claimed under a live lease, waiting
+//     on its owner, done or escalated — keeps the stop the minder's: the
+//     chief does not judge it (false);
+//   - an item still OPEN (or claimed under a lease that has lapsed: an
+//     instance that died holding it) is closed here, no_action, BEFORE the
+//     chief judges — so the minder, back, never acts on a stop the chief
+//     took. ResolveItem refuses an item a live lease holds, so a claim that
+//     lands between the read and the close keeps the stop the minder's.
+//
+// A read or close that fails leaves the stop alone this pass (false): never
+// a second judge. No candidate episode (session state off) or no officer
+// store: nothing was ever fed, true.
+func (s *Server) chiefTakesStop(octx context.Context, owner int64, c nudgeCandidate) bool {
+	if c.episodeID == 0 || s.officerStore == nil {
+		return true
+	}
+	items, err := s.officerStore.SubjectItems(octx, owner, minderItemKind, minderSubject(c.episode))
+	if err != nil {
+		s.logger.Printf("session minder: owner %d: episode %d: read its items: %v; the chief leaves the stop this pass", owner, c.episodeID, err)
+		return false
+	}
+	now := s.now()
+	for _, it := range items {
+		if it.Status != officers.StatusOpen && it.Status != officers.StatusClaimed {
+			return false
+		}
+	}
+	for _, it := range items {
+		if _, err := s.officerStore.ResolveItem(octx, owner, it.Officer, it.ID, "no_action", minderHandoverSummary, now); err != nil {
+			s.logger.Printf("session minder: owner %d: episode %d: hand item %d of %s to the chief: %v; the chief leaves the stop this pass",
+				owner, c.episodeID, it.ID, it.Officer, err)
+			return false
+		}
+	}
+	return true
 }
