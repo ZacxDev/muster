@@ -1,7 +1,6 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Page, request as pwRequest } from '@playwright/test';
@@ -10,6 +9,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, fakeS3Port, repoRoot, uploadsOffPort, uploadsPort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { FakeS3, startFakeS3 } from '../lib/fakes3';
 import { writeFileAtomic } from '../lib/atomic';
 import { coarse, pickView } from '../lib/switcher';
 
@@ -43,6 +43,7 @@ const ACCESS = 'e2e-s3-access-not-real';
 const SIGNING_KEY = 'e2e-upload-signing-key-not-a-real-one-0123456789';
 let server: Running | undefined;
 let offServer: Running | undefined;
+let s3: FakeS3 | undefined;
 const procs: ChildProcess[] = [];
 let mirrorLog = '';
 
@@ -51,74 +52,6 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8AAQv8ZYAwAQ84H+VjtZqAAAAAASUVORK5CYII=',
   'base64',
 );
-
-// --- the fake S3 ---------------------------------------------------------------
-// Path-style, one bucket, what minio-go (internal/uploads) sends: HEAD bucket,
-// ?lifecycle, PUT (aws-chunked when the payload is streamed), HEAD, GET and
-// DELETE object. Multipart uploads are not played: every file here is far
-// under one part.
-const objects = new Map<string, Buffer>();
-const s3Log: string[] = [];
-const xmlErr = (res: http.ServerResponse, status: number, code: string) =>
-  res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`);
-// unchunk decodes an aws-chunked body: `<hex size>[;chunk-signature=…]\r\n<data>\r\n` … `0…`.
-function unchunk(b: Buffer): Buffer {
-  const out: Buffer[] = [];
-  let at = 0;
-  for (;;) {
-    const eol = b.indexOf('\r\n', at);
-    if (eol < 0) break;
-    const size = parseInt(b.subarray(at, eol).toString('latin1').split(';')[0], 16);
-    if (!size) break;
-    out.push(b.subarray(eol + 2, eol + 2 + size));
-    at = eol + 2 + size + 2;
-  }
-  return Buffer.concat(out);
-}
-const objHeaders = (b: Buffer) => ({
-  'Content-Length': String(b.length),
-  ETag: '"' + crypto.createHash('md5').update(b).digest('hex') + '"',
-  'Last-Modified': new Date().toUTCString(),
-  'Content-Type': 'application/octet-stream',
-});
-const s3 = http.createServer((req, res) => {
-  const chunks: Buffer[] = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    let body = Buffer.concat(chunks);
-    const [rawPath, query = ''] = (req.url ?? '').split('?');
-    const p = decodeURIComponent(rawPath);
-    s3Log.push(`${req.method} ${p}${query ? '?' + query : ''}`);
-    if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${ACCESS}/`)) return xmlErr(res, 403, 'AccessDenied');
-    if (!p.startsWith('/muster-e2e')) return xmlErr(res, 404, 'NoSuchBucket');
-    const key = p.replace(/^\/muster-e2e\/?/, '');
-    if (key === '') {
-      if (req.method === 'HEAD') return void res.writeHead(200).end();
-      if (query.startsWith('lifecycle')) return xmlErr(res, 404, 'NoSuchLifecycleConfiguration');
-      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
-      return xmlErr(res, 400, 'NotImplemented');
-    }
-    if (req.method === 'PUT') {
-      const declared = String(req.headers['x-amz-content-sha256'] ?? '');
-      if (declared.startsWith('STREAMING')) {
-        body = unchunk(body);
-        if (String(body.length) !== String(req.headers['x-amz-decoded-content-length'])) return xmlErr(res, 400, 'IncompleteBody');
-      } else if (declared !== 'UNSIGNED-PAYLOAD' && declared !== crypto.createHash('sha256').update(body).digest('hex')) {
-        return xmlErr(res, 400, 'XAmzContentSHA256Mismatch');
-      }
-      objects.set(key, body);
-      return void res.writeHead(200, { ETag: objHeaders(body).ETag }).end();
-    }
-    const b = objects.get(key);
-    if (req.method === 'HEAD') return b ? void res.writeHead(200, objHeaders(b)).end() : void res.writeHead(404).end();
-    if (req.method === 'GET') return b ? void res.writeHead(200, objHeaders(b)).end(b) : xmlErr(res, 404, 'NoSuchKey');
-    if (req.method === 'DELETE') {
-      objects.delete(key);
-      return void res.writeHead(204).end();
-    }
-    res.writeHead(405).end();
-  });
-});
 
 const prompt = (text: string) => JSON.stringify({ type: 'user', promptId: 'p-' + text.length, message: { role: 'user', content: text } }) + '\n';
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
@@ -159,7 +92,7 @@ function startMirror(h: string, at: string, transcript: string) {
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1280, height: 800 } });
 
 test.beforeAll(async () => {
-  await new Promise<void>((r) => s3.listen(fakeS3Port, '127.0.0.1', () => r()));
+  s3 = await startFakeS3(fakeS3Port, ACCESS, 'muster-e2e');
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   const base = { MUSTER_MIRROR: '1', MUSTER_AGENT_PROVISIONER: 'noop', MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105' };
@@ -190,7 +123,7 @@ test.afterAll(async () => {
   }
   await server?.stop();
   await offServer?.stop();
-  await new Promise((r) => s3.close(r));
+  await s3?.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -261,14 +194,14 @@ test('an attached image is a thumbnail chip; Send pastes a signed link; the tran
   expect(got.headers['cache-control']).toBe('private, no-store');
   // HEAD: the same headers, from the object's metadata — the store is asked
   // for a HEAD, not the bytes.
-  const gets = s3Log.filter((l) => l === `GET /muster-e2e/uploads/${id}`).length;
+  const gets = s3!.log.filter((l) => l === `GET /muster-e2e/uploads/${id}`).length;
   const hctx = await pwRequest.newContext();
   const head = await hctx.head(link);
   expect(head.status()).toBe(200);
   expect(head.headers()['content-length']).toBe(String(PNG.length));
   await hctx.dispose();
-  expect(s3Log).toContain(`HEAD /muster-e2e/uploads/${id}`);
-  expect(s3Log.filter((l) => l === `GET /muster-e2e/uploads/${id}`).length, 'a HEAD fetched no body').toBe(gets);
+  expect(s3!.log).toContain(`HEAD /muster-e2e/uploads/${id}`);
+  expect(s3!.log.filter((l) => l === `GET /muster-e2e/uploads/${id}`).length, 'a HEAD fetched no body').toBe(gets);
 
   // Tampered: 404.
   const u = new URL(link);
@@ -287,8 +220,8 @@ test('an attached image is a thumbnail chip; Send pastes a signed link; the tran
   await tchip.getByRole('button', { name: 'Revoke this link' }).click();
   await expect(tchip.getByRole('button', { name: 'Revoke this link' })).toHaveText('Link revoked');
   expect((await fetchNoCookies(link)).status).toBe(404);
-  expect(s3Log).toContain(`DELETE /muster-e2e/uploads/${id}`);
-  expect(objects.has(`uploads/${id}`)).toBe(false);
+  expect(s3!.log).toContain(`DELETE /muster-e2e/uploads/${id}`);
+  expect(s3!.objects.has(`uploads/${id}`)).toBe(false);
 });
 
 test('a pasted image becomes a chip, an attachment alone is a message, and × takes it off and ends its link', async ({ page }) => {
@@ -302,7 +235,7 @@ test('a pasted image becomes a chip, an attachment alone is a message, and × ta
     }, [PNG.toString('base64'), name] as const);
 
   // × before Send: the upload's link is ended (its object deleted).
-  const puts = () => s3Log.filter((l) => l.startsWith('PUT ')).length;
+  const puts = () => s3!.log.filter((l) => l.startsWith('PUT ')).length;
   const putsBefore = puts();
   await paste('removed.png');
   await expect(chips(page)).toHaveCount(1);
@@ -311,7 +244,7 @@ test('a pasted image becomes a chip, an attachment alone is a message, and × ta
   const removedId = await chips(page).first().getAttribute('data-upload-id');
   await chips(page).first().getByRole('button', { name: 'Remove attachment' }).click();
   await expect(chips(page)).toHaveCount(0);
-  await expect.poll(() => s3Log.includes(`DELETE /muster-e2e/uploads/${removedId}`)).toBe(true);
+  await expect.poll(() => s3!.log.includes(`DELETE /muster-e2e/uploads/${removedId}`)).toBe(true);
 
   // Pasted, then sent with no text: the message is the attachment line alone.
   const before = read(tr + '.pasted');

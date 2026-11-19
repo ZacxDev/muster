@@ -151,9 +151,15 @@ type MCPProxy struct {
 	// session finds the window showing its root. nil: only a session a
 	// window shows itself is found.
 	OpenCodeAncestors func(id string) []string
-	// Cwd is process pid's working directory: where a calling session's
-	// attention_ask attachments (mcpproxy_attach.go) and page_asset_upload's
-	// file (mcpproxy_pageasset.go) are resolved from. nil
+	// OpenCodeDirectory is an opencode session's working directory as the
+	// opencode server records it (OpenCodeSource.Directory): where an opencode
+	// caller's attention_ask attachments are resolved from, for the session
+	// its call was bound to (mcpproxy_attach.go). nil: an opencode caller's
+	// attachments are refused.
+	OpenCodeDirectory func(id string) (string, bool)
+	// Cwd is process pid's working directory: where a calling Claude Code
+	// session's attention_ask attachments (mcpproxy_attach.go) and
+	// page_asset_upload's file (mcpproxy_pageasset.go) are resolved from. nil
 	// reads this host's own processes (/proc on Linux, lsof on macOS).
 	Cwd func(pid int) (string, bool)
 
@@ -733,11 +739,12 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 	// carries, bound by openCodeBinding — its pane headers are never read —
 	// and is forwarded with that session's KEY instead of a Claude session.
 	openCode := OpenCodeCaller(r)
-	agentKey := ""
+	agentKey, bound := "", ""
 	var made askUploads
 	if method == "tools/call" {
 		if openCode {
-			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(params))
+			var berr error
+			_, bound, berr = p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(params))
 			if berr == nil {
 				if agentKey = mirror.OpenCodeCallerKey(bound); agentKey == "" {
 					berr = fmt.Errorf("opencode session %s is not a session id muster accepts", strconv.Quote(bound))
@@ -763,7 +770,7 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 		// attention_ask's attachments: the files are on THIS host, so they are
 		// uploaded from here and the call carries their ids (mcpproxy_attach.go).
 		var refused string
-		if body, made, refused = p.uploadAskAttachments(r, body, sid, openCode); refused != "" {
+		if body, made, refused = p.uploadAskAttachments(r, body, sid, bound); refused != "" {
 			mcpToolError(w, id, refused)
 			return nil, false
 		}

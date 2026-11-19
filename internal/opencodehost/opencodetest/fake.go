@@ -181,12 +181,21 @@ func (s *Server) Requests() []Request {
 }
 
 // PutSession adds or replaces a session (by id): a synthetic Session.Info,
-// {"id", "title", "parentID"?, "time": {"created", "updated"}}.
+// {"id", "title", "parentID"?, "time": {"created", "updated"}}, whose
+// location directory is /srv/fixture.
 func (s *Server) PutSession(id, title, parent string) {
+	s.PutSessionIn(id, title, parent, "/srv/fixture")
+}
+
+// PutSessionIn is PutSession with the session's location directory dir
+// ("" records none).
+func (s *Server) PutSessionIn(id, title, parent, dir string) {
 	m := map[string]any{"id": id, "title": title, "projectID": "prj_fixture", "cost": 0,
-		"tokens":   map[string]any{"input": 0, "output": 0, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}},
-		"time":     map[string]any{"created": 1700000000000, "updated": 1700000000000},
-		"location": map[string]any{"directory": "/srv/fixture"}}
+		"tokens": map[string]any{"input": 0, "output": 0, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}},
+		"time":   map[string]any{"created": 1700000000000, "updated": 1700000000000}}
+	if dir != "" {
+		m["location"] = map[string]any{"directory": dir}
+	}
 	if parent != "" {
 		m["parentID"] = parent
 	}
