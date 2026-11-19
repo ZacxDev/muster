@@ -74,13 +74,13 @@ test('an address that is not a server address is refused, and nothing is added',
   deq(plain(core.parseServer('https://[2001:db8::1]:8443')), { ok: true, origin: 'https://[2001:db8::1]:8443' });
   deq(plain(core.parseServer('https://atlas')), { ok: true, origin: 'https://atlas' });
   deq(plain(core.parseServer('https://my_server.lan')), { ok: true, origin: 'https://my_server.lan' }, 'the URL standard allows "_"');
-  deq(plain(core.parseServer('workbench:30306')), { ok: true, origin: 'https://workbench:30306' }, 'a short name with a port');
+  deq(plain(core.parseServer('acme:40001')), { ok: true, origin: 'https://acme:40001' }, 'a short name with a port');
 });
 
 // A short tailnet name typed alone is refused with a hint that adding
 // https:// works — the whole sentence pinned — and is accepted with it.
 test('one bare word is refused, saying that https:// in front of it works', () => {
-  for (const input of ['workbench', 'atlas', 'notaserver']) {
+  for (const input of ['acme', 'atlas', 'notaserver']) {
     deq(plain(core.parseServer(input)), { ok: false, error: 'bareword' }, input);
     deq(plain(core.parseServer('https://' + input)), { ok: true, origin: 'https://' + input }, input);
   }

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
@@ -189,6 +191,25 @@ func serverAddressSheet() InfoSheet {
 		Lead:    "To add this server on another device, paste this address into Add server there.",
 		Live:    true,
 	}
+}
+
+// ServerAddressSheetHTML is the Manage row template's address ⓘ exactly as
+// every page with the sidebar carries it: empty (servers.js fills each
+// clone's code from the browser's own list), and not setup — the addresses
+// are the ones this person keeps in this browser. Page-wide "no ⓘ code row
+// for a member" checks remove exactly this string first
+// (WithoutServerAddressSheet), so any OTHER sheet still fails them.
+func ServerAddressSheetHTML() string { return InfoSheetHTML(serverAddressSheet()) }
+
+// WithoutServerAddressSheet is page with its one copy of
+// ServerAddressSheetHTML removed. ok is false when the page has no copy, so a
+// caller can tell "removed" from "never there".
+func WithoutServerAddressSheet(page string) (out string, ok bool) {
+	sheet := ServerAddressSheetHTML()
+	if !strings.Contains(page, sheet) {
+		return page, false
+	}
+	return strings.Replace(page, sheet, "", 1), true
 }
 
 // serverOfferDialog is the hand-off: a link's fragment (#muster-from=…) named

@@ -170,8 +170,8 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   (letters, digits, `-`, `_`) or an IP is refused ("That doesn't look like a
   server address."). One word with no dot, no port and no scheme (other than
   `localhost`) is refused with "That doesn't look like a server address. If
-  it is one, add https:// in front of it." (`workbench:30306` and
-  `https://workbench` are accepted). This is checked by servers.js itself,
+  it is one, add https:// in front of it." (`acme:40001` and
+  `https://acme` are accepted). This is checked by servers.js itself,
   not left to the browser's URL parser: Chromium's percent-encodes a space in
   a host where the standard refuses it, which once listed "not a server" as
   `https://not%20a%20server`.
