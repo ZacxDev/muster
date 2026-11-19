@@ -522,7 +522,8 @@ func TestAChatAnswersPastItsBudgetAndItsSpendIsCounted(t *testing.T) {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	src := fixedUsage{buckets: []cctranscript.UsageBucket{{Session: "lane-1", Hour: today.Add(time.Hour), APICalls: 7,
 		InputTokens: 300, OutputTokens: 40, Model: "claude-sonnet-5-5"}}}
-	w := newOutboundWorldWith(t, true, outboundFixture{officerExtra: `,"daily_budget_usd":2`, usage: src})
+	gw := &laneChat{reply: func() (string, error) { return "Two drafts wait on you.", nil }}
+	w := newOutboundWorldWith(t, true, outboundFixture{officerExtra: `,"daily_budget_usd":2`, usage: src, gateway: gw})
 	wipeCards(t)
 	t.Cleanup(func() { wipeCards(t) })
 	llmCleanup(t, w.f, builtinOfficerID)
@@ -534,8 +535,6 @@ func TestAChatAnswersPastItsBudgetAndItsSpendIsCounted(t *testing.T) {
 	if !strings.Contains(w.officerPage(), "data-run-held") {
 		t.Fatal("fixture: the officer is not drawn held")
 	}
-	gw := &laneChat{reply: func() (string, error) { return "Two drafts wait on you.", nil }}
-	w.srv.ext.Gateway = gw
 	const msg = "What waits on me today?"
 	rec := w.post(tChatPath, url.Values{"message": {msg}})
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tOfficerBack+"?notice=chat-sent#"+tChatSection {

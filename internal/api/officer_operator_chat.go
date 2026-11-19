@@ -194,7 +194,8 @@ func (s *Server) handleOfficerChat(w http.ResponseWriter, r *http.Request) {
 		s.renderOfficerDetail(w, r, sc, id, http.StatusConflict, "It is still answering your last message. Send this one once it has.")
 		return
 	}
-	go s.runOperatorChat(context.WithoutCancel(r.Context()), o, uid, chatID, text, key)
+	ctx := context.WithoutCancel(r.Context())
+	safeGo(s.logger, "officer chat turn "+o.ID, func() { s.runOperatorChat(ctx, o, uid, chatID, text, key) })
 	http.Redirect(w, r, withNotice(officerHref(sc, id, ""), "chat-sent")+"#"+officerChatSectionID, http.StatusSeeOther)
 }
 

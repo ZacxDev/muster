@@ -94,11 +94,10 @@ func (w *outboundWorld) mcpAs(a agents.Agent, session, secret, tool, args string
 // card the replay drew — so the refusal was decidable, and the call reached
 // the tool.
 func TestAReplayedLaneSecretOnlyProposes(t *testing.T) {
-	w := newOutboundWorld(t, true)
+	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
+	w := newOutboundWorldWith(t, true, outboundFixture{gateway: gw})
 	wipeCards(t)
 	t.Cleanup(func() { wipeCards(t) })
-	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
-	w.srv.ext.Gateway = gw
 	turn := w.chatTurnOf(gw, builtinOfficerID, "", "hello")
 	_, refusal := w.refusedDraft("A refused post.", "the window is closed")
 	item := strconv.FormatInt(refusal, 10)
@@ -134,11 +133,10 @@ func TestAReplayedLaneSecretOnlyProposes(t *testing.T) {
 // owner's origin, which the budget hold lets through — and is re-filed
 // (owner_decision refile).
 func TestAChatRefileStaysUnderTheBudget(t *testing.T) {
-	w := newOutboundWorld(t, true)
+	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
+	w := newOutboundWorldWith(t, true, outboundFixture{gateway: gw})
 	wipeCards(t)
 	t.Cleanup(func() { wipeCards(t) })
-	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
-	w.srv.ext.Gateway = gw
 	turn := w.chatTurnOf(gw, builtinOfficerID, "", "please re-file the refused one")
 	_, refusal := w.refusedDraft("A refused post.", "the window is closed")
 	if before := w.itemFull(refusal); before.origin == officers.OriginOwner {
@@ -205,14 +203,13 @@ func chatFailed(section string) string {
 // its own, and neither page says it failed.
 func TestTwoOfficersOfOneOwnerEachChat(t *testing.T) {
 	const second = "marketing:second"
-	w := newOutboundWorldWith(t, true, outboundFixture{moreOfficers: func(*testing.T, *connFixture) string {
+	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
+	w := newOutboundWorldWith(t, true, outboundFixture{gateway: gw, moreOfficers: func(*testing.T, *connFixture) string {
 		return `,{"id":"` + second + `","backend":"builtin"}`
 	}})
 	t.Cleanup(func() {
 		_, _ = w.f.pool.Exec(dbtest0(w), `DELETE FROM agents WHERE name LIKE 'officer-marketing-second%'`)
 	})
-	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
-	w.srv.ext.Gateway = gw
 	a := w.chatTurnOf(gw, builtinOfficerID, "", "first officer")
 	b := w.chatTurnOf(gw, second, "", "second officer")
 	if a.sessionKey == b.sessionKey || !strings.Contains(b.agent, "second") {
@@ -226,11 +223,9 @@ func TestTwoOfficersOfOneOwnerEachChat(t *testing.T) {
 // TestAChatMovesToARunningInstance: a chat whose instance (1) is no longer
 // running goes to the instance that is (2), and answers there.
 func TestAChatMovesToARunningInstance(t *testing.T) {
-	w := newOutboundWorldWith(t, true, outboundFixture{officerExtra: `,"max_instances":2`})
 	prov := &upProv{}
-	w.srv.ext.Provisioner = prov
 	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
-	w.srv.ext.Gateway = gw
+	w := newOutboundWorldWith(t, true, outboundFixture{officerExtra: `,"max_instances":2`, provisioner: prov, gateway: gw})
 	first := w.chatTurnOf(gw, builtinOfficerID, "", "on instance one")
 	o, err := w.srv.officerRT.reg.Get(builtinOfficerID)
 	if err != nil {
@@ -261,12 +256,11 @@ func TestAChatMovesToARunningInstance(t *testing.T) {
 func TestAPersonalAndATeamOfficerEachChat(t *testing.T) {
 	const teamOfficer = "marketing:team"
 	var team int64
-	w := newOutboundWorldWith(t, true, outboundFixture{moreOfficers: func(t *testing.T, f *connFixture) string {
+	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
+	w := newOutboundWorldWith(t, true, outboundFixture{gateway: gw, moreOfficers: func(t *testing.T, f *connFixture) string {
 		team = newTeam(t, f.pool, 1)
 		return `,{"id":"` + teamOfficer + `","backend":"builtin","owner":` + strconv.FormatInt(team, 10) + `}`
 	}})
-	gw := &laneChat{reply: func() (string, error) { return "ok", nil }}
-	w.srv.ext.Gateway = gw
 	q := "?owner=" + strconv.FormatInt(team, 10)
 	mine := w.chatTurnOf(gw, builtinOfficerID, "", "my own officer")
 	theirs := w.chatTurnOf(gw, teamOfficer, q, "the team's officer")
