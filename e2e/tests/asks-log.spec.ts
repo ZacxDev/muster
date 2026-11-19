@@ -178,6 +178,119 @@ for (const vp of [
   });
 }
 
+// LONG LINES (#832's phone review at 390×844): a facts line that wraps never
+// leaves a "·" ending a line — each separator travels with the fact after it —
+// and a row whose place is wider than its card still shows WHEN it was asked:
+// the place gives way (its ellipsis inside it), the age never does. Measured
+// on the LAYOUT (each character's box, each clipping ancestor), not on the
+// markup. Its own log (askfix wraps), seeded after the tests above.
+//
+// 🔴 REGRESSION, at origin/main 585e8042: on a phone the facts line's first
+// line ends "you answered 2 ·"; on a phone AND a desktop the row's <time> sits
+// past the right edge of the truncated span that holds it. (At a desktop's
+// width the facts line does not wrap, so there its test is a no-regression
+// check, not a reproduction.)
+const wrapsVPs = [
+  { name: 'phone 390×844', key: 'phone', phone: true, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', key: 'desktop', phone: false, use: { viewport: { width: 1440, height: 900 } } },
+];
+test.describe('long lines', () => {
+  let newestID = '';
+  test.beforeAll(() => {
+    fix('clear', '1');
+    newestID = fix('wraps', '1');
+    expect(newestID, 'askfix printed the newest row id').toMatch(/^\d+$/);
+  });
+
+  for (const vp of wrapsVPs) {
+    test.describe(vp.name, () => {
+      test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+      test('no facts line ends with "·"', async ({ page }, testInfo) => {
+        await signIn(page, origin);
+        await page.goto(`${origin}/attention?tab=log`);
+        const panel = page.getByTestId('asklog-panel');
+        const facts = panel.locator('[data-asklog-top-row] [data-asklog-top-facts]');
+        await expect(facts).toHaveText('3 times · you answered 2 · always “continue with the plan” · median 11s');
+        // Every visible character's box, grouped into the lines they sit on:
+        // a line's text is its characters in order, and what ENDS it is its
+        // last non-space one.
+        const lines = await facts.evaluate((el) => {
+          const out: { top: number; text: string }[] = [];
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const s = n.textContent ?? '';
+            for (let i = 0; i < s.length; i++) {
+              const r = document.createRange();
+              r.setStart(n, i);
+              r.setEnd(n, i + 1);
+              const box = Array.from(r.getClientRects()).find((b) => b.width > 0);
+              if (!box) continue; // a collapsed space at a break
+              const top = Math.round(box.top);
+              let line = out.find((l) => Math.abs(l.top - top) < 4);
+              if (!line) out.push((line = { top, text: '' }));
+              line.text += s[i];
+            }
+          }
+          return out.sort((a, b) => a.top - b.top).map((l) => l.text.trim());
+        });
+        // Positive control: on a phone the line really wraps, so "never ends
+        // with ·" is measured at a break, not vacuously.
+        if (vp.phone) expect(lines.length, `the facts line wraps on a phone: ${JSON.stringify(lines)}`).toBeGreaterThanOrEqual(2);
+        for (const l of lines) expect(l.endsWith('·'), `a facts line ends with "·": ${JSON.stringify(lines)}`).toBe(false);
+        await noSidewaysScroll(page);
+
+        await panel.locator('#asklog-top').evaluate((e) => {
+          document.documentElement.style.scrollBehavior = 'auto';
+          const below = document.querySelector('header')!.getBoundingClientRect().bottom;
+          window.scrollTo({ top: window.scrollY + e.getBoundingClientRect().top - below - 4, behavior: 'instant' });
+        });
+        const shot = testInfo.outputPath(`asks-log-wraps-${vp.key}.png`);
+        await page.screenshot({ path: shot });
+        await testInfo.attach(`asks-log-wraps-${vp.key}.png`, { path: shot, contentType: 'image/png' });
+      });
+
+      test("a row's age is never cut by a long place", async ({ page }, testInfo) => {
+        await signIn(page, origin);
+        await page.goto(`${origin}/attention?tab=log`);
+        const panel = page.getByTestId('asklog-panel');
+        // The newest row's age: its text box lies inside every ancestor that
+        // clips (overflow other than visible) up to the card, and inside the
+        // card and the viewport.
+        const row = panel.locator(`#asklog-${newestID}`);
+        await expect(row.locator('time')).toHaveText('15m ago');
+        const age = await row.locator('time').evaluate((t) => {
+          const r = document.createRange();
+          r.selectNodeContents(t);
+          const box = r.getBoundingClientRect();
+          const card = t.closest('[data-asklog-row]')!;
+          const clipped: string[] = [];
+          for (let p = t.parentElement; p && p !== card.parentElement; p = p.parentElement) {
+            if (getComputedStyle(p).overflowX === 'visible') continue;
+            const pb = p.getBoundingClientRect();
+            if (box.left < pb.left - 0.5 || box.right > pb.right + 0.5) clipped.push(`${p.tagName}.${p.className} [${pb.left},${pb.right}] cuts [${box.left},${box.right}]`);
+          }
+          const cb = card.getBoundingClientRect();
+          // Positive control: the place really is too wide (its ellipsis
+          // showing), so the age had something to lose.
+          const where = card.querySelector('[data-asklog-where]') as HTMLElement | null;
+          return { clipped, right: box.right, width: box.width, cardRight: cb.right, vw: window.innerWidth, placeCut: where ? where.scrollWidth > where.clientWidth : null };
+        });
+        expect(age.clipped, 'the age is cut by a clipping ancestor').toEqual([]);
+        expect(age.width, 'the age has a width').toBeGreaterThan(0);
+        expect(age.right, "the age's right edge is within the card").toBeLessThanOrEqual(age.cardRight + 0.5);
+        expect(age.right, "the age's right edge is within the viewport").toBeLessThanOrEqual(age.vw);
+        expect(age.placeCut, 'the long place is truncated').toBe(true);
+        await noSidewaysScroll(page);
+        await row.scrollIntoViewIfNeeded();
+        const shot = testInfo.outputPath(`asks-log-wraps-row-${vp.key}.png`);
+        await page.screenshot({ path: shot });
+        await testInfo.attach(`asks-log-wraps-row-${vp.key}.png`, { path: shot, contentType: 'image/png' });
+      });
+    });
+  }
+});
+
 // With the ask log off there is no Log tab at all (it used to be a tab of
 // setup prose: "set MUSTER_ASK_LOG=1 and restart"), and ?tab=log opens Open.
 // RED at origin/main d1ff2dbe: the tab was drawn, with that prose. The

@@ -385,6 +385,14 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
+	// notifySenders is the per-SENDER cap on the notifications an agent or a
+	// session sends its owner itself — notify_owner and page_update's push
+	// (notify_owner.go), each its own bucket per sender.
+	notifySenders senderRateLimit
+	// pushOffLogged: the "push is not configured" drop has been logged once
+	// (logPushOff). On a server with no push at all every notification is
+	// dropped, so it is said once rather than once per notification.
+	pushOffLogged atomic.Bool
 	// personOwners remembers the owner ids known to be persons (never
 	// teams; users.kind never changes), so the push fan-out
 	// (teamPushRecipients) reads nothing for them after the first time.
@@ -578,6 +586,48 @@ type RouterNotification struct {
 	// recipient's devices (or refused): the disable sweep waits on it before
 	// the disable deletes the person's phones (team_withdraw.go).
 	wait *sync.WaitGroup
+	// outcome, when set, is told what became of this notification for each
+	// recipient — delivered to n devices, or the drop's reason
+	// (pushDrop*) — by goNotify, the one place that decides it. Set with
+	// wait, a caller can REPORT the outcome instead of guessing it
+	// (notify_owner's result, notify_owner.go).
+	outcome *pushOutcome
+}
+
+// pushOutcome collects what goNotify decided for one notification, per
+// recipient. Safe for the fan-out goroutine and a waiting reader.
+type pushOutcome struct {
+	mu        sync.Mutex
+	delivered int      // devices (and the router, counted 1) that accepted it
+	devices   int      // devices asked
+	drops     []string // a reason per recipient that got nothing
+}
+
+func (o *pushOutcome) addDelivered(devices, delivered int) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.devices += devices
+	o.delivered += delivered
+}
+
+func (o *pushOutcome) addDrop(reason string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.drops = append(o.drops, reason)
+}
+
+// read is the outcome so far: how many accepted it, how many were asked, and
+// the drop reasons.
+func (o *pushOutcome) read() (delivered, devices int, drops []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.delivered, o.devices, append([]string(nil), o.drops...)
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -1587,7 +1637,17 @@ const pushBroadcastTimeout = 15 * time.Second
 // the device count for muster-native push, and with -1 (an unknown count,
 // spelled as one rather than as a plausible zero or one) for the router.
 func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDelivered func(int)) {
-	if !s.notifiable() || owner <= 0 {
+	// 🔴 EVERY DROP IS LOGGED (logPushDrop), here and per recipient below:
+	// a notification that silently reached nobody is indistinguishable from
+	// one that was never sent (TestEveryPushDropIsLogged).
+	if !s.notifiable() {
+		s.logPushOff(n.Tag, event)
+		n.outcome.addDrop(pushDropOff)
+		return
+	}
+	if owner <= 0 {
+		s.logPushDrop(n.Tag, event, owner, pushDropNoOwner)
+		n.outcome.addDrop(pushDropNoOwner)
 		return
 	}
 	// 🔴 THE ONE PUSH TITLE SINK. Every notification — the browser payload, the
@@ -1638,6 +1698,10 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip, n.managersOnly)
+		if len(recipients) == 0 {
+			s.logPushDrop(n.Tag, event, owner, pushDropNoRecipient)
+			n.outcome.addDrop(pushDropNoRecipient)
+		}
 		for _, to := range recipients {
 			// Each recipient decides on its own copy (a declared
 			// RouterNotification, so the push-title ledgers see it).
@@ -1652,23 +1716,52 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 				m.Title = prefix + m.Title
 			}
 			m.Title = textplain.TitleKeeping(m.Title, m.TitleKeep)
-			if s.pushServed() && s.pushAllowed(ctx, to, event) {
-				rep := s.sendPush(ctx, to, push.Payload{Type: m.Type, ID: m.ID, Title: m.Title, Body: m.Body, Tag: m.Tag, Data: m.Data,
-					Ask: m.Ask, Update: m.Update, AskActions: m.AskActions, Silent: m.Silent})
-				if rep.Delivered > 0 && onDelivered != nil {
-					onDelivered(rep.Delivered)
+			// drop is this recipient's reason for getting nothing from
+			// muster's own push ("" when it was delivered, or not ours to
+			// send); it is logged only if the router does not take it either.
+			drop := ""
+			if s.pushServed() {
+				if drop = s.pushAllowed(ctx, to, event); drop == "" {
+					rep := s.sendPush(ctx, to, push.Payload{Type: m.Type, ID: m.ID, Title: m.Title, Body: m.Body, Tag: m.Tag, Data: m.Data,
+						Ask: m.Ask, Update: m.Update, AskActions: m.AskActions, Silent: m.Silent})
+					n.outcome.addDelivered(rep.Devices, rep.Delivered)
+					switch {
+					case event == push.EventResolved:
+						// A withdrawal shows nothing, and Safari browsers are
+						// spared it (withoutSilentPenalty), so "no device"
+						// here is the rule working, not a drop.
+					case rep.Devices == 0:
+						drop = pushDropNoDevice
+					case rep.Delivered == 0:
+						drop = pushDropFailed
+					}
+					if rep.Delivered > 0 && onDelivered != nil {
+						onDelivered(rep.Delivered)
+					}
 				}
 			}
 			// The router knows nothing of "resolved" (it closes its own cards).
 			// Nor of the attention queue's items: it has no attention card, and its
 			// own notifications for a waiting session are its own (attention.go).
 			if s.router == nil || event == push.EventResolved || event == push.EventAttention || !s.routerServes(to) {
+				if !s.pushServed() {
+					drop = pushDropRouterOnly
+				}
+				if drop != "" {
+					s.logPushDrop(m.Tag, event, to, drop)
+					n.outcome.addDrop(drop)
+				}
 				continue
 			}
 			if err := s.router.Notify(ctx, m); err != nil {
 				s.logger.Printf("router: notify tag=%s: %v", m.Tag, err)
+				if drop != "" || !s.pushServed() {
+					s.logPushDrop(m.Tag, event, to, firstNonBlank(drop, pushDropFailed))
+					n.outcome.addDrop(firstNonBlank(drop, pushDropFailed))
+				}
 				continue
 			}
+			n.outcome.addDelivered(0, 1)
 			if onDelivered != nil {
 				onDelivered(-1)
 			}
@@ -1680,6 +1773,17 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 // push, or the router. Every notify helper returns early when it cannot, so a
 // deployment with neither does no buffering, no timers and no reads.
 func (s *Server) notifiable() bool { return s.router != nil || s.pushServed() }
+
+// logPushOff logs the drop of a notification on a server where nothing can be
+// delivered (notifiable false) — ONCE per process: there every notification
+// is dropped, so the one line says so for all of them (and the boot banner's
+// `web push:` line says it at start).
+func (s *Server) logPushOff(tag, event string) {
+	if s.pushOffLogged.CompareAndSwap(false, true) {
+		s.logger.Printf("push: dropped tag=%s event=%s: %s; every later one goes the same way, unlogged",
+			tag, event, pushDropSentence(pushDropOff))
+	}
+}
 
 // mirrorToRouter forwards one of owner's events to the router's SSE bus, if
 // configured and owner is an admin (see publish).

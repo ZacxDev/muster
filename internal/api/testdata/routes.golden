@@ -151,6 +151,7 @@ GET /mirror/view/subagent
 GET /mirror/view/successor
 GET /mirror/view/suggest
 GET /mirror/view/ws
+GET /notify/open
 GET /officers
 GET /officers/new
 GET /officers/spawns

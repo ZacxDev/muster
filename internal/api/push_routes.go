@@ -77,6 +77,7 @@ func (s *Server) registerPushRoutes(mux Mux) {
 	mux.HandleFunc("POST "+accountPushTestPath, s.requireOperatorWrite(s.handlePushTest))
 	mux.HandleFunc("POST /account/push/{id}/remove", s.requireOperatorWrite(s.handlePushRemove))
 	mux.HandleFunc("POST "+accountPushPrefsPath, s.requireOperatorWrite(s.handlePushPreferences))
+	mux.HandleFunc("GET "+notifyOpenPath, s.requireSession(s.handleNotifyOpen))
 }
 
 // handlePushPreferences saves the caller's event toggles: every event NOT
@@ -265,7 +266,12 @@ func (l *ownerRateLimit) allow(owner int64, now time.Time) (ok, first bool) {
 // sent until the window rolls. "resolved" (which shows nothing and only clears
 // what an earlier push showed) never counts against the cap — throttling the
 // clear would strand exactly the notification the cap let through.
-func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) bool {
+//
+// It answers WHY it refused (pushDropMuted, pushDropOwnerCap), "" when the
+// notification may go. Its one caller, goNotify, logs every refusal
+// (logPushDrop) and hands the reason to a caller that reports the outcome
+// (notify_owner's result).
+func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) string {
 	muted, err := s.ext.Push.Store().Muted(ctx, owner)
 	if err != nil {
 		// Fail OPEN: preferences are a convenience, and a database blip must not
@@ -274,10 +280,10 @@ func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) boo
 	}
 	if slices.Contains(muted, event) {
 		metrics.PushSuppressed.WithLabelValues("muted").Inc()
-		return false
+		return pushDropMuted
 	}
 	if event == push.EventResolved {
-		return true
+		return ""
 	}
 	ok, first := s.pushLimit.allow(owner, s.now())
 	if !ok {
@@ -286,8 +292,59 @@ func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) boo
 			s.logger.Printf("push: owner=%d reached the cap of %d notifications per %s; dropping until the window rolls",
 				owner, pushOwnerBurst, pushOwnerWindow)
 		}
+		return pushDropOwnerCap
 	}
-	return ok
+	return ""
+}
+
+// The reasons a notification was not delivered, as logPushDrop logs them and
+// notify_owner's result and audit row name them.
+//
+// 🔴 EVERY ONE OF THEM IS LOGGED, AT THE DROP. A page_create push that never
+// reached its owner could not be diagnosed because four of these drops — a
+// muted event, a cap past its first refusal, an owner with no device, a team
+// with no recipient — left no line at all (TestEveryPushDropIsLogged).
+const (
+	pushDropMuted       = "muted"        // the owner turned the event's toggle off
+	pushDropOwnerCap    = "owner_cap"    // the owner's cap (pushOwnerBurst per pushOwnerWindow)
+	pushDropSenderCap   = "sender_cap"   // the sending agent's or session's own cap (notify_owner.go)
+	pushDropNoDevice    = "no_device"    // the recipient has no subscribed device
+	pushDropFailed      = "failed"       // devices exist, and none accepted it
+	pushDropNoRecipient = "no_recipient" // a team owner, and no operator or manager has its notifications on
+	pushDropNoOwner     = "no_owner"     // the notification names no owner
+	pushDropOff         = "push_off"     // neither muster's push nor the router is configured
+	pushDropRouterOnly  = "router_admin_only"
+)
+
+// logPushDrop is THE log line of a notification that was not delivered:
+// which (its tag and event), to whom, and why.
+func (s *Server) logPushDrop(tag, event string, owner int64, reason string) {
+	s.logger.Printf("push: dropped tag=%s event=%s owner=%d: %s", tag, event, owner, pushDropSentence(reason))
+}
+
+// pushDropSentence is reason as a log line (and a tool result) says it.
+func pushDropSentence(reason string) string {
+	switch reason {
+	case pushDropMuted:
+		return "muted (the owner turned this event off in Account → Notifications)"
+	case pushDropOwnerCap:
+		return fmt.Sprintf("the owner's cap of %d notifications per %s is reached", pushOwnerBurst, pushOwnerWindow)
+	case pushDropSenderCap:
+		return fmt.Sprintf("the sender's cap of %d notifications per %s is reached", notifySenderBurst, notifySenderWindow)
+	case pushDropNoDevice:
+		return "no device is subscribed"
+	case pushDropFailed:
+		return "every device refused or failed it"
+	case pushDropNoRecipient:
+		return "a team owner with no operator or manager whose notifications from it are on"
+	case pushDropNoOwner:
+		return "it names no owner"
+	case pushDropOff:
+		return "push is not configured on this server (MUSTER_VAPID_* unset, no router)"
+	case pushDropRouterOnly:
+		return "muster's own push is off, and the router serves admins only"
+	}
+	return reason
 }
 
 // sendPush is the ONE caller of PushService.SendTo. Everything that delivers a
@@ -386,6 +443,7 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 	}
 	b.WriteString(s.accountPushDeviceList(r, false))
 	b.WriteString(s.pushPreferencesForm(r))
+	b.WriteString(s.accountNotifyLog(r))
 	b.WriteString(`</section>`)
 	return b.String()
 }

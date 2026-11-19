@@ -44,6 +44,8 @@ var noCodenameFirst = map[string]string{
 	"officer_cap_hold.go Server.officerBudgetNotice":       "an officer's daily budget: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",
 	"page_tools.go Server.pagePublished":                   "an agent published a page: names the page",
+	"notify_owner.go Server.pageUpdated":                   "an agent published a page's new version: names the page",
+	"notify_owner.go Server.toolNotifyOwner":               "an agent's own notification: its title is the agent's, its body names the sender",
 	"page_tools.go Server.pageShareAuto":                   "an agent shared a page without asking: names the page",
 	"plugin_drafts.go Server.notifyDraftRefused":           "a plugin draft: fixed title, names no session",
 	"plugin_pairing.go Server.pairRequested":               "a plugin pairing request: fixed title, names no session",
