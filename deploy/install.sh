@@ -17,7 +17,9 @@
 #      it); a Compose override beside it that this release and .env cannot
 #      run is refused before anything changes;
 #   4. installs muster-mirror and the muster CLI (checksum-verified) into
-#      ~/.local/bin, mints this machine's mirror token, and runs muster-mirror
+#      ~/.local/bin — or, only when asked (MUSTER_PACKAGE=deb|rpm, Linux), as
+#      the release's system packages in /usr/bin, asking before it uses sudo;
+#      mints this machine's mirror token, and runs muster-mirror
 #      as a user service (systemd on Linux, launchd on macOS) against
 #      http://localhost:<port>; on Linux it turns on linger for this user
 #      (`loginctl enable-linger`, asking before it uses sudo) so the mirror
@@ -34,12 +36,23 @@
 # The mirror token never goes on a command line (other users can read argv in
 # `ps`): curl reads its Authorization header from a 0600 file (`-H @file`).
 #
+# WINDOWS (Git Bash, MSYS2, Cygwin): refused before anything is checked or
+# changed, with where to get the Windows CLI (the release's
+# muster_windows_<arch>.zip, or its Scoop manifest muster.json): muster-mirror
+# drives tmux, which Windows does not have. Inside WSL this script runs as on
+# Linux.
+#
 # Facts it does not keep: the version is the release this file came from (a
 # release stamps it; an unstamped copy asks GitHub for the newest release),
 # and the port is whatever that release's docker-compose.yml publishes.
 #
 # Settings (environment): MUSTER_DIR (default ~/muster), MUSTER_PROJECT
 # (compose project, default muster), MUSTER_BIN (default ~/.local/bin),
+# MUSTER_PACKAGE (tarball, the default: the archives into MUSTER_BIN; deb or
+# rpm: the release's package instead, for every user of this machine — as
+# root, or with sudo after asking first; MUSTER_PACKAGE_SUDO=yes/no answers
+# that without asking; a package OLDER than the one installed is refused
+# unless MUSTER_PACKAGE_DOWNGRADE=1),
 # MUSTER_MIRROR_HOST (default this machine's short hostname), MUSTER_LINGER
 # (yes/no: answer the linger question without asking), MUSTER_JOIN_URL (join
 # that hub instead of starting a server here), MUSTER_MIRROR_INTERACTIVE (0/1:
@@ -48,7 +61,9 @@
 # write, keeping every line it does not own), MUSTER_PRINT_PASSWORD=no (print
 # the command that shows the sign-in password, not the password: for an agent,
 # whose output is read by its provider). For testing only: MUSTER_RELEASE_BASE
-# (where the assets are), MUSTER_IMAGE (a local image).
+# (where the assets are), MUSTER_IMAGE (a local image), MUSTER_PACKAGE_BIN
+# (where an installed package puts its programs, default /usr/bin), MUSTER_TTY
+# (the terminal the sudo question for a package is asked on, default /dev/tty).
 #
 # The capabilities line at the top names the settings above a guide may rely
 # on (join: MUSTER_JOIN_URL; adopt: MUSTER_MIRROR_ADOPT): INSTALL.md's
@@ -66,6 +81,7 @@ REPO="https://github.com/ZacxDev/muster"
 DIR="${MUSTER_DIR:-$HOME/muster}"
 PROJECT="${MUSTER_PROJECT:-muster}"
 BIN="${MUSTER_BIN:-$HOME/.local/bin}"
+PKG_BIN="${MUSTER_PACKAGE_BIN:-/usr/bin}"
 CFG="$HOME/.config/muster-mirror"
 MARK="# written by muster's install.sh; edit freely, lines it does not own are kept"
 PHONE_DOC="$REPO/blob/main/docs/quickstart-local.md#add-your-phone"
@@ -74,6 +90,16 @@ case "${MUSTER_MIRROR_INTERACTIVE:-}" in ""|0|1) ;; *) die "MUSTER_MIRROR_INTERA
 
 # --- 1. preflight -------------------------------------------------------------
 for t in curl tar uname sed grep; do have "$t" || die "this needs $t; install it and run again"; done
+case "${MUSTER_PACKAGE:-tarball}" in deb|rpm|tarball) ;; *) die "MUSTER_PACKAGE must be tarball (the default), deb or rpm" ;; esac
+case "${MUSTER_PACKAGE_SUDO:-}" in ""|yes|no) ;; *) die "MUSTER_PACKAGE_SUDO must be yes or no" ;; esac
+# The platform first: on Windows nothing below applies, so nothing below runs.
+platform
+case "$OS" in
+  linux|darwin) ;;
+  windows) die "$(windows_note)" ;;
+  *) die "unsupported OS $(uname -s): Linux and macOS only (Windows: the muster CLI only, see $REPO/blob/main/docs/releases.md)" ;;
+esac
+[ -n "$ARCH" ] || die "unsupported CPU $(uname -m): amd64 and arm64 only"
 if [ -n "$JOIN" ]; then
   case "$JOIN" in
     https://*|http://localhost:*|http://127.0.0.1:*|http://\[::1\]:*) ;;
@@ -85,8 +111,6 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is missing (\`d
 docker info >/dev/null 2>&1 || die "Docker is installed but this user cannot use it. Start Docker, or on Linux add yourself to the docker group (sudo usermod -aG docker \"\$USER\", then log in again)"
 fi
 if have sha256sum; then sha() { sha256sum "$@"; }; elif have shasum; then sha() { shasum -a 256 "$@"; }; else die "this needs sha256sum or shasum"; fi
-case "$(uname -s)" in Linux) OS=linux ;; Darwin) OS=darwin ;; *) die "unsupported OS $(uname -s): Linux and macOS only" ;; esac
-case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) die "unsupported CPU $(uname -m)" ;; esac
 have tmux || say "note: tmux is not installed; muster shows tmux windows, so install it to see your sessions"
 
 if [ -n "$JOIN" ]; then
@@ -186,13 +210,32 @@ curl -fsS -m 5 -o /dev/null "$URL/readyz" || die "muster is up but $URL/readyz d
 fi
 
 # --- 4. this machine: muster-mirror and the CLI -----------------------------------
-mkdir -p "$BIN"
-for name in muster-mirror muster; do
-  asset="${name}_${OS}_${ARCH}.tar.gz"
-  fetch "$asset"; verify "$asset"
-  mkdir -p "$tmp/x-$name" && tar -xzf "$tmp/$asset" -C "$tmp/x-$name" "$name" || die "$asset does not hold $name"
-  cp "$tmp/x-$name/$name" "$BIN/$name.new" && chmod 755 "$BIN/$name.new" && mv "$BIN/$name.new" "$BIN/$name"
-done
+how=$(install_method "$tmp/checksums.txt") || exit 1
+case "$how" in
+  deb|rpm)
+    # Every package is downloaded and verified, and the versions checked,
+    # before the first is installed.
+    for name in muster-mirror muster; do fetch "${name}_${OS}_${ARCH}.$how"; verify "${name}_${OS}_${ARCH}.$how"; done
+    pkg_downgrade_check "$how"
+    for name in muster-mirror muster; do
+      asset="${name}_${OS}_${ARCH}.$how"
+      pkg_install "$how" "$tmp/$asset" || die "could not install $asset; run again without MUSTER_PACKAGE to install into $BIN instead"
+      [ -x "$PKG_BIN/$name" ] || die "$asset is installed but $PKG_BIN/$name is not there"
+    done
+    for name in muster-mirror muster; do
+      [ ! -e "$BIN/$name" ] || say "note: an earlier $BIN/$name is still there and may come first on PATH: remove it (rm $BIN/$name)"
+    done
+    BIN="$PKG_BIN"
+    say "installed muster-mirror and the muster CLI as $how packages ($BIN)" ;;
+  *)
+    mkdir -p "$BIN"
+    for name in muster-mirror muster; do
+      asset="${name}_${OS}_${ARCH}.tar.gz"
+      fetch "$asset"; verify "$asset"
+      mkdir -p "$tmp/x-$name" && tar -xzf "$tmp/$asset" -C "$tmp/x-$name" "$name" || die "$asset does not hold $name"
+      cp "$tmp/x-$name/$name" "$BIN/$name.new" && chmod 755 "$BIN/$name.new" && mv "$BIN/$name.new" "$BIN/$name"
+    done ;;
+esac
 mkdir -p "$CFG" && chmod 700 "$CFG"
 host="${MUSTER_MIRROR_HOST:-$(hostname 2>/dev/null | cut -d. -f1)}"
 [ -n "$host" ] || host=this-machine
@@ -367,6 +410,103 @@ exit "$rc"
 say() { printf 'muster-install: %s\n' "$*"; }
 die() { printf 'muster-install: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# platform: this machine's OS (linux, darwin, windows; empty when none of
+# those) and ARCH (amd64, arm64; empty when neither), from uname. Git Bash,
+# MSYS2 and Cygwin all run on Windows and name it in `uname -s`.
+platform() {
+  case "$(uname -s)" in
+    Linux) OS=linux ;;
+    Darwin) OS=darwin ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) OS=windows ;;
+    *) OS="" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64|AMD64) ARCH=amd64 ;;
+    aarch64|arm64|ARM64) ARCH=arm64 ;;
+    *) ARCH="" ;;
+  esac
+}
+
+# windows_note: what to do on Windows instead (this script refuses there).
+windows_note() {
+  case "$RELEASE" in @*) dl="$REPO/releases/latest/download" ;; *) dl="$REPO/releases/download/v$RELEASE" ;; esac
+  a="${ARCH:-amd64}"
+  printf '%s\n' "this installer runs on Linux and macOS. On Windows only the muster CLI is available: muster-mirror drives tmux, which Windows does not have."
+  printf '%s\n' "  Scoop:  scoop install $dl/muster.json"
+  printf '%s\n' "  or download $dl/muster_windows_$a.zip and check it against $dl/checksums.txt (Get-FileHash muster_windows_$a.zip)."
+  printf '%s\n' "To show this machine's sessions in muster, run this installer inside WSL (Linux), where tmux runs. Nothing was changed."
+}
+
+# install_method <checksums.txt>: how step 4 installs the programs — tarball
+# (the default: the archives into MUSTER_BIN), or deb/rpm, ONLY when
+# MUSTER_PACKAGE asks for it. A package is refused on anything but Linux, when
+# this release publishes none, without dpkg/rpm, and — not being root — when
+# this user declines sudo (pkg_consent), so a `curl | sh` never changes system
+# packages it was not asked to.
+install_method() {
+  im="${MUSTER_PACKAGE:-tarball}"
+  [ "$im" != tarball ] || { echo tarball; return 0; }
+  [ "$OS" = linux ] || die "MUSTER_PACKAGE=$im: packages are for Linux; this is $OS"
+  grep -q "  muster_${OS}_${ARCH}\.$im\$" "$1" || die "MUSTER_PACKAGE=$im: release $RELEASE publishes no .$im packages (run again without MUSTER_PACKAGE)"
+  case "$im" in deb) have dpkg ;; rpm) have rpm ;; esac || die "MUSTER_PACKAGE=$im: there is no $([ "$im" = deb ] && echo dpkg || echo rpm) on this machine"
+  pkg_consent "$im" || exit 1
+  echo "$im"
+}
+
+# pkg_consent deb|rpm: may this run use sudo to install the packages? Root
+# needs no sudo. Else MUSTER_PACKAGE_SUDO=yes/no answers; else it asks on the
+# terminal, as linger() does; with no terminal to ask on it refuses.
+pkg_consent() {
+  [ "$(id -u)" != 0 ] || return 0
+  have sudo || { say "MUSTER_PACKAGE=$1 needs root or sudo, and there is no sudo: run as root, or without MUSTER_PACKAGE" >&2; return 1; }
+  ans="${MUSTER_PACKAGE_SUDO:-}"; t="${MUSTER_TTY:-/dev/tty}"
+  if [ -z "$ans" ] && (: <"$t") 2>/dev/null; then
+    say "MUSTER_PACKAGE=$1 installs the muster and muster-mirror .$1 packages in $PKG_BIN for every user of this machine. That takes sudo." >>"$t"
+    printf 'muster-install: use sudo to install them (sudo may ask for your password)? [y/N] ' >>"$t"
+    read -r ans <"$t" || ans=
+  fi
+  case "$ans" in
+    y|Y|yes|YES) return 0 ;;
+    "") say "MUSTER_PACKAGE=$1 needs sudo, and there is no terminal to ask on: set MUSTER_PACKAGE_SUDO=yes to allow it, or run without MUSTER_PACKAGE. Nothing was changed." >&2; return 1 ;;
+    *) say "MUSTER_PACKAGE=$1: sudo declined, nothing was installed. Run without MUSTER_PACKAGE to install into $BIN instead." >&2; return 1 ;;
+  esac
+}
+
+# pkg_installed deb|rpm <name>: the installed package's version (X.Y.Z), or nothing.
+pkg_installed() {
+  case "$1" in
+    deb) v=$(dpkg-query -W -f='${Version}' "$2" 2>/dev/null) || v="" ;;
+    rpm) v=$(rpm -q --qf '%{VERSION}' "$2" 2>/dev/null) || v="" ;;
+  esac
+  v="${v%%-*}"
+  case "$v" in [0-9]*.[0-9]*.[0-9]*) echo "$v" ;; esac
+}
+
+# pkg_downgrade_check deb|rpm: refuse a package OLDER than the installed one
+# (one copy in /usr/bin serves every user of this machine, and each one's
+# muster-mirror service) unless MUSTER_PACKAGE_DOWNGRADE=1.
+pkg_downgrade_check() {
+  for n in muster-mirror muster; do
+    cur=$(pkg_installed "$1" "$n")
+    [ -n "$cur" ] && [ "$cur" != "$RELEASE" ] || continue
+    [ "$(printf '%s\n%s\n' "$cur" "$RELEASE" | sort -V | tail -n 1)" = "$cur" ] || continue
+    [ "${MUSTER_PACKAGE_DOWNGRADE:-}" = 1 ] ||
+      die "the installed $n package is $cur, newer than this release ($RELEASE); it serves every user of this machine. Nothing was changed. To install $RELEASE anyway: MUSTER_PACKAGE_DOWNGRADE=1"
+    say "downgrading the $n package from $cur to $RELEASE (MUSTER_PACKAGE_DOWNGRADE=1)"
+  done
+}
+
+# pkg_install deb|rpm <file>: install a package, as root (sudo, already agreed
+# to, when this user is not). A downgrade only after pkg_downgrade_check.
+pkg_install() {
+  as=""; [ "$(id -u)" = 0 ] || as=sudo
+  old=""; [ "${MUSTER_PACKAGE_DOWNGRADE:-}" = 1 ] && old=--oldpackage
+  case "$1" in
+    deb) $as dpkg -i "$2" </dev/null ;;
+    rpm) $as rpm -U --replacepkgs $old "$2" </dev/null ;;
+  esac
+}
 
 # crashloop: muster-mirror's systemd service is restarting over and over since
 # this run started it: NRestarts grew by two or more, or it sat in
