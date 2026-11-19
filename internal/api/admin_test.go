@@ -199,11 +199,11 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 	// 9 admin pages + 4 team pages + the instance branding's 3 writes (whose
 	// admin controls are TestBrandingWritesAreAnAdminsOnly and, for the
 	// app-icon removal, TestAnAppIconBecomesEveryIconAndRollsTheETag: this
-	// world has no branding store) + browser flows' 3 setup writes (whose
+	// world has no branding store) + browser flows' hand-run form (whose
 	// admin controls are TestFlowLifecycleOverHTTP and
 	// TestAMemberGetsAskYourAdminOnFlows).
-	if len(routes) != 19 {
-		t.Fatalf("the admin-only class has %d routes, want 19: %v", len(routes), routes)
+	if len(routes) != 17 {
+		t.Fatalf("the admin-only class has %d routes, want 17: %v", len(routes), routes)
 	}
 	cs, ts := strconv.FormatInt(cID, 10), strconv.FormatInt(team.ID, 10)
 	concrete := func(route string) (string, string, string) {

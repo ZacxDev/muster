@@ -204,11 +204,13 @@ func TestFlowLifecycleOverHTTP(t *testing.T) {
 	sys := authz.System(ctx)
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	var a, b int64
-	// Both ADMINS: minting a runner token and the page's run form are an
-	// admin's (requireAdminRole); row-level security still confines each to
-	// their own jobs and runners, which is what this test walks.
-	for _, id := range []*int64{&a, &b} {
-		if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('admin', $1) RETURNING id`, "flow"+suffix).Scan(id); err != nil {
+	// A is an ADMIN (the page's hand-run form is requireAdminRole); B is a
+	// MEMBER, who mints their own runner token on /flows like anyone.
+	// Row-level security confines each to their own jobs and runners, which
+	// is what this test walks.
+	for i, id := range []*int64{&a, &b} {
+		role := []string{"admin", "member"}[i]
+		if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ($1, $2) RETURNING id`, role, "flow"+suffix).Scan(id); err != nil {
 			t.Fatal(err)
 		}
 	}

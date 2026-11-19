@@ -2,13 +2,18 @@ package api
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,6 +86,13 @@ func (p *plainFlows) RevokeRunnerToken(context.Context, int64) (bool, error) {
 	return true, nil
 }
 
+// Cancel always meets a running job: the refusal that carries detail
+// (FlowNotCancellable) on the page.
+func (p *plainFlows) Cancel(context.Context, int64) (flows.Job, error) {
+	p.note("Cancel")
+	return flows.Job{}, flows.ErrState
+}
+
 func (p *plainFlows) Enqueue(_ context.Context, r flows.Request, _, _ string) (flows.Job, error) {
 	p.note("Enqueue")
 	if _, err := flows.Validate(&r); err != nil {
@@ -95,6 +107,7 @@ type pickerNotes struct{ notes.Store }
 func (pickerNotes) ListSummaries(context.Context) ([]notes.Note, error) {
 	return []notes.Note{
 		{ID: 41, Title: "Plan the acme launch", Status: notes.StatusOpen},
+		{ID: 43, Title: `Fix <b>&"quotes"`, Status: notes.StatusInProgress},
 		{ID: 42, Title: "Shipped already", Status: notes.StatusComplete},
 	}, nil
 }
@@ -258,6 +271,9 @@ func TestFlowsPageTopLayerIsPlainForAnAdmin(t *testing.T) {
 		t.Fatal("CONTROL: the plain scan does not flag the old runner-token sentence")
 	}
 	for _, s := range top {
+		if s == `Fix <b>&"quotes"` {
+			continue // a task's own title is the user's words, not the page's (its escaping is pinned below)
+		}
 		if j := plainscan.Jargon(s); j != "" {
 			t.Errorf("jargon %q in the admin's top layer: %q", j, s)
 		}
@@ -276,16 +292,22 @@ func TestFlowsPageTopLayerIsPlainForAnAdmin(t *testing.T) {
 	}
 	// The picker offers the admin's unfinished tasks, by title, and no
 	// finished one.
-	if !strings.Contains(page, `<option value="">Nowhere</option><option value="41">Plan the acme launch</option></select>`) {
-		t.Errorf("the task picker is not [Nowhere, Plan the acme launch]: %s", page[strings.Index(page, `name="param_task"`):][:200])
+	// The markup-shaped title is escaped, never drawn as markup.
+	if !strings.Contains(page, `<option value="">Nowhere</option><option value="41">Plan the acme launch</option>`+
+		`<option value="43">Fix &lt;b&gt;&amp;&#34;quotes&#34;</option></select>`) {
+		t.Errorf("the task picker is not [Nowhere, Plan the acme launch, Fix <b>&\"quotes\"] escaped: %s",
+			page[strings.Index(page, `name="param_task"`):][:300])
 	}
 }
 
 // TestAMemberGetsAskYourAdminOnFlows: a member's /flows says to ask their
-// admin where the setup was, draws no setup form and no ⓘ at all (absent, not
-// hidden), never reads the runner list — and still shows their agents'
-// requests to decide. The setup writes refuse a member before the store; the
-// admin's same writes reach it (the control).
+// admin where the hand-run form was, and draws no form, no intro and none of
+// the form's ⓘs (absent, not hidden). It still shows their agents' requests to
+// decide, and their own connected browsers with Connect, Disconnect and that
+// section's ⓘ (operator decision 2026-11-18: connecting your own browser is
+// personal setup). The hand-run write refuses a member before the store; the
+// connect and disconnect writes reach it. The admin reaches all three (the
+// control).
 func TestAMemberGetsAskYourAdminOnFlows(t *testing.T) {
 	f := newFlowsPage(t)
 	rec := f.do("GET", "/flows", nil, flowsPlainMember)
@@ -293,54 +315,97 @@ func TestAMemberGetsAskYourAdminOnFlows(t *testing.T) {
 		t.Fatalf("GET /flows as a member: %d", rec.Code)
 	}
 	page := flowsSection(t, rec.Body.String())
-	if !strings.Contains(page, `<p class="text-sm text-fg" data-flows-ask-admin>Ask your admin to set up browser tasks.</p>`) {
+	if !strings.Contains(page, `<p class="text-sm text-fg" data-flows-ask-admin>Ask your admin to run a browser task by hand.</p>`) {
 		t.Errorf("the member's page does not say to ask their admin:\n%s", page)
 	}
-	for _, absent := range []string{`data-testid="flow-enqueue"`, `data-testid="runner-token-create"`, `data-testid="runner-tokens"`,
-		`data-info-sheet`, `data-flows-intro`, "runner", "Connect a browser", "Run task"} {
+	for _, absent := range []string{`data-testid="flow-enqueue"`, `data-flows-intro`, "Run task", `id="flows-about"`, `id="flows-fields"`,
+		`data-flow-advanced`} {
 		if strings.Contains(page, absent) {
 			t.Errorf("the member's page carries %q", absent)
 		}
 	}
+	for _, present := range []string{`data-testid="runner-token-create"`, `data-testid="runner-tokens"`, `data-runner-token-id="5"`,
+		`/flows/runner-tokens/5/revoke`, `id="flows-runner"`, ">Connected browsers</h2>", ">Computer name</label>", ">Connect a browser</button>",
+		">Disconnect</button>", "A runner token (mfr_…) is for ONE host."} {
+		if !strings.Contains(page, present) {
+			t.Errorf("the member's page lacks %q", present)
+		}
+	}
+	if got := labelsOf(page); strings.Join(got, "|") != "Computer name" {
+		t.Errorf("the member's form labels are %q, want only [Computer name]", got)
+	}
 	if !strings.Contains(page, `data-flow-request-id="31"`) || !strings.Contains(page, `/flows/requests/31/approve`) {
 		t.Error("the member's page does not show their agent's pending request to decide")
 	}
-	for _, c := range f.store.snapshot() {
-		if c == "ListRunnerTokens" {
-			t.Error("the member's page read the runner list")
-		}
-	}
 
 	writes := []struct {
-		path      string
-		form      url.Values
-		wantStore string
-		adminCode int
+		path       string
+		form       url.Values
+		wantStore  string
+		memberCode int // 403 = refused before the store
+		adminCode  int
 	}{
-		{"/flows/jobs", url.Values{"flow": {"muse.poll"}, "host": {"atlas"}, "instance": {"personal"}}, "Enqueue", http.StatusSeeOther},
-		{"/flows/runner-tokens", url.Values{"host": {"atlas"}}, "CreateRunnerToken", http.StatusOK},
-		{"/flows/runner-tokens/5/revoke", url.Values{}, "RevokeRunnerToken", http.StatusSeeOther},
+		{"/flows/jobs", url.Values{"flow": {"muse.poll"}, "host": {"atlas"}, "instance": {"personal"}}, "Enqueue", http.StatusForbidden, http.StatusSeeOther},
+		{"/flows/runner-tokens", url.Values{"host": {"atlas"}}, "CreateRunnerToken", http.StatusOK, http.StatusOK},
+		{"/flows/runner-tokens/5/revoke", url.Values{}, "RevokeRunnerToken", http.StatusSeeOther, http.StatusSeeOther},
+	}
+	reached := func(want string) bool {
+		for _, c := range f.store.snapshot() {
+			if c == want {
+				return true
+			}
+		}
+		return false
 	}
 	for _, w := range writes {
 		f.store.reset()
-		if rec := f.do("POST", w.path, w.form, flowsPlainMember); rec.Code != http.StatusForbidden {
-			t.Errorf("a member's POST %s: %d, want 403", w.path, rec.Code)
+		rec := f.do("POST", w.path, w.form, flowsPlainMember)
+		if rec.Code != w.memberCode {
+			t.Errorf("a member's POST %s: %d, want %d", w.path, rec.Code, w.memberCode)
 		}
-		for _, c := range f.store.snapshot() {
-			if c == w.wantStore {
-				t.Errorf("a member's POST %s reached %s", w.path, c)
-			}
+		if got := reached(w.wantStore); got != (w.memberCode != http.StatusForbidden) {
+			t.Errorf("a member's POST %s reached %s: %v", w.path, w.wantStore, got)
+		}
+		if w.path == "/flows/runner-tokens" && !strings.Contains(rec.Body.String(), `id="minted-runner-token" readonly value="mfr_`) {
+			t.Error("a member's new connection code is not shown")
 		}
 		f.store.reset()
 		if rec := f.do("POST", w.path, w.form, authz.OperatorUserID); rec.Code != w.adminCode {
 			t.Errorf("CONTROL: the admin's POST %s: %d, want %d", w.path, rec.Code, w.adminCode)
 		}
-		reached := false
-		for _, c := range f.store.snapshot() {
-			reached = reached || c == w.wantStore
-		}
-		if !reached {
+		if !reached(w.wantStore) {
 			t.Errorf("CONTROL: the admin's POST %s never reached %s", w.path, w.wantStore)
+		}
+	}
+}
+
+// TestAMembersRefusalCarriesNoRawDetail: a refusal with technical detail (a
+// cancel of a running job: FlowNotCancellable) reads plainly to a member, with
+// no ⓘ and none of the detail in the page; the admin's same refusal carries
+// the ⓘ with it (the control).
+func TestAMembersRefusalCarriesNoRawDetail(t *testing.T) {
+	f := newFlowsPage(t)
+	const plain = "That task is already running or finished, so it cannot be cancelled."
+	const raw = "a running job is the runner&#39;s until it reports"
+	alert := regexp.MustCompile(`<p role="alert"[^>]*>([^<]*)</p>`)
+	for _, c := range []struct {
+		who       string
+		uid       int64
+		wantSheet bool
+	}{{"member", flowsPlainMember, false}, {"admin", authz.OperatorUserID, true}} {
+		rec := f.do("POST", "/flows/jobs/9/cancel", url.Values{}, c.uid)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s's cancel of a running job: %d, want 409", c.who, rec.Code)
+		}
+		page := flowsSection(t, rec.Body.String())
+		if m := alert.FindStringSubmatch(page); m == nil || m[1] != plain {
+			t.Errorf("%s's alert reads %q, want %q", c.who, m, plain)
+		}
+		if got := strings.Contains(page, `id="flows-problem"`); got != c.wantSheet {
+			t.Errorf("%s's page has the refusal ⓘ: %v, want %v", c.who, got, c.wantSheet)
+		}
+		if got := strings.Contains(page, raw); got != c.wantSheet {
+			t.Errorf("%s's page carries the raw detail: %v, want %v", c.who, got, c.wantSheet)
 		}
 	}
 }
@@ -405,13 +470,48 @@ func TestFlowsPageSaysARefusalPlainly(t *testing.T) {
 	}
 }
 
-// TestFlowProblemCoversEveryCatalogueProblem: every Problem the catalogue
-// names has its own plain sentence, never the generic fallback, so a new
-// Problem added without words shows up here.
+// TestFlowProblemCoversEveryCatalogueProblem: every Problem constant
+// internal/flows declares (read from its source, so a new one is in the list
+// the day it is added) has its own plain, distinct sentence — never the
+// generic fallback.
 func TestFlowProblemCoversEveryCatalogueProblem(t *testing.T) {
 	const generic = "That could not be done. Check what you entered and try again."
-	problems := []flows.Problem{flows.ProblemFlow, flows.ProblemHost, flows.ProblemInstance, flows.ProblemTTL, flows.ProblemMissing,
-		flows.ProblemValue, flows.ProblemThreadAndSession, flows.ProblemMarkerNeedsSession, flows.ProblemTask}
+	src, err := os.ReadFile(filepath.Join("..", "flows", "catalogue.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "catalogue.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var problems []flows.Problem
+	for _, d := range file.Decls {
+		g, ok := d.(*ast.GenDecl)
+		if !ok || g.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range g.Specs {
+			vs := spec.(*ast.ValueSpec)
+			if id, ok := vs.Type.(*ast.Ident); !ok || id.Name != "Problem" {
+				continue
+			}
+			for _, v := range vs.Values {
+				lit, ok := v.(*ast.BasicLit)
+				if !ok {
+					t.Fatalf("a Problem constant is not a string literal: %T", v)
+				}
+				val, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				problems = append(problems, flows.Problem(val))
+			}
+		}
+	}
+	// The enumeration's control: it found the ones this test knows by name.
+	if len(problems) < 9 || !slices.Contains(problems, flows.ProblemHost) || !slices.Contains(problems, flows.ProblemTask) {
+		t.Fatalf("the source scan found %v", problems)
+	}
 	seen := map[string]flows.Problem{}
 	for _, p := range problems {
 		e := flows.Invalid(p, "x")
@@ -431,13 +531,5 @@ func TestFlowProblemCoversEveryCatalogueProblem(t *testing.T) {
 	// The control: an error with no Problem gets the generic sentence.
 	if v := flowProblem(flows.ErrInvalid); v.problem != generic {
 		t.Errorf("CONTROL: a bare ErrInvalid reads %q", v.problem)
-	}
-	keys := make([]string, 0, len(seen))
-	for k := range seen {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	if len(keys) != len(problems) {
-		t.Errorf("%d sentences for %d problems", len(keys), len(problems))
 	}
 }

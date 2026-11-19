@@ -23,10 +23,11 @@ import (
 //
 // THREE DOORS, AND WHICH CREDENTIAL OPENS WHICH IS THE DESIGN:
 //
-//   - /flows (the page and its forms): a browser SESSION. Cancel and deciding
-//     an agent's request are any owner's; enqueueing by hand and
-//     minting/revoking runner tokens are an ADMIN's (requireAdminRole) —
-//     minting a credential is a person's act, and setup is an admin's.
+//   - /flows (the page and its forms): a browser SESSION. Cancel, deciding an
+//     agent's request, and minting/revoking one's OWN runner tokens are any
+//     owner's — minting a credential is a person's act, and connecting your
+//     own browser is personal setup. Enqueueing a job by hand from the page is
+//     an ADMIN's (requireAdminRole).
 //   - /api/flows/jobs (enqueue, list, read, cancel): a PERSONAL API token
 //     (mst_…) ONLY, through requireAPIToken. 🔴 THE SHARED HOOK AND SERVICE
 //     TOKENS ARE REFUSED BY CONSTRUCTION: the hook token acts as the admin and is held by every hook
@@ -58,19 +59,20 @@ const FlowsUnconfigured = "this server does not serve browser flows (no database
 
 func (s *Server) registerFlowRoutes(mux Mux) {
 	mux.HandleFunc("GET "+flowsPath, s.requireSession(s.handleFlowsPage))
-	// 🔴 SETTING UP IS AN ADMIN'S (the operator rule): queueing a task by hand
-	// and connecting or disconnecting a computer's browser are admin-only
-	// (requireAdminRole: requireOperatorWrite plus the role check). A member's
-	// /flows says "Ask your admin" and still lists, and decides, their own
-	// agents' requests and their own jobs (renderFlowsPage).
+	// 🔴 RUNNING A TASK BY HAND IS AN ADMIN'S (operator decision 2026-11-18):
+	// the page's enqueue form is requireAdminRole (requireOperatorWrite plus
+	// the role check). Connecting and disconnecting one's OWN browser (the
+	// runner-token routes) is personal setup and stays requireOperatorWrite;
+	// row-level security confines each owner to their own tokens. A member's
+	// /flows says FlowsAskAdminText in place of the run form (renderFlowsPage).
 	mux.HandleFunc("POST "+flowsPath+"/jobs", s.requireAdminRole(s.handleFlowEnqueueForm))
 	mux.HandleFunc("POST "+flowsPath+"/jobs/{id}/cancel", s.requireOperatorWrite(s.handleFlowCancelForm))
-	mux.HandleFunc("POST "+flowsPath+"/runner-tokens", s.requireAdminRole(s.handleRunnerTokenCreate))
+	mux.HandleFunc("POST "+flowsPath+"/runner-tokens", s.requireOperatorWrite(s.handleRunnerTokenCreate))
 	// An agent's request (flow_tools.go) is decided HERE, by its owner, on the
 	// connector-request approve pattern (requireOperatorWrite).
 	mux.HandleFunc("POST "+flowsPath+"/requests/{id}/approve", s.requireOperatorWrite(s.handleFlowRequestApprove))
 	mux.HandleFunc("POST "+flowsPath+"/requests/{id}/deny", s.requireOperatorWrite(s.handleFlowRequestDeny))
-	mux.HandleFunc("POST "+flowsPath+"/runner-tokens/{id}/revoke", s.requireAdminRole(s.handleRunnerTokenRevoke))
+	mux.HandleFunc("POST "+flowsPath+"/runner-tokens/{id}/revoke", s.requireOperatorWrite(s.handleRunnerTokenRevoke))
 
 	mux.HandleFunc("POST "+flowsAPIPath, s.requireAPIToken(s.handleFlowEnqueueAPI))
 	mux.HandleFunc("GET "+flowsAPIPath, s.requireAPIToken(s.handleFlowListAPI))
@@ -571,7 +573,7 @@ type flowsView struct {
 const (
 	FlowsTitle        = "Browser tasks"
 	FlowsIntroText    = "Run a saved browser task on one of your computers."
-	FlowsAskAdminText = "Ask your admin to set up browser tasks."
+	FlowsAskAdminText = "Ask your admin to run a browser task by hand."
 	FlowsConnectText  = "Connect a computer's browser so it can run these tasks."
 	FlowsMintedText   = "Copy this code now. It is shown only once. Use it to connect the browser on that computer."
 )
@@ -651,8 +653,10 @@ func flowProblem(err error) flowsView {
 const flowTaskOptionsShown = 50
 
 // flowTaskOptions draws the "Post the result on" picker's options: none, then
-// the caller's unfinished tasks by title (their own, under row-level
-// security). ok is false when the server keeps no tasks.
+// up to flowTaskOptionsShown unfinished tasks the caller can see (row-level
+// security decides which), by title. ok is false when the server keeps no
+// tasks. ListSummaries is the lightest list the store has (it still reads
+// each body; there is no title-only read).
 func (s *Server) flowTaskOptions(ctx context.Context) (string, bool) {
 	if s.ext.Notes == nil {
 		return "", false
@@ -666,7 +670,10 @@ func (s *Server) flowTaskOptions(ctx context.Context) (string, bool) {
 	}
 	n := 0
 	for _, t := range list {
-		if t.Status == notes.StatusComplete || n >= flowTaskOptionsShown {
+		if n >= flowTaskOptionsShown {
+			break
+		}
+		if t.Status == notes.StatusComplete {
 			continue
 		}
 		n++
@@ -681,11 +688,12 @@ func (s *Server) flowTaskOptions(ctx context.Context) (string, bool) {
 
 // renderFlowsPage writes /flows.
 //
-// 🔴 THE SETUP IS AN ADMIN'S, AND ABSENT — NOT HIDDEN — FOR ANYONE ELSE (the
-// operator rule; authz.IsAdmin, the predicate shellFeatures' Setup reads). An
-// admin gets the run form, the connected browsers and every ⓘ. A member gets
-// FlowsAskAdminText where those were, and keeps what is theirs to act on: their
-// agents' requests (approve or deny) and their own jobs.
+// 🔴 THE HAND-RUN FORM IS AN ADMIN'S, AND ABSENT — NOT HIDDEN — FOR ANYONE ELSE
+// (authz.IsAdmin, the predicate shellFeatures' Setup reads). An admin gets the
+// run form, its ⓘs and the exact text of a refusal. A member gets
+// FlowsAskAdminText where the form was, no refusal detail, and keeps what is
+// theirs: their agents' requests (approve or deny), their own jobs, and their
+// own connected browsers (connect, disconnect, and that section's ⓘ).
 func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code int, v flowsView) {
 	admin := authz.IsAdmin(r.Context())
 	var jobs []flows.Job
@@ -703,11 +711,9 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 			s.logger.Printf("flows: page requests: %v", err)
 			v.problem, v.detail = "The request list could not be loaded.", ""
 		}
-		if admin {
-			if runners, err = s.ext.Flows.ListRunnerTokens(r.Context()); err != nil {
-				s.logger.Printf("flows: page runners: %v", err)
-				v.problem, v.detail = "The list of connected browsers could not be loaded.", ""
-			}
+		if runners, err = s.ext.Flows.ListRunnerTokens(r.Context()); err != nil {
+			s.logger.Printf("flows: page runners: %v", err)
+			v.problem, v.detail = "The list of connected browsers could not be loaded.", ""
 		}
 	}
 	esc := html.EscapeString
@@ -728,8 +734,16 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 `)
 	}
 	b.WriteString(flowsProblemHTML(v, admin))
+	if v.minted != "" {
+		b.WriteString(`<div class="flex flex-col gap-2 rounded-md bg-bg px-3 py-3 ring-1 ring-inset ring-edge" data-testid="minted-runner-token">
+<p class="text-sm font-semibold text-fg">` + FlowsMintedText + `</p>
+<input id="minted-runner-token" readonly value="` + esc(v.minted) + `" aria-label="New connection code"
+ class="min-h-[44px] w-full rounded-md bg-s1 px-3 py-2 font-mono text-sm text-fg ring-1 ring-inset ring-edge" onclick="this.select()">
+</div>
+`)
+	}
 	if admin {
-		s.writeFlowsSetup(&b, r.Context(), v)
+		s.writeFlowsSetup(&b, r.Context())
 	}
 	// Agent requests waiting on this owner. 🔴 THE CARD IS THE CONTROL: what the
 	// owner approves is exactly what is drawn here (flowRequestCardHTML).
@@ -828,16 +842,14 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 	b.WriteString(`</ul>
 `)
 
-	if admin {
-		writeFlowsRunners(&b, runners)
-	}
+	writeFlowsRunners(&b, runners)
 	b.WriteString(`<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	s.writeNavDocument(w, r, code, FlowsTitle, "", true, b.String())
 }
 
 // flowsProblemHTML is the page's problem line, and for an admin an ⓘ with its
-// exact technical text beside it.
+// exact technical text beside it. A member gets the plain line only.
 func flowsProblemHTML(v flowsView, admin bool) string {
 	if v.problem == "" {
 		return ""
@@ -851,20 +863,11 @@ func flowsProblemHTML(v flowsView, admin bool) string {
 `
 }
 
-// writeFlowsSetup draws an admin's setup: a code just minted, and the form
-// that runs a task by hand. Each parameter shows its plain Label; the ones
+// writeFlowsSetup draws an admin's form that runs a task by hand. Each parameter shows its plain Label; the ones
 // that address Muse's internals fold under Advanced, and every parameter's
 // exact description is in that section's ⓘ.
-func (s *Server) writeFlowsSetup(b *strings.Builder, ctx context.Context, v flowsView) {
+func (s *Server) writeFlowsSetup(b *strings.Builder, ctx context.Context) {
 	esc := html.EscapeString
-	if v.minted != "" {
-		b.WriteString(`<div class="flex flex-col gap-2 rounded-md bg-bg px-3 py-3 ring-1 ring-inset ring-edge" data-testid="minted-runner-token">
-<p class="text-sm font-semibold text-fg">` + FlowsMintedText + `</p>
-<input id="minted-runner-token" readonly value="` + esc(v.minted) + `" aria-label="New connection code"
- class="min-h-[44px] w-full rounded-md bg-s1 px-3 py-2 font-mono text-sm text-fg ring-1 ring-inset ring-edge" onclick="this.select()">
-</div>
-`)
-	}
 	// One form, every catalogue parameter (each flow uses the ones it names;
 	// the handler reads only those).
 	b.WriteString(`<form method="POST" action="` + flowsPath + `/jobs" class="flex flex-col gap-2" data-testid="flow-enqueue">
@@ -950,7 +953,8 @@ func (s *Server) writeFlowsSetup(b *strings.Builder, ctx context.Context, v flow
 `)
 }
 
-// writeFlowsRunners draws an admin's connected browsers: the connect form and
+// writeFlowsRunners draws the viewer's own connected browsers (any owner's:
+// connecting your own browser is personal setup): the connect form and
 // each runner token by its computer, with its exact detail behind the ⓘ.
 func writeFlowsRunners(b *strings.Builder, runners []flows.RunnerToken) {
 	esc := html.EscapeString
