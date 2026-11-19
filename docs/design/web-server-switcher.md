@@ -169,14 +169,28 @@ name (compared without case): only those show their host under the name, so
 they can still be told apart. Manage servers keeps every address (it is where
 labels are edited).
 
-A **monogram** is the first letter or digit of each of the first two words of
-the name (a word is a run of letters and digits), each upper-cased, on a
-palette colour picked by the name's FNV-1a hash: the same name is the same
-monogram everywhere. The server draws the row's monogram before the script
-runs (Go `serverMonogram`), the script draws the menu's (`monogram`), and both
-are held to one table of literal cases
-(`internal/ui/testdata/server-monograms.json`). It shows wherever a logo is
-absent or fails to load.
+A **monogram** is the first character of each of the first two words of the
+name, on a palette colour picked by the name's FNV-1a hash: the same name is
+the same monogram everywhere. It shows wherever a logo is absent or fails to
+load.
+
+The server draws the row's monogram before the script runs (Go
+`serverMonogram`), and the script draws the menu's (`monogram`). The rule asks
+**no Unicode table**, because the two languages' tables differ: Go's are
+Unicode 15.0 and a browser's are newer, and Go upper-cases with the simple
+mapping where JavaScript uses the full one. So:
+- words split on fixed separator ranges: controls, ASCII and Latin-1
+  punctuation and symbols, General Punctuation, and the ideographic space;
+- a first character is upper-cased only when it and its one-code-point
+  uppercase both lie in Latin, Greek or Cyrillic (U+0000–U+024F,
+  U+0370–U+04FF). Anything else, an emoji or a CJK character for example, is
+  kept as it is.
+
+Both implementations are held to a table of literal cases
+(`internal/ui/testdata/server-monograms.json`), and to the monogram of every
+code point from U+0000 to U+04FF. That second table was generated apart from
+both, from Python's full case mapping
+(`internal/ui/testdata/server-monogram-letters.json`).
 
 The row is drawn by the server at a fixed size, and the script only fills it
 in (its colours, letters and name), so it moves nothing when it loads (the
