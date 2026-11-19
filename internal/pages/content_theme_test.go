@@ -153,7 +153,6 @@ func TestTheContentDocumentIsTheAppsTheme(t *testing.T) {
 		want map[string]string
 	}{
 		{"dark", true, map[string]string{"--mu-bg": "17 15 28", "--mu-text": "238 235 247", "--mu-accent": "228 181 86", "--mu-line": "47 42 72"}},
-		{"light", false, map[string]string{"--mu-bg": "246 244 251", "--mu-text": "26 22 48", "--mu-accent": "131 93 15", "--mu-line": "220 215 234"}},
 	} {
 		got := rootTokens(t, css, c.dark)
 		for k, v := range c.want {
@@ -242,8 +241,9 @@ func elementRuled(rules []cssRule, el string) bool {
 // from markdown.go) fails here.
 //
 // It reads the classes twice: from a rendering of every construct
-// (markdownFixture), and from every class="…" literal in markdown.go itself,
-// so a class in a branch the fixture does not reach is still checked.
+// (markdownFixture), and from markdown.go itself (every class="…" literal and
+// every literal assigned to a variable a class attribute is built from), so a
+// class in a branch the fixture does not reach is still checked.
 func TestEveryMarkdownClassHasARule(t *testing.T) {
 	out := ui.MarkdownHTML(markdownFixture)
 	// The fixture still draws every construct: a fixture the renderer stopped
@@ -273,6 +273,26 @@ func TestEveryMarkdownClassHasARule(t *testing.T) {
 				classes[c] = "internal/ui/markdown.go"
 			}
 		}
+	}
+	// And a class written through a variable: a class="…` + v + `…" in the
+	// source, and every string literal assigned to v (`size := "text-sm"`,
+	// `size = "text-base"`). That one is the chat's heading branch, which
+	// MarkdownHTML never takes (it draws <h1>…<h6>), so it cannot reach the
+	// content document today; it is read anyway, so the day a branch that can
+	// does the same, it is checked.
+	viaVar := 0
+	for _, m := range regexp.MustCompile("class=\"[^\"`]*` \\+ ([A-Za-z_][A-Za-z0-9_]*) \\+").FindAllStringSubmatch(string(src), -1) {
+		for _, a := range regexp.MustCompile(`\b` + m[1] + `\s*:?=\s*"([^"]*)"`).FindAllStringSubmatch(string(src), -1) {
+			for _, c := range strings.Fields(a[1]) {
+				viaVar++
+				if _, ok := classes[c]; !ok {
+					classes[c] = "internal/ui/markdown.go, through `" + m[1] + "`"
+				}
+			}
+		}
+	}
+	if viaVar == 0 {
+		t.Fatal("control: no class written through a variable was found in markdown.go; the extraction is broken")
 	}
 	if len(classes) < 20 {
 		t.Fatalf("control: only %d classes found; the extraction is broken: %v", len(classes), classes)
@@ -393,7 +413,6 @@ func TestTheShellIsTheAppsTheme(t *testing.T) {
 		bg, fg, line, s1 string
 	}{
 		{"dark", true, "rgb(17 15 28)", "rgb(238 235 247)", "rgb(47 42 72)", "rgb(25 22 42)"},
-		{"light", false, "rgb(246 244 251)", "rgb(26 22 48)", "rgb(220 215 234)", "rgb(255 255 255)"},
 	} {
 		vars := rootTokens(t, css, c.dark)
 		for _, r := range rules {

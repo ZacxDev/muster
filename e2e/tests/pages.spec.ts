@@ -1258,14 +1258,12 @@ for (const vp of ROUND_VIEWPORTS) {
 // The expected colours are the palette's, written out from web/css/tokens.css,
 // and cross-checked against the app's own document in the same browser. The
 // app has ONE theme (dark: every document carries class="dark" and the theme
-// head forces it); the light palette is still shipped, so it is checked the way
-// agent-cards-work.spec.ts checks it, by dropping the class by hand, here on the
-// content document's own root.
+// head forces it), so the page is checked in that one; a link's viewer whose
+// device prefers light still gets it.
 //
-// MUSTER_E2E_PAGES_SHOTS=<dir> saves the owner's view in each theme there.
+// MUSTER_E2E_PAGES_SHOTS=<dir> saves the owner's view there.
 const THEME = {
   dark: { bg: 'rgb(17, 15, 28)', accent: 'rgb(228, 181, 86)', line: 'rgb(47, 42, 72)', text: 'rgb(238, 235, 247)' },
-  light: { bg: 'rgb(246, 244, 251)', accent: 'rgb(131, 93, 15)', line: 'rgb(220, 215, 234)' },
 } as const;
 const THEMED_MD =
   '## Prices\n\nEach plan, per seat:\n\n| Plan | Price | Notes |\n| --- | --- | --- |\n| Basic | 4 | [what is in it](https://example.com/basic) |\n| Team | 9 | everything in Basic |\n';
@@ -1287,15 +1285,12 @@ for (const vp of ROUND_VIEWPORTS) {
         };
       });
     await asOwner(browser, vp, async (page) => {
-      // The app's own ground, in each theme, from the app's own document.
+      // Control: the app's own ground and header, from the app's own document.
       await page.goto(origin + '/pages');
       const appDark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
       const appHeader = await page.locator('header').first().evaluate((h) => getComputedStyle(h).backgroundColor);
       expect(appHeader, "control: the app's header is drawn on its dark ground").toBe(THEME.dark.bg);
-      await page.evaluate(() => document.documentElement.classList.remove('dark'));
-      const appLight = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
       expect(appDark, "control: the app's dark ground is the palette's").toBe(THEME.dark.bg);
-      expect(appLight, "control: the app's light ground is the palette's").toBe(THEME.light.bg);
 
       await page.goto(origin + `/pages/${id}/view`);
       const frame = page.frameLocator('iframe#page');
@@ -1313,13 +1308,6 @@ for (const vp of ROUND_VIEWPORTS) {
       expect(dark.bg, "the frame's ground is the app's dark background").toBe(THEME.dark.bg);
       expect(dark.border, 'a table cell is ruled: 1px solid, in the line colour').toEqual(['1px', 'solid', THEME.dark.line, '1px', 'solid']);
       expect(dark.link, "a link is the app's accent").toBe(THEME.dark.accent);
-
-      await frame.locator('html').evaluate((e) => e.classList.remove('dark'));
-      await shot(page, `theme-${vp.name}-light`);
-      const light = await look(frame);
-      expect(light.bg, "the frame's ground is the app's light background").toBe(THEME.light.bg);
-      expect(light.border, 'a table cell is ruled in the light line colour').toEqual(['1px', 'solid', THEME.light.line, '1px', 'solid']);
-      expect(light.link, "a link is the app's light accent").toBe(THEME.light.accent);
 
       // A link's viewer, on a device that prefers light, sees the same document.
       const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });

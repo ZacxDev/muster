@@ -1,10 +1,11 @@
 /*
  * muster Tailwind entrypoint.
  *
- * Built into web/static/app.css by `make css`. Dark is the default — the
- * document root carries the `dark` class — and light is the opt-in: the
- * sidebar's theme control removes that class (themeHeadScript in
- * internal/ui/theme.go), and the token block below swaps every colour with it.
+ * Built into web/static/app.css by `make css`. Dark is the ONLY theme: every
+ * document root carries the `dark` class and the theme head script
+ * (internal/ui/theme.go) forces it; nothing removes it since the light toggle
+ * went (#315). The palette (web/css/tokens.css, imported below) still defines
+ * a light block for a root without the class.
  */
 @import "./tokens.css";
 

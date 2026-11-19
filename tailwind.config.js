@@ -2,9 +2,9 @@
 //
 // muster Tailwind config.
 //
-// Dark mode is the DEFAULT: the app root (<html>) carries the `dark` class by
-// default so the UI renders dark-first, with light as an opt-in toggle.
-// `darkMode: 'class'` makes that switch class-driven rather than tied to the OS
+// Dark is the ONLY theme: the app root (<html>) always carries the `dark` class
+// and the theme head script forces it (the light toggle is gone, #315).
+// `darkMode: 'class'` keeps the theme class-driven rather than tied to the OS
 // preference. Colour no longer needs the `dark:` variant at all: the palette is
 // a set of custom properties that the class swaps (web/css/tokens.css).
 //
