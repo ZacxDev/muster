@@ -378,12 +378,23 @@ func sessionKey(host, session, window string) string {
 	return "session-" + hex.EncodeToString(sum[:8])
 }
 
+// shownAskLabel is a's stored label as a surface shows it: a built-in
+// officer's ask is stored under "officer <id>" (officerAskLabel, the key its
+// page matches asks by) and SHOWN by what the officer is for, "Product officer
+// (Acme)" (the jargon audit's U-24); any other label as stored.
+func shownAskLabel(a attention.Ask) string {
+	if id, ok := strings.CutPrefix(a.Asker.Label, officerAskLabel("")); ok && a.Asker.System && id != "" {
+		return ui.OfficerSourceName(id)
+	}
+	return a.Asker.Label
+}
+
 // askerLabel is an ask's source by what it stored: its label (for a mirrored
 // session, its name and host when it asked — no tmux target), else its ids.
 // Every surface shows askSource, which falls back to this.
 func askerLabel(a attention.Ask) string {
 	if a.Asker.Label != "" {
-		return a.Asker.Label
+		return shownAskLabel(a)
 	}
 	if a.Asker.AgentID > 0 {
 		return "agent " + strconv.FormatInt(a.Asker.AgentID, 10)

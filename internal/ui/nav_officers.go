@@ -146,13 +146,9 @@ func navOfficerOrder(officers []NavOfficer) []NavOfficer {
 	return out
 }
 
-// navOfficerName is what an officer's row calls it: its name, else its id.
-func navOfficerName(o NavOfficer) string {
-	if n := strings.TrimSpace(o.Name); n != "" {
-		return n
-	}
-	return o.ID
-}
+// navOfficerName is what an officer's row calls it: its name, else its id
+// in words (OfficerPlainName), never the "<type>:<area>" id itself.
+func navOfficerName(o NavOfficer) string { return OfficerPlainName(o.Name, o.ID) }
 
 // navOfficersGroup is the Officers group: its heading and one row per officer
 // (navOfficerRow), its instances (as the list met them) by officer. Nothing
