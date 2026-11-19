@@ -509,7 +509,8 @@ for (const vp of [
         await page.goto(origin + '/account');
         await expect(sw).toHaveAttribute('data-state', 'off');
         await expect(sw).toContainText('Start notifications with the computer and session name: Off.');
-        await expect(sw).toContainText('like mango:1@laptop');
+        // The example is in the switch's ⓘ, not its words (the jargon audit's F084).
+        await expect(sw.locator('[data-info-code]')).toHaveText('mango:1@laptop');
         await expect(button).toHaveText('Turn on: Start notifications with the computer and session name');
         expect((await button.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
         const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));

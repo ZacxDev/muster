@@ -57,15 +57,14 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	// with the registry's reason, and offers no switch that would do nothing.
 	//
 	// The registry's reason names a variable, so it is in the admin's ⓘ: the
-	// line says what is missing in words (the jargon audit's F087), and only
-	// an admin gets the link to the feature's setup.
+	// line says what is missing in words (the jargon audit's F087).
 	if f, ok := s.feature(features.SuggestedReplies); ok && f.State == features.Off {
+		// The link is everyone's: the feature's Features sheet is itself
+		// withheld for anyone but an admin, and says to ask their admin.
 		admin := authz.IsAdmin(r.Context())
-		words, link := SuggestOffNeedsKey, ""
-		if admin {
-			link = `<a href="` + ui.FeatureHref(features.SuggestedReplies) + `" class="text-sm text-accent underline">How to turn them on</a>
+		words, link := SuggestOffNeedsKey, `<a href="`+ui.FeatureHref(features.SuggestedReplies)+`" class="text-sm text-accent underline">How to turn them on</a>
 `
-		} else {
+		if !admin {
 			words += " Your admin can turn them on."
 		}
 		return head + `<div class="flex items-center gap-1">` + state("off-needs-key", html.EscapeString(words)) +

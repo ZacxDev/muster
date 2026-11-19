@@ -203,7 +203,7 @@ func TestNotSetUpLinesKeepTheirSetupForAnAdmin(t *testing.T) {
 // with no OpenRouter key, a MEMBER's Suggested replies section says "Off —
 // needs an OpenRouter key on the server. Your admin can turn them on." and
 // carries none of the setup — not the registry's reason, not the sheet's
-// lead, no code row, no setup link — while the admin's does (the control).
+// lead, no code row — while the admin's does (the control).
 func TestAMembersSuggestedRepliesOffLineCarriesNoSetup(t *testing.T) {
 	s, _ := featureServer(t, Extensions{Suggest: &suggest.Engine{}},
 		testFeatureSet(t, map[string]features.Status{features.SuggestedReplies: {State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}}))
@@ -220,7 +220,12 @@ func TestAMembersSuggestedRepliesOffLineCarriesNoSetup(t *testing.T) {
 	if !strings.Contains(member, `data-state="off-needs-key" class="text-sm text-fg">Off — needs an OpenRouter key on the server. Your admin can turn them on.</p>`) {
 		t.Errorf("the member's line is not the plain one:\n%s", member)
 	}
-	for _, n := range []string{"needs EXAMPLE_OPENROUTER_KEY", "What the server reports:", "data-info-code", "#suggested-replies"} {
+	// The "How to turn them on" link stays everyone's: it opens the
+	// feature's Features sheet, itself withheld for a member.
+	if !strings.Contains(member, `href="/account/features#suggested-replies-setup"`) {
+		t.Error("the member's section lost its link to the feature's sheet")
+	}
+	for _, n := range []string{"needs EXAMPLE_OPENROUTER_KEY", "What the server reports:", "data-info-code"} {
 		if !strings.Contains(admin, n) {
 			t.Errorf("CONTROL: the admin's section has no %q", n)
 		}
