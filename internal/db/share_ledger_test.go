@@ -84,7 +84,9 @@ var personalOwned = []string{
 	// 0157: an owner's raise of an officer's daily budget for one UTC day;
 	// only the officer's owner raises it.
 	"officer_cap_raises",
-	// 0158: the morning report; it lists its owner's own sessions, tasks and
+	// 0158: the fleet's action log; same reason.
+	"fleet_actions",
+	// 0160: the morning report; it lists its owner's own sessions, tasks and
 	// questions.
 	"morning_reports",
 }

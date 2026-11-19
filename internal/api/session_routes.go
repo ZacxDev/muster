@@ -418,6 +418,12 @@ func (s *Server) toolRouteToSession(ctx context.Context, chief agents.Agent, arg
 		// into the call. The route names the owner's message that passed.
 		msg, why := s.ownerTurnFor(ctx, chief)
 		if why != "" {
+			// 🔴 OUTSIDE AN OWNER TURN, A CARD (fleet proposals on): the text
+			// becomes a route card the owner reads whole and taps; nothing is
+			// routed without that tap (fleet_answers.go fleetRouteCard).
+			if out, ok := s.fleetRouteCard(ctx, chief, sub, text); ok {
+				return out
+			}
 			s.logger.Printf("routes: agent %d: a request route REFUSED: %s", chief.ID, why)
 			return s.routeOwnerAskedRefusal(ctx, chief, why)
 		}

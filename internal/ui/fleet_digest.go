@@ -46,7 +46,29 @@ const (
 	// FleetChatPath opens the Fleet side chat (POST about=<fleet id>, or none
 	// for the fleet as a whole), answered with the panel body on it.
 	FleetChatPath = "/ui/chief/fleet/chat"
+	// FleetActionPathPrefix is a proposal's card actions (fleet proposals):
+	// POST <prefix><id>/approve, /edit (text=), /reject — each answered with
+	// the card, its Proposed group open and a note.
+	FleetActionPathPrefix = "/ui/chief/fleet/actions/"
+	// FleetBulkPath approves or rejects every listed proposal (POST op=approve
+	// or op=reject, id=… for each row the owner was shown).
+	FleetBulkPath = "/ui/chief/fleet/bulk"
+	// FleetStepUpPath is the "Confirm it's you" dialog an approval loads when
+	// the sign-in is stale and the page has none (GET).
+	FleetStepUpPath = "/ui/chief/fleet/stepup"
 )
+
+// FleetActionPath is proposal id's card action verb (approve, edit, reject).
+func FleetActionPath(id int64, verb string) string {
+	return FleetActionPathPrefix + strconv.FormatInt(id, 10) + "/" + verb
+}
+
+// ChiefOpenParam is the query parameter that opens the chief panel on load
+// (?chief=open): the fleet's "N proposals waiting" push's tap.
+const ChiefOpenParam = "chief"
+
+// ChiefOpenURL is a link that opens the chief panel on the home page.
+const ChiefOpenURL = "/?" + ChiefOpenParam + "=open"
 
 // The card's ids and attributes: what both test tiers read.
 const (
@@ -76,6 +98,11 @@ const (
 	fleetOpenAttr        = "data-fleet-open-session"
 	fleetAskChiefAttr    = "data-fleet-ask-chief"
 	fleetSinceAttr       = "data-fleet-since"
+	fleetProposalAttr    = "data-fleet-proposal"
+	fleetNoteAttr        = "data-fleet-note"
+	fleetBulkAttr        = "data-fleet-bulk"
+	// fleetStepUpSlotID is where the step-up dialog is loaded (ChiefPanel).
+	fleetStepUpSlotID = "fleet-stepup"
 	// ChiefPrefillAttr carries a draft the panel script puts in the chat box
 	// once the body it is in has landed (the Fleet chat's "Ask the chief
 	// about this"): it fills the box and sends nothing.
@@ -98,6 +125,11 @@ type FleetDigestView struct {
 	Groups      []FleetGroupView
 	// Since is the "since you last looked" line ("" for no baseline yet).
 	Since string
+	// Note is the line the last card action left ("Sent.", "2 sent, 1
+	// skipped (moved on)"), "" for none.
+	Note string
+	// OpenGroup is the group drawn open (the one a card action came from).
+	OpenGroup string
 }
 
 // FleetGroupView is one group.
@@ -107,10 +139,41 @@ type FleetGroupView struct {
 	Note string
 	Rows []FleetRowView
 	Asks []FleetAskView
+	// Proposals are the Proposed group's cards (fleet proposals).
+	Proposals []FleetProposalView
 }
 
 // Count is the group's count.
-func (g FleetGroupView) Count() int { return len(g.Rows) + len(g.Asks) }
+func (g FleetGroupView) Count() int { return len(g.Rows) + len(g.Asks) + len(g.Proposals) }
+
+// FleetGroupProposed is the Proposed group's key: the chief's open proposals.
+const FleetGroupProposed = "proposed"
+
+// FleetProposalView is one proposal's card.
+type FleetProposalView struct {
+	ID int64
+	// Subject is its session's fleet id ("mirror:<key>", "agent:<id>").
+	Subject string
+	// Session is its session's label, Where the window or agent.
+	Session, Where string
+	// Verb is its class as a verb ("Continue", "Write handoff, then close").
+	Verb string
+	// Reason is the proposer's one line.
+	Reason string
+	// Text is EXACTLY what will be sent, in full: muster's attribution line,
+	// then the action's text.
+	Text string
+	// EditText is the text an Edit opens with (the action's own, without the
+	// attribution line: an edited text is sent as the owner's).
+	EditText string
+	// Href is Open session ("" when it is not listed now).
+	Href string
+	// Age is how long it has waited.
+	Age string
+	// Editable: the class sends one text (a reassign routes a task first,
+	// and is approved or rejected only).
+	Editable bool
+}
 
 // FleetRowView is one session's row.
 type FleetRowView struct {
@@ -148,7 +211,7 @@ type FleetAskView struct {
 // slow poll; both are skipped while the panel is shut or the owner is inside a
 // group (musterFleetShown, chiefPanelScript), so a refresh never closes what
 // they opened.
-func fleetDigestSlot() g.Node {
+func fleetDigestSlot(propose bool) g.Node {
 	return Div(
 		ID(fleetDigestSlotID),
 		g.Attr("aria-live", "polite"),
@@ -156,23 +219,31 @@ func fleetDigestSlot() g.Node {
 		hx("hx-get", FleetDigestPath),
 		hx("hx-trigger", "muster:fleet-open from:document, sse:attention_queue.changed[!window.musterFleetShown||musterFleetShown()] from:body delay:2s, every 120s[!window.musterFleetShown||musterFleetShown()]"),
 		hx("hx-swap", "innerHTML"),
-		FleetDigestSkeleton(),
+		FleetDigestSkeleton(propose),
 	)
 }
 
 // FleetDigestSkeleton is the card before its first fetch: the real card's
 // shape and height, every count "…".
-func FleetDigestSkeleton() g.Node {
-	return fleetCard(FleetDigestView{Groups: skeletonGroups()}, FleetStateLoading)
+func FleetDigestSkeleton(propose bool) g.Node {
+	return fleetCard(FleetDigestView{Groups: skeletonGroups(propose)}, FleetStateLoading)
 }
 
-func skeletonGroups() []FleetGroupView {
-	out := make([]FleetGroupView, 0, len(fleetGroupKeys))
+// skeletonGroups is the card's groups before a read: the digest's, with the
+// Proposed group second when fleet proposals are on.
+func skeletonGroups(propose bool) []FleetGroupView {
+	out := make([]FleetGroupView, 0, len(fleetGroupKeys)+1)
 	for _, k := range fleetGroupKeys {
 		out = append(out, FleetGroupView{Key: k, Label: fleetGroupLabels[k]})
+		if propose && k == "needs_you" {
+			out = append(out, FleetGroupView{Key: FleetGroupProposed, Label: FleetProposedLabel})
+		}
 	}
 	return out
 }
+
+// FleetProposedLabel is the Proposed group's name on the card.
+const FleetProposedLabel = "Proposed"
 
 // fleetGroupKeys and fleetGroupLabels mirror internal/fleet's GroupOrder and
 // GroupLabel for the skeleton, which the shell renders without a read.
@@ -212,7 +283,11 @@ func fleetCard(v FleetDigestView, state string) g.Node {
 	inert := loading || unavailable
 	groups := v.Groups
 	if unavailable {
-		groups = skeletonGroups()
+		propose := false
+		for _, gr := range v.Groups {
+			propose = propose || gr.Key == FleetGroupProposed
+		}
+		groups = skeletonGroups(propose)
 	}
 	since := v.Since
 	if since == "" {
@@ -248,9 +323,13 @@ func fleetCard(v FleetDigestView, state string) g.Node {
 			g.If(!inert, fleetAskChiefButton("", "Ask the chief", "ml-auto h-7"))),
 		P(g.Attr(fleetSinceAttr, ""), g.If(unavailable, g.Attr("data-fleet-unavailable", "")), g.If(unavailable, g.Attr("title", v.Unavailable)),
 			Class(sinceCls), g.Text(since)),
+		// A card action's note ("Sent.", "2 sent, 1 skipped (moved on)"):
+		// drawn only when an action left one, over the groups.
+		g.If(v.Note != "", P(g.Attr(fleetNoteAttr, ""), g.Attr("role", "status"),
+			Class("rounded-md bg-s2 px-2 py-1 text-[11px] text-fg"), g.Text(v.Note))),
 		// The desktop groups: each opens inline.
 		Div(Class("hidden flex-col gap-0.5 sm:flex"), g.Map(groups, func(gr FleetGroupView) g.Node {
-			return fleetGroupDetails(gr, countOf(gr), inert)
+			return fleetGroupDetails(gr, countOf(gr), inert, gr.Key == v.OpenGroup)
 		})),
 		// The phone: one row of chips, each opening its sheet — or, with no
 		// digest, the reason in that row's place.
@@ -265,7 +344,7 @@ func fleetCard(v FleetDigestView, state string) g.Node {
 
 // fleetGroupDetails is one group on a desktop: a closed <details> whose
 // summary is one fixed-height line.
-func fleetGroupDetails(gr FleetGroupView, count string, inert bool) g.Node {
+func fleetGroupDetails(gr FleetGroupView, count string, inert, open bool) g.Node {
 	summary := Summary(
 		Class("flex min-h-[28px] cursor-pointer list-none items-center gap-2 rounded-md px-2 text-xs text-fg2 hover:bg-s2"),
 		Span(Class("mr-auto truncate"), g.Text(gr.Label)),
@@ -275,9 +354,9 @@ func fleetGroupDetails(gr FleetGroupView, count string, inert bool) g.Node {
 	if inert {
 		return Div(g.Attr(fleetGroupAttr, gr.Key), summary)
 	}
-	return Details(g.Attr(fleetGroupAttr, gr.Key), Class("group"),
+	return Details(g.Attr(fleetGroupAttr, gr.Key), Class("group"), g.If(open, g.Attr("open", "")),
 		summary,
-		Div(Class("max-h-64 overflow-y-auto pb-1 pl-2"), fleetGroupBody(gr)))
+		Div(Class("max-h-96 overflow-y-auto pb-1 pl-2"), fleetGroupBody(gr)))
 }
 
 // fleetChip is one group's chip on a phone.
@@ -296,8 +375,8 @@ func fleetChip(gr FleetGroupView, count string, loading bool) g.Node {
 // a phone (the panel full width and height) is the screen's.
 func fleetSheet(gr FleetGroupView, v FleetDigestView, since string) g.Node {
 	return Div(ID("fleet-sheet-"+gr.Key), g.Attr(fleetSheetAttr, gr.Key), g.Attr("role", "dialog"), g.Attr("aria-label", gr.Label),
-		g.Attr("hidden", ""),
-		Class("fixed inset-x-0 bottom-0 z-50 flex max-h-[70%] flex-col rounded-t-2xl bg-bg shadow-2xl ring-1 ring-line sm:hidden"),
+		g.If(gr.Key != v.OpenGroup, g.Attr("hidden", "")),
+		Class("fixed inset-x-0 bottom-0 z-50 flex max-h-[85%] flex-col rounded-t-2xl bg-bg shadow-2xl ring-1 ring-line sm:hidden"),
 		Div(Class("flex flex-none items-center gap-2 border-b border-line px-3 py-2"),
 			H3(Class("mr-auto text-sm font-semibold text-fg"), g.Text(gr.Label+" ("+strconv.Itoa(gr.Count())+")")),
 			Button(Type("button"), g.Attr(fleetSheetCloseAttr, ""), g.Attr("aria-label", "Close"),
@@ -305,7 +384,8 @@ func fleetSheet(gr FleetGroupView, v FleetDigestView, since string) g.Node {
 		Div(Class("min-h-0 flex-1 overflow-y-auto p-3"),
 			P(Class("mb-2 text-[11px] text-muted"), g.Text(since)),
 			fleetGroupBody(gr)),
-		Div(Class("flex-none border-t border-line p-3"),
+		Div(Class("flex flex-none flex-col gap-2 border-t border-line p-3"),
+			g.If(gr.Key == FleetGroupProposed && len(gr.Proposals) > 0, fleetBulk(gr.Proposals)),
 			fleetAskChiefButton("", "Ask the chief about the fleet", "w-full min-h-[44px] justify-center"),
 		),
 	)
@@ -319,9 +399,95 @@ func fleetGroupBody(gr FleetGroupView) g.Node {
 	return g.Group{
 		g.If(gr.Note != "", P(Class("px-1 pb-1 text-[11px] text-muted"), g.Text(gr.Note))),
 		Ul(Class("flex flex-col gap-1"),
+			g.Map(gr.Proposals, fleetProposalRow),
 			g.Map(gr.Asks, fleetAskRow),
 			g.Map(gr.Rows, fleetRow)),
+		// The desktop's bulk actions sit under the group's rows; the phone's
+		// in its sheet's footer (fleetSheet).
+		g.If(gr.Key == FleetGroupProposed && len(gr.Proposals) > 0, Div(Class("hidden pt-1 sm:block"), fleetBulk(gr.Proposals))),
 	}
+}
+
+// fleetButton is a card action's button: full width and 44px tall on a phone
+// (tap only — the text must be seen; there is no swipe), compact on desktop.
+func fleetButton(label, cls string, attrs ...g.Node) g.Node {
+	nodes := []g.Node{Type("button"),
+		Class("press inline-flex min-h-[44px] w-full items-center justify-center rounded-md px-3 text-xs font-medium ring-1 ring-inset " +
+			"sm:min-h-[28px] sm:w-auto " + cls)}
+	nodes = append(nodes, attrs...)
+	return Button(append(nodes, g.Text(label))...)
+}
+
+// fleetPost is an htmx post that answers with the card, swapped into the
+// digest's slot.
+func fleetPost(path string) g.Node {
+	return g.Group{hx("hx-post", path), hx("hx-target", "#"+fleetDigestSlotID), hx("hx-swap", "innerHTML")}
+}
+
+// fleetProposalRow is one proposal's card: the session, the class as a verb,
+// the reason, EXACTLY what will be sent (in full, never cut), and Approve ·
+// Edit · Reject · Open session.
+func fleetProposalRow(p FleetProposalView) g.Node {
+	id := strconv.FormatInt(p.ID, 10)
+	return Li(g.Attr(fleetProposalAttr, id), g.Attr("data-fleet-proposal-subject", p.Subject),
+		Class("flex flex-col gap-1.5 rounded-lg bg-s1 p-2 text-xs ring-1 ring-inset ring-accent/40"),
+		Div(Class("flex items-baseline gap-2"),
+			Span(Class("min-w-0 flex-1 truncate font-medium text-fg"), g.Text(p.Session)),
+			Span(g.Attr("data-fleet-verb", ""), Class("shrink-0 font-semibold text-accent"), g.Text(p.Verb)),
+			g.If(p.Age != "", Span(Class("shrink-0 text-muted"), g.Text(p.Age)))),
+		g.If(p.Where != "", P(Class("truncate text-[11px] text-muted"), g.Text(p.Where))),
+		g.If(p.Reason != "", P(Class("break-words text-[11px] text-fg2"), g.Text("Why: "+p.Reason))),
+		Div(Class("flex flex-col gap-0.5"),
+			Span(Class("text-[10px] font-semibold uppercase tracking-wide text-muted"), g.Text("Will send")),
+			Pre(g.Attr("data-fleet-text", ""), Class("whitespace-pre-wrap break-words rounded-md bg-bg p-2 font-mono text-[11px] text-fg ring-1 ring-inset ring-line"),
+				g.Text(p.Text))),
+		Div(Class("flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center"),
+			fleetButton("Approve", "bg-accent/20 text-fg ring-accent/60 hover:bg-accent/30", g.Attr("data-fleet-approve", id),
+				fleetPost(FleetActionPath(p.ID, "approve"))),
+			g.If(p.Editable, fleetButton("Edit", "bg-s2 text-fg2 ring-edge hover:bg-s3", g.Attr("data-fleet-edit", id),
+				g.Attr("aria-expanded", "false"))),
+			fleetButton("Reject", "bg-s2 text-fg2 ring-edge hover:bg-s3", g.Attr("data-fleet-reject", id),
+				fleetPost(FleetActionPath(p.ID, "reject"))),
+			g.If(p.Href != "", A(Href(p.Href), g.Attr(fleetOpenAttr, id),
+				Class("press inline-flex min-h-[44px] w-full items-center justify-center rounded-md px-3 text-xs font-medium text-accent ring-1 ring-inset ring-edge hover:underline sm:min-h-[28px] sm:w-auto"),
+				g.Text("Open session")))),
+		// Edit: the text in a box, sent as the owner's own message (no chief
+		// line) — a fresh sign-in is asked for if the current one is stale.
+		// 🔴 NO ids: the card is drawn twice (the desktop group and the phone
+		// sheet), so the Edit button finds ITS form by the card it is in.
+		g.If(p.Editable, Form(g.Attr("data-fleet-edit-form", id), g.Attr("hidden", ""),
+			fleetPost(FleetActionPath(p.ID, "edit")),
+			Class("flex flex-col gap-1.5"),
+			Label(Class("flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted"),
+				g.Text("Your message (sent as yours, with no chief line)"),
+				Textarea(Name("text"), Rows("5"), MaxLength("4096"),
+					Class("w-full rounded-md bg-bg p-2 font-mono text-[11px] normal-case tracking-normal text-fg ring-1 ring-inset ring-edge"), g.Text(p.EditText))),
+			Button(Type("submit"), Class("press inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-accent/20 px-3 text-xs font-medium text-fg ring-1 ring-inset ring-accent/60 sm:min-h-[28px] sm:w-auto"),
+				g.Text("Send as mine")))),
+	)
+}
+
+// fleetBulk is the Proposed group's Approve all and Reject all: each asks to
+// confirm, listing every row's verb and session, and posts the ids the owner
+// was shown — a proposal filed after the card was drawn is not swept in.
+func fleetBulk(ps []FleetProposalView) g.Node {
+	var list []string
+	ids := g.Group{}
+	for _, p := range ps {
+		list = append(list, "• "+p.Verb+" — "+p.Session)
+		ids = append(ids, Input(Type("hidden"), Name("id"), Value(strconv.FormatInt(p.ID, 10))))
+	}
+	n := strconv.Itoa(len(ps))
+	form := func(op, label, confirm, cls string) g.Node {
+		return Form(g.Attr(fleetBulkAttr, op), fleetPost(FleetBulkPath), hx("hx-confirm", confirm+"\n"+strings.Join(list, "\n")),
+			Class("w-full sm:w-auto"),
+			Input(Type("hidden"), Name("op"), Value(op)), ids,
+			Button(Type("submit"), Class("press inline-flex min-h-[44px] w-full items-center justify-center rounded-md px-3 text-xs font-medium ring-1 ring-inset sm:min-h-[28px] sm:w-auto "+cls),
+				g.Text(label)))
+	}
+	return Div(Class("flex flex-col gap-1.5 sm:flex-row"),
+		form("approve", "Approve all ("+n+")", "Send all "+n+"? Each is re-checked first; a session that moved on is skipped.", "bg-accent/20 text-fg ring-accent/60"),
+		form("reject", "Reject all", "Reject all "+n+"?", "bg-s2 text-fg2 ring-edge"))
 }
 
 // fleetAskRow is one of the chief's open cards.

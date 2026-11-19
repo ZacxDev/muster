@@ -171,15 +171,28 @@ func (s *Server) sessionRuntimesFor(ctx context.Context, a agents.Agent) []strin
 // createRuntimeSession opens a's new session on (runtime, model) after checking
 // the pair is one a may have. The error is the operator-facing reason.
 func (s *Server) createRuntimeSession(ctx context.Context, a agents.Agent, runtime, model string) (agents.ChatSession, error) {
-	if !slices.Contains(s.sessionRuntimesFor(ctx, a), runtime) {
-		return agents.ChatSession{}, errRuntimeNotOffered
-	}
-	model, err := agents.ValidateSessionRuntime(runtime, model)
+	model, err := s.runtimeSessionModel(ctx, a, runtime, model)
 	if err != nil {
 		return agents.ChatSession{}, err
 	}
 	st, _ := s.sessionRuntimeStore()
 	return st.CreateSessionOn(ctx, a.ID, a.Name, runtime, model)
+}
+
+// runtimeSessionModel is THE check of an explicit (runtime, model) pair a new
+// session of a is asked to carry: the runtime is offered for a
+// (sessionRuntimesFor) and the model is one it takes
+// (agents.ValidateSessionRuntime). It returns the model as it will be stored;
+// the error is the operator-facing reason.
+//
+// 🔴 ONE PREDICATE FOR EVERY DOOR THAT TAKES A MODEL: New session and Continue
+// (createRuntimeSession) and the side chat route's "+" menu (sideChatModel), so
+// no door can start a session on a model another would refuse.
+func (s *Server) runtimeSessionModel(ctx context.Context, a agents.Agent, runtime, model string) (string, error) {
+	if !slices.Contains(s.sessionRuntimesFor(ctx, a), runtime) {
+		return "", errRuntimeNotOffered
+	}
+	return agents.ValidateSessionRuntime(runtime, model)
 }
 
 var errRuntimeNotOffered = errors.New("that runtime is not offered for this agent's sessions " +

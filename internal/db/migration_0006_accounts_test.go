@@ -121,7 +121,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - fleet_owner_marks (0147, the fleet digest's marks).
 //   - officer_seen (0156, when each person last looked at each officer's page).
 //   - officer_cap_raises (0157, an owner's raise of an officer's daily budget for one UTC day).
-//   - morning_reports (0158, one morning report per user per day).
+//   - fleet_actions (0158, the fleet's action log).
+//   - morning_reports (0160, one morning report per user per day).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -152,7 +153,7 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"fleet_owner_marks",
 	"officer_connector_blocks",
 	"officer_seen",
-	"officer_cap_raises",
+	"officer_cap_raises", "fleet_actions",
 	"morning_reports"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
@@ -229,6 +230,7 @@ var wantForeignKeys = []string{
 	"officer_cap_raises|officer_cap_raises_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"chief_session_llm_usage|chief_session_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"fleet_actions|fleet_actions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"fleet_owner_marks|fleet_owner_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"fleet_owner_marks|fleet_owner_marks_fleet_chat_id_fkey|FOREIGN KEY (fleet_chat_id) REFERENCES chat_sessions(id) ON DELETE SET NULL",
 	"morning_reports|morning_reports_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

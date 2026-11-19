@@ -301,18 +301,24 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/chief/fleet":         classList,
 	"GET /ui/chief/fleet/session": classList,
 	"POST /ui/chief/fleet/chat":   classList,
-	"GET /ui/connector-requests":  classList,
-	"GET /ui/connectors":          classList,
-	"GET /ui/connectors/new":      classList,
-	"GET /ui/notifications":       classList,
-	"GET /ui/tags":                classList,
-	"GET /ui/tasks":               classList,
-	"GET /ui/tasks/new":           classList,
-	"GET /ui/tasks/review-count":  classList,
-	"POST /chief/provision":       classList,
-	"POST /connectors":            classList,
-	"POST /tasks":                 classList,
-	"POST /tasks/merge":           classList, // the form names A's task as the loser
+	// Fleet proposals' cards (fleet_cards.go): each acts on the principal's
+	// own fleet_actions row by id (forced row-level security: another owner's
+	// id is not found), and the dialog route reads nothing.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": classParam,
+	"POST /ui/chief/fleet/bulk":                classList,
+	"GET /ui/chief/fleet/stepup":               classList,
+	"GET /ui/connector-requests":               classList,
+	"GET /ui/connectors":                       classList,
+	"GET /ui/connectors/new":                   classList,
+	"GET /ui/notifications":                    classList,
+	"GET /ui/tags":                             classList,
+	"GET /ui/tasks":                            classList,
+	"GET /ui/tasks/new":                        classList,
+	"GET /ui/tasks/review-count":               classList,
+	"POST /chief/provision":                    classList,
+	"POST /connectors":                         classList,
+	"POST /tasks":                              classList,
+	"POST /tasks/merge":                        classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,
@@ -490,10 +496,12 @@ var isolationClasses = map[string]routeClass{
 	// JSON API is a personal token only; the runner door is a runner token
 	// only. Each names A's job (or A's runner token) by id.
 	"GET /flows":                            classList,
-	"POST /flows/jobs":                      classList,
 	"POST /flows/runner-tokens":             classList,
 	"POST /flows/jobs/{id}/cancel":          classParam,
 	"POST /flows/runner-tokens/{id}/revoke": classParam,
+	// Running a task by hand from the page is an admin's (requireAdminRole,
+	// operator decision 2026-11-18); connecting one's own browser is not.
+	"POST /flows/jobs": classAdminOnly,
 	// An agent's request is decided by its owner only (PR 4).
 	"POST /flows/requests/{id}/approve": classParam,
 	"POST /flows/requests/{id}/deny":    classParam,
@@ -1383,7 +1391,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
 		page: ghostID, pageLink: ghostID, pageDel: ghostID, pageResp: ghostID,
 		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID, morningDate: "1999-01-01"}
-	// The morning report (0158): A's report of isoMorningDate names the canary
+	// The morning report (0160): A's report of isoMorningDate names the canary
 	// in a done line, so A's own page is told from the ghost day's by its body.
 	if _, err := morning.NewPG(pool).Insert(ua, morning.Row{Date: isoMorningDate, Since: time.Date(2001, 2, 2, 14, 0, 0, 0, time.UTC),
 		Until: time.Date(2001, 2, 3, 14, 0, 0, 0, time.UTC), Body: morning.Body{Done: []morning.Done{{Kind: morning.DoneTaskChanged, Label: w.canary + " morning"}}}}); err != nil {
@@ -1474,7 +1482,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
-	// The morning report (0158): A's report is a real object B must not reach.
+	// The morning report (0160): A's report is a real object B must not reach.
 	ext.MorningReport = &MorningReport{Store: morning.NewPG(pool), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}}
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
@@ -2177,6 +2185,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
+	// with fleet proposals off, so every id answers 404 for A and the ghost
+	// alike. That another owner's tap on A's proposal decides nothing and sends
+	// nothing (forced row-level security on fleet_actions) is
+	// TestAnotherOwnersProposalCannotBeDecided's.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": "fleet proposals off in the walk: controlled in TestAnotherOwnersProposalCannotBeDecided",
 	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
 	// session the host lists, which the walk names none of, so A's own call and
 	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the

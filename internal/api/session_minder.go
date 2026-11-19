@@ -88,6 +88,9 @@ func (s *Server) minderRuns(owner int64, officer string) bool {
 // chief's nudges would have judged (stalledSessions). Nothing when owner has
 // no minder.
 func (s *Server) feedSessionMinder(octx context.Context, owner int64, facts []nudgeCandidate) {
+	if s.stopJudgeOf(octx, owner) != judgeMinder {
+		return
+	}
 	minder := s.sessionMinderOf(octx, owner)
 	if minder == "" {
 		return

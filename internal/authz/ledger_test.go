@@ -188,7 +188,7 @@ var (
 		// global hourly cap and reads the live decisions still in flight; each
 		// decision is then acted on as its own owner (attentionPrincipal).
 		"internal/chiefnudge.sys",
-		// The morning report (migration 0158): which owners get one — enabled
+		// The morning report (migration 0160): which owners get one — enabled
 		// persons' ids only (morning.PG.Owners); each report is then built and
 		// stored as its own owner (attentionPrincipal).
 		"internal/morning.(*PG).Owners",
@@ -385,6 +385,11 @@ var (
 		// one owner's queue of every kind. A fixture command, never linked into
 		// a binary, and it refuses any database not ending in _e2e.
 		"e2e/asksfeedfix.run",
+		// The Pages screens' browser fixture (e2e/pagesfix): it writes and
+		// clears pages, versions, links and responses through the real store
+		// AS the named fixture user. A fixture command, never linked into a
+		// binary, and it refuses any database not ending in _e2e.
+		"e2e/pagesfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions

@@ -65,8 +65,15 @@ var musterToolLabels = map[string]string{
 	"page_link_revoke":   "Turned off a page link",
 
 	// Sessions and agents.
-	"fleet_list":          "Looked over your sessions",
-	"fleet_report":        "Reported on your sessions",
+	"fleet_list":   "Looked over your sessions",
+	"fleet_report": "Reported on your sessions",
+	// Fleet proposals (internal/api fleet_actions.go): each only files a
+	// card; nothing is sent until the owner taps it.
+	"session_instruct":    "Proposed a message to a session",
+	"session_wrap":        "Proposed wrapping up a session",
+	"session_answer":      "Proposed an answer to a session",
+	"work_reassign":       "Proposed moving a task",
+	"fleet_actions_list":  "Looked over its proposals",
 	"focus_search":        "Looked up what sessions are working on",
 	"sessions_overview":   "Checked what your sessions are doing",
 	"session_context":     "Looked at a session",

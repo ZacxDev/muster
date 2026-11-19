@@ -461,6 +461,15 @@ export const chiefFleetPort = port + 425;
 export const chiefFleetFakePort = port + 426;
 export const chiefFleetGitHubPort = port + 427;
 export const chiefFleetConnectPort = port + 428;
+// tests/chief-fleet-proposals.spec.ts: the fleet digest's proposal cards
+// (MUSTER_FLEET_ORCHESTRATION=propose) at a phone and a desktop width — its
+// own mirror rig, fake runtime, fake GitHub App and the App's connect listener
+// (+446 to +449: clear of the blocks above, and of features-member's +442 to
+// +444).
+export const chiefProposePort = port + 446;
+export const chiefProposeFakePort = port + 447;
+export const chiefProposeGitHubPort = port + 448;
+export const chiefProposeConnectPort = port + 449;
 // tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
 // in through its own real GoTrue (+410 to +412: clear of the blocks above).
 export const teamUxMainPort = port + 410;
@@ -485,9 +494,9 @@ export const featuresMemberMainPort = port + 442;
 export const featuresMemberBrowserPort = port + 443;
 export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_MEMBER_GOTRUE_PORT ?? port + 444);
 // tests/morning-report.spec.ts: the morning report's page on a phone — its own
-// server with MUSTER_MORNING_REPORT=1 (+446: clear of the blocks above and of
-// officerNeedsYouPort's +445).
-export const morningReportPort = port + 446;
+// server with MUSTER_MORNING_REPORT=1 (+453: clear of the blocks above,
+// officerNeedsYouPort's +445 and chiefPropose's +446 to +449).
+export const morningReportPort = port + 453;
 // tests/plugin-autostart.spec.ts: a plugin's auto-start on its /plugins card —
 // its own e2eterm server over the noop driver, its connect listener, and the
 // fake GitHub App it plays (+450 to +452: clear of the blocks above).
@@ -505,6 +514,11 @@ export const ocAskMediaMCPPort = port + 462;
 // deals with it — its own server with plugins on (+445: clear of the blocks
 // above, of sidebarOfficersPort's +440/+441 and of featuresMember's +442 to +444).
 export const officerNeedsYouPort = port + 445;
+// tests/pages-declutter.spec.ts: the Pages screens, plain — its own server
+// (pages on, a link key, so +456 its connect listener). +455: clear of the
+// blocks above.
+export const pagesDeclutterPort = port + 455;
+export const pagesDeclutterConnectPort = port + 456;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

@@ -58,8 +58,11 @@ type InfoSheet struct {
 	// are the setup ⓘs (HostSettingSheet, HostDetailSheet), for a viewer who
 	// is not an admin (Features.Setup).
 	Withheld bool
-	// Live: the code is filled in by a page script (a link the page's Share
-	// makes later), so its row and Copy are drawn even while Code is "".
+	// Live: the code is filled in by a page script, so its row and Copy are
+	// drawn even while Code is "". Its caller is the Manage servers row's
+	// address ⓘ (server_switcher.go), whose address servers.js reads from
+	// the browser's own list. (#839 removed the flag with its first caller,
+	// the Pages Share link; this one needs it.)
 	Live bool
 	// WithheldText is what a withheld sheet says instead of its code; ""
 	// is InfoSheetWithheldText.

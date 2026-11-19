@@ -64,6 +64,10 @@ var stepUpChannels = map[string]stepUpChannel{
 	"plugin_handoffs.go:handlePluginHandoffMint":          {how: "none"}, // records stepped_up on the hand-off; refuses nobody
 	"mirror.go:freshForMillis":                            {how: "none"}, // how long the sign-in stays fresh, for the page's dialog
 
+	// A fleet proposal's card (fleet_cards.go): the chief panel's script reads
+	// the 403 and asks the page's dialog, or loads it (FleetStepUpPath).
+	"fleet_cards.go:fleetCardGate": {how: "script", gap: "no browser test drives a stale approval to the dialog (the chief panel's script asks; the server's 403 is TestAnEditedTextRequiresAFreshSignIn)"},
+
 	// A plugin's chief instructions (0141): the owner approves one exact text.
 	"plugin_chief_instructions.go:handleChiefInstructionsApprove": {how: "form", proof: "TestThePluginsPageChiefInstructionsApproveConfirmsInPlace"},
 	"plugin_autostart.go:handlePluginAutostart":                   {how: "form", proof: "TestThePluginsPageAutostartTurnOnConfirmsInPlace"},

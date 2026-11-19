@@ -457,6 +457,11 @@ var bannerLedger = []string{
 	// every one of the owner's sessions and fleet_list reads their stops and
 	// pull requests (the GitHub App) — so the log must say which state this is.
 	envFleetDigest,
+	// FLEET PROPOSALS ARE LEDGERED: ON, the chief proposes texts into the
+	// owner's sessions (sent on the owner's tap) and the fleet judges the
+	// owner's stops in place of the chief's nudges — so the log must say which
+	// state this is.
+	envFleetOrchestration,
 	// THE MORNING REPORT IS LEDGERED: ON, every person gets a push each
 	// morning built from their sessions, tasks and questions — so the log must
 	// say which state this is, and at what time.
@@ -963,6 +968,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SessionState: true,
 		// The fleet digest: the banner branches on ext.FleetDigest (below).
 		FleetDigest: true,
+		// Fleet proposals: the banner branches on ext.FleetPropose (below).
+		FleetPropose: true,
 		// The morning report: the banner branches on ext.MorningReport (below).
 		MorningReport: true,
 		// The dial guard: the banner branches on ext.DialGuard (below).
@@ -1027,6 +1034,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
 		FleetDigest:     true,
+		FleetPropose:    true,
 		MorningReport:   &api.MorningReport{Store: morning.NewPG(nil), Schedule: morning.Schedule{Hour: 8, Loc: time.UTC}},
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
 		Pages:           pages.NewPG(nil),

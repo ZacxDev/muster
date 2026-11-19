@@ -65,15 +65,15 @@ func (o *morningPush) to(owner int64) []push.Payload {
 	return out
 }
 
-// observedMirror is the fleet fixture's mirror with each idle window's status
+// morningObservedMirror is the fleet fixture's mirror with each idle window's status
 // observed at a fixed instant, as a host that reports status stamps it (the
 // stall facts read an idle streak from it).
-type observedMirror struct {
+type morningObservedMirror struct {
 	*digestMirror
 	at time.Time
 }
 
-func (m observedMirror) AgentState(ctx context.Context, host, session, window string) mirror.AgentState {
+func (m morningObservedMirror) AgentState(ctx context.Context, host, session, window string) mirror.AgentState {
 	st := m.digestMirror.AgentState(ctx, host, session, window)
 	if st.Status == "idle" {
 		st.Observed = m.at
@@ -247,7 +247,7 @@ func TestAQuietDaySendsNothing(t *testing.T) {
 	// A session idle since BEFORE the night: listed as stuck, but it did not
 	// happen overnight, so it does not make the day loud.
 	f.window(quiet, "idle")
-	f.srv.ext.Mirror = observedMirror{digestMirror: f.mirror, at: f.day.Since.Add(-time.Hour)}
+	f.srv.ext.Mirror = morningObservedMirror{digestMirror: f.mirror, at: f.day.Since.Add(-time.Hour)}
 	pushed, row := f.report(t, ctx, quiet)
 	if pushed || !row.Quiet || len(f.push.to(quiet)) != 0 {
 		t.Fatalf("a quiet day: pushed %v, quiet %v, %d pushes; want no push and quiet", pushed, row.Quiet, len(f.push.to(quiet)))
@@ -380,7 +380,7 @@ func (f *morningFixture) seedEverySection(t *testing.T) (time.Time, notes.Note) 
 	ws := f.mirror.own[f.owner]
 	ws[len(ws)-1].Label = "Gold:2"
 	f.mirror.mu.Unlock()
-	f.srv.ext.Mirror = observedMirror{digestMirror: f.mirror, at: in}
+	f.srv.ext.Mirror = morningObservedMirror{digestMirror: f.mirror, at: in}
 	// The chief's turns: two in the window (90 s and 30 s), one before it.
 	for _, r := range []struct {
 		at time.Time

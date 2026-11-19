@@ -66,6 +66,10 @@ type Features struct {
 	// internal/api fleet_digest.go). It draws the digest card's slot in the
 	// chief panel; false draws none, since its route would only answer 404.
 	FleetDigest bool
+	// FleetPropose is true when fleet proposals are on
+	// (MUSTER_FLEET_ORCHESTRATION=propose, internal/api fleet_actions.go): the
+	// digest card's skeleton draws the Proposed group.
+	FleetPropose bool
 	// Brand is the instance's logo and name (brand.go): the header's and the
 	// sidebar's brand, and the shell's favicon. The zero value draws the
 	// wordmark and muster's own icons.

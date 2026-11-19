@@ -264,6 +264,10 @@ services:
       # fleet_list's fleet fields (docs/chief.md#fleet-digest). Off by
       # default; its states come from session state, above.
       MUSTER_FLEET_DIGEST: ${MUSTER_FLEET_DIGEST:-}
+      # Fleet proposals: off or propose. The chief proposes what to send your
+      # sessions as cards in the digest; nothing is sent until you tap
+      # Approve (docs/chief.md#fleet-proposals). Needs the digest, above.
+      MUSTER_FLEET_ORCHESTRATION: ${MUSTER_FLEET_ORCHESTRATION:-}
 
       # The morning report: one notification a morning, on days something
       # happened, opening a read-only page (docs/features.md#morning-report).

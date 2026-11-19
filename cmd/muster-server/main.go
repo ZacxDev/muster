@@ -483,6 +483,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// The fleet reader's pull-request states (internal/api fleet_read.go):
 			// the App's own server-side read, behind the reader's two-minute cache.
 			ext.FleetPRStates = gapp
+			// The fleet's CI read (ci_result): the App's own
+			// checks + statuses read, a token of its own (githubapp
+			// CommitChecks).
+			ext.FleetChecks = gapp
 			if ext.Connectors != nil {
 				// Admins, and the listed teams' own agents: the App is the
 				// deployment's (connectors.WithVirtual). ONE predicate,
@@ -643,7 +647,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
 		// fleet_list's fleet fields. Off by default; it needs a database.
 		ext.FleetDigest = cfg.FleetDigest
-		// The morning report (MUSTER_MORNING_REPORT=1, migration 0158): one
+		// Fleet proposals (MUSTER_FLEET_ORCHESTRATION=propose; migration
+		// 0158): the chief's fleet write tools, the digest's cards and the
+		// fleet's action log. Off by default; it needs the digest (config).
+		ext.FleetPropose = cfg.FleetPropose
+		ext.FleetActions = fleet.NewPG(a.pool)
+		// The morning report (MUSTER_MORNING_REPORT=1, migration 0160): one
 		// report per owner per day and its push. Off by default; it needs a
 		// database.
 		if cfg.MorningReport {
@@ -2192,6 +2201,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("fleet digest: INERT — %s=1 but there is no database", envFleetDigest)
 	default:
 		l.Printf("fleet digest: OFF — %s is unset", envFleetDigest)
+	}
+	switch {
+	case ext.FleetPropose && ext.Episodes != nil:
+		l.Printf("fleet proposals: ON (%s=propose) — the chief's session_instruct, session_answer, session_wrap, work_reassign and fleet_actions_list "+
+			"tools, and \"Write handoff, then close\" for each finished session (the session-state pass), become cards in the fleet "+
+			"digest; NOTHING is sent until the owner taps Approve; the chief keeps judging stops (its nudges and the per-stop pushes are "+
+			"unchanged)", envFleetOrchestration)
+	case a.cfg.FleetPropose:
+		l.Printf("fleet proposals: INERT — %s=propose but there is no database", envFleetOrchestration)
+	default:
+		l.Printf("fleet proposals: OFF — %s is not propose", envFleetOrchestration)
 	}
 	switch {
 	case ext.MorningReport != nil:

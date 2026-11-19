@@ -198,6 +198,7 @@ GET /ui/agents/{name}/chat-log
 GET /ui/agents/{name}/task
 GET /ui/chief/fleet
 GET /ui/chief/fleet/session
+GET /ui/chief/fleet/stepup
 GET /ui/chief/panel
 GET /ui/chief/threads/search
 GET /ui/connector-requests
@@ -437,6 +438,8 @@ POST /teams/{id}/plugins
 POST /teams/{id}/plugins/{plugin}/revoke
 POST /telemetry/faro
 POST /transcribe
+POST /ui/chief/fleet/actions/{id}/{verb}
+POST /ui/chief/fleet/bulk
 POST /ui/chief/fleet/chat
 POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny

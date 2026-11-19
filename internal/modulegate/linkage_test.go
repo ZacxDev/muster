@@ -139,6 +139,9 @@ var notLinkedLedger = map[string]string{
 		"pending drafts, outreach batch, refusal, finished items and a sent post, written as the login role with " +
 		"row-level security's scope set to all, so it must never be reachable from a shipped binary; it refuses " +
 		"any database not ending in _e2e.",
+	"e2e/pagesfix": "the Pages screens' browser fixture (`go run ./e2e/pagesfix`): it writes and clears " +
+		"an owner's pages, versions, links and responses for any user id it is given, so it must never be " +
+		"reachable from a shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/pluginfix": "the plugins browser spec's fixture (`go run ./e2e/pluginfix`): a chief agent, a " +
 		"delivered message and a lapsed lease, written as the login role with row-level security's " +
 		"scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
