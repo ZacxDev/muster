@@ -217,7 +217,7 @@ func attentionReturnPage(r *http.Request) (string, bool) {
 	if v == "" || safeReturnTo(v) != v {
 		return "", false
 	}
-	return v, strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/view?") || askPageReturn.MatchString(v)
+	return v, strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/view?") || askPageReturn.MatchString(v) || officerPageReturn.MatchString(v)
 }
 
 // askPageReturn is an ask page's own address (attention_ask_page.go), the

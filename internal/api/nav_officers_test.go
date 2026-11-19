@@ -62,11 +62,20 @@ func TestTheSidebarsOfficerFieldIsTheServersBindingRule(t *testing.T) {
 // navCountingReads is navOfficerReads that counts its calls, answering fixed
 // maps or failing.
 type navCountingReads struct {
-	counts, spends     int
-	countErr, spendErr error
-	queued             map[builtin.OfficerRef]int
-	spent              map[builtin.OfficerRef]float64
-	countOwners        [][]int64
+	counts, spends, unreads       int
+	countErr, spendErr, unreadErr error
+	queued                        map[builtin.OfficerRef]int
+	spent                         map[builtin.OfficerRef]float64
+	unread                        map[builtin.OfficerRef]int
+	countOwners                   [][]int64
+}
+
+func (c *navCountingReads) UnreadCounts(context.Context, []int64, time.Time) (map[builtin.OfficerRef]int, error) {
+	c.unreads++
+	if c.unreadErr != nil {
+		return nil, c.unreadErr
+	}
+	return c.unread, nil
 }
 
 func (c *navCountingReads) ItemCounts(_ context.Context, owners []int64, _ []string) (map[builtin.OfficerRef]int, error) {
@@ -132,7 +141,7 @@ func navViewer(t *testing.T) context.Context {
 }
 
 // TestTheOfficerRosterReadsInBatches: however many officers, ONE queued-count
-// read and ONE spend read (no per-officer query) — measured at 2 and at 9
+// read, ONE spend read and ONE "new" read (no per-officer query) — measured at 2 and at 9
 // officers; the roster is every officer the viewer can see (their own, their
 // team's, the declared one that does not run) and nobody else's.
 func TestTheOfficerRosterReadsInBatches(t *testing.T) {
@@ -140,8 +149,8 @@ func TestTheOfficerRosterReadsInBatches(t *testing.T) {
 		s := navRosterServer(t, n)
 		reads := &navCountingReads{}
 		got := s.navOfficerRoster(navViewer(t), reads)
-		if reads.counts != 1 || reads.spends != 1 {
-			t.Errorf("%d officers: %d queued-count reads and %d spend reads, want 1 and 1", n, reads.counts, reads.spends)
+		if reads.counts != 1 || reads.spends != 1 || reads.unreads != 1 {
+			t.Errorf("%d officers: %d queued-count reads, %d spend reads and %d new-count reads, want 1, 1 and 1", n, reads.counts, reads.spends, reads.unreads)
 		}
 		if want := n + 2; len(got) != want {
 			t.Errorf("%d officers: roster of %d, want %d (own, the team's, the declared one)", n, len(got), want)
@@ -164,6 +173,7 @@ func TestTheRosterComposesQueueSpendAndHoldFromTheReads(t *testing.T) {
 	s := navRosterServer(t, 3) // scout:areaa ($7.50), scout:areab (none), scout:areac ($9.50)
 	reads := &navCountingReads{
 		queued: map[builtin.OfficerRef]int{{Owner: 1, Officer: "scout:areaa"}: 4, {Owner: navTeam, Officer: "ops:watch"}: 6},
+		unread: map[builtin.OfficerRef]int{{Owner: 1, Officer: "scout:areaa"}: 3, {Owner: navTeam, Officer: "ops:watch"}: 7},
 		spent: map[builtin.OfficerRef]float64{
 			{Owner: 1, Officer: "scout:areaa"}:     6.25,
 			{Owner: 1, Officer: "scout:areac"}:     9.5, // exactly at its budget: held
@@ -175,18 +185,18 @@ func TestTheRosterComposesQueueSpendAndHoldFromTheReads(t *testing.T) {
 		got[o.ID] = o
 	}
 	a := got["scout:areaa"]
-	if a.Queued == nil || *a.Queued != 4 || a.Spent == nil || *a.Spent != 6.25 || a.Budget != 7.5 || a.Held {
+	if a.Queued == nil || *a.Queued != 4 || a.Spent == nil || *a.Spent != 6.25 || a.Budget != 7.5 || a.Held || a.Unread != 3 {
 		t.Errorf("scout:areaa = %+v", a)
 	}
 	b := got["scout:areab"]
-	if b.Queued == nil || *b.Queued != 0 || b.Spent != nil || b.Budget != 0 || b.Held {
+	if b.Queued == nil || *b.Queued != 0 || b.Spent != nil || b.Budget != 0 || b.Held || b.Unread != 0 {
 		t.Errorf("scout:areab (no budget, nothing queued) = %+v", b)
 	}
 	if c := got["scout:areac"]; c.Spent == nil || !c.Held {
 		t.Errorf("scout:areac at its budget is not held: %+v", c)
 	}
 	w := got["ops:watch"]
-	if w.TeamOwner != navTeam || w.Team == "" || w.Href != "/officers/ops:watch?owner=900" || !w.Held || w.Queued == nil || *w.Queued != 6 {
+	if w.TeamOwner != navTeam || w.Team == "" || w.Href != "/officers/ops:watch?owner=900" || !w.Held || w.Queued == nil || *w.Queued != 6 || w.Unread != 7 {
 		t.Errorf("ops:watch = %+v", w)
 	}
 	d := got["draft:desk"]
@@ -200,13 +210,14 @@ func TestTheRosterComposesQueueSpendAndHoldFromTheReads(t *testing.T) {
 // figure — and the roster is still drawn.
 func TestAFailedReadDrawsNoFigure(t *testing.T) {
 	s := navRosterServer(t, 3)
-	reads := &navCountingReads{countErr: errors.New("fixture: count refused"), spendErr: errors.New("fixture: spend refused")}
+	reads := &navCountingReads{countErr: errors.New("fixture: count refused"), spendErr: errors.New("fixture: spend refused"),
+		unreadErr: errors.New("fixture: new counts refused")}
 	got := s.navOfficerRoster(navViewer(t), reads)
 	if len(got) == 0 {
 		t.Fatal("no roster on a failed read")
 	}
 	for _, o := range got {
-		if o.Spent != nil || o.Held || o.Queued != nil {
+		if o.Spent != nil || o.Held || o.Queued != nil || o.Unread != 0 {
 			t.Errorf("%s drawn with a figure after a failed read: %+v", o.ID, o)
 		}
 	}
