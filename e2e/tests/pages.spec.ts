@@ -434,6 +434,14 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
   await share.click();
   await expect(page.locator('[data-page-toast]').first()).toBeVisible();
   await expect.poll(links).toBe(1);
+  // That one-off link is not the page's reusable link, and Revoke link / New
+  // link act on that one only: the row's ⋯ still offers neither after the
+  // Share (red at 776f0ca57, whose script showed both).
+  await page.locator(`li[data-page-id="${pageID}"] [data-more-menu-open]`).click();
+  const menu = page.locator(`#page-menu-${pageID}`);
+  await expect(menu.getByRole('link', { name: 'Details' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Revoke link' })).toHaveCount(0);
+  await expect(menu.getByRole('button', { name: 'New link' })).toHaveCount(0);
 });
 
 // --- THE OWNER'S OWN VIEW, THE SLIM HEADER AND THE VERSION CHIP --------------

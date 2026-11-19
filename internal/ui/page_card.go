@@ -268,9 +268,10 @@ func pageShareForm(id int64, t, shareURL string, reusable bool, class string) g.
 const pageMenuItem = "press flex min-h-[44px] w-full items-center gap-1.5 rounded-md px-3 text-left text-sm text-fg hover:bg-s2"
 
 // pageLinkActions are the ⋯ menu's link items: Revoke link and New link (the
-// old one stops working), each a form pageShareJS posts. They are drawn
+// old one stops working), each a form pageShareJS posts — for a server WITH a
+// link key only (their callers draw none without one). They are drawn
 // hidden while the page has no live link (live false) and pageShareJS shows
-// them once a Share makes one, and hides them again on Revoke — so a menu
+// them once a Share makes the reusable link, and hides them again on Revoke — so a menu
 // drawn before the first Share offers them after it, with no redraw. (A plain
 // wrapper carries hidden: a display utility on it would win over the
 // attribute.)
@@ -288,10 +289,12 @@ func pageLinkActions(id int64, live bool) g.Node {
 // PageShareMenu is a page card's ⋯ (MoreMenu, menuID its element id): Revoke
 // link and New link (the old one stops working) only while the page has a
 // live link (live) — there is nothing to revoke or replace before — and the
-// page's own screen.
-func PageShareMenu(id int64, title string, live bool, menuID string) g.Node {
+// page's own screen. On a server with no link key (reusable false) they are
+// not drawn at all: both act on the page's reusable link, which it never has
+// (a one-off link is revoked on the page's screen).
+func PageShareMenu(id int64, title string, live, reusable bool, menuID string) g.Node {
 	return MoreMenu(menuID, "More for “"+pageCardTitle(title)+"”",
-		pageLinkActions(id, live),
+		g.If(reusable, pageLinkActions(id, live)),
 		A(Href(PageDetailPath(id)), hx("hx-boost", "false"), Class(pageMenuItem), g.Text("Page settings")))
 }
 
@@ -346,7 +349,7 @@ func PageCard(v PageCardView, id string) g.Node {
 			A(Href(PageViewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
 			PageShareButton(v.ID, v.Title, "", v.Reusable),
-			PageShareMenu(v.ID, v.Title, v.Live, pageCardMenuID(v, id))),
+			PageShareMenu(v.ID, v.Title, v.Live, v.Reusable, pageCardMenuID(v, id))),
 	)
 }
 
@@ -455,7 +458,9 @@ const pageShareJS = `
       if (!btn._ensure) {
         btn._ensure = postJSON(btn.closest('form').action).then(function (j) {
           if (j.reusable) setShareURL(btn.getAttribute('data-page-id'), j.url);
-          else { btn.setAttribute('data-share-url', j.url); setLive(btn.getAttribute('data-page-id'), true); }
+          // A one-off link (no link key): Revoke link and New link act on
+          // the page's reusable link only, so they stay away.
+          else btn.setAttribute('data-share-url', j.url);
           // The page has a live link now: its card no longer says private.
           document.querySelectorAll('[data-page-card][data-page-id="' + btn.getAttribute('data-page-id') + '"] [data-note-live]').forEach(function (n) {
             n.textContent = n.getAttribute('data-note-live');

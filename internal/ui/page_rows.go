@@ -99,7 +99,9 @@ func pageRowMenu(v PageRowView) g.Node {
 	return MoreMenu("page-menu-"+strconv.FormatInt(v.ID, 10), "More for “"+pageCardTitle(v.Title)+"”",
 		PageShareMenuItem(v.ID, v.Title, v.ShareURL, v.Reusable),
 		A(Href(PageDetailPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-details", ""), Class(pageMenuItem), g.Text("Details")),
-		pageLinkActions(v.ID, v.ShareURL != ""))
+		// Revoke link / New link act on the reusable link: none without a
+		// link key (PageShareMenu's rule).
+		g.If(v.Reusable, pageLinkActions(v.ID, v.ShareURL != "")))
 }
 
 // PageLinkMenu is the page screen's ⋯ beside Share: Revoke link and New link.
