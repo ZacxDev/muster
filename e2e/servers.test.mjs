@@ -265,6 +265,23 @@ test('a monogram: the letters and the colour of the one table Go is held to as w
   assert.equal(core.monogram(null), '?');
 });
 
+test('a monogram, code point by code point: the generated table Go is held to as well', () => {
+  const table = JSON.parse(fs.readFileSync(path.join(here, '..', 'internal', 'ui', 'testdata', 'server-monogram-letters.json'), 'utf8'));
+  assert.equal(table.letters.length, 0x500);
+  let changed = 0;
+  const bad = [];
+  table.letters.forEach((want, cp) => {
+    const got = core.monogram(String.fromCodePoint(cp));
+    if (got !== want) bad.push(`U+${cp.toString(16)}: ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
+    if (want !== '?' && want !== String.fromCodePoint(cp)) changed++;
+  });
+  deq(bad.slice(0, 20), []);
+  assert.ok(changed >= 200, 'the table does upper-case');
+  // Past those blocks, letters this engine knows and Go's tables do not, and
+  // an iota-subscript letter, are kept as they are (Go keeps them too).
+  for (const s of ['ᲊ', 'ᾳ', '\u{10d70}']) assert.equal(core.monogram(s), s);
+});
+
 test('names that collide (case aside) are the ones the list tells apart by address', () => {
   deq(core.collisions(['Work', 'Home', 'work', 'Lab']), { work: true });
   deq(core.collisions(['Work', 'Home', 'Lab']), {});

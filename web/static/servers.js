@@ -99,20 +99,37 @@
     return h >>> 0;
   }
 
-  // monogram is a server's picture when it has no logo: the first letter or
-  // digit of each of the first two words of its name (a word is a run of
-  // letters and digits), each upper-cased on its own (kept as it was when its
-  // upper case is more than one character, as Go's unicode.ToUpper does). No
-  // letter or digit at all: '?'. The same rule as ui server_switcher.go
-  // serverMonogram, which draws the row before this script runs; both are
-  // held to one table of literal cases.
+  // MONOGRAM_SEP is what splits a name into words: C0 and C1 controls, ASCII
+  // space, punctuation and symbols, Latin-1's no-break space, punctuation and
+  // symbols, × and ÷, the Ogham space mark, General Punctuation
+  // (U+2000–U+206F), the ideographic space and the BOM. Fixed ranges — no
+  // Unicode property — the same as ui server_switcher.go monogramSeparator.
+  var MONOGRAM_SEP = /[\u0000-/:-@[-`{-¿×÷  -⁯　﻿]+/u;
+
+  // monogram is a server's picture when it has no logo: the first code point
+  // of each of the first two words of its name. No word at all: '?'. The
+  // first code point is upper-cased only inside the Latin (U+0000–U+024F),
+  // Greek (U+0370–U+03FF) and Cyrillic (U+0400–U+04FF) blocks, and only where
+  // its uppercase is ONE code point in those blocks too (Unicode adds a case
+  // pair by encoding a new capital elsewhere: ƛ gained Ꟍ U+A7DC in Unicode 16,
+  // which Go's tables lack); anything else is kept as it is.
+  //
+  // The same rule as ui server_switcher.go serverMonogram, which draws the
+  // row before this script runs, and chosen so the two cannot disagree: this
+  // engine's Unicode tables are newer than Go's (a letter added since is a
+  // letter here and not there), and toUpperCase is the FULL case mapping
+  // where Go's ToUpper is the simple one (ᾳ is "ΑΙ" here, titlecase ᾼ there).
+  // So no Unicode property decides a word, and case changes only in blocks
+  // whose mappings agree. Both are held to the same literal tables.
   function monogram(name) {
-    var words = String(name == null ? '' : name).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    var words = String(name == null ? '' : name).split(MONOGRAM_SEP).filter(Boolean);
     if (!words.length) return '?';
     return words.slice(0, 2).map(function (w) {
       var c = Array.from(w)[0];
+      var inBlocks = function (x) { var p = x.codePointAt(0); return p <= 0x24f || (p >= 0x370 && p <= 0x4ff); };
+      if (!inBlocks(c)) return c;
       var u = c.toUpperCase();
-      return Array.from(u).length === 1 ? u : c;
+      return Array.from(u).length === 1 && inBlocks(u) ? u : c;
     }).join('');
   }
 

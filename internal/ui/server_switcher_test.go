@@ -317,3 +317,66 @@ func TestTheMonogramPaletteIsTheScripts(t *testing.T) {
 		t.Errorf("servers.js does not name the row as ServerSwitcherLabel does (%q)", ServerSwitcherLabel(""))
 	}
 }
+
+// TestTheMonogramLetters holds serverMonogram, code point by code point, to
+// the table of every one-code-point name from U+0000 to U+04FF that was
+// generated apart from it (Python's full case mapping) and that servers.js is
+// held to as well: the blocks where case changes, and every separator there.
+// Plus the two shapes the rule exists for, past those blocks: a letter newer
+// than Go's tables, and an iota-subscript letter, each kept as it is.
+func TestTheMonogramLetters(t *testing.T) {
+	raw, err := os.ReadFile("testdata/server-monogram-letters.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct{ Letters []string }
+	if err := json.Unmarshal(raw, &table); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Letters) != 0x500 {
+		t.Fatalf("%d entries, want 0x500", len(table.Letters))
+	}
+	changed, bad := 0, 0
+	for cp, want := range table.Letters {
+		if got := serverMonogram(string(rune(cp))); got != want {
+			if bad++; bad <= 20 {
+				t.Errorf("serverMonogram(U+%04X) = %q, want %q", cp, got, want)
+			}
+		}
+		if want != "?" && want != string(rune(cp)) {
+			changed++
+		}
+	}
+	// Positive control: the table does upper-case (a-z alone is 26).
+	if changed < 200 {
+		t.Errorf("only %d code points change case in the table", changed)
+	}
+	for _, c := range []struct{ name, want string }{{"ᲊ", "ᲊ"}, {"ᾳ", "ᾳ"}, {"\U00010d70", "\U00010d70"}} {
+		if got := serverMonogram(c.name); got != c.want {
+			t.Errorf("serverMonogram(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTheOfferClaimsNoOrigin: the hand-off offer says a LINK asked, never "you
+// came from", and starts its focus on Not now.
+func TestTheOfferClaimsNoOrigin(t *testing.T) {
+	page := renderString(t, serverSwitcherDialogs())
+	i := strings.Index(page, `id="server-offer"`)
+	if i < 0 {
+		t.Fatal("no offer dialog")
+	}
+	offer := page[i:]
+	offer = offer[:strings.Index(offer, "</dialog>")]
+	for _, banned := range []string{"came from", "switched here from", "switch back"} {
+		if strings.Contains(strings.ToLower(offer), banned) {
+			t.Errorf("the offer claims where you came from (%q)", banned)
+		}
+	}
+	if !strings.Contains(offer, "A link asked") || !strings.Contains(offer, "data-server-origin-text") {
+		t.Errorf("the offer lacks the neutral copy or the origin slot: %s", offer)
+	}
+	if !strings.Contains(offer, `id="server-offer-dismiss"`) || !strings.Contains(offer[strings.Index(offer, `id="server-offer-dismiss"`):], "autofocus") {
+		t.Errorf("Not now does not take the focus: %s", offer)
+	}
+}

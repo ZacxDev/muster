@@ -74,22 +74,68 @@ func serverDotBadge() g.Node {
 // script's.
 var serverMonogramClasses = [...]string{"bg-server-0", "bg-server-1", "bg-server-2", "bg-server-3", "bg-server-4", "bg-server-5", "bg-server-6", "bg-server-7"}
 
-// serverMonogram is a server's picture when it has no logo: the first letter
-// or digit of each of the first two words of its name (a word is a run of
-// letters and digits), each upper-cased on its own. A name with no letter or
-// digit at all is "?". servers.js monogram is the same rule; the two are held
-// to one table of literal cases (TestTheMonogram, e2e/servers.test.mjs).
+// serverMonogram is a server's picture when it has no logo: the first code
+// point of each of the first two words of its name, a word being a run of
+// code points that are not separators (monogramSeparator). A name with no
+// word is "?". The first code point is upper-cased only inside the Latin
+// (U+0000–U+024F), Greek (U+0370–U+03FF) and Cyrillic (U+0400–U+04FF)
+// blocks, and only where its uppercase is one code point in those blocks too
+// (monogramUpper); anything else is kept as it is.
+//
+// 🔴 THE RULE IS CHOSEN SO GO AND THE SCRIPT CANNOT DISAGREE. servers.js
+// monogram redraws what this drew, and the two languages' Unicode tables
+// differ: Go's are 15.0, a browser's are newer, so a letter added since is a
+// letter to the script and a separator to unicode.IsLetter; and Go's ToUpper
+// is the SIMPLE mapping (ᾳ → titlecase ᾼ) where JavaScript's is the FULL one
+// (ᾳ → "ΑΙ"). So nothing here asks a Unicode table what a letter is: the
+// separators are fixed ranges, and case changes only in blocks whose
+// mappings are decades old and agree. Both are held to the same literal
+// table (TestTheMonogram, e2e/servers.test.mjs) and to a code point by code
+// point table of every first letter in those blocks (TestTheMonogramLetters).
 func serverMonogram(name string) string {
-	words := strings.FieldsFunc(name, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+	words := strings.FieldsFunc(name, monogramSeparator)
 	if len(words) == 0 {
 		return "?"
 	}
 	var sb strings.Builder
 	for _, w := range words[:min(2, len(words))] {
 		r, _ := utf8.DecodeRuneInString(w)
-		sb.WriteRune(unicode.ToUpper(r))
+		sb.WriteRune(monogramUpper(r))
 	}
 	return sb.String()
+}
+
+// monogramSeparator reports whether r splits a name into words: C0 and C1
+// controls, ASCII space, punctuation and symbols, Latin-1's no-break space,
+// punctuation and symbols (U+00A0–U+00BF, ×, ÷), the Ogham space mark, the
+// General Punctuation block (U+2000–U+206F: its spaces, dashes, separators),
+// the ideographic space and the BOM. Fixed ranges, the same in servers.js
+// (MONOGRAM_SEP).
+func monogramSeparator(r rune) bool {
+	return r <= 0x2f || (r >= 0x3a && r <= 0x40) || (r >= 0x5b && r <= 0x60) || (r >= 0x7b && r <= 0xbf) ||
+		r == 0xd7 || r == 0xf7 || r == 0x1680 || (r >= 0x2000 && r <= 0x206f) || r == 0x3000 || r == 0xfeff
+}
+
+// monogramCaseBlock reports whether r is in the blocks where a monogram
+// changes case: Latin (U+0000–U+024F), Greek (U+0370–U+03FF), Cyrillic
+// (U+0400–U+04FF).
+func monogramCaseBlock(r rune) bool { return r <= 0x24f || (r >= 0x370 && r <= 0x4ff) }
+
+// monogramUpper is r upper-cased when both r and its uppercase are in those
+// blocks, else r. Both ends, because Unicode adds a case pair by encoding a
+// NEW capital elsewhere: ƛ (U+019B) gained Ꟍ (U+A7DC) in Unicode 16, which a
+// browser maps and Go's 15.0 tables do not; the blocks themselves are full,
+// so no new pair can land inside them. Go's simple mapping has no entry for
+// the letters there whose full uppercase is several code points (ß, ŉ, ǰ, ΐ,
+// ΰ), so they stay as they are — as servers.js keeps them.
+func monogramUpper(r rune) rune {
+	if !monogramCaseBlock(r) {
+		return r
+	}
+	if u := unicode.ToUpper(r); monogramCaseBlock(u) {
+		return u
+	}
+	return r
 }
 
 // serverMonogramColour is the monogram's background, as the index of its
@@ -130,8 +176,13 @@ func serverPicture(b Brand, name string) g.Node {
 	var pic g.Node
 	switch {
 	case b.HasLogo():
+		// It SHRINKS (min-w-0 shrink, here and on the avatar): a wide logo
+		// on a phone gives up width, letterboxed to its left, so the chevron
+		// beside it stays inside the button and its hover and focus ring.
+		// At 8rem and shrink-0, a 6:1 logo at 375 px pushed the chevron out
+		// (e2e/tests/branding.spec.ts, "a wide logo at 375 px").
 		pic = Img(g.Attr("data-brand-logo", ""), g.Attr("data-server-picture", ""), Src(b.Versioned(BrandLogoPath)), Alt(""),
-			Class("h-7 w-auto max-w-[8rem] shrink-0 object-contain"))
+			Class("h-7 w-auto min-w-0 max-w-[8rem] shrink object-contain object-left"))
 	case b.drawsLockup():
 		// width/height are the file's own 16 × 16 viewBox (the brand
 		// ledger's declared size, internal/api brand_assets_test.go); the
@@ -139,7 +190,7 @@ func serverPicture(b Brand, name string) g.Node {
 		pic = Img(g.Attr("data-server-mark", ""), g.Attr("data-server-picture", ""), Src(serverMark()), Alt(""),
 			Width("16"), Height("16"), Class("h-7 w-7 shrink-0 rounded-md"))
 	}
-	return Span(g.Attr("data-server-avatar", ""), Class("inline-flex shrink-0 items-center"), pic, mono)
+	return Span(g.Attr("data-server-avatar", ""), Class("inline-flex min-w-0 shrink items-center"), pic, mono)
 }
 
 // serverSwitcherName is the name the row is drawn with before servers.js

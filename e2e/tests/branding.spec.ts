@@ -313,6 +313,48 @@ test.describe('the admin', () => {
     expect(after.icons.map((i: { src: string }) => i.src)).toContain('/static/icons/maskable-512.png');
     expect(await (await page.request.get(origin + '/api/instance')).json()).toEqual({ name: null, logo: null });
   });
+
+  // A WIDE logo (6:1) on a 375 px phone: the logo shrinks inside the server
+  // switcher's button, so the chevron is drawn inside the button's box (its
+  // hover and focus ring) and the button inside the row. 🔴 REGRESSION TEST:
+  // before, the logo kept its 8rem and pushed the chevron out of the button.
+  test('a wide logo at 375 px: the switcher button holds its chevron', async ({ page }) => {
+    await signIn(page, origin);
+    await page.goto(origin + '/account');
+    await page.fill('#branding-name', 'Team Example');
+    await page.setInputFiles('#branding-logo', { name: 'logo.png', mimeType: 'image/png', buffer: makePNG(600, 100) });
+    await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    try {
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.goto(origin + '/tasks');
+      await page.locator('#sidebar-open').click();
+      await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+      const toggle = page.locator('#server-switcher-toggle');
+      await expect(toggle.locator('[data-brand-logo]')).toBeVisible();
+      expect(await loaded(page, '#server-switcher-toggle [data-brand-logo]')).toBe(true);
+      await page.waitForTimeout(400); // the slide-out's transition
+      const btn = (await toggle.boundingBox())!;
+      const chev = (await toggle.locator('svg').boundingBox())!;
+      const logo = (await toggle.locator('[data-brand-logo]').boundingBox())!;
+      const row = (await page.locator('#server-switcher > div').first().boundingBox())!;
+      const inside = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
+        a.x >= b.x - 0.5 && a.y >= b.y - 0.5 && a.x + a.width <= b.x + b.width + 0.5 && a.y + a.height <= b.y + b.height + 0.5;
+      expect(inside(chev, btn), `chevron ${JSON.stringify(chev)} inside button ${JSON.stringify(btn)}`).toBe(true);
+      expect(inside(logo, btn), `logo ${JSON.stringify(logo)} inside button ${JSON.stringify(btn)}`).toBe(true);
+      expect(inside(btn, row), `button ${JSON.stringify(btn)} inside row ${JSON.stringify(row)}`).toBe(true);
+      // Search and close stay on screen, beside it.
+      for (const sel of ['#sidebar-search', '#sidebar-close']) {
+        const b = (await page.locator(sel).boundingBox())!;
+        expect(b.x, sel).toBeGreaterThanOrEqual(btn.x + btn.width);
+        expect(inside(b, row), sel).toBe(true);
+      }
+    } finally {
+      await page.goto(origin + '/account');
+      await Promise.all([page.waitForURL(origin + '/account?branding=reset#branding'), page.click('#branding-reset')]);
+      await page.fill('#branding-name', '');
+      await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    }
+  });
 });
 
 // A member against the real GoTrue: its own compose project and ports, so it

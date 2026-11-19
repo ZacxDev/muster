@@ -1,5 +1,5 @@
 {
-  "_comment": "The server switcher's monogram rule, as literal cases: the name, its letters, its colour. Go (internal/ui serverMonogram, serverMonogramColour; TestTheMonogram) and the script (web/static/servers.js monogram, monogramColour; e2e/servers.test.mjs) are both held to this one table. The colours were computed apart from either implementation (32-bit FNV-1a over the name's UTF-16 code units, modulo the eight-colour palette).",
+  "_comment": "The server switcher's monogram rule, as literal cases: the name, its letters, its colour. Go (internal/ui serverMonogram, serverMonogramColour; TestTheMonogram) and the script (web/static/servers.js monogram, monogramColour; e2e/servers.test.mjs) are both held to this one table. The colours were computed apart from either implementation (32-bit FNV-1a over the name's UTF-16 code units, modulo the eight-colour palette). The last cases cover the ways Go and a browser could disagree, which the rule avoids: an iota-subscript letter (Go's simple ToUpper gives titlecase, JavaScript's full mapping two letters: kept as it is), an old letter given an uppercase in Unicode 16 (ƛ to U+A7DC, outside the blocks: kept as it is) and a letter newer than Go's Unicode 15 tables (U+1C8A, Unicode 16: a word start in both, kept as it is).",
   "cases": [
     {"name": "Example Studio", "letters": "ES", "colour": "#2bb673"},
     {"name": "This server", "letters": "TS", "colour": "#7c5cff"},
@@ -8,10 +8,17 @@
     {"name": "127.0.0.1:8105", "letters": "10", "colour": "#7c5cff"},
     {"name": "élan vital", "letters": "ÉV", "colour": "#2bb673"},
     {"name": "ß-team", "letters": "ßT", "colour": "#7c5cff"},
-    {"name": "🚀 Launch", "letters": "L", "colour": "#3da5ff"},
-    {"name": "🚀", "letters": "?", "colour": "#7c5cff"},
+    {"name": "🚀 Launch", "letters": "🚀L", "colour": "#3da5ff"},
+    {"name": "🚀", "letters": "🚀", "colour": "#7c5cff"},
     {"name": "", "letters": "?", "colour": "#e8c547"},
     {"name": "a b c", "letters": "AB", "colour": "#b0b4c0"},
-    {"name": "東京 office", "letters": "東O", "colour": "#7c5cff"}
+    {"name": "東京 office", "letters": "東O", "colour": "#7c5cff"},
+    {"name": "Team · Example", "letters": "TE", "colour": "#3da5ff"},
+    {"name": "Lab—two", "letters": "LT", "colour": "#ff8a3d"},
+    {"name": "ŉ ΰx", "letters": "ŉΰ", "colour": "#e84d8a"},
+    {"name": "ǆungla зима", "letters": "ǄЗ", "colour": "#b0b4c0"},
+    {"name": "ᾳ test", "letters": "ᾳT", "colour": "#47d1c9"},
+    {"name": "ᲊaro bay", "letters": "ᲊB", "colour": "#b0b4c0"},
+    {"name": "ƛambda x", "letters": "ƛX", "colour": "#2bb673"}
   ]
 }
