@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -97,13 +100,46 @@ func newChatPG(t *testing.T) *chatPG {
 // clock now; nil is time.Now.
 func newChatPGAt(t *testing.T, now func() time.Time) *chatPG {
 	t.Helper()
-	return newChatPGWithKinds(t, now, stubKinds{pick: "acct-one"})
+	return newChatPGWith(t, chatPGOpts{now: now})
 }
 
-// newChatPGWithKinds is newChatPGAt with the server's agent kinds — the
-// account pool the chat lanes read — given.
-func newChatPGWithKinds(t *testing.T, now func() time.Time, kinds AgentKinds) *chatPG {
+// chatPGOpts are newChatPGWith's knobs; the zero value is newChatPG's rig.
+type chatPGOpts struct {
+	// now is the wake loop's clock; nil is time.Now.
+	now func() time.Time
+	// kinds is the server's agent kinds — the account pool the chat lanes
+	// read; nil is stubKinds{pick: "acct-one"}.
+	kinds AgentKinds
+	// failover, when non-nil, gives the server a real ccfailover.Service with
+	// Enabled = *failover (nothing in the rig asks it to move anything; it is
+	// there for its Allowed and the server's pin policy). nil: no failover.
+	failover *bool
+	// officer edits the officer before it is enabled (cc_account, cc_failover).
+	officer func(*officers.Officer)
+}
+
+// failoverNeverMoves is the ccfailover Pool and Rebinder of a rig whose
+// failover is never asked to move an agent: each call fails the test's
+// expectation loudly instead of answering.
+type failoverNeverMoves struct{}
+
+func (failoverNeverMoves) FailoverTarget(context.Context, int64, string) (string, bool, error) {
+	return "", false, errors.New("this rig's failover is never asked for a target")
+}
+func (failoverNeverMoves) CoolingUntil(context.Context, int64, string) (time.Time, error) {
+	return time.Time{}, errors.New("this rig's failover is never asked for a cooldown")
+}
+func (failoverNeverMoves) Rebind(context.Context, int64, string, string, func(context.Context, agents.Agent) error) (agentprovision.RebindResult, error) {
+	return agentprovision.RebindResult{}, errors.New("this rig's failover is never asked to rebind")
+}
+
+// newChatPGWith is newChatPGAt with the knobs of opts.
+func newChatPGWith(t *testing.T, opts chatPGOpts) *chatPG {
 	t.Helper()
+	now, kinds := opts.now, opts.kinds
+	if kinds == nil {
+		kinds = stubKinds{pick: "acct-one"}
+	}
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 60*time.Second)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
@@ -123,6 +159,9 @@ func newChatPGWithKinds(t *testing.T, now func() time.Time, kinds AgentKinds) *c
 		Tiers: &officers.Tiers{Routine: officers.TierPool{Model: "haiku", MaxInstances: 1},
 			Judgement: officers.TierPool{Model: "opus", MaxInstances: 1, FreshSessionPerItem: true}}}.WithToken(offBTok)
 	o.Tier, o.Model, o.MaxInstances = officers.TierJudgement, "opus", 1
+	if opts.officer != nil {
+		opts.officer(&o)
+	}
 	name := o.InstanceName(1)
 	row, err := pg.Create(ctx, agents.Agent{Name: name, Namespace: prefix + name, Status: agents.StatusRunning,
 		Kind: agents.KindClaudeCode, CCAccount: "acct-one", HooksToken: "tok-" + prefix})
@@ -137,8 +176,16 @@ func newChatPGWithKinds(t *testing.T, now func() time.Time, kinds AgentKinds) *c
 	})
 	chat := &laneChat{}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
-	s.UseExtensions(Extensions{Agents: pg, Provisioner: readyProv{name: name}, Gateway: chat,
-		SessionLiveness: stubLiveness{}, Kinds: kinds, AgentNamespacePrefix: prefix})
+	ext := Extensions{Agents: pg, Provisioner: readyProv{name: name}, Gateway: chat,
+		SessionLiveness: stubLiveness{}, Kinds: kinds, AgentNamespacePrefix: prefix}
+	if opts.failover != nil {
+		svc, err := ccfailover.New(ccfailover.Config{Enabled: *opts.failover, Pool: failoverNeverMoves{}, Agents: pg, Rebinder: failoverNeverMoves{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ext.AccountFailover = svc
+	}
+	s.UseExtensions(ext)
 	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}, InstallSession: discardSession, NoShipResume: true,
 		ChatHeartbeatEvery: time.Hour, ChatReplyRetries: []time.Duration{time.Millisecond}, Now: now})
 	if err != nil {

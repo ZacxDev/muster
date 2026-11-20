@@ -55,9 +55,16 @@ func TestEarliestResetThroughThePoolsStates(t *testing.T) {
 			m["beta"] = Mark{AuthFailedAt: earliestNow.Add(-time.Hour), AuthFailedToken: Fingerprint(tokBeta), AuthFailedDetail: "401"}
 			return m
 		}, time.Date(2026, time.November, 23, 18, 30, 0, 0, time.UTC), true},
-		{"the earliest cooldown is the configured one after an unreadable message: no reset to quote", func() map[string]Mark {
+		{"the earliest cooldown is the configured one after an unreadable message: skipped, the earliest STATED is quoted", func() map[string]Mark {
 			m := exhausted()
-			m["gamma"] = marked(earliestNow.Add(-10*time.Minute), "You've hit your limit")
+			m["beta"] = marked(earliestNow.Add(-10*time.Minute), "You've hit your limit")
+			return m
+		}, time.Date(2026, time.November, 23, 18, 30, 0, 0, time.UTC), true},
+		{"every cooldown is the configured one: no reset to quote", func() map[string]Mark {
+			m := map[string]Mark{}
+			for i, n := range names {
+				m[n] = marked(earliestNow.Add(-time.Duration(10+i)*time.Minute), "You've hit your limit")
+			}
 			return m
 		}, time.Time{}, false},
 		{"no marks at all", func() map[string]Mark { return map[string]Mark{} }, time.Time{}, false},
@@ -106,6 +113,29 @@ func TestStatesSaysWhetherACooldownIsAStatedReset(t *testing.T) {
 	}
 	if g := st["gamma"]; g.ResetStated || !g.CoolingUntil.IsZero() {
 		t.Errorf("gamma = %+v; want not cooling, not stated", g)
+	}
+}
+
+// TestEarliestResetTieOfAStatedAndAGuessedCooldown: a stated reset and a
+// guessed cooldown that end at the SAME instant, the earliest in the pool. The
+// instant is a stated reset, so it is quoted — whichever of the two the map
+// iteration reaches first. Both orders are built (by which account holds
+// which), so a rule that lets the one met first decide fails one of them.
+func TestEarliestResetTieOfAStatedAndAGuessedCooldown(t *testing.T) {
+	tie := time.Date(2026, time.November, 23, 1, 0, 0, 0, time.UTC)
+	later := time.Date(2026, time.November, 24, 14, 0, 0, 0, time.UTC)
+	for _, guessed := range []string{"alpha", "beta"} {
+		stated := map[string]string{"alpha": "beta", "beta": "alpha"}[guessed]
+		states := map[string]AccountState{
+			guessed: {CoolingUntil: tie},
+			stated:  {CoolingUntil: tie, ResetStated: true},
+			"gamma": {CoolingUntil: later, ResetStated: true},
+		}
+		for i := 0; i < 50; i++ { // map order is randomised: give both orders a chance
+			if got, ok := EarliestReset(states, earliestNow); !ok || !got.Equal(tie) {
+				t.Fatalf("%s guessed, %s stated, both at %s: EarliestReset = %s, %v; want %s, true", guessed, stated, tie, got, ok, tie)
+			}
+		}
 	}
 }
 

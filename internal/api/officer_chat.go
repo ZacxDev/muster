@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -276,12 +277,25 @@ func chatTurnError(err error) (error, bool) {
 // (FailoverTarget), and ClaudeAccountStates is that pool's States for the same
 // owner. No other owner's accounts are read.
 //
-// It never fails the turn and never drops the reply: no kinds, a read error or
-// a pool naming no time leaves cerr as it was, and ChatRateLimitedReplyFor
-// falls back to the CLI's stated reset.
+// 🔴 ONLY FOR AN INSTANCE THE FAILOVER MAY MOVE. The pool's earliest reset is
+// when the officer answers again only if its instance can land on that
+// account: ccfailover.Eligible (a claude-code instance on a named account)
+// and the failover's own Allowed (on, and not pinned by the officer's
+// cc_account without cc_failover). Any other instance stays on its account,
+// so the CLI's reset for that account is the truth and is kept.
+//
+// It never fails the turn and never drops the reply: no kinds, no failover, a
+// read error or a pool naming no time leaves cerr as it was, and
+// ChatRateLimitedReplyFor falls back to the CLI's stated reset.
 func (l officerChatLanes) withPoolReset(ctx context.Context, a agents.Agent, cerr error) error {
 	s := l.s
 	if cerr == nil || !errors.Is(cerr, officers.ErrChatUsageLimit) || s.ext.Kinds == nil {
+		return cerr
+	}
+	if s.ext.AccountFailover == nil || !ccfailover.Eligible(a) {
+		return cerr
+	}
+	if ok, _ := s.ext.AccountFailover.Allowed(a); !ok {
 		return cerr
 	}
 	states, err := s.ext.Kinds.ClaudeAccountStates(ctx, a.OwnerID)

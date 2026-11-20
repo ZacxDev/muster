@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // poolStatesKinds answers ClaudeAccountStates with a fixed reading of the
@@ -28,6 +29,9 @@ func (k poolStatesKinds) ClaudeAccountStates(_ context.Context, owner int64) (ma
 	k.mu.Unlock()
 	return k.states, k.err
 }
+
+// ptr is &v, for chatPGOpts' optional knobs.
+func ptr[T any](v T) *T { return &v }
 
 // The resets of the pool fixtures. 🔴 FAR IN THE FUTURE ON PURPOSE: the chat
 // lanes compare them with the server's real clock, so a date in the past
@@ -48,12 +52,19 @@ const lastTriedLimit = "You've hit your weekly limit · resets Nov 24, 2pm (UTC)
 // TestARateLimitedChatLaneIsAnsweredThroughTheWakeLoop — one 429, then 409s
 // from a pane parked on the usage-limit menu, every one carrying
 // lastTriedLimit — on a server whose account pool is k, and returns the
-// officer's one reply, the rig, and the owners the pool was read for.
-func usageLimitReplyThroughTheWakeLoop(t *testing.T, k poolStatesKinds) (string, *chatPG, []int64) {
+// officer's one reply, the rig, and the owners the pool was read for. opts is
+// the rig's other knobs; with none, the server has an enabled account
+// failover and the officer pins no account, so its instance may move.
+func usageLimitReplyThroughTheWakeLoop(t *testing.T, k poolStatesKinds, opts ...chatPGOpts) (string, *chatPG, []int64) {
 	t.Helper()
 	k.mu, k.owners = &sync.Mutex{}, &[]int64{}
 	clk := &stepClock{t: time.Now()}
-	c := newChatPGWithKinds(t, clk.now, k)
+	o := chatPGOpts{failover: ptr(true)}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	o.now, o.kinds = clk.now, k
+	c := newChatPGWith(t, o)
 	c.hq.AddChat(offB, "c-47", "triage")
 	seq, id := c.hq.MemberSays("c-47", "member7", "Member Seven", "Is the build green?")
 	calls := 0
@@ -117,9 +128,10 @@ func TestAUsageLimitReplyQuotesThePoolsEarliestReset(t *testing.T) {
 // stated for the account the turn last tried. Each case is one way the pool
 // names none: no reading at all; a read error (which must never fail or drop
 // the reply); an account that is not cooling (the pool is not exhausted); an
-// account whose reset is already past (not cooling either); and an earliest
-// cooldown that is the pool's guess after an unreadable message, not a stated
-// reset.
+// account whose reset is already past (not cooling either); and a pool whose
+// every other cooldown is the pool's guess after an unreadable message, not a
+// stated reset — the last-tried account's own stated reset is then the only
+// one, so the CLI's text and the pool agree.
 func TestAUsageLimitReplyFallsBackToTheCLIsReset(t *testing.T) {
 	cli := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 24, 2pm (UTC)). Ask again later.)"
 	for _, tc := range []struct {
@@ -141,9 +153,9 @@ func TestAUsageLimitReplyFallsBackToTheCLIsReset(t *testing.T) {
 			"acct-two":   {CoolingUntil: poolResetEarliest, ResetStated: true},
 			"acct-three": {CoolingUntil: time.Date(2001, time.November, 23, 1, 0, 0, 0, time.UTC), ResetStated: true},
 		}}},
-		{"an earliest cooldown that is a guess", poolStatesKinds{states: map[string]ccpool.AccountState{
+		{"only guessed cooldowns besides the last-tried account", poolStatesKinds{states: map[string]ccpool.AccountState{
 			"acct-one":   {CoolingUntil: poolResetLastTried, ResetStated: true},
-			"acct-two":   {CoolingUntil: poolResetMiddle, ResetStated: true},
+			"acct-two":   {CoolingUntil: poolResetMiddle},
 			"acct-three": {CoolingUntil: poolResetEarliest},
 		}}},
 	} {
@@ -154,6 +166,66 @@ func TestAUsageLimitReplyFallsBackToTheCLIsReset(t *testing.T) {
 			}
 			if len(owners) == 0 {
 				t.Fatal("the account pool was never read, so this case proves nothing about the fallback")
+			}
+		})
+	}
+}
+
+// TestAUsageLimitReplySkipsAGuessedCooldownForTheEarliestStatedReset: the
+// EARLIEST cooldown in the pool (acct-three, Nov 23 1am) is the pool's guess
+// after a limit message with no readable reset, so it is not quoted — but it
+// does not make the reply give up either, which would quote the last-tried
+// account's Nov 24, the latest. The earliest STATED reset (acct-two, Nov 23
+// 6:30pm) is quoted.
+func TestAUsageLimitReplySkipsAGuessedCooldownForTheEarliestStatedReset(t *testing.T) {
+	k := poolStatesKinds{states: map[string]ccpool.AccountState{
+		"acct-one":   {CoolingUntil: poolResetLastTried, ResetStated: true},
+		"acct-two":   {CoolingUntil: poolResetMiddle, ResetStated: true},
+		"acct-three": {CoolingUntil: poolResetEarliest},
+	}}
+	got, _, _ := usageLimitReplyThroughTheWakeLoop(t, k)
+	want := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 6:30pm (UTC)). Ask again later.)"
+	if got != want {
+		t.Fatalf("reply = %q\nwant    %q", got, want)
+	}
+}
+
+// TestAUsageLimitReplyKeepsTheCLIsResetWhenTheInstanceCannotFailOver: the
+// pool's earliest reset is when the officer answers again only if its
+// instance can MOVE to that account. An instance the failover will not move
+// stays on its own account, whose reset is the CLI's: quoting the pool's
+// earlier one would tell the member too early. Every pool here is the
+// regression's exhausted one (earliest Nov 23 1am, the last-tried Nov 24 2pm).
+// The last case is the positive control: a pinned officer that opts in to
+// failover gets the pool's earliest.
+//
+// RED before the failover check: every case but the control quoted Nov 23.
+func TestAUsageLimitReplyKeepsTheCLIsResetWhenTheInstanceCannotFailOver(t *testing.T) {
+	exhausted := func() poolStatesKinds {
+		return poolStatesKinds{states: map[string]ccpool.AccountState{
+			"acct-one": {CoolingUntil: poolResetLastTried, ResetStated: true},
+			"acct-two": {CoolingUntil: poolResetEarliest, ResetStated: true},
+		}}
+	}
+	cli := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 24, 2pm (UTC)). Ask again later.)"
+	pool := "(The officer can't reply right now: its Claude accounts are at their usage limit (resets Nov 23, 1am (UTC)). Ask again later.)"
+	pinned := func(failover bool) func(*officers.Officer) {
+		return func(o *officers.Officer) { o.CCAccount, o.CCFailover = "acct-one", failover }
+	}
+	for _, tc := range []struct {
+		name string
+		opts chatPGOpts
+		want string
+	}{
+		{"the officer pins cc_account without cc_failover", chatPGOpts{failover: ptr(true), officer: pinned(false)}, cli},
+		{"account failover is off", chatPGOpts{failover: ptr(false)}, cli},
+		{"no account failover at all", chatPGOpts{}, cli},
+		{"control: pinned, and opted in to failover", chatPGOpts{failover: ptr(true), officer: pinned(true)}, pool},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, _ := usageLimitReplyThroughTheWakeLoop(t, exhausted(), tc.opts)
+			if got != tc.want {
+				t.Fatalf("reply = %q\nwant    %q", got, tc.want)
 			}
 		})
 	}

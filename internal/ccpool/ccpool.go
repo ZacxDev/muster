@@ -692,28 +692,31 @@ func cooldownOf(m Mark, cooldown time.Duration) (time.Time, bool) {
 // waits for (internal/api, internal/officers ChatRateLimitedReplyFor). ok is
 // false when the record names no such time, and the caller keeps what it had.
 //
-// It is the earliest [AccountState.CoolingUntil] that is still after now, and
-// ok, ONLY when:
+// It is the earliest STATED reset ([AccountState.ResetStated]) among the
+// accounts' [AccountState.CoolingUntil], and ok, ONLY when every account that
+// is not auth_failed is cooling at now:
 //
-//   - every account that is not auth_failed is cooling at now. An account that
-//     is neither is not at its limit by the pool's record — usable now, or
-//     unmarked because the runtime never reported its limit — so the pool is not
-//     exhausted and holds no reset to name. A cooldown already over at now (a
-//     reset in the past) is such an account. An auth_failed account is skipped:
-//     it answers when its token is replaced, never at a reset;
-//   - and that earliest cooldown is a stated reset ([AccountState.ResetStated]).
-//     The configured cooldown after an unreadable message is when the pool
-//     tries the account again, not a reset its limit named, and is not quoted
-//     as one.
+//   - An account that is neither is not at its limit by the pool's record —
+//     usable now, or unmarked because the runtime never reported its limit —
+//     so the pool is not exhausted and holds no reset to name. A cooldown
+//     already over at now (a reset in the past) is such an account. An
+//     auth_failed account is skipped: it answers when its token is replaced,
+//     never at a reset.
+//   - A GUESSED cooldown (the configured one after a limit message with no
+//     readable reset) is skipped, never quoted: it is when the pool tries the
+//     account again, not a reset its limit named. It does not veto a stated
+//     reset either — an earlier guess says nothing about when the stated
+//     accounts are back, and giving up would quote the last-tried account's
+//     reset, the latest. With no stated reset at all, ok is false.
 //
 // 🔴 THIS IS THE TIME THE SELECTION AND THE FAILOVER READ. [ChooseFailover]
 // moves an agent onto an account exactly when its cooldown is over (or the
 // usage poller cleared its mark on a live reading, which makes it not cooling
 // here too), so the earliest cooldown is the earliest the officer's turn can
-// land on an account again.
+// land on an account again — for an agent the failover may MOVE (internal/api
+// asks ccfailover first).
 func EarliestReset(states map[string]AccountState, now time.Time) (time.Time, bool) {
 	var earliest time.Time
-	stated := false
 	for _, st := range states {
 		if st.AuthFailed {
 			continue
@@ -721,16 +724,14 @@ func EarliestReset(states map[string]AccountState, now time.Time) (time.Time, bo
 		if !st.CoolingUntil.After(now) {
 			return time.Time{}, false
 		}
+		if !st.ResetStated {
+			continue
+		}
 		if earliest.IsZero() || st.CoolingUntil.Before(earliest) {
-			earliest, stated = st.CoolingUntil, st.ResetStated
-		} else if st.CoolingUntil.Equal(earliest) && st.ResetStated {
-			stated = true
+			earliest = st.CoolingUntil
 		}
 	}
-	if earliest.IsZero() || !stated {
-		return time.Time{}, false
-	}
-	return earliest, true
+	return earliest, !earliest.IsZero()
 }
 
 // ResetPhraseAt is t as the CLI states a reset, in UTC and always with its
