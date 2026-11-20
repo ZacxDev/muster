@@ -162,6 +162,17 @@ test.afterAll(async () => {
 
 type ToolResult = { isError: boolean; body: Record<string, unknown> };
 
+// approveLink taps Approve link on a share card on the Asks page, which must
+// already be open, and returns once the answer is recorded. The card's form
+// posts through htmx (204, no navigation: asks_feed.go asksCardRequest), so
+// the page never leaves /attention and a waitForURL there settles at once;
+// the answer's own response is the signal that the link is live.
+async function approveLink(p: Page, askID: number) {
+  const posted = p.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${askID}/answer` && r.request().method() === 'POST');
+  await p.locator(`#ask-${askID}`).getByRole('button', { name: 'Approve link', exact: true }).click();
+  expect((await posted).status(), 'the approval is taken (204)').toBe(204);
+}
+
 // call is one tools/call through the host's loopback endpoint as the pane's
 // session (mcp-dispatch.spec.ts's): it waits for the secret and the listing.
 async function call(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -294,7 +305,7 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await expect(card).toContainText(`Share the page “Checkout launch ${stamp}”?`);
   await expect(card).not.toContainText('/pages/', { useInnerText: true });
   await expect(card.getByRole('link', { name: 'Open the page', exact: true })).toHaveAttribute('href', `/pages/${pageID}/view`);
-  await Promise.all([page.waitForURL(origin + '/attention'), card.getByRole('button', { name: 'Approve link', exact: true }).click()]);
+  await approveLink(page, askID);
   // (Its push to the owner's phone is muster's own Web Push, which the
   // router never carries — goNotify skips attention events there. The Go
   // test TestAPageFromCreationToAStrangersResponse asserts that push.)
@@ -548,8 +559,7 @@ test('a mirrored session attaches a 2 MB image and a 2 MB video from its working
   expect(req.isError, JSON.stringify(req.body)).toBe(false);
   const url = req.body.url as string;
   await page.goto(origin + '/attention');
-  const card = page.locator(`#ask-${req.body.ask_id as number}`);
-  await Promise.all([page.waitForURL(origin + '/attention'), card.getByRole('button', { name: 'Approve link', exact: true }).click()]);
+  await approveLink(page, req.body.ask_id as number);
   const stranger = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const sp = await stranger.newPage();
   expect((await sp.goto(url))?.status()).toBe(200);

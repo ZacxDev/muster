@@ -132,7 +132,7 @@ func (s *Server) featureOff(id string) bool {
 // WHO GETS WHICH, for a request that looks like a page load:
 //   - a browser session (Via session): the page;
 //   - NO caller yet — a gate that runs before any credential is examined
-//     (requirePluginsOn, requirePluginViewersOn): requireSession decides, so
+//     (requirePluginsOn, requirePluginOriginsOn): requireSession decides, so
 //     a signed-in browser gets the page and a signed-out one is sent to sign
 //     in (the page differs by reader, an admin's ⓘ, so it needs one);
 //   - a caller a token admitted (an API or hook token): the JSON, unchanged —

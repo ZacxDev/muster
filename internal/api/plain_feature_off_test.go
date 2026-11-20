@@ -76,11 +76,11 @@ var featureOffSites = []featureOffSite{
 	{fn: "handlePRSessionBind", feature: features.PRMailRouting, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handlePRSessionBind(w, r) }},
 	{fn: "handlePRSessionList", feature: features.PRMailRouting, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handlePRSessionList(w, r) }},
 	{fn: "handleTranscribe", feature: features.Dictation, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handleTranscribe(w, r) }},
-	{fn: "requirePluginViewersOn", feature: features.Plugins, call: func(s *Server, w http.ResponseWriter, r *http.Request) {
-		s.requirePluginViewersOn(func(http.ResponseWriter, *http.Request) { panic("reached past the gate") })(w, r)
+	{fn: "requirePluginOriginsOn", feature: features.Plugins, call: func(s *Server, w http.ResponseWriter, r *http.Request) {
+		s.requirePluginOriginsOn(func(http.ResponseWriter, *http.Request) { panic("reached past the gate") })(w, r)
 	}},
-	{fn: "requirePluginViewersOn", feature: features.PluginViewers, viewers: true, call: func(s *Server, w http.ResponseWriter, r *http.Request) {
-		s.requirePluginViewersOn(func(http.ResponseWriter, *http.Request) { panic("reached past the gate") })(w, r)
+	{fn: "requirePluginOriginsOn", feature: features.PluginViewers, viewers: true, call: func(s *Server, w http.ResponseWriter, r *http.Request) {
+		s.requirePluginOriginsOn(func(http.ResponseWriter, *http.Request) { panic("reached past the gate") })(w, r)
 	}},
 	{fn: "handleAPIAsksLog", feature: features.AskLog, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handleAPIAsksLog(w, r) }},
 	{fn: "handleAPIAsksSummary", feature: features.AskLog, call: func(s *Server, w http.ResponseWriter, r *http.Request) { s.handleAPIAsksSummary(w, r) }},

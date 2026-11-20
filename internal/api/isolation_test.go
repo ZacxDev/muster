@@ -414,18 +414,18 @@ var isolationClasses = map[string]routeClass{
 	// store call naming the caller's owner and under its principal.
 	// `muster agent rm` (agent_rm.go): hook tier, as its owner — the row is
 	// read and destroyed under the caller's principal.
-	"DELETE /api/agents/{name}":                                        classAdmin,
-	"GET /api/officers/types":                                          classAdmin,
-	"GET /api/officers/types/{key}":                                    classAdmin,
-	"PUT /api/officers/types/{key}":                                    classAdmin,
-	"DELETE /api/officers/types/{key}":                                 classAdmin,
-	"GET /api/officers/defs":                                           classAdmin,
-	"PUT /api/officers/defs/{officer}":                                 classAdmin,
-	"DELETE /api/officers/defs/{officer}":                              classAdmin,
-	"GET /api/officers/defs/{officer}/items":                           classAdmin,
-	"POST /api/officers/defs/{officer}/items":                          classAdmin,
-	"POST /api/officers/defs/{officer}/items/{id}/resolve":             classAdmin,
-	"GET /api/officers/defs/{officer}/schedules":                       classAdmin,
+	"DELETE /api/agents/{name}":                            classAdmin,
+	"GET /api/officers/types":                              classAdmin,
+	"GET /api/officers/types/{key}":                        classAdmin,
+	"PUT /api/officers/types/{key}":                        classAdmin,
+	"DELETE /api/officers/types/{key}":                     classAdmin,
+	"GET /api/officers/defs":                               classAdmin,
+	"PUT /api/officers/defs/{officer}":                     classAdmin,
+	"DELETE /api/officers/defs/{officer}":                  classAdmin,
+	"GET /api/officers/defs/{officer}/items":               classAdmin,
+	"POST /api/officers/defs/{officer}/items":              classAdmin,
+	"POST /api/officers/defs/{officer}/items/{id}/resolve": classAdmin,
+	"GET /api/officers/defs/{officer}/schedules":           classAdmin,
 	// Scheduled host jobs (hostjobs.go): requireArmedHookToken, as the caller.
 	"GET /api/host-jobs":                                               classAdmin,
 	"GET /api/host-jobs/{name}/runs":                                   classAdmin,
@@ -530,7 +530,12 @@ var isolationClasses = map[string]routeClass{
 	// A viewer hand-off (plugin_handoffs.go) names its plugin and window in the
 	// BODY, not the path, so the walk's A-ids never reach it: another owner's
 	// plugin and host are refused by TestAHandoffNamesOnlyTheOwnersPluginAndWindow.
-	"POST /plugin-handoffs":     classList,
+	"POST /plugin-handoffs": classList,
+	// An app tab's page and its alive poll (plugin_app.go) name A's plugin by
+	// id: B's session gets the one 404 (liveAppPlugins reads the principal's
+	// own rows; TestTheAppPageIsTheOwnersAlone).
+	"GET /apps/{id}":            classParam,
+	"GET /ui/apps/{id}/alive":   classParam,
 	"POST /plugins/{id}/revoke": classParam,
 	// Checks replies on an existing plugin names A's plugin by id: B's session
 	// must get the ghost's 404 (row-level security).
@@ -1515,7 +1520,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	srv.EnableOfficerStore(w.officerStore)
 	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
 	srv.EnableHostJobs(hostjobs.NewPG(pool))
-	w.router =&isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
+	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	// The admin pages need GoTrue and the account store; the session tier stays
 	// password mode (sessionUserOverride below).
@@ -2319,6 +2324,13 @@ var sideEffectControlled = map[string]string{
 	"POST /plugin/v1/drafts/{id}/media":  "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
 	"GET /plugins/drafts/{id}/media/{n}": "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
 	"PUT /api/plugins/{id}/deliver-to":   "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	// An app tab needs MUSTER_PLUGIN_ORIGINS and an app plugin, which this
+	// world's servers have not got, so A's own answer is the ghost's 404.
+	// Their owner isolation — B's session gets the one 404 for A's app plugin,
+	// identical to an unknown id's — is TestTheAppPageIsTheOwnersAlone and
+	// TestTheAlivePollIsLiveUntilRevoked (plugin_app_tab_pg_test.go).
+	"GET /apps/{id}":          "controlled in TestTheAppPageIsTheOwnersAlone (plugin_app_tab_pg_test.go)",
+	"GET /ui/apps/{id}/alive": "controlled in TestTheAlivePollIsLiveUntilRevoked (plugin_app_tab_pg_test.go)",
 	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a pairing poll's credential is
 	// the poll secret no walker holds, so A's own answer is the ghost's 404.
 	// Its control is TestAPairedTokenIsHandedOutOnceAndOnlyWithTheCode: the
