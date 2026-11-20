@@ -427,6 +427,13 @@ const pageAssetsMigrationVersion = 164
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const teamPagesMigrationVersion = 165
 
+// pluginTasksCapabilityMigrationVersion is 0166: the tasks plugin capability's
+// CHECKs. No table: it is re-applied by RLSOn only so that it runs AFTER
+// 0141's body, which replaces plugins_capabilities_known with an older list.
+// Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const pluginTasksCapabilityMigrationVersion = 166
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -508,6 +515,16 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts, &hasOfficerPublicBranches, &hasPluginChiefInstructions, &hasChiefSessionLLMUsage, &hasFleetOwnerMarks, &hasOfficerConnectorBlocks, &hasOfficerSeen, &hasOfficerCapRaises, &hasFleetActions, &hasOfficerChatCards, &hasMorningReports, &hasPageAssets, &hasTeamPages); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
+	// 🔴 0141's body (re-applied above, for plugin_chief_instructions) also
+	// REPLACES plugins_capabilities_known with ITS list, which lacks every
+	// capability added since. 0166 is re-applied after it whenever it was
+	// applied, so a RLSOff/RLSOn cycle cannot narrow the CHECK and refuse
+	// every tasks token (TestPluginCapabilityChecksMatchGo drives the cycle).
+	var hasPluginTasksCapability bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`,
+		pluginTasksCapabilityMigrationVersion).Scan(&hasPluginTasksCapability); err != nil {
+		return fmt.Errorf("rls on: %w", err)
+	}
 	applied := false
 	for _, m := range ms {
 		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) &&
@@ -573,7 +590,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == officerChatCardsMigrationVersion && hasOfficerChatCards) &&
 			!(m.version == morningReportsMigrationVersion && hasMorningReports) &&
 			!(m.version == pageAssetsMigrationVersion && hasPageAssets) &&
-			!(m.version == teamPagesMigrationVersion && hasTeamPages) {
+			!(m.version == teamPagesMigrationVersion && hasTeamPages) &&
+			!(m.version == pluginTasksCapabilityMigrationVersion && hasPluginTasksCapability) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

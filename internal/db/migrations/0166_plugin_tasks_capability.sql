@@ -20,8 +20,11 @@
 -- and each migration's ROLLBACK list to the previous migration's.
 --
 -- Must apply after 0165 (the contiguity test refuses a gap); 🔴 RENUMBER IT if
--- another migration takes 0166 first. Idempotent. No table is created, so no
--- db/rollback.go re-application constant.
+-- another migration takes 0166 first (and db/rollback.go's
+-- pluginTasksCapabilityMigrationVersion with it). Idempotent. 🔴 db.RLSOn
+-- RE-APPLIES IT after 0141, whose body replaces plugins_capabilities_known
+-- with a list lacking tasks — so a capability migration after this one must
+-- be re-applied by RLSOn too, after this one.
 --
 -- ROLLBACK (roll the image back first; an older image does not know the
 -- capability):

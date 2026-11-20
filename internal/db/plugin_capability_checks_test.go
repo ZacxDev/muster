@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -156,6 +160,23 @@ func TestPluginCapabilityChecksMatchGo(t *testing.T) {
 		}
 	}
 	pool := freshAt(ctx, t, "ms_plugin_cap_checks", latest)
+	checkLive(t, pool, "after the migrations")
+	// db.RLSOff then db.RLSOn (a real rollback mode, and what api tests do to a
+	// shared database) re-applies older migration bodies, 0141's among them,
+	// which replaces plugins_capabilities_known: the lists must survive it.
+	if err := db.RLSOff(ctx, pool); err != nil {
+		t.Fatalf("RLSOff: %v", err)
+	}
+	if err := db.RLSOn(ctx, pool); err != nil {
+		t.Fatalf("RLSOn: %v", err)
+	}
+	checkLive(t, pool, "after RLSOff and RLSOn")
+}
+
+// checkLive compares the live capability CHECKs with Go's lists.
+func checkLive(t *testing.T, pool *pgxpool.Pool, when string) {
+	t.Helper()
+	ctx := context.Background()
 	for constraint, want := range map[string][]string{
 		"plugins_capabilities_known":              capNames(plugins.KnownCapabilities),
 		"plugin_pair_requests_capabilities_check": capNames(plugins.PairableCapabilities),
@@ -165,7 +186,7 @@ func TestPluginCapabilityChecksMatchGo(t *testing.T) {
 			t.Fatalf("%s: %v", constraint, err)
 		}
 		if got := quotedValues(def); !slices.Equal(got, want) {
-			t.Errorf("the live %s lists %v; Go lists %v (%s)", constraint, got, want, def)
+			t.Errorf("%s the live %s lists %v; Go lists %v (%s)", when, constraint, got, want, def)
 		}
 	}
 }
