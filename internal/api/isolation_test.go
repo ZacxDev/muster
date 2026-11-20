@@ -536,6 +536,9 @@ var isolationClasses = map[string]routeClass{
 	// must get the ghost's 404 (row-level security).
 	"POST /plugins/{id}/draft-checks": classParam,
 	"POST /plugins/{id}/deliver-to":   classParam,
+	// Files tasks on an existing plugin (0167) names A's plugin by id: B's
+	// session must get the ghost's 404 (row-level security).
+	"POST /plugins/{id}/tasks": classParam,
 	// A plugin's chief instructions (0141): the toggle and the approval name
 	// A's plugin by id; B's session must get the ghost's 404 (row-level
 	// security and the store's owner filter).

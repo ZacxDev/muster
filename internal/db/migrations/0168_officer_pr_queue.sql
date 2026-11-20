@@ -24,7 +24,7 @@
 -- statement is idempotent.
 --
 -- Must apply after its predecessor, 0167 (the contiguity test refuses a gap):
--- 0167 is the officer auto-restart migration, which lands first.
+-- 0167 is the `tasks` plugin capability.
 -- 🔴 RENUMBER IT (and db.officerPRQueueMigrationVersion) if another migration
 -- takes 0168 first.
 --
