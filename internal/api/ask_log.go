@@ -293,9 +293,10 @@ func askLogPrefilter(text string) bool {
 // Mirrored windows: plain text (Claude Code) and opencode asks.
 // ---------------------------------------------------------------------------
 
-// AskLogMirrorChanged is the hub's status hook (mirror.Service.SetStatusNotify;
-// cmd/muster-server): owner's windows' status moved. It diffs each window
-// against what it last saw and queues the captures a change calls for:
+// AskLogMirrorChanged is the ask log's half of the hub's status hook
+// (MirrorStatusChanged; mirror.Service.SetStatusNotify, cmd/muster-server):
+// owner's windows' status moved. It diffs each window against what it last saw
+// and queues the captures a change calls for:
 //
 //   - a Claude window naming its session, busy → idle: a turn ended (read its
 //     last assistant message for a question);
