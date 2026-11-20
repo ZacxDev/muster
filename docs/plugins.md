@@ -66,6 +66,7 @@ A plugin token opens only the routes its **capabilities** allow:
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
 | `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
+| `app` | an [app tab](#app-tab): a tab in your sidebar for the plugin's own page. It opens no route of its own yet: the tab, its page and the hand-off for it are later core work ([design](design/meetings.md#the-core-change-the-app-capability)). Never paired (migration `0166`) |
 | `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
@@ -73,7 +74,7 @@ Every token minted before capabilities existed has `messages` (migration
 token is minted, with two exceptions: `draft_checks` and `chief_extension`,
 which you can turn on or off for an existing plugin (below).
 
-On `/plugins`, the `messages`/`viewer` choice is drawn only while
+On `/plugins`, the `messages`/`viewer`/**App tab** choice is drawn only while
 `MUSTER_PLUGIN_ORIGINS` is set
 ([configuration.md](configuration.md#muster-server-optional-features)); without
 it every new token gets `messages`. The **Checks replies** box adds
@@ -104,8 +105,45 @@ A `viewer` token also carries:
   `https://evil.example.net/x?.<zone>` and `https://w.<zone>@evil.example.net/`
   are refused.
 
-A token with `viewer` and no `messages` brings no messages, so its data scope
-is stored as `none` whatever the form says.
+A token with `viewer` or `app` and no `messages` brings no messages, so its
+data scope is stored as `none` whatever the form says.
+
+### App tab
+
+An `app` plugin has a tab in its owner's sidebar that opens the plugin's own
+page, full width, inside muster
+([design](design/meetings.md#the-core-change-the-app-capability)). The
+capability is stored now (migration `0166`); drawing the tab and its page is
+later core work, so today an `app` token is minted, listed and revoked, and
+opens no route but `GET /plugin/v1/self`.
+
+You choose it on `/plugins` with the **App tab** box, only while
+`MUSTER_PLUGIN_ORIGINS` is set. It carries:
+
+- an **origin** and an **entry URL**, the same fields and the same rule as a
+  `viewer` token's (above). A token with both `viewer` and `app` has one of
+  each, shared;
+- a **tab label**, your words, not the plugin's: 1 to 24 characters, each a
+  letter, a digit, a space or one of `- . & '`, with no space at either end
+  and no two in a row. Shown as text, never HTML;
+- a **tab icon**, picked from a fixed list of 16 emoji (stored as the list's
+  key, such as `video`).
+
+It combines with `messages`, `viewer` and the rest, and is fixed at mint.
+Rules the mint enforces:
+
+- **At most 5** live `app` plugins per owner; a sixth is refused until you
+  revoke one.
+- **A person's only.** A team's plugin cannot have one yet.
+- **Never paired.** `POST /plugin/v1/pair` refuses it, as it refuses
+  `viewer`: its origin widens muster's own pages, so you pick it on
+  `/plugins`, never the plugin.
+
+**Do not depend on a cookie in the frame.** The page will show the plugin in a
+cross-origin frame, where a browser treats the plugin's cookies as
+third-party: Safari blocks them and Chrome partitions them at best. Redeem the
+hand-off code at your entry URL and keep the session in the page's memory;
+reloading the frame re-enters through muster's page.
 
 ### Viewer hand-off
 
@@ -1240,7 +1278,7 @@ or seen by anyone — the plugin receives it straight from muster.
 | `owner` | yes | the owner's login (their email, as `GET /plugin/v1/self` names it) |
 | `name`, `label` | yes | as on `/plugins` |
 | `data_scope` | no | as on `/plugins`; default the `name` |
-| `capabilities` | yes | `messages`, optionally with `draft_checks`. `viewer` cannot be paired |
+| `capabilities` | yes | `messages`, optionally with `draft_checks`. `viewer` and `app` cannot be paired |
 | `deliver_to` | no | `officer:<id>`, checked again when the owner approves |
 
 | answer | meaning |

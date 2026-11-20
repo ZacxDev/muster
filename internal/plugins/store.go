@@ -177,13 +177,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to, rotate_at`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to, rotate_at, app_label, app_icon`
 
 // pluginDest is the scan destinations for pluginCols, in its order. THE ONE
 // COPY, as messageDest: every reader of pluginCols scans through it.
 func pluginDest(p *Plugin) []any {
 	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo, &p.RotateAt}
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo, &p.RotateAt, &p.AppLabel, &p.AppIcon}
 }
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
@@ -251,8 +251,12 @@ func (s *PGStore) Create(ctx context.Context, name, label, dataScope string) (st
 type NewPlugin struct {
 	Name, Label, DataScope string
 	Capabilities           []Capability
-	// Origin and EntryURL: set exactly when Capabilities has CapViewer.
+	// Origin and EntryURL: set exactly when Capabilities has CapViewer or
+	// CapApp.
 	Origin, EntryURL string
+	// AppLabel and AppIcon: set exactly when Capabilities has CapApp (the
+	// tab's label, trimmed here, and its AppIcons key).
+	AppLabel, AppIcon string
 	// DeliverTo binds the new plugin to an officer ("officer:<id>", "" for
 	// none): checked as SetDeliverTo checks it.
 	DeliverTo string
@@ -291,9 +295,28 @@ func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (
 	if err != nil {
 		return "", Plugin{}, err
 	}
-	viewer := slices.Contains(caps, CapViewer)
+	app := slices.Contains(caps, CapApp)
+	viewer := slices.Contains(caps, CapViewer) || app
 	if viewer != (in.Origin != "" && in.EntryURL != "") || (in.Origin == "") != (in.EntryURL == "") {
-		return "", Plugin{}, invalid("a viewer plugin needs an origin and an entry URL, and only a viewer plugin has them")
+		return "", Plugin{}, invalid("a viewer or app plugin needs an origin and an entry URL, and only such a plugin has them")
+	}
+	appLabel := strings.TrimSpace(in.AppLabel)
+	if !app && (appLabel != "" || in.AppIcon != "") {
+		return "", Plugin{}, invalid("only an app plugin has a tab label and icon")
+	}
+	var tabLabel, tabIcon *string
+	if app {
+		if err := ValidAppLabel(appLabel); err != nil {
+			return "", Plugin{}, err
+		}
+		if err := ValidAppIcon(in.AppIcon); err != nil {
+			return "", Plugin{}, err
+		}
+		owner, _ := authz.From(ctx)
+		if err := s.appMintChecks(ctx, tx, owner.Team); err != nil {
+			return "", Plugin{}, err
+		}
+		tabLabel, tabIcon = &appLabel, &in.AppIcon
 	}
 	if !slices.Contains(caps, CapMessages) {
 		dataScope = ViewerOnlyDataScope
@@ -328,9 +351,9 @@ func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (
 		return "", Plugin{}, err
 	}
 	p, err := scanPlugin(sp.QueryRow(ctx, `
-		INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url, deliver_to)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, '')) RETURNING `+pluginCols,
-		name, label, HashToken(tok), dataScope, caps, origin, entry, in.DeliverTo))
+		INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url, deliver_to, app_label, app_icon)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), $9, $10) RETURNING `+pluginCols,
+		name, label, HashToken(tok), dataScope, caps, origin, entry, in.DeliverTo, tabLabel, tabIcon))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "plugins_owner_name_live" {
 		_ = sp.Rollback(ctx)
@@ -346,6 +369,9 @@ func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (
 	detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
 	if viewer {
 		detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
+	}
+	if app {
+		detail["app_label"], detail["app_icon"] = appLabel, in.AppIcon
 	}
 	if in.DeliverTo != "" {
 		detail["deliver_to"] = in.DeliverTo
