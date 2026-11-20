@@ -649,21 +649,26 @@ func TestTheWordmarkIsTheLockup(t *testing.T) {
 // TestBothWordmarkSitesGoThroughTheOneRenderer is the other half: the helper
 // being correct is worth nothing if a call site stops using it.
 //
-// 🔴 IT IS A COUNT LEDGER, AND THE NUMBER IS THE POINT. Two is the header and
-// the sidebar. A third site added by hand — the shape that produced the original
-// half-renamed state — renders markup this count does not predict and fails
-// here, as does a site that stops calling wordmark(). A "contains it at least
-// once" check sees neither.
+// 🔴 IT IS A COUNT LEDGER, AND THE NUMBER IS THE POINT. One is the header:
+// the sidebar draws muster's compact square mark instead (the server
+// switcher, operator decision on round 0 of the one-row switcher). A second
+// site added by hand — the shape that produced the original half-renamed
+// state — renders markup this count does not predict and fails here, as does
+// a site that stops calling wordmark(); so does any other reference to the
+// lockup's file. A "contains it at least once" check sees neither.
 func TestBothWordmarkSitesGoThroughTheOneRenderer(t *testing.T) {
 	mark := renderString(t, wordmark())
 	if mark == "" {
 		t.Fatal("wordmark() renders nothing — every count below would be vacuous")
 	}
 	shell := renderString(t, Page(defaultTab, featuresAllOn))
-	if n := strings.Count(shell, mark); n != 2 {
-		t.Errorf("the shell renders the wordmark markup %d times, want 2 (the header and the sidebar).\n"+
+	if n := strings.Count(shell, mark); n != 1 {
+		t.Errorf("the shell renders the wordmark markup %d times, want 1 (the header).\n"+
 			"A site that spells the wordmark inline instead of calling wordmark() is how one of the two "+
 			"was left showing the upstream brand after the carve.", n)
+	}
+	if n := strings.Count(shell, "lockup-horizontal.svg"); n != 1 {
+		t.Errorf("the shell names the lockup's file %d times, want 1 (the header's wordmark())", n)
 	}
 }
 
