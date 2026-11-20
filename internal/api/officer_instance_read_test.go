@@ -232,7 +232,7 @@ func (c *virtualClock) Sleep(d time.Duration) {
 // reads run 4 at a time (the officer loop's concurrent passes), and every
 // request the driver sends first takes a token from client-go's own token
 // bucket at client-go's DEFAULT rate (rest.DefaultQPS 5, rest.DefaultBurst 10)
-// — on a virtual clock, so the time a read waits for tokens is measured, not
+// — on a virtual clock, so the time the reads wait for tokens is measured, not
 // slept.
 //
 // Every officer's read must answer within the bound the officer runtime gives
@@ -243,32 +243,74 @@ func (c *virtualClock) Sleep(d time.Duration) {
 // readers fit beside them on that budget — see
 // TestOfficerReadsAndTheTenSecondLoopsShareTheOldClientBudget for the timed
 // loops, and the raised MUSTER_AGENT_KUBE_QPS default for everything else.
+//
+// 🔴 ONE READ'S TIME IS COMPUTED FROM ITS REQUEST COUNT, NOT READ OFF THE
+// SHARED CLOCK. The virtual clock moves only when a request takes a token,
+// whichever goroutine sends it; a read descheduled between two of its requests
+// holds no place in the bucket's queue, so the other three passes' requests —
+// and whole reads started after it — advanced the clock under it. Its
+// clock-measured time then depended on goroutine scheduling: 34.2s, even 41.2s
+// (the whole run), against a 30s bound, on about 1 run in 100 at -cpu 1. A real
+// read does not wait like that: client-go's bucket (rate.Limiter) serves
+// reservations in the order they are made, and a read has at most one request
+// waiting at a time (InstancesOf reads its agents one after another, each with
+// sequential calls — assumed from the code, not checked here), so each of its
+// requests waits behind at most one request of each other concurrent pass.
+// Its worst case is therefore readTokensWorst(n): n requests × readPasses
+// tokens each, burst ignored. Each request is attributed to its officer by
+// namespace (every officer's read touches only its own: test (a)).
+//
+// The fleet's total needs no model: the bucket is never idle, so the clock
+// ends (requests − burst) / qps after it started whatever the interleaving.
 func TestEighteenOfficersReadTheirInstancesWithinTheOldClientBudget(t *testing.T) {
+	const (
+		qps        = 5  // rest.DefaultQPS
+		burst      = 10 // rest.DefaultBurst
+		readPasses = 4  // officers.maxConcurrentPasses
+	)
+	readTokensWorst := func(n int) time.Duration { return time.Duration(n*readPasses) * time.Second / qps }
+
 	r := newInstanceReadRig(t, everySlot, everySlot)
+	owner := map[string]int{}
+	for i, o := range r.offs {
+		for n := 1; n <= o.Slots(); n++ {
+			owner[readRigPrefix+o.InstanceName(n)] = i
+		}
+	}
 	clk := &virtualClock{now: time.Unix(1_700_000_000, 0)}
-	lim := flowcontrol.NewTokenBucketRateLimiterWithClock(5, 10, clk)
+	lim := flowcontrol.NewTokenBucketRateLimiterWithClock(qps, burst, clk)
 	var limMu sync.Mutex
 	requests := 0
-	r.cs.PrependReactor("*", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+	perOfficer := make([]int, len(r.offs))
+	var foreign []string
+	r.cs.PrependReactor("*", "*", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		ns := a.GetNamespace()
+		if g, ok := a.(k8stesting.GetAction); ok && a.GetResource().Resource == "namespaces" {
+			ns = g.GetName()
+		}
 		// Serialised: the bucket hands out tokens in one order, and the
 		// virtual clock moves only here.
 		limMu.Lock()
 		lim.Accept()
 		requests++
+		if i, ok := owner[ns]; ok {
+			perOfficer[i]++
+		} else {
+			foreign = append(foreign, a.GetVerb()+" "+a.GetResource().Resource+" "+ns)
+		}
 		limMu.Unlock()
 		return false, nil, nil
 	})
 
 	type read struct {
 		id    string
-		took  time.Duration
 		err   error
 		up    int
 		slots int
 	}
 	reads := make([]read, len(r.offs))
 	start := clk.Now()
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, readPasses)
 	var wg sync.WaitGroup
 	for i, o := range r.offs {
 		wg.Add(1)
@@ -276,9 +318,8 @@ func TestEighteenOfficersReadTheirInstancesWithinTheOldClientBudget(t *testing.T
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			t0 := clk.Now()
 			insts, err := (officerFleet{s: r.s}).Instances(context.Background(), o)
-			rd := read{id: o.ID, took: clk.Now().Sub(t0), err: err, slots: len(insts)}
+			rd := read{id: o.ID, err: err, slots: len(insts)}
 			for _, in := range insts {
 				if in.Up {
 					rd.up++
@@ -290,21 +331,29 @@ func TestEighteenOfficersReadTheirInstancesWithinTheOldClientBudget(t *testing.T
 	wg.Wait()
 	all := clk.Now().Sub(start)
 
-	for _, rd := range reads {
+	if len(foreign) != 0 {
+		t.Errorf("the officers' reads sent requests outside every officer's own agent namespaces, so they are "+
+			"charged to no officer's read: %v", foreign)
+	}
+	for i, rd := range reads {
 		if rd.err != nil || rd.slots != readRigSlots || rd.up != readRigSlots {
 			t.Errorf("officer %s: read %d slots, %d up, err %v; want all %d up", rd.id, rd.slots, rd.up, rd.err, readRigSlots)
 		}
-		if rd.took > officerInstancesWithin {
-			t.Errorf("officer %s's instance read took %s of client-go's default request budget (5/s, burst 10), "+
-				"past the %s the officer runtime waits for it: in production it fails as "+
-				"\"rate: Wait(n=1) would exceed context deadline\"", rd.id, rd.took, officerInstancesWithin)
+		if perOfficer[i] == 0 {
+			t.Errorf("officer %s's read sent no request: nothing of it was charged to the budget", rd.id)
+		}
+		if took := readTokensWorst(perOfficer[i]); took > officerInstancesWithin {
+			t.Errorf("officer %s's instance read sent %d requests: with %d passes reading at once on client-go's "+
+				"default request budget (%d/s, burst %d) it can wait %s for tokens, past the %s the officer runtime "+
+				"waits for it: in production it fails as \"rate: Wait(n=1) would exceed context deadline\"",
+				rd.id, perOfficer[i], readPasses, qps, burst, took, officerInstancesWithin)
 		}
 	}
 	if all > officers.DefaultPollInterval {
-		t.Errorf("18 officers' instance reads, 4 at a time, took %s of client-go's default request budget (%d requests); "+
-			"want every officer's read inside one poll interval (%s)", all, requests, officers.DefaultPollInterval)
+		t.Errorf("18 officers' instance reads, %d at a time, took %s of client-go's default request budget (%d requests); "+
+			"want every officer's read inside one poll interval (%s)", readPasses, all, requests, officers.DefaultPollInterval)
 	}
-	t.Logf("%d requests, %s of token time for 18 officers' reads", requests, all)
+	t.Logf("%d requests (per officer %v), %s of token time for 18 officers' reads", requests, perOfficer, all)
 }
 
 // kickoffNoGateway is a kickoff gateway that is never expected to be reached:
