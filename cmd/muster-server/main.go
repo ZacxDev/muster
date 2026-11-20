@@ -997,6 +997,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// A draft officer's public branches and their items (migration
 			// 0138): the only proof a public branch is the officer's.
 			ocfg.PublicBranches = officers.NewPGPublicBranchStore(a.pool)
+			// A draft officer's creates the open cap held back (migration
+			// 0166): the sweep opens them after a restart, on either replica.
+			ocfg.PRQueue = officers.NewPGPRQueueStore(a.pool)
 			// Which items an officer instance held while a pending connector
 			// grant refused it (migration 0148): an approval days later, after
 			// a restart or on the other replica, still re-runs them.

@@ -139,6 +139,9 @@ type Ship struct {
 	// InternalPatternsFile is the local file of internal-details patterns
 	// that repositories marked public are scanned with (ship_docs.go).
 	InternalPatternsFile string
+	// StaleDrafts is a draft officer's `stale_drafts` block (ship_stale.go):
+	// nil — the default — when its idle drafts are never closed by muster.
+	StaleDrafts *StaleDrafts
 
 	appKey          *rsa.PrivateKey
 	escalateWebhook string
@@ -248,7 +251,9 @@ type declaredShip struct {
 	Public               bool            `json:"public"`
 	DocsOnly             json.RawMessage `json:"docs_only"`
 	InternalPatternsFile string          `json:"internal_patterns_file"`
-	Notice               *struct {
+	// StaleDrafts is ship_stale.go's.
+	StaleDrafts json.RawMessage `json:"stale_drafts"`
+	Notice      *struct {
 		Path    string `json:"path"`
 		Channel string `json:"channel"`
 	} `json:"notice"`
@@ -340,6 +345,9 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 	}
 	s.Repos = repos
 	if err := parseDocsAndPublic(s, d); err != nil {
+		return nil, err
+	}
+	if s.StaleDrafts, err = parseStaleDrafts(s.Stage, d.StaleDrafts); err != nil {
 		return nil, err
 	}
 	primary, _ := s.RepoFor(repo, repo)

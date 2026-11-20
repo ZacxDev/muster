@@ -108,8 +108,14 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		return err
 	}
 	err = g.rateLimits(ctx, sr, item)
-	if err == nil {
+	switch {
+	case err == nil:
 		err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
+	case isLimit(err, limitOpen) && g.Queue != nil:
+		// 🔴 THE OPEN CAP QUEUES, IT DOES NOT REFUSE (prqueue.go): the create
+		// is checked, recorded and answered 202; the sweep opens it once a
+		// slot frees. Every other limit still refuses.
+		err = g.queueCreate(ctx, sr, gh, head, item, title, body, err)
 	}
 	if err != nil {
 		g.releaseCreate()
@@ -322,13 +328,15 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 			}
 		}
 	}
+	// Each refusal is a limitError of its kind: the open cap queues a create
+	// (queueCreate) and the drain waits on it (prqueue.go).
 	switch {
 	case forItem >= officers.MaxPRsPerItem:
-		return refused("item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
+		return limit(limitItem, "item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
 	case open >= officers.MaxOpenPRsPerRepo:
-		return refused("%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
+		return limit(limitOpen, "%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
 	case today >= g.Ship.NewPRsPerDay():
-		return refused("this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
+		return limit(limitDay, "this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
 	}
 	return nil
 }
@@ -651,11 +659,7 @@ func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch
 		}
 	}
 	for _, pr := range prs {
-		if g.answer(ctx, sr, gh, pr, pr.HeadSHA, g.checkComparison(ctx, sr, gh, baseOf(sr, pr), pr.HeadSHA), "its creation at "+shortSHA(pr.HeadSHA)) {
-			// 🔴 ONLY A CLEAN CREATE IS ANNOUNCED: one the re-check closed is
-			// no pull request HQ should loop on.
-			g.prOpened(ctx, sr, pr)
-		}
+		g.recheckCreated(ctx, sr, gh, pr)
 	}
 }
 
@@ -1067,6 +1071,15 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 			if pr.State != "open" || pr.HeadSHA == "" || (pr.HeadRepo != "" && !strings.EqualFold(pr.HeadRepo, sr.Repo)) {
 				continue
 			}
+			// The stale-draft age-out (prqueue.go; off unless the ship block
+			// enables it): a closed one frees its slot for the drain below.
+			if g.ageOut(ctx, sr, gh, BotLogin(slug), pr) {
+				g.mu.Lock()
+				delete(g.checked, key)
+				delete(g.misses, key)
+				g.mu.Unlock()
+				continue
+			}
 			g.mu.Lock()
 			done := g.checked[key] == pr.HeadSHA
 			g.mu.Unlock()
@@ -1102,6 +1115,12 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 			}
 		}
 		g.mu.Unlock()
+		// 🔴 THE QUEUE'S DRAIN (prqueue.go): with this repository's pull
+		// requests read and the stale ones closed, the oldest queued creates
+		// are opened while the open cap has room.
+		if err := g.drainQueue(ctx, sr, gh); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := g.sweepAnnounce(ctx); err != nil {
 		errs = append(errs, err)

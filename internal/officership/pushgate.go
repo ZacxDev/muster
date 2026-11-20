@@ -125,6 +125,10 @@ type PushGate struct {
 	// Shepherd is a shepherd-stage officer's rules (shepherd.go). nil on a
 	// shepherd: every write is refused (fail closed).
 	Shepherd *Shepherd
+	// Queue is a draft officer's queue of creates the open cap held back
+	// (prqueue.go): with one, such a create is queued (202) and the sweep
+	// opens it once a slot frees. nil: the open cap refuses, as before.
+	Queue PRQueue
 
 	// createSem serialises a draft officer's creates (draftCreate holds it
 	// from the rate-limit read until afterCreate); built once by createOnce.

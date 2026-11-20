@@ -2132,6 +2132,7 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 	} else {
 		b.WriteString(`<section class="flex flex-col gap-3" id="officer-queue"><h2 class="text-sm font-semibold text-fg">Queue</h2><p class="text-sm text-fg2">Its queue is in its HQ.</p></section>`)
 	}
+	b.WriteString(s.officerPRQueueHTML(ctx, sc, v.ID))
 	b.WriteString(`</details>`)
 
 	// Its spend, where the server books it.

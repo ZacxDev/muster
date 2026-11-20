@@ -1919,6 +1919,7 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 | `forbidden_paths` | none | `draft` and `shepherd` only (refused on another stage, which would ignore it; on `shepherd` it is added to each author's own list — [The shepherd stage](#the-shepherd-stage)): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
 | `forbidden_paths_file` | none | `draft` and `shepherd` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
 | `docs_only` | none | `draft` only: `{allowed_paths, max_diff_lines?, max_files?, max_prs_per_day?}`, an allowlist every changed path must match, the fenced-code rule and the size caps — [Docs-only drafts](#docs-only-drafts). |
+| `stale_drafts` | **off** | `draft` only: `{enabled, days?}` (`days` 1–90, default 3). With `enabled: true`, the draft sweep closes each of the officer's own DRAFT pull requests with no activity for `days` days and comments why — an action on GitHub people see, so it is off unless enabled — [The open-pull-request queue](#the-open-pull-request-queue). |
 | `public` | `false` | `draft` and `shepherd` only, per repository (on each `repos` entry, or at the top in the single-repository form): the repository is public, so its pull requests, its officer branches (their names included) and their commits are scanned with `internal_patterns_file` — [Docs-only drafts](#docs-only-drafts). A shepherd's pushes are scanned only where ITS OWN block marks the repository public. |
 | `internal_patterns_file` | none | `draft` and `shepherd` only; **required** with any `public` repository and refused without one: an absolute path on muster-server's disk to the internal-details pattern file. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
@@ -1997,7 +1998,7 @@ each one from there. It is offered none of `officer_mark_ready`,
 | `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
 | The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item (in a repository marked `public`: exactly `Authored from untrusted inputs by an automated agent; review as such`, and no title, body or comment may name the officer's id or slug), and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
 | At create, HQ (read with the officer's own token) must show the **requesting instance** holding the branch's item under a live lease. Another holder, an expired lease, no such claimed item, or HQ unreadable is a refusal. | 403 |
-| At most 4 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's pulls list, every page, keeping those whose author is its bot, the login compared case-insensitively; the issues list is never read, since the App has no Issues permission). The list is read newest created first and stops after the first page that reaches back past the App's creation (`GET /app`'s `created_at`: its bot cannot have opened anything older), so what it costs is the repository's pull requests (anyone's) opened since the App was created, not the repository's whole history. More than 3,000 of those to read is a refusal, never a truncated count, and so is a list that is not newest-first, a listed pull request without a creation time, or an App whose creation cannot be read. Each is counted by the item its body's first line names, or else by its branch. An author filter that does not match the App's login keeps nothing, which is not an error, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
+| At most 4 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state (a create past the **open** limit alone is not refused but **queued**: [The open-pull-request queue](#the-open-pull-request-queue)). They are counted from **every** pull request the officer's App opened in each repository (GitHub's pulls list, every page, keeping those whose author is its bot, the login compared case-insensitively; the issues list is never read, since the App has no Issues permission). The list is read newest created first and stops after the first page that reaches back past the App's creation (`GET /app`'s `created_at`: its bot cannot have opened anything older), so what it costs is the repository's pull requests (anyone's) opened since the App was created, not the repository's whole history. More than 3,000 of those to read is a refusal, never a truncated count, and so is a list that is not newest-first, a listed pull request without a creation time, or an App whose creation cannot be read. Each is counted by the item its body's first line names, or else by its branch. An author filter that does not match the App's login keeps nothing, which is not an error, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
 | One create per officer at a time: a second create waits for the first to be forwarded and re-checked, and is refused after 2 minutes. | 403 |
 | At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read, and refused when it has: a changed, added, removed or renamed-from path matching the repository's forbidden paths; a `.gitattributes` file in any directory (an attribute can mark files `-diff` or `binary` and so hide their diff); a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; a removed `name:` line in a diff that shows one of those kinds (a rename deletes the old resource); an **added** kustomize `$patch: delete`; an entry dropped from a `kustomization.yaml`'s `resources:`/`bases:`/`components:` whose file at the base declares one of those kinds, or that is not a single YAML file muster can read (a directory, a remote base); an **added** line with a credential-shaped value (below), or an env entry whose credential-like `name:` gets a literal `value:` (the unchanged `name:` line counts as context); an added `kind: Secret` with a literal `data:`/`stringData:` value; or a file GitHub shows **no diff** for (an empty patch: a binary file, which GitHub reports with `changes: 0`, a very large file, a pure rename or copy, a mode change — except a removed file with `changes: 0`, a binary or empty file, which is read at the comparison's merge base instead and refused when it declares one of those kinds, holds a credential-shaped value, or cannot be read). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
 | After a push to a branch with an **open** pull request, after a create, and on every sweep, the same comparison check runs (below). | the pull request is **closed**, its branch deleted (on a content hit), and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
@@ -2135,6 +2136,54 @@ neither: they are the instance's to read.
   with `handoff: {head_sha: <the new head>}` ([Completing an
   item](#completing-an-item-outcomes-and-investigation)); HQ refuses it at an
   unchanged head.
+
+### The open-pull-request queue
+
+A create (`POST pulls`) that passes every rule above **but** the open limit —
+4 of the officer's pull requests already open in that repository — is not
+refused. muster checks its comparison as for any create (a hit is the usual
+409, never queued), reads the branch's head, records the create in its queue
+(`officer_pr_queue`, migration 0166: the branch, that head, the title, the
+body and the item) and answers **`202`** `{"queued": true, "message": …}`:
+the pull request is queued, muster opens it itself, and the officer must
+**not** escalate it or ask a human to open it (its charter says so too). The
+per-item and per-day limits still refuse.
+
+- **Its place.** One row per branch. A create asked again from a queued branch
+  refreshes its head, title and body and **keeps its place**; one from a
+  branch whose earlier row was settled queues it again, at the back.
+- **The drain.** Every draft sweep (5 minutes), per repository, after the
+  sweep's own reads and the age-out below, muster takes the repository's
+  queued creates **oldest first** and, while the open limit has room, opens
+  each as a draft with the officer App's token. Before it opens one it reads
+  the branch again: a branch that is **gone** is skipped; a branch whose head
+  is no longer the queued one (a newer push and no new create) is skipped as
+  **superseded**; a branch a pull request is already open from is skipped;
+  the limits again (the open or daily limit still full **stops** the drain, so
+  nothing behind jumps the queue; an item that has its pull request now is
+  skipped); and the comparison at that head (unreadable stops the drain; a hit
+  is skipped and told to HQ as a refusal). An opened one is re-checked and
+  announced to HQ exactly as one the officer opened itself. The claim on the
+  item is not read again: it was checked when the create was asked.
+- **What you see.** Every queue, open and skip is a log line (`QUEUED`,
+  `OPENED queued draft`, `SKIPPED the queued pull request`, each naming the
+  repository and branch). The officer's page lists its queue, in drain order,
+  under **Technical details → Queued pull requests**.
+- **Without a database** the queue is in the process's memory, and a restart
+  forgets it (the branches stay pushed).
+
+**The stale-draft age-out** (`stale_drafts`, **off by default**). A draft
+nobody looks at holds an open slot until a human closes it, and the queue
+behind it never drains. With `"stale_drafts": {"enabled": true, "days": 3}`
+the sweep closes each open DRAFT pull request of the officer's own App whose
+GitHub `updated_at` (the last push, comment, review or edit) is `days` days
+old or more, then comments: *"This draft pull request had no activity for 3
+days, so it was closed automatically to free the open-pull-request slot it
+held. Its branch is kept: reopen this pull request, or open a new one, when
+the work resumes."* (no officer id, no item: it is posted in public
+repositories too). A pull request marked ready for review is never closed.
+Each close is a log line (`CLOSED stale draft`). 🔴 Closing and commenting are
+writes on GitHub that people see: leave it off until you mean it.
 
 **The orphan report.** Once a UTC day (first an hour after boot) muster lists
 each draft officer's branches, older than 7 days by their head commit, that no
