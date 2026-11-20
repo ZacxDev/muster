@@ -576,16 +576,21 @@ from the question and its options, grounded in them by the same filter:
   race with an answer is withdrawn again as soon as it is delivered.
 - On the page a chip fills the answer box; nothing is sent until **Answer**.
   Payload v2's `ask` carries options and suggestions for an app to draw as
-  chips (the shipped app does not yet), leaving out any a secret scan would
+  chips (the app draws the options as buttons, never a suggestion), leaving out any a secret scan would
   redact (a chip is sent whole or not at all), and dropping the suggestions
   first, then the options, when a push would not fit in its 4096-byte record —
   never the question. The page itself, behind the sign-in like `/attention`,
   draws the asker's options as written.
-- **On a paired phone a chip answers** (once the app draws them). Each option
+- **On a paired phone an option answers.** Each option
   and suggestion is also a notification button (payload v2's `actions`):
   tapped, it is confirmed with the phone's step-up key, whose prompt shows the
   exact text, and sent as the ask's answer by a signed action — the same answer
   as this page's ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
+  A **step-up confirmation card** is answered this way, and only this way:
+  its **Confirm** and **Refuse** are notification buttons, and the phone's
+  prompt shows the card's own text, which muster hands the phone with the
+  challenge (`confirms`). This page cannot answer a card
+  ([mirroring.md](mirroring.md#confirming-a-card-from-its-notification)).
 
 ## The agent tools
 

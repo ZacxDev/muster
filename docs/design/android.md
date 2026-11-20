@@ -788,11 +788,20 @@ POST /api/device/challenge          (Authorization: Bearer mdv_…)
 - `text_sha256` is the lowercase hex SHA-256 of the answer's UTF-8 bytes,
   exactly as it will be sent (no trimming on the phone). Required for
   `ask_answer`; absent for `ask_dismiss`.
+- `confirms` is present only when the target is a **step-up confirmation
+  card** whose decision is pending for the phone's owner
+  ([mirroring.md](../mirroring.md#confirming-a-card-from-its-notification)):
+  the card's own text, read from the pending decision. The app shows it in the
+  prompt (step 3) so the owner sees what a Confirm or Refuse decides. It is
+  display only: it changes nothing about what is signed or how muster checks
+  it. Absent for every other ask and for a card already decided or lost.
 - `target` is the ask id in decimal, no leading zeros.
 - The nonce is single use and lives 2 minutes.
 
 **3. The signature.** Show a `BiometricPrompt` whose description repeats the
-exact answer text, with a `CryptoObject` wrapping `Signature.getInstance(
+exact answer text (for a step-up card, the challenge's `confirms`: the title
+"Confirm this request?" or "Refuse this request?" and the card's text, cut to
+1,000 characters with a visible marker), with a `CryptoObject` wrapping `Signature.getInstance(
 "SHA256withECDSA")` initialised with the step-up key; sign the UTF-8 bytes of
 `message` **exactly as returned** (lines joined by `\n`, no trailing newline:
 `muster-device-action-v1`, the nonce, the action, the target, the text's hex
