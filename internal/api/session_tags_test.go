@@ -215,7 +215,7 @@ func TestTheTagRoutesRefuseBadInput(t *testing.T) {
 		want int
 		says string
 	}{
-		{"no kind", url.Values{"agent_id": {"7"}, "tag": {"x"}}, http.StatusBadRequest, "kind must be agent or mirror"},
+		{"no kind", url.Values{"agent_id": {"7"}, "tag": {"x"}}, http.StatusBadRequest, "Something went wrong: this link doesn't say which session it is for."},
 		{"bad agent_id", url.Values{"kind": {"agent"}, "agent_id": {"x"}, "tag": {"x"}}, http.StatusBadRequest, "bad agent_id"},
 		{"a bad host", url.Values{"kind": {"mirror"}, "host": {"Not A Host"}, "session": {"s"}, "tag": {"x"}}, http.StatusBadRequest, "name an agent or a mirrored session"},
 		{"a window index, not an id", url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"chief"}, "window": {"2"}, "tag": {"x"}}, http.StatusBadRequest, ""},

@@ -118,13 +118,18 @@ func (s *Server) renderTeamPage(w http.ResponseWriter, r *http.Request, team int
 		`<p class="text-sm"><a class="text-accent underline" id="team-chief-link" href="/teams/` + id + `/chief">Open the team's chief</a></p></section>`)
 	// The team's host tokens (team_hosts_page.go, team sharing 2b.2).
 	b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Team hosts</h2>` +
-		`<p class="text-sm"><a class="text-accent underline" id="team-hosts-link" href="/teams/` + id + `/hosts">Manage the team's host tokens</a></p>` +
+		`<p class="text-sm"><a class="text-accent underline" id="team-hosts-link" href="/teams/` + id + `/hosts">Manage the team's computers</a></p>` +
 		`<p class="text-sm"><a class="text-accent underline" id="team-plugins-link" href="/teams/` + id + `/plugins">Manage the team's viewer plugins</a></p></section>`)
 	if entries, err := s.gt.Accounts.TeamAudit(ctx, team, 25); err == nil && len(entries) > 0 {
+		// Each line in words, as the admin's activity list (plain_audit.go).
+		people := auditPeople{me: me, users: map[int64]string{}, teams: s.teamNames(ctx, []int64{team})}
+		for _, m := range members {
+			people.users[m.UserID] = personLabel(m.Email, m.DisplayName, m.UserID)
+		}
 		b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Recent team activity</h2><ul class="flex flex-col gap-1 text-sm text-fg2" id="team-audit">`)
+		now := s.now()
 		for _, e := range entries {
-			b.WriteString(`<li><span class="text-fg">` + html.EscapeString(e.Action) + `</span> · by user ` + strconv.FormatInt(e.UserID, 10) +
-				` · ` + fmtTime(e.At) + `</li>`)
+			b.WriteString(`<li>` + auditLineHTML(e, people, now) + `</li>`)
 		}
 		b.WriteString(`</ul></section>`)
 	}

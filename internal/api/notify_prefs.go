@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,10 +27,12 @@ import (
 // accountNotifyTmuxPath is the switch's POST (on=1|0).
 const accountNotifyTmuxPath = "/account/notifications/tmux"
 
-// Its words on the Account page.
+// Its words on the Account page: plain, with the tmux example in the
+// switch's ⓘ (the jargon audit's F082, F083).
 const (
-	notifyTmuxLabel = "Show tmux sessions"
-	notifyTmuxHelp  = "Adds each session's tmux codename (like mango:1 @ atlas) to notifications and the session lists."
+	notifyTmuxLabel   = "Show technical session names"
+	notifyTmuxHelp    = "Adds each session's technical name to notifications and the session lists."
+	notifyTmuxExample = "mango:1 @ atlas"
 )
 
 // notifyTmuxOn reports whether owner turned on "Show tmux session in
@@ -68,10 +72,11 @@ func (s *Server) notifyCodenameFirstOn(ctx context.Context, owner int64) bool {
 // session lists or the Asks list.
 const accountNotifyCodenamePath = "/account/notifications/codename"
 
-// Its words on the Account page.
+// Its words on the Account page, with the example in its ⓘ (F084).
 const (
-	notifyCodenameLabel = "Start notification titles with the tmux name"
-	notifyCodenameHelp  = "Puts each session's tmux name and host (like mango:1@laptop) at the front of its phone and browser notifications, so it shows even when the title is cut."
+	notifyCodenameLabel   = "Start notifications with the computer and session name"
+	notifyCodenameHelp    = "Puts each session's computer and name at the front of its phone and browser notifications, so it shows even when the title is cut."
+	notifyCodenameExample = "mango:1@laptop"
 )
 
 // notifySwitch is one of the Account page's notification switches: its DOM id
@@ -79,8 +84,11 @@ const (
 // save comes back with (which draws its "Saved."), and store halves.
 type notifySwitch struct {
 	id, label, help, path, saved string
-	get                          func(context.Context, int64) (bool, error)
-	set                          func(context.Context, int64, bool) error
+	// example is what the setting adds, as a session's tmux name reads:
+	// drawn in the switch's ⓘ, never in its help line.
+	example string
+	get     func(context.Context, int64) (bool, error)
+	set     func(context.Context, int64, bool) error
 }
 
 // notifySwitches is the Account page's notification switches, in page order.
@@ -91,8 +99,8 @@ func (s *Server) notifySwitches() []notifySwitch {
 		return nil
 	}
 	return []notifySwitch{
-		{id: "notify-tmux", label: notifyTmuxLabel, help: notifyTmuxHelp, path: accountNotifyTmuxPath, saved: "saved", get: p.TmuxAddress, set: p.SetTmuxAddress},
-		{id: "notify-codename", label: notifyCodenameLabel, help: notifyCodenameHelp, path: accountNotifyCodenamePath, saved: "codename-saved", get: p.CodenameFirst, set: p.SetCodenameFirst},
+		{id: "notify-tmux", label: notifyTmuxLabel, help: notifyTmuxHelp, example: notifyTmuxExample, path: accountNotifyTmuxPath, saved: "saved", get: p.TmuxAddress, set: p.SetTmuxAddress},
+		{id: "notify-codename", label: notifyCodenameLabel, help: notifyCodenameHelp, example: notifyCodenameExample, path: accountNotifyCodenamePath, saved: "codename-saved", get: p.CodenameFirst, set: p.SetCodenameFirst},
 	}
 }
 
@@ -141,11 +149,21 @@ func notifySwitchHTML(sw notifySwitch, on bool, saved string) string {
 	}
 	return `<div id="` + sw.id + `" data-testid="` + sw.id + `" data-state="` + state + `" class="flex flex-col gap-2">
 <p class="text-sm font-medium text-fg">` + sw.label + `: <span id="` + sw.id + `-state">` + map[bool]string{true: "On.", false: "Off."}[on] + `</span></p>
-<p class="text-sm text-fg2">` + sw.help + `</p>
+<div class="flex items-center gap-1"><p class="text-sm text-fg2">` + sw.help + `</p>` + notifyExampleSheet(sw) + `</div>
 ` + saved + `<form method="POST" action="` + sw.path + `"><input type="hidden" name="on" value="` + v + `">
 <button type="submit" id="` + sw.id + `-toggle" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">` + button + `: ` + sw.label + `</button></form>
 </div>
 `
+}
+
+// notifyExampleSheet is a switch's ⓘ: what a session's technical name looks
+// like (a tmux session, window and computer). Not setup, so never withheld.
+func notifyExampleSheet(sw notifySwitch) string {
+	if sw.example == "" {
+		return ""
+	}
+	return ui.InfoSheetHTML(ui.InfoSheet{ID: sw.id + "-example", Label: "Example of " + strings.ToLower(sw.label[:1]) + sw.label[1:],
+		Heading: "What it looks like", Lead: "A session in tmux window 1 of the session mango reads:", Code: sw.example, Inline: true})
 }
 
 // handleAccountNotifySwitch is POST /account/notifications/tmux and

@@ -427,7 +427,7 @@ test.describe('a member', () => {
     // The control: this IS the member's Account page.
     await expect(page.getByRole('heading', { name: 'Account', exact: true })).toBeVisible();
     await expect(page.locator('[data-testid="branding"]')).toHaveCount(0);
-    await expect(page.getByText('Instance branding')).toHaveCount(0);
+    await expect(page.getByText('Server name and logo')).toHaveCount(0);
 
     // The route refuses the member's own session from muster's own origin.
     const put = await page.request.fetch(browserURL + '/api/instance/branding', {

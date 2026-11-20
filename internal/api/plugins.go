@@ -9,11 +9,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE PLUGIN INTERFACE (internal/plugins): out-of-process connectors that bring
@@ -567,7 +569,8 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="plugins-page">
 <h1 class="text-balance text-base font-semibold text-fg">Plugins</h1>
-<p class="text-sm text-fg2">A plugin is a separate process that brings messages from another system to your chief agent. It holds a plugin token, which can post messages here and do nothing else. Each message reaches your chief once, marked as untrusted data.</p>
+<div class="flex items-center gap-1"><p class="text-sm text-fg2">` + PluginsLead + `</p>` +
+		ui.InfoSheetHTML(ui.InfoSheet{ID: "plugins-how", Label: "How plugins work", Heading: "How plugins work", Lead: PluginsHow, Inline: true}) + `</div>
 `)
 	b.WriteString(problemNode(problem))
 	if minted != "" {
@@ -595,13 +598,13 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 `)
 	}
 	b.WriteString(`<form method="POST" action="` + pluginsPath + `" class="flex flex-col gap-2" data-testid="plugin-create">
-<label for="plugin-name" class="text-sm font-medium text-fg">Name <span class="text-xs text-fg2">lower-case letters, digits and hyphens</span></label>
+<label for="plugin-name" class="text-sm font-medium text-fg">Name <span class="text-xs text-fg2">lowercase letters, numbers and dashes</span></label>
 <input id="plugin-name" name="name" maxlength="40" placeholder="example-inbox" class="` + flowsInputClass + `">
 <label for="plugin-label" class="text-sm font-medium text-fg">Label <span class="text-xs text-fg2">what your chief's conversation for it is called</span></label>
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
-<label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">optional: where your chief is told to record anything durable from these messages (empty: the name)</span></label>
+<label for="plugin-scope" class="text-sm font-medium text-fg">Notes topic (optional) <span class="text-xs text-fg2">where your chief keeps notes from these messages (empty: the name)</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="the name" class="` + flowsInputClass + `">
-` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginChiefExtensionFieldHTML() + s.pluginDeliverToFieldHTML() + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
+` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginChiefExtensionFieldHTML() + s.pluginDeliverToFieldHTML(r) + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
 `)
@@ -609,16 +612,20 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString(`<li class="text-sm text-fg2">No plugins yet.</li>`)
 	}
 	chiefGated, autostartGated := false, false
+	now := time.Now()
 	for _, p := range list {
+		// Days in words (ui.PlainWhenHTML), never a UTC timestamp (F065).
 		seen := "never seen"
 		if p.LastSeenAt != nil {
-			seen = "last seen " + p.LastSeenAt.UTC().Format("2006-01-02 15:04") + " UTC"
+			seen = ui.PlainWhenHTML("last seen ", *p.LastSeenAt, now)
 		}
 		id := strconv.FormatInt(p.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-plugin-id="` + id + `">
 <span class="break-all text-sm font-semibold text-fg">` + esc(p.Label) + ` <span class="font-mono text-xs text-fg2">` + esc(p.Name) + `</span></span>
-<span class="text-xs text-fg2">scope ` + esc(p.DataScope) + ` · created ` + p.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
-<span class="text-xs text-fg2" data-plugin-capabilities>` + esc(pluginCapabilitiesText(p)) + `</span>
+<span class="text-xs text-fg2">Notes topic: ` + esc(p.DataScope) + ` · ` + ui.PlainWhenHTML("added ", p.CreatedAt, now) + `</span>
+<div class="flex items-center gap-1"><span class="text-xs text-fg2" data-plugin-capabilities>` + esc(pluginCapabilitiesWords(p)) + `</span>` +
+			ui.InfoSheetHTML(ui.InfoSheet{ID: "plugin-" + id + "-caps", Label: "What " + p.Label + " may do, exactly", Heading: "What it may do",
+				Lead: "Its key's permissions, as muster records them:", Code: pluginCapabilitiesText(p), Inline: true}) + `</div>
 <span class="text-xs text-fg2"><span data-plugin-seen>` + seen + `</span> · <span data-plugin-queued="` + strconv.Itoa(queued[p.ID]) + `">` +
 			queuedText(queued[p.ID]) + `</span></span>
 `)
@@ -632,7 +639,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 				b.WriteString(sec)
 				chiefGated = chiefGated || gated
 			}
-			b.WriteString(s.pluginDeliverToFormHTML(p))
+			b.WriteString(s.pluginDeliverToFormHTML(r, p))
 			auto, gated := s.pluginAutostartHTML(r, p)
 			b.WriteString(auto)
 			autostartGated = autostartGated || gated
@@ -773,6 +780,44 @@ const pluginDraftChecksFieldHTML = `<label class="flex min-h-[44px] items-center
 `
 
 // pluginCapabilitiesText is a plugin's capabilities as its card shows them.
+// The Plugins page's lead (the jargon audit's F060), and what its ⓘ says.
+const (
+	PluginsLead = "Plugins bring messages from other apps to your chief."
+	PluginsHow  = "A plugin is a separate program that brings messages from another system to your chief agent. " +
+		"It holds a plugin token, which can post messages here and do nothing else. Each message reaches your chief once, marked as untrusted data."
+)
+
+// pluginCapabilityWords is what each capability lets a plugin do, in words.
+var pluginCapabilityWords = map[plugins.Capability]string{
+	plugins.CapMessages:       "post messages",
+	plugins.CapDraftChecks:    "check drafts",
+	plugins.CapViewer:         "open session previews",
+	plugins.CapChiefExtension: "add to your chief's instructions",
+}
+
+// pluginCapabilitiesWords is p's capabilities as its card says them: "Can
+// post messages and check drafts" (the jargon audit's F063); the raw names
+// are pluginCapabilitiesText, in the card's ⓘ.
+func pluginCapabilitiesWords(p plugins.Plugin) string {
+	var parts []string
+	for _, c := range p.Capabilities {
+		w, ok := pluginCapabilityWords[c]
+		if !ok {
+			w = strings.ReplaceAll(string(c), "_", " ")
+		}
+		parts = append(parts, w)
+	}
+	switch len(parts) {
+	case 0:
+		return "Can do nothing yet"
+	case 1:
+		return "Can " + parts[0]
+	}
+	return "Can " + strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+}
+
+// pluginCapabilitiesText is p's capabilities by their raw names (and its
+// viewer entry address): the card's ⓘ.
 func pluginCapabilitiesText(p plugins.Plugin) string {
 	parts := make([]string, 0, len(p.Capabilities))
 	for _, c := range p.Capabilities {

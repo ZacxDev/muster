@@ -642,7 +642,7 @@ func TestPasswordModeIgnoresGoTrueCookies(t *testing.T) {
 		t.Fatalf("password mode admitted a GoTrue cookie: %d", w.Code)
 	}
 	// And its own login is the password form, as before.
-	if w := do(h, "GET", "/login", nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Operator password") {
+	if w := do(h, "GET", "/login", nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `<label for="muster-password" class="text-sm font-medium text-fg">Password</label>`) {
 		t.Fatalf("password-mode login page changed: %d", w.Code)
 	}
 }
