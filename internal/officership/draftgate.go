@@ -89,16 +89,9 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		return refused("a pull request from %s: %s", head, g.notOwnBranch(sr, err))
 	}
 	title, body := jsonString(m["title"]), jsonString(m["body"])
-	if err := g.bodyContract(sr, body, item); err != nil {
-		return err
-	}
-	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
-		return g.contentRefusal(ctx, sr, 0, "", head, nil, "its title or body has a credential-shaped value")
-	}
-	if why := g.officerNamedWhy(sr, "its title or body", title+"\n"+body); why != "" {
-		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
-	}
-	if why := g.publicTextWhy(sr, "its title or body", title+"\n"+body); why != "" {
+	if contract, why := g.createTextWhy(sr, title, body, item); contract != nil {
+		return contract
+	} else if why != "" {
 		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
 	}
 	if err := g.claimed(ctx, item); err != nil {
@@ -108,13 +101,55 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 		return err
 	}
 	err = g.rateLimits(ctx, sr, item)
-	if err == nil {
+	switch {
+	case err == nil && g.Queue != nil:
+		// 🔴 NO QUEUE-JUMPING (prqueue.go): with a slot free but creates of
+		// this officer still queued in this repository, this one queues behind
+		// them; the drain below opens the oldest first.
+		var ahead int
+		if ahead, err = g.queuedAhead(ctx, sr, head); err == nil && ahead > 0 {
+			err = g.queueCreate(ctx, sr, gh, head, item, title, body,
+				fmt.Sprintf("%d earlier pull request(s) of this officer are queued in %s, and are opened first", ahead, sr.Repo), false)
+		} else if err == nil {
+			err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
+		}
+	case err == nil:
 		err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
+	case isLimit(err, limitOpen) && g.Queue != nil:
+		// 🔴 THE OPEN CAP QUEUES, IT DOES NOT REFUSE (prqueue.go): the create
+		// is checked, recorded and answered 202, the officer's oldest idle
+		// draft is closed to free a slot (closeOldestDraft), and the queue is
+		// drained. Every other limit still refuses.
+		err = g.queueCreate(ctx, sr, gh, head, item, title, body, limitWhy(err), true)
 	}
 	if err != nil {
 		g.releaseCreate()
+		if errors.Is(err, connectors.ErrGateQueued) {
+			// With the create lock released: a slot may be free now (one
+			// just closed, or the create queued behind others), so the
+			// queue is drained at once rather than at the next sweep.
+			g.drainNow(ctx, sr, gh)
+		}
 	}
 	return err
+}
+
+// createTextWhy is THE title-and-body check of a draft officer's new pull
+// request, at the create and again when the drain opens a queued one: contract
+// is the body contract's 403 refusal (bodyContract), why a content refusal's
+// reason — a credential-shaped value, the officer's own id in a public
+// repository, an internal detail there — "" when the text passes.
+func (g *PushGate) createTextWhy(sr officers.ShipRepo, title, body string, item int) (contract error, why string) {
+	if err := g.bodyContract(sr, body, item); err != nil {
+		return err, ""
+	}
+	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
+		return nil, "its title or body has a credential-shaped value"
+	}
+	if why := g.officerNamedWhy(sr, "its title or body", title+"\n"+body); why != "" {
+		return nil, why
+	}
+	return nil, g.publicTextWhy(sr, "its title or body", title+"\n"+body)
 }
 
 // claimed refuses a new pull request for item unless HQ shows the requesting
@@ -283,25 +318,45 @@ func (g *PushGate) officerNamedWhy(sr officers.ShipRepo, what, text string) stri
 // itself (a human may have edited the body); a pull request whose item
 // resolves neither way is not the officer's shape and is not counted.
 func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item int) error {
+	open, today, forItem, err := g.limitCounts(ctx, sr, item)
+	if err != nil {
+		return err
+	}
+	// Each refusal is a limitError of its kind: the open cap queues a create
+	// (queueCreate) and the drain waits on it (prqueue.go).
+	switch {
+	case forItem >= officers.MaxPRsPerItem:
+		return limit(limitItem, "item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
+	case open >= officers.MaxOpenPRsPerRepo:
+		return limit(limitOpen, "%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
+	case today >= g.Ship.NewPRsPerDay():
+		return limit(limitDay, "this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
+	}
+	return nil
+}
+
+// limitCounts is what rateLimits counts for a new pull request for item in
+// sr: the officer's open pull requests in sr, the ones it opened this UTC day
+// across its repositories, and item's in any state (see rateLimits).
+func (g *PushGate) limitCounts(ctx context.Context, sr officers.ShipRepo, item int) (open, today, forItem int, err error) {
 	now := time.Now
 	if g.Now != nil {
 		now = g.Now
 	}
 	t := now().UTC()
 	midnight := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	open, today, forItem := 0, 0, 0
 	for _, r := range g.Ship.RepoList(g.Repo) {
 		gh := g.ghFor(r.Repo)
 		if gh == nil {
-			return fmt.Errorf("no GitHub reader for %s", r.Repo)
+			return 0, 0, 0, fmt.Errorf("no GitHub reader for %s", r.Repo)
 		}
 		slug, err := gh.AppSlug(ctx)
 		if err != nil {
-			return fmt.Errorf("could not read the officer App's identity: %v", err)
+			return 0, 0, 0, fmt.Errorf("could not read the officer App's identity: %v", err)
 		}
 		prs, err := g.officerPRs(ctx, r, gh, BotLogin(slug), "all")
 		if err != nil {
-			return fmt.Errorf("could not list %s's pull requests by this officer: %v", r.Repo, err)
+			return 0, 0, 0, fmt.Errorf("could not list %s's pull requests by this officer: %v", r.Repo, err)
 		}
 		for _, p := range prs {
 			if !strings.EqualFold(p.Author, BotLogin(slug)) || p.AuthorType != "Bot" {
@@ -322,15 +377,7 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 			}
 		}
 	}
-	switch {
-	case forItem >= officers.MaxPRsPerItem:
-		return refused("item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
-	case open >= officers.MaxOpenPRsPerRepo:
-		return refused("%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
-	case today >= g.Ship.NewPRsPerDay():
-		return refused("this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
-	}
-	return nil
+	return open, today, forItem, nil
 }
 
 // itemOf is the item of the officer's pull request p in r: from its body's
@@ -651,11 +698,7 @@ func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch
 		}
 	}
 	for _, pr := range prs {
-		if g.answer(ctx, sr, gh, pr, pr.HeadSHA, g.checkComparison(ctx, sr, gh, baseOf(sr, pr), pr.HeadSHA), "its creation at "+shortSHA(pr.HeadSHA)) {
-			// 🔴 ONLY A CLEAN CREATE IS ANNOUNCED: one the re-check closed is
-			// no pull request HQ should loop on.
-			g.prOpened(ctx, sr, pr)
-		}
+		g.recheckCreated(ctx, sr, gh, pr)
 	}
 }
 
@@ -1102,6 +1145,12 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 			}
 		}
 		g.mu.Unlock()
+		// 🔴 THE QUEUE'S DRAIN (prqueue.go): with this repository's pull
+		// requests read, the oldest queued creates are opened while the open
+		// cap has room (a slot a human freed by closing or merging one).
+		if err := g.drainQueue(ctx, sr, gh); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := g.sweepAnnounce(ctx); err != nil {
 		errs = append(errs, err)

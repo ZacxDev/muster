@@ -40,7 +40,7 @@ var shareClasses = map[string]shareClass{
 	"chief_proposals": {1, 2}, "note_attachments": {1, 2},
 	"note_comments": {1, 2}, "notes": {1, 2}, "officer_items": {1, 2},
 	"officer_pr_loops": {1, 2}, "officer_public_branches": {1, 2}, "officer_connector_blocks": {1, 2},
-	"routing_rules": {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
+	"officer_pr_queue": {1, 2}, "routing_rules": {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
 	"session_prs": {1, 2}, "session_routes": {1, 2}, "task_ref_writes": {1, 2},
 	"task_sessions": {1, 2}, "uploads": {1, 2},
 	// managed: write manager

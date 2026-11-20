@@ -354,6 +354,12 @@ BEGIN
         ALTER TABLE public.host_job_runs DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.host_job_runs ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0169 (officer_pr_queue), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_pr_queue') IS NOT NULL THEN
+        ALTER TABLE public.officer_pr_queue NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_pr_queue DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_pr_queue ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
         ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;

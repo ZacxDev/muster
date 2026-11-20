@@ -126,6 +126,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - morning_reports (0161, one morning report per user per day).
 //   - page_assets, page_version_assets (0164, a page's author assets and the versions using them).
 //   - host_jobs, host_job_runs (0166, scheduled host jobs and their runs).
+//   - officer_pr_queue (0169, a draft officer's creates the open cap held back).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -160,7 +161,8 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"officer_chat_cards",
 	"morning_reports",
 	"page_assets", "page_version_assets",
-	"host_jobs", "host_job_runs"}
+	"host_jobs", "host_job_runs",
+	"officer_pr_queue"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -230,6 +232,7 @@ var wantForeignKeys = []string{
 	"officer_pr_loops|officer_pr_loops_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_public_branches|officer_public_branches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_connector_blocks|officer_connector_blocks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_pr_queue|officer_pr_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0156: a person's looks at officers go with them.
 	"officer_seen|officer_seen_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	// 0157: an owner's cap raises go with them.

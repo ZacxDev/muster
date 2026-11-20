@@ -138,6 +138,10 @@ type officerRuntime struct {
 	// branches when no store is configured (publicBranchesFor), made once.
 	memPublicBranchesOnce sync.Once
 	memPublicBranches     *officers.MemPublicBranchStore
+	// memPRQueue is the in-memory queue of draft officers' held-back creates
+	// when no store is configured (prQueueFor), made once.
+	memPRQueueOnce sync.Once
+	memPRQueue     *officers.MemPRQueueStore
 	// blocks is OfficersConfig.ConnectorBlocks: which items each officer
 	// instance held while a pending grant refused it (connectorBlocks;
 	// officer_connector_rerun.go); memBlocks the in-memory one when none is
@@ -324,6 +328,10 @@ type OfficersConfig struct {
 	// is for (officers.PGPublicBranchStore, migration 0138); nil keeps them in
 	// this process's memory, which a restart forgets.
 	PublicBranches officers.PublicBranchStore
+	// PRQueue keeps draft officers' creates the open cap held back, until the
+	// draft sweep opens them (officers.PGPRQueueStore, migration 0169); nil
+	// keeps them in this process's memory, which a restart forgets.
+	PRQueue officers.PRQueueStore
 	// ConnectorBlocks keeps which items each officer instance held while a
 	// pending connector grant refused it, so approving that grant re-runs
 	// them (officers.PGConnectorBlockStore, migration 0148); nil keeps them
