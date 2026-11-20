@@ -27,6 +27,12 @@ type stateFixture struct {
 	// reads counts transcript reads; readErr, when set, fails them.
 	reads   int
 	readErr error
+	// retries is the deferred withdrawals (clearEpisodeLater), run only when a
+	// test fires them: no real timer outlives a test.
+	retries *clearRetryRec
+	// rechecks is the status hook's deferred re-checks (episodeStatusRun),
+	// likewise run only when a test fires them.
+	rechecks *clearRetryRec
 }
 
 // newStateFixture is the nudge fixture with episodes on, its window idle for
@@ -37,6 +43,7 @@ func newStateFixture(t *testing.T, nudges bool) *stateFixture {
 	f := &stateFixture{nudgeFixture: newNudgeFixture(t, false), clock: time.Now()}
 	f.eps = sessionstate.NewPG(f.pool)
 	f.srv.ext.Episodes = f.eps
+	f.holdClearRetries()
 	if !nudges {
 		f.srv.ext.ChiefNudge, f.srv.ext.ChiefNudges = nil, nil
 	}

@@ -928,8 +928,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// card, so the attention queue hears it through its own hook.
 		mirrorSvc.SetWaitingNotify(srv.AttentionMirrorChanged)
 		// A turn ending (busy → idle) changes no card and no waiting set: the
-		// ask log hears every status change through its own hook.
-		mirrorSvc.SetStatusNotify(srv.AskLogMirrorChanged)
+		// ask log hears every status change through its own hook — and so does
+		// a pushed idle stop, ended the moment the owner takes the window back
+		// (the hub has one slot; MirrorStatusChanged runs both).
+		mirrorSvc.SetStatusNotify(srv.MirrorStatusChanged)
 		// The host-dispatch reconciler's two inputs (host_dispatch_reconcile.go):
 		// every agent-spawned frame, late or not, and every applied listing.
 		mirrorSvc.SetSpawnReplyNotify(srv.HostDispatchSpawnReply)

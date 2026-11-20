@@ -234,7 +234,7 @@ func TestEveryAskCardCarriesItsOwnMicAndItsSessionLink(t *testing.T) {
 }
 
 // TestEveryAnswerBoxTurnsIntoTheRecorder: the operator's 2026-11-12 decision
-// on the Asks boxes — the Asks list's cards, a session page's block and the
+// on the Asks boxes — the Asks list's cards (drawn with a return, as an officer's page draws them, too) and the
 // ask page's composer. Each mic has its waveform (the box's place, with the
 // × and the clock) right after ITS textarea, and its ↑ right before ITS
 // Answer, clicking and hiding exactly that Answer by id: never an option's
@@ -248,7 +248,7 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 	r := httptest.NewRequest("GET", askPagePath(9), nil)
 	for name, page := range map[string]string{
 		"the list":     attentionItemsHTML(items, time.Now()),
-		"a block":      askerAsksHTML(items, "/agents/ptworker-7", time.Now()),
+		"a return":     attentionItemsHTMLTo(items, time.Now(), officersPagePath+"/builtin:triage"),
 		"the composer": askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false),
 	} {
 		tags := dictateTag.FindAllStringSubmatch(page, -1)
@@ -258,7 +258,7 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 		for _, m := range tags {
 			mic, input := m[1], m[2]
 			// Every box draws the round ↑ (ui.DictateSendPill): the Asks list's
-			// cards and a session page's block are ONE form since the design
+			// cards and the form drawn with a return are ONE form since the design
 			// review (a block drew the wide one).
 			submit, shape := input+"-submit", "rounded-full px-5"
 			if mic == "ask-dictate" {
@@ -301,8 +301,8 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 }
 
 // TestNoServiceNoMicOnAnyAnswerBox: with dictation off (dictatePath "") no
-// answer box draws a mic, a note or the script — the list, a session page's
-// block and the ask page's composer alike. The links do not depend on it.
+// answer box draws a mic, a note or the script — the list, the list drawn with a
+// return (an officer's page) and the ask page's composer alike. The links do not depend on it.
 func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 	s := boxServer(t, false)
 	ctx := s.attentionPrincipal(context.Background(), 1)
@@ -311,7 +311,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 	r := httptest.NewRequest("GET", askPagePath(boxNudgeMirror), nil)
 	for name, html := range map[string]string{
 		"the list":      attentionItemsHTML(items, time.Now()),
-		"a block":       askerAsksHTML(items, "/agents/ptworker-7", time.Now()),
+		"a return":      attentionItemsHTMLTo(items, time.Now(), officersPagePath+"/builtin:triage"),
 		"the composer":  askComposerHTML(r, attention.Ask{ID: boxNudgeMirror}, s.dictatePath(), false),
 		"the page's js": ui.DictateScriptHTML(s.dictatePath()),
 	} {

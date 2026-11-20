@@ -329,7 +329,6 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agent_send.go:agentSendBack":                         1,
 	"AgentSessionHref ← internal/api/agents.go:Server.answerSessionOpened":                1,
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
-	"AgentSessionHref ← internal/api/attention_asker.go:askerRef.page":                    1,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
 	"AgentSessionHref ← internal/api/chief_chats.go:Server.answerSideChatOpened":          1,
 	// The views: the session drawer, the chief page's chip strip (its chips name

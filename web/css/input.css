@@ -681,46 +681,6 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
 }
 
 /*
- * The asker block (internal/ui/attention.go, ONE AT A TIME, CLAMPED): a
- * collapsed list shows its first card only, and a question's text is four
- * lines until its in-card "Show more" opens it. Outside every @layer, so the
- * cards' own `flex` and the text's `whitespace-pre-wrap` cannot outrank it.
- */
-#asker-asks [data-asks-collapsed] > [data-attention-item]:not(:first-child) {
-  display: none;
-}
-#asker-asks [data-attention-item] [data-attention-text]:not([data-ask-open]) {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-clamp: 4;
-  overflow: hidden;
-}
-/*
- * While the block shows ONE card (a collapsed list, or a list of one) its cap
- * rises from the max-h-[45vh] utility to 65dvh, so a real card — long
- * options, the mic — fits whole and the conversation's scroller shrinks
- * instead of the card being cut at the block's scroll edge (AskerAsksBlock).
- * The id outranks the utility by specificity.
- *
- * NOT ON AN AGENT'S PAGE ([data-asks-page], askerAsksSection): there the block
- * is capped at 40dvh and shrinks, scrolling inside, so it can never push the
- * composer under the session switcher (an operator report).
- */
-#asker-asks:not([data-asks-page]):has(> [data-asks-collapsed]),
-#asker-asks:not([data-asks-page]):has(> ul > [data-attention-item]:only-child) {
-  max-height: 65vh;
-  max-height: 65dvh;
-}
-/*
- * The heading's fold (AskerAsksHeading, more than one question): folded, the
- * block is its heading row alone.
- */
-#asker-asks[data-asks-folded] > :not(:first-child) {
-  display: none;
-}
-
-/*
  * THE ASKS CARD FEED (internal/ui/asks_card.go, docs/attention.md "The card
  * feed"). Outside every @layer, so a card's own utilities (p-3, flex) cannot
  * outrank the states below.

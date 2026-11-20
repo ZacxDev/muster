@@ -78,6 +78,18 @@
     --mu-idle-5: 204 36 29; /* #CC241D */
     --mu-idle-6: 177 98 134; /* #B16286 */
     --mu-idle-7: 102 92 84; /* #665C54 */
+    /* The servers' colours (web/static/servers.js PALETTE; ui server_switcher.go
+       serverMonogramClasses): the Android app's palette, the SAME in both themes,
+       so a server is one colour on every device. A monogram's black letters
+       read on each at 4.8:1 or more. */
+    --mu-server-0: 124 92 255; /* #7C5CFF */
+    --mu-server-1: 43 182 115; /* #2BB673 */
+    --mu-server-2: 255 138 61; /* #FF8A3D */
+    --mu-server-3: 61 165 255; /* #3DA5FF */
+    --mu-server-4: 232 77 138; /* #E84D8A */
+    --mu-server-5: 232 197 71; /* #E8C547 */
+    --mu-server-6: 71 209 201; /* #47D1C9 */
+    --mu-server-7: 176 180 192; /* #B0B4C0 */
   }
 
   :root:not(.dark) {
@@ -117,5 +129,17 @@
     --mu-idle-5: 204 36 29; /* #CC241D */
     --mu-idle-6: 177 98 134; /* #B16286 */
     --mu-idle-7: 102 92 84; /* #665C54 */
+    /* The servers' colours (web/static/servers.js PALETTE; ui server_switcher.go
+       serverMonogramClasses): the Android app's palette, the SAME in both themes,
+       so a server is one colour on every device. A monogram's black letters
+       read on each at 4.8:1 or more. */
+    --mu-server-0: 124 92 255; /* #7C5CFF */
+    --mu-server-1: 43 182 115; /* #2BB673 */
+    --mu-server-2: 255 138 61; /* #FF8A3D */
+    --mu-server-3: 61 165 255; /* #3DA5FF */
+    --mu-server-4: 232 77 138; /* #E84D8A */
+    --mu-server-5: 232 197 71; /* #E8C547 */
+    --mu-server-6: 71 209 201; /* #47D1C9 */
+    --mu-server-7: 176 180 192; /* #B0B4C0 */
   }
 }

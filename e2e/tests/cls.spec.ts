@@ -156,7 +156,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /account/devices/live': 'an htmx partial (Account → Devices\' list, re-fetched live)',
   'GET /attention/drafts': 'JSON (the Asks page\'s Reply drafts lists, re-fetched live)',
   'GET /attention/log': 'an HTML fragment (the Asks page\'s Log tab panel, fetched when the tab is opened)',
-  'GET /attention/asker': 'an HTML fragment (a session page\'s asks block, re-fetched live)',
+  'GET /attention/asker': 'an HTML fragment (a session page\'s asks badge, re-fetched live)',
   'GET /attention/open/{key}': 'a redirect (a notification\'s tap, resolved to its session or its Asks item)',
   'GET /notify/open': 'a redirect (an agent\'s notification tap to an allowlisted address, re-checked on every tap; no document of its own)',
   'GET /static/': 'static files',

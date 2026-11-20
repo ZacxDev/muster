@@ -59,10 +59,12 @@ dictation is on. An ask's options sit two to a row when there are two to four
 short ones (each at most 18 characters), one to a row otherwise. The question
 is cut to three lines until the card is expanded.
 
-**The answer form is the same everywhere:** on a card here and in a session
-page's asks block, the asker's options first (Answer is then quiet), then the
-one-line box that grows, its mic and **Answer** on one row. A session page has
-no footer, so its Dismiss ends that row.
+**The answer form is the same everywhere:** on a card here and on an
+officer's page, the asker's options first (Answer is then quiet), then the
+one-line box that grows, its mic and **Answer** on one row. An officer's page
+has no footer, so its Dismiss ends that row. A session's page draws no answer
+form: its header counts the asker's open questions and opens them here,
+filtered to that asker (below).
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
@@ -224,19 +226,30 @@ between waiting and idle, and its notification closes when the stop ends:
 began, or answered the prompt it was waiting on; a chief nudge muster sent
 does not count. A prompt answered at the terminal ends the stop the moment its
 host reports the window no longer waiting, and the push and the row go at
-once; a message of your own is seen by the next 30-second pass, and the push
-and the row go then), **you
+once. A message of your own typed into a pushed idle stop is checked the moment
+its host reports the window's status moved (normally busy, about a second after
+you press Enter): the session's transcript is read then, and if your message is
+in it the stop ends and the push and the row go at once. If the transcript does
+not show your message yet at that moment, nothing is decided there, and the
+next 30-second pass reads it again and ends the stop then. A stop that was
+never pushed, and a message the host reports no status change for, are left
+to that pass), **you
 opened the session in muster** (its rendered view or terminal, or the agent's
 conversation, on the web or in the app, which shows the same pages: the push
 and the row go at once; the Agents list, the bar, the Asks page and a prefetch
 do not count, and looking at the window in a tmux terminal outside muster
 cannot be seen), sustained work of its own (2 minutes), or its window gone
 from a host that is online. Whatever ends it, the notification is withdrawn
-as the stop ends, not on a later pass, with two exceptions that the next
-30-second pass closes instead: a stop whose notification was sent less than
-15 seconds before it ended (withdrawing it at once could reach your device
-before the notification itself, which would then stay up), and a stop
-ended because it repeats one you already dealt with. A stop you dealt with (acted in, or opened) is not
+as the stop ends, not on a later pass, with two exceptions. A stop whose
+notification was sent less than 15 seconds before it ended — or, for a stop
+back from a window that went missing, quietly shown again less than 15
+seconds before — is withdrawn once those 15 seconds are up, not at once
+(withdrawing it at once could reach your device before the notification
+itself, which would then stay up); the next 30-second pass is the backstop for
+it. Normally one withdrawal is sent; if muster cannot record that it sent one,
+it may send it again, which closes nothing new. A
+stop ended because it repeats one you already dealt with is closed by the next
+30-second pass. A stop you dealt with (acted in, or opened) is not
 pushed again while the session sits where it was; once it moves, its next
 stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting
@@ -416,8 +429,8 @@ carries it as each item's `name` (absent when the session has no human name).
 
 Every attention text that names a mirrored window — a chief nudge's ask, a
 waiting session, a session question, a mirrored session's own ask (its source
-on the queue, its page's "*<source>* asks" header and the asks block of its
-session page), an answered ask's card and its delivery line ("Queued for …",
+on the queue and its page's "*<source>* asks" header), an answered ask's card
+and its delivery line ("Queued for …",
 "Waiting for … to read it"), a notice, a session-state stop's row, and their
 notifications — names it the same way
 (`mirror.Where`), so you can go straight to it in a terminal. The chief reads
@@ -491,13 +504,29 @@ itself, showing the answer and where it went. It follows the queue live: chips
 that arrive after it opened appear, and a question answered elsewhere shows as
 answered (`internal/api/attention_ask_page.go`).
 
-**The session's page also shows the asker's open questions with the same answer
-form as `/attention`** (its option buttons — a chief's task actions included —
-free text, Dismiss): an agent's page lists that agent's open asks, a window's
-rendered view the asks of the Claude sessions it runs, never another asker's.
-Answering there sends you back to that page; the list follows the queue live (an
-ask answered anywhere leaves it, a new one arrives, never replacing an answer
-you are typing) (`internal/api/attention_asker.go`). A session is not re-notified:
+**The session's page counts the asker's open questions in its header.** An
+agent's page (the chief's included) and a window's rendered view draw a small
+count badge while the asker has questions open: an agent's page counts that
+agent's open asks, a window's rendered view the asks of the Claude sessions it
+runs, never another asker's. It counts what waits on you, as every other
+count does: a team's question you only watch is not counted, nor is a
+session's question to its chief or a notice. The page draws no list of them and no answer form:
+**tap the badge** to open the Asks page filtered to them,
+`/attention?from=<asker>`, where they are answered, dismissed and listed like
+every other card. The count follows the queue live (an ask answered anywhere,
+or a new one, moves it without a reload), and with nothing open the badge is
+not drawn (`internal/api/attention_asker.go`).
+
+**The filtered Asks page** lists, on its Open tab, that asker's open questions
+alone (no notices, waiting sessions or drafts), with a line above the tabs —
+`Showing asks from <name> · Show all` — and its *N open* counts those that wait on you (no drafts or stalled sessions); **Show all**
+is the unfiltered page. The filter is `from=agent:<name>` for an agent, or
+`from=window:<host>:<window id>:<tmux session>` for a mirrored window; the
+other tabs are unfiltered. It is read as you: a `from` naming an agent you
+cannot read or a window that is not one of yours is ignored, and the page
+lists what it lists without it.
+
+A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
@@ -1161,9 +1190,11 @@ sessions) add two things. Every other tool's description, and the
   call is refused, it reads the current definition, and it calls again.
 
 A host's `muster-mirror` (`-mcp-tools-refresh`, on by default) also re-reads
-the tool list every minute and sends `notifications/tools/list_changed` to its
-connected Claude Code sessions when the list changes, so they re-read it without
-reconnecting ([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
+the tool list every minute, and at once when it reconnects to muster. It sends
+`notifications/tools/list_changed` to each connected Claude Code session whose
+last list differs, so it re-reads it without reconnecting, and a session
+from before a mirror restart is made to initialize again
+([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
 refreshes the tool LIST. A definition already saved in a conversation is still
 recovered the way described above.
 

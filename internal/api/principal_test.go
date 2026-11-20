@@ -187,7 +187,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/drafts",
 		// The Asks page's Log tab (ask_log_read.go): the caller's own asks.
 		"GET /attention/log",
-		// A session page's asks block (attention_asker.go).
+		// A session page's asks badge (attention_asker.go).
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",

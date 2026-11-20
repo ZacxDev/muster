@@ -245,8 +245,17 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   expect(routed, "control: the worker's precache of / was the routed one").toBeGreaterThan(0);
   await context.unroute(root);
   // A's shell links the old stylesheet, and A's cache holds it under that URL.
+  //
+  // 🔴 THE BODY IS READ TO THE END. The worker answers this fetch with a
+  // streamed network response, and while that stream is open the worker is
+  // still busy with the fetch: Chromium will not activate a waiting worker
+  // over a busy one, skipWaiting() or not. Left unread, the response pinned A
+  // until the page navigated away, so Reload's SKIP_WAITING activated nothing
+  // and the update below landed only through pwa.js's 3 s fallback reload
+  // (measured: click to B activating ~3040 ms unread, ~25 ms read). On CI the
+  // reload went to /login under A and B never took over: "e2e-a" for 15 s.
   const links = await page.evaluate(async ([build, old]) => {
-    await fetch(old);
+    await (await fetch(old)).text();
     const doc = await (await caches.open('muster-shell-' + build)).match('/');
     return (await doc!.text()).includes('href="' + old + '"');
   }, [versionA, oldCSS]);
@@ -265,6 +274,12 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   await signOutUnderPage(page);
   await page.evaluate(checkForUpdate);
   await expect(page.locator('#sw-update-toast')).toBeVisible();
+  // 🔴 THE PAGE CLOCK IS PAUSED, so Reload's timed fallback cannot fire: B
+  // must take over through SKIP_WAITING itself. The fallback is what hid the
+  // busy worker above: with it running, this passed on most runs and failed
+  // on the ones where the fallback reload did not hand over either.
+  await page.clock.install();
+  await page.clock.pauseAt(Date.now() + 1000);
   await page.locator('[data-sw-reload]').click();
   await expect
     .poll(() => page.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 })

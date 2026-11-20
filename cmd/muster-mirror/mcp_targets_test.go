@@ -158,9 +158,25 @@ func TestABadTargetsFileLeavesTheMirrorRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// With the tool watch on (the default) a call names the MCP session its
+	// initialize was issued, as Claude Code's does.
+	init, _ := http.NewRequest(http.MethodPost, "http://"+listen+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
+	init.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(secret)))
+	iresp, err := http.DefaultClient.Do(init)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, iresp.Body)
+	iresp.Body.Close()
+	session := iresp.Header.Get(mirrorhost.MCPSessionIDHeader)
+	if session == "" {
+		t.Fatalf("initialize issued no session: %d", iresp.StatusCode)
+	}
 	req, _ := http.NewRequest(http.MethodPost, "http://"+listen+"/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"agents_list","arguments":{"instance":"la"}}}`))
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(secret)))
+	req.Header.Set(mirrorhost.MCPSessionIDHeader, session)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

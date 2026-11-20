@@ -719,7 +719,7 @@ var isolationClasses = map[string]routeClass{
 	// The Log tab's panel reads the caller's own asks (row-level security;
 	// TestTheAskLogReadsAreTheCallersOwn drives B against A's rows).
 	"GET /attention/log": classList,
-	// A session page's asks block names its asker by query (?agent=): A's
+	// A session page's asks badge names its asker by query (?from=agent:): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":      classParam,
 	"GET /attention/open/{key}": classParam,
@@ -871,9 +871,10 @@ var wantCanaryForA = []string{
 	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
-	// The attention asks: A's agent's asks block and A's ask's own page show
-	// A's canary-carrying question. (The tap on A's ask opens that page, by
-	// its id — controlMarkers has its own control.)
+	// The attention asks: A's agent's asks badge (its link names the agent)
+	// and A's ask's own page (its canary-carrying question) show A's data.
+	// (The tap on A's ask opens that page, by its id — controlMarkers has its
+	// own control.)
 	"GET /attention/asker", "GET /attention/asks/{id}",
 	// The attention summary through A's personal token: A's canary-carrying
 	// ask is on it (its why is the question).
@@ -1895,8 +1896,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path = strings.NewReplacer("{officer}", url.PathEscape(o.officer), "{name}", "nightly").Replace(path)
 	}
 	if path == "/attention/asker" {
-		// The asks block of A's agent (the agent page's), by name.
-		path += "?" + url.Values{"agent": {o.agentName}}.Encode()
+		// The asks badge of A's agent (the agent page's), by name.
+		path += "?" + askerRef{agent: o.agentName}.query()
 	}
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
