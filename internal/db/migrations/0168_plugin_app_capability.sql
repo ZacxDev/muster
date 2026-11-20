@@ -1,4 +1,4 @@
--- muster 0166 — THE `app` CAPABILITY (docs/design/meetings.md, "The core
+-- muster 0168 — THE `app` CAPABILITY (docs/design/meetings.md, "The core
 -- change: the `app` capability"; docs/plugins.md#app-tab).
 --
 --   plugins.capabilities 'app'   the plugin may have a tab in its owner's
@@ -23,13 +23,20 @@
 -- the mint's (internal/plugins createPluginTx), not constraints here.
 --
 -- 🔴 plugins_capabilities_known IS A WHOLE LIST: a migration that adds a
--- capability rewrites it. If another such migration lands first, renumber this
--- one AND add that capability to the list below;
--- TestEveryKnownCapabilityIsStorable fails until the list matches the Go one.
+-- capability rewrites it, listing EVERY capability, and its ROLLBACK restores
+-- the previous migration's list (internal/db TestPluginCapabilityChecksMatchGo).
+--
+-- 🔴 GUARDED AGAINST db.RLSOn, which re-applies 0104's and 0141's bodies on
+-- every RLS cycle: this body replaces each constraint only while the live one
+-- does not yet admit `app`, and 0104 now adds plugins_viewer_link only when it
+-- is absent (an unguarded 0104 re-added its viewer-only form over this one,
+-- refusing every app row; TestPluginCapabilityChecksMatchGo cycles RLS with an
+-- app row present).
 --
 -- A new column on an owned table: the table's row-level security covers it;
--- not re-applied by db.RLSOn. Must apply after 0165 (the contiguity test
--- refuses a gap); 🔴 RENUMBER IT if another migration takes 0166 first.
+-- not re-applied by db.RLSOn. Written as 0166, renumbered 0168 at merge (after
+-- 0167, the tasks capability). Must apply after 0167 (the contiguity test
+-- refuses a gap); 🔴 RENUMBER IT if another migration takes 0168 first.
 -- Idempotent.
 --
 -- ROLLBACK (revoke every app token FIRST, then roll the image back: an older
@@ -46,8 +53,8 @@
 --     CHECK ((origin IS NULL) = (entry_url IS NULL) AND (origin IS NOT NULL) = ('viewer' = ANY (capabilities)));
 --   ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
 --   ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
---     CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension']::text[]);
---   DELETE FROM schema_migrations WHERE version = 166;
+--     CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension', 'tasks']::text[]);
+--   DELETE FROM schema_migrations WHERE version = 168;
 -- (An app-only plugin cannot keep an empty set, plugins_capabilities_nonempty:
 -- it is revoked first, and its revoked row then names messages, which a
 -- revoked token never opens. Its origin goes with `app`, or the restored
@@ -58,14 +65,22 @@ SET LOCAL lock_timeout = '3s';
 ALTER TABLE public.plugins ADD COLUMN IF NOT EXISTS app_label TEXT;
 ALTER TABLE public.plugins ADD COLUMN IF NOT EXISTS app_icon TEXT;
 
-ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
-ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
-    CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension', 'app']::text[]);
-
-ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_viewer_link;
-ALTER TABLE public.plugins ADD CONSTRAINT plugins_viewer_link
-    CHECK ((origin IS NULL) = (entry_url IS NULL)
-       AND (origin IS NOT NULL) = ('viewer' = ANY (capabilities) OR 'app' = ANY (capabilities)));
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plugins_capabilities_known'
+                   AND conrelid = 'public.plugins'::regclass AND pg_get_constraintdef(oid) LIKE '%''app''%') THEN
+    ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_capabilities_known;
+    ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
+        CHECK (capabilities <@ ARRAY['messages', 'viewer', 'draft_checks', 'chief_extension', 'tasks', 'app']::text[]);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plugins_viewer_link'
+                   AND conrelid = 'public.plugins'::regclass AND pg_get_constraintdef(oid) LIKE '%''app''%') THEN
+    ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_viewer_link;
+    ALTER TABLE public.plugins ADD CONSTRAINT plugins_viewer_link
+        CHECK ((origin IS NULL) = (entry_url IS NULL)
+           AND (origin IS NOT NULL) = ('viewer' = ANY (capabilities) OR 'app' = ANY (capabilities)));
+  END IF;
+END $$;
 
 ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_app_tab;
 ALTER TABLE public.plugins ADD CONSTRAINT plugins_app_tab

@@ -68,7 +68,14 @@ import (
 //
 // 52 → 54: `asks log` and `asks summary` (asks.go), GET /api/asks/log and
 // /api/asks/summary — reading the ask log (docs/asks.md).
-const wantVerbCount = 54
+//
+// 54 → 57: `job list|runs|run` (job.go), /api/host-jobs — scheduled host
+// jobs (docs/host-jobs.md): read what the hosts declare, read a job's runs,
+// run one now. No verb declares or changes a job: that is the host's.
+//
+// 57 → 58: `job forget` (job.go), DELETE /api/host-jobs/{name} — forget a
+// job of a host that is gone (its row, runs and schedule).
+const wantVerbCount = 58
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -165,6 +172,11 @@ var wiring = []struct {
 	// Reading the ask log (asks.go): your asks, and their summary.
 	{"asks log", []string{"asks", "log", "--kind", "plain_text", "--since", "7d"}, "GET /api/asks/log"},
 	{"asks summary", []string{"asks", "summary"}, "GET /api/asks/summary"},
+	// Scheduled host jobs (job.go): the declared jobs, a job's runs, run now.
+	{"job list", []string{"job", "list"}, "GET /api/host-jobs"},
+	{"job runs", []string{"job", "runs", "smoke", "--host", "alpha"}, "GET /api/host-jobs/smoke/runs"},
+	{"job run", []string{"job", "run", "smoke"}, "POST /api/host-jobs/smoke/run"},
+	{"job forget", []string{"job", "forget", "alpha", "smoke"}, "DELETE /api/host-jobs/smoke"},
 }
 
 // tenantWiring is the `tenant …` half of the ledger. These verbs manage files
@@ -347,6 +359,10 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/asks/log", http.StatusOK, `{"asks":[{"id":3,"kind":"plain_text","question":"Shall I continue?","nested":{"a":1}}],"next":null}`)
 			h.json("GET /api/asks/summary", http.StatusOK, `{"total":1,"by_kind":{"plain_text":1},"top_questions":[]}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
+			h.json("GET /api/host-jobs", http.StatusOK, `{"hosts":[]}`)
+			h.json("GET /api/host-jobs/smoke/runs", http.StatusOK, `{"host":"alpha","job":"smoke","runs":[]}`)
+			h.json("POST /api/host-jobs/smoke/run", http.StatusOK, `{"host":"alpha","job":"smoke","run":{"id":4,"status":"running"}}`)
+			h.json("DELETE /api/host-jobs/smoke", http.StatusOK, `{"forgot":"smoke","host":"alpha"}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)
 			h.json("GET /api/doctor", http.StatusOK, `{"auth_mode":"password","hook_token_armed":true,`+

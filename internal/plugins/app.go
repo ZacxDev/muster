@@ -11,7 +11,7 @@ import (
 )
 
 // The `app` capability (docs/design/meetings.md, "The core change: the `app`
-// capability"; migration 0166): a plugin with a tab in its owner's sidebar.
+// capability"; migration 0168): a plugin with a tab in its owner's sidebar.
 // The tab's label and icon are the OWNER's, chosen on /plugins at mint.
 
 const (
@@ -31,7 +31,7 @@ type AppIcon struct {
 // AppIcons is the whole list the /plugins form offers, in its order. A fixed
 // list, so muster never validates an arbitrary grapheme cluster, and the
 // sidebar keeps its one-emoji-per-tab style. Keys are lower-case letters
-// (0166's plugins_app_tab).
+// (0168's plugins_app_tab).
 var AppIcons = []AppIcon{
 	{"video", "📹", "video camera"},
 	{"mic", "🎙️", "microphone"},

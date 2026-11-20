@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -150,36 +149,6 @@ func TestATeamCannotMintAnAppPlugin(t *testing.T) {
 	if _, _, err := s.CreatePlugin(ctx, NewPlugin{Name: "team-viewer", Label: "x", Capabilities: []Capability{CapViewer},
 		Origin: hoOrigin, EntryURL: hoEntry}); err != nil {
 		t.Fatalf("CONTROL: the team's viewer mint: %v", err)
-	}
-}
-
-// TestEveryKnownCapabilityIsStorable pins the relationship between the Go
-// capability list and the database's: plugins_capabilities_known names
-// EXACTLY KnownCapabilities, no more and no fewer. Two PRs that each add a
-// capability in their own migration each rewrite that whole list; this fails
-// on the merged tree when the later migration forgot the other's value.
-func TestEveryKnownCapabilityIsStorable(t *testing.T) {
-	_, pool, _ := pgStore(t)
-	var def string
-	if err := pool.QueryRow(authz.System(context.Background()), `SELECT pg_get_constraintdef(oid) FROM pg_constraint
-		WHERE conname = 'plugins_capabilities_known' AND conrelid = 'public.plugins'::regclass`).Scan(&def); err != nil {
-		t.Fatal(err)
-	}
-	var inDB []string
-	for _, m := range regexp.MustCompile(`'([a-z_]+)'::text`).FindAllStringSubmatch(def, -1) {
-		inDB = append(inDB, m[1])
-	}
-	if len(inDB) == 0 {
-		t.Fatalf("read no capability out of %q: the pattern is wrong, not the list", def)
-	}
-	var inGo []string
-	for _, c := range KnownCapabilities {
-		inGo = append(inGo, string(c))
-	}
-	slices.Sort(inDB)
-	slices.Sort(inGo)
-	if !slices.Equal(inDB, inGo) {
-		t.Fatalf("plugins_capabilities_known names %v; KnownCapabilities is %v (constraint: %s)", inDB, inGo, def)
 	}
 }
 

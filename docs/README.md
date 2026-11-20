@@ -53,6 +53,7 @@ it off. The full list of features, with every `.env` line, is
 - [glossary.md](glossary.md) — the words these documents use, each linked to its page
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
+- [host-jobs.md](host-jobs.md) — scheduled host jobs: a fixed command a mirrored machine runs on a cron, its output a version of a page, its runs listed and its failures in Attention (`muster job`)
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
 - [suggested-replies.md](suggested-replies.md) — AI-suggested replies for a mirrored session's composer: when they appear, what is sent, and how they stay grounded
 - [asks.md](asks.md) — the ask log: every question an agent puts to you, its answer and how long it took, recorded for review and read back on the Asks page's Log tab, the API and `muster asks` (phase 1 of ask auto-approval)

@@ -83,6 +83,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/hostjobs"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/memorelay"
@@ -939,6 +940,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// And its outcome half (host_dispatch_outcome.go): an opencode
 		// dispatch's final reply, and a later turn re-arming a done one.
 		mirrorSvc.SetOutcomesNotify(srv.HostDispatchOutcomes)
+		// Scheduled host jobs (internal/api hostjobs.go): with a database,
+		// each host's declared jobs and each run's result.
+		if a.pool != nil {
+			srv.EnableHostJobs(hostjobs.NewPG(a.pool))
+			mirrorSvc.SetJobsNotify(srv.HostJobsReported)
+			mirrorSvc.SetJobResultNotify(srv.HostJobResult)
+		}
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -1520,6 +1528,13 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	a.loop(ctx, "a.srv.RunAskLogSweep", func(ctx context.Context) { a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval) })
 	// Host dispatches whose host was not seen for a day end (and free their slot).
 	a.loop(ctx, "a.srv.RunHostDispatchSweep", func(ctx context.Context) { a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval) })
+	// Scheduled host jobs: due crons fired, overdue results called lost
+	// (returns at once while jobs are off). A fire is a compare-and-set on
+	// the job's next fire, so it is never fired twice; but a host is
+	// connected to ONE muster process (the mirror hub is in memory), so with
+	// more than one replica a pod not holding the host's connection would
+	// record it offline. The mirror, and so this, needs one replica.
+	a.loop(ctx, "a.srv.RunHostJobScheduler", func(ctx context.Context) { a.srv.RunHostJobScheduler(ctx, api.HostJobScheduleInterval) })
 	// Task claims whose session ended (its window gone from a reporting host)
 	// are released (returns at once without a mirror).
 	a.loop(ctx, "a.srv.RunClaimSweep", func(ctx context.Context) { a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval) })

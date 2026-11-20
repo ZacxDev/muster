@@ -50,6 +50,7 @@ var backgroundLoops = map[string]string{
 	"a.srv.RunRouteTimeouts":         rowOwners,
 	"a.srv.RunAttentionSweep":        rowOwners,
 	"a.srv.RunHostDispatchSweep":     rowOwners,
+	"a.srv.RunHostJobScheduler":      rowOwners,
 	"a.srv.RunClaimSweep":            rowOwners,
 	"a.srv.RunAgentWatchdog":         rowOwners,
 	"a.memo.Run":                     noOwner,

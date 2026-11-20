@@ -6,10 +6,11 @@ import (
 	"strings"
 )
 
-// KnownCapabilities is every capability muster knows, in its fixed order.
-// 🔴 0102's plugins_capabilities_known must list exactly these
-// (TestEveryKnownCapabilityIsStorable): add one here and in a migration.
-var KnownCapabilities = []Capability{CapMessages, CapViewer, CapDraftChecks, CapChiefExtension, CapApp}
+// KnownCapabilities is every capability muster knows, in its fixed order:
+// what validCapabilities admits, and — pinned by internal/db
+// TestPluginCapabilityChecksMatchGo — exactly the plugins_capabilities_known
+// CHECK's list.
+var KnownCapabilities = []Capability{CapMessages, CapViewer, CapDraftChecks, CapChiefExtension, CapTasks, CapApp}
 
 // validCapabilities is caps, de-duplicated and in a fixed order, or ErrInvalid
 // when it is empty or names a capability muster does not know (0102's CHECKs,
@@ -24,7 +25,7 @@ func validCapabilities(caps []Capability) ([]Capability, error) {
 	}
 	for _, c := range caps {
 		if !slices.Contains(known, c) {
-			return nil, invalid("%q is not a plugin capability (messages, viewer, draft_checks, chief_extension, app)", string(c))
+			return nil, invalid("%q is not a plugin capability (messages, viewer, draft_checks, chief_extension, tasks, app)", string(c))
 		}
 	}
 	if len(out) == 0 {

@@ -123,7 +123,7 @@ var pluginRowReads = map[string]string{
 	"PGStore.ApproveChiefInstructions": "own",
 	"PGStore.SetDeliverTo":             "own",
 	"PGStore.MintHandoff":              "own",
-	"PGStore.appMintChecks":            "own", // 0166: the five-live-app cap counts the principal's own
+	"PGStore.appMintChecks":            "own", // 0168: the five-live-app cap counts the principal's own
 	"PGStore.Plugin":                   "by id: a message's own plugin, read where the message is (delivery under System, a session's route)",
 	"PGStore.Authenticate":             "the token lookup, under System: how the owner is learned",
 	"PGStore.createPluginTx":           "an insert: owner_id is the principal's (the column's default)",

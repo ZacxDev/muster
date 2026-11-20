@@ -687,7 +687,7 @@ means a push service accepted it, not that the device showed it.
 | | limit |
 |---|---|
 | pages per owner | 200 |
-| versions per page | 100 |
+| versions per page | 100 (a page muster makes for a [scheduled host job](host-jobs.md#the-page) keeps its newest 100 instead: the oldest version nothing references is dropped) |
 | a version | 512 KiB, 100 blocks; an `html` block 256 KiB; a `markdown` block 64 KiB |
 | pending and live links per page | 10 |
 | a submit's data | 32 KiB |

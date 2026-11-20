@@ -5,26 +5,26 @@ import (
 	"testing"
 )
 
-// TestMigration0166PluginAppCapability: at 0165 plugins refuses `app` (the
-// control); at 0166 an `app` row needs an origin, an entry URL, a tab label
+// TestMigration0168PluginAppCapability: at 0167 plugins refuses `app` (the
+// control); at 0168 an `app` row needs an origin, an entry URL, a tab label
 // and an icon, and only an `app` row may carry a label or icon. A viewer row
-// from before 0166 is untouched and still valid, the label is 1..24
+// from before 0168 is untouched and still valid, the label is 1..24
 // characters and the icon a lower-case key. Re-applying the body is harmless,
 // and the header's ROLLBACK block runs as written.
-func TestMigration0166PluginAppCapability(t *testing.T) {
+func TestMigration0168PluginAppCapability(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0166_plugin_app", 165)
+	pool := freshAt(ctx, t, "ms_0168_plugin_app", 167)
 	const cols = `(owner_id, name, label, token_hash, data_scope, capabilities, origin, entry_url`
 	const o, e = `'https://*.apps.example.net'`, `'https://m.apps.example.net/enter'`
 	if _, err := pool.Exec(ctx, `INSERT INTO plugins `+cols+`) VALUES (1, 'app-early', 'x', 'h-early', 'none', '{app}', `+o+`, `+e+`)`); err == nil {
-		t.Fatal("control: before 0166 plugins accepted the app capability")
+		t.Fatal("control: before 0168 plugins accepted the app capability")
 	}
 	viewer := itoa(scanID(ctx, t, pool, `INSERT INTO plugins `+cols+`) VALUES (1, 'viewer-old', 'x', 'h-viewer', 'none', '{viewer}', `+o+`, `+e+`) RETURNING id`))
-	applyThroughFrom(ctx, t, pool, 166)
+	applyThroughFrom(ctx, t, pool, 168)
 
 	var label, icon *string
 	if err := pool.QueryRow(ctx, `SELECT app_label, app_icon FROM plugins WHERE id = `+viewer).Scan(&label, &icon); err != nil || label != nil || icon != nil {
-		t.Fatalf("the viewer row from before 0166: label %v icon %v (%v); want both NULL", label, icon, err)
+		t.Fatalf("the viewer row from before 0168: label %v icon %v (%v); want both NULL", label, icon, err)
 	}
 	n := 0
 	insert := func(caps, origin, entry, label, icon string) error {
@@ -60,11 +60,11 @@ func TestMigration0166PluginAppCapability(t *testing.T) {
 			t.Errorf("refused %s: %v", why, err)
 		}
 	}
-	if _, err := pool.Exec(ctx, readMigration(t, "0166_plugin_app_capability.sql")); err != nil {
-		t.Fatalf("re-applying 0166: %v", err)
+	if _, err := pool.Exec(ctx, readMigration(t, "0168_plugin_app_capability.sql")); err != nil {
+		t.Fatalf("re-applying 0168: %v", err)
 	}
 	appOnly := itoa(scanID(ctx, t, pool, `SELECT id FROM plugins WHERE capabilities = '{app}' LIMIT 1`))
-	for _, q := range asksRollbackSQL(t, "0166_plugin_app_capability.sql") {
+	for _, q := range asksRollbackSQL(t, "0168_plugin_app_capability.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}

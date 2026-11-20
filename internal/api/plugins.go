@@ -52,9 +52,29 @@ const (
 // plugins.capabilities admits (0102's CHECK), so no row can hold it.
 const pluginCapAny plugins.Capability = "(any live token)"
 
+// pluginCapFilesTasks is the capability of POST /plugin/v1/tasks: messages OR
+// tasks (docs/design/meetings.md decision 11). Like pluginCapAny it is no value
+// plugins.capabilities admits; pluginTokenHas is the one place it is read.
+const pluginCapFilesTasks plugins.Capability = "(messages or tasks)"
+
+// pluginTokenHas is THE ONE PLACE requirePluginToken admits a capability: p
+// opens a route that needs need.
+func pluginTokenHas(p plugins.Plugin, need plugins.Capability) bool {
+	switch need {
+	case pluginCapAny:
+		return true
+	case pluginCapFilesTasks:
+		return p.Has(plugins.CapMessages) || p.Has(plugins.CapTasks)
+	}
+	return p.Has(need)
+}
+
 // PluginCapabilityRefusal is the 403 body when a live plugin token lacks the
 // capability its route needs. It names the capability, not the token's own set.
 func PluginCapabilityRefusal(c plugins.Capability) string {
+	if c == pluginCapFilesTasks {
+		return "this plugin token has neither the \"messages\" nor the \"tasks\" capability this route needs"
+	}
 	return "this plugin token does not have the \"" + string(c) + "\" capability this route needs"
 }
 
@@ -74,6 +94,8 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Checks replies on or off for an existing plugin (draft_checks), with the
 	// same token: revoke's gate — a session and a same-origin form, no step-up.
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/draft-checks", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginDraftChecksToggle)))
+	// Files tasks on or off (plugin_tasks_capability.go): draft-checks' gate.
+	mux.HandleFunc("POST "+pluginsPath+"/{id}/tasks", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginTasksToggle)))
 	// Binding a plugin to a builtin officer (plugin_outbound.go): the card's
 	// form (revoke's gate), and the admin REST door behind the hook tier.
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/deliver-to", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginDeliverToForm)))
@@ -124,7 +146,8 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// An outbound draft's media, uploaded at its check (plugin_outbound.go).
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/media", s.requirePluginToken(s.handlePluginDraftMedia, plugins.CapDraftChecks))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
-	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, plugins.CapMessages))
+	// messages OR tasks: the one route a tasks token opens (but /self).
+	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, pluginCapFilesTasks))
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
 	// the writes people and agents queued on this plugin's references.
 	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList, plugins.CapMessages))
@@ -207,7 +230,7 @@ func (s *Server) requirePluginToken(next http.HandlerFunc, need plugins.Capabili
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamPluginRouteRefusal})
 			return
 		}
-		if need != pluginCapAny && !p.Has(need) {
+		if !pluginTokenHas(p, need) {
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PluginCapabilityRefusal(need)})
 			return
 		}
@@ -604,7 +627,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
 <label for="plugin-scope" class="text-sm font-medium text-fg">Notes topic (optional) <span class="text-xs text-fg2">where your chief keeps notes from these messages (empty: the name)</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="the name" class="` + flowsInputClass + `">
-` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginChiefExtensionFieldHTML() + s.pluginDeliverToFieldHTML(r) + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
+` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginChiefExtensionFieldHTML() + pluginTasksField + s.pluginDeliverToFieldHTML(r) + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
 `)
@@ -633,6 +656,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
 		} else {
 			b.WriteString(pluginDraftChecksToggleHTML(p))
+			b.WriteString(s.pluginTasksToggleHTML(p))
 			if s.chiefInstructions() != nil {
 				b.WriteString(pluginChiefExtensionToggleHTML(p))
 				sec, gated := s.pluginChiefInstructionsHTML(r, p)
@@ -709,7 +733,8 @@ func queuedText(n int) string {
 // from it and an entry URL under that origin (plugins.ValidViewerLink); `app`
 // also takes the tab label and icon (the store validates them, and reads them
 // only for an `app` token). The set is fixed at mint, but for draft_checks
-// (handlePluginDraftChecksToggle).
+// (handlePluginDraftChecksToggle), chief_extension and tasks
+// (handlePluginTasksToggle).
 func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) {
 	in := plugins.NewPlugin{Name: strings.TrimSpace(r.PostFormValue("name")), Label: r.PostFormValue("label"),
 		DataScope: strings.TrimSpace(r.PostFormValue("data_scope")), DeliverTo: strings.TrimSpace(r.PostFormValue("deliver_to"))}
@@ -721,8 +746,14 @@ func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) 
 	for _, c := range r.PostForm["capability"] {
 		in.Capabilities = append(in.Capabilities, plugins.Capability(c))
 	}
-	if len(in.Capabilities) == 0 {
+	// Files tasks (pluginTasksField): ticked with no capability chosen, it
+	// takes the place of the messages default — a token that files tasks only.
+	tasks := r.PostFormValue("tasks") == "1"
+	if len(in.Capabilities) == 0 && !tasks {
 		in.Capabilities = []plugins.Capability{plugins.CapMessages}
+	}
+	if tasks && !slices.Contains(in.Capabilities, plugins.CapTasks) {
+		in.Capabilities = append(in.Capabilities, plugins.CapTasks)
 	}
 	// draft_checks is its own checkbox, drawn whatever MUSTER_PLUGIN_ORIGINS
 	// says (pluginDraftChecksFieldHTML): a messages plugin that checks each
@@ -815,6 +846,7 @@ var pluginCapabilityWords = map[plugins.Capability]string{
 	plugins.CapDraftChecks:    "check drafts",
 	plugins.CapViewer:         "open session previews",
 	plugins.CapChiefExtension: "add to your chief's instructions",
+	plugins.CapTasks:          "file tasks",
 	plugins.CapApp:            "have a tab in your sidebar",
 }
 

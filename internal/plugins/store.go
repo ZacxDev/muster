@@ -525,7 +525,8 @@ func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plug
 
 // setCapabilityTx turns capability c on or off for the principal's LIVE
 // plugin id in tx, changing that one capability and no other: THE ONE WRITER
-// of plugins.capabilities after the mint (SetDraftChecks, SetChiefExtension).
+// of plugins.capabilities after the mint (SetDraftChecks, SetChiefExtension,
+// SetTasks).
 // The new set passes validCapabilities, the mint's rule. A plugin that already
 // has the asked state changes nothing (changed false, no audit row).
 // ErrNotFound for none, another owner's (row-level security and
@@ -577,6 +578,20 @@ func (s *PGStore) SetChiefExtension(ctx context.Context, id int64, on bool) (p P
 			return err
 		}
 		_, err = tx.Exec(ctx, `DELETE FROM plugin_chief_instructions WHERE plugin_id = $1`, id)
+		return err
+	})
+	return p, changed, err
+}
+
+// SetTasks turns CapTasks on or off for the principal's LIVE plugin id,
+// keeping its token and row (setCapabilityTx: the owner filter, the mint's
+// rule, the plugin.capability.changed audit row). Nothing else moves with it:
+// the tasks it filed stay. ErrNotFound as setCapabilityTx; ErrInvalid when off
+// would leave no capability.
+func (s *PGStore) SetTasks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		p, changed, err = setCapabilityTx(ctx, tx, id, CapTasks, on)
 		return err
 	})
 	return p, changed, err

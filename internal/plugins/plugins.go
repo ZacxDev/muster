@@ -170,8 +170,15 @@ const (
 	// chief nothing. Chosen at mint, and toggled on the plugin's card, as
 	// CapDraftChecks is.
 	CapChiefExtension Capability = "chief_extension"
+	// CapTasks is a plugin that FILES TASKS and nothing else (migration 0167,
+	// docs/design/meetings.md decision 11): it opens POST /plugin/v1/tasks,
+	// filing and commenting by key. CapMessages opens that route too, so a
+	// messages token is unchanged. A token with CapTasks and not CapMessages
+	// may not route a notice to the chief (route_to_chief) nor upsert a task
+	// reference, both messages powers (internal/api plugin_tasks.go).
+	CapTasks Capability = "tasks"
 	// CapApp is a plugin with a tab in its owner's sidebar that opens its page
-	// full width (docs/design/meetings.md, migration 0166). It carries an
+	// full width (docs/design/meetings.md, migration 0168). It carries an
 	// origin and entry URL as CapViewer does (the same columns, the same
 	// ValidViewerLink rule), plus the owner's tab label and icon (app.go).
 	// Chosen on /plugins only (never paired), fixed at mint.

@@ -301,8 +301,8 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID <= 0 && c.MirrorTmuxSession != "" && c.MirrorWindow != "" {
 			tmuxSess, win = truncate(c.MirrorTmuxSession, 200), truncate(c.MirrorWindow, 200)
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, mirror_tmux_session, mirror_window, creator_label, created_by_user)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+pageCols, title, agent, c.MirrorHost, sess, tmuxSess, win, truncate(c.Label, 200), byUser)
+		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, mirror_tmux_session, mirror_window, creator_label, created_by_user, rolling_versions)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+pageCols, title, agent, c.MirrorHost, sess, tmuxSess, win, truncate(c.Label, 200), byUser, c.RollingVersions)
 		var err error
 		if p, err = scanPage(row); err != nil {
 			return err
@@ -327,11 +327,19 @@ func (s *PGStore) AddVersion(ctx context.Context, c Creator, id int64, title str
 			append([]any{id}, args...)...)); err != nil {
 			return err
 		}
-		var last int
-		if err := tx.QueryRow(ctx, `SELECT coalesce(max(version), 0) FROM page_versions WHERE page_id = $1`, id).Scan(&last); err != nil {
+		var last, held int
+		var rolling bool
+		if err := tx.QueryRow(ctx, `SELECT coalesce(max(v.version), 0), count(v.version), (SELECT rolling_versions FROM pages WHERE id = $1)
+			FROM page_versions v WHERE v.page_id = $1`, id).Scan(&last, &held, &rolling); err != nil {
 			return err
 		}
-		if last >= MaxVersionsPerPage {
+		if rolling {
+			// A rolling page counts the versions it HOLDS (numbers keep
+			// rising: a version number is never reused).
+			if err := rollingDrop(ctx, tx, id, held); err != nil {
+				return err
+			}
+		} else if last >= MaxVersionsPerPage {
 			return fmt.Errorf("%w: page %d has %d versions, the most a page may", ErrTooMany, id, last)
 		}
 		if v, err = insertVersion(ctx, tx, id, last+1, title, blocks, size, truncate(c.Label, 200)); err != nil {
@@ -345,6 +353,42 @@ func (s *PGStore) AddVersion(ctx context.Context, c Creator, id int64, title str
 		return Page{}, Version{}, wrap("add version", err)
 	}
 	return p, v, nil
+}
+
+// rollingDrop makes room for one more version on ROLLING page id, which holds
+// held versions, under the page row's lock (AddVersion): while it holds
+// MaxVersionsPerPage or more, its OLDEST version that nothing references is
+// deleted. 🔴 A REFERENCED VERSION IS NEVER DROPPED, so what anyone was
+// shown stays what it was:
+//   - the CURRENT version (pages.current_version): what the owner's view and
+//     every live share link serve — a link serves the current version, never
+//     a pinned one;
+//   - a version a RESPONSE was sent at (page_responses.version), whoever sent
+//     it: its row says what the sender saw.
+//
+// Every other version is unreferenced, and is dropped oldest first. A page
+// whose every version is referenced cannot make room: ErrTooMany, as a
+// non-rolling page at the cap. The versions that remain are never rewritten.
+// A dropped version's asset uses (page_version_assets) go with it, by 0164's
+// cascade; its ASSETS stay the page's, deletable once no kept version uses
+// them (TestARollingPageDropsAVersionThatUsesAnAsset).
+func rollingDrop(ctx context.Context, tx pgx.Tx, id int64, held int) error {
+	excess := held - MaxVersionsPerPage + 1
+	if excess <= 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM page_versions WHERE id IN (
+		SELECT v.id FROM page_versions v JOIN pages p ON p.id = v.page_id
+		WHERE v.page_id = $1 AND v.version <> p.current_version
+		  AND NOT EXISTS (SELECT 1 FROM page_responses r WHERE r.page_id = v.page_id AND r.version = v.version)
+		ORDER BY v.version LIMIT $2)`, id, excess)
+	if err != nil {
+		return err
+	}
+	if int(tag.RowsAffected()) < excess {
+		return fmt.Errorf("%w: page %d holds %d versions, the most a page may, and every older one is the current version or has a response", ErrTooMany, id, held)
+	}
+	return nil
 }
 
 // PageFor reads c's page.
@@ -929,6 +973,13 @@ func scanResponse(row pgx.Row) (Response, error) {
 func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component string, kind ResponseKind, data []byte, uploadID string) (Response, error) {
 	var out Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		// The page row first (page, then link: CloseLinks' order), which the
+		// response's own updated_at write takes anyway: so a rolling page's
+		// AddVersion (rollingDrop) never drops the version this response is
+		// being written at while it is uncommitted.
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM pages WHERE id = $1 FOR UPDATE`, l.PageID); err != nil {
+			return err
+		}
 		var state string
 		if err := tx.QueryRow(ctx, `SELECT state FROM page_links WHERE id = $1 AND page_id = $2 FOR UPDATE`,
 			l.ID, l.PageID).Scan(&state); err != nil {

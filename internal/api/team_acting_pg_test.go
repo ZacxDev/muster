@@ -126,6 +126,9 @@ const (
 	refusedByWithPrincipal = "panics: a team never signs in, and that door does not act as a team"
 	// refusedToolless: turnPrincipal answers false — the turn goes toolless.
 	refusedToolless = "false: a team's gateway turn goes toolless (no team gateway agents in phase 4)"
+	// refusedHostJobNoTeam: hostJobPrincipal answers false — a team host's
+	// jobs are refused (a job writes a personal page).
+	refusedHostJobNoTeam = "false: a team host's jobs are refused (a job writes a personal page)"
 	// refusedStepUpNoTeam: stepUpPrincipal panics with stepUpTeamRefusal.
 	refusedStepUpNoTeam = "panics: a team has no phone, and a team host files no step-up card"
 	// refusedChatNoTeam: chatPersonPrincipal answers false — an operator
@@ -205,6 +208,14 @@ var perOwnerSites = map[string]perOwnerSite{
 	"turnPrincipal": {refusal: refusedToolless,
 		mint: func(s *Server, ctx context.Context, _ int64, a agents.Agent) context.Context {
 			out, ok := s.turnPrincipal(ctx, a, authz.ViaKickoff)
+			if ok {
+				return out
+			}
+			return nil
+		}},
+	"hostJobPrincipal": {refusal: refusedHostJobNoTeam,
+		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
+			out, ok := s.hostJobPrincipal(ctx, team)
 			if ok {
 				return out
 			}
@@ -413,7 +424,7 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 					if msg != "step-up: a team has no phone, and a team host files no step-up card (teamHostTools refuses every owner-authority tool)" {
 						t.Fatalf("%s with a team owner: panic %q, ctx %v; want the step-up runner's own refusal", name, msg, ctx)
 					}
-				case refusedToolless, refusedChatNoTeam:
+				case refusedToolless, refusedChatNoTeam, refusedHostJobNoTeam:
 					if msg != "" || ctx != nil {
 						t.Fatalf("%s with a team-owned agent: panic %q, ok %v; want false, no panic", name, msg, ctx != nil)
 					}
@@ -441,8 +452,8 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 12 || refusing != 4 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 12 and 4", acting, refusing)
+	if acting != 12 || refusing != 5 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 12 and 5", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through

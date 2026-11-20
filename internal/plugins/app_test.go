@@ -50,7 +50,7 @@ func TestValidAppLabel(t *testing.T) {
 
 // TestValidAppIcon: only a key from AppIcons is a tab icon: not an emoji
 // itself, an unknown key or nothing. Every key in the list passes and matches
-// 0166's plugins_app_tab pattern, and no key or emoji appears twice.
+// 0168's plugins_app_tab pattern, and no key or emoji appears twice.
 func TestValidAppIcon(t *testing.T) {
 	dbKey := regexp.MustCompile(`^[a-z]{1,16}$`)
 	keys, emoji := map[string]bool{}, map[string]bool{}
@@ -59,7 +59,7 @@ func TestValidAppIcon(t *testing.T) {
 			t.Errorf("ValidAppIcon(%q) = %v; want accepted", i.Key, err)
 		}
 		if !dbKey.MatchString(i.Key) {
-			t.Errorf("icon key %q does not match 0166's ^[a-z]{1,16}$", i.Key)
+			t.Errorf("icon key %q does not match 0168's ^[a-z]{1,16}$", i.Key)
 		}
 		if keys[i.Key] || emoji[i.Emoji] {
 			t.Errorf("icon %q / %q is listed twice", i.Key, i.Emoji)

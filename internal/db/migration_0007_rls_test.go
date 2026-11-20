@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message, device, page, link, contact int64
+	var note, agent, session, plugin, message, device, page, link, contact, hostJob int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -126,6 +126,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO fleet_actions (class, proposer, subject_kind, subject_key, episode_id, text, text_sha256, state) VALUES ('continue', 'chief', 'mirror', $1, 1, 'go on', repeat('0', 64), 'proposed')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO officer_chat_cards (officer_owner, officer, kind, draft_id, body_sha256, media_sha256, card_sha256) VALUES (1, 'draft:example-' || lower($1), 'draft', 1, repeat('a', 64), '{}', repeat('b', 64))`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO morning_reports (day, window_since, window_until, quiet) VALUES ('2000-01-02', '2000-01-01T14:00:00Z', '2000-01-02T14:00:00Z', true)`, func() []any { return nil }, nil},
+		{`INSERT INTO host_jobs (host, name, cron, command, timeout_s, reported_at) VALUES ('host-a', 'smoke-' || lower($1), '0 6 * * *', '{/bin/true}', 60, now()) RETURNING id`, func() []any { return []any{tag} }, &hostJob},
+		{`INSERT INTO host_job_runs (job_id, host, job, trigger, status, timeout_s, fired_at) VALUES ($1, 'host-a', 'smoke', 'cron', 'ok', 60, now())`, func() []any { return []any{hostJob} }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
