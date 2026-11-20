@@ -728,11 +728,13 @@ func queuedText(n int) string {
 
 // pluginCreateInput reads the create form. With no `capability` field (the
 // form while MUSTER_PLUGIN_ORIGINS is unset, and any older client) the token
-// gets messages alone, as every token did before capabilities. `viewer` is
-// accepted only while MUSTER_PLUGIN_ORIGINS is set, with an origin from it and
-// an entry URL under that origin (plugins.ValidViewerLink). The set is fixed
-// at mint, but for draft_checks (handlePluginDraftChecksToggle),
-// chief_extension and tasks (handlePluginTasksToggle).
+// gets messages alone, as every token did before capabilities. `viewer` and
+// `app` are accepted only while MUSTER_PLUGIN_ORIGINS is set, with an origin
+// from it and an entry URL under that origin (plugins.ValidViewerLink); `app`
+// also takes the tab label and icon (the store validates them, and reads them
+// only for an `app` token). The set is fixed at mint, but for draft_checks
+// (handlePluginDraftChecksToggle), chief_extension and tasks
+// (handlePluginTasksToggle).
 func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) {
 	in := plugins.NewPlugin{Name: strings.TrimSpace(r.PostFormValue("name")), Label: r.PostFormValue("label"),
 		DataScope: strings.TrimSpace(r.PostFormValue("data_scope")), DeliverTo: strings.TrimSpace(r.PostFormValue("deliver_to"))}
@@ -764,11 +766,18 @@ func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) 
 	if r.PostFormValue("chief_extension") == "1" && !slices.Contains(in.Capabilities, plugins.CapChiefExtension) {
 		in.Capabilities = append(in.Capabilities, plugins.CapChiefExtension)
 	}
-	if !slices.Contains(in.Capabilities, plugins.CapViewer) {
+	app := slices.Contains(in.Capabilities, plugins.CapApp)
+	if !slices.Contains(in.Capabilities, plugins.CapViewer) && !app {
 		return in, ""
 	}
 	if len(s.ext.PluginOrigins) == 0 {
+		if !slices.Contains(in.Capabilities, plugins.CapViewer) {
+			return in, "This server does not offer app plugins (MUSTER_PLUGIN_ORIGINS is unset)."
+		}
 		return in, "This server does not offer viewer plugins (MUSTER_PLUGIN_ORIGINS is unset)."
+	}
+	if app {
+		in.AppLabel, in.AppIcon = strings.TrimSpace(r.PostFormValue("app_label")), r.PostFormValue("app_icon")
 	}
 	origin, err := plugins.ValidViewerLink(s.ext.PluginOrigins, r.PostFormValue("origin"), r.PostFormValue("entry_url"))
 	if err != nil {
@@ -790,14 +799,27 @@ func pluginViewerFieldsHTML(origins []plugins.OriginPattern) string {
 <legend class="text-sm font-medium text-fg">What it may do <span class="text-xs text-fg2">fixed once created</span></legend>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="messages" checked> Messages: bring messages to your chief</label>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="viewer"> Viewer: a Preview button on your session views that opens it as you</label>
-<label for="plugin-origin" class="text-sm font-medium text-fg">Viewer origin</label>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="app" data-testid="plugin-app"> App tab: a tab in your sidebar that opens the plugin's page</label>
+<label for="plugin-origin" class="text-sm font-medium text-fg">Origin <span class="text-xs text-fg2">for Viewer or App tab</span></label>
 <select id="plugin-origin" name="origin" class="` + flowsInputClass + `">`)
 	for _, o := range origins {
 		b.WriteString(`<option value="` + html.EscapeString(o.String()) + `">` + html.EscapeString(o.String()) + `</option>`)
 	}
 	b.WriteString(`</select>
-<label for="plugin-entry" class="text-sm font-medium text-fg">Viewer entry URL <span class="text-xs text-fg2">under the origin; where a hand-off is sent</span></label>
+<label for="plugin-entry" class="text-sm font-medium text-fg">Entry URL <span class="text-xs text-fg2">under the origin; where a hand-off is sent</span></label>
 <input id="plugin-entry" name="entry_url" maxlength="2048" inputmode="url" class="` + flowsInputClass + `">
+<label for="plugin-app-label" class="text-sm font-medium text-fg">Tab label <span class="text-xs text-fg2">App tab only; letters, digits, spaces and - . &amp; '</span></label>
+<input id="plugin-app-label" name="app_label" maxlength="` + strconv.Itoa(plugins.MaxAppLabelRunes) + `" class="` + flowsInputClass + `">
+<fieldset class="flex flex-col gap-1" data-testid="plugin-app-icons">
+<legend class="text-sm font-medium text-fg">Tab icon <span class="text-xs text-fg2">App tab only</span></legend>
+<div class="flex flex-wrap gap-1">`)
+	for _, i := range plugins.AppIcons {
+		b.WriteString(`<label class="flex min-h-[44px] min-w-[44px] items-center justify-center gap-1 rounded-md px-2 text-base ring-1 ring-inset ring-edge" title="` +
+			html.EscapeString(i.Name) + `"><input type="radio" name="app_icon" value="` + html.EscapeString(i.Key) + `" aria-label="` + html.EscapeString(i.Name) + `">` +
+			i.Emoji + `</label>`)
+	}
+	b.WriteString(`</div>
+</fieldset>
 </fieldset>
 `)
 	return b.String()
@@ -825,6 +847,7 @@ var pluginCapabilityWords = map[plugins.Capability]string{
 	plugins.CapViewer:         "open session previews",
 	plugins.CapChiefExtension: "add to your chief's instructions",
 	plugins.CapTasks:          "file tasks",
+	plugins.CapApp:            "have a tab in your sidebar",
 }
 
 // pluginCapabilitiesWords is p's capabilities as its card says them: "Can
@@ -857,7 +880,11 @@ func pluginCapabilitiesText(p plugins.Plugin) string {
 	}
 	out := "can: " + strings.Join(parts, ", ")
 	if p.Origin != nil && p.EntryURL != nil {
-		out += " · viewer at " + *p.EntryURL
+		if p.Has(plugins.CapApp) && p.AppLabel != nil {
+			out += " · app tab \"" + *p.AppLabel + "\" at " + *p.EntryURL
+		} else {
+			out += " · viewer at " + *p.EntryURL
+		}
 	}
 	return out
 }

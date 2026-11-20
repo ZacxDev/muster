@@ -83,6 +83,15 @@ type fakeGH struct {
 	// deletedRefs is every DeleteRef call; refsDeleteErr fails it.
 	deletedRefs   []string
 	refsDeleteErr error
+	// openedDrafts is every OpenDraftPR, in order (its head branch);
+	// openDraftErr fails it. An opened draft is added to all and prs as the
+	// bot's own, numbered from nextPR (500 when 0). comments are every
+	// CommentPR ("#n body"). branchErr fails every BranchSHA.
+	openedDrafts []string
+	openDraftErr error
+	nextPR       int
+	prComments   []string
+	branchErr    error
 }
 
 type commitInfo struct {
@@ -144,9 +153,14 @@ func (f *fakeGH) FileAt(_ context.Context, path, ref string) ([]byte, error) {
 	return []byte(b), nil
 }
 func (f *fakeGH) BranchSHA(_ context.Context, b string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.branchErr != nil {
+		return "", f.branchErr
+	}
 	s, ok := f.branches[b]
 	if !ok {
-		return "", errNotFound
+		return "", fmt.Errorf("%w: %s (%v)", ErrRefMissing, b, errNotFound)
 	}
 	return s, nil
 }
@@ -216,6 +230,31 @@ func (f *fakeGH) MergeInto(_ context.Context, base, head, _ string) (string, err
 	return "merged-" + head, nil
 }
 func (f *fakeGH) OpenPR(_ context.Context, _, head, base, _ string) (int, error) { return 900, nil }
+
+func (f *fakeGH) OpenDraftPR(_ context.Context, title, head, base, body string) (PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.openDraftErr != nil {
+		return PR{}, f.openDraftErr
+	}
+	if f.nextPR == 0 {
+		f.nextPR = 500
+	}
+	f.nextPR++
+	p := PR{Number: f.nextPR, State: "open", Draft: true, Author: BotLogin(f.slug), AuthorType: "Bot", HeadRef: head,
+		HeadSHA: f.branches[head], BaseRef: base, Title: title, Body: body}
+	f.openedDrafts = append(f.openedDrafts, head)
+	f.all = append(f.all, p)
+	f.prs[p.Number] = p
+	return p, nil
+}
+
+func (f *fakeGH) CommentPR(_ context.Context, n int, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prComments = append(f.prComments, "#"+fmt.Sprint(n)+" "+body)
+	return nil
+}
 func (f *fakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

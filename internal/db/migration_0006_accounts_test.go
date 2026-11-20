@@ -126,7 +126,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - morning_reports (0161, one morning report per user per day).
 //   - page_assets, page_version_assets (0164, a page's author assets and the versions using them).
 //   - host_jobs, host_job_runs (0166, scheduled host jobs and their runs).
-//   - officer_auto_restarts (0169, the wake loop's auto-restart record per officer, day and instance).
+//   - officer_pr_queue (0169, a draft officer's creates the open cap held back).
+//   - officer_auto_restarts (0170, the wake loop's auto-restart record per officer, day and instance).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -162,6 +163,7 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"morning_reports",
 	"page_assets", "page_version_assets",
 	"host_jobs", "host_job_runs",
+	"officer_pr_queue",
 	"officer_auto_restarts"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
@@ -232,6 +234,7 @@ var wantForeignKeys = []string{
 	"officer_pr_loops|officer_pr_loops_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_public_branches|officer_public_branches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_connector_blocks|officer_connector_blocks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_pr_queue|officer_pr_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0156: a person's looks at officers go with them.
 	"officer_seen|officer_seen_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	// 0157: an owner's cap raises go with them.
@@ -243,7 +246,7 @@ var wantForeignKeys = []string{
 	"host_jobs|host_jobs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"host_job_runs|host_job_runs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"host_job_runs|host_job_runs_job_fkey|FOREIGN KEY (owner_id, job_id) REFERENCES host_jobs(owner_id, id) ON DELETE CASCADE",
-	// 0169: an owner's auto-restart record goes with them.
+	// 0170: an owner's auto-restart record goes with them.
 	"officer_auto_restarts|officer_auto_restarts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE",
 	"chief_session_llm_usage|chief_session_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

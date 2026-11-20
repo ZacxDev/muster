@@ -270,11 +270,14 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 	var p Page
 	var v Version
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		// The cap is the owner's (row-level security counts only theirs).
+		// The cap is the owner's: it counts the pages owned by muster.uid —
+		// the owner the INSERT below writes (the column's default). Not
+		// every page row-level security lets the caller read: since 0165 a
+		// member also reads each of their teams' pages, which are not theirs.
 		// Concurrent creates may pass it together by one or two: it bounds
 		// growth, it is not an accounting.
 		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM pages`).Scan(&n); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM pages WHERE owner_id = nullif(current_setting('muster.uid', true), '')::bigint`).Scan(&n); err != nil {
 			return err
 		}
 		if n >= MaxPagesPerOwner {

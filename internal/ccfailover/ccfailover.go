@@ -287,6 +287,14 @@ func (s *Service) lane(agentID int64) func() {
 	return m.Unlock
 }
 
+// Eligible reports whether ag is an agent a failover can move at all: a
+// claude-code agent running on a named account. One that is not (another
+// kind, or no account — a host-run instance) is never moved, whatever
+// [Service.Allowed] says.
+func Eligible(ag agents.Agent) bool {
+	return agents.ResolveKind(ag.Kind) == agents.KindClaudeCode && ag.CCAccount != ""
+}
+
 // Allowed reports whether ag may be failed over, and why not.
 func (s *Service) Allowed(ag agents.Agent) (bool, string) {
 	if !s.cfg.Enabled {
@@ -341,7 +349,7 @@ func (s *Service) accountFailed(ctx context.Context, agentID int64, account, fai
 		return res
 	}
 	res.AgentName = ag.Name
-	if agents.ResolveKind(ag.Kind) != agents.KindClaudeCode || ag.CCAccount == "" {
+	if !Eligible(ag) {
 		res.Why = "not a claude-code agent"
 		return res
 	}

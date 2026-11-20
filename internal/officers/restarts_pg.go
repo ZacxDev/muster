@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGRestartStore is RestartStore on officer_auto_restarts (migration 0169),
+// PGRestartStore is RestartStore on officer_auto_restarts (migration 0170),
 // under row-level security: ctx must act as the officer's owner
 // (Config.RestartContext).
 type PGRestartStore struct{ pool *pgxpool.Pool }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -159,6 +160,10 @@ type hostDecision struct {
 	host       string
 	caller     toolCaller
 	tool, args string
+	// question is the card's own text, exactly as filed: what a paired phone's
+	// challenge for this card hands back (stepUpCardConfirms), so the step-up
+	// prompt shows what the signature confirms.
+	question string
 }
 
 // hostDecisions is the pending set, by card (ask) id. In memory: muster runs
@@ -388,7 +393,7 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 		s.logger.Printf("step-up: file a card for %s from %s/%s: %v", name, host, c.asker.MirrorSession, err)
 		return toolErr("%s needs your owner's confirmation on their phone, and the confirmation could not be filed; try again", name), true
 	}
-	s.hostDecisions.put(ask.ID, hostDecision{owner: p.UserID, host: host, caller: c, tool: name, args: args})
+	s.hostDecisions.put(ask.ID, hostDecision{owner: p.UserID, host: host, caller: c, tool: name, args: args, question: ask.Question})
 	s.askFiled(ask)
 	s.logger.Printf("step-up: %s from %s/%s waits for card %d (host officer %s on the machine; %s)", name, host, c.asker.MirrorSession, ask.ID, strings.Join(ids, ", "), firstNonBlank(spawn, "no agent spawn"))
 	return toolJSON(map[string]any{"status": "awaiting_owner_confirmation", "card": ask.ID,
@@ -637,4 +642,30 @@ func stepUpPromptBlock(prompt string) string {
 	return fmt.Sprintf("\n\nAN EXCERPT of the instructions: the first %d of %s:\n%s…\n\n⚠ The other %d characters are NOT shown on this card. "+
 		"Confirm only if you know what the rest says; otherwise refuse, and read the full text in the session that asked.",
 		stepUpPromptShown, head, string(r[:stepUpPromptShown]), len(r)-stepUpPromptShown)
+}
+
+// stepUpCardConfirms is what a paired phone's challenge for an action on ask
+// target says it confirms (the challenge's `confirms`): the confirmation
+// card's own text, when target is a card whose decision is pending for the
+// device's owner; "" for any other ask, a lost card, or another owner's.
+//
+// It is DISPLAY, never authority: the challenge it rides on is the same
+// single-use, two-minute challenge bound to the card's id and the sha256 of
+// the exact answer, and hostDecisionForAnswer still refuses every door but
+// the paired phone. It is read from the pending decision itself — the text the
+// card was filed with, in memory beside the decision it runs — so what the
+// phone's prompt shows and what a Confirm runs cannot come from two places.
+func (s *Server) stepUpCardConfirms(ctx context.Context, target string) string {
+	id, err := strconv.ParseInt(target, 10, 64)
+	if err != nil || id <= 0 {
+		return ""
+	}
+	d, ok := s.hostDecisions.peek(id)
+	if !ok {
+		return ""
+	}
+	if p, ok := authz.From(ctx); !ok || p.UserID != d.owner {
+		return ""
+	}
+	return d.question
 }

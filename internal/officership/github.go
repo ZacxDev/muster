@@ -50,6 +50,10 @@ type PR struct {
 	Title          string
 	MergeCommitSHA string
 	CreatedAt      time.Time
+	// UpdatedAt is GitHub's updated_at: the last activity on the pull
+	// request (a push, a comment, a review, an edit) — what the stale-draft
+	// age-out reads (prqueue.go).
+	UpdatedAt time.Time
 	// Body is the pull request's description (OfficerPRs fills it: the draft
 	// gate reads its item from the first line).
 	Body string
@@ -173,6 +177,14 @@ type GitHub interface {
 	CreateCommit(ctx context.Context, message, tree string, parents []string) (string, error)
 	MergeInto(ctx context.Context, base, head, message string) (string, error)
 	OpenPR(ctx context.Context, title, head, base, body string) (int, error)
+	// OpenDraftPR opens a DRAFT pull request from head into base (POST pulls
+	// with "draft": true) and answers it as GitHub created it: the queue's
+	// drain (prqueue.go), with the officer App's token.
+	OpenDraftPR(ctx context.Context, title, head, base, body string) (PR, error)
+	// CommentPR posts body as a conversation comment on pull request n (POST
+	// issues/<n>/comments): the stale-draft age-out's note before it closes
+	// one (prqueue.go).
+	CommentPR(ctx context.Context, n int, body string) error
 	// PRsForBranch is every pull request whose head is branch in this
 	// repository (GitHub's head=<owner>:<branch> filter, which finds a closed
 	// pull request whose branch was deleted too), in state "open", "closed"
@@ -366,13 +378,14 @@ type restPR struct {
 	// pulls/{n}), so a list entry read through Merged alone is never merged.
 	MergedAt  *time.Time `json:"merged_at"`
 	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 	Body      string     `json:"body"`
 }
 
 func (r restPR) pr() PR {
 	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged || r.MergedAt != nil, Mergeable: r.Mergeable, Title: r.Title,
 		Author: r.User.Login, AuthorType: r.User.Type, HeadRef: r.Head.Ref, HeadSHA: r.Head.SHA, BaseRef: r.Base.Ref,
-		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt, Body: r.Body}
+		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Body: r.Body}
 	if r.Head.Repo != nil {
 		p.HeadRepo = r.Head.Repo.FullName
 	}
@@ -577,6 +590,10 @@ func (g *REST) BranchSHA(ctx context.Context, branch string) (string, error) {
 		} `json:"object"`
 	}
 	err := g.do(ctx, http.MethodGet, g.repoPath()+"/git/ref/heads/"+escapeRef(branch), "", nil, &r, "reading branch "+branch)
+	if statusOf(err) == http.StatusNotFound {
+		// A branch GitHub does not have (the queue's drain skips one).
+		return "", fmt.Errorf("%w: %w", ErrRefMissing, err)
+	}
 	if err == nil && r.Object.SHA == "" {
 		err = fmt.Errorf("branch %s has no sha", branch)
 	}
@@ -771,6 +788,23 @@ func (g *REST) OpenPR(ctx context.Context, title, head, base, body string) (int,
 	err := g.do(ctx, http.MethodPost, g.repoPath()+"/pulls", "", map[string]string{"title": title, "head": head, "base": base, "body": body},
 		&r, "opening a pull request")
 	return r.Number, err
+}
+
+// OpenDraftPR implements GitHub.
+func (g *REST) OpenDraftPR(ctx context.Context, title, head, base, body string) (PR, error) {
+	var r restPR
+	err := g.do(ctx, http.MethodPost, g.repoPath()+"/pulls", "", map[string]any{"title": title, "head": head, "base": base, "body": body, "draft": true},
+		&r, "opening a draft pull request")
+	if err == nil && r.Number <= 0 {
+		err = errors.New("GitHub's answer to opening a draft pull request names no pull request")
+	}
+	return r.pr(), err
+}
+
+// CommentPR implements GitHub.
+func (g *REST) CommentPR(ctx context.Context, n int, body string) error {
+	return g.do(ctx, http.MethodPost, g.repoPath()+"/issues/"+strconv.Itoa(n)+"/comments", "", map[string]string{"body": body}, nil,
+		"commenting on pull request #"+strconv.Itoa(n))
 }
 
 // ClosePR implements GitHub.

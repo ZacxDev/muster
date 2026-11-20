@@ -40,7 +40,7 @@ var shareClasses = map[string]shareClass{
 	"chief_proposals": {1, 2}, "note_attachments": {1, 2},
 	"note_comments": {1, 2}, "notes": {1, 2}, "officer_items": {1, 2},
 	"officer_pr_loops": {1, 2}, "officer_public_branches": {1, 2}, "officer_connector_blocks": {1, 2},
-	"routing_rules": {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
+	"officer_pr_queue": {1, 2}, "routing_rules": {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
 	"session_prs": {1, 2}, "session_routes": {1, 2}, "task_ref_writes": {1, 2},
 	"task_sessions": {1, 2}, "uploads": {1, 2},
 	// managed: write manager
@@ -156,7 +156,7 @@ var personalOwned = []string{
 	// 0166: scheduled host jobs and their runs; a job writes one of its
 	// owner's personal pages, so a team host's jobs are refused.
 	"host_jobs", "host_job_runs",
-	// 0169: an officer's auto-restart record; only its owner's loop writes it.
+	// 0170: an officer's auto-restart record; only its owner's loop writes it.
 	"officer_auto_restarts",
 }
 

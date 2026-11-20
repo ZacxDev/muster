@@ -51,10 +51,19 @@ ALTER TABLE public.plugins ADD CONSTRAINT plugins_origin_check
 ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_entry_url_check;
 ALTER TABLE public.plugins ADD CONSTRAINT plugins_entry_url_check
     CHECK (entry_url IS NULL OR (char_length(entry_url) BETWEEN 1 AND 2048 AND entry_url LIKE 'https://%'));
-ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_viewer_link;
-ALTER TABLE public.plugins ADD CONSTRAINT plugins_viewer_link
-    CHECK ((origin IS NULL) = (entry_url IS NULL)
-       AND (origin IS NOT NULL) = ('viewer' = ANY (capabilities)));
+-- 🔴 GUARDED: db.RLSOn RE-APPLIES THIS BODY on every RLS cycle. Unguarded, it
+-- replaced plugins_viewer_link with this viewer-only form even after 0168 had
+-- widened it to viewer OR app, failing outright once an app row existed. It
+-- adds the constraint only when there is none (a later form owns it after).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'plugins_viewer_link'
+                   AND conrelid = 'public.plugins'::regclass) THEN
+    ALTER TABLE public.plugins ADD CONSTRAINT plugins_viewer_link
+        CHECK ((origin IS NULL) = (entry_url IS NULL)
+           AND (origin IS NOT NULL) = ('viewer' = ANY (capabilities)));
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS public.plugin_handoffs (
     id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

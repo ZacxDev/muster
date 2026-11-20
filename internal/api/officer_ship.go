@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -154,6 +155,10 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		},
 		Loops:          s.prLoopsFor(cfg, o),
 		PublicBranches: s.publicBranchesFor(cfg, o),
+		Queue:          s.prQueueFor(cfg, o),
+		ItemFinished: func(ctx context.Context, item int) (bool, string, error) {
+			return itemFinished(ctx, hq.c, item)
+		},
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
 		},
@@ -296,6 +301,54 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 		return it, nil
 	}
 	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+}
+
+// itemLiveStatuses are the statuses of an item whose work is not over: its
+// queued pull request is still opened (open, released or claimed again by
+// anyone; waiting on a person; escalated to one).
+var itemLiveStatuses = []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusWaiting, officers.StatusEscalated}
+
+// itemFinished is the queue drain's item re-read (PushGate.ItemFinished),
+// with officer c's own token: NOT finished when HQ lists item in a live
+// status (itemLiveStatuses), whoever holds it; finished when it lists it
+// done (completed: done or no_action); finished as cancelled when it lists it
+// nowhere. 🔴 A claim is not the test: a lease lasts at most an hour and only
+// the officer heartbeats it, and a down holder's claim is released, while a
+// queued create may wait longer than that. An unreadable list, or a live list
+// at its page bound that does not name the item (officers.AllItemsFull: not
+// proven absent), is an error: the drain waits.
+func itemFinished(ctx context.Context, c officers.Backend, item int) (bool, string, error) {
+	want := strconv.Itoa(item)
+	has := func(items []officers.Item) bool {
+		for _, it := range items {
+			if string(it.ID) == want {
+				return true
+			}
+		}
+		return false
+	}
+	cut := false
+	for _, st := range itemLiveStatuses {
+		items, err := c.AllItems(ctx, st)
+		if err != nil {
+			return false, "", fmt.Errorf("HQ's %s items could not be read: %v", st, err)
+		}
+		if has(items) {
+			return false, "", nil
+		}
+		cut = cut || officers.AllItemsFull(len(items))
+	}
+	done, err := c.AllItems(ctx, officers.StatusDone)
+	if err != nil {
+		return false, "", fmt.Errorf("HQ's done items could not be read: %v", err)
+	}
+	if has(done) {
+		return true, fmt.Sprintf("item %d is completed in HQ, so its pull request is moot", item), nil
+	}
+	if cut {
+		return false, "", fmt.Errorf("item %d is in none of HQ's lists read, and one was at its page bound, so its state is unknown", item)
+	}
+	return true, fmt.Sprintf("item %d is no longer in HQ (cancelled or removed), so its pull request is moot", item), nil
 }
 
 // fixItemsHeld is the draft gate's FixItems: the pull-request fix items
@@ -790,6 +843,41 @@ func (s *Server) publicBranchesFor(cfg OfficersConfig, o officers.Officer) offic
 	return publicBranches{s: s, o: o, st: st}
 }
 
+// prQueueFor is draft officer o's queue of creates the open cap held back
+// (officership.PRQueue) over cfg.PRQueue, acting as o's owner (the database
+// store is under row-level security); nil for any other stage. With no store
+// configured, one in this process's memory, shared by every officer of this
+// server (a restart forgets it).
+func (s *Server) prQueueFor(cfg OfficersConfig, o officers.Officer) officership.PRQueue {
+	if !o.Ship.IsDraft() {
+		return nil
+	}
+	st := cfg.PRQueue
+	if st == nil {
+		s.officerRT.memPRQueueOnce.Do(func() { s.officerRT.memPRQueue = officers.NewMemPRQueueStore() })
+		st = s.officerRT.memPRQueue
+	}
+	return prQueue{s: s, o: o, st: st}
+}
+
+type prQueue struct {
+	s  *Server
+	o  officers.Officer
+	st officers.PRQueueStore
+}
+
+func (p prQueue) as(ctx context.Context) context.Context { return p.s.officerPrincipal(ctx, p.o.Owner) }
+
+func (p prQueue) Add(ctx context.Context, q officers.QueuedPR) (officers.QueuedPR, error) {
+	return p.st.PRQueueAdd(p.as(ctx), p.o.ID, q)
+}
+func (p prQueue) List(ctx context.Context, repo string) ([]officers.QueuedPR, error) {
+	return p.st.PRQueueList(p.as(ctx), p.o.ID, repo)
+}
+func (p prQueue) Settle(ctx context.Context, id int64, head, state string, pr int, note string) (bool, error) {
+	return p.st.PRQueueSettle(p.as(ctx), p.o.ID, id, head, state, pr, note)
+}
+
 type publicBranches struct {
 	s  *Server
 	o  officers.Officer
@@ -833,4 +921,52 @@ func (p prLoops) InLoopPRs(ctx context.Context) ([]officers.PRLoop, error) {
 func (p prLoops) InLoop(ctx context.Context, repo string, n int) (bool, error) {
 	st, err := p.st.PRLoopState(p.as(ctx), p.o.ID, repo, n)
 	return st == officers.PRLoopInLoop, err
+}
+
+// officerPRQueueHTML is the officer page's "Queued pull requests" section
+// (inside Technical details): draft officer id's creates the open cap held
+// back, oldest first — the order muster opens them in — or "" for an officer
+// that is not scope sc's own draft officer with a queue. Read through the
+// officer's own ship runtime, acting as its owner, so it shows exactly the
+// queue the sweep drains.
+func (s *Server) officerPRQueueHTML(ctx context.Context, sc officerScope, id string) string {
+	if s.officerRT == nil || s.officerRT.reg == nil {
+		return ""
+	}
+	o, ok := s.officerRT.reg.ForOwner(sc.Owner, id)
+	if !ok || !o.Ship.IsDraft() {
+		return ""
+	}
+	rt := s.officerRT.ships[o.ID]
+	if rt == nil || rt.gate == nil || rt.gate.Queue == nil {
+		return ""
+	}
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<section class="flex flex-col gap-3" id="officer-pr-queue"><h2 class="text-sm font-semibold text-fg">Queued pull requests</h2>`)
+	list, err := rt.gate.Queue.List(ctx, "")
+	switch {
+	case err != nil:
+		s.logger.Printf("officers: read %s's pull-request queue: %v", o.ID, err)
+		b.WriteString(`<p class="text-sm text-fg2">Its pull-request queue could not be read just now.</p>`)
+	case len(list) == 0:
+		b.WriteString(`<p class="text-sm text-fg2" id="officer-pr-queue-empty">None. A draft held back by the open-pull-request limit waits here until a slot frees.</p>`)
+	default:
+		b.WriteString(`<ol class="flex flex-col divide-y divide-line">`)
+		for i, q := range list {
+			b.WriteString(`<li class="flex flex-col py-2" data-pr-queue="` + strconv.FormatInt(q.ID, 10) + `"><span class="break-words text-sm text-fg">` +
+				esc(fmt.Sprintf("%d. %s · %s", i+1, q.Repo, q.Branch)) + `</span><span class="text-xs text-fg2">` +
+				esc(fmt.Sprintf("item %d · queued %s · head %s", q.Item, fmtTime(q.QueuedAt), shortHead(q.HeadSHA))) + `</span></li>`)
+		}
+		b.WriteString(`</ol>`)
+	}
+	b.WriteString(`</section>`)
+	return b.String()
+}
+
+func shortHead(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }

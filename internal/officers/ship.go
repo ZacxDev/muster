@@ -139,6 +139,10 @@ type Ship struct {
 	// InternalPatternsFile is the local file of internal-details patterns
 	// that repositories marked public are scanned with (ship_docs.go).
 	InternalPatternsFile string
+	// CloseOldestDraft is a draft officer's cap-triggered close of its oldest
+	// idle draft (`close_oldest_draft`, ship_stale.go): ON by default for the
+	// draft stage; nil when the block disables it, and on every other stage.
+	CloseOldestDraft *CloseOldestDraft
 
 	appKey          *rsa.PrivateKey
 	escalateWebhook string
@@ -248,7 +252,9 @@ type declaredShip struct {
 	Public               bool            `json:"public"`
 	DocsOnly             json.RawMessage `json:"docs_only"`
 	InternalPatternsFile string          `json:"internal_patterns_file"`
-	Notice               *struct {
+	// CloseOldestDraft is ship_stale.go's.
+	CloseOldestDraft json.RawMessage `json:"close_oldest_draft"`
+	Notice           *struct {
 		Path    string `json:"path"`
 		Channel string `json:"channel"`
 	} `json:"notice"`
@@ -340,6 +346,9 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 	}
 	s.Repos = repos
 	if err := parseDocsAndPublic(s, d); err != nil {
+		return nil, err
+	}
+	if s.CloseOldestDraft, err = parseCloseOldestDraft(s.Stage, d.CloseOldestDraft); err != nil {
 		return nil, err
 	}
 	primary, _ := s.RepoFor(repo, repo)

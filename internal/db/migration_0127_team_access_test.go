@@ -28,7 +28,8 @@ var ownedAfter0127 = []string{
 	"morning_reports",                    // 0161
 	"page_assets", "page_version_assets", // 0164
 	"host_jobs", "host_job_runs", // 0166
-	"officer_auto_restarts", // 0169
+	"officer_pr_queue",      // 0169
+	"officer_auto_restarts", // 0170
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares
@@ -38,6 +39,7 @@ var sharedAfter0127 = []string{
 	"officer_contacts", "officer_contact_events", // 0132
 	"officer_public_branches",  // 0138
 	"officer_connector_blocks", // 0148
+	"officer_pr_queue",         // 0169
 }
 
 func TestMigration0127TeamAccess(t *testing.T) {

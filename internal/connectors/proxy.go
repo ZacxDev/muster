@@ -157,6 +157,21 @@ var ErrGateRefused = errors.New("connectors: refused by this agent's write polic
 // wraps [ErrGateRefused], so every check for a refusal still sees one.
 var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
 
+// ErrGateQueued is a [Gate]'s answer to a write it did NOT forward but
+// recorded, to be made later by muster itself (a draft officer's pull
+// request held back by its open cap: internal/officership's queue). It is
+// answered 202 Accepted with a [QueuedBody] whose message is the error's
+// text, so the agent reads "accepted, later" rather than a refusal to escalate.
+// It does not wrap [ErrGateRefused]: nothing was refused.
+var ErrGateQueued = errors.New("connectors: accepted and queued by this agent's write policy")
+
+// QueuedBody is the JSON answer to a write a gate queued (202).
+type QueuedBody struct {
+	Queued    bool   `json:"queued"`
+	Message   string `json:"message"`
+	Connector string `json:"connector,omitempty"`
+}
+
 // afterForwardKey carries a gate's after-forward hook in an admitted
 // request's context.
 type afterForwardKey struct{}
@@ -619,6 +634,13 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			}
 		}
 		switch {
+		case errors.Is(err, ErrGateQueued):
+			status, detail = http.StatusAccepted, "gate queued"
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(QueuedBody{Queued: true, Message: err.Error(), Connector: connector})
+			return
 		case errors.Is(err, ErrGateConflict):
 			refuse(http.StatusConflict, RefusalBody{Error: err.Error()}, "gate refused: conflict")
 			return

@@ -125,6 +125,16 @@ type PushGate struct {
 	// Shepherd is a shepherd-stage officer's rules (shepherd.go). nil on a
 	// shepherd: every write is refused (fail closed).
 	Shepherd *Shepherd
+	// Queue is a draft officer's queue of creates the open cap held back
+	// (prqueue.go): with one, such a create is queued (202) and the sweep
+	// opens it once a slot frees. nil: the open cap refuses, as before.
+	Queue PRQueue
+	// ItemFinished answers whether item is FINISHED in HQ — completed,
+	// cancelled or gone — so its queued pull request is moot: the drain reads
+	// it before it opens a queued create (prqueue.go); finished true says
+	// why. An item that is open, waiting, escalated or claimed (by anyone) is
+	// not finished. nil: the drain opens nothing (fail closed).
+	ItemFinished func(ctx context.Context, item int) (finished bool, why string, err error)
 
 	// createSem serialises a draft officer's creates (draftCreate holds it
 	// from the rate-limit read until afterCreate); built once by createOnce.
